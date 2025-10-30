@@ -1,0 +1,83 @@
+/**
+ * Steel IQ - Main Styles
+ * Global typography and component styles
+ */
+
+/* CSS Custom Properties for Typography Scale */
+:root {
+  --font-regular: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+  --callout-steel-bg: #cfe2ff;
+  --callout-steel-border: #b6d4fe;
+  --callout-steel-text: #084298;
+}
+
+/* Base Typography */
+body {
+  font-family: 'Saira', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif;
+  font-weight: var(--font-regular);
+  padding-top: 20px;
+  padding-bottom: 20px;
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: var(--font-semibold);
+}
+
+/* Navigation */
+.navbar {
+  margin-bottom: 20px;
+}
+
+.navbar-brand {
+  display: flex;
+  align-items: center;
+  font-weight: var(--font-semibold);
+}
+
+.navbar-nav .nav-link {
+  font-weight: var(--font-medium);
+}
+
+/* Buttons */
+.btn {
+  font-weight: var(--font-semibold);
+}
+
+/* Tables */
+th, .table thead th {
+  font-weight: var(--font-medium);
+}
+
+/* Cards */
+.card-title {
+  font-weight: var(--font-semibold);
+}
+
+/* Badges */
+.badge {
+  font-weight: var(--font-medium);
+}
+
+/* Forms */
+label, .form-label {
+  font-weight: var(--font-medium);
+}
+
+/* Alerts */
+.alert strong {
+  font-weight: var(--font-semibold);
+}
+
+.alert.callout-steel {
+  background-color: var(--callout-steel-bg);
+  border-color: var(--callout-steel-border);
+  color: var(--callout-steel-text);
+}
+
+.alert.callout-steel i {
+  color: inherit;
+}

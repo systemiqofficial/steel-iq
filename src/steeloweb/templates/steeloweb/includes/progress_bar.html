@@ -1,0 +1,100 @@
+
+<div id="progress-container">
+    {% if modelrun.state == 'running' or modelrun.state == 'cancelling' %}
+        {% if modelrun.appears_stuck %}
+        <div class="alert alert-danger">
+            <h6 class="alert-heading">
+                <i class="fas fa-exclamation-triangle"></i> Simulation Appears Stuck
+            </h6>
+            <p class="mb-2">
+                This simulation hasn't updated in {{ modelrun.time_since_last_update }}. 
+                The worker process may have crashed or been terminated.
+            </p>
+            <p class="mb-0">
+                <strong>Common causes:</strong> Server restart, code changes during development, or worker crash.
+                <br>
+                You can use the <strong>Force Stop</strong> button above to mark this simulation as failed.
+            </p>
+        </div>
+        {% elif modelrun.has_progress %}
+        <div class="progress-info mb-2">
+            <div class="d-flex justify-content-between">
+                <span>
+                    {% if modelrun.state == 'cancelling' %}
+                    <i class="fas fa-spinner fa-spin"></i> Cancelling - Year {{ modelrun.current_progress.current_year }}
+                    {% else %}
+                    Simulating year {{ modelrun.current_progress.current_year }}
+                    {% endif %}
+                </span>
+                <span>{{ modelrun.current_progress.percentage_completed }}%</span>
+            </div>
+        </div>
+        <div class="progress" style="height: 20px;">
+            <div class="progress-bar {% if modelrun.state == 'cancelling' %}bg-warning{% endif %} progress-bar-striped progress-bar-animated"
+                 role="progressbar"
+                 style="width: {{ modelrun.current_progress.percentage_completed }}%;"
+                 aria-valuenow="{{ modelrun.current_progress.percentage_completed }}"
+                 aria-valuemin="0"
+                 aria-valuemax="100">
+            </div>
+        </div>
+        <div class="text-muted small mt-1">
+            {% if modelrun.state == 'cancelling' %}
+            Stopping simulation after current year completes...
+            {% else %}
+            Simulating from {{ modelrun.current_progress.start_year }} to {{ modelrun.current_progress.end_year }}
+            {% endif %}
+        </div>
+        {% else %}
+        <div class="alert alert-info">
+            {% if modelrun.state == 'cancelling' %}
+            <i class="fas fa-spinner fa-spin"></i> Cancellation in progress, waiting for current operation to complete...
+            {% else %}
+            <i class="fas fa-cog fa-spin"></i> Simulation is starting up...
+            <div class="progress mt-2" style="height: 6px;">
+                <div class="progress-bar progress-bar-striped progress-bar-animated bg-info" role="progressbar" style="width: 100%"></div>
+            </div>
+            <div class="small text-muted mt-1">
+                ❤️ Heartbeat active - Last update: {{ modelrun.time_since_last_update }}
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+    {% elif modelrun.state == 'finished' %}
+    <div class="alert alert-success">
+        <i class="fas fa-check-circle"></i> Simulation completed successfully!
+        {% if modelrun.finished_at %}
+        <div class="small text-muted mt-1">
+            Finished {{ modelrun.finished_at|timesince }} ago
+        </div>
+        {% endif %}
+    </div>
+    {% elif modelrun.state == 'failed' %}
+    <div class="alert alert-danger">
+        <i class="fas fa-exclamation-circle"></i> Simulation failed
+        {% if modelrun.error_message %}
+        <div class="small mt-2">
+            <strong>Error:</strong> {{ modelrun.error_message|truncatewords:20 }}
+        </div>
+        {% endif %}
+        {% if modelrun.finished_at %}
+        <div class="small text-muted mt-1">
+            Failed {{ modelrun.finished_at|timesince }} ago
+        </div>
+        {% endif %}
+    </div>
+    {% elif modelrun.state == 'cancelled' %}
+    <div class="alert alert-warning">
+        <i class="fas fa-stop-circle"></i> Simulation was cancelled
+        {% if modelrun.finished_at %}
+        <div class="small text-muted mt-1">
+            Cancelled {{ modelrun.finished_at|timesince }} ago
+        </div>
+        {% endif %}
+    </div>
+    {% else %}
+    <div class="alert alert-secondary">
+        No simulation in progress
+    </div>
+    {% endif %}
+</div>

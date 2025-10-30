@@ -1,0 +1,161 @@
+[project]
+name = "steel-model"
+version = "1.0.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "folium",
+    "geopandas",
+    "black",
+    "networkx",
+    "openpyxl",
+    "osm2geojson",
+    "pandas",
+    "pydantic-settings",
+    "psutil",
+    "python-dotenv",
+    "rich",
+    "pycountry",
+    "scipy",
+    "pydantic",
+    "mocker",
+    "matplotlib",
+    "sentry-sdk",
+    "osmnx",
+    "scikit-learn",
+    "dash",
+    "dash-leaflet",
+    "dash-extensions",
+    "pyomo",
+    "seaborn",
+    "fiona",
+    "cartopy",
+    "geopy",
+    "ipython",
+    "reverse-geocoder",
+    "highspy>=1.9.0",
+    "numba>=0.61.2",
+    # Django Frontend
+    "django",
+    "django-environ",
+    "django-htmx",
+    "django-tasks>=0.9.0",
+    "whitenoise",
+    "rioxarray>=0.19.0",
+    "pydeck>=0.9.1",
+    # Data management
+    "httpx",
+    "tqdm",
+    "dask[array,distributed]>=2025.5.0",
+]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.sdist]
+packages = ["src/steelo", "src/network_optimisation", "src/steeloweb", "src/baseload_optimisation_atlas"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/steelo", "src/network_optimisation", "src/steeloweb", "src/baseload_optimisation_atlas"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "coverage>=7",
+    "mypy",
+    "jupyterlab>=4.3.0",
+    "pytest-mock>=3",
+    "pandas-stubs>=2.2.3.241009",
+    "ruff>=0.8.0",
+    "types-shapely>=2.0.0.20241112",
+    "django-stubs>=5.1.0",
+    "ipykernel>=6.29.5",
+    "xarray>=2025.3.1",
+    "netcdf4>=1.6.0",
+    "h5netcdf>=1.3.0",
+    "h5py>=3.10.0",
+    "certifi>=2024.0.0",
+    "atlite>=0.4.0",
+    # Django Frontend
+    "pytest-django",
+    "django-debug-toolbar",
+    # Documentation
+    "sphinx>=7.0",
+    "myst-parser>=2.0",
+    "furo>=2024.0",
+    "sphinx-autobuild>=2024.0",
+]
+
+[tool.ruff]
+line-length = 120
+
+[project.scripts]
+show_plants_on_map = "steelo.entrypoints.cli:show_plants_on_map"
+show_cost_of_x_on_map = "steelo.entrypoints.cli:show_cost_of_x_on_map"
+run_simulation = "steelo.entrypoints.cli:run_full_simulation"
+run_boa = "baseload_optimisation_atlas.boa_run_simulation:main"
+llm-content = "steelo.entrypoints.developer_tools:llm_content"
+steelo-data-download = "steelo.entrypoints.data_cli:steelo_data_download"
+steelo-data-list = "steelo.entrypoints.data_cli:steelo_data_list"
+steelo-data-verify = "steelo.entrypoints.data_cli:steelo_data_verify"
+steelo-data-validate = "steelo.entrypoints.data_cli:steelo_data_validate"
+test-plotting = "steelo.entrypoints.test_plotting_quick:main"
+steelo-data-convert = "steelo.entrypoints.data_cli:steelo_data_convert"
+steelo-data-recreate = "steelo.entrypoints.data_cli:steelo_data_recreate"
+steelo-data-extract-geo = "steelo.entrypoints.data_cli:steelo_data_extract_geo"
+steelo-data-prepare = "steelo.entrypoints.data_cli:steelo_data_prepare"
+steelo-cache = "steelo.entrypoints.cache_cli:steelo_cache"
+download-binaries = "steelo.entrypoints.download_binaries:main"
+list-binaries = "steelo.entrypoints.list_binaries:main"
+validate-master-input = "steelo.entrypoints.validate_master_input:main"
+count-lines-of-code = "steelo.entrypoints.cli:count_lines_of_code"
+run_baseload_power_simulation = "steelo.entrypoints.geo:run_baseload_power_simulation"
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+filterwarnings = [
+  "ignore::pydantic.warnings.PydanticDeprecatedSince20",
+  "ignore::FutureWarning",
+  "ignore::DeprecationWarning",
+  "ignore:You will likely lose important projection information:UserWarning",
+  "ignore:numpy.ndarray size changed:RuntimeWarning"
+]
+testpaths = ["tests"]
+DJANGO_SETTINGS_MODULE = "config.settings.test"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "network: marks tests that require network access",
+    "integration: marks tests as integration tests"
+]
+django_find_project = false
+pythonpath = [
+    "src/django",  # to make config.settings.test work
+]
+
+[tool.mypy]
+files = ["src"]
+plugins = ["pydantic.mypy"]
+mypy_path = "src/steelo"
+exclude = ["src/electron/", "src/django/", "src/steeloweb/"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+branch = true
+source = ["src"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
+
+[tool.specsync]
+workspace_subdir = "specs"
+repo_specs_dir = "specs"
+
+[tool.specsync.filter]
+require_expose = true
+match_project = true

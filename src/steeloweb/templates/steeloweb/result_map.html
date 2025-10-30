@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} - Model Run #{{ modelrun.id }}{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1>{{ title }}</h1>
+        <div>
+            <a href="{% url 'modelrun-detail' pk=modelrun.id %}" class="btn btn-secondary">
+                <i class="fas fa-arrow-left"></i> Back to Model Run
+            </a>
+        </div>
+    </div>
+
+    {% include "steeloweb/partials/messages.html" %}
+
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="card-title mb-0">{{ title }}</h5>
+        </div>
+        <div class="card-body text-center">
+            <img src="{{ image.url }}" alt="{{ title }}" class="img-fluid">
+        </div>
+        <div class="card-footer">
+            <p class="text-muted mb-0">Results from model run #{{ modelrun.id }}</p>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,9 @@
+# django bundle
+django-bundle/
+
+# python-build-standalone downloads
+python-standalone/
+python-standalone.tar.gz
+
+# generated icon subdirectories (can be regenerated with npm run icons)
+build/icons/

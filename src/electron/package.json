@@ -1,0 +1,32 @@
+{
+  "name": "steelo-electron",
+  "version": "1.0.0",
+  "type": "module",
+  "productName": "STEEL-IQ",
+  "description": "STEEL-IQ Desktop Application",
+  "main": "main.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/systemiqofficial/steel-iq.git"
+  },
+  "author": "Systemiq",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build": "node build-django.js && electron-builder",
+    "build:dir": "node build-django.js && electron-builder --dir",
+    "prebuild": "node build-django.js",
+    "build-django": "node build-django.js",
+    "icons": "node generate-icons.js",
+    "clean": "rm -rf django-bundle python-standalone python-standalone.tar.gz"
+  },
+  "dependencies": {
+    "@sentry/electron": "^7",
+    "electron-store": "^11"
+  },
+  "devDependencies": {
+    "electron": "^38",
+    "electron-builder": "^26",
+    "png2icons": "^2.0.1"
+  }
+}

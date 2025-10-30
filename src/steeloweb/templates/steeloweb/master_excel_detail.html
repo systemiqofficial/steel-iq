@@ -1,0 +1,321 @@
+{% extends "base.html" %}
+{% load steeloweb_extras %}
+
+{% block title %}{{ master_excel.name }} - Master Excel File{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-lg-8 offset-lg-2">
+            <div class="card">
+                <div class="card-header">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h2 class="card-title mb-0">
+                            <i class="fas fa-file-excel text-success"></i> {{ master_excel.name }}
+                            {% if master_excel.is_template %}
+                                <span class="badge bg-primary">Template</span>
+                            {% endif %}
+                            {% if master_excel.is_example %}
+                                <span class="badge bg-warning">Example</span>
+                            {% endif %}
+                        </h2>
+                        <div>
+                            <a href="{% url 'master-excel-download' pk=master_excel.pk %}" class="btn btn-primary">
+                                <i class="fas fa-download"></i> Download
+                            </a>
+                            {% if not master_excel.is_template and not master_excel.is_example %}
+                            <a href="{% url 'master-excel-update' pk=master_excel.pk %}" class="btn btn-outline-primary">
+                                <i class="fas fa-edit"></i> Edit
+                            </a>
+                            <a href="{% url 'master-excel-delete' pk=master_excel.pk %}" class="btn btn-outline-danger">
+                                <i class="fas fa-trash"></i> Delete
+                            </a>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <!-- Django Messages (for blocking errors) -->
+                    {% include "steeloweb/partials/messages.html" %}
+
+                    <!-- Validation Status -->
+                    <div class="mb-4">
+                        <h5>Validation Status</h5>
+                        {% if master_excel.validation_status == 'valid' %}
+                            <div class="alert alert-success">
+                                <i class="fas fa-check-circle"></i> <strong>Valid</strong> - This file passed all validation checks
+                            </div>
+                        {% elif master_excel.validation_status == 'warnings' %}
+                            <div class="alert alert-warning">
+                                <i class="fas fa-exclamation-triangle"></i> <strong>Valid with Warnings</strong> - This file is usable but has some warnings
+                            </div>
+                        {% elif master_excel.validation_status == 'invalid' %}
+                            <div class="alert alert-danger">
+                                <i class="fas fa-times-circle"></i> <strong>Invalid</strong> - This file has errors that must be fixed
+                            </div>
+                        {% else %}
+                            <div class="alert alert-secondary">
+                                <i class="fas fa-clock"></i> <strong>Pending</strong> - Validation has not been run yet
+                            </div>
+                        {% endif %}
+                    </div>
+
+                    <!-- File Information -->
+                    <div class="mb-4">
+                        <h5>File Information</h5>
+                        <table class="table table-sm">
+                            <tbody>
+                                <tr>
+                                    <th style="width: 30%;">ID:</th>
+                                    <td>
+                                        <strong>{{ master_excel.pk }}</strong>
+                                        <small class="text-muted ms-2">(Use this ID with prepare_default_data command)</small>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th>File Name:</th>
+                                    <td>{{ master_excel.file.name|basename }}</td>
+                                </tr>
+                                <tr>
+                                    <th>File Size:</th>
+                                    <td>{{ master_excel.file.size|filesizeformat }}</td>
+                                </tr>
+                                <tr>
+                                    <th>Uploaded:</th>
+                                    <td>{{ master_excel.created_at|date:"Y-m-d H:i:s" }}</td>
+                                </tr>
+                                {% if master_excel.updated_at != master_excel.created_at %}
+                                <tr>
+                                    <th>Last Updated:</th>
+                                    <td>{{ master_excel.updated_at|date:"Y-m-d H:i:s" }}</td>
+                                </tr>
+                                {% endif %}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Description -->
+                    {% if master_excel.description %}
+                    <div class="mb-4">
+                        <h5>Description</h5>
+                        <p class="text-muted">{{ master_excel.description|linebreaks }}</p>
+                    </div>
+                    {% endif %}
+
+                    <!-- Validation Report -->
+                    {% if master_excel.validation_report %}
+                    <div class="mb-4">
+                        <h5>Validation Report</h5>
+                        
+                        {% if master_excel.validation_report.summary %}
+                        <div class="mb-3">
+                            <h6>Summary</h6>
+                            <div class="row">
+                                <div class="col-md-4">
+                                    <div class="text-center p-3 bg-light rounded">
+                                        <i class="fas fa-times-circle text-danger fa-2x mb-2"></i>
+                                        <div class="h4 mb-0">{{ master_excel.validation_report.summary.error_count|default:0 }}</div>
+                                        <small class="text-muted">Errors</small>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="text-center p-3 bg-light rounded">
+                                        <i class="fas fa-exclamation-triangle text-warning fa-2x mb-2"></i>
+                                        <div class="h4 mb-0">{{ master_excel.validation_report.summary.warning_count|default:0 }}</div>
+                                        <small class="text-muted">Warnings</small>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="text-center p-3 bg-light rounded">
+                                        <i class="fas fa-info-circle text-info fa-2x mb-2"></i>
+                                        <div class="h4 mb-0">{{ master_excel.validation_report.summary.info_count|default:0 }}</div>
+                                        <small class="text-muted">Info Messages</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+
+                        {% if master_excel.validation_report.errors %}
+                        <div class="mb-3">
+                            <h6 class="text-danger">Errors</h6>
+                            <div class="list-group">
+                                {% for error in master_excel.validation_report.errors|slice:":10" %}
+                                <div class="list-group-item list-group-item-danger">
+                                    <i class="fas fa-times-circle"></i> {{ error }}
+                                </div>
+                                {% endfor %}
+                                {% if master_excel.validation_report.errors|length > 10 %}
+                                <div class="list-group-item text-muted">
+                                    <em>... and {{ master_excel.validation_report.errors|length|add:"-10" }} more errors</em>
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endif %}
+
+                        {% if master_excel.validation_report.warnings %}
+                        <div class="mb-3">
+                            <h6 class="text-warning">Warnings</h6>
+                            <div class="list-group">
+                                {% for warning in master_excel.validation_report.warnings|slice:":10" %}
+                                <div class="list-group-item list-group-item-warning">
+                                    <i class="fas fa-exclamation-triangle"></i> {{ warning }}
+                                </div>
+                                {% endfor %}
+                                {% if master_excel.validation_report.warnings|length > 10 %}
+                                <div class="list-group-item text-muted">
+                                    <em>... and {{ master_excel.validation_report.warnings|length|add:"-10" }} more warnings</em>
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endif %}
+
+                        {% if master_excel.validation_report.info %}
+                        <details>
+                            <summary class="h6 text-info" style="cursor: pointer;">
+                                Info Messages ({{ master_excel.validation_report.info|length }})
+                            </summary>
+                            <div class="list-group mt-2">
+                                {% for info in master_excel.validation_report.info|slice:":5" %}
+                                <div class="list-group-item list-group-item-info">
+                                    <i class="fas fa-info-circle"></i> {{ info }}
+                                </div>
+                                {% endfor %}
+                                {% if master_excel.validation_report.info|length > 5 %}
+                                <div class="list-group-item text-muted">
+                                    <em>... and {{ master_excel.validation_report.info|length|add:"-5" }} more info messages</em>
+                                </div>
+                                {% endif %}
+                            </div>
+                        </details>
+                        {% endif %}
+
+                        {% if master_excel.validation_report.validated_at %}
+                        <p class="text-muted mt-3 mb-0">
+                            <small>Validated at: {{ master_excel.validation_report.validated_at }}</small>
+                        </p>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+
+                    <!-- Worker availability warning banner -->
+                    {% if data_prep_warning %}
+                    <div class="alert alert-warning alert-dismissible mb-4" role="alert">
+                        <h5 class="alert-heading">
+                            <i class="fas fa-exclamation-triangle"></i> Worker Availability Warning
+                        </h5>
+                        {{ data_prep_warning.message|safe }}
+
+                        <hr>
+
+                        <div class="d-flex gap-2">
+                            <form method="post" action="{% url 'prepare-data-with-master-excel' pk=master_excel.pk %}" class="d-inline">
+                                {% csrf_token %}
+                                <input type="hidden" name="confirm_busy" value="true">
+                                <button type="submit" class="btn btn-sm btn-warning">
+                                    <i class="fas fa-play"></i> Prepare Anyway
+                                </button>
+                            </form>
+                            <form method="post" action="{% url 'dismiss-data-prep-warning' pk=master_excel.pk %}" class="d-inline">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-sm btn-secondary">
+                                    <i class="fas fa-times"></i> Dismiss
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <!-- How to Use -->
+                    {% if master_excel.validation_status == 'valid' or master_excel.validation_status == 'warnings' %}
+                    <div class="mb-4">
+                        <h5>Use This File</h5>
+                        <div class="d-grid gap-2">
+                            {% if existing_preparation %}
+                            <div class="alert alert-info">
+                                <i class="fas fa-check-circle"></i> A data preparation already exists for this master Excel file.
+                                <a href="{% url 'data-preparation-detail' pk=existing_preparation.pk %}" class="alert-link">View Data Preparation</a>
+                            </div>
+                            <form method="post" action="{% url 'delete-data-preparation' pk=existing_preparation.pk %}" onsubmit="return confirm('Are you sure you want to delete this data preparation? This will remove all prepared data.');">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-danger btn-lg">
+                                    <i class="fas fa-trash"></i> Delete Existing Data Preparation
+                                </button>
+                            </form>
+                            <small class="text-muted">Delete the existing data preparation to create a new one.</small>
+                            {% else %}
+                                {% if data_prep_warning %}
+                                <!-- Show "Prepare Anyway" button when warning is active -->
+                                <form method="post" action="{% url 'prepare-data-with-master-excel' pk=master_excel.pk %}">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="confirm_busy" value="true">
+                                    <button type="submit" class="btn btn-warning btn-lg">
+                                        <i class="fas fa-cogs"></i> Prepare Anyway (Workers Busy)
+                                    </button>
+                                </form>
+                                {% else %}
+                                <!-- Normal button -->
+                                <form method="post" action="{% url 'prepare-data-with-master-excel' pk=master_excel.pk %}">
+                                    {% csrf_token %}
+                                    <button type="submit" class="btn btn-primary btn-lg">
+                                        <i class="fas fa-cogs"></i> Prepare Data with This Master Excel
+                                    </button>
+                                </form>
+                                {% endif %}
+                            <small class="text-muted">This will create a new data preparation that you can use in simulations.</small>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endif %}
+                    
+                    <!-- Actions -->
+                    <div class="d-flex justify-content-between">
+                        <a href="{% url 'master-excel-list' %}" class="btn btn-secondary">
+                            <i class="fas fa-arrow-left"></i> Back to List
+                        </a>
+                        <div>
+                            {% if master_excel.validation_status == 'valid' or master_excel.validation_status == 'warnings' %}
+                            <a href="#" class="btn btn-success" data-bs-toggle="modal" data-bs-target="#useInSimulationModal">
+                                <i class="fas fa-play"></i> Use in Simulation
+                            </a>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal for using in simulation -->
+<div class="modal fade" id="useInSimulationModal" tabindex="-1" aria-labelledby="useInSimulationModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="useInSimulationModalLabel">Use Master Excel in Simulation</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>To use this master Excel file in a simulation:</p>
+                <ol>
+                    <li>Click the "Prepare Data with This Master Excel" button above</li>
+                    <li>Wait for the data preparation to complete (you'll see a notification)</li>
+                    <li>In the Data Preparation dropdown, select the preparation with "(Master Excel: {{ master_excel.name }})"</li>
+                    <li>Configure other simulation parameters</li>
+                    <li>Run the simulation</li>
+                </ol>
+                <p class="mb-0">The master Excel file will override default data configurations during the simulation.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <a href="{% url 'create-modelrun' %}" class="btn btn-primary">
+                    <i class="fas fa-plus"></i> Create Model Run
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}

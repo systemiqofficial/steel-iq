@@ -1,0 +1,265 @@
+{% extends "base.html" %}
+{% load steeloweb_extras %}
+
+{% block title %}{{ preparation.name }} - Data Preparation{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-lg-10 offset-lg-1">
+            <!-- Messages -->
+            {% if messages %}
+            <div class="messages mb-4">
+                {% for message in messages %}
+                <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            <!-- Main Card -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h2 class="card-title mb-0">
+                            <i class="fas fa-cogs"></i> {{ preparation.name }}
+                        </h2>
+                        <div>
+                            <span class="badge bg-{{ preparation.get_status_color }}">
+                                {{ preparation.get_status_display }}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <!-- Progress Section -->
+                    {% if preparation.status != 'ready' and preparation.status != 'failed' %}
+                    <div class="mb-4">
+                        <h5>Processing Progress</h5>
+                        <div 
+                            hx-get="{% url 'data-preparation-progress' preparation.id %}"
+                            hx-trigger="load, every 2s"
+                            hx-swap="innerHTML">
+                            {% include "steeloweb/includes/data_preparation_progress.html" with preparation=preparation %}
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <!-- Status Summary -->
+                    <div class="mb-4">
+                        <h5>Status Information</h5>
+                        <div class="table-responsive">
+                            <table class="table table-sm">
+                                <tbody>
+                                    <tr>
+                                        <th style="width: 30%;">Status:</th>
+                                        <td>
+                                            <span class="badge bg-{{ preparation.get_status_color }}">
+                                                {{ preparation.get_status_display }}
+                                            </span>
+                                            {% if preparation.status == 'ready' %}
+                                                <i class="fas fa-check-circle text-success ms-2"></i>
+                                            {% elif preparation.status == 'failed' %}
+                                                <i class="fas fa-times-circle text-danger ms-2"></i>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                    {% if preparation.status == 'ready' %}
+                                    <tr>
+                                        <th>Progress:</th>
+                                        <td>
+                                            <div class="progress" style="height: 20px;">
+                                                <div class="progress-bar bg-{{ preparation.get_status_color }}" role="progressbar" 
+                                                     style="width: {{ preparation.progress }}%;" 
+                                                     aria-valuenow="{{ preparation.progress }}" 
+                                                     aria-valuemin="0" aria-valuemax="100">
+                                                    {{ preparation.progress }}%
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {% endif %}
+                                    <tr>
+                                        <th>Created:</th>
+                                        <td>{{ preparation.created_at|date:"Y-m-d H:i:s" }}</td>
+                                    </tr>
+                                    {% if preparation.updated_at != preparation.created_at %}
+                                    <tr>
+                                        <th>Last Updated:</th>
+                                        <td>{{ preparation.updated_at|date:"Y-m-d H:i:s" }}</td>
+                                    </tr>
+                                    {% endif %}
+                                    {% if preparation.processing_time %}
+                                    <tr>
+                                        <th>Processing Time:</th>
+                                        <td>{{ preparation.processing_time|floatformat:1 }} seconds</td>
+                                    </tr>
+                                    {% endif %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Data Sources -->
+                    <div class="mb-4">
+                        <h5>Data Sources</h5>
+                        <div class="table-responsive">
+                            <table class="table table-sm">
+                                <tbody>
+                                    <tr>
+                                        <th style="width: 30%;">Core Data Package:</th>
+                                        <td>
+                                            <i class="fas fa-archive text-primary"></i>
+                                            {{ preparation.core_data_package.name }} ({{ preparation.core_data_package.version }})
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <th>Geo Data Package:</th>
+                                        <td>
+                                            <i class="fas fa-globe text-success"></i>
+                                            {{ preparation.geo_data_package.name }} ({{ preparation.geo_data_package.version }})
+                                        </td>
+                                    </tr>
+                                    {% if preparation.master_excel %}
+                                    <tr>
+                                        <th>Master Excel File:</th>
+                                        <td>
+                                            <a href="{% url 'master-excel-detail' pk=preparation.master_excel.pk %}">
+                                                <i class="fas fa-file-excel text-success"></i>
+                                                {{ preparation.master_excel.name }}
+                                            </a>
+                                            {% if preparation.master_excel.validation_status == 'valid' %}
+                                                <span class="badge bg-success ms-2">Valid</span>
+                                            {% elif preparation.master_excel.validation_status == 'warnings' %}
+                                                <span class="badge bg-warning ms-2">Valid with Warnings</span>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                    {% else %}
+                                    <tr>
+                                        <th>Master Excel:</th>
+                                        <td class="text-muted">
+                                            <i class="fas fa-cloud"></i>
+                                            Using default from S3
+                                        </td>
+                                    </tr>
+                                    {% endif %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Performance Analysis -->
+                    {% if preparation.timing_data and preparation.status == 'ready' %}
+                    <div class="mb-4">
+                        <h5>Performance Analysis</h5>
+                        
+                        <!-- High-level Step Timing -->
+                        <div class="card mb-3">
+                            <div class="card-header">
+                                <h6 class="mb-0">High-level Step Timing</h6>
+                            </div>
+                            <div class="card-body">
+                                {% render_step_timing_table preparation.timing_data.step_timings %}
+                            </div>
+                        </div>
+                        
+                        <!-- Detailed File Creation Timing -->
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h6 class="mb-0">Detailed File Creation Timing</h6>
+                                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#fileTimingCollapse" aria-expanded="true" aria-controls="fileTimingCollapse">
+                                    <i class="fas fa-chevron-down"></i> Toggle
+                                </button>
+                            </div>
+                            <div class="collapse show" id="fileTimingCollapse">
+                                <div class="card-body">
+                                    {% render_file_timing_table preparation.timing_data.file_timings preparation.pk %}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <!-- Log Messages -->
+                    {% if preparation.preparation_log %}
+                    <div class="mb-4">
+                        <h5>Processing Log</h5>
+                        <div class="card bg-light">
+                            <div class="card-body">
+                                <pre class="mb-0" style="max-height: 300px; overflow-y: auto;">{{ preparation.preparation_log }}</pre>
+                            </div>
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <!-- Error Message -->
+                    {% if preparation.error_message %}
+                    <div class="mb-4">
+                        <h5>Error Details</h5>
+                        <div class="alert alert-danger">
+                            <i class="fas fa-exclamation-triangle"></i>
+                            <strong>Error:</strong> {{ preparation.error_message }}
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <!-- Output Path -->
+                    {% if preparation.data_directory and preparation.status == 'ready' %}
+                    <div class="mb-4">
+                        <h5>Generated Data</h5>
+                        <div class="alert alert-success">
+                            <i class="fas fa-check-circle"></i>
+                            <strong>Success!</strong> Data has been prepared and is ready to use.
+                            <hr>
+                            <p class="mb-0">
+                                <strong>Output Location:</strong><br>
+                                <code>{{ preparation.data_directory }}</code>
+                            </p>
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <!-- Simulations Using This Preparation -->
+                    {% if simulations %}
+                    <div class="mb-4">
+                        <h5>Simulations Using This Data</h5>
+                        <div class="list-group">
+                            {% for sim in simulations %}
+                            <a href="{% url 'modelrun-detail' pk=sim.pk %}" class="list-group-item list-group-item-action">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <div>
+                                        <h6 class="mb-1">{{ sim.name|default:"Unnamed Simulation" }}</h6>
+                                        <small class="text-muted">Created: {{ sim.created_at|date:"Y-m-d H:i" }}</small>
+                                    </div>
+                                    <span class="badge bg-{{ sim.get_state_color }}">
+                                        {{ sim.get_state_display }}
+                                    </span>
+                                </div>
+                            </a>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <!-- Actions -->
+                    <div class="d-flex justify-content-between">
+                        <a href="{% url 'master-excel-list' %}" class="btn btn-secondary">
+                            <i class="fas fa-arrow-left"></i> Back to Master Excel Files
+                        </a>
+                        <div>
+                            {% if preparation.status == 'ready' %}
+                            <a href="{% url 'create-modelrun' %}" class="btn btn-primary">
+                                <i class="fas fa-plus"></i> Create Simulation
+                            </a>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

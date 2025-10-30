@@ -1,0 +1,153 @@
+"""Test demonstrating the BOM fallback issue and solution."""
+
+from steelo.domain.models import get_bom_from_avg_boms
+from steelo.domain.BOM import bom_data
+
+
+def test_empty_avg_boms_now_uses_fallback():
+    """
+    This test demonstrates the FIXED behavior:
+    When avg_boms is empty, get_bom_from_avg_boms now falls back to static bom_data.
+    """
+    # Empty avg_boms (simulating state before trade allocation)
+    avg_boms = {}
+    avg_utilization = {}
+
+    # Try to get BOM for BF-BOF technology
+    energy_costs = {"electricity": 0.05, "natural_gas": 0.03}
+
+    bom, utilization, reductant = get_bom_from_avg_boms(
+        energy_costs=energy_costs, tech="BF-BOF", capacity=1000, avg_boms=avg_boms, avg_utilization=avg_utilization
+    )
+
+    # NEW behavior: returns BOM from fallback
+    assert bom is not None, "get_bom_from_avg_boms should return BOM from fallback"
+    assert utilization == 0.8, "Should use default utilization"
+    assert reductant == "Coke", "Should use default reductant for BF-BOF"
+
+    # Verify we got valid data
+    assert "energy" in bom, "BOM should have energy section"
+    assert "materials" in bom, "BOM should have materials section"
+    assert len(bom["energy"]) > 0 or len(bom["materials"]) > 0, "BOM should have content"
+
+    # Show that bom_data contains iron/steel production entries
+    # bom_data uses tuples as keys: (product, feedstock, reductant, category, item, type)
+    iron_bf_entries = [k for k in bom_data.keys() if isinstance(k, tuple) and len(k) > 0 and k[0] == "iron_bf"]
+    steel_bof_entries = [k for k in bom_data.keys() if isinstance(k, tuple) and len(k) > 0 and k[0] == "steel_bof"]
+    print(f"Found {len(iron_bf_entries)} iron_bf entries in bom_data")
+    print(f"Found {len(steel_bof_entries)} steel_bof entries in bom_data")
+    if iron_bf_entries:
+        print(f"Example iron_bf key: {iron_bf_entries[0]}")
+    if steel_bof_entries:
+        print(f"Example steel_bof key: {steel_bof_entries[0]}")
+
+    # This is now FIXED: we use bom_data as fallback when avg_boms is empty
+    print("FIXED: Fallback to bom_data when avg_boms is empty")
+
+
+def test_populated_avg_boms_works():
+    """
+    This test shows that when avg_boms is populated,
+    get_bom_from_avg_boms works correctly.
+    """
+    # Populated avg_boms (simulating state after trade allocation)
+    avg_boms = {
+        "BF-BOF": {"energy": {"electricity": 100, "coal": 500}, "materials": {"iron_ore": 1600, "limestone": 200}}
+    }
+    avg_utilization = {"BF-BOF": {"utilization_rate": 0.8}}
+
+    energy_costs = {"electricity": 0.05, "natural_gas": 0.03}
+
+    bom, utilization, reductant = get_bom_from_avg_boms(
+        energy_costs=energy_costs, tech="BF-BOF", capacity=1000, avg_boms=avg_boms, avg_utilization=avg_utilization
+    )
+
+    # Works when avg_boms is populated
+    assert bom is not None, "get_bom_from_avg_boms works when avg_boms has data"
+    assert "energy" in bom
+    assert "materials" in bom
+    assert utilization == 0.8
+
+    print("SUCCESS: Works when avg_boms is populated")
+
+
+def test_proposed_fallback_solution():
+    """
+    This test demonstrates what a fallback solution could look like.
+    When avg_boms doesn't have the technology, fall back to bom_data.
+    """
+
+    # This would be the fixed version of get_bom_from_avg_boms
+    def get_bom_with_fallback(energy_costs, tech, capacity, avg_boms, avg_utilization):
+        # Try avg_boms first
+        if tech in avg_boms:
+            return avg_boms[tech], avg_utilization.get(tech, {}).get("utilization_rate", 0.8), ""
+
+        # Fallback to bom_data
+        # bom_data has tuple keys: (product, feedstock, reductant, category, item, type)
+        # For BF-BOF, we need to combine iron_bf and steel_bof data
+
+        if tech == "BF-BOF":
+            # Aggregate BF-BOF data from bom_data
+            bom = {"energy": {}, "materials": {}}
+
+            # Get iron_bf entries (BF part)
+            for key, value in bom_data.items():
+                if isinstance(key, tuple) and len(key) >= 5:
+                    product, feedstock, reductant, category, item = key[:5]
+                    if product == "iron_bf" and category in ["Energy", "Materials"]:
+                        cat_key = category.lower()
+                        if item not in bom[cat_key]:
+                            bom[cat_key][item] = 0
+                        bom[cat_key][item] += value.get("Value", 0)
+
+            # Get steel_bof entries (BOF part)
+            for key, value in bom_data.items():
+                if isinstance(key, tuple) and len(key) >= 5:
+                    product, feedstock, reductant, category, item = key[:5]
+                    if product == "steel_bof" and category in ["Energy", "Materials"]:
+                        cat_key = category.lower()
+                        if item not in bom[cat_key]:
+                            bom[cat_key][item] = 0
+                        bom[cat_key][item] += value.get("Value", 0)
+
+            if bom["energy"] or bom["materials"]:
+                return bom, 0.8, "Coke"  # Default utilization and reductant
+
+        return None, 0.0, ""
+
+    # Test the fallback
+    empty_avg_boms = {}
+    energy_costs = {"electricity": 0.05, "natural_gas": 0.03}
+
+    bom, utilization, reductant = get_bom_with_fallback(
+        energy_costs=energy_costs, tech="BF-BOF", capacity=1000, avg_boms=empty_avg_boms, avg_utilization={}
+    )
+
+    # With fallback, we should get data
+    if bom is not None:
+        print("Fallback solution works!")
+        print(
+            f"Got BOM with {len(bom.get('energy', {}))} energy items and {len(bom.get('materials', {}))} material items"
+        )
+        print("SOLUTION: Fallback to bom_data provides BOMs even when avg_boms is empty")
+    else:
+        print("Fallback solution needs adjustment for key matching")
+
+
+if __name__ == "__main__":
+    print("=== Testing BOM Data Fallback Fix ===\n")
+
+    result1 = test_empty_avg_boms_now_uses_fallback()
+    print(f"Test 1: {result1}\n")
+
+    result2 = test_populated_avg_boms_works()
+    print(f"Test 2: {result2}\n")
+
+    result3 = test_proposed_fallback_solution()
+    print(f"Test 3: {result3}\n")
+
+    print("=== Summary ===")
+    print("The fix: get_bom_from_avg_boms now falls back to bom_data when avg_boms is empty")
+    print("The impact: Plant agents can now evaluate technologies before trade allocation")
+    print("The benefit: Furnaces with no allocations can be properly evaluated for closure/switching")

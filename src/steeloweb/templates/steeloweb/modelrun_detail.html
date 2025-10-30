@@ -1,0 +1,407 @@
+{% extends "base.html" %}
+
+{% block title %}{% if modelrun.name %}{{ modelrun.name }}{% else %}Model Run #{{ modelrun.id }}{% endif %}{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1>
+            {% if modelrun.name %}
+                {{ modelrun.name }}
+                <small class="text-muted">#{{ modelrun.id }}</small>
+            {% else %}
+                Model Run #{{ modelrun.id }}
+            {% endif %}
+        </h1>
+        <div>
+            <a href="{% url 'modelrun-list' %}" class="btn btn-secondary">
+                <i class="fas fa-arrow-left"></i> Back to List
+            </a>
+            {% if modelrun.state == 'created' %}
+                {% if request.session.simulation_warning %}
+                    {# Warning state - show Start Anyway button #}
+                    <form method="post" action="{% url 'run-simulation' modelrun.id %}" class="d-inline">
+                        {% csrf_token %}
+                        <input type="hidden" name="confirm_busy" value="true">
+                        <button type="submit" class="btn btn-warning">
+                            <i class="fas fa-play"></i> Start Anyway
+                        </button>
+                    </form>
+                {% else %}
+                    {# Normal state - show Run Simulation button #}
+                    <form method="post" action="{% url 'run-simulation' modelrun.id %}" class="d-inline">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-play"></i> Run Simulation
+                        </button>
+                    </form>
+                {% endif %}
+            {% endif %}
+            {% if modelrun.state == 'running' or modelrun.state == 'cancelling' %}
+            <form method="post" action="{% url 'cancel-modelrun' modelrun.id %}" class="d-inline">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-danger" onclick="return confirm('Stop this simulation? The background process may continue for up to 15 minutes but results will be discarded.');">
+                    <i class="fas fa-stop"></i> Stop Simulation
+                </button>
+            </form>
+            {% endif %}
+            {% if modelrun.can_rerun %}
+            <form method="post" action="{% url 'rerun-modelrun' modelrun.id %}" class="d-inline">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-outline-primary">
+                    <i class="fas fa-redo"></i> Rerun Simulation
+                </button>
+            </form>
+            {% endif %}
+            {% if modelrun.state != 'running' and modelrun.state != 'cancelling' %}
+            <a href="{% url 'modelrun-delete' modelrun.id %}" class="btn btn-danger">
+                <i class="fas fa-trash"></i> Delete
+            </a>
+            {% endif %}
+        </div>
+    </div>
+
+    {% include "steeloweb/partials/messages.html" %}
+
+    {% if request.session.simulation_warning and modelrun.state == 'created' %}
+    {# Display worker availability warning banner #}
+    <div class="alert alert-warning alert-dismissible mb-4" role="alert">
+        <h5 class="alert-heading">
+            <i class="fas fa-exclamation-triangle"></i> Worker Availability Warning
+        </h5>
+        {{ request.session.simulation_warning.message|safe }}
+
+        <hr>
+
+        <div class="d-flex gap-2">
+            <form method="post" action="{% url 'dismiss-simulation-warning' modelrun.id %}" class="d-inline">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-secondary">
+                    <i class="fas fa-times"></i> Dismiss
+                </button>
+            </form>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="row">
+        <div class="col-md-6">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">Status Information</h5>
+                </div>
+                <div class="card-body">
+                    <dl class="row">
+                        <dt class="col-sm-4">Status</dt>
+                        <dd class="col-sm-8">
+                            {% if modelrun.state == 'running' %}
+                                <span class="badge bg-primary">{{ modelrun.get_state_display }}</span>
+                                {% if modelrun.appears_stuck %}
+                                    <span class="badge bg-danger ms-2">
+                                        <i class="fas fa-exclamation-triangle"></i> Appears Stuck
+                                    </span>
+                                {% endif %}
+                            {% elif modelrun.state == 'finished' %}
+                                <span class="badge bg-success">{{ modelrun.get_state_display }}</span>
+                            {% elif modelrun.state == 'failed' %}
+                                <span class="badge bg-danger">{{ modelrun.get_state_display }}</span>
+                            {% elif modelrun.state == 'cancelling' %}
+                                <span class="badge bg-warning">{{ modelrun.get_state_display }}</span>
+                                {% if modelrun.appears_stuck %}
+                                    <span class="badge bg-danger ms-2">
+                                        <i class="fas fa-exclamation-triangle"></i> Stuck
+                                    </span>
+                                {% endif %}
+                            {% elif modelrun.state == 'cancelled' %}
+                                <span class="badge bg-warning">{{ modelrun.get_state_display }}</span>
+                            {% else %}
+                                <span class="badge bg-secondary">{{ modelrun.get_state_display }}</span>
+                            {% endif %}
+                            
+                            {% if modelrun.state in 'running,cancelling' %}
+                                <div class="text-muted small mt-1">
+                                    Last updated: {{ modelrun.time_since_last_update }}
+                                </div>
+                            {% endif %}
+                        </dd>
+
+                        <dt class="col-sm-4">Started</dt>
+                        <dd class="col-sm-8">{{ modelrun.started_at }}</dd>
+
+                        <dt class="col-sm-4">Finished</dt>
+                        <dd class="col-sm-8">{{ modelrun.finished_at|default:"-" }}</dd>
+
+                        <dt class="col-sm-4">Duration</dt>
+                        <dd class="col-sm-8">
+                            {% if modelrun.finished_at %}
+                            {{ modelrun.finished_at|timeuntil:modelrun.started_at }}
+                            {% else %}
+                            -
+                            {% endif %}
+                        </dd>
+
+                        {% if log_file_path %}
+                        <dt class="col-sm-4">Performance Log</dt>
+                        <dd class="col-sm-8">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" data-log-path="{{ log_file_path }}" onclick="openLogFile(this.dataset.logPath)">
+                                <i class="fas fa-file-alt"></i> View Log File
+                            </button>
+                            <div class="text-muted small mt-1">
+                                {{ log_file_path }}
+                            </div>
+                        </dd>
+                        {% endif %}
+                    </dl>
+
+                    <script>
+                    async function openLogFile(path) {
+                        if (window.electronAPI && window.electronAPI.openLogFile) {
+                            const result = await window.electronAPI.openLogFile(path);
+                            if (!result.success) {
+                                alert('Failed to open log file: ' + (result.error || 'Unknown error'));
+                            }
+                        } else {
+                            // Fallback for non-Electron environments (dev mode)
+                            alert('Log file location:\n' + path);
+                        }
+                    }
+                    </script>
+                    
+                    <div class="mt-3">
+                        <h6>Simulation Progress</h6>
+                        {% if modelrun.state == 'running' or modelrun.state == 'cancelling' %}
+                            <div
+                                 hx-get="{% url 'modelrun-progress' modelrun.id %}"
+                                 hx-trigger="load, every 10s"
+                                 hx-swap="innerHTML">
+                                {% include "steeloweb/includes/progress_bar.html" with modelrun=modelrun %}
+                            </div>
+                        {% else %}
+                            <div id="progress-container">
+                                {% include "steeloweb/includes/progress_bar.html" with modelrun=modelrun %}
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+
+            <div class="card mb-4">
+                <div class="card-header">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h5 class="card-title mb-0">Configuration</h5>
+                        
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <h6 class="mb-2">Data Source:</h6>
+                        <dl class="row">
+                            <dt class="col-sm-4">Data Preparation:</dt>
+                            <dd class="col-sm-8">
+                                {% if modelrun.data_preparation %}
+                                <a href="{% url 'data-preparation-detail' pk=modelrun.data_preparation.pk %}">
+                                    {{ modelrun.data_preparation.name }}
+                                    {% if modelrun.data_preparation.master_excel %}
+                                    <small class="text-muted">({{ modelrun.data_preparation.master_excel.name }})</small>
+                                    {% endif %}
+                                </a>
+                                {% else %}
+                                <span class="text-muted">Default data</span>
+                                {% endif %}
+                            </dd>
+                        </dl>
+                    </div>
+                    
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h6 class="mb-0">Configuration:</h6>
+                        <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#rawConfigCollapse" aria-expanded="false" aria-controls="rawConfigCollapse">
+                            Show Raw Configuration
+                        </button>
+                    </div>
+
+                    <!-- Configuration Summary -->
+                    <div class="mb-3">
+                        <dl class="row small">
+                            <dt class="col-sm-4">Years:</dt>
+                            <dd class="col-sm-8">{{ modelrun.config.start_year }} - {{ modelrun.config.end_year }}</dd>
+
+                            {% comment %}
+                            Demand Scenario field is not yet implemented - shows in form but not used by simulation
+                            {% endcomment %}
+
+                            {% if technology_switches %}
+                            <dt class="col-sm-4">Technology Switches:</dt>
+                            <dd class="col-sm-8">
+                                <small class="text-muted">
+                                    {% for source, targets in technology_switches.items %}
+                                        {{ source }} → {{ targets|join:", " }}{% if not forloop.last %}; {% endif %}
+                                    {% endfor %}
+                                </small>
+                            </dd>
+                            {% endif %}
+
+                            {% if modelrun.config.emissions_boundary %}
+                            <dt class="col-sm-4">Emissions Boundary:</dt>
+                            <dd class="col-sm-8">{{ modelrun.config.emissions_boundary }}</dd>
+                            {% endif %}
+
+                            {% if modelrun.config.enable_carbon_tax %}
+                            <dt class="col-sm-4">Carbon Tax:</dt>
+                            <dd class="col-sm-8">{{ modelrun.config.carbon_tax_amount }} {{ modelrun.config.carbon_tax_currency }}/{{ modelrun.config.carbon_tax_unit }}</dd>
+                            {% endif %}
+                        </dl>
+                    </div>
+
+                    <!-- Raw Configuration Collapse -->
+                    <div class="collapse" id="rawConfigCollapse">
+                        <div class="card card-body bg-light">
+                            <pre class="mb-0" style="max-height: 400px; overflow-y: auto;">{{ modelrun.config|pprint }}</pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+
+            {% if modelrun.error_message %}
+            <div class="card mb-4 border-danger">
+                <div class="card-header bg-danger text-white">
+                    <h5 class="card-title mb-0">Error</h5>
+                </div>
+                <div class="card-body">
+                    <div class="text-danger" style="white-space: pre-wrap; word-wrap: break-word; font-family: monospace; font-size: 0.875rem;">{{ modelrun.error_message }}</div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="col-md-6">
+            {% if modelrun.results %}
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">Simulation Results</h5>
+                </div>
+                <div class="card-body">
+                    <!-- Download CSV Button and Output Files -->
+                    <div class="mb-3">
+                        {% if modelrun.result_csv %}
+                        <a href="{% url 'download-modelrun-csv' pk=modelrun.id %}" class="btn btn-primary">
+                            <i class="fas fa-download"></i> Download Results CSV
+                        </a>
+                        {% endif %}
+                        {% if modelrun.output_directory %}
+                        <a href="{% url 'modelrun-output-files' pk=modelrun.id %}" class="btn btn-outline-primary">
+                            <i class="fas fa-folder-open"></i> View All Output Files
+                        </a>
+                        {% endif %}
+                    </div>
+                    
+                    <!-- Visualization Links -->
+                    {% if result_images %}
+                    <div class="mb-4">
+                        <h6>Result Maps &amp; Visualizations</h6>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="card mb-3">
+                                    <div class="card-header bg-light">Cost Maps</div>
+                                    <div class="card-body">
+                                        <div class="d-grid gap-2">
+                                            <a href="{% url 'view-cost-map' pk=modelrun.id map_type='lcoe' %}" class="btn btn-outline-primary">
+                                                <i class="fas fa-map"></i> Levelized Cost of Electricity (LCOE)
+                                            </a>
+                                            <a href="{% url 'view-cost-map' pk=modelrun.id map_type='lcoh' %}" class="btn btn-outline-primary">
+                                                <i class="fas fa-map"></i> Levelized Cost of Hydrogen (LCOH)
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="card mb-3">
+                                    <div class="card-header bg-light">Priority Locations</div>
+                                    <div class="card-body">
+                                        <div class="d-grid gap-2">
+                                            <a href="{% url 'view-priority-map' pk=modelrun.id map_type='iron' %}" class="btn btn-outline-success">
+                                                <i class="fas fa-map-marked-alt"></i> Top 5% Locations for Iron Production
+                                            </a>
+                                            <a href="{% url 'view-priority-map' pk=modelrun.id map_type='steel' %}" class="btn btn-outline-success">
+                                                <i class="fas fa-map-marked-alt"></i> Top 5% Locations for Steel Production
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="card mb-3">
+                                    <div class="card-header bg-light">New Plants Map</div>
+                                    <div class="card-body">
+                                        <div class="d-grid gap-2">
+                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='iron-construction' %}" class="btn btn-outline-info">
+                                                <i class="fas fa-map-marked-alt"></i> Iron Plants Operating Map
+                                            </a>
+                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='steel-construction' %}" class="btn btn-outline-info">
+                                                <i class="fas fa-map-marked-alt"></i> Steel Plants Operating Map
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="card mb-3">
+                                    <div class="card-header bg-light">New Plants by Status</div>
+                                    <div class="card-body">
+                                        <div class="d-grid gap-2">
+                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='iron-status' %}" class="btn btn-outline-warning">
+                                                <i class="fas fa-chart-bar"></i> Iron Plants by Status Chart
+                                            </a>
+                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='steel-status' %}" class="btn btn-outline-warning">
+                                                <i class="fas fa-chart-bar"></i> Steel Plants by Status Chart
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {% endif %}
+                    
+                    <!-- Display simulation plots -->
+                    {% if modelrun.simulation_plots.exists %}
+                    <div class="mb-4">
+                        <h6>Simulation Results</h6>
+                        <div class="row">
+                            {% for plot in modelrun.simulation_plots.all %}
+                            <div class="col-md-6 mb-3">
+                                <div class="card">
+                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}">
+                                        <img src="{{ plot.image.url }}" class="card-img-top" alt="{{ plot.title }}" style="cursor: pointer;">
+                                    </a>
+                                    <div class="card-body">
+                                        <p class="card-text text-center">
+                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}" class="text-decoration-none">
+                                                {{ plot.title }}
+                                            </a>
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            {% else %}
+            <div class="card mb-4">
+                <div class="card-body">
+                    <div class="alert alert-info mb-0">
+                        No results available yet. Run the simulation to generate results.
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

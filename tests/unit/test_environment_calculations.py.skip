@@ -1,0 +1,266 @@
+"""Tests for environment calculation functions."""
+
+import pytest
+from steelo.domain.models import (
+    Plant,
+    FurnaceGroup,
+    Technology,
+    Location,
+    Supplier,
+    Volumes,
+    PointInTime,
+    Year,
+    TimeFrame,
+)
+from steelo.domain.models import calculate_average_commodity_price_per_region
+from steelo.domain.constants import Commodities
+
+
+class TestCalculateAverageCommodityPricePerRegion:
+    """Tests for calculate_average_commodity_price_per_region function."""
+
+    @pytest.fixture
+    def sample_plants(self):
+        """Create sample plants with known production costs."""
+        plants = []
+
+        # Plant 1: Germany with 2 furnace groups producing steel
+        plant1 = Plant(
+            plant_id="plant_1",
+            parent_gem_id="de_001",
+            location=Location(iso3="DEU", lat=50.0, lon=10.0, country="Germany", region="Europe"),
+            furnace_groups=[],
+            power_source="grid",
+            soe_status="private",
+            workforce_size=100,
+            certified=False,
+            category_steel_product=set(),
+            technology_fopex={},
+        )
+
+        # Active furnace group with unit cost 500
+        fg1 = FurnaceGroup(
+            furnace_group_id="fg_1",
+            technology=Technology(name="EAF", product="steel"),
+            capacity=Volumes(1000),
+            utilization_rate=0.8,
+            status="operating",
+            lifetime=PointInTime(current=Year(2025), time_frame=TimeFrame(start=Year(2020), end=Year(2050))),
+            last_renovation_date=None,
+            historical_production={},
+        )
+
+        # Active furnace group with unit cost 600
+        fg2 = FurnaceGroup(
+            furnace_group_id="fg_2",
+            technology=Technology(name="BOF", product="steel"),
+            capacity=Volumes(2000),
+            utilization_rate=0.9,
+            status="operating",
+            lifetime=PointInTime(current=Year(2025), time_frame=TimeFrame(start=Year(2020), end=Year(2050))),
+            last_renovation_date=None,
+            historical_production={},
+        )
+
+        plant1.furnace_groups = [fg1, fg2]
+        plants.append(plant1)
+
+        # Plant 2: France with iron production
+        plant2 = Plant(
+            plant_id="plant_2",
+            parent_gem_id="fr_001",
+            location=Location(iso3="FRA", lat=48.0, lon=2.0, country="France", region="Europe"),
+            furnace_groups=[],
+            power_source="grid",
+            soe_status="private",
+            workforce_size=100,
+            certified=False,
+            category_steel_product=set(),
+            technology_fopex={},
+        )
+
+        fg3 = FurnaceGroup(
+            furnace_group_id="fg_3",
+            technology=Technology(name="BF", product="iron"),
+            capacity=Volumes(1500),
+            utilization_rate=0.7,
+            status="operating",
+            lifetime=PointInTime(current=Year(2025), time_frame=TimeFrame(start=Year(2020), end=Year(2050))),
+            last_renovation_date=None,
+            historical_production={},
+        )
+
+        plant2.furnace_groups = [fg3]
+        plants.append(plant2)
+
+        # Plant 3: Germany with inactive furnace (should be ignored)
+        plant3 = Plant(
+            plant_id="plant_3",
+            parent_gem_id="de_002",
+            location=Location(iso3="DEU", lat=51.0, lon=11.0, country="Germany", region="Europe"),
+            furnace_groups=[],
+            power_source="grid",
+            soe_status="private",
+            workforce_size=100,
+            certified=False,
+            category_steel_product=set(),
+            technology_fopex={},
+        )
+
+        fg4 = FurnaceGroup(
+            furnace_group_id="fg_4",
+            technology=Technology(name="EAF", product="steel"),
+            capacity=Volumes(1000),
+            utilization_rate=0.0,  # Zero utilization
+            status="operating",
+            lifetime=PointInTime(current=Year(2025), time_frame=TimeFrame(start=Year(2020), end=Year(2050))),
+            last_renovation_date=None,
+            historical_production={},
+        )
+
+        plant3.furnace_groups = [fg4]
+        plants.append(plant3)
+
+        return plants
+
+    @pytest.fixture
+    def sample_suppliers(self):
+        """Create sample suppliers with known production costs."""
+        suppliers = []
+
+        # German steel supplier
+        supplier1 = Supplier(
+            supplier_id="supplier_1",
+            location=Location(iso3="DEU", lat=52.0, lon=12.0, country="Germany", region="Europe"),
+            commodity=Commodities.STEEL,
+            capacity_by_year={Year(2025): Volumes(1000)},
+            production_cost=550.0,
+        )
+        suppliers.append(supplier1)
+
+        # French iron supplier
+        supplier2 = Supplier(
+            supplier_id="supplier_2",
+            location=Location(iso3="FRA", lat=49.0, lon=3.0, country="France", region="Europe"),
+            commodity=Commodities.IRON,
+            capacity_by_year={Year(2025): Volumes(1000)},
+            production_cost=320.0,
+        )
+        suppliers.append(supplier2)
+
+        # Supplier with no cost (should be ignored)
+        supplier3 = Supplier(
+            supplier_id="supplier_3",
+            location=Location(iso3="ESP", lat=40.0, lon=-3.0, country="Spain", region="Europe"),
+            commodity=Commodities.STEEL,
+            capacity_by_year={Year(2025): Volumes(1000)},
+            production_cost=None,
+        )
+        suppliers.append(supplier3)
+
+        return suppliers
+
+    def test_calculate_average_commodity_price_basic(self, sample_plants, sample_suppliers):
+        """Test basic calculation of average commodity prices."""
+        # Create a mapping of costs for each furnace group
+        cost_map = {"fg_1": 500.0, "fg_2": 600.0, "fg_3": 300.0, "fg_4": 1000.0}
+
+        # Store original property
+        original_property = FurnaceGroup.unit_production_cost
+
+        # Create a custom property that returns different values based on instance
+        def mock_unit_production_cost(self):
+            return cost_map.get(self.furnace_group_id, 0.0)
+
+        # Replace the property
+        FurnaceGroup.unit_production_cost = property(mock_unit_production_cost)
+
+        try:
+            active_statuses = ["operating", "operating pre-retirement"]
+            result = calculate_average_commodity_price_per_region(sample_plants, sample_suppliers, active_statuses)
+
+            # Expected results:
+            # Germany steel: (500 + 600 + 550) / 3 = 550.0 (2 plants + 1 supplier)
+            # France iron: (300 + 320) / 2 = 310.0 (1 plant + 1 supplier)
+
+            assert ("steel", "DEU") in result
+            assert result[("steel", "DEU")] == pytest.approx(550.0)
+
+            assert ("iron", "FRA") in result
+            assert result[("iron", "FRA")] == pytest.approx(310.0)
+
+            # Spain should not appear (supplier had no cost)
+            assert ("steel", "ESP") not in result
+        finally:
+            # Restore original property
+            FurnaceGroup.unit_production_cost = original_property
+
+    def test_ignores_inactive_furnace_groups(self, sample_plants, sample_suppliers):
+        """Test that inactive/zero utilization furnace groups are ignored."""
+        # Create a mapping of costs for each furnace group
+        cost_map = {"fg_1": 500.0, "fg_2": 600.0, "fg_3": 300.0, "fg_4": 1000.0}
+
+        # Store original property
+        original_property = FurnaceGroup.unit_production_cost
+
+        # Create a custom property that returns different values based on instance
+        def mock_unit_production_cost(self):
+            return cost_map.get(self.furnace_group_id, 0.0)
+
+        # Replace the property
+        FurnaceGroup.unit_production_cost = property(mock_unit_production_cost)
+
+        try:
+            # The plant with zero utilization should not affect German steel average
+            active_statuses = ["operating", "operating pre-retirement"]
+            result = calculate_average_commodity_price_per_region(sample_plants, sample_suppliers, active_statuses)
+
+            # Should still be (500 + 600 + 550) / 3 = 550.0, not including the 1000 from inactive
+            assert result[("steel", "DEU")] == pytest.approx(550.0)
+        finally:
+            # Restore original property
+            FurnaceGroup.unit_production_cost = original_property
+
+    def test_empty_inputs(self):
+        """Test handling of empty inputs."""
+        active_statuses = ["operating", "operating pre-retirement"]
+        result = calculate_average_commodity_price_per_region([], [], active_statuses)
+        assert result == {}
+
+    def test_plants_only_no_suppliers(self, sample_plants):
+        """Test calculation with only plants, no suppliers."""
+        # Create a mapping of costs for each furnace group
+        cost_map = {"fg_1": 500.0, "fg_2": 600.0, "fg_3": 300.0, "fg_4": 1000.0}
+
+        # Store original property
+        original_property = FurnaceGroup.unit_production_cost
+
+        # Create a custom property that returns different values based on instance
+        def mock_unit_production_cost(self):
+            return cost_map.get(self.furnace_group_id, 0.0)
+
+        # Replace the property
+        FurnaceGroup.unit_production_cost = property(mock_unit_production_cost)
+
+        try:
+            active_statuses = ["operating", "operating pre-retirement"]
+            result = calculate_average_commodity_price_per_region(sample_plants, [], active_statuses)
+
+            # Germany steel: (500 + 600) / 2 = 550.0
+            assert result[("steel", "DEU")] == pytest.approx(550.0)
+
+            # France iron: 300.0 (only one plant)
+            assert result[("iron", "FRA")] == pytest.approx(300.0)
+        finally:
+            # Restore original property
+            FurnaceGroup.unit_production_cost = original_property
+
+    def test_suppliers_only_no_plants(self, sample_suppliers):
+        """Test calculation with only suppliers, no plants."""
+        active_statuses = ["operating", "operating pre-retirement"]
+        result = calculate_average_commodity_price_per_region([], sample_suppliers, active_statuses)
+
+        # Only suppliers with costs should appear
+        assert result[("steel", "DEU")] == pytest.approx(550.0)
+        assert result[("iron", "FRA")] == pytest.approx(320.0)
+        assert ("steel", "ESP") not in result

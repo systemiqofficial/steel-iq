@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block title %}Upload Repository for Model Run #{{ modelrun.id }}{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-header">
+                    <h1 class="h3 mb-0">Upload Repository for Model Run #{{ modelrun.id }}</h1>
+                </div>
+                <div class="card-body">
+                    {% include "steeloweb/partials/messages.html" %}
+
+                    <form method="post" enctype="multipart/form-data">
+                        {% csrf_token %}
+                        
+                        <div class="mb-3">
+                            <label for="{{ form.name.id_for_label }}" class="form-label">Name</label>
+                            {{ form.name }}
+                            {% if form.name.errors %}
+                            <div class="invalid-feedback d-block">{{ form.name.errors }}</div>
+                            {% endif %}
+                            <small class="form-text text-muted">{{ form.name.help_text }}</small>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="{{ form.description.id_for_label }}" class="form-label">Description</label>
+                            {{ form.description }}
+                            {% if form.description.errors %}
+                            <div class="invalid-feedback d-block">{{ form.description.errors }}</div>
+                            {% endif %}
+                            <small class="form-text text-muted">{{ form.description.help_text }}</small>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="{{ form.repo_type.id_for_label }}" class="form-label">Repository Type</label>
+                            {{ form.repo_type }}
+                            {% if form.repo_type.errors %}
+                            <div class="invalid-feedback d-block">{{ form.repo_type.errors }}</div>
+                            {% endif %}
+                            <small class="form-text text-muted">{{ form.repo_type.help_text }}</small>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="{{ form.file.id_for_label }}" class="form-label">JSON File</label>
+                            {{ form.file }}
+                            {% if form.file.errors %}
+                            <div class="invalid-feedback d-block">{{ form.file.errors }}</div>
+                            {% endif %}
+                            <small class="form-text text-muted">Upload a valid JSON repository file. Only .json files are accepted.</small>
+                        </div>
+
+                        {% if form.non_field_errors %}
+                        <div class="alert alert-danger">
+                            {{ form.non_field_errors }}
+                        </div>
+                        {% endif %}
+
+                        <div class="d-flex justify-content-between mt-4">
+                            <a href="{% url 'modelrun-detail' pk=modelrun.id %}" class="btn btn-secondary">Cancel</a>
+                            <button type="submit" class="btn btn-primary">Upload & Associate</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

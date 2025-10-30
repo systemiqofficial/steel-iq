@@ -1,0 +1,334 @@
+{% extends "base.html" %}
+
+{% block title %}Master Excel Files{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1>Master Excel Files</h1>
+        <div>
+            <button id="download-template-btn" class="btn btn-outline-primary me-2" onclick="downloadTemplateWithFetch(event)">
+                <i class="fas fa-download" id="download-icon"></i>
+                <span id="download-text">Download Template</span>
+            </button>
+            <a href="{% url 'master-excel-create' %}" class="btn btn-primary">
+                <i class="fas fa-plus"></i> Upload New
+            </a>
+        </div>
+    </div>
+
+    {% if messages %}
+    <div class="messages mb-4">
+        {% for message in messages %}
+        <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
+            {{ message }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+
+    <!-- Example Files Section -->
+    {% if example_files %}
+    <div class="card mb-4">
+        <div class="card-header">
+            <h3 class="card-title mb-0">
+                <i class="fas fa-star text-warning"></i> Example Files
+            </h3>
+            <small class="text-muted">Pre-configured master Excel files for common scenarios</small>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-striped table-hover">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Description</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for file in example_files %}
+                        <tr>
+                            <td>
+                                <a href="{% url 'master-excel-detail' pk=file.pk %}">
+                                    <i class="fas fa-star text-warning me-1"></i>
+                                    {{ file.name }}
+                                </a>
+                            </td>
+                            <td>{{ file.description|truncatewords:10 }}</td>
+                            <td>
+                                {% if file.validation_status == 'valid' %}
+                                    <span class="badge bg-success">Valid</span>
+                                {% elif file.validation_status == 'warnings' %}
+                                    <span class="badge bg-warning">Valid with Warnings</span>
+                                {% elif file.validation_status == 'invalid' %}
+                                    <span class="badge bg-danger">Invalid</span>
+                                {% else %}
+                                    <span class="badge bg-secondary">Pending</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <a href="{% url 'master-excel-download' pk=file.pk %}" class="btn btn-sm btn-outline-primary">
+                                    <i class="fas fa-download"></i> Download
+                                </a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- User Files Section -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title mb-0">
+                <i class="fas fa-user"></i> Your Master Excel Files
+            </h3>
+            <small class="text-muted">Custom master Excel files you've uploaded</small>
+        </div>
+        <div class="card-body">
+            {% if user_files %}
+            <div class="table-responsive">
+                <table class="table table-striped table-hover">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Name</th>
+                            <th>Description</th>
+                            <th>Status</th>
+                            <th>Uploaded</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for file in user_files %}
+                        <tr>
+                            <td class="text-muted">{{ file.pk }}</td>
+                            <td>
+                                <a href="{% url 'master-excel-detail' pk=file.pk %}">
+                                    {{ file.name }}
+                                </a>
+                            </td>
+                            <td>{{ file.description|truncatewords:10 }}</td>
+                            <td>
+                                <div class="d-flex flex-wrap gap-1 align-items-center">
+                                    {% if file.validation_status == 'valid' %}
+                                        <span class="badge bg-success">Valid</span>
+                                    {% elif file.validation_status == 'warnings' %}
+                                        <span class="badge bg-warning">Valid with Warnings</span>
+                                    {% elif file.validation_status == 'invalid' %}
+                                        <span class="badge bg-danger">Invalid</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">Pending</span>
+                                    {% endif %}
+                                    {% if file.pk in files_with_preparations %}
+                                        <span class="badge bg-info" title="Data already prepared">
+                                            <i class="fas fa-check"></i> Prepared
+                                        </span>
+                                    {% endif %}
+                                </div>
+                            </td>
+                            <td>{{ file.created_at|date:"Y-m-d H:i" }}</td>
+                            <td>
+                                <div class="d-flex flex-wrap gap-1">
+                                    <a href="{% url 'master-excel-update' pk=file.pk %}" class="btn btn-sm btn-primary">
+                                        <i class="fas fa-edit"></i> Edit
+                                    </a>
+                                    <a href="{% url 'master-excel-delete' pk=file.pk %}" class="btn btn-sm btn-danger">
+                                        <i class="fas fa-trash"></i> Delete
+                                    </a>
+                                    {% if file.validation_status == 'valid' or file.validation_status == 'warnings' %}
+                                        {% if file.pk not in files_with_preparations %}
+                                        <form method="post" action="{% url 'prepare-data-with-master-excel' pk=file.pk %}" class="d-inline">
+                                            {% csrf_token %}
+                                            <button type="submit" class="btn btn-sm btn-success">
+                                                <i class="fas fa-cogs"></i> Prepare
+                                            </button>
+                                        </form>
+                                        {% endif %}
+                                    {% endif %}
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-muted">You haven't uploaded any master Excel files yet.</p>
+            <a href="{% url 'master-excel-create' %}" class="btn btn-primary">
+                <i class="fas fa-upload"></i> Upload Your First File
+            </a>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+async function downloadTemplateWithFetch(event) {
+    event.preventDefault();
+
+    const btn = event.currentTarget;
+    const icon = btn.querySelector('#download-icon');
+    const text = btn.querySelector('#download-text');
+    const url = '{% url "download-master-excel-template" %}';
+
+    // Disable button immediately (prevents double-click)
+    btn.disabled = true;
+    icon.className = 'fas fa-spinner fa-spin';
+    text.textContent = 'Downloading...';
+
+    // Show initial toast
+    showDownloadToast('Downloading master Excel template from S3...', 'info');
+
+    try {
+        // Fetch the file (GET request doesn't need CSRF token)
+        const response = await fetch(url, {
+            method: 'GET',
+            credentials: 'same-origin',  // Include cookies for Django auth
+            redirect: 'follow'  // Follow redirects (default behavior)
+        });
+
+        // CRITICAL: Check if server redirected us (indicates error with messages.error)
+        // The backend uses redirect("master-excel-list") with messages.error() for all errors
+        // If redirected, we need to do a full page navigation to show Django messages
+        if (response.redirected) {
+            console.log('Server redirected to:', response.url);
+            console.log('Following redirect to display server error messages...');
+            // Do full page navigation to show Django messages properly
+            window.location.href = response.url;
+            return;  // Don't continue processing
+        }
+
+        // Check for HTTP errors
+        if (!response.ok) {
+            throw new Error(`Server error ${response.status}: ${response.statusText}`);
+        }
+
+        // CRITICAL: Verify we got an actual file, not an HTML error page
+        // This handles cases where server returns 200 OK but with wrong content
+        const contentType = response.headers.get('content-type');
+        const contentDisposition = response.headers.get('content-disposition');
+
+        // Expected content type for Excel files
+        const validContentTypes = [
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',  // .xlsx
+            'application/vnd.ms-excel',  // .xls
+            'application/octet-stream'   // generic binary (sometimes used for downloads)
+        ];
+
+        const isValidType = validContentTypes.some(type =>
+            contentType && contentType.includes(type)
+        );
+
+        if (!isValidType) {
+            console.error('Invalid content type:', contentType);
+            throw new Error(
+                `Server returned unexpected content type: ${contentType}. ` +
+                'Expected Excel file but may have received HTML error page or redirect.'
+            );
+        }
+
+        // Verify Content-Disposition indicates file attachment
+        if (!contentDisposition || !contentDisposition.includes('attachment')) {
+            console.warn('Missing or invalid Content-Disposition:', contentDisposition);
+            // This is a warning not error - some servers don't set it properly
+            // but if Content-Type is correct we proceed
+        }
+
+        // Download successful - convert to blob
+        const blob = await response.blob();
+
+        // Additional safety check: Excel files should be reasonably sized (not tiny HTML error pages)
+        if (blob.size < 1024) {  // Less than 1KB is suspicious for an Excel file
+            console.error('File suspiciously small:', blob.size, 'bytes');
+            throw new Error('Downloaded file is too small to be valid Excel template (possible error page).');
+        }
+
+        // Parse filename from Content-Disposition header (respects server-side naming)
+        // This allows backend to control versioning, localization, etc.
+        let filename = 'master_input_template.xlsx';  // Fallback default
+        if (contentDisposition) {
+            // Try RFC 5987 encoding first (filename*=UTF-8''...)
+            const filenameStarMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+            if (filenameStarMatch) {
+                filename = decodeURIComponent(filenameStarMatch[1]);
+            } else {
+                // Fall back to standard filename="..." or filename=...
+                const filenameMatch = contentDisposition.match(/filename[^;=\n]*=["']?([^"';]+)["']?/i);
+                if (filenameMatch) {
+                    filename = filenameMatch[1].trim();
+                }
+            }
+        }
+
+        // Create blob URL and trigger download
+        const blobUrl = window.URL.createObjectURL(blob);
+        const downloadLink = document.createElement('a');
+        downloadLink.href = blobUrl;
+        downloadLink.download = filename;
+
+        // Trigger download
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        document.body.removeChild(downloadLink);
+
+        // Clean up blob URL
+        window.URL.revokeObjectURL(blobUrl);
+
+        // Show success feedback
+        icon.className = 'fas fa-check-circle';
+        text.textContent = 'Downloaded!';
+        showDownloadToast('Master Excel template downloaded successfully! Check your downloads folder.', 'success');
+
+        // Reset button after success delay
+        setTimeout(() => {
+            btn.disabled = false;
+            icon.className = 'fas fa-download';
+            text.textContent = 'Download Template';
+        }, 2000);
+
+    } catch (error) {
+        // Handle all error cases
+        console.error('Download error:', error);
+
+        // Show error feedback
+        icon.className = 'fas fa-exclamation-circle';
+        text.textContent = 'Download Failed';
+
+        // Determine user-friendly error message
+        let errorMessage = 'Download failed. ';
+        if (error.message.includes('Failed to fetch')) {
+            errorMessage += 'Network error - check your internet connection.';
+        } else if (error.message.includes('404')) {
+            errorMessage += 'Template file not found on server.';
+        } else if (error.message.includes('500')) {
+            errorMessage += 'Server error - please try again later.';
+        } else if (error.message.includes('content type') || error.message.includes('Content-Type')) {
+            errorMessage += 'Server returned invalid file type. You may need to log in again.';
+        } else if (error.message.includes('too small')) {
+            errorMessage += 'Downloaded file appears corrupted or invalid.';
+        } else {
+            errorMessage += error.message;
+        }
+
+        showDownloadToast(errorMessage, 'danger');
+
+        // Reset button after error delay
+        setTimeout(() => {
+            btn.disabled = false;
+            icon.className = 'fas fa-download';
+            text.textContent = 'Download Template';
+        }, 3000);
+    }
+}
+</script>
+{% endblock %}

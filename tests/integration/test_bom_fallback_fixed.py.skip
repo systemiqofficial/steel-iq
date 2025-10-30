@@ -1,0 +1,122 @@
+"""Test to verify the BOM fallback fix works correctly."""
+
+from steelo.domain.models import get_bom_from_avg_boms
+
+
+def test_get_bom_with_empty_avg_boms_uses_fallback():
+    """
+    Test that get_bom_from_avg_boms now falls back to static bom_data
+    when avg_boms doesn't contain the requested technology.
+    """
+    # Empty avg_boms (simulating state before trade allocation)
+    avg_boms = {}
+    avg_utilization = {}
+
+    # Try to get BOM for BF-BOF technology
+    energy_costs = {"electricity": 0.05, "natural_gas": 0.03}
+
+    bom, utilization, reductant = get_bom_from_avg_boms(
+        energy_costs=energy_costs, tech="BF-BOF", capacity=1000, avg_boms=avg_boms, avg_utilization=avg_utilization
+    )
+
+    # With the fix, should now return a BOM from static data
+    assert bom is not None, "get_bom_from_avg_boms should return BOM from fallback"
+    assert "energy" in bom, "BOM should have energy section"
+    assert "materials" in bom, "BOM should have materials section"
+
+    # Check we got reasonable data
+    assert len(bom["energy"]) > 0 or len(bom["materials"]) > 0, "BOM should have some items"
+
+    # Check default values
+    assert utilization == 0.8, "Should use default utilization rate"
+    assert reductant == "Coke", "Should use default reductant for BF-BOF"
+
+    print(f"SUCCESS: Got BOM with {len(bom['energy'])} energy items and {len(bom['materials'])} material items")
+    print(f"Energy items: {list(bom['energy'].keys())}")
+    print(f"Material items: {list(bom['materials'].keys())[:5]}...")  # Show first 5
+
+    # Test passes
+
+
+def test_other_technologies_fallback():
+    """Test that fallback works for other technologies too."""
+    empty_avg_boms = {}
+    empty_utilization = {}
+    energy_costs = {"electricity": 0.05, "natural_gas": 0.03}
+
+    technologies_to_test = [
+        ("DRI-EAF", "Natural gas"),
+        ("Scrap-EAF", ""),
+    ]
+
+    for tech, expected_reductant in technologies_to_test:
+        bom, utilization, reductant = get_bom_from_avg_boms(
+            energy_costs=energy_costs,
+            tech=tech,
+            capacity=1000,
+            avg_boms=empty_avg_boms,
+            avg_utilization=empty_utilization,
+        )
+
+        if bom is not None:
+            print(
+                f"{tech}: Got BOM with {len(bom.get('energy', {}))} energy, {len(bom.get('materials', {}))} materials"
+            )
+            assert reductant == expected_reductant, f"Expected reductant {expected_reductant} for {tech}"
+        else:
+            print(f"{tech}: No BOM data available in static data")
+
+    # Test passes
+
+
+def test_avg_boms_takes_precedence():
+    """Test that when avg_boms has data, it's used instead of fallback."""
+    # Populated avg_boms
+    avg_boms = {
+        "BF-BOF": {
+            "electricity": {"demand": 50, "total_cost": 5, "unit_cost": 0.1},
+            "coal": {"demand": 300, "total_cost": 30, "unit_cost": 0.1},
+        }
+    }
+    avg_utilization = {"BF-BOF": {"utilization_rate": 0.85}}
+    energy_costs = {"electricity": 0.05, "natural_gas": 0.03}
+
+    bom, utilization, reductant = get_bom_from_avg_boms(
+        energy_costs=energy_costs, tech="BF-BOF", capacity=1000, avg_boms=avg_boms, avg_utilization=avg_utilization
+    )
+
+    assert bom is not None
+    # Should use avg_boms data, not fallback
+    assert utilization == 0.85, "Should use utilization from avg_boms"
+    # Check that it properly structured the BOM
+    assert "energy" in bom
+    assert "materials" in bom
+
+    print("SUCCESS: avg_boms data takes precedence when available")
+    # Test passes
+
+
+if __name__ == "__main__":
+    print("=== Testing BOM Fallback Fix ===\n")
+
+    try:
+        test_get_bom_with_empty_avg_boms_uses_fallback()
+        print("\n✓ Test 1 PASSED: Fallback to static BOM data works\n")
+    except AssertionError as e:
+        print(f"\n✗ Test 1 FAILED: {e}\n")
+
+    try:
+        test_other_technologies_fallback()
+        print("\n✓ Test 2 PASSED: Fallback works for multiple technologies\n")
+    except AssertionError as e:
+        print(f"\n✗ Test 2 FAILED: {e}\n")
+
+    try:
+        test_avg_boms_takes_precedence()
+        print("\n✓ Test 3 PASSED: avg_boms takes precedence when available\n")
+    except AssertionError as e:
+        print(f"\n✗ Test 3 FAILED: {e}\n")
+
+    print("=== Summary ===")
+    print("The BOM fallback fix ensures that plant agents can always get BOMs,")
+    print("even before trade allocation populates avg_boms.")

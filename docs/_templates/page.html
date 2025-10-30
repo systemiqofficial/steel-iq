@@ -1,0 +1,14 @@
+{% extends "!page.html" %}
+
+{% block footer %}
+  {{ super() }}
+  {% if commit_short_sha and commit_short_sha != "unknown" %}
+    <div class="footer-commit">
+      {% if is_public_build %}
+        Public docs built from commit {{ commit_short_sha }}.
+      {% else %}
+        Docs built from commit {{ commit_short_sha }}.
+      {% endif %}
+    </div>
+  {% endif %}
+{% endblock %}

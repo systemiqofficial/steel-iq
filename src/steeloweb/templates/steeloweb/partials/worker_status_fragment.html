@@ -1,0 +1,195 @@
+<!-- Worker Status Fragment - PRODUCTION GRADE with Tick endpoint -->
+<div class="row">
+    <div class="col-md-4">
+        <h6 style="color: black !important;">Workers</h6>
+        <div style="color: black !important;">
+            {% with active_workers=data.workers|length %}
+            <span class="badge bg-primary">{{ active_workers }}</span> <span style="color: black !important;">active</span>
+            / <span class="badge bg-info">{{ data.limits.admissible }}</span> <span style="color: black !important;">max</span>
+            {% endwith %}
+        </div>
+        
+        <!-- Show warning if no capacity -->
+        {% if data.limits.no_capacity %}
+        <div class="alert alert-warning mt-2 p-2" style="font-size: 0.9em;">
+            <i class="fas fa-exclamation-triangle"></i> No capacity for workers
+        </div>
+        {% endif %}
+        
+        <div class="mt-2">
+            <!-- Add Worker Button - always clickable, JS handles confirmation -->
+            <button class="btn btn-sm btn-success add-worker-btn"
+                    hx-post="{% url 'add-worker-htmx' %}"
+                    hx-target="#worker-status-content"
+                    hx-swap="innerHTML"
+                    hx-indicator="#manual-worker-loading"
+                    data-can-add="{{ data.limits.can_add }}"
+                    data-no-capacity="{{ data.limits.no_capacity }}">
+                <i class="fas fa-plus"></i> Add Worker
+            </button>
+            
+            <!-- Drain Worker Button (graceful) -->
+            <button class="btn btn-sm btn-warning" 
+                    hx-post="{% url 'drain-worker-htmx' %}"
+                    hx-target="#worker-status-content"
+                    hx-swap="innerHTML"
+                    hx-indicator="#manual-worker-loading"
+                    title="Gracefully drain worker after current task completes"
+                    {% if data.workers|length == 0 %}disabled{% endif %}>
+                <i class="fas fa-stop-circle"></i> Drain Worker
+            </button>
+        </div>
+    </div>
+    
+    <div class="col-md-4">
+        <h6 style="color: black !important;">Memory Usage</h6>
+        <div class="progress" style="height: 25px;">
+            {% with percent=data.memory.percent|floatformat:1 %}
+            <div class="progress-bar 
+                        {% if data.memory.percent > 80 %}bg-danger
+                        {% elif data.memory.percent > 60 %}bg-warning
+                        {% else %}bg-success{% endif %}" 
+                 role="progressbar" 
+                 style="width: {{ percent }}%">
+                <span>{{ percent }}%</span>
+            </div>
+            {% endwith %}
+        </div>
+        <small style="color: #666 !important;">
+            Available: {{ data.memory.available_gb|floatformat:1 }} GB
+            {% if data.limits.no_capacity %}
+            <br><span class="text-danger">Insufficient for workers</span>
+            {% elif data.limits.can_add %}
+            <br><span class="text-success">Room for {{ data.limits.admissible|add:"-"|add:data.limits.active }} more</span>
+            {% endif %}
+        </small>
+    </div>
+    
+    <div class="col-md-4">
+        <h6 style="color: black !important;">
+            Task Queue
+            <i class="fas fa-info-circle text-muted"
+               title="Tasks in queue. One worker can handle multiple tasks sequentially."></i>
+        </h6>
+        <div style="color: black !important;">
+            <span class="badge bg-warning">{{ data.queue.pending }}</span> <span style="color: black !important;">pending</span>
+            <span class="badge bg-success">{{ data.queue.running }}</span> <span style="color: black !important;">running</span>
+            <br>
+            <small class="text-muted">Running = tasks being processed</small>
+        </div>
+    </div>
+</div>
+
+<!-- Worker List -->
+<div class="mt-3">
+    {% if data.workers %}
+        <div style="background-color: white !important; padding: 5px; border-radius: 3px;">
+            <h6 style="color: black !important;">Workers:</h6>
+            <ul class="list-unstyled">
+                {% for worker in data.workers %}
+                <li class="mb-2 d-flex align-items-center justify-content-between" style="background-color: white !important; padding: 5px; color: black !important; border: 1px solid #dee2e6; border-radius: 3px;">
+                    <div class="d-flex align-items-center">
+                        <!-- Worker state badge -->
+                        <span class="badge 
+                                    {% if worker.state == 'RUNNING' %}bg-success
+                                    {% elif worker.state == 'STARTING' %}bg-info
+                                    {% elif worker.state == 'DRAINING' %}bg-warning
+                                    {% elif worker.state == 'FAILED' %}bg-danger
+                                    {% else %}bg-secondary{% endif %}" 
+                              style="min-width: 85px; text-align: center;">
+                            {{ worker.state }}
+                        </span>
+                        
+                        <!-- Worker info -->
+                        <span class="ms-2" style="color: black !important;">
+                            Worker {{ worker.worker_id }} (PID: {{ worker.pid|default:"N/A" }})
+                        </span>
+                        
+                        <!-- Status indicators -->
+                        {% if worker.appears_dead %}
+                            <i class="fas fa-exclamation-triangle text-danger ms-2" 
+                               title="Process not responding - may have different PID"></i>
+                        {% endif %}
+                        
+                        {% if worker.is_stalled %}
+                            <i class="fas fa-clock text-warning ms-2" 
+                               title="Stalled - no heartbeat for 3+ minutes"></i>
+                        {% endif %}
+                        
+                        {% if worker.state == 'DRAINING' %}
+                            <i class="fas fa-hourglass-half text-warning ms-2" 
+                               title="Draining - will exit after current task"></i>
+                        {% endif %}
+                        
+                        <!-- Resource usage stats -->
+                        {% if worker.memory_gb %}
+                            <small class="ms-2" style="color: #666 !important;">
+                                Mem: {{ worker.memory_gb|floatformat:1 }}GB
+                            </small>
+                        {% endif %}
+                        
+                        {% if worker.cpu is not None %}
+                            <small class="ms-2" style="color: #666 !important;">
+                                CPU: {{ worker.cpu|floatformat:1 }}%
+                            </small>
+                        {% endif %}
+                        
+                        {% if worker.time_since_heartbeat %}
+                            <small class="ms-2" style="color: #666 !important;">
+                                <i class="fas fa-heartbeat"></i> {{ worker.time_since_heartbeat }}
+                            </small>
+                        {% endif %}
+                    </div>
+                    
+                    <!-- Individual worker actions -->
+                    <div class="btn-group btn-group-sm">
+                        {% if worker.state == 'RUNNING' %}
+                            <!-- Drain this specific worker -->
+                            <button class="btn btn-sm btn-outline-warning"
+                                    hx-post="{% url 'drain-specific-worker-htmx' worker.worker_id %}"
+                                    hx-target="#worker-status-content"
+                                    hx-swap="innerHTML"
+                                    hx-indicator="#manual-worker-loading"
+                                    title="Drain this worker gracefully">
+                                <i class="fas fa-stop-circle"></i>
+                            </button>
+                        {% endif %}
+                        
+                        {% if worker.state in 'RUNNING,DRAINING,STARTING' %}
+                            <!-- Abort this worker (with confirmation) -->
+                            <button class="btn btn-sm btn-outline-danger"
+                                    hx-delete="{% url 'abort-worker-htmx' worker.worker_id %}"
+                                    hx-target="#worker-status-content"
+                                    hx-swap="innerHTML"
+                                    hx-indicator="#manual-worker-loading"
+                                    hx-confirm="⚠️ This will KILL the running task and lose all progress. Are you sure?"
+                                    title="Force abort (loses current task progress!)">
+                                <i class="fas fa-skull"></i>
+                            </button>
+                        {% endif %}
+                    </div>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        
+        <!-- Cleanup button if there are dead workers -->
+        {% if data.has_dead_workers %}
+            <button class="btn btn-sm btn-secondary mt-2" 
+                    hx-post="{% url 'cleanup-workers-htmx' %}"
+                    hx-target="#worker-status-content"
+                    hx-swap="innerHTML"
+                    hx-indicator="#manual-worker-loading">
+                <i class="fas fa-broom"></i> Clean up dead workers
+            </button>
+        {% endif %}
+        
+    {% else %}
+        <p style="color: #666 !important;">
+            No workers running
+            {% if data.limits.no_capacity %}
+            <br><small class="text-muted">System has insufficient resources for workers</small>
+            {% endif %}
+        </p>
+    {% endif %}
+</div>

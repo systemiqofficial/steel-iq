@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block title %}Clone Repository: {{ original_repository.name }}{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1>Clone Repository: {{ original_repository.name }}</h1>
+        <a href="{% url 'repository-detail' pk=original_repository.pk %}" class="btn btn-secondary">
+            <i class="fas fa-arrow-left"></i> Back to Repository
+        </a>
+    </div>
+
+    {% include "steeloweb/partials/messages.html" %}
+
+    <div class="row">
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-copy"></i> Clone Repository
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-info">
+                        <i class="fas fa-info-circle me-2"></i>
+                        This will create a copy of the example repository that you can modify and use in your model runs.
+                    </div>
+
+                    <form method="post">
+                        {% csrf_token %}
+                        <div class="mb-3">
+                            <label for="name" class="form-label">Repository Name</label>
+                            <input type="text" class="form-control" id="name" name="name" 
+                                   value="{{ suggested_name }}" required>
+                            <div class="form-text">Enter a name for your cloned repository</div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="description" class="form-label">Description</label>
+                            <textarea class="form-control" id="description" name="description" 
+                                      rows="3">{{ suggested_description }}</textarea>
+                            <div class="form-text">Describe what this repository contains or how you've modified it</div>
+                        </div>
+
+                        <div class="d-flex justify-content-end">
+                            <a href="{% url 'repository-detail' pk=original_repository.pk %}" class="btn btn-secondary me-2">
+                                Cancel
+                            </a>
+                            <button type="submit" class="btn btn-primary">
+                                <i class="fas fa-copy"></i> Create Clone
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-header">
+                    <h6 class="card-title mb-0">Original Repository</h6>
+                </div>
+                <div class="card-body">
+                    <dl class="row">
+                        <dt class="col-sm-5">Name:</dt>
+                        <dd class="col-sm-7">{{ original_repository.name }}</dd>
+                        
+                        <dt class="col-sm-5">Type:</dt>
+                        <dd class="col-sm-7">{{ original_repository.get_repo_type_display }}</dd>
+                        
+                        <dt class="col-sm-5">Source:</dt>
+                        <dd class="col-sm-7">
+                            <span class="badge bg-warning text-dark">
+                                <i class="fas fa-star me-1"></i>Example
+                            </span>
+                        </dd>
+                    </dl>
+                    
+                    {% if original_repository.description %}
+                    <div class="mt-3">
+                        <strong>Description:</strong>
+                        <p class="mb-0">{{ original_repository.description }}</p>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

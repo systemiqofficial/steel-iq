@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block title %}{{ filename }} - {{ preparation.name }}{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-lg-10 offset-lg-1">
+            <!-- Breadcrumb -->
+            <nav aria-label="breadcrumb">
+                <ol class="breadcrumb">
+                    <li class="breadcrumb-item"><a href="{% url 'master-excel-list' %}">Master Excel Files</a></li>
+                    {% if preparation.master_excel %}
+                    <li class="breadcrumb-item"><a href="{% url 'master-excel-detail' pk=preparation.master_excel.pk %}">{{ preparation.master_excel.name }}</a></li>
+                    {% endif %}
+                    <li class="breadcrumb-item"><a href="{% url 'data-preparation-detail' pk=preparation.pk %}">{{ preparation.name }}</a></li>
+                    <li class="breadcrumb-item active" aria-current="page">{{ filename }}</li>
+                </ol>
+            </nav>
+
+            <!-- Main Card -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h2 class="card-title mb-0">
+                            <i class="fas fa-file-csv"></i> {{ filename }}
+                        </h2>
+                        <div>
+                            <span class="badge bg-info">{{ file_size_mb }} MB</span>
+                            {% if is_large %}
+                            <span class="badge bg-warning">Preview Mode</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body">
+                    {% if is_large %}
+                    <div class="alert alert-info mb-4">
+                        <i class="fas fa-info-circle"></i>
+                        <strong>Large file:</strong> Showing first 100 rows of {{ total_rows }} total.
+                        <a href="{% url 'view-prepared-file' pk=preparation.pk filename=filename %}?download=1" class="btn btn-sm btn-primary float-end">
+                            <i class="fas fa-download"></i> Download Full File
+                        </a>
+                    </div>
+                    {% endif %}
+
+                    <!-- CSV Content -->
+                    <div class="table-responsive">
+                        <table class="table table-sm table-striped table-bordered">
+                            {% for row in csv_rows %}
+                                {% if forloop.first %}
+                                <thead>
+                                    <tr>
+                                        {% for cell in row %}
+                                        <th>{{ cell }}</th>
+                                        {% endfor %}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                {% else %}
+                                <tr>
+                                    {% for cell in row %}
+                                    <td>{{ cell }}</td>
+                                    {% endfor %}
+                                </tr>
+                                {% endif %}
+                            {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Actions -->
+                    <div class="mt-4 d-flex justify-content-between">
+                        <a href="{% url 'data-preparation-detail' pk=preparation.pk %}" class="btn btn-secondary">
+                            <i class="fas fa-arrow-left"></i> Back to Data Preparation
+                        </a>
+                        <a href="{% url 'view-prepared-file' pk=preparation.pk filename=filename %}?download=1" class="btn btn-primary">
+                            <i class="fas fa-download"></i> Download
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

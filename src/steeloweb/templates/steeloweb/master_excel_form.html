@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% load steeloweb_extras %}
+
+{% block title %}{% if form.instance.pk %}Edit{% else %}Upload{% endif %} Master Excel File{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-md-8 offset-md-2">
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title mb-0">
+                        {% if form.instance.pk %}
+                            <i class="fas fa-edit"></i> Edit Master Excel File
+                        {% else %}
+                            <i class="fas fa-upload"></i> Upload Master Excel File
+                        {% endif %}
+                    </h2>
+                </div>
+                <div class="card-body">
+                    {% if messages %}
+                    <div class="messages mb-4">
+                        {% for message in messages %}
+                        <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
+                            {{ message }}
+                            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+
+                    <div class="alert alert-info mb-4">
+                        <h5 class="alert-heading"><i class="fas fa-info-circle"></i> Getting Started</h5>
+                        <ol class="mb-0">
+                            <li>First, <a href="{% url 'download-master-excel-template' %}" class="alert-link">download the template</a></li>
+                            <li>Modify the template according to your needs</li>
+                            <li>Upload your modified file here</li>
+                            <li>The file will be validated automatically</li>
+                        </ol>
+                    </div>
+
+                    <form method="post" enctype="multipart/form-data">
+                        {% csrf_token %}
+                        
+                        <div class="mb-3">
+                            <label for="{{ form.name.id_for_label }}" class="form-label">
+                                {{ form.name.label }}
+                                <span class="text-danger">*</span>
+                            </label>
+                            {{ form.name }}
+                            {% if form.name.help_text %}
+                                <div class="form-text">{{ form.name.help_text }}</div>
+                            {% endif %}
+                            {% if form.name.errors %}
+                                <div class="invalid-feedback d-block">
+                                    {{ form.name.errors|join:", " }}
+                                </div>
+                            {% endif %}
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="{{ form.description.id_for_label }}" class="form-label">
+                                {{ form.description.label }}
+                            </label>
+                            {{ form.description }}
+                            {% if form.description.help_text %}
+                                <div class="form-text">{{ form.description.help_text }}</div>
+                            {% endif %}
+                            {% if form.description.errors %}
+                                <div class="invalid-feedback d-block">
+                                    {{ form.description.errors|join:", " }}
+                                </div>
+                            {% endif %}
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="{{ form.file.id_for_label }}" class="form-label">
+                                {{ form.file.label }}
+                                {% if not form.instance.pk %}<span class="text-danger">*</span>{% endif %}
+                            </label>
+                            {% if form.instance.pk and form.instance.file %}
+                                <div class="alert alert-warning mb-2">
+                                    <i class="fas fa-exclamation-triangle"></i>
+                                    Current file: <strong>{{ form.instance.file.name|basename }}</strong><br>
+                                    Uploading a new file will replace the existing one.
+                                </div>
+                            {% endif %}
+                            {{ form.file }}
+                            {% if form.file.help_text %}
+                                <div class="form-text">{{ form.file.help_text }}</div>
+                            {% endif %}
+                            {% if form.file.errors %}
+                                <div class="invalid-feedback d-block">
+                                    {{ form.file.errors|join:", " }}
+                                </div>
+                            {% endif %}
+                        </div>
+
+                        {% if form.non_field_errors %}
+                            <div class="alert alert-danger">
+                                {{ form.non_field_errors|join:", " }}
+                            </div>
+                        {% endif %}
+
+                        <div class="d-flex justify-content-between">
+                            <a href="{% url 'master-excel-list' %}" class="btn btn-secondary">
+                                <i class="fas fa-arrow-left"></i> Cancel
+                            </a>
+                            <button type="submit" class="btn btn-primary" id="submit-button">
+                                {% if form.instance.pk %}
+                                    <i class="fas fa-save"></i> Update File
+                                {% else %}
+                                    <i class="fas fa-upload"></i> Upload File
+                                {% endif %}
+                            </button>
+                        </div>
+                        
+                        <!-- Upload progress indicator -->
+                        <div id="upload-progress" class="mt-3 d-none">
+                            <div class="alert alert-info">
+                                <div class="d-flex align-items-center">
+                                    <div class="spinner-border spinner-border-sm me-3" role="status">
+                                        <span class="visually-hidden">Uploading...</span>
+                                    </div>
+                                    <div>
+                                        <strong>Uploading file...</strong>
+                                        <p class="mb-0 small">Please wait while your file is being uploaded and validated. This may take a moment for large files.</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            {% if not form.instance.pk %}
+            <div class="card mt-4">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="fas fa-question-circle"></i> What is a Master Excel File?</h5>
+                </div>
+                <div class="card-body">
+                    <p>The master Excel file contains all the input data configurations for your simulation:</p>
+                    <ul>
+                        <li><strong>Technology settings</strong> - CAPEX values, efficiency parameters</li>
+                        <li><strong>Cost data</strong> - Input costs, carbon costs, transport costs</li>
+                        <li><strong>Plant configurations</strong> - Technology switches, operational parameters</li>
+                        <li><strong>Regional data</strong> - Energy prices, infrastructure availability</li>
+                    </ul>
+                    <p class="mb-0">By providing your own master Excel file, you can customize all aspects of the simulation to match your specific scenario.</p>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<script>
+// Add Bootstrap validation styling and upload progress
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.querySelector('form');
+    const submitButton = document.getElementById('submit-button');
+    const uploadProgress = document.getElementById('upload-progress');
+    
+    if (form) {
+        form.addEventListener('submit', function(event) {
+            if (!form.checkValidity()) {
+                event.preventDefault();
+                event.stopPropagation();
+                form.classList.add('was-validated');
+            } else {
+                // Form is valid, show upload progress
+                if (submitButton && uploadProgress) {
+                    // Disable submit button
+                    submitButton.disabled = true;
+                    
+                    // Update button text to show uploading state
+                    const isUpdate = submitButton.innerHTML.includes('Update');
+                    submitButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status"></span>' + 
+                                           (isUpdate ? 'Updating...' : 'Uploading...');
+                    
+                    // Show progress indicator
+                    uploadProgress.classList.remove('d-none');
+                    
+                    // Disable all form inputs to prevent changes during upload
+                    form.querySelectorAll('input, textarea, select').forEach(function(input) {
+                        input.readOnly = true;
+                    });
+                }
+            }
+        });
+    }
+});
+</script>
+{% endblock %}

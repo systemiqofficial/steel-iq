@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block title %}STEEL-IQ Simulation Runs{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1>STEEL-IQ Simulation Runs</h1>
+        <a href="{% url 'create-modelrun' %}" class="btn btn-primary">
+            <i class="fas fa-plus"></i> New Simulation
+        </a>
+    </div>
+
+    {% include "steeloweb/partials/messages.html" %}
+
+    {% include "steeloweb/partials/worker_status_htmx.html" %}
+
+    <div class="card">
+        <div class="card-body">
+            {% if modelruns %}
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Name</th>
+                        <th>Started</th>
+                        <th>Status</th>
+                        <th>Duration</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="modelrun-table-body"
+                       hx-get="{% url 'modelrun-list-fragment' %}"
+                       hx-trigger="load[hasActiveModelRuns()] delay:100ms, every 10s[hasActiveModelRuns()]"
+                       hx-swap="innerHTML">
+                    {% include "steeloweb/partials/_modelrun_table_rows.html" %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="alert alert-info">
+                <h6 class="alert-heading"><i class="fas fa-info-circle me-2"></i>Getting Started</h6>
+                <p class="mb-2">No model runs found yet. Here's how to get started:</p>
+                <ol class="mb-3">
+                    <li>Browse the <a href="{% url 'master-excel-list' %}" class="alert-link">master Excel files</a> to see available input data templates</li>
+                    <li>Download, modify, and upload your own master Excel input file</li>
+                    <li>Create a <a href="{% url 'create-modelrun' %}" class="alert-link">new simulation</a> with your prepared data</li>
+                </ol>
+                <div class="d-flex gap-2">
+                    <a href="{% url 'master-excel-list' %}" class="btn btn-outline-primary btn-sm">
+                        <i class="fas fa-database me-1"></i>Browse Master Excel Files
+                    </a>
+                    <a href="{% url 'create-modelrun' %}" class="btn btn-primary btn-sm">
+                        <i class="fas fa-plus me-1"></i>Create Simulation
+                    </a>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+window.hasActiveModelRuns = function () {
+    return !!document.querySelector('.modelrun-running, .modelrun-cancelling');
+};
+</script>
+{% endblock %}

@@ -1,0 +1,49 @@
+{
+  "appId": "com.systemiq.steelo",
+  "productName": "STEEL-IQ",
+  "copyright": "© 2025 Systemiq — Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)",
+  "asar": true,
+  "asarUnpack": [
+    "windows_job_wrapper.py",
+    "assets/**/*"
+  ],
+  "publish": null,
+  "directories": {
+    "output": "../../dist"
+  },
+  "files": [
+    "main.js",
+    "preload.cjs",
+    "windows_job_wrapper.py",
+    "assets/**/*",
+    "package.json",
+    "package-lock.json",
+    "node_modules/**/*",
+    "!django-bundle/**/*",
+    "!**/*.log"
+  ],
+  "extraResources": [
+    {
+      "from": "django-bundle",
+      "to": "django-bundle",
+      "filter": ["**/*", "!**/.DS_Store"]
+    }
+  ],
+  "mac": {
+    "icon": "build/icon.icns",
+    "target": [
+      {
+        "target": "dir",
+        "arch": ["x64", "arm64"]
+      }
+    ]
+  },
+  "win": {
+    "icon": "build/icon.ico",
+    "target": "dir"
+  },
+  "linux": {
+    "icon": "build/icon.png",
+    "target": "AppImage"
+  }
+}

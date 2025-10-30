@@ -1,0 +1,77 @@
+<div class="card mb-4">
+    <div class="card-header bg-light">
+        <h5 class="mb-0">Dataset Information</h5>
+    </div>
+    <div class="card-body">
+        {% if message %}
+        <div class="alert callout-steel">
+            <i class="bi bi-info-circle"></i>
+            {{ message }}
+        </div>
+        {% elif has_metadata %}
+        <div class="alert alert-success mb-3">
+            <small>
+                <i class="bi bi-check-circle"></i>
+                <strong>Dataset loaded from:</strong> {{ selected_preparation.name }}
+            </small>
+        </div>
+
+        <dl class="row mb-0">
+            <dt class="col-sm-4">Dataset prepared with:</dt>
+            <dd class="col-sm-8">
+                <strong>Plant lifetime: {{ plant_lifetime_used }} years</strong>
+                <br><small class="text-muted">(This is metadata only - you can configure a different lifetime below)</small>
+            </dd>
+
+            <dt class="col-sm-4">Data reference year:</dt>
+            <dd class="col-sm-8">
+                <strong>{{ data_reference_year }}</strong>
+                <br><small class="text-muted">The year when age calculations are anchored</small>
+            </dd>
+
+            <dt class="col-sm-4">Has metadata:</dt>
+            <dd class="col-sm-8">
+                <span class="badge bg-success">Yes</span>
+                <br><small class="text-muted">Supports variable plant lifetime configurations</small>
+            </dd>
+
+            <dt class="col-sm-4">Furnace groups:</dt>
+            <dd class="col-sm-8">
+                <strong>{{ furnace_group_count }}</strong>
+                <br><small class="text-muted">Total furnace groups with metadata</small>
+            </dd>
+
+            <dt class="col-sm-4">Schema version:</dt>
+            <dd class="col-sm-8">
+                <code>{{ schema_version }}</code>
+            </dd>
+
+            {% if generated_at %}
+            <dt class="col-sm-4">Generated at:</dt>
+            <dd class="col-sm-8">
+                <small class="text-muted">{{ generated_at }}</small>
+            </dd>
+            {% endif %}
+        </dl>
+
+        <div class="alert callout-steel mt-3 mb-0">
+            <i class="bi bi-arrow-down-circle"></i>
+            <strong>Configure Your Simulation:</strong> In the <strong>Plant Construction Settings</strong> section below,
+            you can set a different plant lifetime for your simulation (e.g., 15, 25, or 30 years).
+            The system will automatically recalculate all plant lifecycles based on this dataset's metadata.
+        </div>
+        {% else %}
+        <div class="alert callout-steel">
+            <i class="bi bi-exclamation-triangle"></i>
+            <strong>Legacy dataset - Limited Configuration</strong>
+            <p class="mb-2">
+                This dataset does not include metadata for variable plant lifetime support.
+                <strong>You must use plant_lifetime=20 years</strong> (configured in Plant Construction Settings below).
+            </p>
+            <p class="mb-0">
+                <small>To use different plant lifetimes (15, 25, 30 years, etc.), regenerate the dataset with metadata support.</small>
+            </p>
+        </div>
+        {% endif %}
+    </div>
+</div>

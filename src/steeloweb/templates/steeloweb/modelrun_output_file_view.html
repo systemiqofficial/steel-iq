@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+
+{% block title %}{{ filename }} - {{ modelrun.name|default:"Model Run" }} #{{ modelrun.id }}{% endblock %}
+
+{% block extra_css %}
+<style>
+    .json-viewer {
+        font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        font-size: 14px;
+        line-height: 1.4;
+        background: #f8f9fa;
+        padding: 15px;
+        border-radius: 5px;
+        overflow-x: auto;
+        max-height: 600px;
+        overflow-y: auto;
+    }
+    .file-info {
+        background: #e9ecef;
+        padding: 10px;
+        border-radius: 5px;
+        margin-bottom: 15px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-lg-10 offset-lg-1">
+            <div class="card">
+                <div class="card-header">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h4 class="mb-0">
+                            <i class="fas fa-file-code text-primary"></i> {{ filename }}
+                        </h4>
+                        <div>
+                            <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=filepath %}?download=1" 
+                               class="btn btn-primary btn-sm">
+                                <i class="fas fa-download"></i> Download
+                            </a>
+                            <a href="{% url 'modelrun-output-files' modelrun.pk %}" class="btn btn-secondary btn-sm">
+                                <i class="fas fa-arrow-left"></i> Back to Files
+                            </a>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <!-- File Info -->
+                    <div class="file-info">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <strong>Model Run:</strong> 
+                                <a href="{% url 'modelrun-detail' modelrun.pk %}">
+                                    {{ modelrun.name|default:"Model Run" }} #{{ modelrun.id }}
+                                </a>
+                            </div>
+                            <div class="col-md-6 text-md-end">
+                                <strong>File Size:</strong> {{ file_size_mb }} MB ({{ file_size|filesizeformat }})
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- JSON Content -->
+                    {% if is_large %}
+                    <div class="alert alert-warning">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <strong>Large file:</strong> This file is too large to display inline. 
+                        Please <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=filepath %}?download=1">download it</a> to view the full content.
+                    </div>
+                    {% else %}
+                    <div class="json-viewer">
+                        <pre id="json-content">{{ json_data|pprint }}</pre>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Try to pretty-print JSON if possible
+    document.addEventListener('DOMContentLoaded', function() {
+        const jsonElement = document.getElementById('json-content');
+        if (jsonElement && !{{ is_large|yesno:"true,false" }}) {
+            try {
+                const jsonData = {{ json_data|safe }};
+                jsonElement.textContent = JSON.stringify(jsonData, null, 2);
+            } catch (e) {
+                // If JSON parsing fails, keep the original content
+                console.error('Failed to pretty-print JSON:', e);
+            }
+        }
+    });
+</script>
+{% endblock %}

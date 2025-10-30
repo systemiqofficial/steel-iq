@@ -1,0 +1,112 @@
+<div class="card mb-4">
+    <div class="card-header bg-light">
+        <h5 class="mb-0">Technology Configuration</h5>
+    </div>
+    <div class="card-body">
+        {% if technology_validation_errors %}
+        <!-- DEBUG: Template received {{ technology_validation_errors|length }} errors -->
+        <div class="alert alert-danger mb-3" id="technology-validation-errors">
+            <h6><i class="bi bi-exclamation-triangle"></i> Technology Configuration Issues</h6>
+            {% for error in technology_validation_errors %}
+            <div class="mb-3">
+                <strong>{{ error.title }}</strong>
+                <p class="mb-2">{{ error.description }}</p>
+                {% if error.suggestions %}
+                <div>
+                    <small class="text-muted">Enable at least one of these {{ error.product_type }} technologies:</small>
+                    <ul class="mb-0 mt-1">
+                        {% for suggestion in error.suggestions %}
+                        <li><strong>{{ suggestion.display_name }}</strong> {% if suggestion.code %}<code class="text-muted small">({{ suggestion.code }})</code>{% endif %}</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if error_message %}
+        <div class="alert callout-steel">
+            <i class="bi bi-info-circle"></i>
+            {{ error_message }}
+        </div>
+        {% elif technologies %}
+        <div class="alert callout-steel mb-3">
+            <small>
+                <i class="bi bi-database"></i>
+                <strong>Technologies loaded from:</strong> {{ selected_preparation.name }}
+            </small>
+        </div>
+
+        <div class="table-responsive">
+            <table class="table table-bordered table-hover">
+                <thead class="bg-light sticky-top">
+                    <tr>
+                        <th style="width: 40%">Technology</th>
+                        <th style="width: 15%" class="text-center">
+                            <input type="checkbox" id="select-all-tech" title="Select all" aria-label="Select all technologies">
+                            Allowed
+                        </th>
+                        <th style="width: 20%">From Year</th>
+                        <th style="width: 25%">To Year</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for slug, tech in technologies.items %}
+                    <tr>
+                        <td>
+                            <strong>{{ tech.display_name }}</strong>
+                            <input type="hidden" name="tech_{{ slug }}_code" value="{{ tech.code }}">
+                        </td>
+                        <td class="text-center">
+                            <input type="checkbox"
+                                   class="form-check-input tech-allowed"
+                                   name="tech_{{ slug }}_allowed"
+                                   id="tech_{{ slug }}_allowed"
+                                   {% if tech.allowed %}checked{% endif %}>
+                        </td>
+                        <td>
+                            <input type="number"
+                                   class="form-control form-control-sm"
+                                   name="tech_{{ slug }}_from_year"
+                                   id="tech_{{ slug }}_from_year"
+                                   value="{{ tech.from_year }}"
+                                   data-default-year="{{ tech.default_from_year }}"
+                                   min="2020" max="2100"
+                                   data-slug="{{ slug }}">
+                        </td>
+                        <td>
+                            <input type="number"
+                                   class="form-control form-control-sm"
+                                   name="tech_{{ slug }}_to_year"
+                                   id="tech_{{ slug }}_to_year"
+                                   value="{% if tech.to_year %}{{ tech.to_year }}{% endif %}"
+                                   min="2020" max="2100"
+                                   placeholder="No limit"
+                                   data-slug="{{ slug }}">
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="mt-2">
+            <small class="text-muted">
+                <i class="bi bi-info-circle"></i>
+                {{ technologies|length }} technolog{{ technologies|length|pluralize:"y,ies" }} available
+            </small>
+        </div>
+        {% else %}
+        <div class="alert callout-steel">
+            <i class="bi bi-exclamation-triangle"></i>
+            <strong>No technology configuration available</strong>
+            <p class="mb-0 mt-2">
+                The selected data preparation does not contain technology configuration.
+                Please ensure the master Excel file has been properly prepared with technology data.
+            </p>
+        </div>
+        {% endif %}
+    </div>
+</div>

@@ -1,0 +1,17 @@
+# Local build output
+build/
+
+# Compiled Python files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local database
+db.sqlite3
+
+# Distribution / packaging
+*.egg-info/
+dist/
+
+# media files
+media/

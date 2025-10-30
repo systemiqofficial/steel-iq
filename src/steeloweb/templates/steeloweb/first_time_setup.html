@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+{% load steeloweb_extras %}
+
+{% block title %}Welcome to STEEL-IQ - First Time Setup{% endblock %}
+
+{% block content %}
+<div class="container mt-5">
+    <div class="row">
+        <div class="col-lg-8 offset-lg-2">
+            <div class="card shadow">
+                <div class="card-header bg-primary text-white">
+                    <h2 class="card-title mb-0">
+                        <i class="fas fa-cogs"></i> Welcome to STEEL-IQ
+                    </h2>
+                </div>
+                <div class="card-body">
+                    {% if db_readonly_error %}
+                    <div class="alert alert-danger mb-4">
+                        <h5 class="alert-heading">
+                            <i class="fas fa-exclamation-triangle"></i> STEEL-IQ cannot write to its local database
+                        </h5>
+                        <p>
+                            The bundled SQLite database at <code>{{ db_path }}</code> is read-only. STEEL-IQ needs write access during the first-time setup to store data packages and migration results.
+                        </p>
+                        <p>
+                            Please move the STEEL-IQ application to a writable location (for example, copy the app from the disk image to your <strong>Applications</strong> or <strong>Desktop</strong> folder) and launch it again.
+                        </p>
+                        <p class="mb-0">
+                            After relocating the app, restart STEEL-IQ and return to this page to continue the setup.
+                        </p>
+                    </div>
+                    {% else %}
+                    {% if is_new %}
+                    <div class="alert alert-info mb-4">
+                        <h5 class="alert-heading">
+                            <i class="fas fa-info-circle"></i> First Time Setup
+                        </h5>
+                        <p class="mb-0">
+                            Welcome! We're preparing the initial data for your STEEL-IQ application. 
+                            This one-time setup will download and prepare all necessary data packages.
+                        </p>
+                    </div>
+                    {% endif %}
+                    
+                    <h4 class="mb-3">Setup Progress</h4>
+                    
+                    <!-- Progress Section -->
+                    <div id="setup-progress" 
+                         {% if preparation.status not in 'ready,failed' %}
+                         hx-get="{% url 'data-preparation-progress' preparation.id %}"
+                         hx-trigger="load, every 2s"
+                         hx-swap="innerHTML"
+                         {% endif %}>
+                        {% include "steeloweb/includes/data_preparation_progress.html" with preparation=preparation %}
+                    </div>
+                    
+                    <!-- What's happening section -->
+                    <div class="mt-4">
+                        <h5>What's happening?</h5>
+                        <ul class="list-unstyled">
+                            <li><i class="fas fa-check-circle text-muted"></i> Downloading core data package (plant data, technology specifications)</li>
+                            <li><i class="fas fa-check-circle text-muted"></i> Downloading geospatial data package (maps, boundaries)</li>
+                            <li><i class="fas fa-check-circle text-muted"></i> Downloading master Excel template</li>
+                            <li><i class="fas fa-check-circle text-muted"></i> Creating JSON repositories for simulation</li>
+                        </ul>
+                    </div>
+                    
+                    <!-- Legal Disclaimer Section - OUTSIDE of HTMX updates -->
+                    <!-- This section is completely independent of the progress updates -->
+                    <div id="disclaimer-section">
+                        {% if preparation.status == 'ready' %}
+                        <!-- Success message -->
+                        <div class="alert alert-success mt-4">
+                            <h5 class="alert-heading"><i class="fas fa-check-circle"></i> Setup Complete!</h5>
+                            <p>All data has been successfully downloaded and prepared. Your STEEL-IQ application is ready to use.</p>
+                        </div>
+                        {% endif %}
+                        
+                        <!-- Legal Disclaimer -->
+                        {% if preparation.status == 'ready' %}
+                    <div class="card mt-4 border-warning disclaimer-card">
+                        <div class="card-header bg-warning text-dark">
+                            <h5 class="mb-0"><i class="fas fa-balance-scale"></i> Legal Disclaimer for Public Use</h5>
+                        </div>
+                        <div class="card-body disclaimer-content">
+                            <p class="text-muted small">Please read and acknowledge the following terms before proceeding:</p>
+                            
+                            <h6 class="mt-3">A. Disclaimer of Liability</h6>
+                            <p class="small">
+                                <strong>A.1</strong> The Model is provided on an "as-is" basis. The Company disclaims all responsibility and liability for any use of the Model by the Participant or any third party.<br>
+                                <strong>A.2</strong> The Company makes no representations or warranties of any kind, express or implied, regarding the Model, including but not limited to its accuracy, reliability, or fitness for a particular purpose.
+                            </p>
+                            
+                            <h6 class="mt-3">B. Restrictions on Use</h6>
+                            <p class="small">
+                                <strong>B.1</strong> The Model is provided by the Company solely to understand the decarbonisation pathways of the iron and steel sector ("Purpose"). The Participant shall not use the Model for any other purpose, including but not limited to reverse-engineering, commercial exploitation, or any other unauthorised use.
+                            </p>
+                            
+                            <h6 class="mt-3">C. Confidentiality and Feedback</h6>
+                            <p class="small">
+                                <strong>C.1</strong> Any feedback provided by the Participant regarding the Model shall be treated as confidential by the Company. The Company may follow up with the Participant for further questions or clarifications.<br>
+                                <strong>C.2</strong> The Company reserves the right to use any feedback for the improvement and development of the Model, provided that the identity of the Participant is not disclosed without prior consent.
+                            </p>
+                            
+                            <h6 class="mt-3">D. Intellectual Property</h6>
+                            <p class="small">
+                                <strong>D.1</strong> All intellectual property rights in the Model remain the exclusive property of the Company. The Participant shall not acquire any rights in the Model other than the limited right to test it as set out in this disclaimer.
+                            </p>
+                            
+                            <h6 class="mt-3">E. Data Protection</h6>
+                            <p class="small">
+                                <strong>E.1</strong> The Company and the Participant shall comply with all applicable data protection legislation, including the UK General Data Protection Regulation (UK GDPR) and the Data Protection Act 2018, in relation to any personal data processed in connection with the testing of the Model.
+                            </p>
+                            
+                            <h6 class="mt-3">F. Error Reporting and Diagnostics</h6>
+                            <p class="small">
+                                <strong>F.1</strong> This application uses automated error reporting to improve stability and performance. When errors occur, technical information about the error (but no personal or simulation data) is sent to our monitoring service.<br>
+                                <strong>F.2</strong> Error reports include: error messages, stack traces (with anonymized file paths), system information, and application state. No user data, simulation inputs, or results are transmitted.<br>
+                                <strong>F.3</strong> By clicking "Get Started" below, you consent to this anonymous error reporting which helps us improve the application. You can opt out of error reporting at any time in the application settings.
+                            </p>
+                        </div>
+                        </div>
+                        
+                        <!-- Get Started button -->
+                        <div class="text-center mt-4">
+                            <form method="post" action="{% url 'first-time-setup' %}" onsubmit="sessionStorage.removeItem('setup-complete-reloaded');">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-success btn-lg">
+                                    <i class="fas fa-rocket"></i> Get Started
+                                </button>
+                            </form>
+                        </div>
+                        {% endif %}
+                    </div>
+                    <!-- End of disclaimer-section -->
+                    
+                    {% if preparation.status == 'failed' %}
+                    <div class="alert alert-danger mt-4">
+                        <h5 class="alert-heading">Setup Failed</h5>
+                        <p>{{ preparation.error_message }}</p>
+                        <hr>
+                        <p class="mb-0">Please check your internet connection and try restarting the application.</p>
+                    </div>
+                    {% endif %}
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+/* Custom styles for first-time setup */
+.card {
+    margin-top: 50px;
+}
+
+.progress {
+    height: 30px;
+}
+
+.progress-bar {
+    font-size: 14px;
+    line-height: 30px;
+}
+
+/* Disclaimer styling with improved scrolling */
+.disclaimer-content {
+    max-height: 400px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    position: relative;
+    -webkit-overflow-scrolling: touch; /* Smooth scrolling on iOS */
+    scroll-behavior: smooth;
+    /* Prevent content from jumping */
+    padding-right: 15px;
+    /* Add a subtle shadow to indicate scrollable content */
+    box-shadow: inset 0 -10px 10px -10px rgba(0,0,0,0.1);
+}
+
+/* Ensure scrollbar is always visible on desktop for better UX */
+.disclaimer-content::-webkit-scrollbar {
+    width: 8px;
+}
+
+.disclaimer-content::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 4px;
+}
+
+.disclaimer-content::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 4px;
+}
+
+.disclaimer-content::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+
+/* Ensure debug toolbar doesn't interfere with disclaimer */
+.djDebugToolbar ~ .container .disclaimer-card {
+    position: relative;
+    z-index: 1;
+    /* Isolate the card from any parent transforms or positioning contexts */
+    isolation: isolate;
+}
+
+/* Hide debug toolbar on this page to avoid conflicts */
+#djDebug, #djDebugToolbar {
+    display: none !important;
+}
+</style>
+
+<!-- JavaScript to ensure disclaimer is not affected by HTMX updates -->
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Since disclaimer is now outside HTMX update zone, we just need to ensure
+    // HTMX doesn't accidentally target it
+    document.body.addEventListener('htmx:configRequest', function(evt) {
+        // Make sure HTMX updates only target the setup-progress div
+        if (evt.detail.path && evt.detail.path.includes('data-preparation-progress')) {
+            evt.detail.target = '#setup-progress';
+        }
+    });
+});
+</script>
+
+{% endblock %}

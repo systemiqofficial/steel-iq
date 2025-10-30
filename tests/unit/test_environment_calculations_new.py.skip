@@ -1,0 +1,298 @@
+"""
+Tests for new Environment calculation functions added during the refactoring.
+These test the actual functionality of the calculation functions.
+"""
+
+import pytest
+from steelo.domain import Volumes
+from steelo.domain.models import TransportKPI, CountryMapping, CountryMappingService
+from steelo.domain.environment_calculations import (
+    calculate_installed_capacity_in_year,
+    get_transport_emissions_as_dict,
+    get_eu_countries,
+    extract_price_from_costcurve,
+)
+
+
+class TestCalculateInstalledCapacityInYear:
+    """Test the calculate_installed_capacity_in_year function."""
+
+    def test_empty_capacity_returns_zero(self):
+        """Should return zero when added_capacity is empty."""
+        result = calculate_installed_capacity_in_year({})
+        assert result == Volumes(0)
+
+    def test_sums_all_capacity_values(self):
+        """Should sum all capacity values in the dictionary."""
+        added_capacity = {
+            "plant1": 100.0,
+            "plant2": 200.0,
+            "plant3": 150.0,
+        }
+        result = calculate_installed_capacity_in_year(added_capacity)
+        assert result == Volumes(450)
+
+    def test_handles_single_plant(self):
+        """Should handle dictionary with single entry."""
+        added_capacity = {"plant1": 250.0}
+        result = calculate_installed_capacity_in_year(added_capacity)
+        assert result == Volumes(250)
+
+    def test_handles_negative_values(self):
+        """Should handle negative capacity values (e.g., decommissioned plants)."""
+        added_capacity = {
+            "plant1": 100.0,
+            "plant2": -50.0,  # Decommissioned
+            "plant3": 200.0,
+        }
+        result = calculate_installed_capacity_in_year(added_capacity)
+        assert result == Volumes(250)
+
+
+class TestGetTransportEmissionsAsDict:
+    """Test the get_transport_emissions_as_dict function."""
+
+    def test_empty_list_returns_empty_dict(self):
+        """Should return empty dict for empty emissions list."""
+        result = get_transport_emissions_as_dict([])
+        assert result == {}
+
+    def test_converts_emissions_to_dict_format(self):
+        """Should convert TransportEmission objects to dict with tuple keys."""
+        emissions = [
+            TransportKPI(
+                reporter_iso="USA",
+                partner_iso="CHN",
+                commodity="iron_ore",
+                ghg_factor=0.025,
+                transportation_cost=50.0,
+                updated_on="2024-01-01",
+            ),
+            TransportKPI(
+                reporter_iso="DEU",
+                partner_iso="FRA",
+                commodity="steel",
+                ghg_factor=0.015,
+                transportation_cost=30.0,
+                updated_on="2024-01-01",
+            ),
+        ]
+
+        result = get_transport_emissions_as_dict(emissions)
+
+        assert result == {
+            ("USA", "CHN", "iron_ore"): 0.025,
+            ("DEU", "FRA", "steel"): 0.015,
+        }
+
+    def test_handles_duplicate_routes(self):
+        """Should handle multiple emissions for same route (last one wins)."""
+        emissions = [
+            TransportKPI(
+                reporter_iso="USA",
+                partner_iso="CHN",
+                commodity="steel",
+                ghg_factor=0.020,
+                transportation_cost=45.0,
+                updated_on="2024-01-01",
+            ),
+            TransportKPI(
+                reporter_iso="USA",
+                partner_iso="CHN",
+                commodity="steel",
+                ghg_factor=0.025,  # Updated value
+                transportation_cost=48.0,  # Updated cost
+                updated_on="2024-02-01",
+            ),
+        ]
+
+        result = get_transport_emissions_as_dict(emissions)
+
+        # Last value should be used
+        assert result[("USA", "CHN", "steel")] == 0.025
+
+
+class TestGetEuCountries:
+    """Test the get_eu_countries function."""
+
+    def test_returns_empty_list_when_mappings_none(self):
+        """Should return empty list when country_mappings is None."""
+        result = get_eu_countries(None)
+        assert result == []
+
+    def test_returns_empty_list_when_no_mappings(self):
+        """Should return empty list when no country mappings exist."""
+        service = CountryMappingService([])
+        result = get_eu_countries(service)
+        assert result == []
+
+    def test_filters_eu_countries(self):
+        """Should return only countries marked as EU."""
+        mappings = [
+            CountryMapping(
+                country="Germany",
+                iso2="DE",
+                iso3="DEU",
+                irena_name="Germany",
+                irena_region="Europe",
+                region_for_outputs="Europe",
+                ssp_region="WEU",
+                tiam_ucl_region="Europe",
+                eu_region="EU",
+                EU=True,
+            ),
+            CountryMapping(
+                country="United States",
+                iso2="US",
+                iso3="USA",
+                irena_name="United States",
+                irena_region="Americas",
+                region_for_outputs="Americas",
+                ssp_region="NAM",
+                tiam_ucl_region="Americas",
+                eu_region="Non-EU",
+            ),
+            CountryMapping(
+                country="France",
+                iso2="FR",
+                iso3="FRA",
+                irena_name="France",
+                irena_region="Europe",
+                region_for_outputs="Europe",
+                ssp_region="WEU",
+                tiam_ucl_region="Europe",
+                eu_region="EU",
+                EU=True,
+            ),
+            CountryMapping(
+                country="Norway",
+                iso2="NO",
+                iso3="NOR",
+                irena_name="Norway",
+                irena_region="Europe",
+                region_for_outputs="Europe",
+                ssp_region="WEU",
+                tiam_ucl_region="Europe",
+                eu_region="Non-EU",
+            ),
+        ]
+
+        service = CountryMappingService(mappings)
+        result = get_eu_countries(service)
+
+        assert set(result) == {"DEU", "FRA"}  # get_eu_countries returns ISO3 codes
+
+    def test_handles_none_eu_region(self):
+        """Should handle countries with None eu_region."""
+        mappings = [
+            CountryMapping(
+                country="Germany",
+                iso2="DE",
+                iso3="DEU",
+                irena_name="Germany",
+                irena_region="Europe",
+                region_for_outputs="Europe",
+                ssp_region="WEU",
+                tiam_ucl_region="Europe",
+                eu_region="EU",
+                EU=True,
+            ),
+            CountryMapping(
+                country="Unknown",
+                iso2="XX",
+                iso3="XXX",
+                irena_name="Unknown",
+                irena_region="Unknown",
+                region_for_outputs="Unknown",
+                ssp_region="UNK",
+                tiam_ucl_region="Unknown",
+                eu_region=None,  # No EU region data
+            ),
+        ]
+
+        service = CountryMappingService(mappings)
+        result = get_eu_countries(service)
+
+        assert result == ["DEU"]  # get_eu_countries returns ISO3 codes
+
+
+class TestExtractPriceFromCostCurve:
+    """Test the extract_price_from_costcurve function."""
+
+    def test_basic_price_extraction(self):
+        """Should extract correct price for given demand levels."""
+        cost_curve = {
+            "steel": [
+                {"cumulative_capacity": 100.0, "production_cost": 50.0},
+                {"cumulative_capacity": 200.0, "production_cost": 60.0},
+                {"cumulative_capacity": 300.0, "production_cost": 70.0},
+            ]
+        }
+
+        # Test various demand levels
+        assert extract_price_from_costcurve(cost_curve, {}, 50, "steel") == 50.0
+        assert extract_price_from_costcurve(cost_curve, {}, 100, "steel") == 50.0
+        assert extract_price_from_costcurve(cost_curve, {}, 150, "steel") == 60.0
+        assert extract_price_from_costcurve(cost_curve, {}, 250, "steel") == 70.0
+
+    def test_demand_exceeds_capacity_returns_highest_cost(self):
+        """Should return highest cost when demand exceeds total capacity."""
+        cost_curve = {
+            "steel": [
+                {"cumulative_capacity": 100.0, "production_cost": 50.0},
+                {"cumulative_capacity": 150.0, "production_cost": 60.0},
+            ]
+        }
+
+        result = extract_price_from_costcurve(cost_curve, {}, 200, "steel")
+        assert result == 60.0  # Highest available cost
+
+    def test_empty_cost_curve_raises_error(self):
+        """Should raise ValueError when cost curve is empty."""
+        with pytest.raises(ValueError, match="Cost curve is empty"):
+            extract_price_from_costcurve({}, {}, 100, "steel")
+
+    def test_missing_product_raises_error(self):
+        """Should raise ValueError when product not in cost curve."""
+        cost_curve = {"iron": [{"cumulative_capacity": 100.0, "production_cost": 40.0}]}
+
+        with pytest.raises(ValueError, match="No cost curve data available for product: steel"):
+            extract_price_from_costcurve(cost_curve, {}, 50, "steel")
+
+    def test_empty_product_curve_raises_error(self):
+        """Should raise ValueError when product curve is empty list."""
+        cost_curve = {"steel": []}
+
+        with pytest.raises(ValueError, match="No cost curve data available for product: steel"):
+            extract_price_from_costcurve(cost_curve, {}, 50, "steel")
+
+    def test_future_cost_curve(self):
+        """Should use future cost curve when future=True."""
+        current_curve = {"steel": [{"cumulative_capacity": 100.0, "production_cost": 50.0}]}
+        future_curve = {"steel": [{"cumulative_capacity": 100.0, "production_cost": 55.0}]}
+
+        # Current curve
+        assert extract_price_from_costcurve(current_curve, future_curve, 50, "steel", future=False) == 50.0
+
+        # Future curve
+        assert extract_price_from_costcurve(current_curve, future_curve, 50, "steel", future=True) == 55.0
+
+    def test_empty_future_curve_raises_error(self):
+        """Should raise ValueError when future curve is empty and future=True."""
+        current_curve = {"steel": [{"cumulative_capacity": 100.0, "production_cost": 50.0}]}
+
+        with pytest.raises(ValueError, match="Future cost curve is empty"):
+            extract_price_from_costcurve(current_curve, {}, 50, "steel", future=True)
+
+    def test_exact_capacity_match(self):
+        """Should handle exact capacity matches correctly."""
+        cost_curve = {
+            "steel": [
+                {"cumulative_capacity": 100.0, "production_cost": 50.0},
+                {"cumulative_capacity": 200.0, "production_cost": 60.0},
+            ]
+        }
+
+        # Exact match should return the cost at that capacity
+        assert extract_price_from_costcurve(cost_curve, {}, 100, "steel") == 50.0
+        assert extract_price_from_costcurve(cost_curve, {}, 200, "steel") == 60.0

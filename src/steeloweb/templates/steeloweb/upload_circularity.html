@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block title %}Upload Circularity Data{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-header">
+                    <h1 class="h3 mb-0">Upload Circularity Data</h1>
+                </div>
+                <div class="card-body">
+                    <p>Upload custom circularity and scrap generation data for your simulation:</p>
+
+                    {% include "steeloweb/partials/messages.html" %}
+
+                    <form method="post" enctype="multipart/form-data">
+                        {% csrf_token %}
+                        
+                        <div class="mb-3 row">
+                            <label for="{{ form.name.id_for_label }}" class="col-sm-3 col-form-label">Name:</label>
+                            <div class="col-sm-9">
+                                {{ form.name }}
+                                {% if form.name.errors %}
+                                <div class="invalid-feedback d-block">
+                                    {{ form.name.errors }}
+                                </div>
+                                {% endif %}
+                                <small class="form-text text-muted">{{ form.name.help_text }}</small>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3 row">
+                            <label for="{{ form.description.id_for_label }}" class="col-sm-3 col-form-label">Description:</label>
+                            <div class="col-sm-9">
+                                {{ form.description }}
+                                {% if form.description.errors %}
+                                <div class="invalid-feedback d-block">
+                                    {{ form.description.errors }}
+                                </div>
+                                {% endif %}
+                                <small class="form-text text-muted">{{ form.description.help_text }}</small>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3 row">
+                            <label for="{{ form.circularity_file.id_for_label }}" class="col-sm-3 col-form-label">File:</label>
+                            <div class="col-sm-9">
+                                {{ form.circularity_file }}
+                                {% if form.circularity_file.errors %}
+                                <div class="invalid-feedback d-block">
+                                    {{ form.circularity_file.errors }}
+                                </div>
+                                {% endif %}
+                                <small class="form-text text-muted">{{ form.circularity_file.help_text }}</small>
+                            </div>
+                        </div>
+
+                        <div class="d-flex justify-content-between mt-4">
+                            <a href="{% url 'modelrun-list' %}" class="btn btn-secondary">Cancel</a>
+                            <button type="submit" class="btn btn-primary">Upload</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

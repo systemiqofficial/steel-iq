@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+
+{% block title %}Repository: {{ repository.name }}{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1>
+            {% if repository.is_example %}
+                <i class="fas fa-star text-warning me-2"></i>
+            {% endif %}
+            Repository: {{ repository.name }}
+            {% if repository.is_example %}
+                <span class="badge bg-warning text-dark ms-2">Example</span>
+            {% endif %}
+        </h1>
+        <div>
+            <a href="{% url 'repository-list' %}" class="btn btn-secondary">
+                <i class="fas fa-arrow-left"></i> Back to List
+            </a>
+            <a href="{% url 'repository-download' pk=repository.pk %}" class="btn btn-success">
+                <i class="fas fa-download"></i> Download
+            </a>
+            {% if repository.is_example %}
+                <a href="{% url 'repository-clone' pk=repository.pk %}" class="btn btn-primary">
+                    <i class="fas fa-copy"></i> Clone
+                </a>
+            {% else %}
+                <a href="{% url 'repository-update' pk=repository.pk %}" class="btn btn-primary">
+                    <i class="fas fa-edit"></i> Edit
+                </a>
+            {% endif %}
+        </div>
+    </div>
+
+    {% include "steeloweb/partials/messages.html" %}
+
+    <div class="row">
+        <div class="col-md-6">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">Repository Information</h5>
+                </div>
+                <div class="card-body">
+                    <dl class="row">
+                        <dt class="col-sm-4">Name:</dt>
+                        <dd class="col-sm-8">{{ repository.name }}</dd>
+                        
+                        <dt class="col-sm-4">Type:</dt>
+                        <dd class="col-sm-8">{{ repository.get_repo_type_display }}</dd>
+                        
+                        <dt class="col-sm-4">Source:</dt>
+                        <dd class="col-sm-8">
+                            {% if repository.is_example %}
+                                <span class="badge bg-warning text-dark">
+                                    <i class="fas fa-star me-1"></i>Example Repository
+                                </span>
+                            {% else %}
+                                <span class="badge bg-primary">
+                                    <i class="fas fa-user me-1"></i>User Repository
+                                </span>
+                            {% endif %}
+                        </dd>
+                        
+                        <dt class="col-sm-4">Created:</dt>
+                        <dd class="col-sm-8">{{ repository.created_at }}</dd>
+                        
+                        <dt class="col-sm-4">Last Updated:</dt>
+                        <dd class="col-sm-8">{{ repository.updated_at }}</dd>
+                        
+                        <dt class="col-sm-4">File:</dt>
+                        <dd class="col-sm-8">
+                            <a href="{{ repository.file.url }}" class="text-primary" target="_blank">
+                                {{ repository.file.name }}
+                            </a>
+                        </dd>
+                    </dl>
+                    
+                    {% if repository.description %}
+                    <div class="mt-3">
+                        <h6>Description:</h6>
+                        <p>{{ repository.description|linebreaks }}</p>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-6">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">Usage</h5>
+                </div>
+                <div class="card-body">
+                    {% with model_runs=repository.model_runs.all %}
+                    {% if model_runs %}
+                    <h6>Used in {{ model_runs.count }} Model Run{% if model_runs.count > 1 %}s{% endif %}:</h6>
+                    <ul class="list-group">
+                        {% for run in model_runs %}
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            <a href="{% url 'modelrun-detail' pk=run.pk %}">
+                                Model Run #{{ run.pk }}
+                            </a>
+                            <span class="badge bg-primary rounded-pill">{{ run.get_state_display }}</span>
+                        </li>
+                        {% endfor %}
+                    </ul>
+                    {% else %}
+                    <div class="alert alert-info mb-0">
+                        This repository is not used in any model runs yet.
+                    </div>
+                    {% endif %}
+                    {% endwith %}
+                </div>
+            </div>
+            
+            <div class="card mb-4">
+                <div class="card-header">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h5 class="card-title mb-0">File Preview</h5>
+                        <small class="text-muted">JSON Format</small>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-info mb-3">
+                        <i class="fas fa-info-circle me-2"></i>
+                        This is a preview of the JSON file content. Large files may be truncated.
+                    </div>
+                    <div class="position-relative">
+                        <pre class="bg-light p-3 rounded border" style="max-height: 400px; overflow-y: auto; font-size: 0.875rem; line-height: 1.4;"><code class="language-json">{{ repository.get_formatted_content }}</code></pre>
+                        <div class="position-absolute top-0 end-0 p-2">
+                            <button class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard()" title="Copy to clipboard">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function copyToClipboard() {
+    const preElement = document.querySelector('pre code');
+    const text = preElement.textContent;
+    
+    if (navigator.clipboard && window.isSecureContext) {
+        // Use the Clipboard API if available
+        navigator.clipboard.writeText(text).then(function() {
+            showCopySuccess();
+        }).catch(function(err) {
+            console.error('Failed to copy: ', err);
+            fallbackCopyTextToClipboard(text);
+        });
+    } else {
+        // Fallback for older browsers
+        fallbackCopyTextToClipboard(text);
+    }
+}
+
+function fallbackCopyTextToClipboard(text) {
+    const textArea = document.createElement("textarea");
+    textArea.value = text;
+    textArea.style.position = "fixed";
+    textArea.style.left = "-999999px";
+    textArea.style.top = "-999999px";
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    
+    try {
+        const successful = document.execCommand('copy');
+        if (successful) {
+            showCopySuccess();
+        }
+    } catch (err) {
+        console.error('Fallback: Oops, unable to copy', err);
+    }
+    
+    document.body.removeChild(textArea);
+}
+
+function showCopySuccess() {
+    const button = document.querySelector('button[onclick="copyToClipboard()"]');
+    const originalIcon = button.innerHTML;
+    
+    button.innerHTML = '<i class="fas fa-check text-success"></i>';
+    button.disabled = true;
+    
+    setTimeout(function() {
+        button.innerHTML = originalIcon;
+        button.disabled = false;
+    }, 2000);
+}
+</script>
+{% endblock %}

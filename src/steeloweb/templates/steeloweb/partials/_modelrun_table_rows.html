@@ -1,0 +1,51 @@
+{% for run in modelruns %}
+<tr data-state="{{ run.state }}" class="modelrun-{{ run.state }}">
+    <td>{{ run.id }}</td>
+    <td>
+        {% if run.name %}
+            {{ run.name }}
+        {% else %}
+            <span class="text-muted">-</span>
+        {% endif %}
+    </td>
+    <td>{{ run.started_at }}</td>
+    <td>
+        {% if run.state == 'running' %}
+        <span class="badge bg-primary">{{ run.get_state_display }}</span>
+        {% if run.appears_stuck %}
+            <i class="fas fa-exclamation-triangle text-danger ms-1" title="Appears stuck - last updated {{ run.time_since_last_update }}"></i>
+        {% endif %}
+        {% elif run.state == 'finished' %}
+        <span class="badge bg-success">{{ run.get_state_display }}</span>
+        {% elif run.state == 'failed' %}
+        <span class="badge bg-danger">{{ run.get_state_display }}</span>
+        {% elif run.state == 'cancelling' %}
+        <span class="badge bg-warning">{{ run.get_state_display }}</span>
+        {% if run.appears_stuck %}
+            <i class="fas fa-exclamation-triangle text-danger ms-1" title="Stuck while cancelling"></i>
+        {% endif %}
+        {% elif run.state == 'cancelled' %}
+        <span class="badge bg-warning">{{ run.get_state_display }}</span>
+        {% else %}
+        <span class="badge bg-secondary">{{ run.get_state_display }}</span>
+        {% endif %}
+    </td>
+    <td>
+        {% if run.finished_at %}
+        {{ run.finished_at|timeuntil:run.started_at }}
+        {% else %}
+        -
+        {% endif %}
+    </td>
+    <td>
+        <a href="{% url 'modelrun-detail' run.id %}" class="btn btn-sm btn-info">
+            <i class="fas fa-eye"></i> View
+        </a>
+        {% if run.state != 'running' and run.state != 'cancelling' %}
+        <a href="{% url 'modelrun-delete' run.id %}" class="btn btn-sm btn-danger">
+            <i class="fas fa-trash"></i> Delete
+        </a>
+        {% endif %}
+    </td>
+</tr>
+{% endfor %}

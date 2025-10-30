@@ -1,0 +1,124 @@
+"""Test for BOM technology name mapping to ensure individual technologies are handled correctly."""
+
+import pytest
+from steelo.domain.models import (
+    get_bom_from_avg_boms,
+    _get_bom_from_static_data,
+    DEFAULT_FALLBACK_UTILIZATION,
+)
+from steelo.domain.BOM import bom_data
+
+
+class TestBOMTechnologyMapping:
+    """Test that BOM fallback mechanism handles individual technology names correctly."""
+
+    @pytest.mark.parametrize("tech", ["BF", "DRI", "EAF", "BOF"])
+    def test_get_bom_from_static_data_handles_individual_technologies(self, tech):
+        """Test that _get_bom_from_static_data handles individual technologies."""
+        bom = _get_bom_from_static_data(tech, bom_data)
+        assert bom is not None, f"{tech} technology should return a valid BOM"
+        assert "energy" in bom, f"{tech} BOM should contain energy section"
+        assert "materials" in bom, f"{tech} BOM should contain materials section"
+
+    def test_unknown_technology_returns_none(self):
+        """Test that unknown technology names return None."""
+        unknown_bom = _get_bom_from_static_data("UNKNOWN_TECH", bom_data)
+        assert unknown_bom is None, "Unknown technology should return None"
+
+        # Test OHF which is mentioned but has no BOM data
+        ohf_bom = _get_bom_from_static_data("OHF", bom_data)
+        assert ohf_bom is None, "OHF technology should return None (no BOM data available)"
+
+    @pytest.mark.parametrize(
+        "tech,expected_reductant",
+        [
+            ("BF", "Coke"),
+            ("DRI", "Natural gas"),
+            ("EAF", ""),
+            ("BOF", ""),
+        ],
+    )
+    def test_get_bom_from_avg_boms_falls_back_with_correct_reductant(self, tech, expected_reductant):
+        """Test that get_bom_from_avg_boms falls back to static data with correct reductant."""
+        # Mock empty avg_boms and avg_utilization
+        avg_boms = {}  # Empty - no average BOMs available
+        avg_utilization = {}
+
+        # Mock energy costs
+        energy_costs = {
+            "Electricity": 50.0,
+            "Natural gas": 30.0,
+            "Hydrogen": 100.0,
+            "Coal": 20.0,
+        }
+
+        # Test technology fallback
+        result = get_bom_from_avg_boms(
+            energy_costs=energy_costs, tech=tech, capacity=1000.0, avg_boms=avg_boms, avg_utilization=avg_utilization
+        )
+
+        bom, utilization, reductant = result
+        assert bom is not None, f"{tech} should fall back to static BOM data"
+        assert utilization == DEFAULT_FALLBACK_UTILIZATION, f"{tech} should use default fallback utilization"
+        assert reductant == expected_reductant, f"{tech} should have reductant '{expected_reductant}'"
+
+    def test_empty_bom_data_scenario(self):
+        """Test behavior when BOM data is empty."""
+        empty_bom_data = {}
+        result = _get_bom_from_static_data("BF", empty_bom_data)
+        # With empty BOM data, the function returns None
+        # because no data is found for the technology
+        assert result is None
+
+    @pytest.mark.parametrize(
+        "tech,market_price,expected_positive_npv",
+        [
+            ("BF", 600.0, True),  # Market price > typical production cost
+            ("DRI", 600.0, True),  # Market price > typical production cost
+            ("BF", 100.0, False),  # Market price too low
+            ("DRI", 100.0, False),  # Market price too low
+        ],
+    )
+    def test_calculate_business_opportunity_npv_with_individual_technologies(
+        self, tech, market_price, expected_positive_npv
+    ):
+        """Test that NPV calculation works correctly for individual technology names."""
+        from steelo.domain.calculate_costs import calculate_business_opportunity_npv
+
+        # Mock energy costs
+        energy_costs = {
+            "Electricity": 50.0,
+            "Natural gas": 30.0,
+            "Hydrogen": 100.0,
+            "Coal": 20.0,
+        }
+
+        # Create a mock get_bom_from_avg_boms that uses the real implementation
+        def mock_get_bom(energy_costs, tech, capacity):
+            return get_bom_from_avg_boms(
+                energy_costs=energy_costs,
+                tech=tech,
+                capacity=capacity,
+                avg_boms={},  # Empty avg_boms to force fallback
+                avg_utilization={},
+            )
+
+        # Test technology NPV
+        npv = calculate_business_opportunity_npv(
+            tech=tech,
+            energy_costs=energy_costs,
+            railway_cost=1000000.0,
+            capex=450.0,  # USD/t
+            market_price=market_price,  # USD/t
+            cost_of_debt=0.05,
+            cost_of_equity=0.15,
+            get_bom_from_avg_boms=mock_get_bom,
+        )
+
+        assert npv != float("-inf"), f"{tech} NPV should not be -inf when BOM is available"
+        assert isinstance(npv, (int, float)), f"{tech} NPV should be a numeric value"
+
+        if expected_positive_npv:
+            assert npv > 0, f"{tech} NPV should be positive with high market price"
+        else:
+            assert npv <= 0, f"{tech} NPV should be non-positive with low market price"

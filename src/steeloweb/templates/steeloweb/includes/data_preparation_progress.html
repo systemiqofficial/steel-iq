@@ -1,0 +1,81 @@
+<div id="progress-container">
+    {% if preparation.status in 'downloading,extracting,preparing' %}
+        <div class="progress-info mb-2">
+            <div class="d-flex justify-content-between">
+                <span>
+                    {% if preparation.status == 'downloading' %}
+                        <i class="fas fa-download"></i> Downloading data packages...
+                    {% elif preparation.status == 'extracting' %}
+                        <i class="fas fa-file-archive"></i> Extracting archives...
+                    {% elif preparation.status == 'preparing' %}
+                        <i class="fas fa-cogs"></i> Preparing JSON repositories...
+                    {% endif %}
+                    {% if preparation.preparation_log %}
+                        - {{ preparation.preparation_log|slice:"-100:" }}
+                    {% endif %}
+                </span>
+                <span>{{ preparation.progress }}%</span>
+            </div>
+        </div>
+        <div class="progress" style="height: 25px;">
+            <div class="progress-bar progress-bar-striped progress-bar-animated bg-{{ preparation.get_status_color }}"
+                 role="progressbar"
+                 style="width: {{ preparation.progress }}%;"
+                 aria-valuenow="{{ preparation.progress }}"
+                 aria-valuemin="0"
+                 aria-valuemax="100">
+                {{ preparation.progress }}%
+            </div>
+        </div>
+        <div class="text-muted small mt-1">
+            <i class="fas fa-spinner fa-spin"></i>
+            {{ preparation.get_status_display }}... This may take a few minutes depending on the data size.
+        </div>
+    {% elif preparation.status == 'pending' %}
+        <div class="alert alert-info">
+            <i class="fas fa-clock"></i> Data preparation is queued and will start processing soon...
+        </div>
+    {% elif preparation.status == 'ready' %}
+        <div class="alert alert-success">
+            <i class="fas fa-check-circle"></i> Data preparation completed successfully!
+        </div>
+        <!-- Stop polling and reload page ONCE to show disclaimer -->
+        <script>
+            // Find the parent element with hx-trigger
+            var progressElement = document.getElementById('setup-progress') || 
+                                document.querySelector('[hx-get*="data-preparation-progress"]');
+            if (progressElement) {
+                // Remove the hx-trigger to stop polling
+                progressElement.removeAttribute('hx-trigger');
+                progressElement.removeAttribute('hx-get');
+            }
+            
+            // Check if we've already reloaded to prevent infinite reload loop
+            var hasReloaded = sessionStorage.getItem('setup-complete-reloaded');
+            
+            // Only reload once to show the disclaimer
+            if (!hasReloaded && !document.querySelector('.disclaimer-card')) {
+                // Mark that we've reloaded
+                sessionStorage.setItem('setup-complete-reloaded', 'true');
+                // Reload page after a short delay to show disclaimer
+                setTimeout(function() {
+                    window.location.reload();
+                }, 1000);
+            }
+        </script>
+    {% elif preparation.status == 'failed' %}
+        <div class="alert alert-danger">
+            <i class="fas fa-times-circle"></i> Data preparation failed. Check the error details below.
+        </div>
+        <!-- Stop polling on failure -->
+        <script>
+            // Find the parent element with hx-trigger
+            var progressElement = document.getElementById('setup-progress') || 
+                                document.querySelector('[hx-get*="data-preparation-progress"]');
+            if (progressElement) {
+                // Remove the hx-trigger to stop polling
+                progressElement.removeAttribute('hx-trigger');
+            }
+        </script>
+    {% endif %}
+</div>

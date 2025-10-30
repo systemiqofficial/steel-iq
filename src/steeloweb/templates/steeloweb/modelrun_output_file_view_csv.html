@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+
+{% block title %}{{ filename }} - {{ modelrun.name|default:"Model Run" }} #{{ modelrun.id }}{% endblock %}
+
+{% block extra_css %}
+<style>
+    .csv-viewer {
+        overflow-x: auto;
+        max-height: 600px;
+        overflow-y: auto;
+        border: 1px solid #dee2e6;
+        border-radius: 5px;
+    }
+    .csv-viewer table {
+        margin-bottom: 0;
+    }
+    .csv-viewer th {
+        position: sticky;
+        top: 0;
+        background: #f8f9fa;
+        z-index: 10;
+        border-bottom: 2px solid #dee2e6;
+    }
+    .file-info {
+        background: #e9ecef;
+        padding: 10px;
+        border-radius: 5px;
+        margin-bottom: 15px;
+    }
+    .row-number {
+        background: #f8f9fa;
+        font-weight: bold;
+        text-align: right;
+        padding-right: 10px !important;
+        border-right: 2px solid #dee2e6;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-lg-12">
+            <div class="card">
+                <div class="card-header">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h4 class="mb-0">
+                            <i class="fas fa-file-csv text-success"></i> {{ filename }}
+                        </h4>
+                        <div>
+                            <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=filepath %}?download=1" 
+                               class="btn btn-primary btn-sm">
+                                <i class="fas fa-download"></i> Download
+                            </a>
+                            <a href="{% url 'modelrun-output-files' modelrun.pk %}" class="btn btn-secondary btn-sm">
+                                <i class="fas fa-arrow-left"></i> Back to Files
+                            </a>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <!-- File Info -->
+                    <div class="file-info">
+                        <div class="row">
+                            <div class="col-md-4">
+                                <strong>Model Run:</strong> 
+                                <a href="{% url 'modelrun-detail' modelrun.pk %}">
+                                    {{ modelrun.name|default:"Model Run" }} #{{ modelrun.id }}
+                                </a>
+                            </div>
+                            <div class="col-md-4 text-center">
+                                <strong>Total Rows:</strong> {{ total_rows|floatformat:0 }}
+                                {% if is_large %}
+                                    <span class="text-muted">(showing first 100)</span>
+                                {% endif %}
+                            </div>
+                            <div class="col-md-4 text-md-end">
+                                <strong>File Size:</strong> {{ file_size_mb }} MB
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- CSV Content -->
+                    {% if csv_rows %}
+                    <div class="csv-viewer">
+                        <table class="table table-sm table-striped table-hover">
+                            {% if csv_rows %}
+                                {% with header=csv_rows.0 %}
+                                <thead>
+                                    <tr>
+                                        <th class="row-number">#</th>
+                                        {% for col in header %}
+                                        <th>{{ col }}</th>
+                                        {% endfor %}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for row in csv_rows|slice:"1:" %}
+                                    <tr>
+                                        <td class="row-number">{{ forloop.counter }}</td>
+                                        {% for cell in row %}
+                                        <td>{{ cell }}</td>
+                                        {% endfor %}
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                                {% endwith %}
+                            {% endif %}
+                        </table>
+                    </div>
+
+                    {% if is_large %}
+                    <div class="alert alert-info mt-3">
+                        <i class="fas fa-info-circle"></i>
+                        Showing first 100 rows of {{ total_rows|floatformat:0 }} total rows. 
+                        <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=filepath %}?download=1">
+                            Download the file
+                        </a> to see all data.
+                    </div>
+                    {% endif %}
+                    
+                    {% else %}
+                    <div class="alert alert-warning">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        This CSV file appears to be empty.
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

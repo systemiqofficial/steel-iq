@@ -1,0 +1,15 @@
+{% comment %}
+Reusable messages partial for displaying Django messages with dismiss buttons.
+Include this in your template with: {% include "steeloweb/partials/messages.html" %}
+{% endcomment %}
+
+{% if messages %}
+<div class="messages mb-4">
+    {% for message in messages %}
+    <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
+        {{ message }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}

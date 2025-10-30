@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% load steeloweb_extras %}
+
+{% block title %}Output Files - {{ modelrun.name|default:"Model Run" }} #{{ modelrun.id }}{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-lg-10 offset-lg-1">
+            <!-- Header -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h2 class="card-title mb-0">
+                            <i class="fas fa-folder-open"></i> Output Files
+                        </h2>
+                        <a href="{% url 'modelrun-detail' modelrun.pk %}" class="btn btn-secondary btn-sm">
+                            <i class="fas fa-arrow-left"></i> Back to Model Run
+                        </a>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <!-- Model Run Info -->
+                    <div class="mb-3">
+                        <h5>
+                            {% if modelrun.name %}
+                                {{ modelrun.name }}
+                                <small class="text-muted">#{{ modelrun.id }}</small>
+                            {% else %}
+                                Model Run #{{ modelrun.id }}
+                            {% endif %}
+                        </h5>
+                        <div class="text-muted">
+                            <small>
+                                <i class="fas fa-calendar"></i> Created: {{ modelrun.started_at|date:"Y-m-d H:i" }}
+                                {% if modelrun.state == 'finished' %}
+                                    | <i class="fas fa-check-circle text-success"></i> Finished: {{ modelrun.finished_at|date:"Y-m-d H:i" }}
+                                {% endif %}
+                            </small>
+                        </div>
+                    </div>
+
+                    {% if modelrun.output_directory %}
+                        <div class="alert alert-info">
+                            <i class="fas fa-info-circle"></i>
+                            <strong>Output Directory:</strong> <code>{{ modelrun.output_directory }}</code>
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Files by Directory -->
+            {% if files_by_directory %}
+                {% for dir_name, files in files_by_directory.items %}
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="mb-0">
+                            <i class="fas fa-folder"></i> {{ dir_name }}
+                            <span class="badge bg-secondary ms-2">{{ files|length }} file{{ files|length|pluralize }}</span>
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-sm table-hover">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 40%;">File Name</th>
+                                        <th>Type</th>
+                                        <th class="text-end">Size</th>
+                                        <th class="text-center">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for file in files %}
+                                    <tr>
+                                        <td>
+                                            <i class="fas {{ file.icon }} text-muted me-2"></i>
+                                            {% if file.is_viewable %}
+                                                <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}" 
+                                                   class="text-decoration-none">
+                                                    {{ file.name }}
+                                                </a>
+                                            {% elif file.is_image %}
+                                                <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}" 
+                                                   class="text-decoration-none"
+                                                   target="_blank">
+                                                    {{ file.name }}
+                                                </a>
+                                            {% else %}
+                                                {{ file.name }}
+                                            {% endif %}
+                                        </td>
+                                        <td class="text-muted">{{ file.type }}</td>
+                                        <td class="text-end text-muted">{{ file.size_display }}</td>
+                                        <td class="text-center">
+                                            <div class="btn-group btn-group-sm" role="group">
+                                                {% if file.is_viewable %}
+                                                    <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}" 
+                                                       class="btn btn-outline-primary"
+                                                       title="View {{ file.name }}">
+                                                        <i class="fas fa-eye"></i>
+                                                    </a>
+                                                {% elif file.is_image %}
+                                                    <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}" 
+                                                       class="btn btn-outline-primary"
+                                                       target="_blank"
+                                                       title="View {{ file.name }}">
+                                                        <i class="fas fa-image"></i>
+                                                    </a>
+                                                {% endif %}
+                                                <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}?download=1" 
+                                                   class="btn btn-outline-secondary"
+                                                   title="Download {{ file.name }}">
+                                                    <i class="fas fa-download"></i>
+                                                </a>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            {% else %}
+                <div class="alert alert-warning">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <strong>No output files found.</strong>
+                    {% if modelrun.state != 'finished' %}
+                        The simulation may still be running or has not completed successfully.
+                    {% else %}
+                        The output directory may be empty or missing.
+                    {% endif %}
+                </div>
+            {% endif %}
+
+            <!-- Actions -->
+            <div class="d-flex justify-content-between mt-4">
+                <a href="{% url 'modelrun-detail' modelrun.pk %}" class="btn btn-secondary">
+                    <i class="fas fa-arrow-left"></i> Back to Model Run
+                </a>
+                {% if modelrun.result_csv %}
+                <a href="{% url 'download-modelrun-csv' pk=modelrun.id %}" class="btn btn-primary">
+                    <i class="fas fa-download"></i> Download Results CSV
+                </a>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,10 @@
+# Data Sources
+Note: Now captured in Excel
+
+| Data Type | Description | Temporal Resolution | Time Period | Spatial Resolution | Units | Data Source |
+|-----------|-------------|---------------------|------------|---------------------|-------|------------|
+| Historical RE capacity | Historically installed capacity data for solar PV and onshore wind | Yearly | 2023 | Country and regional (244 countries) | MW | [IRENA](https://pxweb.irena.org/pxweb/en/IRENASTAT/IRENASTAT__Power%20Capacity%20and%20Generation/Country_ELECSTAT_2024_H2.px/) |
+| RE capacity projections (SSP-RCP) | Capacity buildout projections | Decadal | 2005 to 2100 | Regional (5 regions) | GW | [IIASA](https://tntcat.iiasa.ac.at/SspDb/dsd?Action=htmlpage&page=welcome) |
+| CAPEX of RE | Total cost, cost of hardware, and cost of non-hardware for solar and onshore wind | Annual | 2022 | Regional (16 regions worldwide) | USD/kW | Systemiq internal (Shell project - to be replaced by proper source) |
+| Wind and solar generation potential | Baseload power optimization V1 data | - | - | - | - | Renewables Ninja (to be replaced by ERA5 and Atlite data) | 
+| Steel and iron plant data | Global steel plant information | - | 2024 (V1 release) | Plant-level | - | [Global Energy Monitor (GEM), Global Steel Plant Tracker](https://globalenergymonitor.org/creative-commons-public-license/) |

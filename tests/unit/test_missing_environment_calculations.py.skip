@@ -1,0 +1,286 @@
+"""
+Tests for Environment calculation functions that were missing after refactoring.
+These tests verify the correct behavior of functions that were removed from Environment
+but not initially added to calculations.py
+"""
+
+from steelo.domain import Year
+from steelo.domain.models import (
+    SecondaryFeedstockConstraint,
+    TradeTariff,
+)
+from steelo.domain.models import (
+    relevant_secondary_feedstock_constraints,
+    get_active_trade_tariffs,
+    future_demand,
+    extract_global_average_feedstock_cost,
+)
+
+
+class TestRelevantSecondaryFeedstockConstraints:
+    """Test the relevant_secondary_feedstock_constraints function."""
+
+    def test_empty_constraints_returns_empty_dict(self):
+        """Should return empty dict when no constraints are provided."""
+        result = relevant_secondary_feedstock_constraints([], Year(2025))
+        assert result == {}
+
+    def test_filters_constraints_by_year(self):
+        """Should only include constraints relevant for the current year."""
+        constraints = [
+            SecondaryFeedstockConstraint(
+                secondary_feedstock_name="scrap",
+                region_iso3s=["USA"],
+                maximum_constraint_per_year={Year(2025): 1000, Year(2030): 2000},
+            ),
+            SecondaryFeedstockConstraint(
+                secondary_feedstock_name="biomass",
+                region_iso3s=["DEU"],
+                maximum_constraint_per_year={Year(2030): 500},  # Not available in 2025
+            ),
+        ]
+
+        result = relevant_secondary_feedstock_constraints(constraints, Year(2025))
+
+        assert "scrap" in result
+        assert "biomass" not in result
+        assert result["scrap"][("USA",)] == 1000
+
+    def test_groups_constraints_by_commodity_and_region(self):
+        """Should group constraints by commodity and region tuple."""
+        constraints = [
+            SecondaryFeedstockConstraint(
+                secondary_feedstock_name="scrap",
+                region_iso3s=["USA", "CAN"],
+                maximum_constraint_per_year={Year(2025): 1500},
+            ),
+            SecondaryFeedstockConstraint(
+                secondary_feedstock_name="scrap",
+                region_iso3s=["DEU", "FRA"],
+                maximum_constraint_per_year={Year(2025): 2000},
+            ),
+            SecondaryFeedstockConstraint(
+                secondary_feedstock_name="biomass",
+                region_iso3s=["BRA"],
+                maximum_constraint_per_year={Year(2025): 800},
+            ),
+        ]
+
+        result = relevant_secondary_feedstock_constraints(constraints, Year(2025))
+
+        assert "scrap" in result
+        assert "biomass" in result
+        # region_iso3s are sorted in constructor, so check the sorted tuple
+        assert result["scrap"][("CAN", "USA")] == 1500
+        assert result["scrap"][("DEU", "FRA")] == 2000
+        assert result["biomass"][("BRA",)] == 800
+
+
+class TestGetActiveTradeTariffs:
+    """Test the get_active_trade_tariffs function."""
+
+    def test_empty_tariffs_returns_empty_list(self):
+        """Should return empty list when no tariffs provided."""
+        result = get_active_trade_tariffs([], Year(2025))
+        assert result == []
+
+    def test_includes_tariffs_with_no_dates(self):
+        """Should include tariffs with no start or end date."""
+        tariffs = [
+            TradeTariff(
+                tariff_name="USA-CHN Steel Tariff",
+                from_iso3="USA",
+                to_iso3="CHN",
+                commodity="steel",
+                tax_percentage=0.25,
+                start_date=None,
+                end_date=None,
+            )
+        ]
+
+        result = get_active_trade_tariffs(tariffs, Year(2025))
+        assert len(result) == 1
+        assert result[0].from_iso3 == "USA"
+
+    def test_filters_by_year_range(self):
+        """Should only include tariffs active in the current year."""
+        tariffs = [
+            TradeTariff(
+                tariff_name="USA-CHN Steel Tariff",
+                from_iso3="USA",
+                to_iso3="CHN",
+                commodity="steel",
+                tax_percentage=0.25,
+                start_date=Year(2020),
+                end_date=Year(2030),
+            ),
+            TradeTariff(
+                tariff_name="EU-RUS Iron Tariff",
+                from_iso3="EU",
+                to_iso3="RUS",
+                commodity="iron",
+                tax_percentage=0.15,
+                start_date=Year(2026),  # Not yet active
+                end_date=Year(2030),
+            ),
+            TradeTariff(
+                tariff_name="JPN-KOR Steel Tariff",
+                from_iso3="JPN",
+                to_iso3="KOR",
+                commodity="steel",
+                tax_percentage=0.10,
+                start_date=Year(2020),
+                end_date=Year(2024),  # Already expired
+            ),
+        ]
+
+        result = get_active_trade_tariffs(tariffs, Year(2025))
+        assert len(result) == 1
+        assert result[0].from_iso3 == "USA"
+
+    def test_handles_open_ended_tariffs(self):
+        """Should handle tariffs with only start or end date."""
+        tariffs = [
+            TradeTariff(
+                tariff_name="USA-CHN Steel Tariff",
+                from_iso3="USA",
+                to_iso3="CHN",
+                commodity="steel",
+                tax_percentage=0.25,
+                start_date=Year(2024),
+                end_date=None,  # No end date
+            ),
+            TradeTariff(
+                tariff_name="EU-IND Iron Tariff",
+                from_iso3="EU",
+                to_iso3="IND",
+                commodity="iron",
+                tax_percentage=0.15,
+                start_date=None,  # No start date
+                end_date=Year(2026),
+            ),
+        ]
+
+        result = get_active_trade_tariffs(tariffs, Year(2025))
+        assert len(result) == 2
+        assert {t.from_iso3 for t in result} == {"USA", "EU"}
+
+
+class TestFutureDemand:
+    """Test the future_demand function."""
+
+    def test_empty_demand_dict_returns_zero(self):
+        """Should return 0 when demand dict is empty."""
+        result = future_demand({}, Year(2025))
+        assert result == 0
+
+    def test_sums_demand_across_regions(self):
+        """Should sum demand from all regions for the given year."""
+        demand_dict = {
+            "USA": {Year(2025): 1000, Year(2030): 1500},
+            "CHN": {Year(2025): 2000, Year(2030): 2500},
+            "EU": {Year(2025): 1500, Year(2030): 1800},
+        }
+
+        result = future_demand(demand_dict, Year(2025))
+        assert result == 4500  # 1000 + 2000 + 1500
+
+    def test_handles_missing_years_gracefully(self):
+        """Should treat missing years as zero demand."""
+        demand_dict = {
+            "USA": {Year(2025): 1000},
+            "CHN": {Year(2030): 2000},  # No 2025 entry
+            "EU": {Year(2025): 500, Year(2030): 600},
+        }
+
+        result = future_demand(demand_dict, Year(2025))
+        assert result == 1500  # 1000 + 0 + 500
+
+
+class TestExtractGlobalAverageFeedstockCost:
+    """Test the extract_global_average_feedstock_cost function."""
+
+    def test_empty_furnace_groups_returns_empty_dict(self):
+        """Should return empty dict when no furnace groups provided."""
+        result = extract_global_average_feedstock_cost([])
+        assert result == {}
+
+    def test_calculates_weighted_average_costs(self):
+        """Should calculate weighted average cost per feedstock."""
+
+        # Create mock furnace groups with bill of materials
+        # We can mock the minimum necessary attributes
+        class MockFG:
+            def __init__(self, bill_of_materials):
+                self.bill_of_materials = bill_of_materials
+
+        fg1 = MockFG(
+            {
+                "materials": {
+                    "iron_ore": {"demand": 1.5, "total_cost": 150},
+                    "coke": {"demand": 0.5, "total_cost": 100},
+                }
+            }
+        )
+
+        fg2 = MockFG(
+            {
+                "materials": {
+                    "iron_ore": {"demand": 1.6, "total_cost": 144},
+                    "coke": {"demand": 0.6, "total_cost": 90},
+                }
+            }
+        )
+
+        result = extract_global_average_feedstock_cost([fg1, fg2])
+
+        # Check iron_ore: (150 + 144) / (1.5 + 1.6) = 294 / 3.1 ≈ 94.84
+        assert "iron_ore" in result
+        assert abs(result["iron_ore"] - 94.84) < 0.01
+
+        # Check coke: (100 + 90) / (0.5 + 0.6) = 190 / 1.1 ≈ 172.73
+        assert "coke" in result
+        assert abs(result["coke"] - 172.73) < 0.01
+
+    def test_handles_missing_bill_of_materials(self):
+        """Should skip furnace groups without bill of materials."""
+
+        # Use mock objects with minimal attributes
+        class MockFG:
+            def __init__(self, bill_of_materials=None):
+                if bill_of_materials:
+                    self.bill_of_materials = bill_of_materials
+
+        fg1 = MockFG({"materials": {"iron_ore": {"demand": 1.5, "total_cost": 150}}})
+
+        fg2 = MockFG()  # No bill_of_materials
+
+        result = extract_global_average_feedstock_cost([fg1, fg2])
+
+        # Should only use fg1's data
+        assert "iron_ore" in result
+        assert result["iron_ore"] == 100  # 150 / 1.5
+
+    def test_handles_zero_demand(self):
+        """Should handle feedstocks with zero demand."""
+
+        # Use mock object with minimal attributes
+        class MockFG:
+            def __init__(self, bill_of_materials):
+                self.bill_of_materials = bill_of_materials
+
+        fg1 = MockFG(
+            {
+                "materials": {
+                    "iron_ore": {"demand": 0, "total_cost": 150},  # Zero demand
+                    "coke": {"demand": 0.5, "total_cost": 100},
+                }
+            }
+        )
+
+        result = extract_global_average_feedstock_cost([fg1])
+
+        # Should skip iron_ore due to zero demand
+        assert "iron_ore" not in result
+        assert "coke" in result
+        assert result["coke"] == 200  # 100 / 0.5

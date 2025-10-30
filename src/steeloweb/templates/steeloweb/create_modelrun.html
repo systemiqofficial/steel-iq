@@ -1,0 +1,1389 @@
+{% extends "base.html" %}
+
+{% block title %}Create New Simulation{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* Styles for connected vs unconnected fields */
+    .field-connected {
+        /* Normal appearance - these fields work */
+    }
+    
+    .field-not-connected {
+        opacity: 0.6;
+        background-color: #f5f5f5 !important;
+        cursor: not-allowed !important;
+    }
+    
+    .field-not-connected:disabled {
+        background-color: #f5f5f5 !important;
+    }
+    
+    /* Style the labels for disabled fields */
+    label[for] {
+        position: relative;
+    }
+    
+    /* Style help text for not yet implemented fields */
+    .form-text.text-muted {
+        font-size: 0.875rem;
+    }
+    
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Helper function to reset a field to its data-default value
+function resetField(id) {
+    const el = document.getElementById(id);
+    if (el && el.dataset.default !== undefined) {
+        el.value = el.dataset.default;
+    }
+}
+
+// Function to reset form fields to their default values
+function resetSimulationPeriod() {
+    resetField('id_start_year') || (document.getElementById('id_start_year').value = '2025');
+    resetField('id_end_year') || (document.getElementById('id_end_year').value = '2050');
+}
+
+function resetConstructionSettings() {
+    resetField('id_plant_lifetime') || (document.getElementById('id_plant_lifetime').value = '20');
+    resetField('id_construction_time') || (document.getElementById('id_construction_time').value = '4');
+    resetField('id_consideration_time') || (document.getElementById('id_consideration_time').value = '3');
+    document.getElementById('id_probabilistic_agents').checked = true;
+    document.getElementById('id_probability_of_announcement').value = '0.7';
+    document.getElementById('id_probability_of_construction').value = '0.9';
+    resetField('id_priority_pct') || (document.getElementById('id_priority_pct').value = '5');
+    document.getElementById('id_top_n_loctechs_as_business_op').value = '15';
+    document.getElementById('id_expanded_capacity').value = '2.5';
+    document.getElementById('id_capacity_limit_iron').value = '200.0';
+    document.getElementById('id_capacity_limit_steel').value = '200.0';
+    document.getElementById('id_new_capacity_share_from_new_plants').value = '0.2';
+    // Trigger the change event to update probability fields
+    document.getElementById('id_probabilistic_agents').dispatchEvent(new Event('change'));
+}
+
+function resetEconomicParameters() {
+    document.getElementById('id_global_risk_free_rate').value = '0.0209';
+    document.getElementById('id_steel_price_buffer').value = '200.0';
+    document.getElementById('id_iron_price_buffer').value = '200.0';
+}
+
+function resetPolicySettings() {
+    // Reset policy settings
+    document.getElementById('id_use_iron_ore_premiums').checked = true;
+    document.getElementById('id_include_tariffs').checked = true;
+}
+
+function resetDemandSettings() {
+    // Note: total_steel_demand_scenario and green_steel_demand_scenario are disabled
+    // Only scrap_generation_scenario is currently functional
+    document.getElementById('id_scrap_generation_scenario').value = 'business_as_usual';
+    // Circularity file is disabled
+    // document.getElementById('id_circularity_file').value = '';
+}
+
+function resetTechnologySettings() {
+    // Dynamic reset based on HTMX-loaded content
+    // Reset all technology fields that start with 'tech_'
+    document.querySelectorAll('[id^="id_tech_"]').forEach(el => {
+        if (el.dataset.default !== undefined) {
+            // Use the default value from the data attribute
+            if (el.type === 'checkbox') {
+                el.checked = el.dataset.default === 'true';
+            } else {
+                el.value = el.dataset.default;
+            }
+        } else {
+            // No default specified, use sensible defaults
+            if (el.type === 'checkbox') {
+                el.checked = true;  // Default to allowed
+            } else if (el.name && el.name.includes('from_year')) {
+                el.value = '2025';  // Default start year
+            } else if (el.name && el.name.includes('to_year')) {
+                el.value = '';  // No end year limit by default
+            }
+        }
+    });
+
+}
+
+function resetGeospatialSettings() {
+    // Power and Hydrogen settings
+    resetField('id_hydrogen_ceiling_percentile') || (document.getElementById('id_hydrogen_ceiling_percentile').value = '20.0');
+    document.getElementById('id_intraregional_trade_allowed').checked = true;
+    resetField('id_long_dist_pipeline_transport_cost') || (document.getElementById('id_long_dist_pipeline_transport_cost').value = '1.0');
+    document.getElementById('id_included_power_mix').value = '85% baseload + 15% grid';
+
+    // Infrastructure and Transportation settings
+    document.getElementById('id_include_infrastructure_cost').checked = true;
+    document.getElementById('id_include_transport_cost').checked = true;
+    document.getElementById('id_include_lulc_cost').checked = true;
+
+    // Transportation cost fields
+    resetField('id_iron_mine_to_plant') || (document.getElementById('id_iron_mine_to_plant').value = '0.013');
+    resetField('id_iron_to_steel_plant') || (document.getElementById('id_iron_to_steel_plant').value = '0.015');
+    resetField('id_steel_to_demand') || (document.getElementById('id_steel_to_demand').value = '0.019');
+
+    if (typeof window.syncTransportCostFields === 'function') {
+        window.syncTransportCostFields();
+    }
+
+    // Physical constraints
+    resetField('id_max_altitude') || (document.getElementById('id_max_altitude').value = '1500');
+    resetField('id_max_slope') || (document.getElementById('id_max_slope').value = '2.0');
+    resetField('id_max_latitude') || (document.getElementById('id_max_latitude').value = '70.0');
+    
+    // Other geospatial fields (currently disabled - not yet implemented)
+    // These fields are stored but not processed by the simulation
+}
+
+function resetEmissionsSettings() {
+    // Note: All emissions fields are currently disabled (not yet implemented)
+    // These fields are stored but not processed by the simulation
+    
+    // updateCarbonTaxDisplay() can still run as the elements exist
+    updateCarbonTaxDisplay();
+}
+
+// Disable all fields in the Technology section since they are controlled by Master Excel
+function disableTechnologyFields() {
+    // Find the Technology card by looking for the header
+    const cards = document.querySelectorAll('.card');
+    
+    cards.forEach(card => {
+        const header = card.querySelector('.card-header h5');
+        if (header && header.textContent.includes('Technology')) {
+            // Found the Technology card
+            const cardBody = card.querySelector('.card-body');
+            if (cardBody) {
+                // Disable all inputs, selects, and checkboxes
+                const inputs = cardBody.querySelectorAll('input, select');
+                inputs.forEach(input => {
+                    input.disabled = true;
+                    input.classList.add('field-not-connected');
+                    // Remove field-connected class if present
+                    input.classList.remove('field-connected');
+                });
+            }
+        }
+    });
+}
+
+
+// Initialize when the page loads
+document.addEventListener("DOMContentLoaded", function() {
+
+    // Add is-invalid class to fields with errors for proper Bootstrap styling
+    document.querySelectorAll('.invalid-feedback.d-block').forEach(function(errorDiv) {
+        // Find the nearest form control (input, select, textarea)
+        const formGroup = errorDiv.closest('.row');
+        if (formGroup) {
+            const formControl = formGroup.querySelector('input, select, textarea');
+            if (formControl && !formControl.classList.contains('is-invalid')) {
+                formControl.classList.add('is-invalid');
+            }
+        }
+    });
+
+    // Technology fields are now user-editable per request
+    // disableTechnologyFields();
+
+    // Set up transportation cost field toggling
+    const includeTransportCost = document.getElementById('id_include_transport_cost');
+    const transportCostFields = [
+        document.getElementById('id_iron_mine_to_plant'),
+        document.getElementById('id_iron_to_steel_plant'),
+        document.getElementById('id_steel_to_demand'),
+    ];
+
+    function syncTransportCostFields() {
+        const enabled = includeTransportCost.checked;
+        transportCostFields.forEach((field) => {
+            if (!field) {
+                return;
+            }
+            field.disabled = !enabled;
+        });
+    }
+
+    includeTransportCost.addEventListener('change', syncTransportCostFields);
+    syncTransportCostFields();
+
+    window.syncTransportCostFields = syncTransportCostFields; // reuse in reset helper
+});
+
+// Set up pipeline transport cost field toggling based on intraregional trade
+document.addEventListener('DOMContentLoaded', function() {
+    const intraregionalTradeCheckbox = document.getElementById('id_intraregional_trade_allowed');
+    const pipelineCostField = document.getElementById('id_long_dist_pipeline_transport_cost');
+
+    function syncPipelineCostField() {
+        if (!pipelineCostField || !intraregionalTradeCheckbox) {
+            return;
+        }
+        pipelineCostField.disabled = !intraregionalTradeCheckbox.checked;
+    }
+
+    if (intraregionalTradeCheckbox) {
+        intraregionalTradeCheckbox.addEventListener('change', syncPipelineCostField);
+        syncPipelineCostField();
+    }
+});
+
+// Handle probabilistic agents toggle
+document.addEventListener('DOMContentLoaded', function() {
+    const probabilisticCheckbox = document.getElementById('id_probabilistic_agents');
+    const probabilityAnnouncement = document.getElementById('id_probability_of_announcement');
+    const probabilityConstruction = document.getElementById('id_probability_of_construction');
+    const announcementRow = document.getElementById('probability_announcement_row');
+    const constructionRow = document.getElementById('probability_construction_row');
+
+    function updateProbabilityFields() {
+        if (probabilisticCheckbox.checked) {
+            // Enable probability fields for probabilistic mode
+            probabilityAnnouncement.disabled = false;
+            probabilityConstruction.disabled = false;
+            announcementRow.style.opacity = '1';
+            constructionRow.style.opacity = '1';
+            // Reset to default probabilistic values if currently at 1.0
+            if (probabilityAnnouncement.value === '1.00' || probabilityAnnouncement.value === '1') {
+                probabilityAnnouncement.value = '0.7';
+            }
+            if (probabilityConstruction.value === '1.00' || probabilityConstruction.value === '1') {
+                probabilityConstruction.value = '0.9';
+            }
+        } else {
+            // Set to deterministic values (1.0) and disable
+            probabilityAnnouncement.value = '1.00';
+            probabilityConstruction.value = '1.00';
+            probabilityAnnouncement.disabled = true;
+            probabilityConstruction.disabled = true;
+            announcementRow.style.opacity = '0.5';
+            constructionRow.style.opacity = '0.5';
+        }
+    }
+
+    // Set initial state
+    updateProbabilityFields();
+
+    // Add change event listener
+    probabilisticCheckbox.addEventListener('change', updateProbabilityFields);
+});
+
+// Ensure native browser validation runs even if fields still have focus
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.querySelector('form[method="post"]');
+    if (!form) {
+        return;
+    }
+
+    function getClientFeedbackElement(control) {
+        const container = control.closest('.col-sm-9') || control.parentElement;
+        if (!container) {
+            return null;
+        }
+
+        let feedback = container.querySelector('.client-invalid-feedback');
+        if (!feedback) {
+            feedback = document.createElement('div');
+            feedback.className = 'invalid-feedback client-invalid-feedback';
+            feedback.dataset.clientValidation = 'true';
+
+            const help = container.querySelector('.form-text');
+            if (help) {
+                container.insertBefore(feedback, help);
+            } else {
+                container.appendChild(feedback);
+            }
+        }
+
+        return feedback;
+    }
+
+    function showClientValidation(control, message) {
+        const feedback = getClientFeedbackElement(control);
+        if (feedback) {
+            feedback.textContent = message;
+            feedback.classList.add('d-block');
+        }
+        control.classList.add('is-invalid');
+        control.setAttribute('aria-invalid', 'true');
+    }
+
+    function clearClientValidation(control) {
+        const container = control.closest('.col-sm-9') || control.parentElement;
+        if (!container) {
+            return;
+        }
+
+        const feedback = container.querySelector('.client-invalid-feedback');
+        if (feedback) {
+            feedback.textContent = '';
+            feedback.classList.remove('d-block');
+        }
+
+        control.classList.remove('is-invalid');
+        control.removeAttribute('aria-invalid');
+    }
+
+    let isShowingNativeValidation = false;
+    form.addEventListener('invalid', function(event) {
+        const control = event.target;
+        if (!(control instanceof HTMLElement)) {
+            return;
+        }
+
+        showClientValidation(control, control.validationMessage);
+
+        if (isShowingNativeValidation) {
+            return;
+        }
+
+        isShowingNativeValidation = true;
+        setTimeout(() => {
+            if (typeof control.focus === 'function') {
+                control.focus({ preventScroll: true });
+            }
+            if (typeof control.reportValidity === 'function') {
+                control.reportValidity();
+            }
+            isShowingNativeValidation = false;
+        }, 0);
+    }, true);
+
+    form.addEventListener('input', function(event) {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) {
+            return;
+        }
+
+        if (typeof target.checkValidity === 'function' && target.checkValidity()) {
+            clearClientValidation(target);
+        }
+    }, true);
+
+    form.addEventListener('submit', function(e) {
+        if (form.checkValidity()) {
+            return true;
+        }
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        const invalidControl = form.querySelector(':invalid');
+        if (invalidControl instanceof HTMLElement) {
+            showClientValidation(invalidControl, invalidControl.validationMessage);
+
+            if (typeof invalidControl.focus === 'function') {
+                invalidControl.focus({ preventScroll: true });
+            }
+
+            setTimeout(() => {
+                if (typeof invalidControl.reportValidity === 'function') {
+                    invalidControl.reportValidity();
+                }
+            }, 0);
+        } else if (typeof form.reportValidity === 'function') {
+            setTimeout(() => form.reportValidity(), 0);
+        }
+
+        return false;
+    });
+});
+
+// HTMX configuration and event handlers for dynamic technology loading
+document.addEventListener('DOMContentLoaded', function() {
+    // Add CSRF token to HTMX requests (only for unsafe methods)
+    document.body.addEventListener('htmx:configRequest', (event) => {
+        const method = event.detail.verb.toUpperCase();
+        if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+            const token = document.querySelector('input[name="csrfmiddlewaretoken"]')?.value;
+            if (token) {
+                event.detail.headers['X-CSRFToken'] = token;
+            }
+        }
+    });
+
+    // Allow 403 responses to swap content (show friendly message)
+    document.body.addEventListener('htmx:beforeSwap', (e) => {
+        if (e.detail.xhr && e.detail.xhr.status === 403) {
+            e.detail.shouldSwap = true;       // allow swap
+            e.detail.isError = false;          // don't show default error
+        }
+    });
+
+    // Handle other errors
+    document.body.addEventListener('htmx:responseError', () => {
+        const el = document.getElementById('tech-config');
+        if (el) {
+            el.innerHTML = '<div class="alert alert-danger">Could not load technologies. Try refreshing the page and try again.</div>';
+        }
+    });
+
+    // Sync the select-all checkbox with individual checkbox states
+    function syncSelectAllCheckbox() {
+        const selectAll = document.getElementById('select-all-tech');
+        const individualCheckboxes = document.querySelectorAll('.tech-allowed');
+
+        if (selectAll && individualCheckboxes.length > 0) {
+            // Check if all individual checkboxes are checked
+            const allChecked = Array.from(individualCheckboxes).every(cb => cb.checked);
+            selectAll.checked = allChecked;
+        }
+    }
+
+    // Re-bind validation and select-all after HTMX swaps
+    function bindTechValidation() {
+        // Year range validation
+        document.querySelectorAll('[id$="_to_year"]').forEach(input => {
+            input.addEventListener('change', function() {
+                const slug = this.dataset.slug;
+                const fromYear = document.getElementById(`tech_${slug}_from_year`);
+
+                if (this.value && fromYear?.value && parseInt(this.value) < parseInt(fromYear.value)) {
+                    this.setCustomValidity('End year must be after start year');
+                    this.classList.add('is-invalid');
+                } else {
+                    this.setCustomValidity('');
+                    this.classList.remove('is-invalid');
+                }
+            });
+        });
+
+        // Select all functionality
+        const selectAll = document.getElementById('select-all-tech');
+        if (selectAll) {
+            selectAll.addEventListener('change', function() {
+                document.querySelectorAll('.tech-allowed').forEach(cb => {
+                    cb.checked = this.checked;
+                });
+            });
+        }
+
+        // Add change listeners to individual checkboxes to sync the select-all checkbox
+        document.querySelectorAll('.tech-allowed').forEach(cb => {
+            cb.addEventListener('change', syncSelectAllCheckbox);
+        });
+
+        // Sync the select-all checkbox with current state
+        syncSelectAllCheckbox();
+
+        // Client-side filter for technologies (optional enhancement)
+        const filterInput = document.getElementById('tech-filter');
+        if (filterInput) {
+            filterInput.addEventListener('keyup', function() {
+                const filter = this.value.toLowerCase();
+                document.querySelectorAll('#tech-config tbody tr').forEach(row => {
+                    const text = row.textContent.toLowerCase();
+                    row.style.display = text.includes(filter) ? '' : 'none';
+                });
+            });
+        }
+    }
+
+    // Bind validation after HTMX loads content
+    document.addEventListener('htmx:afterSwap', (event) => {
+        if (event.target.id === 'tech-config') {
+            bindTechValidation();
+            // Update the reset function to work with dynamic fields
+            window.resetTechnologySettings = function() {
+                // Reset all dynamic technology checkboxes to checked
+                document.querySelectorAll('.tech-allowed').forEach(cb => {
+                    cb.checked = true;
+                });
+                // Reset all from_year fields to their default values
+                document.querySelectorAll('[id^="tech_"][id$="_from_year"]').forEach(input => {
+                    // Use the default value from data attribute
+                    // Fall back to 2025 ONLY if data attribute is missing (shouldn't happen)
+                    const defaultYear = input.dataset.defaultYear || '2025';
+                    input.value = defaultYear;
+                });
+                // Clear all to_year fields
+                document.querySelectorAll('[id^="tech_"][id$="_to_year"]').forEach(input => {
+                    input.value = '';
+                });
+                // Sync the select-all checkbox
+                syncSelectAllCheckbox();
+            };
+        }
+    });
+
+    // Trigger technology reload when data preparation changes
+    const prepSelect = document.getElementById('id_data_preparation');
+    if (prepSelect) {
+        prepSelect.addEventListener('change', function() {
+            // HTMX will automatically trigger due to hx-trigger="... change from:#id_data_preparation"
+            // but we can add loading state if desired
+            const techConfig = document.getElementById('tech-config');
+            if (techConfig && !this.value) {
+                // If no preparation selected, show the placeholder
+                techConfig.innerHTML = `
+                    <div class="card mb-4">
+                        <div class="card-header bg-light">
+                            <h5 class="mb-0">Technology Configuration</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="text-muted">
+                                <i class="bi bi-info-circle"></i>
+                                Select a data preparation above to load available technologies...
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+        });
+    }
+});
+
+// Auto-scroll to validation errors and preserve scroll position
+document.addEventListener('DOMContentLoaded', function() {
+    // Auto-scroll to first validation error if present
+    function scrollToFirstError() {
+        // Check for technology validation errors first (highest priority)
+        const techErrors = document.getElementById('technology-validation-errors');
+        if (techErrors) {
+            techErrors.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            // Add a highlight effect to draw attention
+            techErrors.style.animation = 'pulse 1s ease-in-out';
+            return;
+        }
+
+        // Check for field-level errors
+        const firstFieldError = document.querySelector('.invalid-feedback.d-block, .alert-danger');
+        if (firstFieldError) {
+            firstFieldError.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            return;
+        }
+    }
+
+    // Store scroll position before form submission
+    const form = document.querySelector('form[method="post"]');
+    if (form) {
+        form.addEventListener('submit', function() {
+            sessionStorage.setItem('scrollPosition', window.scrollY);
+            sessionStorage.setItem('scrollPosition_intent', 'validation');
+        });
+    }
+
+    // Restore scroll position only if returning from a validation error
+    const savedPosition = sessionStorage.getItem('scrollPosition');
+    const intent = sessionStorage.getItem('scrollPosition_intent');
+    const hasErrors = document.querySelector('.invalid-feedback.d-block, #technology-validation-errors, .alert-danger');
+
+    // Only restore scroll if intent was validation AND we have errors
+    if (savedPosition && intent === 'validation' && hasErrors) {
+        // Scroll to first error for better UX
+        setTimeout(scrollToFirstError, 100); // Small delay to ensure DOM is ready
+    }
+
+    // Always clean up sessionStorage, regardless of whether we used it
+    sessionStorage.removeItem('scrollPosition');
+    sessionStorage.removeItem('scrollPosition_intent');
+});
+
+// Add CSS animation for the pulse effect
+const style = document.createElement('style');
+style.textContent = `
+    @keyframes pulse {
+        0% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.4); }
+        50% { box-shadow: 0 0 0 10px rgba(220, 53, 69, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); }
+    }
+`;
+document.head.appendChild(style);
+</script>
+{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row justify-content-center">
+        <div class="col-md-10">
+            <div class="card">
+                <div class="card-header">
+                    <h1 class="h3 mb-0">Create New Simulation</h1>
+                </div>
+                <div class="card-body">
+                    <p>Configure your STEEL-IQ simulation:</p>
+
+                    {% include "steeloweb/partials/messages.html" %}
+
+                    <form method="post">
+                        {% csrf_token %}
+                        
+                        <!-- Simulation name section -->
+                        <div class="card mb-4">
+                            <div class="card-header bg-light">
+                                <h5 class="mb-0">Simulation Name</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3">
+                                    {{ form.name }}
+                                    {% if form.name.errors %}
+                                    <div class="invalid-feedback d-block">
+                                        {{ form.name.errors }}
+                                    </div>
+                                    {% endif %}
+                                    <small class="form-text text-muted">{{ form.name.help_text }}</small>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Simulation Period section -->
+                        <div class="card mb-4">
+                            <div class="card-header bg-light">
+                                <h5 class="mb-0">Simulation Period</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3 row">
+                                    <label for="{{ form.start_year.id_for_label }}" class="col-sm-3 col-form-label">From:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.start_year }}
+                                        {% if form.start_year.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.start_year.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.start_year.help_text }}</small>
+                                    </div>
+                                </div>
+                                
+                                <div class="mb-3 row">
+                                    <label for="{{ form.end_year.id_for_label }}" class="col-sm-3 col-form-label">to:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.end_year }}
+                                        {% if form.end_year.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.end_year.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.end_year.help_text }}</small>
+                                    </div>
+                                </div>
+                                
+                                <div class="text-end">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetSimulationPeriod()">Return to default settings</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Data Input section -->
+                        <div class="card mb-4">
+                            <div class="card-header bg-light">
+                                <h5 class="mb-0">Data Input</h5>
+                            </div>
+                            <div class="card-body">
+                                
+                                <div class="mb-3 row">
+                                    <label for="{{ form.data_preparation.id_for_label }}" class="col-sm-3 col-form-label">Master Input Selection:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.data_preparation }}
+                                        {% if form.data_preparation.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.data_preparation.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">
+                                            Select the prepared data package to use for this simulation. Each data package is generated from a master Excel input file.
+                                            {% if not form.data_preparation.field.queryset.exists %}
+                                            <br><span class="text-warning">No data preparations available.</span>
+                                            {% endif %}
+                                            <br>
+                                            <strong>To use a custom master Excel input file:</strong>
+                                            <ol class="mb-0 mt-1">
+                                                <li><a href="{% url 'master-excel-list' %}" target="_blank">Upload your modified master Excel file</a></li>
+                                                <li>Click "Prepare Data with This Master Excel" on the file's detail page</li>
+                                                <li>The new data preparation will appear in the dropdown above</li>
+                                            </ol>
+                                        </small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Dataset Metadata Section - Loads dynamically via HTMX -->
+                        <div id="dataset-metadata"
+                             class="position-relative"
+                             aria-live="polite"
+                             aria-atomic="true"
+                             hx-get="{% url 'create-modelrun-metadata-fragment' %}"
+                             hx-trigger="load[!!document.getElementById('id_data_preparation')?.value], change from:#id_data_preparation"
+                             hx-target="#dataset-metadata"
+                             hx-swap="innerHTML show:none"
+                             hx-include="#id_data_preparation"
+                             hx-indicator="#metadata-loading-spinner">
+                            <!-- Loading indicator -->
+                            <div id="metadata-loading-spinner" class="htmx-indicator text-center p-3">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">Loading dataset information...</span>
+                                </div>
+                                <div class="small text-muted mt-2">Loading dataset information...</div>
+                            </div>
+                        </div>
+
+                        <!-- Plant Construction Settings section -->
+                        <div class="card mb-4">
+                            <div class="card-header bg-light">
+                                <h5 class="mb-0">Plant Construction Settings</h5>
+                            </div>
+                            <div class="card-body">
+                                <!-- Selection of New Business Opportunities Subsection -->
+                                <h6 class="mb-3 fw-bold">Selection of New Business Opportunities</h6>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.priority_pct.id_for_label }}" class="col-sm-3 col-form-label">{{ form.priority_pct.label }}:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.priority_pct }}
+                                        {% if form.priority_pct.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.priority_pct.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.priority_pct.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.top_n_loctechs_as_business_op.id_for_label }}" class="col-sm-3 col-form-label">{{ form.top_n_loctechs_as_business_op.label }}:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.top_n_loctechs_as_business_op }}
+                                        {% if form.top_n_loctechs_as_business_op.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.top_n_loctechs_as_business_op.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.top_n_loctechs_as_business_op.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <hr class="my-4 border-2">
+
+                                <!-- Timing Subsection -->
+                                <h6 class="mb-3 mt-4 fw-bold">Timing</h6>
+                                <div class="alert callout-steel mb-3">
+                                    <strong>Note:</strong> Construction and consideration time must be between 1 and 10 years.
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.plant_lifetime.id_for_label }}" class="col-sm-3 col-form-label">Plant lifetime for simulation:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.plant_lifetime }}
+                                        {% if form.plant_lifetime.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.plant_lifetime.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">
+                                            Plant lifetime in years for this simulation. This can be different from the dataset's prepared lifetime -
+                                            the system will automatically recalculate plant lifecycles based on the dataset's metadata.
+                                        </small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.construction_time.id_for_label }}" class="col-sm-3 col-form-label">Construction time:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.construction_time }}
+                                        {% if form.construction_time.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.construction_time.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.construction_time.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.consideration_time.id_for_label }}" class="col-sm-3 col-form-label">Consideration time:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.consideration_time }}
+                                        {% if form.consideration_time.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.consideration_time.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.consideration_time.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <hr class="my-4 border-2">
+
+                                <!-- Probability Subsection -->
+                                <h6 class="mb-3 mt-4 fw-bold">Probability</h6>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.probabilistic_agents.id_for_label }}" class="col-sm-3 col-form-label">{{ form.probabilistic_agents.label }}:</label>
+                                    <div class="col-sm-9">
+                                        <div class="form-check">
+                                            {{ form.probabilistic_agents }}
+                                            {% if form.probabilistic_agents.errors %}
+                                            <div class="invalid-feedback d-block">
+                                                {{ form.probabilistic_agents.errors }}
+                                            </div>
+                                            {% endif %}
+                                            <small class="form-text text-muted">{{ form.probabilistic_agents.help_text }}</small>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row" id="probability_announcement_row">
+                                    <label for="{{ form.probability_of_announcement.id_for_label }}" class="col-sm-3 col-form-label">{{ form.probability_of_announcement.label }}:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.probability_of_announcement }}
+                                        {% if form.probability_of_announcement.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.probability_of_announcement.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.probability_of_announcement.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row" id="probability_construction_row">
+                                    <label for="{{ form.probability_of_construction.id_for_label }}" class="col-sm-3 col-form-label">{{ form.probability_of_construction.label }}:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.probability_of_construction }}
+                                        {% if form.probability_of_construction.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.probability_of_construction.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.probability_of_construction.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <hr class="my-4 border-2">
+
+                                <!-- Capacity Subsection -->
+                                <h6 class="mb-3 mt-4 fw-bold">Capacity</h6>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.expanded_capacity.id_for_label }}" class="col-sm-3 col-form-label">{{ form.expanded_capacity.label }}:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.expanded_capacity }}
+                                        {% if form.expanded_capacity.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.expanded_capacity.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.expanded_capacity.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.capacity_limit_iron.id_for_label }}" class="col-sm-3 col-form-label">{{ form.capacity_limit_iron.label }}:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.capacity_limit_iron }}
+                                        {% if form.capacity_limit_iron.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.capacity_limit_iron.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.capacity_limit_iron.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.capacity_limit_steel.id_for_label }}" class="col-sm-3 col-form-label">{{ form.capacity_limit_steel.label }}:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.capacity_limit_steel }}
+                                        {% if form.capacity_limit_steel.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.capacity_limit_steel.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.capacity_limit_steel.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.new_capacity_share_from_new_plants.id_for_label }}" class="col-sm-3 col-form-label">{{ form.new_capacity_share_from_new_plants.label }}:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.new_capacity_share_from_new_plants }}
+                                        {% if form.new_capacity_share_from_new_plants.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.new_capacity_share_from_new_plants.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.new_capacity_share_from_new_plants.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="text-end mt-3">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetConstructionSettings()">Return to default settings</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Economic Parameters section -->
+                        <div class="card mb-4">
+                            <div class="card-header bg-light">
+                                <h5 class="mb-0">Economic Parameters</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3 row">
+                                    <label for="{{ form.global_risk_free_rate.id_for_label }}" class="col-sm-3 col-form-label">Risk-free rate:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.global_risk_free_rate }}
+                                        {% if form.global_risk_free_rate.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.global_risk_free_rate.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.global_risk_free_rate.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.steel_price_buffer.id_for_label }}" class="col-sm-3 col-form-label">Steel premium:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.steel_price_buffer }}
+                                        {% if form.steel_price_buffer.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.steel_price_buffer.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.steel_price_buffer.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.iron_price_buffer.id_for_label }}" class="col-sm-3 col-form-label">Iron premium:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.iron_price_buffer }}
+                                        {% if form.iron_price_buffer.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.iron_price_buffer.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.iron_price_buffer.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="text-end">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetEconomicParameters()">Return to default settings</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Policy Settings section -->
+                        <div class="card mb-4">
+                            <div class="card-header bg-light">
+                                <h5 class="mb-0">Policy Settings</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3 row">
+                                    <label for="{{ form.use_iron_ore_premiums.id_for_label }}" class="col-sm-3 col-form-label">{{ form.use_iron_ore_premiums.label }}:</label>
+                                    <div class="col-sm-9">
+                                        <div class="form-check">
+                                            {{ form.use_iron_ore_premiums }}
+                                            <label class="form-check-label" for="{{ form.use_iron_ore_premiums.id_for_label }}">
+                                                {{ form.use_iron_ore_premiums.help_text }}
+                                            </label>
+                                        </div>
+                                        {% if form.use_iron_ore_premiums.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.use_iron_ore_premiums.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.include_tariffs.id_for_label }}" class="col-sm-3 col-form-label">{{ form.include_tariffs.label }}:</label>
+                                    <div class="col-sm-9">
+                                        <div class="form-check">
+                                            {{ form.include_tariffs }}
+                                            <label class="form-check-label" for="{{ form.include_tariffs.id_for_label }}">
+                                                {{ form.include_tariffs.help_text }}
+                                            </label>
+                                        </div>
+                                        {% if form.include_tariffs.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.include_tariffs.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <div class="text-end">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetPolicySettings()">Return to default settings</button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Demand and Circularity section - commented out as requested -->
+                        <!--
+                        <div class="card mb-4">
+                            <div class="card-header bg-light">
+                                <h5 class="mb-0">Demand and circularity</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3 row">
+                                    <label for="{{ form.total_steel_demand_scenario.id_for_label }}" class="col-sm-4 col-form-label">Select total steel demand scenario:</label>
+                                    <div class="col-sm-8">
+                                        {{ form.total_steel_demand_scenario }}
+                                        {% if form.total_steel_demand_scenario.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.total_steel_demand_scenario.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                
+                                <div class="mb-3 row">
+                                    <label for="{{ form.green_steel_demand_scenario.id_for_label }}" class="col-sm-4 col-form-label">Select green steel demand scenario:</label>
+                                    <div class="col-sm-8">
+                                        {{ form.green_steel_demand_scenario }}
+                                        {% if form.green_steel_demand_scenario.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.green_steel_demand_scenario.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                
+                                <div class="mb-3 row">
+                                    <label for="{{ form.scrap_generation_scenario.id_for_label }}" class="col-sm-4 col-form-label">Select scrap generation and circularity scenario:</label>
+                                    <div class="col-sm-8">
+                                        {{ form.scrap_generation_scenario }}
+                                        {% if form.scrap_generation_scenario.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.scrap_generation_scenario.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                
+                                <div class="mb-3 row">
+                                    <label for="{{ form.circularity_file.id_for_label }}" class="col-sm-4 col-form-label">Circularity Data File:</label>
+                                    <div class="col-sm-8">
+                                        {{ form.circularity_file }}
+                                        {% if form.circularity_file.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.circularity_file.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">
+                                            {{ form.circularity_file.help_text }}
+                                        </small>
+                                    </div>
+                                </div>
+                                
+                                <div class="text-end">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetDemandSettings()">Return to default settings</button>
+                                </div>
+                            </div>
+                        </div>
+                        -->
+
+                        <!-- Technologies Section - Loads dynamically via HTMX or rendered with preserved values -->
+                        {% if technologies %}
+                            {# Server-rendered with preserved user input - keep HTMX for preparation changes but don't trigger on load #}
+                            <div id="tech-config"
+                                 class="position-relative"
+                                 aria-live="polite"
+                                 aria-atomic="true"
+                                 hx-get="{% url 'create-modelrun-tech-fragment' %}"
+                                 hx-trigger="change from:#id_data_preparation"
+                                 hx-target="#tech-config"
+                                 hx-swap="innerHTML show:none"
+                                 hx-include="#id_data_preparation"
+                                 hx-indicator="#tech-loading-spinner">
+                                {% include "steeloweb/partials/_technology_table.html" %}
+                            </div>
+                        {% else %}
+                            {# Initial state - load dynamically via HTMX #}
+                            <div id="tech-config"
+                                 class="position-relative"
+                                 aria-live="polite"
+                                 aria-atomic="true"
+                                 hx-get="{% url 'create-modelrun-tech-fragment' %}"
+                                 hx-trigger="load[!!document.getElementById('id_data_preparation')?.value], change from:#id_data_preparation"
+                                 hx-target="#tech-config"
+                                 hx-swap="innerHTML show:none"
+                                 hx-include="#id_data_preparation"
+                                 hx-indicator="#tech-loading-spinner"
+                                 hx-push-url="true">
+                                <!-- Loading indicator -->
+                                <div id="tech-loading-spinner" class="htmx-indicator text-center p-3">
+                                    <div class="spinner-border text-primary" role="status">
+                                        <span class="visually-hidden">Loading technologies...</span>
+                                    </div>
+                                    <div class="small text-muted mt-2">Loading technologies...</div>
+                                </div>
+                                <!-- Initial placeholder -->
+                                <div class="card mb-4">
+                                    <div class="card-header bg-light">
+                                        <h5 class="mb-0">Technology Configuration</h5>
+                                    </div>
+                                    <div class="card-body">
+                                        <div class="text-muted">
+                                            <i class="bi bi-info-circle"></i>
+                                            Select a data preparation above to load available technologies...
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        {% endif %}
+
+                        <!-- Geospatial section -->
+
+                        <!-- Geospatial Settings Section -->
+                        <div class="card mb-4">
+                            <div class="card-header bg-light">
+                                <h5 class="mb-0">Geospatial Settings</h5>
+                            </div>
+                            <div class="card-body">
+                                <!-- Power and Hydrogen Subsection -->
+                                <h6 class="mb-3 mt-2 fw-bold">Power and Hydrogen</h6>
+                                <div class="alert callout-steel mb-3">
+                                    <strong>Disclaimer:</strong> Baseload power price is precalculated due to long runtimes and cannot be modified further.
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.included_power_mix.id_for_label }}" class="col-sm-4 col-form-label">{{ form.included_power_mix.label }}:</label>
+                                    <div class="col-sm-8">
+                                        {{ form.included_power_mix }}
+                                        {% if form.included_power_mix.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.included_power_mix.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">
+                                            {{ form.included_power_mix.help_text }}
+                                            <br><strong>Note:</strong> New plants' energy costs usually correspond to the power mix used for location prioritization, with one exception: If the power mix is set to "Not included" for location prioritization, the grid power price is used to set the energy costs of new plants. Reason: A plant cannot operate with zero energy costs.
+                                        </small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.hydrogen_ceiling_percentile.id_for_label }}" class="col-sm-4 col-form-label">Hydrogen Ceiling Percentile (%):</label>
+                                    <div class="col-sm-8">
+                                        {{ form.hydrogen_ceiling_percentile }}
+                                        {% if form.hydrogen_ceiling_percentile.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.hydrogen_ceiling_percentile.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.hydrogen_ceiling_percentile.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.intraregional_trade_allowed.id_for_label }}" class="col-sm-4 col-form-label">{{ form.intraregional_trade_allowed.label }}:</label>
+                                    <div class="col-sm-8">
+                                        <div class="form-check">
+                                            {{ form.intraregional_trade_allowed }}
+                                            <label class="form-check-label" for="{{ form.intraregional_trade_allowed.id_for_label }}">
+                                                {{ form.intraregional_trade_allowed.help_text }}
+                                            </label>
+                                        </div>
+                                        {% if form.intraregional_trade_allowed.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.intraregional_trade_allowed.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.long_dist_pipeline_transport_cost.id_for_label }}" class="col-sm-4 col-form-label">Long distance pipeline transport cost ($/kg H2/1000 km):</label>
+                                    <div class="col-sm-8">
+                                        {{ form.long_dist_pipeline_transport_cost }}
+                                        {% if form.long_dist_pipeline_transport_cost.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.long_dist_pipeline_transport_cost.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.long_dist_pipeline_transport_cost.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <hr class="my-4 border-2">
+
+                                <!-- Infrastructure and Transportation Subsection -->
+                                <h6 class="mb-3 mt-4 fw-bold">Infrastructure and Transportation</h6>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.include_infrastructure_cost.id_for_label }}" class="col-sm-4 col-form-label">{{ form.include_infrastructure_cost.label }}:</label>
+                                    <div class="col-sm-8">
+                                        <div class="form-check">
+                                            {{ form.include_infrastructure_cost }}
+                                            <label class="form-check-label" for="{{ form.include_infrastructure_cost.id_for_label }}">
+                                                {{ form.include_infrastructure_cost.help_text }}
+                                            </label>
+                                        </div>
+                                        {% if form.include_infrastructure_cost.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.include_infrastructure_cost.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.include_transport_cost.id_for_label }}" class="col-sm-4 col-form-label">{{ form.include_transport_cost.label }}:</label>
+                                    <div class="col-sm-8">
+                                        <div class="form-check">
+                                            {{ form.include_transport_cost }}
+                                            <label class="form-check-label" for="{{ form.include_transport_cost.id_for_label }}">
+                                                {{ form.include_transport_cost.help_text }}
+                                            </label>
+                                        </div>
+                                        {% if form.include_transport_cost.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.include_transport_cost.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.iron_mine_to_plant.id_for_label }}" class="col-sm-4 col-form-label">Iron mine to plant transport cost ($/tonne/km):</label>
+                                    <div class="col-sm-8">
+                                        {{ form.iron_mine_to_plant }}
+                                        {% if form.iron_mine_to_plant.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.iron_mine_to_plant.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.iron_mine_to_plant.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.iron_to_steel_plant.id_for_label }}" class="col-sm-4 col-form-label">Iron to steel plant transport cost ($/tonne/km):</label>
+                                    <div class="col-sm-8">
+                                        {{ form.iron_to_steel_plant }}
+                                        {% if form.iron_to_steel_plant.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.iron_to_steel_plant.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.iron_to_steel_plant.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.steel_to_demand.id_for_label }}" class="col-sm-4 col-form-label">Steel to demand location transport cost ($/tonne/km):</label>
+                                    <div class="col-sm-8">
+                                        {{ form.steel_to_demand }}
+                                        {% if form.steel_to_demand.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.steel_to_demand.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.steel_to_demand.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <hr class="my-4 border-2">
+
+                                <!-- Feasibility and Land Cover Subsection -->
+                                <h6 class="mb-3 mt-4 fw-bold">Feasibility and Land Cover</h6>
+
+                                <!-- Feasibility Mask Parameters -->
+                                <p class="text-muted mb-3">
+                                    <strong>Feasibility mask:</strong> Hard-to-access locations in which it is not possible to build plants are filtered out.
+                                </p>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.max_altitude.id_for_label }}" class="col-sm-4 col-form-label">Maximum altitude (m):</label>
+                                    <div class="col-sm-8">
+                                        {{ form.max_altitude }}
+                                        {% if form.max_altitude.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.max_altitude.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.max_altitude.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.max_slope.id_for_label }}" class="col-sm-4 col-form-label">Maximum slope (degrees):</label>
+                                    <div class="col-sm-8">
+                                        {{ form.max_slope }}
+                                        {% if form.max_slope.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.max_slope.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.max_slope.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.max_latitude.id_for_label }}" class="col-sm-4 col-form-label">Maximum latitude (°):</label>
+                                    <div class="col-sm-8">
+                                        {{ form.max_latitude }}
+                                        {% if form.max_latitude.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.max_latitude.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.max_latitude.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <!-- Land Use Land Cover -->
+                                <p class="text-muted mb-3 mt-3"><strong>Land Use Land Cover:</strong> Bare areas are preferred over busy locations (e.g., cities) or areas with high ecological value (e.g., forests) to build new plants.</p>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.include_lulc_cost.id_for_label }}" class="col-sm-4 col-form-label">{{ form.include_lulc_cost.label }}:</label>
+                                    <div class="col-sm-8">
+                                        <div class="form-check">
+                                            {{ form.include_lulc_cost }}
+                                            <label class="form-check-label" for="{{ form.include_lulc_cost.id_for_label }}">
+                                                {{ form.include_lulc_cost.help_text }}
+                                            </label>
+                                        </div>
+                                        {% if form.include_lulc_cost.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.include_lulc_cost.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <div class="text-end mt-3">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetGeospatialSettings()">Return to default settings</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        {% if form.errors %}
+                        <div class="alert alert-danger">
+                            <h6>Please correct the following errors:</h6>
+                            <ul>
+                                {% if form.non_field_errors %}
+                                    {% for error in form.non_field_errors %}
+                                    <li>{{ error }}</li>
+                                    {% endfor %}
+                                {% endif %}
+                                {% for field, errors in form.errors.items %}
+                                    {# Skip '__all__' errors - these are technology errors shown in technology section #}
+                                    {% if field != '__all__' %}
+                                        {% for error in errors %}
+                                        <li><strong>{{ field }}:</strong> {{ error }}</li>
+                                        {% endfor %}
+                                    {% endif %}
+                                {% endfor %}
+                            </ul>
+                        </div>
+                        {% endif %}
+
+                        <div class="d-flex justify-content-between mt-4">
+                            <a href="{% url 'modelrun-list' %}" class="btn btn-secondary">Cancel</a>
+                            <button type="submit" class="btn btn-primary">Create Simulation</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
