@@ -633,51 +633,51 @@ jobs:
           export README_EXECUTABLE="$EXECUTABLE_NAME"
           
           cat <<'EOF' > README-template.txt
-# STEEL-IQ Application with Task Worker
+          # STEEL-IQ Application with Task Worker
 
-**Build Information:**
-- Platform: ${README_PLATFORM}
-- Commit: ${README_COMMIT}
-- Branch: ${README_BRANCH}
-- Build Date: ${README_BUILD_DATE}
-- Original Size: ${README_TOTAL_SIZE} MB (${README_FILE_COUNT} files)
-- Compressed Size: ${README_ZIP_SIZE} MB
+          **Build Information:**
+          - Platform: ${README_PLATFORM}
+          - Commit: ${README_COMMIT}
+          - Branch: ${README_BRANCH}
+          - Build Date: ${README_BUILD_DATE}
+          - Original Size: ${README_TOTAL_SIZE} MB (${README_FILE_COUNT} files)
+          - Compressed Size: ${README_ZIP_SIZE} MB
 
-**Features:**
-- Django web server for the user interface
-- Django Task Worker (django_tasks) for background job processing
-- Fully portable Python environment (no dependencies required)
+          **Features:**
+          - Django web server for the user interface
+          - Django Task Worker (django_tasks) for background job processing
+          - Fully portable Python environment (no dependencies required)
 
-**Installation Instructions:**
-1. Download the archive file: ${README_ZIP_FILENAME}
-2. Extract the archive to your desired location
-3. Navigate to the extracted folder
-4. ${README_INSTALL_STEP}
+          **Installation Instructions:**
+          1. Download the archive file: ${README_ZIP_FILENAME}
+          2. Extract the archive to your desired location
+          3. Navigate to the extracted folder
+          4. ${README_INSTALL_STEP}
 
-**System Requirements:**
-${README_REQUIREMENTS}
+          **System Requirements:**
+          ${README_REQUIREMENTS}
 
-**What's Running:**
-When you start the application, the following services automatically start:
-1. Django database migrations (ensures database is up to date)
-2. Django web server (serves the user interface on http://127.0.0.1:8000)
-3. Django Task Worker (processes background jobs from the database queue)
-4. Electron window (displays the Django web interface)
+          **What's Running:**
+          When you start the application, the following services automatically start:
+          1. Django database migrations (ensures database is up to date)
+          2. Django web server (serves the user interface on http://127.0.0.1:8000)
+          3. Django Task Worker (processes background jobs from the database queue)
+          4. Electron window (displays the Django web interface)
 
-**Background Jobs:**
-The built-in task worker will automatically process any background jobs you submit
-through django_tasks. Jobs are stored in the SQLite database and processed
-asynchronously by the worker.
+          **Background Jobs:**
+          The built-in task worker will automatically process any background jobs you submit
+          through django_tasks. Jobs are stored in the SQLite database and processed
+          asynchronously by the worker.
 
-**Contents:**
-- ${README_EXECUTABLE} (main application)
-- Django backend bundle with Python environment
-- Django Task Worker (django_tasks) for background job processing
-- SQLite database for data storage and job queue
-- All necessary libraries and dependencies
-EOF
+          **Contents:**
+          - ${README_EXECUTABLE} (main application)
+          - Django backend bundle with Python environment
+          - Django Task Worker (django_tasks) for background job processing
+          - SQLite database for data storage and job queue
+          - All necessary libraries and dependencies
+          EOF
 
-          envsubst '$README_PLATFORM $README_COMMIT $README_BRANCH $README_BUILD_DATE $README_TOTAL_SIZE $README_FILE_COUNT $README_ZIP_SIZE $README_ZIP_FILENAME $README_INSTALL_STEP $README_REQUIREMENTS $README_EXECUTABLE' < README-template.txt > "README-$PLATFORM.txt"
+          envsubst '$README_PLATFORM $README_COMMIT $README_BRANCH $README_BUILD_DATE $README_TOTAL_SIZE $README_FILE_COUNT $README_ZIP_SIZE $README_ZIP_FILENAME $README_INSTALL_STEP $README_REQUIREMENTS $README_EXECUTABLE' < README-template.txt | sed 's/^          //' > "README-$PLATFORM.txt"
           rm -f README-template.txt
           
           aws s3 cp "README-$PLATFORM.txt" "$S3_PATH/README-$PLATFORM.txt"
