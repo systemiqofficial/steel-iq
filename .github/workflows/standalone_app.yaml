@@ -605,73 +605,64 @@ jobs:
           echo "[OK] Archive file uploaded successfully!"
           aws s3 ls "$S3_PATH/$ZIP_FILENAME" --human-readable
           
-          cat > "README-$PLATFORM.txt" << 'EOF'
-        # STEEL-IQ Application with Task Worker
-        
-        **Build Information:**
-        - Platform: PLATFORM_REPLACE
-        - Commit: COMMIT_REPLACE
-        - Branch: BRANCH_REPLACE
-        - Build Date: DATE_REPLACE
-        - Original Size: SIZE_REPLACE MB (COUNT_REPLACE files)
-        - Compressed Size: ZIP_SIZE_REPLACE MB
-        
-        **Features:**
-        - Django web server for the user interface
-        - Django Task Worker for background job processing (django_tasks)
-        - Fully portable Python environment (no dependencies required)
-        
-        **Installation Instructions:**
-        1. Download the archive file: FILENAME_REPLACE
-        2. Extract the archive to your desired location
-        3. Navigate to the extracted folder
-        4. EXEC_REPLACE
-        
-        **System Requirements:**
-        REQUIREMENTS_REPLACE
-        
-        **What's Running:**
-        When you start the application, the following services automatically start:
-        1. Django database migrations (ensures database is up to date)
-        2. Django web server (serves the user interface on http://127.0.0.1:8000)
-        3. Django Task Worker (processes background jobs from the database queue)
-        4. Electron window (displays the Django web interface)
-        
-        **Background Jobs:**
-        The built-in task worker will automatically process any background jobs you submit
-        through django_tasks. Jobs are stored in the SQLite database and processed
-        asynchronously by the worker.
-        
-        **Contents:**
-        - EXECUTABLE_REPLACE (main application)
-        - Django backend bundle with Python environment
-        - Django Task Worker (django_tasks) for background job processing
-        - SQLite database for data storage and job queue
-        - All necessary libraries and dependencies
-        EOF
-          
-          sed -i.bak "s/PLATFORM_REPLACE/$PLATFORM/g" "README-$PLATFORM.txt"
-          sed -i.bak "s/COMMIT_REPLACE/${SHORT_SHA} (full: ${{ github.sha }})/g" "README-$PLATFORM.txt"
-          sed -i.bak "s/BRANCH_REPLACE/${{ github.ref_name }}/g" "README-$PLATFORM.txt"
-          sed -i.bak "s/DATE_REPLACE/$(date -u '+%Y-%m-%d %H:%M:%S UTC')/g" "README-$PLATFORM.txt"
-          sed -i.bak "s/SIZE_REPLACE/${total_size_mb}/g" "README-$PLATFORM.txt"
-          sed -i.bak "s/COUNT_REPLACE/$file_count/g" "README-$PLATFORM.txt"
-          sed -i.bak "s/ZIP_SIZE_REPLACE/${zip_size_mb}/g" "README-$PLATFORM.txt"
-          sed -i.bak "s/FILENAME_REPLACE/$ZIP_FILENAME/g" "README-$PLATFORM.txt"
-          sed -i.bak "s/EXECUTABLE_REPLACE/${{ matrix.executable_name }}/g" "README-$PLATFORM.txt"
+          BUILD_DATE=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          EXECUTABLE_NAME="${{ matrix.executable_name }}"
           
           if [[ "$PLATFORM" == "windows" ]]; then
-            sed -i.bak "s/EXEC_REPLACE/Run STEEL-IQ.exe/g" "README-$PLATFORM.txt"
-            sed -i.bak "s/REQUIREMENTS_REPLACE/- Windows 10 or later - No additional dependencies required/g" "README-$PLATFORM.txt"
+            INSTALL_STEP="Run \`STEEL-IQ.exe\`"
+            REQUIREMENTS="- Windows 10 or later\n- No additional dependencies required"
           elif [[ "$PLATFORM" == "macos" ]]; then
-            sed -i.bak "s/EXEC_REPLACE/Run STEEL-IQ.app (right-click and select Open first time)/g" "README-$PLATFORM.txt"
-            sed -i.bak "s/REQUIREMENTS_REPLACE/- macOS 10.15 or later - No additional dependencies required/g" "README-$PLATFORM.txt"
+            INSTALL_STEP="Run \`STEEL-IQ.app\` (right-click and select 'Open' the first time)"
+            REQUIREMENTS="- macOS 10.15 or later\n- No additional dependencies required"
           else
-            sed -i.bak "s/EXEC_REPLACE/Make the AppImage executable (\`chmod +x STEEL-IQ.AppImage\`) then run \`./STEEL-IQ.AppImage\`/g" "README-$PLATFORM.txt"
-            sed -i.bak "s/REQUIREMENTS_REPLACE/- 64-bit Linux (tested on Ubuntu 22.04+) - FUSE 2 support for AppImage/g" "README-$PLATFORM.txt"
+            INSTALL_STEP="Make the AppImage executable (\`chmod +x STEEL-IQ.AppImage\`) then run \`./STEEL-IQ.AppImage\`"
+            REQUIREMENTS="- 64-bit Linux (tested on Ubuntu 22.04+)\n- FUSE 2 support for AppImage"
           fi
           
-          rm -f "README-$PLATFORM.txt.bak"
+          cat <<EOF > "README-$PLATFORM.txt"
+# STEEL-IQ Application with Task Worker
+
+**Build Information:**
+- Platform: $PLATFORM
+- Commit: $SHORT_SHA (full: ${{ github.sha }})
+- Branch: ${{ github.ref_name }}
+- Build Date: $BUILD_DATE
+- Original Size: ${total_size_mb} MB ($file_count files)
+- Compressed Size: ${zip_size_mb} MB
+
+**Features:**
+- Django web server for the user interface
+- Django Task Worker for background job processing (django_tasks)
+- Fully portable Python environment (no dependencies required)
+
+**Installation Instructions:**
+1. Download the archive file: $ZIP_FILENAME
+2. Extract the archive to your desired location
+3. Navigate to the extracted folder
+4. $INSTALL_STEP
+
+**System Requirements:**
+$REQUIREMENTS
+
+**What's Running:**
+When you start the application, the following services automatically start:
+1. Django database migrations (ensures database is up to date)
+2. Django web server (serves the user interface on http://127.0.0.1:8000)
+3. Django Task Worker (processes background jobs from the database queue)
+4. Electron window (displays the Django web interface)
+
+**Background Jobs:**
+The built-in task worker will automatically process any background jobs you submit
+through django_tasks. Jobs are stored in the SQLite database and processed
+asynchronously by the worker.
+
+**Contents:**
+- $EXECUTABLE_NAME (main application)
+- Django backend bundle with Python environment
+- Django Task Worker (django_tasks) for background job processing
+- SQLite database for data storage and job queue
+- All necessary libraries and dependencies
+EOF
           
           aws s3 cp "README-$PLATFORM.txt" "$S3_PATH/README-$PLATFORM.txt"
           echo "[OK] README file uploaded"
