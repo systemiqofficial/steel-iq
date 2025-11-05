@@ -633,7 +633,7 @@ jobs:
           export README_REQUIREMENTS="$REQUIREMENTS_TEXT"
           export README_EXECUTABLE="$EXECUTABLE_NAME"
           
-          python -c "import os, textwrap; env=os.environ; content=textwrap.dedent(\"\"\"\
+          python -c 'import os, textwrap; env = os.environ; platform = env["README_PLATFORM"]; content = textwrap.dedent("""\
 # STEEL-IQ Application with Task Worker
 
 **Build Information:**
@@ -676,7 +676,7 @@ asynchronously by the worker.
 - Django Task Worker (django_tasks) for background job processing
 - SQLite database for data storage and job queue
 - All necessary libraries and dependencies
-\"\"\").format(**env); output_path=f\"README-{env['README_PLATFORM']}.txt\"; open(output_path,'w',encoding='utf-8').write(content.strip()+\"\\n\")"
+""").format(**env); output_path = f"README-{platform}.txt"; open(output_path, "w", encoding="utf-8").write(content.strip() + "\n")'
           
           aws s3 cp "README-$PLATFORM.txt" "$S3_PATH/README-$PLATFORM.txt"
           echo "[OK] README file uploaded"
