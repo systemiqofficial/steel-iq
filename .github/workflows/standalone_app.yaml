@@ -633,20 +633,16 @@ jobs:
           export README_REQUIREMENTS="$REQUIREMENTS_TEXT"
           export README_EXECUTABLE="$EXECUTABLE_NAME"
           
-          python - <<'PY'
-import os
-import textwrap
-
-content = f"""
+          python -c "import os, textwrap; env=os.environ; content=textwrap.dedent(\"\"\"\
 # STEEL-IQ Application with Task Worker
 
 **Build Information:**
-- Platform: {os.environ['README_PLATFORM']}
-- Commit: {os.environ['README_COMMIT_SHORT']} (full: {os.environ['README_COMMIT_FULL']})
-- Branch: {os.environ['README_BRANCH']}
-- Build Date: {os.environ['README_BUILD_DATE']}
-- Original Size: {os.environ['README_TOTAL_SIZE']} MB ({os.environ['README_FILE_COUNT']} files)
-- Compressed Size: {os.environ['README_ZIP_SIZE']} MB
+- Platform: {README_PLATFORM}
+- Commit: {README_COMMIT_SHORT} (full: {README_COMMIT_FULL})
+- Branch: {README_BRANCH}
+- Build Date: {README_BUILD_DATE}
+- Original Size: {README_TOTAL_SIZE} MB ({README_FILE_COUNT} files)
+- Compressed Size: {README_ZIP_SIZE} MB
 
 **Features:**
 - Django web server for the user interface
@@ -654,13 +650,13 @@ content = f"""
 - Fully portable Python environment (no dependencies required)
 
 **Installation Instructions:**
-1. Download the archive file: {os.environ['README_ZIP_FILENAME']}
+1. Download the archive file: {README_ZIP_FILENAME}
 2. Extract the archive to your desired location
 3. Navigate to the extracted folder
-4. {os.environ['README_INSTALL_STEP']}
+4. {README_INSTALL_STEP}
 
 **System Requirements:**
-{os.environ['README_REQUIREMENTS']}
+{README_REQUIREMENTS}
 
 **What's Running:**
 When you start the application, the following services automatically start:
@@ -675,17 +671,12 @@ through django_tasks. Jobs are stored in the SQLite database and processed
 asynchronously by the worker.
 
 **Contents:**
-- {os.environ['README_EXECUTABLE']} (main application)
+- {README_EXECUTABLE} (main application)
 - Django backend bundle with Python environment
 - Django Task Worker (django_tasks) for background job processing
 - SQLite database for data storage and job queue
 - All necessary libraries and dependencies
-"""
-
-output_path = f"README-{os.environ['README_PLATFORM']}.txt"
-with open(output_path, "w", encoding="utf-8") as fh:
-    fh.write(textwrap.dedent(content).lstrip() + "\n")
-PY
+\"\"\").format(**env); output_path=f\"README-{env['README_PLATFORM']}.txt\"; open(output_path,'w',encoding='utf-8').write(content.strip()+\"\\n\")"
           
           aws s3 cp "README-$PLATFORM.txt" "$S3_PATH/README-$PLATFORM.txt"
           echo "[OK] README file uploaded"
