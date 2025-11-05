@@ -13,6 +13,7 @@ const IS_MAC = process.platform === 'darwin';
 const IS_LINUX = process.platform === 'linux';
 const SHARED_LIB_REGEX = IS_WIN ? /\.dll$/i : IS_MAC ? /\.dylib$/ : /\.so(\.\d+)*$/;
 const isSharedLib = (filename) => SHARED_LIB_REGEX.test(filename);
+const SHARED_LIB_DIR_NAMES = ['.dylibs', '.libs'];
 const PYTHON_STANDALONE_RELEASE = '20251007';
 
 const projectRoot = path.join(__dirname, '..', '..');
@@ -815,10 +816,9 @@ print(f"Found {len(netcdf_dlls)} NetCDF DLLs: {', '.join(netcdf_dlls[:3])}{'...'
       : path.join(tempVenvPath, 'lib');
     fs.mkdirSync(tempLibDirVerify, { recursive: true });
     const sharedLibPackages = ['h5py', 'netCDF4', 'h5netcdf'];
-    const sharedLibDirNames = ['.dylibs', '.libs'];
     const verifyLibsCopied = new Set();
     sharedLibPackages.forEach(pkg => {
-      sharedLibDirNames.forEach(dirName => {
+      SHARED_LIB_DIR_NAMES.forEach(dirName => {
         const pkgLibDir = path.join(tempSitePackagesForVerify, pkg, dirName);
         if (fs.existsSync(pkgLibDir)) {
           const sharedLibFiles = fs.readdirSync(pkgLibDir).filter(isSharedLib);
@@ -1222,11 +1222,10 @@ print("[OK] All NetCDF4 and HDF5 packages are installed")
     
     // Check for shared libraries in site-packages subdirectories (common in wheels)
     const packagesToCheck = ['netCDF4', 'h5py', 'h5netcdf'];
-    const sharedLibDirNames = ['.dylibs', '.libs'];
     let sharedLibsCopied = 0;
     
     for (const pkg of packagesToCheck) {
-      for (const dirName of sharedLibDirNames) {
+      for (const dirName of SHARED_LIB_DIR_NAMES) {
         const pkgLibDir = path.join(tempSitePackages, pkg, dirName);
         if (fs.existsSync(pkgLibDir)) {
           const sharedLibFiles = fs.readdirSync(pkgLibDir).filter(isSharedLib);
