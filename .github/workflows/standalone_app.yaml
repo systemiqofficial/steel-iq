@@ -633,7 +633,43 @@ jobs:
           export README_REQUIREMENTS="$REQUIREMENTS_TEXT"
           export README_EXECUTABLE="$EXECUTABLE_NAME"
           
-          python -c 'import os; env=os.environ; platform=env["README_PLATFORM"]; lines=["# STEEL-IQ Application with Task Worker","","**Build Information:**",f"- Platform: {env[\'README_PLATFORM\']}",f"- Commit: {env[\'README_COMMIT_SHORT\']} (full: {env[\'README_COMMIT_FULL\']})",f"- Branch: {env[\'README_BRANCH\']}",f"- Build Date: {env[\'README_BUILD_DATE\']}",f"- Original Size: {env[\'README_TOTAL_SIZE\']} MB ({env[\'README_FILE_COUNT\']} files)",f"- Compressed Size: {env[\'README_ZIP_SIZE\']} MB","", "**Features:**","- Django web server for the user interface","- Django Task Worker (django_tasks) for background job processing","- Fully portable Python environment (no dependencies required)","", "**Installation Instructions:**",f\"1. Download the archive file: {env['README_ZIP_FILENAME']}\","2. Extract the archive to your desired location","3. Navigate to the extracted folder",f\"4. {env['README_INSTALL_STEP']}\","", "**System Requirements:**",env["README_REQUIREMENTS"],"", "**What's Running:**","When you start the application, the following services automatically start:","1. Django database migrations (ensures database is up to date)","2. Django web server (serves the user interface on http://127.0.0.1:8000)","3. Django Task Worker (processes background jobs from the database queue)","4. Electron window (displays the Django web interface)","", "**Background Jobs:**","The built-in task worker will automatically process any background jobs you submit","through django_tasks. Jobs are stored in the SQLite database and processed","asynchronously by the worker.","", "**Contents:**",f\"- {env['README_EXECUTABLE']} (main application)\","- Django backend bundle with Python environment","- Django Task Worker (django_tasks) for background job processing","- SQLite database for data storage and job queue","- All necessary libraries and dependencies"]; content="\\n".join(lines).strip()+"\\n"; open(f"README-{platform}.txt","w",encoding="utf-8").write(content)'
+          {
+            printf '# STEEL-IQ Application with Task Worker\n\n'
+            printf '**Build Information:**\n'
+            printf '- Platform: %s\n' "$PLATFORM"
+            printf '- Commit: %s (full: %s)\n' "$SHORT_SHA" "${{ github.sha }}"
+            printf '- Branch: %s\n' "${{ github.ref_name }}"
+            printf '- Build Date: %s\n' "$BUILD_DATE"
+            printf '- Original Size: %s MB (%s files)\n' "${total_size_mb}" "$file_count"
+            printf '- Compressed Size: %s MB\n\n' "${zip_size_mb}"
+            printf '**Features:**\n'
+            printf '- Django web server for the user interface\n'
+            printf '- Django Task Worker (django_tasks) for background job processing\n'
+            printf '- Fully portable Python environment (no dependencies required)\n\n'
+            printf '**Installation Instructions:**\n'
+            printf '1. Download the archive file: %s\n' "$ZIP_FILENAME"
+            printf '2. Extract the archive to your desired location\n'
+            printf '3. Navigate to the extracted folder\n'
+            printf '4. %s\n\n' "$INSTALL_STEP"
+            printf '**System Requirements:**\n'
+            printf '%s\n\n' "$REQUIREMENTS_TEXT"
+            printf '%s\n' "**What's Running:**"
+            printf 'When you start the application, the following services automatically start:\n'
+            printf '1. Django database migrations (ensures database is up to date)\n'
+            printf '2. Django web server (serves the user interface on http://127.0.0.1:8000)\n'
+            printf '3. Django Task Worker (processes background jobs from the database queue)\n'
+            printf '4. Electron window (displays the Django web interface)\n\n'
+            printf '**Background Jobs:**\n'
+            printf 'The built-in task worker will automatically process any background jobs you submit\n'
+            printf 'through django_tasks. Jobs are stored in the SQLite database and processed\n'
+            printf 'asynchronously by the worker.\n\n'
+            printf '**Contents:**\n'
+            printf '- %s (main application)\n' "$EXECUTABLE_NAME"
+            printf '- Django backend bundle with Python environment\n'
+            printf '- Django Task Worker (django_tasks) for background job processing\n'
+            printf '- SQLite database for data storage and job queue\n'
+            printf '- All necessary libraries and dependencies\n'
+          } > "README-$PLATFORM.txt"
           
           aws s3 cp "README-$PLATFORM.txt" "$S3_PATH/README-$PLATFORM.txt"
           echo "[OK] README file uploaded"
