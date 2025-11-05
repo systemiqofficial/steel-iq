@@ -632,66 +632,14 @@ jobs:
           export README_INSTALL_STEP="$INSTALL_STEP"
           export README_REQUIREMENTS="$REQUIREMENTS_TEXT"
           export README_EXECUTABLE="$EXECUTABLE_NAME"
+          export README_OUTPUT_PATH="README-$PLATFORM.txt"
           
-          python - <<'PY'
-import os
-import textwrap
-
-env = os.environ
-content = textwrap.dedent(f"""\
-# STEEL-IQ Application with Task Worker
-
-**Build Information:**
-- Platform: {env['README_PLATFORM']}
-- Commit: {env['README_COMMIT_SHORT']} (full: {env['README_COMMIT_FULL']})
-- Branch: {env['README_BRANCH']}
-- Build Date: {env['README_BUILD_DATE']}
-- Original Size: {env['README_TOTAL_SIZE']} MB ({env['README_FILE_COUNT']} files)
-- Compressed Size: {env['README_ZIP_SIZE']} MB
-
-**Features:**
-- Django web server for the user interface
-- Django Task Worker (django_tasks) for background job processing
-- Fully portable Python environment (no dependencies required)
-
-**Installation Instructions:**
-1. Download the archive file: {env['README_ZIP_FILENAME']}
-2. Extract the archive to your desired location
-3. Navigate to the extracted folder
-4. {env['README_INSTALL_STEP']}
-
-**System Requirements:**
-{env['README_REQUIREMENTS']}
-
-**What's Running:**
-When you start the application, the following services automatically start:
-1. Django database migrations (ensures database is up to date)
-2. Django web server (serves the user interface on http://127.0.0.1:8000)
-3. Django Task Worker (processes background jobs from the database queue)
-4. Electron window (displays the Django web interface)
-
-**Background Jobs:**
-The built-in task worker will automatically process any background jobs you submit
-through django_tasks. Jobs are stored in the SQLite database and processed
-asynchronously by the worker.
-
-**Contents:**
-- {env['README_EXECUTABLE']} (main application)
-- Django backend bundle with Python environment
-- Django Task Worker (django_tasks) for background job processing
-- SQLite database for data storage and job queue
-- All necessary libraries and dependencies
-""")
-
-output_path = f"README-{env['README_PLATFORM']}.txt"
-with open(output_path, "w", encoding="utf-8") as fh:
-    fh.write(content)
-PY
+          python "$GITHUB_WORKSPACE/.github/scripts/generate_readme.py"
           
-          aws s3 cp "README-$PLATFORM.txt" "$S3_PATH/README-$PLATFORM.txt"
+          aws s3 cp "$README_OUTPUT_PATH" "${S3_PATH}/${README_OUTPUT_PATH}"
           echo "[OK] README file uploaded"
           
-          rm -f "$ZIP_PATH" "README-$PLATFORM.txt"
+          rm -f "$ZIP_PATH" "$README_OUTPUT_PATH"
           
           echo "S3_PATH=$S3_PATH" >> $GITHUB_ENV
           echo "ZIP_FILENAME=$ZIP_FILENAME" >> $GITHUB_ENV
