@@ -8,6 +8,13 @@ import crypto from 'crypto';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const IS_WIN = process.platform === 'win32';
+const IS_MAC = process.platform === 'darwin';
+const IS_LINUX = process.platform === 'linux';
+const SHARED_LIB_REGEX = IS_WIN ? /\.dll$/i : IS_MAC ? /\.dylib$/ : /\.so(\.\d+)*$/;
+const isSharedLib = (filename) => SHARED_LIB_REGEX.test(filename);
+const PYTHON_STANDALONE_RELEASE = '20251007';
+
 const projectRoot = path.join(__dirname, '..', '..');
 const djangoSource = path.join(projectRoot, 'src', 'django');
 const steeloweb = path.join(projectRoot, 'src', 'steeloweb');
@@ -16,7 +23,6 @@ const buildDir = path.join(__dirname, 'django-bundle');
 const TARGET_PYTHON_VERSION = '3.13.8';
 const TARGET_PYTHON_MINOR = TARGET_PYTHON_VERSION.split('.').slice(0, 2).join('.');
 const TARGET_PYTHON_BINARY = `python${TARGET_PYTHON_MINOR}`;
-const TARGET_LIBPYTHON_BASENAME = `libpython${TARGET_PYTHON_MINOR}.dylib`;
 const TARGET_PYTHON_MINOR_NO_DOT = TARGET_PYTHON_MINOR.replace('.', '');
 
 console.log('Building Django bundle for production...');
@@ -45,7 +51,7 @@ if (fs.existsSync(readmePath)) {
 }
 
 // Create portable Python environment (Windows only for now)
-if (process.platform === 'win32') {
+if (IS_WIN) {
   console.log('Creating portable Python environment for Windows...');
   
   let portablePythonCreated = false;
@@ -705,8 +711,9 @@ print(f"Found {len(netcdf_dlls)} NetCDF DLLs: {', '.join(netcdf_dlls[:3])}{'...'
       }
     }
   }
-} else if (process.platform === 'darwin') {
-  console.log('Creating portable Python environment for macOS...');
+} else if (IS_MAC || IS_LINUX) {
+  const platformLabel = IS_MAC ? 'macOS' : 'Linux';
+  console.log(`Creating portable Python environment for ${platformLabel}...`);
   
   // Define tempVenvPath and isPythonStandalone outside try block so they're accessible in catch block
   const tempVenvPath = path.join(buildDir, 'temp-venv');
@@ -720,9 +727,12 @@ print(f"Found {len(netcdf_dlls)} NetCDF DLLs: {', '.join(netcdf_dlls[:3])}{'...'
     console.log('Python-build-standalone not found, downloading...');
     
     try {
-      // Determine architecture
+      // Determine architecture triple for python-build-standalone
       const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
-      const pythonStandaloneUrl = `https://github.com/astral-sh/python-build-standalone/releases/download/20251007/cpython-3.13.8+20251007-${arch}-apple-darwin-install_only_stripped.tar.gz`;
+      const targetTriple = IS_MAC
+        ? `${arch}-apple-darwin`
+        : `${arch}-unknown-linux-gnu`;
+      const pythonStandaloneUrl = `https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_STANDALONE_RELEASE}/cpython-${TARGET_PYTHON_VERSION}+${PYTHON_STANDALONE_RELEASE}-${targetTriple}-install_only_stripped.tar.gz`;
       
       console.log(`Downloading from: ${pythonStandaloneUrl}`);
       console.log('This may take a few minutes...');
@@ -751,7 +761,11 @@ print(f"Found {len(netcdf_dlls)} NetCDF DLLs: {', '.join(netcdf_dlls[:3])}{'...'
       console.error('Failed to download python-build-standalone:', downloadError.message);
       console.error('You can manually download it by running:');
       console.error('  cd src/electron');
-      console.error('  curl -L https://github.com/astral-sh/python-build-standalone/releases/download/20251007/cpython-3.13.8+20251007-aarch64-apple-darwin-install_only_stripped.tar.gz -o python-standalone.tar.gz');
+      const fallbackArch = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
+      const fallbackTriple = IS_MAC
+        ? `${fallbackArch}-apple-darwin`
+        : `${fallbackArch}-unknown-linux-gnu`;
+      console.error(`  curl -L https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_STANDALONE_RELEASE}/cpython-${TARGET_PYTHON_VERSION}+${PYTHON_STANDALONE_RELEASE}-${fallbackTriple}-install_only_stripped.tar.gz -o python-standalone.tar.gz`);
       console.error('  mkdir -p python-standalone');
       console.error('  tar -xzf python-standalone.tar.gz -C python-standalone');
     }
@@ -785,7 +799,7 @@ print(f"Found {len(netcdf_dlls)} NetCDF DLLs: {', '.join(netcdf_dlls[:3])}{'...'
       stdio: 'inherit'
     });
 
-    console.log('Preparing HDF5/NetCDF dylibs for verification...');
+    console.log('Preparing HDF5/NetCDF shared libraries for verification...');
     const tempPythonBinary = process.platform === 'win32'
       ? path.join(tempVenvPath, 'Scripts', 'python.exe')
       : path.join(tempVenvPath, 'bin', 'python');
@@ -800,17 +814,25 @@ print(f"Found {len(netcdf_dlls)} NetCDF DLLs: {', '.join(netcdf_dlls[:3])}{'...'
       ? path.join(tempVenvPath, 'DLLs')
       : path.join(tempVenvPath, 'lib');
     fs.mkdirSync(tempLibDirVerify, { recursive: true });
-    const dylibPackages = ['h5py', 'netCDF4', 'h5netcdf'];
-    dylibPackages.forEach(pkg => {
-      const pkgDylibDir = path.join(tempSitePackagesForVerify, pkg, '.dylibs');
-      if (fs.existsSync(pkgDylibDir)) {
-        const dylibFiles = fs.readdirSync(pkgDylibDir).filter(f => f.endsWith(process.platform === 'win32' ? '.dll' : '.dylib'));
-        dylibFiles.forEach(file => {
-          const src = path.join(pkgDylibDir, file);
-          const dest = path.join(tempLibDirVerify, file);
-          fs.copyFileSync(src, dest);
-        });
-      }
+    const sharedLibPackages = ['h5py', 'netCDF4', 'h5netcdf'];
+    const sharedLibDirNames = ['.dylibs', '.libs'];
+    const verifyLibsCopied = new Set();
+    sharedLibPackages.forEach(pkg => {
+      sharedLibDirNames.forEach(dirName => {
+        const pkgLibDir = path.join(tempSitePackagesForVerify, pkg, dirName);
+        if (fs.existsSync(pkgLibDir)) {
+          const sharedLibFiles = fs.readdirSync(pkgLibDir).filter(isSharedLib);
+          sharedLibFiles.forEach(file => {
+            if (verifyLibsCopied.has(file)) {
+              return;
+            }
+            const src = path.join(pkgLibDir, file);
+            const dest = path.join(tempLibDirVerify, file);
+            fs.copyFileSync(src, dest);
+            verifyLibsCopied.add(file);
+          });
+        }
+      });
     });
 
     // Verify critical packages are installed
@@ -849,20 +871,24 @@ print("[OK] All NetCDF4 and HDF5 packages are installed")
     
     try {
       const verifyEnv = { ...process.env, PYTHONNOUSERSITE: '1' };
-      if (process.platform === 'darwin') {
+      const libEnvKey = IS_MAC ? 'DYLD_LIBRARY_PATH' : IS_LINUX ? 'LD_LIBRARY_PATH' : undefined;
+      if (libEnvKey) {
         const candidatePaths = [
           tempLibDirVerify,
           path.join(tempSitePackagesForVerify, 'h5py', '.dylibs'),
           path.join(tempSitePackagesForVerify, 'netCDF4', '.dylibs'),
-          path.join(tempSitePackagesForVerify, 'h5netcdf', '.dylibs')
+          path.join(tempSitePackagesForVerify, 'h5netcdf', '.dylibs'),
+          path.join(tempSitePackagesForVerify, 'h5py', '.libs'),
+          path.join(tempSitePackagesForVerify, 'netCDF4', '.libs'),
+          path.join(tempSitePackagesForVerify, 'h5netcdf', '.libs')
         ].filter(dir => fs.existsSync(dir));
         if (candidatePaths.length > 0) {
-          verifyEnv.DYLD_LIBRARY_PATH = candidatePaths.concat(
-            verifyEnv.DYLD_LIBRARY_PATH ? verifyEnv.DYLD_LIBRARY_PATH.split(':') : []
+          verifyEnv[libEnvKey] = candidatePaths.concat(
+            verifyEnv[libEnvKey] ? verifyEnv[libEnvKey].split(':') : []
           ).filter(Boolean).join(':');
         }
         if (process.env.BUILD_DEBUG === '1') {
-          console.log('DEBUG verify DYLD_LIBRARY_PATH:', verifyEnv.DYLD_LIBRARY_PATH);
+          console.log(`DEBUG verify ${libEnvKey}:`, verifyEnv[libEnvKey]);
         }
       }
 
@@ -879,7 +905,7 @@ print("[OK] All NetCDF4 and HDF5 packages are installed")
     }
 
     // Now create the portable Python directory structure (same as Windows approach)
-    console.log('Creating portable Python structure for macOS...');
+    console.log(`Creating portable Python structure for ${platformLabel}...`);
     const pythonDir = path.join(buildDir, 'python');
     fs.mkdirSync(pythonDir, { recursive: true });
     fs.mkdirSync(path.join(pythonDir, 'bin'), { recursive: true });
@@ -967,12 +993,17 @@ print("[OK] All NetCDF4 and HDF5 packages are installed")
       
       console.log('[OK] Complete python-build-standalone copied');
       
-      // CRITICAL: Verify bundled libpython dylib exists
-      const libpythonPath = path.join(pythonDir, 'lib', TARGET_LIBPYTHON_BASENAME);
-      if (!fs.existsSync(libpythonPath)) {
-        throw new Error(`CRITICAL: ${TARGET_LIBPYTHON_BASENAME} not found at ${libpythonPath}. Python-build-standalone may be corrupted.`);
+      // CRITICAL: Verify bundled libpython shared library exists
+      const libDir = path.join(pythonDir, 'lib');
+      let libpythonFound = false;
+      if (fs.existsSync(libDir)) {
+        const libCandidates = fs.readdirSync(libDir);
+        libpythonFound = libCandidates.some((file) => file.startsWith(`libpython${TARGET_PYTHON_MINOR}`) && isSharedLib(file));
       }
-      console.log(`[OK] Verified ${TARGET_LIBPYTHON_BASENAME} exists`);
+      if (!libpythonFound) {
+        throw new Error(`CRITICAL: libpython${TARGET_PYTHON_MINOR} shared library not found in ${libDir}. Python-build-standalone may be corrupted.`);
+      }
+      console.log(`[OK] Verified libpython${TARGET_PYTHON_MINOR} shared library exists`);
       
       // Fix symlinks in bin directory
       console.log('Fixing Python symlinks...');
@@ -1030,74 +1061,81 @@ print("[OK] All NetCDF4 and HDF5 packages are installed")
       console.log(`Using system Python at: ${pythonInstallDir}`);
     }
 
-    // Handle Python dylib dependencies for macOS
-    console.log('Handling Python dylib dependencies...');
+    console.log('Handling Python shared library dependencies...');
     
-    // For python-build-standalone, dylibs should already be included
-    if (isPythonStandalone) {
-      console.log('Using python-build-standalone - dylibs already included');
-      // python-build-standalone includes all necessary dylibs
-      // No need to copy or modify them
-    } else {
-      // For system Python, try to find and copy dylibs
-      console.log('Using system Python - searching for dylibs...');
-      
-      // First try otool if available
-      try {
-        const otoolOutput = execSync(`otool -L "${pythonPath}"`, { encoding: 'utf8' });
-        const dylibMatches = otoolOutput.match(/\s+(.*\.dylib)/gm);
+    if (IS_MAC) {
+      // For python-build-standalone, dylibs should already be included
+      if (isPythonStandalone) {
+        console.log('Using python-build-standalone - dylibs already included');
+        // python-build-standalone includes all necessary dylibs
+        // No need to copy or modify them
+      } else {
+        // For system Python, try to find and copy dylibs
+        console.log('Using system Python - searching for dylibs...');
         
-        if (dylibMatches) {
-          const targetLibDir = path.join(pythonDir, 'lib');
-          fs.mkdirSync(targetLibDir, { recursive: true });
+        // First try otool if available
+        try {
+          const otoolOutput = execSync(`otool -L "${pythonPath}"`, { encoding: 'utf8' });
+          const dylibMatches = otoolOutput.match(/\s+(.*\.dylib)/gm);
           
-          dylibMatches.forEach(match => {
-            const dylibPath = match.trim().split(' ')[0];
+          if (dylibMatches) {
+            const targetLibDir = path.join(pythonDir, 'lib');
+            fs.mkdirSync(targetLibDir, { recursive: true });
             
-            // Only copy Python-related dylibs, not system ones
-            if (dylibPath.includes('Python') || dylibPath.includes('python')) {
-              const dylibName = path.basename(dylibPath);
-              console.log(`Found Python dylib: ${dylibPath}`);
+            dylibMatches.forEach(match => {
+              const dylibPath = match.trim().split(' ')[0];
               
-              // Handle @executable_path, @loader_path, @rpath references
-              let actualDylibPath = dylibPath;
-              if (dylibPath.startsWith('@')) {
-                // Try to resolve relative paths
-                const possiblePaths = [
-                  path.join(pythonBaseDir, '..', 'lib', dylibName),
-                  path.join(pythonInstallDir, 'lib', dylibName),
-                  path.join(pythonInstallDir, dylibName),
-                  `/usr/local/opt/python@${TARGET_PYTHON_MINOR}/Frameworks/Python.framework/Versions/${TARGET_PYTHON_MINOR}/lib/${dylibName}`
-                ];
+              // Only copy Python-related dylibs, not system ones
+              if (dylibPath.includes('Python') || dylibPath.includes('python')) {
+                const dylibName = path.basename(dylibPath);
+                console.log(`Found Python dylib: ${dylibPath}`);
                 
-                for (const testPath of possiblePaths) {
-                  if (fs.existsSync(testPath)) {
-                    actualDylibPath = testPath;
-                    break;
+                // Handle @executable_path, @loader_path, @rpath references
+                let actualDylibPath = dylibPath;
+                if (dylibPath.startsWith('@')) {
+                  // Try to resolve relative paths
+                  const possiblePaths = [
+                    path.join(pythonBaseDir, '..', 'lib', dylibName),
+                    path.join(pythonInstallDir, 'lib', dylibName),
+                    path.join(pythonInstallDir, dylibName),
+                    `/usr/local/opt/python@${TARGET_PYTHON_MINOR}/Frameworks/Python.framework/Versions/${TARGET_PYTHON_MINOR}/lib/${dylibName}`
+                  ];
+                  
+                  for (const testPath of possiblePaths) {
+                    if (fs.existsSync(testPath)) {
+                      actualDylibPath = testPath;
+                      break;
+                    }
                   }
                 }
-              }
-              
-              if (fs.existsSync(actualDylibPath)) {
-                const destPath = path.join(targetLibDir, dylibName);
-                console.log(`Copying ${dylibName} from ${actualDylibPath}`);
-                fs.copyFileSync(actualDylibPath, destPath);
                 
-                // Update the copied Python executable to use the bundled dylib
-                try {
-                  execSync(`install_name_tool -change "${dylibPath}" "@executable_path/../lib/${dylibName}" "${path.join(pythonDir, 'bin', 'python')}"`, { stdio: 'inherit' });
-                } catch (e) {
-                  console.log(`Warning: Could not update dylib path with install_name_tool: ${e.message}`);
+                if (fs.existsSync(actualDylibPath)) {
+                  const destPath = path.join(targetLibDir, dylibName);
+                  console.log(`Copying ${dylibName} from ${actualDylibPath}`);
+                  fs.copyFileSync(actualDylibPath, destPath);
+                  
+                  // Update the copied Python executable to use the bundled dylib
+                  try {
+                    execSync(`install_name_tool -change "${dylibPath}" "@executable_path/../lib/${dylibName}" "${path.join(pythonDir, 'bin', 'python')}"`, { stdio: 'inherit' });
+                  } catch (e) {
+                    console.log(`Warning: Could not update dylib path with install_name_tool: ${e.message}`);
+                  }
+                } else {
+                  console.log(`Warning: Could not find dylib at ${actualDylibPath}`);
                 }
-              } else {
-                console.log(`Warning: Could not find dylib at ${actualDylibPath}`);
               }
-            }
-          });
+            });
+          }
+        } catch (e) {
+          console.log(`Note: Could not use otool to analyze dependencies: ${e.message}`);
+          console.log('Falling back to manual dylib search...');
         }
-      } catch (e) {
-        console.log(`Note: Could not use otool to analyze dependencies: ${e.message}`);
-        console.log('Falling back to manual dylib search...');
+      }
+    } else if (IS_LINUX) {
+      if (isPythonStandalone) {
+        console.log('Using python-build-standalone - shared libraries already included for Linux');
+      } else {
+        console.log('Using system Python on Linux - ensure required shared libraries are available on target systems');
       }
     }
 
@@ -1120,10 +1158,10 @@ print("[OK] All NetCDF4 and HDF5 packages are installed")
         libItems.forEach(item => {
           const srcPath = path.join(srcLibDir, item);
           
-          if (fs.statSync(srcPath).isFile() && item.endsWith('.dylib')) {
-            // Copy dylib files directly to python/lib/
+          if (fs.statSync(srcPath).isFile() && isSharedLib(item)) {
+            // Copy shared library files directly to python/lib/
             const destPath = path.join(targetLibDir, item);
-            console.log(`Copying dylib: ${item}`);
+            console.log(`Copying shared lib: ${item}`);
             fs.copyFileSync(srcPath, destPath);
           } else if (fs.statSync(srcPath).isDirectory()) {
             // For directories, copy python standard library
@@ -1148,9 +1186,9 @@ print("[OK] All NetCDF4 and HDF5 packages are installed")
         if (fs.existsSync(libPath)) {
           try {
             const items = fs.readdirSync(libPath);
-            const dylibFiles = items.filter(item => item.endsWith('.dylib'));
+            const dylibFiles = items.filter(item => isSharedLib(item));
             if (dylibFiles.length > 0) {
-              console.log(`Found dylib files in ${libPath}: ${dylibFiles}`);
+              console.log(`Found shared libraries in ${libPath}: ${dylibFiles}`);
               const targetLibDir = path.join(pythonDir, 'lib');
               fs.mkdirSync(targetLibDir, { recursive: true });
               
@@ -1179,46 +1217,49 @@ print("[OK] All NetCDF4 and HDF5 packages are installed")
       fs.cpSync(tempSitePackages, sitePackagesDir, { recursive: true });
     }
 
-    // Copy HDF5, NetCDF, and other scientific computing dylibs
-    console.log('Copying HDF5 and NetCDF dylibs from temp venv...');
+    // Copy HDF5, NetCDF, and other scientific computing shared libraries
+    console.log('Copying HDF5 and NetCDF shared libraries from temp venv...');
     
-    // Check for dylibs in site-packages subdirectories (common in wheels)
+    // Check for shared libraries in site-packages subdirectories (common in wheels)
     const packagesToCheck = ['netCDF4', 'h5py', 'h5netcdf'];
-    let dylibsCopied = 0;
+    const sharedLibDirNames = ['.dylibs', '.libs'];
+    let sharedLibsCopied = 0;
     
     for (const pkg of packagesToCheck) {
-      const pkgDylibDir = path.join(tempSitePackages, pkg, '.dylibs');
-      if (fs.existsSync(pkgDylibDir)) {
-        const dylibFiles = fs.readdirSync(pkgDylibDir).filter(f => f.endsWith('.dylib'));
-        dylibFiles.forEach(dylib => {
-          const src = path.join(pkgDylibDir, dylib);
-          const dest = path.join(pythonDir, 'lib', dylib);
-          if (!fs.existsSync(dest)) {
-            fs.copyFileSync(src, dest);
-            console.log(`  Copied ${dylib} from ${pkg}/.dylibs`);
-            dylibsCopied++;
-          }
-        });
+      for (const dirName of sharedLibDirNames) {
+        const pkgLibDir = path.join(tempSitePackages, pkg, dirName);
+        if (fs.existsSync(pkgLibDir)) {
+          const sharedLibFiles = fs.readdirSync(pkgLibDir).filter(isSharedLib);
+          sharedLibFiles.forEach(sharedLib => {
+            const src = path.join(pkgLibDir, sharedLib);
+            const dest = path.join(pythonDir, 'lib', sharedLib);
+            if (!fs.existsSync(dest)) {
+              fs.copyFileSync(src, dest);
+              console.log(`  Copied ${sharedLib} from ${pkg}/${dirName}`);
+              sharedLibsCopied++;
+            }
+          });
+        }
       }
     }
     
-    // Also check venv lib directory for any HDF5/NetCDF dylibs
+    // Also check venv lib directory for any HDF5/NetCDF shared libraries
     const venvLibDir = path.join(tempVenvPath, 'lib');
     if (fs.existsSync(venvLibDir)) {
-      const dylibFiles = fs.readdirSync(venvLibDir)
-        .filter(f => f.endsWith('.dylib') && (f.includes('hdf5') || f.includes('netcdf') || f.includes('sz') || f.includes('z')));
-      dylibFiles.forEach(dylib => {
-        const src = path.join(venvLibDir, dylib);
-        const dest = path.join(pythonDir, 'lib', dylib);
+      const sharedFiles = fs.readdirSync(venvLibDir)
+        .filter(f => isSharedLib(f) && (f.includes('hdf5') || f.includes('netcdf') || f.includes('sz') || f.includes('z')));
+      sharedFiles.forEach(sharedLib => {
+        const src = path.join(venvLibDir, sharedLib);
+        const dest = path.join(pythonDir, 'lib', sharedLib);
         if (!fs.existsSync(dest)) {
           fs.copyFileSync(src, dest);
-          console.log(`  Copied ${dylib} from venv lib`);
-          dylibsCopied++;
+          console.log(`  Copied ${sharedLib} from venv lib`);
+          sharedLibsCopied++;
         }
       });
     }
     
-    console.log(`Total HDF5/NetCDF dylibs copied: ${dylibsCopied}`);
+    console.log(`Total HDF5/NetCDF shared libraries copied: ${sharedLibsCopied}`);
 
     // Test the portable Python installation
     console.log('Testing portable Python installation...');
@@ -1229,9 +1270,14 @@ print("[OK] All NetCDF4 and HDF5 packages are installed")
       ...process.env,
       PYTHONIOENCODING: 'utf-8',
       PYTHONHOME: isPythonStandalone ? pythonDir : undefined,
-      PYTHONPATH: sitePackagesDir,
-      DYLD_LIBRARY_PATH: `${path.join(pythonDir, 'lib')}:${process.env.DYLD_LIBRARY_PATH || ''}`
+      PYTHONPATH: sitePackagesDir
     };
+    const sharedLibEnvKey = IS_MAC ? 'DYLD_LIBRARY_PATH' : IS_LINUX ? 'LD_LIBRARY_PATH' : undefined;
+    if (sharedLibEnvKey) {
+      const existingValue = process.env[sharedLibEnvKey] || '';
+      const prefix = path.join(pythonDir, 'lib');
+      testEnv[sharedLibEnvKey] = [prefix, existingValue].filter(Boolean).join(':');
+    }
 
     execSync(`"${portablePython}" --version`, {
       cwd: buildDir,
@@ -1253,6 +1299,8 @@ print("[OK] All NetCDF4 and HDF5 packages are installed")
 
     // Final verification of NetCDF4 and HDF5 support
     console.log('Final verification of NetCDF4 and HDF5 support...');
+    const sharedLibPatternForVerify = IS_MAC ? '*.dylib' : '*.so*';
+    const sharedLibLabelForVerify = IS_MAC ? 'dylibs' : 'shared libs';
     const finalVerifyScript = String.raw`
 import sys
 import os
@@ -1288,22 +1336,22 @@ try:
 except Exception as e:
     print(f"[ERROR] h5py error: {e}")
 
-# Check for dylibs on macOS
+# Check for shared libraries packaged with Python (${platformLabel})
 import glob
 python_dir = os.path.dirname(os.path.dirname(sys.executable))
-dylib_patterns = [os.path.join(python_dir, "lib", "*.dylib")]
-hdf5_dylibs = []
-netcdf_dylibs = []
-for pattern in dylib_patterns:
-    for dylib in glob.glob(pattern):
-        dylib_name = os.path.basename(dylib).lower()
-        if 'hdf5' in dylib_name:
-            hdf5_dylibs.append(dylib_name)
-        elif 'netcdf' in dylib_name:
-            netcdf_dylibs.append(dylib_name)
+shared_patterns = [os.path.join(python_dir, "lib", "${sharedLibPatternForVerify}")]
+hdf5_libs = []
+netcdf_libs = []
+for pattern in shared_patterns:
+    for shared_lib in glob.glob(pattern):
+        shared_name = os.path.basename(shared_lib).lower()
+        if 'hdf5' in shared_name:
+            hdf5_libs.append(shared_name)
+        elif 'netcdf' in shared_name:
+            netcdf_libs.append(shared_name)
 
-print(f"\\nFound {len(hdf5_dylibs)} HDF5 dylibs: {', '.join(hdf5_dylibs[:3])}{'...' if len(hdf5_dylibs) > 3 else ''}")
-print(f"Found {len(netcdf_dylibs)} NetCDF dylibs: {', '.join(netcdf_dylibs[:3])}{'...' if len(netcdf_dylibs) > 3 else ''}")
+print(f"\\nFound {len(hdf5_libs)} HDF5 ${sharedLibLabelForVerify}: {', '.join(hdf5_libs[:3])}{'...' if len(hdf5_libs) > 3 else ''}")
+print(f"Found {len(netcdf_libs)} NetCDF ${sharedLibLabelForVerify}: {', '.join(netcdf_libs[:3])}{'...' if len(netcdf_libs) > 3 else ''}")
 `;
     
     try {
@@ -1390,8 +1438,8 @@ print(f"Found {len(netcdf_dylibs)} NetCDF dylibs: {', '.join(netcdf_dylibs[:3])}
       throw error;
     }
 
-    // Only fall back to venv if explicitly allowed
-    if (!isPythonStandalone) {
+    // Only fall back to venv if explicitly allowed (macOS only)
+    if (IS_MAC && !isPythonStandalone) {
       console.warn('FALLBACK ENABLED: using relocatable venv for macOS bundle...');
 
       // Fallback to the relocatable venv approach
@@ -1555,7 +1603,7 @@ REM Run Python with the bundled interpreter
   fs.writeFileSync(path.join(buildDir, 'python.bat'), pythonRunnerScript);
 
   console.log('[OK] Django wrapper scripts created');
-} else if (process.platform === 'darwin') {
+} else if (IS_MAC) {
   console.log('Creating Django wrapper scripts for macOS...');
 
   // Check if we have portable Python or venv
@@ -1629,6 +1677,70 @@ ${pythonCommand} "\$@"
   execSync(`chmod +x "${path.join(buildDir, 'python.sh')}"`, { stdio: 'inherit' });
 
   console.log('[OK] Django wrapper scripts created for macOS');
+} else if (IS_LINUX) {
+  console.log('Creating Django wrapper scripts for Linux...');
+
+  const portablePython = path.join(buildDir, 'python', 'bin', 'python');
+  const venvPython = path.join(buildDir, '.venv', 'bin', 'python');
+
+  let pythonCommand;
+  if (fs.existsSync(portablePython)) {
+    pythonCommand = '"$BUNDLE_DIR/python/bin/python"';
+  } else if (fs.existsSync(venvPython)) {
+    pythonCommand = '"$BUNDLE_DIR/.venv/bin/python"';
+  } else {
+    pythonCommand = 'python3';
+  }
+
+  const wrapperScript = `#!/bin/bash
+
+# Get the directory where this script is located
+BUNDLE_DIR="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)/"
+DJANGO_DIR="\$BUNDLE_DIR/django"
+
+# Set Python path to include our modules
+export PYTHONPATH="\$BUNDLE_DIR:\$BUNDLE_DIR/steeloweb:\$DJANGO_DIR"
+
+# Ensure bundled shared libraries are discoverable
+if [ -d "\$BUNDLE_DIR/python/lib" ]; then
+  export LD_LIBRARY_PATH="\$BUNDLE_DIR/python/lib:\${LD_LIBRARY_PATH:-}"
+elif [ -d "\$BUNDLE_DIR/lib" ]; then
+  export LD_LIBRARY_PATH="\$BUNDLE_DIR/lib:\${LD_LIBRARY_PATH:-}"
+fi
+
+# Change to Django directory
+cd "\$DJANGO_DIR"
+
+# Run manage.py with the bundled Python
+${pythonCommand} manage.py "\$@"
+`;
+
+  fs.writeFileSync(path.join(buildDir, 'manage.sh'), wrapperScript);
+  execSync(`chmod +x "${path.join(buildDir, 'manage.sh')}"`, { stdio: 'inherit' });
+
+  const pythonRunnerScript = `#!/bin/bash
+
+# Get the directory where this script is located
+BUNDLE_DIR="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)/"
+
+# Set Python path to include our modules
+export PYTHONPATH="\$BUNDLE_DIR:\$BUNDLE_DIR/steeloweb:\$BUNDLE_DIR/django"
+
+# Ensure bundled shared libraries are discoverable
+if [ -d "\$BUNDLE_DIR/python/lib" ]; then
+  export LD_LIBRARY_PATH="\$BUNDLE_DIR/python/lib:\${LD_LIBRARY_PATH:-}"
+elif [ -d "\$BUNDLE_DIR/lib" ]; then
+  export LD_LIBRARY_PATH="\$BUNDLE_DIR/lib:\${LD_LIBRARY_PATH:-}"
+fi
+
+# Run Python with the bundled interpreter
+${pythonCommand} "\$@"
+`;
+
+  fs.writeFileSync(path.join(buildDir, 'python.sh'), pythonRunnerScript);
+  execSync(`chmod +x "${path.join(buildDir, 'python.sh')}"`, { stdio: 'inherit' });
+
+  console.log('[OK] Django wrapper scripts created for Linux');
 }
 
 // Generate Sentry configuration file if DSNs are provided
@@ -1701,7 +1813,7 @@ try {
   };
 
   // Add Python paths for Windows
-  if (process.platform === 'win32') {
+  if (IS_WIN) {
     collectEnv.PYTHONPATH = [
       path.join(buildDir, 'python', 'Lib', 'site-packages'),
       path.join(buildDir, 'python', 'Lib'),
@@ -1720,8 +1832,10 @@ try {
       path.join(buildDir, 'steeloweb')
     ].join(':');
 
-    if (fs.existsSync(path.join(buildDir, 'python', 'lib'))) {
-      collectEnv.DYLD_LIBRARY_PATH = `${path.join(buildDir, 'python', 'lib')}:${process.env.DYLD_LIBRARY_PATH || ''}`;
+    const libDir = path.join(buildDir, 'python', 'lib');
+    const libEnvKey = IS_MAC ? 'DYLD_LIBRARY_PATH' : IS_LINUX ? 'LD_LIBRARY_PATH' : undefined;
+    if (libEnvKey && fs.existsSync(libDir)) {
+      collectEnv[libEnvKey] = `${libDir}:${process.env[libEnvKey] || ''}`;
     }
   }
 

@@ -77,15 +77,21 @@ npm run build:dir
 This creates unpacked application directories without creating installers:
 - macOS: `dist/mac-arm64/STEEL-IQ.app`
 - Windows: `dist/win-unpacked/STEEL-IQ.exe`
+- Linux: `dist/linux-unpacked/`
 
 ### Full Build
 
-For production builds with installers:
+For production builds with installers / distributables:
 
 ```bash
 cd src/electron
 npm run build
 ```
+
+Outputs include:
+- macOS: signed app bundle under `dist/mac-arm64/`
+- Windows: unpacked directory under `dist/win-unpacked/`
+- Linux: `dist/linux-unpacked/` plus `dist/STEEL-IQ-<version>.AppImage`
 
 ### Verifying Icons
 
@@ -101,12 +107,26 @@ After building, verify the icons appear correctly:
 2. Check the `STEEL-IQ.exe` icon
 3. The icon should appear in the taskbar when running
 
+**Linux:**
+1. Navigate to `dist/linux-unpacked/` and ensure the `resources/app.asar` metadata references the icon
+2. When running the AppImage (`chmod +x STEEL-IQ-*.AppImage && ./STEEL-IQ-*.AppImage`), confirm the desktop environment displays the STEEL-IQ icon in the launcher/taskbar
+
 ## GitHub Actions Build
 
-The application is automatically built for Windows and macOS via GitHub Actions:
+The application is automatically built for Windows, macOS, and Linux via GitHub Actions:
 - Workflow: `.github/workflows/standalone_app.yaml`
 - Triggered manually via `workflow_dispatch`
-- Produces platform-specific builds uploaded to S3
+- Produces platform-specific builds uploaded to S3 (AppImage + `linux-unpacked/` tarball for Linux)
+
+Linux builds run on Ubuntu runners. If you need to reproduce CI output locally, make sure the following packages are installed beforehand:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y libfuse2 rpm libnss3 libgtk-3-0 libxss1 libasound2 libatk1.0-0 \
+  libatk-bridge2.0-0 libgdk-pixbuf2.0-0 patchelf
+```
+
+Then execute the standard build commands (`npm run build:dir` or `npm run build`). The generated AppImage is located in `dist/`—set execute permissions before launching.
 
 The workflow automatically uses the icons from `src/electron/build/` - no special configuration needed.
 

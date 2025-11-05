@@ -17,6 +17,11 @@ jobs:
             artifact_path: ./dist/mac-arm64/
             zip_name: STEEL-IQ-macos
             executable_name: STEEL-IQ.app
+          - os: ubuntu-latest
+            artifact_name: electron-app-linux
+            artifact_path: ./dist/linux-unpacked/
+            zip_name: STEEL-IQ-linux
+            executable_name: STEEL-IQ.AppImage
 
     runs-on: ${{ matrix.os }}
     defaults:
@@ -31,6 +36,12 @@ jobs:
       with:
         version: "latest"
         enable-cache: false
+
+    - name: Install Linux packaging dependencies
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libfuse2 rpm libnss3 libgtk-3-0 libxss1 libasound2 libatk1.0-0 libatk-bridge2.0-0 libgdk-pixbuf2.0-0 patchelf
 
     - name: Download relocatable Python for macOS
       if: matrix.os == 'macos-latest'
@@ -62,6 +73,13 @@ jobs:
 
     - name: Set UV to use Python 3.13 (Windows)
       if: matrix.os == 'windows-latest'
+      run: |
+        uv python pin 3.13
+        uv python list
+      working-directory: ./src/electron
+
+    - name: Set UV to use Python 3.13 (Linux)
+      if: matrix.os == 'ubuntu-latest'
       run: |
         uv python pin 3.13
         uv python list
@@ -122,9 +140,13 @@ jobs:
           APP_PATH="../../dist/win-unpacked"
           RESOURCES_PATH="${APP_PATH}/resources"
           DJANGO_PATH="${RESOURCES_PATH}/django-bundle"
-        else
+        elif [[ "${{ matrix.os }}" == "macos-latest" ]]; then
           APP_PATH="../../dist/mac-arm64/STEEL-IQ.app"
           RESOURCES_PATH="${APP_PATH}/Contents/Resources"
+          DJANGO_PATH="${RESOURCES_PATH}/django-bundle"
+        else
+          APP_PATH="../../dist/linux-unpacked"
+          RESOURCES_PATH="${APP_PATH}/resources"
           DJANGO_PATH="${RESOURCES_PATH}/django-bundle"
         fi
 
@@ -186,9 +208,9 @@ jobs:
             exit 1
           fi
         else
-          # On macOS the build must bundle portable Python; .venv indicates a fallback
+          # For macOS/Linux the build must bundle portable Python; .venv indicates a fallback
           if [ -d "$BUNDLE_PATH/.venv" ]; then
-            echo "❌ ERROR: .venv found in macOS bundle – portable Python setup failed"
+            echo "❌ ERROR: .venv found in bundle – portable Python setup failed"
             exit 1
           fi
         fi
@@ -385,7 +407,7 @@ jobs:
             ls -la "../../dist/" || echo "No dist directory"
             exit 1
           fi
-        else
+        elif [[ "${{ matrix.os }}" == "macos-latest" ]]; then
           if [ -d "../../dist/mac-arm64/" ]; then
             echo "[OK] macOS build output found"
             
@@ -424,6 +446,53 @@ jobs:
             ls -la "../../dist/" || echo "No dist directory"
             exit 1
           fi
+        else
+          if [ -d "../../dist/linux-unpacked/" ]; then
+            echo "[OK] Linux build output found"
+            
+            if [ -f "../../dist/linux-unpacked/resources/app/main.js" ]; then
+              echo "Checking for task worker integration in main.js..."
+              if grep -q "startTaskWorker" "../../dist/linux-unpacked/resources/app/main.js"; then
+                echo "[OK] Task worker integration found"
+              else
+                echo "⚠ Task worker integration not found"
+              fi
+              if grep -q "db_worker" "../../dist/linux-unpacked/resources/app/main.js"; then
+                echo "[OK] db_worker command found"
+              else
+                echo "⚠ db_worker command not found"
+              fi
+            fi
+            
+            if [ -d "../../dist/linux-unpacked/resources/django-bundle/python/lib/python3.13/site-packages/" ]; then
+              echo "Checking for django_tasks in bundled packages..."
+              if ls "../../dist/linux-unpacked/resources/django-bundle/python/lib/python3.13/site-packages/" | grep -i django_tasks > /dev/null; then
+                echo "[OK] django_tasks package found"
+              else
+                echo "⚠ django_tasks package not found"
+              fi
+            fi
+            
+            total_size=$(du -sh "../../dist/linux-unpacked/" | cut -f1)
+            file_count=$(find "../../dist/linux-unpacked/" -type f | wc -l)
+            django_bundle_size=$(du -sh "../../dist/linux-unpacked/resources/django-bundle/" 2>/dev/null | cut -f1 || echo "N/A")
+            echo "Total size: $total_size"
+            echo "Django bundle size: $django_bundle_size"
+            echo "File count: $file_count"
+            
+            # Show AppImage if present
+            if compgen -G "../../dist/*.AppImage" > /dev/null; then
+              echo "AppImage artifacts:"
+              ls -lh ../../dist/*.AppImage
+            else
+              echo "⚠ No AppImage file found alongside linux-unpacked directory"
+            fi
+          else
+            echo "✗ Linux build output not found"
+            echo "Available directories in dist:"
+            ls -la "../../dist/" || echo "No dist directory"
+            exit 1
+          fi
         fi
       shell: bash
 
@@ -434,9 +503,12 @@ jobs:
         if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
           SOURCE_PATH="../../dist/win-unpacked/"
           PLATFORM="windows"
-        else
+        elif [[ "${{ matrix.os }}" == "macos-latest" ]]; then
           SOURCE_PATH="../../dist/mac-arm64/"
           PLATFORM="macos"
+        else
+          SOURCE_PATH="../../dist/linux-unpacked/"
+          PLATFORM="linux"
         fi
         
         # Use timestamp and short commit hash (7 chars) for build ID
@@ -453,14 +525,20 @@ jobs:
         file_count=$(find "$SOURCE_PATH" -type f | wc -l)
         
         # Calculate Django bundle size
-        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+        if [[ "$PLATFORM" == "windows" ]]; then
           DJANGO_BUNDLE_PATH="${SOURCE_PATH}resources/django-bundle/"
           total_size=$(powershell -Command "(Get-ChildItem -Path '$SOURCE_PATH' -Recurse -File | Measure-Object -Property Length -Sum).Sum")
           total_size_mb=$(powershell -Command "[math]::Round($total_size / 1MB, 2)")
           django_bundle_size=$(powershell -Command "(Get-ChildItem -Path '$DJANGO_BUNDLE_PATH' -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum")
           django_bundle_size_mb=$(powershell -Command "[math]::Round($django_bundle_size / 1MB, 2)")
-        else
+        elif [[ "$PLATFORM" == "macos" ]]; then
           DJANGO_BUNDLE_PATH="${SOURCE_PATH}STEEL-IQ.app/Contents/Resources/django-bundle/"
+          total_size=$(du -sk "$SOURCE_PATH" | cut -f1)
+          total_size_mb=$(echo "scale=2; $total_size / 1024" | bc)
+          django_bundle_size=$(du -sk "$DJANGO_BUNDLE_PATH" 2>/dev/null | cut -f1 || echo "0")
+          django_bundle_size_mb=$(echo "scale=2; $django_bundle_size / 1024" | bc)
+        else
+          DJANGO_BUNDLE_PATH="${SOURCE_PATH}resources/django-bundle/"
           total_size=$(du -sk "$SOURCE_PATH" | cut -f1)
           total_size_mb=$(echo "scale=2; $total_size / 1024" | bc)
           django_bundle_size=$(du -sk "$DJANGO_BUNDLE_PATH" 2>/dev/null | cut -f1 || echo "0")
@@ -470,7 +548,7 @@ jobs:
         echo "Compressing $file_count files, total size: ${total_size_mb} MB"
         
         ZIP_FILENAME="${{ matrix.zip_name }}-$BUILD_ID"
-        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+        if [[ "$PLATFORM" == "windows" ]]; then
           ZIP_FILENAME="${ZIP_FILENAME}.zip"
         else
           ZIP_FILENAME="${ZIP_FILENAME}.tar.gz"
@@ -479,12 +557,22 @@ jobs:
         
         echo "Creating archive file: $ZIP_FILENAME"
         
-        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+        if [[ "$PLATFORM" == "windows" ]]; then
           powershell -Command "Compress-Archive -Path '$SOURCE_PATH*' -DestinationPath '$ZIP_PATH' -CompressionLevel Optimal -Force"
-        else
+        elif [[ "$PLATFORM" == "macos" ]]; then
           CURRENT_DIR=$(pwd)
           cd "../../dist"
           tar -czf "../src/electron/$ZIP_FILENAME" mac-arm64/
+          cd "$CURRENT_DIR"
+          echo "[OK] Archive creation completed"
+        else
+          CURRENT_DIR=$(pwd)
+          cd "../../dist"
+          if compgen -G "*.AppImage" > /dev/null; then
+            tar -czf "../src/electron/$ZIP_FILENAME" linux-unpacked/ *.AppImage
+          else
+            tar -czf "../src/electron/$ZIP_FILENAME" linux-unpacked/
+          fi
           cd "$CURRENT_DIR"
           echo "[OK] Archive creation completed"
         fi
@@ -492,11 +580,14 @@ jobs:
         if [ -f "$ZIP_PATH" ]; then
           echo "[OK] Archive file created successfully"
           
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          if [[ "$PLATFORM" == "windows" ]]; then
             zip_size=$(powershell -Command "(Get-Item '$ZIP_PATH').Length")
             zip_size_mb=$(powershell -Command "[math]::Round($zip_size / 1MB, 2)")
-          else
+          elif [[ "$PLATFORM" == "macos" ]]; then
             zip_size=$(stat -f%z "$ZIP_PATH")
+            zip_size_mb=$(echo "scale=2; $zip_size / 1024 / 1024" | bc)
+          else
+            zip_size=$(stat -c%s "$ZIP_PATH")
             zip_size_mb=$(echo "scale=2; $zip_size / 1024 / 1024" | bc)
           fi
           
@@ -571,9 +662,12 @@ jobs:
           if [[ "$PLATFORM" == "windows" ]]; then
             sed -i.bak "s/EXEC_REPLACE/Run STEEL-IQ.exe/g" "README-$PLATFORM.txt"
             sed -i.bak "s/REQUIREMENTS_REPLACE/- Windows 10 or later - No additional dependencies required/g" "README-$PLATFORM.txt"
-          else
+          elif [[ "$PLATFORM" == "macos" ]]; then
             sed -i.bak "s/EXEC_REPLACE/Run STEEL-IQ.app (right-click and select Open first time)/g" "README-$PLATFORM.txt"
             sed -i.bak "s/REQUIREMENTS_REPLACE/- macOS 10.15 or later - No additional dependencies required/g" "README-$PLATFORM.txt"
+          else
+            sed -i.bak "s/EXEC_REPLACE/Make the AppImage executable (\`chmod +x STEEL-IQ.AppImage\`) then run \`./STEEL-IQ.AppImage\`/g" "README-$PLATFORM.txt"
+            sed -i.bak "s/REQUIREMENTS_REPLACE/- 64-bit Linux (tested on Ubuntu 22.04+) - FUSE 2 support for AppImage/g" "README-$PLATFORM.txt"
           fi
           
           rm -f "README-$PLATFORM.txt.bak"
@@ -636,9 +730,13 @@ jobs:
           cat >> $GITHUB_STEP_SUMMARY << EOF
         4. Run \`STEEL-IQ.exe\`
         EOF
-        else
+        elif [[ "${{ env.PLATFORM }}" == "macos" ]]; then
           cat >> $GITHUB_STEP_SUMMARY << EOF
         4. Run \`STEEL-IQ.app\` (right-click and select 'Open' the first time)
+        EOF
+        else
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+        4. Run \`chmod +x STEEL-IQ.AppImage && ./STEEL-IQ.AppImage\`
         EOF
         fi
         

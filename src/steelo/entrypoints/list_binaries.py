@@ -140,24 +140,29 @@ def get_platform_description(filename: str) -> str:
     """Get a human-readable platform description from filename."""
     filename_lower = filename.lower()
 
-    if "win" in filename_lower:
-        return "Windows"
-    elif "mac" in filename_lower or "macos" in filename_lower:
-        if "arm64" in filename_lower:
-            return "macOS (Apple Silicon)"
-        elif "x64" in filename_lower:
-            return "macOS (Intel)"
-        else:
-            return "macOS"
-    elif filename_lower.endswith(".txt"):
+    if filename_lower.endswith(".txt"):
         if "readme-macos" in filename_lower:
             return "macOS README"
-        elif "readme-windows" in filename_lower:
+        if "readme-windows" in filename_lower:
             return "Windows README"
-        else:
-            return "README"
-    else:
-        return "Unknown"
+        if "readme-linux" in filename_lower:
+            return "Linux README"
+        return "README"
+
+    if "win" in filename_lower:
+        return "Windows"
+
+    if "mac" in filename_lower or "macos" in filename_lower:
+        if "arm64" in filename_lower:
+            return "macOS (Apple Silicon)"
+        if "x64" in filename_lower:
+            return "macOS (Intel)"
+        return "macOS"
+
+    if "linux" in filename_lower or filename_lower.endswith(".appimage"):
+        return "Linux"
+
+    return "Unknown"
 
 
 def list_build_files(build_id: str) -> list[tuple[str, int, str]]:
@@ -294,6 +299,9 @@ Examples:
                 if "macOS" in platforms or "macOS (Apple Silicon)" in platforms or "macOS (Intel)" in platforms:
                     macos_file = f"STEEL-IQ-macos-{build_id}.tar.gz"
                     download_urls.append(f"Mac: {get_download_url(build_id, macos_file)}")
+                if "Linux" in platforms:
+                    linux_file = f"STEEL-IQ-linux-{build_id}.tar.gz"
+                    download_urls.append(f"Linux: {get_download_url(build_id, linux_file)}")
 
                 urls_str = " | ".join(download_urls) if download_urls else "None"
 
