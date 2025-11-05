@@ -611,39 +611,51 @@ jobs:
           
           if [[ "$PLATFORM" == "windows" ]]; then
             INSTALL_STEP="Run \`STEEL-IQ.exe\`"
-            REQUIREMENTS="- Windows 10 or later\n- No additional dependencies required"
+            printf -v REQUIREMENTS_TEXT '%s\n%s' "- Windows 10 or later" "- No additional dependencies required"
           elif [[ "$PLATFORM" == "macos" ]]; then
             INSTALL_STEP="Run \`STEEL-IQ.app\` (right-click and select 'Open' the first time)"
-            REQUIREMENTS="- macOS 10.15 or later\n- No additional dependencies required"
+            printf -v REQUIREMENTS_TEXT '%s\n%s' "- macOS 10.15 or later" "- No additional dependencies required"
           else
             INSTALL_STEP="Make the AppImage executable (\`chmod +x STEEL-IQ.AppImage\`) then run \`./STEEL-IQ.AppImage\`"
-            REQUIREMENTS="- 64-bit Linux (tested on Ubuntu 22.04+)\n- FUSE 2 support for AppImage"
+            printf -v REQUIREMENTS_TEXT '%s\n%s' "- 64-bit Linux (tested on Ubuntu 22.04+)" "- FUSE 2 support for AppImage"
           fi
           
-          cat > "README-$PLATFORM.txt" <<EOF
+          export README_PLATFORM="$PLATFORM"
+          export README_COMMIT="$SHORT_SHA (full: ${{ github.sha }})"
+          export README_BRANCH="${{ github.ref_name }}"
+          export README_BUILD_DATE="$BUILD_DATE"
+          export README_TOTAL_SIZE="${total_size_mb}"
+          export README_FILE_COUNT="$file_count"
+          export README_ZIP_SIZE="${zip_size_mb}"
+          export README_ZIP_FILENAME="$ZIP_FILENAME"
+          export README_INSTALL_STEP="$INSTALL_STEP"
+          export README_REQUIREMENTS="$REQUIREMENTS_TEXT"
+          export README_EXECUTABLE="$EXECUTABLE_NAME"
+          
+          cat <<'EOF' > README-template.txt
 # STEEL-IQ Application with Task Worker
 
 **Build Information:**
-- Platform: $PLATFORM
-- Commit: $SHORT_SHA (full: ${{ github.sha }})
-- Branch: ${{ github.ref_name }}
-- Build Date: $BUILD_DATE
-- Original Size: ${total_size_mb} MB ($file_count files)
-- Compressed Size: ${zip_size_mb} MB
+- Platform: ${README_PLATFORM}
+- Commit: ${README_COMMIT}
+- Branch: ${README_BRANCH}
+- Build Date: ${README_BUILD_DATE}
+- Original Size: ${README_TOTAL_SIZE} MB (${README_FILE_COUNT} files)
+- Compressed Size: ${README_ZIP_SIZE} MB
 
 **Features:**
 - Django web server for the user interface
-- Django Task Worker for background job processing (django_tasks)
+- Django Task Worker (django_tasks) for background job processing
 - Fully portable Python environment (no dependencies required)
 
 **Installation Instructions:**
-1. Download the archive file: $ZIP_FILENAME
+1. Download the archive file: ${README_ZIP_FILENAME}
 2. Extract the archive to your desired location
 3. Navigate to the extracted folder
-4. $INSTALL_STEP
+4. ${README_INSTALL_STEP}
 
 **System Requirements:**
-$REQUIREMENTS
+${README_REQUIREMENTS}
 
 **What's Running:**
 When you start the application, the following services automatically start:
@@ -658,12 +670,15 @@ through django_tasks. Jobs are stored in the SQLite database and processed
 asynchronously by the worker.
 
 **Contents:**
-- $EXECUTABLE_NAME (main application)
+- ${README_EXECUTABLE} (main application)
 - Django backend bundle with Python environment
 - Django Task Worker (django_tasks) for background job processing
 - SQLite database for data storage and job queue
 - All necessary libraries and dependencies
 EOF
+
+          envsubst '$README_PLATFORM $README_COMMIT $README_BRANCH $README_BUILD_DATE $README_TOTAL_SIZE $README_FILE_COUNT $README_ZIP_SIZE $README_ZIP_FILENAME $README_INSTALL_STEP $README_REQUIREMENTS $README_EXECUTABLE' < README-template.txt > "README-$PLATFORM.txt"
+          rm -f README-template.txt
           
           aws s3 cp "README-$PLATFORM.txt" "$S3_PATH/README-$PLATFORM.txt"
           echo "[OK] README file uploaded"
