@@ -1,7 +1,7 @@
 name: Build Standalone App with Task Worker
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 jobs:
   build:
