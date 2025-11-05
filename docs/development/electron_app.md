@@ -122,9 +122,11 @@ Linux builds run on Ubuntu runners. If you need to reproduce CI output locally, 
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y libfuse2 rpm libnss3 libgtk-3-0 libxss1 libasound2 libatk1.0-0 \
+sudo apt-get install -y libfuse2 rpm libnss3 libgtk-3-0 libxss1 libasound2t64 libatk1.0-0 \
   libatk-bridge2.0-0 libgdk-pixbuf2.0-0 patchelf
 ```
+
+> Note: On older Ubuntu/Debian releases the package name is `libasound2`; install whichever is available for your distribution.
 
 Then execute the standard build commands (`npm run build:dir` or `npm run build`). The generated AppImage is located in `dist/`—set execute permissions before launching.
 

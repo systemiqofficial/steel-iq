@@ -41,7 +41,8 @@ jobs:
       if: matrix.os == 'ubuntu-latest'
       run: |
         sudo apt-get update
-        sudo apt-get install -y libfuse2 rpm libnss3 libgtk-3-0 libxss1 libasound2 libatk1.0-0 libatk-bridge2.0-0 libgdk-pixbuf2.0-0 patchelf
+        sudo apt-get install -y libfuse2 rpm libnss3 libgtk-3-0 libxss1 libasound2t64 libatk1.0-0 libatk-bridge2.0-0 libgdk-pixbuf2.0-0 patchelf || \
+          sudo apt-get install -y libfuse2 rpm libnss3 libgtk-3-0 libxss1 libasound2 libatk1.0-0 libatk-bridge2.0-0 libgdk-pixbuf2.0-0 patchelf
 
     - name: Download relocatable Python for macOS
       if: matrix.os == 'macos-latest'
