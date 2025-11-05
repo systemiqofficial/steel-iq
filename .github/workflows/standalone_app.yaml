@@ -620,54 +620,50 @@ jobs:
             REQUIREMENTS="- 64-bit Linux (tested on Ubuntu 22.04+)\n- FUSE 2 support for AppImage"
           fi
           
-          cat <<EOF > "README-$PLATFORM.txt"
-          # STEEL-IQ Application with Task Worker
+          cat > "README-$PLATFORM.txt" <<EOF
+# STEEL-IQ Application with Task Worker
 
-          **Build Information:**
-          - Platform: $PLATFORM
-          - Commit: $SHORT_SHA (full: ${{ github.sha }})
-          - Branch: ${{ github.ref_name }}
-          - Build Date: $BUILD_DATE
-          - Original Size: ${total_size_mb} MB ($file_count files)
-          - Compressed Size: ${zip_size_mb} MB
+**Build Information:**
+- Platform: $PLATFORM
+- Commit: $SHORT_SHA (full: ${{ github.sha }})
+- Branch: ${{ github.ref_name }}
+- Build Date: $BUILD_DATE
+- Original Size: ${total_size_mb} MB ($file_count files)
+- Compressed Size: ${zip_size_mb} MB
 
-          **Features:**
-          - Django web server for the user interface
-          - Django Task Worker for background job processing (django_tasks)
-          - Fully portable Python environment (no dependencies required)
+**Features:**
+- Django web server for the user interface
+- Django Task Worker for background job processing (django_tasks)
+- Fully portable Python environment (no dependencies required)
 
-          **Installation Instructions:**
-          1. Download the archive file: $ZIP_FILENAME
-          2. Extract the archive to your desired location
-          3. Navigate to the extracted folder
-          4. $INSTALL_STEP
+**Installation Instructions:**
+1. Download the archive file: $ZIP_FILENAME
+2. Extract the archive to your desired location
+3. Navigate to the extracted folder
+4. $INSTALL_STEP
 
-          **System Requirements:**
-          $REQUIREMENTS
+**System Requirements:**
+$REQUIREMENTS
 
-          **What's Running:**
-          When you start the application, the following services automatically start:
-          1. Django database migrations (ensures database is up to date)
-          2. Django web server (serves the user interface on http://127.0.0.1:8000)
-          3. Django Task Worker (processes background jobs from the database queue)
-          4. Electron window (displays the Django web interface)
+**What's Running:**
+When you start the application, the following services automatically start:
+1. Django database migrations (ensures database is up to date)
+2. Django web server (serves the user interface on http://127.0.0.1:8000)
+3. Django Task Worker (processes background jobs from the database queue)
+4. Electron window (displays the Django web interface)
 
-          **Background Jobs:**
-          The built-in task worker will automatically process any background jobs you submit
-          through django_tasks. Jobs are stored in the SQLite database and processed
-          asynchronously by the worker.
+**Background Jobs:**
+The built-in task worker will automatically process any background jobs you submit
+through django_tasks. Jobs are stored in the SQLite database and processed
+asynchronously by the worker.
 
-          **Contents:**
-          - $EXECUTABLE_NAME (main application)
-          - Django backend bundle with Python environment
-          - Django Task Worker (django_tasks) for background job processing
-          - SQLite database for data storage and job queue
-          - All necessary libraries and dependencies
-          EOF
-
-          # Remove leading indentation added for YAML compatibility
-          sed -i.bak 's/^          //' "README-$PLATFORM.txt"
-          rm -f "README-$PLATFORM.txt.bak"
+**Contents:**
+- $EXECUTABLE_NAME (main application)
+- Django backend bundle with Python environment
+- Django Task Worker (django_tasks) for background job processing
+- SQLite database for data storage and job queue
+- All necessary libraries and dependencies
+EOF
           
           aws s3 cp "README-$PLATFORM.txt" "$S3_PATH/README-$PLATFORM.txt"
           echo "[OK] README file uploaded"
