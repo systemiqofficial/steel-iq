@@ -36,6 +36,7 @@ dependencies = [
     "reverse-geocoder",
     "highspy>=1.9.0",
     "numba>=0.61.2",
+    "torch>=2.0.0",  # Metal Performance Shaders support for M-series chips
     # Django Frontend
     "django",
     "django-environ",
