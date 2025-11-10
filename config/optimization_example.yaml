@@ -1,0 +1,43 @@
+# Steel-IQ Optimization Configuration
+#
+# This file configures the solver implementation used for trade optimization.
+#
+# Available solver modes:
+#   - baseline: Standard Pyomo/HiGHS solver (default, always available)
+#   - parallel: Parallel decomposition solver (future implementation)
+#   - gasplan: Gasplan network solver (future implementation)
+#   - parallel_gasplan: Combined parallel + Gasplan (future implementation)
+
+optimization:
+  # LP Solver Configuration
+  lp_solver:
+    # Solver mode (baseline | parallel | gasplan | parallel_gasplan)
+    mode: baseline
+
+    # Number of parallel workers
+    # "auto" = auto-detect CPU count, or specify integer (e.g., 4, 8)
+    workers: auto
+
+    # GPU preprocessing (experimental)
+    gpu_preprocessing: false
+
+  # Geospatial Configuration
+  geospatial:
+    # Device for geospatial computations
+    # "auto" = auto-detect best device
+    # "cpu" = force CPU
+    # "mps" = force Apple Metal Performance Shaders (M-series Macs)
+    # "cuda" = force NVIDIA CUDA
+    device: auto
+
+  # Validation Configuration
+  validation:
+    # Check accuracy against baseline solver
+    check_accuracy: true
+
+    # Relative tolerance for accuracy validation (default 1% = 0.01)
+    tolerance: 0.01
+
+  # Hardware Detection
+  detect_apple_silicon: true
+  optimize_for_m4: true

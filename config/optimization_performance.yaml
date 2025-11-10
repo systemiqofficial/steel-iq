@@ -1,0 +1,31 @@
+# Steel-IQ High-Performance Optimization Configuration
+#
+# This configuration enables all available optimizations for maximum performance.
+# Note: Advanced solvers (parallel, gasplan) are not yet implemented and will
+# fall back to baseline solver with a warning.
+
+optimization:
+  lp_solver:
+    # Use combined parallel + Gasplan solver (future)
+    mode: parallel_gasplan
+
+    # Use all available CPU cores
+    workers: auto
+
+    # Enable GPU preprocessing if available
+    gpu_preprocessing: true
+
+  geospatial:
+    # Auto-detect best device (MPS on Apple Silicon, CUDA on NVIDIA, CPU otherwise)
+    device: auto
+
+  validation:
+    # Validate optimized solver against baseline
+    check_accuracy: true
+
+    # Allow 1% difference from baseline
+    tolerance: 0.01
+
+  # Hardware detection
+  detect_apple_silicon: true
+  optimize_for_m4: true

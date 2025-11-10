@@ -8,6 +8,7 @@ from typing import cast
 
 from steelo.adapters.geospatial.top_location_finder import get_candidate_locations_for_opening_new_plants
 from steelo.adapters.repositories.in_memory_repository import InMemoryRepository
+from steelo.config.optimization_config import OptimizationConfig
 from steelo.domain import Year
 from steelo.domain.commands import (
     AddFurnaceGroup,
@@ -21,6 +22,7 @@ from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
     set_up_steel_trade_lp,
     solve_steel_trade_lp_and_return_commodity_allocations,
 )
+from steelo.domain.trade_modelling.solver_factory import SolverFactory
 from steelo.logging_config import geo_logger, plant_agents_logger, tm_logger
 from steelo.service_layer.message_bus import MessageBus
 from steelo.utilities.file_output import export_commodity_allocations_to_csv
@@ -264,14 +266,29 @@ class AllocationModel:
     """Model to allocate resource to demand center from supply center"""
 
     @staticmethod
-    def run(bus: MessageBus) -> None:
+    def run(bus: MessageBus, optimization_config: OptimizationConfig | None = None) -> None:
         """
         Run the allocation lp model
 
-        Args
+        Args:
+            bus: Message bus containing environment and repository access
+            optimization_config: Optional configuration for solver optimization.
+                If None, uses default baseline solver. Pass OptimizationConfig
+                to enable parallel, gasplan, or other optimized solvers.
         """
         module_start = time.time()
         tm_logger.debug(f"\n\n[TM] ========== Starting AllocationModel.run for year {bus.env.year} ========== \n")
+
+        # Initialize optimization configuration (defaults to baseline if not provided)
+        if optimization_config is None:
+            optimization_config = OptimizationConfig()
+            tm_logger.info("[TM] Using default optimization config (baseline solver)")
+        else:
+            tm_logger.info(f"[TM] Using optimization config: mode={optimization_config.solver_mode}")
+
+        # Create solver factory
+        solver_factory = SolverFactory(optimization_config)
+        solver_func = solver_factory.create_solver()
 
         # Initialize memory tracker for detailed LP profiling
         memory_tracker = MemoryTracker()
@@ -339,10 +356,62 @@ class AllocationModel:
         tm_logger.info(f"operation=allocation_setup year={bus.env.year} duration_s={setup_elapsed:.3f}")
         memory_tracker.checkpoint("after_lp_setup", year=bus.env.year)
 
-        # Trade LP solve (trade_optimization is logged inside solve_steel_trade_lp_and_return_commodity_allocations)
-        commodity_allocations = solve_steel_trade_lp_and_return_commodity_allocations(
-            trade_lp=trade_lp, repository=cast(InMemoryRepository, bus.uow.repository)
-        )
+        # Trade LP solve using configured solver
+        solve_start = time.time()
+
+        # Solve using the factory-provided solver function
+        tm_logger.info(f"[TM] Solving with {optimization_config.solver_mode} solver...")
+        result = solver_func(trade_lp)
+
+        solve_elapsed = time.time() - solve_start
+        tm_logger.info(f"operation=trade_optimization year={bus.env.year} duration_s={solve_elapsed:.3f} solver={optimization_config.solver_mode}")
+
+        # Extract commodity allocations from the solved model
+        # Note: solve_steel_trade_lp_and_return_commodity_allocations handles extraction
+        # We need to extract solution first, then get allocations
+        trade_lp.extract_solution()
+
+        # Build commodity allocations from the solved model
+        from steelo.domain.models import CommodityAllocations
+        from steelo.domain.constants import LP_TOLERANCE
+        import pyomo.environ as pyo
+
+        commodity_allocations = {}
+        for commodity in trade_lp.commodities:
+            commodity_allocations[commodity.name] = CommodityAllocations(commodity=commodity.name, allocations={})
+
+        if trade_lp.allocations is None:
+            tm_logger.error("No allocations found in trade LP model. Returning empty allocations.")
+        else:
+            # Process allocations
+            for (from_pc, to_pc, comm), alloc_value in trade_lp.allocations.allocations.items():
+                if alloc_value <= LP_TOLERANCE:
+                    continue
+
+                # Map process centers to domain objects
+                if from_pc.process.type.value == "supply":
+                    source = bus.uow.repository.suppliers.get(from_pc.name)
+                else:
+                    furnace_group_id = from_pc.name
+                    plant_id = furnace_group_id.split("_")[0]
+                    plant = bus.uow.repository.plants.get(plant_id)
+                    furnace_group = plant.get_furnace_group(furnace_group_id)
+                    source = (plant, furnace_group)
+
+                if to_pc.process.type.value == "demand":
+                    destination = bus.uow.repository.demand_centers.get(to_pc.name)
+                else:
+                    to_plant_id = to_pc.name.split("_")[0]
+                    to_plant = bus.uow.repository.plants.get(to_plant_id)
+                    to_furnace_group = to_plant.get_furnace_group(to_pc.name)
+                    destination = (to_plant, to_furnace_group)
+
+                volume = alloc_value
+                cost = trade_lp.allocations.get_allocation_cost(from_pc, to_pc, comm)
+
+                commodity_allocations[comm.name].add_allocation(source, destination, Volumes(volume))
+                commodity_allocations[comm.name].add_cost(source, destination, cost)
+
         memory_tracker.checkpoint("after_lp_solve", year=bus.env.year)
 
         # Store current solution for warm-starting next year's LP (OPT-2)
