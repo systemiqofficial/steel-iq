@@ -18,6 +18,8 @@ Including another URLconf
 from django.urls import path
 from . import views
 from . import views_worker
+# NOTE: These imports are for future scenario views (not yet implemented)
+# from steeloweb.views import scenarios, scenario_variations, sensitivity_sweeps
 
 
 urlpatterns = [
@@ -109,4 +111,34 @@ urlpatterns = [
     path(
         "api/workers/cleanup/", views_worker.cleanup_workers_htmx, name="cleanup-workers-json"
     ),  # Using HTMX version for now
+    # ======= SCENARIO MANAGEMENT ENDPOINTS =======
+    # Temporarily commented out until views are created
+    # # Scenarios
+    # path('scenarios/', scenarios.list, name='scenario_list'),
+    # path('scenarios/new/', scenarios.create, name='scenario_create'),
+    # path('scenarios/<int:id>/', scenarios.detail, name='scenario_detail'),
+    # path('scenarios/<int:id>/edit/', scenarios.update, name='scenario_update'),
+    # path('scenarios/<int:id>/delete/', scenarios.delete, name='scenario_delete'),
+    # path('scenarios/<int:id>/clone/', scenarios.clone, name='scenario_clone'),
+    # path('scenarios/<int:id>/run/', scenarios.run, name='scenario_run'),
+    # # Scenario Variations
+    # path('scenarios/<int:scenario_id>/variations/new/',
+    #      scenario_variations.create, name='variation_create'),
+    # path('variations/<int:id>/',
+    #      scenario_variations.detail, name='variation_detail'),
+    # path('variations/<int:id>/edit/',
+    #      scenario_variations.update, name='variation_update'),
+    # path('variations/<int:id>/delete/',
+    #      scenario_variations.delete, name='variation_delete'),
+    # # Sensitivity Sweeps
+    # path('scenarios/<int:scenario_id>/sweeps/new/',
+    #      sensitivity_sweeps.create, name='sweep_create'),
+    # path('sweeps/<int:id>/',
+    #      sensitivity_sweeps.detail, name='sweep_detail'),
+    # path('sweeps/<int:id>/generate/',
+    #      sensitivity_sweeps.generate_runs, name='sweep_generate'),
+    # path('sweeps/<int:id>/delete/',
+    #      sensitivity_sweeps.delete, name='sweep_delete'),
+    # # Comparison
+    # path('compare/', scenarios.compare, name='scenario_compare'),
 ]

@@ -493,6 +493,34 @@ class ModelRun(models.Model):
         help_text="CSV file containing the simulation results",
     )
 
+    # NEW: Scenario system integration
+    scenario = models.ForeignKey(
+        'Scenario',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        help_text="Scenario this run belongs to"
+    )
+    scenario_variation = models.ForeignKey(
+        'ScenarioVariation',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        help_text="Specific variation of the scenario"
+    )
+    sensitivity_sweep = models.ForeignKey(
+        'SensitivitySweep',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        help_text="Sensitivity sweep this run belongs to"
+    )
+    sweep_parameter_value = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="Parameter value for this sweep point"
+    )
+
     def __str__(self):
         if self.name:
             return f"{self.name} - {self.state} ({self.started_at})"
@@ -502,6 +530,37 @@ class ModelRun(models.Model):
         verbose_name = "Model Run"
         verbose_name_plural = "Model Runs"
         ordering = ["-started_at"]
+
+    @classmethod
+    def from_scenario(cls, scenario, variation=None, name=None):
+        """Factory method to create ModelRun from Scenario"""
+        # Note: actual config building will come in Wave 2
+        # For now, just create the relationship
+
+        if name is None:
+            name = scenario.name
+            if variation:
+                name += f" - {variation.name}"
+
+        return cls.objects.create(
+            name=name,
+            scenario=scenario,
+            scenario_variation=variation,
+            # data_preparation will be set when we have the full system
+            config={},  # Placeholder for now
+        )
+
+    def get_scenario_label(self):
+        """Human-readable scenario description"""
+        if not self.scenario:
+            return "Manual run"
+
+        label = self.scenario.name
+        if self.scenario_variation:
+            label += f" > {self.scenario_variation.name}"
+        if self.sensitivity_sweep:
+            label += f" ({self.sweep_parameter_value})"
+        return label
 
     def get_output_path(self) -> Optional[Path]:
         """Return the path to the output directory"""
@@ -1765,3 +1824,166 @@ class AdmissionControl(models.Model):
 
     class Meta:
         db_table = "steeloweb_admission_control"
+
+
+class Scenario(models.Model):
+    """Base scenario with parameter overrides"""
+
+    # Metadata
+    name = models.CharField(max_length=200)
+    description = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+
+    # Links
+    master_excel = models.ForeignKey(
+        'MasterExcelFile',
+        on_delete=models.PROTECT,
+        related_name='scenarios'
+    )
+    base_scenario = models.ForeignKey(
+        'self',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='derived_scenarios'
+    )
+
+    # Simulation timeframe
+    start_year = models.IntegerField(default=2025)
+    end_year = models.IntegerField(default=2050)
+
+    # Override storage (JSON fields)
+    technology_overrides = models.JSONField(default=dict, blank=True)
+    economic_overrides = models.JSONField(default=dict, blank=True)
+    geospatial_overrides = models.JSONField(default=dict, blank=True)
+    policy_overrides = models.JSONField(default=dict, blank=True)
+    agent_overrides = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Scenario'
+        verbose_name_plural = 'Scenarios'
+
+    def __str__(self):
+        return self.name
+
+    def get_absolute_url(self):
+        from django.urls import reverse
+        return reverse('scenario_detail', kwargs={'pk': self.pk})
+
+    def get_all_overrides(self):
+        """Combine all override categories into a single dict"""
+        return {
+            'technology': self.technology_overrides,
+            'economic': self.economic_overrides,
+            'geospatial': self.geospatial_overrides,
+            'policy': self.policy_overrides,
+            'agent': self.agent_overrides,
+        }
+
+    def count_variations(self):
+        """Count the number of variations for this scenario"""
+        return self.variations.filter(is_active=True).count()
+
+    def count_runs(self):
+        """Count total model runs across all variations"""
+        # This would be implemented when ModelRun links to scenarios
+        return 0
+
+
+class ScenarioVariation(models.Model):
+    """Named variation of a base scenario"""
+
+    scenario = models.ForeignKey(
+        Scenario,
+        related_name='variations',
+        on_delete=models.CASCADE
+    )
+    name = models.CharField(max_length=200)
+    description = models.TextField(blank=True)
+    additional_overrides = models.JSONField(default=dict, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['scenario', 'name']
+        verbose_name = 'Scenario Variation'
+        verbose_name_plural = 'Scenario Variations'
+
+    def __str__(self):
+        return f"{self.scenario.name} - {self.name}"
+
+    def get_absolute_url(self):
+        from django.urls import reverse
+        return reverse('scenario_variation_detail', kwargs={'pk': self.pk})
+
+    def get_merged_overrides(self):
+        """Merge base scenario overrides with variation-specific overrides"""
+        base = self.scenario.get_all_overrides()
+
+        # Deep merge additional_overrides into base
+        for category, overrides in self.additional_overrides.items():
+            if category in base:
+                base[category] = self._deep_merge(base[category], overrides)
+            else:
+                base[category] = overrides
+
+        return base
+
+    def _deep_merge(self, base, overrides):
+        """Deep merge two dictionaries"""
+        result = base.copy()
+        for key, value in overrides.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                result[key] = self._deep_merge(result[key], value)
+            else:
+                result[key] = value
+        return result
+
+
+class SensitivitySweep(models.Model):
+    """Automated parameter sweep for sensitivity analysis"""
+
+    VARIATION_TYPES = [
+        ('percentage', 'Percentage (±%)'),
+        ('absolute', 'Absolute (±value)'),
+        ('range', 'Range (min to max)'),
+    ]
+
+    scenario = models.ForeignKey(
+        Scenario,
+        related_name='sweeps',
+        on_delete=models.CASCADE
+    )
+    name = models.CharField(max_length=200)
+    parameter_path = models.CharField(
+        max_length=200,
+        help_text='Dot-separated path to parameter (e.g., "economic.discount_rate")'
+    )
+    base_value = models.FloatField()
+    variation_type = models.CharField(max_length=20, choices=VARIATION_TYPES)
+    variation_values = models.JSONField(
+        help_text='List of values or parameters for the variation type'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['scenario', 'name']
+        verbose_name = 'Sensitivity Sweep'
+        verbose_name_plural = 'Sensitivity Sweeps'
+
+    def __str__(self):
+        return f"{self.scenario.name} - {self.name}"
+
+    def count_runs(self):
+        """Calculate number of runs this sweep will generate"""
+        if isinstance(self.variation_values, list):
+            return len(self.variation_values)
+        return 0

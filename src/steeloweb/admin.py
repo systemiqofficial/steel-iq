@@ -1,7 +1,17 @@
 from django.contrib import admin
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
-from .models import ModelRun, ResultImages, DataPackage, DataPreparation, SimulationPlot, MasterExcelFile
+from .models import (
+    ModelRun,
+    ResultImages,
+    DataPackage,
+    DataPreparation,
+    SimulationPlot,
+    MasterExcelFile,
+    Scenario,
+    ScenarioVariation,
+    SensitivitySweep,
+)
 from .forms import DataPreparationForm
 
 
@@ -297,3 +307,86 @@ class MasterExcelFileAdmin(admin.ModelAdmin):
                 self.message_user(request, f"{master_excel.name}: Validation error - {str(e)}", level="error")
 
     validate_files.short_description = "Validate selected files"
+
+
+@admin.register(Scenario)
+class ScenarioAdmin(admin.ModelAdmin):
+    list_display = ('name', 'master_excel', 'start_year', 'end_year', 'created_by', 'created_at', 'variation_count')
+    list_filter = ('created_at', 'start_year', 'end_year')
+    search_fields = ('name', 'description')
+    readonly_fields = ('created_at', 'updated_at', 'variation_count', 'run_count')
+    raw_id_fields = ('master_excel', 'base_scenario', 'created_by')
+
+    fieldsets = (
+        (None, {
+            'fields': ('name', 'description', 'master_excel', 'base_scenario', 'created_by')
+        }),
+        ('Simulation Timeframe', {
+            'fields': ('start_year', 'end_year')
+        }),
+        ('Override Parameters', {
+            'fields': ('technology_overrides', 'economic_overrides', 'geospatial_overrides', 'policy_overrides', 'agent_overrides'),
+            'classes': ('collapse',)
+        }),
+        ('Metadata', {
+            'fields': ('created_at', 'updated_at', 'variation_count', 'run_count'),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def variation_count(self, obj):
+        return obj.count_variations()
+    variation_count.short_description = 'Active Variations'
+
+    def run_count(self, obj):
+        return obj.count_runs()
+    run_count.short_description = 'Total Runs'
+
+
+@admin.register(ScenarioVariation)
+class ScenarioVariationAdmin(admin.ModelAdmin):
+    list_display = ('name', 'scenario', 'is_active', 'created_at')
+    list_filter = ('is_active', 'created_at', 'scenario')
+    search_fields = ('name', 'description', 'scenario__name')
+    readonly_fields = ('created_at',)
+    raw_id_fields = ('scenario',)
+
+    fieldsets = (
+        (None, {
+            'fields': ('scenario', 'name', 'description', 'is_active')
+        }),
+        ('Additional Overrides', {
+            'fields': ('additional_overrides',),
+            'classes': ('collapse',)
+        }),
+        ('Metadata', {
+            'fields': ('created_at',),
+            'classes': ('collapse',)
+        }),
+    )
+
+
+@admin.register(SensitivitySweep)
+class SensitivitySweepAdmin(admin.ModelAdmin):
+    list_display = ('name', 'scenario', 'parameter_path', 'variation_type', 'run_count', 'created_at')
+    list_filter = ('variation_type', 'created_at', 'scenario')
+    search_fields = ('name', 'parameter_path', 'scenario__name')
+    readonly_fields = ('created_at', 'run_count')
+    raw_id_fields = ('scenario',)
+
+    fieldsets = (
+        (None, {
+            'fields': ('scenario', 'name', 'parameter_path')
+        }),
+        ('Variation Configuration', {
+            'fields': ('base_value', 'variation_type', 'variation_values')
+        }),
+        ('Metadata', {
+            'fields': ('created_at', 'run_count'),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def run_count(self, obj):
+        return obj.count_runs()
+    run_count.short_description = 'Expected Runs'
