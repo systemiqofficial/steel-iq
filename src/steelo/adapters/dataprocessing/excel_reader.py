@@ -572,7 +572,6 @@ def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[st
             else:
                 # Secondary feedstock - store with original units (usually kg/t)
                 if vector:
-                    # Keep the value as-is for secondary feedstocks (no conversion)
                     feedstock.add_secondary_feedstock(normalize_commodity_name(vector), value)
         elif side == "Output":
             # Outputs - keep original values

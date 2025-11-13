@@ -453,6 +453,7 @@ class TradeLPModel:
         return next(bom_element for bom_element in self.bom_elements if bom_element.name == bom_element_name)
 
     def set_legal_allocations(self):
+        # Standard legal allocations for primary commodities
         legal_allocations = [
             (from_pc, to_pc, commodity)
             for from_pc in self.process_centers
@@ -466,6 +467,29 @@ class TradeLPModel:
             )
             and from_pc.process.type != ProcessType.DEMAND
         ]
+
+        # Add legal allocations for dependent commodities that have suppliers
+        dependent_commodity_allocations = []
+        for from_pc in self.process_centers:
+            if from_pc.process.type == ProcessType.SUPPLY:  # Only from suppliers
+                for commodity in from_pc.process.products:
+                    if commodity is None:
+                        continue
+                    # Check if this commodity is a dependent commodity in any destination process
+                    for to_pc in self.process_centers:
+                        if to_pc.process.type == ProcessType.PRODUCTION:
+                            for bom_element in to_pc.process.bill_of_materials:
+                                if bom_element.dependent_commodities:
+                                    if commodity in bom_element.dependent_commodities.keys():
+                                        # Check if there's a process connector allowing this flow
+                                        if any(
+                                            conn.from_process == from_pc.process and conn.to_process == to_pc.process
+                                            for conn in self.process_connectors
+                                        ):
+                                            dependent_commodity_allocations.append((from_pc, to_pc, commodity))
+
+        legal_allocations.extend(dependent_commodity_allocations)
+
         self.legal_allocations = legal_allocations
 
     @time_function

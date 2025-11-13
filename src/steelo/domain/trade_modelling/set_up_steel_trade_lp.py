@@ -151,6 +151,7 @@ def add_furnace_groups_as_process_centers(repository, lp_model: tlp.TradeLPModel
         for furnace_group in plant.furnace_groups:
             if furnace_group.status.lower() not in config.active_statuses:
                 continue
+
             process = lp_model.get_process(furnace_group.technology.name)
             if process is None:
                 process = create_process_from_furnace_group(
@@ -167,6 +168,7 @@ def add_furnace_groups_as_process_centers(repository, lp_model: tlp.TradeLPModel
                 soft_minimum_capacity=config.soft_minimum_capacity_percentage,
             )
             process_centers.append(process_center)
+
     lp_model.add_process_centers(process_centers)
 
 
@@ -674,46 +676,47 @@ def set_up_steel_trade_lp(
     # add dummy processes AND PROCESSCENTERS! for the secondary feedstock constraints:
     if secondary_feedstock_constraints:
         for commodity in secondary_feedstock_constraints:
-            for iso_3_tuple in secondary_feedstock_constraints[commodity]:
-                commodity_supply_com_bom_element = tlp.BOMElement(
-                    name=f"{commodity}_supply",
-                    commodity=tlp.Commodity(name=commodity),
-                    parameters={},
-                    output_commodities=[tlp.Commodity(name=commodity)],
-                )
-                # Create a dummy process for the secondary feedstock
-                commodity_supply_process = tlp.Process(
-                    name=f"{commodity}_supply",
-                    type=tlp.ProcessType.SUPPLY,
-                    bill_of_materials=[commodity_supply_com_bom_element],
-                )
-                lp_model.add_processes([commodity_supply_process])
-                total_capacity = sum(
-                    [
-                        secondary_feedstock_constraints[commodity][iso_3_tuple]
-                        for iso_3_tuple in secondary_feedstock_constraints[commodity]
-                    ]
-                )
-                commodity_supply_process_center = tlp.ProcessCenter(
-                    name=f"{commodity}_supply_process_center",
-                    process=commodity_supply_process,
-                    capacity=total_capacity + 1,  # Set a non-limiting capacity limit
-                    location=tlp.Location(
-                        lat=52.22,  # Set a default latitude
-                        lon=-4.53,  # Set a default longitude
-                        country="dummy country",
-                        iso3="XXX",
-                        region="dummy region",  # Set a default region
-                    ),  # Set a default location
-                )
-                lp_model.add_process_centers([commodity_supply_process_center])
-                # Create a process connector from the dummy process to the demand process
-                for process in lp_model.processes:
-                    if process.type == tlp.ProcessType.PRODUCTION:
-                        commodity_supply_process_to_process = tlp.ProcessConnector(
-                            from_process=commodity_supply_process, to_process=process
-                        )
-                        all_process_connectors.append(commodity_supply_process_to_process)
+            # Calculate total capacity across all regions for this commodity
+            total_capacity = sum(
+                secondary_feedstock_constraints[commodity][iso_3_tuple]
+                for iso_3_tuple in secondary_feedstock_constraints[commodity]
+            )
+
+            commodity_supply_com_bom_element = tlp.BOMElement(
+                name=f"{commodity}_supply",
+                commodity=tlp.Commodity(name=commodity),
+                parameters={},
+                output_commodities=[tlp.Commodity(name=commodity)],
+            )
+            # Create a dummy process for the secondary feedstock
+            commodity_supply_process = tlp.Process(
+                name=f"{commodity}_supply",
+                type=tlp.ProcessType.SUPPLY,
+                bill_of_materials=[commodity_supply_com_bom_element],
+            )
+            lp_model.add_processes([commodity_supply_process])
+
+            commodity_supply_process_center = tlp.ProcessCenter(
+                name=f"{commodity}_supply_process_center",
+                process=commodity_supply_process,
+                capacity=total_capacity + 1,  # Set a non-limiting capacity limit
+                location=tlp.Location(
+                    lat=52.22,  # Set a default latitude
+                    lon=-4.53,  # Set a default longitude
+                    country="dummy country",
+                    iso3="XXX",
+                    region="dummy region",  # Set a default region
+                ),  # Set a default location
+            )
+            lp_model.add_process_centers([commodity_supply_process_center])
+
+            # Create a process connector from the dummy process to all production processes
+            for process in lp_model.processes:
+                if process.type == tlp.ProcessType.PRODUCTION:
+                    commodity_supply_process_to_process = tlp.ProcessConnector(
+                        from_process=commodity_supply_process, to_process=process
+                    )
+                    all_process_connectors.append(commodity_supply_process_to_process)
 
     # Validate process network connectivity before building LP model
     logger.info("🔍 Starting process network validation...")
@@ -783,6 +786,17 @@ def set_up_steel_trade_lp(
             logger.info(f"No active carbon border mechanisms for year {year}, skipping adjustments")
     else:
         logger.info("No carbon border mechanisms defined in environment, skipping adjustments")
+
+    lp_model.lp_model.secondary_feedstock_constraints.pprint()
+    print(
+        f"Number of secondary feedstock constraints from data: {len(secondary_feedstock_constraints) if secondary_feedstock_constraints else 0}"
+    )
+    print(f"Length max feedstock parameters: {len(lp_model.lp_model.max_secondary_feedstock_allocation)}")
+    print(f"length secondary_feedstock_index_set: {len(lp_model.lp_model.secondary_feedstock_index_set)}")
+    print(
+        f"Number of created secondary feedstock constraints in LP model: {len(lp_model.lp_model.secondary_feedstock_constraints)}"
+    )
+    exit()
 
     return lp_model
 

@@ -111,6 +111,7 @@ def _load_secondary_feedstock_constraints(env, repository_json):
     import logging
     from .domain.models import SecondaryFeedstockConstraint
     from .domain import Year
+    from .adapters.dataprocessing.excel_reader import normalize_commodity_name
 
     logger = logging.getLogger(__name__)
     constraints = []
@@ -148,7 +149,7 @@ def _load_secondary_feedstock_constraints(env, repository_json):
         for commodity, regions in aggregated_constraints.items():
             for region_tuple, year_constraints in regions.items():
                 constraint = SecondaryFeedstockConstraint(
-                    secondary_feedstock_name=commodity,
+                    secondary_feedstock_name=normalize_commodity_name(commodity),
                     region_iso3s=list(region_tuple),
                     maximum_constraint_per_year={Year(y): v for y, v in year_constraints.items()},
                 )
