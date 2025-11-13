@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+import copy
 import math
 import logging
 import random
@@ -27,6 +28,7 @@ from steelo.domain.calculate_emissions import (
     materiall_bill_business_case_match,
 )
 from steelo.domain.carbon_cost import CarbonCost, CarbonCostService
+from steelo.domain import diagnostics as diag
 from steelo.logging_config import new_plant_logger
 from steelo.utilities.utils import merge_two_dictionaries
 from steelo.core.parse import normalize_code
@@ -6315,6 +6317,8 @@ class Environment:
         self.switched_capacity: dict[str, float] = {}  # Track technology switches per year
         self.new_plant_capacity: dict[str, float] = {}  # Track capacity from new plants only (separate from expansions)
         self.capacity_snapshot_by_product: dict[str, float] = {}
+        self._diag_bof_baseline_2049: dict[str, dict[str, float]] | None = None
+        self._diag_bof_sample_count: int = 0
 
         # Initialize demand, BOMs, and utilization - will be populated during simulation setup
         self.demand_dict: dict[str, dict[Year, Volumes]] = {}
@@ -7789,6 +7793,8 @@ class Environment:
             lambda: defaultdict(lambda: {"demand_sum": 0.0, "cost_sum": 0.0})
         )  # noqa
         avg_util = {}
+        tech_contributor_counts: dict[str, int] = defaultdict(int)
+        bof_raw_inputs: list[dict[str, object]] = []
 
         for p in plant_list:
             for fg in p.furnace_groups:
@@ -7807,9 +7813,30 @@ class Environment:
                 # Check if bill_of_materials exists and has materials key
                 if not fg.bill_of_materials or "materials" not in fg.bill_of_materials:
                     continue
+                fg_contributed = False
                 for mat_name, info in fg.bill_of_materials["materials"].items():
                     acc[tech][mat_name]["demand_sum"] += info["demand"]
                     acc[tech][mat_name]["cost_sum"] += info["total_material_cost"]
+                    if (
+                        diag.diagnostics_enabled()
+                        and tech.upper() == "BOF"
+                        and mat_name.lower() == "hot_metal"
+                        and info["demand"] > 0
+                    ):
+                        bof_raw_inputs.append(
+                            {
+                                "year": int(self.year),
+                                "plant_id": getattr(p, "plant_id", "unknown"),
+                                "furnace_group_id": fg.furnace_group_id,
+                                "production": float(fg.production),
+                                "demand": float(info["demand"]),
+                                "total_material_cost": float(info.get("total_material_cost", 0.0)),
+                            }
+                        )
+                    fg_contributed = True
+
+                if fg_contributed:
+                    tech_contributor_counts[tech] += 1
 
         # 2) Build the stats structure
         stats: dict[str, dict[str, dict[str, float]]] = {}
@@ -7841,6 +7868,43 @@ class Environment:
                     "unit_cost": unit_cost_for_metallic_charge if unit_cost_for_metallic_charge is not None else 0.0,
                     "demand_share_pct": demand_share_pct_of_mc if demand_share_pct_of_mc is not None else 0.0,
                 }
+        self._diag_bof_sample_count = tech_contributor_counts.get("BOF", 0)
+        if diag.diagnostics_enabled():
+            year_int = int(self.year)
+            bof_stats = stats.get("BOF")
+            if bof_stats:
+                diag.write_json(["avg_boms", f"{year_int}.json"], {"BOF": bof_stats})
+                if year_int == 2049:
+                    self._diag_bof_baseline_2049 = copy.deepcopy(bof_stats)
+                elif year_int == 2050 and self._diag_bof_baseline_2049:
+                    base_cost = self._diag_bof_baseline_2049.get("hot_metal", {}).get("unit_cost")
+                    new_cost = bof_stats.get("hot_metal", {}).get("unit_cost")
+                    if base_cost and new_cost:
+                        delta = new_cost - base_cost
+                        pct = (delta / base_cost * 100) if base_cost else None
+                        logger.warning(
+                            "[DIAGNOSTICS][AVG_BOM] BOF hot_metal unit_cost jump year %s -> %s: %.2f USD/t (%+.1f%%)",
+                            2049,
+                            2050,
+                            delta,
+                            pct if pct is not None else 0.0,
+                        )
+            bof_count = self._diag_bof_sample_count
+            if bof_raw_inputs and diag.should_log_raw_bof_inputs(year_int, bof_count):
+                for entry in bof_raw_inputs:
+                    diag.append_csv(
+                        f"avg_boms/bof_inputs_{year_int}.csv",
+                        ["year", "plant_id", "furnace_group_id", "production", "demand", "total_material_cost"],
+                        [
+                            entry["year"],
+                            entry["plant_id"],
+                            entry["furnace_group_id"],
+                            entry["production"],
+                            entry["demand"],
+                            entry["total_material_cost"],
+                        ],
+                    )
+
         for tech, util_dict in avg_util.items():
             avg_util[tech].update(
                 {

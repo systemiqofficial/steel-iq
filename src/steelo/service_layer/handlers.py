@@ -1,14 +1,17 @@
 from typing import Callable, TYPE_CHECKING
+from collections import defaultdict
 
 from ..domain import events, commands, Volumes, Year, PointInTime, TimeFrame
 from ..domain.models import Environment
 from .unit_of_work import UnitOfWork
 from datetime import datetime
+import json
 
 # Global variables moved to Environment/Config
 from steelo.domain.constants import Commodities, T_TO_KT  # Keep enum as constant
 from steelo.domain.trade_modelling.TM_PAM_connector import TM_PAM_connector
 from steelo.domain.calculate_costs import filter_active_subsidies
+from steelo.domain import diagnostics as diag
 import logging
 
 if TYPE_CHECKING:
@@ -244,12 +247,15 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
 
     with uow:
         fgs = [fg for p in uow.plants.list() for fg in p.furnace_groups if (fg.status in env.config.active_statuses)]
+        active_bof_count = sum(1 for fg in fgs if fg.technology.name.upper() == "BOF")
 
         tmpc = TM_PAM_connector(
             dynamic_feedstocks_classes=env.dynamic_feedstocks,
             plants=uow.plants,  # type: ignore[arg-type]
             transport_kpis=env.transport_kpis,
         )
+        tmpc.current_year = int(env.year)
+        tmpc.diagnostics_active_bof_count = active_bof_count
         tmpc.set_up_network_and_propagate_costs(solved_trade_allocations=trade_allocations)
         tmpc.update_furnace_group_utilisation(fgs)
         bom_issue_count_materials, bom_issue_count_energy = tmpc.update_bill_of_materials(fgs)
@@ -358,6 +364,10 @@ def finalise_iteration(
 
     # Step 3: Update all furnace groups
     with uow:
+        tech_status_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        tech_bom_counts: dict[str, int] = defaultdict(int)
+        active_counts: dict[str, int] = defaultdict(int)
+        year_int = int(env.year)
         for plant in uow.plants.list():
             # plant.reset_capacity_changes()
             for fg in plant.furnace_groups:
@@ -367,6 +377,14 @@ def finalise_iteration(
                 if not fg.lifetime:
                     print("No lifetime.current in furnace group", fg.furnace_group_id, fg.status, fg.capacity)
                     continue
+
+                tech_name = fg.technology.name
+                status_key = fg.status.lower()
+                tech_status_counts[tech_name][status_key] += 1
+                if status_key in env.config.active_statuses:
+                    active_counts[tech_name] += 1
+                    if fg.bill_of_materials and fg.bill_of_materials.get("materials"):
+                        tech_bom_counts[tech_name] += 1
 
                 # Step 3a: Update current year in lifetime tracking
                 fg.lifetime.current = env.year
@@ -437,20 +455,52 @@ def finalise_iteration(
                     f"{len(all_opex_subsidies)} total -> {len(active_opex_subsidies)} active for year {env.year}"
                 )
 
+        if diag.diagnostics_enabled() and tech_status_counts:
+            for tech, statuses in tech_status_counts.items():
+                total = sum(statuses.values())
+                active = active_counts.get(tech, 0)
+                with_bom = tech_bom_counts.get(tech, 0)
+                diag.append_csv(
+                    "furnace_counts.csv",
+                    ["year", "technology", "total", "active", "with_bom", "status_breakdown"],
+                    [year_int, tech, total, active, with_bom, json.dumps(statuses)],
+                )
+
         # Step 4: Update supplier production costs (scrap pricing based on BOF hot_metal costs)
         for supplier in uow.repository.suppliers.list():
             if supplier.commodity == "scrap":
+                pricing_source = "default"
+                source_cost = 200.0  # Default scrap cost
+                sample_size = getattr(env, "_diag_bof_sample_count", None)
                 # Use BOF hot_metal cost if available, otherwise use hardcoded default
                 if "BOF" in env.avg_boms and "hot_metal" in env.avg_boms["BOF"]:
-                    supplier.production_cost = env.avg_boms["BOF"]["hot_metal"]["unit_cost"] * 0.95
+                    source_cost = env.avg_boms["BOF"]["hot_metal"]["unit_cost"] * 0.95
+                    pricing_source = "avg_bom"
                 else:
                     # Fallback to hardcoded value from Excel
                     fallback_cost = env.get_fallback_material_cost(iso3=supplier.location.iso3, technology="BOF")
                     if fallback_cost is not None:
-                        supplier.production_cost = fallback_cost * 0.95
+                        source_cost = fallback_cost * 0.95
+                        pricing_source = "fallback"
                     else:
                         # Ultimate fallback if no cost data available
-                        supplier.production_cost = 200.0  # Default scrap cost
+                        source_cost = 200.0
+                        pricing_source = "default"
+                supplier.production_cost = source_cost
+
+                if diag.diagnostics_enabled():
+                    diag.append_csv(
+                        "scrap_pricing_log.csv",
+                        ["year", "supplier_id", "iso3", "source", "sample_size", "production_cost"],
+                        [
+                            year_int,
+                            getattr(supplier, "supplier_id", "unknown"),
+                            supplier.location.iso3,
+                            pricing_source,
+                            sample_size if sample_size is not None else "",
+                            source_cost,
+                        ],
+                    )
 
         env.calculate_demand()
 

@@ -8,6 +8,7 @@ from steelo.adapters.repositories.in_memory_repository import (
 from steelo.domain.models import PrimaryFeedstock, FurnaceGroup, TransportKPI
 from steelo.domain.trade_modelling.trade_lp_modelling import Allocations, ProcessType
 from steelo.domain.constants import LP_TOLERANCE
+from steelo.domain import diagnostics as diag
 
 
 # logging.getLogger().setLevel(logging.WARNING)  # Commented out to avoid setting root logger
@@ -107,8 +108,13 @@ class TM_PAM_connector:
             for fg in p.furnace_groups
             if isinstance(fg.technology.product, str) and fg.technology.product.lower() == "steel"
         ]
+        self.bof_furnaces = [
+            fg.furnace_group_id for p in plants.list() for fg in p.furnace_groups if fg.technology.name.upper() == "BOF"
+        ]
 
         self.G = None
+        self.current_year: int | None = None
+        self.diagnostics_active_bof_count: int | None = None
 
     def get_transport_cost(self, from_iso: str, to_iso: str, commodity: str) -> float:
         """Retrieve transportation cost between two countries for a specific commodity.
@@ -442,6 +448,40 @@ class TM_PAM_connector:
                 material_and_transport_cost = (per_unit_base + edata.get(transport_attr, 0.0)) * volume
                 current_step_energy_cost = edata.get(process_attr, 0.0) * volume
                 edge_cost = material_and_transport_cost + current_step_energy_cost
+
+                if (
+                    diag.diagnostics_enabled()
+                    and self.current_year is not None
+                    and v in self.bof_furnaces
+                    and comm == "hot_metal"
+                    and volume > 0
+                ):
+                    transport_unit = edata.get(transport_attr, 0.0)
+                    energy_unit = edata.get(process_attr, 0.0)
+                    base_unit = per_unit_base
+                    total_unit = base_unit + transport_unit + energy_unit
+                    delta = total_unit - base_unit
+                    delta_pct = (delta / base_unit * 100) if base_unit else None
+                    if delta > 500 or (delta_pct is not None and delta_pct > 100):
+                        delta_pct_str = f"{delta_pct:.1f}" if delta_pct is not None else "n/a"
+                        diag.append_text(
+                            f"cost_propagation/{self.current_year}.txt",
+                            [
+                                "node={node}, source={src}, commodity={comm}, base={base:.2f}, "
+                                "transport={transport:.2f}, energy={energy:.2f}, total={total:.2f}, "
+                                "delta={delta:.2f}, delta_pct={delta_pct}".format(
+                                    node=v,
+                                    src=u,
+                                    comm=comm,
+                                    base=base_unit,
+                                    transport=transport_unit,
+                                    energy=energy_unit,
+                                    total=total_unit,
+                                    delta=delta,
+                                    delta_pct=delta_pct_str,
+                                )
+                            ],
+                        )
 
                 # Initialize the target node's cost dict if needed
                 if source_attr not in G.nodes[v] or not isinstance(G.nodes[v][source_attr], dict):
@@ -973,6 +1013,28 @@ class TM_PAM_connector:
                     )
 
                 fg.bill_of_materials = merged_bom
+
+                if (
+                    diag.diagnostics_enabled()
+                    and self.current_year is not None
+                    and fg.technology.name.upper() == "BOF"
+                    and diag.allow_heavy_exports(self.current_year, self.diagnostics_active_bof_count)
+                ):
+                    materials = merged_bom.get("materials", {})
+                    for material_name, values in materials.items():
+                        diag.append_csv(
+                            f"bom_summary_{self.current_year}.csv",
+                            ["year", "furnace_group_id", "technology", "material", "demand", "total_cost", "unit_cost"],
+                            [
+                                self.current_year,
+                                fg.furnace_group_id,
+                                fg.technology.name,
+                                material_name,
+                                float(values.get("demand", 0.0)),
+                                float(values.get("total_cost", values.get("total_material_cost", 0.0))),
+                                float(values.get("unit_cost", 0.0)),
+                            ],
+                        )
 
         return bom_issue_count_materials, bom_issue_count_energy
 
