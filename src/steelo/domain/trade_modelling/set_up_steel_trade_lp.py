@@ -787,16 +787,16 @@ def set_up_steel_trade_lp(
     else:
         logger.info("No carbon border mechanisms defined in environment, skipping adjustments")
 
-    lp_model.lp_model.secondary_feedstock_constraints.pprint()
-    print(
-        f"Number of secondary feedstock constraints from data: {len(secondary_feedstock_constraints) if secondary_feedstock_constraints else 0}"
-    )
-    print(f"Length max feedstock parameters: {len(lp_model.lp_model.max_secondary_feedstock_allocation)}")
-    print(f"length secondary_feedstock_index_set: {len(lp_model.lp_model.secondary_feedstock_index_set)}")
-    print(
-        f"Number of created secondary feedstock constraints in LP model: {len(lp_model.lp_model.secondary_feedstock_constraints)}"
-    )
-    exit()
+    # lp_model.lp_model.secondary_feedstock_constraints.pprint()
+    # print(
+    #     f"Number of secondary feedstock constraints from data: {len(secondary_feedstock_constraints) if secondary_feedstock_constraints else 0}"
+    # )
+    # print(f"Length max feedstock parameters: {len(lp_model.lp_model.max_secondary_feedstock_allocation)}")
+    # print(f"length secondary_feedstock_index_set: {len(lp_model.lp_model.secondary_feedstock_index_set)}")
+    # print(
+    #     f"Number of created secondary feedstock constraints in LP model: {len(lp_model.lp_model.secondary_feedstock_constraints)}"
+    # )
+    # exit()
 
     return lp_model
 
