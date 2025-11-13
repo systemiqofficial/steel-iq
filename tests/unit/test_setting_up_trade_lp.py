@@ -105,9 +105,27 @@ class DummyVariable:
         pass
 
 
+class DummyConstraintCollection:
+    def __init__(self):
+        self.data = []
+
+    def add(self, item):
+        self.data.append(item)
+
+    def pprint(self):
+        # No-op for tests
+        pass
+
+    def __len__(self):
+        return len(self.data)
+
+
 class DummyLPModel:
     def __init__(self):
         self.allocation_variables = DummyAllocationVariables()
+        self.secondary_feedstock_constraints = DummyConstraintCollection()
+        self.max_secondary_feedstock_allocation = {}
+        self.secondary_feedstock_index_set = set()
 
 
 # Dummy TradeLPModel that stores processes, bom_elements, process centers, connectors, etc.
@@ -264,9 +282,10 @@ class DummyFurnaceGroup:
 
 
 class DummyTechnology:
-    def __init__(self, name, dynamic_business_case):
+    def __init__(self, name, dynamic_business_case, product="steel"):
         self.name = name
         self.dynamic_business_case = dynamic_business_case
+        self.product = product
 
 
 class DummyFeedstock:
@@ -367,6 +386,12 @@ def patch_dependencies(monkeypatch):
 
     # Patch CommodityAllocations to our dummy version
     monkeypatch.setattr(my_module.domain.models, "CommodityAllocations", DummyCommodityAllocations)
+
+
+@pytest.fixture(autouse=True)
+def patch_exit(monkeypatch):
+    """Prevent set_up_steel_trade_lp from terminating the test run via exit()."""
+    monkeypatch.setattr("builtins.exit", lambda *args, **kwargs: None)
 
 
 # --- Tests ---
