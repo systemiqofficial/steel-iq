@@ -4,6 +4,7 @@ import math
 from steelo.adapters.repositories import InMemoryRepository, Repository
 from steelo.domain.models import (
     Year,
+    Location,
     FurnaceGroup,
     CommodityAllocations,
     TradeTariff,
@@ -13,6 +14,7 @@ from steelo.domain.models import (
     Volumes,
     TransportKPI,
     Environment,
+    Supplier,
 )
 import steelo.domain.trade_modelling.trade_lp_modelling as tlp
 from steelo.service_layer.message_bus import MessageBus
@@ -24,6 +26,47 @@ import pyomo.environ as pyo
 from steelo.domain.constants import LP_TOLERANCE, T_TO_KT
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_secondary_feedstock_supplier(
+    repository: Repository,
+    *,
+    supplier_id: str,
+    commodity: str,
+    location: Location,
+    capacity: float,
+    year: Year,
+) -> Supplier:
+    """
+    Guarantee that a synthetic supplier exists for secondary feedstock constraints.
+
+    The LP injects virtual supply process centers (e.g. ``bio-pci_supply_process_center``) so the
+    constraint can be enforced. Downstream, those nodes must map to Supplier objects when
+    allocations are translated back into domain entities. We therefore create (or update) an
+    in-memory Supplier with the matching identifier and per-year capacity.
+    """
+    capacity_as_volume = Volumes(capacity)
+    try:
+        supplier = repository.suppliers.get(supplier_id)
+    except KeyError:
+        supplier = Supplier(
+            supplier_id=supplier_id,
+            location=location,
+            commodity=commodity,
+            capacity_by_year={year: capacity_as_volume},
+            production_cost=0.0,  # synthetic source: no additional cost beyond LP allocation costs
+        )
+        add_method = getattr(repository.suppliers, "add", None)
+        if callable(add_method):
+            add_method(supplier)
+        else:
+            if hasattr(repository.suppliers, "data"):
+                repository.suppliers.data[supplier_id] = supplier
+            if hasattr(repository.suppliers, "items"):
+                repository.suppliers.items.append(supplier)
+    else:
+        supplier.capacity_by_year[year] = capacity_as_volume
+    return supplier
 
 
 def create_process_from_furnace_group(
@@ -709,6 +752,14 @@ def set_up_steel_trade_lp(
                 ),  # Set a default location
             )
             lp_model.add_process_centers([commodity_supply_process_center])
+            _ensure_secondary_feedstock_supplier(
+                repository,
+                supplier_id=commodity_supply_process_center.name,
+                commodity=commodity,
+                location=commodity_supply_process_center.location,
+                capacity=total_capacity,
+                year=year,
+            )
 
             # Create a process connector from the dummy process to all production processes
             for process in lp_model.processes:

@@ -233,6 +233,11 @@ class DummyContainer:
     def get(self, key):
         return self.data[key]
 
+    def add(self, obj):
+        """Mimic repository add semantics for tests."""
+        self.data[getattr(obj, "supplier_id", getattr(obj, "plant_id", getattr(obj, "demand_center_id", None)))] = obj
+        self.items.append(obj)
+
 
 class DummyRepository:
     def __init__(self):
