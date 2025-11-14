@@ -3,6 +3,7 @@ import pyomo.environ as pyo
 
 # --- Pytest fixtures to patch the module under test ---
 #
+from steelo.domain import Volumes
 from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
     create_process_from_furnace_group,
     add_furnace_groups_as_process_centers,
@@ -1338,8 +1339,30 @@ def test_set_up_steel_trade_lp_with_secondary_feedstock_constraints(monkeypatch)
     # Verify dummy process center was created
     hydrogen_centers = [c for c in centers_added if c.name == "hydrogen_supply_process_center"]
     assert len(hydrogen_centers) > 0
-    # Capacity should be total + 1 = 3001
-    assert hydrogen_centers[0].capacity == 3001.0
+    # Ensure we created the dummy process center with +1 headroom
+    assert any(center.capacity == 3001.0 for center in hydrogen_centers)
+
+
+def test_secondary_feedstock_supplier_capacity_updated_each_year(monkeypatch):
+    from steelo.domain import Year
+
+    repo = DummyRepository()
+    year = Year(2026)
+    mock_config = create_mock_config()
+    message_bus = DummyMessageBus(repo)
+
+    secondary_feedstock_constraints = {"bio-pci": {("USA",): 150.0}}
+
+    set_up_steel_trade_lp(
+        message_bus=message_bus,
+        year=year,
+        config=mock_config,
+        legal_process_connectors=[],
+        secondary_feedstock_constraints=secondary_feedstock_constraints,
+    )
+
+    supplier = repo.suppliers.get("bio-pci_supply_process_center")
+    assert supplier.capacity_by_year[year] == Volumes(150.0)
 
 
 # --- Tests for non-optimal solver results ---

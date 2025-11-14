@@ -313,10 +313,18 @@ def add_suppliers_as_process_centers(repository, lp_model: tlp.TradeLPModel, yea
         if supplier_process is None:
             continue
         lp_model.add_processes([supplier_process])
+        capacity = supplier.capacity_by_year.get(year)
+        if capacity is None:
+            logger.warning(
+                "Skipping supplier %s for year %s because no capacity is defined",
+                supplier.supplier_id,
+                year,
+            )
+            continue
         process_center = tlp.ProcessCenter(
             name=supplier.supplier_id,
             process=supplier_process,
-            capacity=supplier.capacity_by_year[year],
+            capacity=capacity,
             location=supplier.location,
             production_cost=supplier.production_cost,
         )
@@ -655,6 +663,30 @@ def set_up_steel_trade_lp(
 
     add_furnace_groups_as_process_centers(repository=repository, lp_model=lp_model, config=config)
     add_demand_centers_as_process_centers(repository=repository, lp_model=lp_model, year=year)
+    secondary_supply_locations: dict[str, tlp.Location] = {}
+    if secondary_feedstock_constraints:
+        for commodity in secondary_feedstock_constraints:
+            total_capacity = sum(
+                secondary_feedstock_constraints[commodity][iso_3_tuple]
+                for iso_3_tuple in secondary_feedstock_constraints[commodity]
+            )
+            location = tlp.Location(
+                lat=52.22,
+                lon=-4.53,
+                country="dummy country",
+                iso3="XXX",
+                region="dummy region",
+            )
+            secondary_supply_locations[commodity] = location
+            _ensure_secondary_feedstock_supplier(
+                repository,
+                supplier_id=f"{commodity}_supply_process_center",
+                commodity=commodity,
+                location=location,
+                capacity=total_capacity,
+                year=year,
+            )
+
     add_suppliers_as_process_centers(repository=repository, lp_model=lp_model, year=year, config=config)
 
     # Add location-specific transportation costs
@@ -739,27 +771,23 @@ def set_up_steel_trade_lp(
             )
             lp_model.add_processes([commodity_supply_process])
 
+            location = secondary_supply_locations.get(
+                commodity,
+                tlp.Location(
+                    lat=52.22,
+                    lon=-4.53,
+                    country="dummy country",
+                    iso3="XXX",
+                    region="dummy region",
+                ),
+            )
             commodity_supply_process_center = tlp.ProcessCenter(
                 name=f"{commodity}_supply_process_center",
                 process=commodity_supply_process,
                 capacity=total_capacity + 1,  # Set a non-limiting capacity limit
-                location=tlp.Location(
-                    lat=52.22,  # Set a default latitude
-                    lon=-4.53,  # Set a default longitude
-                    country="dummy country",
-                    iso3="XXX",
-                    region="dummy region",  # Set a default region
-                ),  # Set a default location
+                location=location,
             )
             lp_model.add_process_centers([commodity_supply_process_center])
-            _ensure_secondary_feedstock_supplier(
-                repository,
-                supplier_id=commodity_supply_process_center.name,
-                commodity=commodity,
-                location=commodity_supply_process_center.location,
-                capacity=total_capacity,
-                year=year,
-            )
 
             # Create a process connector from the dummy process to all production processes
             for process in lp_model.processes:
