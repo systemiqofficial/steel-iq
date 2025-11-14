@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION = {
     "coking_coal",  # Stored in kg/t in dynamic business cases, priced in USD/t
+    "bio_pci",
 }
 
 # Normalized keys that represent genuine energy carriers. Any secondary-feedstock entry whose normalized

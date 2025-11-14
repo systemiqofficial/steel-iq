@@ -8164,6 +8164,34 @@ class Environment:
                         f"[BOM DEBUG] Fallback: Added {feed.metallic_charge.lower()} = {feed.required_quantity_per_ton_of_product}"
                     )
 
+        # Include secondary feedstocks and other non-metallic inputs so avg_boms stay aligned with dynamic feedstocks
+        for feed in feedstocks_for_tech:
+            secondary_requirements = feed.secondary_feedstock or {}
+            if not secondary_requirements:
+                continue
+            reductant_matches = (
+                feed.reductant == most_common_reductant
+                or str(feed.reductant).lower() == most_common_reductant
+                or (not most_common_reductant and not feed.reductant)
+            )
+            if not reductant_matches:
+                continue
+            for sec_name, volume in secondary_requirements.items():
+                normalized_secondary = _normalize_energy_key(sec_name)
+                converted_volume = (
+                    volume * KG_TO_T
+                    if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION
+                    else volume
+                )
+                if normalized_secondary in input_effectiveness:
+                    bom_logger.debug(
+                        "[BOM DEBUG] Secondary feedstock %s overwriting %.4f with %.4f",
+                        normalized_secondary,
+                        input_effectiveness[normalized_secondary],
+                        converted_volume,
+                    )
+                input_effectiveness[normalized_secondary] = converted_volume
+
         bom_logger.debug(f"[BOM DEBUG] Final input_effectiveness: {input_effectiveness}")
 
         # Step 4: Fallback if no average BOM available
