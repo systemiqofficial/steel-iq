@@ -72,7 +72,19 @@ class TestDataPathResolver:
 
         assert resolver.steel_plants_csv_path == temp_data_dir / "fixtures" / "steel_plants_input_data_2025-03.csv"
         assert resolver.technology_lcop_csv_path == temp_data_dir / "fixtures" / "technology_lcop.csv"
-        assert resolver.master_excel_path == temp_data_dir / "fixtures" / "master_input_vlive.xlsx"
+        primary_path = temp_data_dir / "fixtures" / "master_input_vlive_1.1.xlsx"
+        fallback_path = temp_data_dir / "fixtures" / "master_input_vlive.xlsx"
+
+        # Without any files, resolver reports preferred candidate path
+        assert resolver.master_excel_path == primary_path
+
+        # When the fallback file exists first, it should be used
+        fallback_path.write_text("")
+        assert resolver.master_excel_path == fallback_path
+
+        # Once the primary file exists, it should take priority again
+        primary_path.write_text("")
+        assert resolver.master_excel_path == primary_path
 
     def test_geo_data_paths(self, temp_data_dir):
         """Test geo data path properties."""

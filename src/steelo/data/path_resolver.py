@@ -24,6 +24,7 @@ class DataPathResolver:
     """
 
     MASTER_WORKBOOK_CANDIDATES: tuple[str, ...] = (
+        "master_input_vlive_1.1.xlsx",
         "master_input_vlive.xlsx",
         "master_input.xlsx",
         "Data_collection_ultimate_steel.xlsx",

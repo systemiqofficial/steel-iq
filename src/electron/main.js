@@ -470,7 +470,7 @@ function getPythonEnv(djangoBundlePath, pythonPathEnv) {
   // Get app version for database isolation
   // Using require (created via createRequire) for JSON file
   const packageJson = require('./package.json');
-  const appVersion = packageJson.version || '1.0.0';
+  const appVersion = packageJson.version || '1.1.0';
 
   const env = {
     ...process.env,
@@ -976,7 +976,7 @@ function startTaskWorker(djangoBundlePath) {
 function setupApplicationMenu() {
   // Using require (created via createRequire) for JSON file
   const packageJson = require('./package.json');
-  const appVersion = packageJson.version || '1.0.0';
+  const appVersion = packageJson.version || '1.1.0';
 
   const template = [
     // macOS app menu (only on macOS)
