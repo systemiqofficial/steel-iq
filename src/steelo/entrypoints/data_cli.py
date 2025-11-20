@@ -43,7 +43,7 @@ def steelo_data_download():
 
         if args.package:
             console.print(f"Downloading package: {args.package}")
-            manager.download_package(args.package, args.force)
+            manager.download_package(args.package, force=args.force)
         else:
             console.print("Downloading all required data packages...")
             manager.download_required_data(args.force)
