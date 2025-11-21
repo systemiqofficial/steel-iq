@@ -416,7 +416,18 @@ def test_simulation_service_with_plant_agent_events(
             {"EAF": -50000.0, "BOF": 500000.0},  # EAF negative (non-viable), BOF positive (viable)
             {"EAF": 400, "BOF": 150},  # BOF has lower capex
             1000.0,  # Cost of stranding asset
-            {"EAF": {}, "BOF": {}},  # BOM dictionaries
+            {
+                "EAF": {
+                    "materials": {"scrap": {"demand": 1.0, "total_cost": 1.0, "unit_cost": 1.0, "product_volume": 1.0}},
+                    "energy": {},
+                },
+                "BOF": {
+                    "materials": {
+                        "hot_metal": {"demand": 1.0, "total_cost": 1.0, "unit_cost": 1.0, "product_volume": 1.0}
+                    },
+                    "energy": {},
+                },
+            },  # BOM dictionaries
         )
 
         # Mock ALL EAF furnaces to ensure complete test isolation
@@ -445,7 +456,12 @@ def test_simulation_service_with_plant_agent_events(
             {"EAF": 300000.0},  # Positive NPV for current tech only
             {"EAF": 400},  # Capex for renovation
             0.0,  # No cost of stranding asset (same tech)
-            {"EAF": {}},  # BOM dictionaries
+            {
+                "EAF": {
+                    "materials": {"scrap": {"demand": 1.0, "total_cost": 1.0, "unit_cost": 1.0, "product_volume": 1.0}},
+                    "energy": {},
+                }
+            },  # BOM dictionaries
         )
 
         mocker.patch.object(furnace_group, "optimal_technology_name", return_value=mock_return_value_renovation)
@@ -458,7 +474,12 @@ def test_simulation_service_with_plant_agent_events(
             {"EAF": 300000.0},  # Positive NPV for current tech
             {"EAF": 400},  # Capex
             0.0,  # No cost of stranding asset
-            {"EAF": {}},  # BOM dictionaries
+            {
+                "EAF": {
+                    "materials": {"scrap": {"demand": 1.0, "total_cost": 1.0, "unit_cost": 1.0, "product_volume": 1.0}},
+                    "energy": {},
+                }
+            },  # BOM dictionaries
         )
 
         mocker.patch.object(furnace_group, "optimal_technology_name", return_value=mock_return_value_stay)

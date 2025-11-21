@@ -3886,7 +3886,23 @@ class Plant:
 
             bom = bom_dict.get(best_tech)
             if bom is None:
+                fg_strategy_logger.error(
+                    "[FG STRATEGY]: Missing BOM for %s. Available BOM keys: %s",
+                    best_tech,
+                    list(bom_dict.keys()),
+                )
                 raise ValueError(f"BOM for technology {best_tech} not found in BOM dict")
+            materials = bom.get("materials", {})
+            energy = bom.get("energy", {})
+            if not materials:
+                fg_strategy_logger.error(
+                    "[FG STRATEGY]: Empty BOM for %s at switch time (materials=%d, energy=%d) - BOM keys: %s",
+                    best_tech,
+                    len(materials),
+                    len(energy),
+                    list(bom.keys()),
+                )
+                raise ValueError(f"Empty BOM for technology {best_tech} at switch time")
 
             return commands.ChangeFurnaceGroupTechnology(
                 plant_id=self.plant_id,
@@ -8203,6 +8219,12 @@ class Environment:
         # Check if the specific technology exists in avg_boms - fail fast if missing
         if tech not in self.avg_boms:
             available_techs = list(self.avg_boms.keys())
+            bom_logger.error(
+                "[BOM DEBUG] avg_boms missing tech '%s'. feedstocks=%d, avg_boms_keys=%s",
+                tech,
+                len(feedstocks_for_tech),
+                available_techs,
+            )
             raise KeyError(
                 f"Technology '{tech}' not found in avg_boms. "
                 f"This indicates missing or incomplete fallback material cost data. "

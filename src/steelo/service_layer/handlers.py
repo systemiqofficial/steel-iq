@@ -123,6 +123,22 @@ def change_furnace_group_technology(cmd: commands.ChangeFurnaceGroupTechnology, 
     """
     with uow:
         plant = uow.plants.get(cmd.plant_id)
+        bom_materials = (cmd.bom or {}).get("materials", {})
+        bom_energy = (cmd.bom or {}).get("energy", {})
+        if not bom_materials:
+            logger.error(
+                "Refusing technology change for plant %s fg %s: %s → %s: empty BOM (materials=%d, energy=%d)",
+                cmd.plant_id,
+                cmd.furnace_group_id,
+                cmd.old_technology_name,
+                cmd.technology_name,
+                len(bom_materials),
+                len(bom_energy),
+            )
+            raise ValueError(
+                f"Empty BOM passed to technology change for {cmd.technology_name} "
+                f"(materials={len(bom_materials)}, energy={len(bom_energy)})"
+            )
         plant.change_furnace_group_technology(
             furnace_group_id=cmd.furnace_group_id,
             technology_name=cmd.technology_name,
