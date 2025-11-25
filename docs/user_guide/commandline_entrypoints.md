@@ -30,4 +30,4 @@ Recreate JSON repositories from downloaded data packages (similar to recreate_sa
 ```
 
 
-Use the `download-binaries` and `download-latest` CLI helpers to fetch packaged Electron apps. Refer to the [CLI Commands](cli_commands.md#download-standalone-binaries) section for full usage examples and options.
+Use the `download-binaries` and `download-latest` CLI helpers to fetch packaged Electron apps. Refer to the [CLI Commands](cli_commands.md) section for full usage examples and options.

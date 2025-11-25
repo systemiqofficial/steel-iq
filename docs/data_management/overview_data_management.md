@@ -26,14 +26,12 @@ run_simulation
 ## Quick Links
 
 ### For Users
-- [Download Data](cli_commands.md#steelo-data-download)
-- [Prepare Data](cli_commands.md#steelo-data-prepare)
-- [Common Workflows](cli_commands.md#common-workflows)
+- [CLI Commands](cli_commands.md) - Download, prepare, and validate data
+- [Common Workflows](cli_commands.md)
 
 ### For Developers
 - [Python API Reference](python_api.md)
-- [Creating Data Packages](data_packages.md#creating-a-new-package)
-- [Integration Examples](python_api.md#integration-with-existing-code)
+- [Creating Data Packages](data_packages.md)
 
 ## Key Features
 
@@ -100,9 +98,7 @@ Developers can use local data files or download from S3.
 
 ## Related Documentation
 
-- [Repository Pattern ADR](../architecture/adr/002_repository.md)
-- [Configuration Management ADR](../architecture/adr/003_configuration.md)
-- [Architecture Overview](../architecture/architecture.md)
+- [Architecture Overview](../architecture/overview_architecture.md)
 - [CLI Commands](cli_commands.md)
 - [Python API](python_api.md)
 - [Data Packages](data_packages.md)

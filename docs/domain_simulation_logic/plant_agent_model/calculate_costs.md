@@ -128,7 +128,7 @@ The module supports:
 - Intraregional hydrogen trade with transport costs
 - Country-level LCOH calculations with electrolyzer efficiency curves
 
-**Note:** This LCOH calculation is analogous to the one used in the geospatial model, but based on grid power prices instead of custom renewable energy costs. Functions are duplicated in `geospatial_calculations.py` and changes must be manually synchronized between both locations. See [Priority Location Selection](../geospatial_model/priority_location_selection.md#hydrogen-costs) for more details on ceilings and trade.
+**Note:** This LCOH calculation is analogous to the one used in the geospatial model, but based on grid power prices instead of custom renewable energy costs. Functions are duplicated in `geospatial_calculations.py` and changes must be manually synchronized between both locations. See [Priority Location Selection](../geospatial_model/priority_location_selection.md) for more details on ceilings and trade.
 
 **Functions:**
 - `calculate_lcoh_from_electricity_country_level()` - LCOH per country from electricity prices

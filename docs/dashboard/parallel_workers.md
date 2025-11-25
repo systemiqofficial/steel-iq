@@ -322,7 +322,7 @@ A: Environment variables are read at worker spawn time. Running workers continue
 
 ## Technical Architecture
 
-For developers and system administrators, see [Parallel Simulations Implementation](../../PARALLEL_SIMULATIONS_IMPLEMENTATION.md) for detailed technical documentation including:
+For developers and system administrators, the parallel simulations implementation includes:
 
 - Database schema and models
 - Process management implementation

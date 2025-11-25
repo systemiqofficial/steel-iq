@@ -49,7 +49,7 @@ Comprehensive guide to configuring the Steel Model simulation:
 - **Geographic constraints**: Land use, infrastructure, and renewable energy
 - **Environment variables**: System-wide configuration options
 
-### [Logging Guide](logging_guide.md)
+### [Logging Guide](LOGGING_GUIDE.md)
 Understanding and controlling simulation logging:
 - **Log levels**: DEBUG, INFO, WARNING, ERROR, CRITICAL
 - **Configuring loggers**: Module-specific logging control
@@ -154,10 +154,8 @@ The Steel Model uses a structured data flow:
 
 ## Related Documentation
 
-- **[Data Management](../data_management/overview_data_management.md)**: Architecture and design of the data system
-- **[Architecture Overview](../architecture/architecture.md)**: Overall system design
-- **[Development Guide](../development/just_commands.md)**: Tools for developers
-- **[Dashboard & UI](../dashboard/index.md)**: Web interface and Electron app documentation
+- **[Architecture Overview](../architecture/overview_architecture.md)**: Overall system design
+- **[Dashboard & UI](../dashboard/overview_dashboard.md)**: Web interface and Electron app documentation
 
 ## Getting Help
 
@@ -168,7 +166,7 @@ The Steel Model uses a structured data flow:
 
 ### Troubleshooting
 Common issues and solutions are documented in:
-- [Running Simulations Locally > Troubleshooting](running_simulations_locally.md#troubleshooting)
+- [Running Simulations Locally](running_simulations_locally.md) - See the Troubleshooting section
 - [CLI Commands](cli_commands.md) examples
 
 ### Support

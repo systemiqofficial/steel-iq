@@ -10,7 +10,7 @@ The Steel Model UI comes in two flavors:
 - **Django Web Application** for shared, server-hosted deployments.
 - **Electron Standalone App** for self-contained desktop use.
 
-Both experiences share the same workflows for configuring simulations, launching runs, and reviewing results. Start with the [Django & Electron Overview](django_electron_overview.md) for a tour of the interface, and browse the [User Stories](user_stories.md) for common tasks the UI supports.
+Both experiences share the same workflows for configuring simulations, launching runs, and reviewing results. Start with the [Django & Electron Overview](django_electron_overview.md) for a tour of the interface.
 :::
 
 :::{only} not public
@@ -33,7 +33,7 @@ Comprehensive guide to both deployment options, covering:
 - User workflows and system requirements
 - Security considerations and troubleshooting
 
-### [Concept Document](concept.md)
+### <a href="concept.html">Concept Document</a>
 High-level requirements and design goals for the web UI:
 - Core functionality requirements
 - Technical constraints and performance considerations
@@ -42,28 +42,28 @@ High-level requirements and design goals for the web UI:
 
 ## Implementation Details
 
-### [Parallel Worker Management](parallel_workers.md)
+### <a href="parallel_workers.html">Parallel Worker Management</a>
 Detailed documentation of the parallel execution system:
 - Worker architecture and lifecycle
 - Resource management and scaling
 - Task queue and scheduling
 - Monitoring and troubleshooting
 
-### [Design Approaches](design_approaches.md)
+### <a href="design_approaches.html">Design Approaches</a>
 UI/UX design decisions and patterns:
 - Interface design principles
 - User interaction patterns
 - Visualization approaches
 - Responsive design considerations
 
-### [Custom Repositories](custom_repositories.md)
+### <a href="custom_repositories.html">Custom Repositories</a>
 Data management and repository system:
 - Repository pattern implementation
 - Data storage and retrieval
 - Version control for configurations
 - Custom data source integration
 
-### [User Stories](user_stories.md)
+### <a href="user_stories.html">User Stories</a>
 Use cases and user requirements:
 - Key user workflows
 - Feature requirements
@@ -72,10 +72,8 @@ Use cases and user requirements:
 
 ## Related Documentation
 
-- [Architecture Overview](../architecture/architecture.md) - Overall system architecture
+- [Architecture Overview](../architecture/overview_architecture.md) - Overall system architecture
 - [Configuration Guide](../user_guide/configuration.md) - Configuration options
-- [Data Management](../data_management/overview_data_management.md) - Data preparation and management
-- [Development Guide](../development/just_commands.md) - Development tools and commands
 
 ## Quick Links
 

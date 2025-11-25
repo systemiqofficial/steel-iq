@@ -180,7 +180,7 @@ Subsidies are often announced years before plants are built. Standard NPV using 
 
 **Notes:**
 - If NPV calculation fails (returns NaN due to missing data or invalid inputs), it is set to negative infinity to exclude that location-technology pair from selection.
-- For more information on the NPV calculation, see related documentation in [Calculate Cost](../plant_agent_model/calculate_cost.md).
+- For more information on the NPV calculation, see related documentation in [Calculate Cost](../plant_agent_model/calculate_costs.md).
 
 ### Step 5: Top Opportunity Selection
 
@@ -302,6 +302,6 @@ Models real-world risk factors: financing may fall through, permits may be denie
 ## Related Documentation
 
 - [Priority Location Selection](priority_location_selection.md) - How candidate locations are identified
-- [Calculate Cost](../plant_agent_model/calculate_cost.md) - NPV, subsidy, and carbon costs calculation details
+- [Calculate Cost](../plant_agent_model/calculate_costs.md) - NPV, subsidy, and carbon costs calculation details
 - [Baseload Power Optimization](baseload_optimization_atlas.md) - Renewable energy cost calculations
-- [Plant Agent Model](../plant_agent_model/PLANT_AGENT_DOCUMENTATION.md) - Overall plant lifecycle management
+- [Plant Agent Model](../plant_agent_model/overview_plant_agent_model.md) - Overall plant lifecycle management

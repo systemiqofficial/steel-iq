@@ -29,7 +29,7 @@ The Django application (`src/steeloweb/`) provides:
 - **Data Management**: Upload and manage input data files
 - **Simulation Execution**: Run simulations with progress tracking
 - **Result Visualization**: Interactive charts and geographic maps
-- **Worker Management**: [Parallel execution system](parallel_workers.md) for concurrent simulations
+- **Worker Management**: Parallel execution system for concurrent simulations
 
 ### Key Components
 
@@ -158,7 +158,7 @@ The Electron app stores configuration in platform-specific locations:
 - **Result Analysis**: Interactive visualizations and data export
 
 ### Parallel Processing
-The [Parallel Worker Management System](parallel_workers.md) enables:
+The Parallel Worker Management System enables:
 - **Concurrent Simulations**: Run multiple simulations simultaneously
 - **Resource Optimization**: Automatic scaling based on available memory/CPU
 - **Progress Monitoring**: Real-time status of all running simulations
@@ -311,11 +311,7 @@ Cmd+Option+I (macOS)
 
 ## Related Documentation
 
-- [Parallel Worker Management](parallel_workers.md) - Detailed worker system documentation
-- [User Stories](user_stories.md) - Use cases and requirements
-- [Design Approaches](design_approaches.md) - UI/UX design decisions
-- [Custom Repositories](custom_repositories.md) - Data management system
-- [Architecture](../Architecture.md) - Overall system architecture
+- [Architecture](../architecture/overview_architecture.md) - Overall system architecture
 
 ## Support & Resources
 

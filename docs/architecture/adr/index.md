@@ -14,13 +14,13 @@ Adoption of the Repository Pattern to abstract data access and enable flexible i
 Configuration management approach for the project.
 
 ### 004: Project Layout
-Simplified directory structure organizing the codebase into adapters, domain logic, service layer, economic models, and entrypoints. See [Architecture Overview](../architecture.md) for the full system architecture.
+Simplified directory structure organizing the codebase into adapters, domain logic, service layer, economic models, and entrypoints. See [Architecture Overview](../overview_architecture.md) for the full system architecture.
 
 ### 005: Event-Driven Architecture
 Implementation of event-driven architecture with Message Bus, Unit of Work, Commands, Events, and Handlers.
 
 ### 006: Data Input Strategy
-Centralized data preparation architecture transforming master Excel into validated JSON repositories. See [Data Management Overview](../../data_management/overview_data_management.md#architecture-decision-data-input-strategy) for full details.
+Centralized data preparation architecture transforming master Excel into validated JSON repositories. See [Data Management Overview](../../data_management/overview_data_management.md) for full details.
 
 ## Full ADR List
 

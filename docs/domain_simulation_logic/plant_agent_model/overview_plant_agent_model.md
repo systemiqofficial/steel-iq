@@ -40,7 +40,7 @@ Comprehensive overview of the economic factors shaping PAM decisions: price sign
 **[Debt Accumulation Impact](debt_accumulation_impact.md)**
 Analyzes how preserving debt across technology switches creates realistic transition dynamics. Covers behavioral impacts (clustering at renovation boundaries, higher COSA, capital requirements), cascading debt from multiple switches, and model realism improvements.
 
-**[Cost Calculation Functions](calculate_cost.md)**
+**[Cost Calculation Functions](calculate_costs.md)**
 Comprehensive reference for the functions in `calculate_costs.py`. Organized into functional modules (subsidies, cost breakdown, OPEX, debt repayment, cash flow, NPV, stranded assets, CAPEX, hydrogen costs, reductants). Includes key concepts (COSA, debt method, subsidies, LCOH) and integration points.
 
 ### Integration with Other Modules

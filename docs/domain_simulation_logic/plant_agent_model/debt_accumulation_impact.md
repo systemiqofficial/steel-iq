@@ -334,6 +334,6 @@ Debt accumulation creates realistic technology transition dynamics by:
 ## Related Documentation
 
 - **[Agent Definitions](agent_definitions.md)**: Technical details of legacy_debt_schedule in FurnaceGroup
-- **[Cost Calculation Functions](calculate_cost.md)**: COSA calculation details (stranding_asset_cost function)
+- **[Cost Calculation Functions](calculate_costs.md)**: COSA calculation details (stranding_asset_cost function)
 - **[Economic Considerations](economic_considerations.md)**: How debt interacts with other economic factors
 - **[Furnace Group Strategy](furnace_group_strategy.md)**: How COSA is computed in technology evaluation

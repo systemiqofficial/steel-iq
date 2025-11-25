@@ -54,28 +54,14 @@ root_doc = "README"
 
 PUBLIC_EXCLUDE_PATTERNS = [
     "architecture/adr/**",
-    "data_management/**",
-    "development/**",
-    "legacy_docs/**",
     "dashboard/concept.md",
     "dashboard/custom_repositories.md",
     "dashboard/design_approaches.md",
     "dashboard/parallel_workers.md",
     "dashboard/user_stories.md",
-    "domain_simulation_logic/plant_agent_model/agent_definitions.md",
-    "domain_simulation_logic/plant_agent_model/calculate_costs.md",
-    "domain_simulation_logic/plant_agent_model/debt_accumulation_impact.md",
-    "domain_simulation_logic/plant_agent_model/economic_considerations.md",
-    "domain_simulation_logic/plant_agent_model/furnace_group_strategy.md",
-    "domain_simulation_logic/plant_agent_model/introduction_of_new_technologies.md",
-    "domain_simulation_logic/plant_agent_model/plant_agent_model_logic.md",
-    "domain_simulation_logic/plant_agent_model/plant_agents_model_orchestration.md",
-    "domain_simulation_logic/plant_agent_model/plant_expansions.md",
-    "domain_simulation_logic/plant_agent_model/trade_model_connector.md",
-    "domain_simulation_logic/geospatial_model/baseload_optimization_atlas.md",
-    "domain_simulation_logic/geospatial_model/new_plant_opening.md",
-    "domain_simulation_logic/geospatial_model/priority_location_selection.md",
-    "domain_simulation_logic/trade_model/trade_model_setup.md",
+    "data_management/**",
+    "development/**",
+    "legacy_docs/**",
 ]
 
 if IS_PUBLIC_BUILD:
@@ -96,7 +82,6 @@ myst_enable_extensions = [
 suppress_warnings = [
     "myst.header",  # Non-consecutive header levels (existing docs)
     "misc.highlighting_failure",  # Unknown lexers (mermaid, dotenv, etc.)
-    "myst.xref_missing",  # Broken cross-references to missing files/sections (existing docs)
     "toc.not_included",  # Documents not in toctree (working files, etc.)
     "toc.excluded",  # Internal toctree entries dropped from public build
     "toc.not_readable",  # Internal-only documents excluded from build

@@ -289,6 +289,6 @@ The PAM domain model consists of:
 
 ## Related Documentation
 
-For detailed cost calculation logic, see **[Cost Calculation Functions](calculate_cost.md)**.
+For detailed cost calculation logic, see **[Cost Calculation Functions](calculate_costs.md)**.
 
 For decision-making algorithms, see **[Furnace Group Strategy](furnace_group_strategy.md)** and **[Plant Expansions](plant_expansions.md)**.

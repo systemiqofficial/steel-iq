@@ -47,7 +47,7 @@ The architecture leverages an event-driven design for managing system workflows.
    1. **Message Bus**: Central component for routing commands and events to the appropriate handlers.
    2. **Unit of Work (UoW)**: Manages the lifecycle of atomic operations and ensures consistency.
    3. **Handlers**: Execute business logic in response to commands and events.
-   4. **Checkpoint System**: Provides simulation state persistence for crash recovery and debugging (see [checkpoint documentation](simulation_domain/checkpoint.md)).
+   4. **Checkpoint System**: Provides simulation state persistence for crash recovery and debugging (see [checkpoint documentation](../domain_simulation_logic/checkpoint.md)).
 3. **Data Infrastructure**: Manages data access and storage using the **Repository Pattern** to abstract and decouple data sources, such as Excel files or databases, from the core domain.
 4. **Core Domain**: The central part of the application that encapsulates the fundamental business logic. It should remain independent and not rely on any external libraries or frameworks.
 5. **Economic Models**: Implements various economic modeling strategies, such as **Agent-Based Modeling (ABM)** and **Stock and Flow Models**, utilizing the **Strategy Pattern** to allow for interchangeable and extensible modeling approaches.

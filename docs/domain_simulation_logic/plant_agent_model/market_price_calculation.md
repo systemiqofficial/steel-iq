@@ -165,4 +165,4 @@ This approximation is **sufficient** for modeling long-term industry transformat
 
 - **[Agent Definitions](agent_definitions.md)**: How balance sheets accumulate at Plant and PlantGroup levels
 - **[PlantAgentsModel Orchestration](plant_agents_model_orchestration.md)**: When and how prices are calculated in the simulation loop
-- **[Cost Calculation Functions](calculate_cost.md)**: Functions used for cost calculations that feed into the cost curve
+- **[Cost Calculation Functions](calculate_costs.md)**: Functions used for cost calculations that feed into the cost curve

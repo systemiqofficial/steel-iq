@@ -333,4 +333,4 @@ These factors create emergent industry dynamics:
 
 - **[Market Price Calculation](market_price_calculation.md)**: How market prices are derived from cost curves
 - **[PlantAgentsModel Orchestration](plant_agents_model_orchestration.md)**: When these considerations are evaluated in the simulation
-- **[Cost Calculation Functions](calculate_cost.md)**: Functions for NPV, COSA, subsidies, and carbon costs
+- **[Cost Calculation Functions](calculate_costs.md)**: Functions for NPV, COSA, subsidies, and carbon costs

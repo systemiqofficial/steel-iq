@@ -19,10 +19,10 @@ Welcome to the Steel Model documentation. This guide will help you navigate the 
 :::{only} not public
 - **[User Guide](user_guide/overview_user_guide)** - Installation, CLI commands, configuration, and running simulations
 - **[Domain Logic](domain_simulation_logic/overview_simulation)** - Plant Agent Model, Trade Model, and Geospatial Model
-- **[Dashboard & UI](dashboard/overview_dashboard)** - Web interface and Electron desktop application
-- **[Data Management](data_management/overview_data_management)** - Data packages, preparation, and management
+- **<a href="dashboard/overview_dashboard.html">Dashboard & UI</a>** - Web interface and Electron desktop application
+- **<a href="data_management/overview_data_management.html">Data Management</a>** - Data packages, preparation, and management
 - **[Architecture](architecture/overview_architecture)** - System design and architecture decision records
-- **[Development Guide](development/overview_development)** - Development tools, code standards, and open improvement areas
+- **<a href="development/overview_development.html">Development Guide</a>** - Development tools, code standards, and open improvement areas
 :::
 
 :::{only} not public
