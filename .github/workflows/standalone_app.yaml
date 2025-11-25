@@ -1,0 +1,653 @@
+name: Build Standalone App with Task Worker
+
+on: workflow_dispatch
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact_name: electron-app-windows
+            artifact_path: ./dist/win-unpacked/
+            zip_name: STEEL-IQ-windows
+            executable_name: STEEL-IQ.exe
+          - os: macos-latest
+            artifact_name: electron-app-macos
+            artifact_path: ./dist/mac-arm64/
+            zip_name: STEEL-IQ-macos
+            executable_name: STEEL-IQ.app
+
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: ./src/electron
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install the latest version of uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        version: "latest"
+        enable-cache: false
+
+    - name: Download relocatable Python for macOS
+      if: matrix.os == 'macos-latest'
+      run: |
+        # Download python-build-standalone for macOS
+        curl -L https://github.com/astral-sh/python-build-standalone/releases/download/20251007/cpython-3.13.8+20251007-aarch64-apple-darwin-install_only_stripped.tar.gz -o python-standalone.tar.gz
+        mkdir -p python-standalone
+        tar -xzf python-standalone.tar.gz -C python-standalone
+        echo "PYTHON_STANDALONE_PATH=$(pwd)/python-standalone/python/bin/python3.13" >> $GITHUB_ENV
+      working-directory: ./src/electron
+
+    - name: Setup Python 3.13 (Windows)
+      if: matrix.os == 'windows-latest'
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+
+    - name: Set UV to use relocatable Python (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        # Make the Python executable, well, executable
+        chmod +x $PYTHON_STANDALONE_PATH
+        # Pin UV to use this specific Python
+        uv python pin $PYTHON_STANDALONE_PATH
+        # Verify it works
+        $PYTHON_STANDALONE_PATH --version
+        uv python list
+      working-directory: ./src/electron
+
+    - name: Set UV to use Python 3.13 (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        uv python pin 3.13
+        uv python list
+      working-directory: ./src/electron
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: 'npm'
+        cache-dependency-path: src/electron/package-lock.json
+
+    - name: Install Electron dependencies
+      run: npm ci
+      working-directory: ./src/electron
+      timeout-minutes: 15
+
+    - name: Verify django_tasks dependency
+      run: |
+        echo "Checking if django_tasks is included in dependencies..."
+        if [ -f "../../pyproject.toml" ]; then
+          echo "Found pyproject.toml, checking dependencies..."
+          cat "../../pyproject.toml" | grep -i django_tasks && echo "[OK] django_tasks found in dependencies" || echo "[WARNING] django_tasks not found in pyproject.toml"
+        else
+          echo "No pyproject.toml found"
+        fi
+      shell: bash
+
+    - name: Verify NetCDF4 and HDF5 dependencies
+      run: |
+        echo "Checking if NetCDF4 and HDF5 packages are in dependencies..."
+        if [ -f "../../pyproject.toml" ]; then
+          echo "Checking for netcdf4..."
+          grep -i "netcdf4" "../../pyproject.toml" && echo "[OK] netcdf4 found in dependencies" || echo "[FAIL] netcdf4 NOT found in pyproject.toml"
+          echo "Checking for h5netcdf..."
+          grep -i "h5netcdf" "../../pyproject.toml" && echo "[OK] h5netcdf found in dependencies" || echo "[FAIL] h5netcdf NOT found in pyproject.toml"
+          echo "Checking for h5py..."
+          grep -i "h5py" "../../pyproject.toml" && echo "[OK] h5py found in dependencies" || echo "[FAIL] h5py NOT found in pyproject.toml"
+        else
+          echo "No pyproject.toml found"
+        fi
+      shell: bash
+
+    - name: Build Electron App with Django Task Worker
+      run: npm run build
+      working-directory: ./src/electron
+      timeout-minutes: 45
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SENTRY_DSN_ELECTRON: "${{ secrets.SENTRY_DSN_ELECTRON }}"
+        SENTRY_DSN_DJANGO: "${{ secrets.SENTRY_DSN_DJANGO }}"
+
+    - name: Verify Build Artifacts
+      run: |
+        echo "=== Verifying critical build artifacts ==="
+
+        # Check platform-specific paths
+        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          APP_PATH="../../dist/win-unpacked"
+          RESOURCES_PATH="${APP_PATH}/resources"
+          DJANGO_PATH="${RESOURCES_PATH}/django-bundle"
+        else
+          APP_PATH="../../dist/mac-arm64/STEEL-IQ.app"
+          RESOURCES_PATH="${APP_PATH}/Contents/Resources"
+          DJANGO_PATH="${RESOURCES_PATH}/django-bundle"
+        fi
+
+        # 1. Verify Django bundle exists
+        if [ -d "${DJANGO_PATH}" ]; then
+          echo "[OK] Django bundle found at: ${DJANGO_PATH}"
+        else
+          echo "[FAIL] Django bundle missing!"
+          exit 1
+        fi
+
+        # 2. Verify Django config directory
+        if [ -d "${DJANGO_PATH}/django/config" ]; then
+          echo "[OK] Django config directory found"
+          # Check for __init__.py
+          if [ -f "${DJANGO_PATH}/django/config/__init__.py" ]; then
+            echo "[OK] config/__init__.py exists"
+          else
+            echo "[WARN] config/__init__.py missing"
+          fi
+        else
+          echo "[FAIL] Django config directory missing!"
+          exit 1
+        fi
+
+        # 3. Verify electron-store is packaged
+        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          ELECTRON_STORE_PATH="${RESOURCES_PATH}/app/node_modules/electron-store"
+        else
+          ELECTRON_STORE_PATH="${RESOURCES_PATH}/app/node_modules/electron-store"
+        fi
+
+        if [ -d "${ELECTRON_STORE_PATH}" ]; then
+          echo "[OK] electron-store module found in packaged app"
+        else
+          echo "[WARN] electron-store may be bundled differently - checking main.js"
+          # electron-builder might bundle it into the asar
+        fi
+
+        echo "=== Build artifact verification complete ==="
+      shell: bash
+
+    - name: Verify Django bundle size and contents
+      shell: bash
+      run: |
+        echo "=== Verifying Django bundle ==="
+        BUNDLE_PATH="./django-bundle"
+        
+        # Check for unwanted directories
+        if [ -d "$BUNDLE_PATH/temp-venv" ]; then
+          echo "❌ ERROR: temp-venv found in bundle!"
+          exit 1
+        fi
+        
+        # Only check for .venv on Windows (where portable Python should work)
+        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          if [ -d "$BUNDLE_PATH/.venv" ]; then
+            echo "❌ ERROR: .venv found in Windows bundle! Should use portable Python."
+            exit 1
+          fi
+        else
+          # On macOS the build must bundle portable Python; .venv indicates a fallback
+          if [ -d "$BUNDLE_PATH/.venv" ]; then
+            echo "❌ ERROR: .venv found in macOS bundle – portable Python setup failed"
+            exit 1
+          fi
+        fi
+        
+        # Check bundle size
+        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          # Use PowerShell for Windows
+          BUNDLE_SIZE=$(powershell -Command "(Get-ChildItem -Path '$BUNDLE_PATH' -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1MB")
+          BUNDLE_SIZE=$(echo "$BUNDLE_SIZE" | cut -d'.' -f1)
+        else
+          BUNDLE_SIZE=$(du -sm "$BUNDLE_PATH" 2>/dev/null | cut -f1 || echo "0")
+        fi
+        
+        echo "Django bundle size: ${BUNDLE_SIZE} MB"
+        
+        if [ "$BUNDLE_SIZE" -gt 1000 ]; then
+          echo "⚠️ WARNING: Django bundle exceeds 1 GB (${BUNDLE_SIZE} MB)"
+          
+          # List largest directories
+          echo "Largest directories in bundle:"
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            powershell -Command "Get-ChildItem -Path '$BUNDLE_PATH' -Directory | ForEach-Object { [PSCustomObject]@{Name=\$_.Name; SizeMB=[math]::Round((Get-ChildItem -Path \$_.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum / 1MB, 2)} } | Sort-Object SizeMB -Descending | Select-Object -First 10"
+          else
+            du -sm "$BUNDLE_PATH"/* 2>/dev/null | sort -nr | head -10 || echo "Could not list directories"
+          fi
+        fi
+        
+        # Check for duplicate DLLs on Windows
+        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          echo "=== Checking for duplicate DLLs ==="
+          powershell -Command "Get-ChildItem -Path '$BUNDLE_PATH' -Recurse -Filter '*.dll' | Group-Object Name | Where-Object { \$_.Count -gt 1 } | Sort-Object Count -Descending | Select-Object -First 10 | Format-Table Count, Name -AutoSize"
+        fi
+
+        # Verify Windows DLL fixes (VC++ Runtime and NumPy .libs)
+        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          echo "=== Verifying Windows DLL fixes ==="
+
+          # 1. Verify VC++ Runtime DLLs are present
+          echo "Checking for VC++ Runtime DLLs..."
+          PYTHON_SCRIPTS_DIR="$BUNDLE_PATH/python/Scripts"
+          VCRUNTIME_DLLS=("vcruntime140.dll" "vcruntime140_1.dll" "msvcp140.dll")
+          MISSING_DLLS=0
+
+          for dll in "${VCRUNTIME_DLLS[@]}"; do
+            if [ -f "$PYTHON_SCRIPTS_DIR/$dll" ]; then
+              echo "[OK] Found $dll"
+            else
+              echo "[FAIL] Missing $dll"
+              MISSING_DLLS=$((MISSING_DLLS + 1))
+            fi
+          done
+
+          if [ $MISSING_DLLS -gt 0 ]; then
+            echo "❌ ERROR: $MISSING_DLLS VC++ Runtime DLLs are missing!"
+            exit 1
+          fi
+          echo "[OK] All VC++ Runtime DLLs present"
+
+          # 2. Verify .libs DLLs were copied to Scripts directory
+          echo "Checking for .libs DLLs in Scripts directory..."
+          LIBS_DLLS_COUNT=$(powershell -Command "Get-ChildItem -Path '$PYTHON_SCRIPTS_DIR' -Filter '*.dll' | Where-Object { \$_.Name -match 'openblas|gfortran|quadmath|gcc_s' } | Measure-Object | Select-Object -ExpandProperty Count")
+          echo "Found $LIBS_DLLS_COUNT .libs DLLs in Scripts directory"
+
+          if [ "$LIBS_DLLS_COUNT" -gt 0 ]; then
+            echo "[OK] .libs DLLs have been copied to Scripts"
+          else
+            echo "⚠️  WARNING: No .libs DLLs found in Scripts directory"
+            echo "This may cause NumPy/SciPy import failures"
+          fi
+
+          # 3. Verify simple .pth file exists (backup mechanism)
+          echo "Checking for .pth file..."
+          # Windows uses Lib/site-packages (no version subdirectory)
+          PTH_FILE="$BUNDLE_PATH/python/Lib/site-packages/steelo_libs_paths.pth"
+
+          if [ -f "$PTH_FILE" ]; then
+            echo "[OK] Found steelo_libs_paths.pth"
+            LINE_COUNT=$(wc -l < "$PTH_FILE")
+            echo "Contains $LINE_COUNT .libs directory paths"
+          else
+            echo "⚠️  WARNING: steelo_libs_paths.pth not found!"
+            echo "Expected at: $PTH_FILE"
+          fi
+
+          # 4. Test NumPy import to verify DLL loading works
+          echo "Testing NumPy import..."
+          "$BUNDLE_PATH/python/Scripts/python.exe" -c "import numpy; print('NumPy version:', numpy.__version__)"
+          if [ $? -eq 0 ]; then
+            echo "[OK] NumPy imported successfully"
+          else
+            echo "[ERROR] NumPy import failed!"
+            exit 1
+          fi
+
+          echo "✅ All Windows DLL fixes verified successfully"
+        fi
+
+        # Verify vendor static files for offline capability
+        echo "=== Verifying vendor static files ==="
+        STATIC_VENDOR_PATH="$BUNDLE_PATH/django/staticfiles/vendor"
+
+        if [ -d "$STATIC_VENDOR_PATH" ]; then
+          echo "[OK] Vendor static files directory exists"
+
+          # Check for key vendor files
+          if [ -f "$STATIC_VENDOR_PATH/bootstrap-5.3.0/css/bootstrap.min.css" ]; then
+            echo "[OK] Bootstrap CSS found"
+          else
+            echo "[FAIL] Bootstrap CSS missing"
+            exit 1
+          fi
+
+          if [ -f "$STATIC_VENDOR_PATH/fontawesome-6.0.0/css/all.min.css" ]; then
+            echo "[OK] Font Awesome CSS found"
+          else
+            echo "[FAIL] Font Awesome CSS missing"
+            exit 1
+          fi
+
+          if [ -f "$STATIC_VENDOR_PATH/highlightjs-11.9.0/highlight.min.js" ]; then
+            echo "[OK] Highlight.js found"
+          else
+            echo "[FAIL] Highlight.js missing"
+            exit 1
+          fi
+
+          if [ -f "$STATIC_VENDOR_PATH/mapping-libs/deck.gl@8.9.35/dist.min.js" ]; then
+            echo "[OK] Deck.gl found"
+          else
+            echo "[FAIL] Deck.gl missing"
+            exit 1
+          fi
+
+          # Verify Mapbox GL is NOT bundled (should stay on CDN)
+          if find "$STATIC_VENDOR_PATH" -name "*mapbox-gl*" 2>/dev/null | grep -q .; then
+            echo "[FAIL] Mapbox GL found in vendor directory - must stay on CDN!"
+            exit 1
+          fi
+          echo "[OK] Mapbox GL correctly NOT bundled (stays on CDN)"
+
+          echo "[OK] All vendor static files present"
+        else
+          echo "[FAIL] Vendor static files directory missing!"
+          exit 1
+        fi
+
+        echo "✅ Django bundle verification completed"
+      working-directory: ./src/electron
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+
+    - name: Verify build output and task worker integration
+      run: |
+        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          if [ -d "../../dist/win-unpacked/" ]; then
+            echo "[OK] Windows build output found"
+            
+            if [ -f "../../dist/win-unpacked/resources/app/main.js" ]; then
+              echo "Checking for task worker integration in main.js..."
+              if grep -q "startTaskWorker" "../../dist/win-unpacked/resources/app/main.js"; then
+                echo "[OK] Task worker integration found"
+              else
+                echo "⚠ Task worker integration not found"
+              fi
+              if grep -q "db_worker" "../../dist/win-unpacked/resources/app/main.js"; then
+                echo "[OK] db_worker command found"
+              else
+                echo "⚠ db_worker command not found"
+              fi
+            fi
+            
+            if [ -d "../../dist/win-unpacked/resources/django-bundle/python/lib/python3.13/site-packages/" ]; then
+              echo "Checking for django_tasks in bundled packages..."
+              if ls "../../dist/win-unpacked/resources/django-bundle/python/lib/python3.13/site-packages/" | grep -i django_tasks > /dev/null; then
+                echo "[OK] django_tasks package found"
+              else
+                echo "⚠ django_tasks package not found"
+              fi
+            fi
+            
+            total_size=$(du -sh "../../dist/win-unpacked/" | cut -f1)
+            file_count=$(find "../../dist/win-unpacked/" -type f | wc -l)
+            django_bundle_size=$(du -sh "../../dist/win-unpacked/resources/django-bundle/" 2>/dev/null | cut -f1 || echo "N/A")
+            echo "Total size: $total_size"
+            echo "Django bundle size: $django_bundle_size"
+            echo "File count: $file_count"
+          else
+            echo "✗ Windows build output not found"
+            ls -la "../../dist/" || echo "No dist directory"
+            exit 1
+          fi
+        else
+          if [ -d "../../dist/mac-arm64/" ]; then
+            echo "[OK] macOS build output found"
+            
+            if [ -f "../../dist/mac-arm64/STEEL-IQ.app/Contents/Resources/app/main.js" ]; then
+              echo "Checking for task worker integration in main.js..."
+              if grep -q "startTaskWorker" "../../dist/mac-arm64/STEEL-IQ.app/Contents/Resources/app/main.js"; then
+                echo "[OK] Task worker integration found"
+              else
+                echo "⚠ Task worker integration not found"
+              fi
+              if grep -q "db_worker" "../../dist/mac-arm64/STEEL-IQ.app/Contents/Resources/app/main.js"; then
+                echo "[OK] db_worker command found"
+              else
+                echo "⚠ db_worker command not found"
+              fi
+            fi
+            
+            if [ -d "../../dist/mac-arm64/STEEL-IQ.app/Contents/Resources/django-bundle/python/lib/python3.13/site-packages/" ]; then
+              echo "Checking for django_tasks in bundled packages..."
+              if ls "../../dist/mac-arm64/STEEL-IQ.app/Contents/Resources/django-bundle/python/lib/python3.13/site-packages/" | grep -i django_tasks > /dev/null; then
+                echo "[OK] django_tasks package found"
+              else
+                echo "⚠ django_tasks package not found"
+              fi
+            fi
+            
+            total_size=$(du -sh "../../dist/mac-arm64/" | cut -f1)
+            file_count=$(find "../../dist/mac-arm64/" -type f | wc -l)
+            django_bundle_size=$(du -sh "../../dist/mac-arm64/STEEL-IQ.app/Contents/Resources/django-bundle/" 2>/dev/null | cut -f1 || echo "N/A")
+            echo "Total size: $total_size"
+            echo "Django bundle size: $django_bundle_size"
+            echo "File count: $file_count"
+          else
+            echo "✗ macOS build output not found"
+            echo "Available directories in dist:"
+            ls -la "../../dist/" || echo "No dist directory"
+            exit 1
+          fi
+        fi
+      shell: bash
+
+    - name: Create and Upload Archive to S3
+      shell: bash
+      timeout-minutes: 60
+      run: |
+        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          SOURCE_PATH="../../dist/win-unpacked/"
+          PLATFORM="windows"
+        else
+          SOURCE_PATH="../../dist/mac-arm64/"
+          PLATFORM="macos"
+        fi
+        
+        # Use timestamp and short commit hash (7 chars) for build ID
+        SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+        BUILD_ID="$(date +%Y%m%d-%H%M%S)-${SHORT_SHA}"
+        S3_PATH="s3://github-action-artifacts-steel-model/builds/$BUILD_ID"
+        
+        echo "=== CREATING ARCHIVE ==="
+        echo "Platform: $PLATFORM"
+        echo "Source path: $SOURCE_PATH"
+        echo "S3 destination: $S3_PATH"
+        echo "Note: This build includes Django Task Worker for background job processing"
+        
+        file_count=$(find "$SOURCE_PATH" -type f | wc -l)
+        
+        # Calculate Django bundle size
+        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          DJANGO_BUNDLE_PATH="${SOURCE_PATH}resources/django-bundle/"
+          total_size=$(powershell -Command "(Get-ChildItem -Path '$SOURCE_PATH' -Recurse -File | Measure-Object -Property Length -Sum).Sum")
+          total_size_mb=$(powershell -Command "[math]::Round($total_size / 1MB, 2)")
+          django_bundle_size=$(powershell -Command "(Get-ChildItem -Path '$DJANGO_BUNDLE_PATH' -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum")
+          django_bundle_size_mb=$(powershell -Command "[math]::Round($django_bundle_size / 1MB, 2)")
+        else
+          DJANGO_BUNDLE_PATH="${SOURCE_PATH}STEEL-IQ.app/Contents/Resources/django-bundle/"
+          total_size=$(du -sk "$SOURCE_PATH" | cut -f1)
+          total_size_mb=$(echo "scale=2; $total_size / 1024" | bc)
+          django_bundle_size=$(du -sk "$DJANGO_BUNDLE_PATH" 2>/dev/null | cut -f1 || echo "0")
+          django_bundle_size_mb=$(echo "scale=2; $django_bundle_size / 1024" | bc)
+        fi
+        
+        echo "Compressing $file_count files, total size: ${total_size_mb} MB"
+        
+        ZIP_FILENAME="${{ matrix.zip_name }}-$BUILD_ID"
+        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          ZIP_FILENAME="${ZIP_FILENAME}.zip"
+        else
+          ZIP_FILENAME="${ZIP_FILENAME}.tar.gz"
+        fi
+        ZIP_PATH="./$ZIP_FILENAME"
+        
+        echo "Creating archive file: $ZIP_FILENAME"
+        
+        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          powershell -Command "Compress-Archive -Path '$SOURCE_PATH*' -DestinationPath '$ZIP_PATH' -CompressionLevel Optimal -Force"
+        else
+          CURRENT_DIR=$(pwd)
+          cd "../../dist"
+          tar -czf "../src/electron/$ZIP_FILENAME" mac-arm64/
+          cd "$CURRENT_DIR"
+          echo "[OK] Archive creation completed"
+        fi
+        
+        if [ -f "$ZIP_PATH" ]; then
+          echo "[OK] Archive file created successfully"
+          
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            zip_size=$(powershell -Command "(Get-Item '$ZIP_PATH').Length")
+            zip_size_mb=$(powershell -Command "[math]::Round($zip_size / 1MB, 2)")
+          else
+            zip_size=$(stat -f%z "$ZIP_PATH")
+            zip_size_mb=$(echo "scale=2; $zip_size / 1024 / 1024" | bc)
+          fi
+          
+          echo "Archive file size: ${zip_size_mb} MB"
+        else
+          echo "✗ Failed to create archive file"
+          exit 1
+        fi
+        
+        echo "=== UPLOADING ARCHIVE TO S3 ==="
+        aws s3 cp "$ZIP_PATH" "$S3_PATH/$ZIP_FILENAME" --cli-read-timeout 0
+        
+        if [ $? -eq 0 ]; then
+          echo "[OK] Archive file uploaded successfully!"
+          aws s3 ls "$S3_PATH/$ZIP_FILENAME" --human-readable
+          
+          cat > "README-$PLATFORM.txt" << 'EOF'
+        # STEEL-IQ Application with Task Worker
+        
+        **Build Information:**
+        - Platform: PLATFORM_REPLACE
+        - Commit: COMMIT_REPLACE
+        - Branch: BRANCH_REPLACE
+        - Build Date: DATE_REPLACE
+        - Original Size: SIZE_REPLACE MB (COUNT_REPLACE files)
+        - Compressed Size: ZIP_SIZE_REPLACE MB
+        
+        **Features:**
+        - Django web server for the user interface
+        - Django Task Worker for background job processing (django_tasks)
+        - Fully portable Python environment (no dependencies required)
+        
+        **Installation Instructions:**
+        1. Download the archive file: FILENAME_REPLACE
+        2. Extract the archive to your desired location
+        3. Navigate to the extracted folder
+        4. EXEC_REPLACE
+        
+        **System Requirements:**
+        REQUIREMENTS_REPLACE
+        
+        **What's Running:**
+        When you start the application, the following services automatically start:
+        1. Django database migrations (ensures database is up to date)
+        2. Django web server (serves the user interface on http://127.0.0.1:8000)
+        3. Django Task Worker (processes background jobs from the database queue)
+        4. Electron window (displays the Django web interface)
+        
+        **Background Jobs:**
+        The built-in task worker will automatically process any background jobs you submit
+        through django_tasks. Jobs are stored in the SQLite database and processed
+        asynchronously by the worker.
+        
+        **Contents:**
+        - EXECUTABLE_REPLACE (main application)
+        - Django backend bundle with Python environment
+        - Django Task Worker (django_tasks) for background job processing
+        - SQLite database for data storage and job queue
+        - All necessary libraries and dependencies
+        EOF
+          
+          sed -i.bak "s/PLATFORM_REPLACE/$PLATFORM/g" "README-$PLATFORM.txt"
+          sed -i.bak "s/COMMIT_REPLACE/${SHORT_SHA} (full: ${{ github.sha }})/g" "README-$PLATFORM.txt"
+          sed -i.bak "s/BRANCH_REPLACE/${{ github.ref_name }}/g" "README-$PLATFORM.txt"
+          sed -i.bak "s/DATE_REPLACE/$(date -u '+%Y-%m-%d %H:%M:%S UTC')/g" "README-$PLATFORM.txt"
+          sed -i.bak "s/SIZE_REPLACE/${total_size_mb}/g" "README-$PLATFORM.txt"
+          sed -i.bak "s/COUNT_REPLACE/$file_count/g" "README-$PLATFORM.txt"
+          sed -i.bak "s/ZIP_SIZE_REPLACE/${zip_size_mb}/g" "README-$PLATFORM.txt"
+          sed -i.bak "s/FILENAME_REPLACE/$ZIP_FILENAME/g" "README-$PLATFORM.txt"
+          sed -i.bak "s/EXECUTABLE_REPLACE/${{ matrix.executable_name }}/g" "README-$PLATFORM.txt"
+          
+          if [[ "$PLATFORM" == "windows" ]]; then
+            sed -i.bak "s/EXEC_REPLACE/Run STEEL-IQ.exe/g" "README-$PLATFORM.txt"
+            sed -i.bak "s/REQUIREMENTS_REPLACE/- Windows 10 or later - No additional dependencies required/g" "README-$PLATFORM.txt"
+          else
+            sed -i.bak "s/EXEC_REPLACE/Run STEEL-IQ.app (right-click and select Open first time)/g" "README-$PLATFORM.txt"
+            sed -i.bak "s/REQUIREMENTS_REPLACE/- macOS 10.15 or later - No additional dependencies required/g" "README-$PLATFORM.txt"
+          fi
+          
+          rm -f "README-$PLATFORM.txt.bak"
+          
+          aws s3 cp "README-$PLATFORM.txt" "$S3_PATH/README-$PLATFORM.txt"
+          echo "[OK] README file uploaded"
+          
+          rm -f "$ZIP_PATH" "README-$PLATFORM.txt"
+          
+          echo "S3_PATH=$S3_PATH" >> $GITHUB_ENV
+          echo "ZIP_FILENAME=$ZIP_FILENAME" >> $GITHUB_ENV
+          echo "PLATFORM=$PLATFORM" >> $GITHUB_ENV
+          echo "SOURCE_PATH=$SOURCE_PATH" >> $GITHUB_ENV
+          echo "ORIGINAL_SIZE_MB=${total_size_mb}" >> $GITHUB_ENV
+          echo "ZIP_SIZE_MB=${zip_size_mb}" >> $GITHUB_ENV
+          echo "FILE_COUNT=$file_count" >> $GITHUB_ENV
+          echo "DJANGO_BUNDLE_SIZE_MB=${django_bundle_size_mb}" >> $GITHUB_ENV
+          echo "SHORT_SHA=$SHORT_SHA" >> $GITHUB_ENV
+          echo "BUILD_ID=$BUILD_ID" >> $GITHUB_ENV
+        else
+          echo "✗ Failed to upload archive file"
+          exit 1
+        fi
+
+    - name: Generate build summary
+      shell: bash
+      run: |
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+        ## 🚀 Build Archive Uploaded (${{ env.PLATFORM }}) - WITH TASK WORKER
+
+        **S3 Location:** \`${{ env.S3_PATH }}/${{ env.ZIP_FILENAME }}\`
+        **Archive File:** \`${{ env.ZIP_FILENAME }}\`
+        **Build ID:** \`${{ env.BUILD_ID }}\`
+        **Platform:** ${{ env.PLATFORM }}
+        **Original Size:** ${{ env.ORIGINAL_SIZE_MB }} MB (${{ env.FILE_COUNT }} files)
+        **Django Bundle Size:** ${{ env.DJANGO_BUNDLE_SIZE_MB }} MB
+        **Compressed Size:** ${{ env.ZIP_SIZE_MB }} MB
+        **Commit:** ${{ env.SHORT_SHA }} (full: ${{ github.sha }})
+        **Branch:** ${{ github.ref_name }}
+        **OS:** ${{ matrix.os }}
+
+        **✨ Features Included:**
+        - 🌐 Django web server (user interface)
+        - ⚙️ Django Task Worker (background job processing)
+        - 📦 Fully portable (no external dependencies)
+        - 🗄️ SQLite database with job queue
+
+        **Download with AWS CLI:**
+        \`\`\`bash
+        aws s3 cp ${{ env.S3_PATH }}/${{ env.ZIP_FILENAME }} ./
+        \`\`\`
+
+        **To install and run:**
+        1. Download the archive file using the command above
+        2. Extract the archive to your desired location
+        3. Navigate to the extracted folder
+        EOF
+        
+        if [[ "${{ env.PLATFORM }}" == "windows" ]]; then
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+        4. Run \`STEEL-IQ.exe\`
+        EOF
+        else
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+        4. Run \`STEEL-IQ.app\` (right-click and select 'Open' the first time)
+        EOF
+        fi
+        
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+
+        **🔄 Background Processing:**
+        The application automatically starts a Django Task Worker that processes background jobs
+        submitted through django_tasks. Jobs are queued in the SQLite database and processed
+        asynchronously without blocking the user interface.
+
+        **Note:** The application is fully portable - no installation required!
+        EOF
