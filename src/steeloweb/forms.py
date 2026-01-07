@@ -292,7 +292,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     capacity_limit_iron = forms.DecimalField(
         label="Capacity limit - Iron",
-        initial=200.0,
+        initial=100.0,
         min_value=0.1,
         max_value=1000.0,
         max_digits=6,
@@ -304,7 +304,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     capacity_limit_steel = forms.DecimalField(
         label="Capacity limit - Steel",
-        initial=200.0,
+        initial=100.0,
         min_value=0.1,
         max_value=1000.0,
         max_digits=6,
@@ -316,7 +316,7 @@ class ModelRunCreateForm(forms.ModelForm):
 
     new_capacity_share_from_new_plants = forms.DecimalField(
         label="Proportion of new capacity from new plants",
-        initial=0.2,
+        initial=0.4,
         min_value=0.0,
         max_value=1.0,
         max_digits=3,

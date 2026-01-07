@@ -667,12 +667,12 @@ def create_modelrun(request):
                 "priority_pct": int(form.cleaned_data.get("priority_pct") or 5),
                 # Plant capacity parameters (convert Mt to t)
                 "expanded_capacity": float(form.cleaned_data.get("expanded_capacity") or 2.5) * 1000000,
-                "capacity_limit_iron": float(form.cleaned_data.get("capacity_limit_iron") or 200) * 1000000,
-                "capacity_limit_steel": float(form.cleaned_data.get("capacity_limit_steel") or 200) * 1000000,
+                "capacity_limit_iron": float(form.cleaned_data.get("capacity_limit_iron") or 100) * 1000000,
+                "capacity_limit_steel": float(form.cleaned_data.get("capacity_limit_steel") or 100) * 1000000,
                 "new_capacity_share_from_new_plants": float(
                     form.cleaned_data.get("new_capacity_share_from_new_plants")
                     if form.cleaned_data.get("new_capacity_share_from_new_plants") is not None
-                    else 0.2
+                    else 0.4
                 ),
                 "hydrogen_ceiling_percentile": float(form.cleaned_data.get("hydrogen_ceiling_percentile") or 20.0),
                 "intraregional_trade_allowed": form.cleaned_data.get("intraregional_trade_allowed", True),

@@ -54,13 +54,13 @@ There are three different ways to bring new technologies into the system:
 
 ### 1. New Plant Opening
 
-Business opportunities are evaluated for technologies that will be allowed at the time construction begins. The earliest possible start of construction is calculated as the current simulation year plus a consideration period (default: 3 years) plus an announcement period (fixed at 1 year). This timeline can be significantly extended by probabilistic filters such as the probability of announcement and probability of construction, as well as by capacity constraints. New plant openings are allocated a share of the maximum annual new capacity (default: 20%), and opportunities that fail to pass these filters remain pending and are reconsidered in the following year.
+Business opportunities are evaluated for technologies that will be allowed at the time construction begins. The earliest possible start of construction is calculated as the current simulation year plus a consideration period (default: 3 years) plus an announcement period (fixed at 1 year). This timeline can be significantly extended by probabilistic filters such as the probability of announcement and probability of construction, as well as by capacity constraints. New plant openings are allocated a share of the maximum annual new capacity (default: 40%), and opportunities that fail to pass these filters remain pending and are reconsidered in the following year.
 
 See [New Plant Opening](../geospatial_model/new_plant_opening.md) for detailed documentation on the business opportunity evaluation process and parameter configuration (capacity limits, probabilities, and time lags).
 
 ### 2. Expansion of Existing Furnace Groups
 
-Happens for technologies which are allowed in the current year. Probability and capacity filters are applied here as well (80% of the maximum new capacity per year is used to expand existing plants, configurable).
+Happens for technologies which are allowed in the current year. Probability and capacity filters are applied here as well (60% of the maximum new capacity per year is used to expand existing plants, configurable).
 
 See [Plant Group Expansion](plant_expansions.md) for detailed documentation on the expansion evaluation process.
 
@@ -88,16 +88,16 @@ The new capacity limits are set separately for iron and steel, since the two pro
 - **Different technology transition speeds:** For steel, EAF adoption is primarily limited by scrap availability, while, for iron, DRI (with H2) adoption is limited by hydrogen infrastructure buildout.
 
 ```python
-capacity_limit_steel = 150 * MT_TO_T  # Default: 150 Mt/year max steel capacity additions
-capacity_limit_iron = 150 * MT_TO_T   # Default: 150 Mt/year max iron capacity additions
+capacity_limit_steel = 100 * MT_TO_T  # Default: 100 Mt/year max steel capacity additions
+capacity_limit_iron = 100 * MT_TO_T   # Default: 100 Mt/year max iron capacity additions
 ```
 
 ### New Plant vs Expansion Allocation
 
-The overall limits can be filled by furnace group expansions (adding capacity at existing plants), technology switches (replacing existing capacity with different tech), and new plants (greenfield investments). The first two are evaluated simultaneously within the Plant Agent Model. Since the third option is considered only afterwards, while running the Geospatial Model, some new capacity is reserved for it in advance (default: 20%).
+The overall limits can be filled by furnace group expansions (adding capacity at existing plants), technology switches (replacing existing capacity with different tech), and new plants (greenfield investments). The first two are evaluated simultaneously within the Plant Agent Model. Since the third option is considered only afterwards, while running the Geospatial Model, some new capacity is reserved for it in advance (default: 40%).
 
 ```python
-new_capacity_share_from_new_plants = 0.2  # 20% of new capacity from greenfield
+new_capacity_share_from_new_plants = 0.4  # 40% of new capacity from greenfield
 ```
 
 ## Implementation Details

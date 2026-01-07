@@ -58,9 +58,9 @@ function resetConstructionSettings() {
     resetField('id_priority_pct') || (document.getElementById('id_priority_pct').value = '5');
     document.getElementById('id_top_n_loctechs_as_business_op').value = '15';
     document.getElementById('id_expanded_capacity').value = '2.5';
-    document.getElementById('id_capacity_limit_iron').value = '200.0';
-    document.getElementById('id_capacity_limit_steel').value = '200.0';
-    document.getElementById('id_new_capacity_share_from_new_plants').value = '0.2';
+    document.getElementById('id_capacity_limit_iron').value = '100.0';
+    document.getElementById('id_capacity_limit_steel').value = '100.0';
+    document.getElementById('id_new_capacity_share_from_new_plants').value = '0.4';
     // Trigger the change event to update probability fields
     document.getElementById('id_probabilistic_agents').dispatchEvent(new Event('change'));
 }
@@ -1190,7 +1190,7 @@ document.head.appendChild(style);
                                 </div>
 
                                 <div class="mb-3 row">
-                                    <label for="{{ form.long_dist_pipeline_transport_cost.id_for_label }}" class="col-sm-4 col-form-label">Long distance pipeline transport cost ($/kg H2/1000 km):</label>
+                                    <label for="{{ form.long_dist_pipeline_transport_cost.id_for_label }}" class="col-sm-4 col-form-label">Long distance pipeline transport cost ($/kg H2):</label>
                                     <div class="col-sm-8">
                                         {{ form.long_dist_pipeline_transport_cost }}
                                         {% if form.long_dist_pipeline_transport_cost.errors %}

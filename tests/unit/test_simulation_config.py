@@ -6,6 +6,7 @@ from pathlib import Path
 from steelo.simulation_types import get_default_technology_settings
 
 from steelo.domain import Year
+from steelo.domain.constants import MT_TO_T
 from steelo.simulation import SimulationConfig
 
 
@@ -45,6 +46,9 @@ def test_simulation_config_has_default_parameters():
     assert config.capacity_limit == 0.95
     assert config.geo_config.random_seed == 42
     assert config.active_statuses == ["operating", "operating pre-retirement", "operating switching technology"]
+    assert config.capacity_limit_iron == 100 * MT_TO_T
+    assert config.capacity_limit_steel == 100 * MT_TO_T
+    assert config.new_capacity_share_from_new_plants == 0.4
 
 
 def test_simulation_config_can_override_defaults():

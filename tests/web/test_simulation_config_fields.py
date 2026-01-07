@@ -336,7 +336,7 @@ def test_capacity_limit_iron_default_value(db):
     form = ModelRunCreateForm()
     field = form.fields.get("capacity_limit_iron")
     assert field is not None
-    assert field.initial == 200  # 200 Mt default
+    assert field.initial == 100  # 100 Mt default
 
 
 def test_capacity_limit_iron_field_type(db):
@@ -409,7 +409,7 @@ def test_capacity_limit_steel_default_value(db):
     form = ModelRunCreateForm()
     field = form.fields.get("capacity_limit_steel")
     assert field is not None
-    assert field.initial == 200  # 200 Mt default
+    assert field.initial == 100  # 100 Mt default
 
 
 def test_capacity_limit_steel_field_type(db):
@@ -462,7 +462,7 @@ def test_capacity_limit_steel_passed_to_config(db, data_preparation):
     modelrun.config = {
         "start_year": form.cleaned_data["start_year"],
         "end_year": form.cleaned_data["end_year"],
-        "capacity_limit_steel": float(form.cleaned_data.get("capacity_limit_steel", 200)) * 1000000,  # Convert Mt to t
+        "capacity_limit_steel": float(form.cleaned_data.get("capacity_limit_steel", 100)) * 1000000,  # Convert Mt to t
         # ... other fields
     }
     modelrun.save()
@@ -472,7 +472,7 @@ def test_capacity_limit_steel_passed_to_config(db, data_preparation):
 
 
 def test_capacity_limit_defaults_applied_when_blank(db, data_preparation):
-    """Defaults should be 200 Mt when the capacity fields are left empty."""
+    """Defaults should be 100 Mt when the capacity fields are left empty."""
     form_data = {
         "name": "Test Run",
         "start_year": 2025,
@@ -506,13 +506,13 @@ def test_capacity_limit_defaults_applied_when_blank(db, data_preparation):
     modelrun.config = {
         "start_year": form.cleaned_data["start_year"],
         "end_year": form.cleaned_data["end_year"],
-        "capacity_limit_iron": float(form.cleaned_data.get("capacity_limit_iron") or 200) * 1000000,
-        "capacity_limit_steel": float(form.cleaned_data.get("capacity_limit_steel") or 200) * 1000000,
+        "capacity_limit_iron": float(form.cleaned_data.get("capacity_limit_iron") or 100) * 1000000,
+        "capacity_limit_steel": float(form.cleaned_data.get("capacity_limit_steel") or 100) * 1000000,
     }
     modelrun.save()
 
-    assert modelrun.config["capacity_limit_iron"] == 200000000
-    assert modelrun.config["capacity_limit_steel"] == 200000000
+    assert modelrun.config["capacity_limit_iron"] == 100000000
+    assert modelrun.config["capacity_limit_steel"] == 100000000
 
 
 def test_probabilistic_agents_field_exists_in_form(db):
@@ -637,7 +637,7 @@ def test_new_capacity_share_from_new_plants_default_value(db):
     form = ModelRunCreateForm()
     field = form.fields.get("new_capacity_share_from_new_plants")
     assert field is not None
-    assert field.initial == 0.2  # 20% default
+    assert field.initial == 0.4  # 40% default
 
 
 def test_new_capacity_share_from_new_plants_field_type(db):
@@ -696,14 +696,14 @@ def test_new_capacity_share_from_new_plants_passed_to_config_default(db, data_pr
         "new_capacity_share_from_new_plants": float(
             form.cleaned_data.get("new_capacity_share_from_new_plants")
             if form.cleaned_data.get("new_capacity_share_from_new_plants") is not None
-            else 0.2
+            else 0.4
         ),
         # ... other fields
     }
     modelrun.save()
 
     # Check that the default value was stored correctly
-    assert modelrun.config["new_capacity_share_from_new_plants"] == 0.2
+    assert modelrun.config["new_capacity_share_from_new_plants"] == 0.4
 
 
 def test_new_capacity_share_from_new_plants_passed_to_config_custom_value(db, data_preparation):
@@ -743,7 +743,7 @@ def test_new_capacity_share_from_new_plants_passed_to_config_custom_value(db, da
         "new_capacity_share_from_new_plants": float(
             form.cleaned_data.get("new_capacity_share_from_new_plants")
             if form.cleaned_data.get("new_capacity_share_from_new_plants") is not None
-            else 0.2
+            else 0.4
         ),
         # ... other fields
     }
@@ -790,13 +790,13 @@ def test_new_capacity_share_from_new_plants_zero_value_preserved(db, data_prepar
         "new_capacity_share_from_new_plants": float(
             form.cleaned_data.get("new_capacity_share_from_new_plants")
             if form.cleaned_data.get("new_capacity_share_from_new_plants") is not None
-            else 0.2
+            else 0.4
         ),
         # ... other fields
     }
     modelrun.save()
 
-    # Check that 0.0 was preserved and NOT replaced by default 0.2
+    # Check that 0.0 was preserved and NOT replaced by default 0.4
     assert modelrun.config["new_capacity_share_from_new_plants"] == 0.0
 
 

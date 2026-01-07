@@ -265,7 +265,7 @@ Converts ANNOUNCED business opportunities into CONSTRUCTION status, checking tec
 
 **Capacity Limit Logic:**
 
-Total new capacity (new plants + expansions) is limited annually. Annual capacity limits default to 150 Mt/year for both iron (`capacity_limit_iron`) and steel (`capacity_limit_steel`). The `new_capacity_share_from_new_plants` parameter determines how much of this limit is reserved for new plants versus expansions of existing facilities (default: 20%).
+Total new capacity (new plants + expansions) is limited annually. Annual capacity limits default to 100 Mt/year for both iron (`capacity_limit_iron`) and steel (`capacity_limit_steel`). The `new_capacity_share_from_new_plants` parameter determines how much of this limit is reserved for new plants versus expansions of existing facilities (default: 40%).
 
 **Purpose of Probability Filter:**
 
@@ -295,9 +295,9 @@ Models real-world risk factors: financing may fall through, permits may be denie
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `capacity_limit_iron` | float | 150 Mt/year | Total new iron capacity allowed per year |
-| `capacity_limit_steel` | float | 150 Mt/year | Total new steel capacity allowed per year |
-| `new_capacity_share_from_new_plants` | float | 0.2 | Share of capacity limit for new plants vs. expansions |
+| `capacity_limit_iron` | float | 100 Mt/year | Total new iron capacity allowed per year |
+| `capacity_limit_steel` | float | 100 Mt/year | Total new steel capacity allowed per year |
+| `new_capacity_share_from_new_plants` | float | 0.4 | Share of capacity limit for new plants vs. expansions |
 
 ## Related Documentation
 

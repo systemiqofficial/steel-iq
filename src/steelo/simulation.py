@@ -344,10 +344,10 @@ class SimulationConfig:
     ## Furnace group capacity expansion size and initial capacity of new plants (in tonnes)
     expanded_capacity: float = 2.5 * MT_TO_T
     ## Capacity limits for switching and expanding existing furnace groups (in tonnes)
-    capacity_limit_iron: float = 200 * MT_TO_T
-    capacity_limit_steel: float = 200 * MT_TO_T
+    capacity_limit_iron: float = 100 * MT_TO_T
+    capacity_limit_steel: float = 100 * MT_TO_T
     ## Proportion of new capacity from new plants vs expansions of existing plants
-    new_capacity_share_from_new_plants: float = 0.2  # 20% of new capacity comes from new plants, 80% from expansions
+    new_capacity_share_from_new_plants: float = 0.4  # 40% of new capacity comes from new plants, 60% from expansions
 
     # === Geospatial Module Parameters ===
     # Best locations for new plants

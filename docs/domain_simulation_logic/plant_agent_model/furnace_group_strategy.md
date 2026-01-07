@@ -478,7 +478,7 @@ acceptance_probability = exp(-switch_cost / NPV)
 **Purpose**: Enforce annual capacity expansion limits (supply chain constraints)
 
 **Context**:
-- Total annual capacity is limited (default: 150 Mt for both steel and iron)
+- Total annual capacity is limited (default: 100 Mt for both steel and iron)
 - Limit is split between:
   - **New plants**: Greenfield facilities (handled by Geospatial Model)
   - **Expansions & switches**: Capacity added to existing plants (handled by PAM)
@@ -495,11 +495,11 @@ if expansion_and_switch_capacity + furnace_capacity > expansion_limit:
 
 **Example**:
 - Product: Steel
-- Total expansion limit for steel: 150 Mt/year
-- New plant share: 20% → New plant limit: 30 Mt, Expansion/switch limit: 120 Mt
-- Current new expansion/switch capacity already installed this year: 115 Mt
+- Total expansion limit for steel: 100 Mt/year
+- New plant share: 40% → New plant limit: 40 Mt, Expansion/switch limit: 60 Mt
+- Current new expansion/switch capacity already installed this year: 55 Mt
 - Furnace capacity to switch: 8 Mt
-- Total after switch: 115 + 8 = 123 Mt > 120 Mt → **BLOCKED**
+- Total after switch: 55 + 8 = 63 Mt > 60 Mt → **BLOCKED**
 
 **If within limits**: Proceed to Stage 13
 
