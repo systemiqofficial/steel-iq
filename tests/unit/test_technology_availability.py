@@ -1,7 +1,7 @@
 """Tests for technology availability configuration parameters."""
 
 import pytest
-from steelo.domain.models import Environment
+from steelo.domain.models import Environment, is_technology_allowed
 from steelo.domain import Year
 from steelo.simulation import SimulationConfig
 from steelo.simulation_types import TechnologySettings
@@ -44,8 +44,26 @@ MOE,YES,YES,YES,YES,YES,YES,NO"""
     return csv_path
 
 
+def _filtered_targets_for_year(env: Environment, tech_settings: dict, year: int) -> dict[str, list[str]]:
+    """Apply year-based availability to a static transition graph.
+
+    The transition graph in `env.allowed_furnace_transitions` is loaded once from CSV and contains
+    all *known* technologies. The simulation applies `from_year`/`to_year`/`allowed` constraints at
+    decision time by intersecting with the technologies available for the current year.
+    """
+    all_raw_techs: set[str] = set(env.allowed_furnace_transitions.keys())
+    for targets in env.allowed_furnace_transitions.values():
+        all_raw_techs.update(targets)
+
+    allowed_in_year = {tech for tech in all_raw_techs if is_technology_allowed(tech_settings, tech, year)}
+    return {
+        origin: [tech for tech in targets if tech in allowed_in_year]
+        for origin, targets in env.allowed_furnace_transitions.items()
+    }
+
+
 def test_bf_allowed_false_removes_bf_transitions(tech_switches_csv, tmp_path):
-    """Test that setting bf_allowed=False removes BF-BOF from allowed transitions."""
+    """Test that disabling BF prevents BF-BOF as a switch target."""
     # Get default settings and disable BF technologies
     tech_settings = get_default_technology_settings()
     tech_settings["BF"] = TechnologySettings(allowed=False, from_year=2025, to_year=None)
@@ -61,13 +79,13 @@ def test_bf_allowed_false_removes_bf_transitions(tech_switches_csv, tmp_path):
 
     env = Environment(config=config, tech_switches_csv=tech_switches_csv)
 
-    # BF-BOF should not appear in any transition lists
-    for origin, allowed_techs in env.allowed_furnace_transitions.items():
-        assert "BFBOF" not in allowed_techs, f"BF-BOF found in transitions from {origin}"
+    filtered = _filtered_targets_for_year(env, tech_settings, 2025)
+    for origin, allowed_techs in filtered.items():
+        assert "BF-BOF" not in allowed_techs, f"BF-BOF found in filtered transitions from {origin}"
 
 
 def test_dri_h2_from_year_restricts_early_availability(tech_switches_csv, tmp_path):
-    """Test that dri_h2_from_year prevents DRI-H2 before specified year."""
+    """Test that DRI-H2 is only available as a switch target from its from_year onward."""
     # Get default settings and set DRI-H2 to start from 2030
     tech_settings = get_default_technology_settings()
     tech_settings["DRIH2"] = TechnologySettings(allowed=True, from_year=2030, to_year=None)
@@ -81,27 +99,19 @@ def test_dri_h2_from_year_restricts_early_availability(tech_switches_csv, tmp_pa
         technology_settings=tech_settings,
     )
 
-    # Test year 2025 (before DRI-H2 available)
-    env_2025 = Environment(config=config, tech_switches_csv=tech_switches_csv)
-    env_2025.year = 2025
-    env_2025.load_allowed_transitions(tech_switches_csv=tech_switches_csv)  # Reload after year change
+    env = Environment(config=config, tech_switches_csv=tech_switches_csv)
 
-    for origin, allowed_techs in env_2025.allowed_furnace_transitions.items():
-        assert "DRI-H2-EAF" not in allowed_techs, f"DRI-H2-EAF found in {origin} transitions for year 2025"
+    filtered_2025 = _filtered_targets_for_year(env, tech_settings, 2025)
+    for origin, allowed_techs in filtered_2025.items():
+        assert "DRI-H2-EAF" not in allowed_techs, f"DRI-H2-EAF found in filtered transitions from {origin} for 2025"
 
-    # Test year 2030 (DRI-H2 becomes available)
-    env_2030 = Environment(config=config, tech_switches_csv=tech_switches_csv)
-    env_2030.year = 2030
-    env_2030.load_allowed_transitions(tech_switches_csv=tech_switches_csv)  # Reload after year change
-
-    # DRI-H2-EAF should now be available (in at least some transitions)
-    # Note: The CSV has "DRI-H2-EAF" with hyphens, which is kept as-is in allowed_furnace_transitions
-    has_dri_h2 = any("DRI-H2-EAF" in allowed for allowed in env_2030.allowed_furnace_transitions.values())
-    assert has_dri_h2, "DRI-H2-EAF not found in any transitions for year 2030"
+    filtered_2030 = _filtered_targets_for_year(env, tech_settings, 2030)
+    has_dri_h2 = any("DRI-H2-EAF" in allowed for allowed in filtered_2030.values())
+    assert has_dri_h2, "DRI-H2-EAF not available in filtered transitions for 2030"
 
 
 def test_eaf_to_year_restricts_late_availability(tech_switches_csv, tmp_path):
-    """Test that eaf_to_year prevents EAF after specified year."""
+    """Test that EAF is only available as a switch target until its to_year."""
     # Get default settings and set EAF to end at 2035
     tech_settings = get_default_technology_settings()
     tech_settings["EAF"] = TechnologySettings(allowed=True, from_year=2025, to_year=2035)
@@ -115,19 +125,14 @@ def test_eaf_to_year_restricts_late_availability(tech_switches_csv, tmp_path):
     )
 
     # Test year 2035 (EAF still available)
-    env_2035 = Environment(config=config, tech_switches_csv=tech_switches_csv)
-    env_2035.year = 2035
-    env_2035.load_allowed_transitions(tech_switches_csv=tech_switches_csv)  # Reload after year change
-
-    has_eaf = any("EAF" in allowed for allowed in env_2035.allowed_furnace_transitions.values())
+    env = Environment(config=config, tech_switches_csv=tech_switches_csv)
+    filtered_2035 = _filtered_targets_for_year(env, tech_settings, 2035)
+    has_eaf = any("EAF" in allowed for allowed in filtered_2035.values())
     assert has_eaf, "EAF not found in any transitions for year 2035"
 
     # Test year 2036 (after EAF ends)
-    env_2036 = Environment(config=config, tech_switches_csv=tech_switches_csv)
-    env_2036.year = 2036
-    env_2036.load_allowed_transitions(tech_switches_csv=tech_switches_csv)  # Reload after year change
-
-    for origin, allowed_techs in env_2036.allowed_furnace_transitions.items():
+    filtered_2036 = _filtered_targets_for_year(env, tech_settings, 2036)
+    for origin, allowed_techs in filtered_2036.items():
         assert "EAF" not in allowed_techs, f"EAF found in {origin} transitions for year 2036"
 
 
@@ -150,26 +155,21 @@ def test_multiple_technology_restrictions(tech_switches_csv, tmp_path):
         technology_settings=tech_settings,
     )
 
-    # Test year 2025
-    env_2025 = Environment(config=config, tech_switches_csv=tech_switches_csv)
-    env_2025.year = 2025
-    env_2025.load_allowed_transitions(tech_switches_csv=tech_switches_csv)  # Reload after year change
+    env = Environment(config=config, tech_switches_csv=tech_switches_csv)
 
-    for origin, allowed_techs in env_2025.allowed_furnace_transitions.items():
+    filtered_2025 = _filtered_targets_for_year(env, tech_settings, 2025)
+    for origin, allowed_techs in filtered_2025.items():
         assert "BF-BOF" not in allowed_techs, f"BF-BOF found in {origin} transitions"
         assert "DRI-H2-EAF" not in allowed_techs, f"DRI-H2-EAF found in {origin} transitions for 2025"
         assert "ESF-EAF" not in allowed_techs, f"ESF-EAF found in {origin} transitions"
 
     # Test year 2030 - DRI-H2 should now be available
-    env_2030 = Environment(config=config, tech_switches_csv=tech_switches_csv)
-    env_2030.year = 2030
-    env_2030.load_allowed_transitions(tech_switches_csv=tech_switches_csv)  # Reload after year change
-
-    for origin, allowed_techs in env_2030.allowed_furnace_transitions.items():
+    filtered_2030 = _filtered_targets_for_year(env, tech_settings, 2030)
+    for origin, allowed_techs in filtered_2030.items():
         assert "BF-BOF" not in allowed_techs, f"BF-BOF found in {origin} transitions"
         assert "ESF-EAF" not in allowed_techs, f"ESF-EAF found in {origin} transitions"
 
-    has_dri_h2 = any("DRI-H2-EAF" in allowed for allowed in env_2030.allowed_furnace_transitions.values())
+    has_dri_h2 = any("DRI-H2-EAF" in allowed for allowed in filtered_2030.values())
     assert has_dri_h2, "DRI-H2-EAF not available in 2030"
 
 

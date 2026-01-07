@@ -8381,6 +8381,12 @@ class Environment:
         and subsequent columns as technology names with values 'YES' or 'NO'.
         Any technology ending in 'CCUS' will be excluded even if marked 'YES'.
 
+        Important: this loader must NOT filter technologies by the current simulation year.
+        Technology availability is year-dependent (via `technology_settings`) and is applied
+        later when decisions are evaluated for a given year. If we filter at load time, any
+        technology with `from_year > start_year` would be permanently removed from the
+        transition graph, making future switches impossible (seen in binary/web runs).
+
         Args:
 
         Returns:
@@ -8414,38 +8420,18 @@ class Environment:
             allowed = []
             for tech, flag in zip(tech_names, flags):
                 if flag == "YES" and not tech.endswith("CCUS"):
-                    # Apply config-based filtering with error handling
-                    try:
-                        if self._is_technology_allowed_by_config(tech):
-                            allowed.append(tech)  # Keep original technology names with special characters
-                    except UnknownTechnologyError:
-                        # Log warning but don't crash - skip unknown technologies
-                        import logging
-
-                        logger = logging.getLogger(__name__)
+                    # Keep original technology names with special characters.
+                    # Only filter out technologies that are truly unknown to the configuration.
+                    # Year-based availability is applied later (per-year) via `allowed_techs`.
+                    normalized = normalize_code(tech)
+                    assert self.config.technology_settings is not None
+                    if normalized not in self.config.technology_settings:
                         logger.warning(f"Unknown technology in transitions CSV: {tech}")
+                        continue
+                    allowed.append(tech)
 
             # Store on the instance
             self.allowed_furnace_transitions[origin] = allowed
-
-    def _is_technology_allowed_by_config(self, tech_name: str) -> bool:
-        """
-        Compatibility shim: delegates to strict checker is_technology_allowed.
-        Raises UnknownTechnologyError for unknown techs (no silent allow).
-
-        Args:
-            tech_name: Name of the technology (e.g., "BF-BOF", "DRI-H2-EAF")
-
-        Returns:
-            True if technology is allowed, False otherwise
-
-        Raises:
-            UnknownTechnologyError: If technology not in configuration
-        """
-        # Delegate to the strict global checker using config and current year
-        # technology_settings is guaranteed to be populated by __post_init__
-        assert self.config.technology_settings is not None
-        return is_technology_allowed(self.config.technology_settings, tech_name, self.year)
 
     def calculate_carbon_costs_of_furnace_groups(self, world_plants: list[Plant]) -> None:
         """
