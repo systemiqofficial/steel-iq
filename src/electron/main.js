@@ -1276,6 +1276,26 @@ function createWindow(initialUrl = 'http://127.0.0.1:8000/') {
     show: false // Don't show until Django is ready
   });
 
+  win.on('close', (event) => {
+    if (shutdownInProgress) {
+      return;
+    }
+
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'question',
+      buttons: ['Cancel', 'Close'],
+      defaultId: 0,
+      cancelId: 0,
+      title: 'Confirm Close',
+      message: 'Are you sure you want to close the window?',
+      detail: 'Closing the window will quit the application.'
+    });
+
+    if (choice === 0) {
+      event.preventDefault();
+    }
+  });
+
   // Load Django application
   win.loadURL(initialUrl);
 
