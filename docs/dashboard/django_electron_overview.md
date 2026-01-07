@@ -133,9 +133,9 @@ npm run build-all
 ### Configuration
 
 The Electron app stores configuration in platform-specific locations:
-- **Windows**: `%APPDATA%/steel-iq/`
-- **macOS**: `~/Library/Application Support/steel-iq/`
-- **Linux**: `~/.config/steel-iq/`
+- **Windows**: `%APPDATA%/steel-model/`
+- **macOS**: `~/Library/Application Support/steel-model/`
+- **Linux**: `~/.config/steel-model/`
 
 ## Feature Comparison
 

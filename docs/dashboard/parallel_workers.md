@@ -117,7 +117,7 @@ WORKER_STARTUP_TIMEOUT=30
 WORKER_HEARTBEAT_INTERVAL=30
 
 # Log directory path (default: system temp)
-WORKER_LOG_DIR=/var/log/steel-iq/workers
+WORKER_LOG_DIR=/var/log/steel-model/workers
 
 # Queue name to process (default: "default")
 WORKER_QUEUE_NAME=default

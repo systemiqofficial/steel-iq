@@ -34,8 +34,8 @@ If you need to pin a specific version, append `==<version>` to the package name 
 Check out the source repository:
 
 ```shell
-git clone git@github.com:systemiqofficial/steel-iq.git
-cd steel-iq
+git clone git@github.com:systemiqofficial/steel-model.git
+cd steel-model
 ```
 
 Install `uv` following the instructions on their [website](https://docs.astral.sh/uv/getting-started/installation/).

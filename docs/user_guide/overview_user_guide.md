@@ -65,8 +65,8 @@ See the [Installation Guide](installation_guide.md) for complete setup instructi
 
 1. **Clone and set up**:
    ```bash
-   git clone git@github.com:systemiqofficial/steel-iq.git
-   cd steel-iq
+   git clone git@github.com:systemiqofficial/steel-model.git
+   cd steel-model
    uv venv -p python3.13
    source .venv/bin/activate
    uv sync

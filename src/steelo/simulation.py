@@ -587,7 +587,7 @@ class SimulationConfig:
         Args:
             start_year: First year of simulation
             end_year: Last year of simulation
-            data_dir: Directory containing the data files (e.g., /path/to/steel-iq/data)
+            data_dir: Directory containing the data files (e.g., /path/to/steel-model/data)
             output_dir: Directory where simulation outputs should be written
             master_excel_path: Path to master Excel file. If None, defaults to data_dir/master_input.xlsx
             **kwargs: Additional SimulationConfig parameters to override defaults
