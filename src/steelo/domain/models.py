@@ -7949,11 +7949,13 @@ class Environment:
                         avg_cost = self.get_average_fallback_material_cost(technology=tech)
                         if avg_cost is not None:
                             bom[metallic_charge]["unit_cost"] = avg_cost
+                            bom[metallic_charge]["demand_share_pct"] = 1.0
                     else:
                         # Use region-specific cost (Note: get_available_fallback_technologies doesn't take iso3/tech params)
                         specific_cost = self.get_fallback_material_cost(iso3, tech)
                         if specific_cost is not None:
                             bom[metallic_charge]["unit_cost"] = specific_cost
+                            bom[metallic_charge]["demand_share_pct"] = 1.0
                 else:
                     logger.warning(f"Technology {tech} not found in default_metallic_charge_per_technology mapping")
                 self.avg_boms[tech] = bom
@@ -8241,6 +8243,12 @@ class Environment:
             bom_logger.debug(f"[BOM DEBUG] Processing feedstock: {feedstock} (normalized: {normalized_feedstock})")
             bom_logger.debug(f"[BOM DEBUG] Share data: {share_data}")
 
+            if not isinstance(share_data, dict):
+                raise TypeError(
+                    f"Invalid avg_boms schema for technology {tech!r}, feedstock {feedstock!r}: "
+                    f"expected dict, got {type(share_data).__name__}"
+                )
+
             # Calculate material demand and cost
             if normalized_feedstock not in input_effectiveness:
                 raise KeyError(
@@ -8248,17 +8256,42 @@ class Environment:
                     f"Available inputs: {list(input_effectiveness.keys())}. "
                     f"This indicates a mismatch between avg_boms and dynamic_feedstocks data."
                 )
-            material_demand = share_data["demand_share_pct"] * capacity * input_effectiveness[normalized_feedstock]
-            material_cost = share_data["unit_cost"] * material_demand
+            demand_share_pct = share_data.get("demand_share_pct")
+            if demand_share_pct is None:
+                if len(self.avg_boms[tech]) == 1 and "unit_cost" in share_data:
+                    demand_share_pct = 1.0
+                    bom_logger.warning(
+                        "[BOM DEBUG] avg_boms[%s][%s] missing demand_share_pct; defaulting to 1.0 for single-input BOM",
+                        tech,
+                        feedstock,
+                    )
+                else:
+                    raise KeyError(
+                        f"avg_boms missing demand_share_pct for technology {tech!r}, feedstock {feedstock!r}. "
+                        f"share_data keys: {list(share_data.keys())}"
+                    )
+
+            unit_cost = share_data.get("unit_cost")
+            if unit_cost is None:
+                raise KeyError(
+                    f"avg_boms missing unit_cost for technology {tech!r}, feedstock {feedstock!r}. "
+                    f"share_data keys: {list(share_data.keys())}"
+                )
+
+            material_demand = float(demand_share_pct) * capacity * input_effectiveness[normalized_feedstock]
+            material_cost = float(unit_cost) * material_demand
             bom_logger.debug(
-                f"[BOM DEBUG] Material calculation: demand={material_demand}, cost={material_cost}, unit cost={share_data['unit_cost']}"
+                "[BOM DEBUG] Material calculation: demand=%s, cost=%s, unit cost=%s",
+                material_demand,
+                material_cost,
+                unit_cost,
             )
 
             bom_dict["materials"][feedstock] = {
                 "demand": material_demand,
                 "total_cost": material_cost,
-                "unit_cost": share_data["unit_cost"],
-                "unit_material_cost": share_data["unit_cost"],  # Same as unit_cost for avg_boms
+                "unit_cost": float(unit_cost),
+                "unit_material_cost": float(unit_cost),  # Same as unit_cost for avg_boms
                 "product_volume": capacity,  # Output volume for this furnace
             }
 
@@ -8268,7 +8301,7 @@ class Environment:
                     normalized_feedstock,
                     energy_costs.get(feedstock.replace(" ", "_").lower(), 0.0),
                 )
-                energy_demand = share_data["demand_share_pct"] * capacity
+                energy_demand = float(demand_share_pct) * capacity
                 total_energy_cost = energy_cost_per_unit * energy_demand
                 bom_logger.debug(
                     f"[BOM DEBUG] Energy calculation: demand={energy_demand}, total_cost={total_energy_cost}"

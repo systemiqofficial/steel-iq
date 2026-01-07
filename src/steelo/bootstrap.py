@@ -330,30 +330,10 @@ def bootstrap_simulation(
             )
         logger.info(f"Loaded {len(env.fallback_material_costs)} fallback material costs")
 
-        # Load default metallic charge per technology mapping from master Excel
-        if fixtures_dir:
-            resolver = DataPathResolver(fixtures_dir.parent)
-            master_excel_path = resolver.fallback_bom_excel_path
-            if master_excel_path.exists():
-                from .adapters.dataprocessing.excel_reader import read_fallback_bom_definitions
-
-                try:
-                    env.default_metallic_charge_per_technology = read_fallback_bom_definitions(master_excel_path)
-                except Exception as e:
-                    logger.warning(
-                        "Could not load fallback BOM definitions from %s: %s. "
-                        "New technologies such as MOE or E-WIN will rely on hardcoded averages (no energy costs).",
-                        master_excel_path,
-                        e,
-                    )
-                    env.default_metallic_charge_per_technology = {}
-            else:
-                logger.warning(
-                    "Master workbook for fallback BOM definitions not found at %s. "
-                    "Default metallic charges will remain empty.",
-                    master_excel_path,
-                )
-                env.default_metallic_charge_per_technology = {}
+        env.default_metallic_charge_per_technology = _load_default_metallic_charge_per_technology(
+            config_master_excel_path=config.master_excel_path,
+            fixtures_dir=fixtures_dir,
+        )
         env.initiate_hydrogen_efficiency(repository_json.hydrogen_efficiency.list())
         env.initiate_hydrogen_capex_opex(repository_json.hydrogen_capex_opex.list())
         env.initiate_technology_emission_factors(repository_json.technology_emission_factors.list())
@@ -495,3 +475,67 @@ def bootstrap_simulation(
 
     # Create simulation runner
     return SimulationRunner(bus=bus, config=config)
+
+
+def _resolve_fallback_bom_excel_path(
+    *,
+    config_master_excel_path: Path | str | None,
+    fixtures_dir: Path | None,
+) -> Path | None:
+    """Resolve the Excel workbook used to load fallback BOM definitions.
+
+    Prefer the explicitly configured master Excel path. Fall back to discovery
+    in the prepared-data directory to preserve backwards compatibility.
+    """
+    if config_master_excel_path:
+        configured = Path(config_master_excel_path)
+        if configured.exists():
+            return configured
+
+    if fixtures_dir:
+        resolver = DataPathResolver(fixtures_dir.parent)
+        discovered = resolver.fallback_bom_excel_path
+        if discovered.exists():
+            return discovered
+
+        logger.warning(
+            "Master workbook for fallback BOM definitions not found at %s. Default metallic charges will remain empty.",
+            discovered,
+        )
+        return None
+
+    logger.warning(
+        "No fixtures directory available to resolve fallback BOM workbook. Default metallic charges will remain empty."
+    )
+    return None
+
+
+def _load_default_metallic_charge_per_technology(
+    *,
+    config_master_excel_path: Path | str | None,
+    fixtures_dir: Path | None,
+) -> dict[str, str]:
+    """Load default metallic charge mappings from the fallback BOM definitions sheet."""
+    master_excel_path = _resolve_fallback_bom_excel_path(
+        config_master_excel_path=config_master_excel_path,
+        fixtures_dir=fixtures_dir,
+    )
+    if master_excel_path is None:
+        return {}
+
+    from .adapters.dataprocessing.excel_reader import read_fallback_bom_definitions
+
+    logger.info("Loading fallback BOM definitions from: %s", master_excel_path)
+    try:
+        mapping = read_fallback_bom_definitions(master_excel_path)
+    except Exception as exc:
+        logger.warning(
+            "Could not load fallback BOM definitions from %s: %s. "
+            "New technologies such as MOE or E-WIN will rely on hardcoded averages (no energy costs).",
+            master_excel_path,
+            exc,
+        )
+        return {}
+
+    logger.info("Loaded default metallic charge mapping entries: %d", len(mapping))
+    return mapping
