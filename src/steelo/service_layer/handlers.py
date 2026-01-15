@@ -308,10 +308,10 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
         # Recalculate carbon costs now that allocations/emissions are up to date
     if getattr(env, "carbon_costs", None):
         env.calculate_carbon_costs_of_furnace_groups(world_plants=uow.plants.list())
-        env.calculate_average_material_costs(world_plants=uow.plants.list())
-        env.generate_average_material_costs(uow.plants.list())
-        env.generate_average_boms(uow.plants.list())
-        uow.commit()
+    env.calculate_average_material_costs(world_plants=uow.plants.list())
+    env.generate_average_material_costs(uow.plants.list())
+    env.generate_average_boms(uow.plants.list())
+    uow.commit()
 
 
 def finalise_iteration(
