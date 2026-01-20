@@ -209,9 +209,13 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
                 env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
             ),
             equity_needed=cmd.equity_needed,
-            bill_of_materials=env.get_bom_from_avg_boms(plant.energy_costs or {}, cmd.technology_name, cmd.capacity)[0],
-            chosen_reductant=env.get_bom_from_avg_boms(plant.energy_costs or {}, cmd.technology_name, cmd.capacity)[2]
-            or "",
+            bill_of_materials=env.get_bom_from_avg_boms(
+                plant.energy_costs or {},
+                cmd.technology_name,
+                cmd.capacity,
+                env.most_common_reductant_by_tech.get(cmd.technology_name, ""),
+            )[0],
+            chosen_reductant=env.most_common_reductant_by_tech.get(cmd.technology_name, ""),
         )
         # Set the subsidies on the new furnace group
         new_furnace.applied_subsidies["capex"] = cmd.capex_subsidies
