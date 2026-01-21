@@ -1039,7 +1039,7 @@ def identify_bottlenecks(
                 all_suppliers_utilized = False
         if all_suppliers_utilized:
             potential_bottleneck_found = True
-            logger.warning(
+            print(
                 f"[TM BOTTLENECK ANALYSIS] All suppliers for {commodity} are fully utilized. Potential bottleneck detected."
             )
 
@@ -1051,13 +1051,13 @@ def identify_bottlenecks(
             fg_allocations = alloc.get_allocations_from((plant, fg))
             fg_allocated_vols += sum(fg_allocations.values())
         if fg_allocated_vols < fg.capacity * environment.config.capacity_limit * 0.99999:
-            logger.warning(
+            print(
                 f"[TM BOTTLENECK ANALYSIS] Iron maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized."
             )
             all_iron_makers_utilized = False
     if all_iron_makers_utilized:
         potential_bottleneck_found = True
-        logger.warning("[TM BOTTLENECK ANALYSIS] All iron makers are fully utilized. Potential bottleneck detected.")
+        print("[TM BOTTLENECK ANALYSIS] All iron makers are fully utilized. Potential bottleneck detected.")
 
     # Check steel making
     steel_allocations = commodity_allocations.get("steel")
@@ -1068,17 +1068,16 @@ def identify_bottlenecks(
                 fg_allocations = steel_allocations.get_allocations_from((plant, fg))
                 allocated_volume = sum(fg_allocations.values())
                 if allocated_volume < fg.capacity * environment.config.capacity_limit * 0.99999:
-                    logger.warning(
+                    print(
                         f"[TM BOTTLENECK ANALYSIS] Steel maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized."
                     )
                     all_steel_makers_utilized = False
     if all_steel_makers_utilized:
         potential_bottleneck_found = True
-        logger.warning("[TM BOTTLENECK ANALYSIS] All steel makers are fully utilized. Potential bottleneck detected.")
+        print("[TM BOTTLENECK ANALYSIS] All steel makers are fully utilized. Potential bottleneck detected.")
 
     if not potential_bottleneck_found:
-        logger.warning("[TM BOTTLENECK ANALYSIS] No potential bottlenecks found in steel trade allocations.")
-
+        print("[TM BOTTLENECK ANALYSIS] No potential bottlenecks found in steel trade allocations.")
     # Summarise supplier headroom for key metallic charges to aid diagnostics
     supplier_list = list(repository.suppliers.list())
     capacity_by_commodity: dict[str, float] = {}
@@ -1101,7 +1100,7 @@ def identify_bottlenecks(
                     allocated_from_suppliers += float(volume)
         total_capacity_float = float(total_capacity)
         headroom = total_capacity_float - allocated_from_suppliers
-        logger.info(
+        print(
             "operation=tm_feedstock_headroom year=%s commodity=%s supplier_capacity_kt=%.1f allocated_from_suppliers_kt=%.1f headroom_kt=%.1f",
             int(year),
             tracked,
