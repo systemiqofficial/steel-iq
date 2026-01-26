@@ -334,7 +334,7 @@ class TradeLPModel:
         transportation_costs: Location-specific transport costs
 
     Penalty Costs (for slack variables):
-        demand_slack_cost: Very high cost for unmet demand (10M)
+        demand_slack_cost: Very high cost for unmet demand (10k)
         soft_minimum_capacity_slack_cost: High cost for under-utilization (100k)
     """
 
@@ -348,7 +348,7 @@ class TradeLPModel:
         self.solution_status = None
         self.optimal_solution = None
         self.allocations: Allocations | None = None
-        self.demand_slack_cost = 10000
+        self.demand_slack_cost = 100000
         self.soft_minimum_capacity_slack_cost = 10000
         self.real_life_costs_normalization_factor = 1
         self.tariff_quotas_by_iso3: dict[Tuple[str, str, str], float] = {}

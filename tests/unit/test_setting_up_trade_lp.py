@@ -1082,7 +1082,7 @@ def test_identify_bottlenecks_empty_allocations():
     commodity_allocations = {"iron": iron_allocations}
 
     # Should run without errors
-    identify_bottlenecks(commodity_allocations, repo, env, year)
+    identify_bottlenecks(commodity_allocations, repo, env, year, config)
 
 
 def test_identify_bottlenecks_skip_scrap():
@@ -1105,7 +1105,7 @@ def test_identify_bottlenecks_skip_scrap():
     commodity_allocations = {"scrap": scrap_allocations}
 
     # Should complete without analyzing scrap (the function skips scrap)
-    identify_bottlenecks(commodity_allocations, repo, env, year)
+    identify_bottlenecks(commodity_allocations, repo, env, year, config)
 
 
 # --- Tests for transportation costs (transport_kpis) ---
