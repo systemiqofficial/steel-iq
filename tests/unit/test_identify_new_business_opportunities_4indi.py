@@ -280,6 +280,7 @@ class TestPrepareDataForBusinessOpportunity:
             opex_subsidies={},
             carbon_costs=carbon_costs,
             most_common_reductant={},
+            environment_most_common_reductant={},
         )
 
         # Verify structure
@@ -337,6 +338,7 @@ class TestPrepareDataForBusinessOpportunity:
                 opex_subsidies={},
                 carbon_costs=carbon_costs,
                 most_common_reductant={},
+                environment_most_common_reductant={},
             )
 
     def test_apply_capex_subsidies(self, mock_get_bom):
@@ -386,6 +388,7 @@ class TestPrepareDataForBusinessOpportunity:
             opex_subsidies={},
             carbon_costs=carbon_costs,
             most_common_reductant={},
+            environment_most_common_reductant={},
         )
 
         site_id = (40.0, -100.0, "USA")
@@ -433,6 +436,7 @@ class TestPrepareDataForBusinessOpportunity:
                 opex_subsidies={},
                 carbon_costs=carbon_costs,
                 most_common_reductant={},
+                environment_most_common_reductant={},
             )
 
     def test_multiple_locations_and_techs(self):
@@ -506,6 +510,7 @@ class TestPrepareDataForBusinessOpportunity:
             opex_subsidies={},
             carbon_costs=carbon_costs,
             most_common_reductant={},
+            environment_most_common_reductant={},
         )
 
         # Verify all products are present

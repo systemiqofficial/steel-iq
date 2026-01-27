@@ -2047,6 +2047,7 @@ class FurnaceGroup:
         tech_capex_subsidies: dict[str, list[Subsidy]] = {},
         tech_opex_subsidies: dict[str, list[Subsidy]] = {},
         tech_debt_subsidies: dict[str, list[Subsidy]] = {},
+        most_common_reductant_by_tech: dict[str, str] = {},
     ) -> tuple[dict[str, float], dict[str, float], float | None, dict[str, dict[str, dict[str, dict[str, float]]]]]:
         """
         Identify the optimal technology transition for this furnace group by comparing NPVs of allowed technology
@@ -2324,7 +2325,9 @@ class FurnaceGroup:
             else:  # Switch to a new technology (greenfield)
                 # ========== BRANCH B: Greenfield Installation (New Technology) ==========
                 # Fetch average BOM for the new technology from historical data
-                bom_result = get_bom_from_avg_boms(self.energy_costs, tech, self.capacity, self.chosen_reductant)
+                chosen_reductant = most_common_reductant_by_tech.get(tech)
+                print(f"QEye Chosen reductant for technology {tech}: {chosen_reductant}")
+                bom_result = get_bom_from_avg_boms(self.energy_costs, tech, self.capacity, chosen_reductant)
                 bill_of_materials_opt, util_rate, reductant = bom_result
 
                 # Skip if BOM retrieval failed
@@ -3487,6 +3490,7 @@ class Plant:
         tech_capex_subsidies: dict[str, list[Subsidy]] = {},
         tech_opex_subsidies: dict[str, list[Subsidy]] = {},
         tech_debt_subsidies: dict[str, list[Subsidy]] = {},
+        most_common_reductant_by_tech: dict[str, str] = {},
     ) -> commands.Command | None:
         """
         Evaluate the economic strategy for a furnace group using NPV-based decision making.
@@ -3637,6 +3641,7 @@ class Plant:
             construction_time=construction_time,
             tech_debt_subsidies=tech_debt_subsidies,
             risk_free_rate=risk_free_rate,
+            most_common_reductant_by_tech=most_common_reductant_by_tech,
         )
 
         # Log NPV calculation results
@@ -4649,6 +4654,7 @@ class PlantGroup:
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
+        environment_most_common_reductant: dict[str, str] = {},
     ) -> dict[str, tuple[float | None, str, float]]:
         """
         Calculate NPV and optimal technology choice for all plants in the group considering allowed technologies and
@@ -4753,7 +4759,10 @@ class PlantGroup:
                 if get_bom_from_avg_boms is None:
                     continue
                 bom_result = get_bom_from_avg_boms(
-                    plant.energy_costs, tech, capacity, self.most_common_reductant.get(tech, "")
+                    plant.energy_costs,
+                    tech,
+                    capacity,
+                    self.most_common_reductant.get(tech, environment_most_common_reductant.get(tech)),
                 )
                 bill_of_materials_opt, util_rate, reductant = bom_result
                 if bill_of_materials_opt is None:
@@ -4895,6 +4904,7 @@ class PlantGroup:
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
+        environment_most_common_reductant: dict[str, str] = {},
     ) -> commands.Command | None:
         """
         Evaluate and execute the most profitable furnace expansion across all plants in the plant group.
@@ -4992,6 +5002,7 @@ class PlantGroup:
             technology_emission_factors=technology_emission_factors,
             plant_lifetime=plant_lifetime,
             construction_time=construction_time,
+            environment_most_common_reductant=environment_most_common_reductant,
         )
 
         # ========== STAGE 3: CHECK IF ANY EXPANSION OPTIONS EXIST ==========
@@ -5262,6 +5273,7 @@ class PlantGroup:
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
+        environment_most_common_reductant: dict[str, str] = {},
     ) -> commands.Command:
         """
         Identifies new business opportunities for plants at given locations with specific technologies.
@@ -5396,6 +5408,7 @@ class PlantGroup:
             opex_subsidies=opex_subsidies,
             carbon_costs=carbon_costs,
             most_common_reductant=self.most_common_reductant,
+            environment_most_common_reductant=environment_most_common_reductant,
         )
         cost_counts, cost_total = _count_entries(cost_data)
         candidate_stats["costed_pairs_total"] = cost_total
@@ -7224,7 +7237,10 @@ class Environment:
         self.most_common_reductant_by_tech = self.most_common_reductant(world_plants)
 
     def _generate_cost_dict(
-        self, world_furnace_groups: list[FurnaceGroup], lag: int = 0
+        self,
+        world_furnace_groups: list[FurnaceGroup],
+        lag: int = 0,
+        environment_most_common_reductant: dict[str, str] = {},
     ) -> dict[str, dict[str, dict[str, float]]]:
         """
         Generate a dict representation of the costs for all furnace_groups
@@ -7262,7 +7278,9 @@ class Environment:
                             fg.energy_costs,
                             tech=fg.technology.name,
                             capacity=1000,
-                            most_common_reductant=self.most_common_reductant_by_tech.get(fg.technology.name),
+                            most_common_reductant=self.most_common_reductant_by_tech.get(
+                                fg.technology.name, environment_most_common_reductant.get(fg.technology.name)
+                            ),
                         )
                         if bom is not None:
                             unit_cost = calculate_variable_opex(bom["materials"], bom["energy"])
@@ -7302,7 +7320,9 @@ class Environment:
         TODO: Add separation of steel and iron price.
         """
         cost_curve = {}
-        self._generate_cost_dict(world_furnace_groups, lag=lag)
+        self._generate_cost_dict(
+            world_furnace_groups, lag=lag, environment_most_common_reductant=self.most_common_reductant_by_tech
+        )
         cost_dict = self.cost_dict if lag == 0 else self.future_cost_dict
         for product, product_cost_dict in cost_dict.items():
             sorted_product_costs = dict(
@@ -8205,17 +8225,11 @@ class Environment:
                         converted_volume,
                     )
                 input_effectiveness[normalized_secondary] = converted_volume
-        # Fallback if no inputs matched the most common reductant
+        # If no inputs matched the most common reductant
         if not input_effectiveness:
             bom_logger.error(
                 f"[BOM DEBUG] No inputs matched most common reductant: {most_common_reductant}, feedstocks: {feedstocks_for_tech}"
-            )  # IOANA TODO: check why this ever happens
-            for feed in feedstocks_for_tech:
-                if isinstance(feed.metallic_charge, str) and feed.required_quantity_per_ton_of_product is not None:
-                    input_effectiveness[feed.metallic_charge.lower()] = feed.required_quantity_per_ton_of_product
-                    bom_logger.debug(
-                        f"[BOM DEBUG] Fallback: Added {feed.metallic_charge.lower()} = {feed.required_quantity_per_ton_of_product}"
-                    )
+            )
 
         return input_effectiveness
 
