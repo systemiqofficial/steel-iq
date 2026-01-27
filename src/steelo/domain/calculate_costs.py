@@ -1207,11 +1207,14 @@ def calculate_capex_with_subsidies(capex: float, capex_subsidies: list["Subsidy"
     if capex_subsidies == []:
         return capex
 
-    # Sum all applicable subsidies (both absolute and relative)
+    # Sum all applicable subsidies based on subsidy_type
     capex_total_subsidy = 0.0
     for subsidy in capex_subsidies:
-        capex_total_subsidy += subsidy.absolute_subsidy
-        capex_total_subsidy += capex * subsidy.relative_subsidy
+        if subsidy.subsidy_type == "absolute":
+            capex_total_subsidy += subsidy.subsidy_amount
+        elif subsidy.subsidy_type == "relative":
+            # subsidy_amount stored as decimal (e.g., 0.1 = 10%)
+            capex_total_subsidy += capex * subsidy.subsidy_amount
 
     # Apply total subsidy, ensuring CAPEX doesn't go below zero
     return max(0.0, capex - capex_total_subsidy)
@@ -1235,11 +1238,14 @@ def calculate_opex_with_subsidies(opex: float, opex_subsidies: list["Subsidy"]) 
     if opex_subsidies == []:
         return opex
 
-    # Sum all applicable subsidies (both absolute and relative)
+    # Sum all applicable subsidies based on subsidy_type
     opex_total_subsidy = 0.0
     for subsidy in opex_subsidies:
-        opex_total_subsidy += subsidy.absolute_subsidy
-        opex_total_subsidy += opex * subsidy.relative_subsidy
+        if subsidy.subsidy_type == "absolute":
+            opex_total_subsidy += subsidy.subsidy_amount
+        elif subsidy.subsidy_type == "relative":
+            # subsidy_amount stored as decimal (e.g., 0.1 = 10%)
+            opex_total_subsidy += opex * subsidy.subsidy_amount
 
     # Apply total subsidy, ensuring OPEX doesn't go below zero
     return max(0.0, opex - opex_total_subsidy)
@@ -1394,9 +1400,10 @@ def calculate_debt_with_subsidies(cost_of_debt: float, debt_subsidies: list["Sub
     # Sum all absolute subsidies (percentage point reductions only)
     debt_total_subsidy = 0.0
     for subsidy in debt_subsidies:
-        debt_total_subsidy += subsidy.absolute_subsidy
-
-    logging.info("Ignoring all relative subsidies for subsidised cost of debt calculations")
+        if subsidy.subsidy_type == "absolute":
+            debt_total_subsidy += subsidy.subsidy_amount
+        else:
+            logging.info("Ignoring relative subsidy for cost of debt calculation")
 
     # Apply subsidy, ensuring cost of debt doesn't go below risk-free rate
     return max(risk_free_rate, cost_of_debt - debt_total_subsidy)

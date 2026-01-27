@@ -225,7 +225,8 @@ def test_update_costs_with_capex_subsidies(
         end_year=Year(2035),
         technology_name="DRI",
         cost_item="capex",
-        relative_subsidy=0.3,
+        subsidy_type="relative",
+        subsidy_amount=0.3,  # 30% reduction (stored as decimal)
     )
 
     capex_subsidies = {
@@ -296,7 +297,8 @@ def test_update_costs_with_debt_subsidies(
         end_year=Year(2030),
         technology_name="EAF",
         cost_item="debt",
-        absolute_subsidy=0.02,
+        subsidy_type="absolute",
+        subsidy_amount=0.02,  # 2% absolute reduction
     )
 
     debt_subsidies = {
@@ -628,7 +630,8 @@ def test_considered_plant_with_historical_npv(
         end_year=Year(2027),
         technology_name="EAF",
         cost_item="capex",
-        relative_subsidy=0.5,  # 50% reduction
+        subsidy_type="relative",
+        subsidy_amount=0.5,  # 50% reduction (stored as decimal)
     )
 
     capex_subsidy_late = Subsidy(
@@ -638,7 +641,8 @@ def test_considered_plant_with_historical_npv(
         end_year=Year(2035),
         technology_name="EAF",
         cost_item="capex",
-        relative_subsidy=0.3,  # 30% reduction
+        subsidy_type="relative",
+        subsidy_amount=0.3,  # 30% reduction (stored as decimal)
     )
 
     capex_subsidies = {

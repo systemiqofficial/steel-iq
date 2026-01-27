@@ -16,8 +16,8 @@ def test_risk_free_rate_acts_as_floor_for_debt_cost():
             end_year=Year(2030),
             technology_name="all",
             cost_item="debt",
-            absolute_subsidy=0.08,  # 8% reduction
-            relative_subsidy=1.0,  # No relative change
+            subsidy_type="absolute",
+            subsidy_amount=0.08,  # 8% reduction
         )
     ]
 
@@ -68,8 +68,8 @@ def test_risk_free_rate_with_multiple_subsidies():
             end_year=Year(2030),
             technology_name="all",
             cost_item="debt",
-            absolute_subsidy=0.03,  # 3% reduction
-            relative_subsidy=1.0,
+            subsidy_type="absolute",
+            subsidy_amount=0.03,  # 3% reduction
         ),
         Subsidy(
             scenario_name="Subsidy 2",
@@ -78,8 +78,8 @@ def test_risk_free_rate_with_multiple_subsidies():
             end_year=Year(2030),
             technology_name="all",
             cost_item="debt",
-            absolute_subsidy=0.04,  # 4% reduction
-            relative_subsidy=1.0,
+            subsidy_type="absolute",
+            subsidy_amount=0.04,  # 4% reduction
         ),
     ]
 
@@ -108,8 +108,8 @@ def test_risk_free_rate_outside_subsidy_period():
             end_year=Year(2027),
             technology_name="all",
             cost_item="debt",
-            absolute_subsidy=0.05,  # 5% reduction
-            relative_subsidy=1.0,
+            subsidy_type="absolute",
+            subsidy_amount=0.05,  # 5% reduction
         )
     ]
 

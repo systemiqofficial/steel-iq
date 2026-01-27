@@ -1736,46 +1736,238 @@ def read_hydrogen_capex_opex(
     return hydrogen_capex_opex
 
 
+def _normalize_cost_item(cost_item: str | None, row_index: int) -> str | None:
+    """
+    Normalize cost item to standard values: 'opex', 'capex', 'cost of debt'.
+
+    Args:
+        cost_item: Raw cost item string from Excel
+        row_index: Row index for logging purposes
+
+    Returns:
+        Normalized cost item string, or None if row should be skipped.
+    """
+    logger = logging.getLogger(__name__)
+
+    if cost_item is None or (isinstance(cost_item, float) and math.isnan(cost_item)) or str(cost_item).strip() == "":
+        return "opex"
+
+    normalized = str(cost_item).strip().lower()
+
+    if normalized in ("opex",):
+        return "opex"
+    elif normalized in ("capex",):
+        return "capex"
+    elif normalized in ("cost of debt", "debt"):
+        return "cost of debt"
+    elif normalized in ("hydrogen", "h2"):
+        return "hydrogen"
+    elif normalized in ("electricity",):
+        return "electricity"
+    else:
+        logger.warning(f"Skipping row {row_index}: unknown cost item '{cost_item}'")
+        return None
+
+
+def _expand_technology_pattern(pattern: str | None, all_technologies: list[str]) -> list[str]:
+    """
+    Expand technology pattern to list of matching technologies.
+
+    Args:
+        pattern: Technology name, empty for all, or wildcard with '*' suffix
+        all_technologies: List of all available technology names
+
+    Returns:
+        List of matching technology names. Returns all_technologies for empty pattern.
+    """
+    if pattern is None or (isinstance(pattern, float) and math.isnan(pattern)) or str(pattern).strip() == "":
+        return all_technologies
+
+    pattern_str = str(pattern).strip()
+
+    if pattern_str.endswith("*"):
+        prefix = pattern_str[:-1]
+        matches = [tech for tech in all_technologies if prefix in tech]
+        if not matches:
+            logging.warning(f"Wildcard pattern '{pattern_str}' matched no technologies")
+            return []
+        return matches
+    else:
+        if pattern_str not in all_technologies:
+            logging.warning(f"Technology '{pattern_str}' not found in available technologies")
+            return []
+        return [pattern_str]
+
+
+def _parse_subsidy_type(subsidy_type: str | None, cost_item: str, row_index: int) -> str | None:
+    """
+    Parse subsidy type from Excel, defaulting based on cost item.
+
+    Args:
+        subsidy_type: Raw subsidy type from Excel ("Absolute", "Relative", or empty)
+        cost_item: Normalized cost item
+        row_index: Row index for logging purposes
+
+    Returns:
+        "absolute", "relative", or None if row should be skipped.
+    """
+    if (
+        subsidy_type is None
+        or (isinstance(subsidy_type, float) and math.isnan(subsidy_type))
+        or str(subsidy_type).strip() == ""
+    ):
+        return "absolute"  # Default
+
+    normalized = str(subsidy_type).strip().lower()
+
+    if normalized == "relative":
+        if cost_item == "cost of debt":
+            logging.warning(f"Skipping row {row_index}: relative subsidies not supported for cost of debt")
+            return None
+        return "relative"
+
+    return "absolute"
+
+
 def read_subsidies(
-    excel_path: Path, subsidies_sheet: str = "Subsidies", trade_bloc_sheet: str = "Trade bloc definitions"
+    excel_path: Path,
+    subsidies_sheet: str = "Subsidies",
+    trade_bloc_sheet: str = "Trade bloc definitions",
+    techno_economic_sheet: str = "Techno-economic details",
 ) -> list[Subsidy]:
     """
     Read subsidies data from Excel sheet and return domain objects.
+
+    Supports the new subsidies format with:
+    - Single 'Subsidy amount' + 'Subsidy type' columns
+    - Technology wildcard matching (e.g., 'CCS*' matches all CCS technologies)
+    - Cost item normalization (OPEX, CAPEX, COST OF DEBT)
+    - Percentage values as whole numbers (10 = 10%), converted to decimal internally
+
     Args:
         excel_path: Path to the Excel file
         subsidies_sheet: Name of the sheet containing subsidies data
         trade_bloc_sheet: Name of the sheet containing trade bloc definitions
+        techno_economic_sheet: Name of the sheet containing technology names
+
     Returns:
         List of Subsidy domain objects
     """
+    logger = logging.getLogger(__name__)
 
     subsidies_df = pd.read_excel(excel_path, sheet_name=subsidies_sheet)
     trade_blocs_df = pd.read_excel(excel_path, sheet_name=trade_bloc_sheet)
     trade_blocs_df = trade_blocs_df.set_index("ISO 3-letter code")
-    column_renames = {
-        "ISO3/Trade bloc": "iso3",
-        "Technology (if not specified, then all)": "technology_name",
-        "Cost item (if not specified, then applied to total OPEX for the year)": "cost_item",
-        "Absolute subsidy [USD/functional unit]": "absolute_subsidy",
-        "Relative subsidy [%]": "relative_subsidy",
-        "Start year": "start_year",
-        "End year": "end_year",
-        "Scenario name": "scenario_name",
-    }
-    rows_to_drop = ["Functional unit"]
+
+    # Get all technology names from techno-economic details sheet
+    techno_df = pd.read_excel(excel_path, sheet_name=techno_economic_sheet)
+    all_technologies = techno_df["Technology"].dropna().unique().tolist()
+
+    # Normalize column names to handle headers with newlines and descriptions
+    def normalize_subsidy_column(col: str) -> str:
+        """Normalize column names by taking first line and extracting key terms."""
+        # Take first line before any newline
+        col = col.split("\n")[0].strip()
+        # Map common patterns to normalized names
+        col_lower = col.lower()
+        if "location" in col_lower:
+            return "Location"
+        elif "technology" in col_lower:
+            return "Technology"
+        elif "cost item" in col_lower:
+            return "Cost item"
+        elif "subsidy type" in col_lower:
+            return "Subsidy type"
+        elif "subsidy amount" in col_lower:
+            return "Subsidy amount"
+        elif "start year" in col_lower:
+            return "Start year"
+        elif "end year" in col_lower:
+            return "End year"
+        elif "scenario" in col_lower:
+            return "Scenario name"
+        return col
+
+    # Apply normalization to column names
+    subsidies_df.columns = [normalize_subsidy_column(col) for col in subsidies_df.columns]
+
+    # Only keep required columns (ignore any after End year like notes)
+    required_columns = [
+        "Scenario name",
+        "Location",
+        "Technology",
+        "Cost item",
+        "Subsidy type",
+        "Subsidy amount",
+        "Start year",
+        "End year",
+    ]
+
+    # Validate required columns exist
+    missing_cols = [col for col in required_columns if col not in subsidies_df.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns in subsidies sheet: {missing_cols}")
+
+    subsidies_df = subsidies_df[required_columns]
+
     subsidies = []
     for _index, row in subsidies_df.iterrows():
-        region = row["ISO3/Trade bloc"]
+        row_idx = _index if isinstance(_index, int) else 0  # type: int
+        # Skip rows with empty subsidy amount
+        subsidy_amount = row["Subsidy amount"]
+        if pd.isna(subsidy_amount):
+            logger.warning(f"Skipping row {_index}: empty subsidy amount")
+            continue
 
+        # Normalize cost item
+        cost_item = _normalize_cost_item(row["Cost item"], row_idx)
+        if cost_item is None:
+            continue
+
+        # Parse subsidy type
+        subsidy_type = _parse_subsidy_type(row["Subsidy type"], cost_item, row_idx)
+        if subsidy_type is None:
+            continue
+
+        # Convert percentage values to decimal
+        # - Relative subsidies: percentage to decimal (e.g., 10% -> 0.1)
+        # - Cost of debt absolute: percentage points to decimal (e.g., 5 -> 0.05)
+        # - Other absolute subsidies: keep as-is (e.g., USD/t output)
+        if subsidy_type == "relative":
+            subsidy_amount = float(subsidy_amount) / 100
+        elif cost_item == "cost_of_debt":
+            # Absolute cost of debt subsidy is given as percentage point reduction
+            subsidy_amount = float(subsidy_amount) / 100
+        else:
+            subsidy_amount = float(subsidy_amount)
+
+        # Expand trade bloc to ISO3 list
+        region = row["Location"]
         if region in trade_blocs_df.columns:
             iso3_list = trade_blocs_df[region].dropna().index.tolist()
         else:
             iso3_list = [region]
-        for iso3 in iso3_list:
-            row_dict = row.drop(rows_to_drop).dropna().rename(index=column_renames).to_dict()
-            row_dict["iso3"] = iso3
 
-            subsidies.append(Subsidy(**row_dict))
+        # Expand technology pattern
+        technology_list = _expand_technology_pattern(row["Technology"], all_technologies)
+
+        # Create subsidies for each ISO3 and technology combination
+        for iso3 in iso3_list:
+            for technology in technology_list:
+                subsidies.append(
+                    Subsidy(
+                        scenario_name=row["Scenario name"],
+                        iso3=iso3,
+                        start_year=Year(int(row["Start year"])),
+                        end_year=Year(int(row["End year"])),
+                        technology_name=technology,
+                        cost_item=cost_item,
+                        subsidy_type=subsidy_type,
+                        subsidy_amount=subsidy_amount,
+                    )
+                )
+
+    logger.info(f"Read {len(subsidies)} subsidies from '{subsidies_sheet}'")
     return subsidies
 
 

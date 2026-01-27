@@ -561,7 +561,8 @@ def test_track_business_opportunity_with_opex_subsidies(
         end_year=Year(2040),
         technology_name="EAF",
         cost_item="opex",
-        relative_subsidy=0.2,  # 20% reduction
+        subsidy_type="relative",
+        subsidy_amount=0.2,  # 20% reduction (stored as decimal)
     )
 
     # Mock calculate_npv_full to return higher NPV due to subsidies

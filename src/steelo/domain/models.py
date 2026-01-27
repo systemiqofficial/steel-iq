@@ -3686,13 +3686,13 @@ class Plant:
         for subsidy in capex_subs:
             subsidy_details.append(
                 f"[FG STRATEGY]:     • {subsidy.subsidy_name}: "
-                f"absolute=${subsidy.absolute_subsidy:.2f}, relative={subsidy.relative_subsidy:.2%}, "
+                f"type={subsidy.subsidy_type}, amount={subsidy.subsidy_amount:.4f}, "
                 f"years {subsidy.start_year}-{subsidy.end_year}"
             )
         for subsidy in debt_subs:
             subsidy_details.append(
                 f"[FG STRATEGY]:     • {subsidy.subsidy_name}: "
-                f"absolute=${subsidy.absolute_subsidy:.2f}, relative={subsidy.relative_subsidy:.2%}, "
+                f"type={subsidy.subsidy_type}, amount={subsidy.subsidy_amount:.4f}, "
                 f"years {subsidy.start_year}-{subsidy.end_year}"
             )
 
@@ -5107,7 +5107,7 @@ class PlantGroup:
             subsidy_details.append(
                 f"  CAPEX subsidies ({len(selected_capex_subsidies)}):\n"
                 + "\n".join(
-                    f"    • {s.subsidy_name}: abs=${s.absolute_subsidy:.2f}, rel={s.relative_subsidy:.2%}, "
+                    f"    • {s.subsidy_name}: type={s.subsidy_type}, amount={s.subsidy_amount:.4f}, "
                     f"years {s.start_year}-{s.end_year}"
                     for s in selected_capex_subsidies
                 )
@@ -5116,7 +5116,7 @@ class PlantGroup:
             subsidy_details.append(
                 f"  Debt subsidies ({len(selected_debt_subsidies)}):\n"
                 + "\n".join(
-                    f"    • {s.subsidy_name}: abs=${s.absolute_subsidy:.2f}, rel={s.relative_subsidy:.2%}, "
+                    f"    • {s.subsidy_name}: type={s.subsidy_type}, amount={s.subsidy_amount:.4f}, "
                     f"years {s.start_year}-{s.end_year}"
                     for s in selected_debt_subsidies
                 )
@@ -5927,8 +5927,8 @@ class Subsidy:
         end_year: Year,
         technology_name: str = "all",
         cost_item: str = "opex",
-        absolute_subsidy: float = 0,
-        relative_subsidy: float = 0,
+        subsidy_type: str = "absolute",
+        subsidy_amount: float = 0,
     ) -> None:
         self.scenario_name = scenario_name
         self.iso3 = iso3
@@ -5936,8 +5936,8 @@ class Subsidy:
         self.end_year = end_year
         self.technology_name = technology_name
         self.cost_item = cost_item
-        self.absolute_subsidy = absolute_subsidy
-        self.relative_subsidy = relative_subsidy
+        self.subsidy_type = subsidy_type
+        self.subsidy_amount = subsidy_amount
         self.subsidy_name = f"{self.iso3}_{self.scenario_name}_{self.technology_name}_{self.cost_item}"
 
     def __repr__(self) -> str:
@@ -5952,8 +5952,8 @@ class Subsidy:
                 self.end_year,
                 self.technology_name,
                 self.cost_item,
-                self.absolute_subsidy,
-                self.relative_subsidy,
+                self.subsidy_type,
+                self.subsidy_amount,
             )
         )
 
@@ -5967,8 +5967,8 @@ class Subsidy:
             and self.end_year == other.end_year
             and self.technology_name == other.technology_name
             and self.cost_item == other.cost_item
-            and self.absolute_subsidy == other.absolute_subsidy
-            and self.relative_subsidy == other.relative_subsidy
+            and self.subsidy_type == other.subsidy_type
+            and self.subsidy_amount == other.subsidy_amount
         )
 
 
@@ -6403,6 +6403,8 @@ class Environment:
         self.opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
         self.capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
         self.debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
+        self.hydrogen_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
+        self.electricity_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
 
     def get_transport_emissions_as_dict(self) -> dict[tuple[str, str, str], float]:
         """
@@ -6544,15 +6546,9 @@ class Environment:
             if subsidy.cost_item.lower() == "opex":
                 if subsidy.iso3 not in opex_subsidies:
                     opex_subsidies[subsidy.iso3] = {}
-                    # Now assess the technology that the subsidy applies to
-                if subsidy.technology_name == "all":
-                    for technology in self.technology_to_product.keys():
-                        if technology not in opex_subsidies[subsidy.iso3]:
-                            opex_subsidies[subsidy.iso3][technology] = []
-                        opex_subsidies[subsidy.iso3][technology].append(subsidy)
-                elif subsidy.technology_name not in opex_subsidies[subsidy.iso3]:
+                if subsidy.technology_name not in opex_subsidies[subsidy.iso3]:
                     opex_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                    opex_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+                opex_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
         self.opex_subsidies = opex_subsidies
 
     def initiate_capex_subsidies(self, subsidies: list[Subsidy]) -> None:
@@ -6567,15 +6563,9 @@ class Environment:
             if subsidy.cost_item.lower() == "capex":
                 if subsidy.iso3 not in capex_subsidies:
                     capex_subsidies[subsidy.iso3] = {}
-                    # Now assess the technology that the subsidy applies to
-                if subsidy.technology_name == "all":
-                    for technology in self.technology_to_product.keys():
-                        if technology not in capex_subsidies[subsidy.iso3]:
-                            capex_subsidies[subsidy.iso3][technology] = []
-                        capex_subsidies[subsidy.iso3][technology].append(subsidy)
-                elif subsidy.technology_name not in capex_subsidies[subsidy.iso3]:
+                if subsidy.technology_name not in capex_subsidies[subsidy.iso3]:
                     capex_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                    capex_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+                capex_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
         self.capex_subsidies = capex_subsidies
 
     def initiate_debt_subsidies(self, subsidies: list[Subsidy]) -> None:
@@ -6590,16 +6580,44 @@ class Environment:
             if subsidy.cost_item.lower() == "cost of debt":
                 if subsidy.iso3 not in debt_subsidies:
                     debt_subsidies[subsidy.iso3] = {}
-                    # Now assess the technology that the subsidy applies to
-                if subsidy.technology_name == "all":
-                    for technology in self.technology_to_product.keys():
-                        if technology not in debt_subsidies[subsidy.iso3]:
-                            debt_subsidies[subsidy.iso3][technology] = []
-                        debt_subsidies[subsidy.iso3][technology].append(subsidy)
-                elif subsidy.technology_name not in debt_subsidies[subsidy.iso3]:
+                if subsidy.technology_name not in debt_subsidies[subsidy.iso3]:
                     debt_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                    debt_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+                debt_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
         self.debt_subsidies = debt_subsidies
+
+    def initiate_hydrogen_subsidies(self, subsidies: list[Subsidy]) -> None:
+        """
+        Initialize the hydrogen subsidies for the environment.
+
+        Args:
+            subsidies (list[Subsidy]): A list of Subsidy objects to be added to the environment.
+        """
+        hydrogen_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
+        for subsidy in subsidies:
+            if subsidy.cost_item.lower() == "hydrogen":
+                if subsidy.iso3 not in hydrogen_subsidies:
+                    hydrogen_subsidies[subsidy.iso3] = {}
+                if subsidy.technology_name not in hydrogen_subsidies[subsidy.iso3]:
+                    hydrogen_subsidies[subsidy.iso3][subsidy.technology_name] = []
+                hydrogen_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+        self.hydrogen_subsidies = hydrogen_subsidies
+
+    def initiate_electricity_subsidies(self, subsidies: list[Subsidy]) -> None:
+        """
+        Initialize the electricity subsidies for the environment.
+
+        Args:
+            subsidies (list[Subsidy]): A list of Subsidy objects to be added to the environment.
+        """
+        electricity_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
+        for subsidy in subsidies:
+            if subsidy.cost_item.lower() == "electricity":
+                if subsidy.iso3 not in electricity_subsidies:
+                    electricity_subsidies[subsidy.iso3] = {}
+                if subsidy.technology_name not in electricity_subsidies[subsidy.iso3]:
+                    electricity_subsidies[subsidy.iso3][subsidy.technology_name] = []
+                electricity_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+        self.electricity_subsidies = electricity_subsidies
 
     def initiate_dynamic_feedstocks(self, feedstocks: list[PrimaryFeedstock]) -> None:
         """
