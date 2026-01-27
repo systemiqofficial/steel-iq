@@ -2326,7 +2326,6 @@ class FurnaceGroup:
                 # ========== BRANCH B: Greenfield Installation (New Technology) ==========
                 # Fetch average BOM for the new technology from historical data
                 chosen_reductant = most_common_reductant_by_tech.get(tech)
-                print(f"QEye Chosen reductant for technology {tech}: {chosen_reductant}")
                 bom_result = get_bom_from_avg_boms(self.energy_costs, tech, self.capacity, chosen_reductant)
                 bill_of_materials_opt, util_rate, reductant = bom_result
 
