@@ -2047,6 +2047,7 @@ class FurnaceGroup:
         tech_capex_subsidies: dict[str, list[Subsidy]] = {},
         tech_opex_subsidies: dict[str, list[Subsidy]] = {},
         tech_debt_subsidies: dict[str, list[Subsidy]] = {},
+        most_common_reductant_by_tech: dict[str, str] = {},
     ) -> tuple[dict[str, float], dict[str, float], float | None, dict[str, dict[str, dict[str, dict[str, float]]]]]:
         """
         Identify the optimal technology transition for this furnace group by comparing NPVs of allowed technology
@@ -2324,7 +2325,8 @@ class FurnaceGroup:
             else:  # Switch to a new technology (greenfield)
                 # ========== BRANCH B: Greenfield Installation (New Technology) ==========
                 # Fetch average BOM for the new technology from historical data
-                bom_result = get_bom_from_avg_boms(self.energy_costs, tech, self.capacity)
+                chosen_reductant = most_common_reductant_by_tech.get(tech)
+                bom_result = get_bom_from_avg_boms(self.energy_costs, tech, self.capacity, chosen_reductant)
                 bill_of_materials_opt, util_rate, reductant = bom_result
 
                 # Skip if BOM retrieval failed
@@ -3087,6 +3089,43 @@ class Plant:
                 return True
         return False
 
+    @property
+    def most_common_reductant(self) -> dict[str, str]:
+        """
+        Get the most common reductant for each technology across all furnace groups in the plant.
+
+        Returns:
+            dict[str, str]: Dictionary mapping technology name to most common reductant.
+                           If no reductant is set for a technology, it will be omitted from the result.
+
+        Example:
+            {
+                "BOF": "coke",
+                "EAF": "electricity",
+                "DRI": "natural_gas"
+            }
+        """
+        # Group furnace groups by technology
+        tech_reductants: dict[str, list[str]] = defaultdict(list)
+
+        for fg in self.furnace_groups:
+            tech_name = fg.technology.name
+            reductant = fg.chosen_reductant
+
+            # Only include non-empty reductants
+            if reductant and reductant.strip():
+                tech_reductants[tech_name].append(reductant)
+
+        # Find most common reductant for each technology
+        result: dict[str, str] = {}
+        for tech_name, reductants in tech_reductants.items():
+            if reductants:
+                # Counter.most_common(1) returns [(value, count)]
+                most_common = Counter(reductants).most_common(1)[0][0]
+                result[tech_name] = most_common
+
+        return result
+
     def calculate_average_steel_cost_and_capacity(self, active_statuses: list[str]):
         """
         Calculates average steel cost and capacity for the plant for active steel furnaces
@@ -3450,6 +3489,7 @@ class Plant:
         tech_capex_subsidies: dict[str, list[Subsidy]] = {},
         tech_opex_subsidies: dict[str, list[Subsidy]] = {},
         tech_debt_subsidies: dict[str, list[Subsidy]] = {},
+        most_common_reductant_by_tech: dict[str, str] = {},
     ) -> commands.Command | None:
         """
         Evaluate the economic strategy for a furnace group using NPV-based decision making.
@@ -3600,6 +3640,7 @@ class Plant:
             construction_time=construction_time,
             tech_debt_subsidies=tech_debt_subsidies,
             risk_free_rate=risk_free_rate,
+            most_common_reductant_by_tech=most_common_reductant_by_tech,
         )
 
         # Log NPV calculation results
@@ -4441,6 +4482,47 @@ class PlantGroup:
         self.total_balance = float(sum(balances))
         return self.total_balance
 
+    @property
+    def most_common_reductant(self) -> dict[str, str]:
+        """
+        Get the most common reductant for each technology across all plants in the plant group.
+
+        Aggregates reductant data from all furnace groups across all plants in this plant group
+        to determine the most frequently used reductant for each technology type.
+
+        Returns:
+            dict[str, str]: Dictionary mapping technology name to most common reductant.
+                           If no reductant is set for a technology, it will be omitted from the result.
+
+        Example:
+            {
+                "BOF": "coke",
+                "EAF": "electricity",
+                "DRI": "natural_gas"
+            }
+        """
+        # Group reductants by technology across all plants
+        tech_reductants: dict[str, list[str]] = defaultdict(list)
+
+        for plant in self.plants:
+            for fg in plant.furnace_groups:
+                tech_name = fg.technology.name
+                reductant = fg.chosen_reductant
+
+                # Only include non-empty reductants
+                if reductant and reductant.strip():
+                    tech_reductants[tech_name].append(reductant)
+
+        # Find most common reductant for each technology
+        result: dict[str, str] = {}
+        for tech_name, reductants in tech_reductants.items():
+            if reductants:
+                # Counter.most_common(1) returns [(value, count)]
+                most_common = Counter(reductants).most_common(1)[0][0]
+                result[tech_name] = most_common
+
+        return result
+
     def generate_new_plant(
         self,
         site_id: tuple[float, float, str],  # (lat, lon, iso3)
@@ -4571,6 +4653,7 @@ class PlantGroup:
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
+        environment_most_common_reductant: dict[str, str] = {},
     ) -> dict[str, tuple[float | None, str, float]]:
         """
         Calculate NPV and optimal technology choice for all plants in the group considering allowed technologies and
@@ -4674,7 +4757,12 @@ class PlantGroup:
                 # Get bill of materials for this technology
                 if get_bom_from_avg_boms is None:
                     continue
-                bom_result = get_bom_from_avg_boms(plant.energy_costs, tech, capacity)
+                bom_result = get_bom_from_avg_boms(
+                    plant.energy_costs,
+                    tech,
+                    capacity,
+                    self.most_common_reductant.get(tech, environment_most_common_reductant.get(tech)),
+                )
                 bill_of_materials_opt, util_rate, reductant = bom_result
                 if bill_of_materials_opt is None:
                     continue
@@ -4815,6 +4903,7 @@ class PlantGroup:
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
+        environment_most_common_reductant: dict[str, str] = {},
     ) -> commands.Command | None:
         """
         Evaluate and execute the most profitable furnace expansion across all plants in the plant group.
@@ -4912,6 +5001,7 @@ class PlantGroup:
             technology_emission_factors=technology_emission_factors,
             plant_lifetime=plant_lifetime,
             construction_time=construction_time,
+            environment_most_common_reductant=environment_most_common_reductant,
         )
 
         # ========== STAGE 3: CHECK IF ANY EXPANSION OPTIONS EXIST ==========
@@ -5182,6 +5272,7 @@ class PlantGroup:
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
+        environment_most_common_reductant: dict[str, str] = {},
     ) -> commands.Command:
         """
         Identifies new business opportunities for plants at given locations with specific technologies.
@@ -5315,6 +5406,8 @@ class PlantGroup:
             debt_subsidies=debt_subsidies,
             opex_subsidies=opex_subsidies,
             carbon_costs=carbon_costs,
+            most_common_reductant=self.most_common_reductant,
+            environment_most_common_reductant=environment_most_common_reductant,
         )
         cost_counts, cost_total = _count_entries(cost_data)
         candidate_stats["costed_pairs_total"] = cost_total
@@ -6339,6 +6432,9 @@ class Environment:
         # Initialize demand, BOMs, and utilization - will be populated during simulation setup
         self.demand_dict: dict[str, dict[Year, Volumes]] = {}
         self.avg_boms: dict[str, dict[str, dict[str, float]]] = {}
+
+        # Initialize most common reductant tracking - updated each year
+        self.most_common_reductant_by_tech: dict[str, str] = {}
         self.avg_utilization: dict[str, dict[str, float]] = {}
 
         # Initialize trade tariffs as empty list
@@ -7115,7 +7211,16 @@ class Environment:
 
     def set_primary_feedstocks_in_furnace_groups(self, world_plants: list[Plant]):
         """
-        Set the effective primary feedstocks available to a furnacegroup
+        Set the effective primary feedstocks available to a furnacegroup and update
+        environment-level most common reductant tracking.
+
+        This method:
+        1. Updates each furnace group's dynamic business case and chosen reductant
+        2. Calculates and stores the most common reductant per technology across all plants
+
+        Side Effects:
+            - Updates fg.chosen_reductant for each furnace group via generate_energy_vopex_by_reductant()
+            - Updates self.most_common_reductant_by_tech with aggregated reductant data
         """
 
         for p in world_plants:
@@ -7127,8 +7232,14 @@ class Environment:
                 fg.technology.set_product(self.technology_to_product)
                 fg.generate_energy_vopex_by_reductant()
 
+        # Update environment-level most common reductant tracking after all furnace groups are updated
+        self.most_common_reductant_by_tech = self.most_common_reductant(world_plants)
+
     def _generate_cost_dict(
-        self, world_furnace_groups: list[FurnaceGroup], lag: int = 0
+        self,
+        world_furnace_groups: list[FurnaceGroup],
+        lag: int = 0,
+        environment_most_common_reductant: dict[str, str] = {},
     ) -> dict[str, dict[str, dict[str, float]]]:
         """
         Generate a dict representation of the costs for all furnace_groups
@@ -7163,7 +7274,12 @@ class Environment:
                 if fg.lifetime.start <= self.year + lag:
                     if not fg.bill_of_materials:
                         bom, util_rate, reductant = self.get_bom_from_avg_boms(
-                            fg.energy_costs, tech=fg.technology.name, capacity=1000
+                            fg.energy_costs,
+                            tech=fg.technology.name,
+                            capacity=1000,
+                            most_common_reductant=self.most_common_reductant_by_tech.get(
+                                fg.technology.name, environment_most_common_reductant.get(fg.technology.name)
+                            ),
                         )
                         if bom is not None:
                             unit_cost = calculate_variable_opex(bom["materials"], bom["energy"])
@@ -7203,7 +7319,9 @@ class Environment:
         TODO: Add separation of steel and iron price.
         """
         cost_curve = {}
-        self._generate_cost_dict(world_furnace_groups, lag=lag)
+        self._generate_cost_dict(
+            world_furnace_groups, lag=lag, environment_most_common_reductant=self.most_common_reductant_by_tech
+        )
         cost_dict = self.cost_dict if lag == 0 else self.future_cost_dict
         for product, product_cost_dict in cost_dict.items():
             sorted_product_costs = dict(
@@ -7477,6 +7595,49 @@ class Environment:
 
         if not self.iron_init_capacity:
             self.iron_init_capacity = self.regional_iron_capacity.copy()
+
+    def most_common_reductant(self, world_plants: list[Plant]) -> dict[str, str]:
+        """
+        Get the most common reductant for each technology across all plants in the simulation.
+
+        Aggregates reductant data from all furnace groups across all plants in the simulation
+        to determine the most frequently used reductant for each technology type.
+
+        Args:
+            world_plants (list[Plant]): All plants in the simulation to aggregate reductant data from.
+
+        Returns:
+            dict[str, str]: Dictionary mapping technology name to most common reductant.
+                           If no reductant is set for a technology, it will be omitted from the result.
+
+        Example:
+            {
+                "BOF": "coke",
+                "EAF": "electricity",
+                "DRI": "natural_gas"
+            }
+        """
+        # Group reductants by technology across all plants
+        tech_reductants: dict[str, list[str]] = defaultdict(list)
+
+        for plant in world_plants:
+            for fg in plant.furnace_groups:
+                tech_name = fg.technology.name
+                reductant = fg.chosen_reductant
+
+                # Only include non-empty reductants
+                if reductant and reductant.strip():
+                    tech_reductants[tech_name].append(reductant)
+
+        # Find most common reductant for each technology
+        result: dict[str, str] = {}
+        for tech_name, reductants in tech_reductants.items():
+            if reductants:
+                # Counter.most_common(1) returns [(value, count)]
+                most_common = Counter(reductants).most_common(1)[0][0]
+                result[tech_name] = most_common
+
+        return result
 
     def update_steel_capex_reduction_ratio(self) -> None:
         """
@@ -8012,8 +8173,67 @@ class Environment:
                 else 0
             )
 
+    def generate_input_effectiveness_mapping_from_feedstocks(
+        self, feedstocks_for_tech: list[PrimaryFeedstock], most_common_reductant: str | None = None
+    ) -> dict[str, float]:
+        input_effectiveness: dict[str, float] = {}
+        for feed in feedstocks_for_tech:
+            bom_logger.debug(
+                f"[BOM DEBUG] Checking feed: {feed.metallic_charge}, reductant: '{feed.reductant}' (as reference, the mcr is '{most_common_reductant}'), qty: {feed.required_quantity_per_ton_of_product}"
+            )
+            if (
+                isinstance(feed.metallic_charge, str)
+                and (
+                    most_common_reductant is None  # Accept any reductant when None
+                    or feed.reductant == most_common_reductant
+                    or feed.reductant.lower() == most_common_reductant
+                    or (not most_common_reductant and not feed.reductant)  # Both are blank/empty
+                )
+                and feed.required_quantity_per_ton_of_product is not None
+            ):
+                input_effectiveness[feed.metallic_charge.lower()] = feed.required_quantity_per_ton_of_product
+                bom_logger.debug(
+                    f"[BOM DEBUG] Added to input_effectiveness: {feed.metallic_charge.lower()} = {feed.required_quantity_per_ton_of_product}"
+                )
+            # Include secondary feedstocks and other non-metallic inputs so avg_boms stay aligned with dynamic feedstocks
+            secondary_requirements = feed.secondary_feedstock or {}
+            if not secondary_requirements:
+                continue
+            reductant_matches = (
+                most_common_reductant is None  # Accept any reductant when None
+                or feed.reductant == most_common_reductant
+                or str(feed.reductant).lower() == most_common_reductant
+                or (not most_common_reductant and not feed.reductant)
+            )
+            if not reductant_matches:
+                continue
+            for sec_name, volume in secondary_requirements.items():
+                normalized_secondary = _normalize_energy_key(sec_name)
+                converted_volume = (
+                    volume * KG_TO_T
+                    if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION
+                    else volume
+                )
+                if (
+                    normalized_secondary in input_effectiveness
+                ):  # Should not happen, as each secondary feedstock should only appear once per feedstock and reductant combo
+                    bom_logger.warning(
+                        "[BOM DEBUG] Secondary feedstock %s overwriting %.4f with %.4f",
+                        normalized_secondary,
+                        input_effectiveness[normalized_secondary],
+                        converted_volume,
+                    )
+                input_effectiveness[normalized_secondary] = converted_volume
+        # If no inputs matched the most common reductant
+        if not input_effectiveness:
+            bom_logger.error(
+                f"[BOM DEBUG] No inputs matched most common reductant: {most_common_reductant}, feedstocks: {feedstocks_for_tech}"
+            )
+
+        return input_effectiveness
+
     def get_bom_from_avg_boms(
-        self, energy_costs: dict[str, float], tech: str, capacity: float
+        self, energy_costs: dict[str, float], tech: str, capacity: float, most_common_reductant: str | None = None
     ) -> tuple[dict[str, dict[str, dict[str, float]]] | None, float, str | None]:
         """Construct a complete bill of materials for a furnace from technology averages.
 
@@ -8072,145 +8292,15 @@ class Environment:
             - Material demand shares from avg_boms should sum to 1.0 per technology.
             - Process efficiencies are tons_input/ton_output (>1 for losses, <1 for enrichment).
         """
-        bom_logger.debug("[BOM DEBUG] === Starting get_bom_from_avg_boms ===")
-        bom_logger.debug(f"[BOM DEBUG] Tech: {tech}, Capacity: {capacity}")
-        bom_logger.debug(f"[BOM DEBUG] Energy costs: {energy_costs}")
-        bom_logger.debug(
-            f"[BOM DEBUG] Available technologies in dynamic_feedstocks: {list(self.dynamic_feedstocks.keys())}"
-        )
-        bom_logger.debug(
-            f"[BOM DEBUG] Available technologies in avg_boms: {list(self.avg_boms.keys()) if hasattr(self, 'avg_boms') and self.avg_boms else 'avg_boms not initialized'}"
-        )
 
-        bom_dict: dict[str, dict[str, dict[str, float]]] = {"materials": {}, "energy": {}}
-
-        # Step 1: Calculate total energy costs per (metallic_input, reductant) pair
-        bom_logger.debug("[BOM DEBUG] Step 1: Calculating energy costs")
-        energy_vopex_by_input: dict[str, dict[str, float]] = {}
         feedstocks_for_tech = self.dynamic_feedstocks.get(tech, self.dynamic_feedstocks.get(tech.lower(), []))
-        bom_logger.debug(f"[BOM DEBUG] Found {len(feedstocks_for_tech)} feedstocks for {tech}")
-
-        for feed in feedstocks_for_tech:
-            metallic_input = str(feed.metallic_charge).lower()
-            reductant = feed.reductant
-            raw_energy_reqs = feed.energy_requirements or {}
-            bom_logger.debug(
-                f"[BOM DEBUG] Processing feedstock: {feed.metallic_charge}, reductant: {reductant}, energy_reqs: {raw_energy_reqs}"
-            )
-
-            energy_reqs: dict[str, float] = {}
-            for energy_name, volume in raw_energy_reqs.items():
-                normalized_energy = _normalize_energy_key(energy_name)
-                if normalized_energy not in ENERGY_FEEDSTOCK_KEYS:
-                    continue
-                energy_reqs[normalized_energy] = energy_reqs.get(normalized_energy, 0.0) + volume
-
-            secondary_reqs: dict[str, float] = {}
-            for sec_name, volume in (feed.secondary_feedstock or {}).items():
-                normalized_secondary = _normalize_energy_key(sec_name)
-                if normalized_secondary not in ENERGY_FEEDSTOCK_KEYS:
-                    continue
-                converted_volume = (
-                    volume * KG_TO_T
-                    if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION
-                    else volume
-                )
-                secondary_reqs[normalized_secondary] = secondary_reqs.get(normalized_secondary, 0.0) + converted_volume
-
-            if not energy_reqs and not secondary_reqs:
-                bom_logger.debug(f"[BOM DEBUG] No energy requirements for {feed.metallic_charge}, skipping")
-                continue
-
-            reductant = str(reductant).lower()
-            energy_cost = 0.0
-            for energy_key, volume in energy_reqs.items():
-                price = energy_costs.get(_normalize_energy_key(energy_key), energy_costs.get(energy_key, 0.0))
-                energy_cost += volume * price
-            for energy_key, volume in secondary_reqs.items():
-                price = energy_costs.get(_normalize_energy_key(energy_key), energy_costs.get(energy_key, 0.0))
-                energy_cost += volume * price
-            bom_logger.debug(f"[BOM DEBUG] Calculated energy cost: {energy_cost} for {metallic_input}/{reductant}")
-
-            energy_vopex_by_input.setdefault(metallic_input, {}).setdefault(reductant, 0)
-            energy_vopex_by_input[metallic_input][reductant] += energy_cost
-
-        bom_logger.debug(f"[BOM DEBUG] Final energy_vopex_by_input: {energy_vopex_by_input}")
-
-        # Step 2: Identify the most common lowest-cost reductant
-        bom_logger.debug("[BOM DEBUG] Step 2: Finding cheapest reductant")
-        cheapest_reductants = [
-            min(reductant_costs, key=lambda k: reductant_costs[k]) for reductant_costs in energy_vopex_by_input.values()
-        ]
-        bom_logger.debug(f"[BOM DEBUG] Cheapest reductants: {cheapest_reductants}")
-
-        if not cheapest_reductants:
-            bom_logger.debug(f"[BOM DEBUG] ERROR: No energy cost data found for technology {tech}.")
-            bom_logger.debug(f"[BOM DEBUG] Energy VOPEX by input was: {energy_vopex_by_input}")
-            return None, 0.6, None
-
-        most_common_reductant = Counter(cheapest_reductants).most_common(1)[0][0]
-        bom_logger.debug(f"[BOM DEBUG] Most common reductant: {most_common_reductant}")
+        bom_dict: dict[str, dict[str, dict[str, float]]] = {"materials": {}, "energy": {}}
 
         # Step 3: Build input effectiveness mapping for selected reductant
         bom_logger.debug("[BOM DEBUG] Step 3: Building input effectiveness")
-        input_effectiveness: dict[str, float] = {}
-        for feed in feedstocks_for_tech:
-            bom_logger.debug(
-                f"[BOM DEBUG] Checking feed: {feed.metallic_charge}, reductant: '{feed.reductant}' (as reference, the mcr is '{most_common_reductant}'), qty: {feed.required_quantity_per_ton_of_product}"
-            )
-            if (
-                isinstance(feed.metallic_charge, str)
-                and (
-                    feed.reductant == most_common_reductant
-                    or feed.reductant.lower() == most_common_reductant
-                    or (not most_common_reductant and not feed.reductant)  # Both are blank/empty
-                )
-                and feed.required_quantity_per_ton_of_product is not None
-            ):
-                input_effectiveness[feed.metallic_charge.lower()] = feed.required_quantity_per_ton_of_product
-                bom_logger.debug(
-                    f"[BOM DEBUG] Added to input_effectiveness: {feed.metallic_charge.lower()} = {feed.required_quantity_per_ton_of_product}"
-                )
-
-        # Fallback if no inputs matched the most common reductant
-        if not input_effectiveness:
-            bom_logger.debug("[BOM DEBUG] No inputs matched most common reductant, using fallback")
-            for feed in feedstocks_for_tech:
-                if isinstance(feed.metallic_charge, str) and feed.required_quantity_per_ton_of_product is not None:
-                    input_effectiveness[feed.metallic_charge.lower()] = feed.required_quantity_per_ton_of_product
-                    bom_logger.debug(
-                        f"[BOM DEBUG] Fallback: Added {feed.metallic_charge.lower()} = {feed.required_quantity_per_ton_of_product}"
-                    )
-
-        # Include secondary feedstocks and other non-metallic inputs so avg_boms stay aligned with dynamic feedstocks
-        for feed in feedstocks_for_tech:
-            secondary_requirements = feed.secondary_feedstock or {}
-            if not secondary_requirements:
-                continue
-            reductant_matches = (
-                feed.reductant == most_common_reductant
-                or str(feed.reductant).lower() == most_common_reductant
-                or (not most_common_reductant and not feed.reductant)
-            )
-            if not reductant_matches:
-                continue
-            for sec_name, volume in secondary_requirements.items():
-                normalized_secondary = _normalize_energy_key(sec_name)
-                converted_volume = (
-                    volume * KG_TO_T
-                    if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION
-                    else volume
-                )
-                if normalized_secondary in input_effectiveness:
-                    bom_logger.debug(
-                        "[BOM DEBUG] Secondary feedstock %s overwriting %.4f with %.4f",
-                        normalized_secondary,
-                        input_effectiveness[normalized_secondary],
-                        converted_volume,
-                    )
-                input_effectiveness[normalized_secondary] = converted_volume
-
-        bom_logger.debug(f"[BOM DEBUG] Final input_effectiveness: {input_effectiveness}")
+        input_effectiveness = self.generate_input_effectiveness_mapping_from_feedstocks(
+            feedstocks_for_tech, most_common_reductant
+        )
 
         # Step 4: Fallback if no average BOM available
         bom_logger.debug("[BOM DEBUG] Step 4: Checking avg_boms")

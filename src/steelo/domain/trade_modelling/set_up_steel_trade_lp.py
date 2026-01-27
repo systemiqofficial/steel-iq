@@ -1078,7 +1078,6 @@ def identify_bottlenecks(
 
     if not potential_bottleneck_found:
         logger.warning("[TM BOTTLENECK ANALYSIS] No potential bottlenecks found in steel trade allocations.")
-
     # Summarise supplier headroom for key metallic charges to aid diagnostics
     supplier_list = list(repository.suppliers.list())
     capacity_by_commodity: dict[str, float] = {}
@@ -1101,7 +1100,7 @@ def identify_bottlenecks(
                     allocated_from_suppliers += float(volume)
         total_capacity_float = float(total_capacity)
         headroom = total_capacity_float - allocated_from_suppliers
-        logger.info(
+        logger.warning(
             "operation=tm_feedstock_headroom year=%s commodity=%s supplier_capacity_kt=%.1f allocated_from_suppliers_kt=%.1f headroom_kt=%.1f",
             int(year),
             tracked,
