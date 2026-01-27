@@ -310,7 +310,7 @@ def recreate_subsidy_data(
     json_path: Path,
     excel_path: Path,
     subsidies_sheet_name: str = "Subsidies",
-    trade_bloc_sheet_name: str = "Trade bloc definitions",
+    country_mapping_sheet_name: str = "Country mapping",
 ) -> SubsidyJsonRepository:
     """
     Recreate the JSON sample subsidy data from the current Excel file.
@@ -318,7 +318,7 @@ def recreate_subsidy_data(
     console.print(f"[blue]Reading subsidy data from Excel[/blue]: {excel_path}")
 
     subsidy_data = read_subsidies(
-        excel_path, subsidies_sheet=subsidies_sheet_name, trade_bloc_sheet=trade_bloc_sheet_name
+        excel_path, subsidies_sheet=subsidies_sheet_name, country_mapping_sheet=country_mapping_sheet_name
     )
 
     repo = SubsidyJsonRepository(json_path)

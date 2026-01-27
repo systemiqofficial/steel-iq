@@ -1832,7 +1832,7 @@ def _parse_subsidy_type(subsidy_type: str | None, cost_item: str, row_index: int
 def read_subsidies(
     excel_path: Path,
     subsidies_sheet: str = "Subsidies",
-    trade_bloc_sheet: str = "Trade bloc definitions",
+    country_mapping_sheet: str = "Country mapping",
     techno_economic_sheet: str = "Techno-economic details",
 ) -> list[Subsidy]:
     """
@@ -1847,7 +1847,7 @@ def read_subsidies(
     Args:
         excel_path: Path to the Excel file
         subsidies_sheet: Name of the sheet containing subsidies data
-        trade_bloc_sheet: Name of the sheet containing trade bloc definitions
+        country_mapping_sheet: Name of the sheet containing country mappings with trade bloc columns
         techno_economic_sheet: Name of the sheet containing technology names
 
     Returns:
@@ -1856,8 +1856,13 @@ def read_subsidies(
     logger = logging.getLogger(__name__)
 
     subsidies_df = pd.read_excel(excel_path, sheet_name=subsidies_sheet)
-    trade_blocs_df = pd.read_excel(excel_path, sheet_name=trade_bloc_sheet)
-    trade_blocs_df = trade_blocs_df.set_index("ISO 3-letter code")
+    country_df = pd.read_excel(excel_path, sheet_name=country_mapping_sheet)
+    # Trade bloc columns are columns containing only True/False values
+    trade_bloc_columns = [
+        col
+        for col in country_df.columns
+        if country_df[col].dtype == bool or set(country_df[col].dropna().unique()).issubset({True, False})
+    ]
 
     # Get all technology names from techno-economic details sheet
     techno_df = pd.read_excel(excel_path, sheet_name=techno_economic_sheet)
@@ -1943,8 +1948,8 @@ def read_subsidies(
 
         # Expand trade bloc to ISO3 list
         region = row["Location"]
-        if region in trade_blocs_df.columns:
-            iso3_list = trade_blocs_df[region].dropna().index.tolist()
+        if region in trade_bloc_columns:
+            iso3_list = country_df[country_df[region]]["ISO 3-letter code"].tolist()
         else:
             iso3_list = [region]
 
