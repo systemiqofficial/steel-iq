@@ -291,7 +291,9 @@ class AllocationModel:
 
         # For percentage tariffs:
         bus.env.calculate_average_commodity_price_per_region(
-            world_plants=bus.uow.repository.plants.list(), world_suppliers=bus.uow.repository.suppliers.list()
+            world_plants=bus.uow.repository.plants.list(),
+            world_suppliers=bus.uow.repository.suppliers.list(),
+            year=bus.env.year,
         )
         assert bus.env.legal_process_connectors is not None, (
             "Legal process connectors must be set in the environment. Please ensure they are read in from user input."

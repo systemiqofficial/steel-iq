@@ -269,15 +269,22 @@ def recreate_mines_and_scrap_as_suppliers_data(
         location_csv=location_path,
         gravity_distances_pkl_path=gravity_path,
     )
+    console.print(f"[blue]  Read {len(scrap_suppliers)} scrap suppliers[/blue]")
+
     mine_suppliers = read_mines_as_suppliers(
         mine_data_excel_path=str(master_excel_path),
         mine_data_sheet_name=mines_sheet_name,
         location_csv=location_path,
     )
+    console.print(f"[blue]  Read {len(mine_suppliers)} iron ore mine suppliers[/blue]")
+
     suppliers = scrap_suppliers + mine_suppliers
     write_repository = SupplierJsonRepository(json_path)
     write_repository.add_list(suppliers)
     console.print(f"[green]Sample mine/scrap suppliers data written to[/green]: {json_path}")
+    console.print(
+        f"[green]  Total suppliers: {len(suppliers)} ({len(scrap_suppliers)} scrap + {len(mine_suppliers)} mines)[/green]"
+    )
     return write_repository
 
 

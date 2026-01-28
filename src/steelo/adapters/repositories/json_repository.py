@@ -992,9 +992,9 @@ class SupplierInDb(BaseModel):
     location: LocationInDb
     commodity: str
     capacity_by_year: dict[Year, Volumes]
-    production_cost: float
-    mine_cost: float | None = None
-    mine_price: float | None = None
+    production_cost_by_year: dict[Year, float]
+    mine_cost_by_year: dict[Year, float] | None = None
+    mine_price_by_year: dict[Year, float] | None = None
 
     @property
     def to_domain(self) -> Supplier:
@@ -1004,9 +1004,9 @@ class SupplierInDb(BaseModel):
             location=location,
             commodity=self.commodity,
             capacity_by_year=self.capacity_by_year,
-            production_cost=self.production_cost,
-            mine_cost=self.mine_cost,
-            mine_price=self.mine_price,
+            production_cost_by_year=self.production_cost_by_year,
+            mine_cost_by_year=self.mine_cost_by_year,
+            mine_price_by_year=self.mine_price_by_year,
         )
 
     @classmethod
@@ -1017,9 +1017,9 @@ class SupplierInDb(BaseModel):
             location=location_in_db,
             commodity=supplier.commodity,
             capacity_by_year=supplier.capacity_by_year,
-            production_cost=supplier.production_cost,
-            mine_cost=supplier.mine_cost,
-            mine_price=supplier.mine_price,
+            production_cost_by_year=supplier.production_cost_by_year,
+            mine_cost_by_year=supplier.mine_cost_by_year,
+            mine_price_by_year=supplier.mine_price_by_year,
         )
 
     def __lt__(self, other: Self) -> bool:
@@ -1102,7 +1102,7 @@ class SupplierJsonRepository:
                     existing.location.lat != supplier_in_db.location.lat
                     or existing.location.lon != supplier_in_db.location.lon
                     or existing.commodity != supplier_in_db.commodity
-                    or existing.production_cost != supplier_in_db.production_cost
+                    or existing.production_cost_by_year != supplier_in_db.production_cost_by_year
                 ):
                     raise ValueError(
                         f"Duplicate supplier_id {supplier_in_db.supplier_id} with different data. "
