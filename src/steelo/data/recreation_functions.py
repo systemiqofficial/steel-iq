@@ -285,15 +285,30 @@ def recreate_tarrifs_data(
     json_path: Path,
     tariff_excel_path: str,
     tariff_sheet_name: str = "Tariffs",
-    trade_bloc_sheet_name: str = "Trade bloc definitions",
+    country_mapping_sheet_name: str = "Country mapping",
 ) -> TariffJsonRepository:
     """
     Recreate the JSON sample tariffs data from the current Excel file.
+
+    Args:
+        json_path: Path to output JSON file.
+        tariff_excel_path: Path to Excel file containing tariff data.
+        tariff_sheet_name: Name of the tariff sheet in the Excel file.
+        country_mapping_sheet_name: Name of the country mapping sheet in the Excel file.
+
+    Returns:
+        TariffJsonRepository containing the loaded tariffs.
     """
+    # Load country mappings from the Excel file
+    country_mappings = read_country_mappings(
+        excel_path=Path(tariff_excel_path),
+        sheet_name=country_mapping_sheet_name,
+    )
+
     tariffs = read_tariffs(
         tariff_excel_path=tariff_excel_path,
         tariff_sheet_name=tariff_sheet_name,
-        region_sheet_name=trade_bloc_sheet_name,
+        country_mappings=country_mappings,
     )
     # Start by deleting the existing file if it exists
     if json_path.exists():
