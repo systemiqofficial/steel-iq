@@ -2028,7 +2028,7 @@ class FurnaceGroup:
         cost_of_debt: float,
         cost_of_equity: float,
         get_bom_from_avg_boms: Callable[
-            [dict[str, float], str, float], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str | None]
+            [dict[str, float], str, float, str | None], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]
         ],
         capex_dict: dict[str, float],
         capex_renovation_share: dict[str, float],
@@ -3452,7 +3452,7 @@ class Plant:
         cost_of_debt: float,
         cost_of_equity: float,
         get_bom_from_avg_boms: Callable[
-            [dict[str, float], str, float], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str | None]
+            [dict[str, float], str, float, str | None], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]
         ],
         probabilistic_agents: bool,
         dynamic_business_cases: dict[str, list[PrimaryFeedstock]],
@@ -4603,7 +4603,10 @@ class PlantGroup:
         cost_of_debt_dict: dict[str, float] | None,
         cost_of_equity_dict: dict[str, float] | None,
         get_bom_from_avg_boms: (
-            Callable[[dict[str, float], str, float], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]]
+            Callable[
+                [dict[str, float], str, float, str | None],
+                tuple[dict[str, dict[str, dict[str, float]]] | None, float, str],
+            ]
             | None
         ),
         dynamic_feedstocks: dict[str, list[PrimaryFeedstock]],
@@ -5228,7 +5231,7 @@ class PlantGroup:
         equity_share: float,
         dynamic_feedstocks: dict[str, list[PrimaryFeedstock]],
         get_bom_from_avg_boms: Callable[
-            [dict[str, float], str, float], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str | None]
+            [dict[str, float], str, float, str | None], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]
         ],
         global_risk_free_rate: float,
         tech_to_product: dict[str, str],
@@ -8187,7 +8190,7 @@ class Environment:
 
     def get_bom_from_avg_boms(
         self, energy_costs: dict[str, float], tech: str, capacity: float, most_common_reductant: str | None = None
-    ) -> tuple[dict[str, dict[str, dict[str, float]]] | None, float, str | None]:
+    ) -> tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]:
         """Construct a complete bill of materials for a furnace from technology averages.
 
         Generates a detailed BOM by combining: (1) average material mix from avg_boms,
@@ -8386,6 +8389,11 @@ class Environment:
         bom_logger.debug(f"[BOM DEBUG] Final utilization: {utilization}")
         bom_logger.debug(f"[BOM DEBUG] Final BOM: {bom_dict}")
         bom_logger.debug("[BOM DEBUG] === End get_bom_from_avg_boms ===")
+
+        # Ensure reductant is never None for return type consistency
+        if most_common_reductant is None:
+            most_common_reductant = ""
+            bom_logger.debug("[BOM DEBUG] Reductant was still None at return, using empty string")
 
         return bom_dict, utilization, most_common_reductant
 
