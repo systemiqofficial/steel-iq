@@ -72,7 +72,7 @@ class LoggingConfig:
         # Domain trade modelling
         "steelo.domain.trade_modelling": logging_level,
         "steelo.domain.trade_modelling.TM_PAM_connector.update_bill_of_materials": logging_level,
-        "steelo.domain.trade_modelling.process_network_validator": logging.DEBUG,
+        "steelo.domain.trade_modelling.process_network_validator": logging_level,
         # GEO and new plant opening
         "steelo.domain.new_plant_opening": logging.DEBUG if ENABLE_GEO_DEBUG else logging.WARNING,
         "steelo.adapters.geospatial.geospatial_layers": logging.DEBUG if ENABLE_GEO_DEBUG else logging.WARNING,
@@ -105,7 +105,7 @@ class LoggingConfig:
             "steelo.domain.trade_modelling.TM_PAM_connector.update_bill_of_materials": logging.WARNING
             if ENABLE_GEO_DEBUG
             else logging.INFO,
-            "steelo.domain.trade_modelling.process_network_validator": logging.DEBUG,
+            "steelo.domain.trade_modelling.process_network_validator": logging_level,
         },
         "DebugLogging": {
             # Suppress verbose debug output when accessing properties during debug logging

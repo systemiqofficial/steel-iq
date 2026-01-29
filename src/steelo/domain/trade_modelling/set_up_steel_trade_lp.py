@@ -1100,7 +1100,7 @@ def identify_bottlenecks(
                     allocated_from_suppliers += float(volume)
         total_capacity_float = float(total_capacity)
         headroom = total_capacity_float - allocated_from_suppliers
-        logger.warning(
+        logger.info(
             "operation=tm_feedstock_headroom year=%s commodity=%s supplier_capacity_kt=%.1f allocated_from_suppliers_kt=%.1f headroom_kt=%.1f",
             int(year),
             tracked,

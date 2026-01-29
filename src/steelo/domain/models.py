@@ -3105,26 +3105,9 @@ class Plant:
                 "DRI": "natural_gas"
             }
         """
-        # Group furnace groups by technology
-        tech_reductants: dict[str, list[str]] = defaultdict(list)
+        from steelo.utilities.utils import get_most_common_reductant_by_technology
 
-        for fg in self.furnace_groups:
-            tech_name = fg.technology.name
-            reductant = fg.chosen_reductant
-
-            # Only include non-empty reductants
-            if reductant and reductant.strip():
-                tech_reductants[tech_name].append(reductant)
-
-        # Find most common reductant for each technology
-        result: dict[str, str] = {}
-        for tech_name, reductants in tech_reductants.items():
-            if reductants:
-                # Counter.most_common(1) returns [(value, count)]
-                most_common = Counter(reductants).most_common(1)[0][0]
-                result[tech_name] = most_common
-
-        return result
+        return get_most_common_reductant_by_technology(self.furnace_groups)
 
     def calculate_average_steel_cost_and_capacity(self, active_statuses: list[str]):
         """
@@ -4501,27 +4484,12 @@ class PlantGroup:
                 "DRI": "natural_gas"
             }
         """
-        # Group reductants by technology across all plants
-        tech_reductants: dict[str, list[str]] = defaultdict(list)
+        from steelo.utilities.utils import get_most_common_reductant_by_technology
 
-        for plant in self.plants:
-            for fg in plant.furnace_groups:
-                tech_name = fg.technology.name
-                reductant = fg.chosen_reductant
+        # Collect all furnace groups from all plants
+        all_furnace_groups = [fg for plant in self.plants for fg in plant.furnace_groups]
 
-                # Only include non-empty reductants
-                if reductant and reductant.strip():
-                    tech_reductants[tech_name].append(reductant)
-
-        # Find most common reductant for each technology
-        result: dict[str, str] = {}
-        for tech_name, reductants in tech_reductants.items():
-            if reductants:
-                # Counter.most_common(1) returns [(value, count)]
-                most_common = Counter(reductants).most_common(1)[0][0]
-                result[tech_name] = most_common
-
-        return result
+        return get_most_common_reductant_by_technology(all_furnace_groups)
 
     def generate_new_plant(
         self,
@@ -7617,27 +7585,12 @@ class Environment:
                 "DRI": "natural_gas"
             }
         """
-        # Group reductants by technology across all plants
-        tech_reductants: dict[str, list[str]] = defaultdict(list)
+        from steelo.utilities.utils import get_most_common_reductant_by_technology
 
-        for plant in world_plants:
-            for fg in plant.furnace_groups:
-                tech_name = fg.technology.name
-                reductant = fg.chosen_reductant
+        # Collect all furnace groups from all plants
+        all_furnace_groups = [fg for plant in world_plants for fg in plant.furnace_groups]
 
-                # Only include non-empty reductants
-                if reductant and reductant.strip():
-                    tech_reductants[tech_name].append(reductant)
-
-        # Find most common reductant for each technology
-        result: dict[str, str] = {}
-        for tech_name, reductants in tech_reductants.items():
-            if reductants:
-                # Counter.most_common(1) returns [(value, count)]
-                most_common = Counter(reductants).most_common(1)[0][0]
-                result[tech_name] = most_common
-
-        return result
+        return get_most_common_reductant_by_technology(all_furnace_groups)
 
     def update_steel_capex_reduction_ratio(self) -> None:
         """
@@ -8186,7 +8139,7 @@ class Environment:
                 and (
                     most_common_reductant is None  # Accept any reductant when None
                     or feed.reductant == most_common_reductant
-                    or feed.reductant.lower() == most_common_reductant
+                    or (isinstance(feed.reductant, str) and feed.reductant.lower() == most_common_reductant)
                     or (not most_common_reductant and not feed.reductant)  # Both are blank/empty
                 )
                 and feed.required_quantity_per_ton_of_product is not None
@@ -8297,10 +8250,27 @@ class Environment:
         bom_dict: dict[str, dict[str, dict[str, float]]] = {"materials": {}, "energy": {}}
 
         # Step 3: Build input effectiveness mapping for selected reductant
+        # When most_common_reductant is None, all feedstocks are accepted because avg_boms
+        # will determine the actual mix of metallic charges used
         bom_logger.debug("[BOM DEBUG] Step 3: Building input effectiveness")
         input_effectiveness = self.generate_input_effectiveness_mapping_from_feedstocks(
             feedstocks_for_tech, most_common_reductant
         )
+
+        # If no reductant was specified but we got feedstocks, extract a reductant to return
+        # This ensures the function returns a non-None reductant for validation purposes
+        if most_common_reductant is None and input_effectiveness and feedstocks_for_tech:
+            for feed in feedstocks_for_tech:
+                if feed.reductant and str(feed.reductant).strip():
+                    most_common_reductant = str(feed.reductant)
+                    bom_logger.debug(
+                        f"[BOM DEBUG] No reductant specified, extracted first available for return: {most_common_reductant}"
+                    )
+                    break
+            # If still None after checking all feedstocks, use empty string
+            if most_common_reductant is None:
+                most_common_reductant = ""
+                bom_logger.debug("[BOM DEBUG] All feedstocks have empty reductants, using empty string")
 
         # Step 4: Fallback if no average BOM available
         bom_logger.debug("[BOM DEBUG] Step 4: Checking avg_boms")
