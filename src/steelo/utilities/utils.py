@@ -1,5 +1,10 @@
 import pandas as pd
 from IPython.display import display, HTML
+from collections import Counter, defaultdict
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from steelo.domain.models import FurnaceGroup
 
 
 def display_scrollable_dataframe(df) -> None:
@@ -65,3 +70,46 @@ def merge_two_dictionaries(target: dict, source: dict) -> dict:
     for key, value in source.items():
         target[key] = target.get(key, 0) + value
     return target
+
+
+def get_most_common_reductant_by_technology(furnace_groups: list["FurnaceGroup"]) -> dict[str, str]:
+    """
+    Get the most common reductant for each technology from a collection of furnace groups.
+
+    Aggregates reductant data from all furnace groups to determine the most frequently
+    used reductant for each technology type.
+
+    Args:
+        furnace_groups: List of FurnaceGroup objects to aggregate from.
+
+    Returns:
+        dict[str, str]: Dictionary mapping technology name to most common reductant.
+                       If no reductant is set for a technology, it will be omitted from the result.
+
+    Example:
+        {
+            "BOF": "coke",
+            "EAF": "electricity",
+            "DRI": "natural_gas"
+        }
+    """
+    # Group reductants by technology
+    tech_reductants: dict[str, list[str]] = defaultdict(list)
+
+    for fg in furnace_groups:
+        tech_name = fg.technology.name
+        reductant = fg.chosen_reductant
+
+        # Only include non-empty reductants
+        if reductant and reductant.strip():
+            tech_reductants[tech_name].append(reductant)
+
+    # Find most common reductant for each technology
+    result: dict[str, str] = {}
+    for tech_name, reductants in tech_reductants.items():
+        if reductants:
+            # Counter.most_common(1) returns [(value, count)]
+            most_common = Counter(reductants).most_common(1)[0][0]
+            result[tech_name] = most_common
+
+    return result

@@ -105,9 +105,7 @@ class LoggingConfig:
             "steelo.domain.trade_modelling.TM_PAM_connector.update_bill_of_materials": logging.WARNING
             if ENABLE_GEO_DEBUG
             else logging.INFO,
-            "steelo.domain.trade_modelling.process_network_validator": logging.WARNING
-            if ENABLE_GEO_DEBUG
-            else logging.INFO,
+            "steelo.domain.trade_modelling.process_network_validator": logging_level,
         },
         "DebugLogging": {
             # Suppress verbose debug output when accessing properties during debug logging

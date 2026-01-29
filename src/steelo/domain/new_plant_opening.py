@@ -120,7 +120,7 @@ def prepare_cost_data_for_business_opportunity(
     fopex_all_locs_techs: dict[str, dict[str, float]],
     steel_plant_capacity: float,
     get_bom_from_avg_boms: Callable[
-        [dict[str, float], str, float], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str | None]
+        [dict[str, float], str, float, str | None], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]
     ],
     iso3_to_region_map: dict[str, str],
     global_risk_free_rate: float,
@@ -128,6 +128,8 @@ def prepare_cost_data_for_business_opportunity(
     debt_subsidies: dict[str, dict[str, list[Subsidy]]],
     opex_subsidies: dict[str, dict[str, list[Subsidy]]],
     carbon_costs: dict[str, dict[Year, float]],
+    most_common_reductant: dict[str, str],
+    environment_most_common_reductant: dict[str, str],
 ) -> dict[str, dict[tuple[float, float, str], dict[str, dict[str, Any]]]]:
     """
     For each business opportunity (top location-technology pair), prepare all required inputs to calculate the NPV
@@ -241,7 +243,12 @@ def prepare_cost_data_for_business_opportunity(
                 # Add average BOM and utilization rate per technology if available
                 # energy_costs_site is guaranteed to not be None here (checked above with incomplete_site)
                 assert energy_costs_site is not None  # Help mypy understand the control flow
-                bom_result = get_bom_from_avg_boms(energy_costs_site, tech, int(steel_plant_capacity))
+                bom_result = get_bom_from_avg_boms(
+                    energy_costs_site,
+                    tech,
+                    int(steel_plant_capacity),
+                    most_common_reductant.get(tech, environment_most_common_reductant.get(tech)),
+                )
                 bill_of_materials, util_rate, reductant = bom_result
                 if bill_of_materials is None:
                     missing_critical_fields.append("bom")
