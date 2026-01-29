@@ -1040,24 +1040,48 @@ def read_scrap_as_suppliers(
     return refine_scrap_centers_for_major_countries(supply_centers)
 
 
-def find_iso3s_of_region(region_df: pd.DataFrame, region: str, negation=False) -> list[str]:
+def find_iso3s_of_trade_bloc(country_mappings: list, bloc_name: str, negation: bool = False) -> list[str]:
     """
-    Find the ISO3 codes of a given region in the region DataFrame.
+    Find the ISO3 codes of countries in a given trade bloc using CountryMapping objects.
 
     Args:
-        region_df (pd.DataFrame): DataFrame containing region data.
-        region (str): The name of the region to search for.
-        negation (bool): If True, return ISO3 codes not in the specified region.
+        country_mappings: List of CountryMapping objects.
+        bloc_name: The name of the trade bloc (EU, EFTA/EUCU, OECD, NAFTA, Mercosur, ASEAN, RCEP).
+        negation: If True, return ISO3 codes not in the specified trade bloc.
 
     Returns:
-        list[str]: List of ISO3 codes for the specified region.
+        List of ISO3 codes for the specified trade bloc.
+
+    Raises:
+        ValueError: If the bloc_name is not recognized.
     """
-    if region not in region_df.columns:
-        raise ValueError(f"Region '{region}' not found in the DataFrame.")
-    if negation:
-        return list(region_df[region_df[region] != "X"]["ISO 3-letter code"].values)
-    else:
-        return list(region_df[region_df[region] == "X"]["ISO 3-letter code"].values)
+    # Normalize bloc name to match CountryMapping attributes
+    # EFTA/EUCU in the user input maps to EFTA_EUCJ in the model
+    bloc_name_normalized = bloc_name.replace("/", "_").replace("EUCU", "EUCJ")
+
+    # Supported trade blocs (boolean fields in CountryMapping)
+    supported_blocs = ["EU", "EFTA_EUCJ", "OECD", "NAFTA", "Mercosur", "ASEAN", "RCEP"]
+
+    if bloc_name_normalized not in supported_blocs:
+        raise ValueError(
+            f"Trade bloc '{bloc_name}' not recognized. "
+            f"Supported blocs: EU, EFTA/EUCU, OECD, NAFTA, Mercosur, ASEAN, RCEP"
+        )
+
+    iso3_codes = []
+    for country in country_mappings:
+        # Get the boolean value for this trade bloc
+        is_member = getattr(country, bloc_name_normalized, False)
+
+        # Apply negation logic
+        if negation:
+            if not is_member:
+                iso3_codes.append(country.iso3)
+        else:
+            if is_member:
+                iso3_codes.append(country.iso3)
+
+    return iso3_codes
 
 
 def read_carbon_costs(carbon_cost_excel_path: Path, sheet_name="Carbon cost") -> list[CarbonCostSeries]:
@@ -1259,9 +1283,19 @@ def read_regional_emissivities(excel_path: Path, grid_sheet_name: str, gas_sheet
     return grid_emissivity_list
 
 
-def read_tariffs(tariff_excel_path: str, tariff_sheet_name: str, region_sheet_name: str) -> list[TradeTariff]:
+def read_tariffs(tariff_excel_path: str, tariff_sheet_name: str, country_mappings: list) -> list[TradeTariff]:
+    """
+    Read tariff data from an Excel file and return a list of TradeTariff objects.
+
+    Args:
+        tariff_excel_path: Path to the Excel file containing tariff data.
+        tariff_sheet_name: Name of the sheet in the Excel file to read from.
+        country_mappings: List of CountryMapping objects used to resolve trade bloc names.
+
+    Returns:
+        List of TradeTariff objects.
+    """
     tariff_df = pd.read_excel(tariff_excel_path, sheet_name=tariff_sheet_name)
-    region_df = pd.read_excel(tariff_excel_path, sheet_name=region_sheet_name)
     tariffs = []
     # Drop rows with NaN values in the 'Tariff scenario name' column
     tariff_df = tariff_df.dropna(subset=["Tariff scenario name"])
@@ -1287,19 +1321,26 @@ def read_tariffs(tariff_excel_path: str, tariff_sheet_name: str, region_sheet_na
 
         from_iso3_entry = row["From ISO3"]
         to_iso3_entry = row["To ISO3"]
-        # if it starts with a NOT (then it's the negation of a region)
+
+        # Supported trade blocs for easy lookup
+        supported_blocs = ["EU", "EFTA/EUCU", "OECD", "NAFTA", "Mercosur", "ASEAN", "RCEP"]
+
+        # Process "From ISO3" entry
+        # if it starts with a NOT (then it's the negation of a trade bloc)
         if from_iso3_entry.startswith("NOT "):
-            from_iso3_region = from_iso3_entry[4:]
-            from_iso3_list = find_iso3s_of_region(region_df, from_iso3_region, negation=True)
-        elif from_iso3_entry in region_df.columns:
-            from_iso3_list = find_iso3s_of_region(region_df, from_iso3_entry)
+            from_iso3_bloc = from_iso3_entry[4:]
+            from_iso3_list = find_iso3s_of_trade_bloc(country_mappings, from_iso3_bloc, negation=True)
+        elif from_iso3_entry in supported_blocs:
+            from_iso3_list = find_iso3s_of_trade_bloc(country_mappings, from_iso3_entry)
         else:
             from_iso3_list = [from_iso3_entry]
+
+        # Process "To ISO3" entry
         if to_iso3_entry.startswith("NOT "):
-            to_iso3_region = to_iso3_entry[4:]
-            to_iso3_list = find_iso3s_of_region(region_df, to_iso3_region, negation=True)
-        elif to_iso3_entry in region_df.columns:
-            to_iso3_list = find_iso3s_of_region(region_df, to_iso3_entry)
+            to_iso3_bloc = to_iso3_entry[4:]
+            to_iso3_list = find_iso3s_of_trade_bloc(country_mappings, to_iso3_bloc, negation=True)
+        elif to_iso3_entry in supported_blocs:
+            to_iso3_list = find_iso3s_of_trade_bloc(country_mappings, to_iso3_entry)
         else:
             to_iso3_list = [to_iso3_entry]
 
