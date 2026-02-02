@@ -2,6 +2,7 @@ import math
 from pathlib import Path
 from typing import cast
 
+import numpy as np
 import pandas as pd
 import pycountry
 import pickle
@@ -1044,28 +1045,39 @@ def find_iso3s_of_trade_bloc(country_mappings: list, bloc_name: str, negation: b
     """
     Find the ISO3 codes of countries in a given trade bloc using CountryMapping objects.
 
+    This function dynamically detects trade bloc memberships based on boolean attributes
+    in the CountryMapping objects, allowing any trade bloc column in the Excel sheet to be used.
+
     Args:
         country_mappings: List of CountryMapping objects.
-        bloc_name: The name of the trade bloc (EU, EFTA/EUCU, OECD, NAFTA, Mercosur, ASEAN, RCEP).
+        bloc_name: The name of the trade bloc (e.g., EU, EFTA/EUCU, OECD, NAFTA, etc.).
+                   Special characters like "/" are normalized to "_".
         negation: If True, return ISO3 codes not in the specified trade bloc.
 
     Returns:
         List of ISO3 codes for the specified trade bloc.
 
     Raises:
-        ValueError: If the bloc_name is not recognized.
+        ValueError: If the bloc_name is not found as an attribute in any CountryMapping object.
     """
     # Normalize bloc name to match CountryMapping attributes
-    # EFTA/EUCU in the user input maps to EFTA_EUCJ in the model
-    bloc_name_normalized = bloc_name.replace("/", "_").replace("EUCU", "EUCJ")
+    # Replace special characters that might be in Excel column names
+    bloc_name_normalized = bloc_name.replace("/", "_").replace(" ", "_").replace("-", "_")
 
-    # Supported trade blocs (boolean fields in CountryMapping)
-    supported_blocs = ["EU", "EFTA_EUCJ", "OECD", "NAFTA", "Mercosur", "ASEAN", "RCEP"]
+    # Special case: EUCU maps to EUCJ for backwards compatibility
+    bloc_name_normalized = bloc_name_normalized.replace("EUCU", "EUCJ")
 
-    if bloc_name_normalized not in supported_blocs:
+    # Verify that at least one country mapping has this attribute
+    if country_mappings and not hasattr(country_mappings[0], bloc_name_normalized):
+        # Try to find similar attributes to provide helpful error message
+        available_blocs = [
+            attr
+            for attr in dir(country_mappings[0])
+            if not attr.startswith("_") and isinstance(getattr(country_mappings[0], attr, None), bool)
+        ]
         raise ValueError(
-            f"Trade bloc '{bloc_name}' not recognized. "
-            f"Supported blocs: EU, EFTA/EUCU, OECD, NAFTA, Mercosur, ASEAN, RCEP"
+            f"Trade bloc '{bloc_name}' (normalized to '{bloc_name_normalized}') not found in country mappings. "
+            f"Available trade blocs: {', '.join(available_blocs)}"
         )
 
     iso3_codes = []
@@ -1287,6 +1299,9 @@ def read_tariffs(tariff_excel_path: str, tariff_sheet_name: str, country_mapping
     """
     Read tariff data from an Excel file and return a list of TradeTariff objects.
 
+    Trade bloc names in the "From ISO3" and "To ISO3" columns are automatically detected
+    from the available boolean attributes in the CountryMapping objects.
+
     Args:
         tariff_excel_path: Path to the Excel file containing tariff data.
         tariff_sheet_name: Name of the sheet in the Excel file to read from.
@@ -1297,6 +1312,25 @@ def read_tariffs(tariff_excel_path: str, tariff_sheet_name: str, country_mapping
     """
     tariff_df = pd.read_excel(tariff_excel_path, sheet_name=tariff_sheet_name)
     tariffs = []
+
+    # Dynamically detect available trade blocs from country_mappings
+    # Get all boolean attributes from the first country mapping object
+    supported_blocs = []
+    if country_mappings:
+        supported_blocs = [
+            attr
+            for attr in dir(country_mappings[0])
+            if not attr.startswith("_") and isinstance(getattr(country_mappings[0], attr, None), bool)
+        ]
+        # Add common variants with "/" for Excel column names (e.g., EFTA/EUCU)
+        # This allows the tariff sheet to use either EFTA_EUCJ or EFTA/EUCU
+        if "EFTA_EUCJ" in supported_blocs:
+            supported_blocs.append("EFTA/EUCU")
+
+    logger.info(
+        f"Detected {len(supported_blocs)} available trade blocs for tariff processing: {', '.join(supported_blocs)}"
+    )
+
     # Drop rows with NaN values in the 'Tariff scenario name' column
     tariff_df = tariff_df.dropna(subset=["Tariff scenario name"])
     # tariff_df["Metric (Volume/Emissions)"] = tariff_df["Metric (Volume/Emissions)"].fillna("")
@@ -1321,9 +1355,6 @@ def read_tariffs(tariff_excel_path: str, tariff_sheet_name: str, country_mapping
 
         from_iso3_entry = row["From ISO3"]
         to_iso3_entry = row["To ISO3"]
-
-        # Supported trade blocs for easy lookup
-        supported_blocs = ["EU", "EFTA/EUCU", "OECD", "NAFTA", "Mercosur", "ASEAN", "RCEP"]
 
         # Process "From ISO3" entry
         # if it starts with a NOT (then it's the negation of a trade bloc)
@@ -1552,6 +1583,9 @@ def read_country_mappings(excel_path: Path, sheet_name: str = "Country mapping")
     Reads country mapping data from the specified Excel sheet and converts it
     into a list of CountryMapping domain objects.
 
+    Trade bloc membership columns (columns containing True/False values) are
+    automatically detected and added as boolean attributes to each CountryMapping object.
+
     Args:
         excel_path: Path to the master input Excel file.
         sheet_name: The name of the sheet to read.
@@ -1565,33 +1599,85 @@ def read_country_mappings(excel_path: Path, sheet_name: str = "Country mapping")
         logger.error(f"Sheet '{sheet_name}' not found in {excel_path}")
         return []
 
+    # Define the core columns that should not be treated as trade bloc memberships
+    core_columns = {
+        "Country",
+        "ISO 2-letter code",
+        "ISO 3-letter code",
+        "irena_name",
+        "irena_region",
+        "region_for_outputs",
+        "ssp_region",
+        "gem_country",
+        "eu_or_non_eu",
+        "ws_region",
+        "tiam-ucl_region",
+    }
+
+    # Detect boolean columns (trade bloc memberships)
+    # These are columns with True/False values that aren't in the core set
+    boolean_columns = []
+    for col in df.columns:
+        if col not in core_columns:
+            # Check if the column contains boolean-like values
+            # Sample the first few non-null values to determine if it's boolean
+            non_null_values = df[col].dropna()
+            if len(non_null_values) > 0:
+                # Check if values are boolean, or numeric 0/1, or string true/false variants
+                sample_values = non_null_values.head(10)
+                is_boolean = all(
+                    isinstance(val, (bool, np.bool_))
+                    or (isinstance(val, (int, float, np.integer, np.floating)) and val in [0, 1, 0.0, 1.0])
+                    or (isinstance(val, str) and val.lower() in ["true", "false", "yes", "no", "0", "1"])
+                    for val in sample_values
+                )
+                if is_boolean:
+                    boolean_columns.append(col)
+
+    if boolean_columns:
+        logger.info(f"Detected {len(boolean_columns)} trade bloc membership columns: {', '.join(boolean_columns)}")
+
     mappings = []
     for idx, row in df.iterrows():
         try:
-            mapping = CountryMapping(
-                country=str(row["Country"]),
-                iso2=str(row["ISO 2-letter code"]),
-                iso3=str(row["ISO 3-letter code"]),
-                irena_name=str(row["irena_name"]),
-                irena_region=str(row["irena_region"]) if pd.notna(row["irena_region"]) else None,
-                region_for_outputs=str(row["region_for_outputs"]),
-                ssp_region=str(row["ssp_region"]),
-                gem_country=str(row["gem_country"]) if pd.notna(row["gem_country"]) else None,
-                eu_region=(
+            # Build the base mapping with core attributes
+            mapping_kwargs = {
+                "country": str(row["Country"]),
+                "iso2": str(row["ISO 2-letter code"]),
+                "iso3": str(row["ISO 3-letter code"]),
+                "irena_name": str(row["irena_name"]),
+                "irena_region": str(row["irena_region"]) if pd.notna(row["irena_region"]) else None,
+                "region_for_outputs": str(row["region_for_outputs"]),
+                "ssp_region": str(row["ssp_region"]),
+                "gem_country": str(row["gem_country"]) if pd.notna(row["gem_country"]) else None,
+                "eu_region": (
                     str(row["eu_or_non_eu"]) if "eu_or_non_eu" in row and pd.notna(row["eu_or_non_eu"]) else None
                 ),
-                ws_region=str(row["ws_region"]) if pd.notna(row["ws_region"]) else None,
-                tiam_ucl_region=str(row["tiam-ucl_region"]),
-                # CBAM-related region memberships
-                # Debug: Check if the issue is with row.get() or with the row object
-                EU=bool(row["EU"]) if "EU" in row else False,
-                EFTA_EUCJ=bool(row["EFTA/EUCU"]) if "EFTA/EUCU" in row else False,
-                OECD=bool(row["OECD"]) if "OECD" in row else False,
-                NAFTA=bool(row["NAFTA"]) if "NAFTA" in row else False,
-                Mercosur=bool(row["Mercosur"]) if "Mercosur" in row else False,
-                ASEAN=bool(row["ASEAN"]) if "ASEAN" in row else False,
-                RCEP=bool(row["RCEP"]) if "RCEP" in row else False,
-            )
+                "ws_region": str(row["ws_region"]) if pd.notna(row["ws_region"]) else None,
+                "tiam_ucl_region": str(row["tiam-ucl_region"]),
+            }
+
+            # Add boolean columns dynamically
+            for col in boolean_columns:
+                if col in row:
+                    val = row[col]
+                    # Convert to boolean, handling various input formats
+                    if pd.isna(val):
+                        boolean_val = False
+                    elif isinstance(val, (bool, np.bool_)):
+                        boolean_val = bool(val)
+                    elif isinstance(val, (int, float, np.integer, np.floating)):
+                        boolean_val = bool(val)
+                    elif isinstance(val, str):
+                        boolean_val = val.lower() in ["true", "yes", "1"]
+                    else:
+                        boolean_val = False
+
+                    # Normalize column name for attribute (replace special chars with underscores)
+                    attr_name = col.replace("/", "_").replace(" ", "_").replace("-", "_")
+                    mapping_kwargs[attr_name] = boolean_val
+
+            mapping = CountryMapping(**mapping_kwargs)
             mappings.append(mapping)
         except Exception as e:
             # idx from iterrows is always an integer for standard DataFrames
@@ -1613,6 +1699,9 @@ def read_carbon_border_mechanisms(excel_path: Path, sheet_name: str = "CBAM") ->
     - Row 2: "Year CBAM ends" - end year
     - Row 3: "Common carbon cost across the bloc?" - not used
 
+    The function dynamically detects trade bloc columns (any column except the first
+    descriptor column) and processes them as potential carbon border mechanisms.
+
     Args:
         excel_path: Path to the master input Excel file.
         sheet_name: The name of the sheet to read (default: "CBAM").
@@ -1628,22 +1717,27 @@ def read_carbon_border_mechanisms(excel_path: Path, sheet_name: str = "CBAM") ->
 
     mechanisms = []
 
-    # Define the mechanism columns and their corresponding region columns
-    # Note: Fixed EFTA/EUCU to match actual Excel column name
-    mechanism_configs = [
-        ("EU", "EU"),
-        ("EFTA/EUCU", "EFTA_EUCJ"),  # Excel has EFTA/EUCU, region mapping uses EFTA_EUCJ
-        ("OECD", "OECD"),
-        ("NAFTA", "NAFTA"),
-        ("Mercosur", "Mercosur"),
-        ("ASEAN", "ASEAN"),
-        ("RCEP", "RCEP"),
-    ]
-
     # Check that we have at least 3 rows (active, start year, end year)
     if len(df) < 3:
         logger.warning(f"CBAM sheet has insufficient rows ({len(df)}) - expected at least 3")
         return []
+
+    # Dynamically detect mechanism columns
+    # Skip the first column (assumed to be the row descriptor/label column)
+    # All other columns are potential mechanisms
+    mechanism_configs = []
+    for col in df.columns[1:]:  # Skip first column
+        # Normalize the column name to match CountryMapping attributes
+        region_column = col.replace("/", "_").replace(" ", "_").replace("-", "_")
+        # Special case: EUCU maps to EUCJ
+        region_column = region_column.replace("EUCU", "EUCJ")
+        mechanism_configs.append((col, region_column))
+
+    if mechanism_configs:
+        logger.info(
+            f"Detected {len(mechanism_configs)} potential CBAM mechanism columns: "
+            f"{', '.join(col for col, _ in mechanism_configs)}"
+        )
 
     # Process each mechanism
     for mechanism_name, region_column in mechanism_configs:
