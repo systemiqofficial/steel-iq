@@ -34,6 +34,7 @@ from steelo.utilities.plotting import (
 )
 from .logging_config import LoggingConfig
 from steelo.domain.constants import T_TO_KT, MT_TO_T
+from steelo.domain.calculate_costs import filter_subsidies_for_year
 from .furnace_breakdown_logging_minimal import FurnaceBreakdownLogger
 
 if TYPE_CHECKING:
@@ -997,6 +998,15 @@ class SimulationRunner:
                 bus.env.calculate_capped_hydrogen_costs_per_country()
             )  # Calculate for all countries once per year (iso3 -> cost)
             logging.info(f"\n Steel demand in year {bus.env.year}: \t {bus.env.current_demand * T_TO_KT:,.0f} kt \n")
+
+            # Initialise OPEX subsidies for Year 1 (subsequent years handled by finalise_iteration)
+            if i == start_year:
+                for plant in bus.uow.plants.list():
+                    for fg in plant.furnace_groups:
+                        all_opex_subs = bus.env.opex_subsidies.get(plant.location.iso3, {}).get(fg.technology.name, [])
+                        active_opex_subs = filter_subsidies_for_year(all_opex_subs, bus.env.year)
+                        fg.applied_subsidies["opex"] = active_opex_subs
+
             for plant in bus.uow.plants.list():
                 plant.update_furnace_tech_unit_fopex()
                 plant.update_furnace_hydrogen_costs(capped_hydrogen_cost_dict)
