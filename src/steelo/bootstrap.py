@@ -308,6 +308,8 @@ def bootstrap_simulation(
         env.initiate_capex_subsidies(subsidies=repository_json.subsidies.list())
         env.initiate_opex_subsidies(subsidies=repository_json.subsidies.list())
         env.initiate_debt_subsidies(subsidies=repository_json.subsidies.list())
+        env.initiate_hydrogen_subsidies(subsidies=repository_json.subsidies.list())
+        env.initiate_electricity_subsidies(subsidies=repository_json.subsidies.list())
         env.initiate_industrial_asset_cost_of_capital(repository_json.cost_of_capital.list())
         env.initiate_grid_emissivity(emissivities=repository_json.region_emissivity.list())
         env.initiate_gas_coke_emissivity(emissivities=repository_json.region_emissivity.list())

@@ -18,7 +18,8 @@ from steelo.domain.calculate_costs import (
     calculate_opex_list_with_subsidies,
     calculate_unit_total_opex,
     calculate_variable_opex,
-    filter_active_subsidies,
+    filter_subsidies_for_year,
+    collect_active_subsidies_over_period,
     ENERGY_FEEDSTOCK_KEYS,
     SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION,
 )
@@ -2152,16 +2153,16 @@ class FurnaceGroup:
 
         # ========== STAGE 2: Calculate Current Technology OPEX with Subsidies ==========
         # Collect all active OPEX subsidies across the remaining lifetime
-        applied_opex_subsidies = []
-        for year in range(current_year, current_year + self.lifetime.end):
-            applied_opex_subsidies.extend(
-                filter_active_subsidies(tech_opex_subsidies.get(self.technology.name, []), Year(year))
-            )
+        applied_opex_subsidies = collect_active_subsidies_over_period(
+            tech_opex_subsidies.get(self.technology.name, []),
+            start_year=Year(current_year),
+            end_year=Year(current_year + self.lifetime.end),
+        )
 
         # Calculate unit OPEX with subsidies (without carbon costs yet)
         unit_opex_list = calculate_opex_list_with_subsidies(
             opex=self.unit_total_opex_no_subsidy,
-            opex_subsidies=list(set(applied_opex_subsidies)),
+            opex_subsidies=applied_opex_subsidies,
             start_year=self.lifetime.current,
             end_year=self.lifetime.end,
         )
@@ -2269,11 +2270,13 @@ class FurnaceGroup:
                 continue
 
             # Collect all active subsidies for this technology
-            capex_subsidies = filter_active_subsidies(tech_capex_subsidies.get(tech, []), current_year)
-            debt_subsidies = filter_active_subsidies(tech_debt_subsidies.get(tech, []), current_year)
-            opex_subsidies = []
-            for year in range(current_year + construction_time, current_year + construction_time + plant_lifetime):
-                opex_subsidies.extend(filter_active_subsidies(tech_opex_subsidies.get(tech, []), Year(year)))
+            capex_subsidies = filter_subsidies_for_year(tech_capex_subsidies.get(tech, []), current_year)
+            debt_subsidies = filter_subsidies_for_year(tech_debt_subsidies.get(tech, []), current_year)
+            opex_subsidies = collect_active_subsidies_over_period(
+                tech_opex_subsidies.get(tech, []),
+                start_year=Year(current_year + construction_time),
+                end_year=Year(current_year + construction_time + plant_lifetime),
+            )
 
             # Apply subsidies to capex
             original_capex = capex_dict[tech]
@@ -2407,7 +2410,7 @@ class FurnaceGroup:
                 # Apply operating subsidies over plant lifetime
                 unit_total_opex_list = calculate_opex_list_with_subsidies(
                     opex=unit_total_opex,
-                    opex_subsidies=list(set(opex_subsidies)),
+                    opex_subsidies=opex_subsidies,
                     start_year=Year(current_year + construction_time),
                     end_year=Year(current_year + construction_time + plant_lifetime),
                 )
@@ -2718,15 +2721,17 @@ class FurnaceGroup:
             earliest_operation_end_year = Year(earliest_operation_start_year + plant_lifetime)
 
             # Get OPEX (with subsidies) for the years the plant would be operational
-            selected_opex_subsidies = []
-            for subsidy_year in range(earliest_operation_start_year, earliest_operation_end_year):
-                selected_opex_subsidies.extend(filter_active_subsidies(all_opex_subsidies, Year(subsidy_year)))
+            selected_opex_subsidies = collect_active_subsidies_over_period(
+                all_opex_subsidies,
+                start_year=earliest_operation_start_year,
+                end_year=earliest_operation_end_year,
+            )
             unit_vopex = calculate_variable_opex(self.bill_of_materials["materials"], self.bill_of_materials["energy"])
             unit_fopex = self.unit_fopex
             unit_total_opex = unit_vopex + unit_fopex
             unit_total_opex_list = calculate_opex_list_with_subsidies(
                 opex=unit_total_opex,
-                opex_subsidies=list(set(selected_opex_subsidies)),
+                opex_subsidies=selected_opex_subsidies,
                 start_year=earliest_operation_start_year,
                 end_year=earliest_operation_end_year,
             )
@@ -3672,12 +3677,10 @@ class Plant:
             return None
 
         # ===== Filter and apply subsidies for selected technology =====
-        from steelo.domain.calculate_costs import filter_active_subsidies
-
         all_capex_subs = tech_capex_subsidies.get(best_tech, [])
         all_debt_subs = tech_debt_subsidies.get(best_tech, [])
-        capex_subs = filter_active_subsidies(all_capex_subs, current_year)
-        debt_subs = filter_active_subsidies(all_debt_subs, current_year)
+        capex_subs = filter_subsidies_for_year(all_capex_subs, current_year)
+        debt_subs = filter_subsidies_for_year(all_debt_subs, current_year)
 
         cost_of_debt_with_subsidies = calculate_debt_with_subsidies(
             cost_of_debt=cost_of_debt,
@@ -3690,13 +3693,13 @@ class Plant:
         for subsidy in capex_subs:
             subsidy_details.append(
                 f"[FG STRATEGY]:     • {subsidy.subsidy_name}: "
-                f"absolute=${subsidy.absolute_subsidy:.2f}, relative={subsidy.relative_subsidy:.2%}, "
+                f"type={subsidy.subsidy_type}, amount={subsidy.subsidy_amount:.4f}, "
                 f"years {subsidy.start_year}-{subsidy.end_year}"
             )
         for subsidy in debt_subs:
             subsidy_details.append(
                 f"[FG STRATEGY]:     • {subsidy.subsidy_name}: "
-                f"absolute=${subsidy.absolute_subsidy:.2f}, relative={subsidy.relative_subsidy:.2%}, "
+                f"type={subsidy.subsidy_type}, amount={subsidy.subsidy_amount:.4f}, "
                 f"years {subsidy.start_year}-{subsidy.end_year}"
             )
 
@@ -4693,17 +4696,20 @@ class PlantGroup:
                 )
 
                 # Apply subsidies (filter to only active ones in current year)
-                from steelo.domain.calculate_costs import filter_active_subsidies
+                from steelo.domain.calculate_costs import (
+                    filter_subsidies_for_year,
+                    collect_active_subsidies_over_period,
+                )
 
                 # CAPEX subsidies
                 all_capex_subsidies = capex_subsidies.get(plant.location.iso3, {}).get(tech, [])
-                selected_capex_subsidies = filter_active_subsidies(all_capex_subsidies, current_year)
+                selected_capex_subsidies = filter_subsidies_for_year(all_capex_subsidies, current_year)
                 original_capex = capex
                 capex = cc.calculate_capex_with_subsidies(original_capex, selected_capex_subsidies)
 
                 # Debt subsidies
                 all_debt_subsidies = debt_subsidies.get(plant.location.iso3, {}).get(tech, [])
-                selected_debt_subsidies = filter_active_subsidies(all_debt_subsidies, current_year)
+                selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, current_year)
                 cost_of_debt = cc.calculate_debt_with_subsidies(
                     cost_of_debt=cost_of_debt_original,
                     debt_subsidies=selected_debt_subsidies,
@@ -4723,15 +4729,15 @@ class PlantGroup:
                 )
 
                 # OPEX subsidies (collect active subsidies across plant lifetime)
-                selected_opex_subsidies = []
-                for year in range(current_year + construction_time, current_year + construction_time + plant_lifetime):
-                    selected_opex_subsidies.extend(
-                        filter_active_subsidies(opex_subsidies.get(plant.location.iso3, {}).get(tech, []), Year(year))
-                    )
+                selected_opex_subsidies = collect_active_subsidies_over_period(
+                    opex_subsidies.get(plant.location.iso3, {}).get(tech, []),
+                    start_year=Year(current_year + construction_time),
+                    end_year=Year(current_year + construction_time + plant_lifetime),
+                )
 
                 unit_total_opex_list = cc.calculate_opex_list_with_subsidies(
                     opex=unit_total_opex,
-                    opex_subsidies=list(set(selected_opex_subsidies)),
+                    opex_subsidies=selected_opex_subsidies,
                     start_year=Year(current_year + construction_time),
                     end_year=Year(current_year + construction_time + plant_lifetime),
                 )
@@ -4783,7 +4789,7 @@ class PlantGroup:
 
                 # Calculate subsidized CAPEX for best technology
                 all_best_capex_subsidies = capex_subsidies.get(plant.location.iso3, {}).get(best_tech, [])
-                best_capex_subsidies = filter_active_subsidies(all_best_capex_subsidies, current_year)
+                best_capex_subsidies = filter_subsidies_for_year(all_best_capex_subsidies, current_year)
                 best_capex = cc.calculate_capex_with_subsidies(greenfield_capex[best_tech], best_capex_subsidies)
 
                 NPV_p[plant.plant_id] = NPV.get(best_tech), best_tech, best_capex
@@ -5068,14 +5074,13 @@ class PlantGroup:
         )
 
         # ========== STAGE 10: APPLY SUBSIDIES ==========
-        from steelo.domain.calculate_costs import filter_active_subsidies
         from steelo.domain import calculate_costs as cc
 
         # Get all subsidies for this location and technology, then filter to active ones
         all_debt_subsidies = debt_subsidies.get(plant.location.iso3, {}).get(tech, [])
         all_capex_subsidies = capex_subsidies.get(plant.location.iso3, {}).get(tech, [])
-        selected_debt_subsidies = filter_active_subsidies(all_debt_subsidies, current_year)
-        selected_capex_subsidies = filter_active_subsidies(all_capex_subsidies, current_year)
+        selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, current_year)
+        selected_capex_subsidies = filter_subsidies_for_year(all_capex_subsidies, current_year)
 
         # Apply subsidies to debt and CAPEX
         cost_of_debt = cc.calculate_debt_with_subsidies(
@@ -5111,7 +5116,7 @@ class PlantGroup:
             subsidy_details.append(
                 f"  CAPEX subsidies ({len(selected_capex_subsidies)}):\n"
                 + "\n".join(
-                    f"    • {s.subsidy_name}: abs=${s.absolute_subsidy:.2f}, rel={s.relative_subsidy:.2%}, "
+                    f"    • {s.subsidy_name}: type={s.subsidy_type}, amount={s.subsidy_amount:.4f}, "
                     f"years {s.start_year}-{s.end_year}"
                     for s in selected_capex_subsidies
                 )
@@ -5120,7 +5125,7 @@ class PlantGroup:
             subsidy_details.append(
                 f"  Debt subsidies ({len(selected_debt_subsidies)}):\n"
                 + "\n".join(
-                    f"    • {s.subsidy_name}: abs=${s.absolute_subsidy:.2f}, rel={s.relative_subsidy:.2%}, "
+                    f"    • {s.subsidy_name}: type={s.subsidy_type}, amount={s.subsidy_amount:.4f}, "
                     f"years {s.start_year}-{s.end_year}"
                     for s in selected_debt_subsidies
                 )
@@ -5462,8 +5467,6 @@ class PlantGroup:
                         continue
 
                     # Get subsidies for this location and technology - filter to only active ones
-                    from steelo.domain.calculate_costs import filter_active_subsidies
-
                     all_debt_subsidies = debt_subsidies.get(iso3, {}).get(fg.technology.name, [])
                     all_capex_subsidies = capex_subsidies.get(iso3, {}).get(fg.technology.name, [])
 
@@ -5478,8 +5481,8 @@ class PlantGroup:
                             current_year + consideration_time + 1 - years_already_considered
                         )  # announcement_time = 1
 
-                    selected_debt_subsidies = filter_active_subsidies(all_debt_subsidies, year)
-                    selected_capex_subsidies = filter_active_subsidies(all_capex_subsidies, year)
+                    selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, year)
+                    selected_capex_subsidies = filter_subsidies_for_year(all_capex_subsidies, year)
 
                     new_plant_logger.debug(
                         f"[NEW PLANTS]: Subsidies for {fg.technology.name} in {iso3} for year {current_year}: "
@@ -5931,8 +5934,8 @@ class Subsidy:
         end_year: Year,
         technology_name: str = "all",
         cost_item: str = "opex",
-        absolute_subsidy: float = 0,
-        relative_subsidy: float = 0,
+        subsidy_type: str = "absolute",
+        subsidy_amount: float = 0,
     ) -> None:
         self.scenario_name = scenario_name
         self.iso3 = iso3
@@ -5940,8 +5943,8 @@ class Subsidy:
         self.end_year = end_year
         self.technology_name = technology_name
         self.cost_item = cost_item
-        self.absolute_subsidy = absolute_subsidy
-        self.relative_subsidy = relative_subsidy
+        self.subsidy_type = subsidy_type
+        self.subsidy_amount = subsidy_amount
         self.subsidy_name = f"{self.iso3}_{self.scenario_name}_{self.technology_name}_{self.cost_item}"
 
     def __repr__(self) -> str:
@@ -5956,8 +5959,8 @@ class Subsidy:
                 self.end_year,
                 self.technology_name,
                 self.cost_item,
-                self.absolute_subsidy,
-                self.relative_subsidy,
+                self.subsidy_type,
+                self.subsidy_amount,
             )
         )
 
@@ -5971,8 +5974,8 @@ class Subsidy:
             and self.end_year == other.end_year
             and self.technology_name == other.technology_name
             and self.cost_item == other.cost_item
-            and self.absolute_subsidy == other.absolute_subsidy
-            and self.relative_subsidy == other.relative_subsidy
+            and self.subsidy_type == other.subsidy_type
+            and self.subsidy_amount == other.subsidy_amount
         )
 
 
@@ -6407,6 +6410,8 @@ class Environment:
         self.opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
         self.capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
         self.debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
+        self.hydrogen_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
+        self.electricity_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
 
     def get_transport_emissions_as_dict(self) -> dict[tuple[str, str, str], float]:
         """
@@ -6548,15 +6553,9 @@ class Environment:
             if subsidy.cost_item.lower() == "opex":
                 if subsidy.iso3 not in opex_subsidies:
                     opex_subsidies[subsidy.iso3] = {}
-                    # Now assess the technology that the subsidy applies to
-                if subsidy.technology_name == "all":
-                    for technology in self.technology_to_product.keys():
-                        if technology not in opex_subsidies[subsidy.iso3]:
-                            opex_subsidies[subsidy.iso3][technology] = []
-                        opex_subsidies[subsidy.iso3][technology].append(subsidy)
-                elif subsidy.technology_name not in opex_subsidies[subsidy.iso3]:
+                if subsidy.technology_name not in opex_subsidies[subsidy.iso3]:
                     opex_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                    opex_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+                opex_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
         self.opex_subsidies = opex_subsidies
 
     def initiate_capex_subsidies(self, subsidies: list[Subsidy]) -> None:
@@ -6571,15 +6570,9 @@ class Environment:
             if subsidy.cost_item.lower() == "capex":
                 if subsidy.iso3 not in capex_subsidies:
                     capex_subsidies[subsidy.iso3] = {}
-                    # Now assess the technology that the subsidy applies to
-                if subsidy.technology_name == "all":
-                    for technology in self.technology_to_product.keys():
-                        if technology not in capex_subsidies[subsidy.iso3]:
-                            capex_subsidies[subsidy.iso3][technology] = []
-                        capex_subsidies[subsidy.iso3][technology].append(subsidy)
-                elif subsidy.technology_name not in capex_subsidies[subsidy.iso3]:
+                if subsidy.technology_name not in capex_subsidies[subsidy.iso3]:
                     capex_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                    capex_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+                capex_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
         self.capex_subsidies = capex_subsidies
 
     def initiate_debt_subsidies(self, subsidies: list[Subsidy]) -> None:
@@ -6594,16 +6587,44 @@ class Environment:
             if subsidy.cost_item.lower() == "cost of debt":
                 if subsidy.iso3 not in debt_subsidies:
                     debt_subsidies[subsidy.iso3] = {}
-                    # Now assess the technology that the subsidy applies to
-                if subsidy.technology_name == "all":
-                    for technology in self.technology_to_product.keys():
-                        if technology not in debt_subsidies[subsidy.iso3]:
-                            debt_subsidies[subsidy.iso3][technology] = []
-                        debt_subsidies[subsidy.iso3][technology].append(subsidy)
-                elif subsidy.technology_name not in debt_subsidies[subsidy.iso3]:
+                if subsidy.technology_name not in debt_subsidies[subsidy.iso3]:
                     debt_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                    debt_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+                debt_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
         self.debt_subsidies = debt_subsidies
+
+    def initiate_hydrogen_subsidies(self, subsidies: list[Subsidy]) -> None:
+        """
+        Initialize the hydrogen subsidies for the environment.
+
+        Args:
+            subsidies (list[Subsidy]): A list of Subsidy objects to be added to the environment.
+        """
+        hydrogen_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
+        for subsidy in subsidies:
+            if subsidy.cost_item.lower() == "hydrogen":
+                if subsidy.iso3 not in hydrogen_subsidies:
+                    hydrogen_subsidies[subsidy.iso3] = {}
+                if subsidy.technology_name not in hydrogen_subsidies[subsidy.iso3]:
+                    hydrogen_subsidies[subsidy.iso3][subsidy.technology_name] = []
+                hydrogen_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+        self.hydrogen_subsidies = hydrogen_subsidies
+
+    def initiate_electricity_subsidies(self, subsidies: list[Subsidy]) -> None:
+        """
+        Initialize the electricity subsidies for the environment.
+
+        Args:
+            subsidies (list[Subsidy]): A list of Subsidy objects to be added to the environment.
+        """
+        electricity_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
+        for subsidy in subsidies:
+            if subsidy.cost_item.lower() == "electricity":
+                if subsidy.iso3 not in electricity_subsidies:
+                    electricity_subsidies[subsidy.iso3] = {}
+                if subsidy.technology_name not in electricity_subsidies[subsidy.iso3]:
+                    electricity_subsidies[subsidy.iso3][subsidy.technology_name] = []
+                electricity_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+        self.electricity_subsidies = electricity_subsidies
 
     def initiate_dynamic_feedstocks(self, feedstocks: list[PrimaryFeedstock]) -> None:
         """

@@ -2196,8 +2196,8 @@ class SubsidyInDb(BaseModel):
     end_year: Year
     technology_name: str
     cost_item: str
-    absolute_subsidy: float
-    relative_subsidy: float
+    subsidy_type: str
+    subsidy_amount: float
     subsidy_name: str = Field(..., description="Unique subsidy identifier")
 
     def __lt__(self, other: "SubsidyInDb") -> bool:
@@ -2212,8 +2212,8 @@ class SubsidyInDb(BaseModel):
             end_year=self.end_year,
             technology_name=self.technology_name,
             cost_item=self.cost_item,
-            absolute_subsidy=self.absolute_subsidy,
-            relative_subsidy=self.relative_subsidy,
+            subsidy_type=self.subsidy_type,
+            subsidy_amount=self.subsidy_amount,
         )
 
     @classmethod
@@ -2225,8 +2225,8 @@ class SubsidyInDb(BaseModel):
             end_year=domain.end_year,
             technology_name=domain.technology_name,
             cost_item=domain.cost_item,
-            absolute_subsidy=domain.absolute_subsidy,
-            relative_subsidy=domain.relative_subsidy,
+            subsidy_type=domain.subsidy_type,
+            subsidy_amount=domain.subsidy_amount,
             subsidy_name=domain.subsidy_name,
         )
 

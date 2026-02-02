@@ -28,8 +28,8 @@ def test_calculate_opex_with_subsidies_single_absolute():
             iso3="USA",
             technology_name="DRI+EAF",
             cost_item="OPEX",
-            absolute_subsidy=50.0,
-            relative_subsidy=0.0,
+            subsidy_type="absolute",
+            subsidy_amount=50.0,
             start_year=Year(2025),
             end_year=Year(2030),
         )
@@ -52,8 +52,8 @@ def test_calculate_opex_with_subsidies_single_relative():
             iso3="USA",
             technology_name="DRI+EAF",
             cost_item="OPEX",
-            absolute_subsidy=0.0,
-            relative_subsidy=0.1,  # 10%
+            subsidy_type="relative",
+            subsidy_amount=0.1,  # 10% (stored as decimal)
             start_year=Year(2025),
             end_year=Year(2030),
         )
@@ -72,15 +72,25 @@ def test_calculate_opex_with_subsidies_combined():
     opex = 350.0
     opex_subsidies = [
         Subsidy(
-            scenario_name="test_scenario",
+            scenario_name="test_scenario_abs",
             iso3="USA",
             technology_name="DRI+EAF",
             cost_item="OPEX",
-            absolute_subsidy=50.0,
-            relative_subsidy=0.1,  # 10%
+            subsidy_type="absolute",
+            subsidy_amount=50.0,
             start_year=Year(2025),
             end_year=Year(2030),
-        )
+        ),
+        Subsidy(
+            scenario_name="test_scenario_rel",
+            iso3="USA",
+            technology_name="DRI+EAF",
+            cost_item="OPEX",
+            subsidy_type="relative",
+            subsidy_amount=0.1,  # 10% (stored as decimal)
+            start_year=Year(2025),
+            end_year=Year(2030),
+        ),
     ]
 
     # Act
@@ -97,22 +107,42 @@ def test_calculate_opex_with_subsidies_multiple():
     opex = 350.0
     opex_subsidies = [
         Subsidy(
-            scenario_name="test_scenario_1",
+            scenario_name="test_scenario_1_abs",
             iso3="USA",
             technology_name="DRI+EAF",
             cost_item="OPEX",
-            absolute_subsidy=25.0,
-            relative_subsidy=0.05,  # 5%
+            subsidy_type="absolute",
+            subsidy_amount=25.0,
             start_year=Year(2025),
             end_year=Year(2030),
         ),
         Subsidy(
-            scenario_name="test_scenario_2",
+            scenario_name="test_scenario_1_rel",
             iso3="USA",
             technology_name="DRI+EAF",
             cost_item="OPEX",
-            absolute_subsidy=30.0,
-            relative_subsidy=0.1,  # 10%
+            subsidy_type="relative",
+            subsidy_amount=0.05,  # 5% (stored as decimal)
+            start_year=Year(2025),
+            end_year=Year(2030),
+        ),
+        Subsidy(
+            scenario_name="test_scenario_2_abs",
+            iso3="USA",
+            technology_name="DRI+EAF",
+            cost_item="OPEX",
+            subsidy_type="absolute",
+            subsidy_amount=30.0,
+            start_year=Year(2025),
+            end_year=Year(2030),
+        ),
+        Subsidy(
+            scenario_name="test_scenario_2_rel",
+            iso3="USA",
+            technology_name="DRI+EAF",
+            cost_item="OPEX",
+            subsidy_type="relative",
+            subsidy_amount=0.1,  # 10% (stored as decimal)
             start_year=Year(2025),
             end_year=Year(2030),
         ),
@@ -122,9 +152,9 @@ def test_calculate_opex_with_subsidies_multiple():
     result = calculate_costs.calculate_opex_with_subsidies(opex, opex_subsidies)
 
     # Assert - opex minus sum of all subsidies
-    # First subsidy: 25 + 350 * 0.05 = 25 + 17.5 = 42.5
-    # Second subsidy: 30 + 350 * 0.1 = 30 + 35 = 65
-    # Total subsidy: 42.5 + 65 = 107.5
+    # Absolute subsidies: 25 + 30 = 55
+    # Relative subsidies: 350 * 0.05 + 350 * 0.1 = 17.5 + 35 = 52.5
+    # Total subsidy: 55 + 52.5 = 107.5
     # Result: 350 - 107.5 = 242.5
     assert result == 242.5
 
@@ -139,8 +169,8 @@ def test_calculate_opex_with_subsidies_floor_zero():
             iso3="USA",
             technology_name="DRI+EAF",
             cost_item="OPEX",
-            absolute_subsidy=200.0,  # More than opex
-            relative_subsidy=0.0,
+            subsidy_type="absolute",
+            subsidy_amount=200.0,  # More than opex
             start_year=Year(2025),
             end_year=Year(2030),
         )
@@ -175,15 +205,25 @@ def test_calculate_opex_list_with_subsidies_partial_period():
     opex = 350.0
     opex_subsidies = [
         Subsidy(
-            scenario_name="test_scenario",
+            scenario_name="test_scenario_abs",
             iso3="USA",
             technology_name="DRI+EAF",
             cost_item="OPEX",
-            absolute_subsidy=50.0,
-            relative_subsidy=0.1,
+            subsidy_type="absolute",
+            subsidy_amount=50.0,
             start_year=Year(2026),  # Starts year 2
             end_year=Year(2028),  # Ends year 4
-        )
+        ),
+        Subsidy(
+            scenario_name="test_scenario_rel",
+            iso3="USA",
+            technology_name="DRI+EAF",
+            cost_item="OPEX",
+            subsidy_type="relative",
+            subsidy_amount=0.1,  # 10% (stored as decimal)
+            start_year=Year(2026),  # Starts year 2
+            end_year=Year(2028),  # Ends year 4
+        ),
     ]
     start_year = Year(2025)
     end_year = Year(2030)  # 5 years total
@@ -207,22 +247,42 @@ def test_calculate_opex_list_with_subsidies_overlapping():
     opex = 300.0
     opex_subsidies = [
         Subsidy(
-            scenario_name="test_scenario_1",
+            scenario_name="test_scenario_1_abs",
             iso3="USA",
             technology_name="DRI+EAF",
             cost_item="OPEX",
-            absolute_subsidy=20.0,
-            relative_subsidy=0.1,
+            subsidy_type="absolute",
+            subsidy_amount=20.0,
             start_year=Year(2025),
             end_year=Year(2027),
         ),
         Subsidy(
-            scenario_name="test_scenario_2",
+            scenario_name="test_scenario_1_rel",
+            iso3="USA",
+            technology_name="DRI+EAF",
+            cost_item="OPEX",
+            subsidy_type="relative",
+            subsidy_amount=0.1,  # 10% (stored as decimal)
+            start_year=Year(2025),
+            end_year=Year(2027),
+        ),
+        Subsidy(
+            scenario_name="test_scenario_2_abs",
             iso3="USA",
             technology_name="DRI-EAF",
             cost_item="OPEX",
-            absolute_subsidy=30.0,
-            relative_subsidy=0.05,
+            subsidy_type="absolute",
+            subsidy_amount=30.0,
+            start_year=Year(2026),
+            end_year=Year(2028),
+        ),
+        Subsidy(
+            scenario_name="test_scenario_2_rel",
+            iso3="USA",
+            technology_name="DRI-EAF",
+            cost_item="OPEX",
+            subsidy_type="relative",
+            subsidy_amount=0.05,  # 5% (stored as decimal)
             start_year=Year(2026),
             end_year=Year(2028),
         ),
@@ -252,15 +312,25 @@ def test_calculate_opex_list_with_subsidies_full_period():
     opex = 400.0
     opex_subsidies = [
         Subsidy(
-            scenario_name="test_scenario",
+            scenario_name="test_scenario_abs",
             iso3="USA",
             technology_name="DRI+EAF",
             cost_item="OPEX",
-            absolute_subsidy=100.0,
-            relative_subsidy=0.2,
+            subsidy_type="absolute",
+            subsidy_amount=100.0,
             start_year=Year(2020),  # Before start
             end_year=Year(2035),  # After end
-        )
+        ),
+        Subsidy(
+            scenario_name="test_scenario_rel",
+            iso3="USA",
+            technology_name="DRI+EAF",
+            cost_item="OPEX",
+            subsidy_type="relative",
+            subsidy_amount=0.2,  # 20% (stored as decimal)
+            start_year=Year(2020),  # Before start
+            end_year=Year(2035),  # After end
+        ),
     ]
     start_year = Year(2025)
     end_year = Year(2030)  # 5 years total

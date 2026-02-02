@@ -273,14 +273,14 @@ def prepare_cost_data_for_business_opportunity(
                     missing_critical_fields.append("capex")
                 else:
                     all_capex_subsidies = capex_subsidies.get(site["iso3"], {}).get(tech, [])
-                    selected_capex_subsidies = cc.filter_active_subsidies(all_capex_subsidies, target_year)
+                    selected_capex_subsidies = cc.filter_subsidies_for_year(all_capex_subsidies, target_year)
                     capex_with_subsidies = cc.calculate_capex_with_subsidies(capex, selected_capex_subsidies)
                     cost_data[prod][site_id][tech]["capex"] = capex_with_subsidies
                     cost_data[prod][site_id][tech]["capex_no_subsidy"] = capex
 
                 # Always add cost of debt with subsidies (since it's technology-agnostic but can have tech-specific subsidies)
                 all_debt_subsidies = debt_subsidies.get(site["iso3"], {}).get(tech, [])
-                selected_debt_subsidies = cc.filter_active_subsidies(all_debt_subsidies, target_year)
+                selected_debt_subsidies = cc.filter_subsidies_for_year(all_debt_subsidies, target_year)
                 cost_of_debt_with_subsidies = cc.calculate_debt_with_subsidies(
                     # cost_of_debt is guaranteed to not be None here due to incomplete_site check
                     cost_of_debt=cost_of_debt,  # type: ignore[arg-type]

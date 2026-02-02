@@ -362,7 +362,8 @@ class TestPrepareDataForBusinessOpportunity:
             end_year=Year(2035),
             technology_name="EAF",
             cost_item="capex",
-            relative_subsidy=0.2,  # 20% reduction
+            subsidy_type="relative",
+            subsidy_amount=0.2,  # 20% reduction (stored as decimal)
         )
 
         cost_data = prepare_cost_data_for_business_opportunity(
