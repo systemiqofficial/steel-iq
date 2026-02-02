@@ -1,5 +1,6 @@
 """Test that global_risk_free_rate actually affects debt subsidy calculations."""
 
+import pytest
 from steelo.domain.calculate_costs import calculate_debt_with_subsidies
 from steelo.domain.models import Subsidy, Year
 
@@ -136,3 +137,97 @@ def test_risk_free_rate_outside_subsidy_period():
 
     # No subsidy applies, so cost remains 8%
     assert result_without_subsidy == cost_of_debt
+
+
+def test_debt_with_subsidies_single_absolute():
+    """Test calculate_debt_with_subsidies with a single absolute subsidy."""
+    cost_of_debt = 0.08  # 8%
+    risk_free_rate = 0.02  # 2%
+
+    subsidies = [
+        Subsidy(
+            scenario_name="Single Debt Subsidy",
+            iso3="USA",
+            start_year=Year(2025),
+            end_year=Year(2030),
+            technology_name="all",
+            cost_item="debt",
+            subsidy_type="absolute",
+            subsidy_amount=0.03,  # 3% reduction
+        )
+    ]
+
+    result = calculate_debt_with_subsidies(
+        cost_of_debt=cost_of_debt,
+        debt_subsidies=subsidies,
+        risk_free_rate=risk_free_rate,
+    )
+
+    # 8% - 3% = 5%, which is above 2% floor
+    assert result == 0.05
+
+
+def test_debt_relative_subsidy_ignored():
+    """Test that relative subsidies are ignored for debt calculations."""
+    cost_of_debt = 0.08  # 8%
+    risk_free_rate = 0.02  # 2%
+
+    subsidies = [
+        Subsidy(
+            scenario_name="Relative Debt Subsidy",
+            iso3="USA",
+            start_year=Year(2025),
+            end_year=Year(2030),
+            technology_name="all",
+            cost_item="debt",
+            subsidy_type="relative",
+            subsidy_amount=0.5,  # 50% reduction (should be ignored)
+        )
+    ]
+
+    result = calculate_debt_with_subsidies(
+        cost_of_debt=cost_of_debt,
+        debt_subsidies=subsidies,
+        risk_free_rate=risk_free_rate,
+    )
+
+    # Relative subsidy ignored, so cost remains unchanged at 8%
+    assert result == cost_of_debt
+
+
+def test_debt_mixed_absolute_and_relative_subsidies():
+    """Test that only absolute subsidies apply when mixed with relative ones."""
+    cost_of_debt = 0.10  # 10%
+    risk_free_rate = 0.02  # 2%
+
+    subsidies = [
+        Subsidy(
+            scenario_name="Absolute Debt Subsidy",
+            iso3="USA",
+            start_year=Year(2025),
+            end_year=Year(2030),
+            technology_name="all",
+            cost_item="debt",
+            subsidy_type="absolute",
+            subsidy_amount=0.04,  # 4% reduction
+        ),
+        Subsidy(
+            scenario_name="Relative Debt Subsidy (ignored)",
+            iso3="USA",
+            start_year=Year(2025),
+            end_year=Year(2030),
+            technology_name="all",
+            cost_item="debt",
+            subsidy_type="relative",
+            subsidy_amount=0.3,  # 30% reduction (should be ignored)
+        ),
+    ]
+
+    result = calculate_debt_with_subsidies(
+        cost_of_debt=cost_of_debt,
+        debt_subsidies=subsidies,
+        risk_free_rate=risk_free_rate,
+    )
+
+    # Only absolute applies: 10% - 4% = 6%
+    assert result == pytest.approx(0.06)
