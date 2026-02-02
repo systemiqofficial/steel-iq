@@ -1088,7 +1088,15 @@ class FurnaceGroup:
         self.installed_carbon_capture = 0.0  # CCS/CCU capacity (tCO2e/year) - reduces direct emissions
         self.transport_emissions = 0.0
 
-        self.applied_subsidies: dict[str, list[Subsidy]] = {"capex": [], "opex": [], "debt": []}  # To be set
+        self.applied_subsidies: dict[str, list[Subsidy]] = {
+            "capex": [],
+            "opex": [],
+            "debt": [],
+            "hydrogen": [],
+            "electricity": [],
+        }
+        # Original energy prices before subsidies (for verification)
+        self.energy_costs_no_subsidy: dict[str, float] = {}
 
         # Initialize _carbon_cost from carbon_costs_for_emissions if provided
         if carbon_costs_for_emissions is not None and carbon_costs_for_emissions > 0:
@@ -1144,6 +1152,27 @@ class FurnaceGroup:
             energy_costs["flexible"] = energy_costs["natural_gas"]
 
         self.energy_costs = energy_costs
+
+    def set_subsidised_energy_costs(
+        self,
+        subsidised_costs: dict[str, float],
+        no_subsidy_prices: dict[str, float],
+        h2_subsidies: list["Subsidy"],
+        elec_subsidies: list["Subsidy"],
+    ) -> None:
+        """
+        Set energy costs with subsidies applied and track original prices.
+
+        Args:
+            subsidised_costs: Energy costs with subsidies applied
+            no_subsidy_prices: Original H2/electricity prices before subsidies
+            h2_subsidies: Applied hydrogen subsidies (for tracking)
+            elec_subsidies: Applied electricity subsidies (for tracking)
+        """
+        self.energy_costs = subsidised_costs
+        self.energy_costs_no_subsidy = no_subsidy_prices
+        self.applied_subsidies["hydrogen"] = h2_subsidies
+        self.applied_subsidies["electricity"] = elec_subsidies
 
     def __repr__(self) -> str:
         return f"FurnaceGroup: <{self.furnace_group_id}>"
