@@ -981,382 +981,11 @@ def solve_steel_trade_lp_and_return_commodity_allocations(
     return commodity_allocations
 
 
-def diagnose_demand_fulfillment(
-    commodity_allocations: dict[str, CommodityAllocations],
-    repository: Repository,
-    year: Year,
-    trade_lp: tlp.TradeLPModel,
-    config: "SimulationConfig" = None,
-) -> dict[str, Any]:
-    """Comprehensive diagnostic to identify why demand is not being fulfilled.
-
-    Checks multiple potential issues:
-    1. Demand center fulfillment rates
-    2. LP solver termination status
-    3. Secondary feedstock constraint violations
-    4. Process connectivity issues
-    5. Capacity utilization patterns
-
-    Args:
-        commodity_allocations: Allocations from the solved LP model
-        repository: Repository with plants, suppliers, demand centers
-        year: Current simulation year
-        trade_lp: The solved TradeLPModel for constraint inspection
-
-    Returns:
-        dict with diagnostic results including issues found
-    """
-    issues = []
-    logger.info("=" * 80)
-    logger.info("[DEMAND DIAGNOSTIC] Starting comprehensive demand fulfillment diagnostic")
-    logger.info("=" * 80)
-
-    # 0. Run network connectivity validation if config is provided
-    if config is not None:
-        logger.info("[DEMAND DIAGNOSTIC] Running network connectivity validation...")
-        from steelo.domain.trade_modelling.process_network_validator import validate_process_network_connectivity
-        from steelo.domain.models import LegalProcessConnector
-
-        # Convert ProcessConnector objects to LegalProcessConnector objects
-        legal_connectors = [
-            LegalProcessConnector(
-                from_technology_name=pc.from_process.name if pc.from_process else "None",
-                to_technology_name=pc.to_process.name if pc.to_process else "None",
-            )
-            for pc in trade_lp.process_connectors
-        ]
-
-        network_results = validate_process_network_connectivity(
-            repository=repository,
-            legal_process_connectors=legal_connectors,
-            config=config,
-            current_year=year,
-            verbose=True,
-        )
-
-        if network_results["isolated_technologies"]:
-            logger.error(
-                f"[DEMAND DIAGNOSTIC] ❌ Found {len(network_results['isolated_technologies'])} isolated technologies with no connectivity!"
-            )
-            for tech in network_results["isolated_technologies"]:
-                logger.error(
-                    f"[DEMAND DIAGNOSTIC]     {tech['name']}: {len(tech['furnace_groups'])} furnace groups affected"
-                )
-
-        if network_results["missing_inputs"]:
-            logger.error(
-                f"[DEMAND DIAGNOSTIC] ❌ Found {len(network_results['missing_inputs'])} technologies missing required inputs!"
-            )
-
-        if network_results["missing_outputs"]:
-            logger.warning(
-                f"[DEMAND DIAGNOSTIC] ⚠️  Found {len(network_results['missing_outputs'])} technologies with unused outputs"
-            )
-
-    # 1. Check demand center fulfillment
-    logger.info("[DEMAND DIAGNOSTIC] Checking demand center fulfillment...")
-    steel_allocations = commodity_allocations.get("steel")
-    if steel_allocations:
-        for demand_center in repository.demand_centers.list():
-            expected_demand = demand_center.demand_by_year.get(year, 0)
-            allocations_to_dc = steel_allocations.get_allocations_to(demand_center)
-            actual_delivery = sum(allocations_to_dc.values())
-            fulfillment_rate = (actual_delivery / expected_demand * 100) if expected_demand > 0 else 0
-
-            if fulfillment_rate < 99.9:
-                shortfall = expected_demand - actual_delivery
-                issues.append(f"Demand center {demand_center.demand_center_id} unfulfilled")
-                logger.warning(
-                    f"[DEMAND DIAGNOSTIC] ⚠️  {demand_center.demand_center_id}: "
-                    f"{fulfillment_rate:.1f}% fulfilled "
-                    f"(expected: {expected_demand * T_TO_KT:.1f} kt, actual: {actual_delivery * T_TO_KT:.1f} kt, "
-                    f"shortfall: {shortfall * T_TO_KT:.1f} kt)"
-                )
-            else:
-                logger.info(
-                    f"[DEMAND DIAGNOSTIC] ✓ {demand_center.demand_center_id}: "
-                    f"{fulfillment_rate:.1f}% fulfilled ({actual_delivery * T_TO_KT:.1f} kt)"
-                )
-
-    # 2. Check LP solver status
-    logger.info("[DEMAND DIAGNOSTIC] Checking LP solver status...")
-    if hasattr(trade_lp, "lp_model") and hasattr(trade_lp.lp_model, "_solve_result"):
-        if trade_lp.lp_model._solve_result.solver.termination_condition != pyo.TerminationCondition.optimal:
-            issues.append(f"LP solver non-optimal: {trade_lp.lp_model._solve_result.solver.termination_condition}")
-            logger.error(
-                f"[DEMAND DIAGNOSTIC] ❌ LP solver status: {trade_lp.lp_model._solve_result.solver.termination_condition}"
-            )
-        else:
-            logger.info("[DEMAND DIAGNOSTIC] ✓ LP solver reached optimal solution")
-
-    # 3. Check secondary feedstock constraints
-    logger.info("[DEMAND DIAGNOSTIC] Checking secondary feedstock constraint violations...")
-    if hasattr(trade_lp.lp_model, "secondary_feedstock_constraints"):
-        for constraint_idx in trade_lp.lp_model.secondary_feedstock_constraints:
-            constraint = trade_lp.lp_model.secondary_feedstock_constraints[constraint_idx]
-            try:
-                # In Pyomo, calculate slack as: upper_bound - body_value for <= constraints
-                body_value = pyo.value(constraint.body)
-                upper_bound = pyo.value(constraint.upper)
-                if body_value is not None and upper_bound is not None:
-                    slack = upper_bound - body_value
-                    if abs(slack) < 1e-6:  # Binding constraint
-                        issues.append(f"Secondary feedstock constraint {constraint_idx} is binding")
-                        logger.warning(
-                            f"[DEMAND DIAGNOSTIC] ⚠️  Secondary feedstock constraint {constraint_idx} is BINDING "
-                            f"(body: {body_value * T_TO_KT:.1f} kt, limit: {upper_bound * T_TO_KT:.1f} kt, slack: {slack * T_TO_KT:.1f} kt)"
-                        )
-            except Exception as e:
-                logger.debug(f"[DEMAND DIAGNOSTIC] Could not check constraint {constraint_idx}: {e}")
-
-    # 4. Check aggregated metallic charge constraints
-    logger.info("[DEMAND DIAGNOSTIC] Checking aggregated metallic charge constraints...")
-    if hasattr(trade_lp.lp_model, "aggregate_commodity_minimum_ratio_constraints"):
-        for constraint_idx in trade_lp.lp_model.aggregate_commodity_minimum_ratio_constraints:
-            constraint = trade_lp.lp_model.aggregate_commodity_minimum_ratio_constraints[constraint_idx]
-            try:
-                # For >= constraints: slack = body_value - lower_bound
-                body_value = pyo.value(constraint.body)
-                lower_bound = pyo.value(constraint.lower)
-                if body_value is not None and lower_bound is not None:
-                    slack = body_value - lower_bound
-                    if abs(slack) < 1e-6:  # Binding constraint
-                        issues.append(f"Min metallic charge constraint {constraint_idx} is binding")
-                        logger.warning(
-                            f"[DEMAND DIAGNOSTIC] ⚠️  Minimum metallic charge constraint {constraint_idx} is BINDING "
-                            f"(body: {body_value:.4f}, min: {lower_bound:.4f}, slack: {slack:.2e})"
-                        )
-            except Exception as e:
-                logger.debug(f"[DEMAND DIAGNOSTIC] Could not check min constraint {constraint_idx}: {e}")
-
-    if hasattr(trade_lp.lp_model, "aggregate_commodity_maximum_ratio_constraints"):
-        for constraint_idx in trade_lp.lp_model.aggregate_commodity_maximum_ratio_constraints:
-            constraint = trade_lp.lp_model.aggregate_commodity_maximum_ratio_constraints[constraint_idx]
-            try:
-                # For <= constraints: slack = upper_bound - body_value
-                body_value = pyo.value(constraint.body)
-                upper_bound = pyo.value(constraint.upper)
-                if body_value is not None and upper_bound is not None:
-                    slack = upper_bound - body_value
-                    if abs(slack) < 1e-6:  # Binding constraint
-                        issues.append(f"Max metallic charge constraint {constraint_idx} is binding")
-                        logger.warning(
-                            f"[DEMAND DIAGNOSTIC] ⚠️  Maximum metallic charge constraint {constraint_idx} is BINDING "
-                            f"(body: {body_value:.4f}, max: {upper_bound:.4f}, slack: {slack:.2e})"
-                        )
-            except Exception as e:
-                logger.debug(f"[DEMAND DIAGNOSTIC] Could not check max constraint {constraint_idx}: {e}")
-
-    # 5. Check capacity constraints
-    logger.info("[DEMAND DIAGNOSTIC] Checking production capacity constraints...")
-    if hasattr(trade_lp.lp_model, "production_constraints"):
-        binding_capacity = []
-        underutilized_capacity = []
-        for constraint_idx in trade_lp.lp_model.production_constraints:
-            constraint = trade_lp.lp_model.production_constraints[constraint_idx]
-            try:
-                body_value = pyo.value(constraint.body)
-                upper_bound = pyo.value(constraint.upper)
-                if body_value is not None and upper_bound is not None:
-                    slack = upper_bound - body_value
-                    if abs(slack) < 1e-3:  # Binding capacity (within 1 ton)
-                        binding_capacity.append((constraint_idx, body_value, upper_bound))
-                    elif upper_bound > 100 and slack > upper_bound * 0.5:  # >50% idle capacity, >100t facility
-                        utilization = (body_value / upper_bound) * 100 if upper_bound > 0 else 0
-                        underutilized_capacity.append((constraint_idx, body_value, upper_bound, utilization))
-            except Exception:
-                pass
-
-        if binding_capacity:
-            logger.warning(f"[DEMAND DIAGNOSTIC] ⚠️  {len(binding_capacity)} process centers at capacity limit:")
-            for pc_name, body, cap in binding_capacity[:10]:  # Show top 10
-                logger.warning(f"[DEMAND DIAGNOSTIC]     {pc_name}: {body * T_TO_KT:.1f} / {cap * T_TO_KT:.1f} kt")
-                issues.append(f"Process center {pc_name} at capacity")
-            if len(binding_capacity) > 10:
-                logger.warning(f"[DEMAND DIAGNOSTIC]     ... and {len(binding_capacity) - 10} more")
-        else:
-            logger.info("[DEMAND DIAGNOSTIC] ✓ No capacity constraints are binding")
-
-        # Check for suspicious underutilization
-        if underutilized_capacity:
-            # Create mapping from process center name to technology name
-            pc_to_tech = {}
-            for pc in trade_lp.process_centers:
-                pc_to_tech[pc.name] = pc.process.name
-
-            # Categorize by supplier vs production facility
-            suppliers = []
-            production_facilities = []
-            for pc_name, body, cap, util in underutilized_capacity:
-                # Suppliers typically have names like: sup_*, *_scrap*, *_supply_*
-                # Production facilities start with P followed by numbers
-                if str(pc_name).startswith("sup_") or "_scrap" in str(pc_name) or "supply" in str(pc_name).lower():
-                    suppliers.append((pc_name, body, cap, util))
-                else:
-                    production_facilities.append((pc_name, body, cap, util))
-
-            logger.warning(
-                f"[DEMAND DIAGNOSTIC] ⚠️  {len(underutilized_capacity)} facilities operating below 50% capacity:"
-            )
-            logger.warning(f"[DEMAND DIAGNOSTIC]     - {len(suppliers)} suppliers underutilized")
-            logger.warning(
-                f"[DEMAND DIAGNOSTIC]     - {len(production_facilities)} production facilities underutilized"
-            )
-
-            if suppliers:
-                logger.warning("[DEMAND DIAGNOSTIC]   Top underutilized suppliers (by capacity):")
-                suppliers.sort(key=lambda x: x[2], reverse=True)
-                for pc_name, body, cap, util in suppliers[:5]:
-                    logger.warning(
-                        f"[DEMAND DIAGNOSTIC]     {pc_name}: {body * T_TO_KT:.1f} / {cap * T_TO_KT:.1f} kt ({util:.1f}% utilized)"
-                    )
-                if len(suppliers) > 5:
-                    logger.warning(f"[DEMAND DIAGNOSTIC]     ... and {len(suppliers) - 5} more suppliers")
-
-            if production_facilities:
-                logger.warning("[DEMAND DIAGNOSTIC]   ALL underutilized production facilities (by capacity):")
-                production_facilities.sort(key=lambda x: x[2], reverse=True)
-                for pc_name, body, cap, util in production_facilities:
-                    num_arcs = len(trade_lp.lp_model.outbound_arcs.get(pc_name, []))
-                    tech_name = pc_to_tech.get(pc_name, "UNKNOWN")
-                    logger.warning(
-                        f"[DEMAND DIAGNOSTIC]     {pc_name} ({tech_name}): {body * T_TO_KT:.1f} / {cap * T_TO_KT:.1f} kt ({util:.1f}% utilized, {num_arcs} outbound arcs)"
-                    )
-
-            issues.append(
-                f"{len(underutilized_capacity)} facilities significantly underutilized ({len(suppliers)} suppliers, {len(production_facilities)} production)"
-            )
-        else:
-            logger.info("[DEMAND DIAGNOSTIC] ✓ No significant underutilization detected")
-
-    # 6. Check BOM flow balance constraints
-    logger.info("[DEMAND DIAGNOSTIC] Checking BOM flow balance constraints...")
-    if hasattr(trade_lp.lp_model, "bom_inflow_constraints"):
-        violated_bom = []
-        for constraint_idx in trade_lp.lp_model.bom_inflow_constraints:
-            constraint = trade_lp.lp_model.bom_inflow_constraints[constraint_idx]
-            try:
-                if hasattr(constraint, "body"):
-                    body_value = pyo.value(constraint.body)
-                    # BOM constraints are typically equalities (body == 0)
-                    if body_value is not None and abs(body_value) > 1e-3:
-                        violated_bom.append((constraint_idx, body_value))
-            except Exception:
-                pass
-
-        if violated_bom:
-            logger.warning(f"[DEMAND DIAGNOSTIC] ⚠️  {len(violated_bom)} BOM flow imbalances detected:")
-            for idx, violation in violated_bom[:10]:
-                logger.warning(f"[DEMAND DIAGNOSTIC]     {idx}: imbalance = {violation:.2f}")
-                issues.append(f"BOM flow imbalance at {idx}")
-        else:
-            logger.info("[DEMAND DIAGNOSTIC] ✓ All BOM flow balances satisfied")
-
-    # 7. Check demand constraints and slack variables
-    logger.info("[DEMAND DIAGNOSTIC] Checking demand constraint slack and penalties...")
-    if hasattr(trade_lp.lp_model, "demand_slack_variable"):
-        total_unmet_demand = 0
-        demand_shortfalls = []
-        for demand_center_name in trade_lp.lp_model.demand_slack_variable:
-            slack_var = trade_lp.lp_model.demand_slack_variable[demand_center_name]
-            slack_value = pyo.value(slack_var)
-            if slack_value is not None and slack_value > 1e-3:  # More than 1 ton unmet
-                total_unmet_demand += slack_value
-                demand_shortfalls.append((demand_center_name, slack_value))
-
-        if demand_shortfalls:
-            logger.error(f"[DEMAND DIAGNOSTIC] ❌ Total unmet demand: {total_unmet_demand * T_TO_KT:.1f} kt")
-            for dc_name, shortfall in demand_shortfalls:
-                logger.error(f"[DEMAND DIAGNOSTIC]     {dc_name}: {shortfall * T_TO_KT:.1f} kt unmet")
-
-    # 8. Check objective function coefficients vs demand slack
-    logger.info("[DEMAND DIAGNOSTIC] Checking objective function economics...")
-    if hasattr(trade_lp.lp_model, "objective"):
-        # Check allocation costs
-        if hasattr(trade_lp.lp_model, "allocation_costs"):
-            allocation_costs = []
-            for (from_pc, to_pc, comm), cost in trade_lp.lp_model.allocation_costs.items():
-                if abs(cost) > 1e-6:
-                    allocation_costs.append((from_pc, to_pc, comm, cost))
-
-            if allocation_costs:
-                # Sort by absolute cost
-                allocation_costs.sort(key=lambda x: abs(x[3]), reverse=True)
-                max_cost = max(abs(x[3]) for x in allocation_costs)
-                avg_cost = sum(abs(x[3]) for x in allocation_costs) / len(allocation_costs)
-
-                logger.info(f"[DEMAND DIAGNOSTIC] Allocation costs: max=${max_cost:,.2f}/t, avg=${avg_cost:,.2f}/t")
-                logger.info("[DEMAND DIAGNOSTIC] Top 5 most expensive allocations:")
-                for from_pc, to_pc, comm, cost in allocation_costs[:5]:
-                    logger.info(f"[DEMAND DIAGNOSTIC]     {from_pc} → {to_pc} ({comm}): ${cost:,.2f}/t")
-
-        # Check demand penalty coefficient
-        if hasattr(trade_lp, "demand_slack_cost"):
-            penalty = trade_lp.demand_slack_cost
-            logger.info(f"[DEMAND DIAGNOSTIC] Demand penalty cost: ${penalty:,.2f}/t")
-
-            # Compare penalty to production costs
-            if hasattr(trade_lp.lp_model, "allocation_costs") and allocation_costs:
-                if penalty < max_cost:
-                    issues.append(f"Demand penalty (${penalty:.2f}) < max allocation cost (${max_cost:.2f})")
-                    logger.error(
-                        f"[DEMAND DIAGNOSTIC] ❌ CRITICAL: Demand penalty (${penalty:,.2f}/t) is LOWER than "
-                        f"maximum allocation cost (${max_cost:,.2f}/t)!"
-                    )
-                    logger.error(
-                        "[DEMAND DIAGNOSTIC]    LP will prefer to leave demand unmet rather than pay for expensive routes!"
-                    )
-                elif penalty < avg_cost * 5:
-                    logger.warning(
-                        f"[DEMAND DIAGNOSTIC] ⚠️  Demand penalty (${penalty:,.2f}/t) may be too low compared to "
-                        f"average cost (${avg_cost:,.2f}/t)"
-                    )
-                else:
-                    logger.info("[DEMAND DIAGNOSTIC] ✓ Demand penalty is sufficiently high")
-
-    # 9. Check quota constraints
-    logger.info("[DEMAND DIAGNOSTIC] Checking trade quota constraints...")
-    if hasattr(trade_lp.lp_model, "trade_quota_constraints"):
-        binding_quotas = []
-        for constraint_idx in trade_lp.lp_model.trade_quota_constraints:
-            constraint = trade_lp.lp_model.trade_quota_constraints[constraint_idx]
-            try:
-                body_value = pyo.value(constraint.body)
-                upper_bound = pyo.value(constraint.upper)
-                if body_value is not None and upper_bound is not None:
-                    slack = upper_bound - body_value
-                    if abs(slack) < 1e-3:
-                        binding_quotas.append((constraint_idx, body_value, upper_bound))
-            except Exception:
-                pass
-
-        if binding_quotas:
-            logger.warning(f"[DEMAND DIAGNOSTIC] ⚠️  {len(binding_quotas)} trade quotas are binding:")
-            for idx, body, quota in binding_quotas[:5]:
-                logger.warning(f"[DEMAND DIAGNOSTIC]     {idx}: {body * T_TO_KT:.1f} / {quota * T_TO_KT:.1f} kt")
-                issues.append(f"Trade quota {idx} is binding")
-        else:
-            logger.info("[DEMAND DIAGNOSTIC] ✓ No trade quotas are binding")
-
-    # 10. Summary
-    logger.info("=" * 80)
-    if issues:
-        logger.error(f"[DEMAND DIAGNOSTIC] Found {len(issues)} potential issues:")
-        for i, issue in enumerate(issues, 1):
-            logger.error(f"[DEMAND DIAGNOSTIC]   {i}. {issue}")
-    else:
-        logger.info("[DEMAND DIAGNOSTIC] No obvious issues found - demand should be fulfilled")
-    logger.info("=" * 80)
-
-    return {"issues": issues, "total_issues": len(issues)}
-
-
 def identify_bottlenecks(
     commodity_allocations: dict[str, CommodityAllocations],
     repository: Repository,
     environment: Environment,
     year: Year,
-    config: "SimulationConfig",
 ):
     """Identify production bottlenecks from trade allocation results.
 
@@ -1383,7 +1012,7 @@ def identify_bottlenecks(
         (plant, fg)
         for plant in repository.plants.list()
         for fg in plant.furnace_groups
-        if fg.status.lower() in config.active_statuses
+        if fg.status.lower() in environment.config.active_statuses
     ]
     # Check raw material suppliers
     for commodity, allocations in commodity_allocations.items():
@@ -1421,9 +1050,9 @@ def identify_bottlenecks(
         for com, alloc in commodity_allocations.items():
             fg_allocations = alloc.get_allocations_from((plant, fg))
             fg_allocated_vols += sum(fg_allocations.values())
-        if fg_allocated_vols < fg.capacity * config.capacity_limit * 0.99999:
+        if fg_allocated_vols < fg.capacity * environment.config.capacity_limit * 0.99999:
             logger.warning(
-                f"[TM BOTTLENECK ANALYSIS] Iron maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized. Utilization: {(fg_allocated_vols / (fg.capacity * config.capacity_limit)) * 100:.2f}% allocation: {fg_allocated_vols * T_TO_KT:.1f} kt, capacity: {fg.capacity * config.capacity_limit * T_TO_KT:.1f} kt"
+                f"[TM BOTTLENECK ANALYSIS] Iron maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized."
             )
             all_iron_makers_utilized = False
     if all_iron_makers_utilized:
@@ -1438,14 +1067,17 @@ def identify_bottlenecks(
             if fg.technology.product == "steel":
                 fg_allocations = steel_allocations.get_allocations_from((plant, fg))
                 allocated_volume = sum(fg_allocations.values())
-                if allocated_volume < fg.capacity * config.capacity_limit * 0.99999:
+                if allocated_volume < fg.capacity * environment.config.capacity_limit * 0.99999:
                     logger.warning(
-                        f"[TM BOTTLENECK ANALYSIS] Steel maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized. Utilization: {(allocated_volume / (fg.capacity * config.capacity_limit)) * 100:.2f}% allocation: {allocated_volume * T_TO_KT:.1f} kt, capacity: {fg.capacity * config.capacity_limit * T_TO_KT:.1f} kt"
+                        f"[TM BOTTLENECK ANALYSIS] Steel maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized."
                     )
                     all_steel_makers_utilized = False
     if all_steel_makers_utilized:
         potential_bottleneck_found = True
         logger.warning("[TM BOTTLENECK ANALYSIS] All steel makers are fully utilized. Potential bottleneck detected.")
+
+    if not potential_bottleneck_found:
+        logger.warning("[TM BOTTLENECK ANALYSIS] No potential bottlenecks found in steel trade allocations.")
 
     # Summarise supplier headroom for key metallic charges to aid diagnostics
     supplier_list = list(repository.suppliers.list())
@@ -1455,7 +1087,7 @@ def identify_bottlenecks(
         capacity_value = float(supplier.capacity_by_year.get(year, 0.0))
         capacity_by_commodity[commodity_name] = capacity_by_commodity.get(commodity_name, 0.0) + capacity_value
 
-    tracked_commodities = ("io_low", "io_mid", "io_high", "scrap", "bio-pci")
+    tracked_commodities = ("io_low", "io_mid", "io_high", "scrap")
     for tracked in tracked_commodities:
         total_capacity = capacity_by_commodity.get(tracked, 0.0)
         allocated_from_suppliers: float = 0.0
@@ -1469,9 +1101,6 @@ def identify_bottlenecks(
                     allocated_from_suppliers += float(volume)
         total_capacity_float = float(total_capacity)
         headroom = total_capacity_float - allocated_from_suppliers
-        if headroom < 1:
-            potential_bottleneck_found = True
-            logging.warning(f"[TM FEEDSTOCK HEADROOM] Low headroom for {tracked}: {headroom:.1f} tons")
         logger.info(
             "operation=tm_feedstock_headroom year=%s commodity=%s supplier_capacity_kt=%.1f allocated_from_suppliers_kt=%.1f headroom_kt=%.1f",
             int(year),
@@ -1480,5 +1109,3 @@ def identify_bottlenecks(
             allocated_from_suppliers * T_TO_KT,
             headroom * T_TO_KT,
         )
-    if not potential_bottleneck_found:
-        logger.warning("[TM BOTTLENECK ANALYSIS] No potential bottlenecks found in steel trade allocations.")

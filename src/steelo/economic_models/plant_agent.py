@@ -358,6 +358,10 @@ class AllocationModel:
         # Extract allocations before cleanup (needed for event publishing later)
         trade_lp_allocations = trade_lp.allocations if hasattr(trade_lp, "allocations") else None
 
+        # Explicit LP model cleanup to free memory (Priority 1 memory optimization)
+        del trade_lp
+        gc.collect()
+
         # Post-processing: plotting and CSV export
         postprocess_start = time.time()
 
@@ -425,22 +429,7 @@ class AllocationModel:
             )
 
         if not demand_met:
-            identify_bottlenecks(non_empty_allocations, bus.uow.repository, bus.env, bus.env.year, bus.env.config)
-            # Run comprehensive diagnostic to identify specific issues
-            from steelo.domain.trade_modelling.set_up_steel_trade_lp import diagnose_demand_fulfillment
-
-            diagnose_demand_fulfillment(
-                commodity_allocations=non_empty_allocations,
-                repository=bus.uow.repository,
-                year=bus.env.year,
-                trade_lp=trade_lp,
-                config=bus.env.config,
-            )
-            exit()
-
-        # Explicit LP model cleanup to free memory (Priority 1 memory optimization)
-        del trade_lp
-        gc.collect()
+            identify_bottlenecks(non_empty_allocations, bus.uow.repository, bus.env, bus.env.year)
 
         # for commodity, allocations in commodity_allocations.items():
         #     if len(allocations.allocations) == 0:
