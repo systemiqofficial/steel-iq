@@ -408,17 +408,13 @@ class CountryMapping:
         ws_region (str | None): World Steel regional classification.
         eu_region (str | None): European Union regional grouping.
         tiam_ucl_region (str): TIAM-UCL energy model region.
-        EU (bool): Whether country is an EU member (for CBAM modeling).
-        EFTA_EUCJ (bool): Whether country is in EFTA/EU Customs Union.
-        OECD (bool): Whether country is an OECD member.
-        NAFTA (bool): Whether country is a NAFTA member.
-        Mercosur (bool): Whether country is a Mercosur member.
-        ASEAN (bool): Whether country is an ASEAN member.
-        RCEP (bool): Whether country is an RCEP member.
+        **trade_bloc_memberships: Any additional boolean attributes representing trade bloc memberships
+                                   are dynamically detected from the Excel sheet and added as attributes.
 
     Notes:
         - The iso3 code serves as the unique identifier and is used for all lookups throughout the simulation
-        - Trade bloc memberships (EU, NAFTA, ASEAN, etc.) are used to determine tariff applicability
+        - Trade bloc memberships are dynamically detected from columns containing True/False values in the Excel sheet
+        - These memberships are used to determine tariff applicability in the trade model
         - Different regional classifications allow data from multiple sources to be correctly mapped to countries
         - All country mapping data originates from the master Excel file
     """
@@ -437,7 +433,7 @@ class CountryMapping:
         ws_region: str | None = None,
         eu_region: str | None = None,
         tiam_ucl_region: str,
-        # New CBAM-related region columns
+        # Deprecated explicit parameters (kept for backwards compatibility)
         EU: bool = False,
         EFTA_EUCJ: bool = False,
         OECD: bool = False,
@@ -445,6 +441,8 @@ class CountryMapping:
         Mercosur: bool = False,
         ASEAN: bool = False,
         RCEP: bool = False,
+        # Accept any additional boolean attributes dynamically
+        **trade_bloc_memberships: bool,
     ) -> None:
         self.country = country
         self.iso2 = iso2
@@ -457,7 +455,9 @@ class CountryMapping:
         self.ws_region = ws_region
         self.eu_region = eu_region
         self.tiam_ucl_region = tiam_ucl_region
-        # CBAM-related region memberships
+
+        # Set explicit parameters (for backwards compatibility)
+        # These will be overridden by kwargs if provided
         self.EU = EU
         self.EFTA_EUCJ = EFTA_EUCJ
         self.OECD = OECD
@@ -465,6 +465,10 @@ class CountryMapping:
         self.Mercosur = Mercosur
         self.ASEAN = ASEAN
         self.RCEP = RCEP
+
+        # Set any additional trade bloc memberships dynamically
+        for attr_name, attr_value in trade_bloc_memberships.items():
+            setattr(self, attr_name, attr_value)
 
     @property
     def id(self) -> str:
