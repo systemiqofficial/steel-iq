@@ -209,9 +209,18 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
                 env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
             ),
             equity_needed=cmd.equity_needed,
-            bill_of_materials=env.get_bom_from_avg_boms(plant.energy_costs or {}, cmd.technology_name, cmd.capacity)[0],
-            chosen_reductant=env.get_bom_from_avg_boms(plant.energy_costs or {}, cmd.technology_name, cmd.capacity)[2]
-            or "",
+            bill_of_materials=env.get_bom_from_avg_boms(
+                plant.energy_costs or {},
+                cmd.technology_name,
+                cmd.capacity,
+                env.most_common_reductant_by_tech.get(cmd.technology_name, None),
+            )[0],
+            chosen_reductant=env.get_bom_from_avg_boms(
+                plant.energy_costs or {},
+                cmd.technology_name,
+                cmd.capacity,
+                env.most_common_reductant_by_tech.get(cmd.technology_name, None),
+            )[2],
         )
         # Set the subsidies on the new furnace group
         new_furnace.applied_subsidies["capex"] = cmd.capex_subsidies
@@ -308,10 +317,10 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
         # Recalculate carbon costs now that allocations/emissions are up to date
     if getattr(env, "carbon_costs", None):
         env.calculate_carbon_costs_of_furnace_groups(world_plants=uow.plants.list())
-        env.calculate_average_material_costs(world_plants=uow.plants.list())
-        env.generate_average_material_costs(uow.plants.list())
-        env.generate_average_boms(uow.plants.list())
-        uow.commit()
+    env.calculate_average_material_costs(world_plants=uow.plants.list())
+    env.generate_average_material_costs(uow.plants.list())
+    env.generate_average_boms(uow.plants.list())
+    uow.commit()
 
 
 def finalise_iteration(

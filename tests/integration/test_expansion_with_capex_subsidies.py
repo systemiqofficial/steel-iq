@@ -114,7 +114,7 @@ def test_evaluate_expansion_without_subsidies(
     bus.uow.plant_groups.add(pg)
 
     # Mock get_bom_from_avg_boms
-    def mock_get_bom(energy_costs, tech, capacity):
+    def mock_get_bom(energy_costs, tech, capacity, most_common_reductant=None):
         return (
             {
                 "materials": {"scrap": {"unit_cost": 100.0, "demand": 1.0}},
@@ -182,7 +182,7 @@ def test_evaluate_expansion_with_absolute_capex_subsidy(
     bus.uow.plant_groups.add(pg)
 
     # Mock get_bom_from_avg_boms
-    def mock_get_bom(energy_costs, tech, capacity):
+    def mock_get_bom(energy_costs, tech, capacity, most_common_reductant=None):
         return (
             {
                 "materials": {"scrap": {"unit_cost": 100.0, "demand": 1.0}},
@@ -265,7 +265,7 @@ def test_evaluate_expansion_with_relative_capex_subsidy(
     bus.uow.plant_groups.add(pg)
 
     # Mock get_bom_from_avg_boms
-    def mock_get_bom(energy_costs, tech, capacity):
+    def mock_get_bom(energy_costs, tech, capacity, most_common_reductant=None):
         return (
             {
                 "materials": {"scrap": {"unit_cost": 100.0, "demand": 1.0}},
@@ -345,7 +345,7 @@ def test_evaluate_expansion_with_combined_subsidies(
     bus.uow.plant_groups.add(pg)
 
     # Mock get_bom_from_avg_boms with higher NPV for BOF to ensure it's selected
-    def mock_get_bom(energy_costs, tech, capacity):
+    def mock_get_bom(energy_costs, tech, capacity, most_common_reductant=None):
         if tech == "BOF":
             # Make BOF more attractive
             return (
@@ -448,7 +448,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
     bus.uow.plant_groups.add(pg)
 
     # Mock get_bom_from_avg_boms to make DRI and BF more attractive
-    def mock_get_bom(energy_costs, tech, capacity):
+    def mock_get_bom(energy_costs, tech, capacity, most_common_reductant=None):
         if tech in ["DRI", "BF"]:
             # Make DRI and BF very attractive economically - very low costs
             return (

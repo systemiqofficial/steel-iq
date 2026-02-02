@@ -2608,7 +2608,8 @@ def read_fallback_bom_definitions(excel_path: Path, sheet_name: str = "Fallback 
                 technology = business_case_raw.split("_")[-1].upper()  # extract technology from business case
 
             # if technology is charcoal, rename to BF_CHARCOAL
-            technology = technology.replace("CHARCOAL", "BF_CHARCOAL")
+            if "BF_CHARCOAL" not in technology:
+                technology = technology.replace("CHARCOAL", "BF_CHARCOAL")
 
             # Normalize metallic charge using the same normalization as in BOM reading
             metallic_charge = normalize_commodity_name(metallic_charge_raw)
