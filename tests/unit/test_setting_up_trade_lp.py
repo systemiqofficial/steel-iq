@@ -318,12 +318,22 @@ class DummyDemandCenter:
 
 
 class DummySupplier:
-    def __init__(self, supplier_id, commodity, capacity_by_year, location="supplier_location", production_cost=0.1):
-        self.production_cost = production_cost
+    def __init__(
+        self, supplier_id, commodity, capacity_by_year, location="supplier_location", production_cost_by_year=None
+    ):
+        # Support both old-style single production_cost and new-style production_cost_by_year for compatibility
+        if production_cost_by_year is None:
+            # Create a default production_cost_by_year dictionary with value 0.1 for all years
+            from steelo.domain import Year
+
+            production_cost_by_year = {Year(year): 0.1 for year in range(2020, 2051)}
+        self.production_cost_by_year = production_cost_by_year
         self.supplier_id = supplier_id
         self.commodity = commodity
         self.capacity_by_year = capacity_by_year
         self.location = location
+        self.mine_cost_by_year = {}
+        self.mine_price_by_year = {}
 
 
 class DummyUoW:

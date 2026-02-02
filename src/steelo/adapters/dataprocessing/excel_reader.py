@@ -691,37 +691,44 @@ def read_mines_as_suppliers(mine_data_excel_path: str, mine_data_sheet_name: str
             duplicates = [id for id in supplier_ids if supplier_ids.count(id) > 1]
             raise ValueError(f"Duplicate supplier IDs generated: {set(duplicates)}")
 
-        # 2. Total capacity preservation
-        # Strip whitespace from column names in excel_df if not already done
-        if "capacity" not in excel_df.columns and " capacity" in excel_df.columns:
-            excel_df.columns = excel_df.columns.str.strip()
-        excel_total = excel_df["capacity"].sum()
-        # Get capacity for any year (they're all the same)
-        supplier_total = sum(
-            list(s.capacity_by_year.values())[0] / MT_TO_T  # Convert back to Mt
-            for s in suppliers
-        )
-        tolerance = 0.01  # Allow small rounding differences
-
-        if abs(excel_total - supplier_total) > tolerance:
-            raise ValueError(f"Total capacity mismatch: Excel={excel_total:.2f} Mt, Suppliers={supplier_total:.2f} Mt")
-
-        # 3. Per-product capacity preservation
-        for product in excel_df["Products"].unique():
-            excel_product = excel_df[excel_df["Products"] == product]["capacity"].sum()
-            commodity = Commodities(normalize_product_name(product)).value
-            supplier_product = sum(
-                list(s.capacity_by_year.values())[0] / MT_TO_T for s in suppliers if s.commodity == commodity
+        # 2. Total capacity preservation (check against first capacity column found)
+        capacity_cols = [col for col in excel_df.columns if col.startswith("Capacity [Mt] ")]
+        if capacity_cols:
+            # Use the first capacity column for validation
+            first_cap_col = capacity_cols[0]
+            excel_total = excel_df[first_cap_col].sum()
+            # Get capacity for the same year from suppliers
+            validation_year = Year(int(first_cap_col.split()[-1]))
+            supplier_total = sum(
+                s.capacity_by_year.get(validation_year, Volumes(0)) / MT_TO_T  # Convert back to Mt
+                for s in suppliers
             )
-            if abs(excel_product - supplier_product) > tolerance:
+            tolerance = 0.01  # Allow small rounding differences
+
+            if abs(excel_total - supplier_total) > tolerance:
                 raise ValueError(
-                    f"{product} capacity mismatch: Excel={excel_product:.2f} Mt, Suppliers={supplier_product:.2f} Mt"
+                    f"Total capacity mismatch for {validation_year}: Excel={excel_total:.2f} Mt, Suppliers={supplier_total:.2f} Mt"
                 )
+
+            # 3. Per-product capacity preservation
+            for product in excel_df["Products"].unique():
+                excel_product = excel_df[excel_df["Products"] == product][first_cap_col].sum()
+                commodity = Commodities(normalize_product_name(product)).value
+                supplier_product = sum(
+                    s.capacity_by_year.get(validation_year, Volumes(0)) / MT_TO_T
+                    for s in suppliers
+                    if s.commodity == commodity
+                )
+                if abs(excel_product - supplier_product) > tolerance:
+                    raise ValueError(
+                        f"{product} capacity mismatch for {validation_year}: Excel={excel_product:.2f} Mt, Suppliers={supplier_product:.2f} Mt"
+                    )
 
         # 4. Data type and range validation
         for supplier in suppliers:
-            first_capacity = list(supplier.capacity_by_year.values())[0]
-            assert first_capacity >= 0, f"Negative capacity: {supplier.supplier_id}"
+            # Validate all capacity values
+            for year, capacity in supplier.capacity_by_year.items():
+                assert capacity >= 0, f"Negative capacity for {supplier.supplier_id} in {year}"
             assert -90 <= supplier.location.lat <= 90, f"Invalid latitude: {supplier.supplier_id}"
             assert -180 <= supplier.location.lon <= 180, f"Invalid longitude: {supplier.supplier_id}"
 
@@ -730,10 +737,39 @@ def read_mines_as_suppliers(mine_data_excel_path: str, mine_data_sheet_name: str
     # Strip whitespace from column names to handle Excel inconsistencies
     mine_data_df.columns = mine_data_df.columns.str.strip()
 
+    # Extract year-specific columns dynamically - support both formats:
+    # Old format: "Capacity [Mt] 2025", "Production Cost [$/t] 2025", "Mine Price [$/t] 2025"
+    # New format: "capacity Mtpa 2025", "costs $/t 2025", "price $/t 2025"
+    capacity_cols = [
+        col for col in mine_data_df.columns if col.startswith("Capacity [Mt] ") or col.startswith("capacity Mtpa ")
+    ]
+    mine_price_cols = [
+        col for col in mine_data_df.columns if col.startswith("Mine Price [$/t] ") or col.startswith("price $/t ")
+    ]
+    production_cost_cols = [
+        col for col in mine_data_df.columns if col.startswith("Production Cost [$/t] ") or col.startswith("costs $/t ")
+    ]
+
+    # Add logging to help debug
+    logging.info(f"Reading iron ore mines from '{mine_data_sheet_name}' sheet")
+    logging.info(f"  Total rows in sheet: {len(mine_data_df)}")
+    logging.info(f"  Capacity columns found: {len(capacity_cols)} columns")
+    logging.info(f"  Production cost columns found: {len(production_cost_cols)} columns")
+    logging.info(f"  Mine price columns found: {len(mine_price_cols)} columns")
+
+    def extract_year_from_column(col_name: str) -> int:
+        """Extract year from column name like 'Capacity [Mt] 2025' or 'capacity Mtpa 2025'"""
+        return int(col_name.split()[-1])
+
     mines: list[Supplier] = []
+    skipped_rows = 0
     for row_num, (idx, row) in enumerate(mine_data_df.iterrows()):
-        if row["capacity"] == 0:
+        # Check if any capacity column has non-zero value
+        has_capacity = any(row.get(col, 0) > 0 for col in capacity_cols)
+        if not has_capacity:
+            skipped_rows += 1
             continue
+
         # Create a unique location for each mine (not reused)
         mine_location = Location(
             lat=row["lat"],
@@ -743,37 +779,66 @@ def read_mines_as_suppliers(mine_data_excel_path: str, mine_data_sheet_name: str
             iso3=translate_mine_regions_to_iso3.get(row["Region"], ""),
         )
         product = row["Products"]
-        cap_by_year = {
-            Year(year): Volumes(int(row["capacity"] * MT_TO_T))
-            for year in range(EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR + 1)
-        }
+
+        # Parse year-specific capacities
+        cap_by_year = {}
+        for col in capacity_cols:
+            year = Year(extract_year_from_column(col))
+            capacity_value = row.get(col, 0)
+            if pd.notna(capacity_value):
+                cap_by_year[year] = Volumes(int(capacity_value * MT_TO_T))
+            else:
+                cap_by_year[year] = Volumes(0)
+
+        # Parse year-specific mine prices
+        mine_price_by_year = {}
+        for col in mine_price_cols:
+            year = Year(extract_year_from_column(col))
+            price_value = row.get(col)
+            if pd.notna(price_value):
+                mine_price_by_year[year] = float(price_value)
+
+        # Parse year-specific production costs
+        production_cost_by_year = {}
+        for col in production_cost_cols:
+            year = Year(extract_year_from_column(col))
+            cost_value = row.get(col)
+            if pd.notna(cost_value):
+                production_cost_by_year[year] = float(cost_value)
+
+        # If mine_price is not available for a year, use production_cost as fallback
+        for year in cap_by_year.keys():
+            if year not in mine_price_by_year and year in production_cost_by_year:
+                mine_price_by_year[year] = production_cost_by_year[year]
 
         # Generate unique supplier ID - use row_num which is guaranteed to be an int
-        supplier_id = generate_supplier_id(row, mine_location, product, row_index=row_num)
+        # For backward compatibility with old ID generation, use first capacity value
+        first_capacity_mt = list(cap_by_year.values())[0] / MT_TO_T if cap_by_year else 0
+        first_cost = list(production_cost_by_year.values())[0] if production_cost_by_year else 0
+        row_for_id = row.copy()
+        row_for_id["capacity"] = first_capacity_mt
+        row_for_id["costs"] = first_cost
+        supplier_id = generate_supplier_id(row_for_id, mine_location, product, row_index=row_num)
 
-        # Read both costs and price columns for iron ore premiums support
-        # Handle NaN values: if price column exists but cell is empty, fall back to costs
-        price_value = row.get("price")
-        if price_value is None or pd.isna(price_value):
-            mine_price = row["costs"]
-        else:
-            mine_price = price_value
-
-        # Default production_cost to costs (will be overridden by bootstrap based on flag)
         mine = Supplier(
             supplier_id=supplier_id,
             commodity=Commodities(normalize_product_name(product)).value,
             location=mine_location,
             capacity_by_year=cap_by_year,
-            production_cost=row["costs"],
-            mine_cost=row["costs"],
-            mine_price=mine_price,
+            production_cost_by_year=production_cost_by_year,
+            mine_cost_by_year=production_cost_by_year,  # Using production_cost as mine_cost
+            mine_price_by_year=mine_price_by_year,
         )
         mines.append(mine)
 
+    # Log summary
+    logging.info(f"  Processed {len(mines)} iron ore mines")
+    logging.info(f"  Skipped {skipped_rows} rows (zero capacity)")
+    if mines:
+        commodities = set(m.commodity for m in mines)
+        logging.info(f"  Commodities: {commodities}")
     # Validate the suppliers before returning
     validate_suppliers(mines, mine_data_df)
-
     return mines
 
 
@@ -948,15 +1013,22 @@ def refine_scrap_centers_for_major_countries(old_centers):
             for year in years:
                 amount_by_year[Year(year)] = old_center.capacity_by_year[Year(year)] * center["share"]
 
-            # Create new center with the new location and amount_by_year
+            # Create constant production cost dictionary for all years in simulation horizon
+            # This initial value of 450 will be overwritten annually in handlers.py based on BOF hot_metal costs
+            production_cost_by_year = {
+                Year(year): 450.0 for year in range(EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR + 1)
+            }
 
+            # Create new center with the new location and amount_by_year
             new_centers.append(
                 Supplier(
                     commodity=Commodities.SCRAP.value,
                     supplier_id=new_id,
                     location=location,
                     capacity_by_year=amount_by_year,
-                    production_cost=450,
+                    production_cost_by_year=production_cost_by_year,
+                    mine_cost_by_year={},
+                    mine_price_by_year={},
                 )
             )
             center_counter += 1
@@ -1028,12 +1100,21 @@ def read_scrap_as_suppliers(
                 scrap_by_year[Year(year)] = Volumes(KT_TO_T * int(row[col]))
             except ValueError:
                 continue
+
+        # Create constant production cost dictionary for all years in simulation horizon
+        # This initial value of 450 will be overwritten annually in handlers.py based on BOF hot_metal costs
+        production_cost_by_year = {
+            Year(year): 450.0 for year in range(EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR + 1)
+        }
+
         supply_center = Supplier(
             commodity=Commodities.SCRAP.value,
             supplier_id=f"{scrap_location.country}_scrap",
             location=scrap_location,
             capacity_by_year=scrap_by_year,
-            production_cost=450,
+            production_cost_by_year=production_cost_by_year,
+            mine_cost_by_year={},
+            mine_price_by_year={},
         )
         supply_centers.append(supply_center)
 

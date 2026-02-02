@@ -511,7 +511,8 @@ def finalise_iteration(
                         # Ultimate fallback if no cost data available
                         source_cost = 200.0
                         pricing_source = "default"
-                supplier.production_cost = source_cost
+                # Update production cost for the current year
+                supplier.production_cost_by_year[env.year] = source_cost
 
                 if diag.diagnostics_enabled():
                     diag.append_csv(

@@ -15,7 +15,9 @@ def test_connector_to_disabled_technology_is_skipped():
         location=Location(lat=0.0, lon=0.0, country="Testland", region="Test", iso3="TST"),
         commodity="io_mid",
         capacity_by_year={Year(2025): Volumes(100.0)},
-        production_cost=42.0,
+        production_cost_by_year={Year(2025): 42.0},
+        mine_cost_by_year={},
+        mine_price_by_year={},
     )
     repository.suppliers.add(supplier)
 

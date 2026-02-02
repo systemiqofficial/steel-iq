@@ -5858,17 +5858,17 @@ class Supplier:
         location: Location,
         commodity: str,
         capacity_by_year: dict[Year, Volumes],
-        production_cost: float,
-        mine_cost: float | None = None,
-        mine_price: float | None = None,
+        production_cost_by_year: dict[Year, float],
+        mine_cost_by_year: dict[Year, float] | None = None,
+        mine_price_by_year: dict[Year, float] | None = None,
     ) -> None:
         self.supplier_id = supplier_id
         self.location = location
         self.capacity_by_year = capacity_by_year
         self.commodity = commodity
-        self.production_cost = production_cost
-        self.mine_cost = mine_cost
-        self.mine_price = mine_price
+        self.production_cost_by_year = production_cost_by_year
+        self.mine_cost_by_year = mine_cost_by_year if mine_cost_by_year is not None else {}
+        self.mine_price_by_year = mine_price_by_year if mine_price_by_year is not None else {}
 
     def __repr__(self) -> str:
         return f"Supplier: <{self.supplier_id}>"
@@ -8423,10 +8423,15 @@ class Environment:
         return bom_dict, utilization, most_common_reductant
 
     def calculate_average_commodity_price_per_region(
-        self, world_plants: list[Plant], world_suppliers: list[Supplier]
+        self, world_plants: list[Plant], world_suppliers: list[Supplier], year: Year
     ) -> dict[Tuple, float]:
         """
         Calculate the average commodity price per iso3 based on the per unit costs.
+
+        Args:
+            world_plants: List of plants to include in calculation
+            world_suppliers: List of suppliers to include in calculation
+            year: The year for which to retrieve supplier production costs
         """
         # Initialize the output dict: (commodity, region) -> average price
         average_commodity_price_per_region = {}
@@ -8465,8 +8470,9 @@ class Environment:
 
         # 2) Process supplier-level data
         for supplier in world_suppliers:
-            # Skip if no cost provided
-            if supplier.production_cost is None:
+            # Get production cost for the specified year
+            production_cost = supplier.production_cost_by_year.get(year)
+            if production_cost is None:
                 continue
 
             # Normalize supplier commodity to string
@@ -8483,7 +8489,7 @@ class Environment:
                 count_per_commodity_and_region[key] = 0
 
             # Accumulate cost and count
-            sum_per_commodity_and_region[key] += supplier.production_cost
+            sum_per_commodity_and_region[key] += production_cost
             count_per_commodity_and_region[key] += 1
 
         # 3) Compute averages
