@@ -33,11 +33,27 @@ Three types of subsidies are supported:
 All subsidies are time-bound with `start_year` and `end_year`, automatically filtered each simulation year.
 
 **Functions:**
-- `filter_active_subsidies()` - Filters subsidies to only those active in the current year
+- `filter_subsidies_for_year()` - Filters subsidies to only those active in a specific year
+- `collect_active_subsidies_over_period()` - Collects unique subsidies active during any year in a period (with deduplication)
 - `calculate_capex_with_subsidies()` - Applies absolute and relative subsidies to CAPEX
 - `calculate_opex_with_subsidies()` - Applies absolute and relative subsidies to OPEX (floor at 0)
 - `calculate_opex_list_with_subsidies()` - Generates time-varying OPEX with year-specific subsidies
 - `calculate_debt_with_subsidies()` - Cost-of-debt subsidies; absolute point reductions only; floored at risk-free rate
+
+#### Subsidy Filtering Functions
+
+Two functions handle subsidy filtering for different use cases:
+
+**`filter_subsidies_for_year(subsidies, year)`** - Use for single-year filtering:
+- CAPEX subsidies (applied at construction start)
+- Debt subsidies (applied at financing decision)
+- Current-year OPEX tracking
+
+**`collect_active_subsidies_over_period(subsidies, start_year, end_year)`** - Use for multi-year collection:
+- OPEX subsidies over plant lifetime (for NPV calculations)
+- Any scenario requiring subsidies across multiple years
+
+The period function uses `set()` internally for deduplication - a subsidy spanning 2025-2030 appears once, not six times. The `end_year` is exclusive (matches Python `range()` convention).
 
 ### Cost Breakdown Analysis
 Extracts and processes bills of materials (BOM) to accurately assess the material and energy costs associated with production. Returns nested dictionaries with cost breakdowns by output product or feedstock.

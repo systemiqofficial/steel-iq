@@ -134,7 +134,7 @@ graph TD
   - CAPEX subsidies: Reduce upfront investment
 - **Actions**:
   - Get all subsidies for location and technology
-  - Filter to only active subsidies for current year using `filter_active_subsidies()`
+  - Filter to only active subsidies for current year using `filter_subsidies_for_year()`
   - Calculate adjusted cost of debt using `calculate_debt_with_subsidies()`
   - Calculate adjusted CAPEX using `calculate_capex_with_subsidies()`
 - **Key Variables**: `selected_debt_subsidies`, `selected_capex_subsidies`, adjusted `cost_of_debt`, adjusted `capex`

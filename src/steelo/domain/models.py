@@ -18,7 +18,8 @@ from steelo.domain.calculate_costs import (
     calculate_opex_list_with_subsidies,
     calculate_unit_total_opex,
     calculate_variable_opex,
-    filter_active_subsidies,
+    filter_subsidies_for_year,
+    collect_active_subsidies_over_period,
     ENERGY_FEEDSTOCK_KEYS,
     SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION,
 )
@@ -2148,16 +2149,16 @@ class FurnaceGroup:
 
         # ========== STAGE 2: Calculate Current Technology OPEX with Subsidies ==========
         # Collect all active OPEX subsidies across the remaining lifetime
-        applied_opex_subsidies = []
-        for year in range(current_year, current_year + self.lifetime.end):
-            applied_opex_subsidies.extend(
-                filter_active_subsidies(tech_opex_subsidies.get(self.technology.name, []), Year(year))
-            )
+        applied_opex_subsidies = collect_active_subsidies_over_period(
+            tech_opex_subsidies.get(self.technology.name, []),
+            start_year=Year(current_year),
+            end_year=Year(current_year + self.lifetime.end),
+        )
 
         # Calculate unit OPEX with subsidies (without carbon costs yet)
         unit_opex_list = calculate_opex_list_with_subsidies(
             opex=self.unit_total_opex_no_subsidy,
-            opex_subsidies=list(set(applied_opex_subsidies)),
+            opex_subsidies=applied_opex_subsidies,
             start_year=self.lifetime.current,
             end_year=self.lifetime.end,
         )
@@ -2265,11 +2266,13 @@ class FurnaceGroup:
                 continue
 
             # Collect all active subsidies for this technology
-            capex_subsidies = filter_active_subsidies(tech_capex_subsidies.get(tech, []), current_year)
-            debt_subsidies = filter_active_subsidies(tech_debt_subsidies.get(tech, []), current_year)
-            opex_subsidies = []
-            for year in range(current_year + construction_time, current_year + construction_time + plant_lifetime):
-                opex_subsidies.extend(filter_active_subsidies(tech_opex_subsidies.get(tech, []), Year(year)))
+            capex_subsidies = filter_subsidies_for_year(tech_capex_subsidies.get(tech, []), current_year)
+            debt_subsidies = filter_subsidies_for_year(tech_debt_subsidies.get(tech, []), current_year)
+            opex_subsidies = collect_active_subsidies_over_period(
+                tech_opex_subsidies.get(tech, []),
+                start_year=Year(current_year + construction_time),
+                end_year=Year(current_year + construction_time + plant_lifetime),
+            )
 
             # Apply subsidies to capex
             original_capex = capex_dict[tech]
@@ -2403,7 +2406,7 @@ class FurnaceGroup:
                 # Apply operating subsidies over plant lifetime
                 unit_total_opex_list = calculate_opex_list_with_subsidies(
                     opex=unit_total_opex,
-                    opex_subsidies=list(set(opex_subsidies)),
+                    opex_subsidies=opex_subsidies,
                     start_year=Year(current_year + construction_time),
                     end_year=Year(current_year + construction_time + plant_lifetime),
                 )
@@ -2714,15 +2717,17 @@ class FurnaceGroup:
             earliest_operation_end_year = Year(earliest_operation_start_year + plant_lifetime)
 
             # Get OPEX (with subsidies) for the years the plant would be operational
-            selected_opex_subsidies = []
-            for subsidy_year in range(earliest_operation_start_year, earliest_operation_end_year):
-                selected_opex_subsidies.extend(filter_active_subsidies(all_opex_subsidies, Year(subsidy_year)))
+            selected_opex_subsidies = collect_active_subsidies_over_period(
+                all_opex_subsidies,
+                start_year=earliest_operation_start_year,
+                end_year=earliest_operation_end_year,
+            )
             unit_vopex = calculate_variable_opex(self.bill_of_materials["materials"], self.bill_of_materials["energy"])
             unit_fopex = self.unit_fopex
             unit_total_opex = unit_vopex + unit_fopex
             unit_total_opex_list = calculate_opex_list_with_subsidies(
                 opex=unit_total_opex,
-                opex_subsidies=list(set(selected_opex_subsidies)),
+                opex_subsidies=selected_opex_subsidies,
                 start_year=earliest_operation_start_year,
                 end_year=earliest_operation_end_year,
             )
@@ -3668,12 +3673,10 @@ class Plant:
             return None
 
         # ===== Filter and apply subsidies for selected technology =====
-        from steelo.domain.calculate_costs import filter_active_subsidies
-
         all_capex_subs = tech_capex_subsidies.get(best_tech, [])
         all_debt_subs = tech_debt_subsidies.get(best_tech, [])
-        capex_subs = filter_active_subsidies(all_capex_subs, current_year)
-        debt_subs = filter_active_subsidies(all_debt_subs, current_year)
+        capex_subs = filter_subsidies_for_year(all_capex_subs, current_year)
+        debt_subs = filter_subsidies_for_year(all_debt_subs, current_year)
 
         cost_of_debt_with_subsidies = calculate_debt_with_subsidies(
             cost_of_debt=cost_of_debt,
@@ -4689,17 +4692,20 @@ class PlantGroup:
                 )
 
                 # Apply subsidies (filter to only active ones in current year)
-                from steelo.domain.calculate_costs import filter_active_subsidies
+                from steelo.domain.calculate_costs import (
+                    filter_subsidies_for_year,
+                    collect_active_subsidies_over_period,
+                )
 
                 # CAPEX subsidies
                 all_capex_subsidies = capex_subsidies.get(plant.location.iso3, {}).get(tech, [])
-                selected_capex_subsidies = filter_active_subsidies(all_capex_subsidies, current_year)
+                selected_capex_subsidies = filter_subsidies_for_year(all_capex_subsidies, current_year)
                 original_capex = capex
                 capex = cc.calculate_capex_with_subsidies(original_capex, selected_capex_subsidies)
 
                 # Debt subsidies
                 all_debt_subsidies = debt_subsidies.get(plant.location.iso3, {}).get(tech, [])
-                selected_debt_subsidies = filter_active_subsidies(all_debt_subsidies, current_year)
+                selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, current_year)
                 cost_of_debt = cc.calculate_debt_with_subsidies(
                     cost_of_debt=cost_of_debt_original,
                     debt_subsidies=selected_debt_subsidies,
@@ -4719,15 +4725,15 @@ class PlantGroup:
                 )
 
                 # OPEX subsidies (collect active subsidies across plant lifetime)
-                selected_opex_subsidies = []
-                for year in range(current_year + construction_time, current_year + construction_time + plant_lifetime):
-                    selected_opex_subsidies.extend(
-                        filter_active_subsidies(opex_subsidies.get(plant.location.iso3, {}).get(tech, []), Year(year))
-                    )
+                selected_opex_subsidies = collect_active_subsidies_over_period(
+                    opex_subsidies.get(plant.location.iso3, {}).get(tech, []),
+                    start_year=Year(current_year + construction_time),
+                    end_year=Year(current_year + construction_time + plant_lifetime),
+                )
 
                 unit_total_opex_list = cc.calculate_opex_list_with_subsidies(
                     opex=unit_total_opex,
-                    opex_subsidies=list(set(selected_opex_subsidies)),
+                    opex_subsidies=selected_opex_subsidies,
                     start_year=Year(current_year + construction_time),
                     end_year=Year(current_year + construction_time + plant_lifetime),
                 )
@@ -4779,7 +4785,7 @@ class PlantGroup:
 
                 # Calculate subsidized CAPEX for best technology
                 all_best_capex_subsidies = capex_subsidies.get(plant.location.iso3, {}).get(best_tech, [])
-                best_capex_subsidies = filter_active_subsidies(all_best_capex_subsidies, current_year)
+                best_capex_subsidies = filter_subsidies_for_year(all_best_capex_subsidies, current_year)
                 best_capex = cc.calculate_capex_with_subsidies(greenfield_capex[best_tech], best_capex_subsidies)
 
                 NPV_p[plant.plant_id] = NPV.get(best_tech), best_tech, best_capex
@@ -5064,14 +5070,13 @@ class PlantGroup:
         )
 
         # ========== STAGE 10: APPLY SUBSIDIES ==========
-        from steelo.domain.calculate_costs import filter_active_subsidies
         from steelo.domain import calculate_costs as cc
 
         # Get all subsidies for this location and technology, then filter to active ones
         all_debt_subsidies = debt_subsidies.get(plant.location.iso3, {}).get(tech, [])
         all_capex_subsidies = capex_subsidies.get(plant.location.iso3, {}).get(tech, [])
-        selected_debt_subsidies = filter_active_subsidies(all_debt_subsidies, current_year)
-        selected_capex_subsidies = filter_active_subsidies(all_capex_subsidies, current_year)
+        selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, current_year)
+        selected_capex_subsidies = filter_subsidies_for_year(all_capex_subsidies, current_year)
 
         # Apply subsidies to debt and CAPEX
         cost_of_debt = cc.calculate_debt_with_subsidies(
@@ -5458,8 +5463,6 @@ class PlantGroup:
                         continue
 
                     # Get subsidies for this location and technology - filter to only active ones
-                    from steelo.domain.calculate_costs import filter_active_subsidies
-
                     all_debt_subsidies = debt_subsidies.get(iso3, {}).get(fg.technology.name, [])
                     all_capex_subsidies = capex_subsidies.get(iso3, {}).get(fg.technology.name, [])
 
@@ -5474,8 +5477,8 @@ class PlantGroup:
                             current_year + consideration_time + 1 - years_already_considered
                         )  # announcement_time = 1
 
-                    selected_debt_subsidies = filter_active_subsidies(all_debt_subsidies, year)
-                    selected_capex_subsidies = filter_active_subsidies(all_capex_subsidies, year)
+                    selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, year)
+                    selected_capex_subsidies = filter_subsidies_for_year(all_capex_subsidies, year)
 
                     new_plant_logger.debug(
                         f"[NEW PLANTS]: Subsidies for {fg.technology.name} in {iso3} for year {current_year}: "

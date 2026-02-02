@@ -552,7 +552,8 @@ if expansion_and_switch_capacity + furnace_capacity > expansion_limit:
 
 ### External Functions Called
 - `furnace_group.optimal_technology_name()`: Gets NPV analysis
-- `filter_active_subsidies()`: Filters subsidies by year
+- `filter_subsidies_for_year()`: Filters subsidies for a specific year
+- `collect_active_subsidies_over_period()`: Collects unique subsidies over a multi-year period
 - `calculate_debt_with_subsidies()`: Applies debt subsidies
 
 # Function Relationship Summary
