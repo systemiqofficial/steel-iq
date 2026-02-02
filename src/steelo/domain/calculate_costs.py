@@ -1215,6 +1215,10 @@ def calculate_capex_with_subsidies(capex: float, capex_subsidies: list["Subsidy"
 
     Returns:
         float: The final CAPEX after applying subsidies (minimum value of 0).
+
+    Note:
+        Negative subsidy_amount values act as taxes/penalties (increase cost).
+        Result is floored at 0 - subsidies cannot make costs negative.
     """
     # If no capex subsidies in the list, return original capex
     if capex_subsidies == []:
@@ -1246,6 +1250,10 @@ def calculate_opex_with_subsidies(opex: float, opex_subsidies: list["Subsidy"]) 
 
     Returns:
         float: The final OPEX after applying subsidies (minimum value of 0).
+
+    Note:
+        Negative subsidy_amount values act as taxes/penalties (increase cost).
+        Result is floored at 0 - subsidies cannot make costs negative.
     """
     # If no opex subsidies in the list, return original opex
     if opex_subsidies == []:
@@ -1404,7 +1412,10 @@ def calculate_debt_with_subsidies(cost_of_debt: float, debt_subsidies: list["Sub
     Returns:
         float: The effective cost of debt after applying subsidies (minimum value of risk_free_rate).
 
-    Note: Relative subsidies are ignored for cost of debt calculations; only absolute subsidies are applied.
+    Note:
+        Relative subsidies are ignored for cost of debt calculations; only absolute subsidies are applied.
+        Negative subsidy_amount values act as taxes/penalties (increase cost of debt).
+        Result is floored at risk_free_rate - subsidies cannot reduce cost below risk-free rate.
     """
     # If no cost of debt subsidies in the list, return original cost of debt
     if debt_subsidies == []:

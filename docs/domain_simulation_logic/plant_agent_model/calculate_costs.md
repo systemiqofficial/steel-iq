@@ -32,6 +32,25 @@ Three types of subsidies are supported:
 
 All subsidies are time-bound with `start_year` and `end_year`, automatically filtered each simulation year.
 
+#### Negative Subsidies (Taxes/Penalties)
+
+Subsidies can have negative `subsidy_amount` values, which act as taxes or penalties that **increase** costs instead of reducing them.
+
+**Formula:** `cost_with_subsidy = cost - subsidy_amount`
+
+| subsidy_amount | Calculation | Effect |
+|----------------|-------------|--------|
+| +100 (positive) | `500 - 100 = 400` | Cost decreases |
+| -100 (negative) | `500 - (-100) = 600` | Cost increases |
+| -25% relative | `400 - (400 × -0.25) = 500` | 25% cost increase |
+
+**Use cases:**
+- Carbon penalties on high-emission technologies
+- Environmental surcharges
+- Regulatory fees
+
+**Floor behavior:** The final cost cannot go negative (no "money back"). CAPEX/OPEX floor at 0, COST OF DEBT floors at risk-free rate.
+
 **Functions:**
 - `filter_subsidies_for_year()` - Filters subsidies to only those active in a specific year
 - `collect_active_subsidies_over_period()` - Collects unique subsidies active during any year in a period (with deduplication)
