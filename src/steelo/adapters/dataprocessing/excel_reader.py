@@ -1722,7 +1722,8 @@ def read_country_mappings(excel_path: Path, sheet_name: str = "Country mapping")
     for idx, row in df.iterrows():
         try:
             # Build the base mapping with core attributes
-            mapping_kwargs = {
+            # Type hint to allow str, None, and bool values
+            mapping_kwargs: dict[str, str | None | bool] = {
                 "country": str(row["Country"]),
                 "iso2": str(row["ISO 2-letter code"]),
                 "iso3": str(row["ISO 3-letter code"]),
@@ -1758,7 +1759,7 @@ def read_country_mappings(excel_path: Path, sheet_name: str = "Country mapping")
                     attr_name = col.replace("/", "_").replace(" ", "_").replace("-", "_")
                     mapping_kwargs[attr_name] = boolean_val
 
-            mapping = CountryMapping(**mapping_kwargs)
+            mapping = CountryMapping(**mapping_kwargs)  # type: ignore[arg-type]
             mappings.append(mapping)
         except Exception as e:
             # idx from iterrows is always an integer for standard DataFrames
