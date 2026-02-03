@@ -404,6 +404,79 @@ class TestPrepareDataForBusinessOpportunity:
         # CAPEX should be reduced by 20%
         assert eaf_data["capex"] == 800.0  # 1000 * (1 - 0.2)
 
+    def test_apply_hydrogen_and_electricity_subsidies(self, mock_get_bom):
+        """Test that H2 and electricity subsidies reduce energy costs."""
+        product_to_tech = {"steel": ["EAF"]}
+        best_locations_subset = {
+            "steel": [
+                NewPlantLocation(
+                    Latitude=40.0, Longitude=-100.0, iso3="USA", power_price=0.05, capped_lcoh=5.0, rail_cost=10.0
+                )
+            ]
+        }
+        energy_costs = {"USA": {Year(2025): {"electricity": 50.0, "hydrogen": 5.0, "natural_gas": 3.0}}}
+        capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
+        cost_of_debt_all_locs = {"USA": 0.05}
+        cost_of_equity_all_locs = {"USA": 0.08}
+        fopex_all_locs_techs = {"USA": {"eaf": 50.0}}
+        iso3_to_region_map = {"USA": "Americas"}
+        carbon_costs = {"USA": {Year(2030): 50.0}}
+
+        h2_subsidy = Subsidy(
+            scenario_name="test_h2",
+            iso3="USA",
+            start_year=Year(2025),
+            end_year=Year(2035),
+            technology_name="EAF",
+            cost_item="hydrogen",
+            subsidy_type="absolute",
+            subsidy_amount=1.0,  # $1/kg reduction
+        )
+        elec_subsidy = Subsidy(
+            scenario_name="test_elec",
+            iso3="USA",
+            start_year=Year(2025),
+            end_year=Year(2035),
+            technology_name="EAF",
+            cost_item="electricity",
+            subsidy_type="relative",
+            subsidy_amount=0.2,  # 20% reduction
+        )
+
+        cost_data = prepare_cost_data_for_business_opportunity(
+            product_to_tech=product_to_tech,
+            best_locations_subset=best_locations_subset,
+            current_year=Year(2025),
+            target_year=Year(2030),
+            energy_costs=energy_costs,
+            capex_dict_all_locs_techs=capex_dict_all_locs_techs,
+            cost_of_debt_all_locs=cost_of_debt_all_locs,
+            cost_of_equity_all_locs=cost_of_equity_all_locs,
+            fopex_all_locs_techs=fopex_all_locs_techs,
+            steel_plant_capacity=100.0,
+            get_bom_from_avg_boms=mock_get_bom,
+            iso3_to_region_map=iso3_to_region_map,
+            global_risk_free_rate=0.03,
+            capex_subsidies={},
+            debt_subsidies={},
+            opex_subsidies={},
+            hydrogen_subsidies={"USA": {"EAF": [h2_subsidy]}},
+            electricity_subsidies={"USA": {"EAF": [elec_subsidy]}},
+            carbon_costs=carbon_costs,
+            most_common_reductant={},
+            environment_most_common_reductant={},
+        )
+
+        site_id = (40.0, -100.0, "USA")
+        eaf_data = cost_data["steel"][site_id]["EAF"]
+
+        # H2 price from capped_lcoh=5.0, with $1 absolute subsidy -> 4.0
+        assert eaf_data["energy_costs"]["hydrogen"] == 4.0
+        # Electricity from power_price=0.05, with 20% relative subsidy -> 0.04
+        assert eaf_data["energy_costs"]["electricity"] == 0.04
+        # Natural gas should be unchanged
+        assert eaf_data["energy_costs"]["natural_gas"] == 3.0
+
     def test_missing_data_raises_error(self, mock_get_bom):
         """Test that missing data for parameters raises ValueError."""
         product_to_tech = {"steel": ["EAF"]}
