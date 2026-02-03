@@ -233,3 +233,75 @@ def test_get_subsidised_energy_costs_raises_if_electricity_key_missing():
     )
     with pytest.raises(KeyError, match="'electricity' key not found"):
         calculate_costs.get_subsidised_energy_costs(energy_costs, [], [elec_sub])
+
+
+def test_furnace_group_set_subsidised_energy_costs():
+    """Test that FurnaceGroup tracks subsidised energy costs and original prices."""
+    from datetime import date
+    from steelo.domain.models import FurnaceGroup, PointInTime, Technology
+
+    # Create minimal FurnaceGroup for testing
+    technology = Technology(name="EAF", energy_consumption=1.0, bill_of_materials={}, product="steel")
+    lifetime = PointInTime(plant_lifetime=20, current=Year(2025))
+    furnace_group = FurnaceGroup(
+        furnace_group_id="test_fg_1",
+        capacity=100,
+        status="operating",
+        last_renovation_date=date(2020, 1, 1),
+        technology=technology,
+        historical_production={},
+        utilization_rate=0.7,
+        lifetime=lifetime,
+    )
+
+    # Set initial energy costs on the furnace group
+    furnace_group.energy_costs = {"hydrogen": 5.0, "electricity": 0.10, "natural_gas": 3.0}
+
+    # Create subsidies
+    h2_subsidy = Subsidy(
+        scenario_name="test_h2",
+        iso3="USA",
+        start_year=Year(2025),
+        end_year=Year(2030),
+        technology_name="BF",
+        cost_item="hydrogen",
+        subsidy_type="absolute",
+        subsidy_amount=1.0,
+    )
+    elec_subsidy = Subsidy(
+        scenario_name="test_elec",
+        iso3="USA",
+        start_year=Year(2025),
+        end_year=Year(2030),
+        technology_name="BF",
+        cost_item="electricity",
+        subsidy_type="relative",
+        subsidy_amount=0.2,
+    )
+
+    # Prepare subsidised costs (simulating what get_subsidised_energy_costs returns)
+    subsidised_costs = {"hydrogen": 4.0, "electricity": 0.08, "natural_gas": 3.0}
+    no_subsidy_prices = {"hydrogen": 5.0, "electricity": 0.10}
+
+    # Apply subsidised energy costs
+    furnace_group.set_subsidised_energy_costs(
+        subsidised_costs=subsidised_costs,
+        no_subsidy_prices=no_subsidy_prices,
+        h2_subsidies=[h2_subsidy],
+        elec_subsidies=[elec_subsidy],
+    )
+
+    # Verify energy_costs updated
+    assert furnace_group.energy_costs["hydrogen"] == 4.0
+    assert furnace_group.energy_costs["electricity"] == 0.08
+    assert furnace_group.energy_costs["natural_gas"] == 3.0
+
+    # Verify original prices stored
+    assert furnace_group.energy_costs_no_subsidy["hydrogen"] == 5.0
+    assert furnace_group.energy_costs_no_subsidy["electricity"] == 0.10
+
+    # Verify subsidies tracked in applied_subsidies
+    assert len(furnace_group.applied_subsidies["hydrogen"]) == 1
+    assert furnace_group.applied_subsidies["hydrogen"][0] == h2_subsidy
+    assert len(furnace_group.applied_subsidies["electricity"]) == 1
+    assert furnace_group.applied_subsidies["electricity"][0] == elec_subsidy
