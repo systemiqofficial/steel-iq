@@ -5281,6 +5281,8 @@ class PlantGroup:
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
+        hydrogen_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
+        electricity_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         environment_most_common_reductant: dict[str, str] = {},
     ) -> commands.Command:
         """
@@ -5329,6 +5331,8 @@ class PlantGroup:
             capex_subsidies: Dictionary mapping iso3 -> tech -> list of capex subsidies
             debt_subsidies: Dictionary mapping iso3 -> tech -> list of debt subsidies
             opex_subsidies: Dictionary mapping iso3 -> tech -> list of opex subsidies
+            hydrogen_subsidies: Dictionary mapping iso3 -> tech -> list of H2 subsidies
+            electricity_subsidies: Dictionary mapping iso3 -> tech -> list of electricity subsidies
 
         Returns:
             Command to add new Plant and FurnaceGroup objects for the identified business opportunities
@@ -5414,6 +5418,8 @@ class PlantGroup:
             capex_subsidies=capex_subsidies,
             debt_subsidies=debt_subsidies,
             opex_subsidies=opex_subsidies,
+            hydrogen_subsidies=hydrogen_subsidies,
+            electricity_subsidies=electricity_subsidies,
             carbon_costs=carbon_costs,
             most_common_reductant=self.most_common_reductant,
             environment_most_common_reductant=environment_most_common_reductant,
@@ -5488,6 +5494,8 @@ class PlantGroup:
         global_risk_free_rate: float,
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
+        hydrogen_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
+        electricity_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
     ) -> list[commands.Command]:
         """
         Update dynamic cost data for all furnace groups in all "indi" plants which have not been
@@ -5496,8 +5504,8 @@ class PlantGroup:
         Dynamic costs include:
             - CAPEX with subsidies
             - Cost of debt with subsidies
-            - Electricity costs from custom energy model
-            - Hydrogen costs from custom energy model
+            - Electricity costs from custom energy model (with subsidies)
+            - Hydrogen costs from custom energy model (with subsidies)
 
         Dynamic costs are updated based on the following logic:
             - Base costs: CAPEX, cost of debt, electricity costs, and hydrogen costs are set to the
@@ -5516,6 +5524,8 @@ class PlantGroup:
             global_risk_free_rate: Global risk-free interest rate
             capex_subsidies: Dictionary mapping iso3 -> tech -> list of capex subsidies
             debt_subsidies: Dictionary mapping iso3 -> tech -> list of debt subsidies
+            hydrogen_subsidies: Dictionary mapping iso3 -> tech -> list of H2 subsidies
+            electricity_subsidies: Dictionary mapping iso3 -> tech -> list of electricity subsidies
 
         Returns:
             List of UpdateDynamicCosts commands for each furnace group that was updated.
@@ -5611,6 +5621,25 @@ class PlantGroup:
 
                     new_costs["electricity"] = power_price
                     new_costs["hydrogen"] = hydrogen_price
+
+                    # Apply H2/electricity subsidies
+                    h2_subs = hydrogen_subsidies.get(iso3, {}).get(fg.technology.name, [])
+                    elec_subs = electricity_subsidies.get(iso3, {}).get(fg.technology.name, [])
+                    active_h2_subs = filter_subsidies_for_year(h2_subs, year)
+                    active_elec_subs = filter_subsidies_for_year(elec_subs, year)
+
+                    if active_h2_subs or active_elec_subs:
+                        temp_costs = {"hydrogen": hydrogen_price, "electricity": power_price}
+                        subsidised, _ = cc.get_subsidised_energy_costs(temp_costs, active_h2_subs, active_elec_subs)
+                        # DEBUG: Log subsidy application for INDI dynamic cost update
+                        new_plant_logger.debug(
+                            f"[INDI H2/ELEC SUBS] Dynamic update: {iso3}/{fg.technology.name} year={year} "
+                            f"H2: {hydrogen_price:.3f} -> {subsidised['hydrogen']:.3f} "
+                            f"Elec: {power_price:.4f} -> {subsidised['electricity']:.4f} "
+                            f"({len(active_h2_subs)} H2 subs, {len(active_elec_subs)} elec subs)"
+                        )
+                        new_costs["electricity"] = subsidised["electricity"]
+                        new_costs["hydrogen"] = subsidised["hydrogen"]
 
                     # Calculate updated BOM with new energy prices
                     new_bom: dict[str, dict[str, dict[str, Any]]] | None = None
@@ -6019,6 +6048,23 @@ class TradeTariff:
 
 
 class Subsidy:
+    """Financial subsidy reducing costs for specific technologies and regions.
+
+    Represents a policy instrument that reduces costs (CAPEX, OPEX, debt, hydrogen, or electricity)
+    for steel production technologies within a country during a specified time period.
+
+    Attributes:
+        scenario_name: Name of the subsidy scenario/policy.
+        iso3: ISO3 country code where the subsidy applies.
+        start_year: First year the subsidy is active (inclusive).
+        end_year: Last year the subsidy is active (inclusive).
+        technology_name: Technology the subsidy applies to, or "all" for all technologies.
+        cost_item: Type of cost subsidised ("opex", "capex", "cost of debt", "hydrogen", "electricity").
+        subsidy_type: Either "absolute" (fixed amount) or "relative" (percentage).
+        subsidy_amount: The subsidy value - fixed $/unit for absolute, decimal fraction for relative.
+        subsidy_name: Auto-generated unique identifier string.
+    """
+
     def __init__(
         self,
         scenario_name: str,
@@ -8265,6 +8311,8 @@ class Environment:
             tech: Technology name (must exist in both avg_boms and dynamic_feedstocks).
                 Examples: "EAF", "BF-BOF", "DRI-EAF".
             capacity: Annual production capacity in tons. Used to scale material/energy demands.
+            most_common_reductant: Optional reductant to use for BOM generation. If None,
+                accepts all feedstocks and extracts a reductant from available data.
 
         Returns:
             Tuple of (bom_dict, utilization_rate, chosen_reductant) where:
@@ -8288,15 +8336,15 @@ class Environment:
                         }
                     }
                 - utilization_rate: Expected utilization (from avg_utilization, default 0.6)
-                - chosen_reductant: Name of the selected reductant (e.g., "coke", "natural_gas")
-                    or None if no energy data available
+                - chosen_reductant: Name of the selected reductant (e.g., "coke", "natural_gas"),
+                    or empty string if no reductant data available
 
         Raises:
             KeyError: If technology not found in avg_boms or if material in avg_boms
                 not found in dynamic_feedstocks (indicates data inconsistency).
 
         Notes:
-            - Returns (None, 0.6, None) if no energy cost data found for technology.
+            - Returns (None, 0.6, "") if no energy cost data found for technology.
             - Logs extensive debug information via bom_logger for troubleshooting.
             - Assumes avg_boms already populated (call generate_average_boms() first).
             - Material demand shares from avg_boms should sum to 1.0 per technology.
