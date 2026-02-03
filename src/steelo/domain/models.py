@@ -6084,7 +6084,9 @@ class Subsidy:
         self.cost_item = cost_item
         self.subsidy_type = subsidy_type
         self.subsidy_amount = subsidy_amount
-        self.subsidy_name = f"{self.iso3}_{self.scenario_name}_{self.technology_name}_{self.cost_item}"
+        self.subsidy_name = (
+            f"{self.iso3}_{self.scenario_name}_{self.technology_name}_{self.cost_item}_{self.subsidy_type}"
+        )
 
     def __repr__(self) -> str:
         return f"Subsidy: <{self.subsidy_name}>"
