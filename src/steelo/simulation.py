@@ -34,7 +34,7 @@ from steelo.utilities.plotting import (
 )
 from .logging_config import LoggingConfig
 from steelo.domain.constants import T_TO_KT, MT_TO_T
-from steelo.domain.calculate_costs import filter_subsidies_for_year
+from steelo.domain.calculate_costs import filter_subsidies_for_year, get_subsidised_energy_costs
 from .furnace_breakdown_logging_minimal import FurnaceBreakdownLogger
 
 if TYPE_CHECKING:
@@ -1010,6 +1010,23 @@ class SimulationRunner:
             for plant in bus.uow.plants.list():
                 plant.update_furnace_tech_unit_fopex()
                 plant.update_furnace_hydrogen_costs(capped_hydrogen_cost_dict)
+
+                # Apply H2/electricity subsidies to energy_costs (after H2 price update)
+                for fg in plant.furnace_groups:
+                    all_h2_subs = bus.env.hydrogen_subsidies.get(plant.location.iso3, {}).get(fg.technology.name, [])
+                    all_elec_subs = bus.env.electricity_subsidies.get(plant.location.iso3, {}).get(
+                        fg.technology.name, []
+                    )
+                    active_h2_subs = filter_subsidies_for_year(all_h2_subs, bus.env.year)
+                    active_elec_subs = filter_subsidies_for_year(all_elec_subs, bus.env.year)
+
+                    if active_h2_subs or active_elec_subs:
+                        subsidised_costs, no_subsidy_prices = get_subsidised_energy_costs(
+                            fg.energy_costs, active_h2_subs, active_elec_subs
+                        )
+                        fg.set_subsidised_energy_costs(
+                            subsidised_costs, no_subsidy_prices, active_h2_subs, active_elec_subs
+                        )
 
                 # Set carbon costs for the plant based on its location
                 if plant.location.iso3 in bus.env.carbon_costs:
