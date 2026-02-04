@@ -1045,6 +1045,13 @@ class SimulationRunner:
                     year=bus.env.year,
                 )
 
+                # Collect market prices for iron and steel
+                prices = data_collector.collect_market_iron_steel_price()
+                data_collector.trace_price[bus.env.year] = prices
+                logger.info(
+                    f"Year {bus.env.year} prices - Steel: ${prices['steel']:.2f}/t, Iron: ${prices['iron']:.2f}/t"
+                )
+
             commands[bus.env.year] = bus.collect_commands()
 
             with LoggingConfig.simulation_logging("DebugLogging"):
@@ -1117,6 +1124,65 @@ class SimulationRunner:
             plot_paths=bus.env.plot_paths,
             iso3_to_region_map=bus.env.country_mappings.iso3_to_region(),
         )
+
+        # Export market prices to CSV and plot
+        if data_collector.trace_price:
+            import pandas as pd
+            import matplotlib.pyplot as plt
+
+            price_data = []
+            for year, prices in sorted(data_collector.trace_price.items()):
+                price_data.append(
+                    {
+                        "year": year,
+                        "steel_price_usd_per_t": prices.get("steel", 0.0),
+                        "iron_price_usd_per_t": prices.get("iron", 0.0),
+                    }
+                )
+
+            price_df = pd.DataFrame(price_data)
+
+            # Save CSV to output/data directory
+            data_dir = self.config.output_dir / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            price_csv_path = data_dir / f"market_prices_{start_year}_{end_year}.csv"
+            price_df.to_csv(price_csv_path, index=False)
+            logger.info(f"Saved market prices to {price_csv_path}")
+
+            # Create line plot of prices over time
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.plot(
+                price_df["year"],
+                price_df["steel_price_usd_per_t"],
+                marker="o",
+                linewidth=2,
+                label="Steel",
+                color="#1f77b4",
+            )
+            ax.plot(
+                price_df["year"],
+                price_df["iron_price_usd_per_t"],
+                marker="s",
+                linewidth=2,
+                label="Iron",
+                color="#ff7f0e",
+            )
+
+            ax.set_xlabel("Year", fontsize=12)
+            ax.set_ylabel("Price (USD/t)", fontsize=12)
+            ax.set_title("Market Prices - Steel and Iron", fontsize=14, fontweight="bold")
+            ax.legend(fontsize=11)
+            ax.grid(True, alpha=0.3)
+
+            # Format y-axis with commas for thousands
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f"${x:,.0f}"))
+
+            plt.tight_layout()
+
+            price_plot_path = bus.env.plot_paths.pam_plots_dir / f"market_prices_{start_year}_{end_year}.png"
+            plt.savefig(price_plot_path, dpi=300, bbox_inches="tight")
+            plt.close()
+            logger.info(f"Saved market prices plot to {price_plot_path}")
 
         # Clean up temporary directory
         self._cleanup_temp_dir()
