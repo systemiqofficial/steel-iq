@@ -49,12 +49,20 @@ def _ensure_secondary_feedstock_supplier(
     try:
         supplier = repository.suppliers.get(supplier_id)
     except KeyError:
+        # Create constant production cost dictionary for all years in simulation horizon
+        # Synthetic source: no additional cost beyond LP allocation costs
+        from steelo.adapters.dataprocessing.excel_reader import EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR
+
+        production_cost_by_year = {Year(y): 0.0 for y in range(EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR + 1)}
+
         supplier = Supplier(
             supplier_id=supplier_id,
             location=location,
             commodity=commodity,
             capacity_by_year={year: capacity_as_volume},
-            production_cost=0.0,  # synthetic source: no additional cost beyond LP allocation costs
+            production_cost_by_year=production_cost_by_year,
+            mine_cost_by_year={},
+            mine_price_by_year={},
         )
         add_method = getattr(repository.suppliers, "add", None)
         if callable(add_method):
@@ -273,7 +281,7 @@ def add_suppliers_as_process_centers(repository, lp_model: tlp.TradeLPModel, yea
         - Creates one Process per commodity (e.g., "iron_ore_supply", "coal_supply")
         - Each supplier becomes a separate ProcessCenter
         - Capacity is set to supplier.capacity_by_year[year]
-        - Production cost is set to supplier.production_cost
+        - Production cost is set to supplier.production_cost_by_year[year]
         - Handles both string and enum commodity types via isinstance checks
         - Skips suppliers if their commodity's supply process is not found
     """
@@ -321,12 +329,14 @@ def add_suppliers_as_process_centers(repository, lp_model: tlp.TradeLPModel, yea
                 year,
             )
             continue
+        # Get production cost for this year, fallback to 0 if not defined
+        production_cost = supplier.production_cost_by_year.get(year, 0.0)
         process_center = tlp.ProcessCenter(
             name=supplier.supplier_id,
             process=supplier_process,
             capacity=capacity,
             location=supplier.location,
-            production_cost=supplier.production_cost,
+            production_cost=production_cost,
         )
         supply_process_centers.append(process_center)
 
@@ -1078,7 +1088,6 @@ def identify_bottlenecks(
 
     if not potential_bottleneck_found:
         logger.warning("[TM BOTTLENECK ANALYSIS] No potential bottlenecks found in steel trade allocations.")
-
     # Summarise supplier headroom for key metallic charges to aid diagnostics
     supplier_list = list(repository.suppliers.list())
     capacity_by_commodity: dict[str, float] = {}

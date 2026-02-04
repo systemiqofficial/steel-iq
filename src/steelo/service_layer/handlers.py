@@ -10,7 +10,7 @@ import json
 # Global variables moved to Environment/Config
 from steelo.domain.constants import Commodities, T_TO_KT  # Keep enum as constant
 from steelo.domain.trade_modelling.TM_PAM_connector import TM_PAM_connector
-from steelo.domain.calculate_costs import filter_active_subsidies
+from steelo.domain.calculate_costs import filter_subsidies_for_year
 from steelo.domain import diagnostics as diag
 import logging
 
@@ -209,9 +209,18 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
                 env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
             ),
             equity_needed=cmd.equity_needed,
-            bill_of_materials=env.get_bom_from_avg_boms(plant.energy_costs or {}, cmd.technology_name, cmd.capacity)[0],
-            chosen_reductant=env.get_bom_from_avg_boms(plant.energy_costs or {}, cmd.technology_name, cmd.capacity)[2]
-            or "",
+            bill_of_materials=env.get_bom_from_avg_boms(
+                plant.energy_costs or {},
+                cmd.technology_name,
+                cmd.capacity,
+                env.most_common_reductant_by_tech.get(cmd.technology_name, None),
+            )[0],
+            chosen_reductant=env.get_bom_from_avg_boms(
+                plant.energy_costs or {},
+                cmd.technology_name,
+                cmd.capacity,
+                env.most_common_reductant_by_tech.get(cmd.technology_name, None),
+            )[2],
         )
         # Set the subsidies on the new furnace group
         new_furnace.applied_subsidies["capex"] = cmd.capex_subsidies
@@ -308,10 +317,10 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
         # Recalculate carbon costs now that allocations/emissions are up to date
     if getattr(env, "carbon_costs", None):
         env.calculate_carbon_costs_of_furnace_groups(world_plants=uow.plants.list())
-        env.calculate_average_material_costs(world_plants=uow.plants.list())
-        env.generate_average_material_costs(uow.plants.list())
-        env.generate_average_boms(uow.plants.list())
-        uow.commit()
+    env.calculate_average_material_costs(world_plants=uow.plants.list())
+    env.generate_average_material_costs(uow.plants.list())
+    env.generate_average_boms(uow.plants.list())
+    uow.commit()
 
 
 def finalise_iteration(
@@ -462,7 +471,7 @@ def finalise_iteration(
 
                 # Step 3f: Update OPEX subsidies based on active subsidies for the current year
                 all_opex_subsidies = env.opex_subsidies.get(plant.location.iso3, {}).get(fg.technology.name, [])
-                active_opex_subsidies = filter_active_subsidies(all_opex_subsidies, env.year)
+                active_opex_subsidies = filter_subsidies_for_year(all_opex_subsidies, env.year)
                 fg.applied_subsidies["opex"] = active_opex_subsidies
 
                 logger.debug(
@@ -502,7 +511,8 @@ def finalise_iteration(
                         # Ultimate fallback if no cost data available
                         source_cost = 200.0
                         pricing_source = "default"
-                supplier.production_cost = source_cost
+                # Update production cost for the current year
+                supplier.production_cost_by_year[env.year] = source_cost
 
                 if diag.diagnostics_enabled():
                     diag.append_csv(

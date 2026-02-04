@@ -32,12 +32,47 @@ Three types of subsidies are supported:
 
 All subsidies are time-bound with `start_year` and `end_year`, automatically filtered each simulation year.
 
+#### Negative Subsidies (Taxes/Penalties)
+
+Subsidies can have negative `subsidy_amount` values, which act as taxes or penalties that **increase** costs instead of reducing them.
+
+**Formula:** `cost_with_subsidy = cost - subsidy_amount`
+
+| subsidy_amount | Calculation | Effect |
+|----------------|-------------|--------|
+| +100 (positive) | `500 - 100 = 400` | Cost decreases |
+| -100 (negative) | `500 - (-100) = 600` | Cost increases |
+| -25% relative | `400 - (400 × -0.25) = 500` | 25% cost increase |
+
+**Use cases:**
+- Carbon penalties on high-emission technologies
+- Environmental surcharges
+- Regulatory fees
+
+**Floor behavior:** The final cost cannot go negative (no "money back"). CAPEX/OPEX floor at 0, COST OF DEBT floors at risk-free rate.
+
 **Functions:**
-- `filter_active_subsidies()` - Filters subsidies to only those active in the current year
+- `filter_subsidies_for_year()` - Filters subsidies to only those active in a specific year
+- `collect_active_subsidies_over_period()` - Collects unique subsidies active during any year in a period (with deduplication)
 - `calculate_capex_with_subsidies()` - Applies absolute and relative subsidies to CAPEX
 - `calculate_opex_with_subsidies()` - Applies absolute and relative subsidies to OPEX (floor at 0)
 - `calculate_opex_list_with_subsidies()` - Generates time-varying OPEX with year-specific subsidies
 - `calculate_debt_with_subsidies()` - Cost-of-debt subsidies; absolute point reductions only; floored at risk-free rate
+
+#### Subsidy Filtering Functions
+
+Two functions handle subsidy filtering for different use cases:
+
+**`filter_subsidies_for_year(subsidies, year)`** - Use for single-year filtering:
+- CAPEX subsidies (applied at construction start)
+- Debt subsidies (applied at financing decision)
+- Current-year OPEX tracking
+
+**`collect_active_subsidies_over_period(subsidies, start_year, end_year)`** - Use for multi-year collection:
+- OPEX subsidies over plant lifetime (for NPV calculations)
+- Any scenario requiring subsidies across multiple years
+
+The period function uses `set()` internally for deduplication - a subsidy spanning 2025-2030 appears once, not six times. The `end_year` is exclusive (matches Python `range()` convention).
 
 ### Cost Breakdown Analysis
 Extracts and processes bills of materials (BOM) to accurately assess the material and energy costs associated with production. Returns nested dictionaries with cost breakdowns by output product or feedstock.

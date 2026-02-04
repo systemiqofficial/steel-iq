@@ -232,7 +232,7 @@ class TestPrepareDataForBusinessOpportunity:
     def mock_get_bom(self):
         """Mock function for getting bill of materials."""
 
-        def _get_bom(_energy_costs, tech, _capacity):
+        def _get_bom(_energy_costs, tech, _capacity, _most_common_reductant=None):
             if tech == "EAF":
                 return (
                     {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
@@ -279,6 +279,8 @@ class TestPrepareDataForBusinessOpportunity:
             debt_subsidies={},
             opex_subsidies={},
             carbon_costs=carbon_costs,
+            most_common_reductant={},
+            environment_most_common_reductant={},
         )
 
         # Verify structure
@@ -335,6 +337,8 @@ class TestPrepareDataForBusinessOpportunity:
                 debt_subsidies={},
                 opex_subsidies={},
                 carbon_costs=carbon_costs,
+                most_common_reductant={},
+                environment_most_common_reductant={},
             )
 
     def test_apply_capex_subsidies(self, mock_get_bom):
@@ -362,7 +366,8 @@ class TestPrepareDataForBusinessOpportunity:
             end_year=Year(2035),
             technology_name="EAF",
             cost_item="capex",
-            relative_subsidy=0.2,  # 20% reduction
+            subsidy_type="relative",
+            subsidy_amount=0.2,  # 20% reduction (stored as decimal)
         )
 
         cost_data = prepare_cost_data_for_business_opportunity(
@@ -383,6 +388,8 @@ class TestPrepareDataForBusinessOpportunity:
             debt_subsidies={},
             opex_subsidies={},
             carbon_costs=carbon_costs,
+            most_common_reductant={},
+            environment_most_common_reductant={},
         )
 
         site_id = (40.0, -100.0, "USA")
@@ -429,13 +436,15 @@ class TestPrepareDataForBusinessOpportunity:
                 debt_subsidies={},
                 opex_subsidies={},
                 carbon_costs=carbon_costs,
+                most_common_reductant={},
+                environment_most_common_reductant={},
             )
 
     def test_multiple_locations_and_techs(self):
         """Test preparing cost data for multiple locations and technologies."""
         product_to_tech = {"steel": ["EAF"], "iron": ["DRI"]}
 
-        def _get_bom_multi(_energy_costs, tech, _capacity):
+        def _get_bom_multi(_energy_costs, tech, _capacity, _most_common_reductant=None):
             if tech in ["EAF", "DRI"]:
                 return (
                     {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
@@ -501,6 +510,8 @@ class TestPrepareDataForBusinessOpportunity:
             debt_subsidies={},
             opex_subsidies={},
             carbon_costs=carbon_costs,
+            most_common_reductant={},
+            environment_most_common_reductant={},
         )
 
         # Verify all products are present
@@ -723,7 +734,7 @@ class TestIdentifyNewBusinessOpportunities4indi:
     def mock_get_bom(self):
         """Mock function for getting bill of materials."""
 
-        def _get_bom(_energy_costs, _tech, _capacity):
+        def _get_bom(_energy_costs, _tech, _capacity, _most_common_reductant=None):
             return (
                 {
                     "energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}},

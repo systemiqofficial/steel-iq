@@ -177,7 +177,7 @@ class DataRecreator:
             #         json_path=output_paths["tariffs"],
             #         tariff_excel_path=available_files["tariff_excel"],
             #         tariff_sheet_name="Trade_tariffs for model",
-            #         trade_bloc_sheet_name="Trade_bloc definitions",
+            #         country_mapping_sheet_name="Country mapping",
             #     )
 
             # console.print("[blue]Recreating carbon costs data...[/blue]")
@@ -223,7 +223,7 @@ class DataRecreator:
                     json_path=output_paths["tariffs"],
                     tariff_excel_path=str(master_excel_path),
                     tariff_sheet_name="Tariffs",
-                    trade_bloc_sheet_name="Trade bloc definitions",
+                    country_mapping_sheet_name="Country mapping",
                 )
                 console.print(f"  ✓ Created {output_paths['tariffs'].name} [SOURCE: master-excel - Tariffs sheet]")
 
@@ -232,7 +232,7 @@ class DataRecreator:
                     json_path=output_paths["subsidies"],
                     excel_path=master_excel_path,
                     subsidies_sheet_name="Subsidies",
-                    trade_bloc_sheet_name="Trade bloc definitions",
+                    country_mapping_sheet_name="Country mapping",
                 )
                 console.print(f"  ✓ Created {output_paths['subsidies'].name} [SOURCE: master-excel - Subsidies sheet]")
 
@@ -507,14 +507,14 @@ class DataRecreator:
                     json_path=output_path,
                     tariff_excel_path=str(master_excel_path),
                     tariff_sheet_name=spec.master_excel_sheet,
-                    trade_bloc_sheet_name="Trade bloc definitions",
+                    country_mapping_sheet_name="Country mapping",
                 )
             elif spec.recreate_function == "recreate_subsidy_data":
                 func(
                     json_path=output_path,
                     excel_path=master_excel_path,
                     subsidies_sheet_name=spec.master_excel_sheet,
-                    trade_bloc_sheet_name="Trade bloc definitions",
+                    country_mapping_sheet_name="Country mapping",
                 )
             elif spec.recreate_function == "recreate_carbon_costs_data":
                 func(

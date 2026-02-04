@@ -234,11 +234,13 @@ def bootstrap_simulation(
 
         # Apply use_iron_ore_premiums flag to iron ore supplier costs
         for supplier in repository.suppliers.list():
-            if config.use_iron_ore_premiums and supplier.mine_price is not None:
-                supplier.production_cost = supplier.mine_price
-            elif not config.use_iron_ore_premiums and supplier.mine_cost is not None:
-                supplier.production_cost = supplier.mine_cost
-            # If mine_cost/mine_price are None (e.g., for scrap suppliers), keep existing production_cost
+            if config.use_iron_ore_premiums and supplier.mine_price_by_year:
+                # Copy mine_price_by_year to production_cost_by_year
+                supplier.production_cost_by_year = supplier.mine_price_by_year.copy()
+            elif not config.use_iron_ore_premiums and supplier.mine_cost_by_year:
+                # Copy mine_cost_by_year to production_cost_by_year
+                supplier.production_cost_by_year = supplier.mine_cost_by_year.copy()
+            # If mine_cost/mine_price dictionaries are empty (e.g., for scrap suppliers), keep existing production_cost_by_year
 
         # Plant groups setup from SimulationRunner.setup()
         plant_groups = []
@@ -308,6 +310,8 @@ def bootstrap_simulation(
         env.initiate_capex_subsidies(subsidies=repository_json.subsidies.list())
         env.initiate_opex_subsidies(subsidies=repository_json.subsidies.list())
         env.initiate_debt_subsidies(subsidies=repository_json.subsidies.list())
+        env.initiate_hydrogen_subsidies(subsidies=repository_json.subsidies.list())
+        env.initiate_electricity_subsidies(subsidies=repository_json.subsidies.list())
         env.initiate_industrial_asset_cost_of_capital(repository_json.cost_of_capital.list())
         env.initiate_grid_emissivity(emissivities=repository_json.region_emissivity.list())
         env.initiate_gas_coke_emissivity(emissivities=repository_json.region_emissivity.list())

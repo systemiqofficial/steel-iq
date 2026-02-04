@@ -74,34 +74,47 @@ def _coerce_to_float(value: Any) -> float | None:
     return None
 
 
-def filter_active_subsidies(subsidies: list["Subsidy"], current_year: "Year") -> list["Subsidy"]:
+def filter_subsidies_for_year(subsidies: list["Subsidy"], year: "Year") -> list["Subsidy"]:
     """
-    Filter subsidies to only include those active in the current year.
+    Filter subsidies to only include those active in the specified year.
 
-    A subsidy is considered active if the current year falls within its validity period (inclusive of both
+    A subsidy is considered active if the year falls within its validity period (inclusive of both
     start_year and end_year).
 
     Args:
-        subsidies (list[Subsidy]): List of Subsidy objects with start_year and end_year attributes.
-        current_year (Year): The current simulation year to check against.
+        subsidies: List of Subsidy objects with start_year and end_year attributes.
+        year: The year to check against.
 
     Returns:
-        list[Subsidy]: List of subsidies that are active in the current year. Returns empty list if no subsidies
-            are provided or if none are active.
+        List of subsidies that are active in the specified year. Returns empty list if no subsidies
+        are provided or if none are active.
 
     Note:
-        - The filtering uses inclusive bounds: a subsidy is active if current_year >= start_year AND
-          current_year <= end_year.
-        - When filtering subsidies across multiple years in a loop, the same subsidy object may appear multiple
-          times in the accumulated results if it spans multiple years. Use `list(set(accumulated_subsidies))`
-          to deduplicate before applying subsidies.
+        For collecting subsidies across multiple years, use `collect_active_subsidies_over_period` instead.
     """
     if not subsidies:
         return []
-    else:
-        return [
-            subsidy for subsidy in subsidies if current_year >= subsidy.start_year and current_year <= subsidy.end_year
-        ]
+    return [subsidy for subsidy in subsidies if year >= subsidy.start_year and year <= subsidy.end_year]
+
+
+def collect_active_subsidies_over_period(
+    subsidies: list["Subsidy"], start_year: "Year", end_year: "Year"
+) -> list["Subsidy"]:
+    """
+    Collect unique subsidies active during any year in [start_year, end_year).
+
+    Args:
+        subsidies: List of Subsidy objects with start_year and end_year attributes.
+        start_year: First year of the period (inclusive).
+        end_year: Last year of the period (exclusive, matching Python range convention).
+
+    Returns:
+        List of unique subsidies active during any year in the period.
+    """
+    active: set["Subsidy"] = set()
+    for year in range(start_year, end_year):
+        active.update(filter_subsidies_for_year(subsidies, Year(year)))
+    return list(active)
 
 
 def calculate_cost_breakdown_by_feedstock(
@@ -1028,7 +1041,7 @@ def calculate_business_opportunity_npvs(
         - cost_data has been validated by validate_and_clean_cost_data to ensure all required fields are
           present with correct types (floats for costs, dict for bom).
     """
-    from steelo.domain.calculate_costs import calculate_npv_full, filter_active_subsidies
+    from steelo.domain.calculate_costs import calculate_npv_full, collect_active_subsidies_over_period
     from steelo.logging_config import new_plant_logger
 
     npv_dict: dict[str, dict[tuple[float, float, str], dict[str, float]]] = {}  # product -> site_id -> tech -> NPV
@@ -1043,9 +1056,9 @@ def calculate_business_opportunity_npvs(
 
                 # Calculate unit total opex with subsidies applied for earliest possible operation years
                 all_opex_subsidies: list["Subsidy"] = bo_costs.get("all_opex_subsidies", [])  # type: ignore[assignment]
-                selected_opex_subsidies = []
-                for year in range(start_year, end_year):
-                    selected_opex_subsidies.extend(filter_active_subsidies(all_opex_subsidies, Year(year)))
+                selected_opex_subsidies = collect_active_subsidies_over_period(
+                    all_opex_subsidies, start_year=start_year, end_year=end_year
+                )
                 bom = bo_costs["bom"]
                 assert isinstance(bom, dict), f"Expected bom to be dict, got {type(bom)}"
                 unit_vopex = calculate_variable_opex(bom["materials"], bom["energy"])
@@ -1054,7 +1067,7 @@ def calculate_business_opportunity_npvs(
                 unit_total_opex = unit_vopex + unit_fopex
                 unit_total_opex_list = calculate_opex_list_with_subsidies(
                     opex=unit_total_opex,
-                    opex_subsidies=list(set(selected_opex_subsidies)),
+                    opex_subsidies=selected_opex_subsidies,
                     start_year=start_year,
                     end_year=end_year,
                 )
@@ -1202,16 +1215,23 @@ def calculate_capex_with_subsidies(capex: float, capex_subsidies: list["Subsidy"
 
     Returns:
         float: The final CAPEX after applying subsidies (minimum value of 0).
+
+    Note:
+        Negative subsidy_amount values act as taxes/penalties (increase cost).
+        Result is floored at 0 - subsidies cannot make costs negative.
     """
     # If no capex subsidies in the list, return original capex
     if capex_subsidies == []:
         return capex
 
-    # Sum all applicable subsidies (both absolute and relative)
+    # Sum all applicable subsidies based on subsidy_type
     capex_total_subsidy = 0.0
     for subsidy in capex_subsidies:
-        capex_total_subsidy += subsidy.absolute_subsidy
-        capex_total_subsidy += capex * subsidy.relative_subsidy
+        if subsidy.subsidy_type == "absolute":
+            capex_total_subsidy += subsidy.subsidy_amount
+        elif subsidy.subsidy_type == "relative":
+            # subsidy_amount stored as decimal (e.g., 0.1 = 10%)
+            capex_total_subsidy += capex * subsidy.subsidy_amount
 
     # Apply total subsidy, ensuring CAPEX doesn't go below zero
     return max(0.0, capex - capex_total_subsidy)
@@ -1230,16 +1250,23 @@ def calculate_opex_with_subsidies(opex: float, opex_subsidies: list["Subsidy"]) 
 
     Returns:
         float: The final OPEX after applying subsidies (minimum value of 0).
+
+    Note:
+        Negative subsidy_amount values act as taxes/penalties (increase cost).
+        Result is floored at 0 - subsidies cannot make costs negative.
     """
     # If no opex subsidies in the list, return original opex
     if opex_subsidies == []:
         return opex
 
-    # Sum all applicable subsidies (both absolute and relative)
+    # Sum all applicable subsidies based on subsidy_type
     opex_total_subsidy = 0.0
     for subsidy in opex_subsidies:
-        opex_total_subsidy += subsidy.absolute_subsidy
-        opex_total_subsidy += opex * subsidy.relative_subsidy
+        if subsidy.subsidy_type == "absolute":
+            opex_total_subsidy += subsidy.subsidy_amount
+        elif subsidy.subsidy_type == "relative":
+            # subsidy_amount stored as decimal (e.g., 0.1 = 10%)
+            opex_total_subsidy += opex * subsidy.subsidy_amount
 
     # Apply total subsidy, ensuring OPEX doesn't go below zero
     return max(0.0, opex - opex_total_subsidy)
@@ -1385,7 +1412,10 @@ def calculate_debt_with_subsidies(cost_of_debt: float, debt_subsidies: list["Sub
     Returns:
         float: The effective cost of debt after applying subsidies (minimum value of risk_free_rate).
 
-    Note: Relative subsidies are ignored for cost of debt calculations; only absolute subsidies are applied.
+    Note:
+        Relative subsidies are ignored for cost of debt calculations; only absolute subsidies are applied.
+        Negative subsidy_amount values act as taxes/penalties (increase cost of debt).
+        Result is floored at risk_free_rate - subsidies cannot reduce cost below risk-free rate.
     """
     # If no cost of debt subsidies in the list, return original cost of debt
     if debt_subsidies == []:
@@ -1394,9 +1424,10 @@ def calculate_debt_with_subsidies(cost_of_debt: float, debt_subsidies: list["Sub
     # Sum all absolute subsidies (percentage point reductions only)
     debt_total_subsidy = 0.0
     for subsidy in debt_subsidies:
-        debt_total_subsidy += subsidy.absolute_subsidy
-
-    logging.info("Ignoring all relative subsidies for subsidised cost of debt calculations")
+        if subsidy.subsidy_type == "absolute":
+            debt_total_subsidy += subsidy.subsidy_amount
+        else:
+            logging.info("Ignoring relative subsidy for cost of debt calculation")
 
     # Apply subsidy, ensuring cost of debt doesn't go below risk-free rate
     return max(risk_free_rate, cost_of_debt - debt_total_subsidy)

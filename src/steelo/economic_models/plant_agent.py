@@ -247,6 +247,7 @@ class GeospatialModel:
                 capex_subsidies=bus.env.capex_subsidies,
                 debt_subsidies=bus.env.debt_subsidies,
                 opex_subsidies=bus.env.opex_subsidies,
+                environment_most_common_reductant=bus.env.most_common_reductant_by_tech,
             )
         )
         step_time = time.time() - step_start
@@ -291,7 +292,9 @@ class AllocationModel:
 
         # For percentage tariffs:
         bus.env.calculate_average_commodity_price_per_region(
-            world_plants=bus.uow.repository.plants.list(), world_suppliers=bus.uow.repository.suppliers.list()
+            world_plants=bus.uow.repository.plants.list(),
+            world_suppliers=bus.uow.repository.suppliers.list(),
+            year=bus.env.year,
         )
         assert bus.env.legal_process_connectors is not None, (
             "Legal process connectors must be set in the environment. Please ensure they are read in from user input."
@@ -731,6 +734,7 @@ class PlantAgentsModel:
                         capacity_limit_iron=capacity_limit_pam_iron,
                         installed_capacity_in_year=bus.env.installed_capacity_in_year,
                         new_plant_capacity_in_year=bus.env.new_plant_capacity_in_year,
+                        most_common_reductant_by_tech=bus.env.most_common_reductant_by_tech,
                     )
                 ) is not None:
                     plant_agents_logger.info(
@@ -843,6 +847,7 @@ class PlantAgentsModel:
                     installed_capacity_in_year=bus.env.installed_capacity_in_year,
                     new_plant_capacity_in_year=bus.env.new_plant_capacity_in_year,
                     new_capacity_share_from_new_plants=bus.env.config.new_capacity_share_from_new_plants,
+                    environment_most_common_reductant=bus.env.most_common_reductant_by_tech,
                 )
             ) is not None:
                 plant_agents_logger.info(

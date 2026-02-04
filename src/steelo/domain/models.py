@@ -18,7 +18,8 @@ from steelo.domain.calculate_costs import (
     calculate_opex_list_with_subsidies,
     calculate_unit_total_opex,
     calculate_variable_opex,
-    filter_active_subsidies,
+    filter_subsidies_for_year,
+    collect_active_subsidies_over_period,
     ENERGY_FEEDSTOCK_KEYS,
     SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION,
 )
@@ -408,17 +409,13 @@ class CountryMapping:
         ws_region (str | None): World Steel regional classification.
         eu_region (str | None): European Union regional grouping.
         tiam_ucl_region (str): TIAM-UCL energy model region.
-        EU (bool): Whether country is an EU member (for CBAM modeling).
-        EFTA_EUCJ (bool): Whether country is in EFTA/EU Customs Union.
-        OECD (bool): Whether country is an OECD member.
-        NAFTA (bool): Whether country is a NAFTA member.
-        Mercosur (bool): Whether country is a Mercosur member.
-        ASEAN (bool): Whether country is an ASEAN member.
-        RCEP (bool): Whether country is an RCEP member.
+        **trade_bloc_memberships: Any additional boolean attributes representing trade bloc memberships
+                                   are dynamically detected from the Excel sheet and added as attributes.
 
     Notes:
         - The iso3 code serves as the unique identifier and is used for all lookups throughout the simulation
-        - Trade bloc memberships (EU, NAFTA, ASEAN, etc.) are used to determine tariff applicability
+        - Trade bloc memberships are dynamically detected from columns containing True/False values in the Excel sheet
+        - These memberships are used to determine tariff applicability in the trade model
         - Different regional classifications allow data from multiple sources to be correctly mapped to countries
         - All country mapping data originates from the master Excel file
     """
@@ -437,7 +434,7 @@ class CountryMapping:
         ws_region: str | None = None,
         eu_region: str | None = None,
         tiam_ucl_region: str,
-        # New CBAM-related region columns
+        # Deprecated explicit parameters (kept for backwards compatibility)
         EU: bool = False,
         EFTA_EUCJ: bool = False,
         OECD: bool = False,
@@ -445,6 +442,8 @@ class CountryMapping:
         Mercosur: bool = False,
         ASEAN: bool = False,
         RCEP: bool = False,
+        # Accept any additional boolean attributes dynamically
+        **trade_bloc_memberships: bool,
     ) -> None:
         self.country = country
         self.iso2 = iso2
@@ -457,7 +456,9 @@ class CountryMapping:
         self.ws_region = ws_region
         self.eu_region = eu_region
         self.tiam_ucl_region = tiam_ucl_region
-        # CBAM-related region memberships
+
+        # Set explicit parameters (for backwards compatibility)
+        # These will be overridden by kwargs if provided
         self.EU = EU
         self.EFTA_EUCJ = EFTA_EUCJ
         self.OECD = OECD
@@ -465,6 +466,10 @@ class CountryMapping:
         self.Mercosur = Mercosur
         self.ASEAN = ASEAN
         self.RCEP = RCEP
+
+        # Set any additional trade bloc memberships dynamically
+        for attr_name, attr_value in trade_bloc_memberships.items():
+            setattr(self, attr_name, attr_value)
 
     @property
     def id(self) -> str:
@@ -2028,7 +2033,7 @@ class FurnaceGroup:
         cost_of_debt: float,
         cost_of_equity: float,
         get_bom_from_avg_boms: Callable[
-            [dict[str, float], str, float], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str | None]
+            [dict[str, float], str, float, str | None], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]
         ],
         capex_dict: dict[str, float],
         capex_renovation_share: dict[str, float],
@@ -2047,6 +2052,7 @@ class FurnaceGroup:
         tech_capex_subsidies: dict[str, list[Subsidy]] = {},
         tech_opex_subsidies: dict[str, list[Subsidy]] = {},
         tech_debt_subsidies: dict[str, list[Subsidy]] = {},
+        most_common_reductant_by_tech: dict[str, str] = {},
     ) -> tuple[dict[str, float], dict[str, float], float | None, dict[str, dict[str, dict[str, dict[str, float]]]]]:
         """
         Identify the optimal technology transition for this furnace group by comparing NPVs of allowed technology
@@ -2148,16 +2154,16 @@ class FurnaceGroup:
 
         # ========== STAGE 2: Calculate Current Technology OPEX with Subsidies ==========
         # Collect all active OPEX subsidies across the remaining lifetime
-        applied_opex_subsidies = []
-        for year in range(current_year, current_year + self.lifetime.end):
-            applied_opex_subsidies.extend(
-                filter_active_subsidies(tech_opex_subsidies.get(self.technology.name, []), Year(year))
-            )
+        applied_opex_subsidies = collect_active_subsidies_over_period(
+            tech_opex_subsidies.get(self.technology.name, []),
+            start_year=Year(current_year),
+            end_year=Year(current_year + self.lifetime.end),
+        )
 
         # Calculate unit OPEX with subsidies (without carbon costs yet)
         unit_opex_list = calculate_opex_list_with_subsidies(
             opex=self.unit_total_opex_no_subsidy,
-            opex_subsidies=list(set(applied_opex_subsidies)),
+            opex_subsidies=applied_opex_subsidies,
             start_year=self.lifetime.current,
             end_year=self.lifetime.end,
         )
@@ -2265,11 +2271,13 @@ class FurnaceGroup:
                 continue
 
             # Collect all active subsidies for this technology
-            capex_subsidies = filter_active_subsidies(tech_capex_subsidies.get(tech, []), current_year)
-            debt_subsidies = filter_active_subsidies(tech_debt_subsidies.get(tech, []), current_year)
-            opex_subsidies = []
-            for year in range(current_year + construction_time, current_year + construction_time + plant_lifetime):
-                opex_subsidies.extend(filter_active_subsidies(tech_opex_subsidies.get(tech, []), Year(year)))
+            capex_subsidies = filter_subsidies_for_year(tech_capex_subsidies.get(tech, []), current_year)
+            debt_subsidies = filter_subsidies_for_year(tech_debt_subsidies.get(tech, []), current_year)
+            opex_subsidies = collect_active_subsidies_over_period(
+                tech_opex_subsidies.get(tech, []),
+                start_year=Year(current_year + construction_time),
+                end_year=Year(current_year + construction_time + plant_lifetime),
+            )
 
             # Apply subsidies to capex
             original_capex = capex_dict[tech]
@@ -2324,7 +2332,8 @@ class FurnaceGroup:
             else:  # Switch to a new technology (greenfield)
                 # ========== BRANCH B: Greenfield Installation (New Technology) ==========
                 # Fetch average BOM for the new technology from historical data
-                bom_result = get_bom_from_avg_boms(self.energy_costs, tech, self.capacity)
+                chosen_reductant = most_common_reductant_by_tech.get(tech)
+                bom_result = get_bom_from_avg_boms(self.energy_costs, tech, self.capacity, chosen_reductant)
                 bill_of_materials_opt, util_rate, reductant = bom_result
 
                 # Skip if BOM retrieval failed
@@ -2403,7 +2412,7 @@ class FurnaceGroup:
                 # Apply operating subsidies over plant lifetime
                 unit_total_opex_list = calculate_opex_list_with_subsidies(
                     opex=unit_total_opex,
-                    opex_subsidies=list(set(opex_subsidies)),
+                    opex_subsidies=opex_subsidies,
                     start_year=Year(current_year + construction_time),
                     end_year=Year(current_year + construction_time + plant_lifetime),
                 )
@@ -2714,15 +2723,17 @@ class FurnaceGroup:
             earliest_operation_end_year = Year(earliest_operation_start_year + plant_lifetime)
 
             # Get OPEX (with subsidies) for the years the plant would be operational
-            selected_opex_subsidies = []
-            for subsidy_year in range(earliest_operation_start_year, earliest_operation_end_year):
-                selected_opex_subsidies.extend(filter_active_subsidies(all_opex_subsidies, Year(subsidy_year)))
+            selected_opex_subsidies = collect_active_subsidies_over_period(
+                all_opex_subsidies,
+                start_year=earliest_operation_start_year,
+                end_year=earliest_operation_end_year,
+            )
             unit_vopex = calculate_variable_opex(self.bill_of_materials["materials"], self.bill_of_materials["energy"])
             unit_fopex = self.unit_fopex
             unit_total_opex = unit_vopex + unit_fopex
             unit_total_opex_list = calculate_opex_list_with_subsidies(
                 opex=unit_total_opex,
-                opex_subsidies=list(set(selected_opex_subsidies)),
+                opex_subsidies=selected_opex_subsidies,
                 start_year=earliest_operation_start_year,
                 end_year=earliest_operation_end_year,
             )
@@ -3087,6 +3098,26 @@ class Plant:
                 return True
         return False
 
+    @property
+    def most_common_reductant(self) -> dict[str, str]:
+        """
+        Get the most common reductant for each technology across all furnace groups in the plant.
+
+        Returns:
+            dict[str, str]: Dictionary mapping technology name to most common reductant.
+                           If no reductant is set for a technology, it will be omitted from the result.
+
+        Example:
+            {
+                "BOF": "coke",
+                "EAF": "electricity",
+                "DRI": "natural_gas"
+            }
+        """
+        from steelo.utilities.utils import get_most_common_reductant_by_technology
+
+        return get_most_common_reductant_by_technology(self.furnace_groups)
+
     def calculate_average_steel_cost_and_capacity(self, active_statuses: list[str]):
         """
         Calculates average steel cost and capacity for the plant for active steel furnaces
@@ -3430,7 +3461,7 @@ class Plant:
         cost_of_debt: float,
         cost_of_equity: float,
         get_bom_from_avg_boms: Callable[
-            [dict[str, float], str, float], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str | None]
+            [dict[str, float], str, float, str | None], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]
         ],
         probabilistic_agents: bool,
         dynamic_business_cases: dict[str, list[PrimaryFeedstock]],
@@ -3450,6 +3481,7 @@ class Plant:
         tech_capex_subsidies: dict[str, list[Subsidy]] = {},
         tech_opex_subsidies: dict[str, list[Subsidy]] = {},
         tech_debt_subsidies: dict[str, list[Subsidy]] = {},
+        most_common_reductant_by_tech: dict[str, str] = {},
     ) -> commands.Command | None:
         """
         Evaluate the economic strategy for a furnace group using NPV-based decision making.
@@ -3600,6 +3632,7 @@ class Plant:
             construction_time=construction_time,
             tech_debt_subsidies=tech_debt_subsidies,
             risk_free_rate=risk_free_rate,
+            most_common_reductant_by_tech=most_common_reductant_by_tech,
         )
 
         # Log NPV calculation results
@@ -3668,12 +3701,10 @@ class Plant:
             return None
 
         # ===== Filter and apply subsidies for selected technology =====
-        from steelo.domain.calculate_costs import filter_active_subsidies
-
         all_capex_subs = tech_capex_subsidies.get(best_tech, [])
         all_debt_subs = tech_debt_subsidies.get(best_tech, [])
-        capex_subs = filter_active_subsidies(all_capex_subs, current_year)
-        debt_subs = filter_active_subsidies(all_debt_subs, current_year)
+        capex_subs = filter_subsidies_for_year(all_capex_subs, current_year)
+        debt_subs = filter_subsidies_for_year(all_debt_subs, current_year)
 
         cost_of_debt_with_subsidies = calculate_debt_with_subsidies(
             cost_of_debt=cost_of_debt,
@@ -3686,13 +3717,13 @@ class Plant:
         for subsidy in capex_subs:
             subsidy_details.append(
                 f"[FG STRATEGY]:     • {subsidy.subsidy_name}: "
-                f"absolute=${subsidy.absolute_subsidy:.2f}, relative={subsidy.relative_subsidy:.2%}, "
+                f"type={subsidy.subsidy_type}, amount={subsidy.subsidy_amount:.4f}, "
                 f"years {subsidy.start_year}-{subsidy.end_year}"
             )
         for subsidy in debt_subs:
             subsidy_details.append(
                 f"[FG STRATEGY]:     • {subsidy.subsidy_name}: "
-                f"absolute=${subsidy.absolute_subsidy:.2f}, relative={subsidy.relative_subsidy:.2%}, "
+                f"type={subsidy.subsidy_type}, amount={subsidy.subsidy_amount:.4f}, "
                 f"years {subsidy.start_year}-{subsidy.end_year}"
             )
 
@@ -4441,6 +4472,32 @@ class PlantGroup:
         self.total_balance = float(sum(balances))
         return self.total_balance
 
+    @property
+    def most_common_reductant(self) -> dict[str, str]:
+        """
+        Get the most common reductant for each technology across all plants in the plant group.
+
+        Aggregates reductant data from all furnace groups across all plants in this plant group
+        to determine the most frequently used reductant for each technology type.
+
+        Returns:
+            dict[str, str]: Dictionary mapping technology name to most common reductant.
+                           If no reductant is set for a technology, it will be omitted from the result.
+
+        Example:
+            {
+                "BOF": "coke",
+                "EAF": "electricity",
+                "DRI": "natural_gas"
+            }
+        """
+        from steelo.utilities.utils import get_most_common_reductant_by_technology
+
+        # Collect all furnace groups from all plants
+        all_furnace_groups = [fg for plant in self.plants for fg in plant.furnace_groups]
+
+        return get_most_common_reductant_by_technology(all_furnace_groups)
+
     def generate_new_plant(
         self,
         site_id: tuple[float, float, str],  # (lat, lon, iso3)
@@ -4553,7 +4610,10 @@ class PlantGroup:
         cost_of_debt_dict: dict[str, float] | None,
         cost_of_equity_dict: dict[str, float] | None,
         get_bom_from_avg_boms: (
-            Callable[[dict[str, float], str, float], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]]
+            Callable[
+                [dict[str, float], str, float, str | None],
+                tuple[dict[str, dict[str, dict[str, float]]] | None, float, str],
+            ]
             | None
         ),
         dynamic_feedstocks: dict[str, list[PrimaryFeedstock]],
@@ -4571,6 +4631,7 @@ class PlantGroup:
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
+        environment_most_common_reductant: dict[str, str] = {},
     ) -> dict[str, tuple[float | None, str, float]]:
         """
         Calculate NPV and optimal technology choice for all plants in the group considering allowed technologies and
@@ -4674,7 +4735,12 @@ class PlantGroup:
                 # Get bill of materials for this technology
                 if get_bom_from_avg_boms is None:
                     continue
-                bom_result = get_bom_from_avg_boms(plant.energy_costs, tech, capacity)
+                bom_result = get_bom_from_avg_boms(
+                    plant.energy_costs,
+                    tech,
+                    capacity,
+                    self.most_common_reductant.get(tech, environment_most_common_reductant.get(tech)),
+                )
                 bill_of_materials_opt, util_rate, reductant = bom_result
                 if bill_of_materials_opt is None:
                     continue
@@ -4689,17 +4755,20 @@ class PlantGroup:
                 )
 
                 # Apply subsidies (filter to only active ones in current year)
-                from steelo.domain.calculate_costs import filter_active_subsidies
+                from steelo.domain.calculate_costs import (
+                    filter_subsidies_for_year,
+                    collect_active_subsidies_over_period,
+                )
 
                 # CAPEX subsidies
                 all_capex_subsidies = capex_subsidies.get(plant.location.iso3, {}).get(tech, [])
-                selected_capex_subsidies = filter_active_subsidies(all_capex_subsidies, current_year)
+                selected_capex_subsidies = filter_subsidies_for_year(all_capex_subsidies, current_year)
                 original_capex = capex
                 capex = cc.calculate_capex_with_subsidies(original_capex, selected_capex_subsidies)
 
                 # Debt subsidies
                 all_debt_subsidies = debt_subsidies.get(plant.location.iso3, {}).get(tech, [])
-                selected_debt_subsidies = filter_active_subsidies(all_debt_subsidies, current_year)
+                selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, current_year)
                 cost_of_debt = cc.calculate_debt_with_subsidies(
                     cost_of_debt=cost_of_debt_original,
                     debt_subsidies=selected_debt_subsidies,
@@ -4719,15 +4788,15 @@ class PlantGroup:
                 )
 
                 # OPEX subsidies (collect active subsidies across plant lifetime)
-                selected_opex_subsidies = []
-                for year in range(current_year + construction_time, current_year + construction_time + plant_lifetime):
-                    selected_opex_subsidies.extend(
-                        filter_active_subsidies(opex_subsidies.get(plant.location.iso3, {}).get(tech, []), Year(year))
-                    )
+                selected_opex_subsidies = collect_active_subsidies_over_period(
+                    opex_subsidies.get(plant.location.iso3, {}).get(tech, []),
+                    start_year=Year(current_year + construction_time),
+                    end_year=Year(current_year + construction_time + plant_lifetime),
+                )
 
                 unit_total_opex_list = cc.calculate_opex_list_with_subsidies(
                     opex=unit_total_opex,
-                    opex_subsidies=list(set(selected_opex_subsidies)),
+                    opex_subsidies=selected_opex_subsidies,
                     start_year=Year(current_year + construction_time),
                     end_year=Year(current_year + construction_time + plant_lifetime),
                 )
@@ -4779,7 +4848,7 @@ class PlantGroup:
 
                 # Calculate subsidized CAPEX for best technology
                 all_best_capex_subsidies = capex_subsidies.get(plant.location.iso3, {}).get(best_tech, [])
-                best_capex_subsidies = filter_active_subsidies(all_best_capex_subsidies, current_year)
+                best_capex_subsidies = filter_subsidies_for_year(all_best_capex_subsidies, current_year)
                 best_capex = cc.calculate_capex_with_subsidies(greenfield_capex[best_tech], best_capex_subsidies)
 
                 NPV_p[plant.plant_id] = NPV.get(best_tech), best_tech, best_capex
@@ -4815,6 +4884,7 @@ class PlantGroup:
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
+        environment_most_common_reductant: dict[str, str] = {},
     ) -> commands.Command | None:
         """
         Evaluate and execute the most profitable furnace expansion across all plants in the plant group.
@@ -4912,6 +4982,7 @@ class PlantGroup:
             technology_emission_factors=technology_emission_factors,
             plant_lifetime=plant_lifetime,
             construction_time=construction_time,
+            environment_most_common_reductant=environment_most_common_reductant,
         )
 
         # ========== STAGE 3: CHECK IF ANY EXPANSION OPTIONS EXIST ==========
@@ -5064,14 +5135,13 @@ class PlantGroup:
         )
 
         # ========== STAGE 10: APPLY SUBSIDIES ==========
-        from steelo.domain.calculate_costs import filter_active_subsidies
         from steelo.domain import calculate_costs as cc
 
         # Get all subsidies for this location and technology, then filter to active ones
         all_debt_subsidies = debt_subsidies.get(plant.location.iso3, {}).get(tech, [])
         all_capex_subsidies = capex_subsidies.get(plant.location.iso3, {}).get(tech, [])
-        selected_debt_subsidies = filter_active_subsidies(all_debt_subsidies, current_year)
-        selected_capex_subsidies = filter_active_subsidies(all_capex_subsidies, current_year)
+        selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, current_year)
+        selected_capex_subsidies = filter_subsidies_for_year(all_capex_subsidies, current_year)
 
         # Apply subsidies to debt and CAPEX
         cost_of_debt = cc.calculate_debt_with_subsidies(
@@ -5107,7 +5177,7 @@ class PlantGroup:
             subsidy_details.append(
                 f"  CAPEX subsidies ({len(selected_capex_subsidies)}):\n"
                 + "\n".join(
-                    f"    • {s.subsidy_name}: abs=${s.absolute_subsidy:.2f}, rel={s.relative_subsidy:.2%}, "
+                    f"    • {s.subsidy_name}: type={s.subsidy_type}, amount={s.subsidy_amount:.4f}, "
                     f"years {s.start_year}-{s.end_year}"
                     for s in selected_capex_subsidies
                 )
@@ -5116,7 +5186,7 @@ class PlantGroup:
             subsidy_details.append(
                 f"  Debt subsidies ({len(selected_debt_subsidies)}):\n"
                 + "\n".join(
-                    f"    • {s.subsidy_name}: abs=${s.absolute_subsidy:.2f}, rel={s.relative_subsidy:.2%}, "
+                    f"    • {s.subsidy_name}: type={s.subsidy_type}, amount={s.subsidy_amount:.4f}, "
                     f"years {s.start_year}-{s.end_year}"
                     for s in selected_debt_subsidies
                 )
@@ -5170,7 +5240,7 @@ class PlantGroup:
         equity_share: float,
         dynamic_feedstocks: dict[str, list[PrimaryFeedstock]],
         get_bom_from_avg_boms: Callable[
-            [dict[str, float], str, float], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str | None]
+            [dict[str, float], str, float, str | None], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]
         ],
         global_risk_free_rate: float,
         tech_to_product: dict[str, str],
@@ -5182,6 +5252,7 @@ class PlantGroup:
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
+        environment_most_common_reductant: dict[str, str] = {},
     ) -> commands.Command:
         """
         Identifies new business opportunities for plants at given locations with specific technologies.
@@ -5315,6 +5386,8 @@ class PlantGroup:
             debt_subsidies=debt_subsidies,
             opex_subsidies=opex_subsidies,
             carbon_costs=carbon_costs,
+            most_common_reductant=self.most_common_reductant,
+            environment_most_common_reductant=environment_most_common_reductant,
         )
         cost_counts, cost_total = _count_entries(cost_data)
         candidate_stats["costed_pairs_total"] = cost_total
@@ -5458,8 +5531,6 @@ class PlantGroup:
                         continue
 
                     # Get subsidies for this location and technology - filter to only active ones
-                    from steelo.domain.calculate_costs import filter_active_subsidies
-
                     all_debt_subsidies = debt_subsidies.get(iso3, {}).get(fg.technology.name, [])
                     all_capex_subsidies = capex_subsidies.get(iso3, {}).get(fg.technology.name, [])
 
@@ -5474,8 +5545,8 @@ class PlantGroup:
                             current_year + consideration_time + 1 - years_already_considered
                         )  # announcement_time = 1
 
-                    selected_debt_subsidies = filter_active_subsidies(all_debt_subsidies, year)
-                    selected_capex_subsidies = filter_active_subsidies(all_capex_subsidies, year)
+                    selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, year)
+                    selected_capex_subsidies = filter_subsidies_for_year(all_capex_subsidies, year)
 
                     new_plant_logger.debug(
                         f"[NEW PLANTS]: Subsidies for {fg.technology.name} in {iso3} for year {current_year}: "
@@ -5787,17 +5858,17 @@ class Supplier:
         location: Location,
         commodity: str,
         capacity_by_year: dict[Year, Volumes],
-        production_cost: float,
-        mine_cost: float | None = None,
-        mine_price: float | None = None,
+        production_cost_by_year: dict[Year, float],
+        mine_cost_by_year: dict[Year, float] | None = None,
+        mine_price_by_year: dict[Year, float] | None = None,
     ) -> None:
         self.supplier_id = supplier_id
         self.location = location
         self.capacity_by_year = capacity_by_year
         self.commodity = commodity
-        self.production_cost = production_cost
-        self.mine_cost = mine_cost
-        self.mine_price = mine_price
+        self.production_cost_by_year = production_cost_by_year
+        self.mine_cost_by_year = mine_cost_by_year if mine_cost_by_year is not None else {}
+        self.mine_price_by_year = mine_price_by_year if mine_price_by_year is not None else {}
 
     def __repr__(self) -> str:
         return f"Supplier: <{self.supplier_id}>"
@@ -5927,8 +5998,8 @@ class Subsidy:
         end_year: Year,
         technology_name: str = "all",
         cost_item: str = "opex",
-        absolute_subsidy: float = 0,
-        relative_subsidy: float = 0,
+        subsidy_type: str = "absolute",
+        subsidy_amount: float = 0,
     ) -> None:
         self.scenario_name = scenario_name
         self.iso3 = iso3
@@ -5936,8 +6007,8 @@ class Subsidy:
         self.end_year = end_year
         self.technology_name = technology_name
         self.cost_item = cost_item
-        self.absolute_subsidy = absolute_subsidy
-        self.relative_subsidy = relative_subsidy
+        self.subsidy_type = subsidy_type
+        self.subsidy_amount = subsidy_amount
         self.subsidy_name = f"{self.iso3}_{self.scenario_name}_{self.technology_name}_{self.cost_item}"
 
     def __repr__(self) -> str:
@@ -5952,8 +6023,8 @@ class Subsidy:
                 self.end_year,
                 self.technology_name,
                 self.cost_item,
-                self.absolute_subsidy,
-                self.relative_subsidy,
+                self.subsidy_type,
+                self.subsidy_amount,
             )
         )
 
@@ -5967,8 +6038,8 @@ class Subsidy:
             and self.end_year == other.end_year
             and self.technology_name == other.technology_name
             and self.cost_item == other.cost_item
-            and self.absolute_subsidy == other.absolute_subsidy
-            and self.relative_subsidy == other.relative_subsidy
+            and self.subsidy_type == other.subsidy_type
+            and self.subsidy_amount == other.subsidy_amount
         )
 
 
@@ -6339,6 +6410,9 @@ class Environment:
         # Initialize demand, BOMs, and utilization - will be populated during simulation setup
         self.demand_dict: dict[str, dict[Year, Volumes]] = {}
         self.avg_boms: dict[str, dict[str, dict[str, float]]] = {}
+
+        # Initialize most common reductant tracking - updated each year
+        self.most_common_reductant_by_tech: dict[str, str] = {}
         self.avg_utilization: dict[str, dict[str, float]] = {}
 
         # Initialize trade tariffs as empty list
@@ -6403,6 +6477,8 @@ class Environment:
         self.opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
         self.capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
         self.debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
+        self.hydrogen_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
+        self.electricity_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
 
     def get_transport_emissions_as_dict(self) -> dict[tuple[str, str, str], float]:
         """
@@ -6544,15 +6620,9 @@ class Environment:
             if subsidy.cost_item.lower() == "opex":
                 if subsidy.iso3 not in opex_subsidies:
                     opex_subsidies[subsidy.iso3] = {}
-                    # Now assess the technology that the subsidy applies to
-                if subsidy.technology_name == "all":
-                    for technology in self.technology_to_product.keys():
-                        if technology not in opex_subsidies[subsidy.iso3]:
-                            opex_subsidies[subsidy.iso3][technology] = []
-                        opex_subsidies[subsidy.iso3][technology].append(subsidy)
-                elif subsidy.technology_name not in opex_subsidies[subsidy.iso3]:
+                if subsidy.technology_name not in opex_subsidies[subsidy.iso3]:
                     opex_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                    opex_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+                opex_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
         self.opex_subsidies = opex_subsidies
 
     def initiate_capex_subsidies(self, subsidies: list[Subsidy]) -> None:
@@ -6567,15 +6637,9 @@ class Environment:
             if subsidy.cost_item.lower() == "capex":
                 if subsidy.iso3 not in capex_subsidies:
                     capex_subsidies[subsidy.iso3] = {}
-                    # Now assess the technology that the subsidy applies to
-                if subsidy.technology_name == "all":
-                    for technology in self.technology_to_product.keys():
-                        if technology not in capex_subsidies[subsidy.iso3]:
-                            capex_subsidies[subsidy.iso3][technology] = []
-                        capex_subsidies[subsidy.iso3][technology].append(subsidy)
-                elif subsidy.technology_name not in capex_subsidies[subsidy.iso3]:
+                if subsidy.technology_name not in capex_subsidies[subsidy.iso3]:
                     capex_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                    capex_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+                capex_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
         self.capex_subsidies = capex_subsidies
 
     def initiate_debt_subsidies(self, subsidies: list[Subsidy]) -> None:
@@ -6590,16 +6654,44 @@ class Environment:
             if subsidy.cost_item.lower() == "cost of debt":
                 if subsidy.iso3 not in debt_subsidies:
                     debt_subsidies[subsidy.iso3] = {}
-                    # Now assess the technology that the subsidy applies to
-                if subsidy.technology_name == "all":
-                    for technology in self.technology_to_product.keys():
-                        if technology not in debt_subsidies[subsidy.iso3]:
-                            debt_subsidies[subsidy.iso3][technology] = []
-                        debt_subsidies[subsidy.iso3][technology].append(subsidy)
-                elif subsidy.technology_name not in debt_subsidies[subsidy.iso3]:
+                if subsidy.technology_name not in debt_subsidies[subsidy.iso3]:
                     debt_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                    debt_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+                debt_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
         self.debt_subsidies = debt_subsidies
+
+    def initiate_hydrogen_subsidies(self, subsidies: list[Subsidy]) -> None:
+        """
+        Initialize the hydrogen subsidies for the environment.
+
+        Args:
+            subsidies (list[Subsidy]): A list of Subsidy objects to be added to the environment.
+        """
+        hydrogen_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
+        for subsidy in subsidies:
+            if subsidy.cost_item.lower() == "hydrogen":
+                if subsidy.iso3 not in hydrogen_subsidies:
+                    hydrogen_subsidies[subsidy.iso3] = {}
+                if subsidy.technology_name not in hydrogen_subsidies[subsidy.iso3]:
+                    hydrogen_subsidies[subsidy.iso3][subsidy.technology_name] = []
+                hydrogen_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+        self.hydrogen_subsidies = hydrogen_subsidies
+
+    def initiate_electricity_subsidies(self, subsidies: list[Subsidy]) -> None:
+        """
+        Initialize the electricity subsidies for the environment.
+
+        Args:
+            subsidies (list[Subsidy]): A list of Subsidy objects to be added to the environment.
+        """
+        electricity_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
+        for subsidy in subsidies:
+            if subsidy.cost_item.lower() == "electricity":
+                if subsidy.iso3 not in electricity_subsidies:
+                    electricity_subsidies[subsidy.iso3] = {}
+                if subsidy.technology_name not in electricity_subsidies[subsidy.iso3]:
+                    electricity_subsidies[subsidy.iso3][subsidy.technology_name] = []
+                electricity_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+        self.electricity_subsidies = electricity_subsidies
 
     def initiate_dynamic_feedstocks(self, feedstocks: list[PrimaryFeedstock]) -> None:
         """
@@ -7115,7 +7207,16 @@ class Environment:
 
     def set_primary_feedstocks_in_furnace_groups(self, world_plants: list[Plant]):
         """
-        Set the effective primary feedstocks available to a furnacegroup
+        Set the effective primary feedstocks available to a furnacegroup and update
+        environment-level most common reductant tracking.
+
+        This method:
+        1. Updates each furnace group's dynamic business case and chosen reductant
+        2. Calculates and stores the most common reductant per technology across all plants
+
+        Side Effects:
+            - Updates fg.chosen_reductant for each furnace group via generate_energy_vopex_by_reductant()
+            - Updates self.most_common_reductant_by_tech with aggregated reductant data
         """
 
         for p in world_plants:
@@ -7127,8 +7228,14 @@ class Environment:
                 fg.technology.set_product(self.technology_to_product)
                 fg.generate_energy_vopex_by_reductant()
 
+        # Update environment-level most common reductant tracking after all furnace groups are updated
+        self.most_common_reductant_by_tech = self.most_common_reductant(world_plants)
+
     def _generate_cost_dict(
-        self, world_furnace_groups: list[FurnaceGroup], lag: int = 0
+        self,
+        world_furnace_groups: list[FurnaceGroup],
+        lag: int = 0,
+        environment_most_common_reductant: dict[str, str] = {},
     ) -> dict[str, dict[str, dict[str, float]]]:
         """
         Generate a dict representation of the costs for all furnace_groups
@@ -7163,7 +7270,12 @@ class Environment:
                 if fg.lifetime.start <= self.year + lag:
                     if not fg.bill_of_materials:
                         bom, util_rate, reductant = self.get_bom_from_avg_boms(
-                            fg.energy_costs, tech=fg.technology.name, capacity=1000
+                            fg.energy_costs,
+                            tech=fg.technology.name,
+                            capacity=1000,
+                            most_common_reductant=self.most_common_reductant_by_tech.get(
+                                fg.technology.name, environment_most_common_reductant.get(fg.technology.name)
+                            ),
                         )
                         if bom is not None:
                             unit_cost = calculate_variable_opex(bom["materials"], bom["energy"])
@@ -7203,7 +7315,9 @@ class Environment:
         TODO: Add separation of steel and iron price.
         """
         cost_curve = {}
-        self._generate_cost_dict(world_furnace_groups, lag=lag)
+        self._generate_cost_dict(
+            world_furnace_groups, lag=lag, environment_most_common_reductant=self.most_common_reductant_by_tech
+        )
         cost_dict = self.cost_dict if lag == 0 else self.future_cost_dict
         for product, product_cost_dict in cost_dict.items():
             sorted_product_costs = dict(
@@ -7477,6 +7591,34 @@ class Environment:
 
         if not self.iron_init_capacity:
             self.iron_init_capacity = self.regional_iron_capacity.copy()
+
+    def most_common_reductant(self, world_plants: list[Plant]) -> dict[str, str]:
+        """
+        Get the most common reductant for each technology across all plants in the simulation.
+
+        Aggregates reductant data from all furnace groups across all plants in the simulation
+        to determine the most frequently used reductant for each technology type.
+
+        Args:
+            world_plants (list[Plant]): All plants in the simulation to aggregate reductant data from.
+
+        Returns:
+            dict[str, str]: Dictionary mapping technology name to most common reductant.
+                           If no reductant is set for a technology, it will be omitted from the result.
+
+        Example:
+            {
+                "BOF": "coke",
+                "EAF": "electricity",
+                "DRI": "natural_gas"
+            }
+        """
+        from steelo.utilities.utils import get_most_common_reductant_by_technology
+
+        # Collect all furnace groups from all plants
+        all_furnace_groups = [fg for plant in world_plants for fg in plant.furnace_groups]
+
+        return get_most_common_reductant_by_technology(all_furnace_groups)
 
     def update_steel_capex_reduction_ratio(self) -> None:
         """
@@ -8012,9 +8154,68 @@ class Environment:
                 else 0
             )
 
+    def generate_input_effectiveness_mapping_from_feedstocks(
+        self, feedstocks_for_tech: list[PrimaryFeedstock], most_common_reductant: str | None = None
+    ) -> dict[str, float]:
+        input_effectiveness: dict[str, float] = {}
+        for feed in feedstocks_for_tech:
+            bom_logger.debug(
+                f"[BOM DEBUG] Checking feed: {feed.metallic_charge}, reductant: '{feed.reductant}' (as reference, the mcr is '{most_common_reductant}'), qty: {feed.required_quantity_per_ton_of_product}"
+            )
+            if (
+                isinstance(feed.metallic_charge, str)
+                and (
+                    most_common_reductant is None  # Accept any reductant when None
+                    or feed.reductant == most_common_reductant
+                    or (isinstance(feed.reductant, str) and feed.reductant.lower() == most_common_reductant)
+                    or (not most_common_reductant and not feed.reductant)  # Both are blank/empty
+                )
+                and feed.required_quantity_per_ton_of_product is not None
+            ):
+                input_effectiveness[feed.metallic_charge.lower()] = feed.required_quantity_per_ton_of_product
+                bom_logger.debug(
+                    f"[BOM DEBUG] Added to input_effectiveness: {feed.metallic_charge.lower()} = {feed.required_quantity_per_ton_of_product}"
+                )
+            # Include secondary feedstocks and other non-metallic inputs so avg_boms stay aligned with dynamic feedstocks
+            secondary_requirements = feed.secondary_feedstock or {}
+            if not secondary_requirements:
+                continue
+            reductant_matches = (
+                most_common_reductant is None  # Accept any reductant when None
+                or feed.reductant == most_common_reductant
+                or str(feed.reductant).lower() == most_common_reductant
+                or (not most_common_reductant and not feed.reductant)
+            )
+            if not reductant_matches:
+                continue
+            for sec_name, volume in secondary_requirements.items():
+                normalized_secondary = _normalize_energy_key(sec_name)
+                converted_volume = (
+                    volume * KG_TO_T
+                    if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION
+                    else volume
+                )
+                if (
+                    normalized_secondary in input_effectiveness
+                ):  # Should not happen, as each secondary feedstock should only appear once per feedstock and reductant combo
+                    bom_logger.warning(
+                        "[BOM DEBUG] Secondary feedstock %s overwriting %.4f with %.4f",
+                        normalized_secondary,
+                        input_effectiveness[normalized_secondary],
+                        converted_volume,
+                    )
+                input_effectiveness[normalized_secondary] = converted_volume
+        # If no inputs matched the most common reductant
+        if not input_effectiveness:
+            bom_logger.error(
+                f"[BOM DEBUG] No inputs matched most common reductant: {most_common_reductant}, feedstocks: {feedstocks_for_tech}"
+            )
+
+        return input_effectiveness
+
     def get_bom_from_avg_boms(
-        self, energy_costs: dict[str, float], tech: str, capacity: float
-    ) -> tuple[dict[str, dict[str, dict[str, float]]] | None, float, str | None]:
+        self, energy_costs: dict[str, float], tech: str, capacity: float, most_common_reductant: str | None = None
+    ) -> tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]:
         """Construct a complete bill of materials for a furnace from technology averages.
 
         Generates a detailed BOM by combining: (1) average material mix from avg_boms,
@@ -8072,145 +8273,32 @@ class Environment:
             - Material demand shares from avg_boms should sum to 1.0 per technology.
             - Process efficiencies are tons_input/ton_output (>1 for losses, <1 for enrichment).
         """
-        bom_logger.debug("[BOM DEBUG] === Starting get_bom_from_avg_boms ===")
-        bom_logger.debug(f"[BOM DEBUG] Tech: {tech}, Capacity: {capacity}")
-        bom_logger.debug(f"[BOM DEBUG] Energy costs: {energy_costs}")
-        bom_logger.debug(
-            f"[BOM DEBUG] Available technologies in dynamic_feedstocks: {list(self.dynamic_feedstocks.keys())}"
-        )
-        bom_logger.debug(
-            f"[BOM DEBUG] Available technologies in avg_boms: {list(self.avg_boms.keys()) if hasattr(self, 'avg_boms') and self.avg_boms else 'avg_boms not initialized'}"
-        )
 
+        feedstocks_for_tech = self.dynamic_feedstocks.get(tech, self.dynamic_feedstocks.get(tech.lower(), []))
         bom_dict: dict[str, dict[str, dict[str, float]]] = {"materials": {}, "energy": {}}
 
-        # Step 1: Calculate total energy costs per (metallic_input, reductant) pair
-        bom_logger.debug("[BOM DEBUG] Step 1: Calculating energy costs")
-        energy_vopex_by_input: dict[str, dict[str, float]] = {}
-        feedstocks_for_tech = self.dynamic_feedstocks.get(tech, self.dynamic_feedstocks.get(tech.lower(), []))
-        bom_logger.debug(f"[BOM DEBUG] Found {len(feedstocks_for_tech)} feedstocks for {tech}")
-
-        for feed in feedstocks_for_tech:
-            metallic_input = str(feed.metallic_charge).lower()
-            reductant = feed.reductant
-            raw_energy_reqs = feed.energy_requirements or {}
-            bom_logger.debug(
-                f"[BOM DEBUG] Processing feedstock: {feed.metallic_charge}, reductant: {reductant}, energy_reqs: {raw_energy_reqs}"
-            )
-
-            energy_reqs: dict[str, float] = {}
-            for energy_name, volume in raw_energy_reqs.items():
-                normalized_energy = _normalize_energy_key(energy_name)
-                if normalized_energy not in ENERGY_FEEDSTOCK_KEYS:
-                    continue
-                energy_reqs[normalized_energy] = energy_reqs.get(normalized_energy, 0.0) + volume
-
-            secondary_reqs: dict[str, float] = {}
-            for sec_name, volume in (feed.secondary_feedstock or {}).items():
-                normalized_secondary = _normalize_energy_key(sec_name)
-                if normalized_secondary not in ENERGY_FEEDSTOCK_KEYS:
-                    continue
-                converted_volume = (
-                    volume * KG_TO_T
-                    if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION
-                    else volume
-                )
-                secondary_reqs[normalized_secondary] = secondary_reqs.get(normalized_secondary, 0.0) + converted_volume
-
-            if not energy_reqs and not secondary_reqs:
-                bom_logger.debug(f"[BOM DEBUG] No energy requirements for {feed.metallic_charge}, skipping")
-                continue
-
-            reductant = str(reductant).lower()
-            energy_cost = 0.0
-            for energy_key, volume in energy_reqs.items():
-                price = energy_costs.get(_normalize_energy_key(energy_key), energy_costs.get(energy_key, 0.0))
-                energy_cost += volume * price
-            for energy_key, volume in secondary_reqs.items():
-                price = energy_costs.get(_normalize_energy_key(energy_key), energy_costs.get(energy_key, 0.0))
-                energy_cost += volume * price
-            bom_logger.debug(f"[BOM DEBUG] Calculated energy cost: {energy_cost} for {metallic_input}/{reductant}")
-
-            energy_vopex_by_input.setdefault(metallic_input, {}).setdefault(reductant, 0)
-            energy_vopex_by_input[metallic_input][reductant] += energy_cost
-
-        bom_logger.debug(f"[BOM DEBUG] Final energy_vopex_by_input: {energy_vopex_by_input}")
-
-        # Step 2: Identify the most common lowest-cost reductant
-        bom_logger.debug("[BOM DEBUG] Step 2: Finding cheapest reductant")
-        cheapest_reductants = [
-            min(reductant_costs, key=lambda k: reductant_costs[k]) for reductant_costs in energy_vopex_by_input.values()
-        ]
-        bom_logger.debug(f"[BOM DEBUG] Cheapest reductants: {cheapest_reductants}")
-
-        if not cheapest_reductants:
-            bom_logger.debug(f"[BOM DEBUG] ERROR: No energy cost data found for technology {tech}.")
-            bom_logger.debug(f"[BOM DEBUG] Energy VOPEX by input was: {energy_vopex_by_input}")
-            return None, 0.6, None
-
-        most_common_reductant = Counter(cheapest_reductants).most_common(1)[0][0]
-        bom_logger.debug(f"[BOM DEBUG] Most common reductant: {most_common_reductant}")
-
         # Step 3: Build input effectiveness mapping for selected reductant
+        # When most_common_reductant is None, all feedstocks are accepted because avg_boms
+        # will determine the actual mix of metallic charges used
         bom_logger.debug("[BOM DEBUG] Step 3: Building input effectiveness")
-        input_effectiveness: dict[str, float] = {}
-        for feed in feedstocks_for_tech:
-            bom_logger.debug(
-                f"[BOM DEBUG] Checking feed: {feed.metallic_charge}, reductant: '{feed.reductant}' (as reference, the mcr is '{most_common_reductant}'), qty: {feed.required_quantity_per_ton_of_product}"
-            )
-            if (
-                isinstance(feed.metallic_charge, str)
-                and (
-                    feed.reductant == most_common_reductant
-                    or feed.reductant.lower() == most_common_reductant
-                    or (not most_common_reductant and not feed.reductant)  # Both are blank/empty
-                )
-                and feed.required_quantity_per_ton_of_product is not None
-            ):
-                input_effectiveness[feed.metallic_charge.lower()] = feed.required_quantity_per_ton_of_product
-                bom_logger.debug(
-                    f"[BOM DEBUG] Added to input_effectiveness: {feed.metallic_charge.lower()} = {feed.required_quantity_per_ton_of_product}"
-                )
+        input_effectiveness = self.generate_input_effectiveness_mapping_from_feedstocks(
+            feedstocks_for_tech, most_common_reductant
+        )
 
-        # Fallback if no inputs matched the most common reductant
-        if not input_effectiveness:
-            bom_logger.debug("[BOM DEBUG] No inputs matched most common reductant, using fallback")
+        # If no reductant was specified but we got feedstocks, extract a reductant to return
+        # This ensures the function returns a non-None reductant for validation purposes
+        if most_common_reductant is None and input_effectiveness and feedstocks_for_tech:
             for feed in feedstocks_for_tech:
-                if isinstance(feed.metallic_charge, str) and feed.required_quantity_per_ton_of_product is not None:
-                    input_effectiveness[feed.metallic_charge.lower()] = feed.required_quantity_per_ton_of_product
+                if feed.reductant and str(feed.reductant).strip():
+                    most_common_reductant = str(feed.reductant)
                     bom_logger.debug(
-                        f"[BOM DEBUG] Fallback: Added {feed.metallic_charge.lower()} = {feed.required_quantity_per_ton_of_product}"
+                        f"[BOM DEBUG] No reductant specified, extracted first available for return: {most_common_reductant}"
                     )
-
-        # Include secondary feedstocks and other non-metallic inputs so avg_boms stay aligned with dynamic feedstocks
-        for feed in feedstocks_for_tech:
-            secondary_requirements = feed.secondary_feedstock or {}
-            if not secondary_requirements:
-                continue
-            reductant_matches = (
-                feed.reductant == most_common_reductant
-                or str(feed.reductant).lower() == most_common_reductant
-                or (not most_common_reductant and not feed.reductant)
-            )
-            if not reductant_matches:
-                continue
-            for sec_name, volume in secondary_requirements.items():
-                normalized_secondary = _normalize_energy_key(sec_name)
-                converted_volume = (
-                    volume * KG_TO_T
-                    if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION
-                    else volume
-                )
-                if normalized_secondary in input_effectiveness:
-                    bom_logger.debug(
-                        "[BOM DEBUG] Secondary feedstock %s overwriting %.4f with %.4f",
-                        normalized_secondary,
-                        input_effectiveness[normalized_secondary],
-                        converted_volume,
-                    )
-                input_effectiveness[normalized_secondary] = converted_volume
-
-        bom_logger.debug(f"[BOM DEBUG] Final input_effectiveness: {input_effectiveness}")
+                    break
+            # If still None after checking all feedstocks, use empty string
+            if most_common_reductant is None:
+                most_common_reductant = ""
+                bom_logger.debug("[BOM DEBUG] All feedstocks have empty reductants, using empty string")
 
         # Step 4: Fallback if no average BOM available
         bom_logger.debug("[BOM DEBUG] Step 4: Checking avg_boms")
@@ -8327,13 +8415,23 @@ class Environment:
         bom_logger.debug(f"[BOM DEBUG] Final BOM: {bom_dict}")
         bom_logger.debug("[BOM DEBUG] === End get_bom_from_avg_boms ===")
 
+        # Ensure reductant is never None for return type consistency
+        if most_common_reductant is None:
+            most_common_reductant = ""
+            bom_logger.debug("[BOM DEBUG] Reductant was still None at return, using empty string")
+
         return bom_dict, utilization, most_common_reductant
 
     def calculate_average_commodity_price_per_region(
-        self, world_plants: list[Plant], world_suppliers: list[Supplier]
+        self, world_plants: list[Plant], world_suppliers: list[Supplier], year: Year
     ) -> dict[Tuple, float]:
         """
         Calculate the average commodity price per iso3 based on the per unit costs.
+
+        Args:
+            world_plants: List of plants to include in calculation
+            world_suppliers: List of suppliers to include in calculation
+            year: The year for which to retrieve supplier production costs
         """
         # Initialize the output dict: (commodity, region) -> average price
         average_commodity_price_per_region = {}
@@ -8372,8 +8470,9 @@ class Environment:
 
         # 2) Process supplier-level data
         for supplier in world_suppliers:
-            # Skip if no cost provided
-            if supplier.production_cost is None:
+            # Get production cost for the specified year
+            production_cost = supplier.production_cost_by_year.get(year)
+            if production_cost is None:
                 continue
 
             # Normalize supplier commodity to string
@@ -8390,7 +8489,7 @@ class Environment:
                 count_per_commodity_and_region[key] = 0
 
             # Accumulate cost and count
-            sum_per_commodity_and_region[key] += supplier.production_cost
+            sum_per_commodity_and_region[key] += production_cost
             count_per_commodity_and_region[key] += 1
 
         # 3) Compute averages
@@ -8832,22 +8931,25 @@ class CommodityAllocations:
         # sort the suppliers by sourcing costs:
         # Filter sources that are instances of Supplier
         supplier_sources = [s for s in sources if isinstance(s, Supplier)]
-        # Sort them by production_cost
-        sorted_suppliers = sorted(supplier_sources, key=lambda sup: sup.production_cost)
+        # Sort them by production_cost_by_year
+        sorted_suppliers = sorted(
+            supplier_sources, key=lambda sup: sup.production_cost_by_year.get(environment.year, 0.0)
+        )
         cummultative_capacity = Volumes(0)
         supplier_cost_curve: list[dict[str, Any]] = []
         supplier_price = 0.0
         price_is_set = False
         for supplier in sorted_suppliers:
             cummultative_capacity = Volumes(cummultative_capacity + supplier.capacity_by_year[environment.year])
+            production_cost = supplier.production_cost_by_year.get(environment.year, 0.0)
             supplier_cost_curve.append(
                 {
                     "cumulative_capacity": cummultative_capacity,
-                    "production_cost": supplier.production_cost,
+                    "production_cost": production_cost,
                 }
             )
             if total_demand <= cummultative_capacity and not price_is_set:
-                supplier_price = supplier.production_cost
+                supplier_price = production_cost
         self.price = supplier_price
         self.cost_curve = supplier_cost_curve
 

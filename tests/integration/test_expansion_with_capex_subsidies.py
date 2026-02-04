@@ -114,7 +114,7 @@ def test_evaluate_expansion_without_subsidies(
     bus.uow.plant_groups.add(pg)
 
     # Mock get_bom_from_avg_boms
-    def mock_get_bom(energy_costs, tech, capacity):
+    def mock_get_bom(energy_costs, tech, capacity, most_common_reductant=None):
         return (
             {
                 "materials": {"scrap": {"unit_cost": 100.0, "demand": 1.0}},
@@ -182,7 +182,7 @@ def test_evaluate_expansion_with_absolute_capex_subsidy(
     bus.uow.plant_groups.add(pg)
 
     # Mock get_bom_from_avg_boms
-    def mock_get_bom(energy_costs, tech, capacity):
+    def mock_get_bom(energy_costs, tech, capacity, most_common_reductant=None):
         return (
             {
                 "materials": {"scrap": {"unit_cost": 100.0, "demand": 1.0}},
@@ -200,8 +200,8 @@ def test_evaluate_expansion_with_absolute_capex_subsidy(
         technology_name="EAF",
         iso3="USA",
         cost_item="capex",
-        absolute_subsidy=100.0,
-        relative_subsidy=0.0,
+        subsidy_type="absolute",
+        subsidy_amount=100.0,
         start_year=Year(2020),
         end_year=Year(2030),
     )
@@ -265,7 +265,7 @@ def test_evaluate_expansion_with_relative_capex_subsidy(
     bus.uow.plant_groups.add(pg)
 
     # Mock get_bom_from_avg_boms
-    def mock_get_bom(energy_costs, tech, capacity):
+    def mock_get_bom(energy_costs, tech, capacity, most_common_reductant=None):
         return (
             {
                 "materials": {"scrap": {"unit_cost": 100.0, "demand": 1.0}},
@@ -283,8 +283,8 @@ def test_evaluate_expansion_with_relative_capex_subsidy(
         technology_name="DRI",
         iso3="USA",
         cost_item="capex",
-        absolute_subsidy=0.0,
-        relative_subsidy=0.2,  # 20% subsidy
+        subsidy_type="relative",
+        subsidy_amount=0.2,  # 20% subsidy (stored as decimal)
         start_year=Year(2020),
         end_year=Year(2030),
     )
@@ -345,7 +345,7 @@ def test_evaluate_expansion_with_combined_subsidies(
     bus.uow.plant_groups.add(pg)
 
     # Mock get_bom_from_avg_boms with higher NPV for BOF to ensure it's selected
-    def mock_get_bom(energy_costs, tech, capacity):
+    def mock_get_bom(energy_costs, tech, capacity, most_common_reductant=None):
         if tech == "BOF":
             # Make BOF more attractive
             return (
@@ -374,8 +374,8 @@ def test_evaluate_expansion_with_combined_subsidies(
         technology_name="BOF",
         iso3="USA",
         cost_item="capex",
-        absolute_subsidy=50.0,
-        relative_subsidy=0.0,
+        subsidy_type="absolute",
+        subsidy_amount=50.0,
         start_year=Year(2020),
         end_year=Year(2030),
     )
@@ -385,8 +385,8 @@ def test_evaluate_expansion_with_combined_subsidies(
         technology_name="BOF",
         iso3="USA",
         cost_item="capex",
-        absolute_subsidy=0.0,
-        relative_subsidy=0.1,  # 10% subsidy
+        subsidy_type="relative",
+        subsidy_amount=0.1,  # 10% subsidy (stored as decimal)
         start_year=Year(2020),
         end_year=Year(2030),
     )
@@ -430,8 +430,10 @@ def test_evaluate_expansion_with_combined_subsidies(
     # Verify BOF was chosen given the favorable BOM
     if best_tech == "BOF":
         original_capex = bus.env.name_to_capex["greenfield"]["Americas"]["BOF"]
-        # First apply absolute subsidy, then relative
-        expected_capex = (original_capex - 50.0) * 0.9
+        # Total subsidy = absolute + (capex * relative) = 50 + (500 * 0.1) = 100
+        # Capex with subsidy = max(0, capex - total_subsidy)
+        total_subsidy = 50.0 + (original_capex * 0.1)
+        expected_capex = max(0, original_capex - total_subsidy)
         assert abs(capex_with_subsidy - expected_capex) < 0.01
 
 
@@ -446,7 +448,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
     bus.uow.plant_groups.add(pg)
 
     # Mock get_bom_from_avg_boms to make DRI and BF more attractive
-    def mock_get_bom(energy_costs, tech, capacity):
+    def mock_get_bom(energy_costs, tech, capacity, most_common_reductant=None):
         if tech in ["DRI", "BF"]:
             # Make DRI and BF very attractive economically - very low costs
             return (

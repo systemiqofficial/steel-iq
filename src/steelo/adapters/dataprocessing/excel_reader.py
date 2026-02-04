@@ -2,6 +2,7 @@ import math
 from pathlib import Path
 from typing import cast
 
+import numpy as np
 import pandas as pd
 import pycountry
 import pickle
@@ -690,37 +691,44 @@ def read_mines_as_suppliers(mine_data_excel_path: str, mine_data_sheet_name: str
             duplicates = [id for id in supplier_ids if supplier_ids.count(id) > 1]
             raise ValueError(f"Duplicate supplier IDs generated: {set(duplicates)}")
 
-        # 2. Total capacity preservation
-        # Strip whitespace from column names in excel_df if not already done
-        if "capacity" not in excel_df.columns and " capacity" in excel_df.columns:
-            excel_df.columns = excel_df.columns.str.strip()
-        excel_total = excel_df["capacity"].sum()
-        # Get capacity for any year (they're all the same)
-        supplier_total = sum(
-            list(s.capacity_by_year.values())[0] / MT_TO_T  # Convert back to Mt
-            for s in suppliers
-        )
-        tolerance = 0.01  # Allow small rounding differences
-
-        if abs(excel_total - supplier_total) > tolerance:
-            raise ValueError(f"Total capacity mismatch: Excel={excel_total:.2f} Mt, Suppliers={supplier_total:.2f} Mt")
-
-        # 3. Per-product capacity preservation
-        for product in excel_df["Products"].unique():
-            excel_product = excel_df[excel_df["Products"] == product]["capacity"].sum()
-            commodity = Commodities(normalize_product_name(product)).value
-            supplier_product = sum(
-                list(s.capacity_by_year.values())[0] / MT_TO_T for s in suppliers if s.commodity == commodity
+        # 2. Total capacity preservation (check against first capacity column found)
+        capacity_cols = [col for col in excel_df.columns if col.startswith("Capacity [Mt] ")]
+        if capacity_cols:
+            # Use the first capacity column for validation
+            first_cap_col = capacity_cols[0]
+            excel_total = excel_df[first_cap_col].sum()
+            # Get capacity for the same year from suppliers
+            validation_year = Year(int(first_cap_col.split()[-1]))
+            supplier_total = sum(
+                s.capacity_by_year.get(validation_year, Volumes(0)) / MT_TO_T  # Convert back to Mt
+                for s in suppliers
             )
-            if abs(excel_product - supplier_product) > tolerance:
+            tolerance = 0.01  # Allow small rounding differences
+
+            if abs(excel_total - supplier_total) > tolerance:
                 raise ValueError(
-                    f"{product} capacity mismatch: Excel={excel_product:.2f} Mt, Suppliers={supplier_product:.2f} Mt"
+                    f"Total capacity mismatch for {validation_year}: Excel={excel_total:.2f} Mt, Suppliers={supplier_total:.2f} Mt"
                 )
+
+            # 3. Per-product capacity preservation
+            for product in excel_df["Products"].unique():
+                excel_product = excel_df[excel_df["Products"] == product][first_cap_col].sum()
+                commodity = Commodities(normalize_product_name(product)).value
+                supplier_product = sum(
+                    s.capacity_by_year.get(validation_year, Volumes(0)) / MT_TO_T
+                    for s in suppliers
+                    if s.commodity == commodity
+                )
+                if abs(excel_product - supplier_product) > tolerance:
+                    raise ValueError(
+                        f"{product} capacity mismatch for {validation_year}: Excel={excel_product:.2f} Mt, Suppliers={supplier_product:.2f} Mt"
+                    )
 
         # 4. Data type and range validation
         for supplier in suppliers:
-            first_capacity = list(supplier.capacity_by_year.values())[0]
-            assert first_capacity >= 0, f"Negative capacity: {supplier.supplier_id}"
+            # Validate all capacity values
+            for year, capacity in supplier.capacity_by_year.items():
+                assert capacity >= 0, f"Negative capacity for {supplier.supplier_id} in {year}"
             assert -90 <= supplier.location.lat <= 90, f"Invalid latitude: {supplier.supplier_id}"
             assert -180 <= supplier.location.lon <= 180, f"Invalid longitude: {supplier.supplier_id}"
 
@@ -729,10 +737,39 @@ def read_mines_as_suppliers(mine_data_excel_path: str, mine_data_sheet_name: str
     # Strip whitespace from column names to handle Excel inconsistencies
     mine_data_df.columns = mine_data_df.columns.str.strip()
 
+    # Extract year-specific columns dynamically - support both formats:
+    # Old format: "Capacity [Mt] 2025", "Production Cost [$/t] 2025", "Mine Price [$/t] 2025"
+    # New format: "capacity Mtpa 2025", "costs $/t 2025", "price $/t 2025"
+    capacity_cols = [
+        col for col in mine_data_df.columns if col.startswith("Capacity [Mt] ") or col.startswith("capacity Mtpa ")
+    ]
+    mine_price_cols = [
+        col for col in mine_data_df.columns if col.startswith("Mine Price [$/t] ") or col.startswith("price $/t ")
+    ]
+    production_cost_cols = [
+        col for col in mine_data_df.columns if col.startswith("Production Cost [$/t] ") or col.startswith("costs $/t ")
+    ]
+
+    # Add logging to help debug
+    logging.info(f"Reading iron ore mines from '{mine_data_sheet_name}' sheet")
+    logging.info(f"  Total rows in sheet: {len(mine_data_df)}")
+    logging.info(f"  Capacity columns found: {len(capacity_cols)} columns")
+    logging.info(f"  Production cost columns found: {len(production_cost_cols)} columns")
+    logging.info(f"  Mine price columns found: {len(mine_price_cols)} columns")
+
+    def extract_year_from_column(col_name: str) -> int:
+        """Extract year from column name like 'Capacity [Mt] 2025' or 'capacity Mtpa 2025'"""
+        return int(col_name.split()[-1])
+
     mines: list[Supplier] = []
+    skipped_rows = 0
     for row_num, (idx, row) in enumerate(mine_data_df.iterrows()):
-        if row["capacity"] == 0:
+        # Check if any capacity column has non-zero value
+        has_capacity = any(row.get(col, 0) > 0 for col in capacity_cols)
+        if not has_capacity:
+            skipped_rows += 1
             continue
+
         # Create a unique location for each mine (not reused)
         mine_location = Location(
             lat=row["lat"],
@@ -742,37 +779,66 @@ def read_mines_as_suppliers(mine_data_excel_path: str, mine_data_sheet_name: str
             iso3=translate_mine_regions_to_iso3.get(row["Region"], ""),
         )
         product = row["Products"]
-        cap_by_year = {
-            Year(year): Volumes(int(row["capacity"] * MT_TO_T))
-            for year in range(EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR + 1)
-        }
+
+        # Parse year-specific capacities
+        cap_by_year = {}
+        for col in capacity_cols:
+            year = Year(extract_year_from_column(col))
+            capacity_value = row.get(col, 0)
+            if pd.notna(capacity_value):
+                cap_by_year[year] = Volumes(int(capacity_value * MT_TO_T))
+            else:
+                cap_by_year[year] = Volumes(0)
+
+        # Parse year-specific mine prices
+        mine_price_by_year = {}
+        for col in mine_price_cols:
+            year = Year(extract_year_from_column(col))
+            price_value = row.get(col)
+            if pd.notna(price_value):
+                mine_price_by_year[year] = float(price_value)
+
+        # Parse year-specific production costs
+        production_cost_by_year = {}
+        for col in production_cost_cols:
+            year = Year(extract_year_from_column(col))
+            cost_value = row.get(col)
+            if pd.notna(cost_value):
+                production_cost_by_year[year] = float(cost_value)
+
+        # If mine_price is not available for a year, use production_cost as fallback
+        for year in cap_by_year.keys():
+            if year not in mine_price_by_year and year in production_cost_by_year:
+                mine_price_by_year[year] = production_cost_by_year[year]
 
         # Generate unique supplier ID - use row_num which is guaranteed to be an int
-        supplier_id = generate_supplier_id(row, mine_location, product, row_index=row_num)
+        # For backward compatibility with old ID generation, use first capacity value
+        first_capacity_mt = list(cap_by_year.values())[0] / MT_TO_T if cap_by_year else 0
+        first_cost = list(production_cost_by_year.values())[0] if production_cost_by_year else 0
+        row_for_id = row.copy()
+        row_for_id["capacity"] = first_capacity_mt
+        row_for_id["costs"] = first_cost
+        supplier_id = generate_supplier_id(row_for_id, mine_location, product, row_index=row_num)
 
-        # Read both costs and price columns for iron ore premiums support
-        # Handle NaN values: if price column exists but cell is empty, fall back to costs
-        price_value = row.get("price")
-        if price_value is None or pd.isna(price_value):
-            mine_price = row["costs"]
-        else:
-            mine_price = price_value
-
-        # Default production_cost to costs (will be overridden by bootstrap based on flag)
         mine = Supplier(
             supplier_id=supplier_id,
             commodity=Commodities(normalize_product_name(product)).value,
             location=mine_location,
             capacity_by_year=cap_by_year,
-            production_cost=row["costs"],
-            mine_cost=row["costs"],
-            mine_price=mine_price,
+            production_cost_by_year=production_cost_by_year,
+            mine_cost_by_year=production_cost_by_year,  # Using production_cost as mine_cost
+            mine_price_by_year=mine_price_by_year,
         )
         mines.append(mine)
 
+    # Log summary
+    logging.info(f"  Processed {len(mines)} iron ore mines")
+    logging.info(f"  Skipped {skipped_rows} rows (zero capacity)")
+    if mines:
+        commodities = set(m.commodity for m in mines)
+        logging.info(f"  Commodities: {commodities}")
     # Validate the suppliers before returning
     validate_suppliers(mines, mine_data_df)
-
     return mines
 
 
@@ -947,15 +1013,22 @@ def refine_scrap_centers_for_major_countries(old_centers):
             for year in years:
                 amount_by_year[Year(year)] = old_center.capacity_by_year[Year(year)] * center["share"]
 
-            # Create new center with the new location and amount_by_year
+            # Create constant production cost dictionary for all years in simulation horizon
+            # This initial value of 450 will be overwritten annually in handlers.py based on BOF hot_metal costs
+            production_cost_by_year = {
+                Year(year): 450.0 for year in range(EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR + 1)
+            }
 
+            # Create new center with the new location and amount_by_year
             new_centers.append(
                 Supplier(
                     commodity=Commodities.SCRAP.value,
                     supplier_id=new_id,
                     location=location,
                     capacity_by_year=amount_by_year,
-                    production_cost=450,
+                    production_cost_by_year=production_cost_by_year,
+                    mine_cost_by_year={},
+                    mine_price_by_year={},
                 )
             )
             center_counter += 1
@@ -1027,12 +1100,21 @@ def read_scrap_as_suppliers(
                 scrap_by_year[Year(year)] = Volumes(KT_TO_T * int(row[col]))
             except ValueError:
                 continue
+
+        # Create constant production cost dictionary for all years in simulation horizon
+        # This initial value of 450 will be overwritten annually in handlers.py based on BOF hot_metal costs
+        production_cost_by_year = {
+            Year(year): 450.0 for year in range(EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR + 1)
+        }
+
         supply_center = Supplier(
             commodity=Commodities.SCRAP.value,
             supplier_id=f"{scrap_location.country}_scrap",
             location=scrap_location,
             capacity_by_year=scrap_by_year,
-            production_cost=450,
+            production_cost_by_year=production_cost_by_year,
+            mine_cost_by_year={},
+            mine_price_by_year={},
         )
         supply_centers.append(supply_center)
 
@@ -1040,24 +1122,59 @@ def read_scrap_as_suppliers(
     return refine_scrap_centers_for_major_countries(supply_centers)
 
 
-def find_iso3s_of_region(region_df: pd.DataFrame, region: str, negation=False) -> list[str]:
+def find_iso3s_of_trade_bloc(country_mappings: list, bloc_name: str, negation: bool = False) -> list[str]:
     """
-    Find the ISO3 codes of a given region in the region DataFrame.
+    Find the ISO3 codes of countries in a given trade bloc using CountryMapping objects.
+
+    This function dynamically detects trade bloc memberships based on boolean attributes
+    in the CountryMapping objects, allowing any trade bloc column in the Excel sheet to be used.
 
     Args:
-        region_df (pd.DataFrame): DataFrame containing region data.
-        region (str): The name of the region to search for.
-        negation (bool): If True, return ISO3 codes not in the specified region.
+        country_mappings: List of CountryMapping objects.
+        bloc_name: The name of the trade bloc (e.g., EU, EFTA/EUCU, OECD, NAFTA, etc.).
+                   Special characters like "/" are normalized to "_".
+        negation: If True, return ISO3 codes not in the specified trade bloc.
 
     Returns:
-        list[str]: List of ISO3 codes for the specified region.
+        List of ISO3 codes for the specified trade bloc.
+
+    Raises:
+        ValueError: If the bloc_name is not found as an attribute in any CountryMapping object.
     """
-    if region not in region_df.columns:
-        raise ValueError(f"Region '{region}' not found in the DataFrame.")
-    if negation:
-        return list(region_df[region_df[region] != "X"]["ISO 3-letter code"].values)
-    else:
-        return list(region_df[region_df[region] == "X"]["ISO 3-letter code"].values)
+    # Normalize bloc name to match CountryMapping attributes
+    # Replace special characters that might be in Excel column names
+    bloc_name_normalized = bloc_name.replace("/", "_").replace(" ", "_").replace("-", "_")
+
+    # Special case: EUCU maps to EUCJ for backwards compatibility
+    bloc_name_normalized = bloc_name_normalized.replace("EUCU", "EUCJ")
+
+    # Verify that at least one country mapping has this attribute
+    if country_mappings and not hasattr(country_mappings[0], bloc_name_normalized):
+        # Try to find similar attributes to provide helpful error message
+        available_blocs = [
+            attr
+            for attr in dir(country_mappings[0])
+            if not attr.startswith("_") and isinstance(getattr(country_mappings[0], attr, None), bool)
+        ]
+        raise ValueError(
+            f"Trade bloc '{bloc_name}' (normalized to '{bloc_name_normalized}') not found in country mappings. "
+            f"Available trade blocs: {', '.join(available_blocs)}"
+        )
+
+    iso3_codes = []
+    for country in country_mappings:
+        # Get the boolean value for this trade bloc
+        is_member = getattr(country, bloc_name_normalized, False)
+
+        # Apply negation logic
+        if negation:
+            if not is_member:
+                iso3_codes.append(country.iso3)
+        else:
+            if is_member:
+                iso3_codes.append(country.iso3)
+
+    return iso3_codes
 
 
 def read_carbon_costs(carbon_cost_excel_path: Path, sheet_name="Carbon cost") -> list[CarbonCostSeries]:
@@ -1259,10 +1376,42 @@ def read_regional_emissivities(excel_path: Path, grid_sheet_name: str, gas_sheet
     return grid_emissivity_list
 
 
-def read_tariffs(tariff_excel_path: str, tariff_sheet_name: str, region_sheet_name: str) -> list[TradeTariff]:
+def read_tariffs(tariff_excel_path: str, tariff_sheet_name: str, country_mappings: list) -> list[TradeTariff]:
+    """
+    Read tariff data from an Excel file and return a list of TradeTariff objects.
+
+    Trade bloc names in the "From ISO3" and "To ISO3" columns are automatically detected
+    from the available boolean attributes in the CountryMapping objects.
+
+    Args:
+        tariff_excel_path: Path to the Excel file containing tariff data.
+        tariff_sheet_name: Name of the sheet in the Excel file to read from.
+        country_mappings: List of CountryMapping objects used to resolve trade bloc names.
+
+    Returns:
+        List of TradeTariff objects.
+    """
     tariff_df = pd.read_excel(tariff_excel_path, sheet_name=tariff_sheet_name)
-    region_df = pd.read_excel(tariff_excel_path, sheet_name=region_sheet_name)
     tariffs = []
+
+    # Dynamically detect available trade blocs from country_mappings
+    # Get all boolean attributes from the first country mapping object
+    supported_blocs = []
+    if country_mappings:
+        supported_blocs = [
+            attr
+            for attr in dir(country_mappings[0])
+            if not attr.startswith("_") and isinstance(getattr(country_mappings[0], attr, None), bool)
+        ]
+        # Add common variants with "/" for Excel column names (e.g., EFTA/EUCU)
+        # This allows the tariff sheet to use either EFTA_EUCJ or EFTA/EUCU
+        if "EFTA_EUCJ" in supported_blocs:
+            supported_blocs.append("EFTA/EUCU")
+
+    logger.info(
+        f"Detected {len(supported_blocs)} available trade blocs for tariff processing: {', '.join(supported_blocs)}"
+    )
+
     # Drop rows with NaN values in the 'Tariff scenario name' column
     tariff_df = tariff_df.dropna(subset=["Tariff scenario name"])
     # tariff_df["Metric (Volume/Emissions)"] = tariff_df["Metric (Volume/Emissions)"].fillna("")
@@ -1287,19 +1436,23 @@ def read_tariffs(tariff_excel_path: str, tariff_sheet_name: str, region_sheet_na
 
         from_iso3_entry = row["From ISO3"]
         to_iso3_entry = row["To ISO3"]
-        # if it starts with a NOT (then it's the negation of a region)
+
+        # Process "From ISO3" entry
+        # if it starts with a NOT (then it's the negation of a trade bloc)
         if from_iso3_entry.startswith("NOT "):
-            from_iso3_region = from_iso3_entry[4:]
-            from_iso3_list = find_iso3s_of_region(region_df, from_iso3_region, negation=True)
-        elif from_iso3_entry in region_df.columns:
-            from_iso3_list = find_iso3s_of_region(region_df, from_iso3_entry)
+            from_iso3_bloc = from_iso3_entry[4:]
+            from_iso3_list = find_iso3s_of_trade_bloc(country_mappings, from_iso3_bloc, negation=True)
+        elif from_iso3_entry in supported_blocs:
+            from_iso3_list = find_iso3s_of_trade_bloc(country_mappings, from_iso3_entry)
         else:
             from_iso3_list = [from_iso3_entry]
+
+        # Process "To ISO3" entry
         if to_iso3_entry.startswith("NOT "):
-            to_iso3_region = to_iso3_entry[4:]
-            to_iso3_list = find_iso3s_of_region(region_df, to_iso3_region, negation=True)
-        elif to_iso3_entry in region_df.columns:
-            to_iso3_list = find_iso3s_of_region(region_df, to_iso3_entry)
+            to_iso3_bloc = to_iso3_entry[4:]
+            to_iso3_list = find_iso3s_of_trade_bloc(country_mappings, to_iso3_bloc, negation=True)
+        elif to_iso3_entry in supported_blocs:
+            to_iso3_list = find_iso3s_of_trade_bloc(country_mappings, to_iso3_entry)
         else:
             to_iso3_list = [to_iso3_entry]
 
@@ -1511,6 +1664,9 @@ def read_country_mappings(excel_path: Path, sheet_name: str = "Country mapping")
     Reads country mapping data from the specified Excel sheet and converts it
     into a list of CountryMapping domain objects.
 
+    Trade bloc membership columns (columns containing True/False values) are
+    automatically detected and added as boolean attributes to each CountryMapping object.
+
     Args:
         excel_path: Path to the master input Excel file.
         sheet_name: The name of the sheet to read.
@@ -1524,33 +1680,86 @@ def read_country_mappings(excel_path: Path, sheet_name: str = "Country mapping")
         logger.error(f"Sheet '{sheet_name}' not found in {excel_path}")
         return []
 
+    # Define the core columns that should not be treated as trade bloc memberships
+    core_columns = {
+        "Country",
+        "ISO 2-letter code",
+        "ISO 3-letter code",
+        "irena_name",
+        "irena_region",
+        "region_for_outputs",
+        "ssp_region",
+        "gem_country",
+        "eu_or_non_eu",
+        "ws_region",
+        "tiam-ucl_region",
+    }
+
+    # Detect boolean columns (trade bloc memberships)
+    # These are columns with True/False values that aren't in the core set
+    boolean_columns = []
+    for col in df.columns:
+        if col not in core_columns:
+            # Check if the column contains boolean-like values
+            # Sample the first few non-null values to determine if it's boolean
+            non_null_values = df[col].dropna()
+            if len(non_null_values) > 0:
+                # Check if values are boolean, or numeric 0/1, or string true/false variants
+                sample_values = non_null_values.head(10)
+                is_boolean = all(
+                    isinstance(val, (bool, np.bool_))
+                    or (isinstance(val, (int, float, np.integer, np.floating)) and val in [0, 1, 0.0, 1.0])
+                    or (isinstance(val, str) and val.lower() in ["true", "false", "yes", "no", "0", "1"])
+                    for val in sample_values
+                )
+                if is_boolean:
+                    boolean_columns.append(col)
+
+    if boolean_columns:
+        logger.info(f"Detected {len(boolean_columns)} trade bloc membership columns: {', '.join(boolean_columns)}")
+
     mappings = []
     for idx, row in df.iterrows():
         try:
-            mapping = CountryMapping(
-                country=str(row["Country"]),
-                iso2=str(row["ISO 2-letter code"]),
-                iso3=str(row["ISO 3-letter code"]),
-                irena_name=str(row["irena_name"]),
-                irena_region=str(row["irena_region"]) if pd.notna(row["irena_region"]) else None,
-                region_for_outputs=str(row["region_for_outputs"]),
-                ssp_region=str(row["ssp_region"]),
-                gem_country=str(row["gem_country"]) if pd.notna(row["gem_country"]) else None,
-                eu_region=(
+            # Build the base mapping with core attributes
+            # Type hint to allow str, None, and bool values
+            mapping_kwargs: dict[str, str | None | bool] = {
+                "country": str(row["Country"]),
+                "iso2": str(row["ISO 2-letter code"]),
+                "iso3": str(row["ISO 3-letter code"]),
+                "irena_name": str(row["irena_name"]),
+                "irena_region": str(row["irena_region"]) if pd.notna(row["irena_region"]) else None,
+                "region_for_outputs": str(row["region_for_outputs"]),
+                "ssp_region": str(row["ssp_region"]),
+                "gem_country": str(row["gem_country"]) if pd.notna(row["gem_country"]) else None,
+                "eu_region": (
                     str(row["eu_or_non_eu"]) if "eu_or_non_eu" in row and pd.notna(row["eu_or_non_eu"]) else None
                 ),
-                ws_region=str(row["ws_region"]) if pd.notna(row["ws_region"]) else None,
-                tiam_ucl_region=str(row["tiam-ucl_region"]),
-                # CBAM-related region memberships
-                # Debug: Check if the issue is with row.get() or with the row object
-                EU=bool(row["EU"]) if "EU" in row else False,
-                EFTA_EUCJ=bool(row["EFTA/EUCU"]) if "EFTA/EUCU" in row else False,
-                OECD=bool(row["OECD"]) if "OECD" in row else False,
-                NAFTA=bool(row["NAFTA"]) if "NAFTA" in row else False,
-                Mercosur=bool(row["Mercosur"]) if "Mercosur" in row else False,
-                ASEAN=bool(row["ASEAN"]) if "ASEAN" in row else False,
-                RCEP=bool(row["RCEP"]) if "RCEP" in row else False,
-            )
+                "ws_region": str(row["ws_region"]) if pd.notna(row["ws_region"]) else None,
+                "tiam_ucl_region": str(row["tiam-ucl_region"]),
+            }
+
+            # Add boolean columns dynamically
+            for col in boolean_columns:
+                if col in row:
+                    val = row[col]
+                    # Convert to boolean, handling various input formats
+                    if pd.isna(val):
+                        boolean_val = False
+                    elif isinstance(val, (bool, np.bool_)):
+                        boolean_val = bool(val)
+                    elif isinstance(val, (int, float, np.integer, np.floating)):
+                        boolean_val = bool(val)
+                    elif isinstance(val, str):
+                        boolean_val = val.lower() in ["true", "yes", "1"]
+                    else:
+                        boolean_val = False
+
+                    # Normalize column name for attribute (replace special chars with underscores)
+                    attr_name = col.replace("/", "_").replace(" ", "_").replace("-", "_")
+                    mapping_kwargs[attr_name] = boolean_val
+
+            mapping = CountryMapping(**mapping_kwargs)  # type: ignore[arg-type]
             mappings.append(mapping)
         except Exception as e:
             # idx from iterrows is always an integer for standard DataFrames
@@ -1572,6 +1781,9 @@ def read_carbon_border_mechanisms(excel_path: Path, sheet_name: str = "CBAM") ->
     - Row 2: "Year CBAM ends" - end year
     - Row 3: "Common carbon cost across the bloc?" - not used
 
+    The function dynamically detects trade bloc columns (any column except the first
+    descriptor column) and processes them as potential carbon border mechanisms.
+
     Args:
         excel_path: Path to the master input Excel file.
         sheet_name: The name of the sheet to read (default: "CBAM").
@@ -1587,22 +1799,27 @@ def read_carbon_border_mechanisms(excel_path: Path, sheet_name: str = "CBAM") ->
 
     mechanisms = []
 
-    # Define the mechanism columns and their corresponding region columns
-    # Note: Fixed EFTA/EUCU to match actual Excel column name
-    mechanism_configs = [
-        ("EU", "EU"),
-        ("EFTA/EUCU", "EFTA_EUCJ"),  # Excel has EFTA/EUCU, region mapping uses EFTA_EUCJ
-        ("OECD", "OECD"),
-        ("NAFTA", "NAFTA"),
-        ("Mercosur", "Mercosur"),
-        ("ASEAN", "ASEAN"),
-        ("RCEP", "RCEP"),
-    ]
-
     # Check that we have at least 3 rows (active, start year, end year)
     if len(df) < 3:
         logger.warning(f"CBAM sheet has insufficient rows ({len(df)}) - expected at least 3")
         return []
+
+    # Dynamically detect mechanism columns
+    # Skip the first column (assumed to be the row descriptor/label column)
+    # All other columns are potential mechanisms
+    mechanism_configs = []
+    for col in df.columns[1:]:  # Skip first column
+        # Normalize the column name to match CountryMapping attributes
+        region_column = col.replace("/", "_").replace(" ", "_").replace("-", "_")
+        # Special case: EUCU maps to EUCJ
+        region_column = region_column.replace("EUCU", "EUCJ")
+        mechanism_configs.append((col, region_column))
+
+    if mechanism_configs:
+        logger.info(
+            f"Detected {len(mechanism_configs)} potential CBAM mechanism columns: "
+            f"{', '.join(col for col, _ in mechanism_configs)}"
+        )
 
     # Process each mechanism
     for mechanism_name, region_column in mechanism_configs:
@@ -1736,46 +1953,243 @@ def read_hydrogen_capex_opex(
     return hydrogen_capex_opex
 
 
+def _normalize_cost_item(cost_item: str | None, row_index: int) -> str | None:
+    """
+    Normalize cost item to standard values: 'opex', 'capex', 'cost of debt'.
+
+    Args:
+        cost_item: Raw cost item string from Excel
+        row_index: Row index for logging purposes
+
+    Returns:
+        Normalized cost item string, or None if row should be skipped.
+    """
+    logger = logging.getLogger(__name__)
+
+    if cost_item is None or (isinstance(cost_item, float) and math.isnan(cost_item)) or str(cost_item).strip() == "":
+        return "opex"
+
+    normalized = str(cost_item).strip().lower()
+
+    if normalized in ("opex",):
+        return "opex"
+    elif normalized in ("capex",):
+        return "capex"
+    elif normalized in ("cost of debt", "debt"):
+        return "cost of debt"
+    elif normalized in ("hydrogen", "h2"):
+        return "hydrogen"
+    elif normalized in ("electricity",):
+        return "electricity"
+    else:
+        logger.warning(f"Skipping row {row_index}: unknown cost item '{cost_item}'")
+        return None
+
+
+def _expand_technology_pattern(pattern: str | None, all_technologies: list[str]) -> list[str]:
+    """
+    Expand technology pattern to list of matching technologies.
+
+    Args:
+        pattern: Technology name, empty for all, or wildcard with '*' suffix
+        all_technologies: List of all available technology names
+
+    Returns:
+        List of matching technology names. Returns all_technologies for empty pattern.
+    """
+    if pattern is None or (isinstance(pattern, float) and math.isnan(pattern)) or str(pattern).strip() == "":
+        return all_technologies
+
+    pattern_str = str(pattern).strip()
+
+    if pattern_str.endswith("*"):
+        prefix = pattern_str[:-1]
+        matches = [tech for tech in all_technologies if prefix in tech]
+        if not matches:
+            logging.warning(f"Wildcard pattern '{pattern_str}' matched no technologies")
+            return []
+        return matches
+    else:
+        if pattern_str not in all_technologies:
+            logging.warning(f"Technology '{pattern_str}' not found in available technologies")
+            return []
+        return [pattern_str]
+
+
+def _parse_subsidy_type(subsidy_type: str | None, cost_item: str, row_index: int) -> str | None:
+    """
+    Parse subsidy type from Excel, defaulting based on cost item.
+
+    Args:
+        subsidy_type: Raw subsidy type from Excel ("Absolute", "Relative", or empty)
+        cost_item: Normalized cost item
+        row_index: Row index for logging purposes
+
+    Returns:
+        "absolute", "relative", or None if row should be skipped.
+    """
+    if (
+        subsidy_type is None
+        or (isinstance(subsidy_type, float) and math.isnan(subsidy_type))
+        or str(subsidy_type).strip() == ""
+    ):
+        return "absolute"  # Default
+
+    normalized = str(subsidy_type).strip().lower()
+
+    if normalized == "relative":
+        if cost_item == "cost of debt":
+            logging.warning(f"Skipping row {row_index}: relative subsidies not supported for cost of debt")
+            return None
+        return "relative"
+
+    return "absolute"
+
+
 def read_subsidies(
-    excel_path: Path, subsidies_sheet: str = "Subsidies", trade_bloc_sheet: str = "Trade bloc definitions"
+    excel_path: Path,
+    subsidies_sheet: str = "Subsidies",
+    country_mapping_sheet: str = "Country mapping",
+    techno_economic_sheet: str = "Techno-economic details",
 ) -> list[Subsidy]:
     """
     Read subsidies data from Excel sheet and return domain objects.
+
+    Supports the new subsidies format with:
+    - Single 'Subsidy amount' + 'Subsidy type' columns
+    - Technology wildcard matching (e.g., 'CCS*' matches all CCS technologies)
+    - Cost item normalization (OPEX, CAPEX, COST OF DEBT)
+    - Percentage values as whole numbers (10 = 10%), converted to decimal internally
+
     Args:
         excel_path: Path to the Excel file
         subsidies_sheet: Name of the sheet containing subsidies data
-        trade_bloc_sheet: Name of the sheet containing trade bloc definitions
+        country_mapping_sheet: Name of the sheet containing country mappings with trade bloc columns
+        techno_economic_sheet: Name of the sheet containing technology names
+
     Returns:
         List of Subsidy domain objects
     """
+    logger = logging.getLogger(__name__)
 
     subsidies_df = pd.read_excel(excel_path, sheet_name=subsidies_sheet)
-    trade_blocs_df = pd.read_excel(excel_path, sheet_name=trade_bloc_sheet)
-    trade_blocs_df = trade_blocs_df.set_index("ISO 3-letter code")
-    column_renames = {
-        "ISO3/Trade bloc": "iso3",
-        "Technology (if not specified, then all)": "technology_name",
-        "Cost item (if not specified, then applied to total OPEX for the year)": "cost_item",
-        "Absolute subsidy [USD/functional unit]": "absolute_subsidy",
-        "Relative subsidy [%]": "relative_subsidy",
-        "Start year": "start_year",
-        "End year": "end_year",
-        "Scenario name": "scenario_name",
-    }
-    rows_to_drop = ["Functional unit"]
+    country_df = pd.read_excel(excel_path, sheet_name=country_mapping_sheet)
+    # Trade bloc columns are columns containing only True/False values
+    trade_bloc_columns = [
+        col
+        for col in country_df.columns
+        if country_df[col].dtype == bool or set(country_df[col].dropna().unique()).issubset({True, False})
+    ]
+
+    # Get all technology names from techno-economic details sheet
+    techno_df = pd.read_excel(excel_path, sheet_name=techno_economic_sheet)
+    all_technologies = techno_df["Technology"].dropna().unique().tolist()
+
+    # Normalize column names to handle headers with newlines and descriptions
+    def normalize_subsidy_column(col: str) -> str:
+        """Normalize column names by taking first line and extracting key terms."""
+        # Take first line before any newline
+        col = col.split("\n")[0].strip()
+        # Map common patterns to normalized names
+        col_lower = col.lower()
+        if "location" in col_lower:
+            return "Location"
+        elif "technology" in col_lower:
+            return "Technology"
+        elif "cost item" in col_lower:
+            return "Cost item"
+        elif "subsidy type" in col_lower:
+            return "Subsidy type"
+        elif "subsidy amount" in col_lower:
+            return "Subsidy amount"
+        elif "start year" in col_lower:
+            return "Start year"
+        elif "end year" in col_lower:
+            return "End year"
+        elif "scenario" in col_lower:
+            return "Scenario name"
+        return col
+
+    # Apply normalization to column names
+    subsidies_df.columns = [normalize_subsidy_column(col) for col in subsidies_df.columns]
+
+    # Only keep required columns (ignore any after End year like notes)
+    required_columns = [
+        "Scenario name",
+        "Location",
+        "Technology",
+        "Cost item",
+        "Subsidy type",
+        "Subsidy amount",
+        "Start year",
+        "End year",
+    ]
+
+    # Validate required columns exist
+    missing_cols = [col for col in required_columns if col not in subsidies_df.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns in subsidies sheet: {missing_cols}")
+
+    subsidies_df = subsidies_df[required_columns]
+
     subsidies = []
     for _index, row in subsidies_df.iterrows():
-        region = row["ISO3/Trade bloc"]
+        row_idx = _index if isinstance(_index, int) else 0  # type: int
+        # Skip rows with empty subsidy amount
+        subsidy_amount = row["Subsidy amount"]
+        if pd.isna(subsidy_amount):
+            logger.warning(f"Skipping row {_index}: empty subsidy amount")
+            continue
 
-        if region in trade_blocs_df.columns:
-            iso3_list = trade_blocs_df[region].dropna().index.tolist()
+        # Normalize cost item
+        cost_item = _normalize_cost_item(row["Cost item"], row_idx)
+        if cost_item is None:
+            continue
+
+        # Parse subsidy type
+        subsidy_type = _parse_subsidy_type(row["Subsidy type"], cost_item, row_idx)
+        if subsidy_type is None:
+            continue
+
+        # Convert percentage values to decimal
+        # - Relative subsidies: percentage to decimal (e.g., 10% -> 0.1)
+        # - Cost of debt absolute: percentage points to decimal (e.g., 5 -> 0.05)
+        # - Other absolute subsidies: keep as-is (e.g., USD/t output)
+        if subsidy_type == "relative":
+            subsidy_amount = float(subsidy_amount) / 100
+        elif cost_item == "cost_of_debt":
+            # Absolute cost of debt subsidy is given as percentage point reduction
+            subsidy_amount = float(subsidy_amount) / 100
+        else:
+            subsidy_amount = float(subsidy_amount)
+
+        # Expand trade bloc to ISO3 list
+        region = row["Location"]
+        if region in trade_bloc_columns:
+            iso3_list = country_df[country_df[region]]["ISO 3-letter code"].tolist()
         else:
             iso3_list = [region]
-        for iso3 in iso3_list:
-            row_dict = row.drop(rows_to_drop).dropna().rename(index=column_renames).to_dict()
-            row_dict["iso3"] = iso3
 
-            subsidies.append(Subsidy(**row_dict))
+        # Expand technology pattern
+        technology_list = _expand_technology_pattern(row["Technology"], all_technologies)
+
+        # Create subsidies for each ISO3 and technology combination
+        for iso3 in iso3_list:
+            for technology in technology_list:
+                subsidies.append(
+                    Subsidy(
+                        scenario_name=row["Scenario name"],
+                        iso3=iso3,
+                        start_year=Year(int(row["Start year"])),
+                        end_year=Year(int(row["End year"])),
+                        technology_name=technology,
+                        cost_item=cost_item,
+                        subsidy_type=subsidy_type,
+                        subsidy_amount=subsidy_amount,
+                    )
+                )
+
+    logger.info(f"Read {len(subsidies)} subsidies from '{subsidies_sheet}'")
     return subsidies
 
 
@@ -2276,7 +2690,8 @@ def read_fallback_bom_definitions(excel_path: Path, sheet_name: str = "Fallback 
                 technology = business_case_raw.split("_")[-1].upper()  # extract technology from business case
 
             # if technology is charcoal, rename to BF_CHARCOAL
-            technology = technology.replace("CHARCOAL", "BF_CHARCOAL")
+            if "BF_CHARCOAL" not in technology:
+                technology = technology.replace("CHARCOAL", "BF_CHARCOAL")
 
             # Normalize metallic charge using the same normalization as in BOM reading
             metallic_charge = normalize_commodity_name(metallic_charge_raw)

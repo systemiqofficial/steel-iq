@@ -214,8 +214,8 @@ class FurnaceBreakdownLogger:
                         for subsidy in subsidies_list:
                             subsidy_info = {
                                 "name": getattr(subsidy, "subsidy_name", "Unknown"),
-                                "absolute": getattr(subsidy, "absolute_subsidy", 0),
-                                "relative": getattr(subsidy, "relative_subsidy", 0),
+                                "type": getattr(subsidy, "subsidy_type", "absolute"),
+                                "amount": getattr(subsidy, "subsidy_amount", 0),
                                 "start_year": getattr(subsidy, "start_year", 0),
                                 "end_year": getattr(subsidy, "end_year", 0),
                             }
