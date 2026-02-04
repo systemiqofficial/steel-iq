@@ -1446,22 +1446,30 @@ def calculate_lcoh_from_electricity_country_level(
     year: "Year",
 ) -> dict[str, float]:
     """
-    Calculate LCOH (Levelized Cost of Hydrogen) for each country based on electricity prices.
+    Calculate LCOH (Levelised Cost of Hydrogen) for each country based on electricity prices.
 
-    Formula: LCOH (USD/kg) = electrolyser energy consumption (MWh/kg) * electricity price (USD/kWh) +
-    CAPEX and OPEX components for each country and year (USD/kg)
+    Formula:
+        LCOH (USD/kg) = energy_consumption (MWh/kg) × 1000 × electricity_price (USD/kWh) + capex_opex (USD/kg)
+                      = (kWh/kg) × (USD/kWh) + (USD/kg)
+                      = USD/kg
+
+    The returned LCOH is in USD/kg. When applied to furnace groups via update_furnace_hydrogen_costs(),
+    it is converted to USD/t (×1000) to match the BOM consumption units (t/t after normalisation).
 
     Args:
-        electricity_by_country: Dictionary mapping ISO3 codes to electricity prices (USD/kWh)
-        hydrogen_efficiency: Dictionary mapping years to hydrogen efficiency values (MWh/kg H2)
-        hydrogen_capex_opex: Dictionary mapping ISO3 codes to year->CAPEX+OPEX values (USD/kg)
-        year: Current year
+        electricity_by_country: Dictionary mapping ISO3 codes to electricity prices (USD/kWh).
+            Already converted from USD/MWh by excel_reader.
+        hydrogen_efficiency: Dictionary mapping years to electrolyser energy consumption (MWh/kg H2).
+            From "Hydrogen efficiency" sheet in master Excel.
+        hydrogen_capex_opex: Dictionary mapping ISO3 codes to year->CAPEX+OPEX values (USD/kg).
+            From "Hydrogen CAPEX_OPEX component" sheet in master Excel.
+        year: Current simulation year.
 
     Returns:
-        Dictionary mapping ISO3 codes to LCOH values (USD/kg)
+        Dictionary mapping ISO3 codes to LCOH values (USD/kg).
 
     Raises:
-        ValueError: If required data is missing for calculation
+        ValueError: If required data is missing for calculation.
     """
     if year not in hydrogen_efficiency:
         raise ValueError(f"Hydrogen efficiency not found for year {year}")
@@ -1469,6 +1477,13 @@ def calculate_lcoh_from_electricity_country_level(
     # Energy consumption of the electrolyser
     energy_consumption = hydrogen_efficiency[year]  # MWh/kg H2
     energy_consumption_kwh = energy_consumption * MWH_TO_KWH  # Convert MWh to kWh
+
+    logger.debug(
+        "[ENERGY UNITS] LCOH calc year %s: electrolyser efficiency %.4f MWh/kg = %.2f kWh/kg",
+        year,
+        energy_consumption,
+        energy_consumption_kwh,
+    )
 
     lcoh_by_country = {}
     for iso3, electricity_price in electricity_by_country.items():
@@ -1479,8 +1494,18 @@ def calculate_lcoh_from_electricity_country_level(
             raise ValueError(f"Hydrogen CAPEX/OPEX not found for country {iso3} in year {year}")
         capex_opex = hydrogen_capex_opex[iso3][year]
 
-        # Calculate LCOH
+        # Calculate LCOH: (kWh/kg) × (USD/kWh) + (USD/kg) = USD/kg
         lcoh_by_country[iso3] = energy_consumption_kwh * electricity_price + capex_opex
+
+    # Log a sample of LCOH values for verification
+    sample_countries = list(lcoh_by_country.keys())[:3]
+    for iso3 in sample_countries:
+        logger.debug(
+            "[ENERGY UNITS] LCOH %s year %s: %.2f USD/kg",
+            iso3,
+            year,
+            lcoh_by_country[iso3],
+        )
 
     return lcoh_by_country
 

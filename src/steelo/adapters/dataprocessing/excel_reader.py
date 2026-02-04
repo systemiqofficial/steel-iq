@@ -191,17 +191,17 @@ def read_regional_input_prices_from_master_excel(
             input_cost_stacked.loc[:, commodity] *= PERGJ_TO_PERkWh
         elif unit == "USD/kg":
             # Selective conversion: materials with t/t consumption need USD/kg → USD/t conversion
-            # Materials with kg/t consumption (e.g., hydrogen) should remain in USD/kg
             if commodity in MATERIALS_REQUIRING_KG_TO_T_PRICE_CONVERSION:
                 # Convert from USD/kg to USD/t for materials consumed in tonnes per tonne
                 # (multiply by 1000 kg/t to get USD/t from USD/kg)
+                # Includes: coke, pci, bio-pci, coking_coal, hydrogen
                 input_cost_stacked.loc[:, commodity] *= T_TO_KG
                 logging.info(
                     f"Converting {commodity} price from USD/kg to USD/t (multiply by {T_TO_KG}) for t/t consumption"
                 )
             else:
-                # Keep in USD/kg for materials consumed in kg/t (e.g., hydrogen)
-                logging.info(f"Keeping {commodity} price in USD/kg (consumption in kg/t, no conversion needed)")
+                # Keep in USD/kg for materials not in the conversion set
+                logging.info(f"Keeping {commodity} price in USD/kg (not in t/t consumption set)")
         elif unit == "USD/t":
             pass
         else:
