@@ -9010,22 +9010,25 @@ class CommodityAllocations:
         # sort the suppliers by sourcing costs:
         # Filter sources that are instances of Supplier
         supplier_sources = [s for s in sources if isinstance(s, Supplier)]
-        # Sort them by production_cost
-        sorted_suppliers = sorted(supplier_sources, key=lambda sup: sup.production_cost)
+        # Sort them by production_cost_by_year
+        sorted_suppliers = sorted(
+            supplier_sources, key=lambda sup: sup.production_cost_by_year.get(environment.year, 0.0)
+        )
         cummultative_capacity = Volumes(0)
         supplier_cost_curve: list[dict[str, Any]] = []
         supplier_price = 0.0
         price_is_set = False
         for supplier in sorted_suppliers:
             cummultative_capacity = Volumes(cummultative_capacity + supplier.capacity_by_year[environment.year])
+            production_cost = supplier.production_cost_by_year.get(environment.year, 0.0)
             supplier_cost_curve.append(
                 {
                     "cumulative_capacity": cummultative_capacity,
-                    "production_cost": supplier.production_cost,
+                    "production_cost": production_cost,
                 }
             )
             if total_demand <= cummultative_capacity and not price_is_set:
-                supplier_price = supplier.production_cost
+                supplier_price = production_cost
         self.price = supplier_price
         self.cost_curve = supplier_cost_curve
 

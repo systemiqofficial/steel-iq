@@ -9,7 +9,6 @@ from steelo.utilities.plotting import (
     plot_added_capacity_by_technology,
     plot_year_on_year_technology_development,
     plot_cost_curve_step_from_dataframe,
-    # plot_cost_curve_with_breakdown,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,14 +77,14 @@ def generate_post_run_cap_prod_plots(
 
     # Get the first and last years available in the data for cost curves
     if "year" in output_df.columns:
-        # first_year = output_df["year"].min()
+        first_year = output_df["year"].min()
         last_year = output_df["year"].max()
     elif "year" in output_df.index.names:
-        # first_year = output_df.index.get_level_values("year").min()
+        first_year = output_df.index.get_level_values("year").min()
         last_year = output_df.index.get_level_values("year").max()
     else:
         # Skip cost curve if we can't determine the year
-        # first_year = None
+        first_year = None
         last_year = None
 
     if last_year:
@@ -93,38 +92,42 @@ def generate_post_run_cap_prod_plots(
         steel_demand = _sum_unique_furnace_output(output_df, "steel", last_year)
         iron_demand = _sum_unique_furnace_output(output_df, "iron", last_year)
 
-        #     # Generate cost curve plots in 5-year increments
-        #     years_to_plot = []
+        # Generate cost curve plots in 5-year increments
+        years_to_plot = []
 
-        #     # Start from the first simulation year and add 5-year increments
-        #     current_year = first_year
-        #     while current_year <= last_year:
-        #         years_to_plot.append(current_year)
-        #         current_year += 5
+        # Start from the first simulation year and add 5-year increments
+        current_year = first_year
+        while current_year <= last_year:
+            years_to_plot.append(current_year)
+            current_year += 5
 
-        #     # Always include the last year if not already included
-        #     if last_year not in years_to_plot:
-        #         years_to_plot.append(last_year)
+        # Always include the last year if not already included
+        if last_year not in years_to_plot:
+            years_to_plot.append(last_year)
 
-        #     # Generate cost curve plots with breakdown for each selected year
-        #     for year in years_to_plot:
-        #         # Check if data exists for this year
-        #         if "year" in output_df.columns:
-        #             year_data = output_df[output_df["year"] == year]
-        #         else:
-        #             year_data = output_df.loc[output_df.index.get_level_values("year") == year]
+        # Generate cost curve plots for each selected year
+        for year in years_to_plot:
+            # Compute demand for this specific year
+            year_steel_demand = _sum_unique_furnace_output(output_df, "steel", year)
+            year_iron_demand = _sum_unique_furnace_output(output_df, "iron", year)
 
-        #         if not year_data.empty:
-        #             # Generate both steel and iron cost curves with breakdown
-        #             for product in ["steel", "iron"]:
-        #                 try:
-        #                     # Plot with breakdown
-        #                     plot_cost_curve_with_breakdown(
-        #                         output_df, product, year, plot_paths=plot_paths, show_breakdown=True
-        #                     )
-        #                     logger.info(f"Generated cost curve with breakdown for {product} in {year}")
-        #                 except Exception as e:
-        #                     logger.warning(f"Could not generate cost curve for {product} in {year}: {e}")
+            # Generate cost curves by region and technology for both steel and iron
+            for product_type, year_demand in [("steel", year_steel_demand), ("iron", year_iron_demand)]:
+                for aggregation in ["region", "technology"]:
+                    try:
+                        plot_cost_curve_step_from_dataframe(
+                            output_df,
+                            product_type,
+                            year_demand,
+                            year,
+                            capacity_limit,
+                            units,
+                            aggregation=aggregation,
+                            plot_paths=plot_paths,
+                        )
+                        logger.info(f"Generated {product_type} cost curve by {aggregation} for {year}")
+                    except Exception as e:
+                        logger.warning(f"Could not generate {product_type} cost curve by {aggregation} for {year}: {e}")
 
         # Also generate the simple cost curve for the last year (backward compatibility)
         plot_cost_curve_step_from_dataframe(
