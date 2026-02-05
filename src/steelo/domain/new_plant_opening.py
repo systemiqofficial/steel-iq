@@ -1,10 +1,11 @@
+import logging
 import random
+
 import numpy as np
 from typing import Any, Callable, TypedDict
 
 from steelo.domain.models import Subsidy
 from steelo.domain.constants import Year, T_TO_KG
-from steelo.logging_config import new_plant_logger
 
 
 class NewPlantLocation(TypedDict):
@@ -35,15 +36,16 @@ def select_location_subset(
     Side Effects:
         Logs sampling information and sample locations
     """
-    new_plant_logger.info(f"[NEW PLANTS] Sampling {calculate_npv_pct * 100}% of top locations for NPV calculation.")
+    logger = logging.getLogger(f"{__name__}.select_location_subset")
+    logger.info(f"[NEW PLANTS] Sampling {calculate_npv_pct * 100}% of top locations for NPV calculation.")
     best_locations_subset = {}
     for product in ["iron", "steel"]:
         n = int(len(locations.get(product, [])) * calculate_npv_pct)
         best_locations_subset[product] = random.sample(locations[product], n) if n > 0 else []
-        new_plant_logger.info(
+        logger.info(
             f"[NEW PLANTS] For {product}: Sampling n = {n} out of total locations = {len(locations.get(product, []))} for NPV calculation."
         )
-        new_plant_logger.info(f"[NEW PLANTS] Sample {product} location: {locations[product][0]}")
+        logger.info(f"[NEW PLANTS] Sample {product} location: {locations[product][0]}")
     return best_locations_subset
 
 
@@ -102,7 +104,8 @@ def get_list_of_allowed_techs_for_target_year(
                     f"All techs: {original_techs}, Allowed techs: {allowed_techs_for_target_year}"
                 )
 
-        new_plant_logger.info(
+        logger = logging.getLogger(f"{__name__}.get_list_of_allowed_techs_for_target_year")
+        logger.info(
             f"[NEW PLANTS] Allowed technologies to consider as new business opportunities (based on allowed technologies in year {target_year}): {product_to_tech}"
         )
         return product_to_tech
@@ -176,7 +179,8 @@ def prepare_cost_data_for_business_opportunity(
     """
     from steelo.domain import calculate_costs as cc
 
-    new_plant_logger.info("[NEW PLANTS] Preparing cost data for business opportunities for a subset of best locations.")
+    logger = logging.getLogger(f"{__name__}.prepare_cost_data_for_business_opportunity")
+    logger.info("[NEW PLANTS] Preparing cost data for business opportunities for a subset of best locations.")
     cost_data: dict[
         str, dict[tuple[float, float, str], dict[str, dict[str, Any]]]
     ] = {}  # prod -> site_id (lat, lon, iso3) -> tech -> cost_type -> cost
@@ -253,7 +257,7 @@ def prepare_cost_data_for_business_opportunity(
                 if active_h2 or active_elec:
                     energy_costs_tech, _ = cc.get_subsidised_energy_costs(energy_costs_site, active_h2, active_elec)
                     # DEBUG: Log subsidy application for INDI initial cost_data
-                    new_plant_logger.debug(
+                    logger.debug(
                         f"[INDI H2/ELEC SUBS] Initial cost_data: {site['iso3']}/{tech} year={target_year} "
                         f"H2: {energy_costs_site.get('hydrogen', 0):.3f} -> {energy_costs_tech.get('hydrogen', 0):.3f} "
                         f"Elec: {energy_costs_site.get('electricity', 0):.4f} -> {energy_costs_tech.get('electricity', 0):.4f} "
@@ -335,7 +339,7 @@ def prepare_cost_data_for_business_opportunity(
 
     # Log error if more than 30% of the sampled locations have anomalous power prices
     if anomalous_power_prices_count > len(sites) * 0.3:
-        new_plant_logger.error(
+        logger.error(
             """[NEW PLANTS] More than 30% of the sampled locations have power prices for the own power parc that differ from the local grid " \n
             power price by more than one OOM. Please check the units (expected in USD/kWh)."""
         )
@@ -473,10 +477,11 @@ def validate_and_clean_cost_data(
         )
 
     # Log sample of prepared cost data
+    logger = logging.getLogger(f"{__name__}.validate_and_clean_cost_data")
     for product, sites in cost_data.items():
         for site_id, techs in sites.items():
             for tech, costs in techs.items():
-                new_plant_logger.debug(f"[NEW PLANTS] Sample costs data for {product} x {site_id[2]} x {tech}: {costs}")
+                logger.debug(f"[NEW PLANTS] Sample costs data for {product} x {site_id[2]} x {tech}: {costs}")
                 break
             break
         break
@@ -510,7 +515,8 @@ def select_top_opportunities_by_npv(
         - Random selection weighted by NPV ensures mix of high and medium NPV options rather than only highest
         - If NPVs contain negative values, distribution is shifted to create non-negative weights
     """
-    new_plant_logger.info(
+    logger = logging.getLogger(f"{__name__}.select_top_opportunities_by_npv")
+    logger.info(
         f"[NEW PLANTS] Selecting top {top_n_loctechs_as_business_op} location-technology combinations with high NPVs as "
         "business opportunities (per product and year)."
     )
@@ -526,18 +532,18 @@ def select_top_opportunities_by_npv(
             for tech, npv in techs.items():
                 if np.isnan(npv):
                     nan_count += 1
-                    new_plant_logger.debug(f"  NaN: site={site_id}, tech={tech}, NPV={npv}")
+                    logger.debug(f"  NaN: site={site_id}, tech={tech}, NPV={npv}")
                 elif npv == float("-inf"):
                     neg_inf_count += 1
-                    new_plant_logger.debug(f"  -inf: site={site_id}, tech={tech}, NPV={npv}")
+                    logger.debug(f"  -inf: site={site_id}, tech={tech}, NPV={npv}")
                 else:
                     valid_pairs.append((site_id, tech))
                     valid_npvs.append(npv)
         total_combinations = len(valid_pairs) + nan_count + neg_inf_count
-        new_plant_logger.debug(f"[NEW PLANTS] NPV analysis for product {product}:")
-        new_plant_logger.debug(f"  Valid combinations: {len(valid_pairs)}/{total_combinations}")
-        new_plant_logger.debug(f"  NaN combinations: {nan_count}/{total_combinations}")
-        new_plant_logger.debug(f"  -inf combinations: {neg_inf_count}/{total_combinations}")
+        logger.debug(f"[NEW PLANTS] NPV analysis for product {product}:")
+        logger.debug(f"  Valid combinations: {len(valid_pairs)}/{total_combinations}")
+        logger.debug(f"  NaN combinations: {nan_count}/{total_combinations}")
+        logger.debug(f"  -inf combinations: {neg_inf_count}/{total_combinations}")
         if len(valid_pairs) == 0:
             raise ValueError(
                 f"[NEW PLANTS] No valid NPVs found for product {product}. Skipping opportunity identification. "
@@ -572,10 +578,10 @@ def select_top_opportunities_by_npv(
             top_business_opportunities[product][site_id][tech] = npv_dict[product][site_id][tech]
     # Log selected top opportunities in a more readable format
     for product, sites in top_business_opportunities.items():
-        new_plant_logger.info(f"[NEW PLANTS] Selected top opportunities for {product}:")
+        logger.info(f"[NEW PLANTS] Selected top opportunities for {product}:")
         for site_id, techs in sites.items():
             site_str = f"  Site (lat={site_id[0]}, lon={site_id[1]}, iso3={site_id[2]}):"
             tech_strs = [f"{tech} with NPV: {npv:.2f}" for tech, npv in techs.items()]
-            new_plant_logger.info(f"{site_str} {'; '.join(tech_strs)}")
+            logger.info(f"{site_str} {'; '.join(tech_strs)}")
 
     return top_business_opportunities
