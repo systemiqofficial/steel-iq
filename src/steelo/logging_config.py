@@ -264,10 +264,18 @@ class LoggingConfig:
         features = config.get("features", {})
         cls.ENABLE_FURNACE_GROUP_DEBUG = features.get("furnace_group_debug", True)
 
-        # Create and attach filter to root logger
+        # Create and attach filter to root logger and its handlers
         context_filter = ContextAwareFilter(module_levels, function_overrides)
         root = logging.getLogger()
         root.addFilter(context_filter)
+
+        # Ensure root logger has at least one handler (creates StreamHandler if none)
+        if not root.handlers:
+            logging.basicConfig(level=cli_max_level or logging.DEBUG)
+
+        # Add filter to all handlers so it applies to propagated records
+        for handler in root.handlers:
+            handler.addFilter(context_filter)
 
         # Set external logger levels
         for logger_name, level_str in config.get("external", {}).items():
