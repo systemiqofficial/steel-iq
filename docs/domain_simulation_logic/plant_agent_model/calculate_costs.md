@@ -31,8 +31,9 @@ Five types of subsidies are supported:
    - Relative subsidies are ignored for debt
 
 4. **Hydrogen subsidies**: Reduce hydrogen feedstock costs
-   - Absolute: Fixed $/kg H2 (e.g., $1/kg)
+   - Absolute: Fixed USD/t H2 (e.g., $1000/t)
    - Relative: Percentage reduction (e.g., 20% off)
+   - Note: Subsidy amounts use same units as energy_costs dict (USD/t for hydrogen)
 
 5. **Electricity subsidies**: Reduce electricity costs
    - Absolute: Fixed $/kWh (e.g., $0.02/kWh)

@@ -3,7 +3,7 @@ import numpy as np
 from typing import Any, Callable, TypedDict
 
 from steelo.domain.models import Subsidy
-from steelo.domain.constants import Year
+from steelo.domain.constants import Year, T_TO_KG
 from steelo.logging_config import new_plant_logger
 
 
@@ -210,7 +210,7 @@ def prepare_cost_data_for_business_opportunity(
                 if not (0.1 <= elec_ratio <= 10):
                     anomalous_power_prices_count += 1
                 energy_costs_site["electricity"] = site["power_price"]
-                energy_costs_site["hydrogen"] = site["capped_lcoh"]
+                energy_costs_site["hydrogen"] = site["capped_lcoh"] * T_TO_KG  # Convert USD/kg → USD/t
 
             # Get cost of equity and debt for country
             cost_of_equity = cost_of_equity_all_locs.get(site["iso3"], None)

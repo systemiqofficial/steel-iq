@@ -125,7 +125,7 @@ def calculate_energy_price_with_subsidies(
     Apply subsidies to an energy price.
 
     Args:
-        energy_price: Base price ($/kg for H2, $/kWh for electricity)
+        energy_price: Base price before subsidy (USD/t for H2, USD/kWh for electricity)
         energy_subsidies: List of active subsidies for this energy type
 
     Returns:
@@ -208,8 +208,10 @@ def calculate_cost_breakdown_by_feedstock(
     energy intensity (from dynamic business cases) and usage share (demand_share_pct).
 
     Args:
-        bill_of_materials (dict[str, dict[str, dict[str, float]]]): Nested dictionary containing materials and energy data.
-        chosen_reductant (str): Selected reductant type (e.g., 'coke', 'natural_gas') to filter business cases.
+        bill_of_materials (dict[str, dict[str, dict[str, float]]]): Nested dictionary containing
+            materials and energy data.
+        chosen_reductant (str): Selected reductant type (e.g., 'coke', 'natural_gas') to filter
+            business cases.
         dynamic_business_cases (list[PrimaryFeedstock]): List of primary feedstock options with energy requirements.
         energy_costs (dict[str, float]): Energy costs by type (kept for backward compatibility).
         energy_vopex_breakdown_by_input (dict[str, dict[str, float]] | None): Unused parameter for compatibility.
@@ -1197,7 +1199,8 @@ def calculate_business_opportunity_npvs(
                 # Set to very negative NPV if calculation returned NaN
                 if math.isnan(npv_value):
                     new_plant_logger.warning(
-                        f"NPV calculation returned NaN for product {prod} - site {site_id} - technology {tech}. Returning -inf."
+                        f"NPV calculation returned NaN for product {prod} - site {site_id} - "
+                        f"technology {tech}. Returning -inf."
                     )
                     npv_dict[prod][site_id][tech] = float("-inf")
                 else:

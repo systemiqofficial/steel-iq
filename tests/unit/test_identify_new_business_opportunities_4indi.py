@@ -253,7 +253,7 @@ class TestPrepareDataForBusinessOpportunity:
                 )
             ]
         }
-        energy_costs = {"USA": {Year(2025): {"electricity": 50.0, "hydrogen": 3.5}}}
+        energy_costs = {"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}}  # USD/kWh, USD/t
         capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
         cost_of_debt_all_locs = {"USA": 0.05}
         cost_of_equity_all_locs = {"USA": 0.08}
@@ -355,7 +355,7 @@ class TestPrepareDataForBusinessOpportunity:
                 )
             ]
         }
-        energy_costs = {"USA": {Year(2025): {"electricity": 50.0, "hydrogen": 3.5}}}
+        energy_costs = {"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}}  # USD/kWh, USD/t
         capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
         cost_of_debt_all_locs = {"USA": 0.05}
         cost_of_equity_all_locs = {"USA": 0.08}
@@ -410,11 +410,18 @@ class TestPrepareDataForBusinessOpportunity:
         best_locations_subset = {
             "steel": [
                 NewPlantLocation(
-                    Latitude=40.0, Longitude=-100.0, iso3="USA", power_price=0.05, capped_lcoh=5.0, rail_cost=10.0
+                    Latitude=40.0,
+                    Longitude=-100.0,
+                    iso3="USA",
+                    power_price=0.05,
+                    capped_lcoh=5.0,
+                    rail_cost=10.0,  # capped_lcoh in USD/kg
                 )
             ]
         }
-        energy_costs = {"USA": {Year(2025): {"electricity": 50.0, "hydrogen": 5.0, "natural_gas": 3.0}}}
+        energy_costs = {
+            "USA": {Year(2025): {"electricity": 0.05, "hydrogen": 5000.0, "natural_gas": 0.03}}
+        }  # USD/kWh, USD/t, USD/kWh
         capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
         cost_of_debt_all_locs = {"USA": 0.05}
         cost_of_equity_all_locs = {"USA": 0.08}
@@ -430,7 +437,7 @@ class TestPrepareDataForBusinessOpportunity:
             technology_name="EAF",
             cost_item="hydrogen",
             subsidy_type="absolute",
-            subsidy_amount=1.0,  # $1/kg reduction
+            subsidy_amount=1000.0,  # USD/t reduction
         )
         elec_subsidy = Subsidy(
             scenario_name="test_elec",
@@ -470,12 +477,12 @@ class TestPrepareDataForBusinessOpportunity:
         site_id = (40.0, -100.0, "USA")
         eaf_data = cost_data["steel"][site_id]["EAF"]
 
-        # H2 price from capped_lcoh=5.0, with $1 absolute subsidy -> 4.0
-        assert eaf_data["energy_costs"]["hydrogen"] == 4.0
+        # H2 price from capped_lcoh=5000.0, with $1000 absolute subsidy -> 4000.0
+        assert eaf_data["energy_costs"]["hydrogen"] == 4000.0
         # Electricity from power_price=0.05, with 20% relative subsidy -> 0.04
         assert eaf_data["energy_costs"]["electricity"] == 0.04
         # Natural gas should be unchanged
-        assert eaf_data["energy_costs"]["natural_gas"] == 3.0
+        assert eaf_data["energy_costs"]["natural_gas"] == 0.03
 
     def test_missing_data_raises_error(self, mock_get_bom):
         """Test that missing data for parameters raises ValueError."""
@@ -487,7 +494,7 @@ class TestPrepareDataForBusinessOpportunity:
                 )
             ]
         }
-        energy_costs = {"USA": {Year(2025): {"electricity": 50.0, "hydrogen": 3.5}}}
+        energy_costs = {"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}}  # USD/kWh, USD/t
         capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
         cost_of_debt_all_locs = {"USA": 0.05}
         cost_of_equity_all_locs = {"USA": 0.08}
@@ -550,9 +557,9 @@ class TestPrepareDataForBusinessOpportunity:
             ],
         }
         energy_costs = {
-            "USA": {Year(2025): {"electricity": 50.0, "hydrogen": 3.5}},
-            "DEU": {Year(2025): {"electricity": 60.0, "hydrogen": 4.0}},
-            "CHN": {Year(2025): {"electricity": 40.0, "hydrogen": 3.0}},
+            "USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}},  # USD/kWh, USD/t
+            "DEU": {Year(2025): {"electricity": 0.06, "hydrogen": 4000.0}},  # USD/kWh, USD/t
+            "CHN": {Year(2025): {"electricity": 0.04, "hydrogen": 3000.0}},  # USD/kWh, USD/t
         }
         capex_dict_all_locs_techs = {
             "Americas": {"EAF": 1000.0},
@@ -775,7 +782,7 @@ class TestIdentifyNewBusinessOpportunities4indi:
             "consideration_time": 2,
             "construction_time": 3,
             "plant_lifetime": 30,
-            "input_costs": {"USA": {Year(2025): {"electricity": 50.0, "hydrogen": 3.5}}},
+            "input_costs": {"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}},  # USD/kWh, USD/t
             "locations": {
                 "steel": [
                     NewPlantLocation(
@@ -854,7 +861,7 @@ class TestGenerateNewPlant:
                         "reductant": "scrap",
                         "railway_cost": 10.0,
                         "bom": {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
-                        "energy_costs": {"electricity": 50.0, "hydrogen": 3.5},
+                        "energy_costs": {"electricity": 0.05, "hydrogen": 3500.0},  # USD/kWh, USD/t
                     }
                 }
             }

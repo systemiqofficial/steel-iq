@@ -26,9 +26,9 @@ def furnace_group_with_energy_costs():
         tech_name="DRI",
     )
     fg.energy_costs = {
-        "hydrogen": 5.0,
-        "electricity": 0.10,
-        "natural_gas": 3.0,
+        "hydrogen": 5000.0,  # USD/t (realistic LCOH after kg->t conversion)
+        "electricity": 0.10,  # USD/kWh
+        "natural_gas": 0.03,  # USD/kWh (converted from GJ in Excel)
     }
     return fg
 
@@ -75,7 +75,7 @@ def test_h2_subsidy_applied_to_furnace_group(plant_with_fg_in_usa):
     iso3 = plant_with_fg_in_usa.location.iso3
     year = Year(2025)
 
-    # Create H2 subsidy: $1/kg absolute for USA/DRI
+    # Create H2 subsidy: $1000/t absolute for USA/DRI
     h2_subsidy = Subsidy(
         scenario_name="test_h2",
         iso3="USA",
@@ -84,7 +84,7 @@ def test_h2_subsidy_applied_to_furnace_group(plant_with_fg_in_usa):
         technology_name="DRI",
         cost_item="hydrogen",
         subsidy_type="absolute",
-        subsidy_amount=1.0,
+        subsidy_amount=1000.0,  # USD/t
     )
     hydrogen_subsidies = {"USA": {"DRI": [h2_subsidy]}}
     electricity_subsidies = {}
@@ -93,9 +93,9 @@ def test_h2_subsidy_applied_to_furnace_group(plant_with_fg_in_usa):
     apply_energy_subsidies_to_fg(fg, iso3, hydrogen_subsidies, electricity_subsidies, year)
 
     # Verify subsidised price
-    assert fg.energy_costs["hydrogen"] == 4.0, "H2 price should be reduced by $1"
+    assert fg.energy_costs["hydrogen"] == 4000.0, "H2 price should be reduced by $1000/t"
     # Verify original price tracked
-    assert fg.energy_costs_no_subsidy["hydrogen"] == 5.0, "Original H2 price should be tracked"
+    assert fg.energy_costs_no_subsidy["hydrogen"] == 5000.0, "Original H2 price should be tracked"
     # Verify subsidy tracked
     assert len(fg.applied_subsidies["hydrogen"]) == 1
     assert fg.applied_subsidies["hydrogen"][0] == h2_subsidy
@@ -134,7 +134,7 @@ def test_electricity_subsidy_applied_to_furnace_group(plant_with_fg_in_usa):
     assert len(fg.applied_subsidies["electricity"]) == 1
     assert fg.applied_subsidies["electricity"][0] == elec_subsidy
     # Verify hydrogen unchanged
-    assert fg.energy_costs["hydrogen"] == 5.0
+    assert fg.energy_costs["hydrogen"] == 5000.0
 
 
 def test_combined_h2_and_electricity_subsidies(plant_with_fg_in_usa):
@@ -151,7 +151,7 @@ def test_combined_h2_and_electricity_subsidies(plant_with_fg_in_usa):
         technology_name="DRI",
         cost_item="hydrogen",
         subsidy_type="absolute",
-        subsidy_amount=2.0,
+        subsidy_amount=2000.0,  # USD/t
     )
     elec_subsidy = Subsidy(
         scenario_name="test_elec",
@@ -161,7 +161,7 @@ def test_combined_h2_and_electricity_subsidies(plant_with_fg_in_usa):
         technology_name="DRI",
         cost_item="electricity",
         subsidy_type="absolute",
-        subsidy_amount=0.05,
+        subsidy_amount=0.05,  # USD/kWh
     )
     hydrogen_subsidies = {"USA": {"DRI": [h2_subsidy]}}
     electricity_subsidies = {"USA": {"DRI": [elec_subsidy]}}
@@ -169,10 +169,10 @@ def test_combined_h2_and_electricity_subsidies(plant_with_fg_in_usa):
     apply_energy_subsidies_to_fg(fg, iso3, hydrogen_subsidies, electricity_subsidies, year)
 
     # Both should be reduced
-    assert fg.energy_costs["hydrogen"] == 3.0, "H2: 5.0 - 2.0 = 3.0"
+    assert fg.energy_costs["hydrogen"] == 3000.0, "H2: 5000.0 - 2000.0 = 3000.0"
     assert fg.energy_costs["electricity"] == 0.05, "Elec: 0.10 - 0.05 = 0.05"
     # Both originals tracked
-    assert fg.energy_costs_no_subsidy["hydrogen"] == 5.0
+    assert fg.energy_costs_no_subsidy["hydrogen"] == 5000.0
     assert fg.energy_costs_no_subsidy["electricity"] == 0.10
     # Both subsidies tracked
     assert len(fg.applied_subsidies["hydrogen"]) == 1
@@ -194,7 +194,7 @@ def test_no_subsidy_when_country_not_matched(plant_with_fg_in_usa):
         technology_name="DRI",
         cost_item="hydrogen",
         subsidy_type="absolute",
-        subsidy_amount=1.0,
+        subsidy_amount=1000.0,  # USD/t
     )
     hydrogen_subsidies = {"DEU": {"DRI": [h2_subsidy]}}
     electricity_subsidies = {}
@@ -202,7 +202,7 @@ def test_no_subsidy_when_country_not_matched(plant_with_fg_in_usa):
     apply_energy_subsidies_to_fg(fg, iso3, hydrogen_subsidies, electricity_subsidies, year)
 
     # No change - USA plant doesn't match DEU subsidy
-    assert fg.energy_costs["hydrogen"] == 5.0
+    assert fg.energy_costs["hydrogen"] == 5000.0
     assert fg.applied_subsidies["hydrogen"] == []
 
 
@@ -221,7 +221,7 @@ def test_no_subsidy_when_tech_not_matched(plant_with_fg_in_usa):
         technology_name="BOF",
         cost_item="hydrogen",
         subsidy_type="absolute",
-        subsidy_amount=1.0,
+        subsidy_amount=1000.0,  # USD/t
     )
     hydrogen_subsidies = {"USA": {"BOF": [h2_subsidy]}}
     electricity_subsidies = {}
@@ -229,7 +229,7 @@ def test_no_subsidy_when_tech_not_matched(plant_with_fg_in_usa):
     apply_energy_subsidies_to_fg(fg, iso3, hydrogen_subsidies, electricity_subsidies, year)
 
     # No change - DRI doesn't match BOF subsidy
-    assert fg.energy_costs["hydrogen"] == 5.0
+    assert fg.energy_costs["hydrogen"] == 5000.0
     assert fg.applied_subsidies["hydrogen"] == []
 
 
@@ -247,7 +247,7 @@ def test_no_subsidy_when_year_outside_range(plant_with_fg_in_usa):
         technology_name="DRI",
         cost_item="hydrogen",
         subsidy_type="absolute",
-        subsidy_amount=1.0,
+        subsidy_amount=1000.0,  # USD/t
     )
     hydrogen_subsidies = {"USA": {"DRI": [h2_subsidy]}}
     electricity_subsidies = {}
@@ -255,7 +255,7 @@ def test_no_subsidy_when_year_outside_range(plant_with_fg_in_usa):
     apply_energy_subsidies_to_fg(fg, iso3, hydrogen_subsidies, electricity_subsidies, year)
 
     # No change - year 2035 is outside 2020-2030 range
-    assert fg.energy_costs["hydrogen"] == 5.0
+    assert fg.energy_costs["hydrogen"] == 5000.0
     assert fg.applied_subsidies["hydrogen"] == []
 
 
@@ -274,7 +274,7 @@ def test_subsidy_floors_price_at_zero(plant_with_fg_in_usa):
         technology_name="DRI",
         cost_item="hydrogen",
         subsidy_type="absolute",
-        subsidy_amount=10.0,  # Greater than $5 price
+        subsidy_amount=10000.0,  # USD/t (greater than $5000 price)
     )
     hydrogen_subsidies = {"USA": {"DRI": [h2_subsidy]}}
     electricity_subsidies = {}
@@ -283,4 +283,4 @@ def test_subsidy_floors_price_at_zero(plant_with_fg_in_usa):
 
     # Price floors at zero
     assert fg.energy_costs["hydrogen"] == 0.0
-    assert fg.energy_costs_no_subsidy["hydrogen"] == 5.0
+    assert fg.energy_costs_no_subsidy["hydrogen"] == 5000.0

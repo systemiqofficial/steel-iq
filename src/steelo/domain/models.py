@@ -6070,7 +6070,11 @@ class Subsidy:
         technology_name: Technology the subsidy applies to, or "all" for all technologies.
         cost_item: Type of cost subsidised ("opex", "capex", "cost of debt", "hydrogen", "electricity").
         subsidy_type: Either "absolute" (fixed amount) or "relative" (percentage).
-        subsidy_amount: The subsidy value - fixed $/unit for absolute, decimal fraction for relative.
+        subsidy_amount: The subsidy value with units depending on cost_item:
+            - hydrogen: USD/t H2 (absolute) or decimal fraction (relative)
+            - electricity: USD/kWh (absolute) or decimal fraction (relative)
+            - opex/capex: USD/t steel (absolute) or decimal fraction (relative)
+            - cost of debt: percentage points (absolute only)
         subsidy_name: Auto-generated unique identifier string.
     """
 
