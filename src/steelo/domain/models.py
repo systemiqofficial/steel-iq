@@ -30,7 +30,6 @@ from steelo.domain.calculate_emissions import (
 )
 from steelo.domain.carbon_cost import CarbonCost, CarbonCostService
 from steelo.domain import diagnostics as diag
-from steelo.logging_config import new_plant_logger
 from steelo.utilities.utils import merge_two_dictionaries
 from steelo.core.parse import normalize_code
 from steelo.simulation_types import TechSettingsMap
@@ -5493,7 +5492,7 @@ class PlantGroup:
                 new_plants.append(new_plant)
         candidate_stats["new_plants_created"] = len(new_plants)
         stats_payload = " ".join(f"{key}={value}" for key, value in candidate_stats.items())
-        new_plant_logger.info(f"operation=new_plant_candidate_summary {stats_payload}")
+        logger.info(f"operation=new_plant_candidate_summary {stats_payload}")
         return commands.AddNewBusinessOpportunities(new_plants=new_plants)
 
     def update_dynamic_costs_for_business_opportunities(

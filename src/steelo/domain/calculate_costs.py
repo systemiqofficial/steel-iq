@@ -1119,8 +1119,8 @@ def calculate_business_opportunity_npvs(
           present with correct types (floats for costs, dict for bom).
     """
     from steelo.domain.calculate_costs import calculate_npv_full, collect_active_subsidies_over_period
-    from steelo.logging_config import new_plant_logger
 
+    logger = logging.getLogger(f"{__name__}.calculate_business_opportunity_npvs")
     npv_dict: dict[str, dict[tuple[float, float, str], dict[str, float]]] = {}  # product -> site_id -> tech -> NPV
     for prod, sites in cost_data.items():
         npv_dict[prod] = {}
@@ -1196,7 +1196,7 @@ def calculate_business_opportunity_npvs(
 
                 # Set to very negative NPV if calculation returned NaN
                 if math.isnan(npv_value):
-                    new_plant_logger.warning(
+                    logger.warning(
                         f"NPV calculation returned NaN for product {prod} - site {site_id} - "
                         f"technology {tech}. Returning -inf."
                     )
