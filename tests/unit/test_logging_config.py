@@ -2,7 +2,7 @@
 Unit tests for logging_config.py.
 
 Tests cover YAML loading, context-aware filtering, module context management,
-CLI ceiling behaviour, and utility methods.
+CLI ceiling behaviour, and simulation_logging context manager.
 """
 
 import logging
@@ -49,9 +49,6 @@ def clean_logging_state():
     # Clear thread-local context
     if hasattr(_current_module, "name"):
         _current_module.name = None
-
-    # Restore base logger levels
-    LoggingConfig.configure_base_loggers()
 
 
 @pytest.fixture
@@ -448,99 +445,39 @@ def test_simulation_logging_sets_tm_context(clean_logging_state):
         assert getattr(_current_module, "name", None) == "tm"
 
 
-def test_simulation_logging_restores_base_levels(clean_logging_state):
-    """Logger levels restored to BASE_LOGGERS after context exit."""
-    test_logger_name = "steelo.domain.models"
-    original_level = LoggingConfig.BASE_LOGGERS.get(
-        test_logger_name,
-        logging.WARNING,
-    )
-
-    # Temporarily modify the level inside context
+def test_simulation_logging_clears_context_on_exit(clean_logging_state):
+    """Context is cleared after simulation_logging exits."""
     with LoggingConfig.simulation_logging("PlantAgentsModel"):
-        logger = logging.getLogger(test_logger_name)
-        logger.setLevel(logging.DEBUG)
+        assert getattr(_current_module, "name", None) == "pam"
 
-    # After exit, should be restored
-    logger = logging.getLogger(test_logger_name)
-    assert logger.level == original_level
+    assert getattr(_current_module, "name", None) is None
 
 
-def test_simulation_logging_removes_filters(clean_logging_state):
-    """Filters added during simulation_logging are cleaned up on exit."""
-    root = logging.getLogger()
-    initial_filter_count = len(root.filters)
-
-    with LoggingConfig.simulation_logging("GeospatialModel"):
-        # Filters may be added during context
-        pass
-
-    # After exit, filter count should return to initial
-    # (or be less if any were removed)
-    assert len(root.filters) <= initial_filter_count + 1
+def test_simulation_logging_unknown_model_no_context(clean_logging_state):
+    """Unknown model name yields without setting context."""
+    with LoggingConfig.simulation_logging("DebugLogging"):
+        assert getattr(_current_module, "name", None) is None
 
 
 # ---------------------------------------------------------------------------
-# 6. Utility Method Tests
+# 6. configure_base_loggers Tests
 # ---------------------------------------------------------------------------
 
 
-def test_set_logger_level(clean_logging_state):
-    """set_logger_level sets level for specific logger."""
-    test_logger_name = "steelo.test.specific"
-    LoggingConfig.set_logger_level(test_logger_name, logging.ERROR)
-
-    logger = logging.getLogger(test_logger_name)
-    assert logger.level == logging.ERROR
-
-
-def test_set_module_logging(clean_logging_state):
-    """set_module_logging sets level for parent and existing children."""
-    parent_name = "steelo.test.parent"
-    child_name = f"{parent_name}.child"
-
-    # Create child logger first
-    child_logger = logging.getLogger(child_name)
-    child_logger.setLevel(logging.DEBUG)
-
-    # Set module logging
-    LoggingConfig.set_module_logging(parent_name, logging.WARNING)
-
-    parent_logger = logging.getLogger(parent_name)
-    assert parent_logger.level == logging.WARNING
-    assert child_logger.level == logging.WARNING
-
-
-def test_get_current_levels(clean_logging_state):
-    """get_current_levels returns dict of current levels for BASE_LOGGERS."""
-    levels = LoggingConfig.get_current_levels()
-
-    assert isinstance(levels, dict)
-    assert "__main__" in levels
-    assert "steelo.simulation" in levels
-
-
-def test_configure_for_production(clean_logging_state):
-    """configure_for_production sets appropriate production levels."""
-    LoggingConfig.configure_for_production()
-
-    main_logger = logging.getLogger("__main__")
-    assert main_logger.level == logging.INFO
+def test_configure_base_loggers_sets_pyomo(clean_logging_state):
+    """configure_base_loggers sets pyomo to ERROR."""
+    LoggingConfig.configure_base_loggers()
 
     pyomo_logger = logging.getLogger("pyomo")
-    assert pyomo_logger.level == logging.WARNING
+    assert pyomo_logger.level == logging.ERROR
 
 
-def test_configure_for_development(clean_logging_state):
-    """configure_for_development calls configure_base_loggers."""
-    # First set some levels differently
-    logging.getLogger("__main__").setLevel(logging.CRITICAL)
+def test_configure_base_loggers_sets_matplotlib(clean_logging_state):
+    """configure_base_loggers sets matplotlib.font_manager to ERROR."""
+    LoggingConfig.configure_base_loggers()
 
-    LoggingConfig.configure_for_development()
-
-    # Should restore to BASE_LOGGERS levels
-    main_level = LoggingConfig.BASE_LOGGERS.get("__main__", logging.WARNING)
-    assert logging.getLogger("__main__").level == main_level
+    mpl_logger = logging.getLogger("matplotlib.font_manager")
+    assert mpl_logger.level == logging.ERROR
 
 
 # ---------------------------------------------------------------------------
