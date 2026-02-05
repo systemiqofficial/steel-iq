@@ -904,6 +904,13 @@ class SimulationRunner:
         # Initialize furnace breakdown logger for better debugging
         self.furnace_logger = FurnaceBreakdownLogger()
 
+        # Configure logging from YAML with CLI ceiling
+        yaml_path = Path(__file__).parent.parent.parent / "logging_config.yaml"
+        if yaml_path.exists():
+            LoggingConfig.configure_from_yaml(str(yaml_path), self.config.log_level)
+        else:
+            LoggingConfig.configure_base_loggers()  # Fallback
+
     def _update_geo_paths_for_static_files(self) -> None:
         """Update geo_paths to use temporary directory for static files."""
         if hasattr(self.bus.env, "geo_paths") and self.bus.env.geo_paths and self.temp_dir is not None:

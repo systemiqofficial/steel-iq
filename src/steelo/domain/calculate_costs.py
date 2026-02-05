@@ -14,9 +14,6 @@ if TYPE_CHECKING:
 from collections import Counter
 from steelo.domain.constants import KG_TO_T, MWH_TO_KWH, Year
 
-unit_production_cost_logger = logging.getLogger(f"{__name__}.calculate_unit_production_cost")
-logger = logging.getLogger(__name__)
-
 SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION = {
     "coking_coal",  # Stored in kg/t in dynamic business cases, priced in USD/t
     "bio_pci",
@@ -474,6 +471,7 @@ def calculate_variable_opex(materials_cost_data: dict, energy_cost_data: dict) -
         - Energy costs are summed across all energy carriers and divided by product volume
         - This matches the cost_breakdown calculation which uses unit_material_cost + energy breakdown
     """
+    logger = logging.getLogger(f"{__name__}.calculate_variable_opex")
 
     def calculate_material_total(materials_data: dict[str, dict[str, Any]]) -> float | None:
         """
@@ -1551,6 +1549,8 @@ def calculate_lcoh_from_electricity_country_level(
     Raises:
         ValueError: If required data is missing for calculation.
     """
+    logger = logging.getLogger(f"{__name__}.calculate_lcoh_from_electricity_country_level")
+
     if year not in hydrogen_efficiency:
         raise ValueError(f"Hydrogen efficiency not found for year {year}")
 
@@ -1612,6 +1612,8 @@ def calculate_regional_hydrogen_ceiling_country_level(
     Raises:
         ValueError: If no LCOH values are provided
     """
+    logger = logging.getLogger(f"{__name__}.calculate_regional_hydrogen_ceiling_country_level")
+
     import numpy as np
     from collections import defaultdict
 
