@@ -46,7 +46,7 @@ def make_test_furnace_group() -> FurnaceGroup:
         utilization_rate=0.0,
         lifetime=lifetime,
         production_threshold=ProductionThreshold(low=0.0, high=1.0),
-        energy_cost_dict={"electricity": 0.15, "hydrogen": 8.5},
+        energy_cost_dict={"electricity": 0.08, "hydrogen": 4500.0},  # USD/kWh, USD/t
         tech_unit_fopex=5.0,
         energy_vopex_by_input={},
         historical_npv_business_opportunities={2024: 0.0},
@@ -74,8 +74,8 @@ def test_update_dynamic_costs_uses_geospatial_power_price_without_scaling():
     plant = make_test_plant(fg)
     plant_group = PlantGroup(plant_group_id="PG1", plants=[plant])
 
-    raw_power_price = 55.0  # USD/MWh from geospatial dataset
-    raw_hydrogen_price = 2.5  # USD/kg (already correct units)
+    raw_power_price = 0.055  # USD/kWh from geospatial dataset (power_price layer stored in USD/kWh)
+    raw_hydrogen_price = 2.5  # USD/kg from geospatial dataset (capped_lcoh layer stored in USD/kg)
 
     custom_energy_costs = {
         "power_price": FakeDataArray(raw_power_price),

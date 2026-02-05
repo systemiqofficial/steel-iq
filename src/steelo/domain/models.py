@@ -1117,26 +1117,26 @@ class FurnaceGroup:
         """
         Set energy costs dictionary for the furnace group.
 
-        All energy costs must be provided from the input costs data (typically loaded from the
-        master Excel "Input costs" tab). Keys are normalized (lowercase with underscores instead of spaces).
+        All costs come from input costs data (master Excel "Input costs" tab) after unit
+        conversion by excel_reader.read_regional_input_prices_from_master_excel().
+        Keys are normalised to lowercase with underscores.
 
-        Expected costs:
-            - electricity: Electricity cost in USD/kWh
-            - coke: Coke cost in USD/kg
-            - pci: Pulverized coal injection cost in USD/kg
-            - hydrogen: Hydrogen cost in USD/kg
-            - bio_pci: Bio-PCI cost in USD/kg
-            - natural_gas: Natural gas cost in USD/MMBtu
-            - coal: Coal cost in USD/GJ
+        Expected costs (post-conversion units):
+            Energy carriers (USD/kWh):
+                - electricity (converted from USD/MWh in Excel)
+                - natural_gas, coal, bf_gas, bof_gas, cog, steam (converted from USD/GJ in Excel)
+
+            Material carriers (USD/t):
+                - coke, pci, bio_pci, coking_coal (converted from USD/kg in Excel)
+                - hydrogen (converted from USD/kg; set via update_furnace_hydrogen_costs for capped prices)
+                - ccu_products, co2_stored (unchanged from USD/t in Excel)
 
         Args:
-            **costs: Energy costs as keyword arguments from input costs data.
-
-        Side Effects:
-            Updates self.energy_costs with a dictionary mapping energy type names to their costs.
+            **costs: Energy costs as keyword arguments. Keys normalised to lowercase + underscores.
 
         Note:
-            Hydrogen costs are typically set separately via Plant.update_furnace_hydrogen_costs() to use capped country-level prices.
+            Hydrogen costs are typically set separately via Plant.update_furnace_hydrogen_costs()
+            to use capped country-level prices calculated from LCOH.
         """
         # Store costs with normalized keys to ensure downstream lookups succeed
         energy_costs: dict[str, float] = {}
@@ -4276,10 +4276,19 @@ class Plant:
         if self.location.iso3 not in capped_hydrogen_cost_dict:
             raise ValueError(f"No hydrogen price calculated for {self.location.iso3} (plant {self.plant_id})")
 
-        hydrogen_price = capped_hydrogen_cost_dict[self.location.iso3] * T_TO_KG
+        capped_lcoh_usd_per_kg = capped_hydrogen_cost_dict[self.location.iso3]
+        hydrogen_price_usd_per_t = capped_lcoh_usd_per_kg * T_TO_KG
+
+        logger.debug(
+            "[ENERGY UNITS] Plant %s (%s): H2 LCOH %.2f USD/kg -> %.2f USD/t",
+            self.plant_id,
+            self.location.iso3,
+            capped_lcoh_usd_per_kg,
+            hydrogen_price_usd_per_t,
+        )
 
         for fg in self.furnace_groups:
-            fg.energy_costs["hydrogen"] = hydrogen_price
+            fg.energy_costs["hydrogen"] = hydrogen_price_usd_per_t
 
     def aggregate_average_utilisation_rate(self):
         """
