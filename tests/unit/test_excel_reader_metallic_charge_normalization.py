@@ -84,7 +84,9 @@ class TestDynamicBusinessCaseReadingWithNormalization:
 
         # Should not have warnings about invalid metallic charges
         warning_messages = [
-            record.message for record in caplog.records if "Skipping invalid metallic charge" in record.message
+            record.getMessage()
+            for record in caplog.records
+            if "Skipping invalid metallic charge" in record.getMessage()
         ]
         assert len(warning_messages) == 0, f"Unexpected warnings: {warning_messages}"
 
