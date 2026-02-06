@@ -5,8 +5,6 @@ if TYPE_CHECKING:
     from .models import PrimaryFeedstock
     from .models import TechnologyEmissionFactors
 
-logger = logging.getLogger(__name__)
-
 
 def _normalize_reductant(name: str | None) -> str:
     if name is None:
@@ -238,8 +236,10 @@ def calculate_emissions_cost_series(
         - Carbon costs after CCS/CCU are already reflected in the emissions input.
         - Length of returned list = (end_year - start_year + 1).
     """
+    logger = logging.getLogger(f"{__name__}.calculate_emissions_cost_series")
     logger.debug(
-        f"[EMISSIONS COST SERIES]: Calculating emissions series for {chosen_emission_boundary} from {start_year} to {end_year}"
+        f"[EMISSIONS COST SERIES]: Calculating emissions series for {chosen_emission_boundary} "
+        f"from {start_year} to {end_year}"
     )
     logger.debug(f"[EMISSIONS COST SERIES]: Emissions data: {emissions}")
     logger.debug(f"[EMISSIONS COST SERIES]: Carbon price data: {carbon_price_dict}")
@@ -248,13 +248,14 @@ def calculate_emissions_cost_series(
     if not emissions or emissions is None:
         return [0.0] * (end_year - start_year + 1)
     elif chosen_emission_boundary not in emissions:
-        logging.debug(
+        logger.debug(
             f"Emissions boundary {chosen_emission_boundary} not found in emissions data. Returning zero series."
         )
         return [0.0] * (end_year - start_year + 1)
     elif chosen_emission_boundary in emissions and "direct_ghg" not in emissions[chosen_emission_boundary]:
-        logging.debug(
-            f"Emissions data for {chosen_emission_boundary} does not contain 'direct_ghg' emissions. Returning zero series."
+        logger.debug(
+            f"Emissions data for {chosen_emission_boundary} does not contain 'direct_ghg' emissions. "
+            "Returning zero series."
         )
         return [0.0] * (end_year - start_year + 1)
     else:
@@ -431,16 +432,18 @@ def calculate_emissions_cost_in_year(
         - Emissions should already reflect CCS/CCU reductions if applicable.
         - Logs warnings if boundary or scope keys are missing.
     """
+    logger = logging.getLogger(f"{__name__}.calculate_emissions_cost_in_year")
     if not emissions or emissions is None:
         return 0.0
     elif chosen_emission_boundary not in emissions:
-        logging.warning(
+        logger.warning(
             f"Emissions boundary {chosen_emission_boundary} not found in emissions data. Returning 0.0 carbon costs."
         )
         return 0.0
     elif chosen_emission_boundary in emissions and "direct_ghg" not in emissions[chosen_emission_boundary]:
-        logging.warning(
-            f"Emissions data for {chosen_emission_boundary} does not contain 'direct_ghg' emissions. Returning 0.0 carbon costs."
+        logger.warning(
+            f"Emissions data for {chosen_emission_boundary} does not contain 'direct_ghg' emissions. "
+            "Returning 0.0 carbon costs."
         )
         return 0.0
     else:

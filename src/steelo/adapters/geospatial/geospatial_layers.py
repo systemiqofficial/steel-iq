@@ -51,7 +51,6 @@ from steelo.domain.constants import (
     USD_TO_MioUSD,
     rad_TO_deg,
 )
-from steelo.logging_config import geo_layers_logger
 
 
 def add_iso3_codes(resolution: float, geo_paths: "GeoDataPaths") -> xr.Dataset:
@@ -69,6 +68,7 @@ def add_iso3_codes(resolution: float, geo_paths: "GeoDataPaths") -> xr.Dataset:
         - Generates and saves plot of global grid with ISO3 codes
         - Saves ISO3 grid to NetCDF file in static_layers_dir for reuse
     """
+    logger = logging.getLogger(f"{__name__}.add_iso3_codes")
     # Ensure required paths are provided
     if not geo_paths or not geo_paths.static_layers_dir:
         raise ValueError(
@@ -79,7 +79,7 @@ def add_iso3_codes(resolution: float, geo_paths: "GeoDataPaths") -> xr.Dataset:
 
     # Check if the output file already exists
     if iso3_grid_path.exists():
-        geo_layers_logger.info(f"[GEO LAYERS] Global grid with ISO3 codes already exists at {iso3_grid_path}.")
+        logger.info(f"[GEO LAYERS] Global grid with ISO3 codes already exists at {iso3_grid_path}.")
         try:
             # Try netcdf4 first (preferred)
             ds = xr.open_dataset(iso3_grid_path, engine="netcdf4")
@@ -91,7 +91,7 @@ def add_iso3_codes(resolution: float, geo_paths: "GeoDataPaths") -> xr.Dataset:
                 # Last resort: scipy engine for basic NetCDF3 files
                 ds = xr.open_dataset(iso3_grid_path, engine="scipy")
     else:
-        geo_layers_logger.info(f"[GEO LAYERS] Creating global grid with ISO3 codes at {resolution} degree resolution.")
+        logger.info(f"[GEO LAYERS] Creating global grid with ISO3 codes at {resolution} degree resolution.")
 
         # Initialize empty global grid
         lat_global = np.arange(-90, 90.1, resolution)
@@ -152,6 +152,7 @@ def add_feasibility_mask(ds: xr.Dataset, geo_config: "GeoConfig", geo_paths: "Ge
         - Generates and saves plots of land-sea mask, altitude, slope, and final feasibility mask
         - Saves feasibility mask to NetCDF file in static_layers_dir for reuse
     """
+    logger = logging.getLogger(f"{__name__}.add_feasibility_mask")
     # Ensure required paths are provided
     if not geo_paths or not geo_paths.terrain_nc_path:
         raise ValueError(
@@ -168,9 +169,7 @@ def add_feasibility_mask(ds: xr.Dataset, geo_config: "GeoConfig", geo_paths: "Ge
 
     # Check if the output file already exists
     if feasibility_mask_path.exists():
-        geo_layers_logger.info(
-            f"[GEO LAYERS] Feasibility mask already exists at {feasibility_mask_path}. Loading from file."
-        )
+        logger.info(f"[GEO LAYERS] Feasibility mask already exists at {feasibility_mask_path}. Loading from file.")
         try:
             ds["feasibility_mask"] = xr.open_dataset(feasibility_mask_path, engine="netcdf4")["feasibility_mask"]
         except (ImportError, ValueError):
@@ -179,7 +178,7 @@ def add_feasibility_mask(ds: xr.Dataset, geo_config: "GeoConfig", geo_paths: "Ge
             except (ImportError, ValueError):
                 ds["feasibility_mask"] = xr.open_dataset(feasibility_mask_path, engine="scipy")["feasibility_mask"]
     else:
-        geo_layers_logger.info("[GEO LAYERS] Adding feasibility mask.")
+        logger.info("[GEO LAYERS] Adding feasibility mask.")
         try:
             terrain = xr.open_dataset(terrain_path, engine="netcdf4").isel(valid_time=0).drop_vars("valid_time")
         except (ImportError, ValueError):
@@ -243,7 +242,7 @@ def add_feasibility_mask(ds: xr.Dataset, geo_config: "GeoConfig", geo_paths: "Ge
         # Log effect of feasibility mask
         n_feasible_cells = int((feasibility_mask_corrected > 0).sum())
         n_total_cells = int(feasibility_mask_corrected.size)
-        geo_layers_logger.info(
+        logger.info(
             f"[GEO LAYERS] Feasibility mask filter applied (max_altitude={geo_config.max_altitude}, max_slope={geo_config.max_slope}°, max_latitude={geo_config.max_latitude}°): "
             f"feasible cells {n_feasible_cells:,} / {n_total_cells:,}, "
             f"reduction={(1 - n_feasible_cells / max(n_total_cells, 1)) * 100:.1f}%"
@@ -284,6 +283,7 @@ def add_baseload_power_price(
     Side Effects:
         - Generates and saves plot of optimal LCOE and histogram
     """
+    logger = logging.getLogger(f"{__name__}.add_baseload_power_price")
     # Ensure required paths are provided
     if not geo_paths or not geo_paths.baseload_power_sim_dir:
         raise ValueError(
@@ -311,7 +311,7 @@ def add_baseload_power_price(
 
     if target_year in available_years:
         # Choose the data for the target year if available
-        geo_layers_logger.info(f"[GEO LAYERS] Explicitly calculated LCOE is available for year {target_year}.")
+        logger.info(f"[GEO LAYERS] Explicitly calculated LCOE is available for year {target_year}.")
         baseload_lcoe_path = file_map[target_year]
         baseload_lcoe_year = xr.open_dataset(baseload_lcoe_path)["lcoe"]
     else:
@@ -319,7 +319,7 @@ def add_baseload_power_price(
         years_sorted = sorted(available_years)
         low_year = max([y for y in years_sorted if y <= target_year], default=years_sorted[0])
         high_year = min([y for y in years_sorted if y >= target_year], default=years_sorted[-1])
-        geo_layers_logger.info(
+        logger.info(
             f"[GEO LAYERS] Interpolating baseload LCOE for year {target_year} from years {low_year} and {high_year}."
         )
         baseload_lcoe = []
@@ -422,8 +422,10 @@ def add_power_price(
         The baseload LCOE is already calculated for the specified coverage percentage, so no additional
         multiplication by (1-p) is needed.
     """
-    geo_layers_logger.info(
-        f"[GEO LAYERS] Adding power price as a combination of baseload and grid power price at {baseload_coverage * 100}% baseload coverage."
+    logger = logging.getLogger(f"{__name__}.add_power_price")
+    logger.info(
+        f"[GEO LAYERS] Adding power price as a combination of baseload and grid power price "
+        f"at {baseload_coverage * 100}% baseload coverage."
     )
     ds = add_grid_power_price(ds, input_costs, year, geo_paths=geo_paths)
     if baseload_coverage > 0:
@@ -482,7 +484,8 @@ def add_capped_hydrogen_price(
     Side Effects:
         - Generates and saves plot of capped LCOH
     """
-    geo_layers_logger.info("[GEO LAYERS] Adding (capped) LCOH (Levelized Cost of Hydrogen) to the dataset.")
+    logger = logging.getLogger(f"{__name__}.add_capped_hydrogen_price")
+    logger.info("[GEO LAYERS] Adding (capped) LCOH (Levelized Cost of Hydrogen) to the dataset.")
 
     ds = calculate_lcoh_from_power_price(ds, year, hydrogen_efficiency, hydrogen_capex_opex)
     regional_ceiling = calculate_regional_hydrogen_ceiling(ds, country_mappings, geo_config.hydrogen_ceiling_percentile)
@@ -512,7 +515,8 @@ def add_capex_proxy_for_steel_and_iron_making_tech(capex_dict: dict) -> Optional
     Returns:
         Average greenfield CAPEX value (USD/t), or None if no greenfield values found
     """
-    geo_layers_logger.info("[GEO LAYERS] Adding average greenfield CAPEX for steel and iron making technologies.")
+    logger = logging.getLogger(f"{__name__}.add_capex_proxy_for_steel_and_iron_making_tech")
+    logger.info("[GEO LAYERS] Adding average greenfield CAPEX for steel and iron making technologies.")
 
     def extract_greenfield_values(d, parent_key=None):
         """
@@ -575,6 +579,7 @@ def add_cost_of_infrastructure(ds: xr.Dataset, environment: "Environment", geo_p
     Note:
         Distance to existing rail is calculated as a straight line from any grid cell to the nearest rail line.
     """
+    logger = logging.getLogger(f"{__name__}.add_cost_of_infrastructure")
     # Ensure required paths are provided
     if not geo_paths or not geo_paths.rail_distance_nc_path:
         raise ValueError(
@@ -590,10 +595,10 @@ def add_cost_of_infrastructure(ds: xr.Dataset, environment: "Environment", geo_p
     # Check if the output file already exists
     rail_cost_path = geo_paths.static_layers_dir / "rail_cost.nc"
     if rail_cost_path.exists():
-        geo_layers_logger.info(f"[GEO LAYERS] Rail cost already exists at {rail_cost_path}. Loading from file.")
+        logger.info(f"[GEO LAYERS] Rail cost already exists at {rail_cost_path}. Loading from file.")
         ds["rail_cost"] = xr.open_dataset(rail_cost_path)["rail_cost"]
     else:
-        geo_layers_logger.info("[GEO LAYERS] Adding cost of building new infrastructure (rail only).")
+        logger.info("[GEO LAYERS] Adding cost of building new infrastructure (rail only).")
 
         # Rail distance
         rail_dist = xr.open_dataarray(geo_paths.rail_distance_nc_path)
@@ -695,9 +700,8 @@ def add_transportation_costs(
     Side Effects:
         - Plots distance and transportation cost maps to geo_paths.geo_plots_dir
     """
-    geo_layers_logger.info(
-        "[GEO LAYERS] Adding transportation costs to demand and feedstock for both iron and steel production."
-    )
+    logger = logging.getLogger(f"{__name__}.add_transportation_costs")
+    logger.info("[GEO LAYERS] Adding transportation costs to demand and feedstock for both iron and steel production.")
 
     # Calculate distances to ore mines, iron plants, steel plants, and demand centers
     dist_to_ore_mines, dist_to_iron_plants, dist_to_steel_plants, dist_to_demand_centers = (
@@ -787,7 +791,8 @@ def add_landtype_factor(ds: xr.Dataset, geo_config: "GeoConfig", geo_paths: "Geo
             - Trees and shrubs are less suitable for ecological reasons (higher factors)
         - Default factor is 1.0 for land types not specified in geo_config
     """
-    geo_layers_logger.info("[GEO LAYERS] Adding land type factor.")
+    logger = logging.getLogger(f"{__name__}.add_landtype_factor")
+    logger.info("[GEO LAYERS] Adding land type factor.")
 
     # Load precomputed landtype percentages
     if not geo_paths or not geo_paths.landtype_percentage_path:

@@ -181,6 +181,14 @@ def bootstrap_simulation(
     encapsulating all data loading, repository population, and dependency injection.
     """
     from .simulation import SimulationRunner
+    from .logging_config import LoggingConfig
+
+    # Configure logging from YAML early (before data loading emits logs)
+    yaml_path = Path(__file__).parent.parent.parent / "logging_config.yaml"
+    if yaml_path.exists():
+        LoggingConfig.configure_from_yaml(str(yaml_path), config.log_level)
+    else:
+        LoggingConfig.configure_base_loggers()
 
     # If no repository is provided, create one from JSON files (production behavior)
     repository_json = None

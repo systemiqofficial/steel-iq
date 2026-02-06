@@ -607,7 +607,7 @@ def create_multi_commodity_network_plot(
                 "flows_from": dict(data["flows_from"]),
             }
 
-    print(f"Aggregated country data: {readable_data}")
+    # logger.debug(f"Aggregated country data: {readable_data}")
 
     # Create traces for each commodity
     all_traces = {}

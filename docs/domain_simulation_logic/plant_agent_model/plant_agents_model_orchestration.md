@@ -171,9 +171,10 @@ All changes issued as commands via message bus to:
 
 ### Tracing Decisions
 
-Enable logging for decision-making in `logging_config.py`
-```python
-ENABLE_FURNACE_GROUP_DEBUG = True  # Set to False to disable furnace group debug output
+Enable furnace group breakdown in `logging_config.yaml`:
+```yaml
+features:
+  furnace_group_breakdown: true  # Set to false to disable
 ```
 
 ### Key Metrics to Monitor
