@@ -1023,11 +1023,19 @@ class SimulationRunner:
                     active_elec_subs = filter_subsidies_for_year(all_elec_subs, bus.env.year)
 
                     if active_h2_subs or active_elec_subs:
+                        h2_before = fg.energy_costs.get("hydrogen", 0.0)
+                        elec_before = fg.energy_costs.get("electricity", 0.0)
                         subsidised_costs, no_subsidy_prices = get_subsidised_energy_costs(
                             fg.energy_costs, active_h2_subs, active_elec_subs
                         )
                         fg.set_subsidised_energy_costs(
                             subsidised_costs, no_subsidy_prices, active_h2_subs, active_elec_subs
+                        )
+                        logging.debug(
+                            f"[H2/ELEC SUBS] {plant.location.iso3}/{fg.technology.name} FG:{fg.furnace_group_id} "
+                            f"Year={bus.env.year} | H2: ${h2_before:.2f} -> ${subsidised_costs.get('hydrogen', 0):.2f}/t | "
+                            f"Elec: ${elec_before:.6f} -> ${subsidised_costs.get('electricity', 0):.6f}/kWh | "
+                            f"Subs: {len(active_h2_subs)} H2, {len(active_elec_subs)} elec"
                         )
 
                 # Set carbon costs for the plant based on its location

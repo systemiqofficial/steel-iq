@@ -10,8 +10,21 @@ modules:
   tm: INFO
 
 function_overrides:
+  # Suppress noisy functions
   calculate_unit_production_cost: WARNING
   extract_price_from_costcurve: WARNING
+  calculate_variable_opex: WARNING
+  calculate_material_total: WARNING
+  calculate_energy_total: WARNING
+  generate_input_effectiveness_mapping_from_feedstocks: ERROR
+
+  # Enable subsidy functions
+  filter_subsidies_for_year: DEBUG
+  calculate_energy_price_with_subsidies: DEBUG
+  get_subsidised_energy_costs: DEBUG
+  FurnaceGroup.set_subsidised_energy_costs: DEBUG
+  evaluate_furnace_group_strategy: DEBUG
+  optimal_technology_name: DEBUG
 
 external:
   pyomo: ERROR

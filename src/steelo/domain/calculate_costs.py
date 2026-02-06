@@ -89,9 +89,13 @@ def filter_subsidies_for_year(subsidies: list["Subsidy"], year: "Year") -> list[
     Note:
         For collecting subsidies across multiple years, use `collect_active_subsidies_over_period` instead.
     """
+    logger = logging.getLogger(f"{__name__}.filter_subsidies_for_year")
     if not subsidies:
         return []
-    return [subsidy for subsidy in subsidies if year >= subsidy.start_year and year <= subsidy.end_year]
+    active = [subsidy for subsidy in subsidies if year >= subsidy.start_year and year <= subsidy.end_year]
+    if active:
+        logger.debug(f"[SUBSIDY FILTER] Year {year}: {len(active)}/{len(subsidies)} subsidies active")
+    return active
 
 
 def collect_active_subsidies_over_period(
@@ -128,13 +132,25 @@ def calculate_energy_price_with_subsidies(
     Returns:
         float: Subsidised price (floored at 0)
     """
+    logger = logging.getLogger(f"{__name__}.calculate_energy_price_with_subsidies")
     total_subsidy = 0.0
+    subsidy_details = []
     for subsidy in energy_subsidies:
         if subsidy.subsidy_type == "absolute":
-            total_subsidy += subsidy.subsidy_amount
+            amount = subsidy.subsidy_amount
+            total_subsidy += amount
+            subsidy_details.append(f"{subsidy.scenario_name}(abs:{amount:.4f})")
         elif subsidy.subsidy_type == "relative":
-            total_subsidy += energy_price * subsidy.subsidy_amount
-    return max(0.0, energy_price - total_subsidy)
+            amount = energy_price * subsidy.subsidy_amount
+            total_subsidy += amount
+            subsidy_details.append(f"{subsidy.scenario_name}(rel:{subsidy.subsidy_amount:.2%}={amount:.4f})")
+    final_price = max(0.0, energy_price - total_subsidy)
+    if energy_subsidies:
+        logger.debug(
+            f"[ENERGY SUBSIDY] Price: {energy_price:.4f} -> {final_price:.4f} "
+            f"(reduction: {total_subsidy:.4f}) [{', '.join(subsidy_details)}]"
+        )
+    return final_price
 
 
 def get_subsidised_energy_costs(
@@ -160,6 +176,7 @@ def get_subsidised_energy_costs(
     """
     import copy
 
+    logger = logging.getLogger(f"{__name__}.get_subsidised_energy_costs")
     subsidised = copy.copy(energy_costs)
 
     # Validate required keys exist when subsidies are provided
@@ -184,9 +201,21 @@ def get_subsidised_energy_costs(
 
     if hydrogen_subsidies and h2_price > 0:
         subsidised["hydrogen"] = calculate_energy_price_with_subsidies(h2_price, hydrogen_subsidies)
+        h2_reduction = h2_price - subsidised["hydrogen"]
+        logger.debug(
+            f"[H2 SUBSIDY] Applied {len(hydrogen_subsidies)} subsidies: "
+            f"${h2_price:.2f}/t -> ${subsidised['hydrogen']:.2f}/t "
+            f"(reduction: ${h2_reduction:.2f}/t, {h2_reduction / h2_price:.1%})"
+        )
 
     if electricity_subsidies and elec_price > 0:
         subsidised["electricity"] = calculate_energy_price_with_subsidies(elec_price, electricity_subsidies)
+        elec_reduction = elec_price - subsidised["electricity"]
+        logger.debug(
+            f"[ELEC SUBSIDY] Applied {len(electricity_subsidies)} subsidies: "
+            f"${elec_price:.6f}/kWh -> ${subsidised['electricity']:.6f}/kWh "
+            f"(reduction: ${elec_reduction:.6f}/kWh, {elec_reduction / elec_price:.1%})"
+        )
 
     return subsidised, no_subsidy_prices
 

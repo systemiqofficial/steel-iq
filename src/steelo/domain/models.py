@@ -1157,6 +1157,29 @@ class FurnaceGroup:
             h2_subsidies: Applied hydrogen subsidies (for tracking)
             elec_subsidies: Applied electricity subsidies (for tracking)
         """
+        logger = logging.getLogger(f"{__name__}.FurnaceGroup.set_subsidised_energy_costs")
+
+        h2_reduction = no_subsidy_prices.get("hydrogen", 0) - subsidised_costs.get("hydrogen", 0)
+        elec_reduction = no_subsidy_prices.get("electricity", 0) - subsidised_costs.get("electricity", 0)
+
+        logger.debug(
+            f"[H2/ELEC SUBS SET] FG:{self.furnace_group_id} Tech:{self.technology.name} | "
+            f"H2 reduction: ${h2_reduction:.2f}/t ({len(h2_subsidies)} subs) | "
+            f"Elec reduction: ${elec_reduction:.6f}/kWh ({len(elec_subsidies)} subs)"
+        )
+
+        for sub in h2_subsidies:
+            logger.debug(
+                f"[H2 SUBSIDY DETAIL] {sub.scenario_name}: type={sub.subsidy_type}, "
+                f"amount={sub.subsidy_amount:.4f}, years {sub.start_year}-{sub.end_year}"
+            )
+
+        for sub in elec_subsidies:
+            logger.debug(
+                f"[ELEC SUBSIDY DETAIL] {sub.scenario_name}: type={sub.subsidy_type}, "
+                f"amount={sub.subsidy_amount:.4f}, years {sub.start_year}-{sub.end_year}"
+            )
+
         self.energy_costs = subsidised_costs
         self.energy_costs_no_subsidy = no_subsidy_prices
         self.applied_subsidies["hydrogen"] = h2_subsidies
@@ -2346,6 +2369,18 @@ class FurnaceGroup:
 
             else:  # Switch to a new technology (greenfield)
                 # ========== BRANCH B: Greenfield Installation (New Technology) ==========
+                # Log H2/electricity energy costs being used for NPV (these include subsidies if applied)
+                h2_cost = self.energy_costs.get("hydrogen", 0)
+                elec_cost = self.energy_costs.get("electricity", 0)
+                h2_no_sub = self.energy_costs_no_subsidy.get("hydrogen", h2_cost)
+                elec_no_sub = self.energy_costs_no_subsidy.get("electricity", elec_cost)
+                if h2_cost != h2_no_sub or elec_cost != elec_no_sub:
+                    logger.debug(
+                        f"[NPV SUBSIDY IMPACT] {tech} using subsidised energy: "
+                        f"H2 ${h2_no_sub:.2f}->${h2_cost:.2f}/t, "
+                        f"Elec ${elec_no_sub:.6f}->${elec_cost:.6f}/kWh"
+                    )
+
                 # Fetch average BOM for the new technology from historical data
                 chosen_reductant = most_common_reductant_by_tech.get(tech)
                 bom_result = get_bom_from_avg_boms(self.energy_costs, tech, self.capacity, chosen_reductant)
@@ -3554,6 +3589,20 @@ class Plant:
         """
         logger = logging.getLogger(f"{__name__}.evaluate_furnace_group_strategy")
         furnace_group = self.get_furnace_group(furnace_group_id)
+
+        # Log H2/electricity subsidy status for this FG
+        h2_subs_active = len(furnace_group.applied_subsidies.get("hydrogen", [])) > 0
+        elec_subs_active = len(furnace_group.applied_subsidies.get("electricity", [])) > 0
+        if h2_subs_active or elec_subs_active:
+            h2_no_sub = furnace_group.energy_costs_no_subsidy.get("hydrogen", 0)
+            h2_with_sub = furnace_group.energy_costs.get("hydrogen", 0)
+            elec_no_sub = furnace_group.energy_costs_no_subsidy.get("electricity", 0)
+            elec_with_sub = furnace_group.energy_costs.get("electricity", 0)
+            logger.debug(
+                f"[FG STRATEGY SUBSIDY] FG:{furnace_group_id} {self.location.iso3} | "
+                f"H2={h2_subs_active} (${h2_no_sub:.2f}->${h2_with_sub:.2f}/t), "
+                f"Elec={elec_subs_active} (${elec_no_sub:.6f}->${elec_with_sub:.6f}/kWh)"
+            )
 
         # Log initial state for debugging
         logger.debug(
