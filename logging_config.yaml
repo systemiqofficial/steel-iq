@@ -5,13 +5,13 @@ features:
   furnace_group_debug: true
 
 modules:
-  geo: DEBUG
+  geo: INFO
   pam: INFO
   tm: INFO
 
 function_overrides:
   calculate_unit_production_cost: WARNING
-  extract_price_from_costcurve: ERROR
+  extract_price_from_costcurve: WARNING
 
 external:
   pyomo: ERROR
