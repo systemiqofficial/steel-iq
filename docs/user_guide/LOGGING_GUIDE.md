@@ -121,6 +121,24 @@ def calculate_renewable_costs(params):
     return result
 ```
 
+**Why function-level loggers?**
+
+The `function_overrides` feature in YAML requires function-level loggers to work. When a log
+record is created, the `ContextAwareFilter` extracts the function name from the logger name:
+
+```python
+# Logger name: steelo.domain.models.calculate_renewable_costs
+#                                    ^^^^^^^^^^^^^^^^^^^^^^^^
+#                                    Filter extracts this part
+```
+
+With a module-level logger (`logging.getLogger(__name__)`), the filter would only see `models`
+and cannot match individual function overrides. Function-level loggers enable:
+
+- Per-function suppression of noisy DEBUG output
+- Per-function enabling of DEBUG in otherwise INFO-only modules
+- Granular control without modifying code
+
 ### For Class Methods
 
 ```python
@@ -272,12 +290,30 @@ with LoggingConfig.simulation_logging("PlantAgentsModel"):
 
 ### Files Outside Module Context
 
-Some files run outside geo/pam/tm contexts:
-- `simulation.py` - Orchestration level
-- `bootstrap.py` - Application startup
-- `excel_reader.py` - Data loading
+The module context system (geo/pam/tm) is designed for the **modelling run** where
+DEBUG granularity matters. Code that runs outside these contexts uses standard logging:
 
-For these files:
+**Simulation orchestration** (`simulation.py`):
+- Year progress, timing, model sequencing
+- Uses INFO level - always visible
+- No DEBUG control needed for orchestration
+
+**Data preparation** (`data-prepare` CLI):
+- Uses Rich console for user-facing output
+- Underlying modules (`excel_reader.py`, `preparation.py`) have logging calls
+- INFO/WARNING/ERROR appear; DEBUG suppressed
+- No module context needed - data prep is a separate workflow
+
+**Application startup** (`bootstrap.py`):
+- Configuration loading, initialisation
 - INFO/WARNING/ERROR always log
-- DEBUG is suppressed (no module context)
+
+**Plotting utilities** (`plotting.py`):
+- Mixed context - called from GEO, PAM, and outside contexts
+- Currently uses module-level logger, DEBUG suppressed everywhere
+- Will be rethought during plotting revamp (future work)
+
+For all files outside module context:
+- INFO/WARNING/ERROR always log
+- DEBUG is suppressed (by design - no module context set)
 - Use INFO level for important messages
