@@ -31,6 +31,40 @@ from contextlib import contextmanager
 _current_module = threading.local()
 
 
+class ShortNameFormatter(logging.Formatter):
+    """
+    Formatter that shortens logger names using runtime module context.
+
+    Transforms verbose log output like:
+        WARNING:steelo.domain.calculate_costs.calculate_subsidies:message
+    Into context-aware format:
+        WARNING | PAM | calculate_subsidies: message
+
+    The context prefix comes from the thread-local _current_module, which is
+    set by LoggingConfig.simulation_logging() during model execution.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        """
+        Format the log record with shortened logger name.
+
+        Args:
+            record: Log record to format
+
+        Returns:
+            Formatted log message string
+        """
+        # Extract function name (last component of logger name)
+        parts = record.name.split(".")
+        func_name = parts[-1] if len(parts) > 1 else record.name
+
+        # Get current module context from thread-local
+        context = getattr(_current_module, "name", None)
+        context_str = context.upper() if context else "CORE"
+
+        return f"{record.levelname:<7} | {context_str:<4} | {func_name}: {record.getMessage()}"
+
+
 class ContextAwareFilter(logging.Filter):
     """
     Filter that allows/suppresses DEBUG logs based on current module context.
@@ -153,18 +187,24 @@ class LoggingConfig:
         features = config.get("features", {})
         cls.ENABLE_FURNACE_GROUP_DEBUG = features.get("furnace_group_debug", True)
 
-        # Create and attach filter to root logger and its handlers
+        # Create filter and formatter
         context_filter = ContextAwareFilter(module_levels, function_overrides)
+        formatter = ShortNameFormatter()
+
         root = logging.getLogger()
         root.addFilter(context_filter)
 
-        # Ensure root logger has at least one handler (creates StreamHandler if none)
+        # Ensure root logger has at least one handler
         if not root.handlers:
-            logging.basicConfig(level=cli_max_level or logging.DEBUG)
+            stream_handler = logging.StreamHandler()
+            stream_handler.setLevel(cli_max_level or logging.DEBUG)
+            root.addHandler(stream_handler)
+            root.setLevel(cli_max_level or logging.DEBUG)
 
-        # Add filter to all handlers so it applies to propagated records
-        for handler in root.handlers:
-            handler.addFilter(context_filter)
+        # Add filter and formatter to all handlers
+        for h in root.handlers:
+            h.addFilter(context_filter)
+            h.setFormatter(formatter)
 
         # Set external logger levels
         for logger_name, level_str in config.get("external", {}).items():

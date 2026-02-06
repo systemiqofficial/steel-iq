@@ -1085,7 +1085,7 @@ class SimulationRunner:
 
             with LoggingConfig.simulation_logging("DebugLogging"):
                 if LoggingConfig.ENABLE_FURNACE_GROUP_DEBUG:
-                    logging.info(f"\n========== FURNACE GROUP DEBUG - YEAR {bus.env.year} ==========")
+                    logging.info(f"========== FURNACE GROUP DEBUG - YEAR {bus.env.year} ==========\n")
 
                     # Use the new FurnaceBreakdownLogger for all plants
                     self.furnace_logger.log_all_furnace_groups(bus=bus, commands=commands)

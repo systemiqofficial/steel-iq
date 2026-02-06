@@ -736,7 +736,7 @@ def plot_detailed_trade_map(
     }
 
     for commodity, ca in commodities_with_allocations.items():
-        print(f"Plotting commodity: {commodity}")
+        logger.info(f"Plotting commodity: {commodity}")
         for source, destinations in ca.allocations.items():
             # tech = get_source_tech(source)
             color = commodity_color_map.get(commodity, [0, 0, 255])

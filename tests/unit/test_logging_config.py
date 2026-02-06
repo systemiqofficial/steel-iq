@@ -12,6 +12,7 @@ from pathlib import Path
 from steelo.logging_config import (
     LoggingConfig,
     ContextAwareFilter,
+    ShortNameFormatter,
     _current_module,
 )
 
@@ -96,7 +97,7 @@ external:
 
 
 # ---------------------------------------------------------------------------
-# 1. YAML Configuration Loading Tests
+# YAML Configuration Loading Tests
 # ---------------------------------------------------------------------------
 
 
@@ -172,7 +173,7 @@ def test_configure_from_yaml_sets_external_loggers(
 
 
 # ---------------------------------------------------------------------------
-# 2. Module Context (Thread-Local) Tests
+# Module Context (Thread-Local) Tests
 # ---------------------------------------------------------------------------
 
 
@@ -200,7 +201,7 @@ def test_module_context_handles_exception(clean_logging_state):
 
 
 # ---------------------------------------------------------------------------
-# 3. ContextAwareFilter Behaviour Tests
+# ContextAwareFilter Behaviour Tests
 # ---------------------------------------------------------------------------
 
 
@@ -380,7 +381,7 @@ def test_filter_function_override_enable_in_info_module(clean_logging_state):
 
 
 # ---------------------------------------------------------------------------
-# 4. CLI Ceiling Tests
+# CLI Ceiling Tests
 # ---------------------------------------------------------------------------
 
 
@@ -423,7 +424,7 @@ modules:
 
 
 # ---------------------------------------------------------------------------
-# 5. simulation_logging Context Manager Tests
+# simulation_logging Context Manager Tests
 # ---------------------------------------------------------------------------
 
 
@@ -460,7 +461,7 @@ def test_simulation_logging_unknown_model_no_context(clean_logging_state):
 
 
 # ---------------------------------------------------------------------------
-# 6. configure_base_loggers Tests
+# configure_base_loggers Tests
 # ---------------------------------------------------------------------------
 
 
@@ -481,7 +482,7 @@ def test_configure_base_loggers_sets_matplotlib(clean_logging_state):
 
 
 # ---------------------------------------------------------------------------
-# 7. Edge Case Tests
+# Edge Case Tests
 # ---------------------------------------------------------------------------
 
 
@@ -505,3 +506,134 @@ modules:
 
     with pytest.raises(AttributeError):
         LoggingConfig.configure_from_yaml(str(yaml_path))
+
+
+# ---------------------------------------------------------------------------
+# ShortNameFormatter Tests
+# ---------------------------------------------------------------------------
+
+
+def test_short_name_formatter_with_pam_context(clean_logging_state):
+    """Formatter uses PAM prefix when pam context is set."""
+    formatter = ShortNameFormatter()
+
+    record = logging.LogRecord(
+        name="steelo.domain.calculate_costs.calculate_subsidies",
+        level=logging.WARNING,
+        pathname="",
+        lineno=0,
+        msg="Test message",
+        args=(),
+        exc_info=None,
+    )
+
+    _current_module.name = "pam"
+    result = formatter.format(record)
+
+    assert result == "WARNING | PAM  | calculate_subsidies: Test message"
+
+
+def test_short_name_formatter_with_geo_context(clean_logging_state):
+    """Formatter uses GEO prefix when geo context is set."""
+    formatter = ShortNameFormatter()
+
+    record = logging.LogRecord(
+        name="steelo.domain.calculate_costs.calculate_subsidies",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="Geo message",
+        args=(),
+        exc_info=None,
+    )
+
+    _current_module.name = "geo"
+    result = formatter.format(record)
+
+    assert result == "INFO    | GEO  | calculate_subsidies: Geo message"
+
+
+def test_short_name_formatter_with_tm_context(clean_logging_state):
+    """Formatter uses TM prefix when tm context is set."""
+    formatter = ShortNameFormatter()
+
+    record = logging.LogRecord(
+        name="steelo.domain.trade_modelling.set_up_steel_trade_lp.enforce_tariffs",
+        level=logging.WARNING,
+        pathname="",
+        lineno=0,
+        msg="Trade message",
+        args=(),
+        exc_info=None,
+    )
+
+    _current_module.name = "tm"
+    result = formatter.format(record)
+
+    assert result == "WARNING | TM   | enforce_tariffs: Trade message"
+
+
+def test_short_name_formatter_without_context(clean_logging_state):
+    """Formatter uses CORE prefix when no context is set."""
+    formatter = ShortNameFormatter()
+
+    record = logging.LogRecord(
+        name="steelo.bootstrap.some_function",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="Bootstrap message",
+        args=(),
+        exc_info=None,
+    )
+
+    _current_module.name = None
+    result = formatter.format(record)
+
+    assert result == "INFO    | CORE | some_function: Bootstrap message"
+
+
+def test_short_name_formatter_external_logger(clean_logging_state):
+    """Formatter keeps external logger names unchanged."""
+    formatter = ShortNameFormatter()
+
+    record = logging.LogRecord(
+        name="pyomo.core.base",
+        level=logging.WARNING,
+        pathname="",
+        lineno=0,
+        msg="Pyomo message",
+        args=(),
+        exc_info=None,
+    )
+
+    _current_module.name = "pam"
+    result = formatter.format(record)
+
+    # External loggers use their full name as function name
+    assert result == "WARNING | PAM  | base: Pyomo message"
+
+
+def test_short_name_formatter_same_function_different_context(clean_logging_state):
+    """Same function shows different context prefix based on current module."""
+    formatter = ShortNameFormatter()
+
+    record = logging.LogRecord(
+        name="steelo.domain.calculate_costs.calculate_subsidies",
+        level=logging.DEBUG,
+        pathname="",
+        lineno=0,
+        msg="Subsidy calc",
+        args=(),
+        exc_info=None,
+    )
+
+    # Same function, different contexts
+    _current_module.name = "pam"
+    pam_result = formatter.format(record)
+
+    _current_module.name = "geo"
+    geo_result = formatter.format(record)
+
+    assert pam_result == "DEBUG   | PAM  | calculate_subsidies: Subsidy calc"
+    assert geo_result == "DEBUG   | GEO  | calculate_subsidies: Subsidy calc"
