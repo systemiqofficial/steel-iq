@@ -159,8 +159,9 @@ def get_candidate_locations_for_opening_new_plants(
         )
 
     # Extract energy prices for all locations; needed for NPV calculation later on
+    # Include iso3 codes for country-level aggregation
     with time_step("extract_energy_prices", geo_timer_logger):
-        energy_prices = global_ds[["power_price", "capped_lcoh"]]
+        energy_prices = global_ds[["iso3", "power_price", "capped_lcoh"]]
 
     # Show time taken
     end = time.time()
