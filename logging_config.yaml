@@ -2,7 +2,7 @@ version: 1
 global_level: WARNING
 
 features:
-  furnace_group_debug: true
+  furnace_group_breakdown: true
 
 modules:
   geo: INFO

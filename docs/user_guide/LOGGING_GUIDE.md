@@ -3,7 +3,7 @@
 ## Quick Start
 
 ### Enable DEBUG logging for a module
-Edit `logging_config.yaml` at repo root:
+Edit `logging_config.yaml` in the repository root:
 ```yaml
 modules:
   geo: DEBUG   # GeospatialModel - set to DEBUG
@@ -37,18 +37,43 @@ run_simulation --master-excel input.xlsx --log-level DEBUG --end-year 2027 > deb
 
 ---
 
+## Log Format
+
+Logs use a structured format with aligned columns:
+
+```
+INFO    | CORE | bootstrap: Using fixtures directory...
+INFO    | TM   | set_up_steel_trade_lp: Setting up LP model...
+WARNING | TM   | enforce_trade_tariffs_on_allocations: cannot find average prices
+DEBUG   | PAM  | calculate_subsidies: Processing H2 subsidies for DEU
+```
+
+Format: `LEVEL   | MODULE | function_name: message`
+
+| Column | Width | Description |
+|--------|-------|-------------|
+| LEVEL | 7 chars | DEBUG, INFO, WARNING, ERROR |
+| MODULE | 4 chars | GEO, PAM, TM, or CORE (outside model context) |
+| function | variable | Last component of logger name |
+
+The MODULE column reflects which economic model is currently executing. The same function shows different prefixes depending on which model called it:
+- `PAM  | calculate_subsidies` - called during PlantAgentsModel
+- `GEO  | calculate_subsidies` - called during GeospatialModel
+
+---
+
 ## Overview
 
-The steel model uses YAML-based logging configuration with context-aware filtering. Key features:
+The Steel Model uses YAML-based logging configuration with context-aware filtering. Key features:
 
 - **Module-specific levels**: Control DEBUG output per model (geo/pam/tm)
 - **Function overrides**: Suppress or enable specific functions
 - **CLI ceiling**: `--log-level INFO` suppresses all DEBUG regardless of YAML
 - **Thread-safe**: Context tracking works correctly across concurrent calls
 
-### Configuration Files
-- **YAML config**: `logging_config.yaml` (repo root)
-- **Python module**: `src/steelo/logging_config.py`
+### Configuration File
+
+The logging configuration file `logging_config.yaml` is located in the repository root and ships with sensible defaults.
 
 ---
 
@@ -56,13 +81,13 @@ The steel model uses YAML-based logging configuration with context-aware filteri
 
 ### Module Contexts
 
-Each economic model runs within a logging context:
+The simulation runs three economic models in sequence. Each model has its own logging context:
 
-| Model | Context | YAML Key |
-|-------|---------|----------|
-| GeospatialModel | geo | `modules.geo` |
-| PlantAgentsModel | pam | `modules.pam` |
-| AllocationModel | tm | `modules.tm` |
+| Model | Context | YAML Key | Description |
+|-------|---------|----------|-------------|
+| GeospatialModel | geo | `modules.geo` | Determines optimal locations for new steel plants |
+| PlantAgentsModel | pam | `modules.pam` | Simulates individual plant investment decisions |
+| AllocationModel | tm | `modules.tm` | Optimises steel trade flows between regions |
 
 DEBUG logs only appear when:
 1. The current module context's level is DEBUG in YAML
@@ -78,7 +103,7 @@ version: 1
 global_level: WARNING
 
 features:
-  furnace_group_debug: true  # Feature flag example
+  furnace_group_breakdown: true  # Show detailed furnace-level logs
 
 modules:
   geo: DEBUG   # Enables DEBUG for GeospatialModel
@@ -93,70 +118,25 @@ external:
   pyomo: ERROR  # Suppress noisy third-party libraries
 ```
 
-### CLI Ceiling
+### CLI Level Behaviour
 
-The `--log-level` flag acts as a ceiling:
-- `--log-level DEBUG`: Respects YAML module levels
-- `--log-level INFO`: Suppresses ALL DEBUG, regardless of YAML
-- `--log-level WARNING`: Only WARNING+ logs appear
+The `--log-level` flag controls logging differently inside and outside module contexts:
 
----
+**Inside module contexts (geo/pam/tm):**
+- Acts as a ceiling for the YAML module levels
+- `--log-level INFO` suppresses DEBUG even if YAML says `geo: DEBUG`
+- The more restrictive level (CLI or YAML) wins
 
-## Adding Logging to Functions
+**Outside module contexts (orchestration, data preparation, startup):**
+- CLI level is used directly
+- `--log-level DEBUG` shows DEBUG logs from code outside models
+- `--log-level INFO` shows only INFO+ from outside models
 
-### Pattern: Function-Level Logger
-
-Always use function-level loggers (not module-level):
-
-```python
-import logging
-
-def calculate_renewable_costs(params):
-    logger = logging.getLogger(f"{__name__}.calculate_renewable_costs")
-
-    logger.debug(f"Starting calculation with params: {params}")
-    result = do_calculation(params)
-    logger.debug(f"Calculation complete. Result: {result}")
-
-    return result
-```
-
-**Why function-level loggers?**
-
-The `function_overrides` feature in YAML requires function-level loggers to work. When a log
-record is created, the `ContextAwareFilter` extracts the function name from the logger name:
-
-```python
-# Logger name: steelo.domain.models.calculate_renewable_costs
-#                                    ^^^^^^^^^^^^^^^^^^^^^^^^
-#                                    Filter extracts this part
-```
-
-With a module-level logger (`logging.getLogger(__name__)`), the filter would only see `models`
-and cannot match individual function overrides. Function-level loggers enable:
-
-- Per-function suppression of noisy DEBUG output
-- Per-function enabling of DEBUG in otherwise INFO-only modules
-- Granular control without modifying code
-
-### For Class Methods
-
-```python
-class MyClass:
-    def my_method(self):
-        logger = logging.getLogger(f"{__name__}.MyClass.my_method")
-        logger.debug("Method executing")
-```
-
-### Enable DEBUG for Your Function
-
-If your function runs within a module context (geo/pam/tm), DEBUG logs appear when that module is set to DEBUG in YAML.
-
-To enable DEBUG for a specific function regardless of module level:
-```yaml
-function_overrides:
-  your_function_name: DEBUG
-```
+| CLI Level | Inside Context | Outside Context |
+|-----------|----------------|-----------------|
+| DEBUG | Respects YAML | Shows DEBUG |
+| INFO | Suppresses DEBUG | Shows INFO+ |
+| WARNING | Only WARNING+ | Only WARNING+ |
 
 ---
 
@@ -211,27 +191,13 @@ From most to least verbose:
 
 ---
 
-## Best Practices
-
-1. **Use function-level loggers**: `logging.getLogger(f"{__name__}.function_name")`
-2. **Choose appropriate levels**:
-   - DEBUG: Verbose details (filtered by context)
-   - INFO: Key milestones (always visible)
-   - WARNING: Unexpected situations
-   - ERROR: Errors requiring attention
-3. **Include context in messages**: `f"[FUNCTION]: description {value}"`
-4. **Clean up**: Remove temporary DEBUG settings after fixing issues
-5. **Use British English**: "organised", "analysed", "behaviour"
-
----
-
 ## Troubleshooting
 
 ### DEBUG logs not appearing?
 
-1. **Check module context**: Is the function called from geo/pam/tm context?
-   - Functions in `simulation.py` (orchestration) run outside module context
-   - DEBUG is suppressed outside module context by design
+1. **Check module context**: Is the function called from within a model (geo/pam/tm)?
+   - Code that runs outside model contexts (orchestration, data preparation) suppresses DEBUG by design
+   - Use INFO level for messages that should always appear
 
 2. **Check YAML module level**: Is the module set to DEBUG?
    ```yaml
@@ -255,65 +221,61 @@ logger = logging.getLogger(f"{__name__}.my_function")
 print(f"Logger name: {logger.name}")  # Should be: steelo.domain.module.my_function
 ```
 
-### Check current configuration
-
-```python
-from steelo.logging_config import LoggingConfig
-# Feature flags
-print(f"Furnace debug: {LoggingConfig.ENABLE_FURNACE_GROUP_DEBUG}")
-```
-
 ---
 
-## Architecture Details
+## Adding Custom Logging
 
-### Context-Aware Filtering
+This section is for contributors adding logging to new functions.
 
-The `ContextAwareFilter` class controls DEBUG log visibility:
+### Pattern: Function-Level Logger
 
-1. **Function override check**: If function has override, use that level
-2. **Non-DEBUG passthrough**: INFO/WARNING/ERROR always allowed
-3. **Module context check**: For DEBUG, check if current module allows it
-
-Thread-local storage (`_current_module`) tracks which model is executing, ensuring correct filtering even when functions are called from different contexts.
-
-### Automatic Context Setting
-
-The `simulation_logging()` context manager automatically sets module context:
+Always use function-level loggers (not module-level):
 
 ```python
-# In simulation.py - handled automatically
-with LoggingConfig.simulation_logging("PlantAgentsModel"):
-    # Context "pam" is set for this block
-    model.run()
+import logging
+
+def calculate_renewable_costs(params):
+    logger = logging.getLogger(f"{__name__}.calculate_renewable_costs")
+
+    logger.debug(f"Starting calculation with params: {params}")
+    result = do_calculation(params)
+    logger.debug(f"Calculation complete. Result: {result}")
+
+    return result
 ```
 
-### Files Outside Module Context
+**Why function-level loggers?**
 
-The module context system (geo/pam/tm) is designed for the **modelling run** where
-DEBUG granularity matters. Code that runs outside these contexts uses standard logging:
+The `function_overrides` feature requires function-level loggers. The filter extracts the function name from the logger name:
 
-**Simulation orchestration** (`simulation.py`):
-- Year progress, timing, model sequencing
-- Uses INFO level - always visible
-- No DEBUG control needed for orchestration
+```python
+# Logger name: steelo.domain.models.calculate_renewable_costs
+#                                    ^^^^^^^^^^^^^^^^^^^^^^^^
+#                                    Filter extracts this part
+```
 
-**Data preparation** (`data-prepare` CLI):
-- Uses Rich console for user-facing output
-- Underlying modules (`excel_reader.py`, `preparation.py`) have logging calls
-- INFO/WARNING/ERROR appear; DEBUG suppressed
-- No module context needed - data prep is a separate workflow
+With a module-level logger (`logging.getLogger(__name__)`), the filter cannot match individual function overrides. Function-level loggers enable:
 
-**Application startup** (`bootstrap.py`):
-- Configuration loading, initialisation
-- INFO/WARNING/ERROR always log
+- Per-function suppression of noisy DEBUG output
+- Per-function enabling of DEBUG in otherwise INFO-only modules
+- Granular control without modifying code
 
-**Plotting utilities** (`plotting.py`):
-- Mixed context - called from GEO, PAM, and outside contexts
-- Currently uses module-level logger, DEBUG suppressed everywhere
-- Will be rethought during plotting revamp (future work)
+### For Class Methods
 
-For all files outside module context:
-- INFO/WARNING/ERROR always log
-- DEBUG is suppressed (by design - no module context set)
-- Use INFO level for important messages
+```python
+class MyClass:
+    def my_method(self):
+        logger = logging.getLogger(f"{__name__}.MyClass.my_method")
+        logger.debug("Method executing")
+```
+
+### Best Practices
+
+1. **Use function-level loggers**: `logging.getLogger(f"{__name__}.function_name")`
+2. **Choose appropriate levels**:
+   - DEBUG: Verbose details (filtered by context)
+   - INFO: Key milestones (always visible)
+   - WARNING: Unexpected situations
+   - ERROR: Errors requiring attention
+3. **Include context in messages**: `f"[FUNCTION]: description {value}"`
+4. **Clean up**: Remove temporary DEBUG settings after fixing issues

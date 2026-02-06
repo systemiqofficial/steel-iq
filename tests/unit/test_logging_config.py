@@ -78,7 +78,7 @@ version: 1
 global_level: WARNING
 
 features:
-  furnace_group_debug: true
+  furnace_group_breakdown: true
 
 modules:
   geo: DEBUG
@@ -138,24 +138,24 @@ def test_configure_from_yaml_sets_feature_flags(
     yaml_config_file,
     clean_logging_state,
 ):
-    """Verify ENABLE_FURNACE_GROUP_DEBUG is updated from YAML."""
+    """Verify FURNACE_GROUP_BREAKDOWN is updated from YAML."""
     # First set to opposite value
-    LoggingConfig.ENABLE_FURNACE_GROUP_DEBUG = True
+    LoggingConfig.FURNACE_GROUP_BREAKDOWN = True
 
     content = """
 version: 1
 features:
-  furnace_group_debug: false
+  furnace_group_breakdown: false
 modules:
   geo: INFO
 """
     yaml_path = yaml_config_file(content)
     LoggingConfig.configure_from_yaml(str(yaml_path))
 
-    assert LoggingConfig.ENABLE_FURNACE_GROUP_DEBUG is False
+    assert LoggingConfig.FURNACE_GROUP_BREAKDOWN is False
 
     # Reset for other tests
-    LoggingConfig.ENABLE_FURNACE_GROUP_DEBUG = True
+    LoggingConfig.FURNACE_GROUP_BREAKDOWN = True
 
 
 def test_configure_from_yaml_sets_external_loggers(
@@ -227,11 +227,58 @@ def test_filter_allows_info_without_context(clean_logging_state):
     assert filter_obj.filter(record) is True
 
 
-def test_filter_suppresses_debug_without_context(clean_logging_state):
-    """DEBUG blocked when no module context is set."""
+def test_filter_suppresses_debug_without_context_default_cli(clean_logging_state):
+    """DEBUG blocked when no module context and cli_level defaults to WARNING."""
     filter_obj = ContextAwareFilter(
         module_levels={"geo": logging.DEBUG},
         function_overrides={},
+        # cli_level defaults to WARNING
+    )
+
+    record = logging.LogRecord(
+        name="steelo.test",
+        level=logging.DEBUG,
+        pathname="",
+        lineno=0,
+        msg="Test",
+        args=(),
+        exc_info=None,
+    )
+
+    # No context set
+    _current_module.name = None
+    assert filter_obj.filter(record) is False
+
+
+def test_filter_allows_debug_without_context_when_cli_debug(clean_logging_state):
+    """DEBUG passes when no module context but cli_level is DEBUG."""
+    filter_obj = ContextAwareFilter(
+        module_levels={"geo": logging.INFO},
+        function_overrides={},
+        cli_level=logging.DEBUG,
+    )
+
+    record = logging.LogRecord(
+        name="steelo.test",
+        level=logging.DEBUG,
+        pathname="",
+        lineno=0,
+        msg="Test",
+        args=(),
+        exc_info=None,
+    )
+
+    # No context set
+    _current_module.name = None
+    assert filter_obj.filter(record) is True
+
+
+def test_filter_suppresses_debug_without_context_when_cli_info(clean_logging_state):
+    """DEBUG blocked when no module context and cli_level is INFO."""
+    filter_obj = ContextAwareFilter(
+        module_levels={"geo": logging.DEBUG},
+        function_overrides={},
+        cli_level=logging.INFO,
     )
 
     record = logging.LogRecord(

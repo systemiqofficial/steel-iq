@@ -298,21 +298,30 @@ assert len(new_legacy) == len(old_legacy) - 1  # One year removed
 
 ### Logging
 
-Enable debt tracking logs:
-```python
-import logging
-logger = logging.getLogger('steelo.domain.models.debt_accumulation')
-logger.setLevel(logging.DEBUG)
+Enable debt tracking logs via `logging_config.yaml`:
+```yaml
+# Enable DEBUG for PlantAgentsModel (where debt calculations run)
+modules:
+  pam: DEBUG
 
-# In change_furnace_group_technology():
-logger.debug(
-    f"Technology switch {old_tech} → {new_tech}:\n"
-    f"  Remaining years: {remaining_years}\n"
-    f"  Old debt schedule length: {len(old_debt_schedule)}\n"
-    f"  Captured legacy debt: {sum(legacy_debt):,.0f}\n"
-    f"  New technology debt: {sum(new_debt):,.0f}\n"
-    f"  Combined total: {sum(combined_debt):,.0f}"
-)
+# Or enable DEBUG for a specific function only
+function_overrides:
+  change_furnace_group_technology: DEBUG
+```
+
+Then run with:
+```bash
+run_simulation --log-level DEBUG ...
+```
+
+Look for log messages like:
+```
+DEBUG   | PAM  | change_furnace_group_technology: Technology switch BF-BOF → DRI-EAF:
+  Remaining years: 15
+  Old debt schedule length: 20
+  Captured legacy debt: 45,000,000
+  New technology debt: 120,000,000
+  Combined total: 165,000,000
 ```
 
 ---

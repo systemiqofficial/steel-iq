@@ -70,21 +70,29 @@ class ContextAwareFilter(logging.Filter):
     Filter that allows/suppresses DEBUG logs based on current module context.
 
     Thread-local context tracks which module (geo/pam/tm) is currently executing.
-    DEBUG logs only pass if current module's level is DEBUG in configuration.
-    Non-DEBUG logs always pass through.
+    Inside module contexts: DEBUG logs pass if module's YAML level allows it.
+    Outside module contexts: CLI level determines filtering.
+    The CLI level also acts as a ceiling for module contexts.
     """
 
-    def __init__(self, module_levels: Dict[str, int], function_overrides: Dict[str, int]):
+    def __init__(
+        self,
+        module_levels: Dict[str, int],
+        function_overrides: Dict[str, int],
+        cli_level: Optional[int] = None,
+    ):
         """
         Initialise the context-aware filter.
 
         Args:
             module_levels: Mapping of module names (geo/pam/tm) to logging levels
             function_overrides: Mapping of function names to logging levels
+            cli_level: CLI-specified logging level (used outside contexts, ceiling inside)
         """
         super().__init__()
         self.module_levels = module_levels
         self.function_overrides = function_overrides
+        self.cli_level = cli_level if cli_level is not None else logging.WARNING
 
     def filter(self, record: logging.LogRecord) -> bool:
         """
@@ -108,8 +116,10 @@ class ContextAwareFilter(logging.Filter):
         # For DEBUG: check current module context
         current_module = getattr(_current_module, "name", None)
         if not current_module:
-            return False  # No context set, suppress DEBUG
+            # Outside module context - use CLI level directly
+            return record.levelno >= self.cli_level
 
+        # Inside module context - use YAML level (CLI ceiling already applied to module_levels)
         module_level = self.module_levels.get(current_module, logging.INFO)
         return module_level <= logging.DEBUG
 
@@ -118,7 +128,7 @@ class LoggingConfig:
     """Manages logging configuration for the simulation."""
 
     # Feature flag for furnace group debug output (set from YAML)
-    ENABLE_FURNACE_GROUP_DEBUG = True
+    FURNACE_GROUP_BREAKDOWN = True
 
     @classmethod
     @contextmanager
@@ -156,7 +166,7 @@ class LoggingConfig:
             version: 1
             global_level: WARNING
             features:
-              furnace_group_debug: true
+              furnace_group_breakdown: true
             modules:
               geo: DEBUG
               pam: INFO
@@ -185,10 +195,10 @@ class LoggingConfig:
 
         # Set feature flags
         features = config.get("features", {})
-        cls.ENABLE_FURNACE_GROUP_DEBUG = features.get("furnace_group_debug", True)
+        cls.FURNACE_GROUP_BREAKDOWN = features.get("furnace_group_breakdown", True)
 
         # Create filter and formatter
-        context_filter = ContextAwareFilter(module_levels, function_overrides)
+        context_filter = ContextAwareFilter(module_levels, function_overrides, cli_max_level)
         formatter = ShortNameFormatter()
 
         root = logging.getLogger()
