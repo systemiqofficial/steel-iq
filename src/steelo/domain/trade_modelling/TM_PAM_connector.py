@@ -615,9 +615,8 @@ class TM_PAM_connector:
             Calls in sequence: create_graph() → calculate_allocations_for_graph() →
             validate_edge_attributes() → propage_cost_forward_by_layers_and_normalize().
         """
-        logging.debug(
-            f"[NETWORK DEBUG] Setting up network with {len(solved_trade_allocations.allocations)} total allocations"
-        )
+        logger = logging.getLogger(f"{__name__}.set_up_network_and_propagate_costs")
+        logger.debug(f"[NETWORK] Setting up network with {len(solved_trade_allocations.allocations)} total allocations")
 
         if len(solved_trade_allocations.allocations) == 0:
             raise ValueError("No allocations found in the solved trade allocations. Please check the input data.")
@@ -677,20 +676,16 @@ class TM_PAM_connector:
             exported_volumes = 0.0
             if self.G is not None and fg.furnace_group_id in self.G.nodes:
                 outgoing_edges = list(self.G.out_edges(fg.furnace_group_id, data=True))
-                logger.debug(f"[ALLOCATION DEBUG] FG {fg.furnace_group_id}: Found {len(outgoing_edges)} outgoing edges")
+                logger.debug(f"[ALLOCATION] FG {fg.furnace_group_id}: Found {len(outgoing_edges)} outgoing edges")
                 for _, dest, edge_data in outgoing_edges:
                     volume = edge_data.get(volume_attribute, 0)
                     exported_volumes += volume
-                    logger.debug(f"[ALLOCATION DEBUG] FG {fg.furnace_group_id} -> {dest}: volume = {volume}")
+                    logger.debug(f"[ALLOCATION] FG {fg.furnace_group_id} -> {dest}: volume = {volume}")
                 fg.set_allocated_volumes(exported_volumes)
-                logger.debug(
-                    f"[ALLOCATION DEBUG] FG {fg.furnace_group_id}: total allocated_volumes = {exported_volumes}"
-                )
+                logger.debug(f"[ALLOCATION] FG {fg.furnace_group_id}: total allocated_volumes = {exported_volumes}")
             else:
                 fg.set_allocated_volumes(0.0)
-                logger.debug(
-                    f"[ALLOCATION DEBUG] FG {fg.furnace_group_id}: allocated_volumes = 0.0 (no outgoing edges)"
-                )
+                logger.debug(f"[ALLOCATION] FG {fg.furnace_group_id}: allocated_volumes = 0.0 (no outgoing edges)")
 
     def extract_transportation_costs(
         self,
@@ -755,12 +750,13 @@ class TM_PAM_connector:
             - Utilization rate is capped between 0.0 and capacity (no explicit cap applied).
             - Zero-capacity furnaces get utilization_rate = 0.
         """
+        logger = logging.getLogger(f"{__name__}.update_furnace_group_utilisation")
         self.update_exported_volumes(furnace_groups=furnace_groups, volume_attribute=volume_attribute)
         for fg in furnace_groups:
             fg.utilization_rate = fg.allocated_volumes / fg.capacity if fg.capacity > 0 else 0
             if fg.capacity <= 0:
                 # raise Warning(f"Furnace group capacity is 0 for {fg.furnace_group_id}")
-                logging.debug(
+                logger.debug(
                     f"Furnace group capacity is 0 for {fg.furnace_group_id} \n and allocation is {fg.allocated_volumes}"
                 )
 
@@ -803,23 +799,23 @@ class TM_PAM_connector:
         # Create a custom logger specifically for this function
         logger = logging.getLogger("steelo.domain.trade_modelling.TM_PAM_connector.update_bill_of_materials")
 
-        logger.debug(f"[BOM DEBUG] Starting update_bill_of_materials for {len(furnace_groups)} furnace groups")
+        logger.debug(f"[BOM] Starting update_bill_of_materials for {len(furnace_groups)} furnace groups")
         if self.G is not None:
-            logger.debug(f"[BOM DEBUG] Graph has {len(self.G.nodes)} nodes and {len(self.G.edges)} edges")
+            logger.debug(f"[BOM] Graph has {len(self.G.nodes)} nodes and {len(self.G.edges)} edges")
         else:
-            logger.debug("[BOM DEBUG] Graph is None!")
+            logger.debug("[BOM] Graph is None!")
 
         bom_issue_count_materials = 0
         bom_issue_count_energy = 0
         for fg in furnace_groups:
             logger.debug(
-                f"[BOM DEBUG] Starting BOM update for FG {fg.furnace_group_id} - Tech: {fg.technology.name}, Status: {fg.status}"
+                f"[BOM] Starting BOM update for FG {fg.furnace_group_id} - Tech: {fg.technology.name}, Status: {fg.status}"
             )
             _ = {"materials": [], "energy": []}
             product_volume = 0.0
             if self.G is not None:
                 in_edges = list(self.G.in_edges(fg.furnace_group_id))
-                logger.debug(f"[BOM DEBUG] FG {fg.furnace_group_id}: Found {len(in_edges)} incoming edges")
+                logger.debug(f"[BOM] FG {fg.furnace_group_id}: Found {len(in_edges)} incoming edges")
                 for edges in in_edges:
                     edge_data = self.G.get_edge_data(*edges)
                     for commodity, attr_dict in edge_data.items():
@@ -838,7 +834,7 @@ class TM_PAM_connector:
                                 {commodity: {"demand": attr_dict["volume"], "unit_cost": processing_energy_cost}}
                             )
             else:
-                logger.debug(f"[BOM DEBUG] FG {fg.furnace_group_id}: Graph is None, no edges to process")
+                logger.debug(f"[BOM] FG {fg.furnace_group_id}: Graph is None, no edges to process")
 
             if self.G is not None and fg.furnace_group_id in self.G.nodes:
                 export_dict = self.G.nodes[fg.furnace_group_id].get("export", {}) or {}
@@ -847,20 +843,18 @@ class TM_PAM_connector:
                 product_volume = float(fg.production) if getattr(fg, "production", 0.0) else 0.0
             if product_volume <= 0:
                 logger.warning(
-                    "[BOM DEBUG] FG %s: Unable to determine product volume; falling back to input-based costs",
+                    "[BOM] FG %s: Unable to determine product volume; falling back to input-based costs",
                     fg.furnace_group_id,
                 )
 
             collect: dict[str, dict[str, dict[str, float]]] = {"materials": {}, "energy": {}}
 
             # Log the raw procurement data
-            logger.debug(
-                f"[BOM DEBUG] FG {fg.furnace_group_id}: Processing procurement data with keys: {list(_.keys())}"
-            )
+            logger.debug(f"[BOM] FG {fg.furnace_group_id}: Processing procurement data with keys: {list(_.keys())}")
 
             for key, procurement_dict in _.items():
                 logger.debug(
-                    f"[BOM DEBUG] FG {fg.furnace_group_id}: Processing key '{key}' with {len(procurement_dict)} items"
+                    f"[BOM] FG {fg.furnace_group_id}: Processing key '{key}' with {len(procurement_dict)} items"
                 )
                 for commodity_dict in procurement_dict:
                     for commodity, demand_cost in commodity_dict.items():
@@ -885,28 +879,22 @@ class TM_PAM_connector:
                             else 0.0
                         )
 
-            logger.debug(f"[BOM DEBUG] FG {fg.furnace_group_id}: energy items = {len(collect['energy'])}")
+            logger.debug(f"[BOM] FG {fg.furnace_group_id}: energy items = {len(collect['energy'])}")
 
             if self.G is None:
-                logger.debug(
-                    f"[BOM DEBUG] FG {fg.furnace_group_id}: Graph is None - unable to populate materials allocation"
-                )
+                logger.debug(f"[BOM] FG {fg.furnace_group_id}: Graph is None - unable to populate materials allocation")
             elif fg.furnace_group_id not in self.G.nodes:
                 logger.warning(
                     f"Furnace group {fg.furnace_group_id} not found in graph nodes during bill of materials update"
                 )
-                logger.debug(f"[BOM DEBUG] FG {fg.furnace_group_id} NOT FOUND in graph nodes!")
+                logger.debug(f"[BOM] FG {fg.furnace_group_id} NOT FOUND in graph nodes!")
             else:
-                logger.debug(f"[BOM DEBUG] FG {fg.furnace_group_id}: Checking graph for materials allocation")
+                logger.debug(f"[BOM] FG {fg.furnace_group_id}: Checking graph for materials allocation")
                 node_allocations = self.G.nodes[fg.furnace_group_id].get("allocations", {})
-                logger.debug(
-                    f"[BOM DEBUG] FG {fg.furnace_group_id}: found {len(node_allocations)} allocations in graph node"
-                )
+                logger.debug(f"[BOM] FG {fg.furnace_group_id}: found {len(node_allocations)} allocations in graph node")
 
                 if not node_allocations:
-                    logger.debug(
-                        f"[BOM DEBUG] FG {fg.furnace_group_id}: No allocations available to populate materials BOM"
-                    )
+                    logger.debug(f"[BOM] FG {fg.furnace_group_id}: No allocations available to populate materials BOM")
 
                 for comm, attr_dict in node_allocations.items():
                     volume = attr_dict["Volume"]
@@ -927,9 +915,7 @@ class TM_PAM_connector:
                     if product_volume <= 0 and volume > 0:
                         collect["materials"][comm]["product_volume"] = volume
 
-            logger.debug(
-                f"[BOM DEBUG] FG {fg.furnace_group_id}: Final BOM materials = {list(collect['materials'].keys())}"
-            )
+            logger.debug(f"[BOM] FG {fg.furnace_group_id}: Final BOM materials = {list(collect['materials'].keys())}")
 
             util_rate = getattr(fg, "utilization_rate", None)
             if util_rate is not None and util_rate <= 0:
@@ -943,7 +929,7 @@ class TM_PAM_connector:
                 if not collect["materials"] and not collect["energy"]:
                     if existing_bom and (existing_bom.get("materials") or existing_bom.get("energy")):
                         logger.warning(
-                            "[BOM DEBUG] FG %s: Trade module returned no materials/energy "
+                            "[BOM] FG %s: Trade module returned no materials/energy "
                             "(production=%s). Preserving existing BOM with %d material entries.",
                             fg.furnace_group_id,
                             getattr(fg, "production", None),
@@ -951,7 +937,7 @@ class TM_PAM_connector:
                         )
                         continue
                     logger.warning(
-                        "[BOM DEBUG] FG %s: Trade module returned no materials/energy "
+                        "[BOM] FG %s: Trade module returned no materials/energy "
                         "(production=%s) and no existing BOM found.",
                         fg.furnace_group_id,
                         getattr(fg, "production", None),
@@ -987,14 +973,14 @@ class TM_PAM_connector:
                     _ensure_material_shares(merged_bom["materials"])
                 elif merged_bom.get("materials"):
                     logger.error(
-                        "[BOM DEBUG] FG %s: Preserving %d existing material entries (no new allocations).",
+                        "[BOM] FG %s: Preserving %d existing material entries (no new allocations).",
                         fg.furnace_group_id,
                         len(merged_bom["materials"]),
                     )
                     bom_issue_count_materials += 1
                 else:
                     logger.warning(
-                        "[BOM DEBUG] FG %s: No material allocations available; BOM materials remain empty.",
+                        "[BOM] FG %s: No material allocations available; BOM materials remain empty.",
                         fg.furnace_group_id,
                     )
 
@@ -1002,14 +988,14 @@ class TM_PAM_connector:
                     merged_bom["energy"] = collect["energy"]
                 elif merged_bom.get("energy"):
                     logger.error(
-                        "[BOM DEBUG] FG %s: Preserving %d existing energy entries (no new allocations).",
+                        "[BOM] FG %s: Preserving %d existing energy entries (no new allocations).",
                         fg.furnace_group_id,
                         len(merged_bom["energy"]),
                     )
                     bom_issue_count_energy += 1
                 else:
                     logger.debug(
-                        "[BOM DEBUG] FG %s: No energy allocations available; BOM energy remains empty.",
+                        "[BOM] FG %s: No energy allocations available; BOM energy remains empty.",
                         fg.furnace_group_id,
                     )
 
@@ -1067,10 +1053,10 @@ class TM_PAM_connector:
                 # Log why emissions are being set to empty
                 if not fg.bill_of_materials:
                     logger.warning(
-                        f"[EMISSIONS DEBUG] FG {fg.furnace_group_id}: No bill_of_materials, setting emissions to empty dict"
+                        f"[EMISSIONS] FG {fg.furnace_group_id}: No bill_of_materials, setting emissions to empty dict"
                     )
                 elif not fg.bill_of_materials.get("materials"):
                     logger.warning(
-                        f"[EMISSIONS DEBUG] FG {fg.furnace_group_id}: Empty materials in BOM, setting emissions to empty dict"
+                        f"[EMISSIONS] FG {fg.furnace_group_id}: Empty materials in BOM, setting emissions to empty dict"
                     )
                 fg.emissions = {}

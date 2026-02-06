@@ -1495,6 +1495,7 @@ def calculate_debt_with_subsidies(cost_of_debt: float, debt_subsidies: list["Sub
         Negative subsidy_amount values act as taxes/penalties (increase cost of debt).
         Result is floored at risk_free_rate - subsidies cannot reduce cost below risk-free rate.
     """
+    logger = logging.getLogger(f"{__name__}.calculate_debt_with_subsidies")
     # If no cost of debt subsidies in the list, return original cost of debt
     if debt_subsidies == []:
         return cost_of_debt
@@ -1505,7 +1506,7 @@ def calculate_debt_with_subsidies(cost_of_debt: float, debt_subsidies: list["Sub
         if subsidy.subsidy_type == "absolute":
             debt_total_subsidy += subsidy.subsidy_amount
         else:
-            logging.info("Ignoring relative subsidy for cost of debt calculation")
+            logger.info("Ignoring relative subsidy for cost of debt calculation")
 
     # Apply subsidy, ensuring cost of debt doesn't go below risk-free rate
     return max(risk_free_rate, cost_of_debt - debt_total_subsidy)

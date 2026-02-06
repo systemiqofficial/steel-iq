@@ -190,13 +190,14 @@ class DataCollector:
         """
         Collect the locations of new plants set to operating in the given year, as well as how many.
         """
+        logger = logging.getLogger(f"{__name__}.collect_new_plant_data")
         indi_pg = None
         for pg in self.plant_groups:
             if pg.plant_group_id == "indi":
                 indi_pg = pg
 
         if indi_pg is None:
-            logging.warning("No plant group with ID 'indi' found. Skipping new plant data collection.")
+            logger.warning("No plant group with ID 'indi' found. Skipping new plant data collection.")
             return
 
         for plant in indi_pg.plants:

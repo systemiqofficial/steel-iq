@@ -967,8 +967,12 @@ def plot_detailed_trade_map(
         for col in df.columns:
             sample = df[col].iloc[0]
             if isinstance(sample, object) and not isinstance(sample, (str, int, float, list, dict)):
-                print(f"[WARNING] Column '{col}' has non-serializable object of type {type(sample)}:")
-                print(sample)
+                logger.warning(
+                    "Column '%s' has non-serializable object of type %s: %s",
+                    col,
+                    type(sample),
+                    sample,
+                )
 
     validate_df(arc_df, "arc_df")
     validate_df(node_df, "node_df")
@@ -2199,17 +2203,17 @@ def plot_cost_curve_with_breakdown(
         # Extract cost components from the data
 
         # Check which cost columns are available
-        logger.debug(f"[DEBUG] Available columns in df: {list(df.columns)}")
+        logger.debug(f"Available columns in df: {list(df.columns)}")
         if "cost_breakdown" in df.columns:
             # If we have the cost_breakdown dictionary column (nested by feedstock)
             cost_df = df.loc[(product_type, year)].copy()
 
             # Parse and flatten the cost_breakdown structure
             # cost_breakdown is a dict like: {"iron_ore": {"total_cost": X, "electricity": Y, ...}, ...}
-            logger.debug(f"[DEBUG] cost_breakdown column exists, processing {len(cost_df)} rows")
+            logger.debug(f"cost_breakdown column exists, processing {len(cost_df)} rows")
             for idx, row in cost_df.iterrows():
                 if pd.notna(row.get("cost_breakdown")) and isinstance(row["cost_breakdown"], dict):
-                    logger.debug(f"[DEBUG] Processing cost_breakdown for {idx}: {row['cost_breakdown']}")
+                    logger.debug(f"Processing cost_breakdown for {idx}: {row['cost_breakdown']}")
                     # Aggregate costs across all feedstocks
                     aggregated_costs = {}
 
@@ -2371,7 +2375,7 @@ def plot_cost_curve_with_breakdown(
                     else:
                         # Generate a color for unknown components
                         color = cm.Set3(hash(component) % 12 / 12)  # type: ignore[attr-defined]
-                        logger.debug(f"[DEBUG] Unknown cost component '{component}' using generated color {color}")
+                        logger.debug(f"Unknown cost component '{component}' using generated color {color}")
                         # Add unknown components to legend colors dictionary
                         component_colors[component] = color
 
