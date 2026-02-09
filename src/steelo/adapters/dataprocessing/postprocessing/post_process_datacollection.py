@@ -294,15 +294,27 @@ def extract_and_process_stored_dataCollection(
     else:
         final_df = pd.DataFrame()
 
-    # rearrange columns year and commands to be number 5 and 6
-    final_df = final_df.reindex(
-        columns=[
-            *final_df.columns[:4],
-            "year",
-            "commands",
-            *final_df.columns[4:-2],
-        ]
-    )
+    # Build deterministic column order:
+    # [core 0-3] + [year, commands] + [remaining non-CB] + [priority CB] + [sorted CB]
+    CB_PREFIX = "cost_breakdown - "
+    PRIORITY_CB = [
+        "cost_breakdown - demand_share_pct",
+        "cost_breakdown - material cost (incl. transport and tariffs)",
+    ]
+
+    all_cols = list(final_df.columns)
+    cb_cols = [c for c in all_cols if c.startswith(CB_PREFIX)]
+    non_cb_cols = [c for c in all_cols if not c.startswith(CB_PREFIX) and c not in ("year", "commands")]
+
+    # Insert year and commands at positions 4-5 within the non-CB group
+    ordered = non_cb_cols[:4] + ["year", "commands"] + non_cb_cols[4:]
+
+    # Cost breakdown: priority columns first, then the rest alphabetically
+    priority = [c for c in PRIORITY_CB if c in cb_cols]
+    remaining_cb = sorted(c for c in cb_cols if c not in PRIORITY_CB)
+    ordered += priority + remaining_cb
+
+    final_df = final_df[ordered]
 
     if store:
         final_df.to_csv(output_path, index=False)
