@@ -24,5 +24,10 @@ function_overrides:
   evaluate_furnace_group_strategy: DEBUG
   optimal_technology_name: DEBUG
 
+  # Enable H2 cost breakdown debugging
+  TM_PAM_connector_init: DEBUG
+  update_bill_of_materials: DEBUG
+  calculate_cost_breakdown_by_feedstock: DEBUG
+
 external:
   pyomo: ERROR

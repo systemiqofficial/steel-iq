@@ -253,6 +253,13 @@ def calculate_cost_breakdown_by_feedstock(
 
     # Get BOM energy (same source as calculate_variable_opex)
     bom_energy = bill_of_materials.get("energy", {})
+    _cb_logger = logging.getLogger(f"{__name__}.calculate_cost_breakdown_by_feedstock")
+    _cb_logger.debug(
+        "[H2-DEBUG BREAKDOWN] bom_energy keys: %s | has_hydrogen: %s | chosen_reductant: %s",
+        list(bom_energy.keys()),
+        "hydrogen" in bom_energy,
+        chosen_reductant,
+    )
 
     # Calculate energy intensity per carrier for each feedstock from dynamic business case
     # Structure: {feedstock: {carrier: amount}}
