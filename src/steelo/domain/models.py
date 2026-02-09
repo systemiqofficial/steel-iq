@@ -1029,6 +1029,7 @@ class FurnaceGroup:
         railway_cost: float = 0.0,
         created_by_PAM: bool = False,
         legacy_debt_schedule: list[float] | None = None,
+        cost_breakdown_keys: list[str] | None = None,
     ) -> None:
         self.furnace_group_id = furnace_group_id
         self.capacity = capacity
@@ -1042,6 +1043,7 @@ class FurnaceGroup:
         self.created_by_PAM = created_by_PAM
         self.bill_of_materials = bill_of_materials
         self.chosen_reductant = chosen_reductant
+        self.cost_breakdown_keys = cost_breakdown_keys
         self.allocated_volumes = allocated_volumes
 
         # Future technology switch (accounts for construction time while operating with old technology)
@@ -2060,6 +2062,7 @@ class FurnaceGroup:
             energy_costs=self.energy_costs,
             chosen_reductant=self.chosen_reductant,
             energy_vopex_breakdown_by_input=self.energy_vopex_breakdown_by_input,
+            cost_breakdown_keys=self.cost_breakdown_keys,
         )
 
     def optimal_technology_name(
@@ -7360,6 +7363,7 @@ class Environment:
                 # print(fg.technology.dynamic_business_case[-1].emissions)
                 fg.technology.set_product(self.technology_to_product)
                 fg.generate_energy_vopex_by_reductant()
+                fg.cost_breakdown_keys = self.cost_breakdown_keys
 
         # Update environment-level most common reductant tracking after all furnace groups are updated
         self.most_common_reductant_by_tech = self.most_common_reductant(world_plants)
