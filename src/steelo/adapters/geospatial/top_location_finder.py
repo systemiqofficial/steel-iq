@@ -159,9 +159,13 @@ def get_candidate_locations_for_opening_new_plants(
         )
 
     # Extract energy prices for all locations; needed for NPV calculation later on
-    # Include iso3 codes for country-level aggregation
+    # Include iso3 codes for country-level aggregation and overbuild factors if available
     with time_step("extract_energy_prices", geo_timer_logger):
-        energy_prices = global_ds[["iso3", "power_price", "capped_lcoh"]]
+        fields_to_extract = ["iso3", "power_price", "capped_lcoh"]
+        # Add overbuild factors if they exist (only present when baseload_coverage > 0)
+        if "solar_factor" in global_ds:
+            fields_to_extract.extend(["solar_factor", "wind_factor", "battery_factor"])
+        energy_prices = global_ds[fields_to_extract]
 
     # Show time taken
     end = time.time()
