@@ -9,6 +9,7 @@ from steelo.domain.models import PrimaryFeedstock, FurnaceGroup, TransportKPI
 from steelo.domain.trade_modelling.trade_lp_modelling import Allocations, ProcessType
 from steelo.domain.constants import LP_TOLERANCE
 from steelo.domain import diagnostics as diag
+from steelo.utilities.utils import normalize_energy_key
 
 
 # logging.getLogger().setLevel(logging.WARNING)  # Commented out to avoid setting root logger
@@ -54,9 +55,6 @@ class TM_PAM_connector:
         self.chosen_reductant = {}
         self.processing_energy_cost = {}
 
-        def _normalize_energy_label(value: str) -> str:
-            return str(value).lower().replace(" ", "_").replace("-", "_")
-
         for p in plants.list():
             for fg in p.furnace_groups:
                 per_feed_energy: dict[str, dict[str, dict[str, float] | float]] = {}
@@ -66,7 +64,7 @@ class TM_PAM_connector:
                     normalized_commodity = str(commodity).lower()
                     breakdown = feed_breakdowns.get(commodity) or feed_breakdowns.get(str(commodity).lower()) or {}
                     normalized_breakdown = {
-                        _normalize_energy_label(carrier): float(cost) for carrier, cost in breakdown.items()
+                        normalize_energy_key(carrier): float(cost) for carrier, cost in breakdown.items()
                     }
                     per_feed_energy[normalized_commodity] = {
                         "total": float(total_cost),
@@ -174,9 +172,8 @@ class TM_PAM_connector:
             - Energy requirements are defined per feedstock type in PrimaryFeedstock objects.
         """
         global_cost_dict = dict(
-            flexible=1.05506 * 6, electricity=0.150, coke=0.05, pci=0, hydrogen=6.61, bio_pci=0.05, coal=98.6
+            natural_gas=1.05506 * 6, electricity=0.150, coke=0.05, pci=0, hydrogen=6.61, bio_pci=0.05, coal=98.6
         )
-        global_cost_dict["natural gas"] = 1.05506 * 6
 
         process_energy_cost = 0.0
         plant_id = furnace.split("_")[0]

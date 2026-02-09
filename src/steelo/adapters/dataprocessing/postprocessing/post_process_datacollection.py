@@ -15,7 +15,6 @@ STANDARD_COST_BREAKDOWN_COLUMNS = [
     "cost_breakdown - hydrogen",
     "cost_breakdown - natural gas",
     "cost_breakdown - electricity",
-    "cost_breakdown - heat",  # renamed from flexible
     "cost_breakdown - burnt lime",
     "cost_breakdown - burnt dolomite",
     "cost_breakdown - olivine",
@@ -177,7 +176,6 @@ def extract_and_process_stored_dataCollection(
         long_df = pd.DataFrame.from_records(records)
         long_df.rename(
             columns={
-                "cost_breakdown - flexible": "cost_breakdown - heat",
                 "cost_breakdown - fluxes": "cost_breakdown - burnt lime",
                 "cost_breakdown - burnt_lime": "cost_breakdown - burnt lime",
                 "cost_breakdown - burnt lime": "cost_breakdown - burnt lime",

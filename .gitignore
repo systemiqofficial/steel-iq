@@ -71,6 +71,7 @@ master_input.xlsx
 
 # Claude AI
 .claude/
+PLANS
 
 *.log
 refactoring_issue.md

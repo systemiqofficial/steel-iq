@@ -1,3 +1,5 @@
+import re
+
 import pandas as pd
 from IPython.display import display, HTML
 from collections import Counter, defaultdict
@@ -5,6 +7,23 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from steelo.domain.models import FurnaceGroup
+
+
+def normalize_energy_key(name: str | None) -> str:
+    """Normalise an energy carrier or feedstock name to a canonical key.
+
+    Args:
+        name: Raw carrier/feedstock name (e.g. "Natural Gas", "bio-pci", "co2_-_inlet").
+            None is treated as empty string.
+
+    Returns:
+        Lowercase key with spaces and hyphens replaced by underscores,
+        and consecutive underscores collapsed to one.
+    """
+    if name is None:
+        return ""
+    key = str(name).lower().replace(" ", "_").replace("-", "_")
+    return re.sub(r"_+", "_", key)
 
 
 def display_scrollable_dataframe(df) -> None:
