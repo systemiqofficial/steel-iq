@@ -529,7 +529,7 @@ def test_cost_breakdown_converts_coking_coal_secondary_feedstock_to_tonnes():
         energy_costs={"coking_coal": 210.0},  # USD/t after Excel normalization
     )
 
-    coking_coal_cost = breakdown["dri_high"]["coking coal"]
+    coking_coal_cost = breakdown["dri_high"]["coking_coal"]
     # The function returns the weighted unit cost without multiplying by required_quantity_per_ton_of_product
     # Expected: unit_cost (210.0) when there's only one feedstock using this carrier
     assert coking_coal_cost == pytest.approx(210.0, rel=1e-3)
@@ -604,10 +604,10 @@ def test_cost_breakdown_handles_space_and_hyphenated_energy_price_keys():
     feed_breakdown = breakdown["sinter"]
 
     # The function returns weighted unit costs without multiplying by required_quantity_per_ton_of_product
-    assert feed_breakdown["bio-pci"] == pytest.approx(10.0)  # unit_cost when only one feedstock
-    assert feed_breakdown["natural gas"] == pytest.approx(5.0)  # unit_cost
-    assert feed_breakdown["burnt dolomite"] == pytest.approx(2.0)  # unit_cost
-    assert feed_breakdown["fluxes"] == pytest.approx(1.0)  # unit_cost (burnt lime maps to fluxes)
+    assert feed_breakdown["bio_pci"] == pytest.approx(10.0)  # unit_cost when only one feedstock
+    assert feed_breakdown["natural_gas"] == pytest.approx(5.0)  # unit_cost
+    assert feed_breakdown["burnt_dolomite"] == pytest.approx(2.0)  # unit_cost
+    assert feed_breakdown["burnt_lime"] == pytest.approx(1.0)  # unit_cost
     assert feed_breakdown["olivine"] == pytest.approx(3.0)  # unit_cost
 
 

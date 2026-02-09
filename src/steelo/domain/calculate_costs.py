@@ -206,6 +206,7 @@ def calculate_cost_breakdown_by_feedstock(
     dynamic_business_cases: list["PrimaryFeedstock"],
     energy_costs: dict[str, float],
     energy_vopex_breakdown_by_input: dict[str, dict[str, float]] | None = None,
+    cost_breakdown_keys: list[str] | None = None,
 ) -> dict:
     """
     Calculate detailed cost breakdown by feedstock type for a furnace group.
@@ -221,6 +222,9 @@ def calculate_cost_breakdown_by_feedstock(
         dynamic_business_cases (list[PrimaryFeedstock]): List of primary feedstock options with energy requirements.
         energy_costs (dict[str, float]): Energy costs by type (kept for backward compatibility).
         energy_vopex_breakdown_by_input (dict[str, dict[str, float]] | None): Unused parameter for compatibility.
+        cost_breakdown_keys (list[str] | None): Canonical list of normalised carrier/feedstock keys
+            that should appear in every feedstock's breakdown. Missing keys are zero-padded.
+            Derived from primary_feedstocks.json. When None, no zero-padding is applied.
 
     Returns:
         dict: Dictionary with cost breakdown by feedstock type. Each feedstock key maps to a dictionary containing:
@@ -232,19 +236,6 @@ def calculate_cost_breakdown_by_feedstock(
 
     if not bill_of_materials or not bill_of_materials.get("materials"):
         return breakdown
-
-    # Rename map to match STANDARD_COST_BREAKDOWN_COLUMNS
-    rename_map = {
-        "coking_coal": "coking coal",
-        "burnt_dolomite": "burnt dolomite",
-        "burnt_lime": "fluxes",
-        "burnt lime": "fluxes",
-        "lime": "fluxes",
-        "bio_pci": "bio-pci",
-        "natural_gas": "natural gas",
-        "bf_gas": "bf gas",
-        "bof_gas": "bof gas",
-    }
 
     # Get BOM energy (same source as calculate_variable_opex)
     bom_energy = bill_of_materials.get("energy", {})
@@ -349,13 +340,18 @@ def calculate_cost_breakdown_by_feedstock(
                     # This feedstock's share of THIS carrier's cost
                     carrier_weight = (demand_share * feedstock_carrier_intensity) / total_weighted_intensity_for_carrier
 
-                    target_key = rename_map.get(normalized_carrier, normalized_carrier.replace("_", " "))
-
                     # Weighted energy cost for this feedstock and carrier
                     weighted_cost = carrier_unit_cost * carrier_weight
-                    feed_breakdown[target_key] = feed_breakdown.get(target_key, 0.0) + weighted_cost
+                    feed_breakdown[normalized_carrier] = feed_breakdown.get(normalized_carrier, 0.0) + weighted_cost
 
         breakdown[metallic_charge_lower] = feed_breakdown
+
+    # Zero-pad: ensure every feedstock sub-dict includes all canonical keys
+    if cost_breakdown_keys:
+        for feed_breakdown in breakdown.values():
+            for key in cost_breakdown_keys:
+                if key not in feed_breakdown:
+                    feed_breakdown[key] = 0.0
 
     return breakdown
 
