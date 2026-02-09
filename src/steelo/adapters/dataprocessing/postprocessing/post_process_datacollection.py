@@ -4,28 +4,6 @@ from pathlib import Path
 
 import logging
 
-# Define standard cost_breakdown columns that should always be present
-# This ensures consistent CSV output across all simulations
-STANDARD_COST_BREAKDOWN_COLUMNS = [
-    "cost_breakdown - coal",
-    "cost_breakdown - coking coal",
-    "cost_breakdown - coke",
-    "cost_breakdown - pci",
-    "cost_breakdown - bio-pci",
-    "cost_breakdown - hydrogen",
-    "cost_breakdown - natural gas",
-    "cost_breakdown - electricity",
-    "cost_breakdown - burnt lime",
-    "cost_breakdown - burnt dolomite",
-    "cost_breakdown - olivine",
-    "cost_breakdown - bf gas",
-    "cost_breakdown - cog",
-    "cost_breakdown - bof gas",
-    # "cost_breakdown - fixed opex",
-    # "cost_breakdown - carbon cost",
-    # "cost_breakdown - debt share",
-    # "cost_breakdown - material cost",
-]
 
 STRUCTURAL_FEED_COLUMNS = {"commands", "materials", "energy", "cost_breakdown"}
 
@@ -65,6 +43,7 @@ def extract_and_process_stored_dataCollection(
     data_dir: Path,
     output_path: Path,
     store: bool = True,
+    cost_breakdown_columns: list[str] | None = None,
 ) -> pd.DataFrame | str:
     """
     Extract and process stored pickle-files storing the collected data from the simulation.
@@ -174,15 +153,6 @@ def extract_and_process_stored_dataCollection(
 
                 records.append(records_dict)
         long_df = pd.DataFrame.from_records(records)
-        long_df.rename(
-            columns={
-                "cost_breakdown - fluxes": "cost_breakdown - burnt lime",
-                "cost_breakdown - burnt_lime": "cost_breakdown - burnt lime",
-                "cost_breakdown - burnt lime": "cost_breakdown - burnt lime",
-                "cost_breakdown - lime": "cost_breakdown - burnt lime",
-            },
-            inplace=True,
-        )
         if not long_df.empty and all(col in long_df.columns for col in ["furnace_group_id", "feedstock"]):
             long_df = (
                 long_df.set_index(["furnace_group_id", "feedstock"])
@@ -193,17 +163,19 @@ def extract_and_process_stored_dataCollection(
             )
 
         if not long_df.empty:
-            # Ensure all standard cost_breakdown columns exist
-            for col in STANDARD_COST_BREAKDOWN_COLUMNS:
-                if col not in long_df.columns:
-                    long_df[col] = None  # Use None for missing values (mypy compatible)
+            # Ensure all canonical cost_breakdown columns exist
+            if cost_breakdown_columns:
+                for col in cost_breakdown_columns:
+                    if col not in long_df.columns:
+                        long_df[col] = None
 
             full_furnace_df = furnace_df.merge(long_df, on="furnace_group_id", how="left").drop_duplicates().copy()
         else:
             # If no feedstock data, just use furnace_df and add empty cost_breakdown columns
             full_furnace_df = furnace_df.copy()
-            for col in STANDARD_COST_BREAKDOWN_COLUMNS:
-                full_furnace_df[col] = None
+            if cost_breakdown_columns:
+                for col in cost_breakdown_columns:
+                    full_furnace_df[col] = None
         full_furnace_df["plant_id"] = full_furnace_df["furnace_group_id"].apply(lambda x: x.split("_")[0])
         full_furnace_df = (
             df[["location", "balance"]]
@@ -272,20 +244,18 @@ def extract_and_process_stored_dataCollection(
     if all_furnaces:
         final_df = pd.concat(all_furnaces).sort_values(by="year").reset_index(drop=True)
 
-        # Ensure all standard cost_breakdown columns are present in the final DataFrame
-        # This handles cases where a column might be missing across all years
-        for col in STANDARD_COST_BREAKDOWN_COLUMNS:
-            if col not in final_df.columns:
-                # Find appropriate position (before 'year' column)
-                if "year" in final_df.columns:
-                    year_idx = final_df.columns.get_loc("year")
-                    # Ensure year_idx is an integer for insert
-                    if isinstance(year_idx, int):
-                        final_df.insert(year_idx, col, None)  # Use None instead of pd.NA for compatibility
+        # Ensure all canonical cost_breakdown columns are present in the final DataFrame
+        if cost_breakdown_columns:
+            for col in cost_breakdown_columns:
+                if col not in final_df.columns:
+                    if "year" in final_df.columns:
+                        year_idx = final_df.columns.get_loc("year")
+                        if isinstance(year_idx, int):
+                            final_df.insert(year_idx, col, None)
+                        else:
+                            final_df[col] = None
                     else:
                         final_df[col] = None
-                else:
-                    final_df[col] = None
 
         if "chosen_reductant" in final_df.columns:
             final_df["chosen_reductant"] = final_df["chosen_reductant"].apply(_normalize_reductant)
