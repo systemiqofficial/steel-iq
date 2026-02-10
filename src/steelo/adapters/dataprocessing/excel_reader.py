@@ -578,11 +578,14 @@ def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[st
         elif side == "Output":
             # Outputs - keep original values
             if vector:
-                # Handle steel/liquid steel naming using Commodities
                 output_name = normalize_energy_key(vector)
-                if output_name == Commodities.LIQUID_STEEL.value.lower():
-                    output_name = Commodities.STEEL.value
-                feedstock.add_output(name=output_name, amount=Volumes(float(value)))
+                if output_name.startswith("co2"):
+                    feedstock.add_carbon_output(output_name, float(value))
+                else:
+                    # Handle steel/liquid steel naming using Commodities
+                    if output_name == Commodities.LIQUID_STEEL.value.lower():
+                        output_name = Commodities.STEEL.value
+                    feedstock.add_output(name=output_name, amount=Volumes(float(value)))
 
     # Handle energy
     elif metric_type.lower() in ["energy", "heat", "machine drive", "machine_drive", "others"]:
@@ -597,7 +600,11 @@ def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[st
                     feedstock.add_energy_requirement(normalised, converted_value)
         elif side == "Output":
             if vector:
-                feedstock.add_output(name=normalize_energy_key(vector), amount=Volumes(converted_value))
+                normalised = normalize_energy_key(vector)
+                if normalised.startswith("co2"):
+                    feedstock.add_carbon_output(normalised, converted_value)
+                else:
+                    feedstock.add_output(name=normalised, amount=Volumes(converted_value))
 
 
 def _convert_units(value: float, unit: str, metric_type: str) -> float:

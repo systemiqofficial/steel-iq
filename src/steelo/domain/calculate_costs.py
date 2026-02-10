@@ -1758,9 +1758,10 @@ def calculate_cost_adjustments_from_secondary_outputs(
 
         total_product_volume += product_volume
 
+        all_outputs = {**(dbc.outputs or {}), **(dbc.carbon_outputs or {})}
         material_adjustment = sum(
-            product_volume * adjustments_outputs[output] * dbc.outputs[output]  # multiply by output amounts per unit
-            for output in (dbc.outputs or {})
+            product_volume * adjustments_outputs[output] * all_outputs[output]  # multiply by output amounts per unit
+            for output in all_outputs
             if output in adjustments_outputs
         )
         total_adjustments += material_adjustment

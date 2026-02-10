@@ -76,6 +76,7 @@ def test_cost_adjustments_ignore_secondary_feedstocks_and_use_product_volume():
         def __init__(self):
             self.metallic_charge = "io_low"
             self.outputs = {"slag": 1.0}
+            self.carbon_outputs: dict[str, float] = {}
             self.secondary_feedstock = {"coking_coal": 1.9}  # Should be ignored
             self.required_quantity_per_ton_of_product = 1.611
 
