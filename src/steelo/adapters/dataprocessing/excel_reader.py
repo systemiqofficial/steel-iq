@@ -33,6 +33,7 @@ import logging
 
 from ...domain.models import LegalProcessConnector
 from ...utilities.data_processing import normalize_product_name
+from steelo.utilities.utils import normalize_energy_key
 
 # Import only true constants from global_variables
 from steelo.domain.constants import (
@@ -578,7 +579,7 @@ def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[st
             # Outputs - keep original values
             if vector:
                 # Handle steel/liquid steel naming using Commodities
-                output_name = normalize_commodity_name(vector)
+                output_name = normalize_energy_key(vector)
                 if output_name == Commodities.LIQUID_STEEL.value.lower():
                     output_name = Commodities.STEEL.value
                 feedstock.add_output(name=output_name, amount=Volumes(float(value)))
@@ -589,10 +590,10 @@ def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[st
         converted_value = _convert_units(value, unit, metric_type)
         if side == "Input":
             if vector:
-                feedstock.add_energy_requirement(normalize_commodity_name(vector), converted_value)
+                feedstock.add_energy_requirement(normalize_energy_key(vector), converted_value)
         elif side == "Output":
             if vector:
-                feedstock.add_output(name=normalize_commodity_name(vector), amount=Volumes(converted_value))
+                feedstock.add_output(name=normalize_energy_key(vector), amount=Volumes(converted_value))
 
 
 def _convert_units(value: float, unit: str, metric_type: str) -> float:
