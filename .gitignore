@@ -79,6 +79,7 @@ latest_run.csv
 
 *Master_input_*.xlsx
 test-boms.xlsx
+post_processed*.csv
 
 plot.ipynb
 

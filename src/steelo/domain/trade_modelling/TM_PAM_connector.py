@@ -72,25 +72,6 @@ class TM_PAM_connector:
                     }
                 self.processing_energy_cost[fg.furnace_group_id] = per_feed_energy
                 self.chosen_reductant[fg.furnace_group_id] = fg.chosen_reductant
-                # Debug: log H2-using furnace groups at connector init
-                _h2_carrier_summary: dict[str, list[str]] = {}
-                _has_h2 = False
-                for _comm, _detail in per_feed_energy.items():
-                    if not isinstance(_detail, dict):
-                        continue
-                    _carriers = _detail.get("carriers")
-                    if isinstance(_carriers, dict):
-                        _h2_carrier_summary[_comm] = list(_carriers.keys())
-                        if "hydrogen" in _carriers:
-                            _has_h2 = True
-                if _has_h2:
-                    _init_logger = logging.getLogger(f"{__name__}.TM_PAM_connector_init")
-                    _init_logger.debug(
-                        "[H2-DEBUG INIT] FG:%s Tech:%s | processing_energy carriers: %s",
-                        fg.furnace_group_id,
-                        fg.technology.name,
-                        _h2_carrier_summary,
-                    )
         self.flat_feedstocks_dict = {
             entry.name.lower(): entry for key, items in self.dynamic_feedstocks.items() for entry in items
         }
@@ -896,17 +877,6 @@ class TM_PAM_connector:
                         )
 
             logger.debug(f"[BOM] FG {fg.furnace_group_id}: energy items = {len(collect['energy'])}")
-            energy_keys = list(collect["energy"].keys())
-            has_h2 = "hydrogen" in energy_keys
-            if has_h2 or fg.technology.name.upper() in ("DRI-H2", "DRI+CCS", "E-WIN", "DRI-EAF"):
-                logger.debug(
-                    "[H2-DEBUG BOM] FG:%s Tech:%s | edges:%d | energy carriers: %s | has_hydrogen: %s",
-                    fg.furnace_group_id,
-                    fg.technology.name,
-                    len(in_edges) if self.G is not None else 0,
-                    energy_keys,
-                    has_h2,
-                )
 
             if self.G is None:
                 logger.debug(f"[BOM] FG {fg.furnace_group_id}: Graph is None - unable to populate materials allocation")
@@ -961,12 +931,6 @@ class TM_PAM_connector:
                             fg.furnace_group_id,
                             getattr(fg, "production", None),
                             len(existing_bom.get("materials", {})),
-                        )
-                        logger.debug(
-                            "[H2-DEBUG BOM-PRESERVED] FG:%s Tech:%s | existing energy keys: %s",
-                            fg.furnace_group_id,
-                            fg.technology.name,
-                            list(existing_bom.get("energy", {}).keys()),
                         )
                         continue
                     logger.warning(

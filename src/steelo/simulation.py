@@ -1023,6 +1023,7 @@ class SimulationRunner:
                     active_elec_subs = filter_subsidies_for_year(all_elec_subs, bus.env.year)
 
                     if active_h2_subs or active_elec_subs:
+                        # Apply H2/electricity subsidies to operational plant energy costs
                         h2_before = fg.energy_costs.get("hydrogen", 0.0)
                         elec_before = fg.energy_costs.get("electricity", 0.0)
                         subsidised_costs, no_subsidy_prices = get_subsidised_energy_costs(

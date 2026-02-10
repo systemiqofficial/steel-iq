@@ -125,25 +125,13 @@ def calculate_energy_price_with_subsidies(
     Returns:
         float: Subsidised price (floored at 0)
     """
-    logger = logging.getLogger(f"{__name__}.calculate_energy_price_with_subsidies")
     total_subsidy = 0.0
-    subsidy_details = []
     for subsidy in energy_subsidies:
         if subsidy.subsidy_type == "absolute":
-            amount = subsidy.subsidy_amount
-            total_subsidy += amount
-            subsidy_details.append(f"{subsidy.scenario_name}(abs:{amount:.4f})")
+            total_subsidy += subsidy.subsidy_amount
         elif subsidy.subsidy_type == "relative":
-            amount = energy_price * subsidy.subsidy_amount
-            total_subsidy += amount
-            subsidy_details.append(f"{subsidy.scenario_name}(rel:{subsidy.subsidy_amount:.2%}={amount:.4f})")
-    final_price = max(0.0, energy_price - total_subsidy)
-    if energy_subsidies:
-        logger.debug(
-            f"[ENERGY SUBSIDY] Price: {energy_price:.4f} -> {final_price:.4f} "
-            f"(reduction: {total_subsidy:.4f}) [{', '.join(subsidy_details)}]"
-        )
-    return final_price
+            total_subsidy += energy_price * subsidy.subsidy_amount
+    return max(0.0, energy_price - total_subsidy)
 
 
 def get_subsidised_energy_costs(
@@ -239,13 +227,6 @@ def calculate_cost_breakdown_by_feedstock(
 
     # Get BOM energy (same source as calculate_variable_opex)
     bom_energy = bill_of_materials.get("energy", {})
-    _cb_logger = logging.getLogger(f"{__name__}.calculate_cost_breakdown_by_feedstock")
-    _cb_logger.debug(
-        "[H2-DEBUG BREAKDOWN] bom_energy keys: %s | has_hydrogen: %s | chosen_reductant: %s",
-        list(bom_energy.keys()),
-        "hydrogen" in bom_energy,
-        chosen_reductant,
-    )
 
     # Calculate energy intensity per carrier for each feedstock from dynamic business case
     # Structure: {feedstock: {carrier: amount}}

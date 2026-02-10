@@ -256,13 +256,10 @@ def prepare_cost_data_for_business_opportunity(
 
                 if active_h2 or active_elec:
                     energy_costs_tech, _ = cc.get_subsidised_energy_costs(energy_costs_site, active_h2, active_elec)
-                    h2_subs_names = [s.scenario_name for s in active_h2]
-                    elec_subs_names = [s.scenario_name for s in active_elec]
                     logger.debug(
-                        f"[INDI H2/ELEC SUBS] {site['iso3']}/{tech} year={target_year} | "
+                        f"[NEW PLANTS] {site['iso3']}/{tech} year={target_year} | "
                         f"H2: ${energy_costs_site.get('hydrogen', 0):.2f} -> ${energy_costs_tech.get('hydrogen', 0):.2f}/t | "
-                        f"Elec: ${energy_costs_site.get('electricity', 0):.6f} -> ${energy_costs_tech.get('electricity', 0):.6f}/kWh | "
-                        f"H2 subs: {h2_subs_names or 'none'} | Elec subs: {elec_subs_names or 'none'}"
+                        f"Elec: ${energy_costs_site.get('electricity', 0):.6f} -> ${energy_costs_tech.get('electricity', 0):.6f}/kWh"
                     )
                 else:
                     energy_costs_tech = energy_costs_site

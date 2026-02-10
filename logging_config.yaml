@@ -18,16 +18,5 @@ function_overrides:
   calculate_energy_total: WARNING
   generate_input_effectiveness_mapping_from_feedstocks: ERROR
 
-  # Enable subsidy functions
-  calculate_energy_price_with_subsidies: DEBUG
-  FurnaceGroup.set_subsidised_energy_costs: DEBUG
-  evaluate_furnace_group_strategy: DEBUG
-  optimal_technology_name: DEBUG
-
-  # Enable H2 cost breakdown debugging
-  TM_PAM_connector_init: DEBUG
-  update_bill_of_materials: DEBUG
-  calculate_cost_breakdown_by_feedstock: DEBUG
-
 external:
   pyomo: ERROR
