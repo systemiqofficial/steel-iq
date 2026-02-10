@@ -173,7 +173,7 @@ class DummyTradeLPModel:
     def add_process_connectors(self, connectors):
         self.connectors.extend(connectors)
 
-    def build_lp_model(self):
+    def build_lp_model(self, willingness_to_pay_list=None):
         pass
 
     def solve_lp_model(self):

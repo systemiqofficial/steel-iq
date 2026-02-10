@@ -389,6 +389,35 @@ class InputCosts:
         return self.name == other.name
 
 
+class WillingnessToPay:
+    """
+    Domain object representing willingness to pay for a specific commodity in a region or country.
+
+    Willingness to pay can be specified either at the country level (using ISO3 codes)
+    or at the region/trade bloc level (e.g., EU, NAFTA).
+    """
+
+    def __init__(self, region_or_iso3: str, commodity: str, value: float) -> None:
+        """
+        Initialize a WillingnessToPay entry.
+
+        Args:
+            region_or_iso3: Either an ISO3 country code (e.g., "USA") or a region/trade bloc name (e.g., "EU")
+            commodity: The commodity name (e.g., "steel")
+            value: The willingness to pay value (in USD/tonne or appropriate unit)
+        """
+        self.region_or_iso3 = region_or_iso3
+        self.commodity = commodity
+        self.value = value
+        self.name = f"{self.region_or_iso3}_{self.commodity}"
+
+    def __repr__(self) -> str:
+        return f"WillingnessToPay(region_or_iso3={self.region_or_iso3}, commodity={self.commodity}, value={self.value})"
+
+    def __eq__(self, other):
+        return self.name == other.name
+
+
 class CountryMapping:
     """
     Domain object representing a single country's mapping data across multiple data sources and regional classification systems.
@@ -6477,6 +6506,9 @@ class Environment:
 
         # Carbon border mechanisms:
         self.carbon_border_mechanisms: list[CarbonBorderMechanism] = []
+
+        # Willingness to pay:
+        self.willingness_to_pay: list[WillingnessToPay] = []
 
         # Geospatial data from master Excel - initialized via initiate methods
         self.hydrogen_efficiency: dict[Year, float] = {}

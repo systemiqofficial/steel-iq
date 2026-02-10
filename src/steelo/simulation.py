@@ -458,6 +458,7 @@ class SimulationConfig:
                 transport_emissions_path=fixtures_dir / "transport_emissions.json",
                 biomass_availability_path=fixtures_dir / "biomass_availability.json",
                 technology_emission_factors_path=fixtures_dir / "technology_emission_factors.json",
+                willingness_to_pay_path=fixtures_dir / "willingness_to_pay.json",
                 current_simulation_year=int(self.start_year),
             )
 

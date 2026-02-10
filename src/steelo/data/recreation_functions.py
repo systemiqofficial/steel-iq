@@ -37,6 +37,7 @@ from ..adapters.dataprocessing.excel_reader import (
     read_fopex,
     read_carbon_border_mechanisms,
     read_fallback_material_costs,
+    read_willingness_to_pay,
 )
 from ..adapters.repositories.json_repository import (
     BiomassAvailabilityJsonRepository,
@@ -60,6 +61,7 @@ from ..adapters.repositories.json_repository import (
     FOPEXRepository,
     CarbonBorderMechanismJsonRepository,
     FallbackMaterialCostJsonRepository,
+    WillingnessToPayJsonRepository,
 )
 from ..domain.calculate_costs import calculate_lcoh_from_electricity_country_level
 
@@ -346,6 +348,39 @@ def recreate_subsidy_data(
     repo = SubsidyJsonRepository(json_path)
     repo.add_list(subsidy_data)
     console.print(f"[green]Writing subsidy data to[/green]: {json_path}")
+
+    return repo
+
+
+def recreate_willingness_to_pay_data(
+    json_path: Path,
+    excel_path: Path,
+    country_mappings: list,
+    willingness_to_pay_sheet_name: str = "Willingness to pay",
+) -> WillingnessToPayJsonRepository:
+    """
+    Recreate the JSON willingness to pay data from the current Excel file.
+
+    Args:
+        json_path: Path to the JSON file to write
+        excel_path: Path to the Excel file to read from
+        country_mappings: List of CountryMapping objects for resolving regions
+        willingness_to_pay_sheet_name: Name of the sheet in Excel (default: "Willingness to pay")
+
+    Returns:
+        The repository instance pointing to the newly written JSON
+    """
+    console.print(f"[blue]Reading willingness to pay data from Excel[/blue]: {excel_path}")
+
+    wtp_data = read_willingness_to_pay(
+        excel_path,
+        country_mappings=country_mappings,
+        sheet_name=willingness_to_pay_sheet_name,
+    )
+
+    repo = WillingnessToPayJsonRepository(json_path)
+    repo.add_list(wtp_data)
+    console.print(f"[green]Writing willingness to pay data to[/green]: {json_path}")
 
     return repo
 
