@@ -847,7 +847,11 @@ def set_up_steel_trade_lp(
         if pc is not None and pc.from_process is not None and pc.to_process is not None
     ]
     lp_model.add_process_connectors(valid_process_connectors)
-    lp_model.build_lp_model()
+
+    # Get willingness to pay from environment
+    willingness_to_pay_list = getattr(message_bus.env, "willingness_to_pay", [])
+
+    lp_model.build_lp_model(willingness_to_pay_list=willingness_to_pay_list)
     lp_model = fix_to_zero_allocations_where_distance_doesnt_match_commodity(trade_lp=lp_model, config=config)
 
     # Apply carbon border mechanisms if available

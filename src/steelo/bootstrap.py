@@ -221,6 +221,7 @@ def bootstrap_simulation(
             fopex_path=fixtures_dir / "fopex.json",
             carbon_border_mechanisms_path=fixtures_dir / "carbon_border_mechanisms.json",
             fallback_material_costs_path=fixtures_dir / "fallback_material_costs.json",
+            willingness_to_pay_path=fixtures_dir / "willingness_to_pay.json",
             current_simulation_year=int(config.start_year),
         )
 
@@ -318,6 +319,7 @@ def bootstrap_simulation(
         env.set_trade_tariffs(trade_tariffs=repository_json.trade_tariffs.list())
         env.set_legal_process_connectors(legal_process_connectors=repository_json.legal_process_connectors.list())
         env.carbon_border_mechanisms = repository_json.carbon_border_mechanisms.list()
+        env.willingness_to_pay = repository_json.willingness_to_pay.list()
         env.railway_costs = repository_json.railway_costs.list()
         env.transport_emissions = repository_json.transport_emissions.list()
         env.transport_kpis = repository_json.transport_emissions.list()
