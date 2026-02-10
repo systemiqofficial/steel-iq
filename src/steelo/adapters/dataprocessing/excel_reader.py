@@ -590,7 +590,11 @@ def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[st
         converted_value = _convert_units(value, unit, metric_type)
         if side == "Input":
             if vector:
-                feedstock.add_energy_requirement(normalize_energy_key(vector), converted_value)
+                normalised = normalize_energy_key(vector)
+                if normalised.startswith("co2"):
+                    feedstock.add_carbon_input(normalised, converted_value)
+                else:
+                    feedstock.add_energy_requirement(normalised, converted_value)
         elif side == "Output":
             if vector:
                 feedstock.add_output(name=normalize_energy_key(vector), amount=Volumes(converted_value))

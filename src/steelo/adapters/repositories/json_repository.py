@@ -74,6 +74,7 @@ class PrimaryFeedstockInDb(BaseModel):
     required_quantity_per_ton_of_product: Optional[float] = None
     secondary_feedstock: dict[str, float] = Field(default_factory=dict)
     energy_requirements: dict[str, float] = Field(default_factory=dict)
+    carbon_inputs: dict[str, float] = Field(default_factory=dict)
     maximum_share_in_product: Optional[float] = None
     minimum_share_in_product: Optional[float] = None
     outputs: dict[str, float] = Field(default_factory=dict)
@@ -99,6 +100,7 @@ class PrimaryFeedstockInDb(BaseModel):
         obj.required_quantity_per_ton_of_product = self.required_quantity_per_ton_of_product  # type: ignore
         obj.secondary_feedstock = self.secondary_feedstock.copy()
         obj.energy_requirements = self.energy_requirements.copy()
+        obj.carbon_inputs = self.carbon_inputs.copy()
         obj.maximum_share_in_product = self.maximum_share_in_product
         obj.minimum_share_in_product = self.minimum_share_in_product
         obj.outputs = self.outputs.copy()
@@ -117,6 +119,7 @@ class PrimaryFeedstockInDb(BaseModel):
             required_quantity_per_ton_of_product=pf.required_quantity_per_ton_of_product,
             secondary_feedstock=pf.secondary_feedstock.copy(),
             energy_requirements=pf.energy_requirements.copy(),
+            carbon_inputs=pf.carbon_inputs.copy(),
             maximum_share_in_product=pf.maximum_share_in_product,
             minimum_share_in_product=pf.minimum_share_in_product,
             outputs=pf.outputs.copy(),
@@ -205,6 +208,7 @@ class FurnaceGroupInDb(BaseModel):
             dbc_dict = dbc_in_db.model_dump()
             feedstock = PrimaryFeedstock(**dbc_dict)
             feedstock.energy_requirements = dbc_dict.get("energy_requirements") or {}
+            feedstock.carbon_inputs = dbc_dict.get("carbon_inputs") or {}
             feedstock.outputs = dbc_dict.get("outputs") or {}
             feedstock.secondary_feedstock = dbc_dict.get("secondary_feedstock") or {}
             feedstock.maximum_share_in_product = dbc_dict.get("maximum_share_in_product")

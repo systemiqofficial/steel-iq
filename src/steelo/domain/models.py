@@ -847,6 +847,7 @@ class PrimaryFeedstock:
         self.required_quantity_per_ton_of_product: float | None = None
         self.secondary_feedstock: dict[str, float] = {}
         self.energy_requirements: dict[str, float] = {}
+        self.carbon_inputs: dict[str, float] = {}
         self.maximum_share_in_product: float | None = None
         self.minimum_share_in_product: float | None = None
         self.outputs: dict = {}
@@ -867,6 +868,17 @@ class PrimaryFeedstock:
         if amount is None:
             raise ValueError(f"Energy requirement amount cannot be None for {vector_name}")
         self.energy_requirements[vector_name] = amount
+
+    def add_carbon_input(self, vector_name: str, amount: float) -> None:
+        """Add a carbon input vector (e.g. co2_inlet) to this feedstock.
+
+        Args:
+            vector_name: Normalised carbon input key.
+            amount: Amount per tonne of product (original units preserved).
+        """
+        if amount is None:
+            raise ValueError(f"Carbon input amount cannot be None for {vector_name}")
+        self.carbon_inputs[vector_name] = amount
 
     def add_share_constraint(self, constraint_type: str, value: float) -> None:
         assert constraint_type in ["Maximum", "Minimum", "Minium"], f"Invalid constraint type {constraint_type}"
