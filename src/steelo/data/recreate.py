@@ -40,6 +40,7 @@ from .recreation_functions import (
     recreate_technology_emission_factors_data,
     recreate_fopex_data,
     recreate_fallback_material_costs,
+    recreate_willingness_to_pay_data,
 )
 
 
@@ -464,6 +465,7 @@ class DataRecreator:
             "recreate_fopex_data": recreate_fopex_data,
             "recreate_carbon_border_mechanisms_data": recreate_carbon_border_mechanisms_data,
             "recreate_fallback_material_costs": recreate_fallback_material_costs,
+            "recreate_willingness_to_pay_data": recreate_willingness_to_pay_data,
         }
 
         if isinstance(spec.recreate_function, str):
@@ -603,6 +605,17 @@ class DataRecreator:
                     fallback_material_costs_json_path=output_path,
                     excel_path=master_excel_path,
                     sheet_name=spec.master_excel_sheet,
+                )
+            elif spec.recreate_function == "recreate_willingness_to_pay_data":
+                # Need to read country mappings first
+                from ..adapters.dataprocessing.excel_reader import read_country_mappings
+
+                country_mappings = read_country_mappings(master_excel_path)
+                func(
+                    json_path=output_path,
+                    excel_path=master_excel_path,
+                    country_mappings=country_mappings,
+                    willingness_to_pay_sheet_name=spec.master_excel_sheet or "Willingness to pay",
                 )
             elif spec.recreate_function == "recreate_plants_data":
                 # Special handling for plants - read directly from master Excel

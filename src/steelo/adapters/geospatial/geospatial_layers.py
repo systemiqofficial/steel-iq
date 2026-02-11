@@ -313,7 +313,16 @@ def add_baseload_power_price(
         # Choose the data for the target year if available
         logger.info(f"[GEO LAYERS] Explicitly calculated LCOE is available for year {target_year}.")
         baseload_lcoe_path = file_map[target_year]
-        baseload_lcoe_year = xr.open_dataset(baseload_lcoe_path)["lcoe"]
+        baseload_data = xr.open_dataset(baseload_lcoe_path)
+        baseload_lcoe_year = baseload_data["lcoe"]
+        # Also extract overbuild factors if available
+        has_overbuild_factors = all(
+            factor in baseload_data for factor in ["solar_factor", "wind_factor", "battery_factor"]
+        )
+        if has_overbuild_factors:
+            solar_factor_year = baseload_data["solar_factor"]
+            wind_factor_year = baseload_data["wind_factor"]
+            battery_factor_year = baseload_data["battery_factor"]
     else:
         # If not, interpolate among the two closest years to the target year (below and above)
         years_sorted = sorted(available_years)
@@ -323,13 +332,36 @@ def add_baseload_power_price(
             f"[GEO LAYERS] Interpolating baseload LCOE for year {target_year} from years {low_year} and {high_year}."
         )
         baseload_lcoe = []
+        solar_factors = []
+        wind_factors = []
+        battery_factors = []
+        has_overbuild_factors = False
         for ref_year in sorted(set([low_year, high_year])):
             baseload_lcoe_path = file_map[ref_year]
-            baseload_lcoe.append(xr.open_dataset(baseload_lcoe_path)["lcoe"].expand_dims(year=[ref_year]))
+            baseload_data = xr.open_dataset(baseload_lcoe_path)
+            baseload_lcoe.append(baseload_data["lcoe"].expand_dims(year=[ref_year]))
+            # Check if overbuild factors are available
+            if all(factor in baseload_data for factor in ["solar_factor", "wind_factor", "battery_factor"]):
+                has_overbuild_factors = True
+                solar_factors.append(baseload_data["solar_factor"].expand_dims(year=[ref_year]))
+                wind_factors.append(baseload_data["wind_factor"].expand_dims(year=[ref_year]))
+                battery_factors.append(baseload_data["battery_factor"].expand_dims(year=[ref_year]))
         baseload_lcoe_concat = xr.concat(baseload_lcoe, dim="year")
         baseload_lcoe_year = baseload_lcoe_concat.interp(year=target_year, method="linear").drop_vars("year")
+        if has_overbuild_factors:
+            solar_factor_concat = xr.concat(solar_factors, dim="year")
+            solar_factor_year = solar_factor_concat.interp(year=target_year, method="linear").drop_vars("year")
+            wind_factor_concat = xr.concat(wind_factors, dim="year")
+            wind_factor_year = wind_factor_concat.interp(year=target_year, method="linear").drop_vars("year")
+            battery_factor_concat = xr.concat(battery_factors, dim="year")
+            battery_factor_year = battery_factor_concat.interp(year=target_year, method="linear").drop_vars("year")
     baseload_lcoe_year = baseload_lcoe_year * PERMWh_TO_PERkWh  # USD/MWh to USD/kWh (BOA in USD/MWh, PAM in USD/kWh)
-    ds = xr.merge([ds, baseload_lcoe_year])
+
+    # Merge LCOE and overbuild factors if available
+    if has_overbuild_factors:
+        ds = xr.merge([ds, baseload_lcoe_year, solar_factor_year, wind_factor_year, battery_factor_year])
+    else:
+        ds = xr.merge([ds, baseload_lcoe_year])
 
     plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
     plot_screenshot(

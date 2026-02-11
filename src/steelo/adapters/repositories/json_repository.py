@@ -2297,6 +2297,101 @@ class SubsidyJsonRepository:
         return "[\n" + ",\n".join(json_lines) + "\n]"
 
 
+class WillingnessToPayInDb(BaseModel):
+    region_or_iso3: str
+    commodity: str
+    value: float
+
+    def __lt__(self, other: "WillingnessToPayInDb") -> bool:
+        return (self.region_or_iso3, self.commodity) < (other.region_or_iso3, other.commodity)
+
+    @property
+    def to_domain(self):
+        from steelo.domain import WillingnessToPay
+
+        return WillingnessToPay(
+            region_or_iso3=self.region_or_iso3,
+            commodity=self.commodity,
+            value=self.value,
+        )
+
+    @classmethod
+    def from_domain(cls, domain) -> "WillingnessToPayInDb":
+        return cls(
+            region_or_iso3=domain.region_or_iso3,
+            commodity=domain.commodity,
+            value=domain.value,
+        )
+
+
+class WillingnessToPayListInDb(BaseModel):
+    root: list[WillingnessToPayInDb]
+
+
+class WillingnessToPayJsonRepository:
+    """
+    Repository for storing WillingnessToPay entries in a JSON file.
+    Uses Pydantic models for serialization/deserialization.
+    """
+
+    _all: dict[str, WillingnessToPayInDb] | None = None
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def _fetch_all(self) -> dict[str, WillingnessToPayInDb]:
+        if not self.path.exists():
+            return {}
+        raw = self.path.read_text(encoding="utf-8")
+        wrapper = WillingnessToPayListInDb.model_validate_json(raw)
+        return {f"{item.region_or_iso3}_{item.commodity}": item for item in wrapper.root}
+
+    @property
+    def all(self) -> dict[str, WillingnessToPayInDb]:
+        if self._all is None:
+            self._all = self._fetch_all()
+        return self._all
+
+    def get(self, iso3: str, commodity: str):
+        """Return a domain-level WillingnessToPay for the given iso3 and commodity."""
+        key = f"{iso3}_{commodity}"
+        return self.all[key].to_domain
+
+    def list(self):
+        """List all WillingnessToPay domain entries."""
+        return [item.to_domain for item in self.all.values()]
+
+    def _write_models(self, models: List[WillingnessToPayInDb]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        models.sort()
+        wrapper = WillingnessToPayListInDb(root=models)
+        self.path.write_text(wrapper.model_dump_json(indent=2), encoding="utf-8")
+        self._all = None
+
+    def add(self, item) -> None:
+        """Add or overwrite a single WillingnessToPay entry."""
+        db_item = WillingnessToPayInDb.from_domain(item)
+        locked = self._fetch_all()
+        key = f"{db_item.region_or_iso3}_{db_item.commodity}"
+        locked[key] = db_item
+        self._write_models(list(locked.values()))
+
+    def add_list(self, items) -> None:
+        """Add or overwrite multiple WillingnessToPay entries."""
+        items_in_db = [WillingnessToPayInDb.from_domain(t) for t in items]
+        locked = self._fetch_all()
+        for item_in_db in items_in_db:
+            key = f"{item_in_db.region_or_iso3}_{item_in_db.commodity}"
+            locked[key] = item_in_db
+        self._write_models(list(locked.values()))
+
+    def to_json(self) -> str:
+        """Get raw JSON of all entries."""
+        entries = list(self.all.values())
+        json_lines = [e.model_dump_json(indent=2) for e in entries]
+        return "[\n" + ",\n".join(json_lines) + "\n]"
+
+
 class HydrogenEfficiencyInDb(BaseModel):
     year: int
     efficiency: float
@@ -2969,6 +3064,7 @@ class JsonRepository:
     fopex: FOPEXRepository
     carbon_border_mechanisms: CarbonBorderMechanismJsonRepository
     fallback_material_costs: "FallbackMaterialCostJsonRepository"
+    willingness_to_pay: WillingnessToPayJsonRepository
 
     def __init__(
         self,
@@ -2998,6 +3094,7 @@ class JsonRepository:
         fopex_path: Optional[Path] = None,
         carbon_border_mechanisms_path: Optional[Path] = None,
         fallback_material_costs_path: Optional[Path] = None,
+        willingness_to_pay_path: Optional[Path] = None,
         current_simulation_year: Optional[int] = None,
     ) -> None:
         self.plants = PlantJsonRepository(
@@ -3094,6 +3191,18 @@ class JsonRepository:
             temp_file.write("[]")  # Empty JSON array
             temp_file.close()
             self.fallback_material_costs = FallbackMaterialCostJsonRepository(Path(temp_file.name))
+
+        # Handle optional willingness_to_pay_path by creating empty repository
+        if willingness_to_pay_path:
+            self.willingness_to_pay = WillingnessToPayJsonRepository(willingness_to_pay_path)
+        else:
+            # Create a temporary empty file for default behavior
+            import tempfile
+
+            temp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+            temp_file.write('{"root": []}')  # Empty JSON object with root array
+            temp_file.close()
+            self.willingness_to_pay = WillingnessToPayJsonRepository(Path(temp_file.name))
 
 
 @dataclass
