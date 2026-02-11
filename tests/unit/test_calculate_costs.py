@@ -1,6 +1,7 @@
 import pytest
 
 from steelo.domain.calculate_costs import (
+    calculate_cost_breakdown_by_feedstock,
     calculate_debt_repayment,
     calculate_variable_opex,
     calculate_cost_adjustments_from_secondary_outputs,
@@ -504,3 +505,177 @@ def test_switch_npv_legacy_behavior(mocker, cosa, expected_tech, npv):
     )
 
     assert result == (npv, expected_tech)
+
+
+# --- Cost breakdown by feedstock: output revenue tests ---
+
+
+class _BreakdownDBC:
+    """Minimal DBC for calculate_cost_breakdown_by_feedstock tests."""
+
+    def __init__(
+        self,
+        metallic_charge: str,
+        reductant: str,
+        outputs: dict | None = None,
+        carbon_outputs: dict | None = None,
+        energy_requirements: dict | None = None,
+        secondary_feedstock: dict | None = None,
+        primary_output_keys: set | None = None,
+    ):
+        self.metallic_charge = metallic_charge
+        self.reductant = reductant
+        self.outputs = outputs or {}
+        self.carbon_outputs = carbon_outputs or {}
+        self.energy_requirements = energy_requirements or {}
+        self.secondary_feedstock = secondary_feedstock or {}
+        self._primary_output_keys = primary_output_keys or set()
+
+    def get_primary_outputs(self, primary_products=None):
+        """Return dict of primary outputs (keys used for filtering)."""
+        return {k: v for k, v in self.outputs.items() if k in self._primary_output_keys}
+
+
+def test_cost_breakdown_includes_output_revenue():
+    """Feedstock with slag output should show negative revenue in the breakdown."""
+    dbc = _BreakdownDBC(
+        metallic_charge="io_low",
+        reductant="coke",
+        outputs={"ironmaking_slag": 0.3, "steel": 1.0},
+        primary_output_keys={"steel"},
+        energy_requirements={"electricity": 0.5},
+    )
+    bom = {
+        "materials": {
+            "io_low": {
+                "demand": 1611.0,
+                "demand_share_pct": 1.0,
+                "unit_material_cost": 100.0,
+                "product_volume": 1000.0,
+            },
+        },
+        "energy": {
+            "electricity": {"unit_cost": 50.0, "demand": 500.0},
+        },
+    }
+    input_costs = {"ironmaking_slag": -15.0, "electricity": 0.1}
+
+    result = calculate_cost_breakdown_by_feedstock(
+        bill_of_materials=bom,
+        chosen_reductant="coke",
+        dynamic_business_cases=[dbc],
+        energy_costs={},
+        input_costs=input_costs,
+    )
+
+    # slag revenue: 0.3 t/t product * -15 USD/t * 1.0 demand_share = -4.5 USD/t product
+    assert "io_low" in result
+    assert result["io_low"]["ironmaking_slag"] == pytest.approx(-4.5)
+
+
+def test_cost_breakdown_nets_dual_carrier():
+    """bf_gas as both input and output should show net cost in the same column."""
+    dbc = _BreakdownDBC(
+        metallic_charge="io_low",
+        reductant="coke",
+        outputs={"bf_gas": 0.2},
+        energy_requirements={"bf_gas": 0.1},
+    )
+    bom = {
+        "materials": {
+            "io_low": {
+                "demand": 1000.0,
+                "demand_share_pct": 1.0,
+                "unit_material_cost": 50.0,
+                "product_volume": 1000.0,
+            },
+        },
+        "energy": {
+            "bf_gas": {"unit_cost": 10.0, "demand": 100.0},
+        },
+    }
+    # bf_gas price negative = revenue when output
+    input_costs = {"bf_gas": -5.0}
+
+    result = calculate_cost_breakdown_by_feedstock(
+        bill_of_materials=bom,
+        chosen_reductant="coke",
+        dynamic_business_cases=[dbc],
+        energy_costs={},
+        input_costs=input_costs,
+    )
+
+    # Energy input: bf_gas unit_cost = 10.0 (full allocation, single feedstock)
+    # Output revenue: 0.2 * -5.0 * 1.0 = -1.0
+    # Net: 10.0 + (-1.0) = 9.0
+    assert result["io_low"]["bf_gas"] == pytest.approx(9.0)
+
+
+def test_cost_breakdown_excludes_primary_products():
+    """Primary products (steel, iron) should not appear as output revenue columns."""
+    dbc = _BreakdownDBC(
+        metallic_charge="scrap",
+        reductant="",
+        outputs={"steel": 1.0, "ironmaking_slag": 0.1},
+        primary_output_keys={"steel"},
+    )
+    bom = {
+        "materials": {
+            "scrap": {
+                "demand": 1200.0,
+                "demand_share_pct": 1.0,
+                "unit_material_cost": 300.0,
+                "product_volume": 1000.0,
+            },
+        },
+        "energy": {},
+    }
+    # Even if steel had a price, it should be excluded as a primary output
+    input_costs = {"steel": -500.0, "ironmaking_slag": -10.0}
+
+    result = calculate_cost_breakdown_by_feedstock(
+        bill_of_materials=bom,
+        chosen_reductant="",
+        dynamic_business_cases=[dbc],
+        energy_costs={},
+        input_costs=input_costs,
+    )
+
+    # steel should NOT appear as output revenue (it's a primary product)
+    assert "steel" not in result["scrap"] or result["scrap"].get("steel", 0.0) == 0.0
+    # slag should appear with revenue
+    assert result["scrap"]["ironmaking_slag"] == pytest.approx(-1.0)
+
+
+def test_cost_breakdown_skips_outputs_without_price():
+    """Outputs not in input_costs should remain at zero (via zero-padding)."""
+    dbc = _BreakdownDBC(
+        metallic_charge="io_low",
+        reductant="coke",
+        outputs={"ironmaking_slag": 0.5, "some_unpriced_output": 0.3},
+    )
+    bom = {
+        "materials": {
+            "io_low": {
+                "demand": 1000.0,
+                "demand_share_pct": 1.0,
+                "unit_material_cost": 80.0,
+                "product_volume": 1000.0,
+            },
+        },
+        "energy": {},
+    }
+    input_costs = {"ironmaking_slag": -20.0}
+    cost_breakdown_keys = ["ironmaking_slag", "some_unpriced_output"]
+
+    result = calculate_cost_breakdown_by_feedstock(
+        bill_of_materials=bom,
+        chosen_reductant="coke",
+        dynamic_business_cases=[dbc],
+        energy_costs={},
+        input_costs=input_costs,
+        cost_breakdown_keys=cost_breakdown_keys,
+    )
+
+    assert result["io_low"]["ironmaking_slag"] == pytest.approx(-10.0)
+    assert result["io_low"]["some_unpriced_output"] == 0.0

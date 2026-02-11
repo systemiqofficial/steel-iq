@@ -195,6 +195,7 @@ def calculate_cost_breakdown_by_feedstock(
     energy_costs: dict[str, float],
     energy_vopex_breakdown_by_input: dict[str, dict[str, float]] | None = None,
     cost_breakdown_keys: list[str] | None = None,
+    input_costs: dict[str, float] | None = None,
 ) -> dict:
     """
     Calculate detailed cost breakdown by feedstock type for a furnace group.
@@ -202,23 +203,27 @@ def calculate_cost_breakdown_by_feedstock(
     Uses actual BOM energy and distributes it proportionally across feedstocks based on their
     energy intensity (from dynamic business cases) and usage share (demand_share_pct).
 
+    Secondary output revenues (by-products with prices in ``input_costs``) are included as
+    negative values. Carriers that appear as both inputs and outputs show the net cost.
+
     Args:
-        bill_of_materials (dict[str, dict[str, dict[str, float]]]): Nested dictionary containing
-            materials and energy data.
-        chosen_reductant (str): Selected reductant type (e.g., 'coke', 'natural_gas') to filter
+        bill_of_materials: Nested dictionary containing materials and energy data.
+        chosen_reductant: Selected reductant type (e.g., 'coke', 'natural_gas') to filter
             business cases.
-        dynamic_business_cases (list[PrimaryFeedstock]): List of primary feedstock options with energy requirements.
-        energy_costs (dict[str, float]): Energy costs by type (kept for backward compatibility).
-        energy_vopex_breakdown_by_input (dict[str, dict[str, float]] | None): Unused parameter for compatibility.
-        cost_breakdown_keys (list[str] | None): Canonical list of normalised carrier/feedstock keys
+        dynamic_business_cases: List of primary feedstock options with energy requirements.
+        energy_costs: Energy costs by type (kept for backward compatibility).
+        energy_vopex_breakdown_by_input: Unused parameter for compatibility.
+        cost_breakdown_keys: Canonical list of normalised carrier/feedstock keys
             that should appear in every feedstock's breakdown. Missing keys are zero-padded.
             Derived from primary_feedstocks.json. When None, no zero-padding is applied.
+        input_costs: Prices per unit for energy carriers and by-products (USD/unit).
+            By-product prices are negative (revenue). When provided, secondary output
+            revenues are included in the breakdown.
 
     Returns:
-        dict: Dictionary with cost breakdown by feedstock type. Each feedstock key maps to a dictionary containing:
-            - Material cost (incl. transport and tariffs)
-            - Individual energy carrier costs (weighted proportionally)
-            Returns empty dict if no matching feedstocks are found.
+        dict: Dictionary with cost breakdown by feedstock type. Each feedstock key maps to a
+            dictionary containing material cost, energy carrier costs, and output revenue
+            adjustments. Returns empty dict if no matching feedstocks are found.
     """
     breakdown: dict[str, dict[str, float]] = {}
 
@@ -281,9 +286,10 @@ def calculate_cost_breakdown_by_feedstock(
         material_unit_cost = _coerce_to_float(material_entry.get("unit_material_cost")) or 0.0
         feed_breakdown["material cost (incl. transport and tariffs)"] = material_unit_cost
 
+        demand_share = _coerce_to_float(material_entry.get("demand_share_pct", 1.0)) or 1.0
+
         # Distribute BOM energy proportionally if available
         if bom_energy and metallic_charge_lower in feedstock_carrier_intensities:
-            demand_share = _coerce_to_float(material_entry.get("demand_share_pct", 1.0)) or 1.0
             feedstock_carriers = feedstock_carrier_intensities[metallic_charge_lower]
 
             # Distribute BOM energy carrier-by-carrier
@@ -324,6 +330,23 @@ def calculate_cost_breakdown_by_feedstock(
                     # Weighted energy cost for this feedstock and carrier
                     weighted_cost = carrier_unit_cost * carrier_weight
                     feed_breakdown[normalized_carrier] = feed_breakdown.get(normalized_carrier, 0.0) + weighted_cost
+
+        # Add output revenue for by-products (negative values reduce cost)
+        if input_costs:
+            all_outputs = {**(dbc.outputs or {}), **(dbc.carbon_outputs or {})}
+            primary_output_keys = set(dbc.get_primary_outputs().keys())
+            for output_key, output_amount in all_outputs.items():
+                normalized_output = normalize_energy_key(output_key)
+                if normalized_output in primary_output_keys:
+                    continue
+                if normalized_output not in input_costs:
+                    continue
+                amount = _coerce_to_float(output_amount) or 0.0
+                if amount == 0:
+                    continue
+                # Revenue per tonne of FG product, scaled by this feedstock's share of production
+                revenue = amount * input_costs[normalized_output] * demand_share
+                feed_breakdown[normalized_output] = feed_breakdown.get(normalized_output, 0.0) + revenue
 
         breakdown[metallic_charge_lower] = feed_breakdown
 

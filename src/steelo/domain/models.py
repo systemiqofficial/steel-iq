@@ -2064,6 +2064,7 @@ class FurnaceGroup:
             chosen_reductant=self.chosen_reductant,
             energy_vopex_breakdown_by_input=self.energy_vopex_breakdown_by_input,
             cost_breakdown_keys=self.cost_breakdown_keys,
+            input_costs=self.input_costs,
         )
 
     def optimal_technology_name(
@@ -6842,6 +6843,14 @@ class Environment:
             for key in feedstock.energy_requirements or {}:
                 all_keys.add(normalize_energy_key(key))
             for key in feedstock.secondary_feedstock or {}:
+                all_keys.add(normalize_energy_key(key))
+            # Include secondary output keys (by-products, not primary products)
+            primary_output_keys = set(feedstock.get_primary_outputs().keys())
+            for key in feedstock.outputs or {}:
+                normalized = normalize_energy_key(key)
+                if normalized not in primary_output_keys:
+                    all_keys.add(normalized)
+            for key in feedstock.carbon_outputs or {}:
                 all_keys.add(normalize_energy_key(key))
         self.cost_breakdown_keys: list[str] = sorted(all_keys)
 

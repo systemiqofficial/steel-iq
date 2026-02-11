@@ -153,19 +153,74 @@ def test_co2_inputs_not_in_cost_breakdown_keys():
     assert "co2_inlet" not in all_keys
 
 
-def test_co2_outputs_not_in_cost_breakdown_keys():
-    """CO2 output vectors in carbon_outputs cannot leak into cost_breakdown_keys."""
+def test_co2_outputs_in_cost_breakdown_keys():
+    """CO2 output vectors in carbon_outputs appear in cost_breakdown_keys (stage 4)."""
     feedstock = _make_feedstock()
     feedstock.add_energy_requirement("electricity", 1.2)
     feedstock.add_carbon_output("co2_stored", 0.3)
     feedstock.add_carbon_output("co2_slip", 0.05)
+
+    # Replicate the updated cost_breakdown_keys logic from initiate_dynamic_feedstocks()
+    all_keys: set[str] = set()
+    for key in feedstock.energy_requirements:
+        all_keys.add(normalize_energy_key(key))
+    for key in feedstock.secondary_feedstock:
+        all_keys.add(normalize_energy_key(key))
+    primary_output_keys = set(feedstock.get_primary_outputs().keys())
+    for key in feedstock.outputs:
+        normalized = normalize_energy_key(key)
+        if normalized not in primary_output_keys:
+            all_keys.add(normalized)
+    for key in feedstock.carbon_outputs:
+        all_keys.add(normalize_energy_key(key))
+
+    assert "electricity" in all_keys
+    assert "co2_stored" in all_keys
+    assert "co2_slip" in all_keys
+
+
+def test_cost_breakdown_keys_includes_secondary_outputs():
+    """Secondary output keys (by-products) appear in cost_breakdown_keys."""
+    feedstock = _make_feedstock()
+    feedstock.add_energy_requirement("electricity", 1.2)
+    feedstock.add_output("steel", 1.0)
+    feedstock.add_output("ironmaking_slag", 0.3)
 
     all_keys: set[str] = set()
     for key in feedstock.energy_requirements:
         all_keys.add(normalize_energy_key(key))
     for key in feedstock.secondary_feedstock:
         all_keys.add(normalize_energy_key(key))
+    primary_output_keys = set(feedstock.get_primary_outputs().keys())
+    for key in feedstock.outputs:
+        normalized = normalize_energy_key(key)
+        if normalized not in primary_output_keys:
+            all_keys.add(normalized)
+    for key in feedstock.carbon_outputs:
+        all_keys.add(normalize_energy_key(key))
 
-    assert "electricity" in all_keys
-    assert "co2_stored" not in all_keys
-    assert "co2_slip" not in all_keys
+    assert "ironmaking_slag" in all_keys
+
+
+def test_cost_breakdown_keys_excludes_primary_outputs():
+    """Primary product outputs (steel, iron) do not appear in cost_breakdown_keys."""
+    feedstock = _make_feedstock()
+    feedstock.add_energy_requirement("electricity", 1.2)
+    feedstock.add_output("steel", 1.0)
+    feedstock.add_output("ironmaking_slag", 0.3)
+
+    all_keys: set[str] = set()
+    for key in feedstock.energy_requirements:
+        all_keys.add(normalize_energy_key(key))
+    for key in feedstock.secondary_feedstock:
+        all_keys.add(normalize_energy_key(key))
+    primary_output_keys = set(feedstock.get_primary_outputs().keys())
+    for key in feedstock.outputs:
+        normalized = normalize_energy_key(key)
+        if normalized not in primary_output_keys:
+            all_keys.add(normalized)
+    for key in feedstock.carbon_outputs:
+        all_keys.add(normalize_energy_key(key))
+
+    assert "steel" not in all_keys
+    assert "ironmaking_slag" in all_keys
