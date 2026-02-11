@@ -27,6 +27,7 @@ from steelo.domain import (
     AggregatedMetallicChargeConstraint,
     FOPEX,
     CarbonBorderMechanism,
+    WillingnessToPay,
 )
 from ...domain.models import TransportKPI, TechnologyEmissionFactors, FallbackMaterialCost
 import logging
@@ -2719,3 +2720,107 @@ def read_fallback_bom_definitions(excel_path: Path, sheet_name: str = "Fallback 
         f"Read {len(default_metallic_charge_per_technology)} default metallic charge mappings from '{sheet_name}'"
     )
     return default_metallic_charge_per_technology
+
+
+def read_willingness_to_pay(
+    excel_path: Path,
+    country_mappings: list[CountryMapping],
+    sheet_name: str = "Willingness to pay",
+) -> list[WillingnessToPay]:
+    """
+    Reads willingness to pay data from the specified Excel sheet.
+
+    The sheet should have the following columns:
+    - "region or iso3": Either an ISO3 country code (e.g., "CAN") or a region/trade bloc name (e.g., "EU")
+    - "Commodity": The commodity name (e.g., "steel")
+    - "Willingness to pay": The willingness to pay value (numeric)
+
+    When a region/trade bloc name is used (e.g., "EU"), the function expands it to all countries
+    that have that boolean column set to True in the country mappings.
+
+    Args:
+        excel_path: Path to the master input Excel file.
+        country_mappings: List of CountryMapping objects to resolve regions to ISO3 codes.
+        sheet_name: The name of the sheet to read (default: "Willingness to pay").
+
+    Returns:
+        A list of WillingnessToPay objects, with one entry per ISO3/commodity combination.
+    """
+    try:
+        df = pd.read_excel(excel_path, sheet_name=sheet_name)
+    except ValueError:
+        logger.error(f"Sheet '{sheet_name}' not found in {excel_path}")
+        return []
+
+    # Create mappings for quick lookup
+    iso3_to_mapping = {m.iso3: m for m in country_mappings}
+
+    # Get all valid ISO3 codes
+    valid_iso3s = set(iso3_to_mapping.keys())
+
+    willingness_to_pay_entries = []
+
+    for idx, row in df.iterrows():
+        try:
+            region_or_iso3_raw = str(row["region or iso3"]).strip()
+            commodity_raw = str(row["Commodity"]).strip()
+            value_raw = row["Willingness to pay"]
+
+            # Skip empty rows
+            if not region_or_iso3_raw or pd.isna(value_raw):
+                continue
+
+            # Convert value to float
+            try:
+                value = float(value_raw)
+            except (ValueError, TypeError):
+                logger.warning(f"Row {idx + 2}: Invalid willingness to pay value '{value_raw}' - skipping")
+                continue
+
+            # Determine if this is an ISO3 code or a region/trade bloc
+            if region_or_iso3_raw in valid_iso3s:
+                # Direct ISO3 mapping
+                entry = WillingnessToPay(
+                    region_or_iso3=region_or_iso3_raw,
+                    commodity=commodity_raw,
+                    value=value,
+                )
+                willingness_to_pay_entries.append(entry)
+            else:
+                # Try to interpret as a region/trade bloc attribute
+                # Normalize the attribute name (replace special chars with underscores)
+                attr_name = region_or_iso3_raw.replace("/", "_").replace(" ", "_").replace("-", "_")
+
+                # Find all countries that have this attribute set to True
+                matching_iso3s = []
+                for mapping in country_mappings:
+                    # Check if the mapping has this attribute and it's True
+                    if hasattr(mapping, attr_name) and getattr(mapping, attr_name) is True:
+                        matching_iso3s.append(mapping.iso3)
+
+                if matching_iso3s:
+                    # Create a WillingnessToPay entry for each matching ISO3
+                    for iso3 in matching_iso3s:
+                        entry = WillingnessToPay(
+                            region_or_iso3=iso3,
+                            commodity=commodity_raw,
+                            value=value,
+                        )
+                        willingness_to_pay_entries.append(entry)
+                    logger.debug(
+                        f"Expanded '{region_or_iso3_raw}' to {len(matching_iso3s)} countries for commodity '{commodity_raw}'"
+                    )
+                else:
+                    logger.warning(
+                        f"Row {idx + 2}: '{region_or_iso3_raw}' is not a valid ISO3 code or trade bloc attribute - skipping"
+                    )
+
+        except KeyError as e:
+            logger.warning(f"Row {idx + 2}: Missing required column {e} - skipping")
+            continue
+        except Exception as e:
+            logger.warning(f"Row {idx + 2}: Error processing row: {e} - skipping")
+            continue
+
+    logger.info(f"Successfully read {len(willingness_to_pay_entries)} willingness to pay entries from '{sheet_name}'")
+    return willingness_to_pay_entries

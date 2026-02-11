@@ -8,7 +8,6 @@ import logging
 import time
 import functools
 from steelo.adapters.geospatial.geospatial_toolbox import haversine_distance
-# import steelo.domain.trade_modelling.willingness_to_pay as willingness_to_pay
 
 
 def time_function(func):
@@ -805,12 +804,17 @@ class TradeLPModel:
             transportation_cost = self.get_transportation_cost(
                 from_pc.location.iso3, to_pc.location.iso3, commodity.name
             )
+
+            # Get willingness to pay for this destination and commodity
+            wtp_key = (to_pc.location.iso3, commodity.name)
+            willingness_to_pay_value = self.lp_model.willingness_to_pay.get(wtp_key, 0)
+
             self.lp_model.allocation_costs[from_pc.name, to_pc.name, commodity.name] = (
                 transportation_cost  # Location-specific transportation cost per ton
                 + self.lp_model.bom_energy_costs.get((to_pc.name, commodity.name), 0)
                 + self.lp_model.tariff_tax[from_pc.name, to_pc.name, commodity.name]
                 + from_pc.production_cost  # Production cost (carbon cost) at the source process center
-                # - self.lp_model.willingness_to_pay[to_pc.name]
+                - willingness_to_pay_value  # Reduce cost for high-WTP destinations
             )
         # add a check to ensure allocation costs aren't insane:
         for key in self.lp_model.allocation_costs:
@@ -823,17 +827,23 @@ class TradeLPModel:
                     "Automatically setting demand slack cost higher."
                 )
 
-    # @time_function
-    # def add_willingness_to_pay_as_parameters_to_lp(self):
-    #     """Add the willingness to pay as parameters to the LP model. Needed for the objective function."""
-    #     self.lp_model.willingness_to_pay = {}
-    #     for process_center in self.process_centers:
-    #         if process_center.process.type == ProcessType.DEMAND and process_center.location.iso3 is not None:
-    #             self.lp_model.willingness_to_pay[process_center.name] = willingness_to_pay.get_willingness_to_pay(
-    #                 process_center.location.iso3
-    #             )
-    #         else:
-    #             self.lp_model.willingness_to_pay[process_center.name] = 0
+    @time_function
+    def add_willingness_to_pay_as_parameters_to_lp(self, willingness_to_pay_list):
+        """
+        Add willingness to pay as parameters to the LP model.
+
+        Creates a lookup dictionary mapping (iso3, commodity) to willingness to pay value.
+        This will be used when calculating allocation costs to reduce the cost of sending
+        commodities to regions/countries that have a high willingness to pay.
+
+        Args:
+            willingness_to_pay_list: List of WillingnessToPay objects from the environment
+        """
+        # Build lookup dictionary: (iso3, commodity) -> value
+        self.lp_model.willingness_to_pay = {}
+        for wtp in willingness_to_pay_list:
+            key = (wtp.region_or_iso3, wtp.commodity.lower())
+            self.lp_model.willingness_to_pay[key] = wtp.value
 
     @time_function
     def add_objective_function_to_lp(self):
@@ -1413,12 +1423,15 @@ class TradeLPModel:
         for pc in self.process_centers:
             self.lp_model.process_center_type[pc.name] = pc.process.type.value
 
-    def build_lp_model(self):
+    def build_lp_model(self, willingness_to_pay_list=None):
         """Build the complete Pyomo LP model with all variables, parameters, and constraints.
 
         This orchestrates the construction of the optimization problem by calling all the
         component-building methods in the correct order. Must be called after adding all
         process centers, processes, commodities, and connectors to the model.
+
+        Args:
+            willingness_to_pay_list: List of WillingnessToPay objects (optional, defaults to empty list)
 
         Steps:
             1. Determine legal allocations (valid flows based on process connectors)
@@ -1429,6 +1442,8 @@ class TradeLPModel:
 
         After calling this method, the model is ready to solve with solve_lp_model().
         """
+        if willingness_to_pay_list is None:
+            willingness_to_pay_list = []
         self.set_legal_allocations()
         # Add variables:
         self.add_allocation_variables_to_lp()
@@ -1440,7 +1455,7 @@ class TradeLPModel:
         self.add_minimum_capacity_slack_variables_to_lp()
         # Add parameters:
         self.add_bom_parameters_as_parameters_to_lp()
-        # self.add_willingness_to_pay_as_parameters_to_lp()
+        self.add_willingness_to_pay_as_parameters_to_lp(willingness_to_pay_list)
         self.add_primary_outputs_of_feedstock_as_parameter_to_lp()
         self.add_allocation_maps_to_parameters()
         self.add_allocation_keys_subject_to_sf_constraints_as_parameters_to_lp()
