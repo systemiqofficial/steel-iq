@@ -25,7 +25,6 @@ from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
     set_up_steel_trade_lp,
     solve_steel_trade_lp_and_return_commodity_allocations,
 )
-from steelo.logging_config import geo_logger, plant_agents_logger, tm_logger
 from steelo.service_layer.message_bus import MessageBus
 from steelo.utilities.file_output import export_commodity_allocations_to_csv
 from steelo.utilities.memory_profiling import MemoryTracker
@@ -35,8 +34,6 @@ from steelo.utilities.plotting import (
 )
 
 # from steelo.domain.commands import InstallCarbonCapture
-
-logger = logging.getLogger()
 
 # ============================================================================
 # SOLVER CONFIGURATION - Edit this section to experiment with different solver settings
@@ -109,7 +106,8 @@ class GeospatialModel:
         Side effects: Opens new plants and furnace groups, updates their energy costs (power and hydrogen), and manages
         the status progression of business opportunities through consideration, announcement, and construction.
         """
-        geo_logger.info(f"\n\n[GEO] ========== 🗺️  Starting GeospatialModel.run for Year {bus.env.year} ========== \n")
+        logger = logging.getLogger(f"{__name__}.GeospatialModel.run")
+        logger.info(f"\n\n[GEO] ========== 🗺️  Starting GeospatialModel.run for Year {bus.env.year} ========== \n")
         geo_start = time.time()
 
         # Set up
@@ -159,12 +157,12 @@ class GeospatialModel:
             bus.uow, bus.env, geo_config, bus.env.geo_paths
         )
         step_time = time.time() - step_start
-        geo_logger.info(f"operation=geo_candidate_locations year={bus.env.year} duration_s={step_time:.3f}")
-        geo_logger.debug(f"[GEO] Number of top iron locations returned: {len(top_locations.get('iron', []))}")
-        geo_logger.debug(f"[GEO] Number of top steel locations returned: {len(top_locations.get('steel', []))}")
+        logger.info(f"operation=geo_candidate_locations year={bus.env.year} duration_s={step_time:.3f}")
+        logger.debug(f"[GEO] Number of top iron locations returned: {len(top_locations.get('iron', []))}")
+        logger.debug(f"[GEO] Number of top steel locations returned: {len(top_locations.get('steel', []))}")
         for product in ["iron", "steel"]:
             if not top_locations.get(product):
-                geo_logger.warning(f"[GEO] No {product} locations found! This will cause NPV error.")
+                logger.warning(f"[GEO] No {product} locations found! This will cause NPV error.")
 
         # Export LCOE/LCOH statistics every 5 years (matching cost curve export frequency)
         years_since_start = bus.env.year - bus.env.config.start_year
@@ -202,15 +200,17 @@ class GeospatialModel:
             global_risk_free_rate=bus.env.config.global_risk_free_rate,
             capex_subsidies=bus.env.capex_subsidies,
             debt_subsidies=bus.env.debt_subsidies,
+            hydrogen_subsidies=bus.env.hydrogen_subsidies,
+            electricity_subsidies=bus.env.electricity_subsidies,
         )
         if dynamic_cost_commands:
             for command in dynamic_cost_commands:
                 bus.handle(command)
         step_time = time.time() - step_start
-        geo_logger.info(
+        logger.info(
             f"operation=geo_update_costs year={bus.env.year} duration_s={step_time:.3f} fg_count={len(dynamic_cost_commands)}"
         )
-        geo_logger.debug(f"[GEO] Updated dynamic costs for {len(dynamic_cost_commands)} furnace groups")
+        logger.debug(f"[GEO] Updated dynamic costs for {len(dynamic_cost_commands)} furnace groups")
 
         # Update the status of all existing business opportunities (to move from opportunity to new plant)
         step_start = time.time()
@@ -239,10 +239,10 @@ class GeospatialModel:
             for command in status_commands:
                 bus.handle(command)
             step_time = time.time() - step_start
-            geo_logger.info(
+            logger.info(
                 f"operation=geo_update_status year={bus.env.year} duration_s={step_time:.3f} fg_count={len(status_commands)}"
             )
-            geo_logger.debug(f"[GEO] Updated status for {len(status_commands)} furnace groups")
+            logger.debug(f"[GEO] Updated status for {len(status_commands)} furnace groups")
 
         # Identify new business opportunities and prioritize them by NPV
         step_start = time.time()
@@ -275,16 +275,18 @@ class GeospatialModel:
                 capex_subsidies=bus.env.capex_subsidies,
                 debt_subsidies=bus.env.debt_subsidies,
                 opex_subsidies=bus.env.opex_subsidies,
+                hydrogen_subsidies=bus.env.hydrogen_subsidies,
+                electricity_subsidies=bus.env.electricity_subsidies,
                 environment_most_common_reductant=bus.env.most_common_reductant_by_tech,
             )
         )
         step_time = time.time() - step_start
-        geo_logger.info(f"operation=geo_identify_opportunities year={bus.env.year} duration_s={step_time:.3f}")
+        logger.info(f"operation=geo_identify_opportunities year={bus.env.year} duration_s={step_time:.3f}")
 
         # End of geospatial model
         module_elapsed = time.time() - geo_start
-        geo_logger.info(f"operation=geospatial_model year={bus.env.year} duration_s={module_elapsed:.3f}")
-        geo_logger.info(
+        logger.info(f"operation=geospatial_model year={bus.env.year} duration_s={module_elapsed:.3f}")
+        logger.info(
             f"[GEO] ========== Total GeospatialModel.run Time: {module_elapsed:.3f} seconds ({module_elapsed / 60:.2f} minutes) =========="
         )
 
@@ -299,8 +301,9 @@ class AllocationModel:
 
         Args
         """
+        logger = logging.getLogger(f"{__name__}.AllocationModel.run")
         module_start = time.time()
-        tm_logger.debug(f"\n\n[TM] ========== Starting AllocationModel.run for year {bus.env.year} ========== \n")
+        logger.debug(f"\n\n[TM] ========== Starting AllocationModel.run for year {bus.env.year} ========== \n")
 
         # Initialize memory tracker for detailed LP profiling
         memory_tracker = MemoryTracker()
@@ -367,7 +370,7 @@ class AllocationModel:
             trade_lp.previous_solution = bus.env.previous_lp_solution
 
         setup_elapsed = time.time() - setup_start
-        tm_logger.info(f"operation=allocation_setup year={bus.env.year} duration_s={setup_elapsed:.3f}")
+        logger.info(f"operation=allocation_setup year={bus.env.year} duration_s={setup_elapsed:.3f}")
         memory_tracker.checkpoint("after_lp_setup", year=bus.env.year)
 
         # Trade LP solve (trade_optimization is logged inside solve_steel_trade_lp_and_return_commodity_allocations)
@@ -412,7 +415,7 @@ class AllocationModel:
         )
 
         if total_number_of_allocations == 0:
-            tm_logger.error(
+            logger.error(
                 f"[TM] No allocations found for year {bus.env.year}. "
                 "This may indicate an issue with the trade LP model or input data."
             )
@@ -449,11 +452,9 @@ class AllocationModel:
         if "steel" in non_empty_allocations:
             steel_allocations = non_empty_allocations["steel"]
             demand_met = steel_allocations.validate_demand_is_met(year=bus.env.year, demand_centers=all_dcs)
-            tm_logger.info(
-                "operation=demand_validation year=%s commodity=steel demand_met=%s", bus.env.year, demand_met
-            )
+            logger.info("operation=demand_validation year=%s commodity=steel demand_met=%s", bus.env.year, demand_met)
         else:
-            tm_logger.info(
+            logger.info(
                 "operation=demand_validation year=%s commodity=steel demand_met=%s reason=no_allocations",
                 bus.env.year,
                 demand_met,
@@ -494,10 +495,10 @@ class AllocationModel:
                 bus.handle(event)
 
         postprocess_elapsed = time.time() - postprocess_start
-        tm_logger.info(f"operation=allocation_postprocess year={bus.env.year} duration_s={postprocess_elapsed:.3f}")
+        logger.info(f"operation=allocation_postprocess year={bus.env.year} duration_s={postprocess_elapsed:.3f}")
 
         module_elapsed = time.time() - module_start
-        tm_logger.info(f"operation=allocation_model year={bus.env.year} duration_s={module_elapsed:.3f}")
+        logger.info(f"operation=allocation_model year={bus.env.year} duration_s={module_elapsed:.3f}")
         memory_tracker.checkpoint("allocation_complete", year=bus.env.year)
 
 
@@ -577,24 +578,23 @@ class PlantAgentsModel:
         if bus.env.config is None:
             raise ValueError("SimulationConfig is required for PlantAgentsModel")
 
+        logger = logging.getLogger(f"{__name__}.PlantAgentsModel.run")
         module_start = time.time()
 
-        plant_agents_logger.info(
-            f"\n\n[PAM] ========== Starting PlantAgentsModel.run for year {bus.env.year} ========== \n"
-        )
+        logger.info(f"\n\n[PAM] ========== Starting PlantAgentsModel.run for year {bus.env.year} ========== \n")
 
         # Load all plants from the repository
         plants = bus.uow.plants.list()
 
-        plant_agents_logger.info(f"[PAM] Processing {len(plants)} plants in the simulation")
-        plant_agents_logger.debug(f"[PAM] Active statuses configured: {bus.env.config.active_statuses}")
+        logger.info(f"[PAM] Processing {len(plants)} plants in the simulation")
+        logger.debug(f"[PAM] Active statuses configured: {bus.env.config.active_statuses}")
 
         # Step 1: Calculate carbon costs for all furnace groups
         # This updates each furnace group's carbon cost based on its emissions and the current carbon price
         carbon_start = time.time()
         bus.env.calculate_carbon_costs_of_furnace_groups(world_plants=plants)
         carbon_elapsed = time.time() - carbon_start
-        plant_agents_logger.info(f"operation=pam_carbon_costs year={bus.env.year} duration_s={carbon_elapsed:.3f}")
+        logger.info(f"operation=pam_carbon_costs year={bus.env.year} duration_s={carbon_elapsed:.3f}")
 
         # Step 2: Extract current market prices from cost curves
         # These prices are frozen for consistent evaluation across all plants in this year
@@ -603,11 +603,11 @@ class PlantAgentsModel:
             "iron": bus.env.extract_price_from_costcurve(demand=bus.env.iron_demand, product="iron"),
         }
 
-        plant_agents_logger.info("[PAM] Market prices and demand")
-        plant_agents_logger.info(
+        logger.info("[PAM] Market prices and demand")
+        logger.info(
             f"[PAM] Steel - Price: ${freeze_market_price['steel']:,.2f}/t, Demand: {bus.env.current_demand * T_TO_KT:,.0f} kt"
         )
-        plant_agents_logger.info(
+        logger.info(
             f"[PAM] Iron  - Price: ${freeze_market_price['iron']:,.2f}/t, Demand: {bus.env.iron_demand * T_TO_KT:,.0f} kt"
         )
 
@@ -649,9 +649,9 @@ class PlantAgentsModel:
         # Step 4: Process each plant for furnace group decisions
         # Plants are evaluated in random order to avoid systematic biases in decision-making
         plant_eval_start = time.time()
-        plant_agents_logger.info("[PAM] Step 4 - Evaluating furnace group strategies")
+        logger.info("[PAM] Step 4 - Evaluating furnace group strategies")
         for plant in random.sample(plants, len(plants)):
-            plant_agents_logger.info(
+            logger.info(
                 f"\n\n[PAM] === Processing plant {plant.plant_id} in {plant.location.iso3} (year {bus.env.year}) === \n"
             )
 
@@ -667,13 +667,13 @@ class PlantAgentsModel:
             tech_opex_subsidies = bus.env.opex_subsidies.get(plant.location.iso3, {})
             tech_debt_subsidies = bus.env.debt_subsidies.get(plant.location.iso3, {})
 
-            plant_agents_logger.debug(f"[PAM] Plant group: {plant.parent_gem_id}")
-            plant_agents_logger.debug(f"[PAM] Plant balance before update: ${plant.balance:,.2f}")
-            plant_agents_logger.debug(f"[PAM] Plant balance after FG aggregation: ${plant.balance:,.2f}")
-            plant_agents_logger.debug(f"[PAM] Subsidies for {plant.location.iso3}:")
-            plant_agents_logger.debug(f"[PAM]  - CAPEX: {list(tech_capex_subsidies.keys())}")
-            plant_agents_logger.debug(f"[PAM]  - OPEX:  {list(tech_opex_subsidies.keys())}")
-            plant_agents_logger.debug(f"[PAM]  - DEBT:  {list(tech_debt_subsidies.keys())}")
+            logger.debug(f"[PAM] Plant group: {plant.parent_gem_id}")
+            logger.debug(f"[PAM] Plant balance before update: ${plant.balance:,.2f}")
+            logger.debug(f"[PAM] Plant balance after FG aggregation: ${plant.balance:,.2f}")
+            logger.debug(f"[PAM] Subsidies for {plant.location.iso3}:")
+            logger.debug(f"[PAM]  - CAPEX: {list(tech_capex_subsidies.keys())}")
+            logger.debug(f"[PAM]  - OPEX:  {list(tech_opex_subsidies.keys())}")
+            logger.debug(f"[PAM]  - DEBT:  {list(tech_debt_subsidies.keys())}")
 
             # Evaluate each furnace group within the plant in random order
             for fg in random.sample(plant.furnace_groups, len(plant.furnace_groups)):
@@ -690,17 +690,15 @@ class PlantAgentsModel:
                     or fg.technology.name.lower() == "other"
                     or fg.technology.product.lower() not in freeze_market_price
                 ):
-                    plant_agents_logger.info(
+                    logger.info(
                         f"[PAM] == Skipping FG {fg.furnace_group_id} - Tech: {fg.technology.name}, Capacity: {fg.capacity * T_TO_KT:,.0f} kt, Status: {fg.status}, Product: {fg.technology.product} ==\n"
                     )
                     continue
 
-                plant_agents_logger.info(
+                logger.info(
                     f"\n\n[PAM] == Evaluating FG {fg.furnace_group_id} - Tech: {fg.technology.name}, Capacity: {fg.capacity * T_TO_KT:,.0f} kt, Status: {fg.status}, Product: {fg.technology.product} ==\n"
                 )
-                plant_agents_logger.debug(
-                    f"[PAM] FG balance: ${fg.balance:,.2f}, Historic balance: ${fg.historic_balance:,.2f}"
-                )
+                logger.debug(f"[PAM] FG balance: ${fg.balance:,.2f}, Historic balance: ${fg.historic_balance:,.2f}")
 
                 # Retrieve region-specific CAPEX data for technology switching/renovation
                 if "greenfield" in bus.env.name_to_capex:
@@ -714,9 +712,9 @@ class PlantAgentsModel:
                     region_capex = bus.env.name_to_capex["greenfield"][region]
                     capex_renovation_share = bus.env.capex_renovation_share
 
-                    plant_agents_logger.debug(f"[PAM] Region {region} CAPEX loaded for {plant.location.iso3}")
-                    plant_agents_logger.debug(f"[PAM] Region CAPEX for technologies: {region_capex}")
-                    plant_agents_logger.debug(f"[PAM] Renovation share: {capex_renovation_share}")
+                    logger.debug(f"[PAM] Region {region} CAPEX loaded for {plant.location.iso3}")
+                    logger.debug(f"[PAM] Region CAPEX for technologies: {region_capex}")
+                    logger.debug(f"[PAM] Renovation share: {capex_renovation_share}")
                 else:
                     raise KeyError("Region capex not found in bus.env.name_to_capex.")
 
@@ -730,8 +728,8 @@ class PlantAgentsModel:
                 if cost_of_equity is None:
                     raise ValueError(f"Cost of equity not found for ISO3 code {plant.location.iso3}")
 
-                plant_agents_logger.debug(f"[PAM] Cost of debt for {plant.location.iso3}: {cost_of_debt:.2%}")
-                plant_agents_logger.debug(f"[PAM] Cost of equity for {plant.location.iso3}: {cost_of_equity:.2%}")
+                logger.debug(f"[PAM] Cost of debt for {plant.location.iso3}: {cost_of_debt:.2%}")
+                logger.debug(f"[PAM] Cost of equity for {plant.location.iso3}: {cost_of_equity:.2%}")
 
                 # Evaluate potential technology switch or renovation for this furnace group
                 # This considers: switching technology, renovating existing technology, or closing the furnace
@@ -765,9 +763,7 @@ class PlantAgentsModel:
                         most_common_reductant_by_tech=bus.env.most_common_reductant_by_tech,
                     )
                 ) is not None:
-                    plant_agents_logger.info(
-                        f"[PAM] FG {fg.furnace_group_id} strategy returned command: {type(cmd).__name__}"
-                    )
+                    logger.info(f"[PAM] FG {fg.furnace_group_id} strategy returned command: {type(cmd).__name__}")
                     if isinstance(cmd, ChangeFurnaceGroupTechnology):
                         # Technology switch: operate with old technology during construction period
                         # After construction_time years, switch to new technology
@@ -781,19 +777,19 @@ class PlantAgentsModel:
                         if product_opt is None:
                             raise ValueError(f"Technology {cmd.technology_name} not found in technology_to_product")
                         tech_product: str = product_opt
-                        plant_agents_logger.info(
+                        logger.info(
                             f"[PAM] EXECUTING {type(command_to_execute).__name__} - Future command: {cmd}, Tech: {cmd.technology_name}, Product: {tech_product}, Capacity: {cmd.capacity * T_TO_KT:,.0f} kt"
                         )
                         counter += 1
                         bus.handle(command_to_execute)
                     else:
                         # Execute other commands (e.g., CloseFurnaceGroup, RenovateFurnaceGroup)
-                        plant_agents_logger.info(f"[PAM] EXECUTING {type(cmd).__name__}")
+                        logger.info(f"[PAM] EXECUTING {type(cmd).__name__}")
                         counter += 1
                         bus.handle(cmd)
 
                 # # Evaluate carbon capture and storage (CCS) installation
-                # plant_agents_logger.debug(f"[CLASS PLANT AGENT]: Evaluating CCS strategy for FG {fg.furnace_group_id}")
+                # logger.debug(f"[CLASS PLANT AGENT]: Evaluating CCS strategy for FG {fg.furnace_group_id}")
                 # if (
                 #     cmd := plant.evaluate_ccs_strategy(
                 #         furnace_group_id=fg.furnace_group_id,
@@ -810,41 +806,41 @@ class PlantAgentsModel:
                 #         technology_emission_factors=bus.env.technology_emission_factors,
                 #     )
                 # ) is not None:
-                #     plant_agents_logger.info(
+                #     logger.info(
                 #         f"[CLASS PLANT AGENT]: FG {fg.furnace_group_id} CCS evaluation returned: {type(cmd).__name__}"
                 #     )
                 #     if isinstance(cmd, InstallCarbonCapture):
-                #         plant_agents_logger.info(
+                #         logger.info(
                 #             f"[CLASS PLANT AGENT]: INSTALLING CCS - Capacity: {cmd.installed_capacity:,.0f} tCO2 for FG {fg.furnace_group_id}"
                 #         )
                 #         bus.env.reserve_carbon_storage(iso3=plant.location.iso3, volume=cmd.installed_capacity)
                 #         fg.installed_carbon_capture += cmd.installed_capacity
-                #         plant_agents_logger.debug(
+                #         logger.debug(
                 #             f"[CLASS PLANT AGENT]: Total CCS installed for FG: {fg.installed_carbon_capture:,.0f} tCO2"
                 #         )
 
         plant_eval_elapsed = time.time() - plant_eval_start
-        plant_agents_logger.info(
+        logger.info(
             f"operation=pam_evaluate_plants year={bus.env.year} duration_s={plant_eval_elapsed:.3f} plant_count={len(plants)}"
         )
 
         # Step 5: Evaluate plant groups for expansion opportunities
         # Plant expansions add new furnace groups to existing plants based on NPV analysis
         expansion_start = time.time()
-        plant_agents_logger.info("[PAM] Step 5 - Evaluating plant group expansions")
-        plant_agents_logger.debug(f"[PAM] Total plant groups in simulation: {len(bus.uow.plant_groups.list())}")
-        plant_agents_logger.debug(
+        logger.info("[PAM] Step 5 - Evaluating plant group expansions")
+        logger.debug(f"[PAM] Total plant groups in simulation: {len(bus.uow.plant_groups.list())}")
+        logger.debug(
             f"[PAM] Plant groups: {[plant_group.plant_group_id for plant_group in bus.uow.plant_groups.list()]}"
         )
         # Evaluate plant groups in random order to avoid systematic biases
         for pg in random.sample(bus.uow.plant_groups.list(), len(bus.uow.plant_groups.list())):
-            plant_agents_logger.info(f"[PAM] === Evaluating plant group {pg.plant_group_id} for expansion ===")
-            plant_agents_logger.debug(f"[PAM] Plant group contains {len(pg.plants)} plants")
+            logger.info(f"[PAM] === Evaluating plant group {pg.plant_group_id} for expansion ===")
+            logger.debug(f"[PAM] Plant group contains {len(pg.plants)} plants")
 
             # Aggregate financial balance across all plants in the group
             # This is used to determine if the plant group can afford expansion
             pg.collect_total_plant_balance()
-            plant_agents_logger.debug(f"[PAM] Plant group total balance: ${pg.total_balance:,.2f}")
+            logger.debug(f"[PAM] Plant group total balance: ${pg.total_balance:,.2f}")
             # Evaluate expansion by comparing NPV of adding a new furnace group to status quo
             if (
                 cmd := pg.evaluate_expansion(
@@ -878,16 +874,14 @@ class PlantAgentsModel:
                     environment_most_common_reductant=bus.env.most_common_reductant_by_tech,
                 )
             ) is not None:
-                plant_agents_logger.info(
-                    f"[PAM] Plant group {pg.plant_group_id} expansion returned: {type(cmd).__name__}"
-                )
+                logger.info(f"[PAM] Plant group {pg.plant_group_id} expansion returned: {type(cmd).__name__}")
                 if isinstance(cmd, AddFurnaceGroup):
                     # Execute expansion by adding a new furnace group to the plant
                     product_opt = bus.env.technology_to_product.get(cmd.technology_name)
                     if product_opt is None:
                         raise ValueError(f"Technology {cmd.technology_name} not found in technology_to_product")
                     expansion_product: str = product_opt
-                    plant_agents_logger.info(
+                    logger.info(
                         f"[PAM] EXECUTING EXPANSION {type(cmd).__name__} - Tech: {cmd.technology_name}, Product: {expansion_product}, Capacity: {cmd.capacity * T_TO_KT:,.0f} kt"
                     )
                     counter += 1
@@ -895,22 +889,22 @@ class PlantAgentsModel:
 
         expansion_elapsed = time.time() - expansion_start
         group_count = len(bus.uow.plant_groups.list())
-        plant_agents_logger.info(
+        logger.info(
             f"operation=pam_evaluate_expansions year={bus.env.year} duration_s={expansion_elapsed:.3f} group_count={group_count}"
         )
 
         # Step 6: Summary and final logging
         module_elapsed = time.time() - module_start
-        plant_agents_logger.info(f"operation=plant_agents_model year={bus.env.year} duration_s={module_elapsed:.3f}")
+        logger.info(f"operation=plant_agents_model year={bus.env.year} duration_s={module_elapsed:.3f}")
 
-        plant_agents_logger.info(f"[PAM] ========== PlantAgentsModel.run COMPLETED (year {bus.env.year}) ==========")
-        plant_agents_logger.info(f"[PAM] Total commands executed: {counter}")
-        plant_agents_logger.info(f"[PAM] Added capacities by technology: {bus.env.added_capacity}")
-        plant_agents_logger.info(f"[PAM] Switched capacities by technology: {bus.env.switched_capacity}")
+        logger.info(f"[PAM] ========== PlantAgentsModel.run COMPLETED (year {bus.env.year}) ==========")
+        logger.info(f"[PAM] Total commands executed: {counter}")
+        logger.info(f"[PAM] Added capacities by technology: {bus.env.added_capacity}")
+        logger.info(f"[PAM] Switched capacities by technology: {bus.env.switched_capacity}")
         # Log total capacity installed this year (includes both added and switched capacity)
         steel_capacity = bus.env.installed_capacity_in_year("steel")
         iron_capacity = bus.env.installed_capacity_in_year("iron")
-        plant_agents_logger.info(
+        logger.info(
             f"[PAM] Total capacity installed this year (added + switched) - Steel: {steel_capacity * T_TO_KT:,.0f} kt, Iron: {iron_capacity * T_TO_KT:,.0f} kt"
         )
 
@@ -943,7 +937,7 @@ class PlantAgentsModel:
             remaining_kt = remaining_capacity * T_TO_KT
             remaining_pct = (remaining_capacity / limit * 100.0) if limit > 0 else 0.0
 
-            plant_agents_logger.info(
+            logger.info(
                 "operation=pam_capacity_usage year=%s product=%s limit_kt=%.1f consumed_kt=%.1f utilisation_pct=%.1f "
                 "expansion_kt=%.1f expansion_pct=%.1f switch_kt=%.1f switch_pct=%.1f remaining_kt=%.1f remaining_pct=%.1f "
                 "new_plants_kt=%.1f added_total_kt=%.1f",
@@ -999,7 +993,7 @@ class PlantAgentsModel:
             net_change = added_capacity - removed_capacity
             delta_active = active_capacity - previous_active
 
-            plant_agents_logger.info(
+            logger.info(
                 "operation=pam_capacity_balance year=%s product=%s active_kt=%.1f delta_active_kt=%.1f "
                 "added_kt=%.1f removed_kt=%.1f net_change_kt=%.1f switch_kt=%.1f new_plants_kt=%.1f "
                 "transition_kt=%.1f previous_active_kt=%.1f",

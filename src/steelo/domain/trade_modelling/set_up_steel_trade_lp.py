@@ -25,8 +25,6 @@ from collections import defaultdict
 import pyomo.environ as pyo
 from steelo.domain.constants import LP_TOLERANCE, T_TO_KT
 
-logger = logging.getLogger(__name__)
-
 
 def _ensure_secondary_feedstock_supplier(
     repository: Repository,
@@ -101,6 +99,7 @@ def create_process_from_furnace_group(
         - Raises ValueError if required_quantity_per_ton_of_product is None
         - Adds new BOMElements to lp_model for reuse across furnace groups
     """
+    logger = logging.getLogger(f"{__name__}.create_process_from_furnace_group")
     boms = []
     if furnace_group.technology.dynamic_business_case is None:
         return tlp.Process(
@@ -285,6 +284,7 @@ def add_suppliers_as_process_centers(repository, lp_model: tlp.TradeLPModel, yea
         - Handles both string and enum commodity types via isinstance checks
         - Skips suppliers if their commodity's supply process is not found
     """
+    logger = logging.getLogger(f"{__name__}.add_suppliers_as_process_centers")
     supply_process_centers = []
     supply_processes = []
     supplied_commodities = set([sup.commodity for sup in repository.suppliers.list()])
@@ -371,6 +371,7 @@ def enforce_trade_tariffs_on_allocations(
         - NaN values are skipped
         - Tariff data added via lp_model.add_tariff_information(quota_dict, tax_dict)
     """
+    logger = logging.getLogger(f"{__name__}.enforce_trade_tariffs_on_allocations")
     from steelo.domain.constants import IRON_PRODUCTS
 
     quota_dict: dict[tuple[str, str, str], float] = {}
@@ -663,6 +664,7 @@ def set_up_steel_trade_lp(
         - Distance constraints and tariffs are applied before model building
         - Process centers reuse Process objects when multiple furnaces have same technology
     """
+    logger = logging.getLogger(f"{__name__}.set_up_steel_trade_lp")
     repository = message_bus.uow.repository
     lp_model = tlp.TradeLPModel(lp_epsilon=config.lp_epsilon)
     modelled_products = config.primary_products
@@ -923,6 +925,7 @@ def solve_steel_trade_lp_and_return_commodity_allocations(
             - DEMAND → DemandCenter
         - Logs detailed statistics about allocation counts per commodity
     """
+    logger = logging.getLogger(f"{__name__}.solve_steel_trade_lp_and_return_commodity_allocations")
     result = trade_lp.solve_lp_model()
 
     # Check if the solution is not optimal
@@ -1020,6 +1023,7 @@ def identify_bottlenecks(
         - Sets potential_bottleneck_found flag (logged but not returned)
         - Currently does not return the list of bottlenecks (void return)
     """
+    logger = logging.getLogger(f"{__name__}.identify_bottlenecks")
     potential_bottleneck_found = False
 
     active_furnace_groups = [

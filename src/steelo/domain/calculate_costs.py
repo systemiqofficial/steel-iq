@@ -14,9 +14,6 @@ if TYPE_CHECKING:
 from collections import Counter
 from steelo.domain.constants import KG_TO_T, MWH_TO_KWH, Year
 
-unit_production_cost_logger = logging.getLogger(f"{__name__}.calculate_unit_production_cost")
-logger = logging.getLogger(__name__)
-
 SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION = {
     "coking_coal",  # Stored in kg/t in dynamic business cases, priced in USD/t
     "bio_pci",
@@ -117,6 +114,83 @@ def collect_active_subsidies_over_period(
     return list(active)
 
 
+def calculate_energy_price_with_subsidies(
+    energy_price: float,
+    energy_subsidies: list["Subsidy"],
+) -> float:
+    """
+    Apply subsidies to an energy price.
+
+    Args:
+        energy_price: Base price before subsidy (USD/t for H2, USD/kWh for electricity)
+        energy_subsidies: List of active subsidies for this energy type
+
+    Returns:
+        float: Subsidised price (floored at 0)
+    """
+    total_subsidy = 0.0
+    for subsidy in energy_subsidies:
+        if subsidy.subsidy_type == "absolute":
+            total_subsidy += subsidy.subsidy_amount
+        elif subsidy.subsidy_type == "relative":
+            total_subsidy += energy_price * subsidy.subsidy_amount
+    return max(0.0, energy_price - total_subsidy)
+
+
+def get_subsidised_energy_costs(
+    energy_costs: dict[str, float],
+    hydrogen_subsidies: list["Subsidy"],
+    electricity_subsidies: list["Subsidy"],
+) -> tuple[dict[str, float], dict[str, float]]:
+    """
+    Create energy costs dict with subsidies applied.
+
+    Args:
+        energy_costs: Original energy costs dict {carrier: price}
+        hydrogen_subsidies: Active H2 subsidies
+        electricity_subsidies: Active electricity subsidies
+
+    Returns:
+        tuple: (subsidised_costs, no_subsidy_prices)
+        - subsidised_costs: dict with subsidised prices (to use in calculations)
+        - no_subsidy_prices: {"hydrogen": original_h2, "electricity": original_elec}
+    Raises:
+        KeyError: If hydrogen subsidies provided but "hydrogen" not in energy_costs,
+                  or electricity subsidies provided but "electricity" not in energy_costs.
+    """
+    import copy
+
+    subsidised = copy.copy(energy_costs)
+
+    # Validate required keys exist when subsidies are provided
+    if hydrogen_subsidies and "hydrogen" not in energy_costs:
+        raise KeyError(
+            f"Hydrogen subsidies provided but 'hydrogen' key not found in energy_costs. "
+            f"Available keys: {list(energy_costs.keys())}"
+        )
+    if electricity_subsidies and "electricity" not in energy_costs:
+        raise KeyError(
+            f"Electricity subsidies provided but 'electricity' key not found in energy_costs. "
+            f"Available keys: {list(energy_costs.keys())}"
+        )
+
+    h2_price = energy_costs.get("hydrogen", 0.0)
+    elec_price = energy_costs.get("electricity", 0.0)
+
+    no_subsidy_prices = {
+        "hydrogen": h2_price,
+        "electricity": elec_price,
+    }
+
+    if hydrogen_subsidies and h2_price > 0:
+        subsidised["hydrogen"] = calculate_energy_price_with_subsidies(h2_price, hydrogen_subsidies)
+
+    if electricity_subsidies and elec_price > 0:
+        subsidised["electricity"] = calculate_energy_price_with_subsidies(elec_price, electricity_subsidies)
+
+    return subsidised, no_subsidy_prices
+
+
 def calculate_cost_breakdown_by_feedstock(
     bill_of_materials: dict[str, dict[str, dict[str, float]]],
     chosen_reductant: str,
@@ -131,8 +205,10 @@ def calculate_cost_breakdown_by_feedstock(
     energy intensity (from dynamic business cases) and usage share (demand_share_pct).
 
     Args:
-        bill_of_materials (dict[str, dict[str, dict[str, float]]]): Nested dictionary containing materials and energy data.
-        chosen_reductant (str): Selected reductant type (e.g., 'coke', 'natural_gas') to filter business cases.
+        bill_of_materials (dict[str, dict[str, dict[str, float]]]): Nested dictionary containing
+            materials and energy data.
+        chosen_reductant (str): Selected reductant type (e.g., 'coke', 'natural_gas') to filter
+            business cases.
         dynamic_business_cases (list[PrimaryFeedstock]): List of primary feedstock options with energy requirements.
         energy_costs (dict[str, float]): Energy costs by type (kept for backward compatibility).
         energy_vopex_breakdown_by_input (dict[str, dict[str, float]] | None): Unused parameter for compatibility.
@@ -395,6 +471,7 @@ def calculate_variable_opex(materials_cost_data: dict, energy_cost_data: dict) -
         - Energy costs are summed across all energy carriers and divided by product volume
         - This matches the cost_breakdown calculation which uses unit_material_cost + energy breakdown
     """
+    logger = logging.getLogger(f"{__name__}.calculate_variable_opex")
 
     def calculate_material_total(materials_data: dict[str, dict[str, Any]]) -> float | None:
         """
@@ -1042,8 +1119,8 @@ def calculate_business_opportunity_npvs(
           present with correct types (floats for costs, dict for bom).
     """
     from steelo.domain.calculate_costs import calculate_npv_full, collect_active_subsidies_over_period
-    from steelo.logging_config import new_plant_logger
 
+    logger = logging.getLogger(f"{__name__}.calculate_business_opportunity_npvs")
     npv_dict: dict[str, dict[tuple[float, float, str], dict[str, float]]] = {}  # product -> site_id -> tech -> NPV
     for prod, sites in cost_data.items():
         npv_dict[prod] = {}
@@ -1119,8 +1196,9 @@ def calculate_business_opportunity_npvs(
 
                 # Set to very negative NPV if calculation returned NaN
                 if math.isnan(npv_value):
-                    new_plant_logger.warning(
-                        f"NPV calculation returned NaN for product {prod} - site {site_id} - technology {tech}. Returning -inf."
+                    logger.warning(
+                        f"NPV calculation returned NaN for product {prod} - site {site_id} - "
+                        f"technology {tech}. Returning -inf."
                     )
                     npv_dict[prod][site_id][tech] = float("-inf")
                 else:
@@ -1417,6 +1495,7 @@ def calculate_debt_with_subsidies(cost_of_debt: float, debt_subsidies: list["Sub
         Negative subsidy_amount values act as taxes/penalties (increase cost of debt).
         Result is floored at risk_free_rate - subsidies cannot reduce cost below risk-free rate.
     """
+    logger = logging.getLogger(f"{__name__}.calculate_debt_with_subsidies")
     # If no cost of debt subsidies in the list, return original cost of debt
     if debt_subsidies == []:
         return cost_of_debt
@@ -1427,7 +1506,7 @@ def calculate_debt_with_subsidies(cost_of_debt: float, debt_subsidies: list["Sub
         if subsidy.subsidy_type == "absolute":
             debt_total_subsidy += subsidy.subsidy_amount
         else:
-            logging.info("Ignoring relative subsidy for cost of debt calculation")
+            logger.info("Ignoring relative subsidy for cost of debt calculation")
 
     # Apply subsidy, ensuring cost of debt doesn't go below risk-free rate
     return max(risk_free_rate, cost_of_debt - debt_total_subsidy)
@@ -1471,6 +1550,8 @@ def calculate_lcoh_from_electricity_country_level(
     Raises:
         ValueError: If required data is missing for calculation.
     """
+    logger = logging.getLogger(f"{__name__}.calculate_lcoh_from_electricity_country_level")
+
     if year not in hydrogen_efficiency:
         raise ValueError(f"Hydrogen efficiency not found for year {year}")
 
@@ -1532,6 +1613,8 @@ def calculate_regional_hydrogen_ceiling_country_level(
     Raises:
         ValueError: If no LCOH values are provided
     """
+    logger = logging.getLogger(f"{__name__}.calculate_regional_hydrogen_ceiling_country_level")
+
     import numpy as np
     from collections import defaultdict
 

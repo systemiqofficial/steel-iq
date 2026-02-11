@@ -9,17 +9,15 @@ import time
 import functools
 from steelo.adapters.geospatial.geospatial_toolbox import haversine_distance
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 
 def time_function(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
+        logger = logging.getLogger(f"{__name__}.{func.__name__}")
         start_time = time.time()
         result = func(*args, **kwargs)
         end_time = time.time()
-        logging.info(f"{func.__name__} took {end_time - start_time:.4f} seconds")
+        logger.info(f"{func.__name__} took {end_time - start_time:.4f} seconds")
         return result
 
     return wrapper
@@ -417,11 +415,12 @@ class TradeLPModel:
         self.commodities = self.commodities + commodities
 
     def add_processes(self, processes: list[Process]):
+        logger = logging.getLogger(f"{__name__}.add_processes")
         for proc in processes:
             if not proc.products == []:
                 for product in proc.products:
                     if product not in self.commodities and product is not None:
-                        logging.info(f"Commodity {product} implicitly added to commodities")
+                        logger.info(f"Commodity {product} implicitly added to commodities")
                         self.add_commodities([product])
         self.processes = self.processes + processes
 
@@ -432,9 +431,10 @@ class TradeLPModel:
         self.process_connectors = self.process_connectors + process_connectors
 
     def add_bom_elements(self, bom_elements: list[BOMElement]):
+        logger = logging.getLogger(f"{__name__}.add_bom_elements")
         for element in bom_elements:
             if element.commodity not in self.commodities:
-                logging.info(f"Commodity {element.commodity.name} implicitly added to commodities")
+                logger.info(f"Commodity {element.commodity.name} implicitly added to commodities")
                 self.add_commodities([element.commodity])
         self.bom_elements = self.bom_elements + bom_elements
 
@@ -797,6 +797,7 @@ class TradeLPModel:
     @time_function
     def add_allocation_costs_as_parameters_to_lp(self):
         """Add the allocation costs as parameters to the LP model. Needed for the objective function."""
+        logger = logging.getLogger(f"{__name__}.add_allocation_costs_as_parameters_to_lp")
         self.lp_model.allocation_costs = {}
         for from_pc, to_pc, commodity in self.legal_allocations:
             # Get location-specific transportation cost
@@ -820,8 +821,10 @@ class TradeLPModel:
             if self.lp_model.allocation_costs[key] >= (
                 self.demand_slack_cost * 0.2
             ):  # if higher than 20% of demand slack
-                logging.warning(
-                    f"High allocation cost {self.lp_model.allocation_costs[key]} for allocation {key}, higher than 20% of demand slack cost {self.demand_slack_cost}. Automatically setting demand slack cost higher."
+                logger.warning(
+                    f"High allocation cost {self.lp_model.allocation_costs[key]} for allocation {key}, "
+                    f"higher than 20% of demand slack cost {self.demand_slack_cost}. "
+                    "Automatically setting demand slack cost higher."
                 )
 
     @time_function
@@ -1027,6 +1030,7 @@ class TradeLPModel:
             - Multiple primary inputs can share the same dependent commodity
             - Process centers with no incoming connections are still checked (per Ioana's 20.05 note)
         """
+        logger = logging.getLogger(f"{__name__}.add_dependent_commodities_consistency_constraints_to_lp")
         model = self.lp_model
 
         # 1) Create dictionaries of sets
@@ -1496,6 +1500,7 @@ class TradeLPModel:
             - Does not automatically load solution (call extract_solution() after)
             - Logs detailed diagnostics if model is infeasible
         """
+        logger = logging.getLogger(f"{__name__}.solve_lp_model")
         start_time = time.time()
         solver = pyo.SolverFactory("appsi_highs")
         solver.options["random_seed"] = 1337
@@ -1534,28 +1539,28 @@ class TradeLPModel:
 
         # Check if solution was found
         if result.solver.termination_condition == pyo.TerminationCondition.infeasible:
-            logging.error("\n=== LP SOLVER DIAGNOSTICS ===")
-            logging.error(f"Termination condition: {result.solver.termination_condition}")
-            logging.error(f"Solver status: {result.solver.status}")
-            logging.error("\nModel statistics:")
-            logging.error(f"- Variables: {self.lp_model.nvariables()}")
-            logging.error(f"- Constraints: {self.lp_model.nconstraints()}")
-            logging.error(f"- Process centers: {len(self.process_centers)}")
+            logger.error("\n=== LP SOLVER DIAGNOSTICS ===")
+            logger.error(f"Termination condition: {result.solver.termination_condition}")
+            logger.error(f"Solver status: {result.solver.status}")
+            logger.error("\nModel statistics:")
+            logger.error(f"- Variables: {self.lp_model.nvariables()}")
+            logger.error(f"- Constraints: {self.lp_model.nconstraints()}")
+            logger.error(f"- Process centers: {len(self.process_centers)}")
 
             # Check for dependent commodities constraints
             if hasattr(self.lp_model, "dependent_commodities_constraints"):
                 dep_constraints = len(self.lp_model.dependent_commodities_constraints)
-                logging.error(f"- Dependent commodity constraints: {dep_constraints}")
+                logger.error(f"- Dependent commodity constraints: {dep_constraints}")
                 if dep_constraints > 0:
-                    logging.error("  WARNING: Dependent commodities constraints are active!")
-                    logging.error("  Check if all dependent commodities have suppliers defined")
+                    logger.error("  WARNING: Dependent commodities constraints are active!")
+                    logger.error("  Check if all dependent commodities have suppliers defined")
 
-            logging.error("\nThe model is infeasible - no solution exists that satisfies all constraints.")
-            logging.error("Possible causes:")
-            logging.error("  1. Demand exceeds available supply chain capacity")
-            logging.error("  2. Missing process connectors prevent required flows")
-            logging.error("  3. Dependent commodities (e.g., limestone) have no suppliers")
-            logging.error("  4. Trade quotas/tariffs block necessary routes")
+            logger.error("\nThe model is infeasible - no solution exists that satisfies all constraints.")
+            logger.error("Possible causes:")
+            logger.error("  1. Demand exceeds available supply chain capacity")
+            logger.error("  2. Missing process connectors prevent required flows")
+            logger.error("  3. Dependent commodities (e.g., limestone) have no suppliers")
+            logger.error("  4. Trade quotas/tariffs block necessary routes")
         elif result.solver.termination_condition == pyo.TerminationCondition.optimal:
             # Load the solution if optimal
             self.lp_model.solutions.load_from(result)

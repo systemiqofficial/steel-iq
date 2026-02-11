@@ -34,6 +34,7 @@ from steelo.utilities.plotting import (
 )
 from .logging_config import LoggingConfig
 from steelo.domain.constants import T_TO_KT, MT_TO_T
+from steelo.domain.calculate_costs import filter_subsidies_for_year, get_subsidised_energy_costs
 from .furnace_breakdown_logging_minimal import FurnaceBreakdownLogger
 
 if TYPE_CHECKING:
@@ -904,6 +905,8 @@ class SimulationRunner:
         # Initialize furnace breakdown logger for better debugging
         self.furnace_logger = FurnaceBreakdownLogger()
 
+        # Note: Logging is now configured in bootstrap_simulation() before data loading
+
     def _update_geo_paths_for_static_files(self) -> None:
         """Update geo_paths to use temporary directory for static files."""
         if hasattr(self.bus.env, "geo_paths") and self.bus.env.geo_paths and self.temp_dir is not None:
@@ -998,9 +1001,35 @@ class SimulationRunner:
                 bus.env.calculate_capped_hydrogen_costs_per_country()
             )  # Calculate for all countries once per year (iso3 -> cost)
             logging.info(f"\n Steel demand in year {bus.env.year}: \t {bus.env.current_demand * T_TO_KT:,.0f} kt \n")
+
+            # Initialise OPEX subsidies for Year 1 (subsequent years handled by finalise_iteration)
+            if i == start_year:
+                for plant in bus.uow.plants.list():
+                    for fg in plant.furnace_groups:
+                        all_opex_subs = bus.env.opex_subsidies.get(plant.location.iso3, {}).get(fg.technology.name, [])
+                        active_opex_subs = filter_subsidies_for_year(all_opex_subs, bus.env.year)
+                        fg.applied_subsidies["opex"] = active_opex_subs
+
             for plant in bus.uow.plants.list():
                 plant.update_furnace_tech_unit_fopex()
                 plant.update_furnace_hydrogen_costs(capped_hydrogen_cost_dict)
+
+                # Apply H2/electricity subsidies to energy_costs (after H2 price update)
+                for fg in plant.furnace_groups:
+                    all_h2_subs = bus.env.hydrogen_subsidies.get(plant.location.iso3, {}).get(fg.technology.name, [])
+                    all_elec_subs = bus.env.electricity_subsidies.get(plant.location.iso3, {}).get(
+                        fg.technology.name, []
+                    )
+                    active_h2_subs = filter_subsidies_for_year(all_h2_subs, bus.env.year)
+                    active_elec_subs = filter_subsidies_for_year(all_elec_subs, bus.env.year)
+
+                    if active_h2_subs or active_elec_subs:
+                        subsidised_costs, no_subsidy_prices = get_subsidised_energy_costs(
+                            fg.energy_costs, active_h2_subs, active_elec_subs
+                        )
+                        fg.set_subsidised_energy_costs(
+                            subsidised_costs, no_subsidy_prices, active_h2_subs, active_elec_subs
+                        )
 
                 # Set carbon costs for the plant based on its location
                 if plant.location.iso3 in bus.env.carbon_costs:
@@ -1056,8 +1085,8 @@ class SimulationRunner:
             commands[bus.env.year] = bus.collect_commands()
 
             with LoggingConfig.simulation_logging("DebugLogging"):
-                if LoggingConfig.ENABLE_FURNACE_GROUP_DEBUG:
-                    logging.info(f"\n========== FURNACE GROUP DEBUG - YEAR {bus.env.year} ==========")
+                if LoggingConfig.FURNACE_GROUP_BREAKDOWN:
+                    logging.info(f"========== FURNACE GROUP DEBUG - YEAR {bus.env.year} ==========\n")
 
                     # Use the new FurnaceBreakdownLogger for all plants
                     self.furnace_logger.log_all_furnace_groups(bus=bus, commands=commands)

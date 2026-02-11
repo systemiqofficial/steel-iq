@@ -14,9 +14,9 @@ All calculations are normalized to per-unit-of-production basis, support time-va
 ## Functional Modules
 
 ### Subsidy Management
-Handles time-varying subsidies for CAPEX, OPEX, and cost of debt. Subsidies are automatically filtered by year and applied to reduce costs. Bounds checking prevents costs from going negative or below floors (CAPEX/OPEX ≥ 0, Cost_of_Debt ≥ Risk_Free_Rate).
+Handles time-varying subsidies for CAPEX, OPEX, cost of debt, hydrogen, and electricity. Subsidies are automatically filtered by year and applied to reduce costs. Bounds checking prevents costs from going negative or below floors (CAPEX/OPEX/Energy ≥ 0, Cost_of_Debt ≥ Risk_Free_Rate).
 
-Three types of subsidies are supported:
+Five types of subsidies are supported:
 
 1. **CAPEX subsidies**: Reduce upfront investment costs
    - Absolute: Fixed dollar amount per unit (e.g., $50/t)
@@ -30,7 +30,38 @@ Three types of subsidies are supported:
    - Absolute only: Percentage point reduction (e.g., -2% points)
    - Relative subsidies are ignored for debt
 
+4. **Hydrogen subsidies**: Reduce hydrogen feedstock costs
+   - Absolute: Fixed USD/t H2 (e.g., $1000/t)
+   - Relative: Percentage reduction (e.g., 20% off)
+   - Note: Subsidy amounts use same units as energy_costs dict (USD/t for hydrogen)
+
+5. **Electricity subsidies**: Reduce electricity costs
+   - Absolute: Fixed $/kWh (e.g., $0.02/kWh)
+   - Relative: Percentage reduction (e.g., 15% off)
+
 All subsidies are time-bound with `start_year` and `end_year`, automatically filtered each simulation year.
+
+#### Energy Subsidies Application Order
+
+Hydrogen and electricity subsidies work differently from CAPEX/OPEX/Debt subsidies. They modify the `energy_costs` dictionary **before** downstream calculations, affecting:
+- BOM generation (`get_bom_from_avg_boms`)
+- Energy VOPEX calculations
+- Materials cost data
+- Reductant selection
+- NPV calculations
+
+**Formula:**
+```
+subsidised_price = max(0, price - absolute_sum - (price × relative_sum))
+```
+
+Where `absolute_sum` is the sum of all matching absolute subsidies and `relative_sum` is the sum of all matching relative rates.
+
+**Key behaviours:**
+- Multiple subsidies stack (both absolute and relative are summed)
+- Price floors at zero (free energy, but never negative)
+- Original prices stored in `energy_costs_no_subsidy` for verification
+- LCOH calculations use unsubsidised electricity prices (by design)
 
 #### Negative Subsidies (Taxes/Penalties)
 
@@ -58,6 +89,8 @@ Subsidies can have negative `subsidy_amount` values, which act as taxes or penal
 - `calculate_opex_with_subsidies()` - Applies absolute and relative subsidies to OPEX (floor at 0)
 - `calculate_opex_list_with_subsidies()` - Generates time-varying OPEX with year-specific subsidies
 - `calculate_debt_with_subsidies()` - Cost-of-debt subsidies; absolute point reductions only; floored at risk-free rate
+- `calculate_energy_price_with_subsidies()` - Applies absolute and relative subsidies to a single energy price (H2 or electricity)
+- `get_subsidised_energy_costs()` - Applies H2/electricity subsidies to energy_costs dict; returns (subsidised_costs, no_subsidy_prices)
 
 #### Subsidy Filtering Functions
 

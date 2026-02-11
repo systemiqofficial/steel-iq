@@ -384,9 +384,14 @@ When uploading through the web UI:
 
 ### Debugging Tips
 
-1. Enable verbose logging:
-```python
-logging.getLogger('steelo.data').setLevel(logging.DEBUG)
+1. Enable verbose logging via CLI:
+```bash
+steelo-data-prepare --verbose
+```
+
+Or run with DEBUG level:
+```bash
+run_simulation --log-level DEBUG ...
 ```
 
 2. Test your reader function independently:

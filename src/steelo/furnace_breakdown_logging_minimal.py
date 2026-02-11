@@ -184,6 +184,7 @@ class FurnaceBreakdownLogger:
             "unit_fopex": getattr(fg, "unit_fopex", 0),
             "energy_cost_dict": getattr(fg, "energy_cost_dict", {}),
             "bill_of_materials": getattr(fg, "bill_of_materials", None),
+            "energy_costs_no_subsidy": getattr(fg, "energy_costs_no_subsidy", {}),
         }
 
         # Commodity price
@@ -206,7 +207,7 @@ class FurnaceBreakdownLogger:
         data["subsidies"] = {}
         if hasattr(fg, "applied_subsidies") and fg.applied_subsidies:
             # Track each type of subsidy
-            for subsidy_type in ["capex", "debt", "opex"]:
+            for subsidy_type in ["capex", "debt", "opex", "hydrogen", "electricity"]:
                 if subsidy_type in fg.applied_subsidies:
                     subsidies_list = fg.applied_subsidies[subsidy_type]
                     if subsidies_list:
@@ -339,6 +340,18 @@ class FurnaceBreakdownLogger:
                 energy_items = [f"{k}: ${v:,.0f}" for k, v in energy_costs.items() if v > 0]
                 if energy_items:
                     logging.info(f"    Energy Costs: {', '.join(energy_items[:3])}")  # Show first 3
+
+            # H2/Electricity subsidy effect (show before -> after if subsidised)
+            no_sub = operations.get("energy_costs_no_subsidy", {})
+            if no_sub:
+                h2_before = no_sub.get("hydrogen", 0)
+                h2_after = energy_costs.get("hydrogen", 0)
+                elec_before = no_sub.get("electricity", 0)
+                elec_after = energy_costs.get("electricity", 0)
+                if h2_before > 0 and h2_before != h2_after:
+                    logging.info(f"    H2 Subsidy: ${h2_before:.2f} -> ${h2_after:.2f}/kg")
+                if elec_before > 0 and elec_before != elec_after:
+                    logging.info(f"    Elec Subsidy: ${elec_before:.4f} -> ${elec_after:.4f}/kWh")
 
         # Financial information
         financial = fg_data["financial"]

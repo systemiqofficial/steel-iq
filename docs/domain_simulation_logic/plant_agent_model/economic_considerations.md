@@ -241,7 +241,7 @@ When multiple technologies have positive NPV:
 ## 7. Subsidies
 
 ### Subsidy Types
-Three categories, each reducing costs:
+Five categories, each reducing costs:
 
 1. **CAPEX Subsidies**: Reduce upfront investment
    ```python
@@ -258,6 +258,16 @@ Three categories, each reducing costs:
    subsidized_rate = base_rate - absolute_points
    ```
 
+4. **Hydrogen Subsidies**: Reduce H2 feedstock costs
+   ```python
+   subsidised_h2_price = base_price - absolute - (base_price × relative)
+   ```
+
+5. **Electricity Subsidies**: Reduce electricity costs
+   ```python
+   subsidised_elec_price = base_price - absolute - (base_price × relative)
+   ```
+
 ### Time-Bounded Application
 Subsidies active only within specified years:
 ```python
@@ -272,6 +282,17 @@ if current_year >= start_year and current_year <= end_year:
 - Lower CAPEX → Higher NPV → More likely to switch/expand
 - Lower OPEX → Higher profits → Faster balance sheet recovery
 - Lower debt cost → Lower unit production cost → More competitive
+- Lower H2 cost → Lower VOPEX for H2-consuming technologies → Higher NPV
+- Lower electricity cost → Lower VOPEX for electricity-intensive technologies → Higher NPV
+
+### Application Order
+Energy subsidies (H2/electricity) are applied differently from other subsidy types:
+
+1. **Energy subsidies applied first**: Modify the `energy_costs` dictionary before downstream calculations
+2. **Downstream effects propagate**: BOM, VOPEX, and NPV calculations automatically use subsidised prices
+3. **OPEX subsidies applied later**: Applied to the total OPEX after energy costs are calculated
+
+This ordering prevents double-counting and ensures energy subsidies affect all cost calculations that depend on energy prices.
 
 **Strategic Use**:
 - Target emerging technologies to accelerate adoption
