@@ -34,7 +34,7 @@ import logging
 
 from ...domain.models import LegalProcessConnector
 from ...utilities.data_processing import normalize_product_name
-from steelo.utilities.utils import normalize_energy_key
+from steelo.utilities.utils import normalize_name
 
 # Import only true constants from global_variables
 from steelo.domain.constants import (
@@ -73,30 +73,14 @@ A note on units:
 # IMPORTANT: Only include commodities whose BOM consumption ultimately uses tonnes per tonne.
 # Hydrogen now falls into this bucket because BOM ingestion normalises its kg/t requirement to tonnes.
 #
-# NOTE: Keys must match the normalized commodity names after lowercasing and space-to-underscore
-# conversion. "Bio-PCI" in Excel becomes "bio-pci" (hyphen preserved), not "bio_pci".
+# NOTE: Keys must match normalised names after normalize_name() processing.
 MATERIALS_REQUIRING_KG_TO_T_PRICE_CONVERSION = {
-    "bio-pci",  # Bio-PCI: consumption in t/t, price needs conversion from USD/kg to USD/t
+    "bio_pci",  # Bio-PCI: consumption in t/t, price needs conversion from USD/kg to USD/t
     "pci",  # PCI: consumption in t/t, price needs conversion from USD/kg to USD/t
     "coke",  # Coke: consumption in t/t, price needs conversion from USD/kg to USD/t
     "coking_coal",  # Coking coal: consumption in t/t, price needs conversion from USD/kg to USD/t
     "hydrogen",  # Hydrogen consumption stored in t/t after BOM processing; convert price to USD/t for consistency
 }
-
-
-def normalize_commodity_name(commodity: str) -> str:
-    """Normalize metallic charge names to match expected format.
-
-    Examples:
-    - "Hot metal" -> "hot_metal"
-    - "Pig iron" -> "pig_iron"
-    - "DRI low" -> "dri_low"
-    """
-    if not commodity:
-        return commodity
-    # Convert to lowercase and replace spaces with underscores
-    normalized = commodity.lower().replace(" ", "_")
-    return normalized
 
 
 translate_country_names = {
@@ -168,12 +152,12 @@ def read_regional_input_prices_from_master_excel(
     rename_map = {}
     for col in input_cost_stacked.columns:
         if col not in ["iso-3 code", "year"]:
-            rename_map[col] = col.replace(" ", "_")
+            rename_map[col] = normalize_name(col)
     input_cost_stacked = input_cost_stacked.rename(columns=rename_map)
     ## Update unit mapping keys to match normalized commodity names (lowercase + spaces to underscores)
     unit_mapping_lower = {}
     for commodity, unit in unit_mapping.items():
-        commodity_normalized = commodity.lower().replace(" ", "_")
+        commodity_normalized = normalize_name(commodity)
         unit_mapping_lower[commodity_normalized] = unit
 
     # 3) Convert units to match BOM requirements based on Unit column
@@ -384,7 +368,7 @@ def read_dynamic_business_cases(
             mc_raw = row["Metallic charge"] if row["Metallic charge"] and row["Metallic charge"] != "nan" else ""
             # Skip wildcards when collecting unique values
             if mc_raw and "*" not in mc_raw:
-                mc = normalize_commodity_name(mc_raw)
+                mc = normalize_name(mc_raw)
                 if mc:
                     metallic_charges.add(mc)
 
@@ -424,7 +408,7 @@ def read_dynamic_business_cases(
                     continue
                 else:
                     # For non-constraint rows, apply to matching feedstocks
-                    pattern = normalize_commodity_name(mc_raw.replace("*", ""))
+                    pattern = normalize_name(mc_raw.replace("*", ""))
                     for key, feedstock in feedstocks_dict.items():
                         if (
                             feedstock.technology.lower() == technology.lower()
@@ -432,7 +416,7 @@ def read_dynamic_business_cases(
                         ):
                             _process_row(row.to_dict(), feedstock, feedstocks_dict)
             elif mc_raw:
-                mc = normalize_commodity_name(mc_raw)
+                mc = normalize_name(mc_raw)
                 if not red:
                     # Apply to all feedstocks with this metallic charge
                     for key, feedstock in feedstocks_dict.items():
@@ -562,7 +546,7 @@ def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[st
     if metric_type.lower() in ["materials", "feedstock", "reductant"]:
         if side == "Input":
             # Check if this is the primary feedstock (Vector matches metallic charge)
-            if vector and normalize_commodity_name(vector) == feedstock.metallic_charge.lower():
+            if vector and normalize_name(vector) == feedstock.metallic_charge.lower():
                 # For primary feedstock, keep the original unit logic
                 if "t/t" in unit.lower():
                     feedstock.required_quantity_per_ton_of_product = float(value)
@@ -575,11 +559,11 @@ def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[st
             else:
                 # Secondary feedstock - store with original units (usually kg/t)
                 if vector:
-                    feedstock.add_secondary_feedstock(normalize_commodity_name(vector), value)
+                    feedstock.add_secondary_feedstock(normalize_name(vector), value)
         elif side == "Output":
             # Outputs - keep original values
             if vector:
-                output_name = normalize_energy_key(vector)
+                output_name = normalize_name(vector)
                 if output_name.startswith("co2"):
                     feedstock.add_carbon_output(output_name, float(value))
                 else:
@@ -594,14 +578,14 @@ def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[st
         converted_value = _convert_units(value, unit, metric_type)
         if side == "Input":
             if vector:
-                normalised = normalize_energy_key(vector)
+                normalised = normalize_name(vector)
                 if normalised.startswith("co2"):
                     feedstock.add_carbon_input(normalised, converted_value)
                 else:
                     feedstock.add_energy_requirement(normalised, converted_value)
         elif side == "Output":
             if vector:
-                normalised = normalize_energy_key(vector)
+                normalised = normalize_name(vector)
                 if normalised.startswith("co2"):
                     feedstock.add_carbon_output(normalised, converted_value)
                 else:
@@ -1539,7 +1523,7 @@ def read_capex_and_learning_rate_data(
         if pd.isna(product):
             product = ""
         else:
-            product = normalize_commodity_name(str(product))  # Normalize to lowercase
+            product = normalize_name(str(product))  # Normalize to lowercase
 
         # Handle empty or invalid values for greenfield and renovation capex
         greenfield = row.get("Greenfield", 0.0)
@@ -2380,7 +2364,7 @@ def read_co2_storage_availability(excel_path: Path, sheet_name: str = "CO2 stora
                     availability = BiomassAvailability(
                         region="",  # Empty region since we use ISO3 directly
                         country=country_iso3,  # Store ISO3 in country field
-                        metric="co2 - stored",  # Use normalized lowercase name to match BOM normalization
+                        metric="co2_stored",  # Use normalized lowercase name to match BOM normalization
                         scenario=scenario,
                         unit=unit,
                         year=Year(int(year)),
@@ -2481,10 +2465,8 @@ def read_technology_emission_factors(
             technology = technology.replace("CHARCOAL", "BF_CHARCOAL")
 
             boundary = str(row["Boundary"]) if pd.notna(row["Boundary"]) else ""
-            metallic_charge = (
-                normalize_commodity_name(row["Metallic charge"]) if pd.notna(row["Metallic charge"]) else ""
-            )
-            reductant = normalize_commodity_name(str(row["Reductant"])) if pd.notna(row["Reductant"]) else ""
+            metallic_charge = normalize_name(row["Metallic charge"]) if pd.notna(row["Metallic charge"]) else ""
+            reductant = normalize_name(str(row["Reductant"])) if pd.notna(row["Reductant"]) else ""
             direct_ghg_factor = float(row["Direct"]) if pd.notna(row["Direct"]) else 0.0
             direct_with_biomass_ghg_factor = (
                 float(row["Direct with biomass"]) if pd.notna(row["Direct with biomass"]) else 0.0
@@ -2707,7 +2689,7 @@ def read_fallback_bom_definitions(excel_path: Path, sheet_name: str = "Fallback 
                 technology = technology.replace("CHARCOAL", "BF_CHARCOAL")
 
             # Normalize metallic charge using the same normalization as in BOM reading
-            metallic_charge = normalize_commodity_name(metallic_charge_raw)
+            metallic_charge = normalize_name(metallic_charge_raw)
 
             default_metallic_charge_per_technology[technology] = metallic_charge
             logger.debug(f"Mapped {business_case_raw} -> {technology} -> {metallic_charge}")

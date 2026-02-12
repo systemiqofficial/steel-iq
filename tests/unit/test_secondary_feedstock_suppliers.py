@@ -22,7 +22,7 @@ def test_secondary_feedstock_constraints_create_virtual_supplier(tmp_path):
     config = SimulationConfig.for_testing(repository=repository, output_dir=tmp_path)
     message_bus = _make_message_bus(repository)
 
-    constraints = {"bio-pci": {("USA",): 150.0}}
+    constraints = {"bio_pci": {("USA",): 150.0}}
 
     set_up_steel_trade_lp(
         message_bus=message_bus,
@@ -35,6 +35,6 @@ def test_secondary_feedstock_constraints_create_virtual_supplier(tmp_path):
         transport_kpis=None,
     )
 
-    supplier = repository.suppliers.get("bio-pci_supply_process_center")
-    assert supplier.commodity == "bio-pci"
+    supplier = repository.suppliers.get("bio_pci_supply_process_center")
+    assert supplier.commodity == "bio_pci"
     assert supplier.capacity_by_year[config.start_year] == Volumes(150.0)

@@ -578,7 +578,7 @@ def test_cost_breakdown_handles_space_and_hyphenated_energy_price_keys():
     dynamic_business_case = Mock()
     dynamic_business_case.metallic_charge = "sinter"
     dynamic_business_case.reductant = "coke"
-    dynamic_business_case.energy_requirements = {"bio-pci": 2.0, "natural_gas": 3.0}
+    dynamic_business_case.energy_requirements = {"bio_pci": 2.0, "natural_gas": 3.0}
     dynamic_business_case.secondary_feedstock = {
         "Burnt Dolomite": 1.0,
         "Burnt lime": 0.5,
@@ -587,7 +587,7 @@ def test_cost_breakdown_handles_space_and_hyphenated_energy_price_keys():
     dynamic_business_case.required_quantity_per_ton_of_product = 1.1
 
     energy_prices = {
-        "bio-pci": 10.0,
+        "bio_pci": 10.0,
         "natural_gas": 5.0,
         "burnt dolomite": 2.0,
         "burnt lime": 1.0,

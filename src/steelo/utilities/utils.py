@@ -9,12 +9,22 @@ if TYPE_CHECKING:
     from steelo.domain.models import FurnaceGroup
 
 
-def normalize_energy_key(name: str | None) -> str:
-    """Normalise an energy carrier or feedstock name to a canonical key.
+def normalize_name(name: str | None) -> str:
+    """Normalise a domain name to a canonical lookup key.
+
+    Single normalisation function used across the codebase for energy carriers,
+    commodities, feedstocks, constraint types, and any other domain string that
+    needs a consistent key form for matching and storage.
+
+    Examples:
+        "Natural Gas"  → "natural_gas"
+        "bio-pci"      → "bio_pci"
+        "co2 - stored" → "co2_stored"
+        "co2_-_inlet"  → "co2_inlet"
+        "Hot metal"    → "hot_metal"
 
     Args:
-        name: Raw carrier/feedstock name (e.g. "Natural Gas", "bio-pci", "co2_-_inlet").
-            None is treated as empty string.
+        name: Raw domain name. None is treated as empty string.
 
     Returns:
         Lowercase key with spaces and hyphens replaced by underscores,

@@ -23,7 +23,7 @@ from steelo.domain.calculate_costs import (
     ENERGY_FEEDSTOCK_KEYS,
     SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION,
 )
-from steelo.utilities.utils import normalize_energy_key
+from steelo.utilities.utils import normalize_name
 from steelo.domain.calculate_emissions import (
     calculate_emissions,
     calculate_emissions_cost_series,
@@ -104,14 +104,14 @@ def _recalculate_feedstock_energy_unit_cost(
     if not dynamic_cases:
         return None
 
-    chosen_reductant = normalize_energy_key(getattr(fg, "chosen_reductant", "") or "")
+    chosen_reductant = normalize_name(getattr(fg, "chosen_reductant", "") or "")
 
     for dbc in dynamic_cases:
-        metallic_charge = normalize_energy_key(getattr(dbc, "metallic_charge", ""))
+        metallic_charge = normalize_name(getattr(dbc, "metallic_charge", ""))
         if metallic_charge != feedstock_key:
             continue
 
-        reductant = normalize_energy_key(getattr(dbc, "reductant", "") or "")
+        reductant = normalize_name(getattr(dbc, "reductant", "") or "")
         if chosen_reductant and reductant and reductant != chosen_reductant:
             continue
 
@@ -122,10 +122,10 @@ def _recalculate_feedstock_energy_unit_cost(
         combined_requirements: dict[str, float] = {}
 
         for energy_name, amount in (getattr(dbc, "energy_requirements", None) or {}).items():
-            combined_requirements[normalize_energy_key(energy_name)] = amount
+            combined_requirements[normalize_name(energy_name)] = amount
 
         for secondary_name, amount in (getattr(dbc, "secondary_feedstock", None) or {}).items():
-            normalized_secondary = normalize_energy_key(secondary_name)
+            normalized_secondary = normalize_name(secondary_name)
             if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION:
                 combined_requirements[normalized_secondary] = amount * KG_TO_T
             else:
@@ -588,7 +588,7 @@ class SecondaryFeedstockConstraint:
         Initialize a secondary feedstock constraint.
 
         Args:
-            secondary_feedstock_name: Name of the secondary feedstock (e.g., "bio-pci")
+            secondary_feedstock_name: Name of the secondary feedstock (e.g., "bio_pci")
             region_iso3s: List of ISO-3 country codes that define the region
             maximum_constraint_per_year: Dictionary mapping years to maximum allocation limits (in tonnes)
 
@@ -1181,7 +1181,7 @@ class FurnaceGroup:
         # Store costs with normalized keys to ensure downstream lookups succeed
         energy_costs: dict[str, float] = {}
         for raw_key, price in costs.items():
-            normalized_key = normalize_energy_key(raw_key)
+            normalized_key = normalize_name(raw_key)
             energy_costs[normalized_key] = price
             # Preserve original key for compatibility where callers still expect legacy naming
             if normalized_key != raw_key:
@@ -2650,13 +2650,13 @@ class FurnaceGroup:
 
             combined_requirements: dict[str, float] = {}
             for energy_type, volume in raw_energy_req.items():
-                normalized_energy = normalize_energy_key(energy_type)
+                normalized_energy = normalize_name(energy_type)
                 if normalized_energy not in ENERGY_FEEDSTOCK_KEYS:
                     continue
                 combined_requirements[normalized_energy] = combined_requirements.get(normalized_energy, 0.0) + volume
 
             for secondary_type, volume in raw_secondary.items():
-                normalized_secondary = normalize_energy_key(secondary_type)
+                normalized_secondary = normalize_name(secondary_type)
                 if normalized_secondary not in ENERGY_FEEDSTOCK_KEYS:
                     continue
                 converted_volume = (
@@ -2678,7 +2678,7 @@ class FurnaceGroup:
             energy_breakdown_by_input.setdefault(metallic_input, {}).setdefault(dbc.reductant, defaultdict(float))
 
             for energy_type, volume in combined_requirements.items():
-                normalized_energy = normalize_energy_key(energy_type)
+                normalized_energy = normalize_name(energy_type)
                 price = self.energy_costs.get(normalized_energy, self.energy_costs.get(energy_type, 0.0))
                 cost_value = volume * price
                 energy_vopex_by_input[metallic_input][dbc.reductant] += cost_value
@@ -5724,7 +5724,7 @@ class PlantGroup:
                             updated_energy_costs["hydrogen"] = new_costs["hydrogen"]
 
                         for feed_key, energy_value in new_bom.get("energy", {}).items():
-                            normalized_feed_key = normalize_energy_key(feed_key)
+                            normalized_feed_key = normalize_name(feed_key)
                             if normalized_feed_key == "electricity":
                                 unit_cost = updated_energy_costs.get("electricity", energy_value.get("unit_cost"))
                             elif normalized_feed_key == "hydrogen":
@@ -6873,17 +6873,17 @@ class Environment:
         all_keys: set[str] = set()
         for feedstock in feedstocks:
             for key in feedstock.energy_requirements or {}:
-                all_keys.add(normalize_energy_key(key))
+                all_keys.add(normalize_name(key))
             for key in feedstock.secondary_feedstock or {}:
-                all_keys.add(normalize_energy_key(key))
+                all_keys.add(normalize_name(key))
             # Include secondary output keys (by-products, not primary products)
             primary_output_keys = set(feedstock.get_primary_outputs().keys())
             for key in feedstock.outputs or {}:
-                normalized = normalize_energy_key(key)
+                normalized = normalize_name(key)
                 if normalized not in primary_output_keys:
                     all_keys.add(normalized)
             for key in feedstock.carbon_outputs or {}:
-                all_keys.add(normalize_energy_key(key))
+                all_keys.add(normalize_name(key))
         self.cost_breakdown_keys: list[str] = sorted(all_keys)
 
     def initiate_aggregated_metallic_charge_constraints(
@@ -8370,7 +8370,7 @@ class Environment:
             if not reductant_matches:
                 continue
             for sec_name, volume in secondary_requirements.items():
-                normalized_secondary = normalize_energy_key(sec_name)
+                normalized_secondary = normalize_name(sec_name)
                 converted_volume = (
                     volume * KG_TO_T
                     if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION

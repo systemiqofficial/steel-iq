@@ -9,7 +9,7 @@ from steelo.domain.models import PrimaryFeedstock, FurnaceGroup, TransportKPI
 from steelo.domain.trade_modelling.trade_lp_modelling import Allocations, ProcessType
 from steelo.domain.constants import LP_TOLERANCE
 from steelo.domain import diagnostics as diag
-from steelo.utilities.utils import normalize_energy_key
+from steelo.utilities.utils import normalize_name
 
 
 # logging.getLogger().setLevel(logging.WARNING)  # Commented out to avoid setting root logger
@@ -63,9 +63,7 @@ class TM_PAM_connector:
                 for commodity, total_cost in feed_totals.items():
                     normalized_commodity = str(commodity).lower()
                     breakdown = feed_breakdowns.get(commodity) or feed_breakdowns.get(str(commodity).lower()) or {}
-                    normalized_breakdown = {
-                        normalize_energy_key(carrier): float(cost) for carrier, cost in breakdown.items()
-                    }
+                    normalized_breakdown = {normalize_name(carrier): float(cost) for carrier, cost in breakdown.items()}
                     per_feed_energy[normalized_commodity] = {
                         "total": float(total_cost),
                         "carriers": normalized_breakdown,

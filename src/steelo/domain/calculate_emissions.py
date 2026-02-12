@@ -1,7 +1,7 @@
 import logging
 from typing import TYPE_CHECKING
 
-from steelo.utilities.utils import normalize_energy_key
+from steelo.utilities.utils import normalize_name
 
 if TYPE_CHECKING:
     from .models import PrimaryFeedstock
@@ -133,12 +133,12 @@ def calculate_emissions(
         else:
             amount_of_product = material_bill[material]["demand_share_pct"]
 
-        normalized_bc_reductant = normalize_energy_key(bc.reductant)
+        normalized_bc_reductant = normalize_name(bc.reductant)
         selected_technology_emission_factors = [
             factor
             for factor in technology_emission_factors
             if factor.technology.lower() == bc.technology.lower()
-            and normalize_energy_key(factor.reductant) == normalized_bc_reductant
+            and normalize_name(factor.reductant) == normalized_bc_reductant
             and factor.metallic_charge == bc.metallic_charge
         ]
 

@@ -2786,8 +2786,8 @@ class BiomassAvailabilityJsonRepository:
     ) -> dict[str, dict[tuple[str, ...], dict[int, float]]]:
         """
         Convert biomass and CO2 storage availability to secondary feedstock constraints format.
-        Returns: {"bio-pci": {(iso3_codes_tuple): total_availability},
-                  "co2 - stored": {(iso3_codes_tuple): total_availability}}
+        Returns: {"bio_pci": {(iso3_codes_tuple): total_availability},
+                  "co2_stored": {(iso3_codes_tuple): total_availability}}
         """
         from collections import defaultdict
 
@@ -2801,13 +2801,13 @@ class BiomassAvailabilityJsonRepository:
 
             # Determine the constraint type based on the metric
             if item.metric and "co2" in item.metric.lower():
-                constraint_type = "co2 - stored"  # Lowercase to match BOM normalization
+                constraint_type = "co2_stored"
             else:
-                constraint_type = "bio-pci"
+                constraint_type = "bio_pci"
 
             # Map region to ISO3 codes
             # For CO2 storage, country field contains ISO3 directly
-            if constraint_type == "co2 - stored" and item.country:
+            if constraint_type == "co2_stored" and item.country:
                 iso3_codes = [item.country]  # Country field contains ISO3 for CO2 storage
             else:
                 iso3_codes = self._map_region_to_iso3_codes(item.region, item.country, country_mapping)
@@ -2821,10 +2821,10 @@ class BiomassAvailabilityJsonRepository:
                     constraints[constraint_type][iso3_tuple].get(int(year), 0.0) + item.availability
                 )
 
-        # Always return bio-pci key even if empty for backward compatibility
+        # Always return bio_pci key even if empty for backward compatibility
         result = dict(constraints)
-        if "bio-pci" not in result:
-            result["bio-pci"] = {}
+        if "bio_pci" not in result:
+            result["bio_pci"] = {}
         return result
 
     def _map_region_to_iso3_codes(self, region: str, country: Optional[str], country_mapping: Any) -> List[str]:

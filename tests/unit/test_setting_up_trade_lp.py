@@ -1361,7 +1361,7 @@ def test_secondary_feedstock_supplier_capacity_updated_each_year(monkeypatch):
     mock_config = create_mock_config()
     message_bus = DummyMessageBus(repo)
 
-    secondary_feedstock_constraints = {"bio-pci": {("USA",): 150.0}}
+    secondary_feedstock_constraints = {"bio_pci": {("USA",): 150.0}}
 
     set_up_steel_trade_lp(
         message_bus=message_bus,
@@ -1371,7 +1371,7 @@ def test_secondary_feedstock_supplier_capacity_updated_each_year(monkeypatch):
         secondary_feedstock_constraints=secondary_feedstock_constraints,
     )
 
-    supplier = repo.suppliers.get("bio-pci_supply_process_center")
+    supplier = repo.suppliers.get("bio_pci_supply_process_center")
     assert supplier.capacity_by_year[year] == Volumes(150.0)
 
 

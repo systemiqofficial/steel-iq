@@ -2,7 +2,7 @@ import logging
 from typing import TYPE_CHECKING, TypedDict, Any
 import math
 
-from steelo.utilities.utils import normalize_energy_key
+from steelo.utilities.utils import normalize_name
 
 from steelo.domain.calculate_emissions import (
     calculate_emissions,
@@ -225,6 +225,7 @@ def calculate_cost_breakdown_by_feedstock(
             dictionary containing material cost, energy carrier costs, and output revenue
             adjustments. Returns empty dict if no matching feedstocks are found.
     """
+    logger = logging.getLogger(f"{__name__}.calculate_cost_breakdown_by_feedstock")
     breakdown: dict[str, dict[str, float]] = {}
 
     if not bill_of_materials or not bill_of_materials.get("materials"):
@@ -249,7 +250,7 @@ def calculate_cost_breakdown_by_feedstock(
 
         # Get energy requirements by carrier
         for energy_key, amount in (dbc.energy_requirements or {}).items():
-            normalized_key = normalize_energy_key(energy_key)
+            normalized_key = normalize_name(energy_key)
             if normalized_key in ENERGY_FEEDSTOCK_KEYS:
                 carrier_amounts[normalized_key] = carrier_amounts.get(normalized_key, 0.0) + (
                     _coerce_to_float(amount) or 0.0
@@ -257,7 +258,7 @@ def calculate_cost_breakdown_by_feedstock(
 
         # Add secondary feedstock by carrier
         for secondary_key, amount in (dbc.secondary_feedstock or {}).items():
-            normalized_secondary = normalize_energy_key(secondary_key)
+            normalized_secondary = normalize_name(secondary_key)
             if normalized_secondary in ENERGY_FEEDSTOCK_KEYS:
                 converted_amount = (
                     (amount * KG_TO_T)
@@ -269,6 +270,11 @@ def calculate_cost_breakdown_by_feedstock(
                 )
 
         feedstock_carrier_intensities[dbc_lower] = carrier_amounts
+
+    logger.debug(
+        "feedstock_carrier_intensities: %s",
+        {k: sorted(v.keys()) for k, v in feedstock_carrier_intensities.items()},
+    )
 
     # Build cost breakdown for each feedstock
     for dbc in dynamic_business_cases:
@@ -301,7 +307,7 @@ def calculate_cost_breakdown_by_feedstock(
                 if carrier_unit_cost == 0:
                     continue
 
-                normalized_carrier = normalize_energy_key(carrier)
+                normalized_carrier = normalize_name(carrier)
 
                 # Check if this feedstock uses this carrier
                 feedstock_carrier_intensity = feedstock_carriers.get(normalized_carrier, 0.0)
@@ -335,8 +341,15 @@ def calculate_cost_breakdown_by_feedstock(
         if input_costs:
             all_outputs = {**(dbc.outputs or {}), **(dbc.carbon_outputs or {})}
             primary_output_keys = set(dbc.get_primary_outputs().keys())
+            if all_outputs:
+                logger.debug(
+                    "outputs for %s: all=%s primary(excluded)=%s",
+                    dbc.metallic_charge,
+                    sorted(all_outputs.keys()),
+                    sorted(primary_output_keys),
+                )
             for output_key, output_amount in all_outputs.items():
-                normalized_output = normalize_energy_key(output_key)
+                normalized_output = normalize_name(output_key)
                 if normalized_output in primary_output_keys:
                     continue
                 if normalized_output not in input_costs:
@@ -356,6 +369,15 @@ def calculate_cost_breakdown_by_feedstock(
             for key in cost_breakdown_keys:
                 if key not in feed_breakdown:
                     feed_breakdown[key] = 0.0
+
+    for fs_name, fs_data in breakdown.items():
+        cost_keys = {
+            k: round(v, 4)
+            for k, v in fs_data.items()
+            if isinstance(v, (int, float)) and k in (cost_breakdown_keys or [])
+        }
+        if cost_keys:
+            logger.debug("breakdown %s costs: %s", fs_name, cost_keys)
 
     return breakdown
 
@@ -410,13 +432,13 @@ def calculate_cost_breakdown(
 
                 combined_energy: dict[str, float] = {}
                 for energy_key, amount in energy_requirements.items():
-                    normalized_key = normalize_energy_key(energy_key)
+                    normalized_key = normalize_name(energy_key)
                     if normalized_key not in ENERGY_FEEDSTOCK_KEYS:
                         continue
                     combined_energy[normalized_key] = combined_energy.get(normalized_key, 0.0) + amount
 
                 for secondary_key, amount in secondary_feedstock.items():
-                    normalized_secondary = normalize_energy_key(secondary_key)
+                    normalized_secondary = normalize_name(secondary_key)
                     if normalized_secondary not in ENERGY_FEEDSTOCK_KEYS:
                         continue
                     converted_amount = (
@@ -434,14 +456,14 @@ def calculate_cost_breakdown(
                 _nrg = {
                     key: (
                         value
-                        * (energy_costs.get(key) or energy_costs.get(normalize_energy_key(key)) or 0.0)
+                        * (energy_costs.get(key) or energy_costs.get(normalize_name(key)) or 0.0)
                         * material_demand
                         / dbc.required_quantity_per_ton_of_product
                         if dbc.required_quantity_per_ton_of_product
                         else 0.0
                     )
                     for key, value in total_dict.items()
-                    if key in energy_costs or normalize_energy_key(key) in energy_costs
+                    if key in energy_costs or normalize_name(key) in energy_costs
                 }
 
                 # Initialize or accumulate costs for this output product
@@ -1430,7 +1452,7 @@ def calculate_energy_costs_and_most_common_reductant(
         metallic_input = str(dbc.metallic_charge)
         energy_requirements_dict: dict[str, float] = {}
         for energy_name, amount in (dbc.energy_requirements or {}).items():
-            normalized_energy = normalize_energy_key(energy_name)
+            normalized_energy = normalize_name(energy_name)
             if normalized_energy not in ENERGY_FEEDSTOCK_KEYS:
                 continue
             energy_requirements_dict[normalized_energy] = energy_requirements_dict.get(normalized_energy, 0.0) + amount
@@ -1441,7 +1463,7 @@ def calculate_energy_costs_and_most_common_reductant(
 
         # Combine energy requirements and secondary feedstock with proper units
         for secondary_key, amount in secondary_feedstock_dict.items():
-            normalized_secondary = normalize_energy_key(secondary_key)
+            normalized_secondary = normalize_name(secondary_key)
             if normalized_secondary not in ENERGY_FEEDSTOCK_KEYS:
                 continue
             converted_amount = (
@@ -1464,7 +1486,7 @@ def calculate_energy_costs_and_most_common_reductant(
 
         # Sum energy costs for all energy types
         for energy_type, volume in energy_requirements_dict.items():
-            normalized_energy_type = normalize_energy_key(energy_type)
+            normalized_energy_type = normalize_name(energy_type)
             price = energy_costs.get(normalized_energy_type, energy_costs.get(energy_type, 0.0))
             energy_vopex_by_input[metallic_input][dbc.reductant] += volume * price
 

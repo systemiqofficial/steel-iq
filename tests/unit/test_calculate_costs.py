@@ -679,3 +679,77 @@ def test_cost_breakdown_skips_outputs_without_price():
 
     assert result["io_low"]["ironmaking_slag"] == pytest.approx(-10.0)
     assert result["io_low"]["some_unpriced_output"] == 0.0
+
+
+# --- CO2 storage revenue tests ---
+
+
+def test_cost_breakdown_co2_stored_revenue():
+    """CO2 stored in carbon_outputs generates revenue in cost breakdown."""
+    dbc = _BreakdownDBC(
+        metallic_charge="io_low",
+        reductant="coke",
+        outputs={"steel": 1.0},
+        carbon_outputs={"co2_stored": 0.4},
+        primary_output_keys={"steel"},
+        energy_requirements={"electricity": 0.5},
+    )
+    bom = {
+        "materials": {
+            "io_low": {
+                "demand": 1000.0,
+                "demand_share_pct": 1.0,
+                "unit_material_cost": 100.0,
+                "product_volume": 1000.0,
+            },
+        },
+        "energy": {
+            "electricity": {"unit_cost": 50.0, "demand": 500.0},
+        },
+    }
+    # co2_stored has a negative price (revenue for storing CO2)
+    input_costs = {"co2_stored": -30.0, "electricity": 0.1}
+
+    result = calculate_cost_breakdown_by_feedstock(
+        bill_of_materials=bom,
+        chosen_reductant="coke",
+        dynamic_business_cases=[dbc],
+        energy_costs={},
+        input_costs=input_costs,
+    )
+
+    # co2_stored revenue: 0.4 t/t * -30 USD/t * 1.0 share = -12.0 USD/t product
+    assert "io_low" in result
+    assert result["io_low"]["co2_stored"] == pytest.approx(-12.0)
+
+
+def test_secondary_output_adjustment_includes_co2_stored():
+    """calculate_cost_adjustments_from_secondary_outputs includes carbon_outputs."""
+    from steelo.domain.calculate_costs import calculate_cost_adjustments_from_secondary_outputs
+
+    dbc = _BreakdownDBC(
+        metallic_charge="io_low",
+        reductant="coke",
+        outputs={"ironmaking_slag": 0.3},
+        carbon_outputs={"co2_stored": 0.4},
+    )
+    bom = {
+        "materials": {
+            "io_low": {
+                "demand": 1000.0,
+                "product_volume": 1000.0,
+            },
+        },
+    }
+    input_costs = {"co2_stored": -30.0, "ironmaking_slag": -15.0}
+
+    result = calculate_cost_adjustments_from_secondary_outputs(
+        bill_of_materials=bom,
+        dynamic_business_cases=[dbc],
+        input_costs=input_costs,
+    )
+
+    # slag: 1000 * -15 * 0.3 = -4500
+    # co2_stored: 1000 * -30 * 0.4 = -12000
+    # total: -16500 / 1000 = -16.5 USD/t product
+    assert result == pytest.approx(-16.5)
