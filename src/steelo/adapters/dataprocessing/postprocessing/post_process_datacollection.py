@@ -94,6 +94,8 @@ def extract_and_process_stored_dataCollection(
                 fg_cols_to_select.append("unit_secondary_output_costs")
             if "unit_carbon_cost" in plant.columns:
                 fg_cols_to_select.append("unit_carbon_cost")
+            if "unit_carbon_cost_contribution - co2_slip" in plant.columns:
+                fg_cols_to_select.append("unit_carbon_cost_contribution - co2_slip")
             # Add emissions columns dynamically
             fg_cols_to_select += plant.columns[plant.columns.str.startswith("emissions_")].tolist()
 

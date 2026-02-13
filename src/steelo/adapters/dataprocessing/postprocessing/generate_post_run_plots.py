@@ -47,7 +47,7 @@ def generate_post_run_cap_prod_plots(
     output_df = output_df.copy()
     output_df = output_df.sort_values(by="year").reset_index(drop=True)
 
-    output_df["region"] = output_df["location"].map(iso3_to_region_map)
+    output_df["region"] = output_df["iso3"].map(iso3_to_region_map)
 
     # Check order of magnitude and convert if needed for better readability
     # If values are in millions (tonnes), convert to kt for better readability

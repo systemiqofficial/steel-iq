@@ -31,7 +31,7 @@ def sample_output_df():
                     {
                         "year": year,
                         "technology": tech,
-                        "location": loc,
+                        "iso3": loc,
                         "product": "steel",
                         "capacity": np.random.randint(100, 500),
                         "production": np.random.randint(80, 450),
