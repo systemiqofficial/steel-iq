@@ -1153,6 +1153,8 @@ class SimulationRunner:
             / f"post_processed_{datetime.now().strftime('%Y-%m-%d %H-%M')}.csv",
             store=True,
             cost_breakdown_columns=[f"cost_breakdown - {k}" for k in bus.env.cost_breakdown_keys],
+            carbon_breakdown_columns=[f"carbon_breakdown - {k}" for k in bus.env.carbon_breakdown_keys],
+            carbon_input_columns=[f"carbon_breakdown - {k}" for k in bus.env.carbon_input_keys],
         )
         plot_bar_chart_of_new_plants_by_status(data_collector.status_counts, plot_paths=bus.env.plot_paths)
         plot_map_of_new_plants_operating(data_collector.new_plant_locations, plot_paths=bus.env.plot_paths)

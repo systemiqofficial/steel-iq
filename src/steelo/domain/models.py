@@ -1083,6 +1083,7 @@ class FurnaceGroup:
         created_by_PAM: bool = False,
         legacy_debt_schedule: list[float] | None = None,
         cost_breakdown_keys: list[str] | None = None,
+        carbon_breakdown_keys: list[str] | None = None,
     ) -> None:
         self.furnace_group_id = furnace_group_id
         self.capacity = capacity
@@ -1097,6 +1098,7 @@ class FurnaceGroup:
         self.bill_of_materials = bill_of_materials
         self.chosen_reductant = chosen_reductant
         self.cost_breakdown_keys = cost_breakdown_keys
+        self.carbon_breakdown_keys = carbon_breakdown_keys
         self.allocated_volumes = allocated_volumes
 
         # Future technology switch (accounts for construction time while operating with old technology)
@@ -2094,6 +2096,21 @@ class FurnaceGroup:
             energy_vopex_breakdown_by_input=self.energy_vopex_breakdown_by_input,
             cost_breakdown_keys=self.cost_breakdown_keys,
             input_costs=self.input_costs,
+        )
+
+    @property
+    def carbon_breakdown_by_feedstock(self) -> dict[str, dict[str, float]]:
+        """Physical carbon intensity breakdown by feedstock (tCO2/t-product)."""
+        from .calculate_costs import calculate_carbon_breakdown_by_feedstock
+
+        if self.bill_of_materials is None:
+            return {}
+
+        return calculate_carbon_breakdown_by_feedstock(
+            bill_of_materials=self.bill_of_materials,
+            chosen_reductant=self.chosen_reductant,
+            dynamic_business_cases=self.technology.dynamic_business_case or [],
+            carbon_breakdown_keys=self.carbon_breakdown_keys,
         )
 
     def optimal_technology_name(
@@ -6869,6 +6886,12 @@ class Environment:
             if tech_name_lower != tech_name:
                 self.dynamic_feedstocks[tech_name_lower].append(feedstock)
 
+        # Collect all priced commodity keys from input_costs (across all countries/years)
+        priced_commodities: set[str] = set()
+        for yearly_costs in self.input_costs.values():
+            for costs in yearly_costs.values():
+                priced_commodities.update(costs.keys())
+
         # Compute canonical cost breakdown keys from all feedstocks
         all_keys: set[str] = set()
         for feedstock in feedstocks:
@@ -6882,9 +6905,25 @@ class Environment:
                 normalized = normalize_name(key)
                 if normalized not in primary_output_keys:
                     all_keys.add(normalized)
+            # Only carbon outputs with a price belong in cost_breakdown (e.g. co2_stored);
+            # costless vectors (co2_slip, co2_utilised) are tracked in carbon_breakdown instead
             for key in feedstock.carbon_outputs or {}:
-                all_keys.add(normalize_name(key))
+                normalized = normalize_name(key)
+                if normalized in priced_commodities:
+                    all_keys.add(normalized)
         self.cost_breakdown_keys: list[str] = sorted(all_keys)
+
+        # Compute canonical carbon breakdown keys (physical tCO2/t-product for all CO2 vectors)
+        ci_keys: set[str] = set()
+        co_keys: set[str] = set()
+        for feedstock in feedstocks:
+            for key in feedstock.carbon_inputs or {}:
+                ci_keys.add(normalize_name(key))
+            for key in feedstock.carbon_outputs or {}:
+                co_keys.add(normalize_name(key))
+        self.carbon_input_keys: list[str] = sorted(ci_keys)
+        self.carbon_output_keys: list[str] = sorted(co_keys)
+        self.carbon_breakdown_keys: list[str] = sorted(ci_keys | co_keys)
 
     def initiate_aggregated_metallic_charge_constraints(
         self, constraints: list[AggregatedMetallicChargeConstraint]
@@ -7403,6 +7442,7 @@ class Environment:
                 fg.technology.set_product(self.technology_to_product)
                 fg.generate_energy_vopex_by_reductant()
                 fg.cost_breakdown_keys = self.cost_breakdown_keys
+                fg.carbon_breakdown_keys = self.carbon_breakdown_keys
 
         # Update environment-level most common reductant tracking after all furnace groups are updated
         self.most_common_reductant_by_tech = self.most_common_reductant(world_plants)

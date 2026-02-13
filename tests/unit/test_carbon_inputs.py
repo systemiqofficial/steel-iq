@@ -153,12 +153,20 @@ def test_co2_inputs_not_in_cost_breakdown_keys():
     assert "co2_inlet" not in all_keys
 
 
-def test_co2_outputs_in_cost_breakdown_keys():
-    """CO2 output vectors in carbon_outputs appear in cost_breakdown_keys (stage 4)."""
+def test_co2_outputs_cost_breakdown_keys_only_priced():
+    """Only carbon outputs with prices appear in cost_breakdown_keys (stage 7).
+
+    co2_stored has a price in input_costs → included.
+    co2_slip and co2_utilised have no price → excluded (tracked in carbon_breakdown instead).
+    """
     feedstock = _make_feedstock()
     feedstock.add_energy_requirement("electricity", 1.2)
     feedstock.add_carbon_output("co2_stored", 0.3)
     feedstock.add_carbon_output("co2_slip", 0.05)
+    feedstock.add_carbon_output("co2_utilised", 0.1)
+
+    # Simulate input_costs with only co2_stored having a price
+    priced_commodities = {"electricity", "co2_stored"}
 
     # Replicate the updated cost_breakdown_keys logic from initiate_dynamic_feedstocks()
     all_keys: set[str] = set()
@@ -172,11 +180,35 @@ def test_co2_outputs_in_cost_breakdown_keys():
         if normalized not in primary_output_keys:
             all_keys.add(normalized)
     for key in feedstock.carbon_outputs:
-        all_keys.add(normalize_name(key))
+        normalized = normalize_name(key)
+        if normalized in priced_commodities:
+            all_keys.add(normalized)
 
     assert "electricity" in all_keys
     assert "co2_stored" in all_keys
-    assert "co2_slip" in all_keys
+    assert "co2_slip" not in all_keys
+    assert "co2_utilised" not in all_keys
+
+
+def test_carbon_breakdown_keys_contain_all_co2_vectors():
+    """carbon_breakdown_keys contains all CO2 vectors from both carbon_inputs and carbon_outputs."""
+    feedstock = _make_feedstock()
+    feedstock.add_carbon_input("co2_inlet", 0.5)
+    feedstock.add_carbon_output("co2_stored", 0.3)
+    feedstock.add_carbon_output("co2_slip", 0.05)
+    feedstock.add_carbon_output("co2_utilised", 0.1)
+
+    ci_keys: set[str] = set()
+    co_keys: set[str] = set()
+    for key in feedstock.carbon_inputs:
+        ci_keys.add(normalize_name(key))
+    for key in feedstock.carbon_outputs:
+        co_keys.add(normalize_name(key))
+    carbon_breakdown_keys = sorted(ci_keys | co_keys)
+
+    assert carbon_breakdown_keys == ["co2_inlet", "co2_slip", "co2_stored", "co2_utilised"]
+    assert sorted(ci_keys) == ["co2_inlet"]
+    assert sorted(co_keys) == ["co2_slip", "co2_stored", "co2_utilised"]
 
 
 def test_cost_breakdown_keys_includes_secondary_outputs():
@@ -196,8 +228,6 @@ def test_cost_breakdown_keys_includes_secondary_outputs():
         normalized = normalize_name(key)
         if normalized not in primary_output_keys:
             all_keys.add(normalized)
-    for key in feedstock.carbon_outputs:
-        all_keys.add(normalize_name(key))
 
     assert "ironmaking_slag" in all_keys
 
@@ -219,8 +249,6 @@ def test_cost_breakdown_keys_excludes_primary_outputs():
         normalized = normalize_name(key)
         if normalized not in primary_output_keys:
             all_keys.add(normalized)
-    for key in feedstock.carbon_outputs:
-        all_keys.add(normalize_name(key))
 
     assert "steel" not in all_keys
     assert "ironmaking_slag" in all_keys

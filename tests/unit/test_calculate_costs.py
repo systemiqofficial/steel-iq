@@ -519,6 +519,7 @@ class _BreakdownDBC:
         reductant: str,
         outputs: dict | None = None,
         carbon_outputs: dict | None = None,
+        carbon_inputs: dict | None = None,
         energy_requirements: dict | None = None,
         secondary_feedstock: dict | None = None,
         primary_output_keys: set | None = None,
@@ -527,6 +528,7 @@ class _BreakdownDBC:
         self.reductant = reductant
         self.outputs = outputs or {}
         self.carbon_outputs = carbon_outputs or {}
+        self.carbon_inputs = carbon_inputs or {}
         self.energy_requirements = energy_requirements or {}
         self.secondary_feedstock = secondary_feedstock or {}
         self._primary_output_keys = primary_output_keys or set()

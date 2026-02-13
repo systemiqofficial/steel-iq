@@ -382,6 +382,69 @@ def calculate_cost_breakdown_by_feedstock(
     return breakdown
 
 
+def calculate_carbon_breakdown_by_feedstock(
+    bill_of_materials: dict[str, dict[str, dict[str, float]]],
+    chosen_reductant: str,
+    dynamic_business_cases: list["PrimaryFeedstock"],
+    carbon_breakdown_keys: list[str] | None = None,
+) -> dict[str, dict[str, float]]:
+    """Calculate physical carbon intensity breakdown by feedstock (tCO2/t-product).
+
+    For each feedstock matching the chosen reductant, reports carbon_inputs
+    (negated — CO2 consumed by CCS/CCU) and carbon_outputs (positive — CO2
+    stored/slipped/utilised) scaled by demand_share.  Summing all values for
+    a feedstock gives the mass-balance residual (approx 0 when balanced).
+
+    Args:
+        bill_of_materials: BOM with ``materials`` sub-dict containing ``demand_share_pct``.
+        chosen_reductant: Reductant filter for matching DBCs.
+        dynamic_business_cases: List of PrimaryFeedstock with carbon_inputs/carbon_outputs.
+        carbon_breakdown_keys: Canonical keys for zero-padding.  When ``None``, no padding.
+
+    Returns:
+        Dict mapping feedstock name to ``{carbon_key: tCO2/t-product}``.
+    """
+    breakdown: dict[str, dict[str, float]] = {}
+
+    if not bill_of_materials or not bill_of_materials.get("materials"):
+        return breakdown
+
+    for dbc in dynamic_business_cases:
+        metallic_charge_lower = dbc.metallic_charge.lower()
+        if metallic_charge_lower not in bill_of_materials["materials"]:
+            continue
+        if dbc.reductant != chosen_reductant:
+            continue
+
+        material_entry = bill_of_materials["materials"][metallic_charge_lower]
+        demand_share = _coerce_to_float(material_entry.get("demand_share_pct", 1.0)) or 1.0
+
+        feed_carbon: dict[str, float] = {}
+
+        # Carbon inputs — negative (consumed by CCS/CCU)
+        for key, amount in (dbc.carbon_inputs or {}).items():
+            normalized = normalize_name(key)
+            val = -(_coerce_to_float(amount) or 0.0) * demand_share
+            feed_carbon[normalized] = feed_carbon.get(normalized, 0.0) + val
+
+        # Carbon outputs — positive (stored / slipped / utilised)
+        for key, amount in (dbc.carbon_outputs or {}).items():
+            normalized = normalize_name(key)
+            val = (_coerce_to_float(amount) or 0.0) * demand_share
+            feed_carbon[normalized] = feed_carbon.get(normalized, 0.0) + val
+
+        breakdown[metallic_charge_lower] = feed_carbon
+
+    # Zero-pad with canonical keys
+    if carbon_breakdown_keys:
+        for feed_carbon in breakdown.values():
+            for key in carbon_breakdown_keys:
+                if key not in feed_carbon:
+                    feed_carbon[key] = 0.0
+
+    return breakdown
+
+
 def calculate_cost_breakdown(
     bill_of_materials: dict[str, dict[str, dict[str, float]]],
     production: float,
