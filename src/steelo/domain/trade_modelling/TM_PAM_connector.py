@@ -166,12 +166,12 @@ class TM_PAM_connector:
         # p.get_energy_costs() # THis function doesn't exist but let's get it.
         for key, value in self.feedstock_energy_requirements[process].items():
             # if the plant has the attribute
-            if hasattr(plant_energy_cost, key.lower().replace("-", "_")):
-                process_energy_cost += getattr(plant_energy_cost, key.lower().replace("-", "_")) * value
+            if hasattr(plant_energy_cost, normalize_name(key)):
+                process_energy_cost += getattr(plant_energy_cost, normalize_name(key)) * value
             else:
                 # logging.debug(f"Key {key} not found in global cost dict or plant")
 
-                process_energy_cost += float(global_cost_dict[key.lower().replace("-", "_")]) * value
+                process_energy_cost += float(global_cost_dict[normalize_name(key)]) * value
         return process_energy_cost
 
     def calculate_allocations_for_graph(

@@ -4,18 +4,10 @@ from pathlib import Path
 
 import logging
 
+from steelo.utilities.utils import normalize_name
+
 
 STRUCTURAL_FEED_COLUMNS = {"commands", "materials", "energy", "cost_breakdown"}
-
-
-def _normalize_reductant(value):
-    """Convert reductant labels to a reporting-friendly form (spaces -> underscores)."""
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return None
-    text = str(value).strip()
-    if not text:
-        return ""
-    return text.replace(" ", "_")
 
 
 def _filter_effectively_empty_frames(frames: list[pd.DataFrame]) -> list[pd.DataFrame]:
@@ -258,7 +250,9 @@ def extract_and_process_stored_dataCollection(
                         final_df[col] = None
 
         if "chosen_reductant" in final_df.columns:
-            final_df["chosen_reductant"] = final_df["chosen_reductant"].apply(_normalize_reductant)
+            final_df["chosen_reductant"] = final_df["chosen_reductant"].apply(
+                lambda v: normalize_name(v) if isinstance(v, str) and v.strip() else v
+            )
     else:
         final_df = pd.DataFrame()
 

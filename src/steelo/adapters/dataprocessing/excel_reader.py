@@ -372,7 +372,7 @@ def read_dynamic_business_cases(
                 if mc:
                     metallic_charges.add(mc)
 
-            red = row["Reductant"].lower() if row["Reductant"] and row["Reductant"] != "nan" else ""
+            red = normalize_name(row["Reductant"]) if row["Reductant"] and row["Reductant"] != "nan" else ""
             if red and "*" not in red:
                 reductants.add(red)
 
@@ -399,7 +399,7 @@ def read_dynamic_business_cases(
         # Now process all rows for this business case
         for _, row in group.iterrows():
             mc_raw = row["Metallic charge"] if row["Metallic charge"] and row["Metallic charge"] != "nan" else ""
-            red = row["Reductant"].lower() if row["Reductant"] and row["Reductant"] != "nan" else ""
+            red = normalize_name(row["Reductant"]) if row["Reductant"] and row["Reductant"] != "nan" else ""
 
             # Check for wildcards in metallic charge
             if mc_raw and "*" in mc_raw:
@@ -410,17 +410,14 @@ def read_dynamic_business_cases(
                     # For non-constraint rows, apply to matching feedstocks
                     pattern = normalize_name(mc_raw.replace("*", ""))
                     for key, feedstock in feedstocks_dict.items():
-                        if (
-                            feedstock.technology.lower() == technology.lower()
-                            and feedstock.metallic_charge.lower().startswith(pattern)
-                        ):
+                        if feedstock.technology == technology.lower() and feedstock.metallic_charge.startswith(pattern):
                             _process_row(row.to_dict(), feedstock, feedstocks_dict)
             elif mc_raw:
                 mc = normalize_name(mc_raw)
                 if not red:
                     # Apply to all feedstocks with this metallic charge
                     for key, feedstock in feedstocks_dict.items():
-                        if feedstock.technology.lower() == technology.lower() and feedstock.metallic_charge == mc:
+                        if feedstock.technology == technology.lower() and feedstock.metallic_charge == mc:
                             _process_row(row.to_dict(), feedstock, feedstocks_dict)
                 else:
                     # Apply to specific combination
@@ -430,12 +427,12 @@ def read_dynamic_business_cases(
             elif red and not mc_raw:
                 # Apply to all feedstocks with this reductant
                 for key, feedstock in feedstocks_dict.items():
-                    if feedstock.technology.lower() == technology.lower() and feedstock.reductant == red:
+                    if feedstock.technology == technology.lower() and feedstock.reductant == red:
                         _process_row(row.to_dict(), feedstock, feedstocks_dict)
             else:
                 # Apply to all feedstocks of this technology (if neither mc nor red specified)
                 for key, feedstock in feedstocks_dict.items():
-                    if feedstock.technology.lower() == technology.lower():
+                    if feedstock.technology == technology.lower():
                         _process_row(row.to_dict(), feedstock, feedstocks_dict)
 
     # Organize by technology (use uppercase keys for backward compatibility)

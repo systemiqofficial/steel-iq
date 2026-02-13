@@ -78,8 +78,8 @@ def test_recreate_input_costs_derives_hydrogen_price(monkeypatch, tmp_path):
 
 
 def test_calculate_emissions_handles_spaced_reductant():
-    """Emission lookup should match when feedstock and factors differ only by space vs underscore."""
-    feedstock = PrimaryFeedstock(metallic_charge="io_high", reductant="natural gas", technology="DRI")
+    """Emission lookup matches normalised reductant against emission factors."""
+    feedstock = PrimaryFeedstock(metallic_charge="io_high", reductant="natural_gas", technology="DRI")
     feedstock.required_quantity_per_ton_of_product = 1.0
 
     material_bill = {"io_high": {"demand": 100.0}}

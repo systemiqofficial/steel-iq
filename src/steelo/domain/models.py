@@ -5717,7 +5717,7 @@ class PlantGroup:
                         new_bom = copy.deepcopy(fg.bill_of_materials)
                         updated_energy_costs: dict[str, float] = {}
                         if getattr(fg, "energy_costs", None):
-                            updated_energy_costs.update({k.replace("-", "_"): v for k, v in fg.energy_costs.items()})
+                            updated_energy_costs.update({normalize_name(k): v for k, v in fg.energy_costs.items()})
                         if "electricity" in new_costs and new_costs["electricity"] is not None:
                             updated_energy_costs["electricity"] = new_costs["electricity"]
                         if "hydrogen" in new_costs and new_costs["hydrogen"] is not None:
@@ -8511,7 +8511,7 @@ class Environment:
         # Step 5: Build BOM based on avg_boms and input effectiveness
         logger.debug("[BOM] Step 5: Building final BOM")
         for feedstock, share_data in self.avg_boms[tech].items():
-            normalized_feedstock = feedstock.replace("-", "_").lower()
+            normalized_feedstock = normalize_name(feedstock)
             logger.debug(f"[BOM] Processing feedstock: {feedstock} (normalized: {normalized_feedstock})")
             logger.debug(f"[BOM] Share data: {share_data}")
 
@@ -8571,7 +8571,7 @@ class Environment:
             if normalized_feedstock in ENERGY_FEEDSTOCK_KEYS:
                 energy_cost_per_unit = energy_costs.get(
                     normalized_feedstock,
-                    energy_costs.get(feedstock.replace(" ", "_").lower(), 0.0),
+                    energy_costs.get(normalize_name(feedstock), 0.0),
                 )
                 energy_demand = float(demand_share_pct) * capacity
                 total_energy_cost = energy_cost_per_unit * energy_demand
