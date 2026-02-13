@@ -298,14 +298,24 @@ def extract_and_process_stored_dataCollection(
     all_cols = list(final_df.columns)
     cb_cols = [c for c in all_cols if c.startswith(CB_PREFIX)]
     carb_cols = set(c for c in all_cols if c.startswith(CARB_PREFIX))
-    non_breakdown_cols = [
-        c
-        for c in all_cols
-        if not c.startswith(CB_PREFIX) and not c.startswith(CARB_PREFIX) and c not in ("year", "commands")
-    ]
+    non_breakdown_cols = [c for c in all_cols if not c.startswith(CB_PREFIX) and not c.startswith(CARB_PREFIX)]
 
-    # Insert year and commands after core id columns within the non-breakdown group
-    ordered = non_breakdown_cols[:6] + ["year", "commands"] + non_breakdown_cols[6:]
+    # Core columns in explicit order
+    CORE_COLS = [
+        "year",
+        "region",
+        "country",
+        "iso3",
+        "plant_id",
+        "balance",
+        "commands",
+        "furnace_group_id",
+        "technology",
+        "product",
+    ]
+    core = [c for c in CORE_COLS if c in non_breakdown_cols]
+    rest = [c for c in non_breakdown_cols if c not in CORE_COLS]
+    ordered = core + rest
 
     # Cost breakdown: priority columns first, then the rest alphabetically
     priority = [c for c in PRIORITY_CB if c in cb_cols]
