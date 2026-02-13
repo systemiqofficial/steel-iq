@@ -203,6 +203,10 @@ class FurnaceBreakdownLogger:
         except Exception:
             data["commodity_price"] = 0
 
+        # Energy costs (current, possibly subsidised)
+        data["energy_costs"] = getattr(fg, "energy_costs", {})
+        data["energy_costs_no_subsidy"] = getattr(fg, "energy_costs_no_subsidy", {})
+
         # Applied subsidies tracking
         data["subsidies"] = {}
         if hasattr(fg, "applied_subsidies") and fg.applied_subsidies:
@@ -214,7 +218,7 @@ class FurnaceBreakdownLogger:
                         data["subsidies"][subsidy_type] = {"count": len(subsidies_list), "details": []}
                         for subsidy in subsidies_list:
                             subsidy_info = {
-                                "name": getattr(subsidy, "subsidy_name", "Unknown"),
+                                "name": getattr(subsidy, "scenario_name", "Unknown"),
                                 "type": getattr(subsidy, "subsidy_type", "absolute"),
                                 "amount": getattr(subsidy, "subsidy_amount", 0),
                                 "start_year": getattr(subsidy, "start_year", 0),
@@ -334,24 +338,40 @@ class FurnaceBreakdownLogger:
             if operations.get("unit_fopex", 0) > 0:
                 logging.info(f"    Unit FOPEX: ${operations['unit_fopex']:,.0f}")
 
-            # Energy costs
-            energy_costs = operations.get("energy_cost_dict", {})
-            if energy_costs:
-                energy_items = [f"{k}: ${v:,.0f}" for k, v in energy_costs.items() if v > 0]
-                if energy_items:
-                    logging.info(f"    Energy Costs: {', '.join(energy_items[:3])}")  # Show first 3
+        # H2/Electricity subsidy effect (show before -> after if subsidised)
+        energy_costs = fg_data.get("energy_costs", {})
+        no_sub = fg_data.get("energy_costs_no_subsidy", {})
+        subsidies = fg_data.get("subsidies", {})
 
-            # H2/Electricity subsidy effect (show before -> after if subsidised)
-            no_sub = operations.get("energy_costs_no_subsidy", {})
-            if no_sub:
-                h2_before = no_sub.get("hydrogen", 0)
-                h2_after = energy_costs.get("hydrogen", 0)
-                elec_before = no_sub.get("electricity", 0)
-                elec_after = energy_costs.get("electricity", 0)
-                if h2_before > 0 and h2_before != h2_after:
-                    logging.info(f"    H2 Subsidy: ${h2_before:.2f} -> ${h2_after:.2f}/kg")
-                if elec_before > 0 and elec_before != elec_after:
-                    logging.info(f"    Elec Subsidy: ${elec_before:.4f} -> ${elec_after:.4f}/kWh")
+        h2_subs = subsidies.get("hydrogen", {})
+        elec_subs = subsidies.get("electricity", {})
+
+        if h2_subs or elec_subs:
+            h2_before = no_sub.get("hydrogen", 0)
+            h2_after = energy_costs.get("hydrogen", h2_before)
+            elec_before = no_sub.get("electricity", 0)
+            elec_after = energy_costs.get("electricity", elec_before)
+
+            subsidy_lines = []
+            if h2_subs and h2_before > 0:
+                h2_reduction = h2_before - h2_after
+                h2_pct = (h2_reduction / h2_before * 100) if h2_before > 0 else 0
+                h2_names = [d.get("name", "?") for d in h2_subs.get("details", [])]
+                subsidy_lines.append(
+                    f"    [H2 SUBSIDY] ${h2_before:.2f} -> ${h2_after:.2f}/t "
+                    f"(-${h2_reduction:.2f}, -{h2_pct:.1f}%) | {h2_names}"
+                )
+            if elec_subs and elec_before > 0:
+                elec_reduction = elec_before - elec_after
+                elec_pct = (elec_reduction / elec_before * 100) if elec_before > 0 else 0
+                elec_names = [d.get("name", "?") for d in elec_subs.get("details", [])]
+                subsidy_lines.append(
+                    f"    [ELEC SUBSIDY] ${elec_before:.6f} -> ${elec_after:.6f}/kWh "
+                    f"(-${elec_reduction:.6f}, -{elec_pct:.1f}%) | {elec_names}"
+                )
+
+            for line in subsidy_lines:
+                logging.info(line)
 
         # Financial information
         financial = fg_data["financial"]

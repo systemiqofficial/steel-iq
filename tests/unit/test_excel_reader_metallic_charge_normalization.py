@@ -14,16 +14,16 @@ class TestMetallicChargeNormalization:
         """Test that a normalize_metallic_charge function exists and works correctly."""
         # First check if the function exists
         try:
-            from steelo.adapters.dataprocessing.excel_reader import normalize_commodity_name
+            from steelo.utilities.utils import normalize_name
         except ImportError:
             pytest.fail("normalize_metallic_charge function should exist in excel_reader.py")
 
         # Test basic functionality
-        assert normalize_commodity_name("Hot metal") == "hot_metal"
-        assert normalize_commodity_name("Pig iron") == "pig_iron"
-        assert normalize_commodity_name("iron ore") == "iron_ore"
-        assert normalize_commodity_name("HOT METAL") == "hot_metal"
-        assert normalize_commodity_name("hot_metal") == "hot_metal"
+        assert normalize_name("Hot metal") == "hot_metal"
+        assert normalize_name("Pig iron") == "pig_iron"
+        assert normalize_name("iron ore") == "iron_ore"
+        assert normalize_name("HOT METAL") == "hot_metal"
+        assert normalize_name("hot_metal") == "hot_metal"
 
 
 class TestDynamicBusinessCaseReadingWithNormalization:
@@ -84,7 +84,9 @@ class TestDynamicBusinessCaseReadingWithNormalization:
 
         # Should not have warnings about invalid metallic charges
         warning_messages = [
-            record.message for record in caplog.records if "Skipping invalid metallic charge" in record.message
+            record.getMessage()
+            for record in caplog.records
+            if "Skipping invalid metallic charge" in record.getMessage()
         ]
         assert len(warning_messages) == 0, f"Unexpected warnings: {warning_messages}"
 

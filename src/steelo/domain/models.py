@@ -23,6 +23,7 @@ from steelo.domain.calculate_costs import (
     ENERGY_FEEDSTOCK_KEYS,
     SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION,
 )
+from steelo.utilities.utils import normalize_name
 from steelo.domain.calculate_emissions import (
     calculate_emissions,
     calculate_emissions_cost_series,
@@ -85,10 +86,6 @@ def is_technology_allowed(config: TechSettingsMap, raw_code: str, year: int) -> 
     return True
 
 
-def _normalize_energy_key(name: str) -> str:
-    return str(name).lower().replace(" ", "_").replace("-", "_")
-
-
 def _recalculate_feedstock_energy_unit_cost(
     fg: "FurnaceGroup", feedstock_key: str, energy_costs: dict[str, float]
 ) -> float | None:
@@ -107,14 +104,14 @@ def _recalculate_feedstock_energy_unit_cost(
     if not dynamic_cases:
         return None
 
-    chosen_reductant = _normalize_energy_key(getattr(fg, "chosen_reductant", "") or "")
+    chosen_reductant = normalize_name(getattr(fg, "chosen_reductant", "") or "")
 
     for dbc in dynamic_cases:
-        metallic_charge = _normalize_energy_key(getattr(dbc, "metallic_charge", ""))
+        metallic_charge = normalize_name(getattr(dbc, "metallic_charge", ""))
         if metallic_charge != feedstock_key:
             continue
 
-        reductant = _normalize_energy_key(getattr(dbc, "reductant", "") or "")
+        reductant = normalize_name(getattr(dbc, "reductant", "") or "")
         if chosen_reductant and reductant and reductant != chosen_reductant:
             continue
 
@@ -125,10 +122,10 @@ def _recalculate_feedstock_energy_unit_cost(
         combined_requirements: dict[str, float] = {}
 
         for energy_name, amount in (getattr(dbc, "energy_requirements", None) or {}).items():
-            combined_requirements[_normalize_energy_key(energy_name)] = amount
+            combined_requirements[normalize_name(energy_name)] = amount
 
         for secondary_name, amount in (getattr(dbc, "secondary_feedstock", None) or {}).items():
-            normalized_secondary = _normalize_energy_key(secondary_name)
+            normalized_secondary = normalize_name(secondary_name)
             if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION:
                 combined_requirements[normalized_secondary] = amount * KG_TO_T
             else:
@@ -591,7 +588,7 @@ class SecondaryFeedstockConstraint:
         Initialize a secondary feedstock constraint.
 
         Args:
-            secondary_feedstock_name: Name of the secondary feedstock (e.g., "bio-pci")
+            secondary_feedstock_name: Name of the secondary feedstock (e.g., "bio_pci")
             region_iso3s: List of ISO-3 country codes that define the region
             maximum_constraint_per_year: Dictionary mapping years to maximum allocation limits (in tonnes)
 
@@ -879,6 +876,8 @@ class PrimaryFeedstock:
         self.required_quantity_per_ton_of_product: float | None = None
         self.secondary_feedstock: dict[str, float] = {}
         self.energy_requirements: dict[str, float] = {}
+        self.carbon_inputs: dict[str, float] = {}
+        self.carbon_outputs: dict[str, float] = {}
         self.maximum_share_in_product: float | None = None
         self.minimum_share_in_product: float | None = None
         self.outputs: dict = {}
@@ -899,6 +898,28 @@ class PrimaryFeedstock:
         if amount is None:
             raise ValueError(f"Energy requirement amount cannot be None for {vector_name}")
         self.energy_requirements[vector_name] = amount
+
+    def add_carbon_input(self, vector_name: str, amount: float) -> None:
+        """Add a carbon input vector (e.g. co2_inlet) to this feedstock.
+
+        Args:
+            vector_name: Normalised carbon input key.
+            amount: Amount per tonne of product (original units preserved).
+        """
+        if amount is None:
+            raise ValueError(f"Carbon input amount cannot be None for {vector_name}")
+        self.carbon_inputs[vector_name] = amount
+
+    def add_carbon_output(self, vector_name: str, amount: float) -> None:
+        """Add a carbon output vector (e.g. co2_stored, co2_slip) to this feedstock.
+
+        Args:
+            vector_name: Normalised carbon output key.
+            amount: Amount per tonne of product (original units preserved).
+        """
+        if amount is None:
+            raise ValueError(f"Carbon output amount cannot be None for {vector_name}")
+        self.carbon_outputs[vector_name] = amount
 
     def add_share_constraint(self, constraint_type: str, value: float) -> None:
         assert constraint_type in ["Maximum", "Minimum", "Minium"], f"Invalid constraint type {constraint_type}"
@@ -1061,6 +1082,8 @@ class FurnaceGroup:
         railway_cost: float = 0.0,
         created_by_PAM: bool = False,
         legacy_debt_schedule: list[float] | None = None,
+        cost_breakdown_keys: list[str] | None = None,
+        carbon_breakdown_keys: list[str] | None = None,
     ) -> None:
         self.furnace_group_id = furnace_group_id
         self.capacity = capacity
@@ -1074,6 +1097,8 @@ class FurnaceGroup:
         self.created_by_PAM = created_by_PAM
         self.bill_of_materials = bill_of_materials
         self.chosen_reductant = chosen_reductant
+        self.cost_breakdown_keys = cost_breakdown_keys
+        self.carbon_breakdown_keys = carbon_breakdown_keys
         self.allocated_volumes = allocated_volumes
 
         # Future technology switch (accounts for construction time while operating with old technology)
@@ -1158,15 +1183,11 @@ class FurnaceGroup:
         # Store costs with normalized keys to ensure downstream lookups succeed
         energy_costs: dict[str, float] = {}
         for raw_key, price in costs.items():
-            normalized_key = _normalize_energy_key(raw_key)
+            normalized_key = normalize_name(raw_key)
             energy_costs[normalized_key] = price
             # Preserve original key for compatibility where callers still expect legacy naming
             if normalized_key != raw_key:
                 energy_costs[raw_key] = price
-
-        # Ensure "flexible" has a value - default to natural_gas if not provided
-        if "flexible" not in energy_costs and "natural_gas" in energy_costs:
-            energy_costs["flexible"] = energy_costs["natural_gas"]
 
         self.energy_costs = energy_costs
 
@@ -2073,6 +2094,23 @@ class FurnaceGroup:
             energy_costs=self.energy_costs,
             chosen_reductant=self.chosen_reductant,
             energy_vopex_breakdown_by_input=self.energy_vopex_breakdown_by_input,
+            cost_breakdown_keys=self.cost_breakdown_keys,
+            input_costs=self.input_costs,
+        )
+
+    @property
+    def carbon_breakdown_by_feedstock(self) -> dict[str, dict[str, float]]:
+        """Physical carbon intensity breakdown by feedstock (tCO2/t-product)."""
+        from .calculate_costs import calculate_carbon_breakdown_by_feedstock
+
+        if self.bill_of_materials is None:
+            return {}
+
+        return calculate_carbon_breakdown_by_feedstock(
+            bill_of_materials=self.bill_of_materials,
+            chosen_reductant=self.chosen_reductant,
+            dynamic_business_cases=self.technology.dynamic_business_case or [],
+            carbon_breakdown_keys=self.carbon_breakdown_keys,
         )
 
     def optimal_technology_name(
@@ -2178,27 +2216,27 @@ class FurnaceGroup:
         logger = logging.getLogger(f"{__name__}.optimal_technology_name")
 
         # Log initial furnace group state
-        logger.info(f"[OPTIMAL TECHNOLOGY]: Starting technology evaluation for FurnaceGroup {self.furnace_group_id}")
+        logger.info(f"[OPTIMAL TECH] Starting technology evaluation for FurnaceGroup {self.furnace_group_id}")
         logger.info(
-            f"[OPTIMAL TECHNOLOGY]: Current technology: {self.technology.name}, "
+            f"[OPTIMAL TECH] Current technology: {self.technology.name}, "
             f"Capacity: {self.capacity * T_TO_KT:,.0f} kt, Utilization: {self.utilization_rate:.1%}"
         )
         logger.debug(
-            f"[OPTIMAL TECHNOLOGY]: Current year: {current_year}, "
-            f"Lifetime remaining: {self.lifetime.remaining_number_of_years} years\n"
-            f"[OPTIMAL TECHNOLOGY]: Market price series for steel ($/t): ${market_price_series['steel']}\n"
-            f"[OPTIMAL TECHNOLOGY]: Market price series for iron ($/t): ${market_price_series['iron']}\n"
-            f"[OPTIMAL TECHNOLOGY]: Allowed transitions from {self.technology.name}: "
+            f"[OPTIMAL TECH] Current year: {current_year}, "
+            f"Lifetime remaining: {self.lifetime.remaining_number_of_years} years"
+        )
+        logger.debug(f"[OPTIMAL TECH] Market price series for steel ($/t): ${market_price_series['steel']}")
+        logger.debug(f"[OPTIMAL TECH] Market price series for iron ($/t): ${market_price_series['iron']}")
+        logger.debug(
+            f"[OPTIMAL TECH] Allowed transitions from {self.technology.name}: "
             f"{allowed_furnace_transitions.get(self.technology.name, [])}"
         )
 
         # Log current operating costs
-        logger.debug(
-            f"[OPTIMAL TECHNOLOGY]: Unit fixed OPEX: ${self.unit_fopex:,.2f}/t\n"
-            f"[OPTIMAL TECHNOLOGY]: Unit variable OPEX: ${self.unit_vopex:,.2f}/t\n"
-            f"[OPTIMAL TECHNOLOGY]: Unit total OPEX: ${self.unit_total_opex:,.2f}/t\n"
-            f"[OPTIMAL TECHNOLOGY]: Debt repayment number of years: {len(self.debt_repayment_per_year)}"
-        )
+        logger.debug(f"[OPTIMAL TECH] Unit fixed OPEX: ${self.unit_fopex:,.2f}/t")
+        logger.debug(f"[OPTIMAL TECH] Unit variable OPEX: ${self.unit_vopex:,.2f}/t")
+        logger.debug(f"[OPTIMAL TECH] Unit total OPEX: ${self.unit_total_opex:,.2f}/t")
+        logger.debug(f"[OPTIMAL TECH] Debt repayment number of years: {len(self.debt_repayment_per_year)}")
 
         # ========== STAGE 2: Calculate Current Technology OPEX with Subsidies ==========
         # Collect all active OPEX subsidies across the remaining lifetime
@@ -2217,9 +2255,9 @@ class FurnaceGroup:
         )
 
         logger.debug(
-            f"[OPTIMAL TECHNOLOGY]: Applied OPEX subsidies for current technology {self.technology.name}: {applied_opex_subsidies}\n"
-            f"[OPTIMAL TECHNOLOGY]: Unit opex list with subsidies (without carbon costs): {unit_opex_list}"
+            f"[OPTIMAL TECH] Applied OPEX subsidies for current technology {self.technology.name}: {applied_opex_subsidies}"
         )
+        logger.debug(f"[OPTIMAL TECH] Unit opex list with subsidies (without carbon costs): {unit_opex_list}")
 
         # ========== STAGE 3: Calculate Carbon Costs for Current Technology ==========
         # Calculate total carbon costs over remaining lifetime
@@ -2240,25 +2278,27 @@ class FurnaceGroup:
         # Combine OPEX with carbon costs for COSA calculation
         unit_opex_carbon_costs = [x + y for x, y in zip(unit_opex_list, unit_carbon_cost_list)]
 
+        logger.debug(f"[OPTIMAL TECH] Calculating carbon costs for current technology {self.technology.name}")
+        logger.debug(f"[OPTIMAL TECH] Emission boundary: {chosen_emissions_boundary_for_carbon_costs}")
         logger.debug(
-            f"[OPTIMAL TECHNOLOGY]: Calculating carbon costs for current technology {self.technology.name}\n"
-            f"[OPTIMAL TECHNOLOGY]: Emission boundary: {chosen_emissions_boundary_for_carbon_costs}\n"
-            f"[OPTIMAL TECHNOLOGY]: Carbon cost series length: {len(unit_carbon_cost_list)}, "
-            f"First 5 values: {unit_carbon_cost_list[:5] if unit_carbon_cost_list else 'None'}\n"
-            f"[OPTIMAL TECHNOLOGY]: Unit opex list with subsidies (after carbon costs): {unit_opex_carbon_costs}"
+            f"[OPTIMAL TECH] Carbon cost series length: {len(unit_carbon_cost_list)}, "
+            f"First 5 values: {unit_carbon_cost_list[:5] if unit_carbon_cost_list else 'None'}"
         )
+        logger.debug(f"[OPTIMAL TECH] Unit opex list with subsidies (after carbon costs): {unit_opex_carbon_costs}")
 
         # ========== STAGE 4: Calculate Cost of Stranded Assets (COSA) ==========
         # COSA represents the economic penalty for abandoning current technology before end of life
+        logger.debug(f"[OPTIMAL TECH] Calculating COSA for current technology {self.technology.name}")
         logger.debug(
-            f"[OPTIMAL TECHNOLOGY]: Calculating COSA for current technology {self.technology.name}\n"
-            f"[OPTIMAL TECHNOLOGY]: Debt repayment years: {len(self.debt_repayment_per_year)}, "
-            f"Remaining lifetime: {self.lifetime.remaining_number_of_years} years\n"
-            f"[OPTIMAL TECHNOLOGY]: Debt repayment per year: {self.debt_repayment_per_year}\n"
-            f"[OPTIMAL TECHNOLOGY]: Product: {self.technology.product}, "
-            f"Expected production: {self.production * T_TO_KT:,.0f} kt\n"
-            f"[OPTIMAL TECHNOLOGY] Price series ($/t): {market_price_series.get(self.technology.product)}"
+            f"[OPTIMAL TECH] Debt repayment years: {len(self.debt_repayment_per_year)}, "
+            f"Remaining lifetime: {self.lifetime.remaining_number_of_years} years"
         )
+        logger.debug(f"[OPTIMAL TECH] Debt repayment per year: {self.debt_repayment_per_year}")
+        logger.debug(
+            f"[OPTIMAL TECH] Product: {self.technology.product}, "
+            f"Expected production: {self.production * T_TO_KT:,.0f} kt"
+        )
+        logger.debug(f"[OPTIMAL TECH] Price series ($/t): {market_price_series.get(self.technology.product)}")
 
         # Calculate economic COSA based on remaining cash flows
         original_cosa = stranding_asset_cost(
@@ -2275,9 +2315,11 @@ class FurnaceGroup:
         cosa = max(remaining_debt, original_cosa)
 
         logger.debug(
-            f"[OPTIMAL TECHNOLOGY]: COSA calculation - Original: ${original_cosa:,.0f}, "
-            f"Remaining debt: ${remaining_debt:,.0f}, Final COSA: ${cosa:,.0f}\n"
-            f"[OPTIMAL TECHNOLOGY]: COSA decision - Using {'remaining debt' if cosa == remaining_debt else 'calculated COSA'} as final value"
+            f"[OPTIMAL TECH] COSA calculation - Original: ${original_cosa:,.0f}, "
+            f"Remaining debt: ${remaining_debt:,.0f}, Final COSA: ${cosa:,.0f}"
+        )
+        logger.debug(
+            f"[OPTIMAL TECH] COSA decision - Using {'remaining debt' if cosa == remaining_debt else 'calculated COSA'} as final value"
         )
 
         # ========== STAGE 5: Check for Allowed Technology Transitions ==========
@@ -2287,33 +2329,31 @@ class FurnaceGroup:
 
         # Check if current technology has any allowed transitions defined
         if self.technology.name not in allowed_furnace_transitions:
-            logger.info(
-                f"[OPTIMAL TECHNOLOGY]: NO TRANSITIONS ALLOWED - {self.technology.name} has no defined transitions\n"
-                "[OPTIMAL TECHNOLOGY]: Returning empty results - no technology switch possible\n"
-                "[OPTIMAL TECHNOLOGY]: NPV dict: {}\n"
-                f"[OPTIMAL TECHNOLOGY]: NPV capex dict: {npv_capex_dict}\n"
-                "[OPTIMAL TECHNOLOGY]: COSA: None\n"
-                f"[OPTIMAL TECHNOLOGY]: BOM dict: {bom_dict}"
-            )
+            logger.info(f"[OPTIMAL TECH] NO TRANSITIONS ALLOWED - {self.technology.name} has no defined transitions")
+            logger.info("[OPTIMAL TECH] Returning empty results - no technology switch possible")
+            logger.info("[OPTIMAL TECH] NPV dict: {}")
+            logger.info(f"[OPTIMAL TECH] NPV capex dict: {npv_capex_dict}")
+            logger.info("[OPTIMAL TECH] COSA: None")
+            logger.info(f"[OPTIMAL TECH] BOM dict: {bom_dict}")
             return {}, npv_capex_dict, None, bom_dict
 
         # ========== STAGE 6: Evaluate Each Allowed Technology Transition ==========
         logger.debug(
-            f"[OPTIMAL TECHNOLOGY]: Beginning evaluation of {len(allowed_furnace_transitions[self.technology.name])} "
+            f"[OPTIMAL TECH] Beginning evaluation of {len(allowed_furnace_transitions[self.technology.name])} "
             f"possible transitions: {allowed_furnace_transitions[self.technology.name]}"
         )
 
         for tech in allowed_furnace_transitions[self.technology.name]:
-            logger.info(f"[OPTIMAL TECHNOLOGY]: ===== Evaluating transition to {tech} =====")
+            logger.info(f"[OPTIMAL TECH] ===== Evaluating transition to {tech} =====")
 
             # Skip if technology lacks capex data
             if tech not in capex_dict:
-                logger.info(f"[OPTIMAL TECHNOLOGY]: SKIPPING {tech} - No capex data available")
+                logger.info(f"[OPTIMAL TECH] SKIPPING {tech} - No capex data available")
                 continue
 
             # BOF requires smelter furnace (for pig iron production)
             if tech == "BOF" and not plant_has_smelter_furnace:
-                logger.info("[OPTIMAL TECHNOLOGY]: SKIPPING BOF - Plant has no smelter furnace (required for BOF)")
+                logger.info("[OPTIMAL TECH] SKIPPING BOF - Plant has no smelter furnace (required for BOF)")
                 continue
 
             # Collect all active subsidies for this technology
@@ -2329,13 +2369,13 @@ class FurnaceGroup:
             original_capex = capex_dict[tech]
             capex = calculate_capex_with_subsidies(original_capex, capex_subsidies)
 
+            logger.debug(f"[OPTIMAL TECH] Base capex for {tech}: ${original_capex:,.2f}")
             logger.debug(
-                f"[OPTIMAL TECHNOLOGY]: Base capex for {tech}: ${original_capex:,.2f}\n"
-                f"[OPTIMAL TECHNOLOGY]: Capex after subsidies: ${capex:.2f}, Reduction: ${original_capex - capex:.2f}\n"
-                f"[OPTIMAL TECHNOLOGY]: Capex subsidies: {capex_subsidies}\n"
-                f"[OPTIMAL TECHNOLOGY]: Debt subsidies: {debt_subsidies}\n"
-                f"[OPTIMAL TECHNOLOGY]: Opex subsidies: {opex_subsidies}"
+                f"[OPTIMAL TECH] Capex after subsidies: ${capex:.2f}, Reduction: ${original_capex - capex:.2f}"
             )
+            logger.debug(f"[OPTIMAL TECH] Capex subsidies: {capex_subsidies}")
+            logger.debug(f"[OPTIMAL TECH] Debt subsidies: {debt_subsidies}")
+            logger.debug(f"[OPTIMAL TECH] Opex subsidies: {opex_subsidies}")
 
             # === STAGE 7: Branch Based on Current vs New Technology ==========
             if tech == self.technology.name:  # Renovate current technology (brownfield)
@@ -2352,7 +2392,7 @@ class FurnaceGroup:
 
                 # Validate BOM structure before proceeding
                 if not bill_of_materials or "materials" not in bill_of_materials or "energy" not in bill_of_materials:
-                    logger.warning(f"[OPTIMAL TECHNOLOGY]: SKIPPING {tech} - Invalid or missing BOM structure")
+                    logger.warning(f"[OPTIMAL TECH] SKIPPING {tech} - Invalid or missing BOM structure")
                     logger.warning(f"Invalid or missing BOM for current technology {tech}, skipping")
                     continue
 
@@ -2365,16 +2405,29 @@ class FurnaceGroup:
                     end_year=self.lifetime.current + self.lifetime.plant_lifetime,
                 )
 
+                logger.debug(f"[OPTIMAL TECH] Evaluating CURRENT technology {tech} as brownfield renovation")
                 logger.debug(
-                    f"[OPTIMAL TECHNOLOGY]: Evaluating CURRENT technology {tech} as brownfield renovation\n"
-                    f"[OPTIMAL TECHNOLOGY]: Capex renovation share adjustment - Share: {capex_renovation_share_for_tech:.2%}, Adjusted: ${capex:,.2f}\n"
-                    f"[OPTIMAL TECHNOLOGY]: Using existing BOM and utilization rate: {util_rate:.2%}\n"
-                    f"[OPTIMAL TECHNOLOGY]: BOM for {tech}: {bill_of_materials}\n"
-                    "[OPTIMAL TECHNOLOGY]: Carbon costs calculated for plant lifetime horizon using existing emissions"
+                    f"[OPTIMAL TECH] Capex renovation share adjustment - Share: {capex_renovation_share_for_tech:.2%}, Adjusted: ${capex:,.2f}"
+                )
+                logger.debug(f"[OPTIMAL TECH] Using existing BOM and utilization rate: {util_rate:.2%}")
+                logger.debug(f"[OPTIMAL TECH] BOM for {tech}: {bill_of_materials}")
+                logger.debug(
+                    "[OPTIMAL TECH] Carbon costs calculated for plant lifetime horizon using existing emissions"
                 )
 
             else:  # Switch to a new technology (greenfield)
                 # ========== BRANCH B: Greenfield Installation (New Technology) ==========
+                h2_cost = self.energy_costs.get("hydrogen", 0)
+                elec_cost = self.energy_costs.get("electricity", 0)
+                h2_no_sub = self.energy_costs_no_subsidy.get("hydrogen", h2_cost)
+                elec_no_sub = self.energy_costs_no_subsidy.get("electricity", elec_cost)
+                if h2_cost != h2_no_sub or elec_cost != elec_no_sub:
+                    logger.debug(
+                        f"[OPTIMAL TECH] {tech} using subsidised energy: "
+                        f"H2 ${h2_no_sub:.2f}->${h2_cost:.2f}/t, "
+                        f"Elec ${elec_no_sub:.6f}->${elec_cost:.6f}/kWh"
+                    )
+
                 # Fetch average BOM for the new technology from historical data
                 chosen_reductant = most_common_reductant_by_tech.get(tech)
                 bom_result = get_bom_from_avg_boms(self.energy_costs, tech, self.capacity, chosen_reductant)
@@ -2382,7 +2435,7 @@ class FurnaceGroup:
 
                 # Skip if BOM retrieval failed
                 if bill_of_materials_opt is None:
-                    logger.warning(f"[OPTIMAL TECHNOLOGY]: SKIPPING {tech} - Could not retrieve BOM from averages")
+                    logger.warning(f"[OPTIMAL TECH] SKIPPING {tech} - Could not retrieve BOM from averages")
                     logger.warning(f"Could not get bill of materials for technology {tech}, skipping")
                     continue
 
@@ -2413,18 +2466,20 @@ class FurnaceGroup:
                     end_year=self.lifetime.current + construction_time + self.lifetime.plant_lifetime,
                 )
 
+                logger.debug(f"[OPTIMAL TECH] Evaluating NEW technology {tech} as greenfield installation")
+                logger.debug(f"[OPTIMAL TECH] Full greenfield capex: ${capex:,.2f}")
                 logger.debug(
-                    f"[OPTIMAL TECHNOLOGY]: Evaluating NEW technology {tech} as greenfield installation\n"
-                    f"[OPTIMAL TECHNOLOGY]: Full greenfield capex: ${capex:,.2f}\n"
-                    f"[OPTIMAL TECHNOLOGY]: Fetching average BOM for {tech} with capacity {self.capacity * T_TO_KT:.2f} kt\n"
-                    f"[OPTIMAL TECHNOLOGY]: Retrieved BOM successfully - Utilization: {util_rate:.2%}, Reductant: {reductant}\n"
-                    f"[OPTIMAL TECHNOLOGY]: Found {len(tech_business_cases)} business cases for {tech}\n"
-                    f"[OPTIMAL TECHNOLOGY]: Business cases: {tech_business_cases}\n"
-                    f"[OPTIMAL TECHNOLOGY]: Matched {len(matched_business_cases)} business cases with BOM\n"
-                    f"[OPTIMAL TECHNOLOGY]: Matched business cases: {matched_business_cases}\n"
-                    f"[OPTIMAL TECHNOLOGY]: Calculated emissions for {len(bom_emissions)} boundaries\n"
-                    "[OPTIMAL TECHNOLOGY]: Calculated carbon costs for new technology over plant lifetime"
+                    f"[OPTIMAL TECH] Fetching average BOM for {tech} with capacity {self.capacity * T_TO_KT:.2f} kt"
                 )
+                logger.debug(
+                    f"[OPTIMAL TECH] Retrieved BOM successfully - Utilization: {util_rate:.2%}, Reductant: {reductant}"
+                )
+                logger.debug(f"[OPTIMAL TECH] Found {len(tech_business_cases)} business cases for {tech}")
+                logger.debug(f"[OPTIMAL TECH] Business cases: {tech_business_cases}")
+                logger.debug(f"[OPTIMAL TECH] Matched {len(matched_business_cases)} business cases with BOM")
+                logger.debug(f"[OPTIMAL TECH] Matched business cases: {matched_business_cases}")
+                logger.debug(f"[OPTIMAL TECH] Calculated emissions for {len(bom_emissions)} boundaries")
+                logger.debug("[OPTIMAL TECH] Calculated carbon costs for new technology over plant lifetime")
 
             # ========== STAGE 8: Calculate NPV for Technology ==========
             # Only proceed if we have valid BOM data
@@ -2434,9 +2489,7 @@ class FurnaceGroup:
                 # Validate and retrieve product price series for this technology
                 product_type = tech_to_product[tech]
                 if not product_type or product_type not in market_price_series:
-                    logger.debug(
-                        f"[OPTIMAL TECHNOLOGY]: SKIPPING {tech} - Invalid or missing product type: {product_type}"
-                    )
+                    logger.debug(f"[OPTIMAL TECH] SKIPPING {tech} - Invalid or missing product type: {product_type}")
                     continue
                 product_price_series = market_price_series[product_type]
 
@@ -2483,25 +2536,33 @@ class FurnaceGroup:
                     carbon_costs=carbon_cost_list,
                 )
 
+                logger.debug(f"[OPTIMAL TECH] Proceeding with NPV calculation for {tech}")
                 logger.debug(
-                    f"[OPTIMAL TECHNOLOGY]: Proceeding with NPV calculation for {tech}\n"
-                    f"[OPTIMAL TECHNOLOGY]: Product type: {product_type}, Market price series ($/t): {product_price_series}\n"
-                    f"[OPTIMAL TECHNOLOGY]: Unit FOPEX for {tech}: ${unit_fopex:,.2f}\n"
-                    f"[OPTIMAL TECHNOLOGY]: Operating subsidies calculated for {self.lifetime.plant_lifetime} years\n"
-                    f"[OPTIMAL TECHNOLOGY]: Cost of debt for {tech}: {original_cost_of_debt:.1%} -> {cost_of_debt:.1%} (after subsidies)\n"
-                    "[OPTIMAL TECHNOLOGY]: Calculating NPV with parameters:\n"
-                    f"[OPTIMAL TECHNOLOGY]:   - Technology: {tech}\n"
-                    f"[OPTIMAL TECHNOLOGY]:   - Capex per tonne: ${capex:,.2f} (before subsidy: ${original_capex:,.2f})\n"
-                    f"[OPTIMAL TECHNOLOGY]:   - Total opex per tonne: {unit_total_opex_list} (before subsidy: ${unit_total_opex:,.2f})\n"
-                    f"[OPTIMAL TECHNOLOGY]:   - Capacity: {self.capacity:.2f} t\n"
-                    f"[OPTIMAL TECHNOLOGY]:   - Utilization rate: {util_rate:.2%}\n"
-                    f"[OPTIMAL TECHNOLOGY]:   - Price series ($/t): {product_price_series}\n"
-                    f"[OPTIMAL TECHNOLOGY]:   - Lifetime: {self.lifetime.plant_lifetime} years\n"
-                    f"[OPTIMAL TECHNOLOGY]:   - Cost of debt: {cost_of_debt:.2%} (before subsidy: {original_cost_of_debt:.2%})\n"
-                    f"[OPTIMAL TECHNOLOGY]:   - Cost of equity: {cost_of_equity:.2%}\n"
-                    f"[OPTIMAL TECHNOLOGY]:   - Equity share: {self.equity_share:.2%}\n"
-                    f"[OPTIMAL TECHNOLOGY]: Raw NPV for {tech}: ${npv_dict[tech]:,.2f}"
+                    f"[OPTIMAL TECH] Product type: {product_type}, Market price series ($/t): {product_price_series}"
                 )
+                logger.debug(f"[OPTIMAL TECH] Unit FOPEX for {tech}: ${unit_fopex:,.2f}")
+                logger.debug(f"[OPTIMAL TECH] Operating subsidies calculated for {self.lifetime.plant_lifetime} years")
+                logger.debug(
+                    f"[OPTIMAL TECH] Cost of debt for {tech}: {original_cost_of_debt:.1%} -> {cost_of_debt:.1%} (after subsidies)"
+                )
+                logger.debug("[OPTIMAL TECH] Calculating NPV with parameters:")
+                logger.debug(f"[OPTIMAL TECH]   - Technology: {tech}")
+                logger.debug(
+                    f"[OPTIMAL TECH]   - Capex per tonne: ${capex:,.2f} (before subsidy: ${original_capex:,.2f})"
+                )
+                logger.debug(
+                    f"[OPTIMAL TECH]   - Total opex per tonne: {unit_total_opex_list} (before subsidy: ${unit_total_opex:,.2f})"
+                )
+                logger.debug(f"[OPTIMAL TECH]   - Capacity: {self.capacity:.2f} t")
+                logger.debug(f"[OPTIMAL TECH]   - Utilization rate: {util_rate:.2%}")
+                logger.debug(f"[OPTIMAL TECH]   - Price series ($/t): {product_price_series}")
+                logger.debug(f"[OPTIMAL TECH]   - Lifetime: {self.lifetime.plant_lifetime} years")
+                logger.debug(
+                    f"[OPTIMAL TECH]   - Cost of debt: {cost_of_debt:.2%} (before subsidy: {original_cost_of_debt:.2%})"
+                )
+                logger.debug(f"[OPTIMAL TECH]   - Cost of equity: {cost_of_equity:.2%}")
+                logger.debug(f"[OPTIMAL TECH]   - Equity share: {self.equity_share:.2%}")
+                logger.debug(f"[OPTIMAL TECH] Raw NPV for {tech}: ${npv_dict[tech]:,.2f}")
 
                 # ========== STAGE 9: Adjust NPV for COSA (Technology Switches Only) ==========
                 # Subtract COSA penalty only when switching to a different technology
@@ -2509,13 +2570,15 @@ class FurnaceGroup:
                     original_npv = npv_dict[tech]
                     npv_dict[tech] -= cosa
                     logger.debug(
-                        f"[OPTIMAL TECHNOLOGY]: COSA adjustment for {tech} - "
-                        f"Original NPV: ${original_npv:,.2f}, COSA: ${cosa:,.2f}, Adjusted NPV: ${npv_dict[tech]:,.2f}\n"
-                        f"[OPTIMAL TECHNOLOGY]: Technology switch {self.technology.name} -> {tech} "
+                        f"[OPTIMAL TECH] COSA adjustment for {tech} - "
+                        f"Original NPV: ${original_npv:,.2f}, COSA: ${cosa:,.2f}, Adjusted NPV: ${npv_dict[tech]:,.2f}"
+                    )
+                    logger.debug(
+                        f"[OPTIMAL TECH] Technology switch {self.technology.name} -> {tech} "
                         f"is {'PROFITABLE' if npv_dict[tech] > 0 else 'UNPROFITABLE'} after COSA"
                     )
                 else:
-                    logger.debug(f"[OPTIMAL TECHNOLOGY]: No COSA adjustment for current technology {tech}")
+                    logger.debug(f"[OPTIMAL TECH] No COSA adjustment for current technology {tech}")
             else:
                 # Skip NPV calculation - log reasons
                 reasons = []
@@ -2526,30 +2589,26 @@ class FurnaceGroup:
                 if current_year is None:
                     reasons.append("current_year is None")
 
-                logger.debug(
-                    f"[OPTIMAL TECHNOLOGY]: SKIPPING NPV calculation for {tech} - Reasons: {', '.join(reasons)}"
-                )
+                logger.debug(f"[OPTIMAL TECH] SKIPPING NPV calculation for {tech} - Reasons: {', '.join(reasons)}")
 
         # ========== STAGE 10: Return Results ==========
         # Log final evaluation summary
         if npv_dict:
             best_tech = max(npv_dict, key=lambda k: npv_dict[k])
-            logger.debug(
-                "[OPTIMAL TECHNOLOGY]: ===== Evaluation Complete =====\n"
-                f"[OPTIMAL TECHNOLOGY]: Technologies evaluated: {list(npv_dict.keys())}\n"
-                f"[OPTIMAL TECHNOLOGY]: Best technology by NPV: {best_tech} with NPV: ${npv_dict[best_tech]:,.2f}\n"
-                f"[OPTIMAL TECHNOLOGY]: COSA calculated: ${cosa:,.2f}"
-                if cosa
-                else "[OPTIMAL TECHNOLOGY]: COSA is None"
-            )
+            logger.debug("[OPTIMAL TECH] ===== Evaluation Complete =====")
+            logger.debug(f"[OPTIMAL TECH] Technologies evaluated: {list(npv_dict.keys())}")
+            logger.debug(f"[OPTIMAL TECH] Best technology by NPV: {best_tech} with NPV: ${npv_dict[best_tech]:,.2f}")
+            if cosa:
+                logger.debug(f"[OPTIMAL TECH] COSA calculated: ${cosa:,.2f}")
+            else:
+                logger.debug("[OPTIMAL TECH] COSA is None")
         else:
-            logger.debug(
-                "[OPTIMAL TECHNOLOGY]: ===== Evaluation Complete =====\n"
-                "[OPTIMAL TECHNOLOGY]: No viable technology transitions found\n"
-                f"[OPTIMAL TECHNOLOGY]: COSA calculated: ${cosa:,.2f}"
-                if cosa
-                else "[OPTIMAL TECHNOLOGY]: COSA is None"
-            )
+            logger.debug("[OPTIMAL TECH] ===== Evaluation Complete =====")
+            logger.debug("[OPTIMAL TECH] No viable technology transitions found")
+            if cosa:
+                logger.debug(f"[OPTIMAL TECH] COSA calculated: ${cosa:,.2f}")
+            else:
+                logger.debug("[OPTIMAL TECH] COSA is None")
 
         return npv_dict, npv_capex_dict, cosa, bom_dict
 
@@ -2608,13 +2667,13 @@ class FurnaceGroup:
 
             combined_requirements: dict[str, float] = {}
             for energy_type, volume in raw_energy_req.items():
-                normalized_energy = _normalize_energy_key(energy_type)
+                normalized_energy = normalize_name(energy_type)
                 if normalized_energy not in ENERGY_FEEDSTOCK_KEYS:
                     continue
                 combined_requirements[normalized_energy] = combined_requirements.get(normalized_energy, 0.0) + volume
 
             for secondary_type, volume in raw_secondary.items():
-                normalized_secondary = _normalize_energy_key(secondary_type)
+                normalized_secondary = normalize_name(secondary_type)
                 if normalized_secondary not in ENERGY_FEEDSTOCK_KEYS:
                     continue
                 converted_volume = (
@@ -2636,7 +2695,7 @@ class FurnaceGroup:
             energy_breakdown_by_input.setdefault(metallic_input, {}).setdefault(dbc.reductant, defaultdict(float))
 
             for energy_type, volume in combined_requirements.items():
-                normalized_energy = _normalize_energy_key(energy_type)
+                normalized_energy = normalize_name(energy_type)
                 price = self.energy_costs.get(normalized_energy, self.energy_costs.get(energy_type, 0.0))
                 cost_value = volume * price
                 energy_vopex_by_input[metallic_input][dbc.reductant] += cost_value
@@ -3584,18 +3643,29 @@ class Plant:
         logger = logging.getLogger(f"{__name__}.evaluate_furnace_group_strategy")
         furnace_group = self.get_furnace_group(furnace_group_id)
 
+        h2_subs_active = len(furnace_group.applied_subsidies.get("hydrogen", [])) > 0
+        elec_subs_active = len(furnace_group.applied_subsidies.get("electricity", [])) > 0
+        if h2_subs_active or elec_subs_active:
+            h2_no_sub = furnace_group.energy_costs_no_subsidy.get("hydrogen", 0)
+            h2_with_sub = furnace_group.energy_costs.get("hydrogen", 0)
+            elec_no_sub = furnace_group.energy_costs_no_subsidy.get("electricity", 0)
+            elec_with_sub = furnace_group.energy_costs.get("electricity", 0)
+            logger.debug(
+                f"[FG STRATEGY] FG:{furnace_group_id} {self.location.iso3} | "
+                f"H2={h2_subs_active} (${h2_no_sub:.2f}->${h2_with_sub:.2f}/t), "
+                f"Elec={elec_subs_active} (${elec_no_sub:.6f}->${elec_with_sub:.6f}/kWh)"
+            )
+
         # Log initial state for debugging
-        logger.debug(
-            f"[FG STRATEGY]: ========== Starting evaluation for FG {furnace_group_id} ==========\n"
-            f"[FG STRATEGY]:   - Current year: {current_year}\n"
-            f"[FG STRATEGY]:   - Current tech: {furnace_group.technology.name}\n"
-            f"[FG STRATEGY]:   - Capacity: {furnace_group.capacity * T_TO_KT:,.0f} kt\n"
-            f"[FG STRATEGY]:   - Status: {furnace_group.status}\n"
-            f"[FG STRATEGY]:   - FG balance: ${furnace_group.balance:,.2f}\n"
-            f"[FG STRATEGY]:   - Historic balance: ${furnace_group.historic_balance:,.2f}\n"
-            f"[FG STRATEGY]:   - Plant balance: ${self.balance:,.2f}\n"
-            f"[FG STRATEGY]:   - Location: {self.location.iso3}"
-        )
+        logger.debug(f"[FG STRATEGY] ========== Starting evaluation for FG {furnace_group_id} ==========")
+        logger.debug(f"[FG STRATEGY]   - Current year: {current_year}")
+        logger.debug(f"[FG STRATEGY]   - Current tech: {furnace_group.technology.name}")
+        logger.debug(f"[FG STRATEGY]   - Capacity: {furnace_group.capacity * T_TO_KT:,.0f} kt")
+        logger.debug(f"[FG STRATEGY]   - Status: {furnace_group.status}")
+        logger.debug(f"[FG STRATEGY]   - FG balance: ${furnace_group.balance:,.2f}")
+        logger.debug(f"[FG STRATEGY]   - Historic balance: ${furnace_group.historic_balance:,.2f}")
+        logger.debug(f"[FG STRATEGY]   - Plant balance: ${self.balance:,.2f}")
+        logger.debug(f"[FG STRATEGY]   - Location: {self.location.iso3}")
 
         # ===== STAGE 1: Check plant financial health =====
         # Negative balance means no investment capacity available
@@ -3606,7 +3676,7 @@ class Plant:
         # ===== STAGE 2: Check furnace group status =====
         # Skip if already scheduled for retirement
         if furnace_group.status.lower() == "operating pre-retirement":
-            logger.debug(f"[FG STRATEGY]: DECISION - No action (FG status: {furnace_group.status})")
+            logger.debug(f"[FG STRATEGY] DECISION - No action (FG status: {furnace_group.status})")
             return None
 
         # ===== STAGE 3: Check for forced closure =====
@@ -3616,17 +3686,15 @@ class Plant:
             raise ValueError(f"CAPEX for technology {furnace_group.technology.name} not found in region_capex")
 
         closure_threshold = current_capex_per_tonne * furnace_group.capacity
-        logger.debug(
-            f"[FG STRATEGY]: Closure threshold check:\n"
-            f"[FG STRATEGY]:   - CAPEX: ${current_capex_per_tonne:,.2f}/t\n"
-            f"[FG STRATEGY]:   - FG capacity: {furnace_group.capacity * T_TO_KT:,.2f} kt\n"
-            f"[FG STRATEGY]:   - Closure threshold (CAPEX × capacity): ${-closure_threshold:,.2f}\n"
-            f"[FG STRATEGY]:   - Historic balance: ${furnace_group.historic_balance:,.2f}"
-        )
+        logger.debug("[FG STRATEGY] Closure threshold check:")
+        logger.debug(f"[FG STRATEGY]   - CAPEX: ${current_capex_per_tonne:,.2f}/t")
+        logger.debug(f"[FG STRATEGY]   - FG capacity: {furnace_group.capacity * T_TO_KT:,.2f} kt")
+        logger.debug(f"[FG STRATEGY]   - Closure threshold (CAPEX × capacity): ${-closure_threshold:,.2f}")
+        logger.debug(f"[FG STRATEGY]   - Historic balance: ${furnace_group.historic_balance:,.2f}")
 
         if furnace_group.historic_balance < -closure_threshold:
             logger.info(
-                f"[FG STRATEGY]: DECISION - CLOSE FG (historic losses ${furnace_group.historic_balance:,.2f} "
+                f"[FG STRATEGY] DECISION - CLOSE FG (historic losses ${furnace_group.historic_balance:,.2f} "
                 f"exceed threshold ${-closure_threshold:,.2f})"
             )
             return commands.CloseFurnaceGroup(plant_id=self.plant_id, furnace_group_id=furnace_group.furnace_group_id)
@@ -3642,15 +3710,13 @@ class Plant:
         }
 
         logger.debug(
-            f"[FG STRATEGY]: Allowed transitions from {furnace_group.technology.name}: "
+            f"[FG STRATEGY] Allowed transitions from {furnace_group.technology.name}: "
             f"{filtered_allowed_furnace_transitions.get(furnace_group.technology.name)}"
         )
 
         # ===== STAGE 5: Calculate NPV for all technology options =====
-        logger.debug(
-            f"[FG STRATEGY]: === Calculating NPV for all technology options ===\n"
-            f"[FG STRATEGY]: Fixed opex for technologies: {self.technology_unit_fopex}"
-        )
+        logger.debug("[FG STRATEGY] === Calculating NPV for all technology options ===")
+        logger.debug(f"[FG STRATEGY] Fixed opex for technologies: {self.technology_unit_fopex}")
         tech_npv_dict, npv_capex_dict, cosa, bom_dict = furnace_group.optimal_technology_name(
             market_price_series=market_price_series,
             cost_of_debt=cost_of_debt,
@@ -3677,21 +3743,19 @@ class Plant:
         )
 
         # Log NPV calculation results
-        npv_results = "\n".join([f"[FG STRATEGY]:   {tech}: NPV = ${npv:,.2f}" for tech, npv in tech_npv_dict.items()])
         cosa_msg = f"${cosa:,.2f}" if cosa else "None"
-        logger.debug(
-            f"[FG STRATEGY]: NPV results by tech (COSA adjusted):\n"
-            f"{npv_results}\n"
-            f"[FG STRATEGY]: CAPEX by tech ($/t): {npv_capex_dict}\n"
-            f"[FG STRATEGY]: COSA: {cosa_msg}"
-        )
+        logger.debug("[FG STRATEGY] NPV results by tech (COSA adjusted):")
+        for tech, npv in tech_npv_dict.items():
+            logger.debug(f"[FG STRATEGY]   {tech}: NPV = ${npv:,.2f}")
+        logger.debug(f"[FG STRATEGY] CAPEX by tech ($/t): {npv_capex_dict}")
+        logger.debug(f"[FG STRATEGY] COSA: {cosa_msg}")
 
         # ===== STAGE 6: Check if any technology option is profitable =====
         best_npv = max(tech_npv_dict.values(), default=0)
-        logger.debug(f"[FG STRATEGY]: Best NPV across all options: ${best_npv:,.2f}")
+        logger.debug(f"[FG STRATEGY] Best NPV across all options: ${best_npv:,.2f}")
 
         if best_npv <= 0:
-            logger.debug("[FG STRATEGY]: DECISION - No action (all NPVs negative or zero)")
+            logger.debug("[FG STRATEGY] DECISION - No action (all NPVs negative or zero)")
             return None
 
         # ===== STAGE 7: Identify optimal technology =====
@@ -3700,43 +3764,43 @@ class Plant:
         is_current_best = current_tech == optimal_tech
 
         logger.debug(
-            f"[FG STRATEGY]: Current tech: {current_tech}, Optimal tech: {optimal_tech}, "
+            f"[FG STRATEGY] Current tech: {current_tech}, Optimal tech: {optimal_tech}, "
             f"Current is best: {is_current_best}"
         )
 
         # ===== STAGE 8: Technology selection =====
         # Use weighted random selection if current tech is not optimal
         if not is_current_best:
-            logger.debug("[FG STRATEGY]: Current technology is not optimal, selecting alternative")
+            logger.debug("[FG STRATEGY] Current technology is not optimal, selecting alternative")
 
             # Filter out invalid NPV values (infinite, NaN)
             valid_techs = {
                 k: v for k, v in tech_npv_dict.items() if v is not None and not math.isinf(v) and not math.isnan(v)
             }
-            logger.debug(f"[FG STRATEGY]: Valid technology options: {list(valid_techs.keys())}")
+            logger.debug(f"[FG STRATEGY] Valid technology options: {list(valid_techs.keys())}")
 
             if not valid_techs:
-                logger.warning(f"[FG STRATEGY]: No valid NPV values found for plant {self.plant_id}")
+                logger.warning(f"[FG STRATEGY] No valid NPV values found for plant {self.plant_id}")
                 return None
 
             # Weighted random selection based on NPV (negative NPVs get zero weight)
             weights = [max(v, 0) for v in valid_techs.values()]
             formatted_dict = {k: f"{v:,.0f}" for k, v in zip(valid_techs.keys(), weights)}
-            logger.debug(f"[FG STRATEGY]: Selection weights: {formatted_dict}")
+            logger.debug(f"[FG STRATEGY] Selection weights: {formatted_dict}")
 
             if sum(weights) < 0.0001:
                 return None
 
             best_tech = random.choices(population=list(valid_techs.keys()), weights=weights, k=1)[0]
-            logger.debug(f"[FG STRATEGY]: Selected technology: {best_tech} (weighted random)")
+            logger.debug(f"[FG STRATEGY] Selected technology: {best_tech} (weighted random)")
         else:
-            logger.debug("[FG STRATEGY]: Current technology is already optimal")
+            logger.debug("[FG STRATEGY] Current technology is already optimal")
             best_tech = current_tech
 
         # Final profitability check for selected technology
         if tech_npv_dict[best_tech] <= 0:
             logger.debug(
-                f"[FG STRATEGY]: DECISION - No action "
+                f"[FG STRATEGY] DECISION - No action "
                 f"(selected tech {best_tech} has NPV ${tech_npv_dict[best_tech]:,.2f} <= 0)"
             )
             return None
@@ -3757,27 +3821,28 @@ class Plant:
         subsidy_details = []
         for subsidy in capex_subs:
             subsidy_details.append(
-                f"[FG STRATEGY]:     • {subsidy.subsidy_name}: "
+                f"[FG STRATEGY]     • {subsidy.subsidy_name}: "
                 f"type={subsidy.subsidy_type}, amount={subsidy.subsidy_amount:.4f}, "
                 f"years {subsidy.start_year}-{subsidy.end_year}"
             )
         for subsidy in debt_subs:
             subsidy_details.append(
-                f"[FG STRATEGY]:     • {subsidy.subsidy_name}: "
+                f"[FG STRATEGY]     • {subsidy.subsidy_name}: "
                 f"type={subsidy.subsidy_type}, amount={subsidy.subsidy_amount:.4f}, "
                 f"years {subsidy.start_year}-{subsidy.end_year}"
             )
 
-        subsidy_log = "\n".join(subsidy_details) if subsidy_details else "[FG STRATEGY]:     (none)"
-        logger.debug(
-            f"[FG STRATEGY]: Filtering subsidies for year {current_year}:\n"
-            f"[FG STRATEGY]:   - Total CAPEX subsidies available: {len(all_capex_subs)}\n"
-            f"[FG STRATEGY]:   - Active CAPEX subsidies: {len(capex_subs)}\n"
-            f"[FG STRATEGY]:   - Total debt subsidies available: {len(all_debt_subs)}\n"
-            f"[FG STRATEGY]:   - Active debt subsidies: {len(debt_subs)}\n"
-            f"[FG STRATEGY]:   - Technology: {best_tech}\n"
-            f"{subsidy_log}"
-        )
+        logger.debug(f"[FG STRATEGY] Filtering subsidies for year {current_year}:")
+        logger.debug(f"[FG STRATEGY]   - Total CAPEX subsidies available: {len(all_capex_subs)}")
+        logger.debug(f"[FG STRATEGY]   - Active CAPEX subsidies: {len(capex_subs)}")
+        logger.debug(f"[FG STRATEGY]   - Total debt subsidies available: {len(all_debt_subs)}")
+        logger.debug(f"[FG STRATEGY]   - Active debt subsidies: {len(debt_subs)}")
+        logger.debug(f"[FG STRATEGY]   - Technology: {best_tech}")
+        if subsidy_details:
+            for detail in subsidy_details:
+                logger.debug(detail)
+        else:
+            logger.debug("[FG STRATEGY]     (none)")
 
         # Get unsubsidized CAPEX for comparison
         original_capex_per_tonne = region_capex.get(best_tech)
@@ -3786,10 +3851,10 @@ class Plant:
 
         # ===== STAGE 9: Handle renovation scenario (best tech = current tech) =====
         if best_tech == current_tech:
-            logger.debug("[FG STRATEGY]: Best technology is current technology")
+            logger.debug("[FG STRATEGY] Best technology is current technology")
 
             if furnace_group.lifetime.expired:
-                logger.debug("[FG STRATEGY]: Furnace group lifetime expired, evaluating renovation")
+                logger.debug("[FG STRATEGY] Furnace group lifetime expired, evaluating renovation")
 
                 # Get subsidized renovation CAPEX per tonne
                 capex_per_tonne_opt = npv_capex_dict.get(best_tech)
@@ -3806,18 +3871,16 @@ class Plant:
                 # Calculate actual renovation cost (equity portion only)
                 renovate_cost = capex_per_tonne * furnace_group.capacity * furnace_group.equity_share
 
-                logger.debug(
-                    f"[FG STRATEGY]: Renovation cost calculation:\n"
-                    f"[FG STRATEGY]:   - Subsidized CAPEX: ${capex_per_tonne:,.2f}/t\n"
-                    f"[FG STRATEGY]:   - Capacity: {furnace_group.capacity * T_TO_KT:,.0f} kt\n"
-                    f"[FG STRATEGY]:   - Equity share: {furnace_group.equity_share:.1%}\n"
-                    f"[FG STRATEGY]:   - Total cost: ${renovate_cost:,.2f}"
-                )
+                logger.debug("[FG STRATEGY] Renovation cost calculation:")
+                logger.debug(f"[FG STRATEGY]   - Subsidized CAPEX: ${capex_per_tonne:,.2f}/t")
+                logger.debug(f"[FG STRATEGY]   - Capacity: {furnace_group.capacity * T_TO_KT:,.0f} kt")
+                logger.debug(f"[FG STRATEGY]   - Equity share: {furnace_group.equity_share:.1%}")
+                logger.debug(f"[FG STRATEGY]   - Total cost: ${renovate_cost:,.2f}")
 
                 # Check affordability
                 if renovate_cost > self.balance:
                     logger.info(
-                        f"[FG STRATEGY]: DECISION - CLOSE FG "
+                        f"[FG STRATEGY] DECISION - CLOSE FG "
                         f"(cannot afford renovation: ${renovate_cost:,.2f} > balance ${self.balance:,.2f})"
                     )
                     return commands.CloseFurnaceGroup(
@@ -3827,7 +3890,7 @@ class Plant:
                 # Proceed with renovation (update plant balance)
                 self.balance -= renovate_cost
                 logger.info(
-                    f"[FG STRATEGY]: DECISION - RENOVATE {best_tech} "
+                    f"[FG STRATEGY] DECISION - RENOVATE {best_tech} "
                     f"(cost: ${renovate_cost:,.2f}, new balance: ${self.balance:,.2f})"
                 )
 
@@ -3843,13 +3906,13 @@ class Plant:
                 )
             else:
                 logger.debug(
-                    f"[FG STRATEGY]: DECISION - No action "
+                    f"[FG STRATEGY] DECISION - No action "
                     f"(current tech optimal, lifetime not expired: {furnace_group.lifetime.remaining_number_of_years} years left)"
                 )
                 return None
 
         # ===== STAGE 10: Handle technology switch scenario =====
-        logger.debug(f"[FG STRATEGY]: Evaluating technology switch from {current_tech} to {best_tech}")
+        logger.debug(f"[FG STRATEGY] Evaluating technology switch from {current_tech} to {best_tech}")
 
         # Get subsidized greenfield CAPEX per tonne
         capex_per_tonne_opt = npv_capex_dict.get(best_tech)
@@ -3860,18 +3923,16 @@ class Plant:
         # Calculate switching cost (equity portion only)
         switch_cost = capex_per_tonne * furnace_group.capacity * furnace_group.equity_share
 
-        logger.debug(
-            f"[FG STRATEGY]: Switch cost calculation:\n"
-            f"[FG STRATEGY]:   - Subsidized CAPEX: ${capex_per_tonne:,.2f}/t\n"
-            f"[FG STRATEGY]:   - Capacity: {furnace_group.capacity * T_TO_KT:,.0f} kt\n"
-            f"[FG STRATEGY]:   - Equity share: {furnace_group.equity_share:.1%}\n"
-            f"[FG STRATEGY]:   - Total cost: ${switch_cost:,.2f}"
-        )
+        logger.debug("[FG STRATEGY] Switch cost calculation:")
+        logger.debug(f"[FG STRATEGY]   - Subsidized CAPEX: ${capex_per_tonne:,.2f}/t")
+        logger.debug(f"[FG STRATEGY]   - Capacity: {furnace_group.capacity * T_TO_KT:,.0f} kt")
+        logger.debug(f"[FG STRATEGY]   - Equity share: {furnace_group.equity_share:.1%}")
+        logger.debug(f"[FG STRATEGY]   - Total cost: ${switch_cost:,.2f}")
 
         # Check affordability
         if switch_cost > self.balance:
             logger.debug(
-                f"[FG STRATEGY]: DECISION - No action "
+                f"[FG STRATEGY] DECISION - No action "
                 f"(cannot afford switch: ${switch_cost:,.2f} > balance ${self.balance:,.2f})"
             )
             return None
@@ -3882,14 +3943,12 @@ class Plant:
         # Higher cost relative to benefit → lower probability
         if probabilistic_agents:
             accept_prob = math.exp(-switch_cost / tech_npv_dict[best_tech])
-            logger.debug(
-                f"[FG STRATEGY]: Probabilistic decision mode:\n"
-                f"[FG STRATEGY]:   - Acceptance probability: {accept_prob:.2%}\n"
-                f"[FG STRATEGY]:   - Cost/NPV ratio: {switch_cost / tech_npv_dict[best_tech]:.2f}"
-            )
+            logger.debug("[FG STRATEGY] Probabilistic decision mode:")
+            logger.debug(f"[FG STRATEGY]   - Acceptance probability: {accept_prob:.2%}")
+            logger.debug(f"[FG STRATEGY]   - Cost/NPV ratio: {switch_cost / tech_npv_dict[best_tech]:.2f}")
         else:
             accept_prob = 1.0
-            logger.debug("[FG STRATEGY]: Deterministic decision mode (100% acceptance)")
+            logger.debug("[FG STRATEGY] Deterministic decision mode (100% acceptance)")
 
         # Make final decision with random draw
         random_draw = random.random()
@@ -3919,19 +3978,21 @@ class Plant:
                 else:
                     raise ValueError(f"Unknown product type: '{tech_product}' for technology: '{best_tech}'")
 
+                logger.debug("[FG STRATEGY] CAPACITY LIMIT check:")
+                logger.debug(f"[FG STRATEGY]   - Product: {tech_product}")
+                logger.debug(f"[FG STRATEGY]   - New plants: {new_plant_capacity * T_TO_KT:,.0f} kt")
                 logger.debug(
-                    f"[FG STRATEGY]: Capacity limit check:\n"
-                    f"[FG STRATEGY]:   - Product: {tech_product}\n"
-                    f"[FG STRATEGY]:   - New plants: {new_plant_capacity * T_TO_KT:,.0f} kt\n"
-                    f"[FG STRATEGY]:   - Expansions/switches so far: {expansion_and_switch_capacity * T_TO_KT:,.0f} kt\n"
-                    f"[FG STRATEGY]:   - To add (switch): {furnace_group.capacity * T_TO_KT:,.0f} kt\n"
-                    f"[FG STRATEGY]:   - Total after: {(expansion_and_switch_capacity + furnace_group.capacity) * T_TO_KT:,.0f} kt\n"
-                    f"[FG STRATEGY]:   - Expansion/switch limit: {expansion_limit * T_TO_KT:,.0f} kt"
+                    f"[FG STRATEGY]   - Expansions/switches so far: {expansion_and_switch_capacity * T_TO_KT:,.0f} kt"
                 )
+                logger.debug(f"[FG STRATEGY]   - To add (switch): {furnace_group.capacity * T_TO_KT:,.0f} kt")
+                logger.debug(
+                    f"[FG STRATEGY]   - Total after: {(expansion_and_switch_capacity + furnace_group.capacity) * T_TO_KT:,.0f} kt"
+                )
+                logger.debug(f"[FG STRATEGY]   - Expansion/switch limit: {expansion_limit * T_TO_KT:,.0f} kt")
 
                 if expansion_and_switch_capacity + furnace_group.capacity > expansion_limit:
                     logger.warning(
-                        f"[FG STRATEGY]: BLOCKED - Expansion/switch capacity limit reached for {tech_product}: "
+                        f"[FG STRATEGY] BLOCKED - Expansion/switch capacity limit reached for {tech_product}: "
                         f"{expansion_and_switch_capacity * T_TO_KT:,.0f} kt + {furnace_group.capacity * T_TO_KT:,.0f} kt > "
                         f"{expansion_limit * T_TO_KT:,.0f} kt"
                     )
@@ -3941,7 +4002,7 @@ class Plant:
             # Update plant balance and return command
             self.balance -= switch_cost
             logger.info(
-                f"[FG STRATEGY]: DECISION - SWITCH TECHNOLOGY "
+                f"[FG STRATEGY] DECISION - SWITCH TECHNOLOGY "
                 f"{current_tech} → {best_tech} "
                 f"(NPV: ${tech_npv_dict.get(best_tech, 0):,.2f}, cost: ${switch_cost:,.2f}, "
                 f"new balance: ${self.balance:,.2f})"
@@ -3959,7 +4020,7 @@ class Plant:
             bom = bom_dict.get(best_tech)
             if bom is None:
                 logger.error(
-                    "[FG STRATEGY]: Missing BOM for %s. Available BOM keys: %s",
+                    "[FG STRATEGY] Missing BOM for %s. Available BOM keys: %s",
                     best_tech,
                     list(bom_dict.keys()),
                 )
@@ -3968,7 +4029,7 @@ class Plant:
             energy = bom.get("energy", {})
             if not materials:
                 logger.error(
-                    "[FG STRATEGY]: Empty BOM for %s at switch time (materials=%d, energy=%d) - BOM keys: %s",
+                    "[FG STRATEGY] Empty BOM for %s at switch time (materials=%d, energy=%d) - BOM keys: %s",
                     best_tech,
                     len(materials),
                     len(energy),
@@ -4001,7 +4062,7 @@ class Plant:
                 if fg_has_ccs_or_ccu
                 else f"probabilistic rejection ({random_draw:.2%} >= {accept_prob:.2%})"
             )
-            logger.debug(f"[FG STRATEGY]: DECISION - No action ({rejection_reason})")
+            logger.debug(f"[FG STRATEGY] DECISION - No action ({rejection_reason})")
             return None
 
     def generate_new_furnace(
@@ -4744,7 +4805,7 @@ class PlantGroup:
         allowed_techs_in_year = allowed_techs.get(current_year, [])
         if not allowed_techs_in_year:
             raise ValueError(f"No allowed technologies found for year {current_year}")
-        logger.info(f"[PG EXPANSION]: Allowed technologies in {current_year}: {allowed_techs_in_year}")
+        logger.info(f"[PG EXPANSION] Allowed technologies in {current_year}: {allowed_techs_in_year}")
 
         # Dictionary to store best NPV and technology choice for each plant
         NPV_p = {}
@@ -5007,15 +5068,15 @@ class PlantGroup:
         logger = logging.getLogger(f"{__name__}.PlantGroup.evaluate_expansion")
 
         # ========== STAGE 1: INITIALIZATION ==========
+        logger.debug(f"[PG EXPANSION] Starting expansion evaluation for PlantGroup {self.plant_group_id}")
+        logger.debug(f"[PG EXPANSION]   - Year: {current_year}, Capacity: {capacity:,} kt")
+        logger.debug(f"[PG EXPANSION]   - Balance: ${self.total_balance:,.2f}, Plants: {len(self.plants)}")
         logger.debug(
-            f"[PG EXPANSION]: Starting expansion evaluation for PlantGroup {self.plant_group_id}\n"
-            f"  Year: {current_year}, Capacity: {capacity:,} kt\n"
-            f"  Balance: ${self.total_balance:,.2f}, Plants: {len(self.plants)}\n"
-            f"  Probabilistic: {probabilistic_agents}, Equity share: {equity_share * 100:.0f}%"
+            f"[PG EXPANSION]   - Probabilistic: {probabilistic_agents}, Equity share: {equity_share * 100:.0f}%"
         )
 
         # ========== STAGE 2: EVALUATE ALL EXPANSION OPTIONS ==========
-        logger.debug("[PG EXPANSION]: === Stage 2: Evaluating expansion options ===")
+        logger.debug("[PG EXPANSION] === Stage 2: Evaluating expansion options ===")
 
         expansion_options = self.evaluate_expansion_options(
             price_series=price_series,
@@ -5044,32 +5105,28 @@ class PlantGroup:
 
         # ========== STAGE 3: CHECK IF ANY EXPANSION OPTIONS EXIST ==========
         if not expansion_options:
-            logger.debug("[PG EXPANSION]: DECISION - No expansion (no viable options from evaluate_expansion_options)")
+            logger.debug("[PG EXPANSION] DECISION - No expansion (no viable options from evaluate_expansion_options)")
             return None
 
         # Log all expansion options found
-        logger.debug(
-            f"[PG EXPANSION]: Found {len(expansion_options)} potential expansion options:\n"
-            + "\n".join(
-                f"  Plant {pid}: Tech={tech}, NPV=${'None' if npv is None else f'{npv:,.0f}'}, CAPEX=${capex:.2f}/t"
-                for pid, (npv, tech, capex) in expansion_options.items()
-            )
-        )
+        logger.debug(f"[PG EXPANSION] Found {len(expansion_options)} potential expansion options:")
+        for pid, (npv, tech, capex) in expansion_options.items():
+            npv_str = "None" if npv is None else f"${npv:,.0f}"
+            logger.debug(f"[PG EXPANSION]   - Plant {pid}: Tech={tech}, NPV={npv_str}, CAPEX=${capex:.2f}/t")
 
         # ========== STAGE 4: SELECT HIGHEST NPV OPTION ==========
         highest_plant_and_tech = max(expansion_options.items(), key=lambda item: item[1][0] or float("-inf"))
         plant_id, (npv, tech, capex) = highest_plant_and_tech
 
-        logger.debug(
-            f"[PG EXPANSION]: === Stage 4: Best option ===\n"
-            f"  Plant: {plant_id}, Tech: {tech}\n"
-            f"  NPV: ${'None' if npv is None else f'{npv:,.0f}'}, CAPEX: ${capex:,.2f}/t"
-        )
+        logger.debug("[PG EXPANSION] === Stage 4: Best option ===")
+        logger.debug(f"[PG EXPANSION]   - Plant: {plant_id}, Tech: {tech}")
+        npv_str = "None" if npv is None else f"{npv:,.0f}"
+        logger.debug(f"[PG EXPANSION]   - NPV: ${npv_str}, CAPEX: ${capex:,.2f}/t")
 
         # ========== STAGE 5: CHECK NPV PROFITABILITY ==========
         if npv is None or npv <= 0:
             logger.debug(
-                f"[PG EXPANSION]: DECISION - No expansion (NPV {'is None' if npv is None else f'= ${npv:,.0f} ≤ 0'})"
+                f"[PG EXPANSION] DECISION - No expansion (NPV {'is None' if npv is None else f'= ${npv:,.0f} ≤ 0'})"
             )
             return None
 
@@ -5077,19 +5134,18 @@ class PlantGroup:
         equity_needed = capacity * capex  # Equity to finance up-front cost
 
         if self.total_balance < equity_needed:
+            logger.debug("[PG EXPANSION] === Stage 6: Balance check FAILED ===")
             logger.debug(
-                f"[PG EXPANSION]: === Stage 6: Balance check FAILED ===\n"
-                f"  Equity needed: ${equity_needed:,.2f} ({capacity * T_TO_KT:,.0f} kt × ${capex:.2f}/t)\n"
-                f"  Available: ${self.total_balance:,.2f}\n"
-                f"  Shortfall: ${equity_needed - self.total_balance:,.2f}\n"
-                f"  DECISION - No expansion (insufficient funds)"
+                f"[PG EXPANSION]   - Equity needed: ${equity_needed:,.2f} ({capacity * T_TO_KT:,.0f} kt × ${capex:.2f}/t)"
             )
+            logger.debug(f"[PG EXPANSION]   - Available: ${self.total_balance:,.2f}")
+            logger.debug(f"[PG EXPANSION]   - Shortfall: ${equity_needed - self.total_balance:,.2f}")
+            logger.debug("[PG EXPANSION]   - DECISION - No expansion (insufficient funds)")
             return None
 
-        logger.debug(
-            f"[PG EXPANSION]: === Stage 6: Balance check PASSED ===\n"
-            f"  Equity needed: ${equity_needed:,.2f}, Available: ${self.total_balance:,.2f}"
-        )
+        logger.debug("[PG EXPANSION] === Stage 6: Balance check PASSED ===")
+        logger.debug(f"[PG EXPANSION]   - Equity needed: ${equity_needed:,.2f}")
+        logger.debug(f"[PG EXPANSION]   - Available: ${self.total_balance:,.2f}")
 
         # ========== STAGE 7: PROBABILISTIC ACCEPTANCE ==========
         if probabilistic_agents:
@@ -5102,20 +5158,16 @@ class PlantGroup:
         random_draw = random.random()
 
         if random_draw >= acceptance_probability:
-            logger.debug(
-                f"[PG EXPANSION]: === Stage 7: Probabilistic check FAILED ===\n"
-                f"  Mode: {'Probabilistic' if probabilistic_agents else 'Deterministic'}\n"
-                f"  Investment: ${capacity * capex:,.0f}, NPV: ${npv:,.0f}\n"
-                f"  Acceptance probability: {acceptance_probability:.2%}\n"
-                f"  Random draw: {random_draw:.4f} ≥ {acceptance_probability:.4f}\n"
-                f"  DECISION - No expansion (probabilistic rejection)"
-            )
+            logger.debug("[PG EXPANSION] === Stage 7: Probabilistic check FAILED ===")
+            logger.debug(f"[PG EXPANSION]   - Mode: {'Probabilistic' if probabilistic_agents else 'Deterministic'}")
+            logger.debug(f"[PG EXPANSION]   - Investment: ${capacity * capex:,.0f}, NPV: ${npv:,.0f}")
+            logger.debug(f"[PG EXPANSION]   - Acceptance probability: {acceptance_probability:.2%}")
+            logger.debug(f"[PG EXPANSION]   - Random draw: {random_draw:.4f} ≥ {acceptance_probability:.4f}")
+            logger.debug("[PG EXPANSION]   - DECISION - No expansion (probabilistic rejection)")
             return None
 
-        logger.debug(
-            f"[PG EXPANSION]: === Stage 7: Probabilistic check PASSED ===\n"
-            f"  Probability: {acceptance_probability:.2%}, Draw: {random_draw:.4f}"
-        )
+        logger.debug("[PG EXPANSION] === Stage 7: Probabilistic check PASSED ===")
+        logger.debug(f"[PG EXPANSION]   - Probability: {acceptance_probability:.2%}, Draw: {random_draw:.4f}")
 
         # ========== STAGE 8: CHECK CAPACITY LIMITS ==========
         if (
@@ -5140,21 +5192,23 @@ class PlantGroup:
 
             # Check if expansion would exceed limit
             if expansion_and_switch_capacity + capacity > expansion_limit:
+                logger.warning("[PG EXPANSION] === Stage 8: Capacity limit EXCEEDED ===")
+                logger.warning(f"[PG EXPANSION]   - Product: {expansion_product}")
                 logger.warning(
-                    f"[PG EXPANSION]: === Stage 8: Capacity limit EXCEEDED ===\n"
-                    f"  Product: {expansion_product}\n"
-                    f"  Current expansion/switch capacity: {expansion_and_switch_capacity * T_TO_KT:,.0f} kt\n"
-                    f"  New expansion capacity: {capacity * T_TO_KT:,.0f} kt\n"
-                    f"  Total after expansion: {(expansion_and_switch_capacity + capacity) * T_TO_KT:,.0f} kt\n"
-                    f"  Limit: {expansion_limit * T_TO_KT:,.0f} kt\n"
-                    f"  DECISION - No expansion (capacity limit reached)"
+                    f"[PG EXPANSION]   - Current expansion/switch capacity: {expansion_and_switch_capacity * T_TO_KT:,.0f} kt"
                 )
+                logger.warning(f"[PG EXPANSION]   - New expansion capacity: {capacity * T_TO_KT:,.0f} kt")
+                logger.warning(
+                    f"[PG EXPANSION]   - Total after expansion: {(expansion_and_switch_capacity + capacity) * T_TO_KT:,.0f} kt"
+                )
+                logger.warning(f"[PG EXPANSION]   - Limit: {expansion_limit * T_TO_KT:,.0f} kt")
+                logger.warning("[PG EXPANSION]   - DECISION - No expansion (capacity limit reached)")
                 return None
 
+            logger.debug("[PG EXPANSION] === Stage 8: Capacity limit check PASSED ===")
+            logger.debug(f"[PG EXPANSION]   - Product: {expansion_product}")
             logger.debug(
-                f"[PG EXPANSION]: === Stage 8: Capacity limit check PASSED ===\n"
-                f"  Product: {expansion_product}\n"
-                f"  After expansion: {(expansion_and_switch_capacity + capacity) * T_TO_KT:,.0f} kt / "
+                f"[PG EXPANSION]   - After expansion: {(expansion_and_switch_capacity + capacity) * T_TO_KT:,.0f} kt / "
                 f"{expansion_limit * T_TO_KT:,.0f} kt limit"
             )
 
@@ -5166,16 +5220,16 @@ class PlantGroup:
         # Find the plant and validate location
         plant = next((p for p in self.plants if p.plant_id == plant_id), None)
         if plant is None:
-            logger.warning(f"[PG EXPANSION]: ERROR - Plant {plant_id} not found in plant group")
+            logger.warning(f"[PG EXPANSION] ERROR - Plant {plant_id} not found in plant group")
             return None
 
         if plant.location.iso3 is None:
-            logger.warning(f"[PG EXPANSION]: ERROR - Plant {plant_id} has no ISO3 location")
+            logger.warning(f"[PG EXPANSION] ERROR - Plant {plant_id} has no ISO3 location")
             return None
 
         region = iso3_to_region_map.get(plant.location.iso3)
         if region is None:
-            logger.warning(f"[PG EXPANSION]: ERROR - No region mapping for ISO3: {plant.location.iso3}")
+            logger.warning(f"[PG EXPANSION] ERROR - No region mapping for ISO3: {plant.location.iso3}")
             return None
 
         # Get base cost of debt
@@ -5183,11 +5237,9 @@ class PlantGroup:
         if cost_of_debt_original is None:
             raise ValueError(f"No cost of debt data for country: {plant.location.iso3} when expanding plant")
 
-        logger.debug(
-            f"[PG EXPANSION]: === Stage 9: Plant validation ===\n"
-            f"  Plant: {plant_id}, Location: {plant.location.iso3}, Region: {region}\n"
-            f"  Base cost of debt: {cost_of_debt_original:.2%}"
-        )
+        logger.debug("[PG EXPANSION] === Stage 9: Plant validation ===")
+        logger.debug(f"[PG EXPANSION]   - Plant: {plant_id}, Location: {plant.location.iso3}, Region: {region}")
+        logger.debug(f"[PG EXPANSION]   - Base cost of debt: {cost_of_debt_original:.2%}")
 
         # ========== STAGE 10: APPLY SUBSIDIES ==========
         from steelo.domain import calculate_costs as cc
@@ -5208,13 +5260,19 @@ class PlantGroup:
         base_capex = region_capex[region][tech]
         capex = cc.calculate_capex_with_subsidies(base_capex, selected_capex_subsidies)
 
+        logger.debug("[PG EXPANSION] === Stage 10: Subsidies applied ===")
         logger.debug(
-            f"[PG EXPANSION]: === Stage 10: Subsidies applied ===\n"
-            f"  Debt subsidies: {len(selected_debt_subsidies)} active (of {len(all_debt_subsidies)} total)\n"
-            f"  CAPEX subsidies: {len(selected_capex_subsidies)} active (of {len(all_capex_subsidies)} total)\n"
-            f"  Cost of debt: {cost_of_debt_original:.2%} → {cost_of_debt:.2%} "
-            f"({(cost_of_debt - cost_of_debt_original) * 100:+.2f} pp)\n"
-            f"  CAPEX: ${base_capex:.2f}/t → ${capex:.2f}/t (${base_capex - capex:.2f}/t reduction)"
+            f"[PG EXPANSION]   - Debt subsidies: {len(selected_debt_subsidies)} active (of {len(all_debt_subsidies)} total)"
+        )
+        logger.debug(
+            f"[PG EXPANSION]   - CAPEX subsidies: {len(selected_capex_subsidies)} active (of {len(all_capex_subsidies)} total)"
+        )
+        logger.debug(
+            f"[PG EXPANSION]   - Cost of debt: {cost_of_debt_original:.2%} → {cost_of_debt:.2%} "
+            f"({(cost_of_debt - cost_of_debt_original) * 100:+.2f} pp)"
+        )
+        logger.debug(
+            f"[PG EXPANSION]   - CAPEX: ${base_capex:.2f}/t → ${capex:.2f}/t (${base_capex - capex:.2f}/t reduction)"
         )
 
         # ========== STAGE 11: CREATE EXPANSION COMMAND ==========
@@ -5222,7 +5280,7 @@ class PlantGroup:
 
         # Safety check: ensure technology has product mapping
         if tech not in tech_to_product:
-            logger.warning(f"[PG EXPANSION]: ERROR - No product mapping for technology: {tech}")
+            logger.warning(f"[PG EXPANSION] ERROR - No product mapping for technology: {tech}")
             return None
         product = tech_to_product[tech]
 
@@ -5247,17 +5305,19 @@ class PlantGroup:
                 )
             )
 
+        logger.info("[PG EXPANSION] ✓ SUCCESS - Expansion approved")
+        logger.info(f"[PG EXPANSION]   - Plant: {plant_id}, Technology: {tech}, Product: {product}")
+        logger.info(f"[PG EXPANSION]   - Capacity: {capacity * T_TO_KT:,.0f} kt, NPV: ${npv:,.0f}")
+        logger.info(f"[PG EXPANSION]   - Investment: ${capacity * capex:,.0f} (equity: ${equity_needed:,.0f})")
+        logger.info(f"[PG EXPANSION]   - CAPEX: ${base_capex:.2f}/t → ${capex:.2f}/t (with subsidies)")
         logger.info(
-            f"[PG EXPANSION]: ✓ SUCCESS - Expansion approved\n"
-            f"  Plant: {plant_id}, Technology: {tech}, Product: {product}\n"
-            f"  Capacity: {capacity * T_TO_KT:,.0f} kt, NPV: ${npv:,.0f}\n"
-            f"  Investment: ${capacity * capex:,.0f} (equity: ${equity_needed:,.0f})\n"
-            f"  CAPEX: ${base_capex:.2f}/t → ${capex:.2f}/t (with subsidies)\n"
-            f"  Cost of debt: {cost_of_debt_original:.2%} → {cost_of_debt:.2%} (with subsidies)"
+            f"[PG EXPANSION]   - Cost of debt: {cost_of_debt_original:.2%} → {cost_of_debt:.2%} (with subsidies)"
         )
 
         if subsidy_details:
-            logger.debug("[PG EXPANSION]: Subsidies included:\n" + "\n".join(subsidy_details))
+            logger.debug("[PG EXPANSION] Subsidies included:")
+            for detail in subsidy_details:
+                logger.debug(f"[PG EXPANSION]   {detail}")
 
         return commands.AddFurnaceGroup(
             furnace_group_id=furnace_group_id,
@@ -5657,9 +5717,8 @@ class PlantGroup:
                     if active_h2_subs or active_elec_subs:
                         temp_costs = {"hydrogen": hydrogen_price, "electricity": power_price}
                         subsidised, _ = cc.get_subsidised_energy_costs(temp_costs, active_h2_subs, active_elec_subs)
-                        # DEBUG: Log subsidy application for INDI dynamic cost update
                         logger.debug(
-                            f"[INDI H2/ELEC SUBS] Dynamic update: {iso3}/{fg.technology.name} year={year} "
+                            f"[NEW PLANTS] {iso3}/{fg.technology.name} year={year} "
                             f"H2: {hydrogen_price:.3f} -> {subsidised['hydrogen']:.3f} "
                             f"Elec: {power_price:.4f} -> {subsidised['electricity']:.4f} "
                             f"({len(active_h2_subs)} H2 subs, {len(active_elec_subs)} elec subs)"
@@ -5675,14 +5734,14 @@ class PlantGroup:
                         new_bom = copy.deepcopy(fg.bill_of_materials)
                         updated_energy_costs: dict[str, float] = {}
                         if getattr(fg, "energy_costs", None):
-                            updated_energy_costs.update({k.replace("-", "_"): v for k, v in fg.energy_costs.items()})
+                            updated_energy_costs.update({normalize_name(k): v for k, v in fg.energy_costs.items()})
                         if "electricity" in new_costs and new_costs["electricity"] is not None:
                             updated_energy_costs["electricity"] = new_costs["electricity"]
                         if "hydrogen" in new_costs and new_costs["hydrogen"] is not None:
                             updated_energy_costs["hydrogen"] = new_costs["hydrogen"]
 
                         for feed_key, energy_value in new_bom.get("energy", {}).items():
-                            normalized_feed_key = _normalize_energy_key(feed_key)
+                            normalized_feed_key = normalize_name(feed_key)
                             if normalized_feed_key == "electricity":
                                 unit_cost = updated_energy_costs.get("electricity", energy_value.get("unit_cost"))
                             elif normalized_feed_key == "hydrogen":
@@ -6827,6 +6886,45 @@ class Environment:
             if tech_name_lower != tech_name:
                 self.dynamic_feedstocks[tech_name_lower].append(feedstock)
 
+        # Collect all priced commodity keys from input_costs (across all countries/years)
+        priced_commodities: set[str] = set()
+        for yearly_costs in self.input_costs.values():
+            for costs in yearly_costs.values():
+                priced_commodities.update(costs.keys())
+
+        # Compute canonical cost breakdown keys from all feedstocks
+        all_keys: set[str] = set()
+        for feedstock in feedstocks:
+            for key in feedstock.energy_requirements or {}:
+                all_keys.add(normalize_name(key))
+            for key in feedstock.secondary_feedstock or {}:
+                all_keys.add(normalize_name(key))
+            # Include secondary output keys (by-products, not primary products)
+            primary_output_keys = set(feedstock.get_primary_outputs().keys())
+            for key in feedstock.outputs or {}:
+                normalized = normalize_name(key)
+                if normalized not in primary_output_keys:
+                    all_keys.add(normalized)
+            # Only carbon outputs with a price belong in cost_breakdown (e.g. co2_stored);
+            # costless vectors (co2_slip, co2_utilised) are tracked in carbon_breakdown instead
+            for key in feedstock.carbon_outputs or {}:
+                normalized = normalize_name(key)
+                if normalized in priced_commodities:
+                    all_keys.add(normalized)
+        self.cost_breakdown_keys: list[str] = sorted(all_keys)
+
+        # Compute canonical carbon breakdown keys (physical tCO2/t-product for all CO2 vectors)
+        ci_keys: set[str] = set()
+        co_keys: set[str] = set()
+        for feedstock in feedstocks:
+            for key in feedstock.carbon_inputs or {}:
+                ci_keys.add(normalize_name(key))
+            for key in feedstock.carbon_outputs or {}:
+                co_keys.add(normalize_name(key))
+        self.carbon_input_keys: list[str] = sorted(ci_keys)
+        self.carbon_output_keys: list[str] = sorted(co_keys)
+        self.carbon_breakdown_keys: list[str] = sorted(ci_keys | co_keys)
+
     def initiate_aggregated_metallic_charge_constraints(
         self, constraints: list[AggregatedMetallicChargeConstraint]
     ) -> None:
@@ -7343,6 +7441,8 @@ class Environment:
                 # print(fg.technology.dynamic_business_case[-1].emissions)
                 fg.technology.set_product(self.technology_to_product)
                 fg.generate_energy_vopex_by_reductant()
+                fg.cost_breakdown_keys = self.cost_breakdown_keys
+                fg.carbon_breakdown_keys = self.carbon_breakdown_keys
 
         # Update environment-level most common reductant tracking after all furnace groups are updated
         self.most_common_reductant_by_tech = self.most_common_reductant(world_plants)
@@ -8310,7 +8410,7 @@ class Environment:
             if not reductant_matches:
                 continue
             for sec_name, volume in secondary_requirements.items():
-                normalized_secondary = _normalize_energy_key(sec_name)
+                normalized_secondary = normalize_name(sec_name)
                 converted_volume = (
                     volume * KG_TO_T
                     if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION
@@ -8451,7 +8551,7 @@ class Environment:
         # Step 5: Build BOM based on avg_boms and input effectiveness
         logger.debug("[BOM] Step 5: Building final BOM")
         for feedstock, share_data in self.avg_boms[tech].items():
-            normalized_feedstock = feedstock.replace("-", "_").lower()
+            normalized_feedstock = normalize_name(feedstock)
             logger.debug(f"[BOM] Processing feedstock: {feedstock} (normalized: {normalized_feedstock})")
             logger.debug(f"[BOM] Share data: {share_data}")
 
@@ -8511,7 +8611,7 @@ class Environment:
             if normalized_feedstock in ENERGY_FEEDSTOCK_KEYS:
                 energy_cost_per_unit = energy_costs.get(
                     normalized_feedstock,
-                    energy_costs.get(feedstock.replace(" ", "_").lower(), 0.0),
+                    energy_costs.get(normalize_name(feedstock), 0.0),
                 )
                 energy_demand = float(demand_share_pct) * capacity
                 total_energy_cost = energy_cost_per_unit * energy_demand

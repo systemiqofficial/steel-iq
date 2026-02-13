@@ -38,7 +38,7 @@ def _ensure_secondary_feedstock_supplier(
     """
     Guarantee that a synthetic supplier exists for secondary feedstock constraints.
 
-    The LP injects virtual supply process centers (e.g. ``bio-pci_supply_process_center``) so the
+    The LP injects virtual supply process centers (e.g. ``bio_pci_supply_process_center``) so the
     constraint can be enforced. Downstream, those nodes must map to Supplier objects when
     allocations are translated back into domain entities. We therefore create (or update) an
     in-memory Supplier with the matching identifier and per-year capacity.
