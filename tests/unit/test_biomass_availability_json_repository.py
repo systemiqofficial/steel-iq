@@ -137,14 +137,14 @@ def test_get_constraints_for_year_basic(temp_json_path, sample_biomass_data, moc
 
     constraints = repo.get_constraints_for_year(Year(2030), mock_country_mapping)
 
-    assert "bio-pci" in constraints
-    assert len(constraints["bio-pci"]) > 0
+    assert "bio_pci" in constraints
+    assert len(constraints["bio_pci"]) > 0
 
     # Check USA constraint
     usa_tuple = ("USA",)
-    assert usa_tuple in constraints["bio-pci"]
-    assert 2030 in constraints["bio-pci"][usa_tuple]
-    assert constraints["bio-pci"][usa_tuple][2030] == 200.0
+    assert usa_tuple in constraints["bio_pci"]
+    assert 2030 in constraints["bio_pci"][usa_tuple]
+    assert constraints["bio_pci"][usa_tuple][2030] == 200.0
 
 
 def test_get_constraints_for_year_with_country(temp_json_path, mock_country_mapping):
@@ -168,9 +168,9 @@ def test_get_constraints_for_year_with_country(temp_json_path, mock_country_mapp
 
     # Should map Germany to DEU
     deu_tuple = ("DEU",)
-    assert deu_tuple in constraints["bio-pci"]
-    assert 2030 in constraints["bio-pci"][deu_tuple]
-    assert constraints["bio-pci"][deu_tuple][2030] == 100.0
+    assert deu_tuple in constraints["bio_pci"]
+    assert 2030 in constraints["bio_pci"][deu_tuple]
+    assert constraints["bio_pci"][deu_tuple][2030] == 100.0
 
 
 def test_get_constraints_aggregation(temp_json_path, mock_country_mapping):
@@ -202,9 +202,9 @@ def test_get_constraints_aggregation(temp_json_path, mock_country_mapping):
     constraints = repo.get_constraints_for_year(Year(2030), mock_country_mapping)
 
     usa_tuple = ("USA",)
-    assert usa_tuple in constraints["bio-pci"]
-    assert 2030 in constraints["bio-pci"][usa_tuple]
-    assert constraints["bio-pci"][usa_tuple][2030] == 150.0  # 100 + 50
+    assert usa_tuple in constraints["bio_pci"]
+    assert 2030 in constraints["bio_pci"][usa_tuple]
+    assert constraints["bio_pci"][usa_tuple][2030] == 150.0  # 100 + 50
 
 
 def test_get_constraints_no_data_for_year(temp_json_path, sample_biomass_data, mock_country_mapping):
@@ -215,8 +215,8 @@ def test_get_constraints_no_data_for_year(temp_json_path, sample_biomass_data, m
     # Request year with no data
     constraints = repo.get_constraints_for_year(Year(2025), mock_country_mapping)
 
-    assert "bio-pci" in constraints
-    assert len(constraints["bio-pci"]) == 0
+    assert "bio_pci" in constraints
+    assert len(constraints["bio_pci"]) == 0
 
 
 def test_region_mapping_western_europe(temp_json_path, mock_country_mapping):
@@ -240,9 +240,9 @@ def test_region_mapping_western_europe(temp_json_path, mock_country_mapping):
     constraints = repo.get_constraints_for_year(Year(2030), mock_country_mapping)
 
     # Should have entries for multiple European countries
-    assert "bio-pci" in constraints
+    assert "bio_pci" in constraints
     # The exact mapping depends on implementation, but should have some entries
-    assert len(constraints["bio-pci"]) > 0
+    assert len(constraints["bio_pci"]) > 0
 
 
 def test_pydantic_model_conversion():
@@ -271,3 +271,116 @@ def test_pydantic_model_conversion():
     assert domain_obj.country is None
     assert domain_obj.year == Year(2030)
     assert domain_obj.availability == 200.0
+
+
+# --- CO2 storage constraint tests ---
+
+
+@pytest.fixture
+def sample_co2_storage_data():
+    """Create sample CO2 storage availability data.
+
+    CO2 storage items differ from biomass: metric contains 'co2',
+    country field holds ISO3 directly.
+    """
+    return [
+        BiomassAvailability(
+            region="",
+            country="DEU",
+            metric="co2_stored",
+            scenario="",
+            unit="t/y",
+            year=Year(2030),
+            availability=5_000_000.0,
+        ),
+        BiomassAvailability(
+            region="",
+            country="FRA",
+            metric="co2_stored",
+            scenario="",
+            unit="t/y",
+            year=Year(2030),
+            availability=3_000_000.0,
+        ),
+        BiomassAvailability(
+            region="",
+            country="DEU",
+            metric="co2_stored",
+            scenario="",
+            unit="t/y",
+            year=Year(2040),
+            availability=8_000_000.0,
+        ),
+    ]
+
+
+def test_co2_storage_constraints_use_co2_stored_key(
+    temp_json_path,
+    sample_co2_storage_data,
+    mock_country_mapping,
+):
+    """CO2 storage items produce constraints under the 'co2_stored' key."""
+    repo = BiomassAvailabilityJsonRepository(temp_json_path)
+    repo.add_list(sample_co2_storage_data)
+
+    constraints = repo.get_constraints_for_year(Year(2030), mock_country_mapping)
+
+    assert "co2_stored" in constraints
+    assert len(constraints["co2_stored"]) == 2  # DEU and FRA
+
+
+def test_co2_storage_country_is_iso3_directly(
+    temp_json_path,
+    sample_co2_storage_data,
+    mock_country_mapping,
+):
+    """CO2 storage uses country field as ISO3 directly (no region mapping)."""
+    repo = BiomassAvailabilityJsonRepository(temp_json_path)
+    repo.add_list(sample_co2_storage_data)
+
+    constraints = repo.get_constraints_for_year(Year(2030), mock_country_mapping)
+
+    deu_tuple = ("DEU",)
+    fra_tuple = ("FRA",)
+    assert deu_tuple in constraints["co2_stored"]
+    assert fra_tuple in constraints["co2_stored"]
+    assert constraints["co2_stored"][deu_tuple][2030] == 5_000_000.0
+    assert constraints["co2_stored"][fra_tuple][2030] == 3_000_000.0
+
+
+def test_co2_storage_different_year(
+    temp_json_path,
+    sample_co2_storage_data,
+    mock_country_mapping,
+):
+    """CO2 storage constraints filter by year correctly."""
+    repo = BiomassAvailabilityJsonRepository(temp_json_path)
+    repo.add_list(sample_co2_storage_data)
+
+    constraints = repo.get_constraints_for_year(Year(2040), mock_country_mapping)
+
+    assert "co2_stored" in constraints
+    deu_tuple = ("DEU",)
+    assert deu_tuple in constraints["co2_stored"]
+    assert constraints["co2_stored"][deu_tuple][2040] == 8_000_000.0
+    # FRA has no 2040 data
+    fra_tuple = ("FRA",)
+    assert fra_tuple not in constraints["co2_stored"]
+
+
+def test_mixed_biomass_and_co2_constraints(
+    temp_json_path,
+    sample_biomass_data,
+    sample_co2_storage_data,
+    mock_country_mapping,
+):
+    """Both bio_pci and co2_stored keys present when data contains both types."""
+    repo = BiomassAvailabilityJsonRepository(temp_json_path)
+    repo.add_list(sample_biomass_data + sample_co2_storage_data)
+
+    constraints = repo.get_constraints_for_year(Year(2030), mock_country_mapping)
+
+    assert "bio_pci" in constraints
+    assert "co2_stored" in constraints
+    assert len(constraints["bio_pci"]) > 0
+    assert len(constraints["co2_stored"]) == 2

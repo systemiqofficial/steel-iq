@@ -69,24 +69,24 @@ def test_biomass_constraints_loaded_into_environment(temp_biomass_json_path, tmp
     constraints_2030 = repo.get_constraints_for_year(Year(2030), None)
 
     # Verify we got the expected constraints
-    assert "bio-pci" in constraints_2030
+    assert "bio_pci" in constraints_2030
 
     # Check that we have the correct regions
     # USA should be there
     usa_tuple = ("USA",)
-    assert usa_tuple in constraints_2030["bio-pci"]
-    assert constraints_2030["bio-pci"][usa_tuple] == {2030: 500.0}
+    assert usa_tuple in constraints_2030["bio_pci"]
+    assert constraints_2030["bio_pci"][usa_tuple] == {2030: 500.0}
 
     # Western Europe is mapped to individual country codes
     # Check that we have a tuple with multiple European country codes
     we_countries = None
-    for region_tuple in constraints_2030["bio-pci"]:
+    for region_tuple in constraints_2030["bio_pci"]:
         if len(region_tuple) > 1 and "DEU" in region_tuple:  # Germany is in Western Europe
             we_countries = region_tuple
             break
 
     assert we_countries is not None
-    assert constraints_2030["bio-pci"][we_countries] == {2030: 1000.0}
+    assert constraints_2030["bio_pci"][we_countries] == {2030: 1000.0}
 
     # Convert to SecondaryFeedstockConstraint objects
     constraint_objects = []
@@ -101,7 +101,7 @@ def test_biomass_constraints_loaded_into_environment(temp_biomass_json_path, tmp
 
     # Verify we created the constraint objects
     assert len(constraint_objects) == 2  # USA and Western Europe
-    assert all(c.secondary_feedstock_name == "bio-pci" for c in constraint_objects)
+    assert all(c.secondary_feedstock_name == "bio_pci" for c in constraint_objects)
 
     # Check that we can filter by year using the domain model
     from steelo.domain.models import Environment
@@ -122,8 +122,8 @@ def test_biomass_constraints_loaded_into_environment(temp_biomass_json_path, tmp
     # Get relevant constraints for current year
     relevant = env.relevant_secondary_feedstock_constraints(env.secondary_feedstock_constraints, env.year)
     assert relevant is not None
-    assert "bio-pci" in relevant
-    assert len(relevant["bio-pci"]) == 2
+    assert "bio_pci" in relevant
+    assert len(relevant["bio_pci"]) == 2
 
 
 @pytest.mark.skip(reason="Needs refactoring to work with new bootstrap architecture")
@@ -173,21 +173,21 @@ def test_biomass_constraints_change_with_year(temp_biomass_json_path, tmp_path):
     env.year = Year(2030)
     relevant_2030 = env.relevant_secondary_feedstock_constraints(env.secondary_feedstock_constraints, env.year)
 
-    assert "bio-pci" in relevant_2030
-    assert len(relevant_2030["bio-pci"]) == 2  # Western Europe and USA
+    assert "bio_pci" in relevant_2030
+    assert len(relevant_2030["bio_pci"]) == 2  # Western Europe and USA
 
     # Test year 2040
     env.year = Year(2040)
     relevant_2040 = env.relevant_secondary_feedstock_constraints(env.secondary_feedstock_constraints, env.year)
 
-    assert "bio-pci" in relevant_2040
+    assert "bio_pci" in relevant_2040
     # In 2040 we have China data (which gets mapped to CHN)
     # Check for CHN or China
     found_china = False
-    for region_tuple in relevant_2040["bio-pci"]:
+    for region_tuple in relevant_2040["bio_pci"]:
         if "CHN" in region_tuple or "China" in region_tuple:
             found_china = True
-            assert relevant_2040["bio-pci"][region_tuple] == 800.0
+            assert relevant_2040["bio_pci"][region_tuple] == 800.0
             break
     assert found_china
 

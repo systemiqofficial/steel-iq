@@ -1024,11 +1024,20 @@ class SimulationRunner:
                     active_elec_subs = filter_subsidies_for_year(all_elec_subs, bus.env.year)
 
                     if active_h2_subs or active_elec_subs:
+                        # Apply H2/electricity subsidies to operational plant energy costs
+                        h2_before = fg.energy_costs.get("hydrogen", 0.0)
+                        elec_before = fg.energy_costs.get("electricity", 0.0)
                         subsidised_costs, no_subsidy_prices = get_subsidised_energy_costs(
                             fg.energy_costs, active_h2_subs, active_elec_subs
                         )
                         fg.set_subsidised_energy_costs(
                             subsidised_costs, no_subsidy_prices, active_h2_subs, active_elec_subs
+                        )
+                        logging.debug(
+                            f"[H2/ELEC SUBS] {plant.location.iso3}/{fg.technology.name} FG:{fg.furnace_group_id} "
+                            f"Year={bus.env.year} | H2: ${h2_before:.2f} -> ${subsidised_costs.get('hydrogen', 0):.2f}/t | "
+                            f"Elec: ${elec_before:.6f} -> ${subsidised_costs.get('electricity', 0):.6f}/kWh | "
+                            f"Subs: {len(active_h2_subs)} H2, {len(active_elec_subs)} elec"
                         )
 
                 # Set carbon costs for the plant based on its location
@@ -1143,6 +1152,9 @@ class SimulationRunner:
             / "TM"
             / f"post_processed_{datetime.now().strftime('%Y-%m-%d %H-%M')}.csv",
             store=True,
+            cost_breakdown_columns=[f"cost_breakdown - {k}" for k in bus.env.cost_breakdown_keys],
+            carbon_breakdown_columns=[f"carbon_breakdown - {k}" for k in bus.env.carbon_breakdown_keys],
+            carbon_input_columns=[f"carbon_breakdown - {k}" for k in bus.env.carbon_input_keys],
         )
         plot_bar_chart_of_new_plants_by_status(data_collector.status_counts, plot_paths=bus.env.plot_paths)
         plot_map_of_new_plants_operating(data_collector.new_plant_locations, plot_paths=bus.env.plot_paths)

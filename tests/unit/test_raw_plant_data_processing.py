@@ -142,7 +142,7 @@ def test_split_spatial_coordinates_invalid_input(caplog):
     with caplog.at_level(logging.WARNING):
         _result = split_spatial_coordinates(data_invalid)
 
-    assert any("Invalid coordinates found" in record.message for record in caplog.records)
+    assert any("Invalid coordinates found" in record.getMessage() for record in caplog.records)
 
 
 # ---------------------------------------------- Test filter_inactive_plants ------------------------------------------
