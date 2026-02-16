@@ -2906,3 +2906,158 @@ def plot_trade_allocation_visualization(
     logger.info(
         f"Created trade allocation network visualization for {chosen_year}: {output_dir / f'trade_network_visualization_{chosen_year}.html'}"
     )
+
+
+def plot_capex_by_technology_and_year(
+    trace_capex: dict[int, dict[str, dict[str, float]]],
+    plot_paths: Optional["PlotPaths"] = None,
+    iso3_filter: Optional[str] = None,
+):
+    """
+    Plot total CAPEX investments by technology over years as a stacked bar chart.
+
+    This function visualizes capital expenditure (CAPEX) for new plants and renovations,
+    showing how investment flows into different steel production technologies over time.
+
+    CAPEX unit verification:
+    - capacity: tonnes/year
+    - technology.capex: USD/tonne
+    - total_investment = capacity × capex = USD
+    - Plot displays: Billion USD (USD / 1e9)
+
+    Args:
+        trace_capex: Nested dict {year: {technology: {iso3: total_capex_usd}}}
+                     from DataCollector.trace_capex
+        plot_paths: Plot output paths (must include pam_plots_dir)
+        iso3_filter: Optional ISO3 country code to filter investments (e.g., 'CHN', 'IND').
+                     If None, shows global totals.
+
+    Raises:
+        ValueError: If plot_paths is None or pam_plots_dir is not set
+
+    Example:
+        >>> trace_capex = {
+        ...     2025: {'EAF': {'CHN': 1e9, 'USA': 5e8}, 'DRI': {'IND': 2e9}},
+        ...     2026: {'EAF': {'CHN': 1.5e9}, 'BF+CCS': {'USA': 3e9}}
+        ... }
+        >>> plot_capex_by_technology_and_year(trace_capex, plot_paths)
+    """
+    if not trace_capex:
+        logger.warning("No CAPEX data to plot (trace_capex is empty)")
+        return
+
+    if plot_paths is None or plot_paths.pam_plots_dir is None:
+        raise ValueError("plot_paths with pam_plots_dir must be provided when saving CAPEX plots")
+
+    # Get the full year range from trace_capex
+    all_years = sorted(trace_capex.keys())
+    if not all_years:
+        logger.warning("No years found in trace_capex")
+        return
+
+    year_min = min(all_years)
+    year_max = max(all_years)
+    full_year_range = list(range(year_min, year_max + 1))
+
+    # Convert nested dict to DataFrame
+    data_rows = []
+    for year, techs in trace_capex.items():
+        for tech, locations in techs.items():
+            for iso3, capex in locations.items():
+                # Apply ISO3 filter if specified
+                if iso3_filter is None or iso3 == iso3_filter:
+                    data_rows.append({"year": year, "technology": tech, "iso3": iso3, "capex": capex})
+
+    if not data_rows:
+        logger.warning(f"No CAPEX data to plot after filtering{f' for {iso3_filter}' if iso3_filter else ''}")
+        return
+
+    df = pd.DataFrame(data_rows)
+
+    # Log sample values for unit verification
+    sample_capex = df["capex"].iloc[0] if len(df) > 0 else 0
+    logger.debug(f"[CAPEX PLOT] Sample CAPEX value: ${sample_capex:,.0f} USD (= {sample_capex / 1e9:.3f} billion USD)")
+
+    # Aggregate by year and technology (sum across all locations or filtered location)
+    capex_by_year_tech = df.groupby(["year", "technology"])["capex"].sum().unstack("technology", fill_value=0)
+
+    # Reindex to include all years in the range (fill missing years with 0)
+    capex_by_year_tech = capex_by_year_tech.reindex(full_year_range, fill_value=0)
+
+    # Convert to billions for readability
+    capex_by_year_tech_bn = capex_by_year_tech / 1e9
+
+    # Ensure all technologies have colors, assign default if missing
+    unique_techs = capex_by_year_tech_bn.columns
+    for tech in unique_techs:
+        if tech not in tech2colours:
+            tech2colours[tech] = "brown"
+            logger.warning(f"No color defined for technology '{tech}', using brown")
+
+    # Create stacked bar chart
+    fig, ax = plt.subplots(figsize=(12, 7))
+
+    capex_by_year_tech_bn.plot.bar(
+        stacked=True,
+        ax=ax,
+        color=[tech2colours.get(tech, "brown") for tech in capex_by_year_tech_bn.columns],
+        width=0.8,
+    )
+
+    # Formatting
+    location_str = f" in {iso3_filter}" if iso3_filter else " (Global)"
+    ax.set_title(f"CAPEX Investments by Technology{location_str}", fontsize=14, fontweight="bold")
+    ax.set_xlabel("Year", fontsize=12)
+    ax.set_ylabel("Total CAPEX (Billion USD)", fontsize=12)
+    ax.legend(title="Technology", bbox_to_anchor=(1.05, 1), loc="upper left", frameon=True)
+    ax.grid(axis="y", alpha=0.3, linestyle="--")
+
+    # Set x-axis to show all years (including years with zero CAPEX)
+    ax.set_xticks(range(len(full_year_range)))
+    ax.set_xticklabels([str(year) for year in full_year_range], rotation=45, ha="right")
+
+    # Optionally thin out labels if there are too many years (e.g., > 20)
+    if len(full_year_range) > 20:
+        # Show every 2nd or 5th year depending on range
+        step = 5 if len(full_year_range) > 50 else 2
+        for i, label in enumerate(ax.xaxis.get_ticklabels()):
+            if i % step != 0:
+                label.set_visible(False)
+
+    # Add value labels on bars for readability (only if values are significant)
+    from matplotlib.container import BarContainer
+
+    for container in ax.containers:
+        if isinstance(container, BarContainer):
+            # Get heights from bar patches instead of using datavalues to avoid type issues
+            heights = [patch.get_height() for patch in container.patches]
+            labels = [f"${float(h):.1f}B" if float(h) > 0.1 else "" for h in heights]
+            ax.bar_label(container, labels=labels, label_type="center", fontsize=8, color="white", weight="bold")
+
+    fig.tight_layout()
+
+    # Save plot
+    pam_plots_dir = plot_paths.pam_plots_dir
+    pam_plots_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"capex_by_technology_and_year{'_' + iso3_filter if iso3_filter else ''}.png"
+    output_path = pam_plots_dir / filename
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    logger.info(f"Saved CAPEX plot to {output_path}")
+
+    # Log summary statistics for unit verification
+    total_capex_bn = capex_by_year_tech_bn.sum().sum()
+    total_capex_usd = df["capex"].sum()
+    max_annual_capex = capex_by_year_tech_bn.sum(axis=1).max()
+    min_nonzero_capex = (
+        capex_by_year_tech_bn[capex_by_year_tech_bn > 0].min().min() if (capex_by_year_tech_bn > 0).any().any() else 0
+    )
+
+    logger.info(
+        f"[CAPEX PLOT] Total CAPEX{location_str}: ${total_capex_bn:.2f}B (= ${total_capex_usd:,.0f} USD) across "
+        f"{len(full_year_range)} years and {len(unique_techs)} technologies"
+    )
+    logger.info(
+        f"[CAPEX PLOT] Max annual CAPEX: ${max_annual_capex:.2f}B, Min non-zero tech CAPEX: ${min_nonzero_capex:.3f}B"
+    )

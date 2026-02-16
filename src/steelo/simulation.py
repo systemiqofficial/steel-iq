@@ -1155,6 +1155,16 @@ class SimulationRunner:
             iso3_to_region_map=bus.env.country_mappings.iso3_to_region(),
         )
 
+        # Plot CAPEX investments by technology and year
+        if data_collector.trace_capex:
+            from steelo.utilities.plotting import plot_capex_by_technology_and_year
+
+            plot_capex_by_technology_and_year(
+                trace_capex=data_collector.trace_capex,
+                plot_paths=bus.env.plot_paths,
+            )
+            logger.info("Generated CAPEX investment plots")
+
         # Export market prices to CSV and plot
         if data_collector.trace_price:
             import pandas as pd

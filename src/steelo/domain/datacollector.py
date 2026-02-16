@@ -36,6 +36,9 @@ class DataCollector:
             lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
         )
         self.new_plant_locations: dict[Any, dict[Any, list]] = defaultdict(lambda: defaultdict(list))
+        self.trace_capex: dict[int, dict[str, dict[str, float]]] = defaultdict(
+            lambda: defaultdict(lambda: defaultdict(float))
+        )  # {year: {technology: {iso3: total_capex}}}
 
         if custom_function is not None:
             pass
@@ -208,6 +211,59 @@ class DataCollector:
                         ({"lat": plant.location.lat, "lon": plant.location.lon})
                     )
 
+    def collect_capex_investments(self, year: Year):
+        """
+        Collect CAPEX investments by technology and location for newly operating plants.
+
+        Tracks total capital expenditure (CAPEX) for furnace groups that started operating
+        in the given year. This includes both new greenfield plants and renovations/technology
+        switches in existing plants.
+
+        CAPEX is recorded in the year the plant becomes operational, even though the actual
+        investment was made during construction (construction_time years earlier).
+
+        Args:
+            year: The year to collect CAPEX data for
+
+        Returns:
+            dict: {technology: {iso3: total_capex_in_usd}}
+        """
+        logger = logging.getLogger(f"{__name__}.collect_capex_investments")
+        capex_by_tech_and_location: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+
+        # Collect from all plant groups to capture both new plants and renovations
+        for pg in self.plant_groups:
+            for plant in pg.plants:
+                iso3 = plant.location.iso3
+
+                for fg in plant.furnace_groups:
+                    # Track CAPEX for furnace groups that started operating this year
+                    if fg.status == "operating" and fg.lifetime.start == year:
+                        technology = fg.technology.name
+                        capex = fg.total_investment
+
+                        if capex > 0:
+                            capex_by_tech_and_location[technology][iso3] += capex
+                            logger.debug(
+                                f"[CAPEX] Year {year}: {technology} in {iso3} - "
+                                f"${capex:,.0f} (capacity: {fg.capacity:,.0f} t/yr)"
+                            )
+
+        # Store in trace_capex for later analysis
+        if capex_by_tech_and_location:
+            for tech, locations in capex_by_tech_and_location.items():
+                for iso3, capex in locations.items():
+                    self.trace_capex[year][tech][iso3] += capex
+
+            # Log summary
+            total_capex = sum(sum(locations.values()) for locations in capex_by_tech_and_location.values())
+            logger.info(
+                f"[CAPEX] Year {year}: Total CAPEX = ${total_capex:,.0f} across "
+                f"{len(capex_by_tech_and_location)} technologies"
+            )
+
+        return dict(capex_by_tech_and_location)
+
     def collect(self, world_plant_list: list[Plant], world_plant_groups: list[PlantGroup], year):
         """
         Execute the data collection process
@@ -217,6 +273,7 @@ class DataCollector:
         self.capacity_by_technology_and_PAM_status[self.step] = self.collect_capacity_by_technology_and_PAM_status()
         self.plant_emissions[self.step] = self.collect_emissions_by_plants().copy()
         self.collect_new_plant_data(self.env.year)
+        self.collect_capex_investments(self.env.year)
 
         plants = {}
         for p in world_plant_list:
