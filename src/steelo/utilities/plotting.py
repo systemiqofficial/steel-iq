@@ -3280,3 +3280,110 @@ def plot_iron_ore_by_quality(
         f"[IRON ORE PLOT] Total consumption across all years: {total_consumption_all_years / 1e6:.2f} Mt "
         f"({len(years)} years, max annual: {max_annual_consumption:.2f} Mt)"
     )
+
+
+def plot_metallic_charges(
+    trace_metallic_charges: dict[int, dict[str, float]],
+    plot_paths: Optional["PlotPaths"] = None,
+):
+    """
+    Plot metallic charge consumption over time as a stacked area chart.
+
+    Creates a stacked area chart showing how consumption of different metallic charges
+    (scrap, hot metal, DRI, HBI, etc.) evolves over time in steel production.
+
+    Args:
+        trace_metallic_charges: Nested dict {year: {charge_type: total_consumption_tonnes}}
+                               from DataCollector.trace_metallic_charges
+        plot_paths: Plot output paths (must include pam_plots_dir)
+
+    Raises:
+        ValueError: If plot_paths is None or pam_plots_dir is not set
+
+    Example:
+        >>> trace_metallic_charges = {
+        ...     2025: {'scrap': 100000000, 'hot_metal': 200000000, 'dri_high': 50000000},
+        ...     2030: {'scrap': 120000000, 'hot_metal': 180000000, 'dri_high': 70000000},
+        ... }
+        >>> plot_metallic_charges(trace_metallic_charges, plot_paths)
+    """
+    if not trace_metallic_charges:
+        logger.warning("No metallic charge data to plot (trace_metallic_charges is empty)")
+        return
+
+    if plot_paths is None or plot_paths.pam_plots_dir is None:
+        raise ValueError("plot_paths with pam_plots_dir must be provided when saving metallic charge plots")
+
+    # Convert nested dict to DataFrame
+    data_rows = []
+    for year, charges in trace_metallic_charges.items():
+        for charge_type, consumption in charges.items():
+            data_rows.append({"year": year, "charge_type": charge_type, "consumption": consumption})
+
+    if not data_rows:
+        logger.warning("No metallic charge data to plot after conversion")
+        return
+
+    df = pd.DataFrame(data_rows)
+
+    # Convert to Mt (megatonnes) for readability
+    df["consumption_mt"] = df["consumption"] / 1e6
+
+    # Pivot to get charge types as columns
+    df_pivot = df.pivot(index="year", columns="charge_type", values="consumption_mt")
+    df_pivot = df_pivot.fillna(0)
+
+    # Use a matplotlib colormap to automatically assign distinct colors
+    # tab20 provides 20 distinct colors, good for many charge types
+    n_charges = len(df_pivot.columns)
+    if n_charges <= 10:
+        cmap = cm.get_cmap("tab10")
+    elif n_charges <= 20:
+        cmap = cm.get_cmap("tab20")
+    else:
+        cmap = cm.get_cmap("hsv")
+
+    colors_for_plot = [cmap(i / n_charges) for i in range(n_charges)]
+
+    # Create stacked area chart
+    fig, ax = plt.subplots(figsize=(12, 7))
+
+    df_pivot.plot.area(
+        ax=ax,
+        color=colors_for_plot,
+        alpha=0.8,
+        linewidth=2,
+    )
+
+    # Formatting
+    ax.set_title("Metallic Charge Consumption Over Time", fontsize=14, fontweight="bold")
+    ax.set_xlabel("Year", fontsize=12)
+    ax.set_ylabel("Total Consumption (Mt)", fontsize=12)
+    ax.legend(title="Charge Type", bbox_to_anchor=(1.05, 1), loc="upper left", frameon=True)
+    ax.grid(axis="y", alpha=0.3, linestyle="--")
+
+    # Format x-axis
+    years = sorted(df_pivot.index)
+    ax.set_xlim(years[0], years[-1])
+
+    # Set integer ticks for years
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=min(len(years), 20)))
+
+    fig.tight_layout()
+
+    # Save plot
+    pam_plots_dir = plot_paths.pam_plots_dir
+    pam_plots_dir.mkdir(parents=True, exist_ok=True)
+    output_path = pam_plots_dir / "metallic_charges_over_time.png"
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    logger.info(f"Saved metallic charge consumption chart to {output_path}")
+
+    # Log summary statistics
+    total_consumption_all_years = df["consumption"].sum()
+    max_annual_consumption = df.groupby("year")["consumption"].sum().max() / 1e6
+    logger.info(
+        f"[METALLIC CHARGES PLOT] Total consumption across all years: {total_consumption_all_years / 1e6:.2f} Mt "
+        f"({len(years)} years, max annual: {max_annual_consumption:.2f} Mt)"
+    )

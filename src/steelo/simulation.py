@@ -1185,6 +1185,16 @@ class SimulationRunner:
             )
             logger.info("Generated iron ore consumption chart")
 
+        # Plot metallic charges consumption stacked area chart
+        if data_collector.trace_metallic_charges:
+            from steelo.utilities.plotting import plot_metallic_charges
+
+            plot_metallic_charges(
+                trace_metallic_charges=data_collector.trace_metallic_charges,
+                plot_paths=bus.env.plot_paths,
+            )
+            logger.info("Generated metallic charges consumption chart")
+
         # Export market prices to CSV and plot
         if data_collector.trace_price:
             import pandas as pd

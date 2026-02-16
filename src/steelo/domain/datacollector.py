@@ -45,6 +45,9 @@ class DataCollector:
         self.trace_iron_ore: dict[int, dict[str, float]] = defaultdict(
             lambda: defaultdict(float)
         )  # {year: {quality: total_consumption_tonnes}}
+        self.trace_metallic_charges: dict[int, dict[str, float]] = defaultdict(
+            lambda: defaultdict(float)
+        )  # {year: {charge_type: total_consumption_tonnes}}
 
         if custom_function is not None:
             pass
@@ -384,6 +387,72 @@ class DataCollector:
 
         return dict(iron_ore_by_quality)
 
+    def collect_metallic_charges(self, year: Year):
+        """
+        Collect metallic charge consumption for the given year.
+
+        Aggregates consumption of all metallic charges from operating furnace groups.
+        Uses the metallic_charge field from each technology's primary feedstocks to
+        dynamically identify what materials are metallic charges.
+
+        Args:
+            year: The year to collect metallic charge data for
+
+        Returns:
+            dict: {charge_type: total_consumption_tonnes}
+        """
+        logger = logging.getLogger(f"{__name__}.collect_metallic_charges")
+        metallic_charges: dict[str, float] = defaultdict(float)
+
+        for pg in self.plant_groups:
+            for plant in pg.plants:
+                for fg in plant.furnace_groups:
+                    # Only collect from operating furnace groups
+                    if fg.status.lower() not in self.env.config.active_statuses:
+                        continue
+
+                    # Get the metallic charges from this furnace group's primary feedstocks
+                    feedstock_metallic_charges = set()
+                    for feedstock in fg.effective_primary_feedstocks:
+                        if feedstock.metallic_charge:
+                            feedstock_metallic_charges.add(feedstock.metallic_charge.lower())
+
+                    if not feedstock_metallic_charges:
+                        continue
+
+                    # Check bill of materials for these metallic charges
+                    if not fg.bill_of_materials or "materials" not in fg.bill_of_materials:
+                        continue
+
+                    materials = fg.bill_of_materials["materials"]
+                    if not materials:
+                        continue
+
+                    # Collect consumption for materials that match metallic charges
+                    for material_name, material_data in materials.items():
+                        material_lower = material_name.lower()
+
+                        # Check if this material is one of the metallic charges for this technology
+                        if material_lower in feedstock_metallic_charges:
+                            # Get the demand (total consumption in tonnes)
+                            demand = material_data.get("demand", 0)
+                            if demand and demand > 0:
+                                metallic_charges[material_name] += demand
+
+        # Store in trace_metallic_charges for later analysis
+        if metallic_charges:
+            for charge_type, consumption in metallic_charges.items():
+                self.trace_metallic_charges[year][charge_type] += consumption
+
+            # Log summary
+            total_consumption = sum(metallic_charges.values())
+            logger.info(
+                f"[METALLIC CHARGES] Year {year}: Total consumption = {total_consumption:,.0f} tonnes across "
+                f"{len(metallic_charges)} charge types"
+            )
+
+        return dict(metallic_charges)
+
     def collect(self, world_plant_list: list[Plant], world_plant_groups: list[PlantGroup], year):
         """
         Execute the data collection process
@@ -396,6 +465,7 @@ class DataCollector:
         self.collect_capex_investments(self.env.year)
         self.collect_emissions_by_technology(self.env.year)
         self.collect_iron_ore_by_quality(self.env.year)
+        self.collect_metallic_charges(self.env.year)
 
         plants = {}
         for p in world_plant_list:
