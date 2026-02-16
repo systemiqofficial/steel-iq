@@ -1165,6 +1165,16 @@ class SimulationRunner:
             )
             logger.info("Generated CAPEX investment plots")
 
+        # Plot emissions stacked area chart by technology
+        if data_collector.trace_emissions:
+            from steelo.utilities.plotting import plot_emissions_wedge_by_technology
+
+            plot_emissions_wedge_by_technology(
+                trace_emissions=data_collector.trace_emissions,
+                plot_paths=bus.env.plot_paths,
+            )
+            logger.info("Generated emissions stacked area chart")
+
         # Export market prices to CSV and plot
         if data_collector.trace_price:
             import pandas as pd

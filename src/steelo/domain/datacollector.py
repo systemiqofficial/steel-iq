@@ -39,6 +39,9 @@ class DataCollector:
         self.trace_capex: dict[int, dict[str, dict[str, float]]] = defaultdict(
             lambda: defaultdict(lambda: defaultdict(float))
         )  # {year: {technology: {iso3: total_capex}}}
+        self.trace_emissions: dict[int, dict[str, float]] = defaultdict(
+            lambda: defaultdict(float)
+        )  # {year: {technology: total_emissions_tCO2e}}
 
         if custom_function is not None:
             pass
@@ -264,6 +267,55 @@ class DataCollector:
 
         return dict(capex_by_tech_and_location)
 
+    def collect_emissions_by_technology(self, year: Year):
+        """
+        Collect total emissions by technology for the given year.
+
+        Aggregates emissions from all operating furnace groups by technology type.
+        Uses the configured emissions boundary (typically "cradle-to-gate") and sums
+        all scopes (scope 1, 2, and 3).
+
+        Args:
+            year: The year to collect emissions data for
+
+        Returns:
+            dict: {technology: total_emissions_tCO2e}
+        """
+        logger = logging.getLogger(f"{__name__}.collect_emissions_by_technology")
+        emissions_by_tech: dict[str, float] = defaultdict(float)
+
+        # Get the configured emissions boundary
+        emissions_boundary = self.env.config.chosen_emissions_boundary_for_carbon_costs
+
+        for pg in self.plant_groups:
+            for plant in pg.plants:
+                for fg in plant.furnace_groups:
+                    # Only collect from operating furnace groups
+                    if fg.status.lower() not in self.env.config.active_statuses:
+                        continue
+
+                    technology = fg.technology.name
+
+                    # Sum emissions across all scopes for the configured boundary
+                    if fg.emissions and emissions_boundary in fg.emissions:
+                        for scope, emission_value in fg.emissions[emissions_boundary].items():
+                            if emission_value and emission_value > 0:
+                                emissions_by_tech[technology] += emission_value
+
+        # Store in trace_emissions for later analysis
+        if emissions_by_tech:
+            for tech, emissions in emissions_by_tech.items():
+                self.trace_emissions[year][tech] += emissions
+
+            # Log summary
+            total_emissions = sum(emissions_by_tech.values())
+            logger.info(
+                f"[EMISSIONS] Year {year}: Total emissions = {total_emissions:,.0f} tCO2e across "
+                f"{len(emissions_by_tech)} technologies (boundary: {emissions_boundary})"
+            )
+
+        return dict(emissions_by_tech)
+
     def collect(self, world_plant_list: list[Plant], world_plant_groups: list[PlantGroup], year):
         """
         Execute the data collection process
@@ -274,6 +326,7 @@ class DataCollector:
         self.plant_emissions[self.step] = self.collect_emissions_by_plants().copy()
         self.collect_new_plant_data(self.env.year)
         self.collect_capex_investments(self.env.year)
+        self.collect_emissions_by_technology(self.env.year)
 
         plants = {}
         for p in world_plant_list:
