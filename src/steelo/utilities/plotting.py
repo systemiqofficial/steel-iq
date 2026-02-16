@@ -3163,3 +3163,120 @@ def plot_emissions_wedge_by_technology(
         f"[EMISSIONS PLOT] Total emissions across all years: {total_emissions_all_years / 1e6:.2f} Mt CO2e "
         f"({len(years)} years, max annual: {max_annual_emissions:.2f} Mt CO2e)"
     )
+
+
+def plot_iron_ore_by_quality(
+    trace_iron_ore: dict[int, dict[str, float]],
+    plot_paths: Optional["PlotPaths"] = None,
+):
+    """
+    Plot iron ore consumption by quality over time as a stacked area chart.
+
+    Creates a stacked area chart showing how iron ore/pellets consumption of different
+    qualities evolves over time. The y-axis shows total consumption with each quality's
+    contribution stacked.
+
+    Args:
+        trace_iron_ore: Nested dict {year: {quality: total_consumption_tonnes}}
+                       from DataCollector.trace_iron_ore
+        plot_paths: Plot output paths (must include pam_plots_dir)
+
+    Raises:
+        ValueError: If plot_paths is None or pam_plots_dir is not set
+
+    Example:
+        >>> trace_iron_ore = {
+        ...     2025: {'pellets_high': 50000000, 'pellets_mid': 120000000},
+        ...     2030: {'pellets_high': 60000000, 'pellets_mid': 100000000},
+        ... }
+        >>> plot_iron_ore_by_quality(trace_iron_ore, plot_paths)
+    """
+    if not trace_iron_ore:
+        logger.warning("No iron ore data to plot (trace_iron_ore is empty)")
+        return
+
+    if plot_paths is None or plot_paths.pam_plots_dir is None:
+        raise ValueError("plot_paths with pam_plots_dir must be provided when saving iron ore plots")
+
+    # Convert nested dict to DataFrame
+    data_rows = []
+    for year, qualities in trace_iron_ore.items():
+        for quality, consumption in qualities.items():
+            data_rows.append({"year": year, "quality": quality, "consumption": consumption})
+
+    if not data_rows:
+        logger.warning("No iron ore data to plot after conversion")
+        return
+
+    df = pd.DataFrame(data_rows)
+
+    # Convert to Mt (megatonnes) for readability
+    df["consumption_mt"] = df["consumption"] / 1e6
+
+    # Pivot to get qualities as columns
+    df_pivot = df.pivot(index="year", columns="quality", values="consumption_mt")
+    df_pivot = df_pivot.fillna(0)
+
+    # Define colors for different iron ore qualities (distinct colors for easy distinction)
+    quality_colors = {
+        "io_high": "#2E7D32",  # green (highest quality)
+        "io_mid": "#1976D2",  # blue (mid quality)
+        "io_low": "#D32F2F",  # red (lowest quality)
+    }
+
+    # Assign colors to qualities in the data
+    colors_for_plot = []
+    for quality in df_pivot.columns:
+        quality_lower = quality.lower()
+        color_found = False
+        for key, color in quality_colors.items():
+            if key in quality_lower:
+                colors_for_plot.append(color)
+                color_found = True
+                break
+        if not color_found:
+            colors_for_plot.append("brown")  # default
+            logger.warning(f"No color defined for iron ore quality '{quality}', using brown")
+
+    # Create stacked area chart
+    fig, ax = plt.subplots(figsize=(12, 7))
+
+    df_pivot.plot.area(
+        ax=ax,
+        color=colors_for_plot,
+        alpha=0.8,
+        linewidth=2,
+    )
+
+    # Formatting
+    ax.set_title("Iron Ore Consumption by Quality Over Time", fontsize=14, fontweight="bold")
+    ax.set_xlabel("Year", fontsize=12)
+    ax.set_ylabel("Total Consumption (Mt)", fontsize=12)
+    ax.legend(title="Quality", bbox_to_anchor=(1.05, 1), loc="upper left", frameon=True)
+    ax.grid(axis="y", alpha=0.3, linestyle="--")
+
+    # Format x-axis
+    years = sorted(df_pivot.index)
+    ax.set_xlim(years[0], years[-1])
+
+    # Set integer ticks for years
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=min(len(years), 20)))
+
+    fig.tight_layout()
+
+    # Save plot
+    pam_plots_dir = plot_paths.pam_plots_dir
+    pam_plots_dir.mkdir(parents=True, exist_ok=True)
+    output_path = pam_plots_dir / "iron_ore_by_quality_over_time.png"
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    logger.info(f"Saved iron ore consumption chart to {output_path}")
+
+    # Log summary statistics
+    total_consumption_all_years = df["consumption"].sum()
+    max_annual_consumption = df.groupby("year")["consumption"].sum().max() / 1e6
+    logger.info(
+        f"[IRON ORE PLOT] Total consumption across all years: {total_consumption_all_years / 1e6:.2f} Mt "
+        f"({len(years)} years, max annual: {max_annual_consumption:.2f} Mt)"
+    )

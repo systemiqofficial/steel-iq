@@ -1175,6 +1175,16 @@ class SimulationRunner:
             )
             logger.info("Generated emissions stacked area chart")
 
+        # Plot iron ore consumption stacked area chart by quality
+        if data_collector.trace_iron_ore:
+            from steelo.utilities.plotting import plot_iron_ore_by_quality
+
+            plot_iron_ore_by_quality(
+                trace_iron_ore=data_collector.trace_iron_ore,
+                plot_paths=bus.env.plot_paths,
+            )
+            logger.info("Generated iron ore consumption chart")
+
         # Export market prices to CSV and plot
         if data_collector.trace_price:
             import pandas as pd
