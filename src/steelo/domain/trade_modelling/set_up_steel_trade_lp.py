@@ -138,6 +138,18 @@ def create_process_from_furnace_group(
                 raise ValueError(
                     f"Required quantity per ton of product is None for feedstock {primary_feedstock.name}. It's outputs are: {primary_feedstock.outputs.keys()}"
                 )
+            # Bridge carbon outputs (e.g. co2_stored) into dependent_commodities so that
+            # regional availability constraints can be enforced by the LP. carbon_outputs
+            # values are in tCO2/t-product-output; dividing by required_quantity converts
+            # to tCO2/t-primary-input, which is the unit the LP dependent-commodity ratio
+            # expects. If no supply process exists for a given carbon output (i.e. no
+            # constraint is configured), set_legal_allocations will simply find no allocation
+            # variable and the equality constraint is skipped harmlessly.
+            req_qty = primary_feedstock.required_quantity_per_ton_of_product
+            for co_key, co_amount in (primary_feedstock.carbon_outputs or {}).items():
+                if co_amount:  # skip zero-valued outputs — no LP effect and avoids noisy warnings
+                    dependent_commodities[tlp.Commodity(name=co_key)] = co_amount / req_qty
+
             output_commodities = [tlp.Commodity(name=oc) for oc in primary_commodities]
 
             # energy_vopex_by_input is calculated as $ per ton of OUTPUT (from dynamic business case)
@@ -881,17 +893,6 @@ def set_up_steel_trade_lp(
             logger.info(f"No active carbon border mechanisms for year {year}, skipping adjustments")
     else:
         logger.info("No carbon border mechanisms defined in environment, skipping adjustments")
-
-    # lp_model.lp_model.secondary_feedstock_constraints.pprint()
-    # print(
-    #     f"Number of secondary feedstock constraints from data: {len(secondary_feedstock_constraints) if secondary_feedstock_constraints else 0}"
-    # )
-    # print(f"Length max feedstock parameters: {len(lp_model.lp_model.max_secondary_feedstock_allocation)}")
-    # print(f"length secondary_feedstock_index_set: {len(lp_model.lp_model.secondary_feedstock_index_set)}")
-    # print(
-    #     f"Number of created secondary feedstock constraints in LP model: {len(lp_model.lp_model.secondary_feedstock_constraints)}"
-    # )
-    # exit()
 
     return lp_model
 
