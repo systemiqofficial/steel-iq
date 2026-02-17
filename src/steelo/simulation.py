@@ -1155,44 +1155,31 @@ class SimulationRunner:
             iso3_to_region_map=bus.env.country_mappings.iso3_to_region(),
         )
 
+        # Generate plots using SteelPlotter class for consistent styling
+        from steelo.utilities.steeliq_plotter import SteelPlotter, PlotConfig
+
+        # Create plotter with default configuration
+        plot_config = PlotConfig()
+        plotter = SteelPlotter(config=plot_config, plot_paths=bus.env.plot_paths)
+
         # Plot CAPEX investments by technology and year
         if data_collector.trace_capex:
-            from steelo.utilities.plotting import plot_capex_by_technology_and_year
-
-            plot_capex_by_technology_and_year(
-                trace_capex=data_collector.trace_capex,
-                plot_paths=bus.env.plot_paths,
-            )
+            plotter.plot_capex_by_technology(trace_capex=data_collector.trace_capex)
             logger.info("Generated CAPEX investment plots")
 
         # Plot emissions stacked area chart by technology
         if data_collector.trace_emissions:
-            from steelo.utilities.plotting import plot_emissions_wedge_by_technology
-
-            plot_emissions_wedge_by_technology(
-                trace_emissions=data_collector.trace_emissions,
-                plot_paths=bus.env.plot_paths,
-            )
+            plotter.plot_emissions_by_technology(trace_emissions=data_collector.trace_emissions)
             logger.info("Generated emissions stacked area chart")
 
         # Plot iron ore consumption stacked area chart by quality
         if data_collector.trace_iron_ore:
-            from steelo.utilities.plotting import plot_iron_ore_by_quality
-
-            plot_iron_ore_by_quality(
-                trace_iron_ore=data_collector.trace_iron_ore,
-                plot_paths=bus.env.plot_paths,
-            )
+            plotter.plot_iron_ore_by_quality(trace_iron_ore=data_collector.trace_iron_ore)
             logger.info("Generated iron ore consumption chart")
 
         # Plot metallic charges consumption stacked area chart
         if data_collector.trace_metallic_charges:
-            from steelo.utilities.plotting import plot_metallic_charges
-
-            plot_metallic_charges(
-                trace_metallic_charges=data_collector.trace_metallic_charges,
-                plot_paths=bus.env.plot_paths,
-            )
+            plotter.plot_metallic_charges(trace_metallic_charges=data_collector.trace_metallic_charges)
             logger.info("Generated metallic charges consumption chart")
 
         # Export market prices to CSV and plot
