@@ -295,6 +295,7 @@ class DataCollector:
                             "unit_secondary_output_costs": fg.cost_adjustments_from_secondary_outputs,
                             "unit_carbon_cost": fg.carbon_cost_per_unit,
                             "cost_breakdown": fg.cost_breakdown_by_feedstock,  # type: ignore
+                            "carbon_breakdown": fg.carbon_breakdown_by_feedstock,  # type: ignore
                         }
                     )
 
@@ -325,6 +326,7 @@ class DataCollector:
                         "materials": None,
                         "energy": None,
                         "cost_breakdown": None,
+                        "carbon_breakdown": None,
                         "unit_vopex": None,
                         "unit_carbon_cost": None,
                         "unit_secondary_outputs_revenue": None,

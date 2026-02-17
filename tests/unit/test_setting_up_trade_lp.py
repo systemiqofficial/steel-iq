@@ -296,7 +296,15 @@ class DummyTechnology:
 
 class DummyFeedstock:
     def __init__(
-        self, name, metallic_charge, required_quantity, maximum_share, minimum_share, secondary_feedstock, outputs
+        self,
+        name,
+        metallic_charge,
+        required_quantity,
+        maximum_share,
+        minimum_share,
+        secondary_feedstock,
+        outputs,
+        carbon_outputs=None,
     ):
         self.name = name
         self.metallic_charge = metallic_charge
@@ -305,6 +313,7 @@ class DummyFeedstock:
         self.minimum_share_in_product = minimum_share
         self.secondary_feedstock = secondary_feedstock
         self.outputs = outputs
+        self.carbon_outputs = carbon_outputs or {}
 
     def get_primary_outputs(self, primary_products: list[str] | None = None):
         return self.outputs
@@ -467,6 +476,69 @@ def test_create_process_from_furnace_group_feedstock():
     assert process.type == DummyProcessType.PRODUCTION
     assert len(process.bill_of_materials) == 1
     assert "HS" in lp_model.bom_elements
+
+
+def test_create_process_from_furnace_group_carbon_outputs_bridged_to_dependent_commodities():
+    """CCS carbon_outputs are added to BOM dependent_commodities with per-input unit conversion."""
+    required_quantity = 1.05  # t hot_metal input per t steel output
+    feedstock = DummyFeedstock(
+        name="BF_CCS_HS",
+        metallic_charge="hot_metal",
+        required_quantity=required_quantity,
+        maximum_share=1.0,
+        minimum_share=0.0,
+        secondary_feedstock={},
+        outputs={"steel": 1},
+        carbon_outputs={"co2_stored": 2.7, "co2_slip": 0.13},
+    )
+    tech = DummyTechnology(name="BF+CCS", dynamic_business_case=[feedstock])
+    furnace_group = DummyFurnaceGroup(
+        furnace_group_id="plant_ccs_fg1", technology=tech, status="operating", capacity=100
+    )
+    lp_model = DummyTradeLPModel()
+    config = create_mock_config()
+
+    process = create_process_from_furnace_group(furnace_group, lp_model, config)
+
+    assert len(process.bill_of_materials) == 1
+    bom = process.bill_of_materials[0]
+
+    # dependent_commodities keys are real tlp.Commodity objects — look up by name
+    dep_by_name = {c.name: v for c, v in bom.dependent_commodities.items()}
+
+    assert "co2_stored" in dep_by_name, "co2_stored should be bridged into dependent_commodities"
+    assert "co2_slip" in dep_by_name, "co2_slip should be bridged into dependent_commodities"
+
+    # Values are converted: tCO2/t-product-output → tCO2/t-primary-input
+    assert dep_by_name["co2_stored"] == pytest.approx(2.7 / required_quantity)
+    assert dep_by_name["co2_slip"] == pytest.approx(0.13 / required_quantity)
+
+
+def test_create_process_from_furnace_group_zero_carbon_output_excluded():
+    """Zero-valued carbon outputs are excluded from dependent_commodities (no LP effect, avoids noise)."""
+    feedstock = DummyFeedstock(
+        name="BF_CCS_HS2",
+        metallic_charge="hot_metal",
+        required_quantity=1.0,
+        maximum_share=1.0,
+        minimum_share=0.0,
+        secondary_feedstock={},
+        outputs={"steel": 1},
+        carbon_outputs={"co2_stored": 2.7, "co2_utilised": 0.0},
+    )
+    tech = DummyTechnology(name="BF+CCS2", dynamic_business_case=[feedstock])
+    furnace_group = DummyFurnaceGroup(
+        furnace_group_id="plant_ccs_fg2", technology=tech, status="operating", capacity=100
+    )
+    lp_model = DummyTradeLPModel()
+    config = create_mock_config()
+
+    process = create_process_from_furnace_group(furnace_group, lp_model, config)
+    bom = process.bill_of_materials[0]
+    dep_by_name = {c.name: v for c, v in bom.dependent_commodities.items()}
+
+    assert "co2_stored" in dep_by_name
+    assert "co2_utilised" not in dep_by_name, "zero-valued carbon output should be excluded"
 
 
 def test_add_furnace_groups_as_process_centers():
@@ -1361,7 +1433,7 @@ def test_secondary_feedstock_supplier_capacity_updated_each_year(monkeypatch):
     mock_config = create_mock_config()
     message_bus = DummyMessageBus(repo)
 
-    secondary_feedstock_constraints = {"bio-pci": {("USA",): 150.0}}
+    secondary_feedstock_constraints = {"bio_pci": {("USA",): 150.0}}
 
     set_up_steel_trade_lp(
         message_bus=message_bus,
@@ -1371,7 +1443,7 @@ def test_secondary_feedstock_supplier_capacity_updated_each_year(monkeypatch):
         secondary_feedstock_constraints=secondary_feedstock_constraints,
     )
 
-    supplier = repo.suppliers.get("bio-pci_supply_process_center")
+    supplier = repo.suppliers.get("bio_pci_supply_process_center")
     assert supplier.capacity_by_year[year] == Volumes(150.0)
 
 

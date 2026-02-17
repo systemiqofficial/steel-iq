@@ -1,3 +1,5 @@
+import re
+
 import pandas as pd
 from IPython.display import display, HTML
 from collections import Counter, defaultdict
@@ -5,6 +7,33 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from steelo.domain.models import FurnaceGroup
+
+
+def normalize_name(name: str | None) -> str:
+    """Normalise a domain name to a canonical lookup key.
+
+    Single normalisation function used across the codebase for energy carriers,
+    commodities, feedstocks, constraint types, and any other domain string that
+    needs a consistent key form for matching and storage.
+
+    Examples:
+        "Natural Gas"  → "natural_gas"
+        "bio-pci"      → "bio_pci"
+        "co2 - stored" → "co2_stored"
+        "co2_-_inlet"  → "co2_inlet"
+        "Hot metal"    → "hot_metal"
+
+    Args:
+        name: Raw domain name. None is treated as empty string.
+
+    Returns:
+        Lowercase key with spaces and hyphens replaced by underscores,
+        and consecutive underscores collapsed to one.
+    """
+    if name is None:
+        return ""
+    key = str(name).lower().replace(" ", "_").replace("-", "_")
+    return re.sub(r"_+", "_", key)
 
 
 def display_scrollable_dataframe(df) -> None:

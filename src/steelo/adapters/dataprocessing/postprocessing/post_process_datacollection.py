@@ -4,41 +4,10 @@ from pathlib import Path
 
 import logging
 
-# Define standard cost_breakdown columns that should always be present
-# This ensures consistent CSV output across all simulations
-STANDARD_COST_BREAKDOWN_COLUMNS = [
-    "cost_breakdown - coal",
-    "cost_breakdown - coking coal",
-    "cost_breakdown - coke",
-    "cost_breakdown - pci",
-    "cost_breakdown - bio-pci",
-    "cost_breakdown - hydrogen",
-    "cost_breakdown - natural gas",
-    "cost_breakdown - electricity",
-    "cost_breakdown - heat",  # renamed from flexible
-    "cost_breakdown - burnt lime",
-    "cost_breakdown - burnt dolomite",
-    "cost_breakdown - olivine",
-    "cost_breakdown - bf gas",
-    "cost_breakdown - cog",
-    "cost_breakdown - bof gas",
-    # "cost_breakdown - fixed opex",
-    # "cost_breakdown - carbon cost",
-    # "cost_breakdown - debt share",
-    # "cost_breakdown - material cost",
-]
-
-STRUCTURAL_FEED_COLUMNS = {"commands", "materials", "energy", "cost_breakdown"}
+from steelo.utilities.utils import normalize_name
 
 
-def _normalize_reductant(value):
-    """Convert reductant labels to a reporting-friendly form (spaces -> underscores)."""
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return None
-    text = str(value).strip()
-    if not text:
-        return ""
-    return text.replace(" ", "_")
+STRUCTURAL_FEED_COLUMNS = {"commands", "materials", "energy", "cost_breakdown", "carbon_breakdown"}
 
 
 def _filter_effectively_empty_frames(frames: list[pd.DataFrame]) -> list[pd.DataFrame]:
@@ -66,6 +35,9 @@ def extract_and_process_stored_dataCollection(
     data_dir: Path,
     output_path: Path,
     store: bool = True,
+    cost_breakdown_columns: list[str] | None = None,
+    carbon_breakdown_columns: list[str] | None = None,
+    carbon_input_columns: list[str] | None = None,
 ) -> pd.DataFrame | str:
     """
     Extract and process stored pickle-files storing the collected data from the simulation.
@@ -128,6 +100,8 @@ def extract_and_process_stored_dataCollection(
             cols_to_select = ["furnace_group_id", "materials", "energy"]
             if "cost_breakdown" in plant.columns:
                 cols_to_select.append("cost_breakdown")
+            if "carbon_breakdown" in plant.columns:
+                cols_to_select.append("carbon_breakdown")
             feedstock_proccess.append(plant[cols_to_select])
 
         # Filter out empty/all-NA DataFrames to avoid pandas FutureWarning on concat
@@ -149,6 +123,9 @@ def extract_and_process_stored_dataCollection(
             cost_break = row.get("cost_breakdown", {})
             if not isinstance(cost_break, dict):
                 cost_break = {}
+            carb_break = row.get("carbon_breakdown", {})
+            if not isinstance(carb_break, dict):
+                carb_break = {}
 
             # get every feedstock that appears in either dict
             for feed in set(mats):
@@ -173,18 +150,13 @@ def extract_and_process_stored_dataCollection(
                         continue
                     records_dict[f"cost_breakdown - {process_cost}"] = cb.get(process_cost, 0)
 
+                # Unpack carbon breakdown (tCO2/t-product)
+                cb_carbon = carb_break.get(feed, {})
+                for carbon_key in cb_carbon:
+                    records_dict[f"carbon_breakdown - {carbon_key}"] = cb_carbon.get(carbon_key, 0)
+
                 records.append(records_dict)
         long_df = pd.DataFrame.from_records(records)
-        long_df.rename(
-            columns={
-                "cost_breakdown - flexible": "cost_breakdown - heat",
-                "cost_breakdown - fluxes": "cost_breakdown - burnt lime",
-                "cost_breakdown - burnt_lime": "cost_breakdown - burnt lime",
-                "cost_breakdown - burnt lime": "cost_breakdown - burnt lime",
-                "cost_breakdown - lime": "cost_breakdown - burnt lime",
-            },
-            inplace=True,
-        )
         if not long_df.empty and all(col in long_df.columns for col in ["furnace_group_id", "feedstock"]):
             long_df = (
                 long_df.set_index(["furnace_group_id", "feedstock"])
@@ -195,17 +167,26 @@ def extract_and_process_stored_dataCollection(
             )
 
         if not long_df.empty:
-            # Ensure all standard cost_breakdown columns exist
-            for col in STANDARD_COST_BREAKDOWN_COLUMNS:
-                if col not in long_df.columns:
-                    long_df[col] = None  # Use None for missing values (mypy compatible)
+            # Ensure all canonical cost_breakdown and carbon_breakdown columns exist
+            if cost_breakdown_columns:
+                for col in cost_breakdown_columns:
+                    if col not in long_df.columns:
+                        long_df[col] = None
+            if carbon_breakdown_columns:
+                for col in carbon_breakdown_columns:
+                    if col not in long_df.columns:
+                        long_df[col] = None
 
             full_furnace_df = furnace_df.merge(long_df, on="furnace_group_id", how="left").drop_duplicates().copy()
         else:
-            # If no feedstock data, just use furnace_df and add empty cost_breakdown columns
+            # If no feedstock data, just use furnace_df and add empty columns
             full_furnace_df = furnace_df.copy()
-            for col in STANDARD_COST_BREAKDOWN_COLUMNS:
-                full_furnace_df[col] = None
+            if cost_breakdown_columns:
+                for col in cost_breakdown_columns:
+                    full_furnace_df[col] = None
+            if carbon_breakdown_columns:
+                for col in carbon_breakdown_columns:
+                    full_furnace_df[col] = None
         full_furnace_df["plant_id"] = full_furnace_df["furnace_group_id"].apply(lambda x: x.split("_")[0])
         full_furnace_df = (
             df[["location", "balance"]]
@@ -274,35 +255,61 @@ def extract_and_process_stored_dataCollection(
     if all_furnaces:
         final_df = pd.concat(all_furnaces).sort_values(by="year").reset_index(drop=True)
 
-        # Ensure all standard cost_breakdown columns are present in the final DataFrame
-        # This handles cases where a column might be missing across all years
-        for col in STANDARD_COST_BREAKDOWN_COLUMNS:
-            if col not in final_df.columns:
-                # Find appropriate position (before 'year' column)
-                if "year" in final_df.columns:
-                    year_idx = final_df.columns.get_loc("year")
-                    # Ensure year_idx is an integer for insert
-                    if isinstance(year_idx, int):
-                        final_df.insert(year_idx, col, None)  # Use None instead of pd.NA for compatibility
-                    else:
-                        final_df[col] = None
-                else:
-                    final_df[col] = None
+        # Ensure all canonical breakdown columns are present in the final DataFrame
+        for canonical_cols in (cost_breakdown_columns, carbon_breakdown_columns):
+            if canonical_cols:
+                for col in canonical_cols:
+                    if col not in final_df.columns:
+                        if "year" in final_df.columns:
+                            year_idx = final_df.columns.get_loc("year")
+                            if isinstance(year_idx, int):
+                                final_df.insert(year_idx, col, None)
+                            else:
+                                final_df[col] = None
+                        else:
+                            final_df[col] = None
 
         if "chosen_reductant" in final_df.columns:
-            final_df["chosen_reductant"] = final_df["chosen_reductant"].apply(_normalize_reductant)
+            final_df["chosen_reductant"] = final_df["chosen_reductant"].apply(
+                lambda v: normalize_name(v) if isinstance(v, str) and v.strip() else v
+            )
     else:
         final_df = pd.DataFrame()
 
-    # rearrange columns year and commands to be number 5 and 6
-    final_df = final_df.reindex(
-        columns=[
-            *final_df.columns[:4],
-            "year",
-            "commands",
-            *final_df.columns[4:-2],
-        ]
-    )
+    # Build deterministic column order:
+    # [core 0-3] + [year, commands] + [remaining non-breakdown] + [priority CB] + [sorted CB]
+    # + [carbon inputs] + [carbon outputs]
+    CB_PREFIX = "cost_breakdown - "
+    CARB_PREFIX = "carbon_breakdown - "
+    PRIORITY_CB = [
+        "cost_breakdown - demand_share_pct",
+        "cost_breakdown - material cost (incl. transport and tariffs)",
+    ]
+
+    all_cols = list(final_df.columns)
+    cb_cols = [c for c in all_cols if c.startswith(CB_PREFIX)]
+    carb_cols = set(c for c in all_cols if c.startswith(CARB_PREFIX))
+    non_breakdown_cols = [
+        c
+        for c in all_cols
+        if not c.startswith(CB_PREFIX) and not c.startswith(CARB_PREFIX) and c not in ("year", "commands")
+    ]
+
+    # Insert year and commands at positions 4-5 within the non-breakdown group
+    ordered = non_breakdown_cols[:4] + ["year", "commands"] + non_breakdown_cols[4:]
+
+    # Cost breakdown: priority columns first, then the rest alphabetically
+    priority = [c for c in PRIORITY_CB if c in cb_cols]
+    remaining_cb = sorted(c for c in cb_cols if c not in PRIORITY_CB)
+    ordered += priority + remaining_cb
+
+    # Carbon breakdown: inputs first (from carbon_input_columns), then outputs
+    carb_input_set = set(carbon_input_columns or [])
+    carb_input_ordered = sorted(c for c in carb_cols if c in carb_input_set)
+    carb_output_ordered = sorted(c for c in carb_cols if c not in carb_input_set)
+    ordered += carb_input_ordered + carb_output_ordered
+
+    final_df = final_df[ordered]
 
     if store:
         final_df.to_csv(output_path, index=False)

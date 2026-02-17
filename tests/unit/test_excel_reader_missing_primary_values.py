@@ -123,7 +123,7 @@ class TestMissingPrimaryValues:
             read_dynamic_business_cases("dummy.xlsx", "Bill of Materials")
 
         # Should have warnings about feedstocks being skipped due to no primary value
-        warnings = [record.message for record in caplog.records if record.levelname == "WARNING"]
+        warnings = [record.getMessage() for record in caplog.records if record.levelname == "WARNING"]
         # Check that we have warnings about skipping feedstocks
         assert any("Skipping feedstock" in w and "no primary value" in w for w in warnings)
         # Should have at least one warning (for the feedstock with coke)

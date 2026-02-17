@@ -111,7 +111,7 @@ def _load_secondary_feedstock_constraints(env, repository_json):
     import logging
     from .domain.models import SecondaryFeedstockConstraint
     from .domain import Year
-    from .adapters.dataprocessing.excel_reader import normalize_commodity_name
+    from .utilities.utils import normalize_name
 
     logger = logging.getLogger(__name__)
     constraints = []
@@ -149,15 +149,15 @@ def _load_secondary_feedstock_constraints(env, repository_json):
         for commodity, regions in aggregated_constraints.items():
             for region_tuple, year_constraints in regions.items():
                 constraint = SecondaryFeedstockConstraint(
-                    secondary_feedstock_name=normalize_commodity_name(commodity),
+                    secondary_feedstock_name=normalize_name(commodity),
                     region_iso3s=list(region_tuple),
                     maximum_constraint_per_year={Year(y): v for y, v in year_constraints.items()},
                 )
                 constraints.append(constraint)
 
         # Log breakdown of constraint types
-        biomass_constraints = [c for c in constraints if "bio-pci" == c.secondary_feedstock_name]
-        co2_constraints = [c for c in constraints if "co2 - stored" == c.secondary_feedstock_name]
+        biomass_constraints = [c for c in constraints if "bio_pci" == c.secondary_feedstock_name]
+        co2_constraints = [c for c in constraints if "co2_stored" == c.secondary_feedstock_name]
 
         logger.info(f"Loaded {len(biomass_constraints)} biomass secondary feedstock constraints")
         logger.info(f"Loaded {len(co2_constraints)} CO2 storage secondary feedstock constraints")

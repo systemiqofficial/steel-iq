@@ -25,22 +25,22 @@ def test_bom_handles_secondary_feedstock_inputs():
         "BF_CHARCOAL": [
             DummyFeed(
                 metallic_charge="io_high",
-                reductant="bio-pci",
+                reductant="bio_pci",
                 required_qty=1.0,
-                secondary_feedstock={"bio-pci": 500.0},
+                secondary_feedstock={"bio_pci": 500.0},
                 energy_requirements={"electricity": 0.0},
             )
         ]
     }
-    env.avg_boms = {"BF_CHARCOAL": {"bio-pci": {"demand_share_pct": 1.0, "unit_cost": 100.0}}}
+    env.avg_boms = {"BF_CHARCOAL": {"bio_pci": {"demand_share_pct": 1.0, "unit_cost": 100.0}}}
     bom_dict, utilization, reductant = env.get_bom_from_avg_boms(
         energy_costs={"bio_pci": 0.0, "electricity": 0.0},
         tech="BF_CHARCOAL",
         capacity=1.0,
     )
 
-    assert "bio-pci" in bom_dict["materials"]
-    assert bom_dict["materials"]["bio-pci"]["demand"] > 0
+    assert "bio_pci" in bom_dict["materials"]
+    assert bom_dict["materials"]["bio_pci"]["demand"] > 0
 
 
 def test_bom_from_feedstocks_for_dri_esf_ccs_not_empty():

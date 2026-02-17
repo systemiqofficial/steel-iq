@@ -19,8 +19,6 @@ def temp_excel_with_mixed_units(tmp_path):
     excel_path = tmp_path / "test_input_costs.xlsx"
 
     # Create test data with various materials and units
-    # NOTE: Use actual production names - "Bio-PCI" has a hyphen, which becomes "bio-pci" after normalization
-    # "Coking coal" has a space, which becomes "coking_coal" after normalization
     data = {
         "ISO-3 code": ["USA", "USA", "USA", "USA", "USA"],
         "Commodity": ["Bio-PCI", "PCI", "Coke", "Coking coal", "Hydrogen"],  # Production names (will be normalized)
@@ -47,10 +45,9 @@ def test_bio_pci_conversion_from_usd_per_kg_to_usd_per_t(temp_excel_with_mixed_u
     assert usa_2025 is not None, "USA 2025 data not found"
 
     # Bio-PCI price should be converted: 0.66 USD/kg × 1000 = 660 USD/t
-    # NOTE: Normalized name is "bio-pci" (with hyphen), not "bio_pci"
     expected_bio_pci_price = 0.66 * T_TO_KG
-    assert usa_2025.costs["bio-pci"] == pytest.approx(expected_bio_pci_price, rel=1e-6), (
-        f"bio-pci price should be {expected_bio_pci_price} USD/t but got {usa_2025.costs['bio-pci']}"
+    assert usa_2025.costs["bio_pci"] == pytest.approx(expected_bio_pci_price, rel=1e-6), (
+        f"bio_pci price should be {expected_bio_pci_price} USD/t but got {usa_2025.costs['bio_pci']}"
     )
 
 
@@ -96,7 +93,6 @@ def test_coking_coal_conversion_from_usd_per_kg_to_usd_per_t(temp_excel_with_mix
     assert usa_2025 is not None
 
     # Coking coal price should be converted: 0.18 USD/kg × 1000 = 180 USD/t
-    # NOTE: "Coking coal" (with space) normalizes to "coking_coal" (with underscore)
     expected_coking_coal_price = 0.18 * T_TO_KG
     assert usa_2025.costs["coking_coal"] == pytest.approx(expected_coking_coal_price, rel=1e-6), (
         f"coking_coal price should be {expected_coking_coal_price} USD/t but got {usa_2025.costs['coking_coal']}"
@@ -129,9 +125,9 @@ def test_conversion_across_multiple_years(temp_excel_with_mixed_units):
     usa_2026 = next((r for r in result if r.iso3 == "USA" and r.year == 2026), None)
     assert usa_2026 is not None
 
-    # Bio-PCI 2026: 0.68 USD/kg × 1000 = 680 USD/t (normalized name is "bio-pci")
-    assert usa_2026.costs["bio-pci"] == pytest.approx(0.68 * T_TO_KG, rel=1e-6)
-    # Coking coal 2026: 0.19 USD/kg × 1000 = 190 USD/t (normalized name is "coking_coal")
+    # Bio-PCI 2026: 0.68 USD/kg × 1000 = 680 USD/t
+    assert usa_2026.costs["bio_pci"] == pytest.approx(0.68 * T_TO_KG, rel=1e-6)
+    # Coking coal 2026: 0.19 USD/kg × 1000 = 190 USD/t
     assert usa_2026.costs["coking_coal"] == pytest.approx(0.19 * T_TO_KG, rel=1e-6)
     # Hydrogen 2026: 5.10 USD/kg × 1000 = 5100 USD/t
     assert usa_2026.costs["hydrogen"] == pytest.approx(5.10 * T_TO_KG, rel=1e-6)
@@ -245,18 +241,13 @@ def test_bio_pci_with_hyphen_normalization(tmp_path):
     """
     Test that "Bio-PCI" with a hyphen is correctly normalized and converted.
 
-    This is a regression test for the critical bug where the mapping used "bio_pci" (underscore)
-    but the normalized column name was "bio-pci" (hyphen), causing the conversion to never trigger.
-
-    Production data uses "Bio-PCI" (with hyphen), which normalizes to "bio-pci" (hyphen preserved).
-    The mapping must use "bio-pci" to match.
+    Production data uses "Bio-PCI" (with hyphen), which normalizes to "bio_pci" (underscore).
     """
     excel_path = tmp_path / "test_bio_pci_hyphen.xlsx"
 
-    # Exactly as it appears in production: "Bio-PCI" with a hyphen
     data = {
         "ISO-3 code": ["USA"],
-        "Commodity": ["Bio-PCI"],  # Production name with hyphen
+        "Commodity": ["Bio-PCI"],
         "Unit": ["USD/kg"],
         "2025": [0.66],
     }
@@ -269,14 +260,13 @@ def test_bio_pci_with_hyphen_normalization(tmp_path):
     usa_2025 = next((r for r in result if r.iso3 == "USA" and r.year == 2025), None)
     assert usa_2025 is not None
 
-    # The normalized key should be "bio-pci" (with hyphen, not underscore)
-    assert "bio-pci" in usa_2025.costs, f"Expected 'bio-pci' in costs dict, but got keys: {list(usa_2025.costs.keys())}"
+    assert "bio_pci" in usa_2025.costs, f"Expected 'bio_pci' in costs dict, but got keys: {list(usa_2025.costs.keys())}"
 
     # The price should be converted: 0.66 USD/kg × 1000 = 660 USD/t
     expected_price = 0.66 * T_TO_KG
-    assert usa_2025.costs["bio-pci"] == pytest.approx(expected_price, rel=1e-6), (
+    assert usa_2025.costs["bio_pci"] == pytest.approx(expected_price, rel=1e-6), (
         f"Bio-PCI price should be {expected_price} USD/t (converted from USD/kg), "
-        f"but got {usa_2025.costs['bio-pci']} USD/t. "
+        f"but got {usa_2025.costs['bio_pci']} USD/t. "
         f"If this is close to 0.66, the conversion is not being applied!"
     )
 

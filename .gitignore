@@ -71,6 +71,7 @@ master_input.xlsx
 
 # Claude AI
 .claude/
+PLANS
 
 *.log
 refactoring_issue.md
@@ -78,6 +79,7 @@ latest_run.csv
 
 *Master_input_*.xlsx
 test-boms.xlsx
+post_processed*.csv
 
 plot.ipynb
 

@@ -111,8 +111,9 @@ The period function uses `set()` internally for deduplication - a subsidy spanni
 Extracts and processes bills of materials (BOM) to accurately assess the material and energy costs associated with production. Returns nested dictionaries with cost breakdowns by output product or feedstock.
 
 **Functions:**
-- `calculate_cost_breakdown()` - Calculates normalized cost breakdown per unit of production
+- `calculate_cost_breakdown()` - Calculates normalised cost breakdown per unit of production
 - `calculate_cost_breakdown_by_feedstock()` - Detailed cost breakdown for each feedstock option
+- `calculate_carbon_breakdown_by_feedstock()` - Physical carbon intensity (tCO2/t-product) by feedstock. Sign convention: carbon_inputs negated (consumed), carbon_outputs positive (stored/slipped/utilised)
 
 ### Operating Expenditure Calculation
 Computes both variable and fixed operating expenditures based on input cost data and capital investment ratios. Returns 0 for unit costs when utilization is zero (no production means no unit cost).
