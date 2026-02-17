@@ -13,7 +13,7 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
 from matplotlib.container import BarContainer
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -646,7 +646,7 @@ class SteelPlotter:
 
         # Prepare sorted rectangles
         sorted_rectangles = []
-        region_colors = {}
+        region_colors: dict[str, Any] = {}
 
         # Use configured region colors if available, otherwise generate colors
         if self.config.region_colors:
@@ -933,7 +933,7 @@ class SteelPlotter:
 
         if show_breakdown and component_columns:
             # Define colors for each cost component
-            component_colors = {
+            component_colors: dict[str, Any] = {
                 "material_cost": "#8B4513",  # Saddle brown
                 "electricity": "#FFD700",  # Gold
                 "coal": "#2F4F4F",  # Dark slate gray
@@ -966,7 +966,7 @@ class SteelPlotter:
                         if component in component_colors:
                             color = component_colors[component]
                         else:
-                            color = cm.Set3(hash(component) % 12 / 12)
+                            color = cm.get_cmap("Set3")(hash(component) % 12 / 12)
                             component_colors[component] = color
 
                         # Draw the stacked segment
@@ -1231,7 +1231,7 @@ class SteelPlotter:
 
         # Build color map for all columns that exist in the pivoted data
         # Pandas requires ALL columns to have colors if a color dict is provided
-        colour_map = {}
+        colour_map: dict[str, Any] = {}
         colormap = cm.get_cmap("tab10")  # Default colormap for auto-assignment
 
         for idx, col in enumerate(df_pivot.columns):
