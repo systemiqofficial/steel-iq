@@ -1155,6 +1155,8 @@ class SimulationRunner:
             cost_breakdown_columns=[f"cost_breakdown - {k}" for k in bus.env.cost_breakdown_keys],
             carbon_breakdown_columns=[f"carbon_breakdown - {k}" for k in bus.env.carbon_breakdown_keys],
             carbon_input_columns=[f"carbon_breakdown - {k}" for k in bus.env.carbon_input_keys],
+            iso3_to_country_map=bus.env.country_mappings.code_to_country_map,
+            iso3_to_region_map=bus.env.country_mappings.iso3_to_region(),
         )
         plot_bar_chart_of_new_plants_by_status(data_collector.status_counts, plot_paths=bus.env.plot_paths)
         plot_map_of_new_plants_operating(data_collector.new_plant_locations, plot_paths=bus.env.plot_paths)

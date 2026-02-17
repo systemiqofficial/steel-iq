@@ -38,6 +38,8 @@ def extract_and_process_stored_dataCollection(
     cost_breakdown_columns: list[str] | None = None,
     carbon_breakdown_columns: list[str] | None = None,
     carbon_input_columns: list[str] | None = None,
+    iso3_to_country_map: dict[str, str] | None = None,
+    iso3_to_region_map: dict[str, str] | None = None,
 ) -> pd.DataFrame | str:
     """
     Extract and process stored pickle-files storing the collected data from the simulation.
@@ -195,6 +197,11 @@ def extract_and_process_stored_dataCollection(
             .merge(full_furnace_df, on="plant_id", how="right")
             .copy()
         )
+        full_furnace_df.rename(columns={"location": "iso3"}, inplace=True)
+        if iso3_to_country_map:
+            full_furnace_df["country"] = full_furnace_df["iso3"].map(iso3_to_country_map)
+        if iso3_to_region_map:
+            full_furnace_df["region"] = full_furnace_df["iso3"].map(iso3_to_region_map)
         full_furnace_df["year"] = year
 
         # Map commands to their string representation (class name)
@@ -295,8 +302,8 @@ def extract_and_process_stored_dataCollection(
         if not c.startswith(CB_PREFIX) and not c.startswith(CARB_PREFIX) and c not in ("year", "commands")
     ]
 
-    # Insert year and commands at positions 4-5 within the non-breakdown group
-    ordered = non_breakdown_cols[:4] + ["year", "commands"] + non_breakdown_cols[4:]
+    # Insert year and commands after core id columns within the non-breakdown group
+    ordered = non_breakdown_cols[:6] + ["year", "commands"] + non_breakdown_cols[6:]
 
     # Cost breakdown: priority columns first, then the rest alphabetically
     priority = [c for c in PRIORITY_CB if c in cb_cols]
