@@ -74,6 +74,8 @@ class PrimaryFeedstockInDb(BaseModel):
     required_quantity_per_ton_of_product: Optional[float] = None
     secondary_feedstock: dict[str, float] = Field(default_factory=dict)
     energy_requirements: dict[str, float] = Field(default_factory=dict)
+    carbon_inputs: dict[str, float] = Field(default_factory=dict)
+    carbon_outputs: dict[str, float] = Field(default_factory=dict)
     maximum_share_in_product: Optional[float] = None
     minimum_share_in_product: Optional[float] = None
     outputs: dict[str, float] = Field(default_factory=dict)
@@ -99,6 +101,8 @@ class PrimaryFeedstockInDb(BaseModel):
         obj.required_quantity_per_ton_of_product = self.required_quantity_per_ton_of_product  # type: ignore
         obj.secondary_feedstock = self.secondary_feedstock.copy()
         obj.energy_requirements = self.energy_requirements.copy()
+        obj.carbon_inputs = self.carbon_inputs.copy()
+        obj.carbon_outputs = self.carbon_outputs.copy()
         obj.maximum_share_in_product = self.maximum_share_in_product
         obj.minimum_share_in_product = self.minimum_share_in_product
         obj.outputs = self.outputs.copy()
@@ -117,6 +121,8 @@ class PrimaryFeedstockInDb(BaseModel):
             required_quantity_per_ton_of_product=pf.required_quantity_per_ton_of_product,
             secondary_feedstock=pf.secondary_feedstock.copy(),
             energy_requirements=pf.energy_requirements.copy(),
+            carbon_inputs=pf.carbon_inputs.copy(),
+            carbon_outputs=pf.carbon_outputs.copy(),
             maximum_share_in_product=pf.maximum_share_in_product,
             minimum_share_in_product=pf.minimum_share_in_product,
             outputs=pf.outputs.copy(),
@@ -205,6 +211,8 @@ class FurnaceGroupInDb(BaseModel):
             dbc_dict = dbc_in_db.model_dump()
             feedstock = PrimaryFeedstock(**dbc_dict)
             feedstock.energy_requirements = dbc_dict.get("energy_requirements") or {}
+            feedstock.carbon_inputs = dbc_dict.get("carbon_inputs") or {}
+            feedstock.carbon_outputs = dbc_dict.get("carbon_outputs") or {}
             feedstock.outputs = dbc_dict.get("outputs") or {}
             feedstock.secondary_feedstock = dbc_dict.get("secondary_feedstock") or {}
             feedstock.maximum_share_in_product = dbc_dict.get("maximum_share_in_product")
@@ -2778,8 +2786,8 @@ class BiomassAvailabilityJsonRepository:
     ) -> dict[str, dict[tuple[str, ...], dict[int, float]]]:
         """
         Convert biomass and CO2 storage availability to secondary feedstock constraints format.
-        Returns: {"bio-pci": {(iso3_codes_tuple): total_availability},
-                  "co2 - stored": {(iso3_codes_tuple): total_availability}}
+        Returns: {"bio_pci": {(iso3_codes_tuple): total_availability},
+                  "co2_stored": {(iso3_codes_tuple): total_availability}}
         """
         from collections import defaultdict
 
@@ -2793,13 +2801,13 @@ class BiomassAvailabilityJsonRepository:
 
             # Determine the constraint type based on the metric
             if item.metric and "co2" in item.metric.lower():
-                constraint_type = "co2 - stored"  # Lowercase to match BOM normalization
+                constraint_type = "co2_stored"
             else:
-                constraint_type = "bio-pci"
+                constraint_type = "bio_pci"
 
             # Map region to ISO3 codes
             # For CO2 storage, country field contains ISO3 directly
-            if constraint_type == "co2 - stored" and item.country:
+            if constraint_type == "co2_stored" and item.country:
                 iso3_codes = [item.country]  # Country field contains ISO3 for CO2 storage
             else:
                 iso3_codes = self._map_region_to_iso3_codes(item.region, item.country, country_mapping)
@@ -2813,10 +2821,10 @@ class BiomassAvailabilityJsonRepository:
                     constraints[constraint_type][iso3_tuple].get(int(year), 0.0) + item.availability
                 )
 
-        # Always return bio-pci key even if empty for backward compatibility
+        # Always return bio_pci key even if empty for backward compatibility
         result = dict(constraints)
-        if "bio-pci" not in result:
-            result["bio-pci"] = {}
+        if "bio_pci" not in result:
+            result["bio_pci"] = {}
         return result
 
     def _map_region_to_iso3_codes(self, region: str, country: Optional[str], country_mapping: Any) -> List[str]:
