@@ -1134,8 +1134,6 @@ class FurnaceGroup:
             "capex": [],
             "opex": [],
             "debt": [],
-            "hydrogen": [],
-            "electricity": [],
         }
         # Original energy prices before subsidies (for verification)
         self.energy_costs_no_subsidy: dict[str, float] = {}
@@ -1195,22 +1193,20 @@ class FurnaceGroup:
         self,
         subsidised_costs: dict[str, float],
         no_subsidy_prices: dict[str, float],
-        h2_subsidies: list["Subsidy"],
-        elec_subsidies: list["Subsidy"],
+        energy_subsidies: dict[str, list["Subsidy"]],
     ) -> None:
         """
         Set energy costs with subsidies applied and track original prices.
 
         Args:
             subsidised_costs: Energy costs with subsidies applied
-            no_subsidy_prices: Original H2/electricity prices before subsidies
-            h2_subsidies: Applied hydrogen subsidies (for tracking)
-            elec_subsidies: Applied electricity subsidies (for tracking)
+            no_subsidy_prices: Original prices for all subsidised carriers
+            energy_subsidies: Applied subsidies per carrier {carrier: [Subsidy, ...]}
         """
         self.energy_costs = subsidised_costs
         self.energy_costs_no_subsidy = no_subsidy_prices
-        self.applied_subsidies["hydrogen"] = h2_subsidies
-        self.applied_subsidies["electricity"] = elec_subsidies
+        for carrier, subs in energy_subsidies.items():
+            self.applied_subsidies[carrier] = subs
 
     def __repr__(self) -> str:
         return f"FurnaceGroup: <{self.furnace_group_id}>"
@@ -5367,8 +5363,7 @@ class PlantGroup:
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
-        hydrogen_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
-        electricity_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
+        energy_subsidies: dict[str, dict[str, dict[str, list[Subsidy]]]] = {},  # carrier -> iso3 -> tech -> [Subsidy]
         environment_most_common_reductant: dict[str, str] = {},
     ) -> commands.Command:
         """
@@ -5417,8 +5412,7 @@ class PlantGroup:
             capex_subsidies: Dictionary mapping iso3 -> tech -> list of capex subsidies
             debt_subsidies: Dictionary mapping iso3 -> tech -> list of debt subsidies
             opex_subsidies: Dictionary mapping iso3 -> tech -> list of opex subsidies
-            hydrogen_subsidies: Dictionary mapping iso3 -> tech -> list of H2 subsidies
-            electricity_subsidies: Dictionary mapping iso3 -> tech -> list of electricity subsidies
+            energy_subsidies: Dictionary mapping carrier -> iso3 -> tech -> list of energy subsidies
 
         Returns:
             Command to add new Plant and FurnaceGroup objects for the identified business opportunities
@@ -5503,8 +5497,7 @@ class PlantGroup:
             capex_subsidies=capex_subsidies,
             debt_subsidies=debt_subsidies,
             opex_subsidies=opex_subsidies,
-            hydrogen_subsidies=hydrogen_subsidies,
-            electricity_subsidies=electricity_subsidies,
+            energy_subsidies=energy_subsidies,
             carbon_costs=carbon_costs,
             most_common_reductant=self.most_common_reductant,
             environment_most_common_reductant=environment_most_common_reductant,
@@ -5579,8 +5572,7 @@ class PlantGroup:
         global_risk_free_rate: float,
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
-        hydrogen_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
-        electricity_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
+        energy_subsidies: dict[str, dict[str, dict[str, list[Subsidy]]]] = {},
     ) -> list[commands.Command]:
         """
         Update dynamic cost data for all furnace groups in all "indi" plants which have not been
@@ -5589,8 +5581,7 @@ class PlantGroup:
         Dynamic costs include:
             - CAPEX with subsidies
             - Cost of debt with subsidies
-            - Electricity costs from custom energy model (with subsidies)
-            - Hydrogen costs from custom energy model (with subsidies)
+            - Energy costs from custom energy model (with subsidies)
 
         Dynamic costs are updated based on the following logic:
             - Base costs: CAPEX, cost of debt, electricity costs, and hydrogen costs are set to the
@@ -5609,8 +5600,7 @@ class PlantGroup:
             global_risk_free_rate: Global risk-free interest rate
             capex_subsidies: Dictionary mapping iso3 -> tech -> list of capex subsidies
             debt_subsidies: Dictionary mapping iso3 -> tech -> list of debt subsidies
-            hydrogen_subsidies: Dictionary mapping iso3 -> tech -> list of H2 subsidies
-            electricity_subsidies: Dictionary mapping iso3 -> tech -> list of electricity subsidies
+            energy_subsidies: Dictionary mapping carrier -> iso3 -> tech -> list of energy subsidies
 
         Returns:
             List of UpdateDynamicCosts commands for each furnace group that was updated.
@@ -5708,23 +5698,22 @@ class PlantGroup:
                     new_costs["electricity"] = power_price
                     new_costs["hydrogen"] = hydrogen_price
 
-                    # Apply H2/electricity subsidies
-                    h2_subs = hydrogen_subsidies.get(iso3, {}).get(fg.technology.name, [])
-                    elec_subs = electricity_subsidies.get(iso3, {}).get(fg.technology.name, [])
-                    active_h2_subs = filter_subsidies_for_year(h2_subs, year)
-                    active_elec_subs = filter_subsidies_for_year(elec_subs, year)
+                    # Apply energy carrier subsidies
+                    active_energy_subs: dict[str, list] = {}
+                    for carrier, carrier_subs in energy_subsidies.items():
+                        all_subs = carrier_subs.get(iso3, {}).get(fg.technology.name, [])
+                        active = filter_subsidies_for_year(all_subs, year)
+                        if active:
+                            active_energy_subs[carrier] = active
 
-                    if active_h2_subs or active_elec_subs:
+                    if active_energy_subs:
                         temp_costs = {"hydrogen": hydrogen_price, "electricity": power_price}
-                        subsidised, _ = cc.get_subsidised_energy_costs(temp_costs, active_h2_subs, active_elec_subs)
-                        logger.debug(
-                            f"[NEW PLANTS] {iso3}/{fg.technology.name} year={year} "
-                            f"H2: {hydrogen_price:.3f} -> {subsidised['hydrogen']:.3f} "
-                            f"Elec: {power_price:.4f} -> {subsidised['electricity']:.4f} "
-                            f"({len(active_h2_subs)} H2 subs, {len(active_elec_subs)} elec subs)"
-                        )
-                        new_costs["electricity"] = subsidised["electricity"]
-                        new_costs["hydrogen"] = subsidised["hydrogen"]
+                        subsidised, _ = cc.get_subsidised_energy_costs(temp_costs, active_energy_subs)
+                        for carrier in active_energy_subs:
+                            if carrier in subsidised:
+                                new_costs[carrier] = subsidised[carrier]
+                        sub_summary = ", ".join(f"{len(s)} {c}" for c, s in active_energy_subs.items())
+                        logger.debug(f"[NEW PLANTS] {iso3}/{fg.technology.name} year={year} Subs: {sub_summary}")
 
                     # Calculate updated BOM with new energy prices
                     new_bom: dict[str, dict[str, dict[str, Any]]] | None = None
@@ -5735,10 +5724,10 @@ class PlantGroup:
                         updated_energy_costs: dict[str, float] = {}
                         if getattr(fg, "energy_costs", None):
                             updated_energy_costs.update({normalize_name(k): v for k, v in fg.energy_costs.items()})
-                        if "electricity" in new_costs and new_costs["electricity"] is not None:
-                            updated_energy_costs["electricity"] = new_costs["electricity"]
-                        if "hydrogen" in new_costs and new_costs["hydrogen"] is not None:
-                            updated_energy_costs["hydrogen"] = new_costs["hydrogen"]
+                        # Apply updated/subsidised energy carrier prices to BOM costs
+                        for cost_key, cost_val in new_costs.items():
+                            if cost_val is not None:
+                                updated_energy_costs[cost_key] = cost_val
 
                         for feed_key, energy_value in new_bom.get("energy", {}).items():
                             normalized_feed_key = normalize_name(feed_key)
@@ -6134,8 +6123,8 @@ class TradeTariff:
 class Subsidy:
     """Financial subsidy reducing costs for specific technologies and regions.
 
-    Represents a policy instrument that reduces costs (CAPEX, OPEX, debt, hydrogen, or electricity)
-    for steel production technologies within a country during a specified time period.
+    Represents a policy instrument that reduces costs for steel production technologies
+    within a country during a specified time period.
 
     Attributes:
         scenario_name: Name of the subsidy scenario/policy.
@@ -6143,11 +6132,12 @@ class Subsidy:
         start_year: First year the subsidy is active (inclusive).
         end_year: Last year the subsidy is active (inclusive).
         technology_name: Technology the subsidy applies to, or "all" for all technologies.
-        cost_item: Type of cost subsidised ("opex", "capex", "cost of debt", "hydrogen", "electricity").
+        cost_item: Type of cost subsidised. Financial: "opex", "capex", "cost of debt".
+            Energy carriers: any normalised carrier name (e.g. "hydrogen", "electricity",
+            "natural_gas", "coal", etc.) matching energy_costs dict keys.
         subsidy_type: Either "absolute" (fixed amount) or "relative" (percentage).
         subsidy_amount: The subsidy value with units depending on cost_item:
-            - hydrogen: USD/t H2 (absolute) or decimal fraction (relative)
-            - electricity: USD/kWh (absolute) or decimal fraction (relative)
+            - energy carriers: USD per carrier unit (absolute) or decimal fraction (relative)
             - opex/capex: USD/t steel (absolute) or decimal fraction (relative)
             - cost of debt: percentage points (absolute only)
         subsidy_name: Auto-generated unique identifier string.
@@ -6648,8 +6638,9 @@ class Environment:
         self.opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
         self.capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
         self.debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
-        self.hydrogen_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
-        self.electricity_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
+        self.energy_subsidies: dict[
+            str, dict[str, dict[str, list[Subsidy]]]
+        ] = {}  # carrier -> iso3 -> tech -> [Subsidy]
 
     def get_transport_emissions_as_dict(self) -> dict[tuple[str, str, str], float]:
         """
@@ -6830,39 +6821,31 @@ class Environment:
                 debt_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
         self.debt_subsidies = debt_subsidies
 
-    def initiate_hydrogen_subsidies(self, subsidies: list[Subsidy]) -> None:
+    def initiate_energy_subsidies(self, subsidies: list[Subsidy]) -> None:
         """
-        Initialize the hydrogen subsidies for the environment.
+        Initialise energy carrier subsidies for the environment.
+
+        Groups subsidies by carrier name (cost_item), then by iso3, then by technology.
+        Financial subsidies (opex, capex, cost of debt) are excluded — they are handled
+        by their own initiate methods.
 
         Args:
-            subsidies (list[Subsidy]): A list of Subsidy objects to be added to the environment.
+            subsidies: List of Subsidy objects to filter and group.
         """
-        hydrogen_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
+        financial_cost_items = {"opex", "capex", "cost of debt"}
+        energy_subsidies: dict[str, dict[str, dict[str, list[Subsidy]]]] = {}
         for subsidy in subsidies:
-            if subsidy.cost_item.lower() == "hydrogen":
-                if subsidy.iso3 not in hydrogen_subsidies:
-                    hydrogen_subsidies[subsidy.iso3] = {}
-                if subsidy.technology_name not in hydrogen_subsidies[subsidy.iso3]:
-                    hydrogen_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                hydrogen_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
-        self.hydrogen_subsidies = hydrogen_subsidies
-
-    def initiate_electricity_subsidies(self, subsidies: list[Subsidy]) -> None:
-        """
-        Initialize the electricity subsidies for the environment.
-
-        Args:
-            subsidies (list[Subsidy]): A list of Subsidy objects to be added to the environment.
-        """
-        electricity_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
-        for subsidy in subsidies:
-            if subsidy.cost_item.lower() == "electricity":
-                if subsidy.iso3 not in electricity_subsidies:
-                    electricity_subsidies[subsidy.iso3] = {}
-                if subsidy.technology_name not in electricity_subsidies[subsidy.iso3]:
-                    electricity_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                electricity_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
-        self.electricity_subsidies = electricity_subsidies
+            carrier = subsidy.cost_item.lower()
+            if carrier in financial_cost_items:
+                continue
+            if carrier not in energy_subsidies:
+                energy_subsidies[carrier] = {}
+            if subsidy.iso3 not in energy_subsidies[carrier]:
+                energy_subsidies[carrier][subsidy.iso3] = {}
+            if subsidy.technology_name not in energy_subsidies[carrier][subsidy.iso3]:
+                energy_subsidies[carrier][subsidy.iso3][subsidy.technology_name] = []
+            energy_subsidies[carrier][subsidy.iso3][subsidy.technology_name].append(subsidy)
+        self.energy_subsidies = energy_subsidies
 
     def initiate_dynamic_feedstocks(self, feedstocks: list[PrimaryFeedstock]) -> None:
         """

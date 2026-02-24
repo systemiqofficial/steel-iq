@@ -136,54 +136,40 @@ def calculate_energy_price_with_subsidies(
 
 def get_subsidised_energy_costs(
     energy_costs: dict[str, float],
-    hydrogen_subsidies: list["Subsidy"],
-    electricity_subsidies: list["Subsidy"],
+    energy_subsidies: dict[str, list["Subsidy"]],
 ) -> tuple[dict[str, float], dict[str, float]]:
     """
-    Create energy costs dict with subsidies applied.
+    Create energy costs dict with subsidies applied for any energy carriers.
 
     Args:
         energy_costs: Original energy costs dict {carrier: price}
-        hydrogen_subsidies: Active H2 subsidies
-        electricity_subsidies: Active electricity subsidies
+        energy_subsidies: Active subsidies per carrier {carrier_name: [Subsidy, ...]}
 
     Returns:
         tuple: (subsidised_costs, no_subsidy_prices)
         - subsidised_costs: dict with subsidised prices (to use in calculations)
-        - no_subsidy_prices: {"hydrogen": original_h2, "electricity": original_elec}
+        - no_subsidy_prices: original prices for all subsidised carriers
+
     Raises:
-        KeyError: If hydrogen subsidies provided but "hydrogen" not in energy_costs,
-                  or electricity subsidies provided but "electricity" not in energy_costs.
+        KeyError: If subsidies provided for a carrier not present in energy_costs.
     """
     import copy
 
     subsidised = copy.copy(energy_costs)
+    no_subsidy_prices: dict[str, float] = {}
 
-    # Validate required keys exist when subsidies are provided
-    if hydrogen_subsidies and "hydrogen" not in energy_costs:
-        raise KeyError(
-            f"Hydrogen subsidies provided but 'hydrogen' key not found in energy_costs. "
-            f"Available keys: {list(energy_costs.keys())}"
-        )
-    if electricity_subsidies and "electricity" not in energy_costs:
-        raise KeyError(
-            f"Electricity subsidies provided but 'electricity' key not found in energy_costs. "
-            f"Available keys: {list(energy_costs.keys())}"
-        )
-
-    h2_price = energy_costs.get("hydrogen", 0.0)
-    elec_price = energy_costs.get("electricity", 0.0)
-
-    no_subsidy_prices = {
-        "hydrogen": h2_price,
-        "electricity": elec_price,
-    }
-
-    if hydrogen_subsidies and h2_price > 0:
-        subsidised["hydrogen"] = calculate_energy_price_with_subsidies(h2_price, hydrogen_subsidies)
-
-    if electricity_subsidies and elec_price > 0:
-        subsidised["electricity"] = calculate_energy_price_with_subsidies(elec_price, electricity_subsidies)
+    for carrier, subs in energy_subsidies.items():
+        if not subs:
+            continue
+        if carrier not in energy_costs:
+            raise KeyError(
+                f"'{carrier}' subsidies provided but '{carrier}' key not found in energy_costs. "
+                f"Available keys: {list(energy_costs.keys())}"
+            )
+        price = energy_costs[carrier]
+        no_subsidy_prices[carrier] = price
+        if price > 0:
+            subsidised[carrier] = calculate_energy_price_with_subsidies(price, subs)
 
     return subsidised, no_subsidy_prices
 

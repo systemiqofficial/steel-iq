@@ -1014,30 +1014,24 @@ class SimulationRunner:
                 plant.update_furnace_tech_unit_fopex()
                 plant.update_furnace_hydrogen_costs(capped_hydrogen_cost_dict)
 
-                # Apply H2/electricity subsidies to energy_costs (after H2 price update)
+                # Apply energy carrier subsidies to energy_costs (after H2 price update)
                 for fg in plant.furnace_groups:
-                    all_h2_subs = bus.env.hydrogen_subsidies.get(plant.location.iso3, {}).get(fg.technology.name, [])
-                    all_elec_subs = bus.env.electricity_subsidies.get(plant.location.iso3, {}).get(
-                        fg.technology.name, []
-                    )
-                    active_h2_subs = filter_subsidies_for_year(all_h2_subs, bus.env.year)
-                    active_elec_subs = filter_subsidies_for_year(all_elec_subs, bus.env.year)
+                    active_energy_subs: dict[str, list] = {}
+                    for carrier, carrier_subs in bus.env.energy_subsidies.items():
+                        all_subs = carrier_subs.get(plant.location.iso3, {}).get(fg.technology.name, [])
+                        active = filter_subsidies_for_year(all_subs, bus.env.year)
+                        if active:
+                            active_energy_subs[carrier] = active
 
-                    if active_h2_subs or active_elec_subs:
-                        # Apply H2/electricity subsidies to operational plant energy costs
-                        h2_before = fg.energy_costs.get("hydrogen", 0.0)
-                        elec_before = fg.energy_costs.get("electricity", 0.0)
+                    if active_energy_subs:
                         subsidised_costs, no_subsidy_prices = get_subsidised_energy_costs(
-                            fg.energy_costs, active_h2_subs, active_elec_subs
+                            fg.energy_costs, active_energy_subs
                         )
-                        fg.set_subsidised_energy_costs(
-                            subsidised_costs, no_subsidy_prices, active_h2_subs, active_elec_subs
-                        )
+                        fg.set_subsidised_energy_costs(subsidised_costs, no_subsidy_prices, active_energy_subs)
+                        sub_summary = ", ".join(f"{len(s)} {c}" for c, s in active_energy_subs.items())
                         logging.debug(
-                            f"[H2/ELEC SUBS] {plant.location.iso3}/{fg.technology.name} FG:{fg.furnace_group_id} "
-                            f"Year={bus.env.year} | H2: ${h2_before:.2f} -> ${subsidised_costs.get('hydrogen', 0):.2f}/t | "
-                            f"Elec: ${elec_before:.6f} -> ${subsidised_costs.get('electricity', 0):.6f}/kWh | "
-                            f"Subs: {len(active_h2_subs)} H2, {len(active_elec_subs)} elec"
+                            f"[ENERGY SUBS] {plant.location.iso3}/{fg.technology.name} "
+                            f"FG:{fg.furnace_group_id} Year={bus.env.year} | Subs: {sub_summary}"
                         )
 
                 # Set carbon costs for the plant based on its location

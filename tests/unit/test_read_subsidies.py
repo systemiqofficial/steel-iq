@@ -292,18 +292,16 @@ def test_normalize_cost_item_electricity():
     assert result == "electricity"
 
 
-def test_normalize_cost_item_unknown_returns_none(caplog):
-    """Test that unknown cost item returns None with warning."""
+def test_normalize_cost_item_unknown_treated_as_energy_carrier():
+    """Test that unknown cost item is normalised as energy carrier name."""
     # Arrange
     cost_item = "unknown_item"
 
     # Act
     result = _normalize_cost_item(cost_item, row_index=5)
 
-    # Assert
-    assert result is None
-    assert "unknown cost item" in caplog.text
-    assert "row 5" in caplog.text
+    # Assert — now treated as energy carrier, normalised via normalize_name()
+    assert result == "unknown_item"
 
 
 def test_normalize_cost_item_trims_whitespace():
@@ -316,6 +314,20 @@ def test_normalize_cost_item_trims_whitespace():
 
     # Assert
     assert result == "capex"
+
+
+def test_normalize_cost_item_energy_carrier_natural_gas():
+    """Test that 'Natural Gas' is normalised to 'natural_gas'."""
+    assert _normalize_cost_item("Natural Gas", row_index=0) == "natural_gas"
+    assert _normalize_cost_item("natural gas", row_index=0) == "natural_gas"
+    assert _normalize_cost_item("natural_gas", row_index=0) == "natural_gas"
+
+
+def test_normalize_cost_item_energy_carrier_bio_pci():
+    """Test that 'Bio PCI' and variants are normalised to 'bio_pci'."""
+    assert _normalize_cost_item("bio_pci", row_index=0) == "bio_pci"
+    assert _normalize_cost_item("Bio PCI", row_index=0) == "bio_pci"
+    assert _normalize_cost_item("bio-pci", row_index=0) == "bio_pci"
 
 
 # =============================================================================
@@ -721,8 +733,8 @@ def test_read_subsidies_skip_empty_subsidy_amount(caplog):
     assert "empty subsidy amount" in caplog.text
 
 
-def test_read_subsidies_skip_unknown_cost_item(caplog):
-    """Test that rows with unknown cost item are skipped."""
+def test_read_subsidies_unknown_cost_item_treated_as_energy_carrier(caplog):
+    """Test that rows with unknown cost item are treated as energy carrier subsidies."""
     # Arrange
     subsidies_df = _make_subsidies_df(
         [
@@ -744,9 +756,9 @@ def test_read_subsidies_skip_unknown_cost_item(caplog):
         mock_read.side_effect = [subsidies_df, _make_country_df(), _make_techno_df()]
         result = read_subsidies(Path("dummy.xlsx"))
 
-    # Assert
-    assert len(result) == 0
-    assert "unknown cost item" in caplog.text
+    # Assert — now treated as energy carrier subsidy, not skipped
+    assert len(result) == 1
+    assert result[0].cost_item == "unknown_item"
 
 
 def test_read_subsidies_skip_relative_cost_of_debt(caplog):

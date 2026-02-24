@@ -200,8 +200,7 @@ class GeospatialModel:
             global_risk_free_rate=bus.env.config.global_risk_free_rate,
             capex_subsidies=bus.env.capex_subsidies,
             debt_subsidies=bus.env.debt_subsidies,
-            hydrogen_subsidies=bus.env.hydrogen_subsidies,
-            electricity_subsidies=bus.env.electricity_subsidies,
+            energy_subsidies=bus.env.energy_subsidies,
         )
         if dynamic_cost_commands:
             for command in dynamic_cost_commands:
@@ -275,8 +274,7 @@ class GeospatialModel:
                 capex_subsidies=bus.env.capex_subsidies,
                 debt_subsidies=bus.env.debt_subsidies,
                 opex_subsidies=bus.env.opex_subsidies,
-                hydrogen_subsidies=bus.env.hydrogen_subsidies,
-                electricity_subsidies=bus.env.electricity_subsidies,
+                energy_subsidies=bus.env.energy_subsidies,
                 environment_most_common_reductant=bus.env.most_common_reductant_by_tech,
             )
         )

@@ -130,8 +130,7 @@ def prepare_cost_data_for_business_opportunity(
     capex_subsidies: dict[str, dict[str, list[Subsidy]]],
     debt_subsidies: dict[str, dict[str, list[Subsidy]]],
     opex_subsidies: dict[str, dict[str, list[Subsidy]]],
-    hydrogen_subsidies: dict[str, dict[str, list[Subsidy]]],
-    electricity_subsidies: dict[str, dict[str, list[Subsidy]]],
+    energy_subsidies: dict[str, dict[str, dict[str, list[Subsidy]]]],
     carbon_costs: dict[str, dict[Year, float]],
     most_common_reductant: dict[str, str],
     environment_most_common_reductant: dict[str, str],
@@ -158,8 +157,7 @@ def prepare_cost_data_for_business_opportunity(
         capex_subsidies: Nested dictionary with CAPEX subsidies per country and technology (iso3 -> tech -> list of subsidies)
         debt_subsidies: Nested dictionary with debt subsidies per country and technology (iso3 -> tech -> list of subsidies)
         opex_subsidies: Nested dictionary with OPEX subsidies per country and technology (iso3 -> tech -> list of subsidies)
-        hydrogen_subsidies: Nested dictionary with H2 subsidies per country and technology (iso3 -> tech -> list of subsidies)
-        electricity_subsidies: Nested dictionary with electricity subsidies per country and technology (iso3 -> tech -> list of subsidies)
+        energy_subsidies: Nested dictionary with energy carrier subsidies (carrier -> iso3 -> tech -> list of subsidies)
         carbon_costs: Dictionary with carbon cost series per country (iso3 -> year -> carbon cost)
         most_common_reductant: Dictionary mapping technology to most common reductant from plant group (tech -> reductant)
         environment_most_common_reductant: Fallback dict mapping technology to most common reductant from environment (tech -> reductant)
@@ -247,20 +245,22 @@ def prepare_cost_data_for_business_opportunity(
                 else:
                     cost_data[prod][site_id][tech]["railway_cost"] = site["rail_cost"]
 
-                # Apply H2/electricity subsidies for this technology
+                # Apply energy carrier subsidies for this technology
                 assert energy_costs_site is not None  # Help mypy understand the control flow
-                h2_subs = hydrogen_subsidies.get(site["iso3"], {}).get(tech, [])
-                elec_subs = electricity_subsidies.get(site["iso3"], {}).get(tech, [])
-                active_h2 = cc.filter_subsidies_for_year(h2_subs, target_year)
-                active_elec = cc.filter_subsidies_for_year(elec_subs, target_year)
+                active_energy_subs: dict[str, list] = {}
+                for carrier, carrier_subs in energy_subsidies.items():
+                    all_subs = carrier_subs.get(site["iso3"], {}).get(tech, [])
+                    active = cc.filter_subsidies_for_year(all_subs, target_year)
+                    if active:
+                        active_energy_subs[carrier] = active
 
-                if active_h2 or active_elec:
-                    energy_costs_tech, _ = cc.get_subsidised_energy_costs(energy_costs_site, active_h2, active_elec)
-                    logger.debug(
-                        f"[NEW PLANTS] {site['iso3']}/{tech} year={target_year} | "
-                        f"H2: ${energy_costs_site.get('hydrogen', 0):.2f} -> ${energy_costs_tech.get('hydrogen', 0):.2f}/t | "
-                        f"Elec: ${energy_costs_site.get('electricity', 0):.6f} -> ${energy_costs_tech.get('electricity', 0):.6f}/kWh"
+                if active_energy_subs:
+                    energy_costs_tech, _ = cc.get_subsidised_energy_costs(
+                        energy_costs_site,
+                        active_energy_subs,
                     )
+                    sub_summary = ", ".join(f"{len(s)} {c}" for c, s in active_energy_subs.items())
+                    logger.debug(f"[NEW PLANTS] {site['iso3']}/{tech} year={target_year} | Subs: {sub_summary}")
                 else:
                     energy_costs_tech = energy_costs_site
 
