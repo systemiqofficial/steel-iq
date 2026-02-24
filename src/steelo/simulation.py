@@ -1028,10 +1028,13 @@ class SimulationRunner:
                             fg.energy_costs, active_energy_subs
                         )
                         fg.set_subsidised_energy_costs(subsidised_costs, no_subsidy_prices, active_energy_subs)
-                        sub_summary = ", ".join(f"{len(s)} {c}" for c, s in active_energy_subs.items())
+                        price_changes = ", ".join(
+                            f"{c}: ${no_subsidy_prices[c]:.4f}->${subsidised_costs.get(c, no_subsidy_prices[c]):.4f}"
+                            for c in sorted(no_subsidy_prices)
+                        )
                         logging.debug(
                             f"[ENERGY SUBS] {plant.location.iso3}/{fg.technology.name} "
-                            f"FG:{fg.furnace_group_id} Year={bus.env.year} | Subs: {sub_summary}"
+                            f"FG:{fg.furnace_group_id} Year={bus.env.year} | {price_changes}"
                         )
 
                 # Set carbon costs for the plant based on its location

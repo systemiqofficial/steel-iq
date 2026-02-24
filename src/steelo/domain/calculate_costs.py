@@ -119,19 +119,28 @@ def calculate_energy_price_with_subsidies(
     Apply subsidies to an energy price.
 
     Args:
-        energy_price: Base price before subsidy (USD/t for H2, USD/kWh for electricity)
-        energy_subsidies: List of active subsidies for this energy type
+        energy_price: Base price before subsidy (USD/unit for the carrier)
+        energy_subsidies: List of active subsidies for this energy carrier
 
     Returns:
         float: Subsidised price (floored at 0)
     """
+    logger = logging.getLogger(f"{__name__}.calculate_energy_price_with_subsidies")
     total_subsidy = 0.0
     for subsidy in energy_subsidies:
         if subsidy.subsidy_type == "absolute":
             total_subsidy += subsidy.subsidy_amount
         elif subsidy.subsidy_type == "relative":
             total_subsidy += energy_price * subsidy.subsidy_amount
-    return max(0.0, energy_price - total_subsidy)
+    result = max(0.0, energy_price - total_subsidy)
+    logger.debug(
+        "[ENERGY SUBS] price=$%.4f total_subsidy=$%.4f result=$%.4f (from %d subsidies)",
+        energy_price,
+        total_subsidy,
+        result,
+        len(energy_subsidies),
+    )
+    return result
 
 
 def get_subsidised_energy_costs(
@@ -155,6 +164,7 @@ def get_subsidised_energy_costs(
     """
     import copy
 
+    logger = logging.getLogger(f"{__name__}.get_subsidised_energy_costs")
     subsidised = copy.copy(energy_costs)
     no_subsidy_prices: dict[str, float] = {}
 
@@ -170,6 +180,13 @@ def get_subsidised_energy_costs(
         no_subsidy_prices[carrier] = price
         if price > 0:
             subsidised[carrier] = calculate_energy_price_with_subsidies(price, subs)
+            logger.debug(
+                "[ENERGY SUBS] carrier '%s': $%.4f -> $%.4f (%d subsidies applied)",
+                carrier,
+                price,
+                subsidised[carrier],
+                len(subs),
+            )
 
     return subsidised, no_subsidy_prices
 
@@ -344,7 +361,16 @@ def calculate_cost_breakdown_by_feedstock(
                 if amount == 0:
                     continue
                 # Revenue per tonne of FG product, scaled by this feedstock's share of production
-                revenue = amount * input_costs[normalized_output] * demand_share
+                price = input_costs[normalized_output]
+                revenue = amount * price * demand_share
+                logger.debug(
+                    "[COST BREAKDOWN] output '%s': amount=%.4f x price=$%.4f x share=%.4f = $%.4f",
+                    normalized_output,
+                    amount,
+                    price,
+                    demand_share,
+                    revenue,
+                )
                 feed_breakdown[normalized_output] = feed_breakdown.get(normalized_output, 0.0) + revenue
 
         breakdown[metallic_charge_lower] = feed_breakdown
@@ -1819,6 +1845,7 @@ def calculate_cost_adjustments_from_secondary_outputs(
     return negative values (reducing production cost) while additional costs will return positive
     values.
     """
+    logger = logging.getLogger(f"{__name__}.calculate_cost_adjustments_from_secondary_outputs")
     if "materials" not in bill_of_materials or not dynamic_business_cases:
         return 0.0
 
@@ -1860,4 +1887,11 @@ def calculate_cost_adjustments_from_secondary_outputs(
         )
         total_adjustments += material_adjustment
 
-    return total_adjustments / total_product_volume if total_product_volume > 0 else 0.0
+    result = total_adjustments / total_product_volume if total_product_volume > 0 else 0.0
+    if result != 0.0:
+        logger.debug(
+            "[SECONDARY OUTPUTS] total adjustment: $%.4f/t (from %d materials)",
+            result,
+            len(materials),
+        )
+    return result

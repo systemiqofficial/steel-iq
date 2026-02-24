@@ -330,6 +330,20 @@ def test_normalize_cost_item_energy_carrier_bio_pci():
     assert _normalize_cost_item("bio-pci", row_index=0) == "bio_pci"
 
 
+def test_normalize_cost_item_co2_stored():
+    """Test that 'CO2-Stored' and variants are normalised to 'co2_stored'."""
+    assert _normalize_cost_item("CO2-Stored", row_index=0) == "co2_stored"
+    assert _normalize_cost_item("co2_stored", row_index=0) == "co2_stored"
+    assert _normalize_cost_item("co2-stored", row_index=0) == "co2_stored"
+
+
+def test_normalize_cost_item_ccu_products():
+    """Test that 'CCU Products' and variants are normalised to 'ccu_products'."""
+    assert _normalize_cost_item("CCU Products", row_index=0) == "ccu_products"
+    assert _normalize_cost_item("ccu_products", row_index=0) == "ccu_products"
+    assert _normalize_cost_item("ccu products", row_index=0) == "ccu_products"
+
+
 # =============================================================================
 # Tests for _parse_subsidy_type
 # =============================================================================

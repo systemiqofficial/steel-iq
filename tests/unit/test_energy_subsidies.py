@@ -375,3 +375,78 @@ def test_furnace_group_set_subsidised_energy_costs():
     assert furnace_group.applied_subsidies["hydrogen"][0] == h2_subsidy
     assert len(furnace_group.applied_subsidies["electricity"]) == 1
     assert furnace_group.applied_subsidies["electricity"][0] == elec_subsidy
+
+
+def _make_env_stub():
+    """Create a lightweight stub with just the method under test."""
+    from steelo.domain.models import Environment
+
+    stub = object.__new__(Environment)
+    stub.energy_subsidies = {}
+    return stub
+
+
+def test_environment_initiate_energy_subsidies_groups_by_carrier_iso3_tech():
+    """Test that initiate_energy_subsidies groups subsidies by carrier -> iso3 -> tech."""
+    env = _make_env_stub()
+    h2_sub = Subsidy(
+        scenario_name="h2_test",
+        iso3="USA",
+        start_year=Year(2025),
+        end_year=Year(2030),
+        technology_name="DRI",
+        cost_item="hydrogen",
+        subsidy_type="absolute",
+        subsidy_amount=500.0,
+    )
+    ng_sub = Subsidy(
+        scenario_name="ng_test",
+        iso3="DEU",
+        start_year=Year(2025),
+        end_year=Year(2030),
+        technology_name="BF",
+        cost_item="natural_gas",
+        subsidy_type="absolute",
+        subsidy_amount=0.01,
+    )
+    env.initiate_energy_subsidies([h2_sub, ng_sub])
+
+    assert "hydrogen" in env.energy_subsidies
+    assert "natural_gas" in env.energy_subsidies
+    assert env.energy_subsidies["hydrogen"]["USA"]["DRI"] == [h2_sub]
+    assert env.energy_subsidies["natural_gas"]["DEU"]["BF"] == [ng_sub]
+
+
+def test_environment_initiate_energy_subsidies_excludes_financial():
+    """Test that financial subsidies (opex, capex, cost of debt) are excluded."""
+    env = _make_env_stub()
+    opex_sub = Subsidy(
+        scenario_name="opex_test",
+        iso3="USA",
+        start_year=Year(2025),
+        end_year=Year(2030),
+        technology_name="DRI",
+        cost_item="opex",
+        subsidy_type="relative",
+        subsidy_amount=0.1,
+    )
+    capex_sub = Subsidy(
+        scenario_name="capex_test",
+        iso3="USA",
+        start_year=Year(2025),
+        end_year=Year(2030),
+        technology_name="DRI",
+        cost_item="capex",
+        subsidy_type="absolute",
+        subsidy_amount=100.0,
+    )
+    env.initiate_energy_subsidies([opex_sub, capex_sub])
+
+    assert env.energy_subsidies == {}
+
+
+def test_environment_initiate_energy_subsidies_empty_input():
+    """Test that empty input produces empty dict."""
+    env = _make_env_stub()
+    env.initiate_energy_subsidies([])
+    assert env.energy_subsidies == {}

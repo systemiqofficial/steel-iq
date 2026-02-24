@@ -1203,10 +1203,17 @@ class FurnaceGroup:
             no_subsidy_prices: Original prices for all subsidised carriers
             energy_subsidies: Applied subsidies per carrier {carrier: [Subsidy, ...]}
         """
+        logger = logging.getLogger(f"{__name__}.set_subsidised_energy_costs")
         self.energy_costs = subsidised_costs
         self.energy_costs_no_subsidy = no_subsidy_prices
         for carrier, subs in energy_subsidies.items():
             self.applied_subsidies[carrier] = subs
+        diffs = [
+            f"{c} ${no_subsidy_prices[c]:.4f}->${subsidised_costs.get(c, no_subsidy_prices[c]):.4f}"
+            for c in sorted(no_subsidy_prices)
+        ]
+        if diffs:
+            logger.debug("[ENERGY SUBS] FG set: %s", ", ".join(diffs))
 
     def __repr__(self) -> str:
         return f"FurnaceGroup: <{self.furnace_group_id}>"
@@ -2413,16 +2420,14 @@ class FurnaceGroup:
 
             else:  # Switch to a new technology (greenfield)
                 # ========== BRANCH B: Greenfield Installation (New Technology) ==========
-                h2_cost = self.energy_costs.get("hydrogen", 0)
-                elec_cost = self.energy_costs.get("electricity", 0)
-                h2_no_sub = self.energy_costs_no_subsidy.get("hydrogen", h2_cost)
-                elec_no_sub = self.energy_costs_no_subsidy.get("electricity", elec_cost)
-                if h2_cost != h2_no_sub or elec_cost != elec_no_sub:
-                    logger.debug(
-                        f"[OPTIMAL TECH] {tech} using subsidised energy: "
-                        f"H2 ${h2_no_sub:.2f}->${h2_cost:.2f}/t, "
-                        f"Elec ${elec_no_sub:.6f}->${elec_cost:.6f}/kWh"
-                    )
+                if self.energy_costs_no_subsidy:
+                    diffs = []
+                    for carrier, original in self.energy_costs_no_subsidy.items():
+                        current = self.energy_costs.get(carrier, original)
+                        if current != original:
+                            diffs.append(f"{carrier} ${original:.4f}->${current:.4f}")
+                    if diffs:
+                        logger.debug(f"[OPTIMAL TECH] {tech} using subsidised energy: {', '.join(diffs)}")
 
                 # Fetch average BOM for the new technology from historical data
                 chosen_reductant = most_common_reductant_by_tech.get(tech)
@@ -3639,18 +3644,18 @@ class Plant:
         logger = logging.getLogger(f"{__name__}.evaluate_furnace_group_strategy")
         furnace_group = self.get_furnace_group(furnace_group_id)
 
-        h2_subs_active = len(furnace_group.applied_subsidies.get("hydrogen", [])) > 0
-        elec_subs_active = len(furnace_group.applied_subsidies.get("electricity", [])) > 0
-        if h2_subs_active or elec_subs_active:
-            h2_no_sub = furnace_group.energy_costs_no_subsidy.get("hydrogen", 0)
-            h2_with_sub = furnace_group.energy_costs.get("hydrogen", 0)
-            elec_no_sub = furnace_group.energy_costs_no_subsidy.get("electricity", 0)
-            elec_with_sub = furnace_group.energy_costs.get("electricity", 0)
-            logger.debug(
-                f"[FG STRATEGY] FG:{furnace_group_id} {self.location.iso3} | "
-                f"H2={h2_subs_active} (${h2_no_sub:.2f}->${h2_with_sub:.2f}/t), "
-                f"Elec={elec_subs_active} (${elec_no_sub:.6f}->${elec_with_sub:.6f}/kWh)"
-            )
+        active_energy_subs = {
+            k: v
+            for k, v in furnace_group.applied_subsidies.items()
+            if k not in ("capex", "opex", "debt", "cost of debt") and v
+        }
+        if active_energy_subs:
+            diffs = []
+            for carrier in sorted(active_energy_subs):
+                no_sub = furnace_group.energy_costs_no_subsidy.get(carrier, 0)
+                with_sub = furnace_group.energy_costs.get(carrier, 0)
+                diffs.append(f"{carrier} ${no_sub:.4f}->${with_sub:.4f}")
+            logger.debug(f"[FG STRATEGY] FG:{furnace_group_id} {self.location.iso3} | {', '.join(diffs)}")
 
         # Log initial state for debugging
         logger.debug(f"[FG STRATEGY] ========== Starting evaluation for FG {furnace_group_id} ==========")
