@@ -36,7 +36,13 @@ def base_path() -> Path:
 
 def ensure_base_dir(sub_path: Iterable[str | Path]) -> Path:
     path = base_path().joinpath(*sub_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # Resolve any symlinks before creating directories to handle broken symlinks
+    try:
+        resolved_parent = path.parent.resolve(strict=False)
+        resolved_parent.mkdir(parents=True, exist_ok=True)
+    except (OSError, FileExistsError):
+        # If resolution fails, try creating with the original path
+        path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
 
@@ -52,7 +58,13 @@ def append_csv(relative_path: str | Path, headers: Sequence[str], row: Sequence)
     if not diagnostics_enabled():
         return
     path = base_path() / relative_path
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # Resolve any symlinks before creating directories to handle broken symlinks
+    try:
+        resolved_parent = path.parent.resolve(strict=False)
+        resolved_parent.mkdir(parents=True, exist_ok=True)
+    except (OSError, FileExistsError):
+        # If resolution fails, try creating with the original path
+        path.parent.mkdir(parents=True, exist_ok=True)
     file_exists = path.exists()
     with path.open("a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -65,7 +77,13 @@ def append_text(relative_path: str | Path, lines: list[str]) -> None:
     if not diagnostics_enabled():
         return
     path = base_path() / relative_path
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # Resolve any symlinks before creating directories to handle broken symlinks
+    try:
+        resolved_parent = path.parent.resolve(strict=False)
+        resolved_parent.mkdir(parents=True, exist_ok=True)
+    except (OSError, FileExistsError):
+        # If resolution fails, try creating with the original path
+        path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         for line in lines:
             f.write(f"{line}\n")
