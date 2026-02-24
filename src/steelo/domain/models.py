@@ -1119,7 +1119,7 @@ class FurnaceGroup:
         self.energy_vopex_breakdown_by_input = energy_vopex_breakdown_by_input
         self.energy_vopex_by_carrier = energy_vopex_by_carrier
         self.tech_unit_fopex = tech_unit_fopex
-        self.input_costs: dict[str, float] = {}
+
         self.has_ccs_or_ccu = False  # To be updated if carbon capture is installed
         self.grid_emissivity: float | None = None
 
@@ -1854,7 +1854,7 @@ class FurnaceGroup:
         return calculate_cost_adjustments_from_secondary_outputs(
             bill_of_materials=self.bill_of_materials,
             dynamic_business_cases=self.effective_primary_feedstocks,
-            input_costs=self.input_costs,
+            input_costs=self.energy_costs,
         )
 
     @property
@@ -2091,7 +2091,7 @@ class FurnaceGroup:
             chosen_reductant=self.chosen_reductant,
             energy_vopex_breakdown_by_input=self.energy_vopex_breakdown_by_input,
             cost_breakdown_keys=self.cost_breakdown_keys,
-            input_costs=self.input_costs,
+            input_costs=self.energy_costs,
         )
 
     @property
@@ -5707,7 +5707,9 @@ class PlantGroup:
                             active_energy_subs[carrier] = active
 
                     if active_energy_subs:
-                        temp_costs = {"hydrogen": hydrogen_price, "electricity": power_price}
+                        temp_costs = dict(fg.energy_costs)
+                        temp_costs["electricity"] = power_price
+                        temp_costs["hydrogen"] = hydrogen_price
                         subsidised, _ = cc.get_subsidised_energy_costs(temp_costs, active_energy_subs)
                         for carrier in active_energy_subs:
                             if carrier in subsidised:
@@ -7248,8 +7250,7 @@ class Environment:
         Process:
             1. Retrieve country-specific input costs (electricity, hydrogen, coke, pci, natural_gas, coal, bio_pci)
                for each plant's location
-            2. Assign these costs to furnace group's input_costs attribute (for cost calculations)
-            3. Handle special cases based on plant type:
+            2. Handle special cases based on plant type:
 
                **New GEO Plants (parent_gem_id="indi"):**
                - These plants have their own power infrastructure (renewable energy park)
@@ -7270,7 +7271,6 @@ class Environment:
             world_plants (list[Plant]): All plants in the simulation to update.
 
         Side Effects:
-            - Updates fg.input_costs attribute for each furnace group (dict of commodity costs)
             - Updates fg.energy_costs dictionary via set_energy_costs() for each furnace group
 
         Notes:
@@ -7288,10 +7288,6 @@ class Environment:
 
             # Get input costs from Excel for this country and year
             input_costs = self.input_costs[plant.location.iso3][self.year].copy()
-
-            # Store raw input costs in furnace groups for reference
-            for fg in plant.furnace_groups:
-                fg.input_costs = input_costs
 
             # New GEO plants: Preserve their own power infrastructure costs (always set)
             if plant.parent_gem_id.lower() == "indi":
