@@ -1975,9 +1975,11 @@ def _normalize_cost_item(cost_item: str | None, row_index: int) -> str | None:
         return "capex"
     elif normalized in ("cost of debt", "debt"):
         return "cost of debt"
-    # Known alias
+    # Known aliases
     elif normalized == "h2":
         return "hydrogen"
+    elif normalized in ("co2 storage", "co2_storage"):
+        return "co2_stored"
     # Everything else is an energy carrier — normalise to match energy_costs keys
     else:
         return normalize_name(normalized)
