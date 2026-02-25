@@ -335,6 +335,10 @@ def test_normalize_cost_item_co2_stored():
     assert _normalize_cost_item("CO2-Stored", row_index=0) == "co2_stored"
     assert _normalize_cost_item("co2_stored", row_index=0) == "co2_stored"
     assert _normalize_cost_item("co2-stored", row_index=0) == "co2_stored"
+    # "co2 storage" alias from Subsidies Excel sheet (fixed in 5d8e492)
+    assert _normalize_cost_item("co2 storage", row_index=0) == "co2_stored"
+    assert _normalize_cost_item("co2_storage", row_index=0) == "co2_stored"
+    assert _normalize_cost_item("CO2 Storage", row_index=0) == "co2_stored"
 
 
 def test_normalize_cost_item_ccu_products():
