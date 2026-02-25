@@ -8555,6 +8555,11 @@ class Environment:
             logger.debug(f"[BOM] Processing feedstock: {feedstock} (normalized: {normalized_feedstock})")
             logger.debug(f"[BOM] Share data: {share_data}")
 
+            # Skip carbon outputs - they are tracked separately and don't need input effectiveness
+            if hasattr(self, "carbon_output_keys") and normalized_feedstock in self.carbon_output_keys:
+                logger.debug(f"[BOM] Skipping carbon output: {feedstock}")
+                continue
+
             if not isinstance(share_data, dict):
                 raise TypeError(
                     f"Invalid avg_boms schema for technology {tech!r}, feedstock {feedstock!r}: "
