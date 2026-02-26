@@ -543,6 +543,7 @@ class DataCollector:
                             "unit_vopex": fg.unit_vopex,
                             "unit_secondary_output_costs": fg.cost_adjustments_from_secondary_outputs,
                             "unit_carbon_cost": fg.carbon_cost_per_unit,
+                            "unit_carbon_cost_contribution - co2_slip": fg.co2_slip_carbon_cost_contribution,
                             "cost_breakdown": fg.cost_breakdown_by_feedstock,  # type: ignore
                             "carbon_breakdown": fg.carbon_breakdown_by_feedstock,  # type: ignore
                         }
@@ -578,6 +579,7 @@ class DataCollector:
                         "carbon_breakdown": None,
                         "unit_vopex": None,
                         "unit_carbon_cost": None,
+                        "unit_carbon_cost_contribution - co2_slip": None,
                         "unit_secondary_outputs_revenue": None,
                         "unit_fopex": fg.unit_fopex,
                         "unit_debt_repayment": fg.unit_current_debt_repayment,

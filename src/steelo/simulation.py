@@ -1166,7 +1166,6 @@ class SimulationRunner:
             steel_demand=bus.env.current_demand,
             iron_demand=bus.env.iron_demand,
             plot_paths=bus.env.plot_paths,
-            iso3_to_region_map=bus.env.country_mappings.iso3_to_region(),
         )
 
         # Generate plots using SteelPlotter class for consistent styling

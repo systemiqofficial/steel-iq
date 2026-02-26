@@ -31,7 +31,7 @@ def sample_output_df():
                     {
                         "year": year,
                         "technology": tech,
-                        "location": loc,
+                        "iso3": loc,
                         "product": "steel",
                         "capacity": np.random.randint(100, 500),
                         "production": np.random.randint(80, 450),
@@ -73,14 +73,11 @@ def test_generate_post_run_cap_prod_plots_calls_all_functions_with_plot_paths(
     """Test that generate_post_run_cap_prod_plots passes plot_paths to all plotting functions."""
     mock_plotter_instance = mock_plotter_class.return_value
 
-    # Call the function with plot_paths and mock iso3_to_region_map
-    mock_iso3_to_region_map = {"USA": "Americas", "DEU": "Europe"}
     generate_post_run_cap_prod_plots(
         temp_csv_file,
         capacity_limit=0.95,
         steel_demand=1000,
         iron_demand=800,
-        iso3_to_region_map=mock_iso3_to_region_map,
         plot_paths=mock_plot_paths,
     )
 
@@ -111,14 +108,11 @@ def test_generate_post_run_cap_prod_plots_works_without_plot_paths(
     """Test that generate_post_run_cap_prod_plots works when plot_paths is None."""
     mock_plotter_instance = mock_plotter_class.return_value
 
-    # Call the function without plot_paths but with mock iso3_to_region_map
-    mock_iso3_to_region_map = {"USA": "Americas", "DEU": "Europe"}
     generate_post_run_cap_prod_plots(
         temp_csv_file,
         capacity_limit=0.95,
         steel_demand=1000,
         iron_demand=800,
-        iso3_to_region_map=mock_iso3_to_region_map,
     )
 
     # Verify plot_added_capacity_by_technology was called with plot_paths=None
