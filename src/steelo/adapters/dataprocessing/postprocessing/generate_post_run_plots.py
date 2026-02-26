@@ -5,11 +5,10 @@ from typing import Optional, TYPE_CHECKING
 
 from steelo.domain.constants import T_TO_KT, T_TO_MT
 from steelo.utilities.plotting import (
-    plot_area_chart_of_column_by_region_or_technology,
     plot_added_capacity_by_technology,
-    plot_year_on_year_technology_development,
     plot_cost_curve_step_from_dataframe,
 )
+from steelo.utilities.steeliq_plotter import SteelPlotter, PlotConfig
 
 logger = logging.getLogger(__name__)
 
@@ -47,10 +46,10 @@ def generate_post_run_cap_prod_plots(
     output_df = output_df.copy()
     output_df = output_df.sort_values(by="year").reset_index(drop=True)
 
+    output_df["region"] = output_df["iso3"].map(iso3_to_region_map)
     # Support both 'iso3' (new) and 'location' (legacy) column names
     location_col = "iso3" if "iso3" in output_df.columns else "location"
     output_df["region"] = output_df[location_col].map(iso3_to_region_map)
-
     # Check order of magnitude and convert if needed for better readability
     # If values are in millions (tonnes), convert to kt for better readability
     capacity_mean = output_df["capacity"].mean()
@@ -75,7 +74,10 @@ def generate_post_run_cap_prod_plots(
         units_pa = "tpa"
 
     plot_added_capacity_by_technology(output_df, units_pa, plot_paths=plot_paths)
-    plot_year_on_year_technology_development(output_df, units_pa, plot_paths=plot_paths)
+
+    # Use SteelPlotter for capacity development to get consistent styling and footer
+    plotter = SteelPlotter(config=PlotConfig(), plot_paths=plot_paths)
+    plotter.plot_capacity_development_by_technology(data_file=output_df, units=units_pa)
 
     # Get the first and last years available in the data for cost curves
     if "year" in output_df.columns:
@@ -173,80 +175,72 @@ def generate_post_run_cap_prod_plots(
             plot_paths=plot_paths,
         )
 
-    # BY REGION
-    plot_area_chart_of_column_by_region_or_technology(
+    # BY REGION - Using SteelPlotter for consistent styling and footers
+    plotter.plot_area_chart_by_region_or_technology(
         dataframe=output_df,
         column_name="production",
         title="Steel Production Volume by Region",
         units=units_pa,
         pivot_columns=["region"],
         product_type="steel",
-        plot_paths=plot_paths,
     )
-    plot_area_chart_of_column_by_region_or_technology(
+    plotter.plot_area_chart_by_region_or_technology(
         dataframe=output_df,
         column_name="production",
         title="Iron Production Volume by Region",
         units=units_pa,
         pivot_columns=["region"],
         product_type="iron",
-        plot_paths=plot_paths,
     )
-    plot_area_chart_of_column_by_region_or_technology(
+    plotter.plot_area_chart_by_region_or_technology(
         dataframe=output_df,
         column_name="capacity",
         title="Steel Capacity Volume by Region",
         units=units_pa,
         pivot_columns=["region"],
         product_type="steel",
-        plot_paths=plot_paths,
     )
-    plot_area_chart_of_column_by_region_or_technology(
+    plotter.plot_area_chart_by_region_or_technology(
         dataframe=output_df,
         column_name="capacity",
         title="Iron Capacity Volume by Region",
         units=units_pa,
         pivot_columns=["region"],
         product_type="iron",
-        plot_paths=plot_paths,
     )
 
-    # BY TECHNOLOGY
-    plot_area_chart_of_column_by_region_or_technology(
+    # BY TECHNOLOGY - Using SteelPlotter for consistent styling and footers
+    plotter.plot_area_chart_by_region_or_technology(
         dataframe=output_df,
         column_name="production",
         title="Steel Production Volume by Technology",
         units=units_pa,
         pivot_columns=["technology"],
         product_type="steel",
-        plot_paths=plot_paths,
     )
-    plot_area_chart_of_column_by_region_or_technology(
+    plotter.plot_area_chart_by_region_or_technology(
         dataframe=output_df,
         column_name="production",
         title="Iron Production Volume by Technology",
         units=units_pa,
         pivot_columns=["technology"],
         product_type="iron",
-        plot_paths=plot_paths,
     )
-    plot_area_chart_of_column_by_region_or_technology(
+    plotter.plot_area_chart_by_region_or_technology(
         dataframe=output_df,
         column_name="capacity",
         title="Steel Capacity Volume by Technology",
         units=units_pa,
         pivot_columns=["technology"],
         product_type="steel",
-        plot_paths=plot_paths,
     )
-    plot_area_chart_of_column_by_region_or_technology(
+    plotter.plot_area_chart_by_region_or_technology(
         dataframe=output_df,
         column_name="capacity",
         title="Iron Capacity Volume by Technology",
         units=units_pa,
         pivot_columns=["technology"],
         product_type="iron",
-        plot_paths=plot_paths,
     )
 
 

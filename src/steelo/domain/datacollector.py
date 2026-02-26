@@ -36,6 +36,18 @@ class DataCollector:
             lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
         )
         self.new_plant_locations: dict[Any, dict[Any, list]] = defaultdict(lambda: defaultdict(list))
+        self.trace_capex: dict[int, dict[str, dict[str, float]]] = defaultdict(
+            lambda: defaultdict(lambda: defaultdict(float))
+        )  # {year: {technology: {iso3: total_capex}}}
+        self.trace_emissions: dict[int, dict[str, float]] = defaultdict(
+            lambda: defaultdict(float)
+        )  # {year: {technology: total_emissions_tCO2e}}
+        self.trace_iron_ore: dict[int, dict[str, float]] = defaultdict(
+            lambda: defaultdict(float)
+        )  # {year: {quality: total_consumption_tonnes}}
+        self.trace_metallic_charges: dict[int, dict[str, float]] = defaultdict(
+            lambda: defaultdict(float)
+        )  # {year: {charge_type: total_consumption_tonnes}}
 
         if custom_function is not None:
             pass
@@ -208,6 +220,239 @@ class DataCollector:
                         ({"lat": plant.location.lat, "lon": plant.location.lon})
                     )
 
+    def collect_capex_investments(self, year: Year):
+        """
+        Collect CAPEX investments by technology and location for newly operating plants.
+
+        Tracks total capital expenditure (CAPEX) for furnace groups that started operating
+        in the given year. This includes both new greenfield plants and renovations/technology
+        switches in existing plants.
+
+        CAPEX is recorded in the year the plant becomes operational, even though the actual
+        investment was made during construction (construction_time years earlier).
+
+        Args:
+            year: The year to collect CAPEX data for
+
+        Returns:
+            dict: {technology: {iso3: total_capex_in_usd}}
+        """
+        logger = logging.getLogger(f"{__name__}.collect_capex_investments")
+        capex_by_tech_and_location: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+
+        # Collect from all plant groups to capture both new plants and renovations
+        for pg in self.plant_groups:
+            for plant in pg.plants:
+                iso3 = plant.location.iso3
+
+                for fg in plant.furnace_groups:
+                    # Track CAPEX for furnace groups that started operating this year
+                    if fg.status == "operating" and fg.lifetime.start == year:
+                        technology = fg.technology.name
+                        capex = fg.total_investment
+
+                        if capex > 0:
+                            capex_by_tech_and_location[technology][iso3] += capex
+                            logger.debug(
+                                f"[CAPEX] Year {year}: {technology} in {iso3} - "
+                                f"${capex:,.0f} (capacity: {fg.capacity:,.0f} t/yr)"
+                            )
+
+        # Store in trace_capex for later analysis
+        if capex_by_tech_and_location:
+            for tech, locations in capex_by_tech_and_location.items():
+                for iso3, capex in locations.items():
+                    self.trace_capex[year][tech][iso3] += capex
+
+            # Log summary
+            total_capex = sum(sum(locations.values()) for locations in capex_by_tech_and_location.values())
+            logger.info(
+                f"[CAPEX] Year {year}: Total CAPEX = ${total_capex:,.0f} across "
+                f"{len(capex_by_tech_and_location)} technologies"
+            )
+
+        return dict(capex_by_tech_and_location)
+
+    def collect_emissions_by_technology(self, year: Year):
+        """
+        Collect total emissions by technology for the given year.
+
+        Aggregates emissions from all operating furnace groups by technology type.
+        Uses the configured emissions boundary (typically "cradle-to-gate") and sums
+        all scopes (scope 1, 2, and 3).
+
+        Args:
+            year: The year to collect emissions data for
+
+        Returns:
+            dict: {technology: total_emissions_tCO2e}
+        """
+        logger = logging.getLogger(f"{__name__}.collect_emissions_by_technology")
+        emissions_by_tech: dict[str, float] = defaultdict(float)
+
+        # Get the configured emissions boundary
+        emissions_boundary = self.env.config.chosen_emissions_boundary_for_carbon_costs
+
+        for pg in self.plant_groups:
+            for plant in pg.plants:
+                for fg in plant.furnace_groups:
+                    # Only collect from operating furnace groups
+                    if fg.status.lower() not in self.env.config.active_statuses:
+                        continue
+
+                    technology = fg.technology.name
+
+                    # Sum emissions across all scopes for the configured boundary
+                    if fg.emissions and emissions_boundary in fg.emissions:
+                        for scope, emission_value in fg.emissions[emissions_boundary].items():
+                            if emission_value and emission_value > 0:
+                                emissions_by_tech[technology] += emission_value
+
+        # Store in trace_emissions for later analysis
+        if emissions_by_tech:
+            for tech, emissions in emissions_by_tech.items():
+                self.trace_emissions[year][tech] += emissions
+
+            # Log summary
+            total_emissions = sum(emissions_by_tech.values())
+            logger.info(
+                f"[EMISSIONS] Year {year}: Total emissions = {total_emissions:,.0f} tCO2e across "
+                f"{len(emissions_by_tech)} technologies (boundary: {emissions_boundary})"
+            )
+
+        return dict(emissions_by_tech)
+
+    def collect_iron_ore_by_quality(self, year: Year):
+        """
+        Collect iron ore consumption by quality for the given year.
+
+        Aggregates iron ore/pellets consumption from all operating furnace groups by quality type.
+        Tracks pellets_high, pellets_mid, pellets_low, and other iron ore materials.
+
+        Args:
+            year: The year to collect iron ore data for
+
+        Returns:
+            dict: {quality: total_consumption_tonnes}
+        """
+        logger = logging.getLogger(f"{__name__}.collect_iron_ore_by_quality")
+        iron_ore_by_quality: dict[str, float] = defaultdict(float)
+
+        # Keywords to identify iron ore and pellet materials
+        iron_ore_keywords = [
+            "io_",
+            "iron_ore",
+        ]
+
+        for pg in self.plant_groups:
+            for plant in pg.plants:
+                for fg in plant.furnace_groups:
+                    # Only collect from operating furnace groups
+                    if fg.status.lower() not in self.env.config.active_statuses:
+                        continue
+
+                    # Check bill of materials for iron ore/pellets
+                    if not fg.bill_of_materials or "materials" not in fg.bill_of_materials:
+                        continue
+
+                    materials = fg.bill_of_materials["materials"]
+                    if not materials:
+                        continue
+
+                    # Iterate through materials to find iron ore/pellets
+                    for material_name, material_data in materials.items():
+                        material_lower = material_name.lower()
+
+                        # Check if this is an iron ore related material
+                        is_iron_ore = any(keyword in material_lower for keyword in iron_ore_keywords)
+
+                        if is_iron_ore:
+                            # Get the demand (total consumption in tonnes)
+                            demand = material_data.get("demand", 0)
+                            if demand and demand > 0:
+                                # Use the material name as the quality identifier
+                                iron_ore_by_quality[material_name] += demand
+
+        # Store in trace_iron_ore for later analysis
+        if iron_ore_by_quality:
+            for quality, consumption in iron_ore_by_quality.items():
+                self.trace_iron_ore[year][quality] += consumption
+
+            # Log summary
+            total_consumption = sum(iron_ore_by_quality.values())
+            logger.info(
+                f"[IRON ORE] Year {year}: Total consumption = {total_consumption:,.0f} tonnes across "
+                f"{len(iron_ore_by_quality)} qualities"
+            )
+
+        return dict(iron_ore_by_quality)
+
+    def collect_metallic_charges(self, year: Year):
+        """
+        Collect metallic charge consumption for the given year.
+
+        Aggregates consumption of all metallic charges from operating furnace groups.
+        Uses the metallic_charge field from each technology's primary feedstocks to
+        dynamically identify what materials are metallic charges.
+
+        Args:
+            year: The year to collect metallic charge data for
+
+        Returns:
+            dict: {charge_type: total_consumption_tonnes}
+        """
+        logger = logging.getLogger(f"{__name__}.collect_metallic_charges")
+        metallic_charges: dict[str, float] = defaultdict(float)
+
+        for pg in self.plant_groups:
+            for plant in pg.plants:
+                for fg in plant.furnace_groups:
+                    # Only collect from operating furnace groups
+                    if fg.status.lower() not in self.env.config.active_statuses:
+                        continue
+
+                    # Get the metallic charges from this furnace group's primary feedstocks
+                    feedstock_metallic_charges = set()
+                    for feedstock in fg.effective_primary_feedstocks:
+                        if feedstock.metallic_charge:
+                            feedstock_metallic_charges.add(feedstock.metallic_charge.lower())
+
+                    if not feedstock_metallic_charges:
+                        continue
+
+                    # Check bill of materials for these metallic charges
+                    if not fg.bill_of_materials or "materials" not in fg.bill_of_materials:
+                        continue
+
+                    materials = fg.bill_of_materials["materials"]
+                    if not materials:
+                        continue
+
+                    # Collect consumption for materials that match metallic charges
+                    for material_name, material_data in materials.items():
+                        material_lower = material_name.lower()
+
+                        # Check if this material is one of the metallic charges for this technology
+                        if material_lower in feedstock_metallic_charges:
+                            # Get the demand (total consumption in tonnes)
+                            demand = material_data.get("demand", 0)
+                            if demand and demand > 0:
+                                metallic_charges[material_name] += demand
+
+        # Store in trace_metallic_charges for later analysis
+        if metallic_charges:
+            for charge_type, consumption in metallic_charges.items():
+                self.trace_metallic_charges[year][charge_type] += consumption
+
+            # Log summary
+            total_consumption = sum(metallic_charges.values())
+            logger.info(
+                f"[METALLIC CHARGES] Year {year}: Total consumption = {total_consumption:,.0f} tonnes across "
+                f"{len(metallic_charges)} charge types"
+            )
+
+        return dict(metallic_charges)
+
     def collect(self, world_plant_list: list[Plant], world_plant_groups: list[PlantGroup], year):
         """
         Execute the data collection process
@@ -217,6 +462,10 @@ class DataCollector:
         self.capacity_by_technology_and_PAM_status[self.step] = self.collect_capacity_by_technology_and_PAM_status()
         self.plant_emissions[self.step] = self.collect_emissions_by_plants().copy()
         self.collect_new_plant_data(self.env.year)
+        self.collect_capex_investments(self.env.year)
+        self.collect_emissions_by_technology(self.env.year)
+        self.collect_iron_ore_by_quality(self.env.year)
+        self.collect_metallic_charges(self.env.year)
 
         plants = {}
         for p in world_plant_list:
