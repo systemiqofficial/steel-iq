@@ -64,80 +64,72 @@ def mock_plot_paths():
     return mock_paths
 
 
+@patch("steelo.adapters.dataprocessing.postprocessing.generate_post_run_plots.SteelPlotter")
 @patch("steelo.adapters.dataprocessing.postprocessing.generate_post_run_plots.plot_added_capacity_by_technology")
-@patch("steelo.adapters.dataprocessing.postprocessing.generate_post_run_plots.plot_year_on_year_technology_development")
 @patch("steelo.adapters.dataprocessing.postprocessing.generate_post_run_plots.plot_cost_curve_step_from_dataframe")
-@patch(
-    "steelo.adapters.dataprocessing.postprocessing.generate_post_run_plots.plot_area_chart_of_column_by_region_or_technology"
-)
 def test_generate_post_run_cap_prod_plots_calls_all_functions_with_plot_paths(
-    mock_area_chart, mock_cost_curve, mock_year_on_year, mock_added_capacity, temp_csv_file, mock_plot_paths
+    mock_cost_curve, mock_added_capacity, mock_plotter_class, temp_csv_file, mock_plot_paths
 ):
     """Test that generate_post_run_cap_prod_plots passes plot_paths to all plotting functions."""
-    # Call the function with plot_paths and mock iso3_to_region_map
-    mock_iso3_to_region_map = {"USA": "Americas", "DEU": "Europe"}
+    mock_plotter_instance = mock_plotter_class.return_value
+
     generate_post_run_cap_prod_plots(
         temp_csv_file,
         capacity_limit=0.95,
         steel_demand=1000,
         iron_demand=800,
-        iso3_to_region_map=mock_iso3_to_region_map,
         plot_paths=mock_plot_paths,
     )
 
-    # Verify that all plotting functions were called with plot_paths
+    # Verify plot_added_capacity_by_technology was called with plot_paths
     mock_added_capacity.assert_called_once()
     assert mock_added_capacity.call_args.kwargs["plot_paths"] == mock_plot_paths
 
-    mock_year_on_year.assert_called_once()
-    assert mock_year_on_year.call_args.kwargs["plot_paths"] == mock_plot_paths
+    # Verify SteelPlotter was instantiated with plot_paths
+    mock_plotter_class.assert_called_once()
+    assert mock_plotter_class.call_args.kwargs["plot_paths"] == mock_plot_paths
+
+    # Verify SteelPlotter methods were called
+    mock_plotter_instance.plot_capacity_development_by_technology.assert_called_once()
+    assert mock_plotter_instance.plot_area_chart_by_region_or_technology.call_count == 8
 
     # plot_cost_curve is called multiple times (for different years/products)
     assert mock_cost_curve.call_count >= 1
     for call_args in mock_cost_curve.call_args_list:
         assert call_args.kwargs["plot_paths"] == mock_plot_paths
 
-    # plot_area_chart_of_column_by_region is called 8 times
-    assert mock_area_chart.call_count == 8
-    for call_args in mock_area_chart.call_args_list:
-        assert call_args.kwargs["plot_paths"] == mock_plot_paths
 
-
+@patch("steelo.adapters.dataprocessing.postprocessing.generate_post_run_plots.SteelPlotter")
 @patch("steelo.adapters.dataprocessing.postprocessing.generate_post_run_plots.plot_added_capacity_by_technology")
-@patch("steelo.adapters.dataprocessing.postprocessing.generate_post_run_plots.plot_year_on_year_technology_development")
 @patch("steelo.adapters.dataprocessing.postprocessing.generate_post_run_plots.plot_cost_curve_step_from_dataframe")
-@patch(
-    "steelo.adapters.dataprocessing.postprocessing.generate_post_run_plots.plot_area_chart_of_column_by_region_or_technology"
-)
 def test_generate_post_run_cap_prod_plots_works_without_plot_paths(
-    mock_area_chart, mock_cost_curve, mock_year_on_year, mock_added_capacity, temp_csv_file
+    mock_cost_curve, mock_added_capacity, mock_plotter_class, temp_csv_file
 ):
     """Test that generate_post_run_cap_prod_plots works when plot_paths is None."""
-    # Call the function without plot_paths but with mock iso3_to_region_map
-    mock_iso3_to_region_map = {"USA": "Americas", "DEU": "Europe"}
+    mock_plotter_instance = mock_plotter_class.return_value
+
     generate_post_run_cap_prod_plots(
         temp_csv_file,
         capacity_limit=0.95,
         steel_demand=1000,
         iron_demand=800,
-        iso3_to_region_map=mock_iso3_to_region_map,
     )
 
-    # Verify that all plotting functions were called with plot_paths=None
+    # Verify plot_added_capacity_by_technology was called with plot_paths=None
     mock_added_capacity.assert_called_once()
     assert mock_added_capacity.call_args.kwargs["plot_paths"] is None
 
-    mock_year_on_year.assert_called_once()
-    assert mock_year_on_year.call_args.kwargs["plot_paths"] is None
+    # Verify SteelPlotter was instantiated with plot_paths=None
+    mock_plotter_class.assert_called_once()
+    assert mock_plotter_class.call_args.kwargs["plot_paths"] is None
+
+    # Verify SteelPlotter methods were called
+    mock_plotter_instance.plot_capacity_development_by_technology.assert_called_once()
+    assert mock_plotter_instance.plot_area_chart_by_region_or_technology.call_count == 8
 
     # plot_cost_curve is called multiple times (for different years/products)
     assert mock_cost_curve.call_count >= 1
     for call_args in mock_cost_curve.call_args_list:
-        assert call_args.kwargs["plot_paths"] is None
-
-    # plot_area_chart_of_column_by_region is called 8 times
-    assert mock_area_chart.call_count == 8
-    for call_args in mock_area_chart.call_args_list:
         assert call_args.kwargs["plot_paths"] is None
 
 

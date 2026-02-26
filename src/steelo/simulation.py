@@ -1166,8 +1166,34 @@ class SimulationRunner:
             steel_demand=bus.env.current_demand,
             iron_demand=bus.env.iron_demand,
             plot_paths=bus.env.plot_paths,
-            iso3_to_region_map=bus.env.country_mappings.iso3_to_region(),
         )
+
+        # Generate plots using SteelPlotter class for consistent styling
+        from steelo.utilities.steeliq_plotter import SteelPlotter, PlotConfig
+
+        # Create plotter with default configuration
+        plot_config = PlotConfig()
+        plotter = SteelPlotter(config=plot_config, plot_paths=bus.env.plot_paths)
+
+        # Plot CAPEX investments by technology and year
+        if data_collector.trace_capex:
+            plotter.plot_capex_by_technology(trace_capex=data_collector.trace_capex)
+            logger.info("Generated CAPEX investment plots")
+
+        # Plot emissions stacked area chart by technology
+        if data_collector.trace_emissions:
+            plotter.plot_emissions_by_technology(trace_emissions=data_collector.trace_emissions)
+            logger.info("Generated emissions stacked area chart")
+
+        # Plot iron ore consumption stacked area chart by quality
+        if data_collector.trace_iron_ore:
+            plotter.plot_iron_ore_by_quality(trace_iron_ore=data_collector.trace_iron_ore)
+            logger.info("Generated iron ore consumption chart")
+
+        # Plot metallic charges consumption stacked area chart
+        if data_collector.trace_metallic_charges:
+            plotter.plot_metallic_charges(trace_metallic_charges=data_collector.trace_metallic_charges)
+            logger.info("Generated metallic charges consumption chart")
 
         # Export market prices to CSV and plot
         if data_collector.trace_price:
