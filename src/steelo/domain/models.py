@@ -1406,6 +1406,22 @@ class FurnaceGroup:
         """
         return self._carbon_cost
 
+    @property
+    def co2_slip_carbon_cost_contribution(self) -> float:
+        """Carbon cost contribution from CO2 slip emissions (USD/t product).
+
+        Returns:
+            float: ``co2_slip (tCO2/t) * carbon_price ($/tCO2)``, or 0.0 when
+                no carbon cost is set, utilisation is zero, or no CO2 slip exists.
+        """
+        if self._carbon_cost is None or self.utilization_rate == 0:
+            return 0.0
+        carbon_price = self._carbon_cost.carbon_price
+        if carbon_price == 0.0:
+            return 0.0
+        total_co2_slip = sum(feed.get("co2_slip", 0.0) for feed in self.carbon_breakdown_by_feedstock.values())
+        return total_co2_slip * carbon_price
+
     # def is_suitable_for_green_steel(
     #     self, chosen_emissions_boundary_for_carbon_costs: str, green_steel_emissions_limit: float
     # ) -> bool:
