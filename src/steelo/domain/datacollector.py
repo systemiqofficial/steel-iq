@@ -48,6 +48,9 @@ class DataCollector:
         self.trace_metallic_charges: dict[int, dict[str, float]] = defaultdict(
             lambda: defaultdict(float)
         )  # {year: {charge_type: total_consumption_tonnes}}
+        self.trace_international_iron_trade: dict[int, dict[str, float]] = defaultdict(
+            lambda: defaultdict(float)
+        )  # {year: {iron_product: total_international_trade_tonnes}}
 
         if custom_function is not None:
             pass
@@ -452,6 +455,89 @@ class DataCollector:
             )
 
         return dict(metallic_charges)
+
+    def collect_international_iron_trade(self, year: Year, trade_allocations):
+        """
+        Collect international trade volumes for iron products.
+
+        Analyzes commodity flows from the trade optimization model and identifies
+        international trade (flows where source and destination are in different countries).
+        Only tracks iron products as defined in IRON_PRODUCTS constant.
+
+        Args:
+            year: The year to collect trade data for
+            trade_allocations: Allocations object from trade LP solution containing
+                              dict of (ProcessCenter_from, ProcessCenter_to, Commodity) -> volume
+
+        Returns:
+            dict: {iron_product: total_international_trade_volume_tonnes}
+        """
+        logger = logging.getLogger(f"{__name__}.collect_international_iron_trade")
+
+        # Import here to avoid circular dependency
+        from steelo.domain.constants import IRON_PRODUCTS
+
+        international_trade: dict[str, float] = defaultdict(float)
+
+        if trade_allocations is None:
+            logger.warning(f"[INTERNATIONAL IRON TRADE] Year {year}: No trade allocations provided")
+            return dict(international_trade)
+
+        # Check if trade_allocations has the expected structure
+        if not hasattr(trade_allocations, "allocations"):
+            logger.warning(f"[INTERNATIONAL IRON TRADE] Year {year}: trade_allocations missing 'allocations' attribute")
+            return dict(international_trade)
+
+        # Iterate through all allocations: (from_pc, to_pc, commodity) -> volume
+        for (from_pc, to_pc, commodity), volume in trade_allocations.allocations.items():
+            # Skip if volume is negligible
+            if volume < 1e-6:
+                continue
+
+            # Get commodity name
+            commodity_name = commodity.name if hasattr(commodity, "name") else str(commodity)
+            commodity_name_lower = commodity_name.lower()
+
+            # Only track iron products
+            if commodity_name_lower not in [ip.lower() for ip in IRON_PRODUCTS]:
+                continue
+
+            # Check if this is international trade (different countries)
+            from_iso3 = from_pc.location.iso3 if hasattr(from_pc, "location") else None
+            to_iso3 = to_pc.location.iso3 if hasattr(to_pc, "location") else None
+
+            if from_iso3 is None or to_iso3 is None:
+                logger.debug(
+                    f"[INTERNATIONAL IRON TRADE] Skipping flow: missing ISO3 codes (from={from_iso3}, to={to_iso3})"
+                )
+                continue
+
+            # Only count international flows
+            if from_iso3 != to_iso3:
+                international_trade[commodity_name_lower] += volume
+                logger.debug(
+                    f"[INTERNATIONAL IRON TRADE] {commodity_name_lower}: {from_iso3} -> {to_iso3}: {volume:,.0f} tonnes"
+                )
+
+        # Store in trace_international_iron_trade for later analysis
+        if international_trade:
+            for product, volume in international_trade.items():
+                self.trace_international_iron_trade[year][product] += volume
+
+            # Log summary
+            total_trade = sum(international_trade.values())
+            logger.info(
+                f"[INTERNATIONAL IRON TRADE] Year {year}: Total = {total_trade:,.0f} tonnes "
+                f"across {len(international_trade)} iron products"
+            )
+            logger.info(
+                f"[INTERNATIONAL IRON TRADE] Year {year}: Products traded: "
+                f"{', '.join(f'{k}={v:,.0f}t' for k, v in sorted(international_trade.items()))}"
+            )
+        else:
+            logger.info(f"[INTERNATIONAL IRON TRADE] Year {year}: No international iron trade detected")
+
+        return dict(international_trade)
 
     def collect(self, world_plant_list: list[Plant], world_plant_groups: list[PlantGroup], year):
         """

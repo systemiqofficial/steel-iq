@@ -1091,6 +1091,12 @@ class SimulationRunner:
                     f"Year {bus.env.year} prices - Steel: ${prices['steel']:.2f}/t, Iron: ${prices['iron']:.2f}/t"
                 )
 
+                # Collect international iron trade volumes
+                if bus.env.trade_allocations is not None:
+                    data_collector.collect_international_iron_trade(
+                        year=bus.env.year, trade_allocations=bus.env.trade_allocations
+                    )
+
             commands[bus.env.year] = bus.collect_commands()
 
             with LoggingConfig.simulation_logging("DebugLogging"):
@@ -1194,6 +1200,29 @@ class SimulationRunner:
         if data_collector.trace_metallic_charges:
             plotter.plot_metallic_charges(trace_metallic_charges=data_collector.trace_metallic_charges)
             logger.info("Generated metallic charges consumption chart")
+
+        # Plot international iron trade volumes stacked area chart
+        if data_collector.trace_international_iron_trade:
+            plotter.plot_international_iron_trade(
+                trace_international_iron_trade=data_collector.trace_international_iron_trade
+            )
+            logger.info("Generated international iron trade wedge chart")
+
+            # Export international iron trade data to CSV
+            import pandas as pd
+
+            trade_data = []
+            for year, products in sorted(data_collector.trace_international_iron_trade.items()):
+                for product, volume in products.items():
+                    trade_data.append({"year": year, "iron_product": product, "volume_tonnes": volume})
+
+            if trade_data:
+                trade_df = pd.DataFrame(trade_data)
+                data_dir = self.config.output_dir / "data"
+                data_dir.mkdir(parents=True, exist_ok=True)
+                trade_csv_path = data_dir / f"international_iron_trade_{start_year}_{end_year}.csv"
+                trade_df.to_csv(trade_csv_path, index=False)
+                logger.info(f"Saved international iron trade data to {trade_csv_path}")
 
         # Export market prices to CSV and plot
         if data_collector.trace_price:

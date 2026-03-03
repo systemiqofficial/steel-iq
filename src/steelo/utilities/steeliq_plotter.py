@@ -563,6 +563,80 @@ class SteelPlotter:
 
         return self._save_figure(fig, "metallic_charges_over_time.png")
 
+    def plot_international_iron_trade(
+        self,
+        trace_international_iron_trade: dict[int, dict[str, float]],
+    ) -> Optional[Path]:
+        """Plot international iron product trade volumes over time as a stacked area chart (wedge chart).
+
+        Args:
+            trace_international_iron_trade: Nested dict {year: {iron_product: total_trade_volume_tonnes}}
+
+        Returns:
+            Path to saved plot, or None if no data to plot
+        """
+        if not trace_international_iron_trade:
+            self.logger.warning("No international iron trade data to plot")
+            return None
+
+        # Convert to DataFrame
+        data_rows = []
+        for year, products in trace_international_iron_trade.items():
+            for product, volume in products.items():
+                data_rows.append({"year": year, "product": product, "volume": volume})
+
+        if not data_rows:
+            return None
+
+        df = pd.DataFrame(data_rows)
+        df["volume_mt"] = df["volume"] / 1e6
+
+        # Pivot
+        df_pivot = df.pivot(index="year", columns="product", values="volume_mt")
+        df_pivot = df_pivot.fillna(0)
+
+        # Define color scheme for iron products
+        iron_product_colors = {
+            "iron": "#8B4513",  # saddle brown - generic iron
+            "hot_metal": "#DC143C",  # crimson - hot/molten
+            "pig_iron": "#696969",  # dim gray - intermediate product
+            "dri_low": "#87CEEB",  # sky blue (light) - low grade DRI
+            "dri_mid": "#4682B4",  # steel blue (medium) - mid grade DRI
+            "dri_high": "#000080",  # navy (dark) - high grade DRI
+            "hbi_low": "#FFB6C1",  # light pink (light) - low grade HBI
+            "hbi_mid": "#FF69B4",  # hot pink (medium) - mid grade HBI
+            "hbi_high": "#C71585",  # medium violet red (dark) - high grade HBI
+        }
+
+        # Assign colors
+        colors_for_plot = [iron_product_colors.get(product, "#808080") for product in df_pivot.columns]
+
+        # Create plot
+        fig, ax = plt.subplots(figsize=self.config.default_figsize_wide)
+
+        df_pivot.plot.area(
+            ax=ax,
+            color=colors_for_plot,
+            alpha=0.8,
+            linewidth=0,
+        )
+
+        # Formatting
+        ax.set_title("International Iron Product Trade Volumes Over Time", fontsize=14, fontweight="bold")
+        ax.set_xlabel("Year", fontsize=12)
+        ax.set_ylabel("Total Trade Volume (Mt)", fontsize=12)
+        self._style_legend(ax, title="Iron Product")
+        ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
+
+        # X-axis formatting
+        years = sorted(df_pivot.index)
+        ax.set_xlim(years[0], years[-1])
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=min(len(years), 20)))
+
+        fig.tight_layout()
+
+        return self._save_figure(fig, "international_iron_trade_over_time.png")
+
     def plot_steel_cost_curve(
         self,
         curve: list[dict[str, float]],

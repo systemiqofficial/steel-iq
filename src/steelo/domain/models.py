@@ -6634,6 +6634,7 @@ class Environment:
         self.default_metallic_charge_per_technology: dict[str, str] = {}
         self.transport_kpis: list[TransportKPI] = []  # Alias for transport_emissions for compatibility
         self.allocation_and_transportation_costs: dict | None = None  # For storing allocation costs
+        self.trade_allocations: Any = None  # For storing trade allocations from LP solution
         # Plot paths
         self.plot_paths: Optional[PlotPaths] = None
 
