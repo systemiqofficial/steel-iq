@@ -8624,6 +8624,7 @@ class Environment:
             bom_dict["materials"][feedstock] = {
                 "demand": material_demand,
                 "total_cost": material_cost,
+                "total_material_cost": material_cost,  # Required by calculate_variable_opex
                 "unit_cost": float(unit_cost),
                 "unit_material_cost": float(unit_cost),  # Same as unit_cost for avg_boms
                 "product_volume": capacity,  # Output volume for this furnace
@@ -8648,6 +8649,7 @@ class Environment:
                     "demand": energy_demand,
                     "total_cost": total_energy_cost,
                     "unit_cost": total_energy_cost / energy_demand if energy_demand > 0 else float("inf"),
+                    "product_volume": capacity,  # Required by calculate_variable_opex
                 }
 
         utilization = (
