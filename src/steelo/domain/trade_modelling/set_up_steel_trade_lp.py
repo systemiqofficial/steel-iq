@@ -186,11 +186,134 @@ def create_process_from_furnace_group(
     return process
 
 
-def add_furnace_groups_as_process_centers(repository, lp_model: tlp.TradeLPModel, config: "SimulationConfig"):
+def create_process_from_meta_furnace_group(
+    meta_fg, lp_model: tlp.TradeLPModel, config: "SimulationConfig"
+) -> tlp.Process:
+    """Create a production process from a meta-furnace group for the LP model.
+
+    Similar to create_process_from_furnace_group but adapted for clustered MetaFurnaceGroup objects.
+    Uses the dynamic business case from the cluster (should be identical across all constituent FGs)
+    and capacity-weighted average energy costs.
+
+    Args:
+        meta_fg: MetaFurnaceGroup containing aggregated technology and feedstock specifications
+        lp_model: The trade LP model to add BOM elements to (reuses existing BOMs if found)
+        config: Simulation configuration containing primary products list
+
+    Returns:
+        Process object of type PRODUCTION with bill of materials for the technology
+
+    Notes:
+        - Returns empty process if meta_fg has no dynamic business case
+        - Skips feedstocks with NaN metallic charge values
+        - Logs warnings for feedstocks with no primary outputs
+        - Raises ValueError if required_quantity_per_ton_of_product is None
+        - Uses capacity-weighted average energy costs from meta_fg.weighted_avg_energy_costs
+        - All constituent FGs in cluster should have identical dynamic_business_case structure
+    """
+    logger = logging.getLogger(f"{__name__}.create_process_from_meta_furnace_group")
+    boms = []
+
+    if meta_fg.dynamic_business_case is None:
+        return tlp.Process(
+            name=meta_fg.technology_name,
+            type=tlp.ProcessType.PRODUCTION,
+            bill_of_materials=[],
+        )
+
+    # Filter feedstocks by chosen_reductant (similar to effective_primary_feedstocks property)
+    # Don't filter if chosen_reductant is "unknown" or empty
+    relevant_feedstocks = (
+        [fs for fs in meta_fg.dynamic_business_case if fs.reductant == meta_fg.chosen_reductant]
+        if (meta_fg.chosen_reductant and meta_fg.chosen_reductant != "unknown")
+        else meta_fg.dynamic_business_case
+    )
+
+    for primary_feedstock in relevant_feedstocks:
+        try:
+            bom = lp_model.get_bom_element(primary_feedstock.name)
+        except StopIteration:
+            # Filter out NaN metallic charge values
+            if type(primary_feedstock.metallic_charge) is float:
+                continue
+
+            primary_commodities = list(primary_feedstock.get_primary_outputs(config.primary_products).keys())
+
+            # Log warning and skip this feedstock if it has no primary outputs
+            if len(primary_commodities) == 0:
+                logger.warning(
+                    f"WARNING: Feedstock {primary_feedstock.name} has no primary outputs. "
+                    f"Outputs: {list(primary_feedstock.outputs.keys())}, "
+                    f"Primary products considered: {config.primary_products}. "
+                    f"Skipping this feedstock."
+                )
+                continue
+            else:
+                logger.info(
+                    f"Feedstock {primary_feedstock.name} has primary outputs: {primary_commodities} "
+                    f"(from total outputs: {list(primary_feedstock.outputs.keys())})"
+                )
+
+            # Build dependent commodities (secondary feedstocks)
+            dependent_commodities = {}
+            for sec_feedstock in primary_feedstock.secondary_feedstock:
+                dependent_commodities[tlp.Commodity(name=sec_feedstock)] = primary_feedstock.secondary_feedstock[
+                    sec_feedstock
+                ]
+
+            if primary_feedstock.required_quantity_per_ton_of_product is None:
+                raise ValueError(
+                    f"Required quantity per ton of product is None for feedstock {primary_feedstock.name}. "
+                    f"Its outputs are: {primary_feedstock.outputs.keys()}"
+                )
+
+            # Bridge carbon outputs into dependent_commodities
+            req_qty = primary_feedstock.required_quantity_per_ton_of_product
+            for co_key, co_amount in (primary_feedstock.carbon_outputs or {}).items():
+                if co_amount:  # skip zero-valued outputs
+                    dependent_commodities[tlp.Commodity(name=co_key)] = co_amount / req_qty
+
+            output_commodities = [tlp.Commodity(name=oc) for oc in primary_commodities]
+
+            # Get capacity-weighted average energy cost for this metallic charge
+            # energy_vopex_by_input is in $ per ton of OUTPUT
+            # need to convert to $ per ton of INPUT by dividing by required_quantity_per_ton_of_product
+            energy_cost_per_ton_output = meta_fg.weighted_avg_energy_costs.get(primary_feedstock.metallic_charge, 0.0)
+            energy_cost_per_ton_input = (
+                energy_cost_per_ton_output / primary_feedstock.required_quantity_per_ton_of_product
+            )
+
+            bom = tlp.BOMElement(
+                name=primary_feedstock.name,
+                commodity=tlp.Commodity(name=primary_feedstock.metallic_charge),
+                output_commodities=output_commodities,
+                parameters={
+                    tlp.MaterialParameters.INPUT_RATIO.value: primary_feedstock.required_quantity_per_ton_of_product,
+                    tlp.MaterialParameters.MAXIMUM_RATIO.value: primary_feedstock.maximum_share_in_product,
+                    tlp.MaterialParameters.MINIMUM_RATIO.value: primary_feedstock.minimum_share_in_product,
+                },
+                dependent_commodities=dependent_commodities,
+                energy_cost=energy_cost_per_ton_input,
+            )
+            lp_model.add_bom_elements([bom])
+        boms.append(bom)
+
+    process = tlp.Process(
+        name=meta_fg.technology_name,
+        type=tlp.ProcessType.PRODUCTION,
+        bill_of_materials=boms,
+    )
+    return process
+
+
+def add_furnace_groups_as_process_centers(
+    repository, lp_model: tlp.TradeLPModel, config: "SimulationConfig", furnace_groups_override: list[Any] | None = None
+):
     """Convert steel furnace groups into production process centers for the LP model.
 
     Creates ProcessCenter objects for each active furnace group in the repository. Each process
     center represents a production facility with its technology, capacity, location, and costs.
+    Can accept either individual FurnaceGroup objects or clustered MetaFurnaceGroup objects.
 
     Args:
         repository: Repository containing plants with furnace groups
@@ -200,36 +323,74 @@ def add_furnace_groups_as_process_centers(repository, lp_model: tlp.TradeLPModel
             - capacity_limit: Safety factor to scale capacities (typically 0.95)
             - soft_minimum_capacity_percentage: Target minimum utilization
             - primary_products: List of primary products for BOM creation
+        furnace_groups_override: Optional list of MetaFurnaceGroup objects to use instead
+            of extracting from repository. When provided, uses clustered furnace groups.
 
     Notes:
-        - Only includes furnace groups with status in config.active_statuses
+        - Only includes furnace groups with status in config.active_statuses (when using repository)
         - Reuses Process objects across furnace groups with the same technology
         - Capacity is scaled by config.capacity_limit (e.g., 0.95 for 95% availability)
-        - Production cost is set to furnace_group.carbon_cost_per_unit
+        - Production cost is set to furnace_group.carbon_cost_per_unit or weighted_avg_carbon_cost
         - Creates new processes on-the-fly using create_process_from_furnace_group()
+        - MetaFurnaceGroup objects use capacity-weighted centroid locations
     """
-    process_centers = []
-    for plant in repository.plants.list():
-        for furnace_group in plant.furnace_groups:
-            if furnace_group.status.lower() not in config.active_statuses:
-                continue
+    from steelo.domain.trade_modelling.furnace_group_clustering import MetaFurnaceGroup
 
-            process = lp_model.get_process(furnace_group.technology.name)
+    process_centers = []
+
+    if furnace_groups_override is not None:
+        # Use provided meta-furnace groups
+        logger = logging.getLogger(f"{__name__}.add_furnace_groups_as_process_centers")
+        logger.info(f"Using {len(furnace_groups_override)} meta-furnace groups (clustered mode)")
+
+        for meta_fg in furnace_groups_override:
+            # Get or create process for this technology
+            process = lp_model.get_process(meta_fg.technology_name)
             if process is None:
-                process = create_process_from_furnace_group(
-                    furnace_group=furnace_group, lp_model=lp_model, config=config
+                logger.info(
+                    f"Creating new process for technology: {meta_fg.technology_name}, dynamic_business_case: {meta_fg.dynamic_business_case}"
                 )
+                process = create_process_from_meta_furnace_group(meta_fg=meta_fg, lp_model=lp_model, config=config)
+                logger.info(f"Created process {process.name} with {len(process.bill_of_materials)} BOMs")
                 lp_model.add_processes([process])
+            else:
+                logger.info(f"Reusing existing process for technology: {meta_fg.technology_name}")
 
             process_center = tlp.ProcessCenter(
-                name=furnace_group.furnace_group_id,
+                name=meta_fg.meta_furnace_group_id,
                 process=process,
-                capacity=config.capacity_limit * furnace_group.capacity,
-                location=plant.location,
-                production_cost=furnace_group.carbon_cost_per_unit,  # setting production cost to carbon cost per unit
+                capacity=config.capacity_limit * meta_fg.total_capacity,
+                location=meta_fg.location,  # This is the capacity-weighted centroid
+                production_cost=meta_fg.weighted_avg_carbon_cost,
                 soft_minimum_capacity=config.soft_minimum_capacity_percentage,
             )
+            logger.info(
+                f"Created ProcessCenter {process_center.name} with capacity {process_center.capacity} and {len(process.bill_of_materials)} BOMs"
+            )
             process_centers.append(process_center)
+    else:
+        # Original behavior: extract from repository
+        for plant in repository.plants.list():
+            for furnace_group in plant.furnace_groups:
+                if furnace_group.status.lower() not in config.active_statuses:
+                    continue
+
+                process = lp_model.get_process(furnace_group.technology.name)
+                if process is None:
+                    process = create_process_from_furnace_group(
+                        furnace_group=furnace_group, lp_model=lp_model, config=config
+                    )
+                    lp_model.add_processes([process])
+
+                process_center = tlp.ProcessCenter(
+                    name=furnace_group.furnace_group_id,
+                    process=process,
+                    capacity=config.capacity_limit * furnace_group.capacity,
+                    location=plant.location,
+                    production_cost=furnace_group.carbon_cost_per_unit,
+                    soft_minimum_capacity=config.soft_minimum_capacity_percentage,
+                )
+                process_centers.append(process_center)
 
     lp_model.add_process_centers(process_centers)
 
@@ -632,6 +793,7 @@ def set_up_steel_trade_lp(
     secondary_feedstock_constraints: dict[Any, Any] | None = None,
     aggregated_metallic_charge_constraints: list[AggregatedMetallicChargeConstraint] | None = None,
     transport_kpis: list[TransportKPI] | None = None,
+    furnace_groups_override: list[Any] | None = None,
 ) -> tlp.TradeLPModel:
     """Set up the linear programming model for steel trade optimization.
 
@@ -662,6 +824,10 @@ def set_up_steel_trade_lp(
             ratio constraints (e.g., minimum scrap share in EAF)
         transport_kpis: Optional list of TransportKPI objects with location-specific costs
             and emissions per country-commodity pair
+        furnace_groups_override: Optional list of MetaFurnaceGroup objects to use instead of
+            extracting furnace groups from repository. When provided, uses clustered meta-furnace
+            groups for reduced LP complexity. If None, extracts individual furnace groups from
+            all plants in the repository.
 
     Returns:
         TradeLPModel: Configured LP model ready for solving with:
@@ -675,6 +841,8 @@ def set_up_steel_trade_lp(
         - Model is not solved by this function - call solve_steel_trade_lp_and_return_commodity_allocations()
         - Distance constraints and tariffs are applied before model building
         - Process centers reuse Process objects when multiple furnaces have same technology
+        - When using furnace_groups_override with MetaFurnaceGroup objects, the LP will use
+          capacity-weighted centroids for distance calculations
     """
     logger = logging.getLogger(f"{__name__}.set_up_steel_trade_lp")
     repository = message_bus.uow.repository
@@ -685,7 +853,9 @@ def set_up_steel_trade_lp(
     for commodity in modelled_products:
         lp_model.add_commodities([tlp.Commodity(name=commodity)])
 
-    add_furnace_groups_as_process_centers(repository=repository, lp_model=lp_model, config=config)
+    add_furnace_groups_as_process_centers(
+        repository=repository, lp_model=lp_model, config=config, furnace_groups_override=furnace_groups_override
+    )
     add_demand_centers_as_process_centers(repository=repository, lp_model=lp_model, year=year)
     secondary_supply_locations: dict[str, tlp.Location] = {}
     if secondary_feedstock_constraints:
@@ -895,6 +1065,133 @@ def set_up_steel_trade_lp(
         logger.info("No carbon border mechanisms defined in environment, skipping adjustments")
 
     return lp_model
+
+
+def create_commodity_allocations_from_allocations(
+    allocations: "tlp.Allocations", repository: InMemoryRepository, commodities: list["tlp.Commodity"]
+) -> dict[str, CommodityAllocations]:
+    """Convert raw Allocations to CommodityAllocations by mapping to domain objects.
+
+    Takes an Allocations object (typically after disaggregation) and creates
+    CommodityAllocations by looking up Plants, FurnaceGroups, Suppliers, and
+    DemandCenters from the repository.
+
+    Args:
+        allocations: Raw allocations from LP (with individual FG ProcessCenters)
+        repository: Repository for looking up domain objects
+        commodities: List of commodities from the LP model
+
+    Returns:
+        dict[str, CommodityAllocations]: Dictionary mapping commodity names to allocations
+    """
+    logger = logging.getLogger(f"{__name__}.create_commodity_allocations_from_allocations")
+
+    commodity_allocations = {}
+    for commodity in commodities:
+        commodity_allocations[commodity.name] = CommodityAllocations(
+            commodity=commodity.name, allocations={}, allocation_costs={}
+        )
+
+    if allocations is None or len(allocations.allocations) == 0:
+        logger.warning("No allocations to convert to CommodityAllocations")
+        return commodity_allocations
+
+    logger.info(f"Converting {len(allocations.allocations)} raw allocations to CommodityAllocations")
+
+    # Iterate over all allocations
+    for (from_pc, to_pc, comm), alloc_value in allocations.allocations.items():
+        if alloc_value <= LP_TOLERANCE:
+            continue  # Skip zero or negative allocations
+
+        # Map source
+        if from_pc.process.type == tlp.ProcessType.SUPPLY:
+            supplier = repository.suppliers.get(from_pc.name)
+            source = supplier
+        else:
+            furnace_group_id = from_pc.name
+            # Find the plant that owns the furnace group
+            plant_id = furnace_group_id.split("_")[0]
+            plant = repository.plants.get(plant_id)
+            furnace_group = plant.get_furnace_group(furnace_group_id)
+            source = (plant, furnace_group)
+
+        # Map destination
+        if to_pc.process.type == tlp.ProcessType.DEMAND:
+            demand_id = to_pc.name
+            demand_center = repository.demand_centers.get(demand_id)
+            destination = demand_center
+        else:
+            to_plant_id = to_pc.name.split("_")[0]
+            to_plant = repository.plants.get(to_plant_id)
+            to_furnace_group = to_plant.get_furnace_group(to_pc.name)
+            destination = (to_plant, to_furnace_group)
+
+        volume = alloc_value
+        cost = allocations.get_allocation_cost(from_pc, to_pc, comm) if allocations.allocation_costs else 0.0
+
+        # Add to commodity allocations
+        if comm.name not in commodity_allocations:
+            commodity_allocations[comm.name] = CommodityAllocations(
+                commodity=comm.name, allocations={}, allocation_costs={}
+            )
+
+        if source not in commodity_allocations[comm.name].allocations:
+            commodity_allocations[comm.name].allocations[source] = {}
+        if source not in commodity_allocations[comm.name].allocation_costs:
+            commodity_allocations[comm.name].allocation_costs[source] = {}
+
+        commodity_allocations[comm.name].allocations[source][destination] = Volumes(volume)
+        commodity_allocations[comm.name].allocation_costs[source][destination] = cost
+
+    # Log statistics
+    for commodity_name, allocs in commodity_allocations.items():
+        count = sum(len(dests) for dests in allocs.allocations.values())
+        if count > 0:
+            logger.info(f"Commodity {commodity_name}: {count} allocations")
+
+    return commodity_allocations
+
+
+def solve_lp_only(trade_lp: tlp.TradeLPModel) -> dict[str, CommodityAllocations]:
+    """Solve the LP without creating CommodityAllocations (used when clustering).
+
+    This is a simplified version used when clustering is enabled. It just solves
+    the LP and extracts the solution, returning empty CommodityAllocations.
+    The actual CommodityAllocations will be created after disaggregation.
+
+    Args:
+        trade_lp: Configured TradeLPModel ready for solving
+
+    Returns:
+        Empty dict of CommodityAllocations (to be populated after disaggregation)
+    """
+    logger = logging.getLogger(f"{__name__}.solve_lp_only")
+    result = trade_lp.solve_lp_model()
+
+    # Check if the solution is not optimal
+    if result.solver.termination_condition != pyo.TerminationCondition.optimal:
+        logger.error(f"\nLP solver terminated with: {result.solver.termination_condition}")
+        logger.error("Returning empty allocations due to non-optimal solution.")
+        commodity_allocations = {}
+        for commodity in trade_lp.commodities:
+            commodity_allocations[commodity.name] = CommodityAllocations(
+                commodity=commodity.name, allocations={}, allocation_costs={}
+            )
+        return commodity_allocations
+
+    trade_lp.extract_solution()
+
+    # Return empty CommodityAllocations - will be populated after disaggregation
+    commodity_allocations = {}
+    for commodity in trade_lp.commodities:
+        commodity_allocations[commodity.name] = CommodityAllocations(
+            commodity=commodity.name, allocations={}, allocation_costs={}
+        )
+
+    logger.info(
+        f"LP solved successfully. Total allocations: {len(trade_lp.allocations.allocations) if trade_lp.allocations else 0}"
+    )
+    return commodity_allocations
 
 
 def solve_steel_trade_lp_and_return_commodity_allocations(

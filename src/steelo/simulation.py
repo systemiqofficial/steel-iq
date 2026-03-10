@@ -317,6 +317,9 @@ class SimulationConfig:
         default_factory=lambda: ["hbi_high", "hbi_mid", "hbi_low", "pig_iron", "electrolytic_iron"]
     )
 
+    # === Clustering Configuration ===
+    enable_furnace_group_clustering: bool = False  # Feature flag for LP complexity reduction via clustering
+
     # === Plant Agent Module Parameters ===
     probabilistic_agents: bool = True  # Probabilitstic (mimick human decision-making) vs deterministic approach
     plant_lifetime: int = 20  # Years

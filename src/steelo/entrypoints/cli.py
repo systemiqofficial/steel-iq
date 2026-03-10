@@ -113,6 +113,11 @@ def run_full_simulation() -> str:
         default=None,
         help="Path to BOA-generated baseload power simulation output directory (overrides default)",
     )
+    parser.add_argument(
+        "--enable-clustering",
+        action="store_true",
+        help="Enable furnace group clustering to reduce LP complexity",
+    )
 
     # Parse the command-line arguments
     try:
@@ -231,6 +236,11 @@ def run_full_simulation() -> str:
 
             config = SimulationConfig.from_data_directory(**config_kwargs)
 
+            # Override clustering setting from command line
+            if args.enable_clustering:
+                config.enable_furnace_group_clustering = True
+                console.print("[green]Furnace group clustering enabled[/green]")
+
             # Save config and metadata
             config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
             config_path = output_dir / "simulation_config.json"
@@ -294,6 +304,11 @@ def run_full_simulation() -> str:
                     console.print(f"[blue]Using custom baseload power simulation directory: {baseload_dir}[/blue]")
 
                 config = SimulationConfig.from_data_directory(**config_kwargs)
+
+                # Override clustering setting from command line
+                if args.enable_clustering:
+                    config.enable_furnace_group_clustering = True
+                    console.print("[green]Furnace group clustering enabled[/green]")
 
                 # Save config and metadata
                 config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
