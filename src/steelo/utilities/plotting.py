@@ -2243,19 +2243,8 @@ def plot_added_capacity_by_technology(
         raise ValueError("plot_paths with pam_plots_dir must be provided when saving plots")
     pam_plots_dir = plot_paths.pam_plots_dir
     pam_plots_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save PNG
     fig.savefig(pam_plots_dir / "year2year_added_capacity_by_technology.png", dpi=300)
     plt.close()
-
-    # Export CSV with the data
-    try:
-        # Prepare CSV data - use by_product which has the complete data
-        csv_path = pam_plots_dir / "year2year_added_capacity_by_technology.csv"
-        by_product.to_csv(csv_path)
-        logger.info(f"Saved chart data to {csv_path}")
-    except Exception as e:
-        logger.error(f"Failed to save CSV for added capacity plot: {e}")
 
 
 def plot_year_on_year_technology_development(
@@ -2967,19 +2956,8 @@ def plot_cost_curve_step_from_dataframe(
         raise ValueError("plot_paths with pam_plots_dir must be provided when saving plots")
     pam_plots_dir = plot_paths.pam_plots_dir
     pam_plots_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save PNG
-    filename = f"{product_type}_cost_curve_by_{aggregation}_{year}"
-    fig.savefig(pam_plots_dir / f"{filename}.png", dpi=300)
+    fig.savefig(pam_plots_dir / f"{product_type}_cost_curve_by_{aggregation}_{year}.png", dpi=300)
     plt.close()
-
-    # Export CSV with the cost curve data
-    try:
-        csv_path = pam_plots_dir / f"{filename}.csv"
-        cost_df.to_csv(csv_path)
-        logger.info(f"Saved chart data to {csv_path}")
-    except Exception as e:
-        logger.error(f"Failed to save CSV for cost curve plot: {e}")
 
 
 def plot_geo_layers(
