@@ -1597,8 +1597,20 @@ class FurnaceGroup:
             raise ValueError("Bill of materials must exist for FG with utilization rate > 0")
         # Validate materials exist in BOM
         elif not ("materials" in self.bill_of_materials and self.bill_of_materials["materials"]):
+            # Get diagnostic info
+            has_feedstocks = hasattr(self, "effective_primary_feedstocks")
+            feedstock_count = (
+                len(self.effective_primary_feedstocks) if has_feedstocks and self.effective_primary_feedstocks else 0
+            )
+
             logger.error(
-                f"FurnaceGroup {self.furnace_group_id} of technology {self.technology.name} has no materials defined in its bill of materials. It's production is {self.production}. It's bill of materials is {self.bill_of_materials}."
+                f"FurnaceGroup {self.furnace_group_id} of technology {self.technology.name} has no materials defined in its bill of materials. "
+                f"Production: {self.production}, "
+                f"Utilization: {self.utilization_rate}, "
+                f"Capacity: {self.capacity}, "
+                f"Has effective_primary_feedstocks: {has_feedstocks}, "
+                f"Feedstock count: {feedstock_count}, "
+                f"BOM: {self.bill_of_materials}"
             )
             raise ValueError("Materials must exist in BOM for FG with utilization rate > 0")
         else:
@@ -6656,6 +6668,10 @@ class Environment:
 
         # Willingness to pay:
         self.willingness_to_pay: list[WillingnessToPay] = []
+
+        # Furnace group clustering - initialized during AllocationModel.run when clustering is enabled
+        self.cluster_mapping: dict[str, list] | None = None  # Maps cluster keys to list of FurnaceGroups
+        self.meta_furnace_groups: list | None = None  # List of MetaFurnaceGroup objects
 
         # Geospatial data from master Excel - initialized via initiate methods
         self.hydrogen_efficiency: dict[Year, float] = {}

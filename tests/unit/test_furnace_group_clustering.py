@@ -9,7 +9,6 @@ from steelo.domain.trade_modelling.furnace_group_clustering import (
     cluster_furnace_groups,
 )
 from steelo.domain.models import Location, Plant, FurnaceGroup, Technology, Volumes, PointInTime, TimeFrame, Year
-from steelo.simulation import SimulationConfig
 
 
 @dataclass
@@ -56,12 +55,33 @@ def create_test_furnace_group(
     status: str = "operating",
 ) -> FurnaceGroup:
     """Helper to create a test furnace group."""
+    from steelo.domain.models import PrimaryFeedstock
+
+    # Create dynamic_business_case with appropriate feedstocks based on technology
+    if technology_name == "BF":
+        dynamic_business_case = [
+            PrimaryFeedstock(metallic_charge="io_low", reductant=chosen_reductant, technology=technology_name),
+            PrimaryFeedstock(metallic_charge="io_mid", reductant=chosen_reductant, technology=technology_name),
+        ]
+    elif technology_name == "DRI":
+        dynamic_business_case = [
+            PrimaryFeedstock(metallic_charge="io_high", reductant=chosen_reductant, technology=technology_name),
+        ]
+    elif technology_name == "BOF":
+        dynamic_business_case = [
+            PrimaryFeedstock(metallic_charge="hot_metal", reductant="hot_metal", technology=technology_name),
+        ]
+    else:
+        dynamic_business_case = [
+            PrimaryFeedstock(metallic_charge="io_mid", reductant=chosen_reductant, technology=technology_name),
+        ]
+
     technology = Technology(
         name=technology_name,
         product="iron",
         bill_of_materials=None,
         capex_type="greenfield",
-        dynamic_business_case=None,
+        dynamic_business_case=dynamic_business_case,
     )
 
     fg = FurnaceGroup(
@@ -81,6 +101,7 @@ def create_test_furnace_group(
         allocated_volumes=capacity,  # Needed for carbon_cost_per_unit calculation
         carbon_costs_for_emissions=carbon_cost * capacity,  # carbon_cost_per_unit = this / allocated_volumes
     )
+
     return fg
 
 
@@ -715,3 +736,131 @@ class TestClusterFurnaceGroups:
         assert "BF" in meta_fg.meta_furnace_group_id
         assert "coke" in meta_fg.meta_furnace_group_id
         assert "CHN" in meta_fg.meta_furnace_group_id
+
+
+class TestTransportationProblem:
+    """Test the transportation problem solver directly."""
+
+    def test_simple_2x2_transportation_problem(self):
+        """Test a simple 2 sources to 2 destinations transportation problem."""
+        from steelo.domain.trade_modelling.furnace_group_clustering import _solve_batched_transportation_problem
+        from steelo.domain.trade_modelling.trade_lp_modelling import Commodity
+
+        # Define sources (2 suppliers with 500 tons each)
+        source_supplies = {"source_A": 500.0, "source_B": 500.0}
+
+        # Define destinations (2 consumers with 500 tons each)
+        dest_demands = {"dest_X": 500.0, "dest_Y": 500.0}
+
+        # Define locations (all close together, no distance constraints)
+        source_locations = {
+            "source_A": create_test_location(lat=35.0, lon=110.0, iso3="CHN"),
+            "source_B": create_test_location(lat=35.1, lon=110.1, iso3="CHN"),
+        }
+        dest_locations = {
+            "dest_X": create_test_location(lat=35.2, lon=110.2, iso3="CHN"),
+            "dest_Y": create_test_location(lat=35.3, lon=110.3, iso3="CHN"),
+        }
+
+        commodity = Commodity("steel")
+        config = type("Config", (), {"hot_metal_radius": 1000.0, "enable_trade_lp_clustering": True})()
+
+        # Solve
+        flows, stats = _solve_batched_transportation_problem(
+            source_supplies=source_supplies,
+            dest_demands=dest_demands,
+            source_locations=source_locations,
+            dest_locations=dest_locations,
+            commodity=commodity,
+            config=config,
+        )
+
+        # Verify solution exists
+        assert flows is not None
+        assert len(flows) > 0
+
+        # Verify supply constraints: each source sends exactly what it has
+        from_totals = {}
+        for (source_id, dest_id), volume in flows.items():
+            from_totals[source_id] = from_totals.get(source_id, 0) + volume
+
+        assert abs(from_totals.get("source_A", 0) - 500.0) < 1e-6
+        assert abs(from_totals.get("source_B", 0) - 500.0) < 1e-6
+
+        # Verify demand constraints: each dest receives exactly what it needs
+        to_totals = {}
+        for (source_id, dest_id), volume in flows.items():
+            to_totals[dest_id] = to_totals.get(dest_id, 0) + volume
+
+        assert abs(to_totals.get("dest_X", 0) - 500.0) < 1e-6
+        assert abs(to_totals.get("dest_Y", 0) - 500.0) < 1e-6
+
+    def test_unbalanced_supply_demand(self):
+        """Test that transportation problem handles small floating point imbalances."""
+        from steelo.domain.trade_modelling.furnace_group_clustering import _solve_batched_transportation_problem
+        from steelo.domain.trade_modelling.trade_lp_modelling import Commodity
+
+        # Create slight imbalance (floating point error)
+        source_supplies = {"source_A": 1000.0}
+        dest_demands = {"dest_X": 1000.0000000001}  # Tiny difference
+
+        source_locations = {"source_A": create_test_location(lat=35.0, lon=110.0)}
+        dest_locations = {"dest_X": create_test_location(lat=35.5, lon=110.5)}
+
+        commodity = Commodity("steel")
+        config = type("Config", (), {"hot_metal_radius": 1000.0, "enable_trade_lp_clustering": True})()
+
+        # Should not raise error - should normalize automatically
+        flows, stats = _solve_batched_transportation_problem(
+            source_supplies=source_supplies,
+            dest_demands=dest_demands,
+            source_locations=source_locations,
+            dest_locations=dest_locations,
+            commodity=commodity,
+            config=config,
+        )
+
+        # Should produce a solution (with normalized demand)
+        assert flows is not None
+        assert len(flows) == 1
+        assert abs(flows[("source_A", "dest_X")] - 1000.0) < 1e-6
+
+    def test_1_to_many_transportation(self):
+        """Test 1 source to multiple destinations."""
+        from steelo.domain.trade_modelling.furnace_group_clustering import _solve_batched_transportation_problem
+        from steelo.domain.trade_modelling.trade_lp_modelling import Commodity
+
+        source_supplies = {"source_A": 1000.0}
+        dest_demands = {"dest_X": 300.0, "dest_Y": 400.0, "dest_Z": 300.0}
+
+        source_locations = {"source_A": create_test_location(lat=35.0, lon=110.0)}
+        dest_locations = {
+            "dest_X": create_test_location(lat=35.1, lon=110.1),
+            "dest_Y": create_test_location(lat=35.2, lon=110.2),
+            "dest_Z": create_test_location(lat=35.3, lon=110.3),
+        }
+
+        commodity = Commodity("steel")
+        config = type("Config", (), {"hot_metal_radius": 1000.0, "enable_trade_lp_clustering": True})()
+
+        flows, stats = _solve_batched_transportation_problem(
+            source_supplies=source_supplies,
+            dest_demands=dest_demands,
+            source_locations=source_locations,
+            dest_locations=dest_locations,
+            commodity=commodity,
+            config=config,
+        )
+
+        # Should produce 3 flows (all from source_A)
+        assert len(flows) == 3
+
+        # Verify each destination gets correct amount
+        to_totals = {}
+        for (source_id, dest_id), volume in flows.items():
+            assert source_id == "source_A"
+            to_totals[dest_id] = volume
+
+        assert abs(to_totals["dest_X"] - 300.0) < 1e-6
+        assert abs(to_totals["dest_Y"] - 400.0) < 1e-6
+        assert abs(to_totals["dest_Z"] - 300.0) < 1e-6

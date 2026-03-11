@@ -121,7 +121,7 @@ def create_process_from_furnace_group(
                     f"WARNING: Feedstock {primary_feedstock.name} has no primary outputs. "
                     f"Outputs: {list(primary_feedstock.outputs.keys())}, "
                     f"Primary products considered: {config.primary_products}. "
-                    f"Skipping this feedstock."
+                    "Skipping this feedstock."
                 )
                 continue
             else:
@@ -245,7 +245,7 @@ def create_process_from_meta_furnace_group(
                     f"WARNING: Feedstock {primary_feedstock.name} has no primary outputs. "
                     f"Outputs: {list(primary_feedstock.outputs.keys())}, "
                     f"Primary products considered: {config.primary_products}. "
-                    f"Skipping this feedstock."
+                    "Skipping this feedstock."
                 )
                 continue
             else:
@@ -334,8 +334,6 @@ def add_furnace_groups_as_process_centers(
         - Creates new processes on-the-fly using create_process_from_furnace_group()
         - MetaFurnaceGroup objects use capacity-weighted centroid locations
     """
-    from steelo.domain.trade_modelling.furnace_group_clustering import MetaFurnaceGroup
-
     process_centers = []
 
     if furnace_groups_override is not None:
@@ -680,10 +678,13 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
 ):
     """Fix allocation variables to zero based on commodity-specific distance constraints.
 
-    Applies distance-based restrictions to prevent certain commodities from traveling
-    inappropriate distances. Some processes produce hot and cold metal variations.
-    Hot metal can only travel short distances, while other products like pig iron are
-    made to be transported over longer distances.
+    When clustering is enabled:
+        - Fixes all hot commodities to zero in LP (they're substituted during disaggregation)
+        - LP optimizes using only cold commodities to avoid distance-based infeasibility
+
+    When clustering is disabled (backwards compatibility):
+        - Applies distance-based restrictions for both hot and cold commodities
+        - Hot metal can only travel short distances, cold products travel long distances
 
     Args:
         trade_lp: The trade LP model with allocation variables to constrain
@@ -691,26 +692,36 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
             - hot_metal_radius: Maximum distance for hot metal transport (km, typically ~100)
             - closely_allocated_products: Products limited to short distances (e.g., ["hot_metal"])
             - distantly_allocated_products: Products requiring longer distances (e.g., ["pig_iron", "steel"])
+            - enable_trade_lp_clustering: Whether clustering is enabled (optional)
 
     Notes:
-        - For distances <= hot_metal_radius: fixes distantly_allocated_products to zero
-        - For distances > hot_metal_radius: fixes closely_allocated_products to zero
         - Variables are fixed using pyomo's .fix(0) method
         - This must be called after allocation variables are created but before solving
     """
-    for from_pc, to_pc, comm in trade_lp.lp_model.allocation_variables:
-        distance = trade_lp.get_distance(from_pc, to_pc)
-        # if the distance is within our hot metal radius
-        if distance <= config.hot_metal_radius:
-            # and if the commodity is one that is usually transported over long distances
-            if comm in config.distantly_allocated_products:
-                # Set the allocation to zero
-                trade_lp.lp_model.allocation_variables[(from_pc, to_pc, comm)].fix(0)
-        else:  # if the distance is outside our hot metal radius
-            # and the commodity can only be transported over short distances
+    # Check if clustering is enabled (defaults to False for backwards compatibility)
+    enable_clustering = getattr(config, "enable_trade_lp_clustering", False)
+
+    if enable_clustering:
+        # NEW BEHAVIOR: Fix all hot commodities to zero (substituted during disaggregation)
+        for from_pc, to_pc, comm in trade_lp.lp_model.allocation_variables:
             if comm in config.closely_allocated_products:
-                # Set the allocation to zero
                 trade_lp.lp_model.allocation_variables[(from_pc, to_pc, comm)].fix(0)
+    else:
+        # OLD BEHAVIOR: Distance-based fixing for backwards compatibility
+        for from_pc, to_pc, comm in trade_lp.lp_model.allocation_variables:
+            distance = trade_lp.get_distance(from_pc, to_pc)
+            # if the distance is within our hot metal radius
+            if distance <= config.hot_metal_radius:
+                # and if the commodity is one that is usually transported over long distances
+                if comm in config.distantly_allocated_products:
+                    # Set the allocation to zero
+                    trade_lp.lp_model.allocation_variables[(from_pc, to_pc, comm)].fix(0)
+            else:  # if the distance is outside our hot metal radius
+                # and the commodity can only be transported over short distances
+                if comm in config.closely_allocated_products:
+                    # Set the allocation to zero
+                    trade_lp.lp_model.allocation_variables[(from_pc, to_pc, comm)].fix(0)
+
     return trade_lp
 
 
@@ -1113,7 +1124,7 @@ def create_commodity_allocations_from_allocations(
             plant_id = furnace_group_id.split("_")[0]
             plant = repository.plants.get(plant_id)
             furnace_group = plant.get_furnace_group(furnace_group_id)
-            source = (plant, furnace_group)
+            source = (plant, furnace_group)  # type: ignore[assignment]
 
         # Map destination
         if to_pc.process.type == tlp.ProcessType.DEMAND:
@@ -1124,7 +1135,7 @@ def create_commodity_allocations_from_allocations(
             to_plant_id = to_pc.name.split("_")[0]
             to_plant = repository.plants.get(to_plant_id)
             to_furnace_group = to_plant.get_furnace_group(to_pc.name)
-            destination = (to_plant, to_furnace_group)
+            destination = (to_plant, to_furnace_group)  # type: ignore[assignment]
 
         volume = alloc_value
         cost = allocations.get_allocation_cost(from_pc, to_pc, comm) if allocations.allocation_costs else 0.0
