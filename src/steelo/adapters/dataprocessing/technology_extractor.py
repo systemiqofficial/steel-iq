@@ -175,10 +175,33 @@ def extract_technologies(df: pd.DataFrame, excel_path: Path) -> dict:
 
         product_type = product_raw
 
-        # Parse optional columns with robust parsing
-        allowed = parse_bool(first_row.get(ALLOWED_COL), True) if has_allowed else True
-        from_year = parse_int(first_row.get(FROM_YEAR_COL), 2025) if has_from_year else 2025
-        to_year = parse_int(first_row.get(TO_YEAR_COL), None) if has_to_year else None
+        # Get defaults from configuration
+        try:
+            from steelo.config.technology_defaults import get_technology_defaults
+
+            tech_defaults = get_technology_defaults(norm_code)
+        except ImportError:
+            # Fallback if config file doesn't exist
+            tech_defaults = {
+                "from_year": 2025,
+                "to_year": None,
+                "allowed": True,
+            }
+
+        # Parse optional columns with robust parsing, using configured defaults
+        allowed = (
+            parse_bool(first_row.get(ALLOWED_COL), tech_defaults["allowed"])
+            if has_allowed
+            else tech_defaults["allowed"]
+        )
+        from_year = (
+            parse_int(first_row.get(FROM_YEAR_COL), tech_defaults["from_year"])
+            if has_from_year
+            else tech_defaults["from_year"]
+        )
+        to_year = (
+            parse_int(first_row.get(TO_YEAR_COL), tech_defaults["to_year"]) if has_to_year else tech_defaults["to_year"]
+        )
 
         # Use normalized slug (guaranteed unique due to deduplication)
         slug = _slug_for(tech_code_str)

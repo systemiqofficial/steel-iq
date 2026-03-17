@@ -301,6 +301,7 @@ class AllocationModel:
 
         Args
         """
+
         logger = logging.getLogger(f"{__name__}.AllocationModel.run")
         module_start = time.time()
         logger.debug(f"\n\n[TM] ========== Starting AllocationModel.run for year {bus.env.year} ========== \n")
