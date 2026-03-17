@@ -170,8 +170,12 @@ def create_process_from_furnace_group(
                 output_commodities=output_commodities,
                 parameters={
                     tlp.MaterialParameters.INPUT_RATIO.value: primary_feedstock.required_quantity_per_ton_of_product,
-                    tlp.MaterialParameters.MAXIMUM_RATIO.value: primary_feedstock.maximum_share_in_product,
-                    tlp.MaterialParameters.MINIMUM_RATIO.value: primary_feedstock.minimum_share_in_product,
+                    tlp.MaterialParameters.MAXIMUM_RATIO.value: primary_feedstock.maximum_share_in_product
+                    if primary_feedstock.maximum_share_in_product != 1.0
+                    else None,  # Only set max ratio if it's less than 100% to avoid redundant constraints
+                    tlp.MaterialParameters.MINIMUM_RATIO.value: primary_feedstock.minimum_share_in_product
+                    if primary_feedstock.minimum_share_in_product != 0.0
+                    else None,  # Only set min ratio if it's greater than 0% to avoid redundant constraints
                 },
                 dependent_commodities=dependent_commodities,
                 energy_cost=energy_cost_per_ton_input,
@@ -289,8 +293,12 @@ def create_process_from_meta_furnace_group(
                 output_commodities=output_commodities,
                 parameters={
                     tlp.MaterialParameters.INPUT_RATIO.value: primary_feedstock.required_quantity_per_ton_of_product,
-                    tlp.MaterialParameters.MAXIMUM_RATIO.value: primary_feedstock.maximum_share_in_product,
-                    tlp.MaterialParameters.MINIMUM_RATIO.value: primary_feedstock.minimum_share_in_product,
+                    tlp.MaterialParameters.MAXIMUM_RATIO.value: primary_feedstock.maximum_share_in_product
+                    if primary_feedstock.maximum_share_in_product != 1.0
+                    else None,
+                    tlp.MaterialParameters.MINIMUM_RATIO.value: primary_feedstock.minimum_share_in_product
+                    if primary_feedstock.minimum_share_in_product != 0.0
+                    else None,
                 },
                 dependent_commodities=dependent_commodities,
                 energy_cost=energy_cost_per_ton_input,
@@ -679,8 +687,10 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
     """Fix allocation variables to zero based on commodity-specific distance constraints.
 
     When clustering is enabled:
-        - Fixes all hot commodities to zero in LP (they're substituted during disaggregation)
-        - LP optimizes using only cold commodities to avoid distance-based infeasibility
+        - Hot commodities are restricted to intra-country allocations only
+        - Cold commodities can be allocated anywhere (both domestic and international)
+        - Hot metal radius is NOT applied here, will be handled during disaggregation
+        - This ensures BOF hot metal minimum constraints can be satisfied in LP
 
     When clustering is disabled (backwards compatibility):
         - Applies distance-based restrictions for both hot and cold commodities
@@ -692,20 +702,41 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
             - hot_metal_radius: Maximum distance for hot metal transport (km, typically ~100)
             - closely_allocated_products: Products limited to short distances (e.g., ["hot_metal"])
             - distantly_allocated_products: Products requiring longer distances (e.g., ["pig_iron", "steel"])
-            - enable_trade_lp_clustering: Whether clustering is enabled (optional)
+            - enable_furnace_group_clustering: Whether clustering is enabled (optional)
 
     Notes:
         - Variables are fixed using pyomo's .fix(0) method
         - This must be called after allocation variables are created but before solving
     """
     # Check if clustering is enabled (defaults to False for backwards compatibility)
-    enable_clustering = getattr(config, "enable_trade_lp_clustering", False)
+    enable_clustering = getattr(config, "enable_furnace_group_clustering", False)
 
     if enable_clustering:
-        # NEW BEHAVIOR: Fix all hot commodities to zero (substituted during disaggregation)
-        for from_pc, to_pc, comm in trade_lp.lp_model.allocation_variables:
+        # NEW BEHAVIOR: Allow both hot and cold commodities with geographic constraints
+        # Hot commodities are restricted to intra-country allocations
+        # Cold commodities can go anywhere
+
+        # Build a mapping from process center names to ISO3 codes for quick lookup
+        pc_name_to_iso3 = {}
+        for pc in trade_lp.process_centers:
+            if pc.location and pc.location.iso3:
+                pc_name_to_iso3[pc.name] = pc.location.iso3
+
+        for from_pc_name, to_pc_name, comm in trade_lp.lp_model.allocation_variables:
             if comm in config.closely_allocated_products:
-                trade_lp.lp_model.allocation_variables[(from_pc, to_pc, comm)].fix(0)
+                # Hot commodities can only be allocated within the same country
+                from_iso3 = pc_name_to_iso3.get(from_pc_name)
+                to_iso3 = pc_name_to_iso3.get(to_pc_name)
+
+                # If we can't determine ISO3 codes, be conservative and block the allocation
+                if from_iso3 is None or to_iso3 is None:
+                    trade_lp.lp_model.allocation_variables[(from_pc_name, to_pc_name, comm)].fix(0)
+                # If it's an international allocation, block hot commodity flow
+                elif from_iso3 != to_iso3:
+                    trade_lp.lp_model.allocation_variables[(from_pc_name, to_pc_name, comm)].fix(0)
+                # Intra-country hot commodity allocations are allowed
+                # (hot metal radius will be enforced during disaggregation)
+
     else:
         # OLD BEHAVIOR: Distance-based fixing for backwards compatibility
         for from_pc, to_pc, comm in trade_lp.lp_model.allocation_variables:
@@ -915,6 +946,9 @@ def set_up_steel_trade_lp(
     # Convert new format aggregated constraints to old format for LP model
     if aggregated_metallic_charge_constraints and len(aggregated_metallic_charge_constraints) > 0:
         converted_constraints: dict[tuple[str, str], dict[str, float]] = {}
+        logger.info(
+            f"Converting {len(aggregated_metallic_charge_constraints)} aggregated metallic charge constraints for LP model"
+        )
         for constraint in aggregated_metallic_charge_constraints:
             key = (constraint.technology_name, constraint.feedstock_pattern)
             converted_constraints[key] = {}
@@ -922,7 +956,13 @@ def set_up_steel_trade_lp(
                 converted_constraints[key]["minimum"] = constraint.minimum_share
             if constraint.maximum_share is not None:
                 converted_constraints[key]["maximum"] = constraint.maximum_share
+            logger.debug(
+                f"  Converted constraint: {constraint.technology_name} {constraint.feedstock_pattern} min={constraint.minimum_share} max={constraint.maximum_share}"
+            )
         lp_model.aggregated_commodity_constraints = converted_constraints
+        logger.info(f"Set {len(converted_constraints)} aggregated commodity constraints on LP model")
+    else:
+        logger.warning("No aggregated metallic charge constraints provided to set_up_steel_trade_lp")
 
     new_sf_constraints: defaultdict[Any, dict[Any, Any]] = defaultdict(dict)
     if secondary_feedstock_constraints:

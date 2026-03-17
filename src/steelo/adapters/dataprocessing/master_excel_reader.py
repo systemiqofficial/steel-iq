@@ -380,7 +380,8 @@ class MasterExcelReader:
         geocoder_coordinates: Optional[list[Coordinate]] = None,
         simulation_start_year: int = 2025,
         regional_fopex: dict[str, float] = {},
-    ) -> tuple[list, dict]:
+        aggregated_constraints: Optional[dict[str, Any]] = None,
+    ) -> tuple[list, dict, list]:
         """
         Extract plant data from the 'Iron and steel plants' sheet and create Plant domain objects.
 
@@ -529,11 +530,12 @@ class MasterExcelReader:
             raw_canonical_metadata: dict[str, FurnaceGroupMetadata] = {}
 
             # Read dynamic business cases if not provided
-            if dynamic_feedstocks_dict is None:
+            if dynamic_feedstocks_dict is None or aggregated_constraints is None:
                 logger.info("Reading dynamic business cases from Bill of Materials sheet")
-                dynamic_feedstocks_dict = read_dynamic_business_cases(
+                dynamic_feedstocks_dict, aggregated_constraints = read_dynamic_business_cases(
                     str(self.excel_path), excel_sheet="Bill of Materials"
                 )
+                # Note: aggregated_constraints should be passed to the environment
 
             # Load gravity distances if path provided
             # if gravity_distances_pkl_path and gravity_distances_pkl_path.exists():
@@ -781,7 +783,9 @@ class MasterExcelReader:
                 f"Successfully created {len(plants)} plants from master Excel "
                 f"(from {len(raw_plants)} raw records) with metadata for {len(final_canonical_metadata)} furnace groups"
             )
-            return plants, final_canonical_metadata
+            # Return aggregated_constraints if they were read, otherwise empty list
+            aggregated_constraints_to_return = aggregated_constraints if "aggregated_constraints" in locals() else []
+            return plants, final_canonical_metadata, aggregated_constraints_to_return
 
         except Exception as e:
             logger.error(f"Failed to extract plant data: {e}")

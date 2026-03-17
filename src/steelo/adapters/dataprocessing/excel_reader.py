@@ -315,7 +315,7 @@ def read_aggregated_metallic_charge_constraints(
 
 def read_dynamic_business_cases(
     dynamic_business_cases_excel_path: str, excel_sheet: str
-) -> dict[str, list[PrimaryFeedstock]]:
+) -> tuple[dict[str, list[PrimaryFeedstock]], list[AggregatedMetallicChargeConstraint]]:
     """
     Read and process dynamic business cases from Excel to create PrimaryFeedstock objects.
 
@@ -326,16 +326,18 @@ def read_dynamic_business_cases(
     Process:
     1. Create feedstocks for each technology + metallic_charge + reductant combination
     2. Data rows populate feedstock properties (materials, energy, outputs, constraints)
-    3. Wildcard constraints (e.g., DRI*, HBI*) are read separately and applied to matching feedstocks
+    3. Wildcard constraints (e.g., DRI*, HBI*) are read separately and returned as aggregated constraints
 
     Args:
         dynamic_business_cases_excel_path: Path to the Excel file containing Bill of Materials
         excel_sheet: Name of the sheet to read (typically "Bill of Materials")
 
     Returns:
-        Dictionary mapping technology names (lowercase) to lists of PrimaryFeedstock objects.
-        Each feedstock represents a unique technology-metallic_charge-reductant combination
-        with associated materials, energy requirements, outputs, and constraints.
+        Tuple of:
+        - Dictionary mapping technology names (lowercase) to lists of PrimaryFeedstock objects.
+          Each feedstock represents a unique technology-metallic_charge-reductant combination
+          with associated materials, energy requirements, outputs, and constraints.
+        - List of AggregatedMetallicChargeConstraint objects for wildcard constraints
     """
     df = pd.read_excel(dynamic_business_cases_excel_path, sheet_name=excel_sheet)
 
@@ -458,28 +460,16 @@ def read_dynamic_business_cases(
     for feedstock_list in technology_feedstocks.values():
         feedstock_list.sort(key=lambda fs: (fs.metallic_charge, fs.reductant))
 
-    # Apply aggregated constraints from wildcards to matching feedstocks
+    # Read aggregated constraints from wildcards - these will be passed to the environment
+    # and NOT applied to individual feedstocks
     aggregated_constraints = read_aggregated_metallic_charge_constraints(dynamic_business_cases_excel_path, excel_sheet)
 
+    logger.info(f"Read {len(aggregated_constraints)} aggregated metallic charge constraints")
     for constraint in aggregated_constraints:
-        # Find all feedstocks that match this constraint pattern
-        # Ensure proper capitalization for technology names
-        technology = constraint.technology_name.upper()
-        pattern = constraint.feedstock_pattern.lower()
-
-        if technology in technology_feedstocks:
-            for feedstock in technology_feedstocks[technology]:
-                # Check if the feedstock's metallic charge matches the pattern
-                if feedstock.metallic_charge.lower().startswith(pattern):
-                    # Apply the constraint to this feedstock
-                    if constraint.minimum_share is not None:
-                        feedstock.minimum_share_in_product = constraint.minimum_share
-                    if constraint.maximum_share is not None:
-                        feedstock.maximum_share_in_product = constraint.maximum_share
-                    logger.debug(
-                        f"Applied constraint to {feedstock.technology}_{feedstock.metallic_charge}: "
-                        f"min={constraint.minimum_share}, max={constraint.maximum_share}"
-                    )
+        logger.info(
+            f"  Aggregated constraint: {constraint.technology_name} {constraint.feedstock_pattern}* "
+            f"min={constraint.minimum_share}, max={constraint.maximum_share}"
+        )
 
     # Set default constraints (0.0 to 1.0) for any feedstock without constraints
     for tech_key, feedstock_list in technology_feedstocks.items():
@@ -495,7 +485,7 @@ def read_dynamic_business_cases(
                     f"Setting default maximum constraint (1.0) for {feedstock.technology}_{feedstock.metallic_charge}_{feedstock.reductant}"
                 )
 
-    return technology_feedstocks
+    return technology_feedstocks, aggregated_constraints
 
 
 def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[str, PrimaryFeedstock]):

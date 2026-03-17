@@ -581,7 +581,7 @@ def _is_flow_feasible(commodity, distance_km: float, config: "SimulationConfig")
         True if the flow is feasible, False if it violates distance constraints
     """
     # Check if clustering is enabled
-    enable_clustering = getattr(config, "enable_trade_lp_clustering", False)
+    enable_clustering = getattr(config, "enable_furnace_group_clustering", False)
 
     # When clustering is enabled, all flows are feasible (cold commodities have no distance limits)
     if enable_clustering:
@@ -676,6 +676,7 @@ def _solve_batched_transportation_problem(
     commodity,
     config: "SimulationConfig",
     allocation_costs: dict[tuple[str, str], float] | None = None,  # {(source_id, dest_id): $/ton}
+    is_hot_commodity: bool = False,  # Whether this commodity is a hot (close) product
 ) -> tuple[dict[tuple[str, str], float], dict]:
     """Solve batched transportation problem for multiple sources and destinations.
 
@@ -699,6 +700,7 @@ def _solve_batched_transportation_problem(
         - flow_dict: {(source_id, dest_id): volume} for non-zero flows only
         - stats_dict: Statistics about reduction (total_pairs, used_edges, etc.)
     """
+    print(f"Solving transportation problem for {len(source_supplies)} sources → {len(dest_demands)} destinations...")
     # Build bipartite graph for transportation problem
     G = nx.DiGraph()
 
@@ -784,6 +786,12 @@ def _solve_batched_transportation_problem(
                 # No location data, assume feasible with zero cost
                 distance_km = 0
                 is_feasible = True
+
+            # Get commodity name for logging
+            commodity_name = commodity.name if hasattr(commodity, "name") else str(commodity)
+            if is_hot_commodity and distance_km > config.hot_metal_radius:
+                # Additional check for hot commodities: enforce distance constraint
+                is_feasible = False
 
             if is_feasible:
                 # Use pre-computed allocation cost if available, otherwise fall back to distance
@@ -968,6 +976,7 @@ def _solve_transportation_problem(
     plants_repo: "PlantInMemoryRepository | None" = None,
     transport_cost_lookup: dict[tuple[str, str, str], float] | None = None,
     wtp_lookup: dict[tuple[str, str], float] | None = None,
+    is_hot_commodity: bool = False,
 ) -> tuple[dict[tuple[str, str], float], dict]:
     """Solve transportation problem for meta-FG → meta-FG (Case 4).
 
@@ -982,7 +991,7 @@ def _solve_transportation_problem(
         plants_repo: Repository for validating FG BOMs
         transport_cost_lookup: Optional transport cost lookup dict
         wtp_lookup: Optional willingness to pay lookup dict
-
+        is_hot_commodity: Flag indicating if the commodity is hot (affects disaggregation logic)
     Returns:
         Tuple of (flow_dict, stats_dict)
     """
@@ -1030,6 +1039,11 @@ def _solve_transportation_problem(
             wtp_lookup=wtp_lookup,
         )
 
+    if commodity.name in config.closely_allocated_products:
+        is_hot_commodity = True
+    else:
+        is_hot_commodity = False
+
     # Use the batched solver
     return _solve_batched_transportation_problem(
         source_supplies=source_supplies,
@@ -1039,6 +1053,7 @@ def _solve_transportation_problem(
         commodity=commodity,
         config=config,
         allocation_costs=allocation_costs,
+        is_hot_commodity=is_hot_commodity,
     )
 
 
@@ -1134,7 +1149,7 @@ def disaggregate_allocations(
 
     # PASS 1: Group allocations by type for batching
     case1_allocs = []  # Neither is meta-FG (passthrough)
-    case2_batches: dict[tuple[str, str], list] = {}  # Meta-FG → Supplier: group by (from_meta_fg, commodity)
+    case2_batches: dict[tuple[str, str], list] = {}  # Meta-FG → DemandCenter: group by (from_meta_fg, commodity)
     case3_batches: dict[tuple[str, str], list] = {}  # Supplier → Meta-FG: group by (to_meta_fg, commodity)
     case4_allocs = []  # Meta-FG → Meta-FG (individual transportation problems)
 
@@ -1176,18 +1191,18 @@ def disaggregate_allocations(
     for from_pc, to_pc, commodity, volume in case1_allocs:
         disaggregated_allocs[(from_pc, to_pc, commodity)] = volume
 
-    # Case 2: Meta-FG → Suppliers (batched transportation problem)
+    # Case 2: Meta-FG → DemandCenter (batched transportation problem)
     for (from_meta_name, commodity_str), batch in case2_batches.items():
         from_meta_fg = meta_fg_by_id[from_meta_name]
 
         # Collect all suppliers and their demands
-        supplier_demands: dict[str, float] = {}
-        supplier_pcs = {}
+        demand_volume: dict[str, float] = {}
+        demand_pcs = {}
         total_batch_volume = 0
 
         for from_pc, to_pc, commodity, volume in batch:
-            supplier_demands[to_pc.name] = supplier_demands.get(to_pc.name, 0) + volume
-            supplier_pcs[to_pc.name] = to_pc
+            demand_volume[to_pc.name] = demand_volume.get(to_pc.name, 0) + volume
+            demand_pcs[to_pc.name] = to_pc
             total_batch_volume += volume
 
         # Prepare supplies from FGs in meta-cluster
@@ -1201,9 +1216,9 @@ def disaggregate_allocations(
 
         allocation_costs = _compute_allocation_costs(
             source_ids=list(fg_supplies.keys()),
-            dest_ids=list(supplier_demands.keys()),
+            dest_ids=list(demand_volume.keys()),
             source_locations=from_meta_fg.constituent_locations,
-            dest_locations={name: pc.location for name, pc in supplier_pcs.items()},
+            dest_locations={name: pc.location for name, pc in demand_pcs.items()},
             source_production_costs=fg_production_costs,
             commodity_name=commodity_name,
             transport_cost_lookup=transport_cost_lookup,
@@ -1213,12 +1228,13 @@ def disaggregate_allocations(
         # Solve batched transportation problem
         flows, stats = _solve_batched_transportation_problem(
             source_supplies=fg_supplies,
-            dest_demands=supplier_demands,
+            dest_demands=demand_volume,
             source_locations=from_meta_fg.constituent_locations,
-            dest_locations={name: pc.location for name, pc in supplier_pcs.items()},
+            dest_locations={name: pc.location for name, pc in demand_pcs.items()},
             commodity=batch[0][2],  # Get commodity from first item
             config=config,
             allocation_costs=allocation_costs,
+            is_hot_commodity=False,
         )
 
         # Track stats
@@ -1234,7 +1250,7 @@ def disaggregate_allocations(
                 from_meta_fg.capacity_shares[fg_id],
                 batch[0][0].process,  # Get process from first from_pc
             )
-            supplier_pc = supplier_pcs[supplier_name]
+            supplier_pc = demand_pcs[supplier_name]
 
             # Calculate distance and substitute commodity if close enough
             fg_location = from_meta_fg.constituent_locations[fg_id]
@@ -1250,12 +1266,12 @@ def disaggregate_allocations(
 
         # Collect all suppliers and their supplies
         supplier_supplies: dict[str, float] = {}
-        supplier_pcs = {}
+        demand_pcs = {}
         total_batch_volume = 0
 
         for from_pc, to_pc, commodity, volume in batch:
             supplier_supplies[from_pc.name] = supplier_supplies.get(from_pc.name, 0) + volume
-            supplier_pcs[from_pc.name] = from_pc
+            demand_pcs[from_pc.name] = from_pc
             total_batch_volume += volume
 
         # Filter out FGs without valid BOMs from destination
@@ -1284,12 +1300,12 @@ def disaggregate_allocations(
 
         # Compute allocation costs using LP cost structure
         commodity_name = str(batch[0][2]).lower()
-        supplier_production_costs = {name: pc.production_cost for name, pc in supplier_pcs.items()}
+        supplier_production_costs = {name: pc.production_cost for name, pc in demand_pcs.items()}
 
         allocation_costs = _compute_allocation_costs(
             source_ids=list(supplier_supplies.keys()),
             dest_ids=list(fg_demands.keys()),
-            source_locations={name: pc.location for name, pc in supplier_pcs.items()},
+            source_locations={name: pc.location for name, pc in demand_pcs.items()},
             dest_locations={fg_id: to_meta_fg.constituent_locations[fg_id] for fg_id in valid_fg_shares},
             source_production_costs=supplier_production_costs,
             commodity_name=commodity_name,
@@ -1301,11 +1317,12 @@ def disaggregate_allocations(
         flows, stats = _solve_batched_transportation_problem(
             source_supplies=supplier_supplies,
             dest_demands=fg_demands,
-            source_locations={name: pc.location for name, pc in supplier_pcs.items()},
+            source_locations={name: pc.location for name, pc in demand_pcs.items()},
             dest_locations={fg_id: to_meta_fg.constituent_locations[fg_id] for fg_id in valid_fg_shares},
             commodity=batch[0][2],  # Get commodity from first item
             config=config,
             allocation_costs=allocation_costs,
+            is_hot_commodity=False,
         )
 
         # Track stats
@@ -1315,7 +1332,7 @@ def disaggregate_allocations(
 
         # Create allocations with commodity substitution
         for (supplier_name, fg_id), flow_volume in flows.items():
-            supplier_pc = supplier_pcs[supplier_name]
+            supplier_pc = demand_pcs[supplier_name]
             fg_pc = create_fg_process_center(
                 fg_id,
                 to_meta_fg,
