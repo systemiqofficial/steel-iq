@@ -539,16 +539,24 @@ def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[st
                     )
                     feedstock.add_secondary_feedstock(normalize_name(vector), converted)
         elif side == "Output":
-            # Outputs - keep original values
+            # Outputs - convert units at read time (kg/t → t/t, tCO2/t as-is)
             if vector:
                 output_name = normalize_name(vector)
+                converted = _convert_units(value, unit, metric_type)
+                logger.debug(
+                    "Output %s: %s %s -> %s (converted)",
+                    output_name,
+                    value,
+                    unit,
+                    converted,
+                )
                 if output_name.startswith("co2"):
-                    feedstock.add_carbon_output(output_name, float(value))
+                    feedstock.add_carbon_output(output_name, converted)
                 else:
                     # Handle steel/liquid steel naming using Commodities
                     if output_name == Commodities.LIQUID_STEEL.value.lower():
                         output_name = Commodities.STEEL.value
-                    feedstock.add_output(name=output_name, amount=Volumes(float(value)))
+                    feedstock.add_output(name=output_name, amount=Volumes(converted))
 
     # Handle energy
     elif metric_type.lower() in ["energy", "heat", "machine drive", "machine_drive", "others"]:

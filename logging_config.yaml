@@ -10,18 +10,14 @@ modules:
   tm: INFO
 
 function_overrides:
-  # Suppress noisy PAM functions
+  # Suppress noisy functions
   calculate_unit_production_cost: WARNING
   extract_price_from_costcurve: WARNING
+  calculate_variable_opex: WARNING
+  calculate_material_total: WARNING
+  calculate_energy_total: WARNING
   generate_input_effectiveness_mapping_from_feedstocks: ERROR
-  evaluate_expansion: WARNING
-  evaluate_expansion_options: WARNING
-  evaluate_furnace_group_strategy: WARNING
-  run: INFO
-  # Secondary feedstock conversion comparison
-  calculate_variable_opex: DEBUG
-  get_bom_from_avg_boms: DEBUG
-  # Data prep only (not used during simulation)
+  # Data prep unit conversion debugging
   _process_row: DEBUG
 
 external:
