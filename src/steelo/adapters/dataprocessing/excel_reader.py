@@ -60,28 +60,11 @@ logger.setLevel(logging.DEBUG)
 """
 A note on units:
 - iron and steel volumes should be read in tonnes (t), and handled as tons throughout the code.
-- Secondary feedstock should be read in as the unit that is defined in the BOMs, usually kilograms, costs need to be given as per that unit as well.
+- Secondary feedstock quantities are converted to t/t at read time via _convert_units.
+  All USD/kg prices are converted to USD/t to match.
 - Energy should be converted to kWh.
 - currencies should be in USD.
 """
-
-# Mapping of commodities whose consumption is expressed in t/t (tonnes per tonne) that require
-# USD/kg to USD/t conversion when loading prices from master Excel.
-# These materials have their usage in the BOM expressed as tonnes per tonne of product,
-# so their prices must be converted from USD/kg to USD/t (multiply by 1000).
-#
-# IMPORTANT: Only include commodities whose BOM consumption ultimately uses tonnes per tonne.
-# Hydrogen now falls into this bucket because BOM ingestion normalises its kg/t requirement to tonnes.
-#
-# NOTE: Keys must match normalised names after normalize_name() processing.
-MATERIALS_REQUIRING_KG_TO_T_PRICE_CONVERSION = {
-    "bio_pci",  # Bio-PCI: consumption in t/t, price needs conversion from USD/kg to USD/t
-    "pci",  # PCI: consumption in t/t, price needs conversion from USD/kg to USD/t
-    "coke",  # Coke: consumption in t/t, price needs conversion from USD/kg to USD/t
-    "coking_coal",  # Coking coal: consumption in t/t, price needs conversion from USD/kg to USD/t
-    "hydrogen",  # Hydrogen consumption stored in t/t after BOM processing; convert price to USD/t for consistency
-}
-
 
 translate_country_names = {
     "Dem. Rep. of the Congo": "Congo DRC",
@@ -176,18 +159,8 @@ def read_regional_input_prices_from_master_excel(
             # Convert from USD/GJ to USD/kWh
             input_cost_stacked.loc[:, commodity] *= PERGJ_TO_PERkWh
         elif unit == "USD/kg":
-            # Selective conversion: materials with t/t consumption need USD/kg → USD/t conversion
-            if commodity in MATERIALS_REQUIRING_KG_TO_T_PRICE_CONVERSION:
-                # Convert from USD/kg to USD/t for materials consumed in tonnes per tonne
-                # (multiply by 1000 kg/t to get USD/t from USD/kg)
-                # Includes: coke, pci, bio-pci, coking_coal, hydrogen
-                input_cost_stacked.loc[:, commodity] *= T_TO_KG
-                logging.info(
-                    f"Converting {commodity} price from USD/kg to USD/t (multiply by {T_TO_KG}) for t/t consumption"
-                )
-            else:
-                # Keep in USD/kg for materials not in the conversion set
-                logging.info(f"Keeping {commodity} price in USD/kg (not in t/t consumption set)")
+            # All BOM quantities normalised to t/t; convert all USD/kg → USD/t
+            input_cost_stacked.loc[:, commodity] *= T_TO_KG
         elif unit == "USD/t":
             pass
         else:
@@ -554,9 +527,17 @@ def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[st
                     logger.warning(f"Unexpected unit '{unit}' for primary material requirement")
                     feedstock.required_quantity_per_ton_of_product = float(value)
             else:
-                # Secondary feedstock - store with original units (usually kg/t)
+                # Secondary feedstock - convert units at read time (kg/t → t/t)
                 if vector:
-                    feedstock.add_secondary_feedstock(normalize_name(vector), value)
+                    converted = _convert_units(value, unit, metric_type)
+                    logger.debug(
+                        "Secondary feedstock %s: %s %s -> %s (converted)",
+                        normalize_name(vector),
+                        value,
+                        unit,
+                        converted,
+                    )
+                    feedstock.add_secondary_feedstock(normalize_name(vector), converted)
         elif side == "Output":
             # Outputs - keep original values
             if vector:
@@ -595,7 +576,8 @@ def _convert_units(value: float, unit: str, metric_type: str) -> float:
 
     Conversions:
     - Energy units: GJ/t -> kWh/t (*277.78), MWh/t -> kWh/t (*1000)
-    - Material units: kept as-is (t/t, kg/t)
+    - Material units: t/t kept as-is, kg*/t converted to t/t (*0.001)
+      Handles patterns like "kg/t", "kg H2/t DRI", "kg H2/t HM"
     - Percentages: kept as-is
 
     Args:
@@ -614,7 +596,8 @@ def _convert_units(value: float, unit: str, metric_type: str) -> float:
     # Material units
     if "t/t" in unit_lower:
         return value
-    elif "kg/t" in unit_lower:
+    elif "kg/t" in unit_lower or (unit_lower.startswith("kg") and "/t" in unit_lower):
+        # Matches "kg/t", "kg H2/t DRI", "kg H2/t HM", etc.
         return value * KG_TO_T
     elif "tco2/t" in unit_lower:
         return value
@@ -626,10 +609,6 @@ def _convert_units(value: float, unit: str, metric_type: str) -> float:
         return value * GJ_TO_KWH
     elif "mwh/t" in unit_lower:
         return value * MWH_TO_KWH
-    elif "kg/t" in unit_lower and metric_type.lower() in ["energy", "heat", "machine drive", "reductant"]:
-        # For things like hydrogen or PCI which are measured in kg/t
-        return value
-
     # Percentage (for constraints)
     elif "%" in unit_lower:
         return value
