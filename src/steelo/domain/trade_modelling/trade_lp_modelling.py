@@ -335,7 +335,7 @@ class TradeLPModel:
         soft_minimum_capacity_slack_cost: High cost for under-utilization (100k)
     """
 
-    def __init__(self, lp_epsilon: float = 1e-3):
+    def __init__(self, lp_epsilon: float = 1e-3, distance_function=None):
         self.process_centers: list[ProcessCenter] = []
         self.process_connectors: list[ProcessConnector] = []
         self.commodities: list[Commodity] = []
@@ -355,6 +355,10 @@ class TradeLPModel:
         self.transportation_costs: list[TransportationCost] = []
         self._transportation_cost_lookup: dict[tuple[str, str, str], float] = {}
         self.lp_epsilon = lp_epsilon
+
+        # Store distance function for optimized lookups
+        # If None, falls back to original implementation
+        self._external_distance_function = distance_function
 
         # Solver options for performance tuning (OPT-4)
         # Default to IPM - equivalent runtime to Simplex but uses ~5GB less memory
@@ -387,9 +391,31 @@ class TradeLPModel:
         key = (from_iso3, to_iso3, commodity_lower)
         return self._transportation_cost_lookup.get(key, 0.0)
 
-    def get_distance(self, from_pc_name, to_pc_name, type="haversine"):
-        from_pc = next(pc for pc in self.process_centers if pc.name == from_pc_name)
-        to_pc = next(pc for pc in self.process_centers if pc.name == to_pc_name)
+    def get_distance(self, from_pc_name, to_pc_name, type="pref_economic"):
+        """
+        Get distance between two process centers.
+
+        Performance optimized to use external distance function when available.
+
+        Args:
+            from_pc_name: Source process center name
+            to_pc_name: Destination process center name
+            type: Distance type (ignored when using external function)
+
+        Returns:
+            Distance in km
+        """
+        # Fast path: Use external distance function if provided
+        if self._external_distance_function is not None:
+            return self._external_distance_function(from_pc_name, to_pc_name)
+
+        # Fallback: Original implementation
+        from_pc = next((pc for pc in self.process_centers if pc.name == from_pc_name), None)
+        to_pc = next((pc for pc in self.process_centers if pc.name == to_pc_name), None)
+
+        if from_pc is None or to_pc is None:
+            return float("inf")
+
         if type == "haversine":
             return haversine_distance(
                 [

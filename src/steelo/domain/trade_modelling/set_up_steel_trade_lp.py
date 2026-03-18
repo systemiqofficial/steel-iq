@@ -682,7 +682,7 @@ def enforce_trade_tariffs_on_allocations(
 
 
 def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
-    trade_lp: tlp.TradeLPModel, config: "SimulationConfig"
+    trade_lp: tlp.TradeLPModel, config: "SimulationConfig", env=None
 ):
     """Fix allocation variables to zero based on commodity-specific distance constraints.
 
@@ -739,10 +739,25 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
 
     else:
         # OLD BEHAVIOR: Distance-based fixing for backwards compatibility
+
+        # Pre-compute distances if environment available for massive speedup
+        hot_metal_pairs = None
+        if env is not None:
+            hot_metal_pairs = env.precompute_distances_for_hot_metal_check(
+                trade_lp.process_centers, config.hot_metal_radius
+            )
+
         for from_pc, to_pc, comm in trade_lp.lp_model.allocation_variables:
-            distance = trade_lp.get_distance(from_pc, to_pc)
+            if hot_metal_pairs is not None:
+                # Fast path: O(1) set membership check
+                is_within_radius = (from_pc, to_pc) in hot_metal_pairs
+            else:
+                # Fallback: Original distance calculation
+                distance = trade_lp.get_distance(from_pc, to_pc)
+                is_within_radius = distance <= config.hot_metal_radius
+
             # if the distance is within our hot metal radius
-            if distance <= config.hot_metal_radius:
+            if is_within_radius:
                 # and if the commodity is one that is usually transported over long distances
                 if comm in config.distantly_allocated_products:
                     # Set the allocation to zero
@@ -888,7 +903,14 @@ def set_up_steel_trade_lp(
     """
     logger = logging.getLogger(f"{__name__}.set_up_steel_trade_lp")
     repository = message_bus.uow.repository
-    lp_model = tlp.TradeLPModel(lp_epsilon=config.lp_epsilon)
+
+    # Build distance function if environment available
+    distance_function = None
+    if hasattr(message_bus, "env") and message_bus.env is not None:
+        # We'll update this after process centers are added
+        distance_function = None  # Placeholder for now
+
+    lp_model = tlp.TradeLPModel(lp_epsilon=config.lp_epsilon, distance_function=distance_function)
     modelled_products = config.primary_products
 
     logger.info(f"Setting up LP model with PRIMARY_PRODUCTS: {modelled_products}")
@@ -924,6 +946,13 @@ def set_up_steel_trade_lp(
             )
 
     add_suppliers_as_process_centers(repository=repository, lp_model=lp_model, year=year, config=config)
+
+    # Now that all process centers are added, update the distance function with the actual list
+    if hasattr(message_bus, "env") and message_bus.env is not None:
+        lp_model._external_distance_function = message_bus.env.build_distance_function_for_trade_lp(
+            lp_model.process_centers
+        )
+        logger.info(f"Distance function updated with {len(lp_model.process_centers)} process centers")
 
     # Add location-specific transportation costs
     if transport_kpis is not None:
@@ -1087,7 +1116,9 @@ def set_up_steel_trade_lp(
     willingness_to_pay_list = getattr(message_bus.env, "willingness_to_pay", [])
 
     lp_model.build_lp_model(willingness_to_pay_list=willingness_to_pay_list)
-    lp_model = fix_to_zero_allocations_where_distance_doesnt_match_commodity(trade_lp=lp_model, config=config)
+    lp_model = fix_to_zero_allocations_where_distance_doesnt_match_commodity(
+        trade_lp=lp_model, config=config, env=message_bus.env if hasattr(message_bus, "env") else None
+    )
 
     # Apply carbon border mechanisms if available
     if (
@@ -1114,6 +1145,10 @@ def set_up_steel_trade_lp(
             logger.info(f"No active carbon border mechanisms for year {year}, skipping adjustments")
     else:
         logger.info("No carbon border mechanisms defined in environment, skipping adjustments")
+
+    # Log distance cache statistics if available
+    if hasattr(message_bus, "env") and message_bus.env is not None:
+        message_bus.env.log_distance_cache_stats()
 
     return lp_model
 
