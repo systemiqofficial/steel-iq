@@ -407,7 +407,10 @@ class TM_PAM_connector:
             unit_cost = {}
 
             if allocation_attr in G.nodes[u]:
-                export = {}
+                # Initialize export dict if it doesn't exist
+                if export_attr not in G.nodes[u]:
+                    G.nodes[u][export_attr] = {}
+                # Accumulate export volumes by commodity
                 for src, v, comm, edata in self.G.out_edges(u, keys=True, data=True):
                     G.nodes[u][export_attr][comm] = G.nodes[u][export_attr].get(comm, 0) + edata.get(volume_attr, 0)
             # If G[u] is also a to-node
@@ -428,9 +431,19 @@ class TM_PAM_connector:
                 else:
                     base_cost = float(node_cost)
 
-                # Normalize by total exported volume of that commodity at u, if available
+                # Normalize by export volume
                 export = G.nodes[u].get(export_attr, {})
-                export_volume_at_u = export.get(comm, 1.0)
+
+                # For multi-output processes (e.g., BF producing hot_metal AND pig_iron),
+                # divide total input cost by TOTAL output volume across all commodities
+                # to avoid inflating per-unit costs
+                if isinstance(node_cost, dict) and G.in_degree(u) > 0 and len(export) > 1:
+                    # Multi-output process: use total export volume
+                    export_volume_at_u = sum(export.values())
+                else:
+                    # Single-output process or supplier: use commodity-specific volume
+                    export_volume_at_u = export.get(comm, 1.0)
+
                 per_unit_base = base_cost / export_volume_at_u
                 unit_cost.update({comm: per_unit_base})
                 if G.out_degree(v) == 0:

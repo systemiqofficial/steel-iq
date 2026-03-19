@@ -1,6 +1,7 @@
 import pytest
 
 from steelo.domain.calculate_costs import (
+    SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION,
     calculate_cost_breakdown_by_feedstock,
     calculate_debt_repayment,
     calculate_variable_opex,
@@ -755,3 +756,27 @@ def test_secondary_output_adjustment_includes_co2_stored():
     # co2_stored: 1000 * -30 * 0.4 = -12000
     # total: -16500 / 1000 = -16.5 USD/t product
     assert result == pytest.approx(-16.5)
+
+
+def test_pci_in_secondary_feedstocks_kg_to_t_conversion_set():
+    """PCI must be in the kg/t→t/t conversion set to avoid a 1000× cost error.
+
+    PCI is stored in kg/t in BOM sheets but its price is converted from USD/kg
+    to USD/t by excel_reader (MATERIALS_REQUIRING_KG_TO_T_PRICE_CONVERSION).
+    Without the volume conversion, cost = kg/t × USD/t is 1000× too high.
+
+    Example:
+        PCI usage: 50 kg/t steel, price: 0.14 USD/kg → 140 USD/t
+        Correct:   50 kg/t × 0.001 × 140 USD/t = 7.0 USD/t steel
+        Without:   50 kg/t × 140 USD/t = 7000 USD/t steel  (1000× error)
+    """
+    assert "pci" in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION
+
+    from steelo.domain.constants import KG_TO_T
+
+    pci_usage_kg_per_t = 50.0
+    pci_price_usd_per_kg = 0.14
+    pci_price_usd_per_t = pci_price_usd_per_kg * 1000  # as loaded by excel_reader
+
+    correct_cost = pci_usage_kg_per_t * KG_TO_T * pci_price_usd_per_t
+    assert correct_cost == pytest.approx(7.0, rel=1e-6)

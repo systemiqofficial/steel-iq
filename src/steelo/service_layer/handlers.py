@@ -292,6 +292,9 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
         tmpc.update_furnace_group_emissions(fgs)
         env.allocation_and_transportation_costs = tmpc.extract_transportation_costs(fgs)
 
+        # Store trade allocations for data collection
+        env.trade_allocations = trade_allocations
+
         steel_demand_dict = env.demand_dict
 
         # Initialize virgin iron demand if not already done (this is used for the FUTURE MARKET PRICE in cost curve)

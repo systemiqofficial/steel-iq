@@ -16,9 +16,11 @@ if TYPE_CHECKING:
 from collections import Counter
 from steelo.domain.constants import KG_TO_T, MWH_TO_KWH, Year
 
+# feedstocks are stored in kg/t in BOM sheets but priced in USD/t (after the USD/kg → USD/t conversion in excel_reader)
 SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION = {
-    "coking_coal",  # Stored in kg/t in dynamic business cases, priced in USD/t
+    "coking_coal",
     "bio_pci",
+    "pci",
 }
 
 # Normalized keys that represent genuine energy carriers. Any secondary-feedstock entry whose normalized

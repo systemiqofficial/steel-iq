@@ -283,6 +283,40 @@ class SteelPlotter:
             self.logger.info(f"Assigned color {color} to metallic charge '{charge_type}'")
         return self.config.metallic_charge_colors[charge_lower]
 
+    def _save_chart_data_to_csv(self, df: pd.DataFrame, filename: str, subdir: str = "pam_plots_dir") -> Optional[Path]:
+        """Save chart data to CSV file.
+
+        Args:
+            df: DataFrame containing the chart data
+            filename: Output filename (will replace .png with .csv)
+            subdir: Subdirectory attribute name from PlotPaths
+
+        Returns:
+            Path where CSV was saved, or None if plot_paths not set
+        """
+        if self.plot_paths is None:
+            self.logger.warning("plot_paths not set, skipping CSV export")
+            return None
+
+        plot_dir = getattr(self.plot_paths, subdir, None)
+        if plot_dir is None:
+            self.logger.warning(f"PlotPaths does not have attribute '{subdir}', skipping CSV export")
+            return None
+
+        plot_dir.mkdir(parents=True, exist_ok=True)
+
+        # Replace .png extension with .csv
+        csv_filename = filename.replace(".png", ".csv")
+        output_path = plot_dir / csv_filename
+
+        try:
+            df.to_csv(output_path, index=True)
+            self.logger.info(f"Saved chart data to {output_path}")
+            return output_path
+        except Exception as e:
+            self.logger.error(f"Failed to save CSV to {output_path}: {e}")
+            return None
+
     # ========================================================================
     # Plotting Methods
     # ========================================================================
@@ -291,12 +325,14 @@ class SteelPlotter:
         self,
         trace_capex: dict[int, dict[str, dict[str, float]]],
         iso3_filter: Optional[str] = None,
+        export_csv: bool = True,
     ) -> Optional[Path]:
         """Plot total CAPEX investments by technology over years as a stacked bar chart.
 
         Args:
             trace_capex: Nested dict {year: {technology: {iso3: total_capex_usd}}}
             iso3_filter: Optional ISO3 country code to filter investments
+            export_csv: If True, also export chart data to CSV (default: True)
 
         Returns:
             Path to saved plot, or None if no data to plot
@@ -377,16 +413,23 @@ class SteelPlotter:
 
         # Save
         filename = f"capex_by_technology_and_year{'_' + iso3_filter if iso3_filter else ''}.png"
+
+        # Export CSV if requested
+        if export_csv:
+            self._save_chart_data_to_csv(capex_by_year_tech, filename)
+
         return self._save_figure(fig, filename)
 
     def plot_emissions_by_technology(
         self,
         trace_emissions: dict[int, dict[str, float]],
+        export_csv: bool = True,
     ) -> Optional[Path]:
         """Plot emissions by technology over time as a stacked area chart.
 
         Args:
             trace_emissions: Nested dict {year: {technology: total_emissions_tCO2e}}
+            export_csv: If True, also export chart data to CSV (default: True)
 
         Returns:
             Path to saved plot, or None if no data to plot
@@ -439,16 +482,23 @@ class SteelPlotter:
 
         fig.tight_layout()
 
-        return self._save_figure(fig, "emissions_by_technology_over_time.png")
+        # Export CSV if requested
+        filename = "emissions_by_technology_over_time.png"
+        if export_csv:
+            self._save_chart_data_to_csv(df_pivot, filename)
+
+        return self._save_figure(fig, filename)
 
     def plot_iron_ore_by_quality(
         self,
         trace_iron_ore: dict[int, dict[str, float]],
+        export_csv: bool = True,
     ) -> Optional[Path]:
         """Plot iron ore consumption by quality over time as a stacked area chart.
 
         Args:
             trace_iron_ore: Nested dict {year: {quality: total_consumption_tonnes}}
+            export_csv: If True, also export chart data to CSV (default: True)
 
         Returns:
             Path to saved plot, or None if no data to plot
@@ -500,16 +550,23 @@ class SteelPlotter:
 
         fig.tight_layout()
 
-        return self._save_figure(fig, "iron_ore_by_quality_over_time.png")
+        # Export CSV if requested
+        filename = "iron_ore_by_quality_over_time.png"
+        if export_csv:
+            self._save_chart_data_to_csv(df_pivot, filename)
+
+        return self._save_figure(fig, filename)
 
     def plot_metallic_charges(
         self,
         trace_metallic_charges: dict[int, dict[str, float]],
+        export_csv: bool = True,
     ) -> Optional[Path]:
         """Plot metallic charge consumption over time as a stacked area chart.
 
         Args:
             trace_metallic_charges: Nested dict {year: {charge_type: total_consumption_tonnes}}
+            export_csv: If True, also export chart data to CSV (default: True)
 
         Returns:
             Path to saved plot, or None if no data to plot
@@ -561,13 +618,100 @@ class SteelPlotter:
 
         fig.tight_layout()
 
-        return self._save_figure(fig, "metallic_charges_over_time.png")
+        # Export CSV if requested
+        filename = "metallic_charges_over_time.png"
+        if export_csv:
+            self._save_chart_data_to_csv(df_pivot, filename)
+
+        return self._save_figure(fig, filename)
+
+    def plot_international_iron_trade(
+        self,
+        trace_international_iron_trade: dict[int, dict[str, float]],
+        export_csv: bool = True,
+    ) -> Optional[Path]:
+        """Plot international iron product trade volumes over time as a stacked area chart (wedge chart).
+
+        Args:
+            trace_international_iron_trade: Nested dict {year: {iron_product: total_trade_volume_tonnes}}
+            export_csv: If True, also export chart data to CSV (default: True)
+
+        Returns:
+            Path to saved plot, or None if no data to plot
+        """
+        if not trace_international_iron_trade:
+            self.logger.warning("No international iron trade data to plot")
+            return None
+
+        # Convert to DataFrame
+        data_rows = []
+        for year, products in trace_international_iron_trade.items():
+            for product, volume in products.items():
+                data_rows.append({"year": year, "product": product, "volume": volume})
+
+        if not data_rows:
+            return None
+
+        df = pd.DataFrame(data_rows)
+        df["volume_mt"] = df["volume"] / 1e6
+
+        # Pivot
+        df_pivot = df.pivot(index="year", columns="product", values="volume_mt")
+        df_pivot = df_pivot.fillna(0)
+
+        # Define color scheme for iron products
+        iron_product_colors = {
+            "iron": "#8B4513",  # saddle brown - generic iron
+            "hot_metal": "#DC143C",  # crimson - hot/molten
+            "pig_iron": "#696969",  # dim gray - intermediate product
+            "dri_low": "#87CEEB",  # sky blue (light) - low grade DRI
+            "dri_mid": "#4682B4",  # steel blue (medium) - mid grade DRI
+            "dri_high": "#000080",  # navy (dark) - high grade DRI
+            "hbi_low": "#FFB6C1",  # light pink (light) - low grade HBI
+            "hbi_mid": "#FF69B4",  # hot pink (medium) - mid grade HBI
+            "hbi_high": "#C71585",  # medium violet red (dark) - high grade HBI
+        }
+
+        # Assign colors
+        colors_for_plot = [iron_product_colors.get(product, "#808080") for product in df_pivot.columns]
+
+        # Create plot
+        fig, ax = plt.subplots(figsize=self.config.default_figsize_wide)
+
+        df_pivot.plot.area(
+            ax=ax,
+            color=colors_for_plot,
+            alpha=0.8,
+            linewidth=0,
+        )
+
+        # Formatting
+        ax.set_title("International Iron Product Trade Volumes Over Time", fontsize=14, fontweight="bold")
+        ax.set_xlabel("Year", fontsize=12)
+        ax.set_ylabel("Total Trade Volume (Mt)", fontsize=12)
+        self._style_legend(ax, title="Iron Product")
+        ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
+
+        # X-axis formatting
+        years = sorted(df_pivot.index)
+        ax.set_xlim(years[0], years[-1])
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=min(len(years), 20)))
+
+        fig.tight_layout()
+
+        # Export CSV if requested
+        filename = "international_iron_trade_over_time.png"
+        if export_csv:
+            self._save_chart_data_to_csv(df_pivot, filename)
+
+        return self._save_figure(fig, filename)
 
     def plot_steel_cost_curve(
         self,
         curve: list[dict[str, float]],
         demand: float,
         filename: str = "steel_cost_curve.png",
+        export_csv: bool = True,
     ) -> Optional[Path]:
         """Plot a steel cost curve with marginal producer highlighted.
 
@@ -578,6 +722,7 @@ class SteelPlotter:
             curve: List of dicts with 'cumulative_capacity' and 'production_cost'
             demand: Demanded capacity (will highlight intersection point)
             filename: Output filename for the plot
+            export_csv: If True, also export chart data to CSV (default: True)
 
         Returns:
             Path to saved plot, or None if no data
@@ -653,18 +798,29 @@ class SteelPlotter:
 
         fig.tight_layout()
 
+        # Export CSV if requested
+        if export_csv:
+            # Convert curve data to DataFrame
+            df_curve = pd.DataFrame(curve)
+            df_curve["cumulative_capacity_kt"] = df_curve["cumulative_capacity"] / 1000
+            df_curve = df_curve[["cumulative_capacity_kt", "production_cost"]]
+            df_curve.index.name = "step"
+            self._save_chart_data_to_csv(df_curve, filename)
+
         return self._save_figure(fig, filename)
 
     def plot_cost_curve_per_region(
         self,
         plants: "PlantRepository",
         filename: str = "cost_curve_per_region.png",
+        export_csv: bool = True,
     ) -> Optional[Path]:
         """Plot cost curve with regions colored separately.
 
         Args:
             plants: PlantRepository containing plant data
             filename: Output filename for the plot
+            export_csv: If True, also export chart data to CSV (default: True)
 
         Returns:
             Path to saved plot, or None if no data
@@ -751,6 +907,27 @@ class SteelPlotter:
 
         fig.tight_layout()
 
+        # Export CSV if requested
+        if export_csv:
+            # Convert rectangles to DataFrame
+            df_regions = pd.DataFrame(
+                final_rectangles, columns=["cumulative_capacity_start_mt", "cost_per_unit_usd_t", "width_mt", "region"]
+            )
+            df_regions["cumulative_capacity_end_mt"] = (
+                df_regions["cumulative_capacity_start_mt"] + df_regions["width_mt"]
+            )
+            df_regions = df_regions[
+                [
+                    "region",
+                    "cumulative_capacity_start_mt",
+                    "cumulative_capacity_end_mt",
+                    "width_mt",
+                    "cost_per_unit_usd_t",
+                ]
+            ]
+            df_regions.index.name = "segment"
+            self._save_chart_data_to_csv(df_regions, filename)
+
         return self._save_figure(fig, filename)
 
     def plot_cost_curve_for_commodity(
@@ -758,6 +935,7 @@ class SteelPlotter:
         cost_curve: list[dict],
         total_demand: float,
         filename: str = "cost_curve.png",
+        export_csv: bool = True,
     ) -> Optional[Path]:
         """Plot cost curve for a commodity with demand line.
 
@@ -765,6 +943,7 @@ class SteelPlotter:
             cost_curve: List of dicts with 'cumulative_capacity' and 'production_cost'
             total_demand: Total demand to highlight on the curve
             filename: Output filename for the plot
+            export_csv: If True, also export chart data to CSV (default: True)
 
         Returns:
             Path to saved plot, or None if no data
@@ -807,6 +986,13 @@ class SteelPlotter:
 
         fig.tight_layout()
 
+        # Export CSV if requested
+        if export_csv:
+            # Convert cost curve data to DataFrame
+            df_curve = pd.DataFrame({"cumulative_capacity": x_vals, "production_cost": y_vals})
+            df_curve.index.name = "step"
+            self._save_chart_data_to_csv(df_curve, filename)
+
         return self._save_figure(fig, filename)
 
     def plot_cost_curve_with_breakdown(
@@ -816,6 +1002,7 @@ class SteelPlotter:
         year: int,
         show_breakdown: bool = True,
         filename: Optional[str] = None,
+        export_csv: bool = True,
     ) -> Optional[Path]:
         """Plot cost curve with stacked bar breakdown showing cost components per furnace group.
 
@@ -825,6 +1012,7 @@ class SteelPlotter:
             year: Year to plot
             show_breakdown: If True, show cost breakdown as stacked bars
             filename: Optional custom filename (default: auto-generated from product/year)
+            export_csv: If True, also export chart data to CSV (default: True)
 
         Returns:
             Path to saved plot, or None if no data
@@ -1126,6 +1314,17 @@ class SteelPlotter:
                 else f"{product_type}_cost_curve_{year}.png"
             )
 
+        # Export CSV if requested
+        if export_csv:
+            # Prepare CSV export with relevant columns
+            csv_columns = ["production_cost", "capacity", "region", "clearing_capacity"]
+            if show_breakdown and component_columns:
+                csv_columns.extend(component_columns)
+            # Only include columns that actually exist in cost_df
+            csv_columns = [col for col in csv_columns if col in cost_df.columns]
+            df_export = cost_df[csv_columns].copy()
+            self._save_chart_data_to_csv(df_export, filename)
+
         return self._save_figure(fig, filename)
 
     def plot_capacity_development_by_technology(
@@ -1133,6 +1332,7 @@ class SteelPlotter:
         data_file: pd.DataFrame,
         units: str = "Mt",
         filename: str = "Capacity_development_by_technology.png",
+        export_csv: bool = True,
     ) -> Optional[Path]:
         """Plot year-on-year capacity development by technology.
 
@@ -1142,6 +1342,7 @@ class SteelPlotter:
             data_file: DataFrame with columns: furnace_group_id, year, technology, capacity, product
             units: Unit string for y-axis label (e.g., "Mt", "ktpa")
             filename: Output filename for the plot
+            export_csv: If True, also export chart data to CSV (default: True)
 
         Returns:
             Path to saved plot, or None if no data
@@ -1200,6 +1401,10 @@ class SteelPlotter:
 
         fig.tight_layout()
 
+        # Export CSV if requested
+        if export_csv:
+            self._save_chart_data_to_csv(capacity_diff, filename)
+
         return self._save_figure(fig, filename)
 
     def plot_area_chart_by_region_or_technology(
@@ -1211,6 +1416,7 @@ class SteelPlotter:
         pivot_columns: list[str],
         product_type: str = "steel",
         filename: Optional[str] = None,
+        export_csv: bool = True,
     ) -> Optional[Path]:
         """Plot a stacked area chart of a column grouped by region or technology.
 
@@ -1226,6 +1432,7 @@ class SteelPlotter:
             pivot_columns: List of columns to pivot by (e.g., ["region"] or ["technology"])
             product_type: Filter by product type ("steel" or "iron")
             filename: Optional custom filename (auto-generated if None)
+            export_csv: If True, also export chart data to CSV (default: True)
 
         Returns:
             Path to saved plot, or None if no data
@@ -1329,5 +1536,9 @@ class SteelPlotter:
         if filename is None:
             pivot_str = pivot_columns[0] if pivot_columns else "unknown"
             filename = f"{product_type}_{column_name}_development_by_{pivot_str}.png"
+
+        # Export CSV if requested
+        if export_csv:
+            self._save_chart_data_to_csv(df_pivot, filename)
 
         return self._save_figure(fig, filename)
