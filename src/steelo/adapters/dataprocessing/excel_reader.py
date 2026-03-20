@@ -2732,6 +2732,7 @@ def read_willingness_to_pay(
     willingness_to_pay_entries = []
 
     for idx, row in df.iterrows():
+        row_num = int(str(idx)) + 2
         try:
             region_or_iso3_raw = str(row["region or iso3"]).strip()
             commodity_raw = str(row["Commodity"]).strip()
@@ -2745,7 +2746,7 @@ def read_willingness_to_pay(
             try:
                 value = float(value_raw)
             except (ValueError, TypeError):
-                logger.warning(f"Row {idx + 2}: Invalid willingness to pay value '{value_raw}' - skipping")
+                logger.warning(f"Row {row_num}: Invalid willingness to pay value '{value_raw}' - skipping")
                 continue
 
             # Determine if this is an ISO3 code or a region/trade bloc
@@ -2783,14 +2784,14 @@ def read_willingness_to_pay(
                     )
                 else:
                     logger.warning(
-                        f"Row {idx + 2}: '{region_or_iso3_raw}' is not a valid ISO3 code or trade bloc attribute - skipping"
+                        f"Row {row_num}: '{region_or_iso3_raw}' is not a valid ISO3 code or trade bloc attribute - skipping"
                     )
 
         except KeyError as e:
-            logger.warning(f"Row {idx + 2}: Missing required column {e} - skipping")
+            logger.warning(f"Row {row_num}: Missing required column {e} - skipping")
             continue
         except Exception as e:
-            logger.warning(f"Row {idx + 2}: Error processing row: {e} - skipping")
+            logger.warning(f"Row {row_num}: Error processing row: {e} - skipping")
             continue
 
     logger.info(f"Successfully read {len(willingness_to_pay_entries)} willingness to pay entries from '{sheet_name}'")
