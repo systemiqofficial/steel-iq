@@ -650,6 +650,49 @@ class DataCollector:
                         for boundary in fg.emissions:
                             for scope in fg.emissions[boundary]:
                                 record[f"emissions_{boundary}_{scope}"] = fg.emissions[boundary][scope]
+
+                    # Subsidy tracking - calculate $/t (per unit production)
+                    unit_subsidies: dict[str, float] = {
+                        "capex": 0.0,
+                        "opex": 0.0,
+                        "debt": 0.0,
+                    }
+                    if hasattr(fg, "applied_subsidies") and fg.applied_subsidies:
+                        # CAPEX subsidies (use base capex from technology for relative)
+                        capex_base = fg.technology.capex_no_subsidy if fg.technology.capex_no_subsidy else 0
+                        for sub in fg.applied_subsidies.get("capex", []):
+                            if sub.subsidy_type == "absolute":
+                                unit_subsidies["capex"] += sub.subsidy_amount
+                            elif sub.subsidy_type == "relative" and capex_base > 0:
+                                unit_subsidies["capex"] += capex_base * sub.subsidy_amount
+
+                        # OPEX subsidies (use unit_total_opex_no_subsidy for relative)
+                        opex_base = fg.unit_total_opex_no_subsidy if hasattr(fg, "unit_total_opex_no_subsidy") else 0
+                        for sub in fg.applied_subsidies.get("opex", []):
+                            if sub.subsidy_type == "absolute":
+                                unit_subsidies["opex"] += sub.subsidy_amount
+                            elif sub.subsidy_type == "relative" and opex_base > 0:
+                                unit_subsidies["opex"] += opex_base * sub.subsidy_amount
+
+                        # Debt subsidies (only absolute - relative affects interest rate, not $/t)
+                        for sub in fg.applied_subsidies.get("debt", []):
+                            if sub.subsidy_type == "absolute":
+                                unit_subsidies["debt"] += sub.subsidy_amount
+
+                    # Energy subsidies: (price_before - price_after) * consumption_per_tonne
+                    # Generalised for all energy carriers (hydrogen, electricity, natural_gas, etc.)
+                    if hasattr(fg, "energy_costs_no_subsidy") and fg.energy_costs_no_subsidy:
+                        for carrier, price_before in fg.energy_costs_no_subsidy.items():
+                            price_after = fg.energy_costs.get(carrier, 0) if fg.energy_costs else 0
+                            carrier_data = energy.get(carrier, {}) if energy else {}
+                            if carrier_data.get("unit_cost", 0) > 0 and fg.production > 0:
+                                per_t = carrier_data.get("demand", 0) / fg.production
+                                unit_subsidies[carrier] = (price_before - price_after) * per_t
+
+                    for key, value in unit_subsidies.items():
+                        record[f"unit_subsidy_{key}"] = value
+                    record["unit_subsidy_total"] = sum(unit_subsidies.values())
+
                 else:
                     record = {
                         "furnace_group_id": fg.furnace_group_id,
@@ -673,6 +716,10 @@ class DataCollector:
                         "debt_repayment_per_year": fg.debt_repayment_per_year,
                         "debt_repayment_for_current_year": fg.debt_repayment_for_current_year,
                         "historic_balance": fg.historic_balance,
+                        "unit_subsidy_capex": 0.0,
+                        "unit_subsidy_opex": 0.0,
+                        "unit_subsidy_debt": 0.0,
+                        "unit_subsidy_total": 0.0,
                     }
                 plant_dict.append(record)
 

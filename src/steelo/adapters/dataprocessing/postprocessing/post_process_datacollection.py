@@ -98,6 +98,8 @@ def extract_and_process_stored_dataCollection(
                 fg_cols_to_select.append("unit_carbon_cost_contribution - co2_slip")
             # Add emissions columns dynamically
             fg_cols_to_select += plant.columns[plant.columns.str.startswith("emissions_")].tolist()
+            # Add subsidy columns dynamically
+            fg_cols_to_select += plant.columns[plant.columns.str.startswith("unit_subsidy_")].tolist()
 
             furnaces.append(plant[fg_cols_to_select])
             # Include cost_breakdown if it exists in the plant DataFrame
