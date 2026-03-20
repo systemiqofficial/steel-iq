@@ -23,6 +23,8 @@ function_overrides:
   set_subsidised_energy_costs: DEBUG
   calculate_cost_breakdown_by_feedstock: DEBUG
   calculate_cost_adjustments_from_secondary_outputs: DEBUG
+  # Data prep unit conversion debugging
+  _process_row: DEBUG
 
 external:
   pyomo: ERROR

@@ -21,7 +21,6 @@ from steelo.domain.calculate_costs import (
     filter_subsidies_for_year,
     collect_active_subsidies_over_period,
     ENERGY_FEEDSTOCK_KEYS,
-    SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION,
 )
 from steelo.utilities.utils import normalize_name
 from steelo.domain.calculate_emissions import (
@@ -41,7 +40,6 @@ from steelo.domain.constants import (
     Year,
     Commodities,
     T_TO_KT,
-    KG_TO_T,
     T_TO_KG,
     MioUSD_TO_USD,
     MINIMUM_UTILIZATION_RATE_FOR_COST_CURVE,
@@ -125,11 +123,7 @@ def _recalculate_feedstock_energy_unit_cost(
             combined_requirements[normalize_name(energy_name)] = amount
 
         for secondary_name, amount in (getattr(dbc, "secondary_feedstock", None) or {}).items():
-            normalized_secondary = normalize_name(secondary_name)
-            if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION:
-                combined_requirements[normalized_secondary] = amount * KG_TO_T
-            else:
-                combined_requirements[normalized_secondary] = amount
+            combined_requirements[normalize_name(secondary_name)] = amount
 
         total_cost = 0.0
         matched = False
@@ -2693,13 +2687,8 @@ class FurnaceGroup:
                 normalized_secondary = normalize_name(secondary_type)
                 if normalized_secondary not in ENERGY_FEEDSTOCK_KEYS:
                     continue
-                converted_volume = (
-                    volume * KG_TO_T
-                    if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION
-                    else volume
-                )
                 combined_requirements[normalized_secondary] = (
-                    combined_requirements.get(normalized_secondary, 0.0) + converted_volume
+                    combined_requirements.get(normalized_secondary, 0.0) + volume
                 )
 
             if not combined_requirements:
@@ -8412,11 +8401,6 @@ class Environment:
                 continue
             for sec_name, volume in secondary_requirements.items():
                 normalized_secondary = normalize_name(sec_name)
-                converted_volume = (
-                    volume * KG_TO_T
-                    if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION
-                    else volume
-                )
                 if (
                     normalized_secondary in input_effectiveness
                 ):  # Should not happen, as each secondary feedstock should only appear once per feedstock and reductant combo
@@ -8424,9 +8408,9 @@ class Environment:
                         "[BOM] Secondary feedstock %s overwriting %.4f with %.4f",
                         normalized_secondary,
                         input_effectiveness[normalized_secondary],
-                        converted_volume,
+                        volume,
                     )
-                input_effectiveness[normalized_secondary] = converted_volume
+                input_effectiveness[normalized_secondary] = volume
         # If no inputs matched the most common reductant
         if not input_effectiveness:
             logger.error(

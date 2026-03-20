@@ -27,7 +27,7 @@ def test_bom_handles_secondary_feedstock_inputs():
                 metallic_charge="io_high",
                 reductant="bio_pci",
                 required_qty=1.0,
-                secondary_feedstock={"bio_pci": 500.0},
+                secondary_feedstock={"bio_pci": 0.5},  # t/t (converted from 500 kg/t at read time)
                 energy_requirements={"electricity": 0.0},
             )
         ]
@@ -53,7 +53,7 @@ def test_bom_from_feedstocks_for_dri_esf_ccs_not_empty():
             self.metallic_charge = "io_low"
             self.reductant = "coal"
             self.required_quantity_per_ton_of_product = 1.5
-            self.secondary_feedstock = {"coking_coal": 50.0}
+            self.secondary_feedstock = {"coking_coal": 0.05}  # t/t (converted from 50 kg/t at read time)
             self.energy_requirements = {"electricity": 100.0}
 
     feed = DummyFeed()

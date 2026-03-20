@@ -79,6 +79,23 @@ The logging configuration file `logging_config.yaml` is located in the repositor
 
 ## How It Works
 
+### Priority Hierarchy
+
+Log messages pass through two gates: the **handler** and the **filter**. Both must allow a message for it to appear.
+
+| Gate | Controlled by | Purpose |
+|------|---------------|---------|
+| Handler threshold | CLI `--log-level` | Sets the minimum level the handler will accept |
+| Context-aware filter | YAML config | Decides per-message based on function overrides, module context, and CLI level |
+
+The filter applies settings in this order (highest priority first):
+
+1. **Function overrides** — if the function name matches an entry in `function_overrides`, that level is used. Module and CLI levels are ignored for filtering.
+2. **Module context** — if running inside a model context (geo/pam/tm), the YAML module level applies (capped by CLI level).
+3. **CLI level** — used directly for code running outside any module context.
+
+**Practical consequence:** A function override of `my_func: DEBUG` lets DEBUG through the *filter*, but the *handler* still enforces `--log-level`. If you run with `--log-level INFO`, the handler discards DEBUG messages before the filter ever sees them. Always run with `--log-level DEBUG` when using DEBUG function overrides.
+
 ### Module Contexts
 
 The simulation runs three economic models in sequence. Each model has its own logging context:
