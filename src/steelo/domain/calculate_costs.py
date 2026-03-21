@@ -328,10 +328,13 @@ def calculate_cost_breakdown_by_feedstock(
                     weighted_cost = carrier_unit_cost * carrier_weight
                     feed_breakdown[normalized_carrier] = feed_breakdown.get(normalized_carrier, 0.0) + weighted_cost
 
-        # Add output revenue for by-products (negative values reduce cost)
+        # Add output revenue for by-products
+        # Physical outputs (dbc.outputs): always revenue, use -abs(price)
+        # Carbon outputs (dbc.carbon_outputs): keep input_costs sign
         if input_costs:
             all_outputs = {**(dbc.outputs or {}), **(dbc.carbon_outputs or {})}
             primary_output_keys = set(dbc.get_primary_outputs().keys())
+            physical_output_keys = set(normalize_name(k) for k in (dbc.outputs or {}).keys())
             if all_outputs:
                 logger.debug(
                     "outputs for %s: all=%s primary(excluded)=%s",
@@ -348,14 +351,15 @@ def calculate_cost_breakdown_by_feedstock(
                 amount = _coerce_to_float(output_amount) or 0.0
                 if amount == 0:
                     continue
-                # Revenue per tonne of FG product, scaled by this feedstock's share of production
-                price = input_costs[normalized_output]
-                revenue = amount * price * demand_share
+                # Physical outputs are always revenue; carbon outputs keep their sign
+                raw_price = input_costs[normalized_output]
+                effective_price = -abs(raw_price) if normalized_output in physical_output_keys else raw_price
+                revenue = amount * effective_price * demand_share
                 logger.debug(
                     "[COST BREAKDOWN] output '%s': amount=%.4f x price=$%.4f x share=%.4f = $%.4f",
                     normalized_output,
                     amount,
-                    price,
+                    effective_price,
                     demand_share,
                     revenue,
                 )
@@ -1831,7 +1835,9 @@ def calculate_cost_adjustments_from_secondary_outputs(
 
     dbc_by_metallic_charge = {dbc.metallic_charge: dbc for dbc in dynamic_business_cases}
     adjustments_outputs = {output: price for output, price in input_costs.items()}
-    # NOTE: By-product revenues must be provided as negative values in input_costs (e.g., slag: -10 USD/t).
+    # NOTE: Physical by-product outputs (dbc.outputs) always generate revenue, so their price
+    # is negated via -abs(price) regardless of sign in input_costs. Carbon outputs
+    # (dbc.carbon_outputs) keep their input_costs sign (positive = storage cost, negative = credit).
 
     total_adjustments = 0.0
     total_product_volume = 0.0
@@ -1855,10 +1861,18 @@ def calculate_cost_adjustments_from_secondary_outputs(
 
         total_product_volume += product_volume
 
-        all_outputs = {**(dbc.outputs or {}), **(dbc.carbon_outputs or {})}
+        # Physical outputs: always revenue (negate absolute price)
+        physical_outputs = dbc.outputs or {}
         material_adjustment = sum(
-            product_volume * adjustments_outputs[output] * all_outputs[output]  # multiply by output amounts per unit
-            for output in all_outputs
+            product_volume * (-abs(adjustments_outputs[output])) * physical_outputs[output]
+            for output in physical_outputs
+            if output in adjustments_outputs
+        )
+        # Carbon outputs: keep input_costs sign (positive = cost, negative = credit)
+        carbon_outputs = dbc.carbon_outputs or {}
+        material_adjustment += sum(
+            product_volume * adjustments_outputs[output] * carbon_outputs[output]
+            for output in carbon_outputs
             if output in adjustments_outputs
         )
         total_adjustments += material_adjustment

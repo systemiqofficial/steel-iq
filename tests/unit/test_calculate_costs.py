@@ -101,6 +101,7 @@ def test_cost_adjustments_ignore_secondary_feedstocks_and_use_product_volume():
         input_costs=input_costs,
     )
 
+    # slag: 1000 * -abs(-10) * 1.0 = -10000 / 1000 = -10.0 (physical output → revenue)
     assert pytest.approx(adjustment, 1e-9) == -10.0
 
 
@@ -576,7 +577,7 @@ def test_cost_breakdown_includes_output_revenue():
 
 
 def test_cost_breakdown_nets_dual_carrier():
-    """bf_gas as both input and output should show net cost in the same column."""
+    """bf_gas as both input and output: positive price in input_costs, output still generates revenue."""
     dbc = _BreakdownDBC(
         metallic_charge="io_low",
         reductant="coke",
@@ -596,8 +597,8 @@ def test_cost_breakdown_nets_dual_carrier():
             "bf_gas": {"unit_cost": 10.0, "demand": 100.0},
         },
     }
-    # bf_gas price negative = revenue when output
-    input_costs = {"bf_gas": -5.0}
+    # bf_gas has POSITIVE price (cost to buy); output should still be revenue via -abs()
+    input_costs = {"bf_gas": 5.0}
 
     result = calculate_cost_breakdown_by_feedstock(
         bill_of_materials=bom,
@@ -608,7 +609,7 @@ def test_cost_breakdown_nets_dual_carrier():
     )
 
     # Energy input: bf_gas unit_cost = 10.0 (full allocation, single feedstock)
-    # Output revenue: 0.2 * -5.0 * 1.0 = -1.0
+    # Output revenue: 0.2 * -abs(5.0) * 1.0 = -1.0 (physical output → always revenue)
     # Net: 10.0 + (-1.0) = 9.0
     assert result["io_low"]["bf_gas"] == pytest.approx(9.0)
 
@@ -752,6 +753,69 @@ def test_secondary_output_adjustment_includes_co2_stored():
     )
 
     # slag: 1000 * -15 * 0.3 = -4500
-    # co2_stored: 1000 * -30 * 0.4 = -12000
+    # slag: 1000 * -abs(-15) * 0.3 = -4500  (physical output → -abs)
+    # co2_stored: 1000 * -30 * 0.4 = -12000  (carbon output → raw sign)
     # total: -16500 / 1000 = -16.5 USD/t product
     assert result == pytest.approx(-16.5)
+
+
+def test_secondary_output_positive_price_produces_revenue():
+    """Physical output with positive input price should still generate revenue (negative adjustment)."""
+    from steelo.domain.calculate_costs import calculate_cost_adjustments_from_secondary_outputs
+
+    dbc = _BreakdownDBC(
+        metallic_charge="io_low",
+        reductant="coke",
+        outputs={"bf_gas": 0.5},
+    )
+    bom = {
+        "materials": {
+            "io_low": {
+                "demand": 1000.0,
+                "product_volume": 1000.0,
+            },
+        },
+    }
+    # bf_gas has POSITIVE price (cost to buy as input)
+    input_costs = {"bf_gas": 0.008}
+
+    result = calculate_cost_adjustments_from_secondary_outputs(
+        bill_of_materials=bom,
+        dynamic_business_cases=[dbc],
+        input_costs=input_costs,
+    )
+
+    # Physical output: 1000 * -abs(0.008) * 0.5 = -4.0
+    # total: -4.0 / 1000 = -0.004 USD/t product (revenue)
+    assert result == pytest.approx(-0.004)
+
+
+def test_secondary_output_co2_stored_positive_is_cost():
+    """co2_stored with positive price (storage cost) in carbon_outputs should increase production cost."""
+    from steelo.domain.calculate_costs import calculate_cost_adjustments_from_secondary_outputs
+
+    dbc = _BreakdownDBC(
+        metallic_charge="io_low",
+        reductant="coke",
+        carbon_outputs={"co2_stored": 0.4},
+    )
+    bom = {
+        "materials": {
+            "io_low": {
+                "demand": 1000.0,
+                "product_volume": 1000.0,
+            },
+        },
+    }
+    # co2_stored positive = you pay for storage
+    input_costs = {"co2_stored": 30.0}
+
+    result = calculate_cost_adjustments_from_secondary_outputs(
+        bill_of_materials=bom,
+        dynamic_business_cases=[dbc],
+        input_costs=input_costs,
+    )
+
+    # Carbon output: 1000 * 30 * 0.4 = 12000
+    # total: 12000 / 1000 = 12.0 USD/t product (cost increase)
+    assert result == pytest.approx(12.0)
