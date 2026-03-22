@@ -595,11 +595,16 @@ def calculate_variable_opex(materials_cost_data: dict, energy_cost_data: dict) -
 
         # Sum total material costs across all materials (excluding current step's energy)
         total_material_cost = 0.0
-        for _, item in materials_data.items():
+        for mat_name, item in materials_data.items():
             # Use total_material_cost which excludes current step's energy
             # This matches what cost_breakdown uses (unit_material_cost)
             item_cost = _coerce_to_float(item.get("total_material_cost")) or 0.0
             total_material_cost += item_cost
+            logger.debug(
+                "[VOPEX] material '%s': total_material_cost=$%.4f",
+                mat_name,
+                item_cost,
+            )
 
         if product_volume and product_volume > 0 and total_material_cost > 0:
             unit_material_cost = total_material_cost / product_volume
@@ -630,9 +635,14 @@ def calculate_variable_opex(materials_cost_data: dict, energy_cost_data: dict) -
 
         # Sum total energy costs across all energy carriers
         total_energy_cost = 0.0
-        for _, item in energy_data.items():
+        for carrier_name, item in energy_data.items():
             item_cost = _coerce_to_float(item.get("total_cost")) or 0.0
             total_energy_cost += item_cost
+            logger.debug(
+                "[VOPEX] energy carrier '%s': total_cost=$%.4f",
+                carrier_name,
+                item_cost,
+            )
 
         if product_volume and product_volume > 0 and total_energy_cost > 0:
             unit_energy_cost = total_energy_cost / product_volume
@@ -660,6 +670,28 @@ def calculate_variable_opex(materials_cost_data: dict, energy_cost_data: dict) -
     material_unit_cost = calculate_material_total(materials_cost_data)
     # Calculate energy cost as total cost / total output
     energy_unit_cost = calculate_energy_total(energy_cost_data)
+
+    # Warn when cost component is None despite data being present
+    if energy_unit_cost is None and energy_cost_data:
+        logger.warning(
+            "[VOPEX] Energy cost is None despite energy data present "
+            "(total_energy_cost <= 0 or no product_volume). Carriers: %s",
+            list(energy_cost_data.keys()),
+        )
+    if material_unit_cost is None and materials_cost_data:
+        logger.warning(
+            "[VOPEX] Material cost is None despite material data present "
+            "(total_material_cost <= 0 or no product_volume). Materials: %s",
+            list(materials_cost_data.keys()),
+        )
+
+    # Log VOPEX component summary
+    logger.debug(
+        "[VOPEX] material=$%.4f/t energy=$%.4f/t total=$%.4f/t",
+        material_unit_cost or 0.0,
+        energy_unit_cost or 0.0,
+        (material_unit_cost or 0.0) + (energy_unit_cost or 0.0),
+    )
 
     # Handle cases where one or both unit costs are None
     if material_unit_cost is None and energy_unit_cost is None:
@@ -1863,18 +1895,35 @@ def calculate_cost_adjustments_from_secondary_outputs(
 
         # Physical outputs: always revenue (negate absolute price)
         physical_outputs = dbc.outputs or {}
-        material_adjustment = sum(
-            product_volume * (-abs(adjustments_outputs[output])) * physical_outputs[output]
-            for output in physical_outputs
-            if output in adjustments_outputs
-        )
+        material_adjustment = 0.0
+        for output in physical_outputs:
+            if output in adjustments_outputs:
+                carrier_adj = product_volume * (-abs(adjustments_outputs[output])) * physical_outputs[output]
+                material_adjustment += carrier_adj
+                logger.debug(
+                    "[SECONDARY OUTPUTS] physical '%s' (%s): vol=%.1f x price=$%.6f x qty=%.4f = $%.4f",
+                    output,
+                    material,
+                    product_volume,
+                    -abs(adjustments_outputs[output]),
+                    physical_outputs[output],
+                    carrier_adj,
+                )
         # Carbon outputs: keep input_costs sign (positive = cost, negative = credit)
         carbon_outputs = dbc.carbon_outputs or {}
-        material_adjustment += sum(
-            product_volume * adjustments_outputs[output] * carbon_outputs[output]
-            for output in carbon_outputs
-            if output in adjustments_outputs
-        )
+        for output in carbon_outputs:
+            if output in adjustments_outputs:
+                carrier_adj = product_volume * adjustments_outputs[output] * carbon_outputs[output]
+                material_adjustment += carrier_adj
+                logger.debug(
+                    "[SECONDARY OUTPUTS] carbon '%s' (%s): vol=%.1f x price=$%.6f x qty=%.4f = $%.4f",
+                    output,
+                    material,
+                    product_volume,
+                    adjustments_outputs[output],
+                    carbon_outputs[output],
+                    carrier_adj,
+                )
         total_adjustments += material_adjustment
 
     result = total_adjustments / total_product_volume if total_product_volume > 0 else 0.0

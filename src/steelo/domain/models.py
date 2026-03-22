@@ -1172,6 +1172,7 @@ class FurnaceGroup:
             Hydrogen costs are typically set separately via Plant.update_furnace_hydrogen_costs()
             to use capped country-level prices calculated from LCOH.
         """
+        logger = logging.getLogger(f"{__name__}.set_energy_costs")
         # Store costs with normalized keys to ensure downstream lookups succeed
         energy_costs: dict[str, float] = {}
         for raw_key, price in costs.items():
@@ -1182,6 +1183,12 @@ class FurnaceGroup:
                 energy_costs[raw_key] = price
 
         self.energy_costs = energy_costs
+        logger.debug(
+            "[ENERGY COSTS] FG %s: set %d carriers, sample: %s",
+            getattr(self, "furnace_group_id", "?"),
+            len({normalize_name(k) for k in energy_costs}),
+            {k: f"${v:.6f}" for k, v in list(energy_costs.items())[:5]},
+        )
 
     def set_subsidised_energy_costs(
         self,
@@ -1512,6 +1519,14 @@ class FurnaceGroup:
         materials = self.bill_of_materials.get("materials", {})
         energy = self.bill_of_materials.get("energy", {})
         vopex = calculate_variable_opex(materials, energy)
+        logger.debug(
+            "[VOPEX] FG %s (%s): vopex=$%.4f/t, materials=%d, energy=%d",
+            self.furnace_group_id,
+            getattr(self.technology, "name", "?"),
+            vopex,
+            len(materials),
+            len(energy),
+        )
 
         # # Record a simple per-tonne breakdown for diagnostics
         # product_volume: float | None = None
@@ -7290,6 +7305,7 @@ class Environment:
               proper modeling of regional hydrogen price ceilings and interregional hydrogen trade
         """
         logger = logging.getLogger(f"{__name__}.Environment.set_input_cost_in_furnace_groups")
+        logged_countries: set[str] = set()
         for plant in world_plants:
             if plant.location.iso3 not in self.input_costs:
                 logger.warning(
@@ -7299,6 +7315,16 @@ class Environment:
 
             # Get input costs from Excel for this country and year
             input_costs = self.input_costs[plant.location.iso3][self.year].copy()
+
+            # Log once per country to avoid flooding
+            if plant.location.iso3 not in logged_countries:
+                logger.debug(
+                    "[INPUT COSTS] %s (year=%d): %s",
+                    plant.location.iso3,
+                    self.year,
+                    {k: f"${v:.6f}" for k, v in input_costs.items()},
+                )
+                logged_countries.add(plant.location.iso3)
 
             # New GEO plants: Preserve their own power infrastructure costs (always set)
             if plant.parent_gem_id.lower() == "indi":
@@ -8606,6 +8632,14 @@ class Environment:
                 )
                 energy_demand = float(demand_share_pct) * capacity
                 total_energy_cost = energy_cost_per_unit * energy_demand
+                if total_energy_cost < 0:
+                    logger.warning(
+                        "[BOM] Negative energy cost for '%s': unit=$%.6f x demand=%.1f = $%.4f",
+                        feedstock,
+                        energy_cost_per_unit,
+                        energy_demand,
+                        total_energy_cost,
+                    )
                 logger.debug(f"[BOM] Energy calculation: demand={energy_demand}, total_cost={total_energy_cost}")
 
                 if energy_demand <= 0:
