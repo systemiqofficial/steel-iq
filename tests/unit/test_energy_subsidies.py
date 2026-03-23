@@ -90,9 +90,11 @@ def test_calculate_energy_price_with_subsidies_floors_at_zero():
 def test_get_subsidised_energy_costs_no_subsidies():
     """Test that no subsidies returns original energy costs unchanged."""
     energy_costs = {"hydrogen": 5000.0, "electricity": 0.10, "natural_gas": 0.03}
-    subsidised, no_sub = calculate_costs.get_subsidised_energy_costs(energy_costs, {})
-    assert subsidised["hydrogen"] == 5000.0
-    assert subsidised["electricity"] == 0.10
+    input_costs, output_costs, no_sub = calculate_costs.get_subsidised_energy_costs(energy_costs, {})
+    assert input_costs["hydrogen"] == 5000.0
+    assert input_costs["electricity"] == 0.10
+    assert output_costs["hydrogen"] == 5000.0
+    assert output_costs["electricity"] == 0.10
     assert no_sub == {}
 
 
@@ -109,12 +111,14 @@ def test_get_subsidised_energy_costs_hydrogen_only():
         subsidy_type="absolute",
         subsidy_amount=1000.0,
     )
-    subsidised, no_sub = calculate_costs.get_subsidised_energy_costs(
+    input_costs, output_costs, no_sub = calculate_costs.get_subsidised_energy_costs(
         energy_costs,
         {"hydrogen": [h2_sub]},
     )
-    assert subsidised["hydrogen"] == 4000.0
-    assert subsidised["electricity"] == 0.10  # unchanged
+    assert input_costs["hydrogen"] == 4000.0
+    assert input_costs["electricity"] == 0.10  # unchanged
+    assert output_costs["hydrogen"] == 6000.0  # 5000 + 1000
+    assert output_costs["electricity"] == 0.10  # unchanged
     assert no_sub["hydrogen"] == 5000.0
 
 
@@ -131,17 +135,19 @@ def test_get_subsidised_energy_costs_electricity_only():
         subsidy_type="relative",
         subsidy_amount=0.2,
     )
-    subsidised, no_sub = calculate_costs.get_subsidised_energy_costs(
+    input_costs, output_costs, no_sub = calculate_costs.get_subsidised_energy_costs(
         energy_costs,
         {"electricity": [elec_sub]},
     )
-    assert subsidised["hydrogen"] == 5000.0  # unchanged
-    assert subsidised["electricity"] == 0.08  # 20% reduction
+    assert input_costs["hydrogen"] == 5000.0  # unchanged
+    assert input_costs["electricity"] == 0.08  # 20% reduction
+    assert output_costs["hydrogen"] == 5000.0  # unchanged
+    assert output_costs["electricity"] == pytest.approx(0.12)  # 20% increase
     assert no_sub["electricity"] == 0.10
 
 
 def test_get_subsidised_energy_costs_both_subsidies():
-    """Test that both hydrogen and electricity subsidies apply."""
+    """Test that both hydrogen and electricity subsidies apply to input and output."""
     energy_costs = {"hydrogen": 5000.0, "electricity": 0.10}
     h2_sub = Subsidy(
         scenario_name="test_h2",
@@ -163,12 +169,14 @@ def test_get_subsidised_energy_costs_both_subsidies():
         subsidy_type="relative",
         subsidy_amount=0.2,
     )
-    subsidised, no_sub = calculate_costs.get_subsidised_energy_costs(
+    input_costs, output_costs, no_sub = calculate_costs.get_subsidised_energy_costs(
         energy_costs,
         {"hydrogen": [h2_sub], "electricity": [elec_sub]},
     )
-    assert subsidised["hydrogen"] == 4000.0
-    assert subsidised["electricity"] == 0.08
+    assert input_costs["hydrogen"] == 4000.0
+    assert input_costs["electricity"] == 0.08
+    assert output_costs["hydrogen"] == 6000.0
+    assert output_costs["electricity"] == pytest.approx(0.12)
     assert no_sub["hydrogen"] == 5000.0
     assert no_sub["electricity"] == 0.10
 
@@ -186,12 +194,14 @@ def test_get_subsidised_energy_costs_preserves_other_carriers():
         subsidy_type="absolute",
         subsidy_amount=1000.0,
     )
-    subsidised, no_sub = calculate_costs.get_subsidised_energy_costs(
+    input_costs, output_costs, no_sub = calculate_costs.get_subsidised_energy_costs(
         energy_costs,
         {"hydrogen": [h2_sub]},
     )
-    assert subsidised["natural_gas"] == 0.03
-    assert subsidised["coal"] == 0.02
+    assert input_costs["natural_gas"] == 0.03
+    assert input_costs["coal"] == 0.02
+    assert output_costs["natural_gas"] == 0.03
+    assert output_costs["coal"] == 0.02
 
 
 def test_get_subsidised_energy_costs_zero_price_not_modified():
@@ -207,11 +217,12 @@ def test_get_subsidised_energy_costs_zero_price_not_modified():
         subsidy_type="absolute",
         subsidy_amount=1000.0,
     )
-    subsidised, no_sub = calculate_costs.get_subsidised_energy_costs(
+    input_costs, output_costs, no_sub = calculate_costs.get_subsidised_energy_costs(
         energy_costs,
         {"hydrogen": [h2_sub]},
     )
-    assert subsidised["hydrogen"] == 0.0  # zero price not modified
+    assert input_costs["hydrogen"] == 0.0  # zero price not modified
+    assert output_costs["hydrogen"] == 0.0  # zero price not modified
     assert no_sub["hydrogen"] == 0.0
 
 
@@ -262,14 +273,15 @@ def test_get_subsidised_energy_costs_natural_gas():
         subsidy_type="absolute",
         subsidy_amount=0.01,
     )
-    subsidised, no_sub = calculate_costs.get_subsidised_energy_costs(
+    input_costs, output_costs, no_sub = calculate_costs.get_subsidised_energy_costs(
         energy_costs,
         {"natural_gas": [ng_sub]},
     )
-    assert subsidised["natural_gas"] == pytest.approx(0.02)
+    assert input_costs["natural_gas"] == pytest.approx(0.02)
+    assert output_costs["natural_gas"] == pytest.approx(0.04)  # 0.03 + 0.01
     assert no_sub["natural_gas"] == 0.03
-    assert subsidised["hydrogen"] == 5000.0  # unchanged
-    assert subsidised["electricity"] == 0.10  # unchanged
+    assert input_costs["hydrogen"] == 5000.0  # unchanged
+    assert input_costs["electricity"] == 0.10  # unchanged
 
 
 def test_get_subsidised_energy_costs_multiple_carriers():
@@ -295,18 +307,23 @@ def test_get_subsidised_energy_costs_multiple_carriers():
         subsidy_type="relative",
         subsidy_amount=0.5,
     )
-    subsidised, no_sub = calculate_costs.get_subsidised_energy_costs(
+    input_costs, output_costs, no_sub = calculate_costs.get_subsidised_energy_costs(
         energy_costs,
         {"hydrogen": [h2_sub], "natural_gas": [ng_sub]},
     )
-    assert subsidised["hydrogen"] == 4000.0
-    assert subsidised["natural_gas"] == pytest.approx(0.015)
+    assert input_costs["hydrogen"] == 4000.0
+    assert input_costs["natural_gas"] == pytest.approx(0.015)
+    assert output_costs["hydrogen"] == 6000.0
+    assert output_costs["natural_gas"] == pytest.approx(0.045)  # 0.03 + 50% of 0.03
     assert no_sub["hydrogen"] == 5000.0
     assert no_sub["natural_gas"] == 0.03
 
 
 def test_furnace_group_set_subsidised_energy_costs():
-    """Test that FurnaceGroup tracks subsidised energy costs and original prices."""
+    """Test that FurnaceGroup stores input, output, and original prices separately.
+
+    A subsidy simultaneously reduces input cost and increases output profit.
+    """
     from datetime import date
     from steelo.domain.models import FurnaceGroup, PointInTime, Technology
 
@@ -324,8 +341,8 @@ def test_furnace_group_set_subsidised_energy_costs():
         lifetime=lifetime,
     )
 
-    # Set initial energy costs on the furnace group
-    furnace_group.energy_costs = {"hydrogen": 5000.0, "electricity": 0.10, "natural_gas": 0.03}
+    # Set initial energy costs via set_energy_costs (populates output_energy_costs)
+    furnace_group.set_energy_costs(hydrogen=5000.0, electricity=0.10, natural_gas=0.03)
 
     # Create subsidies
     h2_subsidy = Subsidy(
@@ -350,21 +367,28 @@ def test_furnace_group_set_subsidised_energy_costs():
     )
 
     # Prepare subsidised costs (simulating what get_subsidised_energy_costs returns)
-    subsidised_costs = {"hydrogen": 4000.0, "electricity": 0.08, "natural_gas": 0.03}
+    input_costs = {"hydrogen": 4000.0, "electricity": 0.08, "natural_gas": 0.03}
+    output_costs = {"hydrogen": 6000.0, "electricity": 0.12, "natural_gas": 0.03}
     no_subsidy_prices = {"hydrogen": 5000.0, "electricity": 0.10}
     energy_subsidies = {"hydrogen": [h2_subsidy], "electricity": [elec_subsidy]}
 
     # Apply subsidised energy costs
     furnace_group.set_subsidised_energy_costs(
-        subsidised_costs=subsidised_costs,
+        input_costs=input_costs,
+        output_costs=output_costs,
         no_subsidy_prices=no_subsidy_prices,
         energy_subsidies=energy_subsidies,
     )
 
-    # Verify energy_costs updated
+    # Verify input costs (reduced by subsidy)
     assert furnace_group.energy_costs["hydrogen"] == 4000.0
     assert furnace_group.energy_costs["electricity"] == 0.08
     assert furnace_group.energy_costs["natural_gas"] == 0.03
+
+    # Verify output costs (increased by subsidy)
+    assert furnace_group.output_energy_costs["hydrogen"] == 6000.0
+    assert furnace_group.output_energy_costs["electricity"] == pytest.approx(0.12)
+    assert furnace_group.output_energy_costs["natural_gas"] == 0.03
 
     # Verify original prices stored
     assert furnace_group.energy_costs_no_subsidy["hydrogen"] == 5000.0

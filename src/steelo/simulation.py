@@ -1024,12 +1024,17 @@ class SimulationRunner:
                             active_energy_subs[carrier] = active
 
                     if active_energy_subs:
-                        subsidised_costs, no_subsidy_prices = get_subsidised_energy_costs(
+                        input_costs, output_costs, no_subsidy_prices = get_subsidised_energy_costs(
                             fg.energy_costs, active_energy_subs
                         )
-                        fg.set_subsidised_energy_costs(subsidised_costs, no_subsidy_prices, active_energy_subs)
+                        fg.set_subsidised_energy_costs(
+                            input_costs,
+                            output_costs,
+                            no_subsidy_prices,
+                            active_energy_subs,
+                        )
                         price_changes = ", ".join(
-                            f"{c}: ${no_subsidy_prices[c]:.4f}->${subsidised_costs.get(c, no_subsidy_prices[c]):.4f}"
+                            f"{c}: ${no_subsidy_prices[c]:.4f}->${input_costs.get(c, no_subsidy_prices[c]):.4f}"
                             for c in sorted(no_subsidy_prices)
                         )
                         logging.debug(

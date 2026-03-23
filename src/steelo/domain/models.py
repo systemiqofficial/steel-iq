@@ -1199,26 +1199,33 @@ class FurnaceGroup:
 
     def set_subsidised_energy_costs(
         self,
-        subsidised_costs: dict[str, float],
+        input_costs: dict[str, float],
+        output_costs: dict[str, float],
         no_subsidy_prices: dict[str, float],
         energy_subsidies: dict[str, list["Subsidy"]],
     ) -> None:
-        """
-        Set energy costs with subsidies applied and track original prices.
+        """Set energy costs with subsidies applied and track original prices.
+
+        A subsidy simultaneously reduces input cost and increases output profit:
+        - ``input_costs[carrier] = max(0, price - subsidy)``
+        - ``output_costs[carrier] = price + subsidy``
 
         Args:
-            subsidised_costs: Energy costs with subsidies applied
-            no_subsidy_prices: Original prices for all subsidised carriers
-            energy_subsidies: Applied subsidies per carrier {carrier: [Subsidy, ...]}
+            input_costs: Subsidised prices for consumption (BOM energy, VOPEX).
+            output_costs: Subsidised prices for by-product revenue.
+            no_subsidy_prices: Original prices for all subsidised carriers.
+            energy_subsidies: Applied subsidies per carrier {carrier: [Subsidy, ...]}.
         """
         logger = logging.getLogger(f"{__name__}.set_subsidised_energy_costs")
-        self.energy_costs = subsidised_costs
-        self.output_energy_costs = subsidised_costs.copy()
+        self.energy_costs = input_costs
+        self.output_energy_costs = output_costs
         self.energy_costs_no_subsidy = no_subsidy_prices
         for carrier, subs in energy_subsidies.items():
             self.applied_subsidies[carrier] = subs
         diffs = [
-            f"{c} ${no_subsidy_prices[c]:.4f}->${subsidised_costs.get(c, no_subsidy_prices[c]):.4f}"
+            f"{c} in=${input_costs.get(c, no_subsidy_prices[c]):.4f}"
+            f" out=${output_costs.get(c, no_subsidy_prices[c]):.4f}"
+            f" (base=${no_subsidy_prices[c]:.4f})"
             for c in sorted(no_subsidy_prices)
         ]
         if diffs:
@@ -5743,7 +5750,7 @@ class PlantGroup:
                         temp_costs = dict(fg.energy_costs)
                         temp_costs["electricity"] = power_price
                         temp_costs["hydrogen"] = hydrogen_price
-                        subsidised, _ = cc.get_subsidised_energy_costs(temp_costs, active_energy_subs)
+                        subsidised, _, _ = cc.get_subsidised_energy_costs(temp_costs, active_energy_subs)
                         for carrier in active_energy_subs:
                             if carrier in subsidised:
                                 new_costs[carrier] = subsidised[carrier]

@@ -106,27 +106,43 @@ def collect_active_subsidies_over_period(
     return list(active)
 
 
+def _compute_total_subsidy(
+    energy_price: float,
+    energy_subsidies: list["Subsidy"],
+) -> float:
+    """Accumulate the total subsidy amount from a list of subsidies.
+
+    Args:
+        energy_price: Base price used for relative subsidy calculations.
+        energy_subsidies: Active subsidies for a single carrier.
+
+    Returns:
+        float: Total subsidy value (always non-negative).
+    """
+    total = 0.0
+    for subsidy in energy_subsidies:
+        if subsidy.subsidy_type == "absolute":
+            total += subsidy.subsidy_amount
+        elif subsidy.subsidy_type == "relative":
+            total += energy_price * subsidy.subsidy_amount
+    return total
+
+
 def calculate_energy_price_with_subsidies(
     energy_price: float,
     energy_subsidies: list["Subsidy"],
 ) -> float:
-    """
-    Apply subsidies to an energy price.
+    """Apply subsidies to an energy price (input-side: reduces cost, floored at 0).
 
     Args:
-        energy_price: Base price before subsidy (USD/unit for the carrier)
-        energy_subsidies: List of active subsidies for this energy carrier
+        energy_price: Base price before subsidy (USD/unit for the carrier).
+        energy_subsidies: List of active subsidies for this energy carrier.
 
     Returns:
-        float: Subsidised price (floored at 0)
+        float: Subsidised price (floored at 0).
     """
     logger = logging.getLogger(f"{__name__}.calculate_energy_price_with_subsidies")
-    total_subsidy = 0.0
-    for subsidy in energy_subsidies:
-        if subsidy.subsidy_type == "absolute":
-            total_subsidy += subsidy.subsidy_amount
-        elif subsidy.subsidy_type == "relative":
-            total_subsidy += energy_price * subsidy.subsidy_amount
+    total_subsidy = _compute_total_subsidy(energy_price, energy_subsidies)
     result = max(0.0, energy_price - total_subsidy)
     logger.debug(
         "[ENERGY SUBS] price=$%.4f total_subsidy=$%.4f result=$%.4f (from %d subsidies)",
@@ -141,18 +157,22 @@ def calculate_energy_price_with_subsidies(
 def get_subsidised_energy_costs(
     energy_costs: dict[str, float],
     energy_subsidies: dict[str, list["Subsidy"]],
-) -> tuple[dict[str, float], dict[str, float]]:
-    """
-    Create energy costs dict with subsidies applied for any energy carriers.
+) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
+    """Create input and output energy cost dicts with subsidies applied.
+
+    A subsidy simultaneously:
+    - Reduces the input cost (cheaper to consume): ``max(0, price - subsidy)``
+    - Increases the output profit (more profitable to produce): ``price + subsidy``
 
     Args:
-        energy_costs: Original energy costs dict {carrier: price}
-        energy_subsidies: Active subsidies per carrier {carrier_name: [Subsidy, ...]}
+        energy_costs: Original energy costs dict {carrier: price}.
+        energy_subsidies: Active subsidies per carrier {carrier_name: [Subsidy, ...]}.
 
     Returns:
-        tuple: (subsidised_costs, no_subsidy_prices)
-        - subsidised_costs: dict with subsidised prices (to use in calculations)
-        - no_subsidy_prices: original prices for all subsidised carriers
+        tuple: (input_costs, output_costs, no_subsidy_prices)
+        - input_costs: subsidised prices for consumption (BOM energy, VOPEX).
+        - output_costs: subsidised prices for by-product revenue.
+        - no_subsidy_prices: original prices for all subsidised carriers.
 
     Raises:
         KeyError: If subsidies provided for a carrier not present in energy_costs.
@@ -160,7 +180,8 @@ def get_subsidised_energy_costs(
     import copy
 
     logger = logging.getLogger(f"{__name__}.get_subsidised_energy_costs")
-    subsidised = copy.copy(energy_costs)
+    input_costs = copy.copy(energy_costs)
+    output_costs = copy.copy(energy_costs)
     no_subsidy_prices: dict[str, float] = {}
 
     for carrier, subs in energy_subsidies.items():
@@ -174,16 +195,19 @@ def get_subsidised_energy_costs(
         price = energy_costs[carrier]
         no_subsidy_prices[carrier] = price
         if price > 0:
-            subsidised[carrier] = calculate_energy_price_with_subsidies(price, subs)
+            total_subsidy = _compute_total_subsidy(price, subs)
+            input_costs[carrier] = max(0.0, price - total_subsidy)
+            output_costs[carrier] = price + total_subsidy
             logger.debug(
-                "[ENERGY SUBS] carrier '%s': $%.4f -> $%.4f (%d subsidies applied)",
+                "[ENERGY SUBS] carrier '%s': base=$%.4f input=$%.4f output=$%.4f (%d subsidies)",
                 carrier,
                 price,
-                subsidised[carrier],
+                input_costs[carrier],
+                output_costs[carrier],
                 len(subs),
             )
 
-    return subsidised, no_subsidy_prices
+    return input_costs, output_costs, no_subsidy_prices
 
 
 def calculate_cost_breakdown_by_feedstock(

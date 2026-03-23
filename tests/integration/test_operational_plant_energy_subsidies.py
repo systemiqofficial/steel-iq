@@ -64,11 +64,16 @@ def apply_energy_subsidies_to_fg(fg, iso3, energy_subsidies, year):
             active_energy_subs[carrier] = active
 
     if active_energy_subs:
-        subsidised_costs, no_subsidy_prices = get_subsidised_energy_costs(
+        input_costs, output_costs, no_subsidy_prices = get_subsidised_energy_costs(
             fg.energy_costs,
             active_energy_subs,
         )
-        fg.set_subsidised_energy_costs(subsidised_costs, no_subsidy_prices, active_energy_subs)
+        fg.set_subsidised_energy_costs(
+            input_costs,
+            output_costs,
+            no_subsidy_prices,
+            active_energy_subs,
+        )
 
 
 def test_h2_subsidy_applied_to_furnace_group(plant_with_fg_in_usa):
@@ -454,31 +459,31 @@ def test_get_subsidised_energy_costs_with_non_h2_elec_carrier():
         subsidy_amount=0.005,
     )
     # Must not raise KeyError
-    subsidised, no_sub = get_subsidised_energy_costs(
+    input_costs, output_costs, no_sub = get_subsidised_energy_costs(
         full_energy_costs,
         {"natural_gas": [ng_sub]},
     )
-    assert subsidised["natural_gas"] == pytest.approx(0.025)
+    assert input_costs["natural_gas"] == pytest.approx(0.025)
+    assert output_costs["natural_gas"] == pytest.approx(0.035)  # 0.03 + 0.005
     assert no_sub["natural_gas"] == 0.03
     # Unsubsidised carriers unchanged
-    assert subsidised["hydrogen"] == 5000.0
-    assert subsidised["coal"] == 0.025
+    assert input_costs["hydrogen"] == 5000.0
+    assert input_costs["coal"] == 0.025
 
 
-def test_by_product_revenue_uses_subsidised_price(plant_with_fg_in_usa):
-    """Verify that cost_adjustments_from_secondary_outputs uses subsidised energy_costs.
+def test_subsidy_reduces_input_cost_and_increases_output_profit(plant_with_fg_in_usa):
+    """Verify dual-sided subsidy: input cost reduced, output profit increased.
 
-    After Stage 2, FurnaceGroup passes self.energy_costs (which receives subsidies)
-    to cost adjustment functions, so subsidised by-product prices flow to revenue.
+    A subsidy simultaneously reduces the input price (cheaper to consume) and
+    increases the output price (more profitable to produce as by-product).
     """
     fg = plant_with_fg_in_usa.furnace_groups[0]
     iso3 = plant_with_fg_in_usa.location.iso3
     year = Year(2025)
 
-    # Add co2_stored to energy_costs (it's a by-product with a price)
-    fg.energy_costs["co2_stored"] = -50.0  # negative = revenue
+    # Set base prices via set_energy_costs (populates both energy_costs and output_energy_costs)
+    fg.set_energy_costs(co2_stored=50.0, electricity=0.10)
 
-    # Apply a subsidy that makes co2_stored more valuable (more negative)
     co2_subsidy = Subsidy(
         scenario_name="45Q",
         iso3="USA",
@@ -492,17 +497,19 @@ def test_by_product_revenue_uses_subsidised_price(plant_with_fg_in_usa):
     energy_subsidies = {"co2_stored": {"USA": {"DRI": [co2_subsidy]}}}
     apply_energy_subsidies_to_fg(fg, iso3, energy_subsidies, year)
 
-    # co2_stored price should be subsidised (price - subsidy, floored at 0)
-    # -50 is not > 0 so subsidy won't apply via calculate_energy_price_with_subsidies
-    # This verifies the energy_costs dict is what gets passed to cost functions
-    assert fg.energy_costs["co2_stored"] == -50.0  # negative prices aren't subsidised
+    # Input cost reduced: 50 - 25 = 25
+    assert fg.energy_costs["co2_stored"] == pytest.approx(25.0)
+    # Output profit increased: 50 + 25 = 75
+    assert fg.output_energy_costs["co2_stored"] == pytest.approx(75.0)
+    # Original price preserved
+    assert fg.energy_costs_no_subsidy["co2_stored"] == 50.0
 
-    # Now test with a positive co2_stored price scenario
+    # Negative co2_stored (credit) — subsidy skipped due to price > 0 guard
     fg2 = plant_with_fg_in_usa.furnace_groups[0]
-    fg2.energy_costs["co2_stored"] = 50.0
+    fg2.set_energy_costs(co2_stored=-50.0, electricity=0.10)
     fg2.energy_costs_no_subsidy = {}
     fg2.applied_subsidies = {}
     apply_energy_subsidies_to_fg(fg2, iso3, energy_subsidies, year)
 
-    assert fg2.energy_costs["co2_stored"] == pytest.approx(25.0), "50 - 25 = 25"
-    assert fg2.energy_costs_no_subsidy["co2_stored"] == 50.0
+    assert fg2.energy_costs["co2_stored"] == -50.0  # negative prices not subsidised
+    assert fg2.output_energy_costs["co2_stored"] == -50.0

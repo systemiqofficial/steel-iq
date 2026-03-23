@@ -255,7 +255,7 @@ def prepare_cost_data_for_business_opportunity(
                         active_energy_subs[carrier] = active
 
                 if active_energy_subs:
-                    energy_costs_tech, _ = cc.get_subsidised_energy_costs(
+                    energy_costs_tech, _, _ = cc.get_subsidised_energy_costs(
                         energy_costs_site,
                         active_energy_subs,
                     )
