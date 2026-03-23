@@ -504,12 +504,12 @@ def test_subsidy_reduces_input_cost_and_increases_output_profit(plant_with_fg_in
     # Original price preserved
     assert fg.energy_costs_no_subsidy["co2_stored"] == 50.0
 
-    # Negative co2_stored (credit) — subsidy skipped due to price > 0 guard
+    # Negative co2_stored (credit) — subsidy still applied
     fg2 = plant_with_fg_in_usa.furnace_groups[0]
     fg2.set_energy_costs(co2_stored=-50.0, electricity=0.10)
     fg2.energy_costs_no_subsidy = {}
     fg2.applied_subsidies = {}
     apply_energy_subsidies_to_fg(fg2, iso3, energy_subsidies, year)
 
-    assert fg2.energy_costs["co2_stored"] == -50.0  # negative prices not subsidised
-    assert fg2.output_energy_costs["co2_stored"] == -50.0
+    assert fg2.energy_costs["co2_stored"] == pytest.approx(0.0)  # max(0, -50 - 25) = 0
+    assert fg2.output_energy_costs["co2_stored"] == pytest.approx(-25.0)  # -50 + 25 = -25

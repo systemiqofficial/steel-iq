@@ -194,18 +194,17 @@ def get_subsidised_energy_costs(
             )
         price = energy_costs[carrier]
         no_subsidy_prices[carrier] = price
-        if price > 0:
-            total_subsidy = _compute_total_subsidy(price, subs)
-            input_costs[carrier] = max(0.0, price - total_subsidy)
-            output_costs[carrier] = price + total_subsidy
-            logger.debug(
-                "[ENERGY SUBS] carrier '%s': base=$%.4f input=$%.4f output=$%.4f (%d subsidies)",
-                carrier,
-                price,
-                input_costs[carrier],
-                output_costs[carrier],
-                len(subs),
-            )
+        input_costs[carrier] = calculate_energy_price_with_subsidies(price, subs)
+        total_subsidy = _compute_total_subsidy(price, subs)
+        output_costs[carrier] = price + total_subsidy
+        logger.debug(
+            "[ENERGY SUBS] carrier '%s': base=$%.4f input=$%.4f output=$%.4f (%d subsidies)",
+            carrier,
+            price,
+            input_costs[carrier],
+            output_costs[carrier],
+            len(subs),
+        )
 
     return input_costs, output_costs, no_subsidy_prices
 

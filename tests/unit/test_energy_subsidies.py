@@ -204,8 +204,8 @@ def test_get_subsidised_energy_costs_preserves_other_carriers():
     assert output_costs["coal"] == 0.02
 
 
-def test_get_subsidised_energy_costs_zero_price_not_modified():
-    """Test that zero price carriers are not modified even with subsidies."""
+def test_get_subsidised_energy_costs_zero_price_still_subsidised():
+    """Test that zero-priced carriers still receive subsidies on the output side."""
     energy_costs = {"hydrogen": 0.0, "electricity": 0.10}
     h2_sub = Subsidy(
         scenario_name="test",
@@ -221,8 +221,8 @@ def test_get_subsidised_energy_costs_zero_price_not_modified():
         energy_costs,
         {"hydrogen": [h2_sub]},
     )
-    assert input_costs["hydrogen"] == 0.0  # zero price not modified
-    assert output_costs["hydrogen"] == 0.0  # zero price not modified
+    assert input_costs["hydrogen"] == 0.0  # max(0, 0 - 1000) = 0
+    assert output_costs["hydrogen"] == 1000.0  # 0 + 1000 = 1000
     assert no_sub["hydrogen"] == 0.0
 
 
