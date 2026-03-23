@@ -5739,12 +5739,12 @@ class PlantGroup:
                     new_costs["hydrogen"] = hydrogen_price
 
                     # Apply energy carrier subsidies
-                    active_energy_subs = cc.collect_active_energy_subsidies(
-                        energy_subsidies,
-                        iso3,
-                        fg.technology.name,
-                        year,
-                    )
+                    active_energy_subs: dict[str, list] = {}
+                    for carrier, carrier_subs in energy_subsidies.items():
+                        all_subs = carrier_subs.get(iso3, {}).get(fg.technology.name, [])
+                        active = filter_subsidies_for_year(all_subs, year)
+                        if active:
+                            active_energy_subs[carrier] = active
 
                     if active_energy_subs:
                         temp_costs = dict(fg.energy_costs)

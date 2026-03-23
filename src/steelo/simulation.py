@@ -34,11 +34,7 @@ from steelo.utilities.plotting import (
 )
 from .logging_config import LoggingConfig
 from steelo.domain.constants import T_TO_KT, MT_TO_T
-from steelo.domain.calculate_costs import (
-    collect_active_energy_subsidies,
-    filter_subsidies_for_year,
-    get_subsidised_energy_costs,
-)
+from steelo.domain.calculate_costs import filter_subsidies_for_year, get_subsidised_energy_costs
 from .furnace_breakdown_logging_minimal import FurnaceBreakdownLogger
 
 if TYPE_CHECKING:
@@ -1020,12 +1016,12 @@ class SimulationRunner:
 
                 # Apply energy carrier subsidies to energy_costs (after H2 price update)
                 for fg in plant.furnace_groups:
-                    active_energy_subs = collect_active_energy_subsidies(
-                        bus.env.energy_subsidies,
-                        plant.location.iso3,
-                        fg.technology.name,
-                        bus.env.year,
-                    )
+                    active_energy_subs: dict[str, list] = {}
+                    for carrier, carrier_subs in bus.env.energy_subsidies.items():
+                        all_subs = carrier_subs.get(plant.location.iso3, {}).get(fg.technology.name, [])
+                        active = filter_subsidies_for_year(all_subs, bus.env.year)
+                        if active:
+                            active_energy_subs[carrier] = active
 
                     if active_energy_subs:
                         input_costs, output_costs, no_subsidy_prices = get_subsidised_energy_costs(
