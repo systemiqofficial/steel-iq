@@ -247,12 +247,12 @@ def prepare_cost_data_for_business_opportunity(
 
                 # Apply energy carrier subsidies for this technology
                 assert energy_costs_site is not None  # Help mypy understand the control flow
-                active_energy_subs: dict[str, list] = {}
-                for carrier, carrier_subs in energy_subsidies.items():
-                    all_subs = carrier_subs.get(site["iso3"], {}).get(tech, [])
-                    active = cc.filter_subsidies_for_year(all_subs, target_year)
-                    if active:
-                        active_energy_subs[carrier] = active
+                active_energy_subs = cc.collect_active_energy_subsidies(
+                    energy_subsidies,
+                    site["iso3"],
+                    tech,
+                    target_year,
+                )
 
                 if active_energy_subs:
                     energy_costs_tech, _, _ = cc.get_subsidised_energy_costs(

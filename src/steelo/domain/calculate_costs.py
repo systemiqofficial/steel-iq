@@ -106,6 +106,37 @@ def collect_active_subsidies_over_period(
     return list(active)
 
 
+def collect_active_energy_subsidies(
+    energy_subsidies: dict[str, dict[str, dict[str, list["Subsidy"]]]],
+    iso3: str,
+    technology_name: str,
+    year: "Year",
+) -> dict[str, list["Subsidy"]]:
+    """Collect active energy subsidies for a location/technology/year.
+
+    Checks both technology-specific subsidies and technology_name="all"
+    subsidies, merging them for each carrier.
+
+    Args:
+        energy_subsidies: Nested dict {carrier: {iso3: {tech: [Subsidy, ...]}}}.
+        iso3: Country ISO3 code.
+        technology_name: Technology name to look up.
+        year: Simulation year.
+
+    Returns:
+        Dict of {carrier: [active subsidies]} for carriers with active subsidies.
+    """
+    active_energy_subs: dict[str, list[Subsidy]] = {}
+    for carrier, carrier_subs in energy_subsidies.items():
+        country_subs = carrier_subs.get(iso3, {})
+        tech_subs = country_subs.get(technology_name, [])
+        all_tech_subs = country_subs.get("all", [])
+        active = filter_subsidies_for_year(tech_subs + all_tech_subs, year)
+        if active:
+            active_energy_subs[carrier] = active
+    return active_energy_subs
+
+
 def _compute_total_subsidy(
     energy_price: float,
     energy_subsidies: list["Subsidy"],
