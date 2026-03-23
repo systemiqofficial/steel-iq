@@ -162,7 +162,8 @@ def get_subsidised_energy_costs(
 
     A subsidy simultaneously:
     - Reduces the input cost (cheaper to consume): ``max(0, price - subsidy)``
-    - Increases the output profit (more profitable to produce): ``price + subsidy``
+    - For physical carriers: increases output profit: ``price + subsidy``
+    - For carbon carriers (co2_*): reduces output cost/increases credit: ``price - subsidy``
 
     Args:
         energy_costs: Original energy costs dict {carrier: price}.
@@ -196,7 +197,12 @@ def get_subsidised_energy_costs(
         no_subsidy_prices[carrier] = price
         input_costs[carrier] = calculate_energy_price_with_subsidies(price, subs)
         total_subsidy = _compute_total_subsidy(price, subs)
-        output_costs[carrier] = price + total_subsidy
+        # Physical carriers: subsidy increases output revenue (price + subsidy)
+        # Carbon carriers (co2_*): subsidy reduces cost/increases credit (price - subsidy)
+        if carrier.startswith("co2"):
+            output_costs[carrier] = price - total_subsidy
+        else:
+            output_costs[carrier] = price + total_subsidy
         logger.debug(
             "[ENERGY SUBS] carrier '%s': base=$%.4f input=$%.4f output=$%.4f (%d subsidies)",
             carrier,
