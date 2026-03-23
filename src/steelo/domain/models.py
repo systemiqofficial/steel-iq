@@ -6191,10 +6191,10 @@ class Subsidy:
         iso3: str,
         start_year: Year,
         end_year: Year,
-        technology_name: str = "all",
-        cost_item: str = "opex",
-        subsidy_type: str = "absolute",
-        subsidy_amount: float = 0,
+        technology_name: str,
+        cost_item: str,
+        subsidy_type: str,
+        subsidy_amount: float,
     ) -> None:
         self.scenario_name = scenario_name
         self.iso3 = iso3
