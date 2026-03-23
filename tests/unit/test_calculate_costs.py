@@ -98,7 +98,7 @@ def test_cost_adjustments_ignore_secondary_feedstocks_and_use_product_volume():
     adjustment = calculate_cost_adjustments_from_secondary_outputs(
         bill_of_materials=bill_of_materials,
         dynamic_business_cases=dynamic_business_cases,
-        input_costs=input_costs,
+        output_costs=input_costs,
     )
 
     # slag: 1000 * -abs(-10) * 1.0 = -10000 / 1000 = -10.0 (physical output → revenue)
@@ -568,7 +568,7 @@ def test_cost_breakdown_includes_output_revenue():
         chosen_reductant="coke",
         dynamic_business_cases=[dbc],
         energy_costs={},
-        input_costs=input_costs,
+        output_costs=input_costs,
     )
 
     # slag revenue: 0.3 t/t product * -15 USD/t * 1.0 demand_share = -4.5 USD/t product
@@ -605,7 +605,7 @@ def test_cost_breakdown_nets_dual_carrier():
         chosen_reductant="coke",
         dynamic_business_cases=[dbc],
         energy_costs={},
-        input_costs=input_costs,
+        output_costs=input_costs,
     )
 
     # Energy input: bf_gas unit_cost = 10.0 (full allocation, single feedstock)
@@ -641,7 +641,7 @@ def test_cost_breakdown_excludes_primary_products():
         chosen_reductant="",
         dynamic_business_cases=[dbc],
         energy_costs={},
-        input_costs=input_costs,
+        output_costs=input_costs,
     )
 
     # steel should NOT appear as output revenue (it's a primary product)
@@ -676,7 +676,7 @@ def test_cost_breakdown_skips_outputs_without_price():
         chosen_reductant="coke",
         dynamic_business_cases=[dbc],
         energy_costs={},
-        input_costs=input_costs,
+        output_costs=input_costs,
         cost_breakdown_keys=cost_breakdown_keys,
     )
 
@@ -718,7 +718,7 @@ def test_cost_breakdown_co2_stored_revenue():
         chosen_reductant="coke",
         dynamic_business_cases=[dbc],
         energy_costs={},
-        input_costs=input_costs,
+        output_costs=input_costs,
     )
 
     # co2_stored revenue: 0.4 t/t * -30 USD/t * 1.0 share = -12.0 USD/t product
@@ -749,7 +749,7 @@ def test_secondary_output_adjustment_includes_co2_stored():
     result = calculate_cost_adjustments_from_secondary_outputs(
         bill_of_materials=bom,
         dynamic_business_cases=[dbc],
-        input_costs=input_costs,
+        output_costs=input_costs,
     )
 
     # slag: 1000 * -15 * 0.3 = -4500
@@ -782,7 +782,7 @@ def test_secondary_output_positive_price_produces_revenue():
     result = calculate_cost_adjustments_from_secondary_outputs(
         bill_of_materials=bom,
         dynamic_business_cases=[dbc],
-        input_costs=input_costs,
+        output_costs=input_costs,
     )
 
     # Physical output: 1000 * -abs(0.008) * 0.5 = -4.0
@@ -813,7 +813,7 @@ def test_secondary_output_co2_stored_positive_is_cost():
     result = calculate_cost_adjustments_from_secondary_outputs(
         bill_of_materials=bom,
         dynamic_business_cases=[dbc],
-        input_costs=input_costs,
+        output_costs=input_costs,
     )
 
     # Carbon output: 1000 * 30 * 0.4 = 12000

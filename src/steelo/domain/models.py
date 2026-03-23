@@ -1131,6 +1131,8 @@ class FurnaceGroup:
         }
         # Original energy prices before subsidies (for verification)
         self.energy_costs_no_subsidy: dict[str, float] = {}
+        # Energy costs used for output revenue (by-product sales)
+        self.output_energy_costs: dict[str, float] = {}
 
         # Initialize _carbon_cost from carbon_costs_for_emissions if provided
         if carbon_costs_for_emissions is not None and carbon_costs_for_emissions > 0:
@@ -1173,16 +1175,21 @@ class FurnaceGroup:
             to use capped country-level prices calculated from LCOH.
         """
         logger = logging.getLogger(f"{__name__}.set_energy_costs")
-        # Store costs with normalized keys to ensure downstream lookups succeed
+        # Store costs with normalized keys to ensure downstream lookups succeed.
+        # Physical carriers: abs() ensures consumption is always a positive cost.
+        # Carbon carriers (co2_*): sign preserved (positive = cost, negative = credit).
         energy_costs: dict[str, float] = {}
         for raw_key, price in costs.items():
             normalized_key = normalize_name(raw_key)
+            if not normalized_key.startswith("co2"):
+                price = abs(price)
             energy_costs[normalized_key] = price
             # Preserve original key for compatibility where callers still expect legacy naming
             if normalized_key != raw_key:
                 energy_costs[raw_key] = price
 
         self.energy_costs = energy_costs
+        self.output_energy_costs = energy_costs.copy()
         logger.debug(
             "[ENERGY COSTS] FG %s: set %d carriers, sample: %s",
             getattr(self, "furnace_group_id", "?"),
@@ -1206,6 +1213,7 @@ class FurnaceGroup:
         """
         logger = logging.getLogger(f"{__name__}.set_subsidised_energy_costs")
         self.energy_costs = subsidised_costs
+        self.output_energy_costs = subsidised_costs.copy()
         self.energy_costs_no_subsidy = no_subsidy_prices
         for carrier, subs in energy_subsidies.items():
             self.applied_subsidies[carrier] = subs
@@ -1886,7 +1894,7 @@ class FurnaceGroup:
         return calculate_cost_adjustments_from_secondary_outputs(
             bill_of_materials=self.bill_of_materials,
             dynamic_business_cases=self.effective_primary_feedstocks,
-            input_costs=self.energy_costs,
+            output_costs=self.output_energy_costs,
         )
 
     @property
@@ -2123,7 +2131,7 @@ class FurnaceGroup:
             chosen_reductant=self.chosen_reductant,
             energy_vopex_breakdown_by_input=self.energy_vopex_breakdown_by_input,
             cost_breakdown_keys=self.cost_breakdown_keys,
-            input_costs=self.energy_costs,
+            output_costs=self.output_energy_costs,
         )
 
     @property

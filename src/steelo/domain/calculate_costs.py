@@ -193,7 +193,7 @@ def calculate_cost_breakdown_by_feedstock(
     energy_costs: dict[str, float],
     energy_vopex_breakdown_by_input: dict[str, dict[str, float]] | None = None,
     cost_breakdown_keys: list[str] | None = None,
-    input_costs: dict[str, float] | None = None,
+    output_costs: dict[str, float] | None = None,
 ) -> dict:
     """
     Calculate detailed cost breakdown by feedstock type for a furnace group.
@@ -201,22 +201,21 @@ def calculate_cost_breakdown_by_feedstock(
     Uses actual BOM energy and distributes it proportionally across feedstocks based on their
     energy intensity (from dynamic business cases) and usage share (demand_share_pct).
 
-    Secondary output revenues (by-products with prices in ``input_costs``) are included as
-    negative values. Carriers that appear as both inputs and outputs show the net cost.
+    Secondary output revenues (by-products with prices in ``output_costs``) are included as
+    negative values.
 
     Args:
         bill_of_materials: Nested dictionary containing materials and energy data.
         chosen_reductant: Selected reductant type (e.g., 'coke', 'natural_gas') to filter
             business cases.
         dynamic_business_cases: List of primary feedstock options with energy requirements.
-        energy_costs: Energy costs by type (kept for backward compatibility).
-        energy_vopex_breakdown_by_input: Unused parameter for compatibility.
+        energy_costs: Unused, kept for backward compatibility.
+        energy_vopex_breakdown_by_input: Unused, kept for backward compatibility.
         cost_breakdown_keys: Canonical list of normalised carrier/feedstock keys
             that should appear in every feedstock's breakdown. Missing keys are zero-padded.
             Derived from primary_feedstocks.json. When None, no zero-padding is applied.
-        input_costs: Prices per unit for energy carriers and by-products (USD/unit).
-            By-product prices are negative (revenue). When provided, secondary output
-            revenues are included in the breakdown.
+        output_costs: Energy costs for output-side revenue pricing (USD/unit). Physical
+            carriers use -abs(price); carbon carriers (co2_*) keep their sign.
 
     Returns:
         dict: Dictionary with cost breakdown by feedstock type. Each feedstock key maps to a
@@ -330,8 +329,8 @@ def calculate_cost_breakdown_by_feedstock(
 
         # Add output revenue for by-products
         # Physical outputs (dbc.outputs): always revenue, use -abs(price)
-        # Carbon outputs (dbc.carbon_outputs): keep input_costs sign
-        if input_costs:
+        # Carbon outputs (dbc.carbon_outputs): keep output_costs sign
+        if output_costs:
             all_outputs = {**(dbc.outputs or {}), **(dbc.carbon_outputs or {})}
             primary_output_keys = set(dbc.get_primary_outputs().keys())
             physical_output_keys = set(normalize_name(k) for k in (dbc.outputs or {}).keys())
@@ -346,13 +345,13 @@ def calculate_cost_breakdown_by_feedstock(
                 normalized_output = normalize_name(output_key)
                 if normalized_output in primary_output_keys:
                     continue
-                if normalized_output not in input_costs:
+                if normalized_output not in output_costs:
                     continue
                 amount = _coerce_to_float(output_amount) or 0.0
                 if amount == 0:
                     continue
                 # Physical outputs are always revenue; carbon outputs keep their sign
-                raw_price = input_costs[normalized_output]
+                raw_price = output_costs[normalized_output]
                 effective_price = -abs(raw_price) if normalized_output in physical_output_keys else raw_price
                 revenue = amount * effective_price * demand_share
                 logger.debug(
@@ -1848,7 +1847,7 @@ def apply_hydrogen_price_cap_country_level(
 def calculate_cost_adjustments_from_secondary_outputs(
     bill_of_materials,
     dynamic_business_cases,
-    input_costs,
+    output_costs,
 ) -> float:
     """
     Calculate per-unit cost adjustments from secondary outputs (by-products).
@@ -1856,6 +1855,11 @@ def calculate_cost_adjustments_from_secondary_outputs(
     The adjustment is expressed in USD per tonne of product. Revenues from by-products will
     return negative values (reducing production cost) while additional costs will return positive
     values.
+
+    Args:
+        bill_of_materials: BOM dict with "materials" key.
+        dynamic_business_cases: List of PrimaryFeedstock objects.
+        output_costs: Energy costs used for output revenue pricing (USD/unit).
     """
     logger = logging.getLogger(f"{__name__}.calculate_cost_adjustments_from_secondary_outputs")
     if "materials" not in bill_of_materials or not dynamic_business_cases:
@@ -1866,10 +1870,10 @@ def calculate_cost_adjustments_from_secondary_outputs(
         return 0.0
 
     dbc_by_metallic_charge = {dbc.metallic_charge: dbc for dbc in dynamic_business_cases}
-    adjustments_outputs = {output: price for output, price in input_costs.items()}
+    adjustments_outputs = {output: price for output, price in output_costs.items()}
     # NOTE: Physical by-product outputs (dbc.outputs) always generate revenue, so their price
-    # is negated via -abs(price) regardless of sign in input_costs. Carbon outputs
-    # (dbc.carbon_outputs) keep their input_costs sign (positive = storage cost, negative = credit).
+    # is negated via -abs(price). Carbon outputs (dbc.carbon_outputs) keep their sign
+    # (positive = storage cost, negative = credit).
 
     total_adjustments = 0.0
     total_product_volume = 0.0
@@ -1909,7 +1913,7 @@ def calculate_cost_adjustments_from_secondary_outputs(
                     physical_outputs[output],
                     carrier_adj,
                 )
-        # Carbon outputs: keep input_costs sign (positive = cost, negative = credit)
+        # Carbon outputs: keep output_costs sign (positive = cost, negative = credit)
         carbon_outputs = dbc.carbon_outputs or {}
         for output in carbon_outputs:
             if output in adjustments_outputs:
