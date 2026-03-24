@@ -2247,6 +2247,7 @@ class FurnaceGroup:
             calculate_npv_full,
             stranding_asset_cost,
             calculate_capex_with_subsidies,
+            calculate_cost_adjustments_from_secondary_outputs,
             calculate_opex_list_with_subsidies,
             calculate_variable_opex,
         )
@@ -2318,8 +2319,12 @@ class FurnaceGroup:
         else:
             unit_carbon_cost_list = [carbon_cost / self.production for carbon_cost in carbon_costs_list]
 
-        # Combine OPEX with carbon costs for COSA calculation
-        unit_opex_carbon_costs = [x + y for x, y in zip(unit_opex_list, unit_carbon_cost_list)]
+        # Combine OPEX with carbon costs and secondary output adjustment for COSA calculation
+        cosa_secondary_adj = self.cost_adjustments_from_secondary_outputs
+        unit_opex_carbon_costs = [x + y + cosa_secondary_adj for x, y in zip(unit_opex_list, unit_carbon_cost_list)]
+        logger.debug(
+            f"[OPTIMAL TECH] COSA secondary output adjustment for {self.technology.name}: ${cosa_secondary_adj:,.4f}/t"
+        )
 
         logger.debug(f"[OPTIMAL TECH] Calculating carbon costs for current technology {self.technology.name}")
         logger.debug(f"[OPTIMAL TECH] Emission boundary: {chosen_emissions_boundary_for_carbon_costs}")
@@ -2432,6 +2437,10 @@ class FurnaceGroup:
                 # Reuse existing BOM and utilization rate (no technology change)
                 bill_of_materials = self.bill_of_materials
                 util_rate = self.utilization_rate
+                secondary_output_adj = self.cost_adjustments_from_secondary_outputs
+                logger.debug(
+                    f"[OPTIMAL TECH] {tech} brownfield secondary output adjustment: ${secondary_output_adj:,.4f}/t"
+                )
 
                 # Validate BOM structure before proceeding
                 if not bill_of_materials or "materials" not in bill_of_materials or "energy" not in bill_of_materials:
@@ -2489,6 +2498,16 @@ class FurnaceGroup:
                     material_bill=bill_of_materials["materials"],
                     tech=tech,
                     reductant=reductant,
+                )
+
+                # Calculate secondary output cost adjustment for new technology
+                secondary_output_adj = calculate_cost_adjustments_from_secondary_outputs(
+                    bill_of_materials=bill_of_materials,
+                    dynamic_business_cases=list(matched_business_cases.values()),
+                    output_costs=self.output_energy_costs,
+                )
+                logger.debug(
+                    f"[OPTIMAL TECH] {tech} greenfield secondary output adjustment: ${secondary_output_adj:,.4f}/t"
                 )
 
                 # Calculate emissions profile for new technology
@@ -2575,6 +2594,7 @@ class FurnaceGroup:
                     cost_of_equity=cost_of_equity,
                     equity_share=self.equity_share,
                     carbon_costs=carbon_cost_list,
+                    secondary_output_adjustment=secondary_output_adj,
                 )
 
                 logger.debug(f"[OPTIMAL TECH] Proceeding with NPV calculation for {tech}")
@@ -2830,7 +2850,10 @@ class FurnaceGroup:
         opened.
         """
         logger = logging.getLogger(f"{__name__}.FurnaceGroup.track_business_opportunities")
-        from steelo.domain.calculate_costs import calculate_npv_full
+        from steelo.domain.calculate_costs import (
+            calculate_cost_adjustments_from_secondary_outputs,
+            calculate_npv_full,
+        )
 
         # Verify prerequisites
         if self.historical_npv_business_opportunities is None:
@@ -2900,6 +2923,16 @@ class FurnaceGroup:
                 end_year=earliest_operation_end_year,
             )
 
+            # Calculate secondary output cost adjustment (by-product revenue/cost)
+            secondary_output_adj = calculate_cost_adjustments_from_secondary_outputs(
+                bill_of_materials=self.bill_of_materials,
+                dynamic_business_cases=list(matched_business_cases.values()),
+                output_costs=self.output_energy_costs,
+            )
+            logger.debug(
+                f"[NEW PLANTS] {self.technology.name} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
+            )
+
             # Calculate updated NPV
             npv_value = calculate_npv_full(
                 capex=self.technology.capex,
@@ -2914,6 +2947,7 @@ class FurnaceGroup:
                 equity_share=self.equity_share,
                 infrastructure_costs=self.railway_cost,
                 carbon_costs=carbon_cost_list,
+                secondary_output_adjustment=secondary_output_adj,
             )
 
         # Set to very negative NPV if calculation returned NaN
@@ -4981,6 +5015,16 @@ class PlantGroup:
                     else util_rate
                 )
 
+                # Calculate secondary output cost adjustment (by-product revenue/cost)
+                secondary_output_adj = cc.calculate_cost_adjustments_from_secondary_outputs(
+                    bill_of_materials=bill_of_materials,
+                    dynamic_business_cases=list(matched_business_cases.values()),
+                    output_costs=plant.energy_costs,
+                )
+                logger.debug(
+                    f"[PAM EVAL] {plant.plant_id}/{tech} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
+                )
+
                 NPV[tech] = cc.calculate_npv_full(
                     capex=capex,
                     capacity=capacity,
@@ -4993,6 +5037,7 @@ class PlantGroup:
                     expected_utilisation_rate=expected_utilisation_rate,
                     price_series=price_series[product],
                     carbon_costs=carbon_cost_list,
+                    secondary_output_adjustment=secondary_output_adj,
                 )
 
             # Select technology with highest NPV for this plant

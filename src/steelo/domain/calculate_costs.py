@@ -173,7 +173,7 @@ def get_subsidised_energy_costs(
         tuple: (input_costs, output_costs, no_subsidy_prices)
         - input_costs: subsidised prices for consumption (BOM energy, VOPEX).
         - output_costs: subsidised prices for by-product revenue.
-        - no_subsidy_prices: original prices for all subsidised carriers.
+        - no_subsidy_prices: original (unsubsidised) prices for all carriers.
 
     Raises:
         KeyError: If subsidies provided for a carrier not present in energy_costs.
@@ -183,7 +183,7 @@ def get_subsidised_energy_costs(
     logger = logging.getLogger(f"{__name__}.get_subsidised_energy_costs")
     input_costs = copy.copy(energy_costs)
     output_costs = copy.copy(energy_costs)
-    no_subsidy_prices: dict[str, float] = {}
+    no_subsidy_prices = copy.copy(energy_costs)
 
     for carrier, subs in energy_subsidies.items():
         if not subs:
@@ -1078,20 +1078,23 @@ def calculate_npv_full(
     construction_time: int,
     carbon_costs: list[float] | None = None,
     infrastructure_costs: float = 0.0,
+    secondary_output_adjustment: float = 0.0,
 ) -> float:
     """
     Calculate the full net present value (NPV) for a technology investment.
 
     Computes NPV by calculating total investment, debt repayment schedule, applying construction
-    time lags, adding carbon costs to OPEX, and discounting net cash flows to present value.
+    time lags, adding carbon costs and secondary output adjustments to OPEX, and discounting
+    net cash flows to present value.
 
     Steps:
     1. Calculate total investment (CAPEX * capacity + infrastructure costs) and expected production
     2. Generate debt repayment schedule over the project lifetime
     3. Apply construction time lag to debt repayments and OPEX
     4. Add carbon costs to OPEX (if provided and production > 0)
-    5. Calculate gross and net cash flows
-    6. Discount to present value using cost of equity
+    5. Add secondary output cost adjustment to OPEX (by-product revenue/cost)
+    6. Calculate gross and net cash flows
+    7. Discount to present value using cost of equity
 
     Args:
         capex (float): The capital expenditure per unit capacity ($/unit).
@@ -1107,6 +1110,9 @@ def calculate_npv_full(
         carbon_costs (list[float] | None): List of total carbon costs per period ($). Defaults to None.
         infrastructure_costs (float): Additional infrastructure costs like rail (applies to new plants only).
             Defaults to 0.0.
+        secondary_output_adjustment (float): Per-unit cost adjustment from secondary outputs ($/unit).
+            Negative values represent by-product revenue (reduce cost), positive values represent
+            additional costs. Applied as a constant across all operational years. Defaults to 0.0.
 
     Returns:
         float: The calculated NPV for the technology investment.
@@ -1141,6 +1147,10 @@ def calculate_npv_full(
         unit_carbon_costs_lagged = zeros + unit_carbon_costs
         unit_opex_lagged = [x + y for x, y in zip(unit_opex_lagged, unit_carbon_costs_lagged)]
 
+    # Add secondary output cost adjustment (by-product revenue/cost) to OPEX
+    unit_opex_lagged = [x + secondary_output_adjustment for x in unit_opex_lagged]
+    func_logger.debug(f"[NPV FULL] Secondary output adjustment: ${secondary_output_adjustment:,.4f}/t applied to OPEX")
+
     # Calculate cash flows
     gross_cash_flow = calculate_gross_cash_flow(
         total_opex=unit_opex_lagged, price_series=price_series, expected_production=expected_production
@@ -1152,7 +1162,8 @@ def calculate_npv_full(
     func_logger.debug(f"[NPV FULL] Expected production: {expected_production:,.0f} kt")
     func_logger.debug(f"[NPV FULL] Debt repayment: {debt_repayment}")
     func_logger.debug(f"[NPV FULL] Debt repayment lagged: {debt_repayment_lagged}")
-    func_logger.debug(f"[NPV FULL] OPEX list: {unit_opex_lagged}")
+    func_logger.debug(f"[NPV FULL] Secondary output adjustment: ${secondary_output_adjustment:,.4f}/t")
+    func_logger.debug(f"[NPV FULL] OPEX list (incl. carbon + secondary): {unit_opex_lagged}")
     func_logger.debug(f"[NPV FULL] Gross cash flow: {gross_cash_flow}")
     func_logger.debug(f"[NPV FULL] Net cash flow: {net_cash_flow}")
 
@@ -1335,6 +1346,16 @@ def calculate_business_opportunity_npvs(
                     end_year=end_year,
                 )
 
+                # Calculate secondary output cost adjustment (by-product revenue/cost)
+                secondary_output_adj = calculate_cost_adjustments_from_secondary_outputs(
+                    bill_of_materials=bom,
+                    dynamic_business_cases=list(matched_business_cases.values()),
+                    output_costs=bo_costs["output_costs"],
+                )
+                logger.debug(
+                    f"[NEW PLANT NPV] {prod}/{tech} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
+                )
+
                 # Calculate NPV
                 npv_value = calculate_npv_full(
                     capex=bo_costs["capex"],  # type: ignore[arg-type]
@@ -1349,6 +1370,7 @@ def calculate_business_opportunity_npvs(
                     equity_share=equity_share,
                     infrastructure_costs=bo_costs["railway_cost"],  # type: ignore[arg-type]
                     carbon_costs=carbon_cost_list,
+                    secondary_output_adjustment=secondary_output_adj,
                 )
 
                 # Set to very negative NPV if calculation returned NaN

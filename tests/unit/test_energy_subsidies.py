@@ -95,7 +95,7 @@ def test_get_subsidised_energy_costs_no_subsidies():
     assert input_costs["electricity"] == 0.10
     assert output_costs["hydrogen"] == 5000.0
     assert output_costs["electricity"] == 0.10
-    assert no_sub == {}
+    assert no_sub == energy_costs
 
 
 def test_get_subsidised_energy_costs_hydrogen_only():
