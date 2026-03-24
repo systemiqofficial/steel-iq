@@ -1108,7 +1108,18 @@ class FurnaceGroup:
         self.historical_npv_business_opportunities = historical_npv_business_opportunities
         self.railway_cost = railway_cost
         self.legacy_debt_schedule = legacy_debt_schedule or []  # Track debt from previous tech when switching
-        self.set_energy_costs(**energy_cost_dict)
+
+        self.applied_subsidies: dict[str, list[Subsidy]] = {
+            "capex": [],
+            "opex": [],
+            "debt": [],
+        }
+        # Original energy prices before subsidies (for verification)
+        self.energy_costs_no_subsidy: dict[str, float] = {}
+        # Energy costs used for output revenue (by-product sales)
+        self.output_energy_costs: dict[str, float] = {}
+        self.set_energy_costs(**energy_cost_dict)  # must follow output_energy_costs init
+
         self.energy_vopex_by_input = energy_vopex_by_input
         self.energy_vopex_breakdown_by_input = energy_vopex_breakdown_by_input
         self.energy_vopex_by_carrier = energy_vopex_by_carrier
@@ -1123,16 +1134,6 @@ class FurnaceGroup:
         self.emissions = emissions
         self.installed_carbon_capture = 0.0  # CCS/CCU capacity (tCO2e/year) - reduces direct emissions
         self.transport_emissions = 0.0
-
-        self.applied_subsidies: dict[str, list[Subsidy]] = {
-            "capex": [],
-            "opex": [],
-            "debt": [],
-        }
-        # Original energy prices before subsidies (for verification)
-        self.energy_costs_no_subsidy: dict[str, float] = {}
-        # Energy costs used for output revenue (by-product sales)
-        self.output_energy_costs: dict[str, float] = {}
 
         # Initialize _carbon_cost from carbon_costs_for_emissions if provided
         if carbon_costs_for_emissions is not None and carbon_costs_for_emissions > 0:
@@ -4154,6 +4155,8 @@ class Plant:
         dynamic_business_case: list[PrimaryFeedstock] | None = None,
         bill_of_materials: dict[str, dict[str, dict[str, float]]] | None = None,
         energy_costs: dict[str, float] | None = None,
+        output_energy_costs: dict[str, float] | None = None,
+        energy_costs_no_subsidy: dict[str, float] | None = None,
         **kwargs,
     ) -> FurnaceGroup:
         """
@@ -4191,6 +4194,10 @@ class Plant:
                 furnace group.
             energy_costs (dict[str, float] | None): Optional energy costs; must be passed explicitly for
                 new plants, otherwise inherited from the plant.
+            output_energy_costs (dict[str, float] | None): Optional output-side energy costs for
+                by-product revenue pricing. If None, defaults to a copy of energy_costs.
+            energy_costs_no_subsidy (dict[str, float] | None): Optional pre-subsidy energy costs
+                for all carriers.
             **kwargs: Additional keyword arguments for FurnaceGroup initialization.
 
         Returns:
@@ -4234,11 +4241,30 @@ class Plant:
         )
         furnace_group.bill_of_materials = bill_of_materials
 
-        # Set energy costs: explicitly provided for new plants, or inherited from existing plant
+        # Set energy costs via set_energy_costs for normalisation (abs, normalize_name)
+        gnf_logger = logging.getLogger(f"{__name__}.generate_new_furnace")
         if energy_costs:
-            furnace_group.energy_costs = energy_costs
+            furnace_group.set_energy_costs(**energy_costs)
+            if output_energy_costs:
+                furnace_group.output_energy_costs = output_energy_costs
+            if energy_costs_no_subsidy:
+                furnace_group.energy_costs_no_subsidy = energy_costs_no_subsidy
+            gnf_logger.debug(
+                "[NEW FG] %s tech=%s | input=%d output=%d no_sub=%d carriers",
+                furnace_group.furnace_group_id,
+                technology_name,
+                len(furnace_group.energy_costs),
+                len(furnace_group.output_energy_costs),
+                len(furnace_group.energy_costs_no_subsidy),
+            )
         else:
-            furnace_group.energy_costs = self.energy_costs
+            furnace_group.set_energy_costs(**self.energy_costs.copy())
+            gnf_logger.debug(
+                "[NEW FG] %s tech=%s | inherited %d carriers from plant",
+                furnace_group.furnace_group_id,
+                technology_name,
+                len(furnace_group.energy_costs),
+            )
         furnace_group.generate_energy_vopex_by_reductant()
 
         # Set fixed OPEX from technology lookup table
@@ -4433,6 +4459,8 @@ class Plant:
 
         for fg in self.furnace_groups:
             fg.energy_costs["hydrogen"] = hydrogen_price_usd_per_t
+            fg.output_energy_costs["hydrogen"] = hydrogen_price_usd_per_t
+            fg.energy_costs_no_subsidy["hydrogen"] = hydrogen_price_usd_per_t
 
     def aggregate_average_utilisation_rate(self):
         """
@@ -4778,6 +4806,8 @@ class PlantGroup:
             dynamic_business_case=dynamic_feedstocks,
             bill_of_materials=cost_data[product][site_id][technology_name].get("bom"),  # type: ignore[arg-type]
             energy_costs=cost_data[product][site_id][technology_name].get("energy_costs"),  # type: ignore[arg-type]
+            output_energy_costs=cost_data[product][site_id][technology_name].get("output_costs"),  # type: ignore[arg-type]
+            energy_costs_no_subsidy=cost_data[product][site_id][technology_name].get("no_subsidy_prices"),  # type: ignore[arg-type]
         )
         new_furnace.created_by_PAM = True
         # cost_data has been validated by validate_and_clean_cost_data to ensure these are floats/dicts

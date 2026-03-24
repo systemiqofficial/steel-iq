@@ -255,7 +255,7 @@ def prepare_cost_data_for_business_opportunity(
                         active_energy_subs[carrier] = active
 
                 if active_energy_subs:
-                    energy_costs_tech, output_costs_tech, _ = cc.get_subsidised_energy_costs(
+                    energy_costs_tech, output_costs_tech, no_subsidy_prices_tech = cc.get_subsidised_energy_costs(
                         energy_costs_site,
                         active_energy_subs,
                     )
@@ -264,9 +264,11 @@ def prepare_cost_data_for_business_opportunity(
                 else:
                     energy_costs_tech = energy_costs_site
                     output_costs_tech = energy_costs_site
+                    no_subsidy_prices_tech = energy_costs_site.copy()
 
                 cost_data[prod][site_id][tech]["energy_costs"] = energy_costs_tech  # type: ignore[assignment]
                 cost_data[prod][site_id][tech]["output_costs"] = output_costs_tech  # type: ignore[assignment]
+                cost_data[prod][site_id][tech]["no_subsidy_prices"] = no_subsidy_prices_tech  # type: ignore[assignment]
                 cost_data[prod][site_id][tech]["cost_of_equity"] = cost_of_equity  # type: ignore[assignment]
 
                 # Add average BOM and utilization rate per technology if available
@@ -381,7 +383,7 @@ def validate_and_clean_cost_data(
         float_fields
         + string_fields
         + list_fields
-        + ["railway_cost", "energy_costs", "output_costs", "bom", "carbon_cost_series"]
+        + ["railway_cost", "energy_costs", "output_costs", "no_subsidy_prices", "bom", "carbon_cost_series"]
     )
 
     # Run through all products, sites, and technologies
@@ -418,6 +420,18 @@ def validate_and_clean_cost_data(
                             if not isinstance(output_cost, (float, int)):
                                 raise ValueError(
                                     f"output_costs['{output_type}'] must be float or int, got {type(output_cost).__name__}: {output_cost}"
+                                )
+
+                        # no_subsidy_prices: dict of floats or ints (pre-subsidy energy costs)
+                        if not isinstance(tech_data["no_subsidy_prices"], dict):
+                            raise ValueError(
+                                f"no_subsidy_prices must be dict, got {type(tech_data['no_subsidy_prices']).__name__}"
+                            )
+                        for price_key, price_val in tech_data["no_subsidy_prices"].items():
+                            if not isinstance(price_val, (float, int)):
+                                raise ValueError(
+                                    f"no_subsidy_prices['{price_key}'] must be float or int, "
+                                    f"got {type(price_val).__name__}: {price_val}"
                                 )
 
                         # float-only fields

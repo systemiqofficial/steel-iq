@@ -474,3 +474,204 @@ def test_environment_initiate_energy_subsidies_empty_input():
     env = _make_env_stub()
     env.initiate_energy_subsidies([])
     assert env.energy_subsidies == {}
+
+
+# ── FurnaceGroup.__init__ energy cost propagation ───────────────────────────
+
+
+def test_furnace_group_init_populates_output_energy_costs():
+    """Test that FurnaceGroup.__init__ with energy_cost_dict populates output_energy_costs."""
+    from datetime import date
+    from steelo.domain.models import FurnaceGroup, PointInTime, Technology
+
+    technology = Technology(name="EAF", product="steel")
+    lifetime = PointInTime(plant_lifetime=20, current=Year(2025))
+    fg = FurnaceGroup(
+        furnace_group_id="test_init_1",
+        capacity=100,
+        status="operating",
+        last_renovation_date=date(2020, 1, 1),
+        technology=technology,
+        historical_production={},
+        utilization_rate=0.7,
+        lifetime=lifetime,
+        energy_cost_dict={"hydrogen": 5000.0, "electricity": 0.10, "bf_gas": 0.02},
+    )
+
+    assert fg.output_energy_costs != {}
+    assert fg.output_energy_costs["hydrogen"] == 5000.0
+    assert fg.output_energy_costs["electricity"] == 0.10
+    assert fg.output_energy_costs["bf_gas"] == 0.02
+    assert fg.energy_costs["hydrogen"] == 5000.0
+
+
+def test_furnace_group_init_empty_energy_costs_leaves_empty_dicts():
+    """Test that FurnaceGroup.__init__ without energy_cost_dict leaves dicts empty."""
+    from datetime import date
+    from steelo.domain.models import FurnaceGroup, PointInTime, Technology
+
+    technology = Technology(name="EAF", product="steel")
+    lifetime = PointInTime(plant_lifetime=20, current=Year(2025))
+    fg = FurnaceGroup(
+        furnace_group_id="test_init_2",
+        capacity=100,
+        status="operating",
+        last_renovation_date=date(2020, 1, 1),
+        technology=technology,
+        historical_production={},
+        utilization_rate=0.7,
+        lifetime=lifetime,
+    )
+
+    assert fg.energy_costs == {}
+    assert fg.output_energy_costs == {}
+    assert fg.energy_costs_no_subsidy == {}
+
+
+# ── generate_new_furnace energy cost propagation ────────────────────────────
+
+
+def _make_plant_with_energy_costs():
+    """Create a minimal Plant with one FG that has energy costs set."""
+    from datetime import date
+    from steelo.domain.models import (
+        FurnaceGroup,
+        Plant,
+        PointInTime,
+        Technology,
+        Location,
+    )
+
+    technology = Technology(name="BF-BOF", product="steel")
+    lifetime = PointInTime(plant_lifetime=20, current=Year(2025))
+    fg = FurnaceGroup(
+        furnace_group_id="P000000000001",
+        capacity=500_000,
+        status="operating",
+        last_renovation_date=date(2020, 1, 1),
+        technology=technology,
+        historical_production={},
+        utilization_rate=0.8,
+        lifetime=lifetime,
+        energy_cost_dict={
+            "hydrogen": 5000.0,
+            "electricity": 0.10,
+            "bf_gas": -0.02,
+            "natural_gas": 0.03,
+        },
+    )
+    location = Location(
+        lat=51.5,
+        lon=-0.1,
+        country="Test",
+        region="test_region",
+        iso3="TST",
+    )
+    plant = Plant(
+        plant_id="P000000000001",
+        location=location,
+        furnace_groups=[fg],
+        power_source="grid",
+        soe_status="private",
+        parent_gem_id="parent",
+        workforce_size=100,
+        certified=False,
+        category_steel_product=set(),
+        technology_unit_fopex={"bf-bof": 10.0, "dri+eaf": 8.0},
+    )
+    return plant
+
+
+def test_generate_new_furnace_path_a_sets_all_three_dicts():
+    """Test that explicit energy_costs + output + no_subsidy populates all three dicts."""
+    plant = _make_plant_with_energy_costs()
+
+    input_costs = {"hydrogen": 4000.0, "electricity": 0.08}
+    output_costs = {"hydrogen": 6000.0, "electricity": 0.12}
+    no_subsidy = {"hydrogen": 5000.0, "electricity": 0.10}
+
+    new_fg = plant.generate_new_furnace(
+        technology_name="DRI+EAF",
+        product="steel",
+        current_year=2025,
+        capex=500.0,
+        capex_no_subsidy=500.0,
+        cost_of_debt=0.05,
+        cost_of_debt_no_subsidy=0.05,
+        capacity=100_000,
+        lag=2,
+        status="considered",
+        util_rate=0.0,
+        equity_needed=0.0,
+        plant_lifetime=20,
+        chosen_reductant="hydrogen",
+        energy_costs=input_costs,
+        output_energy_costs=output_costs,
+        energy_costs_no_subsidy=no_subsidy,
+    )
+
+    assert new_fg.energy_costs["hydrogen"] == 4000.0
+    assert new_fg.energy_costs["electricity"] == 0.08
+    assert new_fg.output_energy_costs["hydrogen"] == 6000.0
+    assert new_fg.output_energy_costs["electricity"] == 0.12
+    assert new_fg.energy_costs_no_subsidy["hydrogen"] == 5000.0
+    assert new_fg.energy_costs_no_subsidy["electricity"] == 0.10
+
+
+def test_generate_new_furnace_path_b_copies_parent_costs():
+    """Test that inherited energy_costs are copied, not referenced.
+
+    Mutating the parent FG's energy_costs must not affect the child FG.
+    """
+    plant = _make_plant_with_energy_costs()
+
+    new_fg = plant.generate_new_furnace(
+        technology_name="DRI+EAF",
+        product="steel",
+        current_year=2025,
+        capex=500.0,
+        capex_no_subsidy=500.0,
+        cost_of_debt=0.05,
+        cost_of_debt_no_subsidy=0.05,
+        capacity=100_000,
+        lag=2,
+        status="construction",
+        util_rate=0.0,
+        equity_needed=0.0,
+        plant_lifetime=20,
+        chosen_reductant="hydrogen",
+    )
+
+    assert new_fg.energy_costs["hydrogen"] == 5000.0
+    assert new_fg.output_energy_costs["hydrogen"] == 5000.0
+
+    # Mutation isolation
+    parent_fg = plant.furnace_groups[0]
+    parent_fg.energy_costs["hydrogen"] = 9999.0
+    assert new_fg.energy_costs["hydrogen"] == 5000.0
+
+
+def test_generate_new_furnace_normalises_negative_physical_carriers():
+    """Test that set_energy_costs applies abs() to negative physical carrier prices."""
+    plant = _make_plant_with_energy_costs()
+
+    new_fg = plant.generate_new_furnace(
+        technology_name="DRI+EAF",
+        product="steel",
+        current_year=2025,
+        capex=500.0,
+        capex_no_subsidy=500.0,
+        cost_of_debt=0.05,
+        cost_of_debt_no_subsidy=0.05,
+        capacity=100_000,
+        lag=2,
+        status="considered",
+        util_rate=0.0,
+        equity_needed=0.0,
+        plant_lifetime=20,
+        chosen_reductant="hydrogen",
+        energy_costs={"bf_gas": -0.02, "hydrogen": 5000.0},
+    )
+
+    # bf_gas should be abs-normalised (non-co2 carrier)
+    assert new_fg.energy_costs["bf_gas"] == 0.02
