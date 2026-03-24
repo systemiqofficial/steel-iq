@@ -5799,16 +5799,15 @@ class PlantGroup:
                         custom_energy_costs["power_price"].sel(lat=plant.location.lat, lon=plant.location.lon).values
                     )
                     power_price = float(raw_power_price) if raw_power_price is not None else None
+                    no_sub = fg.energy_costs_no_subsidy or fg.energy_costs
                     if power_price is None or math.isnan(power_price):
-                        power_price = fg.energy_costs["electricity"]
+                        power_price = no_sub["electricity"]
                     raw_hydrogen_price = (
                         custom_energy_costs["capped_lcoh"].sel(lat=plant.location.lat, lon=plant.location.lon).values
                     )
                     hydrogen_price = float(raw_hydrogen_price) if raw_hydrogen_price is not None else None
-                    if hydrogen_price is not None and math.isnan(hydrogen_price):
-                        hydrogen_price = fg.energy_costs["hydrogen"]
-                    elif hydrogen_price is None:
-                        hydrogen_price = fg.energy_costs["hydrogen"]
+                    if hydrogen_price is None or (hydrogen_price is not None and math.isnan(hydrogen_price)):
+                        hydrogen_price = no_sub["hydrogen"]
 
                     new_costs["electricity"] = power_price
                     new_costs["hydrogen"] = hydrogen_price
@@ -7416,11 +7415,22 @@ class Environment:
                 )
                 logged_countries.add(plant.location.iso3)
 
-            # New GEO plants: Preserve their own power infrastructure costs (always set)
+            # New GEO plants: preserve own power costs; use no_subsidy to avoid compounding
             if plant.parent_gem_id.lower() == "indi":
                 for fg in plant.furnace_groups:
-                    input_costs["electricity"] = fg.energy_costs["electricity"]
-                    input_costs["hydrogen"] = fg.energy_costs["hydrogen"]
+                    no_sub = fg.energy_costs_no_subsidy or fg.energy_costs
+                    input_costs["electricity"] = no_sub["electricity"]
+                    input_costs["hydrogen"] = no_sub["hydrogen"]
+                    if fg.energy_costs_no_subsidy:
+                        sub_elec = fg.energy_costs.get("electricity", 0)
+                        if sub_elec != no_sub["electricity"]:
+                            logger.debug(
+                                "[INPUT COSTS] indi %s FG:%s elec no_sub=$%.6f (was sub=$%.6f)",
+                                plant.location.iso3,
+                                fg.furnace_group_id,
+                                no_sub["electricity"],
+                                sub_elec,
+                            )
                     fg.set_energy_costs(**input_costs)
 
             # Existing plants: Preserve calculated hydrogen costs if set (only not at bootstrap)

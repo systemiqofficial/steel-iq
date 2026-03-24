@@ -675,3 +675,84 @@ def test_generate_new_furnace_normalises_negative_physical_carriers():
 
     # bf_gas should be abs-normalised (non-co2 carrier)
     assert new_fg.energy_costs["bf_gas"] == 0.02
+
+
+# ── set_input_cost_in_furnace_groups: indi compounding fix ──────────────────
+
+
+def test_set_input_cost_indi_uses_no_subsidy_prices():
+    """Test that indi plants preserve pre-subsidy electricity/hydrogen prices.
+
+    Simulates the yearly cycle: subsidies applied → set_input_cost resets base.
+    Without the fix, the subsidised price becomes next year's base (compounding).
+    """
+    from datetime import date
+    from steelo.domain.models import (
+        Environment,
+        FurnaceGroup,
+        Plant,
+        PointInTime,
+        Technology,
+        Location,
+    )
+
+    # Create indi plant with energy costs
+    technology = Technology(name="EAF", product="steel")
+    lifetime = PointInTime(plant_lifetime=20, current=Year(2025))
+    fg = FurnaceGroup(
+        furnace_group_id="P000000000001",
+        capacity=100_000,
+        status="operating",
+        last_renovation_date=date(2020, 1, 1),
+        technology=technology,
+        historical_production={},
+        utilization_rate=0.8,
+        lifetime=lifetime,
+        energy_cost_dict={"electricity": 0.028, "hydrogen": 3500.0, "natural_gas": 0.025},
+    )
+    location = Location(lat=24.0, lon=44.0, country="SAU", region="mena", iso3="SAU")
+    plant = Plant(
+        plant_id="P000000000001",
+        location=location,
+        furnace_groups=[fg],
+        power_source="grid",
+        soe_status="private",
+        parent_gem_id="indi",
+        workforce_size=100,
+        certified=False,
+        category_steel_product=set(),
+        technology_unit_fopex={"eaf": 10.0},
+    )
+
+    # Simulate subsidy application (electricity $0.028 → $0.023)
+    fg.set_subsidised_energy_costs(
+        input_costs={"electricity": 0.023, "hydrogen": 3400.0, "natural_gas": 0.025},
+        output_costs={"electricity": 0.033, "hydrogen": 3600.0, "natural_gas": 0.025},
+        no_subsidy_prices={"electricity": 0.028, "hydrogen": 3500.0, "natural_gas": 0.025},
+        energy_subsidies={"electricity": [], "hydrogen": []},
+    )
+    assert fg.energy_costs["electricity"] == 0.023  # subsidised
+
+    # Create env stub with input_costs
+    env = object.__new__(Environment)
+    env.year = Year(2025)
+    env.input_costs = {
+        "SAU": {
+            Year(2025): {
+                "electricity": 0.050,
+                "hydrogen": 4000.0,
+                "natural_gas": 0.025,
+            },
+        },
+    }
+
+    # Run set_input_cost_in_furnace_groups (end-of-year reset)
+    env.set_input_cost_in_furnace_groups(world_plants=[plant])
+
+    # Electricity should be reset to the no_subsidy price (0.028), NOT the
+    # subsidised price (0.023) and NOT the country-level price (0.050)
+    assert fg.energy_costs["electricity"] == 0.028
+    # Hydrogen should also use no_subsidy price
+    assert fg.energy_costs["hydrogen"] == 3500.0
+    # Other carriers should come from country-level input_costs
+    assert fg.energy_costs["natural_gas"] == 0.025
