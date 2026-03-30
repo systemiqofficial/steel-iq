@@ -496,7 +496,7 @@ class TestCarbonCostCompleteFlow:
 
 
 def test_cost_breakdown_converts_coking_coal_secondary_feedstock_to_tonnes():
-    """Ensure secondary-feedstock coking coal recorded in kg is converted before costing."""
+    """Ensure secondary-feedstock coking coal in t/t (converted at read time) is costed correctly."""
     bill_of_materials = {
         "materials": {
             "dri_high": {
@@ -519,7 +519,7 @@ def test_cost_breakdown_converts_coking_coal_secondary_feedstock_to_tonnes():
     dynamic_business_case.metallic_charge = "dri_high"
     dynamic_business_case.reductant = ""
     dynamic_business_case.energy_requirements = {}
-    dynamic_business_case.secondary_feedstock = {"coking_coal": 30.863112425484626}  # kg/t from BOM
+    dynamic_business_case.secondary_feedstock = {"coking_coal": 0.030863112425484626}  # t/t (converted at read time)
     dynamic_business_case.required_quantity_per_ton_of_product = 1.1
 
     breakdown = calculate_cost_breakdown_by_feedstock(

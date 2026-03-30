@@ -13,7 +13,7 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
 from matplotlib.container import BarContainer
 from pathlib import Path
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING, cast
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -1036,7 +1036,7 @@ class SteelPlotter:
         df = df.sort_index()
 
         # Get the data for the specific product and year
-        demand = df.loc[product_type].loc[year].production.sum()
+        demand = cast(pd.DataFrame, df.loc[product_type]).loc[year].production.sum()
 
         # Prepare cost breakdown components
         component_columns = []
@@ -1046,7 +1046,7 @@ class SteelPlotter:
             self.logger.debug(f"Available columns in df: {list(df.columns)}")
             if "cost_breakdown" in df.columns:
                 # If we have the cost_breakdown dictionary column (nested by feedstock)
-                cost_df = df.loc[(product_type, year)].copy()
+                cost_df = cast(pd.DataFrame, df.loc[(product_type, year)]).copy()
 
                 # Parse and flatten the cost_breakdown structure
                 for idx, row in cost_df.iterrows():
@@ -1068,7 +1068,7 @@ class SteelPlotter:
 
                         # Add the aggregated costs as columns to the dataframe
                         for cost_type, value in aggregated_costs.items():
-                            cost_df.at[idx, cost_type] = value
+                            cost_df.at[idx, cost_type] = value  # type: ignore[index]
 
                 # Now identify component columns from the flattened data
                 if "material_cost" in cost_df.columns:
@@ -1092,7 +1092,7 @@ class SteelPlotter:
                         component_columns.append(col)
             else:
                 # Build cost breakdown from available columns
-                cost_df = df.loc[(product_type, year)].copy()
+                cost_df = cast(pd.DataFrame, df.loc[(product_type, year)]).copy()
 
                 # Add cost breakdown columns that start with "cost_breakdown - "
                 breakdown_cols = [col for col in cost_df.columns if col.startswith("cost_breakdown - ")]
@@ -1139,7 +1139,7 @@ class SteelPlotter:
         else:
             # Original simple calculation
             df["production_cost"] = df["unit_production_cost"]
-            cost_df = df.loc[(product_type, year)][["production_cost", "region", "capacity"]].copy()
+            cost_df = cast(pd.DataFrame, df.loc[(product_type, year)])[["production_cost", "region", "capacity"]].copy()
 
         # Sort by production cost
         cost_df = cost_df.sort_values("production_cost")
