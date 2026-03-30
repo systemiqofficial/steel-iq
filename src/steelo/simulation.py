@@ -1244,12 +1244,17 @@ class SimulationRunner:
 
             price_df = pd.DataFrame(price_data)
 
-            # Save CSV to output/data directory
+            # Save CSV to output/data directory (for backward compatibility)
             data_dir = self.config.output_dir / "data"
             data_dir.mkdir(parents=True, exist_ok=True)
             price_csv_path = data_dir / f"market_prices_{start_year}_{end_year}.csv"
             price_df.to_csv(price_csv_path, index=False)
             logger.info(f"Saved market prices to {price_csv_path}")
+
+            # Also save CSV alongside the plot in pam_plots_dir for consistency with other charts
+            pam_csv_path = bus.env.plot_paths.pam_plots_dir / f"market_prices_{start_year}_{end_year}.csv"
+            price_df.to_csv(pam_csv_path, index=False)
+            logger.info(f"Saved market prices CSV alongside plot to {pam_csv_path}")
 
             # Create line plot of prices over time
             fig, ax = plt.subplots(figsize=(10, 6))
