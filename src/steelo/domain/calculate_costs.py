@@ -14,12 +14,7 @@ from steelo.domain.calculate_emissions import (
 if TYPE_CHECKING:
     from steelo.domain.models import PrimaryFeedstock, Subsidy, CountryMappingService, TechnologyEmissionFactors
 from collections import Counter
-from steelo.domain.constants import KG_TO_T, MWH_TO_KWH, Year
-
-SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION = {
-    "coking_coal",  # Stored in kg/t in dynamic business cases, priced in USD/t
-    "bio_pci",
-}
+from steelo.domain.constants import MWH_TO_KWH, Year
 
 # Normalized keys that represent genuine energy carriers. Any secondary-feedstock entry whose normalized
 # name is not in this set is treated as a material input and must not be double-counted as energy.
@@ -256,18 +251,11 @@ def calculate_cost_breakdown_by_feedstock(
                     _coerce_to_float(amount) or 0.0
                 )
 
-        # Add secondary feedstock by carrier
+        # Add secondary feedstock by carrier (already in t/t after excel_reader conversion)
         for secondary_key, amount in (dbc.secondary_feedstock or {}).items():
             normalized_secondary = normalize_name(secondary_key)
             if normalized_secondary in ENERGY_FEEDSTOCK_KEYS:
-                converted_amount = (
-                    (amount * KG_TO_T)
-                    if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION
-                    else amount
-                )
-                carrier_amounts[normalized_secondary] = (
-                    carrier_amounts.get(normalized_secondary, 0.0) + converted_amount
-                )
+                carrier_amounts[normalized_secondary] = carrier_amounts.get(normalized_secondary, 0.0) + amount
 
         feedstock_carrier_intensities[dbc_lower] = carrier_amounts
 
@@ -504,14 +492,7 @@ def calculate_cost_breakdown(
                     normalized_secondary = normalize_name(secondary_key)
                     if normalized_secondary not in ENERGY_FEEDSTOCK_KEYS:
                         continue
-                    converted_amount = (
-                        amount * KG_TO_T
-                        if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION
-                        else amount
-                    )
-                    combined_energy[normalized_secondary] = (
-                        combined_energy.get(normalized_secondary, 0.0) + converted_amount
-                    )
+                    combined_energy[normalized_secondary] = combined_energy.get(normalized_secondary, 0.0) + amount
 
                 total_dict = combined_energy
 
@@ -1524,18 +1505,13 @@ def calculate_energy_costs_and_most_common_reductant(
         if not energy_requirements_dict and not secondary_feedstock_dict:
             continue
 
-        # Combine energy requirements and secondary feedstock with proper units
+        # Combine secondary feedstock (already in t/t) with energy requirements
         for secondary_key, amount in secondary_feedstock_dict.items():
             normalized_secondary = normalize_name(secondary_key)
             if normalized_secondary not in ENERGY_FEEDSTOCK_KEYS:
                 continue
-            converted_amount = (
-                amount * KG_TO_T
-                if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION
-                else amount
-            )
             energy_requirements_dict[normalized_secondary] = (
-                energy_requirements_dict.get(normalized_secondary, 0.0) + converted_amount
+                energy_requirements_dict.get(normalized_secondary, 0.0) + amount
             )
 
         if not energy_requirements_dict:

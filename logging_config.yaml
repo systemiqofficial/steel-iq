@@ -17,6 +17,8 @@ function_overrides:
   calculate_material_total: WARNING
   calculate_energy_total: WARNING
   generate_input_effectiveness_mapping_from_feedstocks: ERROR
+  # Data prep unit conversion debugging
+  _process_row: DEBUG
 
 external:
   pyomo: ERROR
