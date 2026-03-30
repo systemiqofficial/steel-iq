@@ -344,6 +344,12 @@ class SimulationConfig:
     steel_price_buffer: float = 200.0  # USD/tonne - buffer above highest cost curve price when demand exceeds supply
     iron_price_buffer: float = 200.0  # USD/tonne - buffer above highest cost curve price when demand exceeds supply
 
+    # Iron price pegging configuration
+    peg_iron_to_steel_price: bool = (
+        False  # Whether to peg iron price to steel price (minimum of cost curve or % of steel)
+    )
+    iron_to_steel_price_ratio: float = 0.8  # Ratio of steel price for iron floor (80% default)
+
     # Capacity
     ## Furnace group capacity expansion size and initial capacity of new plants (in tonnes)
     expanded_capacity: float = 2.5 * MT_TO_T

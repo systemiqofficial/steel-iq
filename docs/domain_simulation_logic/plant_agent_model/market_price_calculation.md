@@ -129,6 +129,56 @@ market_price = extract_price_from_costcurve(
 
 ---
 
+## Iron Price Pegging
+
+### Overview
+
+The simulation now supports **pegging iron prices to steel prices** to ensure iron maintains a minimum value relative to steel. This feature addresses market dynamics where iron's value is linked to steel as its primary downstream product.
+
+### Configuration
+
+Two parameters control iron price pegging in `SimulationConfig`:
+
+```python
+peg_iron_to_steel_price: bool = False  # Enable/disable pegging (default: disabled)
+iron_to_steel_price_ratio: float = 0.8  # Minimum ratio of steel price (default: 80%)
+```
+
+### How It Works
+
+When `peg_iron_to_steel_price = True`:
+
+1. **Calculate Base Iron Price**: Extract iron price from the cost curve based on demand
+2. **Calculate Steel Price**: Extract steel price from the cost curve based on steel demand
+3. **Apply Pegging**: `iron_price = max(base_iron_price, steel_price × ratio)`
+
+### Example
+
+With pegging enabled at 80% ratio:
+- Steel price from cost curve: $600/t
+- Iron price from cost curve: $350/t
+- Pegged floor price: $600 × 0.8 = $480/t
+- **Final iron price: $480/t** (pegged floor is higher)
+
+If iron's cost curve price was $500/t:
+- Pegged floor: $480/t
+- **Final iron price: $500/t** (cost curve is higher)
+
+### Important Notes
+
+- **Current Year Only**: Pegging applies only to current year prices, NOT to future price projections used in NPV calculations
+- **Configurable Ratio**: The ratio can be adjusted based on market assumptions (e.g., 0.7 for 70%, 0.9 for 90%)
+- **Optional Feature**: Disabled by default to maintain backward compatibility
+
+### Rationale
+
+Iron price pegging reflects real-world market dynamics where:
+- Iron (especially DRI/HBI) trades at a premium relative to its production cost
+- Steel prices set a floor for iron prices due to substitution economics
+- Integrated steelmakers have pricing power in iron markets
+
+---
+
 ## Limitations
 
 1. **Assumes Perfect Competition**: All plants receive the same market price
