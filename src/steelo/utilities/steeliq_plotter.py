@@ -317,6 +317,22 @@ class SteelPlotter:
             self.logger.error(f"Failed to save CSV to {output_path}: {e}")
             return None
 
+    def _ensure_y_axis_starts_at_zero(self, ax, upper_margin: float = 1.1):
+        """Ensure y-axis starts at 0 and has appropriate upper limit.
+
+        Args:
+            ax: Matplotlib axis object
+            upper_margin: Factor to multiply max value for upper limit (default: 1.1 = 10% margin)
+        """
+        current_ylim = ax.get_ylim()
+        # Set lower limit to 0
+        # For upper limit, use current max or add margin
+        if current_ylim[1] > 0:
+            ax.set_ylim(0, current_ylim[1] * upper_margin)
+        else:
+            # If no positive data, just set a reasonable range
+            ax.set_ylim(0, 1)
+
     # ========================================================================
     # Plotting Methods
     # ========================================================================
