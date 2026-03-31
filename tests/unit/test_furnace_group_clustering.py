@@ -16,6 +16,16 @@ class MockConfig:
     """Mock simulation config for testing."""
 
     active_statuses: list[str]
+    closely_allocated_products: list[str] = None  # Add field with default
+
+    def __post_init__(self):
+        if self.closely_allocated_products is None:
+            self.closely_allocated_products = [
+                "dri_high",
+                "dri_mid",
+                "dri_low",
+                "hot_metal",
+            ]
 
 
 def create_test_location(lat: float, lon: float, iso3: str = "TST") -> Location:
@@ -323,7 +333,11 @@ class TestDisaggregateAllocations:
         clustered_allocs = Allocations(allocations={(meta_fg_pc, demand_pc, commodity): 2000.0})
 
         # Mock config and repo
-        config = type("Config", (), {"hot_metal_radius": 100.0})()
+        config = type(
+            "Config",
+            (),
+            {"hot_metal_radius": 100.0, "closely_allocated_products": ["dri_high", "dri_mid", "dri_low", "hot_metal"]},
+        )()
         plants_repo = None  # Not used in this simple test
 
         # Disaggregate
@@ -433,7 +447,11 @@ class TestDisaggregateAllocations:
         # Create clustered allocation: 8000t of hot_metal from iron to steel cluster
         clustered_allocs = Allocations(allocations={(iron_pc, steel_pc, commodity): 8000.0})
 
-        config = type("Config", (), {"hot_metal_radius": 100.0})()
+        config = type(
+            "Config",
+            (),
+            {"hot_metal_radius": 100.0, "closely_allocated_products": ["dri_high", "dri_mid", "dri_low", "hot_metal"]},
+        )()
         plants_repo = None
 
         # Disaggregate
@@ -504,7 +522,11 @@ class TestDisaggregateAllocations:
         # Create allocation between non-meta centers
         clustered_allocs = Allocations(allocations={(supplier_pc, demand_pc, commodity): 3000.0})
 
-        config = type("Config", (), {"hot_metal_radius": 100.0})()
+        config = type(
+            "Config",
+            (),
+            {"hot_metal_radius": 100.0, "closely_allocated_products": ["dri_high", "dri_mid", "dri_low", "hot_metal"]},
+        )()
         plants_repo = None
 
         # Disaggregate (should pass through)
@@ -763,7 +785,15 @@ class TestTransportationProblem:
         }
 
         commodity = Commodity("steel")
-        config = type("Config", (), {"hot_metal_radius": 1000.0, "enable_trade_lp_clustering": True})()
+        config = type(
+            "Config",
+            (),
+            {
+                "hot_metal_radius": 1000.0,
+                "enable_trade_lp_clustering": True,
+                "closely_allocated_products": ["dri_high", "dri_mid", "dri_low", "hot_metal"],
+            },
+        )()
 
         # Solve
         flows, stats = _solve_batched_transportation_problem(
@@ -808,7 +838,15 @@ class TestTransportationProblem:
         dest_locations = {"dest_X": create_test_location(lat=35.5, lon=110.5)}
 
         commodity = Commodity("steel")
-        config = type("Config", (), {"hot_metal_radius": 1000.0, "enable_trade_lp_clustering": True})()
+        config = type(
+            "Config",
+            (),
+            {
+                "hot_metal_radius": 1000.0,
+                "enable_trade_lp_clustering": True,
+                "closely_allocated_products": ["dri_high", "dri_mid", "dri_low", "hot_metal"],
+            },
+        )()
 
         # Should not raise error - should normalize automatically
         flows, stats = _solve_batched_transportation_problem(
@@ -841,7 +879,15 @@ class TestTransportationProblem:
         }
 
         commodity = Commodity("steel")
-        config = type("Config", (), {"hot_metal_radius": 1000.0, "enable_trade_lp_clustering": True})()
+        config = type(
+            "Config",
+            (),
+            {
+                "hot_metal_radius": 1000.0,
+                "enable_trade_lp_clustering": True,
+                "closely_allocated_products": ["dri_high", "dri_mid", "dri_low", "hot_metal"],
+            },
+        )()
 
         flows, stats = _solve_batched_transportation_problem(
             source_supplies=source_supplies,

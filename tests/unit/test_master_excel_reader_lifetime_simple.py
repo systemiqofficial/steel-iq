@@ -28,12 +28,31 @@ def test_furnace_group_lifetime_current_year():
         # Write to Excel
         with pd.ExcelWriter(tf.name) as writer:
             plant_data.to_excel(writer, sheet_name="Iron and steel plants", index=False)
+            # Add minimal Bill of Materials sheet
+            bom_data = pd.DataFrame(
+                {
+                    "Business case": ["steel_bof"],
+                    "Metallic charge": ["hot_metal"],
+                    "Reductant": [""],
+                    "Side": ["Input"],
+                    "Type": ["feedstock"],
+                    "Metric type": ["Materials"],
+                    "Vector": ["hot_metal"],
+                    "Value": [0.95],
+                    "Unit": ["t/t"],
+                    "System boundary": ["cradle-to-gate"],
+                    "ghg_factor_scope_1": [1.0],
+                    "ghg_factor_scope_2": [0.1],
+                    "ghg_factor_scope_3_rest": [0.05],
+                }
+            )
+            bom_data.to_excel(writer, sheet_name="Bill of Materials", index=False)
 
         # Read plants WITHOUT dynamic business cases
         reader = MasterExcelReader(Path(tf.name))
         with reader:
             # Pass empty dict to skip Bill of Materials reading
-            plants, _ = reader.read_plants(dynamic_feedstocks_dict={})  # Unpack tuple
+            plants, _, _ = reader.read_plants(dynamic_feedstocks_dict={})  # Unpack tuple (3 values)
 
         # Check that we got a plant
         assert len(plants) == 1
@@ -71,11 +90,32 @@ def test_furnace_group_lifetime_with_custom_year():
         # Write to Excel
         with pd.ExcelWriter(tf.name) as writer:
             plant_data.to_excel(writer, sheet_name="Iron and steel plants", index=False)
+            # Add minimal Bill of Materials sheet
+            bom_data = pd.DataFrame(
+                {
+                    "Business case": ["steel_bof"],
+                    "Metallic charge": ["hot_metal"],
+                    "Reductant": [""],
+                    "Side": ["Input"],
+                    "Type": ["feedstock"],
+                    "Metric type": ["Materials"],
+                    "Vector": ["hot_metal"],
+                    "Value": [0.95],
+                    "Unit": ["t/t"],
+                    "System boundary": ["cradle-to-gate"],
+                    "ghg_factor_scope_1": [1.0],
+                    "ghg_factor_scope_2": [0.1],
+                    "ghg_factor_scope_3_rest": [0.05],
+                }
+            )
+            bom_data.to_excel(writer, sheet_name="Bill of Materials", index=False)
 
         # Read plants with custom simulation year
         reader = MasterExcelReader(Path(tf.name))
         with reader:
-            plants, _ = reader.read_plants(dynamic_feedstocks_dict={}, simulation_start_year=2030)  # Unpack tuple
+            plants, _, _ = reader.read_plants(
+                dynamic_feedstocks_dict={}, simulation_start_year=2030
+            )  # Unpack tuple (3 values)
 
         # Check that custom simulation year is used
         assert len(plants) == 1

@@ -33,7 +33,7 @@ def get_default_technology_settings() -> TechSettingsMap:
     These defaults are now configurable via steelo.config.technology_defaults.
     """
     try:
-        from steelo.config.technology_defaults import get_technology_defaults
+        from steelo.domain.constants import get_technology_defaults
 
         # Define all known technology codes (NORMALIZED format)
         all_tech_codes = [
@@ -87,23 +87,23 @@ def get_default_technology_settings() -> TechSettingsMap:
         # Fallback to hardcoded defaults if config file doesn't exist
         return {
             # Special technology overrides (all starting in 2030)
-            "BOF": {"allowed": False, "from_year": 2025},
-            "BF": {"allowed": False, "from_year": 2025},
-            "EAF": {"allowed": False, "from_year": 2025},
-            "DRI": {"allowed": False, "from_year": 2025},
-            "ESF": {"allowed": False, "from_year": 2030},  # Electro-Smelting Furnace disabled by default
-            "MOE": {"allowed": False, "from_year": 2030},  # Molten Oxide Electrolysis disabled by default
-            "E-WIN": {"allowed": True, "from_year": 2030},  # Electrowinning starts in 2030
-            "BF+CCS": {"allowed": True, "from_year": 2030},  # Blast Furnace with CCS
-            "BF+CCU": {"allowed": True, "from_year": 2030},  # Blast Furnace with CCU
-            "BF_CHARCOAL": {"allowed": True, "from_year": 2030},  # Charcoal blast furnace
-            "BF_CHARCOAL+CCS": {"allowed": True, "from_year": 2030},  # Charcoal BF with CCS
-            "BF_CHARCOAL+CCU": {"allowed": True, "from_year": 2030},  # Charcoal BF with CCU
-            "DRI+CCS": {"allowed": True, "from_year": 2030},  # DRI with CCS
-            "DRI+CCU": {"allowed": True, "from_year": 2030},  # DRI with CCU
-            "DRI+ESF": {"allowed": True, "from_year": 2030},  # DRI with ESF
-            "DRI+ESF+CCS": {"allowed": True, "from_year": 2030},  # DRI with ESF and CCS
-            "DRI+ESF+CCU": {"allowed": True, "from_year": 2030},  # DRI with ESF and CCU
-            "SR+CCS": {"allowed": True, "from_year": 2030},  # Smelting Reduction with CCS
-            "SR+CCU": {"allowed": True, "from_year": 2030},  # Smelting Reduction with CCU
+            "BOF": TechnologySettings(allowed=False, from_year=2025),
+            "BF": TechnologySettings(allowed=False, from_year=2025),
+            "EAF": TechnologySettings(allowed=False, from_year=2025),
+            "DRI": TechnologySettings(allowed=False, from_year=2025),
+            "ESF": TechnologySettings(allowed=False, from_year=2030),  # Electro-Smelting Furnace disabled by default
+            "MOE": TechnologySettings(allowed=False, from_year=2030),  # Molten Oxide Electrolysis disabled by default
+            "E-WIN": TechnologySettings(allowed=True, from_year=2030),  # Electrowinning starts in 2030
+            "BF+CCS": TechnologySettings(allowed=True, from_year=2030),  # Blast Furnace with CCS
+            "BF+CCU": TechnologySettings(allowed=True, from_year=2030),  # Blast Furnace with CCU
+            "BF_CHARCOAL": TechnologySettings(allowed=True, from_year=2030),  # Charcoal blast furnace
+            "BF_CHARCOAL+CCS": TechnologySettings(allowed=True, from_year=2030),  # Charcoal BF with CCS
+            "BF_CHARCOAL+CCU": TechnologySettings(allowed=True, from_year=2030),  # Charcoal BF with CCU
+            "DRI+CCS": TechnologySettings(allowed=True, from_year=2030),  # DRI with CCS
+            "DRI+CCU": TechnologySettings(allowed=True, from_year=2030),  # DRI with CCU
+            "DRI+ESF": TechnologySettings(allowed=True, from_year=2030),  # DRI with ESF
+            "DRI+ESF+CCS": TechnologySettings(allowed=True, from_year=2030),  # DRI with ESF and CCS
+            "DRI+ESF+CCU": TechnologySettings(allowed=True, from_year=2030),  # DRI with ESF and CCU
+            "SR+CCS": TechnologySettings(allowed=True, from_year=2030),  # Smelting Reduction with CCS
+            "SR+CCU": TechnologySettings(allowed=True, from_year=2030),  # Smelting Reduction with CCU
         }

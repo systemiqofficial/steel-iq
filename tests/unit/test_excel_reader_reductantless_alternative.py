@@ -53,7 +53,7 @@ class TestReductantlessAlternativeLookup:
         mock_read_excel.return_value = data
 
         # This should not raise ValueError about missing reductantless alternative
-        result = read_dynamic_business_cases("dummy.xlsx", "Bill of Materials")
+        result, aggregated_constraints = read_dynamic_business_cases("dummy.xlsx", "Bill of Materials")
 
         # Check that BOF business cases were created
         assert "BOF" in result
@@ -95,7 +95,7 @@ class TestReductantlessAlternativeLookup:
         mock_read_excel.return_value = data
 
         # This should skip the feedstock with a warning, not raise an error
-        result = read_dynamic_business_cases("dummy.xlsx", "Bill of Materials")
+        result, aggregated_constraints = read_dynamic_business_cases("dummy.xlsx", "Bill of Materials")
 
         # BOF might not be in result if all its feedstocks were skipped
         if "BOF" in result:
