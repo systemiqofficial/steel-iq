@@ -168,6 +168,7 @@ class ProcessCenter:
         production_cost: Cost per ton to operate this facility (e.g., carbon cost)
         soft_minimum_capacity: Optional target minimum utilization (fraction, e.g., 0.5 for 50%)
         optimal_production: Set after solving, the optimal production quantity
+        green_steel_eligible: Indicates if the facility is eligible for green steel production
     """
 
     def __init__(
@@ -178,11 +179,13 @@ class ProcessCenter:
         location: Location,
         production_cost: float = 0.0,
         soft_minimum_capacity: float | None = None,
+        green_steel_eligible: bool = False,
     ):
         self.name = name
         self.process = process
         self.capacity = capacity
         self.location = location
+        self.green_steel_eligible = green_steel_eligible
         self.production_cost = production_cost
         self.soft_minimum_capacity = soft_minimum_capacity
         self.optimal_production: float | None = None
@@ -405,10 +408,14 @@ class TradeLPModel:
             raise ValueError(f"Unknown distance type: {type}")
 
     def add_tariff_information(
-        self, quota_dict: dict[Tuple[str, str, str], float], tax_dict: dict[Tuple[str, str, str], float]
+        self,
+        quota_dict: dict[Tuple[str, str, str], float],
+        tax_dict: dict[Tuple[str, str, str], float],
+        exemptions_dict: dict[Tuple[str, str, str], float] | None = None,
     ):
         self.tariff_quotas_by_iso3 = quota_dict
         self.tariff_taxes_by_iso3 = tax_dict
+        self.green_steel_exemptions = exemptions_dict if exemptions_dict is not None else {}
 
     def add_commodities(self, commodities: list[Commodity]):
         commodities = [commodity for commodity in commodities if commodity is not None]
@@ -717,8 +724,28 @@ class TradeLPModel:
             )
             for key in potential_tariff_keys:
                 if key in self.tariff_taxes_by_iso3:  # if the potential key is in the tariff taxes
-                    # Add the tariff tax to the allocation cost
-                    self.lp_model.tariff_tax[from_pc.name, to_pc.name, commodity.name] += self.tariff_taxes_by_iso3[key]
+                    base_tariff = self.tariff_taxes_by_iso3[key]
+
+                    # Check if green steel exemption applies (only for steel, only if from_pc is eligible)
+                    exemption_fraction = 1.0  # Default: apply full tariff (100%)
+                    if (
+                        commodity.name == "steel"
+                        and from_pc.green_steel_eligible
+                        and key in self.green_steel_exemptions
+                    ):
+                        exemption_fraction = self.green_steel_exemptions[key]
+                        logging.debug(
+                            f"[GREEN STEEL EXEMPTION] {from_pc.name} → {to_pc.name} (steel): "
+                            f"Base tariff: ${base_tariff:.2f}/t, Exemption: {exemption_fraction * 100:.0f}%, "
+                            f"Effective: ${base_tariff * exemption_fraction:.2f}/t"
+                        )
+
+                    # Apply exemption: exemption_fraction is what % of tariff to apply
+                    # 0.0 = no tariff, 1.0 = full tariff
+                    effective_tariff = base_tariff * exemption_fraction
+
+                    # Add the effective tariff to the allocation cost
+                    self.lp_model.tariff_tax[from_pc.name, to_pc.name, commodity.name] += effective_tariff
 
             # QUOTAS - these will be constraints on a sum of allocations. We need to find all allocations subject to the quota:
             # TODO: We can't do quotas on regions yet

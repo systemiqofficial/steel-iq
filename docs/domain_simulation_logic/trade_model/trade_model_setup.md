@@ -97,10 +97,21 @@ The model represents the global steel value chain as a network:
 2. **Absolute taxes**: Fixed cost per ton ($/ton)
 3. **Percentage taxes**: Cost based on commodity price (% of market price)
 
+**Green Steel Tariff Exemptions:**
+- Steel producers with green steel certification can receive tariff reductions
+- Eligibility: Furnace group must achieve minimum green steel grade level (configurable via `GREEN_STEEL_ELIGIBILITY_MINIMUM_LEVEL` in constants.py)
+- Exemption specified as fraction (0.0-1.0) in tariff data:
+  - 0.0 = no tariff applied (full exemption)
+  - 1.0 = full tariff applied (no exemption)
+  - 0.5 = 50% of tariff applied
+- **Only applies to steel tariffs**, not iron or other commodities
+- For meta furnace groups (clusters): uses production-weighted average green steel grade
+
 **Features:**
 - Wildcard support for country groups (e.g., "any country to EU")
 - Handles iron product families (hot metal, pig iron, DRI → "iron")
 - Accumulates multiple taxes on same route
+- Green steel exemptions reduce effective tariff: `effective_tariff = base_tariff × exemption_fraction`
 
 ---
 

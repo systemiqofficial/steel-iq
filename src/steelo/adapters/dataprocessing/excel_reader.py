@@ -1445,6 +1445,9 @@ def read_tariffs(tariff_excel_path: str, tariff_sheet_name: str, country_mapping
                     quota=row["Quota [t]"],
                     start_date=Year(start_year) if start_year is not None else None,
                     end_date=Year(end_year) if end_year is not None else None,
+                    green_steel_exemption=row.get("Green Steel Exemption [% of original tax]", None)
+                    if "Green Steel Exemption [% of original tax]" in row
+                    else None,
                 )
                 tariffs.append(tariff)
 

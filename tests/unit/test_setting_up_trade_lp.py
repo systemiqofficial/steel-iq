@@ -46,13 +46,23 @@ class DummyProcess:
 
 
 class DummyProcessCenter:
-    def __init__(self, name, process, capacity, location, production_cost=0.1, soft_minimum_capacity=0.0):
+    def __init__(
+        self,
+        name,
+        process,
+        capacity,
+        location,
+        production_cost=0.1,
+        soft_minimum_capacity=0.0,
+        green_steel_eligible=False,
+    ):
         self.production_cost = production_cost
         self.name = name
         self.process = process
         self.capacity = capacity
         self.location = location
         self.soft_minimum_capacity = soft_minimum_capacity
+        self.green_steel_eligible = green_steel_eligible
 
 
 class DummyProcessConnector:
@@ -196,7 +206,7 @@ class DummyTradeLPModel:
         """Mock distance calculation"""
         return 100.0  # Return a dummy distance
 
-    def add_tariff_information(self, quota_dict=None, tax_dict=None):
+    def add_tariff_information(self, quota_dict=None, tax_dict=None, exemptions_dict=None):
         """Mock tariff information addition"""
         pass
 
@@ -285,6 +295,10 @@ class DummyFurnaceGroup:
     def carbon_cost_per_unit(self):
         """Mock carbon cost per unit for testing."""
         return 0.0
+
+    def get_green_steel_grade(self, environment):
+        """Mock green steel grade - always returns None for test furnace groups."""
+        return None
 
 
 class DummyTechnology:
@@ -738,6 +752,7 @@ class DummyTradeTariff:
         quota=None,
         tax_absolute=None,
         tax_percentage=None,
+        green_steel_exemption=None,
     ):
         self.tariff_name = tariff_name
         self.from_iso3 = from_iso3
@@ -746,6 +761,7 @@ class DummyTradeTariff:
         self.quota = quota
         self.tax_absolute = tax_absolute
         self.tax_percentage = tax_percentage
+        self.green_steel_exemption = green_steel_exemption
 
 
 def test_enforce_trade_tariffs_with_quota():

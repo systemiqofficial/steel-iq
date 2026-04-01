@@ -6201,6 +6201,7 @@ class TradeTariff:
         metric: Measurement unit or basis for the tariff (e.g., "USD/tonne", "percent").
         commodity: Specific commodity name this tariff applies to (e.g., "steel", "iron_ore").
             None means applies to all commodities on this route.
+        green_steel_exemption: Percentage exemption for green steel (0-100) relative to the original tax. None if no exemption.
 
     Attributes:
         tariff_id: Unique identifier string (UUID format).
@@ -6214,7 +6215,7 @@ class TradeTariff:
         end_date: End year.
         metric: Measurement unit.
         commodity: Applicable commodity.
-
+        green_steel_exemption: Percentage exemption for green steel (0-100) relative to the original tax. None if no exemption.
     Example:
         >>> tariff = TradeTariff(
         ...     tariff_name="EU_Steel_Import_25pct",
@@ -6244,6 +6245,7 @@ class TradeTariff:
         end_date: Year | None = None,
         metric: str | None = None,
         commodity: str | None = None,
+        green_steel_exemption: float | None = None,
     ) -> None:
         self.tariff_name = tariff_name
         self.from_iso3 = from_iso3
@@ -6259,6 +6261,7 @@ class TradeTariff:
             self.tariff_id = str(uuid.uuid4())
         else:
             self.tariff_id = tariff_id
+        self.green_steel_exemption = green_steel_exemption
 
     def __repr__(self) -> str:
         return f"TradeTariff: <{self.tariff_name}>"

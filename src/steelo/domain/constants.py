@@ -18,6 +18,8 @@ LP_TOLERANCE = 1e-4  # Linear programming solver tolerance, values below are tre
 MINIMUM_UTILIZATION_RATE_FOR_COST_CURVE = 0.3
 MINIMUM_PRODUCTION_VOLUME_FOR_COST_CURVE = 50e3  # tpa; minimum production volume for a plant to have a cost curve
 
+GREEN_STEEL_ELIGIBILITY_MINIMUM_LEVEL = 1  # Minimum level of "green steel" evaluation for a plant to be considered eligible for green steel exemption in tariffs.
+
 # ===== Unit Conversion Factors =====
 GJ_TO_KWH = 1e3 / 3.6  # 1 GJ = 1e3/3e6 kWh and 1/3.6 MWh
 MWH_TO_KWH = 1e3

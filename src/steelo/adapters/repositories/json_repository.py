@@ -1142,6 +1142,7 @@ class TariffInDb(BaseModel):
     end_date: Year
     metric: str
     commodity: str
+    green_steel_exemption: float | None = None
 
     @property
     def to_domain(self) -> TradeTariff:
@@ -1160,6 +1161,7 @@ class TariffInDb(BaseModel):
             end_date=self.end_date,
             metric=self.metric,
             commodity=self.commodity,
+            green_steel_exemption=self.green_steel_exemption,
         )
 
     @classmethod
@@ -1179,6 +1181,7 @@ class TariffInDb(BaseModel):
             end_date=tariff.end_date,
             metric=tariff.metric,
             commodity=tariff.commodity,
+            green_steel_exemption=tariff.green_steel_exemption,
         )
 
     def __lt__(self, other: Self) -> bool:

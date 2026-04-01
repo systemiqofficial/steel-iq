@@ -23,7 +23,70 @@ if TYPE_CHECKING:
     from steelo.simulation import SimulationConfig
 from collections import defaultdict
 import pyomo.environ as pyo
-from steelo.domain.constants import LP_TOLERANCE, T_TO_KT
+from steelo.domain.constants import LP_TOLERANCE, T_TO_KT, GREEN_STEEL_ELIGIBILITY_MINIMUM_LEVEL
+
+
+def is_furnace_group_eligible_for_green_steel_exemption(
+    furnace_group: FurnaceGroup,
+    environment: Environment,
+) -> bool:
+    """
+    Check if a furnace group qualifies for green steel tariff exemptions.
+
+    Returns True if:
+    - Furnace group has production (allocated_volumes > 0)
+    - Green steel grades are defined in environment
+    - Furnace group achieves minimum required grade level
+
+    Args:
+        furnace_group: The furnace group to check
+        environment: Environment containing green steel grade definitions
+
+    Returns:
+        True if eligible for green steel tariff exemptions
+    """
+    grade = furnace_group.get_green_steel_grade(environment)
+
+    if grade is None:
+        return False
+
+    return grade >= GREEN_STEEL_ELIGIBILITY_MINIMUM_LEVEL
+
+
+def calculate_meta_furnace_group_green_steel_eligibility(
+    underlying_furnace_groups: list[FurnaceGroup],
+    environment: Environment,
+) -> bool:
+    """
+    Check if a meta furnace group (cluster) qualifies for green steel exemptions.
+
+    Uses weighted average approach:
+    - Calculate green steel grade for each underlying furnace group
+    - Weight by production volume (allocated_volumes)
+    - If weighted average grade >= minimum eligibility level, qualify
+
+    Args:
+        underlying_furnace_groups: List of furnace groups in the cluster
+        environment: Environment containing green steel grade definitions
+
+    Returns:
+        True if the weighted average grade meets the minimum threshold
+    """
+    total_production = 0.0
+    weighted_grade_sum = 0.0
+
+    for fg in underlying_furnace_groups:
+        if fg.allocated_volumes and fg.allocated_volumes > 0:
+            grade = fg.get_green_steel_grade(environment)
+            if grade is not None:
+                weighted_grade_sum += grade * fg.allocated_volumes
+                total_production += fg.allocated_volumes
+
+    if total_production == 0:
+        return False
+
+    average_grade = weighted_grade_sum / total_production
+    return average_grade >= GREEN_STEEL_ELIGIBILITY_MINIMUM_LEVEL
 
 
 def _ensure_secondary_feedstock_supplier(
@@ -315,7 +378,11 @@ def create_process_from_meta_furnace_group(
 
 
 def add_furnace_groups_as_process_centers(
-    repository, lp_model: tlp.TradeLPModel, config: "SimulationConfig", furnace_groups_override: list[Any] | None = None
+    repository,
+    lp_model: tlp.TradeLPModel,
+    config: "SimulationConfig",
+    furnace_groups_override: list[Any] | None = None,
+    environment: Environment | None = None,
 ):
     """Convert steel furnace groups into production process centers for the LP model.
 
@@ -362,6 +429,21 @@ def add_furnace_groups_as_process_centers(
             else:
                 logger.info(f"Reusing existing process for technology: {meta_fg.technology_name}")
 
+            # Check green steel eligibility for meta furnace group
+            green_steel_eligible = False
+            if environment is not None:
+                # Retrieve the actual furnace group objects from the repository
+                underlying_furnace_groups = []
+                for plant in repository.plants.list():
+                    for fg in plant.furnace_groups:
+                        if fg.furnace_group_id in meta_fg.constituent_fg_ids:
+                            underlying_furnace_groups.append(fg)
+
+                green_steel_eligible = calculate_meta_furnace_group_green_steel_eligibility(
+                    underlying_furnace_groups=underlying_furnace_groups,
+                    environment=environment,
+                )
+
             process_center = tlp.ProcessCenter(
                 name=meta_fg.meta_furnace_group_id,
                 process=process,
@@ -369,6 +451,7 @@ def add_furnace_groups_as_process_centers(
                 location=meta_fg.location,  # This is the capacity-weighted centroid
                 production_cost=meta_fg.weighted_avg_carbon_cost,
                 soft_minimum_capacity=config.soft_minimum_capacity_percentage,
+                green_steel_eligible=green_steel_eligible,
             )
             logger.info(
                 f"Created ProcessCenter {process_center.name} with capacity {process_center.capacity} and {len(process.bill_of_materials)} BOMs"
@@ -388,6 +471,14 @@ def add_furnace_groups_as_process_centers(
                     )
                     lp_model.add_processes([process])
 
+                # Check green steel eligibility for regular furnace group
+                green_steel_eligible = False
+                if environment is not None:
+                    green_steel_eligible = is_furnace_group_eligible_for_green_steel_exemption(
+                        furnace_group=furnace_group,
+                        environment=environment,
+                    )
+
                 process_center = tlp.ProcessCenter(
                     name=furnace_group.furnace_group_id,
                     process=process,
@@ -395,6 +486,7 @@ def add_furnace_groups_as_process_centers(
                     location=plant.location,
                     production_cost=furnace_group.carbon_cost_per_unit,
                     soft_minimum_capacity=config.soft_minimum_capacity_percentage,
+                    green_steel_eligible=green_steel_eligible,
                 )
                 process_centers.append(process_center)
 
@@ -555,6 +647,7 @@ def enforce_trade_tariffs_on_allocations(
 
     quota_dict: dict[tuple[str, str, str], float] = {}
     tax_dict: dict[tuple[str, str, str], float] = {}
+    exemptions_dict: dict[tuple[str, str, str], float] = {}
     average_commodity_price_per_region = message_bus.env.average_commodity_price_per_region
     for trade_tariff in active_trade_tariffs:
         if trade_tariff.commodity is not None and trade_tariff.commodity.lower() in IRON_PRODUCTS:
@@ -678,7 +771,22 @@ def enforce_trade_tariffs_on_allocations(
                         )
     # Remove entries from tax_dict where the value is NaN or infinity
     tax_dict = {key: value for key, value in tax_dict.items() if not (math.isnan(value) or math.isinf(value))}
-    lp_model.add_tariff_information(quota_dict=quota_dict, tax_dict=tax_dict)
+
+    # Build green steel exemptions dictionary (only for steel tariffs)
+    for trade_tariff in active_trade_tariffs:
+        # Only process steel tariffs with exemptions
+        if trade_tariff.commodity is not None and trade_tariff.commodity.lower() == "steel":
+            if trade_tariff.green_steel_exemption is not None and not math.isnan(trade_tariff.green_steel_exemption):
+                key = (
+                    trade_tariff.from_iso3 or "unknown",
+                    trade_tariff.to_iso3 or "unknown",
+                    "steel",
+                )
+                exemptions_dict[key] = trade_tariff.green_steel_exemption
+
+    logger.info(f"[GREEN STEEL] Loaded {len(exemptions_dict)} tariff exemptions for green steel")
+
+    lp_model.add_tariff_information(quota_dict=quota_dict, tax_dict=tax_dict, exemptions_dict=exemptions_dict)
 
 
 def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
@@ -896,7 +1004,11 @@ def set_up_steel_trade_lp(
         lp_model.add_commodities([tlp.Commodity(name=commodity)])
 
     add_furnace_groups_as_process_centers(
-        repository=repository, lp_model=lp_model, config=config, furnace_groups_override=furnace_groups_override
+        repository=repository,
+        lp_model=lp_model,
+        config=config,
+        furnace_groups_override=furnace_groups_override,
+        environment=message_bus.env,
     )
     add_demand_centers_as_process_centers(repository=repository, lp_model=lp_model, year=year)
     secondary_supply_locations: dict[str, tlp.Location] = {}
