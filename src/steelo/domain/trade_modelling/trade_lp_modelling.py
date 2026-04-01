@@ -1275,35 +1275,63 @@ class TradeLPModel:
     @time_function
     def add_aggregate_commodity_constraint_parameters(self):
         """Add the aggregate commodity constraints parameters to the LP model. Needed for the aggregate commodity constraints."""
+        logger = logging.getLogger(f"{__name__}.add_aggregate_commodity_constraint_parameters")
+
         self.tech_to_process_centers = {}
         for pc in self.process_centers:
             if pc.process.type == ProcessType.PRODUCTION:
-                tech = pc.process.technology.name
+                tech = pc.process.name
                 if tech not in self.tech_to_process_centers:
                     self.tech_to_process_centers[tech] = []
                 self.tech_to_process_centers[tech].append(pc.name)
+
+        logger.info(f"Technologies found in process centers: {list(self.tech_to_process_centers.keys())}")
+
         self.lp_model.minimum_aggregate_commodity_constraints_params = {}
         self.lp_model.maximum_aggregate_commodity_constraints_params = {}
+
+        if not self.aggregated_commodity_constraints:
+            logger.warning("No aggregated commodity constraints to process")
+            return
+
+        logger.info(f"Processing {len(self.aggregated_commodity_constraints)} aggregated commodity constraints")
+
         for tech, commodity_mask in self.aggregated_commodity_constraints:
+            logger.debug(f"Processing constraint for tech={tech}, pattern={commodity_mask}")
+
+            if tech not in self.tech_to_process_centers:
+                logger.warning(
+                    f"Technology '{tech}' from constraint not found in process centers (available: {list(self.tech_to_process_centers.keys())})"
+                )
+                continue
+
             if "minimum" in self.aggregated_commodity_constraints[(tech, commodity_mask)]:
                 for pc_name in self.tech_to_process_centers[tech]:
                     self.lp_model.minimum_aggregate_commodity_constraints_params[pc_name, commodity_mask] = (
                         self.aggregated_commodity_constraints[(tech, commodity_mask)]["minimum"]
                     )
+                logger.debug(
+                    f"  Added min constraint for {len(self.tech_to_process_centers[tech])} {tech} process centers"
+                )
+
             if "maximum" in self.aggregated_commodity_constraints[(tech, commodity_mask)]:
                 for pc_name in self.tech_to_process_centers[tech]:
                     self.lp_model.maximum_aggregate_commodity_constraints_params[pc_name, commodity_mask] = (
                         self.aggregated_commodity_constraints[(tech, commodity_mask)]["maximum"]
                     )
+                logger.debug(
+                    f"  Added max constraint for {len(self.tech_to_process_centers[tech])} {tech} process centers"
+                )
 
     @time_function
     def add_aggregate_commodity_constraints_to_lp(self):
-        """Add the aggregate commodity constraints to the LP model. The sum of allocations for a commodity must equal the total demand for that commodity."""
-        self.lp_model.allocations_that_produce_same_outputs_agg = {}
+        """Add the aggregate commodity constraints to the LP model. Enforces min/max ratios for aggregated commodities."""
+        self.lp_model.all_inbound_allocations_agg = {}
         self.lp_model.allocations_of_bom_commodity_agg = {}
 
+        logger = logging.getLogger(f"{__name__}.add_aggregate_commodity_constraints_to_lp")
+
         inbound_arcs = self.lp_model.inbound_arcs
-        feedstock_outputs = self.lp_model.feedstock_outputs
 
         for pc in self.process_centers:
             # skip if not production
@@ -1311,93 +1339,116 @@ class TradeLPModel:
                 continue
 
             pc_name = pc.name
-            # feedstock_outputs_for_pc is a dict: c -> primary_outputs_of_feedstock[pc_name, c]
-            feedstock_outputs_for_pc = feedstock_outputs[pc_name]
+            pc_technology = pc.process.name  # Get the technology name (e.g., "BOF", "EAF")
 
             # arcs_into_pc is the list of (f, t, c) that come into pc_name
             arcs_into_pc = inbound_arcs[pc_name]
 
-            # ensure that all feedstocks that are part of the mask have the same output:
-            reference_outputs = None
-
+            # Check each aggregated commodity constraint
             for tech, commodity_mask in self.aggregated_commodity_constraints:
-                for c in feedstock_outputs_for_pc:
-                    if commodity_mask in c:
-                        if reference_outputs is None:
-                            reference_outputs = feedstock_outputs_for_pc[c]
-                        elif feedstock_outputs_for_pc[c] != reference_outputs:
-                            raise ValueError(
-                                f"Feedstock {c} has different outputs than the reference outputs {reference_outputs} for process center {pc_name}."
-                            )
-                same_output_set = set()
+                # Only apply constraints to matching technology
+                if tech != pc_technology:
+                    continue
+
+                # Collect all incoming allocations (denominator for ratio)
+                all_inbound_set = set(arcs_into_pc)  # All incoming allocations
+
+                # Collect allocations matching the commodity mask (numerator for ratio)
                 bom_commodity_set = set()
 
                 # Loop only over arcs leading into pc_name
                 for f, t, c in arcs_into_pc:
-                    # same_output_set: feedstock that yields the same "primary output" as the commodity mask
-                    if c in feedstock_outputs_for_pc and feedstock_outputs_for_pc[c] == reference_outputs:
-                        same_output_set.add((f, t, c))
-
-                    # bom_commodity_set: arcs for which c is part of the commodity mask
+                    # Check if commodity matches the pattern (e.g., "hot_metal" in c for mask "hot_metal")
                     if commodity_mask in c:
                         bom_commodity_set.add((f, t, c))
 
-                self.lp_model.allocations_that_produce_same_outputs_agg[pc_name, commodity_mask] = same_output_set
+                # Store the sets for this process center and commodity mask
+                self.lp_model.all_inbound_allocations_agg[pc_name, commodity_mask] = all_inbound_set
                 self.lp_model.allocations_of_bom_commodity_agg[pc_name, commodity_mask] = bom_commodity_set
 
+                # Log what we found
+                if bom_commodity_set:
+                    logger.debug(
+                        f"Found {len(bom_commodity_set)} allocations matching pattern '{commodity_mask}' "
+                        f"out of {len(all_inbound_set)} total for {pc_technology} process center {pc_name}"
+                    )
+
         def agg_maximum_ratio_rule(model, pc, comm_mask):
-            if (
-                not model.allocations_that_produce_same_outputs_agg[pc, comm_mask]
-                or not model.allocations_of_bom_commodity_agg[pc, comm_mask]
-            ):
+            # Skip if no allocations exist for this process center and commodity mask
+            if (pc, comm_mask) not in model.all_inbound_allocations_agg:
                 return pyo.Constraint.Skip
-            # direct summation
-            total_same_output = pyo.quicksum(
-                model.allocation_variables[idx]
-                for idx in model.allocations_that_produce_same_outputs_agg[pc, comm_mask]
+
+            if not model.all_inbound_allocations_agg.get(
+                (pc, comm_mask), set()
+            ) or not model.allocations_of_bom_commodity_agg.get((pc, comm_mask), set()):
+                return pyo.Constraint.Skip
+
+            # Total of ALL incoming allocations (denominator)
+            total_all_inbound = pyo.quicksum(
+                model.allocation_variables[idx] for idx in model.all_inbound_allocations_agg[pc, comm_mask]
             )
+
+            # Total of allocations matching the commodity mask (numerator)
             total_bom_commodity = pyo.quicksum(
                 model.allocation_variables[idx] for idx in model.allocations_of_bom_commodity_agg[pc, comm_mask]
             )
+
+            # Constraint: bom_commodity / all_inbound <= maximum_ratio
+            # Rearranged: bom_commodity - maximum_ratio * all_inbound <= 0
             return (
                 total_bom_commodity
-                - total_same_output * model.maximum_aggregate_commodity_constraints_params[pc, comm_mask]
+                - total_all_inbound * model.maximum_aggregate_commodity_constraints_params[pc, comm_mask]
                 <= 0
             )
 
         def agg_minimum_ratio_rule(model, pc, comm_mask):
-            if (
-                not model.allocations_that_produce_same_outputs_agg[pc, comm_mask]
-                or not model.allocations_of_bom_commodity_agg[pc, comm_mask]
-            ):
+            # Skip if no allocations exist for this process center and commodity mask
+            if (pc, comm_mask) not in model.all_inbound_allocations_agg:
                 return pyo.Constraint.Skip
-            # direct summation
-            total_same_output = pyo.quicksum(
-                model.allocation_variables[idx]
-                for idx in model.allocations_that_produce_same_outputs_agg[pc, comm_mask]
+
+            if not model.all_inbound_allocations_agg.get(
+                (pc, comm_mask), set()
+            ) or not model.allocations_of_bom_commodity_agg.get((pc, comm_mask), set()):
+                return pyo.Constraint.Skip
+
+            # Total of ALL incoming allocations (denominator)
+            total_all_inbound = pyo.quicksum(
+                model.allocation_variables[idx] for idx in model.all_inbound_allocations_agg[pc, comm_mask]
             )
+
+            # Total of allocations matching the commodity mask (numerator)
             total_bom_commodity = pyo.quicksum(
                 model.allocation_variables[idx] for idx in model.allocations_of_bom_commodity_agg[pc, comm_mask]
             )
+
+            # Constraint: bom_commodity / all_inbound >= minimum_ratio
+            # Rearranged: bom_commodity - minimum_ratio * all_inbound >= 0
             return (
                 total_bom_commodity
-                - total_same_output * model.minimum_aggregate_commodity_constraints_params[pc, comm_mask]
+                - total_all_inbound * model.minimum_aggregate_commodity_constraints_params[pc, comm_mask]
                 >= 0
             )
 
+        # Log how many constraints we're creating
+        max_constraints = list(self.lp_model.maximum_aggregate_commodity_constraints_params.keys())
+        min_constraints = list(self.lp_model.minimum_aggregate_commodity_constraints_params.keys())
+
+        if max_constraints:
+            logger.info(f"Creating {len(max_constraints)} aggregate maximum ratio constraints")
+        if min_constraints:
+            logger.info(f"Creating {len(min_constraints)} aggregate minimum ratio constraints")
+            for pc_name, comm_mask in min_constraints[:5]:  # Log first 5 for debugging
+                logger.debug(
+                    f"  Min constraint for {pc_name}, pattern '{comm_mask}': {self.lp_model.minimum_aggregate_commodity_constraints_params[pc_name, comm_mask]}"
+                )
+
         self.lp_model.aggregate_commodity_maximum_ratio_constraints = pyo.Constraint(
-            [
-                (pc_name, comm_mask)
-                for (pc_name, comm_mask) in self.lp_model.maximum_aggregate_commodity_constraints_params.keys()
-            ],
+            max_constraints,
             rule=agg_maximum_ratio_rule,
         )
 
         self.lp_model.aggregate_commodity_minimum_ratio_constraints = pyo.Constraint(
-            [
-                (pc_name, comm_mask)
-                for (pc_name, comm_mask) in self.lp_model.minimum_aggregate_commodity_constraints_params.keys()
-            ],
+            min_constraints,
             rule=agg_minimum_ratio_rule,
         )
 
@@ -1448,9 +1499,6 @@ class TradeLPModel:
         # Add variables:
         self.add_allocation_variables_to_lp()
 
-        if self.aggregated_commodity_constraints is not None:
-            self.add_aggregate_commodity_constraint_parameters()
-            self.add_aggregate_commodity_constraints_to_lp()
         self.add_demand_slack_variables_to_lp()
         self.add_minimum_capacity_slack_variables_to_lp()
         # Add parameters:
@@ -1471,6 +1519,9 @@ class TradeLPModel:
         self.add_allocation_costs_as_parameters_to_lp()
         self.add_process_center_type_as_parameter_to_lp()
         # Add constraints:
+        if self.aggregated_commodity_constraints is not None:
+            self.add_aggregate_commodity_constraint_parameters()
+            self.add_aggregate_commodity_constraints_to_lp()
         self.add_production_constraints_to_lp()
         self.add_demand_constraint_to_lp()
         self.add_bom_inflow_constraints_to_lp()
@@ -1564,6 +1615,24 @@ class TradeLPModel:
         elif result.solver.termination_condition == pyo.TerminationCondition.optimal:
             # Load the solution if optimal
             self.lp_model.solutions.load_from(result)
+
+            # Calculate and report unfulfilled demand percentage
+            total_demand = 0
+            total_unfulfilled = 0
+            for dc in self.process_centers:
+                if dc.process.type == ProcessType.DEMAND and dc.capacity is not None:
+                    demand = dc.capacity
+                    slack = pyo.value(self.lp_model.demand_slack_variable[dc.name])
+                    total_demand += demand
+                    total_unfulfilled += slack
+
+            if total_demand > 0:
+                unfulfilled_pct = (total_unfulfilled / total_demand) * 100
+                logger.info(
+                    f"LP Solution: {unfulfilled_pct:.2f}% of demand remains unfulfilled ({total_unfulfilled:,.0f} / {total_demand:,.0f} tons)"
+                )
+            else:
+                logger.info("LP Solution: No demand centers found")
 
         return result
 

@@ -63,7 +63,7 @@ class TestDynamicBusinessCaseReadingWithNormalization:
         mock_read_excel.return_value = mock_excel_data
 
         # This should not skip "Hot metal" and "Pig iron" entries
-        result = read_dynamic_business_cases("dummy.xlsx", "Bill of Materials")
+        result, aggregated_constraints = read_dynamic_business_cases("dummy.xlsx", "Bill of Materials")
 
         # BOF should have business cases with hot metal and pig iron
         assert "BOF" in result
@@ -80,7 +80,7 @@ class TestDynamicBusinessCaseReadingWithNormalization:
         mock_read_excel.return_value = mock_excel_data
 
         with caplog.at_level("WARNING"):
-            read_dynamic_business_cases("dummy.xlsx", "Bill of Materials")
+            result, aggregated_constraints = read_dynamic_business_cases("dummy.xlsx", "Bill of Materials")
 
         # Should not have warnings about invalid metallic charges
         warning_messages = [
@@ -112,7 +112,7 @@ class TestDynamicBusinessCaseReadingWithNormalization:
         )
         mock_read_excel.return_value = data
 
-        result = read_dynamic_business_cases("dummy.xlsx", "Bill of Materials")
+        result, aggregated_constraints = read_dynamic_business_cases("dummy.xlsx", "Bill of Materials")
 
         # Should handle both formats and create proper business cases
         assert "BOF" in result
@@ -153,7 +153,7 @@ class TestDynamicBusinessCaseReadingWithNormalization:
 
         mock_read_excel.side_effect = lambda *args, **kwargs: _make_frame().copy()
 
-        results = [read_dynamic_business_cases("dummy.xlsx", "Bill of Materials") for _ in range(5)]
+        results = [(read_dynamic_business_cases("dummy.xlsx", "Bill of Materials")[0]) for _ in range(5)]
         # Extract ordering tuples for deterministic comparison
         orderings = [tuple((fs.metallic_charge, fs.reductant) for fs in result["DRI"]) for result in results]
 
@@ -214,7 +214,7 @@ class TestMasterExcelReaderWithNormalizedBusinessCases:
     def test_bof_plants_created_with_normalized_charges(self, mock_excel_file):
         """Test that BOF furnace groups are created when charges are normalized."""
         with MasterExcelReader(mock_excel_file) as reader:
-            plants, _ = reader.read_plants()  # Unpack tuple (plants, metadata)
+            plants, _, _ = reader.read_plants()  # Unpack tuple (plants, metadata, additional)
 
         # Should have created at least one plant
         assert len(plants) > 0

@@ -317,6 +317,22 @@ class SteelPlotter:
             self.logger.error(f"Failed to save CSV to {output_path}: {e}")
             return None
 
+    def _ensure_y_axis_starts_at_zero(self, ax, upper_margin: float = 1.1):
+        """Ensure y-axis starts at 0 and has appropriate upper limit.
+
+        Args:
+            ax: Matplotlib axis object
+            upper_margin: Factor to multiply max value for upper limit (default: 1.1 = 10% margin)
+        """
+        current_ylim = ax.get_ylim()
+        # Set lower limit to 0
+        # For upper limit, use current max or add margin
+        if current_ylim[1] > 0:
+            ax.set_ylim(0, current_ylim[1] * upper_margin)
+        else:
+            # If no positive data, just set a reasonable range
+            ax.set_ylim(0, 1)
+
     # ========================================================================
     # Plotting Methods
     # ========================================================================
@@ -409,6 +425,9 @@ class SteelPlotter:
                 labels = [f"{float(h):.1f}" if float(h) > 0.1 else "" for h in heights]
                 ax.bar_label(container, labels=labels, label_type="center", fontsize=8, color="white", weight="bold")
 
+        # Ensure y-axis starts at 0
+        self._ensure_y_axis_starts_at_zero(ax)
+
         fig.tight_layout()
 
         # Save
@@ -480,6 +499,9 @@ class SteelPlotter:
         ax.set_xlim(years[0], years[-1])
         ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=min(len(years), 20)))
 
+        # Ensure y-axis starts at 0
+        self._ensure_y_axis_starts_at_zero(ax)
+
         fig.tight_layout()
 
         # Export CSV if requested
@@ -548,6 +570,9 @@ class SteelPlotter:
         ax.set_xlim(years[0], years[-1])
         ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=min(len(years), 20)))
 
+        # Ensure y-axis starts at 0
+        self._ensure_y_axis_starts_at_zero(ax)
+
         fig.tight_layout()
 
         # Export CSV if requested
@@ -615,6 +640,9 @@ class SteelPlotter:
         years = sorted(df_pivot.index)
         ax.set_xlim(years[0], years[-1])
         ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=min(len(years), 20)))
+
+        # Ensure y-axis starts at 0
+        self._ensure_y_axis_starts_at_zero(ax)
 
         fig.tight_layout()
 
@@ -696,6 +724,9 @@ class SteelPlotter:
         years = sorted(df_pivot.index)
         ax.set_xlim(years[0], years[-1])
         ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=min(len(years), 20)))
+
+        # Ensure y-axis starts at 0
+        self._ensure_y_axis_starts_at_zero(ax)
 
         fig.tight_layout()
 
@@ -795,6 +826,9 @@ class SteelPlotter:
         ax.set_ylabel("Production Cost (US$/t)", fontsize=12)
         self._style_legend(ax)
         ax.grid(True, alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
+
+        # Ensure y-axis starts at 0
+        self._ensure_y_axis_starts_at_zero(ax)
 
         fig.tight_layout()
 
@@ -905,6 +939,9 @@ class SteelPlotter:
         ax.set_title("Cost Curve per Region", fontsize=14, fontweight="bold")
         ax.grid(True, linestyle="--", alpha=self.config.grid_alpha)
 
+        # Ensure y-axis starts at 0
+        self._ensure_y_axis_starts_at_zero(ax)
+
         fig.tight_layout()
 
         # Export CSV if requested
@@ -983,6 +1020,9 @@ class SteelPlotter:
         ax.set_title("Cost Curve", fontsize=14, fontweight="bold")
         self._style_legend(ax)
         ax.grid(True, alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
+
+        # Ensure y-axis starts at 0
+        self._ensure_y_axis_starts_at_zero(ax)
 
         fig.tight_layout()
 
@@ -1304,6 +1344,9 @@ class SteelPlotter:
         # Add grid
         ax.grid(True, alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
 
+        # Ensure y-axis starts at 0
+        self._ensure_y_axis_starts_at_zero(ax)
+
         fig.tight_layout()
 
         # Generate filename if not provided
@@ -1398,6 +1441,9 @@ class SteelPlotter:
 
         # Rotate x-axis labels for better readability
         ax.tick_params(axis="x", rotation=45)
+
+        # Ensure y-axis starts at 0
+        self._ensure_y_axis_starts_at_zero(ax)
 
         fig.tight_layout()
 
@@ -1529,6 +1575,9 @@ class SteelPlotter:
             ax.set_xlim(df_pivot.index.min(), df_pivot.index.max())
 
         ax.grid(True, alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
+
+        # Ensure y-axis starts at 0
+        self._ensure_y_axis_starts_at_zero(ax)
 
         fig.tight_layout()
 

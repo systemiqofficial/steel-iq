@@ -301,6 +301,7 @@ class AllocationModel:
 
         Args
         """
+
         logger = logging.getLogger(f"{__name__}.AllocationModel.run")
         module_start = time.time()
         logger.debug(f"\n\n[TM] ========== Starting AllocationModel.run for year {bus.env.year} ========== \n")
@@ -340,6 +341,25 @@ class AllocationModel:
                 current_year, bus.env.config.chosen_emissions_boundary_for_carbon_costs
             )
 
+        # Clustering: Reduce LP complexity by aggregating furnace groups
+        meta_furnace_groups = None
+        if bus.env.config.enable_furnace_group_clustering:
+            from steelo.domain.trade_modelling.furnace_group_clustering import cluster_furnace_groups
+
+            logger.info(f"[CLUSTERING] Clustering enabled for year {bus.env.year}")
+            meta_furnace_groups, cluster_mapping = cluster_furnace_groups(
+                plants=bus.uow.plants.list(), config=bus.env.config
+            )
+            logger.info(
+                f"[CLUSTERING] Reduced furnace groups from "
+                f"{sum(len(fgs) for fgs in cluster_mapping.values())} to {len(meta_furnace_groups)}"
+            )
+            # Store cluster_mapping in environment for disaggregation later
+            bus.env.cluster_mapping = cluster_mapping
+            bus.env.meta_furnace_groups = meta_furnace_groups
+        else:
+            logger.debug(f"[CLUSTERING] Clustering disabled for year {bus.env.year}")
+
         if bus.env.config.include_tariffs:
             active_tariffs = bus.env.get_active_trade_tariffs()
             assert bus.env.config is not None, "config must be set in the environment"
@@ -352,6 +372,7 @@ class AllocationModel:
                 secondary_feedstock_constraints=bus.env.relevant_secondary_feedstock_constraints(),
                 aggregated_metallic_charge_constraints=bus.env.aggregated_metallic_charge_constraints,
                 transport_kpis=bus.env.transport_kpis,
+                furnace_groups_override=meta_furnace_groups,  # Pass clustered meta-FGs
             )
         else:
             assert bus.env.config is not None, "config must be set in the environment"
@@ -363,6 +384,7 @@ class AllocationModel:
                 secondary_feedstock_constraints=bus.env.relevant_secondary_feedstock_constraints(),
                 aggregated_metallic_charge_constraints=bus.env.aggregated_metallic_charge_constraints,
                 transport_kpis=bus.env.transport_kpis,
+                furnace_groups_override=meta_furnace_groups,  # Pass clustered meta-FGs
             )
 
         # Warm-start from previous year's solution if available (OPT-2)
@@ -374,9 +396,19 @@ class AllocationModel:
         memory_tracker.checkpoint("after_lp_setup", year=bus.env.year)
 
         # Trade LP solve (trade_optimization is logged inside solve_steel_trade_lp_and_return_commodity_allocations)
-        commodity_allocations = solve_steel_trade_lp_and_return_commodity_allocations(
-            trade_lp=trade_lp, repository=cast(InMemoryRepository, bus.uow.repository)
-        )
+        # When clustering is enabled, we skip CommodityAllocations creation here and do it after disaggregation
+        # Use explicit True check to avoid MagicMock truthy values in tests
+        clustering_enabled = getattr(bus.env.config, "enable_furnace_group_clustering", None)
+        if clustering_enabled is True:
+            # Just solve the LP, don't create CommodityAllocations yet
+            from steelo.domain.trade_modelling.set_up_steel_trade_lp import solve_lp_only
+
+            commodity_allocations = solve_lp_only(trade_lp)
+            logger.info("[CLUSTERING] LP solved, CommodityAllocations creation deferred until after disaggregation")
+        else:
+            commodity_allocations = solve_steel_trade_lp_and_return_commodity_allocations(
+                trade_lp=trade_lp, repository=cast(InMemoryRepository, bus.uow.repository)
+            )
         memory_tracker.checkpoint("after_lp_solve", year=bus.env.year)
 
         # Store current solution for warm-starting next year's LP (OPT-2)
@@ -391,6 +423,39 @@ class AllocationModel:
 
         # Extract allocations before cleanup (needed for event publishing later)
         trade_lp_allocations = trade_lp.allocations if hasattr(trade_lp, "allocations") else None
+
+        # Disaggregation: Convert clustered allocations back to individual furnace groups
+        # Use explicit True check to avoid MagicMock truthy values in tests
+        enable_clustering = getattr(bus.env.config, "enable_furnace_group_clustering", None)
+        if enable_clustering is True and trade_lp_allocations is not None:
+            from steelo.domain.trade_modelling.furnace_group_clustering import disaggregate_allocations
+            from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
+                create_commodity_allocations_from_allocations,
+            )
+
+            logger.info(f"[DISAGGREGATION] Starting allocation disaggregation for year {bus.env.year}")
+            # Assertion: meta_furnace_groups must be set when clustering is enabled
+            assert bus.env.meta_furnace_groups is not None, "meta_furnace_groups must be set when clustering is enabled"
+            disaggregated_allocations = disaggregate_allocations(
+                clustered_allocations=trade_lp_allocations,
+                meta_furnace_groups=bus.env.meta_furnace_groups,
+                plants_repo=bus.uow.plants,  # type: ignore[arg-type]
+                config=bus.env.config,
+                transport_kpis=bus.env.transport_kpis,
+                willingness_to_pay=bus.env.willingness_to_pay,
+            )
+            # Use disaggregated allocations for TM-PAM connector
+            trade_lp_allocations = disaggregated_allocations
+            logger.info(f"[DISAGGREGATION] Disaggregation complete for year {bus.env.year}")
+
+            # Now create CommodityAllocations from disaggregated allocations
+            logger.info("[DISAGGREGATION] Creating CommodityAllocations from disaggregated allocations")
+            commodity_allocations = create_commodity_allocations_from_allocations(
+                allocations=disaggregated_allocations,
+                repository=cast(InMemoryRepository, bus.uow.repository),
+                commodities=trade_lp.commodities,
+            )
+            logger.info("[DISAGGREGATION] CommodityAllocations created")
 
         # Explicit LP model cleanup to free memory (Priority 1 memory optimization)
         del trade_lp
