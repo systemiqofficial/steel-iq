@@ -1555,3 +1555,176 @@ def test_solve_steel_trade_lp_plant_to_plant_allocation(monkeypatch):
     iron_alloc = allocations["iron"]
     # Check that allocations dict has entries (real CommodityAllocations uses .allocations dict)
     assert len(iron_alloc.allocations) > 0
+
+
+# --- Tests for meta-furnace group clustering integration ---
+
+
+class DummyMetaFurnaceGroup:
+    """Mock MetaFurnaceGroup for testing."""
+
+    def __init__(
+        self,
+        meta_furnace_group_id,
+        technology_name,
+        chosen_reductant,
+        location,
+        total_capacity,
+        weighted_avg_carbon_cost,
+        dynamic_business_case,
+        weighted_avg_energy_costs=None,
+        capacity_shares=None,
+        constituent_locations=None,
+    ):
+        self.meta_furnace_group_id = meta_furnace_group_id
+        self.technology_name = technology_name
+        self.chosen_reductant = chosen_reductant
+        self.location = location
+        self.total_capacity = total_capacity
+        self.weighted_avg_carbon_cost = weighted_avg_carbon_cost
+        self.dynamic_business_case = dynamic_business_case
+        self.weighted_avg_energy_costs = weighted_avg_energy_costs or {}
+        self.capacity_shares = capacity_shares or {}
+        self.constituent_locations = constituent_locations or {}
+
+
+def test_add_furnace_groups_as_process_centers_with_meta_furnace_groups():
+    """Test that meta-furnace groups are correctly processed into process centers."""
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import add_furnace_groups_as_process_centers
+
+    # Create dummy location for meta-FG (capacity-weighted centroid)
+    class MockLocation:
+        def __init__(self, lat, lon, iso3="USA"):
+            self.lat = lat
+            self.lon = lon
+            self.iso3 = iso3
+
+    centroid_location = MockLocation(lat=40.5, lon=101.5)
+
+    # Create a meta-furnace group representing 2 clustered BF-coke furnaces
+    meta_fg = DummyMetaFurnaceGroup(
+        meta_furnace_group_id="cluster_BF_coke_USA",
+        technology_name="BF",
+        chosen_reductant="coke",
+        location=centroid_location,
+        total_capacity=Volumes(4000.0),  # Combined capacity
+        weighted_avg_carbon_cost=90.0,  # Weighted average
+        dynamic_business_case=[],
+        weighted_avg_energy_costs={"hot_metal": 25.5, "pig_iron": 30.0},
+        capacity_shares={"plant1_fg0": 0.25, "plant2_fg0": 0.75},
+    )
+
+    repo = DummyRepository()
+    lp_model = DummyTradeLPModel()
+    config = create_mock_config()
+
+    # Pass meta-furnace group via furnace_groups_override
+    add_furnace_groups_as_process_centers(repo, lp_model, config, furnace_groups_override=[meta_fg])
+
+    # Verify that a process center was created
+    assert len(lp_model.process_centers) == 1
+    pc = lp_model.process_centers[0]
+
+    # Check process center properties
+    assert pc.name == "cluster_BF_coke_USA"
+    assert pc.capacity == config.capacity_limit * meta_fg.total_capacity
+    assert pc.location == centroid_location
+    assert pc.production_cost == 90.0  # Weighted average carbon cost
+
+    # Verify the process was created/retrieved
+    assert "BF" in lp_model._processes
+
+
+def test_set_up_steel_trade_lp_with_meta_furnace_groups(monkeypatch):
+    """Integration test: set up LP with meta-furnace groups instead of raw furnace groups."""
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import set_up_steel_trade_lp
+
+    year = 2025
+
+    # Create empty repository (no plants, since we're using meta-FGs)
+    repo = DummyRepository()
+    repo.plants.items = []
+    repo.demand_centers.items = []
+    repo.suppliers.items = []
+
+    # Create demand center
+    demand_center = DummyDemandCenter(demand_center_id="demand_cluster", demand_by_year={year: 5000})
+    repo.demand_centers.items = [demand_center]
+    repo.demand_centers.data = {"demand_cluster": demand_center}
+
+    # Create supplier
+    supplier = DummySupplier(supplier_id="sup_cluster", commodity="scrap", capacity_by_year={year: 3000})
+    repo.suppliers.items = [supplier]
+    repo.suppliers.data = {"sup_cluster": supplier}
+
+    # Create mock location
+    class MockLocation:
+        def __init__(self, lat, lon, iso3="CHN"):
+            self.lat = lat
+            self.lon = lon
+            self.iso3 = iso3
+
+    # Create meta-furnace groups
+    meta_fg1 = DummyMetaFurnaceGroup(
+        meta_furnace_group_id="cluster_BF_coke_CHN",
+        technology_name="BF",
+        chosen_reductant="coke",
+        location=MockLocation(lat=35.0, lon=110.0),
+        total_capacity=Volumes(10000.0),
+        weighted_avg_carbon_cost=85.0,
+        dynamic_business_case=[],
+        weighted_avg_energy_costs={"hot_metal": 28.0},
+    )
+
+    meta_fg2 = DummyMetaFurnaceGroup(
+        meta_furnace_group_id="cluster_EAF_electricity_CHN",
+        technology_name="EAF",
+        chosen_reductant="electricity",
+        location=MockLocation(lat=36.0, lon=112.0),
+        total_capacity=Volumes(5000.0),
+        weighted_avg_carbon_cost=45.0,
+        dynamic_business_case=[],
+        weighted_avg_energy_costs={"scrap": 15.0},
+    )
+
+    # Patch DummyTradeLPModel to have required processes
+    orig_init = ORIGINAL_DUMMY_TRADE_LP_MODEL_INIT
+
+    def init_with_processes(self, lp_epsilon=1e-3, year=None, solver_options=None):
+        orig_init(self, lp_epsilon, year, solver_options)
+        for proc_name in ["BF", "EAF", "demand", "scrap_supply"]:
+            self._processes[proc_name] = DummyProcess(proc_name, DummyProcessType.PRODUCTION, [])
+
+    monkeypatch.setattr(DummyTradeLPModel, "__init__", init_with_processes)
+
+    mock_config = create_mock_config()
+    message_bus = DummyMessageBus(repo)
+
+    # Call set_up_steel_trade_lp with meta-furnace groups
+    lp_model = set_up_steel_trade_lp(
+        message_bus=message_bus,
+        year=year,
+        config=mock_config,
+        legal_process_connectors=[],
+        furnace_groups_override=[meta_fg1, meta_fg2],
+    )
+
+    # Verify that process centers were created for meta-furnace groups
+    meta_fg_centers = [pc for pc in lp_model.process_centers if pc.name.startswith("cluster_")]
+    assert len(meta_fg_centers) == 2
+
+    # Check that capacities are correct
+    bf_center = next(pc for pc in meta_fg_centers if "BF" in pc.name)
+    assert bf_center.capacity == mock_config.capacity_limit * Volumes(10000.0)
+    assert bf_center.production_cost == 85.0
+
+    eaf_center = next(pc for pc in meta_fg_centers if "EAF" in pc.name)
+    assert eaf_center.capacity == mock_config.capacity_limit * Volumes(5000.0)
+    assert eaf_center.production_cost == 45.0
+
+    # Verify demand and supplier centers were also created
+    demand_centers = [pc for pc in lp_model.process_centers if pc.name == "demand_cluster"]
+    assert len(demand_centers) == 1
+
+    supplier_centers = [pc for pc in lp_model.process_centers if pc.name == "sup_cluster"]
+    assert len(supplier_centers) == 1

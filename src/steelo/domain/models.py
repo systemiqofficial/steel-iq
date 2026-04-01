@@ -1625,8 +1625,20 @@ class FurnaceGroup:
             raise ValueError("Bill of materials must exist for FG with utilization rate > 0")
         # Validate materials exist in BOM
         elif not ("materials" in self.bill_of_materials and self.bill_of_materials["materials"]):
+            # Get diagnostic info
+            has_feedstocks = hasattr(self, "effective_primary_feedstocks")
+            feedstock_count = (
+                len(self.effective_primary_feedstocks) if has_feedstocks and self.effective_primary_feedstocks else 0
+            )
+
             logger.error(
-                f"FurnaceGroup {self.furnace_group_id} of technology {self.technology.name} has no materials defined in its bill of materials. It's production is {self.production}. It's bill of materials is {self.bill_of_materials}."
+                f"FurnaceGroup {self.furnace_group_id} of technology {self.technology.name} has no materials defined in its bill of materials. "
+                f"Production: {self.production}, "
+                f"Utilization: {self.utilization_rate}, "
+                f"Capacity: {self.capacity}, "
+                f"Has effective_primary_feedstocks: {has_feedstocks}, "
+                f"Feedstock count: {feedstock_count}, "
+                f"BOM: {self.bill_of_materials}"
             )
             raise ValueError("Materials must exist in BOM for FG with utilization rate > 0")
         else:
@@ -6747,6 +6759,10 @@ class Environment:
         # Willingness to pay:
         self.willingness_to_pay: list[WillingnessToPay] = []
 
+        # Furnace group clustering - initialized during AllocationModel.run when clustering is enabled
+        self.cluster_mapping: dict[str, list] | None = None  # Maps cluster keys to list of FurnaceGroups
+        self.meta_furnace_groups: list | None = None  # List of MetaFurnaceGroup objects
+
         # Geospatial data from master Excel - initialized via initiate methods
         self.hydrogen_efficiency: dict[Year, float] = {}
         self.hydrogen_capex_opex: dict[str, dict[Year, float]] = {}
@@ -7761,11 +7777,52 @@ class Environment:
         if product:
             logger.debug(f"[COST CURVE]: Extracting price for product {product} - NORMAL CASE")
             logger.debug(f"[COST CURVE]: Demand: {demand}")
+
+            # Find the base price from the cost curve
+            base_price = None
             for entry in cost_curve[product]:
                 logger.debug(f"[COST CURVE]: Checking entry: {entry}")
                 if entry["cumulative_capacity"] >= demand:
                     logger.debug(f"[COST CURVE]: Satisfies demand: {entry}")
-                    return entry["production_cost"]
+                    base_price = entry["production_cost"]
+                    break
+
+            if base_price is None:
+                raise ValueError("capacity should always be greater than demand")  # This should never happen
+
+            # Apply iron price pegging if configured (only for current year, not future prices)
+            if product == "iron" and not future and self.config.peg_iron_to_steel_price:
+                # Get steel price using current demand
+                steel_price = None
+                steel_demand = self.current_demand  # Use global steel demand
+
+                # Check if steel cost curve exists
+                if "steel" in cost_curve and cost_curve["steel"]:
+                    # Find steel price from cost curve
+                    for entry in cost_curve["steel"]:
+                        if entry["cumulative_capacity"] >= steel_demand:
+                            steel_price = entry["production_cost"]
+                            break
+
+                    # If steel demand exceeds capacity, use highest price + buffer
+                    if steel_price is None:
+                        last_steel_entry = cost_curve["steel"][-1]
+                        steel_price = last_steel_entry["production_cost"] + self.config.steel_price_buffer
+
+                    # Apply pegging: iron price = max(cost_curve_price, steel_price * ratio)
+                    pegged_price = steel_price * self.config.iron_to_steel_price_ratio
+                    final_price = max(base_price, pegged_price)
+
+                    if final_price != base_price:
+                        logger.info(
+                            f"[IRON PRICE PEGGING]: Applied pegging. Base iron price: ${base_price:.2f}/t, "
+                            f"Steel price: ${steel_price:.2f}/t, Pegged price (at {self.config.iron_to_steel_price_ratio:.0%}): "
+                            f"${pegged_price:.2f}/t, Final iron price: ${final_price:.2f}/t"
+                        )
+
+                    return final_price
+
+            return base_price
         else:
             raise KeyError(
                 "A product name - lower case - needs to be specified haven't sorted out how to yield both yet"

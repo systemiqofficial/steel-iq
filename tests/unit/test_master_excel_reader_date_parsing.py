@@ -107,11 +107,30 @@ def test_furnace_group_renovation_dates():
         # Write to Excel
         with pd.ExcelWriter(tf.name) as writer:
             plant_data.to_excel(writer, sheet_name="Iron and steel plants", index=False)
+            # Add minimal Bill of Materials sheet
+            bom_data = pd.DataFrame(
+                {
+                    "Business case": ["steel_bof"],
+                    "Metallic charge": ["hot_metal"],
+                    "Reductant": [""],
+                    "Side": ["Input"],
+                    "Type": ["feedstock"],
+                    "Metric type": ["Materials"],
+                    "Vector": ["hot_metal"],
+                    "Value": [0.95],
+                    "Unit": ["t/t"],
+                    "System boundary": ["cradle-to-gate"],
+                    "ghg_factor_scope_1": [1.0],
+                    "ghg_factor_scope_2": [0.1],
+                    "ghg_factor_scope_3_rest": [0.05],
+                }
+            )
+            bom_data.to_excel(writer, sheet_name="Bill of Materials", index=False)
 
         # Read plants
         reader = MasterExcelReader(Path(tf.name))
         with reader:
-            plants, _ = reader.read_plants(dynamic_feedstocks_dict={})  # Unpack tuple
+            plants, _, _ = reader.read_plants(dynamic_feedstocks_dict={})  # Unpack tuple (3 values)
 
         assert len(plants) == 3
 

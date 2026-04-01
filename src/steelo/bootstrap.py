@@ -106,6 +106,42 @@ def bootstrap(
     )
 
 
+def _load_aggregated_metallic_charge_constraints(env, fixtures_dir):
+    """Load aggregated metallic charge constraints from JSON file if available."""
+    import logging
+    import json
+    from .domain.models import AggregatedMetallicChargeConstraint
+
+    logger = logging.getLogger(__name__)
+    constraints = []
+
+    if fixtures_dir:
+        constraints_path = fixtures_dir / "aggregated_metallic_charge_constraints.json"
+        if constraints_path.exists():
+            try:
+                with open(constraints_path, "r") as f:
+                    constraints_data = json.load(f)
+
+                for c in constraints_data:
+                    constraint = AggregatedMetallicChargeConstraint(
+                        technology_name=c["technology_name"],
+                        feedstock_pattern=c["feedstock_pattern"],
+                        minimum_share=c.get("minimum_share"),
+                        maximum_share=c.get("maximum_share"),
+                    )
+                    constraints.append(constraint)
+
+                logger.info(f"Loaded {len(constraints)} aggregated metallic charge constraints from {constraints_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load aggregated metallic charge constraints: {e}")
+
+    env.initiate_aggregated_metallic_charge_constraints(constraints)
+    if not constraints:
+        logger.info("No aggregated metallic charge constraints available, using empty list")
+    else:
+        logger.info(f"Total {len(constraints)} aggregated metallic charge constraints loaded")
+
+
 def _load_secondary_feedstock_constraints(env, repository_json):
     """Load secondary feedstock constraints from biomass availability data (includes CO2 storage)."""
     import logging
@@ -353,6 +389,7 @@ def bootstrap_simulation(
 
         # Load secondary feedstock constraints from biomass availability data
         _load_secondary_feedstock_constraints(env, repository_json)
+        _load_aggregated_metallic_charge_constraints(env, fixtures_dir)
 
         # Initialize virgin iron demand (required for PlantAgentsModel)
         env.initialize_virgin_iron_demand(
@@ -367,6 +404,7 @@ def bootstrap_simulation(
             env.initiate_industrial_asset_cost_of_capital(repository.cost_of_capital)
         # Initialize empty secondary feedstock constraints for test repositories
         env.initiate_secondary_feedstock_constraints([])
+        env.initiate_aggregated_metallic_charge_constraints([])
 
     # Set configuration attributes
     # Note: global_bf_ban removed - now handled via allowed_techs system

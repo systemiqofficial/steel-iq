@@ -48,9 +48,6 @@ def get_project_root_dir() -> Path:
 project_root = get_project_root_dir()
 root = get_steelo_home()  # STEELO_HOME
 
-# Data year range for production data (used by preprocessing modules)
-PRODUCTION_GEM_DATA_YEARS = range(2019, 2023)
-
 
 class Settings:
     """Minimal settings object for allowed exception modules only."""

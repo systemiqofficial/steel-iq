@@ -317,6 +317,9 @@ class SimulationConfig:
         default_factory=lambda: ["hbi_high", "hbi_mid", "hbi_low", "pig_iron", "electrolytic_iron"]
     )
 
+    # === Clustering Configuration ===
+    enable_furnace_group_clustering: bool = False  # Feature flag for LP complexity reduction via clustering
+
     # === Plant Agent Module Parameters ===
     probabilistic_agents: bool = True  # Probabilitstic (mimick human decision-making) vs deterministic approach
     plant_lifetime: int = 20  # Years
@@ -340,6 +343,12 @@ class SimulationConfig:
     # Price increase when demand exceeds supply
     steel_price_buffer: float = 200.0  # USD/tonne - buffer above highest cost curve price when demand exceeds supply
     iron_price_buffer: float = 200.0  # USD/tonne - buffer above highest cost curve price when demand exceeds supply
+
+    # Iron price pegging configuration
+    peg_iron_to_steel_price: bool = (
+        False  # Whether to peg iron price to steel price (minimum of cost curve or % of steel)
+    )
+    iron_to_steel_price_ratio: float = 0.8  # Ratio of steel price for iron floor (80% default)
 
     # Capacity
     ## Furnace group capacity expansion size and initial capacity of new plants (in tonnes)
@@ -1243,12 +1252,17 @@ class SimulationRunner:
 
             price_df = pd.DataFrame(price_data)
 
-            # Save CSV to output/data directory
+            # Save CSV to output/data directory (for backward compatibility)
             data_dir = self.config.output_dir / "data"
             data_dir.mkdir(parents=True, exist_ok=True)
             price_csv_path = data_dir / f"market_prices_{start_year}_{end_year}.csv"
             price_df.to_csv(price_csv_path, index=False)
             logger.info(f"Saved market prices to {price_csv_path}")
+
+            # Also save CSV alongside the plot in pam_plots_dir for consistency with other charts
+            pam_csv_path = bus.env.plot_paths.pam_plots_dir / f"market_prices_{start_year}_{end_year}.csv"
+            price_df.to_csv(pam_csv_path, index=False)
+            logger.info(f"Saved market prices CSV alongside plot to {pam_csv_path}")
 
             # Create line plot of prices over time
             fig, ax = plt.subplots(figsize=(10, 6))

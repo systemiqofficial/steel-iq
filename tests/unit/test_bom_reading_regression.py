@@ -112,8 +112,10 @@ def test_bom_reading_produces_non_empty_business_cases():
     excel_path = create_test_bom_excel()
 
     try:
-        # Read dynamic business cases - returns dict[str, list[PrimaryFeedstock]]
-        technology_feedstocks = read_dynamic_business_cases(str(excel_path), "Bill of Materials")
+        # Read dynamic business cases - returns tuple of (dict[str, list[PrimaryFeedstock]], list[AggregatedMetallicChargeConstraint])
+        technology_feedstocks, aggregated_constraints = read_dynamic_business_cases(
+            str(excel_path), "Bill of Materials"
+        )
 
         # Verify we got business cases back
         assert technology_feedstocks is not None, "Technology feedstocks should not be None"
@@ -199,7 +201,7 @@ def test_bom_reading_handles_missing_values_gracefully():
             df.to_excel(writer, sheet_name="Bill of Materials", index=False)
 
         # Should not crash and should return valid business cases
-        technology_feedstocks = read_dynamic_business_cases(temp_file.name, "Bill of Materials")
+        technology_feedstocks, aggregated_constraints = read_dynamic_business_cases(temp_file.name, "Bill of Materials")
 
         assert technology_feedstocks is not None
         assert len(technology_feedstocks) > 0, "Should have at least one valid business case"
@@ -261,7 +263,7 @@ def test_metallic_charge_case_handling():
         with pd.ExcelWriter(temp_file.name, engine="openpyxl") as writer:
             df.to_excel(writer, sheet_name="Bill of Materials", index=False)
 
-        technology_feedstocks = read_dynamic_business_cases(temp_file.name, "Bill of Materials")
+        technology_feedstocks, aggregated_constraints = read_dynamic_business_cases(temp_file.name, "Bill of Materials")
 
         assert technology_feedstocks is not None
         assert len(technology_feedstocks) > 0
@@ -359,7 +361,7 @@ def test_no_excessive_feedstock_removal():
         with pd.ExcelWriter(temp_file.name, engine="openpyxl") as writer:
             df.to_excel(writer, sheet_name="Bill of Materials", index=False)
 
-        technology_feedstocks = read_dynamic_business_cases(temp_file.name, "Bill of Materials")
+        technology_feedstocks, aggregated_constraints = read_dynamic_business_cases(temp_file.name, "Bill of Materials")
 
         # Count total feedstocks across all technologies
         total_feedstocks = sum(len(feedstock_list) for feedstock_list in technology_feedstocks.values())
