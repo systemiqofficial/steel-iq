@@ -52,6 +52,25 @@ class TestMasterExcelReaderFixes:
         with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tf:
             with pd.ExcelWriter(tf.name) as writer:
                 sample_excel_data.to_excel(writer, sheet_name="Iron and steel plants", index=False)
+                # Add minimal Bill of Materials sheet
+                bom_data = pd.DataFrame(
+                    {
+                        "Business case": ["steel_bof", "steel_eaf", "iron_bf", "iron_dri"],
+                        "Metallic charge": ["hot_metal", "scrap", "sinter", "pellets"],
+                        "Reductant": ["", "", "coke", "natural_gas"],
+                        "Side": ["Input", "Input", "Input", "Input"],
+                        "Type": ["feedstock", "feedstock", "feedstock", "feedstock"],
+                        "Metric type": ["Materials", "Materials", "Materials", "Materials"],
+                        "Vector": ["hot_metal", "scrap", "sinter", "pellets"],
+                        "Value": [0.95, 1.05, 1.6, 1.5],
+                        "Unit": ["t/t", "t/t", "t/t", "t/t"],
+                        "System boundary": ["cradle-to-gate", "cradle-to-gate", "cradle-to-gate", "cradle-to-gate"],
+                        "ghg_factor_scope_1": [1.0, 0.1, 2.0, 1.8],
+                        "ghg_factor_scope_2": [0.1, 0.05, 0.2, 0.15],
+                        "ghg_factor_scope_3_rest": [0.05, 0.01, 0.1, 0.08],
+                    }
+                )
+                bom_data.to_excel(writer, sheet_name="Bill of Materials", index=False)
             yield Path(tf.name)
             Path(tf.name).unlink()
 
@@ -88,7 +107,9 @@ class TestMasterExcelReaderFixes:
                 (51.0, 9.0): "DEU",  # Germany, should remain DEU
             }.get((lat, lon), "XXX")
 
-            plants, _ = reader.read_plants(dynamic_feedstocks_mock, current_date=date(2025, 1, 1))  # Unpack tuple
+            plants, _, _ = reader.read_plants(
+                dynamic_feedstocks_mock, current_date=date(2025, 1, 1)
+            )  # Unpack tuple (3 values)
 
             # Verify derive_iso3 was called with correct coordinates
             assert mock_derive_iso3.call_count == 3
@@ -107,7 +128,9 @@ class TestMasterExcelReaderFixes:
         reader = MasterExcelReader(excel_file_with_data)
 
         with patch("steelo.adapters.dataprocessing.master_excel_reader.derive_iso3", return_value="DEU"):
-            plants, _ = reader.read_plants(dynamic_feedstocks_mock, current_date=date(2025, 1, 1))  # Unpack tuple
+            plants, _, _ = reader.read_plants(
+                dynamic_feedstocks_mock, current_date=date(2025, 1, 1)
+            )  # Unpack tuple (3 values)
 
         plant_dict = {p.plant_id: p for p in plants}
 
@@ -138,7 +161,7 @@ class TestMasterExcelReaderFixes:
                 (51.0, 9.0): "DEU",
             }.get((lat, lon), "XXX")
 
-            plants, _ = reader.read_plants(
+            plants, _, _ = reader.read_plants(
                 dynamic_feedstocks_mock,
                 current_date=date(2025, 1, 1),
                 gravity_distances_pkl_path=gravity_distances_file,
@@ -170,7 +193,7 @@ class TestMasterExcelReaderFixes:
                 (51.0, 9.0): "DEU",
             }.get((lat, lon), "XXX")
 
-            plants, _ = reader.read_plants(
+            plants, _, _ = reader.read_plants(
                 dynamic_feedstocks_mock,
                 current_date=date(2025, 1, 1),
                 gravity_distances_pkl_path=gravity_distances_file,

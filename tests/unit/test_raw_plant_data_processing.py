@@ -62,7 +62,7 @@ from steelo.adapters.dataprocessing.preprocessing.raw_plant_data_processing impo
     add_historical_production_data,
     split_into_plant_and_furnace_group,
 )
-from steelo.config import PRODUCTION_GEM_DATA_YEARS
+from steelo.domain.constants import PRODUCTION_GEM_DATA_YEARS
 
 # Hardcoded constant (for testing only)
 SIMULATION_START_YEAR = 2025

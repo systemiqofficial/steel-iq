@@ -527,10 +527,11 @@ def recreate_primary_feedstock_data(
     repo = PrimaryFeedstockJsonRepository(primary_feedstock_json_path)
 
     # 3) If an Excel path is provided, read from it and write those entries:
-    pf_dict = read_dynamic_business_cases(str(excel_path), excel_sheet=bom_excel_sheet)
+    pf_dict, aggregated_constraints = read_dynamic_business_cases(str(excel_path), excel_sheet=bom_excel_sheet)
     # Flatten the dict to get a single list of PrimaryFeedstock objects
     pf_list = [pf for pf_list in pf_dict.values() for pf in pf_list]
     repo.add_list(pf_list)
+    # Note: aggregated_constraints are not stored in the repository - they should be added to environment
 
     return repo
 

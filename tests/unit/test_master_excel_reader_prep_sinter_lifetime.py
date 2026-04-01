@@ -28,11 +28,32 @@ def test_prep_sinter_lifetime_current():
         # Write to Excel
         with pd.ExcelWriter(tf.name) as writer:
             plant_data.to_excel(writer, sheet_name="Iron and steel plants", index=False)
+            # Add minimal Bill of Materials sheet
+            bom_data = pd.DataFrame(
+                {
+                    "Business case": ["iron_bf"],
+                    "Metallic charge": ["sinter"],
+                    "Reductant": ["coke"],
+                    "Side": ["Input"],
+                    "Type": ["feedstock"],
+                    "Metric type": ["Materials"],
+                    "Vector": ["sinter"],
+                    "Value": [1.6],
+                    "Unit": ["t/t"],
+                    "System boundary": ["cradle-to-gate"],
+                    "ghg_factor_scope_1": [2.0],
+                    "ghg_factor_scope_2": [0.2],
+                    "ghg_factor_scope_3_rest": [0.1],
+                }
+            )
+            bom_data.to_excel(writer, sheet_name="Bill of Materials", index=False)
 
         # Read plants
         reader = MasterExcelReader(Path(tf.name))
         with reader:
-            plants, _ = reader.read_plants(dynamic_feedstocks_dict={}, simulation_start_year=2025)  # Unpack tuple
+            plants, _, _ = reader.read_plants(
+                dynamic_feedstocks_dict={}, simulation_start_year=2025
+            )  # Unpack tuple (3 values)
 
         plant = plants[0]
 

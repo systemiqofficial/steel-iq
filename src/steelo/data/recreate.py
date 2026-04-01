@@ -653,13 +653,13 @@ class DataRecreator:
 
                 # Read dynamic business cases from Bill of Materials sheet
                 console.print("  [dim]Reading dynamic business cases from Bill of Materials sheet[/dim]")
-                dynamic_feedstocks_dict = read_dynamic_business_cases(
+                dynamic_feedstocks_dict, aggregated_constraints = read_dynamic_business_cases(
                     str(master_excel_path), excel_sheet="Bill of Materials"
                 )
 
                 # Note: We're not loading gravity distances for now as they need proper JSON serialization
                 with MasterExcelReader(master_excel_path) as reader:
-                    plants, canonical_metadata = reader.read_plants(
+                    plants, canonical_metadata, aggregated_metallic_constraints = reader.read_plants(
                         dynamic_feedstocks_dict=dynamic_feedstocks_dict,
                         geocoder_coordinates=geocoder_coordinates,
                         simulation_start_year=2025,  # TODO: Make this configurable
@@ -673,6 +673,26 @@ class DataRecreator:
                     master_excel_path=master_excel_path,
                     master_excel_version="v1.0",  # TODO: Extract from Excel or config
                 )
+
+                # Save aggregated metallic charge constraints to JSON
+                if aggregated_constraints:
+                    import json
+
+                    constraints_path = output_dir / "aggregated_metallic_charge_constraints.json"
+                    constraints_data = [
+                        {
+                            "technology_name": c.technology_name,
+                            "feedstock_pattern": c.feedstock_pattern,
+                            "minimum_share": c.minimum_share,
+                            "maximum_share": c.maximum_share,
+                        }
+                        for c in aggregated_metallic_constraints
+                    ]
+                    with open(constraints_path, "w") as f:
+                        json.dump(constraints_data, f, indent=2)
+                    console.print(
+                        f"  [dim]Saved {len(aggregated_metallic_constraints)} aggregated metallic charge constraints[/dim]"
+                    )
             elif spec.recreate_function == "recreate_plant_groups_data":
                 func(
                     plants_json_path=output_dir / "plants.json",
