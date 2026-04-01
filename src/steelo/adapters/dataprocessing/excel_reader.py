@@ -28,6 +28,7 @@ from steelo.domain import (
     FOPEX,
     CarbonBorderMechanism,
     WillingnessToPay,
+    GreenSteelGrade,
 )
 from ...domain.models import TransportKPI, TechnologyEmissionFactors, FallbackMaterialCost
 import logging
@@ -2781,3 +2782,126 @@ def read_willingness_to_pay(
 
     logger.info(f"Successfully read {len(willingness_to_pay_entries)} willingness to pay entries from '{sheet_name}'")
     return willingness_to_pay_entries
+
+
+def read_green_steel_definitions(
+    excel_path: str, sheet_name: str = "Green Steel Definitions"
+) -> dict[int, GreenSteelGrade]:
+    """
+    Read green steel grade definitions from Excel sheet.
+
+    Expected columns in Excel:
+    - Grade: The grade level (e.g., "Level 1", "Level 2")
+    - Threshold function (y <= b - m*x) parameter b: Y-intercept of threshold line
+    - Threshold function (y <= b - m*x) parameter m: Slope of threshold line
+    - Threshold function (y <= b - m*x) - definition of x: Description (informational)
+
+    Args:
+        excel_path: Path to the Excel file
+        sheet_name: Name of the sheet containing green steel definitions (default: "Green Steel Definitions")
+
+    Returns:
+        Dictionary mapping grade level (int) to GreenSteelGrade objects
+    """
+    logger = logging.getLogger(f"{__name__}.read_green_steel_definitions")
+    logger.info(f"[GREEN STEEL READ FUNCTION CALLED] excel_path={excel_path}, sheet_name={sheet_name}")
+
+    try:
+        # Read the Excel sheet
+        logger.info(f"[GREEN STEEL READ] Attempting to read from '{sheet_name}' in {excel_path}")
+        df = pd.read_excel(excel_path, sheet_name=sheet_name)
+        logger.info(f"[GREEN STEEL READ] Successfully read sheet with {len(df)} rows")
+        logger.info(f"Reading green steel definitions from sheet '{sheet_name}'")
+    except ValueError as e:
+        # Sheet doesn't exist - return empty dict (backward compatibility)
+        logger.info(f"[GREEN STEEL READ] Sheet '{sheet_name}' not found - green steel feature disabled: {e}")
+        logger.info(f"Green steel definitions sheet '{sheet_name}' not found - feature disabled: {e}")
+        return {}
+    except Exception as e:
+        logger.error(f"[GREEN STEEL READ] Error reading green steel definitions: {e}")
+        logger.error(f"Error reading green steel definitions: {e}")
+        return {}
+
+    # Define expected column names (handle variations)
+    grade_col_names = ["Grade", "grade"]
+
+    # Find actual column names - more specific matching to avoid conflicts
+    grade_col = None
+    b_col = None
+    m_col = None
+
+    for col in df.columns:
+        col_lower = col.lower().strip()
+
+        # Match grade column
+        if grade_col is None and any(name.lower() in col_lower for name in grade_col_names):
+            grade_col = col
+
+        # Match parameter b column - must have "parameter b" and NOT end with "parameter m"
+        if b_col is None and "parameter b" in col_lower and not col_lower.endswith("parameter m"):
+            b_col = col
+
+        # Match parameter m column - must end with "parameter m"
+        if m_col is None and col_lower.endswith("parameter m"):
+            m_col = col
+
+    if not all([grade_col, b_col, m_col]):
+        missing = []
+        if not grade_col:
+            missing.append("Grade")
+        if not b_col:
+            missing.append("parameter b")
+        if not m_col:
+            missing.append("parameter m")
+        logger.error(f"Missing required columns in green steel definitions: {missing}")
+        return {}
+
+    # Process each row
+    green_steel_grades = {}
+    for idx, row in df.iterrows():
+        try:
+            # Parse grade level
+            grade_str = str(row[grade_col]).strip()
+            # Extract level number (e.g., "Level 1" -> 1)
+            if "level" in grade_str.lower():
+                level = int("".join(filter(str.isdigit, grade_str)))
+            else:
+                level = int(grade_str)
+
+            # Get parameters
+            b_param = float(row[b_col])
+            m_param = float(row[m_col])
+
+            # Create grade object
+            grade = GreenSteelGrade(level=level, name=f"Level {level}", b=b_param, m=m_param)
+
+            green_steel_grades[level] = grade
+            logger.debug(f"Loaded green steel grade: {grade}")
+
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Row {idx + 2}: Error parsing green steel grade - {e}")
+            continue
+        except Exception as e:
+            logger.warning(f"Row {idx + 2}: Unexpected error - {e}")
+            continue
+
+    # Validate that grades make sense (higher levels should be stricter)
+    if len(green_steel_grades) > 1:
+        levels = sorted(green_steel_grades.keys())
+        for i in range(len(levels) - 1):
+            curr_level = levels[i]
+            next_level = levels[i + 1]
+            # At zero scrap share, check if higher level has lower threshold
+            curr_threshold_at_zero = green_steel_grades[curr_level].b
+            next_threshold_at_zero = green_steel_grades[next_level].b
+            if next_threshold_at_zero > curr_threshold_at_zero:
+                logger.warning(
+                    f"Green steel Level {next_level} appears less strict than Level {curr_level} "
+                    f"at zero scrap share ({next_threshold_at_zero} > {curr_threshold_at_zero})"
+                )
+
+    logger.info(f"[GREEN STEEL READ] Successfully loaded {len(green_steel_grades)} green steel grade definitions:")
+    for level, grade in sorted(green_steel_grades.items()):
+        logger.info(f"  Level {level}: y <= {grade.b} - {grade.m}*x")
+    logger.info(f"Successfully loaded {len(green_steel_grades)} green steel grade definitions")
+    return green_steel_grades

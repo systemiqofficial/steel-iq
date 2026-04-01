@@ -46,6 +46,9 @@ from steelo.domain.constants import (
     MINIMUM_PRODUCTION_VOLUME_FOR_COST_CURVE,
 )
 
+# Module-level logger for green steel and other logging
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from steelo.simulation import SimulationConfig
 
@@ -1342,6 +1345,125 @@ class FurnaceGroup:
     #     # Using "emissivity" as the inner key
     #     for energy_type, emissivity_value in combined_emissivities.items():
     #         self.emissions_factor[energy_type] = {"emissivity": emissivity_value}
+
+    def calculate_emissions_intensity(self) -> float:
+        """
+        Calculate the emissions intensity of the furnace group in tCO2eq/t of output.
+
+        Returns the total emissions divided by production. If no production, returns 0.
+
+        Returns:
+            float: Emissions intensity in tCO2eq/t
+        """
+        if not self.allocated_volumes or self.allocated_volumes <= 0:
+            return 0.0
+
+        # Sum all emissions from different scopes
+        total_emissions = 0.0
+
+        # Emissions dict structure: {boundary: {scope: value}}
+        # Example: {'responsible_steel': {'scope1': 100, 'scope2': 50, 'scope3': 200}}
+        if self.emissions:
+            for boundary_emissions in self.emissions.values():
+                if isinstance(boundary_emissions, dict):
+                    for scope_value in boundary_emissions.values():
+                        if isinstance(scope_value, (int, float)):
+                            total_emissions += scope_value
+
+        # Calculate intensity: tCO2eq per tonne of product
+        emissions_intensity = total_emissions / self.allocated_volumes
+
+        return emissions_intensity
+
+    def calculate_scrap_share(self) -> float:
+        """
+        Calculate the percentage of scrap in the metallic inputs for this furnace group.
+
+        Examines the effective primary feedstocks and calculates the share of scrap
+        based on the metallic_charge field and required quantities.
+
+        Returns:
+            float: Scrap share as a percentage (0-100)
+        """
+        feedstocks = self.effective_primary_feedstocks
+
+        if not feedstocks:
+            return 0.0
+
+        total_metallic_input = 0.0
+        scrap_input = 0.0
+
+        for feedstock in feedstocks:
+            # Get the required quantity for this feedstock
+            quantity = feedstock.required_quantity_per_ton_of_product or 0.0
+
+            if quantity > 0:
+                total_metallic_input += quantity
+
+                # Check if this feedstock is scrap-based
+                # metallic_charge could be 'scrap', 'Scrap', 'scrap_low', 'scrap_mid', 'scrap_high', etc.
+                if feedstock.metallic_charge and "scrap" in feedstock.metallic_charge.lower():
+                    scrap_input += quantity
+
+        if total_metallic_input == 0:
+            return 0.0
+
+        # Calculate percentage (0-100)
+        scrap_share = (scrap_input / total_metallic_input) * 100
+
+        return scrap_share
+
+    def get_green_steel_grade(self, environment: "Environment") -> Optional[int]:
+        """
+        Determine the green steel grade for this furnace group based on emissions intensity and scrap share.
+
+        Checks the furnace group's emissions intensity and scrap share against the green steel
+        grade thresholds defined in the Environment. Returns the best (lowest number) grade
+        that the furnace group qualifies for.
+
+        Args:
+            environment: Environment object containing green steel grade definitions
+
+        Returns:
+            int: Grade level (1-4) if applicable, None if no grade criteria are met
+                 or if the furnace group has no production
+        """
+        # Return None if furnace group has no production
+        if not self.allocated_volumes or self.allocated_volumes <= 0:
+            return None
+
+        # Check if green steel grades are defined
+        if not environment.green_steel_grades:
+            return None
+
+        # Calculate emissions intensity and scrap share
+        emissions_intensity = self.calculate_emissions_intensity()
+        scrap_share = self.calculate_scrap_share()
+
+        # Check which grades this furnace group qualifies for
+        applicable_grades = []
+
+        for level, grade in environment.green_steel_grades.items():
+            if grade.check_threshold(emissions_intensity, scrap_share):
+                applicable_grades.append(level)
+
+        # Return the best (highest number) applicable grade - Level 4 is strictest
+        if applicable_grades:
+            best_grade = max(applicable_grades)
+            # Log the green steel qualification
+            logger.debug(
+                f"[GREEN STEEL] {self.furnace_group_id}: Grade {best_grade} "
+                f"(emissions: {emissions_intensity:.2f} tCO2e/t, scrap: {scrap_share:.1f}%)"
+            )
+            return best_grade
+        else:
+            # Log when furnace doesn't qualify - with emissions and scrap data
+            logger.debug(
+                f"[GREEN STEEL] {self.furnace_group_id}: No grade qualified "
+                f"(emissions: {emissions_intensity:.2f} tCO2e/t, scrap: {scrap_share:.1f}%)"
+            )
+
+        return None
 
     # def set_grid_emsissivity(self, grid_emission: dict[str, float]) -> None:
     #     """
@@ -6536,6 +6658,46 @@ class VirginIronDemand:
         return [self._demand_by_year.get(Year(y), 0.0) for y in range(start_year, end_year + 1)]
 
 
+@dataclass
+class GreenSteelGrade:
+    """
+    Represents a green steel grade definition based on emissions intensity and scrap share.
+
+    The grade is defined by a linear threshold function: y <= b - m*x
+    where:
+        y = emissions intensity (tCO2eq/t)
+        x = scrap share (percentage, 0-100)
+        b = y-intercept parameter (from Excel column "Threshold function (y <= b - m*x) parameter b")
+        m = slope parameter (from Excel column "Threshold function (y <= b - m*x) parameter m")
+    """
+
+    level: int  # Grade level (1, 2, 3, 4)
+    name: str  # Display name (e.g., "Level 1", "Level 2")
+    b: float  # y-intercept parameter (from Excel)
+    m: float  # slope parameter (from Excel)
+
+    def check_threshold(self, emissions_intensity: float, scrap_share: float) -> bool:
+        """
+        Check if given emissions and scrap share meet this grade's threshold.
+
+        Args:
+            emissions_intensity: Emissions in tCO2eq/t
+            scrap_share: Percentage of scrap in metallic inputs (0-100)
+
+        Returns:
+            True if emissions are below the threshold for given scrap share
+        """
+        # Calculate threshold using Excel formula: y <= b - m*x
+        # Convert scrap_share from percentage (0-100) to fraction (0-1) for calculation
+        scrap_fraction = scrap_share / 100.0
+        threshold = self.b - self.m * scrap_fraction
+        return emissions_intensity <= threshold
+
+    def __repr__(self) -> str:
+        """String representation showing the threshold formula."""
+        return f"GreenSteelGrade(level={self.level}, name='{self.name}', threshold: y <= {self.b} - ({self.m})*x)"
+
+
 class Environment:
     """
     Class to track system environment, e.g. the collective macro-scale of the system
@@ -6621,6 +6783,9 @@ class Environment:
 
         # Secondary feedstock constraints - to be set during data loading
         self.secondary_feedstock_constraints: list[SecondaryFeedstockConstraint] = []
+
+        # Green steel grades - to be set during data loading
+        self.green_steel_grades: dict[int, GreenSteelGrade] = {}
 
         # Geospatial data paths - to be set during simulation setup
 
@@ -6975,6 +7140,23 @@ class Environment:
             carbon_costs (list[CarbonCostSeries]): A list of CarbonCostSeries objects to be added to the environment.
         """
         self.carbon_costs = {cc.iso3: cc.carbon_cost for cc in carbon_costs}
+
+    def initiate_green_steel_grades(self, green_steel_grades: dict[int, GreenSteelGrade]) -> None:
+        """
+        Initialize the green steel grade definitions for the environment.
+
+        Args:
+            green_steel_grades: Dictionary mapping grade level to GreenSteelGrade objects
+        """
+        self.green_steel_grades = green_steel_grades
+        if green_steel_grades:
+            logger = logging.getLogger(f"{__name__}.initiate_green_steel_grades")
+            logger.info(f"[GREEN STEEL INIT] Loaded {len(green_steel_grades)} green steel grade definitions:")
+            for level, grade in green_steel_grades.items():
+                logger.info(f"  Level {level}: y <= {grade.b} - {grade.m}*x")
+        else:
+            logger = logging.getLogger(f"{__name__}.initiate_green_steel_grades")
+            logger.info("[GREEN STEEL INIT] No green steel grade definitions provided")
 
     def initiate_grid_emissivity(self, emissivities: list[RegionEmissivity]) -> None:
         """

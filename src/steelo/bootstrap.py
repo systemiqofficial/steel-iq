@@ -396,6 +396,30 @@ def bootstrap_simulation(
         env.initialize_virgin_iron_demand(
             world_suppliers_list=repository_json.suppliers.list(), steel_demand_dict=env.demand_dict
         )
+
+        # Load green steel grades if available
+        if fixtures_dir is not None:
+            green_steel_path = fixtures_dir / "green_steel_grades.json"
+        else:
+            green_steel_path = None
+
+        if green_steel_path is not None and green_steel_path.exists():
+            logger.info(f"[BOOTSTRAP] Loading green steel grades from {green_steel_path}")
+            import json
+            from steelo.domain.models import GreenSteelGrade
+
+            with open(green_steel_path, "r") as f:
+                grades_data = json.load(f)
+                green_steel_grades = {}
+                for level_str, grade_dict in grades_data.items():
+                    level = int(level_str)
+                    green_steel_grades[level] = GreenSteelGrade(
+                        level=grade_dict["level"], name=grade_dict["name"], b=grade_dict["b"], m=grade_dict["m"]
+                    )
+                env.initiate_green_steel_grades(green_steel_grades)
+                logger.info(f"[BOOTSTRAP] Loaded {len(green_steel_grades)} green steel grade definitions")
+        else:
+            logger.info(f"[BOOTSTRAP] No green steel grades file found at {green_steel_path}")
     else:
         # For test repositories, initialize country mappings if provided
         if hasattr(repository, "country_mappings") and repository.country_mappings:

@@ -287,6 +287,14 @@ FILE_RECREATION_SPECS = {
         dependencies=["country_mappings.json"],
         description="Willingness to pay by region/country and commodity from master Excel",
     ),
+    "green_steel_grades.json": FileRecreationSpec(
+        filename="green_steel_grades.json",
+        recreate_function="recreate_green_steel_grades_data",
+        source_type="master-excel",
+        master_excel_sheet="Green Steel Definitions",
+        dependencies=[],
+        description="Green steel grade thresholds from master Excel",
+    ),
 }
 
 

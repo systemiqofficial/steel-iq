@@ -567,38 +567,6 @@ class AllocationModel:
         memory_tracker.checkpoint("allocation_complete", year=bus.env.year)
 
 
-# class NewAllocationModel:
-#     """Model to allocate resource to demand center from supply center"""
-
-#     @staticmethod
-#     def run(bus: MessageBus) -> None:
-#         """
-#         Run the allocation lp model
-
-#         Args
-#         """
-#         assert bus.env.legal_process_connectors is not None, (
-#             "Legal process connectors must be set in the environment. Please ensure they are read in from user input."
-#         )
-#         assert bus.env.config is not None, "config is required for trade LP"
-
-#         trade_lp = set_up_steel_trade_lp(
-#             bus,
-#             bus.env.year,
-#             bus.env.config,
-#             legal_process_connectors=bus.env.legal_process_connectors,
-#             transport_kpis=bus.env.transport_kpis,
-#         )
-#         logger.debug("Bom flow constraints ", len(trade_lp.lp_model.bom_inflow_constraints))
-#         logger.debug("Demand constraints ", len(trade_lp.lp_model.demand_constraints))
-#         trade_lp.solve_lp_model()
-#         trade_lp.extract_solution()
-
-#         if trade_lp.allocations is not None:
-#             if (event := SteelAllocationsCalculated(trade_allocations=trade_lp.allocations)) is not None:
-#                 bus.handle(event)
-
-
 class PlantAgentsModel:
     """
     Economic decision-making model for steel and iron plant agents.

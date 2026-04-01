@@ -840,3 +840,44 @@ def recreate_fallback_material_costs(
         f"{len(fallback_costs)} fallback material cost entries[/green]"
     )
     return repo
+
+
+def recreate_green_steel_grades_data(
+    json_path: Path,
+    master_excel_path: str | Path,
+    sheet_name: str = "Green Steel Definitions",
+) -> None:
+    """
+    Recreate green steel grades data from master Excel.
+
+    Args:
+        json_path: Path to output JSON file
+        master_excel_path: Path to master Excel file
+        sheet_name: Name of sheet containing green steel definitions
+    """
+    from ..adapters.dataprocessing.excel_reader import read_green_steel_definitions
+
+    console.print(f"[blue]Reading green steel grades from {sheet_name} sheet[/blue]")
+
+    # Read from Excel
+    grades = read_green_steel_definitions(excel_path=str(master_excel_path), sheet_name=sheet_name)
+
+    # Convert to JSON-serializable format
+    grades_data = {}
+    for level, grade in grades.items():
+        grades_data[str(level)] = {
+            "level": grade.level,
+            "name": grade.name,
+            "b": grade.b,
+            "m": grade.m,
+        }
+
+    # Write to JSON
+    if json_path.exists():
+        console.print(f"[blue]Deleting existing green steel grades JSON file[/blue]: {json_path}")
+        json_path.unlink()
+
+    with open(json_path, "w") as f:
+        json.dump(grades_data, f, indent=2)
+
+    console.print(f"[green]Created {json_path.name} with {len(grades)} green steel grade definitions[/green]")

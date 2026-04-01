@@ -24,6 +24,7 @@ from .recreation_functions import (
     recreate_country_mappings_data,
     recreate_demand_center_data,
     recreate_region_emissivity_data,
+    recreate_green_steel_grades_data,
     recreate_input_costs_data,
     recreate_legal_process_connectors_data,
     recreate_mines_and_scrap_as_suppliers_data,
@@ -236,6 +237,33 @@ class DataRecreator:
                     country_mapping_sheet_name="Country mapping",
                 )
                 console.print(f"  ✓ Created {output_paths['subsidies'].name} [SOURCE: master-excel - Subsidies sheet]")
+
+                # Read green steel definitions (optional - for backward compatibility)
+                console.print("[blue]Reading green steel definitions from MASTER EXCEL...[/blue]")
+                from steelo.adapters.dataprocessing.excel_reader import read_green_steel_definitions
+
+                green_steel_grades = read_green_steel_definitions(
+                    excel_path=str(master_excel_path), sheet_name="Green Steel Definitions"
+                )
+                if green_steel_grades:
+                    # Store in a JSON file for later use
+                    green_steel_json_path = output_paths.get(
+                        "green_steel_grades", output_dir / "green_steel_grades.json"
+                    )
+                    with open(green_steel_json_path, "w") as f:
+                        import json
+
+                        # Convert to JSON-serializable format
+                        grades_dict = {
+                            str(level): {"level": grade.level, "name": grade.name, "b": grade.b, "m": grade.m}
+                            for level, grade in green_steel_grades.items()
+                        }
+                        json.dump(grades_dict, f, indent=2)
+                    console.print(
+                        f"  ✓ Created {green_steel_json_path.name} [SOURCE: master-excel - Green Steel Definitions sheet]"
+                    )
+                else:
+                    console.print("  ℹ No green steel definitions found (optional)")
 
                 console.print("[blue]Recreating suppliers data from MASTER EXCEL...[/blue]")
                 recreate_mines_and_scrap_as_suppliers_data(
@@ -452,6 +480,7 @@ class DataRecreator:
             "recreate_carbon_costs_data": recreate_carbon_costs_data,
             "recreate_capex_data": recreate_capex_data,
             "recreate_cost_of_capital_data": recreate_cost_of_capital_data,
+            "recreate_green_steel_grades_data": recreate_green_steel_grades_data,
             "recreate_input_costs_data": recreate_input_costs_data,
             "recreate_primary_feedstock_data": recreate_primary_feedstock_data,
             "recreate_region_emissivity_data": recreate_region_emissivity_data,
@@ -616,6 +645,12 @@ class DataRecreator:
                     excel_path=master_excel_path,
                     country_mappings=country_mappings,
                     willingness_to_pay_sheet_name=spec.master_excel_sheet or "Willingness to pay",
+                )
+            elif spec.recreate_function == "recreate_green_steel_grades_data":
+                func(
+                    json_path=output_path,
+                    master_excel_path=master_excel_path,
+                    sheet_name=spec.master_excel_sheet,
                 )
             elif spec.recreate_function == "recreate_plants_data":
                 # Special handling for plants - read directly from master Excel
