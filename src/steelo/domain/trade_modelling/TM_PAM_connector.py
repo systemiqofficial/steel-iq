@@ -17,8 +17,8 @@ from steelo.utilities.utils import normalize_name
 
 class TM_PAM_connector:
     """
-    class to connect the trade module with the PAM model - containing various methods to extract data from the trade module and update
-    the unit production costs and utilisation rates of the furnace groups
+    Connects the trade module with the PAM model — extracts data from the
+    trade module and updates unit production costs and utilisation rates.
     """
 
     def __init__(
@@ -125,6 +125,32 @@ class TM_PAM_connector:
         """
         key = (from_iso, to_iso, commodity.lower())
         return self.transport_costs.get(key, 0.0)  # Default to 0 if not found
+
+    def get_tariff_cost(self, from_iso: str, to_iso: str, commodity: str) -> float:
+        """Retrieve tariff cost between two countries for a specific commodity.
+
+        Supports wildcard keys: checks exact match first, then wildcard source,
+        wildcard destination, and wildcard commodity. All matching tariffs are summed,
+        mirroring the LP's ``return_potential_tariff_keys`` logic.
+
+        Args:
+            from_iso: Source country ISO3 code.
+            to_iso: Destination country ISO3 code.
+            commodity: Commodity name (case-insensitive).
+
+        Returns:
+            Tariff cost per ton in USD. Returns 0.0 if no tariffs apply.
+        """
+        comm = commodity.lower()
+        total = 0.0
+        for key in [
+            (from_iso, to_iso, comm),
+            ("*", to_iso, comm),
+            (from_iso, "*", comm),
+            (from_iso, to_iso, "*"),
+        ]:
+            total += self.tariff_taxes.get(key, 0.0)
+        return total
 
     def process_energy_cost(
         self,
@@ -247,6 +273,12 @@ class TM_PAM_connector:
         - Uses `self.processing_energy_cost` to fetch energy costs per process.
         - Uses `self.flat_feedstocks_dict` to lookup primary outputs and efficiencies.
         """
+        logger = logging.getLogger(f"{__name__}.create_graph")
+
+        # Store tariff taxes for edge attribute lookup
+        self.tariff_taxes: dict[tuple[str, str, str], float] = solved_trade_allocations.tariff_taxes or {}
+        logger.debug("[TARIFF] Loaded %d tariff entries", len(self.tariff_taxes))
+
         # Initialize an empty directed multigraph
         self.G = nx.MultiDiGraph()
 
@@ -283,19 +315,21 @@ class TM_PAM_connector:
                 "volume": alloc_value,
                 # 2. Transport cost from TransportKPI data
                 "transport_cost": self.get_transport_cost(from_pc.location.iso3, to_pc.location.iso3, commodity),
-                # 3. Processing energy cost, if defined for this destination
+                # 3. Tariff cost from LP tariff taxes (import/export duties)
+                "tariff_cost": self.get_tariff_cost(from_pc.location.iso3, to_pc.location.iso3, commodity),
+                # 4. Processing energy cost, if defined for this destination
                 "processing_energy_cost": total_energy_cost,
                 "processing_energy_breakdown": energy_breakdown,
-                # 4. Process identifier and commodity tag
+                # 5. Process identifier and commodity tag
                 "process": process,
                 "commodity": commodity,
-                # 5. Primary output of this process, if in the flat feedstocks map
+                # 6. Primary output of this process, if in the flat feedstocks map
                 "output": (
                     next(iter(self.flat_feedstocks_dict[process].get_primary_outputs()), None)
                     if process in self.flat_feedstocks_dict
                     else None
                 ),
-                # 6. Process efficiency (required quantity per ton of product)
+                # 7. Process efficiency (required quantity per ton of product)
                 "process_efficiency": (
                     self.flat_feedstocks_dict[process].required_quantity_per_ton_of_product
                     if process in self.flat_feedstocks_dict
@@ -329,6 +363,15 @@ class TM_PAM_connector:
 
             # Finally, add the directed edge with all computed attributes
             self.G.add_edge(from_name, to_name, key=commodity, **edge_attrs)  # allow parallel edges keyed by commodity
+
+            if edge_attrs["tariff_cost"] > 0:
+                logger.debug(
+                    "[TARIFF] %s -> %s (%s): tariff=$%.2f/t",
+                    from_name,
+                    to_name,
+                    commodity,
+                    edge_attrs["tariff_cost"],
+                )
 
     def propage_cost_forward_by_layers_and_normalize(
         self,
@@ -450,12 +493,27 @@ class TM_PAM_connector:
                     # print(f"Skipping sink node {v} with no outgoing edges")
                     continue
                 # Calculate cost components separately
-                # Material cost includes upstream material + all upstream energy + all transport
+                # Material cost includes upstream material + all upstream energy + transport + tariffs
                 # We want to track the material cost EXCLUDING the current step's energy
                 volume = edata.get(volume_attr, 0.0)
-                material_and_transport_cost = (per_unit_base + edata.get(transport_attr, 0.0)) * volume
+                material_tariff_transportation_cost = (
+                    per_unit_base + edata.get(transport_attr, 0.0) + edata.get("tariff_cost", 0.0)
+                ) * volume
                 current_step_energy_cost = edata.get(process_attr, 0.0) * volume
-                edge_cost = material_and_transport_cost + current_step_energy_cost
+                edge_cost = material_tariff_transportation_cost + current_step_energy_cost
+
+                tariff_unit = edata.get("tariff_cost", 0.0)
+                if tariff_unit > 0:
+                    logger.debug(
+                        "[COST PROP] %s -> %s (%s): base=$%.2f transport=$%.2f tariff=$%.2f energy=$%.2f",
+                        u,
+                        v,
+                        comm,
+                        per_unit_base,
+                        edata.get(transport_attr, 0.0),
+                        tariff_unit,
+                        edata.get(process_attr, 0.0),
+                    )
 
                 if (
                     diag.diagnostics_enabled()
@@ -467,7 +525,7 @@ class TM_PAM_connector:
                     transport_unit = edata.get(transport_attr, 0.0)
                     energy_unit = edata.get(process_attr, 0.0)
                     base_unit = per_unit_base
-                    total_unit = base_unit + transport_unit + energy_unit
+                    total_unit = base_unit + transport_unit + tariff_unit + energy_unit
                     delta = total_unit - base_unit
                     delta_pct = (delta / base_unit * 100) if base_unit else None
                     if delta > 500 or (delta_pct is not None and delta_pct > 100):
@@ -475,14 +533,17 @@ class TM_PAM_connector:
                         diag.append_text(
                             f"cost_propagation/{self.current_year}.txt",
                             [
-                                "node={node}, source={src}, commodity={comm}, base={base:.2f}, "
-                                "transport={transport:.2f}, energy={energy:.2f}, total={total:.2f}, "
-                                "delta={delta:.2f}, delta_pct={delta_pct}".format(
+                                "node={node}, source={src}, commodity={comm}, "
+                                "base={base:.2f}, transport={transport:.2f}, "
+                                "tariff={tariff:.2f}, energy={energy:.2f}, "
+                                "total={total:.2f}, delta={delta:.2f}, "
+                                "delta_pct={delta_pct}".format(
                                     node=v,
                                     src=u,
                                     comm=comm,
                                     base=base_unit,
                                     transport=transport_unit,
+                                    tariff=tariff_unit,
                                     energy=energy_unit,
                                     total=total_unit,
                                     delta=delta,
@@ -498,11 +559,12 @@ class TM_PAM_connector:
 
                 # Accumulate cost and volume
                 # Store both total cost and material cost (excluding current step's energy)
-                # MaterialCost includes upstream material + ALL upstream costs (including upstream energy) + current transport
+                # MaterialCost includes upstream material + ALL upstream costs
+                # (including upstream energy) + current transport + tariffs
                 # EXCLUDES the current step's processing energy
                 prev = G.nodes[v][allocation_attr].get(comm, {"Cost": 0.0, "MaterialCost": 0.0, "Volume": 0.0})
                 prev["Cost"] += edge_cost  # Total cost including current step's energy
-                prev["MaterialCost"] += material_and_transport_cost  # Excludes current step's energy only
+                prev["MaterialCost"] += material_tariff_transportation_cost  # Excludes current step's energy only
                 prev["Volume"] += volume
                 G.nodes[v][allocation_attr][comm] = prev
                 G.nodes[v][source_attr][comm] = prev["Cost"]
@@ -807,9 +869,16 @@ class TM_PAM_connector:
         # Create a custom logger specifically for this function
         logger = logging.getLogger("steelo.domain.trade_modelling.TM_PAM_connector.update_bill_of_materials")
 
-        logger.debug(f"[BOM] Starting update_bill_of_materials for {len(furnace_groups)} furnace groups")
+        logger.debug(
+            "[BOM] Starting update_bill_of_materials for %d furnace groups",
+            len(furnace_groups),
+        )
         if self.G is not None:
-            logger.debug(f"[BOM] Graph has {len(self.G.nodes)} nodes and {len(self.G.edges)} edges")
+            logger.debug(
+                "[BOM] Graph has %d nodes and %d edges",
+                len(self.G.nodes),
+                len(self.G.edges),
+            )
         else:
             logger.debug("[BOM] Graph is None!")
 
@@ -922,6 +991,16 @@ class TM_PAM_connector:
                     }
                     if product_volume <= 0 and volume > 0:
                         collect["materials"][comm]["product_volume"] = volume
+
+                    if material_cost > 0 and material_cost != cost:
+                        logger.debug(
+                            "[BOM] FG %s: %s total_material_cost=$%.2f (total_cost=$%.2f, diff=$%.2f incl. tariffs)",
+                            fg.furnace_group_id,
+                            comm,
+                            material_cost,
+                            cost,
+                            cost - material_cost,
+                        )
 
             logger.debug(f"[BOM] FG {fg.furnace_group_id}: Final BOM materials = {list(collect['materials'].keys())}")
 
