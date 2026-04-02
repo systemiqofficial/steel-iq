@@ -21,7 +21,7 @@ from steelo.domain.commands import (
 from steelo.domain.constants import T_TO_KT, Volumes
 from steelo.domain.events import SteelAllocationsCalculated
 from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
-    identify_bottlenecks,
+    check_if_bottlenecks_identified,
     set_up_steel_trade_lp,
     solve_steel_trade_lp_and_return_commodity_allocations,
 )
@@ -526,7 +526,14 @@ class AllocationModel:
             )
 
         if not demand_met:
-            identify_bottlenecks(non_empty_allocations, bus.uow.repository, bus.env, bus.env.year)
+            bottlnecks_identified = check_if_bottlenecks_identified(
+                non_empty_allocations, bus.uow.repository, bus.env, bus.env.year
+            )
+            if not bottlnecks_identified:
+                print(
+                    f"Tequila! No bottlenecks identified for unmet demand in year {bus.env.year}. Please investigate further."
+                )
+                exit()
 
         # for commodity, allocations in commodity_allocations.items():
         #     if len(allocations.allocations) == 0:

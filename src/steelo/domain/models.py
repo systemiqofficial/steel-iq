@@ -9133,7 +9133,9 @@ class CommodityAllocations:
         for dc in demand_centers:
             supplied_demand = sum(self.get_allocations_to(dc).values())
             needed_demand = dc.demand_by_year.get(year, Volumes(0))
-            if (supplied_demand + Volumes(1e-3)) < needed_demand:  # small tolerance to avoid floating point issues
+            if (
+                (supplied_demand + Volumes(150)) < needed_demand
+            ):  # tolerance to avoid floating point issues and issues with transport problem integer constraint
                 demand_met = False
                 logger.warning(
                     f"Demand not met for {dc} in {year}: {needed_demand:,.2f} needed, {supplied_demand:,.2f} supplied."
