@@ -42,6 +42,14 @@ PlantGroup (Company/Owner)
 - `equity_share`, `cost_of_debt`, `total_investment`
 - `unit_production_cost` (total cost per tonne)
 
+**Energy cost attributes** (three parallel dicts, all keyed by normalised carrier name):
+- `energy_costs`: Input-side subsidised prices — used for BOM, VOPEX, reductant selection. For subsidised carriers: `max(0, price - subsidy)`. Set via `set_energy_costs()` which applies `abs()` to non-co2 carriers and `normalize_name()` to keys.
+- `output_energy_costs`: Output-side subsidised prices — used for by-product revenue calculations. For physical carriers: `price + subsidy`; for carbon carriers (co2_*): `price - subsidy`.
+- `energy_costs_no_subsidy`: Original unsubsidised prices for all carriers. Used as baseline to prevent subsidy compounding (indi plants) and for future per-tech subsidy calculations.
+
+**Subsidy tracking**:
+- `applied_subsidies`: `dict[str, list[Subsidy]]` — keys are `"capex"`, `"opex"`, `"debt"`, plus dynamic carrier keys (e.g., `"hydrogen"`, `"electricity"`) for energy subsidies applied in the current year
+
 ### 2. Plant (models.py:2692)
 **What it represents**: A physical production facility at a specific geographic location.
 
@@ -241,10 +249,11 @@ All costs are normalized to **per-unit-of-production** basis (USD/tonne):
 - Carbon costs → emissions per tonne × carbon price
 
 ### 4. Subsidies
-Three types, each with absolute and relative components:
+Four categories, each with absolute and relative components:
 - **CAPEX**: Reduces upfront investment → affects NPV and affordability
 - **OPEX**: Reduces operating costs → affects profitability
 - **Debt**: Reduces interest rates → affects debt repayment costs
+- **Energy carriers**: Reduces energy/feedstock costs for any carrier (hydrogen, electricity, natural_gas, etc.) → affects VOPEX and by-product revenue via dual-sided pricing
 
 Time-bounded: Only applied if `start_year <= current_year <= end_year`
 
