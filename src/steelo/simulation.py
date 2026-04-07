@@ -1084,6 +1084,15 @@ class SimulationRunner:
                             logging.info(
                                 f"Transitioned furnace group {fg.furnace_group_id} from construction to operating"
                             )
+                            logging.debug(
+                                "[OPERATING] FG %s now operating: "
+                                "energy_costs=%s output_energy_costs=%s "
+                                "energy_costs_no_subsidy=%s",
+                                fg.furnace_group_id,
+                                fg.energy_costs,
+                                fg.output_energy_costs,
+                                fg.energy_costs_no_subsidy,
+                            )
 
             Simulation(bus=bus, economic_model=AllocationModel()).run_simulation()
             Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()

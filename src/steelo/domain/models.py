@@ -5832,16 +5832,23 @@ class PlantGroup:
                         if active:
                             active_energy_subs[carrier] = active
 
+                    # Build full energy cost dicts with updated electricity/hydrogen
+                    base_costs = dict(fg.energy_costs_no_subsidy or fg.energy_costs)
+                    base_costs["electricity"] = power_price
+                    base_costs["hydrogen"] = hydrogen_price
+
                     if active_energy_subs:
-                        temp_costs = dict(fg.energy_costs)
-                        temp_costs["electricity"] = power_price
-                        temp_costs["hydrogen"] = hydrogen_price
-                        subsidised, _, _ = cc.get_subsidised_energy_costs(temp_costs, active_energy_subs)
-                        for carrier in active_energy_subs:
-                            if carrier in subsidised:
-                                new_costs[carrier] = subsidised[carrier]
+                        new_energy_costs, new_output_energy_costs, new_energy_costs_no_subsidy = (
+                            cc.get_subsidised_energy_costs(base_costs, active_energy_subs)
+                        )
                         sub_summary = ", ".join(f"{len(s)} {c}" for c, s in active_energy_subs.items())
-                        logger.debug(f"[NEW PLANTS] {iso3}/{fg.technology.name} year={year} Subs: {sub_summary}")
+                        logger.debug(
+                            f"[NEW PLANTS] {iso3}/{fg.technology.name} year={year} Subs: {sub_summary}",
+                        )
+                    else:
+                        new_energy_costs = dict(base_costs)
+                        new_output_energy_costs = dict(base_costs)
+                        new_energy_costs_no_subsidy = dict(base_costs)
 
                     # Calculate updated BOM with new energy prices
                     new_bom: dict[str, dict[str, dict[str, Any]]] | None = None
@@ -5851,18 +5858,26 @@ class PlantGroup:
                         new_bom = copy.deepcopy(fg.bill_of_materials)
                         updated_energy_costs: dict[str, float] = {}
                         if getattr(fg, "energy_costs", None):
-                            updated_energy_costs.update({normalize_name(k): v for k, v in fg.energy_costs.items()})
-                        # Apply updated/subsidised energy carrier prices to BOM costs
-                        for cost_key, cost_val in new_costs.items():
+                            updated_energy_costs.update(
+                                {normalize_name(k): v for k, v in fg.energy_costs.items()},
+                            )
+                        # Apply subsidised input prices to BOM costs
+                        for cost_key, cost_val in new_energy_costs.items():
                             if cost_val is not None:
                                 updated_energy_costs[cost_key] = cost_val
 
                         for feed_key, energy_value in new_bom.get("energy", {}).items():
                             normalized_feed_key = normalize_name(feed_key)
                             if normalized_feed_key == "electricity":
-                                unit_cost = updated_energy_costs.get("electricity", energy_value.get("unit_cost"))
+                                unit_cost = updated_energy_costs.get(
+                                    "electricity",
+                                    energy_value.get("unit_cost"),
+                                )
                             elif normalized_feed_key == "hydrogen":
-                                unit_cost = updated_energy_costs.get("hydrogen", energy_value.get("unit_cost"))
+                                unit_cost = updated_energy_costs.get(
+                                    "hydrogen",
+                                    energy_value.get("unit_cost"),
+                                )
                             else:
                                 unit_cost = _recalculate_feedstock_energy_unit_cost(
                                     fg=fg,
@@ -5913,20 +5928,26 @@ class PlantGroup:
                                     feed_key,
                                     energy_value.get("unit_cost"),
                                 )
-                    new_costs["bom"] = new_bom  # type: ignore[assignment]
 
-                    # Update dynamic costs
-                    old_costs = {
+                    # Check if costs have actually changed
+                    old_costs_cmp = {
                         "cost_of_debt": fg.cost_of_debt,
                         "capex": fg.technology.capex,
-                        "electricity": fg.energy_costs["electricity"],
-                        "hydrogen": fg.energy_costs["hydrogen"],
+                        "energy_costs": fg.energy_costs,
+                        "output_energy_costs": fg.output_energy_costs,
                     }
-                    if old_costs == new_costs:
+                    new_costs_cmp = {
+                        "cost_of_debt": new_costs["cost_of_debt"],
+                        "capex": new_costs["capex"],
+                        "energy_costs": new_energy_costs,
+                        "output_energy_costs": new_output_energy_costs,
+                    }
+                    if old_costs_cmp == new_costs_cmp:
                         continue  # Skip if no changes
-                    logger.debug(f"[NEW PLANTS] Updating dynamic costs for furnace group {fg.furnace_group_id}: ")
-                    for key in old_costs.keys():
-                        logger.debug(f"  - {key}: {old_costs[key]} -> {new_costs[key]}")
+                    logger.debug(
+                        "[NEW PLANTS] Updating dynamic costs for FG %s",
+                        fg.furnace_group_id,
+                    )
                     update_commands.append(
                         commands.UpdateDynamicCosts(
                             plant_id=plant.plant_id,
@@ -5935,9 +5956,10 @@ class PlantGroup:
                             new_capex_no_subsidy=capex,
                             new_cost_of_debt=new_costs["cost_of_debt"],
                             new_cost_of_debt_no_subsidy=cost_of_debt,
-                            new_electricity_cost=new_costs["electricity"],
-                            new_hydrogen_cost=new_costs["hydrogen"],
-                            new_bill_of_materials=new_costs.get("bom"),  # type: ignore[arg-type]
+                            new_energy_costs=new_energy_costs,
+                            new_output_energy_costs=new_output_energy_costs,
+                            new_energy_costs_no_subsidy=new_energy_costs_no_subsidy,
+                            new_bill_of_materials=new_bom,
                         )
                     )
         return update_commands
