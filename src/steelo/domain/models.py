@@ -5061,7 +5061,7 @@ class PlantGroup:
                 secondary_output_adj = cc.calculate_cost_adjustments_from_secondary_outputs(
                     bill_of_materials=bill_of_materials,
                     dynamic_business_cases=list(matched_business_cases.values()),
-                    output_costs=plant.energy_costs,
+                    output_costs=plant.furnace_groups[-1].output_energy_costs,
                 )
                 logger.debug(
                     f"[PAM EVAL] {plant.plant_id}/{tech} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
