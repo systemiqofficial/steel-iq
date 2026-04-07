@@ -117,7 +117,8 @@ def _compute_total_subsidy(
         energy_subsidies: Active subsidies for a single carrier.
 
     Returns:
-        float: Total subsidy value (always non-negative).
+        float: Total subsidy value. May be negative if subsidy_amount is
+            negative (representing a fine, tax, or surcharge).
     """
     total = 0.0
     for subsidy in energy_subsidies:
