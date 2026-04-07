@@ -1078,6 +1078,7 @@ class FurnaceGroup:
         legacy_debt_schedule: list[float] | None = None,
         cost_breakdown_keys: list[str] | None = None,
         carbon_breakdown_keys: list[str] | None = None,
+        disposal_cost_outputs: frozenset[str] | None = None,
     ) -> None:
         self.furnace_group_id = furnace_group_id
         self.capacity = capacity
@@ -1094,6 +1095,7 @@ class FurnaceGroup:
         self.cost_breakdown_keys = cost_breakdown_keys
         self.carbon_breakdown_keys = carbon_breakdown_keys
         self.allocated_volumes = allocated_volumes
+        self.disposal_cost_outputs = disposal_cost_outputs
 
         # Future technology switch (accounts for construction time while operating with old technology)
         self.future_switch_cmd: Optional[commands.ChangeFurnaceGroupTechnology] = None
@@ -1915,6 +1917,7 @@ class FurnaceGroup:
             bill_of_materials=self.bill_of_materials,
             dynamic_business_cases=self.effective_primary_feedstocks,
             output_costs=self.output_energy_costs,
+            disposal_cost_outputs=self.disposal_cost_outputs,
         )
 
     @property
@@ -2152,6 +2155,7 @@ class FurnaceGroup:
             energy_vopex_breakdown_by_input=self.energy_vopex_breakdown_by_input,
             cost_breakdown_keys=self.cost_breakdown_keys,
             output_costs=self.output_energy_costs,
+            disposal_cost_outputs=self.disposal_cost_outputs,
         )
 
     @property
@@ -2518,6 +2522,7 @@ class FurnaceGroup:
                     bill_of_materials=bill_of_materials,
                     dynamic_business_cases=list(matched_business_cases.values()),
                     output_costs=self.output_energy_costs,
+                    disposal_cost_outputs=self.disposal_cost_outputs,
                 )
                 logger.debug(
                     f"[OPTIMAL TECH] {tech} greenfield secondary output adjustment: ${secondary_output_adj:,.4f}/t"
@@ -2941,6 +2946,7 @@ class FurnaceGroup:
                 bill_of_materials=self.bill_of_materials,
                 dynamic_business_cases=list(matched_business_cases.values()),
                 output_costs=self.output_energy_costs,
+                disposal_cost_outputs=self.disposal_cost_outputs,
             )
             logger.debug(
                 f"[NEW PLANTS] {self.technology.name} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
@@ -4737,6 +4743,7 @@ class PlantGroup:
         steel_plant_capacity: float,
         dynamic_feedstocks: list[PrimaryFeedstock],
         plant_lifetime: int,
+        disposal_cost_outputs: frozenset[str] | None = None,
     ) -> Plant:
         """
         Generate a new plant (and furnace group) in the plant group for a given location and technology.
@@ -4820,6 +4827,7 @@ class PlantGroup:
             energy_costs=cost_data[product][site_id][technology_name].get("energy_costs"),  # type: ignore[arg-type]
             output_energy_costs=cost_data[product][site_id][technology_name].get("output_costs"),  # type: ignore[arg-type]
             energy_costs_no_subsidy=cost_data[product][site_id][technology_name].get("no_subsidy_prices"),  # type: ignore[arg-type]
+            disposal_cost_outputs=disposal_cost_outputs,
         )
         new_furnace.created_by_PAM = True
         # cost_data has been validated by validate_and_clean_cost_data to ensure these are floats/dicts
@@ -5062,6 +5070,7 @@ class PlantGroup:
                     bill_of_materials=bill_of_materials,
                     dynamic_business_cases=list(matched_business_cases.values()),
                     output_costs=plant.furnace_groups[-1].output_energy_costs,
+                    disposal_cost_outputs=plant.furnace_groups[-1].disposal_cost_outputs,
                 )
                 logger.debug(
                     f"[PAM EVAL] {plant.plant_id}/{tech} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
@@ -5492,6 +5501,7 @@ class PlantGroup:
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         energy_subsidies: dict[str, dict[str, dict[str, list[Subsidy]]]] = {},  # carrier -> iso3 -> tech -> [Subsidy]
         environment_most_common_reductant: dict[str, str] = {},
+        disposal_cost_outputs: frozenset[str] | None = None,
     ) -> commands.Command:
         """
         Identifies new business opportunities for plants at given locations with specific technologies.
@@ -5647,6 +5657,7 @@ class PlantGroup:
             technology_emission_factors=technology_emission_factors,
             chosen_emissions_boundary_for_carbon_costs=chosen_emissions_boundary_for_carbon_costs,
             dynamic_business_cases=dynamic_feedstocks,
+            disposal_cost_outputs=disposal_cost_outputs,
         )
         npv_counts, npv_total = _count_entries(npv_dict)
         candidate_stats["npv_pairs_total"] = npv_total
@@ -5680,6 +5691,7 @@ class PlantGroup:
                         steel_plant_capacity=steel_plant_capacity,
                         dynamic_feedstocks=dynamic_feedstocks.get(tech.lower(), []),
                         plant_lifetime=plant_lifetime,
+                        disposal_cost_outputs=disposal_cost_outputs,
                     )
                 all_plant_ids.append(new_plant.plant_id)
                 new_plants.append(new_plant)
@@ -7456,6 +7468,8 @@ class Environment:
             # New GEO plants: preserve own power costs; use no_subsidy to avoid compounding
             if plant.parent_gem_id.lower() == "indi":
                 for fg in plant.furnace_groups:
+                    if fg.disposal_cost_outputs is None:
+                        fg.disposal_cost_outputs = self.config.disposal_cost_outputs
                     no_sub = fg.energy_costs_no_subsidy or fg.energy_costs
                     input_costs["electricity"] = no_sub["electricity"]
                     input_costs["hydrogen"] = no_sub["hydrogen"]
@@ -7474,6 +7488,8 @@ class Environment:
             # Existing plants: Preserve calculated hydrogen costs if set (only not at bootstrap)
             else:
                 for fg in plant.furnace_groups:
+                    if fg.disposal_cost_outputs is None:
+                        fg.disposal_cost_outputs = self.config.disposal_cost_outputs
                     if "hydrogen" in fg.energy_costs:
                         input_costs["hydrogen"] = fg.energy_costs["hydrogen"]
                     fg.set_energy_costs(**input_costs)

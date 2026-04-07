@@ -819,3 +819,160 @@ def test_secondary_output_co2_stored_positive_is_cost():
     # Carbon output: 1000 * 30 * 0.4 = 12000
     # total: 12000 / 1000 = 12.0 USD/t product (cost increase)
     assert result == pytest.approx(12.0)
+
+
+# ── disposal_cost_outputs tests ────────────────────────────────────────────
+
+
+def test_disposal_cost_output_positive_adjustment():
+    """ironmaking_slag with positive price and disposal_cost_outputs → positive cost, not revenue."""
+
+    class DummyDBC:
+        metallic_charge = "io_low"
+        outputs = {"ironmaking_slag": 0.3}
+        carbon_outputs: dict[str, float] = {}
+        required_quantity_per_ton_of_product = 1.611
+
+    bom = {
+        "materials": {
+            "io_low": {
+                "demand": 1611.0,
+                "product_volume": 1000.0,
+            },
+        },
+    }
+    output_costs = {"ironmaking_slag": 15.0}
+
+    result = calculate_cost_adjustments_from_secondary_outputs(
+        bill_of_materials=bom,
+        dynamic_business_cases=[DummyDBC()],
+        output_costs=output_costs,
+        disposal_cost_outputs=frozenset({"ironmaking_slag"}),
+    )
+
+    # disposal cost: 1000 * 15.0 * 0.3 = 4500 / 1000 = 4.5 (positive = cost)
+    assert result == pytest.approx(4.5)
+
+
+def test_disposal_cost_output_without_flag_is_revenue():
+    """Same setup as above but without disposal flag → revenue (negative)."""
+
+    class DummyDBC:
+        metallic_charge = "io_low"
+        outputs = {"ironmaking_slag": 0.3}
+        carbon_outputs: dict[str, float] = {}
+        required_quantity_per_ton_of_product = 1.611
+
+    bom = {
+        "materials": {
+            "io_low": {
+                "demand": 1611.0,
+                "product_volume": 1000.0,
+            },
+        },
+    }
+    output_costs = {"ironmaking_slag": 15.0}
+
+    result = calculate_cost_adjustments_from_secondary_outputs(
+        bill_of_materials=bom,
+        dynamic_business_cases=[DummyDBC()],
+        output_costs=output_costs,
+    )
+
+    # No disposal flag: -abs(15) * 0.3 * 1000 / 1000 = -4.5 (revenue)
+    assert result == pytest.approx(-4.5)
+
+
+def test_non_disposal_output_unaffected_by_disposal_set():
+    """bf_gas still uses -abs() even when ironmaking_slag is in disposal set."""
+
+    class DummyDBC:
+        metallic_charge = "io_low"
+        outputs = {"bf_gas": 0.2}
+        carbon_outputs: dict[str, float] = {}
+        required_quantity_per_ton_of_product = 1.611
+
+    bom = {
+        "materials": {
+            "io_low": {
+                "demand": 1611.0,
+                "product_volume": 1000.0,
+            },
+        },
+    }
+    output_costs = {"bf_gas": 5.0}
+
+    result = calculate_cost_adjustments_from_secondary_outputs(
+        bill_of_materials=bom,
+        dynamic_business_cases=[DummyDBC()],
+        output_costs=output_costs,
+        disposal_cost_outputs=frozenset({"ironmaking_slag"}),
+    )
+
+    # bf_gas not in disposal set: -abs(5) * 0.2 * 1000 / 1000 = -1.0 (revenue)
+    assert result == pytest.approx(-1.0)
+
+
+def test_breakdown_disposal_cost_output():
+    """ironmaking_slag in cost breakdown uses raw positive price when in disposal set."""
+    dbc = _BreakdownDBC(
+        metallic_charge="io_low",
+        reductant="coke",
+        outputs={"ironmaking_slag": 0.3, "steel": 1.0},
+        primary_output_keys={"steel"},
+    )
+    bom = {
+        "materials": {
+            "io_low": {
+                "demand": 1000.0,
+                "demand_share_pct": 1.0,
+                "product_volume": 1000.0,
+            },
+        },
+        "energy": {},
+    }
+    output_costs = {"ironmaking_slag": 15.0}
+
+    result = calculate_cost_breakdown_by_feedstock(
+        bill_of_materials=bom,
+        dynamic_business_cases=[dbc],
+        energy_costs={},
+        chosen_reductant="coke",
+        output_costs=output_costs,
+        disposal_cost_outputs=frozenset({"ironmaking_slag"}),
+    )
+
+    # disposal cost: 0.3 * 15.0 * 1.0 (demand_share) = 4.5 (positive = cost)
+    assert result["io_low"]["ironmaking_slag"] == pytest.approx(4.5)
+
+
+def test_breakdown_disposal_cost_none_preserves_legacy():
+    """Without disposal flag, ironmaking_slag shows as revenue (negative)."""
+    dbc = _BreakdownDBC(
+        metallic_charge="io_low",
+        reductant="coke",
+        outputs={"ironmaking_slag": 0.3, "steel": 1.0},
+        primary_output_keys={"steel"},
+    )
+    bom = {
+        "materials": {
+            "io_low": {
+                "demand": 1000.0,
+                "demand_share_pct": 1.0,
+                "product_volume": 1000.0,
+            },
+        },
+        "energy": {},
+    }
+    output_costs = {"ironmaking_slag": 15.0}
+
+    result = calculate_cost_breakdown_by_feedstock(
+        bill_of_materials=bom,
+        dynamic_business_cases=[dbc],
+        energy_costs={},
+        chosen_reductant="coke",
+        output_costs=output_costs,
+    )
+
+    # No disposal flag: -abs(15) * 0.3 * 1.0 = -4.5 (revenue)
+    assert result["io_low"]["ironmaking_slag"] == pytest.approx(-4.5)

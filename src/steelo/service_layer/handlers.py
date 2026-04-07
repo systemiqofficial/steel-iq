@@ -223,6 +223,7 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
                 cmd.capacity,
                 env.most_common_reductant_by_tech.get(cmd.technology_name, None),
             )[2],
+            disposal_cost_outputs=env.config.disposal_cost_outputs,
         )
         # Set the subsidies on the new furnace group
         new_furnace.applied_subsidies["capex"] = cmd.capex_subsidies

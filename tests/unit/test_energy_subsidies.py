@@ -840,6 +840,7 @@ def test_set_input_cost_indi_uses_no_subsidy_prices():
     # Create env stub with input_costs
     env = object.__new__(Environment)
     env.year = Year(2025)
+    env.config = type("Config", (), {"disposal_cost_outputs": frozenset({"ironmaking_slag"})})()
     env.input_costs = {
         "SAU": {
             Year(2025): {

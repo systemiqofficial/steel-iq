@@ -414,6 +414,11 @@ class SimulationConfig:
     excel_reader_end_year: int = 2050
     demand_sheet_name: str = "Steel_Demand_Chris Bataille"
 
+    # === Cost Model Settings ===
+    # Physical output carriers where positive price = disposal cost (not revenue)
+    # These carriers keep their raw Excel sign instead of being negated via -abs()
+    disposal_cost_outputs: frozenset[str] = field(default_factory=lambda: frozenset({"ironmaking_slag"}))
+
     # === Other ===
     # Verbosity
     log_level: int = logging.DEBUG

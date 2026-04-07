@@ -46,6 +46,7 @@ PlantGroup (Company/Owner)
 - `energy_costs`: Input-side subsidised prices — used for BOM, VOPEX, reductant selection. For subsidised carriers: `max(0, price - subsidy)`. Set via `set_energy_costs()` which applies `abs()` to non-co2 carriers and `normalize_name()` to keys.
 - `output_energy_costs`: Output-side subsidised prices — used for by-product revenue calculations. For physical carriers: `price + subsidy`; for carbon carriers (co2_*): `price - subsidy`.
 - `energy_costs_no_subsidy`: Original unsubsidised prices for all carriers. Used as baseline to prevent subsidy compounding (indi plants) and for future per-tech subsidy calculations.
+- `disposal_cost_outputs`: `frozenset[str] | None` — carrier names where positive price represents a disposal cost rather than revenue (e.g. `{"ironmaking_slag"}`). Set from `SimulationConfig.disposal_cost_outputs` during bootstrap. These carriers keep their raw price sign in secondary output calculations instead of being negated via `-abs()`.
 
 **Subsidy tracking**:
 - `applied_subsidies`: `dict[str, list[Subsidy]]` — keys are `"capex"`, `"opex"`, `"debt"`, plus dynamic carrier keys (e.g., `"hydrogen"`, `"electricity"`) for energy subsidies applied in the current year

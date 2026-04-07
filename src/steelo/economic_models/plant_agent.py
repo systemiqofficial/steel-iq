@@ -276,6 +276,7 @@ class GeospatialModel:
                 opex_subsidies=bus.env.opex_subsidies,
                 energy_subsidies=bus.env.energy_subsidies,
                 environment_most_common_reductant=bus.env.most_common_reductant_by_tech,
+                disposal_cost_outputs=bus.env.config.disposal_cost_outputs,
             )
         )
         step_time = time.time() - step_start

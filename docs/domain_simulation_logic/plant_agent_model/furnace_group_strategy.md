@@ -193,7 +193,7 @@ Start
      - Debt service
      - Secondary output adjustment (constant snapshot from current year)
 - **Key parameters**: Capacity, utilization, lifetime, financing costs
-- **Note**: Secondary output adjustment is included in NPV for both brownfield (renovation) and greenfield (technology switch) paths, as well as COSA baseline. This captures by-product revenue (e.g., bf_gas, bof_gas, cog) and carbon output costs (e.g., co2_stored) in investment decisions.
+- **Note**: Secondary output adjustment is included in NPV for both brownfield (renovation) and greenfield (technology switch) paths, as well as COSA baseline. This captures by-product revenue (e.g., bf_gas, bof_gas, cog), disposal costs (e.g., ironmaking_slag — see `disposal_cost_outputs` in SimulationConfig), and carbon output costs (e.g., co2_stored) in investment decisions.
 
 ### Stage 9: Adjust NPV for COSA
 - **Decision**: Is this a technology switch?

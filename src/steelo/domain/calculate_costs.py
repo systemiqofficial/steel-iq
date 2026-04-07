@@ -224,6 +224,7 @@ def calculate_cost_breakdown_by_feedstock(
     energy_vopex_breakdown_by_input: dict[str, dict[str, float]] | None = None,
     cost_breakdown_keys: list[str] | None = None,
     output_costs: dict[str, float] | None = None,
+    disposal_cost_outputs: frozenset[str] | None = None,
 ) -> dict:
     """
     Calculate detailed cost breakdown by feedstock type for a furnace group.
@@ -232,7 +233,8 @@ def calculate_cost_breakdown_by_feedstock(
     energy intensity (from dynamic business cases) and usage share (demand_share_pct).
 
     Secondary output revenues (by-products with prices in ``output_costs``) are included as
-    negative values.
+    negative values. Carriers in ``disposal_cost_outputs`` keep their raw price sign
+    (positive = disposal cost).
 
     Args:
         bill_of_materials: Nested dictionary containing materials and energy data.
@@ -357,8 +359,8 @@ def calculate_cost_breakdown_by_feedstock(
                     weighted_cost = carrier_unit_cost * carrier_weight
                     feed_breakdown[normalized_carrier] = feed_breakdown.get(normalized_carrier, 0.0) + weighted_cost
 
-        # Add output revenue for by-products
-        # Physical outputs (dbc.outputs): always revenue, use -abs(price)
+        # Add output revenue/cost for by-products
+        # Physical outputs (dbc.outputs): revenue via -abs(price), unless disposal cost
         # Carbon outputs (dbc.carbon_outputs): keep output_costs sign
         if output_costs:
             all_outputs = {**(dbc.outputs or {}), **(dbc.carbon_outputs or {})}
@@ -380,9 +382,15 @@ def calculate_cost_breakdown_by_feedstock(
                 amount = _coerce_to_float(output_amount) or 0.0
                 if amount == 0:
                     continue
-                # Physical outputs are always revenue; carbon outputs keep their sign
+                # Physical outputs are revenue unless disposal cost; carbon outputs keep sign
                 raw_price = output_costs[normalized_output]
-                effective_price = -abs(raw_price) if normalized_output in physical_output_keys else raw_price
+                if normalized_output in physical_output_keys:
+                    if disposal_cost_outputs and normalized_output in disposal_cost_outputs:
+                        effective_price = raw_price  # positive = disposal cost
+                    else:
+                        effective_price = -abs(raw_price)  # revenue
+                else:
+                    effective_price = raw_price  # carbon outputs keep sign
                 revenue = amount * effective_price * demand_share
                 logger.debug(
                     "[COST BREAKDOWN] output '%s': amount=%.4f x price=$%.4f x share=%.4f = $%.4f",
@@ -1250,6 +1258,7 @@ def calculate_business_opportunity_npvs(
     technology_emission_factors: list["TechnologyEmissionFactors"],
     chosen_emissions_boundary_for_carbon_costs: str,
     dynamic_business_cases: dict[str, list["PrimaryFeedstock"]],
+    disposal_cost_outputs: frozenset[str] | None = None,
 ) -> dict[str, dict[tuple[float, float, str], dict[str, float]]]:
     """
     Calculates the NPV for a series of business opportunities. If the calculation fails, it returns a very
@@ -1273,6 +1282,7 @@ def calculate_business_opportunity_npvs(
         technology_emission_factors: List of technology-specific emission factors
         chosen_emissions_boundary_for_carbon_costs: Emission boundary for carbon cost calculation
         dynamic_business_cases: Dictionary mapping technology to list of primary feedstocks
+        disposal_cost_outputs: Carrier names where positive price = disposal cost.
 
     Returns:
         Dictionary mapping product -> site_id -> technology -> NPV.
@@ -1352,6 +1362,7 @@ def calculate_business_opportunity_npvs(
                     bill_of_materials=bom,
                     dynamic_business_cases=list(matched_business_cases.values()),
                     output_costs=bo_costs["output_costs"],
+                    disposal_cost_outputs=disposal_cost_outputs,
                 )
                 logger.debug(
                     f"[NEW PLANT NPV] {prod}/{tech} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
@@ -1900,6 +1911,7 @@ def calculate_cost_adjustments_from_secondary_outputs(
     bill_of_materials,
     dynamic_business_cases,
     output_costs,
+    disposal_cost_outputs: frozenset[str] | None = None,
 ) -> float:
     """
     Calculate per-unit cost adjustments from secondary outputs (by-products).
@@ -1912,6 +1924,8 @@ def calculate_cost_adjustments_from_secondary_outputs(
         bill_of_materials: BOM dict with "materials" key.
         dynamic_business_cases: List of PrimaryFeedstock objects.
         output_costs: Energy costs used for output revenue pricing (USD/unit).
+        disposal_cost_outputs: Carrier names where positive price = disposal cost.
+            These keep their raw price sign instead of being negated via -abs().
     """
     logger = logging.getLogger(f"{__name__}.calculate_cost_adjustments_from_secondary_outputs")
     if "materials" not in bill_of_materials or not dynamic_business_cases:
@@ -1923,9 +1937,10 @@ def calculate_cost_adjustments_from_secondary_outputs(
 
     dbc_by_metallic_charge = {dbc.metallic_charge: dbc for dbc in dynamic_business_cases}
     adjustments_outputs = {output: price for output, price in output_costs.items()}
-    # NOTE: Physical by-product outputs (dbc.outputs) always generate revenue, so their price
-    # is negated via -abs(price). Carbon outputs (dbc.carbon_outputs) keep their sign
-    # (positive = storage cost, negative = credit).
+    # NOTE: Physical by-product outputs (dbc.outputs) are normally revenue, so their price
+    # is negated via -abs(price). Exception: carriers in disposal_cost_outputs keep their
+    # raw sign (positive = disposal cost). Carbon outputs (dbc.carbon_outputs) always keep
+    # their sign (positive = storage cost, negative = credit).
 
     total_adjustments = 0.0
     total_product_volume = 0.0
@@ -1949,19 +1964,24 @@ def calculate_cost_adjustments_from_secondary_outputs(
 
         total_product_volume += product_volume
 
-        # Physical outputs: always revenue (negate absolute price)
+        # Physical outputs: revenue via -abs(price), unless disposal cost output
         physical_outputs = dbc.outputs or {}
         material_adjustment = 0.0
         for output in physical_outputs:
             if output in adjustments_outputs:
-                carrier_adj = product_volume * (-abs(adjustments_outputs[output])) * physical_outputs[output]
+                if disposal_cost_outputs and output in disposal_cost_outputs:
+                    effective_price = adjustments_outputs[output]  # positive = disposal cost
+                else:
+                    effective_price = -abs(adjustments_outputs[output])  # revenue
+                carrier_adj = product_volume * effective_price * physical_outputs[output]
                 material_adjustment += carrier_adj
                 logger.debug(
-                    "[SECONDARY OUTPUTS] physical '%s' (%s): vol=%.1f x price=$%.6f x qty=%.4f = $%.4f",
+                    "[SECONDARY OUTPUTS] physical '%s' (%s)%s: vol=%.1f x price=$%.6f x qty=%.4f = $%.4f",
                     output,
                     material,
+                    " [disposal]" if disposal_cost_outputs and output in disposal_cost_outputs else "",
                     product_volume,
-                    -abs(adjustments_outputs[output]),
+                    effective_price,
                     physical_outputs[output],
                     carrier_adj,
                 )
