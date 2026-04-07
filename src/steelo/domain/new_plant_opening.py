@@ -214,6 +214,11 @@ def prepare_cost_data_for_business_opportunity(
                 energy_costs_site["electricity"] = site["power_price"]
                 energy_costs_site["hydrogen"] = site["capped_lcoh"] * T_TO_KG  # Convert USD/kg → USD/t
 
+                # abs() negative by-product prices so subsidy arithmetic works correctly (mirrors set_energy_costs)
+                for carrier in energy_costs_site:
+                    if not carrier.startswith("co2"):
+                        energy_costs_site[carrier] = abs(energy_costs_site[carrier])
+
             # Get cost of equity and debt for country
             cost_of_equity = cost_of_equity_all_locs.get(site["iso3"], None)
             if not cost_of_equity:

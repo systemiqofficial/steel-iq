@@ -677,6 +677,110 @@ def test_generate_new_furnace_normalises_negative_physical_carriers():
     assert new_fg.energy_costs["bf_gas"] == 0.02
 
 
+# ── prepare_cost_data_for_business_opportunity: abs() on negative prices ─────
+
+
+def test_prepare_cost_data_normalises_negative_prices_before_subsidy():
+    """Test that negative by-product prices are abs-normalised before subsidy calc.
+
+    Without abs(), a negative bf_gas price (-0.02) with a subsidy (0.005) gives:
+    - Input: max(0, -0.02 - 0.005) = 0  (wrong — should be max(0, 0.02 - 0.005) = 0.015)
+    - Output: -0.02 + 0.005 = -0.015    (wrong — should be 0.02 + 0.005 = 0.025)
+    """
+    from steelo.domain.new_plant_opening import (
+        prepare_cost_data_for_business_opportunity,
+        NewPlantLocation,
+    )
+
+    product_to_tech = {"steel": ["BF-BOF"]}
+    best_locations_subset = {
+        "steel": [
+            NewPlantLocation(
+                Latitude=40.0,
+                Longitude=-100.0,
+                iso3="USA",
+                power_price=0.05,
+                capped_lcoh=3.0,
+                rail_cost=10.0,
+            ),
+        ],
+    }
+    energy_costs = {
+        "USA": {
+            Year(2025): {
+                "electricity": 0.05,
+                "hydrogen": 3500.0,
+                "bf_gas": -0.02,  # Negative by-product price
+            },
+        },
+    }
+    capex_dict_all_locs_techs = {"Americas": {"BF-BOF": 1000.0}}
+    cost_of_debt_all_locs = {"USA": 0.05}
+    cost_of_equity_all_locs = {"USA": 0.08}
+    fopex_all_locs_techs = {"USA": {"bf-bof": 50.0}}
+    iso3_to_region_map = {"USA": "Americas"}
+    carbon_costs = {"USA": {Year(2030): 50.0}}
+
+    # bf_gas subsidy: absolute 0.005 USD/kWh
+    bf_gas_subsidy = Subsidy(
+        scenario_name="test",
+        iso3="USA",
+        start_year=Year(2025),
+        end_year=Year(2035),
+        technology_name="BF-BOF",
+        cost_item="bf_gas",
+        subsidy_type="absolute",
+        subsidy_amount=0.005,
+    )
+    energy_subsidies = {
+        "bf_gas": {"USA": {"BF-BOF": [bf_gas_subsidy]}},
+    }
+
+    def _get_bom(_energy_costs, tech, _capacity, _most_common_reductant=None):
+        """Minimal BOM mock."""
+        if tech == "BF-BOF":
+            return (
+                {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
+                0.85,
+                "coal",
+            )
+        return None, 0.0, None
+
+    cost_data = prepare_cost_data_for_business_opportunity(
+        product_to_tech=product_to_tech,
+        best_locations_subset=best_locations_subset,
+        current_year=Year(2025),
+        target_year=Year(2030),
+        energy_costs=energy_costs,
+        capex_dict_all_locs_techs=capex_dict_all_locs_techs,
+        cost_of_debt_all_locs=cost_of_debt_all_locs,
+        cost_of_equity_all_locs=cost_of_equity_all_locs,
+        fopex_all_locs_techs=fopex_all_locs_techs,
+        steel_plant_capacity=100.0,
+        get_bom_from_avg_boms=_get_bom,
+        iso3_to_region_map=iso3_to_region_map,
+        global_risk_free_rate=0.03,
+        capex_subsidies={},
+        debt_subsidies={},
+        opex_subsidies={},
+        energy_subsidies=energy_subsidies,
+        carbon_costs=carbon_costs,
+        most_common_reductant={},
+        environment_most_common_reductant={},
+    )
+
+    site_id = (40.0, -100.0, "USA")
+    tech_data = cost_data["steel"][site_id]["BF-BOF"]
+
+    # bf_gas base price should be abs-normalised to 0.02 before subsidy calc
+    # Input: max(0, 0.02 - 0.005) = 0.015
+    assert tech_data["energy_costs"]["bf_gas"] == pytest.approx(0.015)
+    # Output: 0.02 + 0.005 = 0.025
+    assert tech_data["output_costs"]["bf_gas"] == pytest.approx(0.025)
+    # No-subsidy: the abs-normalised base price
+    assert tech_data["no_subsidy_prices"]["bf_gas"] == pytest.approx(0.02)
+
+
 # ── set_input_cost_in_furnace_groups: indi compounding fix ──────────────────
 
 
