@@ -98,6 +98,23 @@ def extract_and_process_stored_dataCollection(
                 fg_cols_to_select.append("unit_carbon_cost_contribution - co2_slip")
             # Add emissions columns dynamically
             fg_cols_to_select += plant.columns[plant.columns.str.startswith("emissions_")].tolist()
+            # Add subsidy columns: fixed order first, then dynamic carriers, then total
+            subsidy_cols = set(plant.columns[plant.columns.str.startswith("unit_subsidy_")])
+            fixed_subsidy_cols = [
+                "unit_subsidy_capex",
+                "unit_subsidy_opex",
+                "unit_subsidy_debt",
+                "unit_subsidy_electricity",
+                "unit_subsidy_hydrogen",
+            ]
+            skip = set(fixed_subsidy_cols) | {"unit_subsidy_total"}
+            dynamic_subsidy_cols = sorted(c for c in subsidy_cols if c not in skip)
+            for col in fixed_subsidy_cols:
+                if col not in plant.columns:
+                    plant[col] = 0.0
+            if "unit_subsidy_total" not in plant.columns:
+                plant["unit_subsidy_total"] = 0.0
+            fg_cols_to_select += fixed_subsidy_cols + dynamic_subsidy_cols + ["unit_subsidy_total"]
 
             furnaces.append(plant[fg_cols_to_select])
             # Include cost_breakdown if it exists in the plant DataFrame

@@ -140,8 +140,7 @@ class UpdateDynamicCosts(Command):
     This command updates the dynamic costs that change yearly:
         - Cost of debt (with subsidies, if applicable)
         - CAPEX (with subsidies, if applicable)
-        - Electricity costs from own renewable energy parc or grid
-        - Hydrogen costs from own renewable energy parc or grid
+        - Energy costs for all carriers (subsidised input, output, and unsubsidised)
         - Bill of materials with updated energy prices
     """
 
@@ -151,8 +150,9 @@ class UpdateDynamicCosts(Command):
     new_cost_of_debt_no_subsidy: float
     new_capex: float
     new_capex_no_subsidy: float
-    new_electricity_cost: float
-    new_hydrogen_cost: float
+    new_energy_costs: dict[str, float]
+    new_output_energy_costs: dict[str, float]
+    new_energy_costs_no_subsidy: dict[str, float]
     new_bill_of_materials: dict[str, dict[str, dict[str, Any]]] | None
 
 

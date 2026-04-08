@@ -1926,35 +1926,40 @@ def read_hydrogen_capex_opex(
 
 def _normalize_cost_item(cost_item: str | None, row_index: int) -> str | None:
     """
-    Normalize cost item to standard values: 'opex', 'capex', 'cost of debt'.
+    Normalize cost item to standard values.
+
+    Non-financial cost items (i.e. not opex/capex/cost of debt) are treated as energy carrier
+    names and normalised with normalize_name() to match energy_costs dict keys.
 
     Args:
-        cost_item: Raw cost item string from Excel
+        cost_item: Raw cost item string from Excel (e.g. "opex", "hydrogen", "natural gas")
         row_index: Row index for logging purposes
 
     Returns:
         Normalized cost item string, or None if row should be skipped.
     """
-    logger = logging.getLogger(__name__)
+    from steelo.utilities.utils import normalize_name
 
     if cost_item is None or (isinstance(cost_item, float) and math.isnan(cost_item)) or str(cost_item).strip() == "":
         return "opex"
 
     normalized = str(cost_item).strip().lower()
 
+    # Financial cost items
     if normalized in ("opex",):
         return "opex"
     elif normalized in ("capex",):
         return "capex"
     elif normalized in ("cost of debt", "debt"):
         return "cost of debt"
-    elif normalized in ("hydrogen", "h2"):
+    # Known aliases
+    elif normalized == "h2":
         return "hydrogen"
-    elif normalized in ("electricity",):
-        return "electricity"
+    elif normalized in ("co2 storage", "co2_storage", "co2-storage"):
+        return "co2_stored"
+    # Everything else is an energy carrier — normalise to match energy_costs keys
     else:
-        logger.warning(f"Skipping row {row_index}: unknown cost item '{cost_item}'")
-        return None
+        return normalize_name(normalized)
 
 
 def _expand_technology_pattern(pattern: str | None, all_technologies: list[str]) -> list[str]:

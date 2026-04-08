@@ -101,5 +101,8 @@ def test_update_dynamic_costs_uses_geospatial_power_price_without_scaling():
     assert commands_generated, "Expected one UpdateDynamicCosts command to be emitted."
     (cmd,) = commands_generated
     assert isinstance(cmd, UpdateDynamicCosts)
-    assert math.isclose(cmd.new_electricity_cost, raw_power_price, rel_tol=1e-9)
-    assert math.isclose(cmd.new_hydrogen_cost, raw_hydrogen_price, rel_tol=1e-9)
+    assert math.isclose(cmd.new_energy_costs["electricity"], raw_power_price, rel_tol=1e-9)
+    assert math.isclose(cmd.new_energy_costs["hydrogen"], raw_hydrogen_price, rel_tol=1e-9)
+    # Output and no_subsidy should match input when no subsidies active
+    assert math.isclose(cmd.new_output_energy_costs["electricity"], raw_power_price, rel_tol=1e-9)
+    assert math.isclose(cmd.new_energy_costs_no_subsidy["electricity"], raw_power_price, rel_tol=1e-9)

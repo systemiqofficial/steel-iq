@@ -209,6 +209,8 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
                 env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
             ),
             equity_needed=cmd.equity_needed,
+            # TODO(3h): BOM uses plant.energy_costs (last FG's subsidised costs), not the new
+            # tech's. Impact zero during construction (0% utilisation); refreshed when operational.
             bill_of_materials=env.get_bom_from_avg_boms(
                 plant.energy_costs or {},
                 cmd.technology_name,
@@ -221,6 +223,7 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
                 cmd.capacity,
                 env.most_common_reductant_by_tech.get(cmd.technology_name, None),
             )[2],
+            disposal_cost_outputs=env.config.disposal_cost_outputs,
         )
         # Set the subsidies on the new furnace group
         new_furnace.applied_subsidies["capex"] = cmd.capex_subsidies
@@ -634,16 +637,15 @@ def update_status_of_furnace_group(cmd: commands.UpdateFurnaceGroupStatus, uow: 
 
 
 def update_dynamic_costs(cmd: commands.UpdateDynamicCosts, uow: UnitOfWork, env: Environment):
-    """
-    Updates the dynamic costs for a furnace group.
+    """Update dynamic costs for a furnace group in a business opportunity.
 
-    This handler applies the yearly updated costs to a furnace group:
+    Applies yearly updated costs to a furnace group:
         - Cost of debt (with subsidies, if applicable)
         - CAPEX (with subsidies, if applicable)
-        - Electricity costs from own renewable energy parc or grid
-        - Hydrogen costs from own renewable energy parc or grid
+        - Energy costs for all carriers (subsidised input, output, and unsubsidised)
         - Bill of materials with updated energy prices
     """
+    logger = logging.getLogger(f"{__name__}.update_dynamic_costs")
     with uow:
         plant = uow.plants.get(cmd.plant_id)
         for fg in plant.furnace_groups:
@@ -652,10 +654,19 @@ def update_dynamic_costs(cmd: commands.UpdateDynamicCosts, uow: UnitOfWork, env:
                 fg.cost_of_debt_no_subsidy = cmd.new_cost_of_debt_no_subsidy
                 fg.technology.capex = cmd.new_capex
                 fg.technology.capex_no_subsidy = cmd.new_capex_no_subsidy
-                fg.energy_costs["electricity"] = cmd.new_electricity_cost
-                fg.energy_costs["hydrogen"] = cmd.new_hydrogen_cost
+                fg.energy_costs = cmd.new_energy_costs
+                fg.output_energy_costs = cmd.new_output_energy_costs
+                fg.energy_costs_no_subsidy = cmd.new_energy_costs_no_subsidy
                 if cmd.new_bill_of_materials is not None:
                     fg.bill_of_materials = cmd.new_bill_of_materials
+                logger.debug(
+                    "[HANDLER] UpdateDynamicCosts %s/%s: energy_costs=%s output=%s no_sub=%s",
+                    cmd.plant_id,
+                    cmd.furnace_group_id,
+                    cmd.new_energy_costs,
+                    cmd.new_output_energy_costs,
+                    cmd.new_energy_costs_no_subsidy,
+                )
         uow.commit()
 
 
