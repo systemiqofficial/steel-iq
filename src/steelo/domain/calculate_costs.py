@@ -393,8 +393,9 @@ def calculate_cost_breakdown_by_feedstock(
                     effective_price = raw_price  # carbon outputs keep sign
                 revenue = amount * effective_price * demand_share
                 logger.debug(
-                    "[COST BREAKDOWN] output '%s': amount=%.4f x price=$%.4f x share=%.4f = $%.4f",
+                    "[COST BREAKDOWN] output '%s'%s: amount=%.4f x price=$%.4f x share=%.4f = $%.4f",
                     normalized_output,
+                    " [disposal]" if disposal_cost_outputs and normalized_output in disposal_cost_outputs else "",
                     amount,
                     effective_price,
                     demand_share,

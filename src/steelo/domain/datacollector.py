@@ -680,7 +680,6 @@ class DataCollector:
                                 unit_subsidies["debt"] += sub.subsidy_amount
 
                     # Energy subsidies: (price_before - price_after) * consumption_per_tonne
-                    # Generalised for all energy carriers (hydrogen, electricity, natural_gas, etc.)
                     if hasattr(fg, "energy_costs_no_subsidy") and fg.energy_costs_no_subsidy:
                         for carrier, price_before in fg.energy_costs_no_subsidy.items():
                             price_after = fg.energy_costs.get(carrier, 0) if fg.energy_costs else 0
