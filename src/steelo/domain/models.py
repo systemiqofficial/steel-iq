@@ -1078,6 +1078,7 @@ class FurnaceGroup:
         legacy_debt_schedule: list[float] | None = None,
         cost_breakdown_keys: list[str] | None = None,
         carbon_breakdown_keys: list[str] | None = None,
+        disposal_cost_outputs: frozenset[str] | None = None,
     ) -> None:
         self.furnace_group_id = furnace_group_id
         self.capacity = capacity
@@ -1094,6 +1095,7 @@ class FurnaceGroup:
         self.cost_breakdown_keys = cost_breakdown_keys
         self.carbon_breakdown_keys = carbon_breakdown_keys
         self.allocated_volumes = allocated_volumes
+        self.disposal_cost_outputs = disposal_cost_outputs
 
         # Future technology switch (accounts for construction time while operating with old technology)
         self.future_switch_cmd: Optional[commands.ChangeFurnaceGroupTechnology] = None
@@ -1108,12 +1110,23 @@ class FurnaceGroup:
         self.historical_npv_business_opportunities = historical_npv_business_opportunities
         self.railway_cost = railway_cost
         self.legacy_debt_schedule = legacy_debt_schedule or []  # Track debt from previous tech when switching
-        self.set_energy_costs(**energy_cost_dict)
+
+        self.applied_subsidies: dict[str, list[Subsidy]] = {
+            "capex": [],
+            "opex": [],
+            "debt": [],
+        }
+        # Original energy prices before subsidies (for verification)
+        self.energy_costs_no_subsidy: dict[str, float] = {}
+        # Energy costs used for output revenue (by-product sales)
+        self.output_energy_costs: dict[str, float] = {}
+        self.set_energy_costs(**energy_cost_dict)  # must follow output_energy_costs init
+
         self.energy_vopex_by_input = energy_vopex_by_input
         self.energy_vopex_breakdown_by_input = energy_vopex_breakdown_by_input
         self.energy_vopex_by_carrier = energy_vopex_by_carrier
         self.tech_unit_fopex = tech_unit_fopex
-        self.input_costs: dict[str, float] = {}
+
         self.has_ccs_or_ccu = False  # To be updated if carbon capture is installed
         self.grid_emissivity: float | None = None
 
@@ -1123,16 +1136,6 @@ class FurnaceGroup:
         self.emissions = emissions
         self.installed_carbon_capture = 0.0  # CCS/CCU capacity (tCO2e/year) - reduces direct emissions
         self.transport_emissions = 0.0
-
-        self.applied_subsidies: dict[str, list[Subsidy]] = {
-            "capex": [],
-            "opex": [],
-            "debt": [],
-            "hydrogen": [],
-            "electricity": [],
-        }
-        # Original energy prices before subsidies (for verification)
-        self.energy_costs_no_subsidy: dict[str, float] = {}
 
         # Initialize _carbon_cost from carbon_costs_for_emissions if provided
         if carbon_costs_for_emissions is not None and carbon_costs_for_emissions > 0:
@@ -1174,37 +1177,62 @@ class FurnaceGroup:
             Hydrogen costs are typically set separately via Plant.update_furnace_hydrogen_costs()
             to use capped country-level prices calculated from LCOH.
         """
-        # Store costs with normalized keys to ensure downstream lookups succeed
+        logger = logging.getLogger(f"{__name__}.set_energy_costs")
+        # Store costs with normalized keys to ensure downstream lookups succeed.
+        # Physical carriers: abs() ensures consumption is always a positive cost.
+        # Carbon carriers (co2_*): sign preserved (positive = cost, negative = credit).
         energy_costs: dict[str, float] = {}
         for raw_key, price in costs.items():
             normalized_key = normalize_name(raw_key)
+            if not normalized_key.startswith("co2"):
+                price = abs(price)
             energy_costs[normalized_key] = price
             # Preserve original key for compatibility where callers still expect legacy naming
             if normalized_key != raw_key:
                 energy_costs[raw_key] = price
 
         self.energy_costs = energy_costs
+        self.output_energy_costs = energy_costs.copy()
+        logger.debug(
+            "[ENERGY COSTS] FG %s: set %d carriers, sample: %s",
+            getattr(self, "furnace_group_id", "?"),
+            len({normalize_name(k) for k in energy_costs}),
+            {k: f"${v:.6f}" for k, v in list(energy_costs.items())[:5]},
+        )
 
     def set_subsidised_energy_costs(
         self,
-        subsidised_costs: dict[str, float],
+        input_costs: dict[str, float],
+        output_costs: dict[str, float],
         no_subsidy_prices: dict[str, float],
-        h2_subsidies: list["Subsidy"],
-        elec_subsidies: list["Subsidy"],
+        energy_subsidies: dict[str, list["Subsidy"]],
     ) -> None:
-        """
-        Set energy costs with subsidies applied and track original prices.
+        """Set energy costs with subsidies applied and track original prices.
+
+        A subsidy simultaneously reduces input cost and increases output profit:
+        - ``input_costs[carrier] = max(0, price - subsidy)``
+        - ``output_costs[carrier] = price + subsidy``
 
         Args:
-            subsidised_costs: Energy costs with subsidies applied
-            no_subsidy_prices: Original H2/electricity prices before subsidies
-            h2_subsidies: Applied hydrogen subsidies (for tracking)
-            elec_subsidies: Applied electricity subsidies (for tracking)
+            input_costs: Subsidised prices for consumption (BOM energy, VOPEX).
+            output_costs: Subsidised prices for by-product revenue.
+            no_subsidy_prices: Original prices for all subsidised carriers.
+            energy_subsidies: Applied subsidies per carrier {carrier: [Subsidy, ...]}.
         """
-        self.energy_costs = subsidised_costs
+        logger = logging.getLogger(f"{__name__}.set_subsidised_energy_costs")
+        self.energy_costs = input_costs
+        self.output_energy_costs = output_costs
         self.energy_costs_no_subsidy = no_subsidy_prices
-        self.applied_subsidies["hydrogen"] = h2_subsidies
-        self.applied_subsidies["electricity"] = elec_subsidies
+        for carrier, subs in energy_subsidies.items():
+            self.applied_subsidies[carrier] = subs
+        diffs = [
+            f"{c} in=${input_costs.get(c, no_subsidy_prices[c]):.4f}"
+            f" out=${output_costs.get(c, no_subsidy_prices[c]):.4f}"
+            f" (base=${no_subsidy_prices[c]:.4f})"
+            for c in sorted(no_subsidy_prices)
+        ]
+        if diffs:
+            logger.debug("[ENERGY SUBS] FG set: %s", ", ".join(diffs))
 
     def __repr__(self) -> str:
         return f"FurnaceGroup: <{self.furnace_group_id}>"
@@ -1509,6 +1537,14 @@ class FurnaceGroup:
         materials = self.bill_of_materials.get("materials", {})
         energy = self.bill_of_materials.get("energy", {})
         vopex = calculate_variable_opex(materials, energy)
+        logger.debug(
+            "[VOPEX] FG %s (%s): vopex=$%.4f/t, materials=%d, energy=%d",
+            self.furnace_group_id,
+            getattr(self.technology, "name", "?"),
+            vopex,
+            len(materials),
+            len(energy),
+        )
 
         # # Record a simple per-tonne breakdown for diagnostics
         # product_volume: float | None = None
@@ -1880,7 +1916,8 @@ class FurnaceGroup:
         return calculate_cost_adjustments_from_secondary_outputs(
             bill_of_materials=self.bill_of_materials,
             dynamic_business_cases=self.effective_primary_feedstocks,
-            input_costs=self.input_costs,
+            output_costs=self.output_energy_costs,
+            disposal_cost_outputs=self.disposal_cost_outputs,
         )
 
     @property
@@ -2117,7 +2154,8 @@ class FurnaceGroup:
             chosen_reductant=self.chosen_reductant,
             energy_vopex_breakdown_by_input=self.energy_vopex_breakdown_by_input,
             cost_breakdown_keys=self.cost_breakdown_keys,
-            input_costs=self.input_costs,
+            output_costs=self.output_energy_costs,
+            disposal_cost_outputs=self.disposal_cost_outputs,
         )
 
     @property
@@ -2226,6 +2264,7 @@ class FurnaceGroup:
             calculate_npv_full,
             stranding_asset_cost,
             calculate_capex_with_subsidies,
+            calculate_cost_adjustments_from_secondary_outputs,
             calculate_opex_list_with_subsidies,
             calculate_variable_opex,
         )
@@ -2297,8 +2336,12 @@ class FurnaceGroup:
         else:
             unit_carbon_cost_list = [carbon_cost / self.production for carbon_cost in carbon_costs_list]
 
-        # Combine OPEX with carbon costs for COSA calculation
-        unit_opex_carbon_costs = [x + y for x, y in zip(unit_opex_list, unit_carbon_cost_list)]
+        # Combine OPEX with carbon costs and secondary output adjustment for COSA calculation
+        cosa_secondary_adj = self.cost_adjustments_from_secondary_outputs
+        unit_opex_carbon_costs = [x + y + cosa_secondary_adj for x, y in zip(unit_opex_list, unit_carbon_cost_list)]
+        logger.debug(
+            f"[OPTIMAL TECH] COSA secondary output adjustment for {self.technology.name}: ${cosa_secondary_adj:,.4f}/t"
+        )
 
         logger.debug(f"[OPTIMAL TECH] Calculating carbon costs for current technology {self.technology.name}")
         logger.debug(f"[OPTIMAL TECH] Emission boundary: {chosen_emissions_boundary_for_carbon_costs}")
@@ -2411,6 +2454,10 @@ class FurnaceGroup:
                 # Reuse existing BOM and utilization rate (no technology change)
                 bill_of_materials = self.bill_of_materials
                 util_rate = self.utilization_rate
+                secondary_output_adj = self.cost_adjustments_from_secondary_outputs
+                logger.debug(
+                    f"[OPTIMAL TECH] {tech} brownfield secondary output adjustment: ${secondary_output_adj:,.4f}/t"
+                )
 
                 # Validate BOM structure before proceeding
                 if not bill_of_materials or "materials" not in bill_of_materials or "energy" not in bill_of_materials:
@@ -2439,16 +2486,14 @@ class FurnaceGroup:
 
             else:  # Switch to a new technology (greenfield)
                 # ========== BRANCH B: Greenfield Installation (New Technology) ==========
-                h2_cost = self.energy_costs.get("hydrogen", 0)
-                elec_cost = self.energy_costs.get("electricity", 0)
-                h2_no_sub = self.energy_costs_no_subsidy.get("hydrogen", h2_cost)
-                elec_no_sub = self.energy_costs_no_subsidy.get("electricity", elec_cost)
-                if h2_cost != h2_no_sub or elec_cost != elec_no_sub:
-                    logger.debug(
-                        f"[OPTIMAL TECH] {tech} using subsidised energy: "
-                        f"H2 ${h2_no_sub:.2f}->${h2_cost:.2f}/t, "
-                        f"Elec ${elec_no_sub:.6f}->${elec_cost:.6f}/kWh"
-                    )
+                if self.energy_costs_no_subsidy:
+                    diffs = []
+                    for carrier, original in self.energy_costs_no_subsidy.items():
+                        current = self.energy_costs.get(carrier, original)
+                        if current != original:
+                            diffs.append(f"{carrier} ${original:.4f}->${current:.4f}")
+                    if diffs:
+                        logger.debug(f"[OPTIMAL TECH] {tech} using subsidised energy: {', '.join(diffs)}")
 
                 # Fetch average BOM for the new technology from historical data
                 chosen_reductant = most_common_reductant_by_tech.get(tech)
@@ -2470,6 +2515,17 @@ class FurnaceGroup:
                     material_bill=bill_of_materials["materials"],
                     tech=tech,
                     reductant=reductant,
+                )
+
+                # Calculate secondary output cost adjustment for new technology
+                secondary_output_adj = calculate_cost_adjustments_from_secondary_outputs(
+                    bill_of_materials=bill_of_materials,
+                    dynamic_business_cases=list(matched_business_cases.values()),
+                    output_costs=self.output_energy_costs,
+                    disposal_cost_outputs=self.disposal_cost_outputs,
+                )
+                logger.debug(
+                    f"[OPTIMAL TECH] {tech} greenfield secondary output adjustment: ${secondary_output_adj:,.4f}/t"
                 )
 
                 # Calculate emissions profile for new technology
@@ -2556,6 +2612,7 @@ class FurnaceGroup:
                     cost_of_equity=cost_of_equity,
                     equity_share=self.equity_share,
                     carbon_costs=carbon_cost_list,
+                    secondary_output_adjustment=secondary_output_adj,
                 )
 
                 logger.debug(f"[OPTIMAL TECH] Proceeding with NPV calculation for {tech}")
@@ -2811,7 +2868,10 @@ class FurnaceGroup:
         opened.
         """
         logger = logging.getLogger(f"{__name__}.FurnaceGroup.track_business_opportunities")
-        from steelo.domain.calculate_costs import calculate_npv_full
+        from steelo.domain.calculate_costs import (
+            calculate_cost_adjustments_from_secondary_outputs,
+            calculate_npv_full,
+        )
 
         # Verify prerequisites
         if self.historical_npv_business_opportunities is None:
@@ -2881,6 +2941,17 @@ class FurnaceGroup:
                 end_year=earliest_operation_end_year,
             )
 
+            # Calculate secondary output cost adjustment (by-product revenue/cost)
+            secondary_output_adj = calculate_cost_adjustments_from_secondary_outputs(
+                bill_of_materials=self.bill_of_materials,
+                dynamic_business_cases=list(matched_business_cases.values()),
+                output_costs=self.output_energy_costs,
+                disposal_cost_outputs=self.disposal_cost_outputs,
+            )
+            logger.debug(
+                f"[NEW PLANTS] {self.technology.name} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
+            )
+
             # Calculate updated NPV
             npv_value = calculate_npv_full(
                 capex=self.technology.capex,
@@ -2895,6 +2966,7 @@ class FurnaceGroup:
                 equity_share=self.equity_share,
                 infrastructure_costs=self.railway_cost,
                 carbon_costs=carbon_cost_list,
+                secondary_output_adjustment=secondary_output_adj,
             )
 
         # Set to very negative NPV if calculation returned NaN
@@ -3660,18 +3732,18 @@ class Plant:
         logger = logging.getLogger(f"{__name__}.evaluate_furnace_group_strategy")
         furnace_group = self.get_furnace_group(furnace_group_id)
 
-        h2_subs_active = len(furnace_group.applied_subsidies.get("hydrogen", [])) > 0
-        elec_subs_active = len(furnace_group.applied_subsidies.get("electricity", [])) > 0
-        if h2_subs_active or elec_subs_active:
-            h2_no_sub = furnace_group.energy_costs_no_subsidy.get("hydrogen", 0)
-            h2_with_sub = furnace_group.energy_costs.get("hydrogen", 0)
-            elec_no_sub = furnace_group.energy_costs_no_subsidy.get("electricity", 0)
-            elec_with_sub = furnace_group.energy_costs.get("electricity", 0)
-            logger.debug(
-                f"[FG STRATEGY] FG:{furnace_group_id} {self.location.iso3} | "
-                f"H2={h2_subs_active} (${h2_no_sub:.2f}->${h2_with_sub:.2f}/t), "
-                f"Elec={elec_subs_active} (${elec_no_sub:.6f}->${elec_with_sub:.6f}/kWh)"
-            )
+        active_energy_subs = {
+            k: v
+            for k, v in furnace_group.applied_subsidies.items()
+            if k not in ("capex", "opex", "debt", "cost of debt") and v
+        }
+        if active_energy_subs:
+            diffs = []
+            for carrier in sorted(active_energy_subs):
+                no_sub = furnace_group.energy_costs_no_subsidy.get(carrier, 0)
+                with_sub = furnace_group.energy_costs.get(carrier, 0)
+                diffs.append(f"{carrier} ${no_sub:.4f}->${with_sub:.4f}")
+            logger.debug(f"[FG STRATEGY] FG:{furnace_group_id} {self.location.iso3} | {', '.join(diffs)}")
 
         # Log initial state for debugging
         logger.debug(f"[FG STRATEGY] ========== Starting evaluation for FG {furnace_group_id} ==========")
@@ -4101,6 +4173,8 @@ class Plant:
         dynamic_business_case: list[PrimaryFeedstock] | None = None,
         bill_of_materials: dict[str, dict[str, dict[str, float]]] | None = None,
         energy_costs: dict[str, float] | None = None,
+        output_energy_costs: dict[str, float] | None = None,
+        energy_costs_no_subsidy: dict[str, float] | None = None,
         **kwargs,
     ) -> FurnaceGroup:
         """
@@ -4138,6 +4212,10 @@ class Plant:
                 furnace group.
             energy_costs (dict[str, float] | None): Optional energy costs; must be passed explicitly for
                 new plants, otherwise inherited from the plant.
+            output_energy_costs (dict[str, float] | None): Optional output-side energy costs for
+                by-product revenue pricing. If None, defaults to a copy of energy_costs.
+            energy_costs_no_subsidy (dict[str, float] | None): Optional pre-subsidy energy costs
+                for all carriers.
             **kwargs: Additional keyword arguments for FurnaceGroup initialization.
 
         Returns:
@@ -4181,11 +4259,30 @@ class Plant:
         )
         furnace_group.bill_of_materials = bill_of_materials
 
-        # Set energy costs: explicitly provided for new plants, or inherited from existing plant
+        # Set energy costs via set_energy_costs for normalisation (abs, normalize_name)
+        gnf_logger = logging.getLogger(f"{__name__}.generate_new_furnace")
         if energy_costs:
-            furnace_group.energy_costs = energy_costs
+            furnace_group.set_energy_costs(**energy_costs)
+            if output_energy_costs:
+                furnace_group.output_energy_costs = output_energy_costs
+            if energy_costs_no_subsidy:
+                furnace_group.energy_costs_no_subsidy = energy_costs_no_subsidy
+            gnf_logger.debug(
+                "[NEW FG] %s tech=%s | input=%d output=%d no_sub=%d carriers",
+                furnace_group.furnace_group_id,
+                technology_name,
+                len(furnace_group.energy_costs),
+                len(furnace_group.output_energy_costs),
+                len(furnace_group.energy_costs_no_subsidy),
+            )
         else:
-            furnace_group.energy_costs = self.energy_costs
+            furnace_group.set_energy_costs(**self.energy_costs.copy())
+            gnf_logger.debug(
+                "[NEW FG] %s tech=%s | inherited %d carriers from plant",
+                furnace_group.furnace_group_id,
+                technology_name,
+                len(furnace_group.energy_costs),
+            )
         furnace_group.generate_energy_vopex_by_reductant()
 
         # Set fixed OPEX from technology lookup table
@@ -4380,6 +4477,8 @@ class Plant:
 
         for fg in self.furnace_groups:
             fg.energy_costs["hydrogen"] = hydrogen_price_usd_per_t
+            fg.output_energy_costs["hydrogen"] = hydrogen_price_usd_per_t
+            fg.energy_costs_no_subsidy["hydrogen"] = hydrogen_price_usd_per_t
 
     def aggregate_average_utilisation_rate(self):
         """
@@ -4644,6 +4743,7 @@ class PlantGroup:
         steel_plant_capacity: float,
         dynamic_feedstocks: list[PrimaryFeedstock],
         plant_lifetime: int,
+        disposal_cost_outputs: frozenset[str] | None = None,
     ) -> Plant:
         """
         Generate a new plant (and furnace group) in the plant group for a given location and technology.
@@ -4725,6 +4825,9 @@ class PlantGroup:
             dynamic_business_case=dynamic_feedstocks,
             bill_of_materials=cost_data[product][site_id][technology_name].get("bom"),  # type: ignore[arg-type]
             energy_costs=cost_data[product][site_id][technology_name].get("energy_costs"),  # type: ignore[arg-type]
+            output_energy_costs=cost_data[product][site_id][technology_name].get("output_costs"),  # type: ignore[arg-type]
+            energy_costs_no_subsidy=cost_data[product][site_id][technology_name].get("no_subsidy_prices"),  # type: ignore[arg-type]
+            disposal_cost_outputs=disposal_cost_outputs,
         )
         new_furnace.created_by_PAM = True
         # cost_data has been validated by validate_and_clean_cost_data to ensure these are floats/dicts
@@ -4962,6 +5065,17 @@ class PlantGroup:
                     else util_rate
                 )
 
+                # Calculate secondary output cost adjustment (by-product revenue/cost)
+                secondary_output_adj = cc.calculate_cost_adjustments_from_secondary_outputs(
+                    bill_of_materials=bill_of_materials,
+                    dynamic_business_cases=list(matched_business_cases.values()),
+                    output_costs=plant.furnace_groups[-1].output_energy_costs,
+                    disposal_cost_outputs=plant.furnace_groups[-1].disposal_cost_outputs,
+                )
+                logger.debug(
+                    f"[PAM EVAL] {plant.plant_id}/{tech} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
+                )
+
                 NPV[tech] = cc.calculate_npv_full(
                     capex=capex,
                     capacity=capacity,
@@ -4974,6 +5088,7 @@ class PlantGroup:
                     expected_utilisation_rate=expected_utilisation_rate,
                     price_series=price_series[product],
                     carbon_costs=carbon_cost_list,
+                    secondary_output_adjustment=secondary_output_adj,
                 )
 
             # Select technology with highest NPV for this plant
@@ -5384,9 +5499,9 @@ class PlantGroup:
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
-        hydrogen_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
-        electricity_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
+        energy_subsidies: dict[str, dict[str, dict[str, list[Subsidy]]]] = {},  # carrier -> iso3 -> tech -> [Subsidy]
         environment_most_common_reductant: dict[str, str] = {},
+        disposal_cost_outputs: frozenset[str] | None = None,
     ) -> commands.Command:
         """
         Identifies new business opportunities for plants at given locations with specific technologies.
@@ -5434,8 +5549,7 @@ class PlantGroup:
             capex_subsidies: Dictionary mapping iso3 -> tech -> list of capex subsidies
             debt_subsidies: Dictionary mapping iso3 -> tech -> list of debt subsidies
             opex_subsidies: Dictionary mapping iso3 -> tech -> list of opex subsidies
-            hydrogen_subsidies: Dictionary mapping iso3 -> tech -> list of H2 subsidies
-            electricity_subsidies: Dictionary mapping iso3 -> tech -> list of electricity subsidies
+            energy_subsidies: Dictionary mapping carrier -> iso3 -> tech -> list of energy subsidies
 
         Returns:
             Command to add new Plant and FurnaceGroup objects for the identified business opportunities
@@ -5520,8 +5634,7 @@ class PlantGroup:
             capex_subsidies=capex_subsidies,
             debt_subsidies=debt_subsidies,
             opex_subsidies=opex_subsidies,
-            hydrogen_subsidies=hydrogen_subsidies,
-            electricity_subsidies=electricity_subsidies,
+            energy_subsidies=energy_subsidies,
             carbon_costs=carbon_costs,
             most_common_reductant=self.most_common_reductant,
             environment_most_common_reductant=environment_most_common_reductant,
@@ -5544,6 +5657,7 @@ class PlantGroup:
             technology_emission_factors=technology_emission_factors,
             chosen_emissions_boundary_for_carbon_costs=chosen_emissions_boundary_for_carbon_costs,
             dynamic_business_cases=dynamic_feedstocks,
+            disposal_cost_outputs=disposal_cost_outputs,
         )
         npv_counts, npv_total = _count_entries(npv_dict)
         candidate_stats["npv_pairs_total"] = npv_total
@@ -5577,6 +5691,7 @@ class PlantGroup:
                         steel_plant_capacity=steel_plant_capacity,
                         dynamic_feedstocks=dynamic_feedstocks.get(tech.lower(), []),
                         plant_lifetime=plant_lifetime,
+                        disposal_cost_outputs=disposal_cost_outputs,
                     )
                 all_plant_ids.append(new_plant.plant_id)
                 new_plants.append(new_plant)
@@ -5596,8 +5711,7 @@ class PlantGroup:
         global_risk_free_rate: float,
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
-        hydrogen_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
-        electricity_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
+        energy_subsidies: dict[str, dict[str, dict[str, list[Subsidy]]]] = {},
     ) -> list[commands.Command]:
         """
         Update dynamic cost data for all furnace groups in all "indi" plants which have not been
@@ -5606,8 +5720,7 @@ class PlantGroup:
         Dynamic costs include:
             - CAPEX with subsidies
             - Cost of debt with subsidies
-            - Electricity costs from custom energy model (with subsidies)
-            - Hydrogen costs from custom energy model (with subsidies)
+            - Energy costs from custom energy model (with subsidies)
 
         Dynamic costs are updated based on the following logic:
             - Base costs: CAPEX, cost of debt, electricity costs, and hydrogen costs are set to the
@@ -5626,8 +5739,7 @@ class PlantGroup:
             global_risk_free_rate: Global risk-free interest rate
             capex_subsidies: Dictionary mapping iso3 -> tech -> list of capex subsidies
             debt_subsidies: Dictionary mapping iso3 -> tech -> list of debt subsidies
-            hydrogen_subsidies: Dictionary mapping iso3 -> tech -> list of H2 subsidies
-            electricity_subsidies: Dictionary mapping iso3 -> tech -> list of electricity subsidies
+            energy_subsidies: Dictionary mapping carrier -> iso3 -> tech -> list of energy subsidies
 
         Returns:
             List of UpdateDynamicCosts commands for each furnace group that was updated.
@@ -5711,37 +5823,44 @@ class PlantGroup:
                         custom_energy_costs["power_price"].sel(lat=plant.location.lat, lon=plant.location.lon).values
                     )
                     power_price = float(raw_power_price) if raw_power_price is not None else None
+                    no_sub = fg.energy_costs_no_subsidy or fg.energy_costs
                     if power_price is None or math.isnan(power_price):
-                        power_price = fg.energy_costs["electricity"]
+                        power_price = no_sub["electricity"]
                     raw_hydrogen_price = (
                         custom_energy_costs["capped_lcoh"].sel(lat=plant.location.lat, lon=plant.location.lon).values
                     )
                     hydrogen_price = float(raw_hydrogen_price) if raw_hydrogen_price is not None else None
-                    if hydrogen_price is not None and math.isnan(hydrogen_price):
-                        hydrogen_price = fg.energy_costs["hydrogen"]
-                    elif hydrogen_price is None:
-                        hydrogen_price = fg.energy_costs["hydrogen"]
+                    if hydrogen_price is None or (hydrogen_price is not None and math.isnan(hydrogen_price)):
+                        hydrogen_price = no_sub["hydrogen"]
 
                     new_costs["electricity"] = power_price
                     new_costs["hydrogen"] = hydrogen_price
 
-                    # Apply H2/electricity subsidies
-                    h2_subs = hydrogen_subsidies.get(iso3, {}).get(fg.technology.name, [])
-                    elec_subs = electricity_subsidies.get(iso3, {}).get(fg.technology.name, [])
-                    active_h2_subs = filter_subsidies_for_year(h2_subs, year)
-                    active_elec_subs = filter_subsidies_for_year(elec_subs, year)
+                    # Apply energy carrier subsidies
+                    active_energy_subs: dict[str, list] = {}
+                    for carrier, carrier_subs in energy_subsidies.items():
+                        all_subs = carrier_subs.get(iso3, {}).get(fg.technology.name, [])
+                        active = filter_subsidies_for_year(all_subs, year)
+                        if active:
+                            active_energy_subs[carrier] = active
 
-                    if active_h2_subs or active_elec_subs:
-                        temp_costs = {"hydrogen": hydrogen_price, "electricity": power_price}
-                        subsidised, _ = cc.get_subsidised_energy_costs(temp_costs, active_h2_subs, active_elec_subs)
-                        logger.debug(
-                            f"[NEW PLANTS] {iso3}/{fg.technology.name} year={year} "
-                            f"H2: {hydrogen_price:.3f} -> {subsidised['hydrogen']:.3f} "
-                            f"Elec: {power_price:.4f} -> {subsidised['electricity']:.4f} "
-                            f"({len(active_h2_subs)} H2 subs, {len(active_elec_subs)} elec subs)"
+                    # Build full energy cost dicts with updated electricity/hydrogen
+                    base_costs = dict(fg.energy_costs_no_subsidy or fg.energy_costs)
+                    base_costs["electricity"] = power_price
+                    base_costs["hydrogen"] = hydrogen_price
+
+                    if active_energy_subs:
+                        new_energy_costs, new_output_energy_costs, new_energy_costs_no_subsidy = (
+                            cc.get_subsidised_energy_costs(base_costs, active_energy_subs)
                         )
-                        new_costs["electricity"] = subsidised["electricity"]
-                        new_costs["hydrogen"] = subsidised["hydrogen"]
+                        sub_summary = ", ".join(f"{len(s)} {c}" for c, s in active_energy_subs.items())
+                        logger.debug(
+                            f"[NEW PLANTS] {iso3}/{fg.technology.name} year={year} Subs: {sub_summary}",
+                        )
+                    else:
+                        new_energy_costs = dict(base_costs)
+                        new_output_energy_costs = dict(base_costs)
+                        new_energy_costs_no_subsidy = dict(base_costs)
 
                     # Calculate updated BOM with new energy prices
                     new_bom: dict[str, dict[str, dict[str, Any]]] | None = None
@@ -5751,18 +5870,26 @@ class PlantGroup:
                         new_bom = copy.deepcopy(fg.bill_of_materials)
                         updated_energy_costs: dict[str, float] = {}
                         if getattr(fg, "energy_costs", None):
-                            updated_energy_costs.update({normalize_name(k): v for k, v in fg.energy_costs.items()})
-                        if "electricity" in new_costs and new_costs["electricity"] is not None:
-                            updated_energy_costs["electricity"] = new_costs["electricity"]
-                        if "hydrogen" in new_costs and new_costs["hydrogen"] is not None:
-                            updated_energy_costs["hydrogen"] = new_costs["hydrogen"]
+                            updated_energy_costs.update(
+                                {normalize_name(k): v for k, v in fg.energy_costs.items()},
+                            )
+                        # Apply subsidised input prices to BOM costs
+                        for cost_key, cost_val in new_energy_costs.items():
+                            if cost_val is not None:
+                                updated_energy_costs[cost_key] = cost_val
 
                         for feed_key, energy_value in new_bom.get("energy", {}).items():
                             normalized_feed_key = normalize_name(feed_key)
                             if normalized_feed_key == "electricity":
-                                unit_cost = updated_energy_costs.get("electricity", energy_value.get("unit_cost"))
+                                unit_cost = updated_energy_costs.get(
+                                    "electricity",
+                                    energy_value.get("unit_cost"),
+                                )
                             elif normalized_feed_key == "hydrogen":
-                                unit_cost = updated_energy_costs.get("hydrogen", energy_value.get("unit_cost"))
+                                unit_cost = updated_energy_costs.get(
+                                    "hydrogen",
+                                    energy_value.get("unit_cost"),
+                                )
                             else:
                                 unit_cost = _recalculate_feedstock_energy_unit_cost(
                                     fg=fg,
@@ -5813,20 +5940,26 @@ class PlantGroup:
                                     feed_key,
                                     energy_value.get("unit_cost"),
                                 )
-                    new_costs["bom"] = new_bom  # type: ignore[assignment]
 
-                    # Update dynamic costs
-                    old_costs = {
+                    # Check if costs have actually changed
+                    old_costs_cmp = {
                         "cost_of_debt": fg.cost_of_debt,
                         "capex": fg.technology.capex,
-                        "electricity": fg.energy_costs["electricity"],
-                        "hydrogen": fg.energy_costs["hydrogen"],
+                        "energy_costs": fg.energy_costs,
+                        "output_energy_costs": fg.output_energy_costs,
                     }
-                    if old_costs == new_costs:
+                    new_costs_cmp = {
+                        "cost_of_debt": new_costs["cost_of_debt"],
+                        "capex": new_costs["capex"],
+                        "energy_costs": new_energy_costs,
+                        "output_energy_costs": new_output_energy_costs,
+                    }
+                    if old_costs_cmp == new_costs_cmp:
                         continue  # Skip if no changes
-                    logger.debug(f"[NEW PLANTS] Updating dynamic costs for furnace group {fg.furnace_group_id}: ")
-                    for key in old_costs.keys():
-                        logger.debug(f"  - {key}: {old_costs[key]} -> {new_costs[key]}")
+                    logger.debug(
+                        "[NEW PLANTS] Updating dynamic costs for FG %s",
+                        fg.furnace_group_id,
+                    )
                     update_commands.append(
                         commands.UpdateDynamicCosts(
                             plant_id=plant.plant_id,
@@ -5835,9 +5968,10 @@ class PlantGroup:
                             new_capex_no_subsidy=capex,
                             new_cost_of_debt=new_costs["cost_of_debt"],
                             new_cost_of_debt_no_subsidy=cost_of_debt,
-                            new_electricity_cost=new_costs["electricity"],
-                            new_hydrogen_cost=new_costs["hydrogen"],
-                            new_bill_of_materials=new_costs.get("bom"),  # type: ignore[arg-type]
+                            new_energy_costs=new_energy_costs,
+                            new_output_energy_costs=new_output_energy_costs,
+                            new_energy_costs_no_subsidy=new_energy_costs_no_subsidy,
+                            new_bill_of_materials=new_bom,
                         )
                     )
         return update_commands
@@ -6151,8 +6285,8 @@ class TradeTariff:
 class Subsidy:
     """Financial subsidy reducing costs for specific technologies and regions.
 
-    Represents a policy instrument that reduces costs (CAPEX, OPEX, debt, hydrogen, or electricity)
-    for steel production technologies within a country during a specified time period.
+    Represents a policy instrument that reduces costs for steel production technologies
+    within a country during a specified time period.
 
     Attributes:
         scenario_name: Name of the subsidy scenario/policy.
@@ -6160,11 +6294,12 @@ class Subsidy:
         start_year: First year the subsidy is active (inclusive).
         end_year: Last year the subsidy is active (inclusive).
         technology_name: Technology the subsidy applies to, or "all" for all technologies.
-        cost_item: Type of cost subsidised ("opex", "capex", "cost of debt", "hydrogen", "electricity").
+        cost_item: Type of cost subsidised. Financial: "opex", "capex", "cost of debt".
+            Energy carriers: any normalised carrier name (e.g. "hydrogen", "electricity",
+            "natural_gas", "coal", etc.) matching energy_costs dict keys.
         subsidy_type: Either "absolute" (fixed amount) or "relative" (percentage).
         subsidy_amount: The subsidy value with units depending on cost_item:
-            - hydrogen: USD/t H2 (absolute) or decimal fraction (relative)
-            - electricity: USD/kWh (absolute) or decimal fraction (relative)
+            - energy carriers: USD per carrier unit (absolute) or decimal fraction (relative)
             - opex/capex: USD/t steel (absolute) or decimal fraction (relative)
             - cost of debt: percentage points (absolute only)
         subsidy_name: Auto-generated unique identifier string.
@@ -6176,10 +6311,10 @@ class Subsidy:
         iso3: str,
         start_year: Year,
         end_year: Year,
-        technology_name: str = "all",
-        cost_item: str = "opex",
-        subsidy_type: str = "absolute",
-        subsidy_amount: float = 0,
+        technology_name: str,
+        cost_item: str,
+        subsidy_type: str,
+        subsidy_amount: float,
     ) -> None:
         self.scenario_name = scenario_name
         self.iso3 = iso3
@@ -6670,8 +6805,9 @@ class Environment:
         self.opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
         self.capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
         self.debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
-        self.hydrogen_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
-        self.electricity_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
+        self.energy_subsidies: dict[
+            str, dict[str, dict[str, list[Subsidy]]]
+        ] = {}  # carrier -> iso3 -> tech -> [Subsidy]
 
     def get_transport_emissions_as_dict(self) -> dict[tuple[str, str, str], float]:
         """
@@ -6852,39 +6988,31 @@ class Environment:
                 debt_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
         self.debt_subsidies = debt_subsidies
 
-    def initiate_hydrogen_subsidies(self, subsidies: list[Subsidy]) -> None:
+    def initiate_energy_subsidies(self, subsidies: list[Subsidy]) -> None:
         """
-        Initialize the hydrogen subsidies for the environment.
+        Initialise energy carrier subsidies for the environment.
+
+        Groups subsidies by carrier name (cost_item), then by iso3, then by technology.
+        Financial subsidies (opex, capex, cost of debt) are excluded — they are handled
+        by their own initiate methods.
 
         Args:
-            subsidies (list[Subsidy]): A list of Subsidy objects to be added to the environment.
+            subsidies: List of Subsidy objects to filter and group.
         """
-        hydrogen_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
+        financial_cost_items = {"opex", "capex", "cost of debt"}
+        energy_subsidies: dict[str, dict[str, dict[str, list[Subsidy]]]] = {}
         for subsidy in subsidies:
-            if subsidy.cost_item.lower() == "hydrogen":
-                if subsidy.iso3 not in hydrogen_subsidies:
-                    hydrogen_subsidies[subsidy.iso3] = {}
-                if subsidy.technology_name not in hydrogen_subsidies[subsidy.iso3]:
-                    hydrogen_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                hydrogen_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
-        self.hydrogen_subsidies = hydrogen_subsidies
-
-    def initiate_electricity_subsidies(self, subsidies: list[Subsidy]) -> None:
-        """
-        Initialize the electricity subsidies for the environment.
-
-        Args:
-            subsidies (list[Subsidy]): A list of Subsidy objects to be added to the environment.
-        """
-        electricity_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
-        for subsidy in subsidies:
-            if subsidy.cost_item.lower() == "electricity":
-                if subsidy.iso3 not in electricity_subsidies:
-                    electricity_subsidies[subsidy.iso3] = {}
-                if subsidy.technology_name not in electricity_subsidies[subsidy.iso3]:
-                    electricity_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                electricity_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
-        self.electricity_subsidies = electricity_subsidies
+            carrier = subsidy.cost_item.lower()
+            if carrier in financial_cost_items:
+                continue
+            if carrier not in energy_subsidies:
+                energy_subsidies[carrier] = {}
+            if subsidy.iso3 not in energy_subsidies[carrier]:
+                energy_subsidies[carrier][subsidy.iso3] = {}
+            if subsidy.technology_name not in energy_subsidies[carrier][subsidy.iso3]:
+                energy_subsidies[carrier][subsidy.iso3][subsidy.technology_name] = []
+            energy_subsidies[carrier][subsidy.iso3][subsidy.technology_name].append(subsidy)
+        self.energy_subsidies = energy_subsidies
 
     def initiate_dynamic_feedstocks(self, feedstocks: list[PrimaryFeedstock]) -> None:
         """
@@ -7287,8 +7415,7 @@ class Environment:
         Process:
             1. Retrieve country-specific input costs (electricity, hydrogen, coke, pci, natural_gas, coal, bio_pci)
                for each plant's location
-            2. Assign these costs to furnace group's input_costs attribute (for cost calculations)
-            3. Handle special cases based on plant type:
+            2. Handle special cases based on plant type:
 
                **New GEO Plants (parent_gem_id="indi"):**
                - These plants have their own power infrastructure (renewable energy park)
@@ -7309,7 +7436,6 @@ class Environment:
             world_plants (list[Plant]): All plants in the simulation to update.
 
         Side Effects:
-            - Updates fg.input_costs attribute for each furnace group (dict of commodity costs)
             - Updates fg.energy_costs dictionary via set_energy_costs() for each furnace group
 
         Notes:
@@ -7318,6 +7444,7 @@ class Environment:
               proper modeling of regional hydrogen price ceilings and interregional hydrogen trade
         """
         logger = logging.getLogger(f"{__name__}.Environment.set_input_cost_in_furnace_groups")
+        logged_countries: set[str] = set()
         for plant in world_plants:
             if plant.location.iso3 not in self.input_costs:
                 logger.warning(
@@ -7328,20 +7455,41 @@ class Environment:
             # Get input costs from Excel for this country and year
             input_costs = self.input_costs[plant.location.iso3][self.year].copy()
 
-            # Store raw input costs in furnace groups for reference
-            for fg in plant.furnace_groups:
-                fg.input_costs = input_costs
+            # Log once per country to avoid flooding
+            if plant.location.iso3 not in logged_countries:
+                logger.debug(
+                    "[INPUT COSTS] %s (year=%d): %s",
+                    plant.location.iso3,
+                    self.year,
+                    {k: f"${v:.6f}" for k, v in input_costs.items()},
+                )
+                logged_countries.add(plant.location.iso3)
 
-            # New GEO plants: Preserve their own power infrastructure costs (always set)
+            # New GEO plants: preserve own power costs; use no_subsidy to avoid compounding
             if plant.parent_gem_id.lower() == "indi":
                 for fg in plant.furnace_groups:
-                    input_costs["electricity"] = fg.energy_costs["electricity"]
-                    input_costs["hydrogen"] = fg.energy_costs["hydrogen"]
+                    if fg.disposal_cost_outputs is None:
+                        fg.disposal_cost_outputs = self.config.disposal_cost_outputs
+                    no_sub = fg.energy_costs_no_subsidy or fg.energy_costs
+                    input_costs["electricity"] = no_sub["electricity"]
+                    input_costs["hydrogen"] = no_sub["hydrogen"]
+                    if fg.energy_costs_no_subsidy:
+                        sub_elec = fg.energy_costs.get("electricity", 0)
+                        if sub_elec != no_sub["electricity"]:
+                            logger.debug(
+                                "[INPUT COSTS] indi %s FG:%s elec no_sub=$%.6f (was sub=$%.6f)",
+                                plant.location.iso3,
+                                fg.furnace_group_id,
+                                no_sub["electricity"],
+                                sub_elec,
+                            )
                     fg.set_energy_costs(**input_costs)
 
             # Existing plants: Preserve calculated hydrogen costs if set (only not at bootstrap)
             else:
                 for fg in plant.furnace_groups:
+                    if fg.disposal_cost_outputs is None:
+                        fg.disposal_cost_outputs = self.config.disposal_cost_outputs
                     if "hydrogen" in fg.energy_costs:
                         input_costs["hydrogen"] = fg.energy_costs["hydrogen"]
                     fg.set_energy_costs(**input_costs)
@@ -8684,6 +8832,14 @@ class Environment:
                 )
                 energy_demand = float(demand_share_pct) * capacity
                 total_energy_cost = energy_cost_per_unit * energy_demand
+                if total_energy_cost < 0:
+                    logger.warning(
+                        "[BOM] Negative energy cost for '%s': unit=$%.6f x demand=%.1f = $%.4f",
+                        feedstock,
+                        energy_cost_per_unit,
+                        energy_demand,
+                        total_energy_cost,
+                    )
                 logger.debug(f"[BOM] Energy calculation: demand={energy_demand}, total_cost={total_energy_cost}")
 
                 if energy_demand <= 0:
