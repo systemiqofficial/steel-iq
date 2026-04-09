@@ -118,7 +118,7 @@ def master_excel_with_all_sheets(tmp_path):
 def test_read_plants_success(master_excel_with_plants, tmp_path):
     """Test successful reading of plant data."""
     with MasterExcelReader(master_excel_with_plants, output_dir=tmp_path) as reader:
-        plants, _ = reader.read_plants()  # Unpack tuple (plants, metadata)
+        plants, _, _ = reader.read_plants()  # Unpack tuple (plants, metadata, additional)
 
         # read_plants now returns tuple of (list[Plant], dict)
         assert isinstance(plants, list)

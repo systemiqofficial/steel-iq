@@ -2021,7 +2021,20 @@ def plot_area_chart_of_column_by_region_or_technology(
         raise ValueError("plot_paths with pam_plots_dir must be provided when saving plots")
     pam_plots_dir = plot_paths.pam_plots_dir
     pam_plots_dir.mkdir(parents=True, exist_ok=True)
-    fig.savefig(pam_plots_dir / f"{product_type}_{column_name}_development_by_{pivot_columns[0]}.png", dpi=300)
+
+    # Save PNG
+    filename = f"{product_type}_{column_name}_development_by_{pivot_columns[0]}.png"
+    fig.savefig(pam_plots_dir / filename, dpi=300)
+
+    # Export CSV with the data
+    try:
+        csv_filename = filename.replace(".png", ".csv")
+        csv_path = pam_plots_dir / csv_filename
+        df_pivot.to_csv(csv_path)
+        logger.info(f"Saved area chart data to {csv_path}")
+    except Exception as e:
+        logger.error(f"Failed to save CSV for area chart: {e}")
+
     plt.close()
     return fig
 
@@ -3235,6 +3248,15 @@ def plot_capex_by_technology_and_year(
 
     logger.info(f"Saved CAPEX plot to {output_path}")
 
+    # Export CSV with the data
+    try:
+        csv_filename = filename.replace(".png", ".csv")
+        csv_path = pam_plots_dir / csv_filename
+        capex_by_year_tech_bn.to_csv(csv_path)
+        logger.info(f"Saved CAPEX chart data to {csv_path}")
+    except Exception as e:
+        logger.error(f"Failed to save CSV for CAPEX plot: {e}")
+
     # Log summary statistics for unit verification
     total_capex_bn = capex_by_year_tech_bn.sum().sum()
     total_capex_usd = df["capex"].sum()
@@ -3344,6 +3366,14 @@ def plot_emissions_wedge_by_technology(
     plt.close(fig)
 
     logger.info(f"Saved emissions stacked area chart to {output_path}")
+
+    # Export CSV with the data
+    try:
+        csv_path = pam_plots_dir / "emissions_by_technology_over_time.csv"
+        df_pivot.to_csv(csv_path)
+        logger.info(f"Saved emissions chart data to {csv_path}")
+    except Exception as e:
+        logger.error(f"Failed to save CSV for emissions plot: {e}")
 
     # Log summary statistics
     total_emissions_all_years = df["emissions"].sum()
@@ -3462,6 +3492,14 @@ def plot_iron_ore_by_quality(
 
     logger.info(f"Saved iron ore consumption chart to {output_path}")
 
+    # Export CSV with the data
+    try:
+        csv_path = pam_plots_dir / "iron_ore_by_quality_over_time.csv"
+        df_pivot.to_csv(csv_path)
+        logger.info(f"Saved iron ore chart data to {csv_path}")
+    except Exception as e:
+        logger.error(f"Failed to save CSV for iron ore plot: {e}")
+
     # Log summary statistics
     total_consumption_all_years = df["consumption"].sum()
     max_annual_consumption = df.groupby("year")["consumption"].sum().max() / 1e6
@@ -3568,6 +3606,14 @@ def plot_metallic_charges(
     plt.close(fig)
 
     logger.info(f"Saved metallic charge consumption chart to {output_path}")
+
+    # Export CSV with the data
+    try:
+        csv_path = pam_plots_dir / "metallic_charges_over_time.csv"
+        df_pivot.to_csv(csv_path)
+        logger.info(f"Saved metallic charges chart data to {csv_path}")
+    except Exception as e:
+        logger.error(f"Failed to save CSV for metallic charges plot: {e}")
 
     # Log summary statistics
     total_consumption_all_years = df["consumption"].sum()

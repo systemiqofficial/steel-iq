@@ -60,28 +60,11 @@ logger.setLevel(logging.DEBUG)
 """
 A note on units:
 - iron and steel volumes should be read in tonnes (t), and handled as tons throughout the code.
-- Secondary feedstock should be read in as the unit that is defined in the BOMs, usually kilograms, costs need to be given as per that unit as well.
+- Secondary feedstock quantities are converted to t/t at read time via _convert_units.
+  All USD/kg prices are converted to USD/t to match.
 - Energy should be converted to kWh.
 - currencies should be in USD.
 """
-
-# Mapping of commodities whose consumption is expressed in t/t (tonnes per tonne) that require
-# USD/kg to USD/t conversion when loading prices from master Excel.
-# These materials have their usage in the BOM expressed as tonnes per tonne of product,
-# so their prices must be converted from USD/kg to USD/t (multiply by 1000).
-#
-# IMPORTANT: Only include commodities whose BOM consumption ultimately uses tonnes per tonne.
-# Hydrogen now falls into this bucket because BOM ingestion normalises its kg/t requirement to tonnes.
-#
-# NOTE: Keys must match normalised names after normalize_name() processing.
-MATERIALS_REQUIRING_KG_TO_T_PRICE_CONVERSION = {
-    "bio_pci",  # Bio-PCI: consumption in t/t, price needs conversion from USD/kg to USD/t
-    "pci",  # PCI: consumption in t/t, price needs conversion from USD/kg to USD/t
-    "coke",  # Coke: consumption in t/t, price needs conversion from USD/kg to USD/t
-    "coking_coal",  # Coking coal: consumption in t/t, price needs conversion from USD/kg to USD/t
-    "hydrogen",  # Hydrogen consumption stored in t/t after BOM processing; convert price to USD/t for consistency
-}
-
 
 translate_country_names = {
     "Dem. Rep. of the Congo": "Congo DRC",
@@ -176,18 +159,8 @@ def read_regional_input_prices_from_master_excel(
             # Convert from USD/GJ to USD/kWh
             input_cost_stacked.loc[:, commodity] *= PERGJ_TO_PERkWh
         elif unit == "USD/kg":
-            # Selective conversion: materials with t/t consumption need USD/kg → USD/t conversion
-            if commodity in MATERIALS_REQUIRING_KG_TO_T_PRICE_CONVERSION:
-                # Convert from USD/kg to USD/t for materials consumed in tonnes per tonne
-                # (multiply by 1000 kg/t to get USD/t from USD/kg)
-                # Includes: coke, pci, bio-pci, coking_coal, hydrogen
-                input_cost_stacked.loc[:, commodity] *= T_TO_KG
-                logging.info(
-                    f"Converting {commodity} price from USD/kg to USD/t (multiply by {T_TO_KG}) for t/t consumption"
-                )
-            else:
-                # Keep in USD/kg for materials not in the conversion set
-                logging.info(f"Keeping {commodity} price in USD/kg (not in t/t consumption set)")
+            # All BOM quantities normalised to t/t; convert all USD/kg → USD/t
+            input_cost_stacked.loc[:, commodity] *= T_TO_KG
         elif unit == "USD/t":
             pass
         else:
@@ -544,20 +517,36 @@ def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[st
                     logger.warning(f"Unexpected unit '{unit}' for primary material requirement")
                     feedstock.required_quantity_per_ton_of_product = float(value)
             else:
-                # Secondary feedstock - store with original units (usually kg/t)
+                # Secondary feedstock - convert units at read time (kg/t → t/t)
                 if vector:
-                    feedstock.add_secondary_feedstock(normalize_name(vector), value)
+                    converted = _convert_units(value, unit, metric_type)
+                    logger.debug(
+                        "Secondary feedstock %s: %s %s -> %s (converted)",
+                        normalize_name(vector),
+                        value,
+                        unit,
+                        converted,
+                    )
+                    feedstock.add_secondary_feedstock(normalize_name(vector), converted)
         elif side == "Output":
-            # Outputs - keep original values
+            # Outputs - convert units at read time (kg/t → t/t, tCO2/t as-is)
             if vector:
                 output_name = normalize_name(vector)
+                converted = _convert_units(value, unit, metric_type)
+                logger.debug(
+                    "Output %s: %s %s -> %s (converted)",
+                    output_name,
+                    value,
+                    unit,
+                    converted,
+                )
                 if output_name.startswith("co2"):
-                    feedstock.add_carbon_output(output_name, float(value))
+                    feedstock.add_carbon_output(output_name, converted)
                 else:
                     # Handle steel/liquid steel naming using Commodities
                     if output_name == Commodities.LIQUID_STEEL.value.lower():
                         output_name = Commodities.STEEL.value
-                    feedstock.add_output(name=output_name, amount=Volumes(float(value)))
+                    feedstock.add_output(name=output_name, amount=Volumes(converted))
 
     # Handle energy
     elif metric_type.lower() in ["energy", "heat", "machine drive", "machine_drive", "others"]:
@@ -585,7 +574,8 @@ def _convert_units(value: float, unit: str, metric_type: str) -> float:
 
     Conversions:
     - Energy units: GJ/t -> kWh/t (*277.78), MWh/t -> kWh/t (*1000)
-    - Material units: kept as-is (t/t, kg/t)
+    - Material units: t/t kept as-is, kg*/t converted to t/t (*0.001)
+      Handles patterns like "kg/t", "kg H2/t DRI", "kg H2/t HM"
     - Percentages: kept as-is
 
     Args:
@@ -604,7 +594,8 @@ def _convert_units(value: float, unit: str, metric_type: str) -> float:
     # Material units
     if "t/t" in unit_lower:
         return value
-    elif "kg/t" in unit_lower:
+    elif "kg/t" in unit_lower or (unit_lower.startswith("kg") and "/t" in unit_lower):
+        # Matches "kg/t", "kg H2/t DRI", "kg H2/t HM", etc.
         return value * KG_TO_T
     elif "tco2/t" in unit_lower:
         return value
@@ -616,10 +607,6 @@ def _convert_units(value: float, unit: str, metric_type: str) -> float:
         return value * GJ_TO_KWH
     elif "mwh/t" in unit_lower:
         return value * MWH_TO_KWH
-    elif "kg/t" in unit_lower and metric_type.lower() in ["energy", "heat", "machine drive", "reductant"]:
-        # For things like hydrogen or PCI which are measured in kg/t
-        return value
-
     # Percentage (for constraints)
     elif "%" in unit_lower:
         return value
@@ -1939,35 +1926,40 @@ def read_hydrogen_capex_opex(
 
 def _normalize_cost_item(cost_item: str | None, row_index: int) -> str | None:
     """
-    Normalize cost item to standard values: 'opex', 'capex', 'cost of debt'.
+    Normalize cost item to standard values.
+
+    Non-financial cost items (i.e. not opex/capex/cost of debt) are treated as energy carrier
+    names and normalised with normalize_name() to match energy_costs dict keys.
 
     Args:
-        cost_item: Raw cost item string from Excel
+        cost_item: Raw cost item string from Excel (e.g. "opex", "hydrogen", "natural gas")
         row_index: Row index for logging purposes
 
     Returns:
         Normalized cost item string, or None if row should be skipped.
     """
-    logger = logging.getLogger(__name__)
+    from steelo.utilities.utils import normalize_name
 
     if cost_item is None or (isinstance(cost_item, float) and math.isnan(cost_item)) or str(cost_item).strip() == "":
         return "opex"
 
     normalized = str(cost_item).strip().lower()
 
+    # Financial cost items
     if normalized in ("opex",):
         return "opex"
     elif normalized in ("capex",):
         return "capex"
     elif normalized in ("cost of debt", "debt"):
         return "cost of debt"
-    elif normalized in ("hydrogen", "h2"):
+    # Known aliases
+    elif normalized == "h2":
         return "hydrogen"
-    elif normalized in ("electricity",):
-        return "electricity"
+    elif normalized in ("co2 storage", "co2_storage", "co2-storage"):
+        return "co2_stored"
+    # Everything else is an energy carrier — normalise to match energy_costs keys
     else:
-        logger.warning(f"Skipping row {row_index}: unknown cost item '{cost_item}'")
-        return None
+        return normalize_name(normalized)
 
 
 def _expand_technology_pattern(pattern: str | None, all_technologies: list[str]) -> list[str]:
@@ -2730,6 +2722,7 @@ def read_willingness_to_pay(
     willingness_to_pay_entries = []
 
     for idx, row in df.iterrows():
+        row_num = int(str(idx)) + 2
         try:
             region_or_iso3_raw = str(row["region or iso3"]).strip()
             commodity_raw = str(row["Commodity"]).strip()
@@ -2743,7 +2736,7 @@ def read_willingness_to_pay(
             try:
                 value = float(value_raw)
             except (ValueError, TypeError):
-                logger.warning(f"Row {idx + 2}: Invalid willingness to pay value '{value_raw}' - skipping")
+                logger.warning(f"Row {row_num}: Invalid willingness to pay value '{value_raw}' - skipping")
                 continue
 
             # Determine if this is an ISO3 code or a region/trade bloc
@@ -2781,14 +2774,14 @@ def read_willingness_to_pay(
                     )
                 else:
                     logger.warning(
-                        f"Row {idx + 2}: '{region_or_iso3_raw}' is not a valid ISO3 code or trade bloc attribute - skipping"
+                        f"Row {row_num}: '{region_or_iso3_raw}' is not a valid ISO3 code or trade bloc attribute - skipping"
                     )
 
         except KeyError as e:
-            logger.warning(f"Row {idx + 2}: Missing required column {e} - skipping")
+            logger.warning(f"Row {row_num}: Missing required column {e} - skipping")
             continue
         except Exception as e:
-            logger.warning(f"Row {idx + 2}: Error processing row: {e} - skipping")
+            logger.warning(f"Row {row_num}: Error processing row: {e} - skipping")
             continue
 
     logger.info(f"Successfully read {len(willingness_to_pay_entries)} willingness to pay entries from '{sheet_name}'")

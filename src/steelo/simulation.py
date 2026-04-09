@@ -344,6 +344,12 @@ class SimulationConfig:
     steel_price_buffer: float = 200.0  # USD/tonne - buffer above highest cost curve price when demand exceeds supply
     iron_price_buffer: float = 200.0  # USD/tonne - buffer above highest cost curve price when demand exceeds supply
 
+    # Iron price pegging configuration
+    peg_iron_to_steel_price: bool = (
+        False  # Whether to peg iron price to steel price (minimum of cost curve or % of steel)
+    )
+    iron_to_steel_price_ratio: float = 0.8  # Ratio of steel price for iron floor (80% default)
+
     # Capacity
     ## Furnace group capacity expansion size and initial capacity of new plants (in tonnes)
     expanded_capacity: float = 2.5 * MT_TO_T
@@ -407,6 +413,11 @@ class SimulationConfig:
     excel_reader_start_year: int = 2020
     excel_reader_end_year: int = 2050
     demand_sheet_name: str = "Steel_Demand_Chris Bataille"
+
+    # === Cost Model Settings ===
+    # Physical output carriers where positive price = disposal cost (not revenue)
+    # These carriers keep their raw Excel sign instead of being negated via -abs()
+    disposal_cost_outputs: frozenset[str] = field(default_factory=lambda: frozenset({"ironmaking_slag"}))
 
     # === Other ===
     # Verbosity
@@ -1017,30 +1028,32 @@ class SimulationRunner:
                 plant.update_furnace_tech_unit_fopex()
                 plant.update_furnace_hydrogen_costs(capped_hydrogen_cost_dict)
 
-                # Apply H2/electricity subsidies to energy_costs (after H2 price update)
+                # Apply energy carrier subsidies to energy_costs (after H2 price update)
                 for fg in plant.furnace_groups:
-                    all_h2_subs = bus.env.hydrogen_subsidies.get(plant.location.iso3, {}).get(fg.technology.name, [])
-                    all_elec_subs = bus.env.electricity_subsidies.get(plant.location.iso3, {}).get(
-                        fg.technology.name, []
-                    )
-                    active_h2_subs = filter_subsidies_for_year(all_h2_subs, bus.env.year)
-                    active_elec_subs = filter_subsidies_for_year(all_elec_subs, bus.env.year)
+                    active_energy_subs: dict[str, list] = {}
+                    for carrier, carrier_subs in bus.env.energy_subsidies.items():
+                        all_subs = carrier_subs.get(plant.location.iso3, {}).get(fg.technology.name, [])
+                        active = filter_subsidies_for_year(all_subs, bus.env.year)
+                        if active:
+                            active_energy_subs[carrier] = active
 
-                    if active_h2_subs or active_elec_subs:
-                        # Apply H2/electricity subsidies to operational plant energy costs
-                        h2_before = fg.energy_costs.get("hydrogen", 0.0)
-                        elec_before = fg.energy_costs.get("electricity", 0.0)
-                        subsidised_costs, no_subsidy_prices = get_subsidised_energy_costs(
-                            fg.energy_costs, active_h2_subs, active_elec_subs
+                    if active_energy_subs:
+                        input_costs, output_costs, no_subsidy_prices = get_subsidised_energy_costs(
+                            fg.energy_costs, active_energy_subs
                         )
                         fg.set_subsidised_energy_costs(
-                            subsidised_costs, no_subsidy_prices, active_h2_subs, active_elec_subs
+                            input_costs,
+                            output_costs,
+                            no_subsidy_prices,
+                            active_energy_subs,
+                        )
+                        price_changes = ", ".join(
+                            f"{c}: ${no_subsidy_prices[c]:.4f}->${input_costs.get(c, no_subsidy_prices[c]):.4f}"
+                            for c in sorted(no_subsidy_prices)
                         )
                         logging.debug(
-                            f"[H2/ELEC SUBS] {plant.location.iso3}/{fg.technology.name} FG:{fg.furnace_group_id} "
-                            f"Year={bus.env.year} | H2: ${h2_before:.2f} -> ${subsidised_costs.get('hydrogen', 0):.2f}/t | "
-                            f"Elec: ${elec_before:.6f} -> ${subsidised_costs.get('electricity', 0):.6f}/kWh | "
-                            f"Subs: {len(active_h2_subs)} H2, {len(active_elec_subs)} elec"
+                            f"[ENERGY SUBS] {plant.location.iso3}/{fg.technology.name} "
+                            f"FG:{fg.furnace_group_id} Year={bus.env.year} | {price_changes}"
                         )
 
                 # Set carbon costs for the plant based on its location
@@ -1075,6 +1088,15 @@ class SimulationRunner:
                             fg.status = "operating"
                             logging.info(
                                 f"Transitioned furnace group {fg.furnace_group_id} from construction to operating"
+                            )
+                            logging.debug(
+                                "[OPERATING] FG %s now operating: "
+                                "energy_costs=%s output_energy_costs=%s "
+                                "energy_costs_no_subsidy=%s",
+                                fg.furnace_group_id,
+                                fg.energy_costs,
+                                fg.output_energy_costs,
+                                fg.energy_costs_no_subsidy,
                             )
 
             Simulation(bus=bus, economic_model=AllocationModel()).run_simulation()
@@ -1244,12 +1266,17 @@ class SimulationRunner:
 
             price_df = pd.DataFrame(price_data)
 
-            # Save CSV to output/data directory
+            # Save CSV to output/data directory (for backward compatibility)
             data_dir = self.config.output_dir / "data"
             data_dir.mkdir(parents=True, exist_ok=True)
             price_csv_path = data_dir / f"market_prices_{start_year}_{end_year}.csv"
             price_df.to_csv(price_csv_path, index=False)
             logger.info(f"Saved market prices to {price_csv_path}")
+
+            # Also save CSV alongside the plot in pam_plots_dir for consistency with other charts
+            pam_csv_path = bus.env.plot_paths.pam_plots_dir / f"market_prices_{start_year}_{end_year}.csv"
+            price_df.to_csv(pam_csv_path, index=False)
+            logger.info(f"Saved market prices CSV alongside plot to {pam_csv_path}")
 
             # Create line plot of prices over time
             fig, ax = plt.subplots(figsize=(10, 6))

@@ -185,12 +185,15 @@ Start
   2. Get market price for product type
   3. Calculate operating subsidies
   4. Apply capex subsidies
-  5. Calculate full NPV including:
+  5. Calculate secondary output adjustment (by-product revenue/cost from `output_energy_costs`)
+  6. Calculate full NPV including:
      - Capex (after subsidies)
      - Operating costs and revenues
      - Carbon costs
      - Debt service
+     - Secondary output adjustment (constant snapshot from current year)
 - **Key parameters**: Capacity, utilization, lifetime, financing costs
+- **Note**: Secondary output adjustment is included in NPV for both brownfield (renovation) and greenfield (technology switch) paths, as well as COSA baseline. This captures by-product revenue (e.g., bf_gas, bof_gas, cog), disposal costs (e.g., ironmaking_slag — see `disposal_cost_outputs` in SimulationConfig), and carbon output costs (e.g., co2_stored) in investment decisions.
 
 ### Stage 9: Adjust NPV for COSA
 - **Decision**: Is this a technology switch?

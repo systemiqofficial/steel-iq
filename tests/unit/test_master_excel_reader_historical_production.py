@@ -153,7 +153,7 @@ class TestMasterExcelReaderHistoricalProduction:
         reader = MasterExcelReader(mock_excel_with_production)
 
         with reader:
-            plants, _ = reader.read_plants()  # Unpack tuple
+            plants, _, _ = reader.read_plants()  # Unpack tuple (3 values)
 
             # Check Plant P001
             p1 = next(p for p in plants if p.plant_id == "P001")
@@ -217,7 +217,7 @@ class TestMasterExcelReaderHistoricalProduction:
         reader = MasterExcelReader(mock_excel_without_production_sheet)
 
         with reader:
-            plants, _ = reader.read_plants()  # Unpack tuple
+            plants, _, _ = reader.read_plants()  # Unpack tuple (3 values)
 
             # Check plants are created
             assert len(plants) == 1

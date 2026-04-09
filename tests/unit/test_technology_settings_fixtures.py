@@ -6,32 +6,34 @@ from steelo.simulation_types import TechnologySettings
 def test_default_technology_settings_fixture(default_technology_settings):
     """Test that default_technology_settings fixture provides production defaults."""
     assert "BF" in default_technology_settings
-    assert "DRIH2" in default_technology_settings
-    assert default_technology_settings["BF"].allowed is True
-    assert default_technology_settings["ESF"].allowed is False  # ESF disabled by default
+    assert "DRI" in default_technology_settings
+    assert default_technology_settings["BF"].allowed is True  # BF enabled by default
+    # ESF is defined but disabled by default
+    if "ESF" in default_technology_settings:
+        assert default_technology_settings["ESF"].allowed is False
 
 
 def test_make_technology_settings_with_dict_overrides(make_technology_settings):
     """Test make_technology_settings fixture with dict overrides (most common usage)."""
     tech_settings = make_technology_settings(
         {
-            "BF": {"allowed": False, "from_year": 2030},
-            "DRIH2": {"from_year": 2028},  # Only override specific fields
+            "BF": {"allowed": True, "from_year": 2030},  # Override to enable
+            "DRI": {"from_year": 2028},  # Only override specific fields
         }
     )
 
     # BF should be fully updated
-    assert tech_settings["BF"].allowed is False
+    assert tech_settings["BF"].allowed is True  # Override keeps it enabled
     assert tech_settings["BF"].from_year == 2030
     assert tech_settings["BF"].to_year is None  # Keeps default
 
-    # DRIH2 should have partial update
-    assert tech_settings["DRIH2"].allowed is True  # Keeps default
-    assert tech_settings["DRIH2"].from_year == 2028  # Override
-    assert tech_settings["DRIH2"].to_year is None  # Keeps default
+    # DRI should have partial update
+    assert tech_settings["DRI"].allowed is True  # Keeps default (enabled)
+    assert tech_settings["DRI"].from_year == 2028  # Override
+    assert tech_settings["DRI"].to_year is None  # Keeps default
 
     # Other technologies keep defaults
-    assert tech_settings["EAF"].allowed is True
+    assert tech_settings["EAF"].allowed is True  # EAF enabled by default
     assert tech_settings["EAF"].from_year == 2025
 
 

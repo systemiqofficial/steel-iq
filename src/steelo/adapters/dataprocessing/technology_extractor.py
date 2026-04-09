@@ -177,7 +177,7 @@ def extract_technologies(df: pd.DataFrame, excel_path: Path) -> dict:
 
         # Get defaults from configuration
         try:
-            from steelo.config.technology_defaults import get_technology_defaults
+            from steelo.domain.constants import get_technology_defaults
 
             tech_defaults = get_technology_defaults(norm_code)
         except ImportError:

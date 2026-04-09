@@ -221,15 +221,19 @@ class Allocations:
     Attributes:
         allocations: Dict mapping (from, to, commodity) → flow quantity (tons/year)
         allocation_costs: Optional dict mapping (from, to, commodity) → total cost
+        tariff_taxes: Optional dict mapping (from_iso3, to_iso3, commodity) → tariff cost per unit.
+            Passed through to TM_PAM_connector so tariffs can be propagated into BOM material costs.
     """
 
     def __init__(
         self,
         allocations: dict[Tuple[ProcessCenter, ProcessCenter, Commodity], float],
         allocation_costs: dict[Tuple[ProcessCenter, ProcessCenter, Commodity], float] | None = None,
+        tariff_taxes: dict[tuple[str, str, str], float] | None = None,
     ):
         self.allocations = allocations
         self.allocation_costs = allocation_costs
+        self.tariff_taxes = tariff_taxes
 
     def get_allocation(
         self, from_processcenter: ProcessCenter, to_processcenter: ProcessCenter, commodity: Commodity
@@ -1694,7 +1698,11 @@ class TradeLPModel:
                     from_pc_name, to_pc_name, commodity_name
                 ]
 
-        self.allocations = Allocations(allocations=allocations, allocation_costs=allocation_costs)
+        self.allocations = Allocations(
+            allocations=allocations,
+            allocation_costs=allocation_costs,
+            tariff_taxes=dict(self.tariff_taxes_by_iso3) if self.tariff_taxes_by_iso3 else None,
+        )
         # self.allocations.validate_allocations()
 
     def get_solution_for_warm_start(self) -> dict[tuple[str, str, str], float]:

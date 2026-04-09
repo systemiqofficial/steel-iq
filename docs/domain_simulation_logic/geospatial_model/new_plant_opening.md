@@ -13,7 +13,7 @@ Business opportunities progress through the following stages:
 
 The system updates the costs and status of business opportunities each simulation year:
 1. **Update Dynamic Costs**
-   - Refresh CAPEX, cost of debt, electricity, and hydrogen prices
+   - Refresh CAPEX, cost of debt, and energy prices for all carriers
    - Apply subsidies based on earliest construction start year
    - Update bill of materials with new energy prices
 
@@ -43,7 +43,7 @@ The flow from business opportunity to new plant is as follows:
         |
         | [Each year]:
         | update_dynamic_costs_for_business_opportunities()
-        | - Update CAPEX, cost of debt, electricity & hydrogen prices (with subsidies)
+        | - Update CAPEX, cost of debt, and energy prices for all carriers (with subsidies)
         |
         | track_business_opportunities()
         | - Recalculate NPV with updated costs/prices
@@ -68,7 +68,7 @@ The flow from business opportunity to new plant is as follows:
         |                                                                       |
         | [Each year]:                                                          |
         | update_dynamic_costs_for_business_opportunities()                     |
-        | - Update CAPEX, cost of debt, electricity & hydrogen prices (with subsidies) |
+        | - Update CAPEX, cost of debt, and energy prices for all carriers (with subsidies) |
         |                                                                       |
         | convert_business_opportunity_                                         |
         | into_actual_project()                                                 |
@@ -173,7 +173,7 @@ Subsidies are often announced years before plants are built. Standard NPV using 
 | **Cost of Equity** | Return required by investors | No subsidies | Financing period |
 | **OPEX - Variable** | Materials + energy from bill of materials × unit costs | OPEX subsidies: Operation years | Annual (plant lifetime) |
 | **OPEX - Fixed** | Fixed operating costs per tonne | OPEX subsidies: Operation years | Annual (plant lifetime) |
-| **Energy Costs** | Electricity and hydrogen prices | No subsidies | Annual (plant lifetime) |
+| **Energy Costs** | Energy prices for all carriers (electricity, hydrogen, gas, etc.) | Energy subsidies: Target year | Annual (plant lifetime) |
 | **Carbon Costs** | Emissions × carbon price trajectory | No subsidies | Annual (plant lifetime) |
 | **Revenue** | Production capacity × utilization rate × market price projections | N/A | Annual (plant lifetime) |
 | **Discount Rate** | Weighted average cost of capital (WACC = debt share × cost of debt + equity share × cost of equity) | Applied to debt portion only | NPV calculation |
@@ -211,9 +211,12 @@ Updates dynamic costs for all CONSIDERED and ANNOUNCED business opportunities ea
 **Updated Costs:**
 - CAPEX (with subsidies for target construction year)
 - Cost of debt (with subsidies for target construction year)
-- Electricity price (custom power mix: LCOE from baseload power optimization and/or grid price)
-- Hydrogen price (calculated from electricity price, including regional cap and intraregional trade, if allowed)
-- Bill of materials (updated with new energy prices)
+- Energy prices for all carriers, carried as three dicts:
+  - `energy_costs`: subsidised input prices (reduced by subsidy) — used for BOM and VOPEX
+  - `output_energy_costs`: subsidised output prices (increased by subsidy for physical carriers) — used for by-product revenue
+  - `energy_costs_no_subsidy`: original unsubsidised prices — used as baseline for yearly refresh
+- Electricity and hydrogen prices sourced from the geospatial layer (custom power mix / capped LCOH); other carriers from the furnace group's existing cost base
+- Bill of materials (updated with new subsidised input energy prices)
 
 **Note:** For more information on the electricity and hydrogen prices see related documentation [Priority Location Selection](priority_location_selection.md).
 

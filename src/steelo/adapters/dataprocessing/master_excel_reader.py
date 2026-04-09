@@ -380,8 +380,8 @@ class MasterExcelReader:
         geocoder_coordinates: Optional[list[Coordinate]] = None,
         simulation_start_year: int = 2025,
         regional_fopex: dict[str, float] = {},
-        aggregated_constraints: Optional[dict[str, Any]] = None,
-    ) -> tuple[list, dict, list]:
+        aggregated_constraints: Optional[list] = None,
+    ) -> tuple[list[Any], dict[Any, Any], list[Any]]:
         """
         Extract plant data from the 'Iron and steel plants' sheet and create Plant domain objects.
 
@@ -784,7 +784,9 @@ class MasterExcelReader:
                 f"(from {len(raw_plants)} raw records) with metadata for {len(final_canonical_metadata)} furnace groups"
             )
             # Return aggregated_constraints if they were read, otherwise empty list
-            aggregated_constraints_to_return = aggregated_constraints if "aggregated_constraints" in locals() else []
+            aggregated_constraints_to_return: list[Any] = (
+                aggregated_constraints if aggregated_constraints is not None else []
+            )
             return plants, final_canonical_metadata, aggregated_constraints_to_return
 
         except Exception as e:

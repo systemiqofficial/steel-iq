@@ -1,4 +1,4 @@
-from typing import NewType, Sequence
+from typing import NewType, Sequence, Optional, Any
 from enum import Enum
 import numpy as np
 
@@ -112,3 +112,72 @@ MAJOR_DEMAND_AND_SUPPLY_CENTERS = {
     "Brazil_South": {"iso3": "BRA", "latitude": -23, "longitude": -45, "share": 0.83},
     "Brazil_North": {"iso3": "BRA", "latitude": -2, "longitude": -48, "share": 0.17},
 }
+
+# ===== Data Preparation Constants =====
+# Data year range for production data (used by preprocessing modules)
+PRODUCTION_GEM_DATA_YEARS = range(2019, 2023)
+
+# ===== Technology Defaults =====
+# Default year when technologies become available
+DEFAULT_TECHNOLOGY_FROM_YEAR = 2030
+
+# Default year when technologies stop being available (None = indefinite)
+DEFAULT_TECHNOLOGY_TO_YEAR: Optional[int] = None
+
+# Default allowed status for technologies
+DEFAULT_TECHNOLOGY_ALLOWED = True
+
+# Technology-specific overrides (optional)
+# Format: {"TECHNOLOGY_CODE": {"from_year": 2030, "to_year": 2050, "allowed": True}}
+# NOTE: Use NORMALIZED codes (no +, _, or special chars)
+TECHNOLOGY_SPECIFIC_DEFAULTS: dict[str, dict[str, Any]] = {
+    # Core technologies - available from simulation start
+    "BOF": {"allowed": True, "from_year": 2025},
+    "BF": {"allowed": True, "from_year": 2025},
+    "EAF": {"allowed": True, "from_year": 2025},
+    "DRI": {"allowed": True, "from_year": 2025},
+    # Special technologies
+    "ESF": {"allowed": False, "from_year": 2030},  # Electro-Smelting Furnace disabled by default
+    "MOE": {"allowed": False, "from_year": 2030},  # Molten Oxide Electrolysis disabled by default
+    "SR": {"allowed": True, "from_year": 2030},  # Smelting Reduction
+    # Advanced technologies (normalized codes)
+    "EWIN": {"allowed": True, "from_year": 2030},  # Electrowinning (E-WIN → EWIN)
+    "BFCCS": {"allowed": True, "from_year": 2030},  # Blast Furnace with CCS (BF+CCS → BFCCS)
+    "BFCCU": {"allowed": True, "from_year": 2030},  # Blast Furnace with CCU (BF+CCU → BFCCU)
+    "BFCHARCOAL": {"allowed": True, "from_year": 2030},  # Charcoal blast furnace (BF_CHARCOAL → BFCHARCOAL)
+    "BFCHARCOALCCS": {"allowed": True, "from_year": 2030},  # Charcoal BF with CCS
+    "BFCHARCOALCCU": {"allowed": True, "from_year": 2030},  # Charcoal BF with CCU
+    "DRICCS": {"allowed": True, "from_year": 2030},  # DRI with CCS (DRI+CCS → DRICCS)
+    "DRICCU": {"allowed": True, "from_year": 2030},  # DRI with CCU (DRI+CCU → DRICCU)
+    "DRIESF": {"allowed": True, "from_year": 2030},  # DRI with ESF (DRI+ESF → DRIESF)
+    "DRIESFCCS": {"allowed": True, "from_year": 2030},  # DRI with ESF and CCS
+    "DRIESFCCU": {"allowed": True, "from_year": 2030},  # DRI with ESF and CCU
+    "SRCCS": {"allowed": True, "from_year": 2030},  # Smelting Reduction with CCS
+    "SRCCU": {"allowed": True, "from_year": 2030},  # Smelting Reduction with CCU
+}
+
+
+def get_technology_defaults(technology_code: str) -> dict[str, Any]:
+    """
+    Get default settings for a technology.
+
+    Args:
+        technology_code: The technology code (normalized)
+
+    Returns:
+        Dict with 'from_year', 'to_year', and 'allowed' settings
+    """
+    if technology_code in TECHNOLOGY_SPECIFIC_DEFAULTS:
+        defaults = TECHNOLOGY_SPECIFIC_DEFAULTS[technology_code].copy()
+    else:
+        defaults = {}
+
+    # Apply global defaults for any missing values
+    if "from_year" not in defaults:
+        defaults["from_year"] = DEFAULT_TECHNOLOGY_FROM_YEAR
+    if "to_year" not in defaults:
+        defaults["to_year"] = DEFAULT_TECHNOLOGY_TO_YEAR
+    if "allowed" not in defaults:
+        defaults["allowed"] = DEFAULT_TECHNOLOGY_ALLOWED
+
+    return defaults
