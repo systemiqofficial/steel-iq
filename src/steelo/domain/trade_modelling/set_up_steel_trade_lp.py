@@ -134,6 +134,8 @@ def create_process_from_furnace_group(
                 dependent_commodities[tlp.Commodity(name=sec_feedstock)] = primary_feedstock.secondary_feedstock[
                     sec_feedstock
                 ]
+            for en_req in primary_feedstock.energy_requirements:
+                dependent_commodities[tlp.Commodity(name=en_req)] = primary_feedstock.energy_requirements[en_req]
             if primary_feedstock.required_quantity_per_ton_of_product is None:
                 raise ValueError(
                     f"Required quantity per ton of product is None for feedstock {primary_feedstock.name}. It's outputs are: {primary_feedstock.outputs.keys()}"
@@ -264,6 +266,8 @@ def create_process_from_meta_furnace_group(
                 dependent_commodities[tlp.Commodity(name=sec_feedstock)] = primary_feedstock.secondary_feedstock[
                     sec_feedstock
                 ]
+            for en_req in primary_feedstock.energy_requirements:
+                dependent_commodities[tlp.Commodity(name=en_req)] = primary_feedstock.energy_requirements[en_req]
 
             if primary_feedstock.required_quantity_per_ton_of_product is None:
                 raise ValueError(
@@ -1114,7 +1118,6 @@ def set_up_steel_trade_lp(
             logger.info(f"No active carbon border mechanisms for year {year}, skipping adjustments")
     else:
         logger.info("No carbon border mechanisms defined in environment, skipping adjustments")
-
     return lp_model
 
 
@@ -1449,7 +1452,7 @@ def check_if_bottlenecks_identified(
             fg_allocations = alloc.get_allocations_from((plant, fg))
             fg_allocated_vols += sum(fg_allocations.values())
         if fg_allocated_vols < fg.capacity * environment.config.capacity_limit * 0.99999:
-            logger.warning(
+            logger.debug(
                 f"[TM BOTTLENECK ANALYSIS] Iron maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized."
             )
             all_iron_makers_utilized = False
@@ -1466,7 +1469,7 @@ def check_if_bottlenecks_identified(
                 fg_allocations = steel_allocations.get_allocations_from((plant, fg))
                 allocated_volume = sum(fg_allocations.values())
                 if allocated_volume < fg.capacity * environment.config.capacity_limit * 0.99999:
-                    logger.warning(
+                    logger.debug(
                         f"[TM BOTTLENECK ANALYSIS] Steel maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized."
                     )
                     all_steel_makers_utilized = False

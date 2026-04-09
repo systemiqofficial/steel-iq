@@ -305,6 +305,7 @@ class DummyFeedstock:
         secondary_feedstock,
         outputs,
         carbon_outputs=None,
+        energy_requirements=None,
     ):
         self.name = name
         self.metallic_charge = metallic_charge
@@ -314,6 +315,7 @@ class DummyFeedstock:
         self.secondary_feedstock = secondary_feedstock
         self.outputs = outputs
         self.carbon_outputs = carbon_outputs or {}
+        self.energy_requirements = energy_requirements or {}
 
     def get_primary_outputs(self, primary_products: list[str] | None = None):
         return self.outputs

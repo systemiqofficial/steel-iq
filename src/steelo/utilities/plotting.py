@@ -20,11 +20,13 @@ import folium
 import math
 import pydeck as pdk
 import xarray as xr
+import matplotlib.patches as mpatches
 
 from matplotlib.patches import Patch
 
 from steelo.domain import Year
 from steelo.domain.models import CommodityAllocations, DemandCenter, Supplier, Plant, Location, Volumes
+from steelo.domain.trade_modelling.trade_lp_modelling import TradeLPModel
 from steelo.adapters.repositories.interface import PlantRepository
 
 
@@ -1612,6 +1614,374 @@ def plot_detailed_trade_map(
             print(f"\nData saved as CSV files in {output_path}")
 
         print("=" * 80)
+
+
+def plot_process_graph(
+    trade_lp: TradeLPModel, save_path=None, dpi=150, show_broken_edges=True, utilization: dict[str, float] | None = None
+):
+    """Plot the process graph as a left-to-right layered network map.
+
+    Supply nodes on the left, demand on the right, production in between.
+    Edges are orthogonal (right-angle) lines labelled with commodity names.
+
+    Args:
+        save_path: Optional file path to save the figure (e.g. 'graph.png').
+        dpi: Resolution for saved figure.
+        show_broken_edges: Whether to highlight edges that are broken or incomplete.
+        utilization: Optional dict mapping process name to utilization percentage (0-100).
+            If provided, utilization is shown in node labels.
+    """
+    graph = trade_lp.process_graph_for_reporting
+
+    if not show_broken_edges:
+        # filter out edges with no process connectors or missing commodities
+        filtered_graph: dict[Any, dict[Any, list[str]]] = {}
+        for fp in graph:
+            for tp in graph[fp]:
+                keys = (fp, tp)
+                label_list = graph[fp][tp]
+                new_label_list = []
+                for label in label_list if isinstance(label_list, list) else [label_list]:
+                    if "no linking commodity" in label.lower() or "no legal pc" in label.lower():
+                        # delete from label_list:
+                        continue
+                    new_label_list.append(label)
+                if new_label_list not in ([], ["(no legal PC)", "no linking commodity"]):
+                    fp, tp = keys
+                    filtered_graph.setdefault(fp, {})[tp] = new_label_list
+        graph = filtered_graph
+
+    # --- Collect nodes and edges, deduplicating by process name ---
+    nodes_by_name: dict[str, Any] = {}  # name → Process (keeps first instance seen)
+    edges = []  # list of (from, to, commodity)
+    for from_p, targets in graph.items():
+        nodes_by_name.setdefault(from_p.name, from_p)
+        for to_p, commodities in targets.items():
+            nodes_by_name.setdefault(to_p.name, to_p)
+            # Support both list values (new) and single values (legacy)
+            if isinstance(commodities, list):
+                for c in commodities:
+                    edges.append((nodes_by_name[from_p.name], nodes_by_name[to_p.name], c))
+            else:
+                edges.append((nodes_by_name[from_p.name], nodes_by_name[to_p.name], commodities))
+
+    # Also include any processes not in the graph dict
+    for p in getattr(trade_lp, "processes", []):
+        nodes_by_name.setdefault(p.name, p)
+
+    all_nodes = set(nodes_by_name.values())
+
+    # --- Categorise by type ---
+    supply = [n for n in all_nodes if n.type.name == "SUPPLY"]
+    demand = [n for n in all_nodes if n.type.name == "DEMAND"]
+    production = [n for n in all_nodes if n.type.name == "PRODUCTION"]
+
+    # --- Assign layers via longest-path from supply nodes ---
+    layers = {n: 0 for n in supply}
+
+    # Build adjacency from edges
+    adj = defaultdict(set)
+    for f, t, _ in edges:
+        adj[f].add(t)
+
+    # Initialise production nodes
+    for n in production:
+        layers[n] = 1
+
+    # Iterative relaxation (longest path)
+    # Guard against cycles with a max iteration limit
+    demand_set = set(demand)
+    max_iterations = len(all_nodes) + 1
+    for _ in range(max_iterations):
+        changed = False
+        for f, t, _ in edges:
+            if f in layers and t not in demand_set:
+                new_layer = layers[f] + 1
+                if t not in layers or new_layer > layers[t]:
+                    layers[t] = new_layer
+                    changed = True
+        if not changed:
+            break
+
+    max_prod_layer = max((layers[n] for n in production if n in layers), default=0)
+    for d in demand:
+        layers[d] = max_prod_layer + 1
+
+    # --- Position nodes per layer ---
+    layer_groups = defaultdict(list)
+    for node in all_nodes:
+        if node in layers:
+            layer_groups[layers[node]].append(node)
+
+    # Sort nodes within each layer alphabetically for determinism
+    for layer_idx in layer_groups:
+        layer_groups[layer_idx].sort(key=lambda n: n.name)
+
+    x_gap = 5.0
+    y_gap = 2.5
+    node_w = 2.8
+    node_h = 1.2 if utilization else 0.9
+
+    pos = {}
+    for layer_idx, nodes in layer_groups.items():
+        x = layer_idx * x_gap
+        n = len(nodes)
+        for i, node in enumerate(nodes):
+            y = -(i - (n - 1) / 2) * y_gap
+            pos[node] = (x, y)
+
+    # --- Figure sizing ---
+    if not pos:
+        # Nothing to draw
+        return
+    all_x = [p[0] for p in pos.values()]
+    all_y = [p[1] for p in pos.values()]
+    fig_w = max(12, (max(all_x) - min(all_x)) + 6)
+    fig_h = max(6, (max(all_y) - min(all_y)) + 4)
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+    # --- Colour palette ---
+    colors = {
+        "SUPPLY": "#90CAF9",
+        "PRODUCTION": "#A5D6A7",
+        "DEMAND": "#EF9A9A",
+    }
+
+    # --- Draw nodes ---
+    for node, (x, y) in pos.items():
+        c = colors.get(node.type.name, "#E0E0E0")
+        rect = mpatches.FancyBboxPatch(
+            (x - node_w / 2, y - node_h / 2),
+            node_w,
+            node_h,
+            boxstyle="round,pad=0.1",
+            facecolor=c,
+            edgecolor="#333333",
+            linewidth=1.5,
+            zorder=3,
+        )
+        ax.add_patch(rect)
+
+        # Build label: process name + utilization if available
+        label_text = node.name
+        if utilization and node.name in utilization:
+            label_text += f"\n{utilization[node.name]:.1f}%"
+
+        ax.text(
+            x,
+            y,
+            label_text,
+            ha="center",
+            va="center",
+            fontsize=9,
+            fontweight="bold",
+            zorder=4,
+        )
+
+    # --- Group edges by (from, to) for parallel-edge offsetting ---
+    edge_groups = defaultdict(list)
+    for f, t, c in edges:
+        label = c.name if hasattr(c, "name") else str(c)
+        edge_groups[(f, t)].append(label)
+
+    # Prioritise real commodity labels over error labels
+    error_markers = ("(no legal PC)", "no linking commodity")
+    for key in edge_groups:
+        labels = edge_groups[key]
+        valid = [lbl for lbl in labels if not any(err in lbl for err in error_markers)]
+        if valid:
+            edge_groups[key] = valid
+        # else: keep the error labels as-is so the issue is still visible
+
+    # Merge parallel labels into a single comma-separated string per edge
+    for key in edge_groups:
+        edge_groups[key] = [", ".join(edge_groups[key])]
+
+    # Precompute the lowest node center y across all layers for routing long edges below
+    global_min_y = min(ny for (nx, ny) in pos.values())
+    min_y_by_layer: dict[int, float] = {}
+    for node, (nx, ny) in pos.items():
+        layer_idx = layers[node]
+        if layer_idx not in min_y_by_layer or ny < min_y_by_layer[layer_idx]:
+            min_y_by_layer[layer_idx] = ny
+
+    # Track midpoint x offsets globally to avoid overlaps across different pairs
+    # that share the same layer gap
+    layer_gap_usage: defaultdict[tuple[int, int], int] = defaultdict(int)
+    # Separate counter for long edges routed below
+    long_edge_count = 0
+
+    for (f, t), labels in edge_groups.items():
+        # Filter out None edges
+        labels = [lbl for lbl in labels if lbl is not None and str(lbl) != "None"]
+        if not labels:
+            continue
+
+        fx, fy = pos[f]
+        tx, ty = pos[t]
+        n_edges = len(labels)
+        layer_span = layers[t] - layers[f]
+
+        start_x = fx + node_w / 2
+        end_x = tx - node_w / 2
+
+        if layer_span <= 1:
+            # --- Single-layer span: standard orthogonal routing ---
+            base_mid_x = (start_x + end_x) / 2
+
+            gap_key = (layers[f], layers[t])
+            gap_offset_base = layer_gap_usage[gap_key]
+            layer_gap_usage[gap_key] += n_edges
+
+            edge_spacing = 0.35
+            for i, label in enumerate(labels):
+                idx = gap_offset_base + i
+                total_in_gap = gap_offset_base + n_edges
+                offset = (idx - (total_in_gap - 1) / 2) * edge_spacing
+
+                mid_x = base_mid_x + offset
+                label_str = str(label)
+
+                if "(no legal PC)" in label_str:
+                    edge_color = "#D32F2F"
+                    linestyle = "--"
+                    label_color = "#D32F2F"
+                elif label_str == "no linking commodity":
+                    edge_color = "#7B1FA2"
+                    linestyle = "--"
+                    label_color = "#7B1FA2"
+                else:
+                    edge_color = "#666666"
+                    linestyle = "-"
+                    label_color = "#444444"
+
+                path_x = [start_x, mid_x, mid_x, end_x]
+                path_y = [fy, fy, ty, ty]
+                ax.plot(
+                    path_x,
+                    path_y,
+                    color=edge_color,
+                    linewidth=1.0,
+                    linestyle=linestyle,
+                    zorder=1,
+                    solid_capstyle="round",
+                )
+
+                arrow_len = 0.25
+                ax.annotate(
+                    "",
+                    xy=(end_x, ty),
+                    xytext=(end_x - arrow_len, ty),
+                    arrowprops=dict(arrowstyle="->", color=edge_color, lw=1.2, linestyle=linestyle),
+                    zorder=2,
+                )
+
+                label_x = mid_x
+                label_y = (fy + ty) / 2
+                ax.text(
+                    label_x + 0.1,
+                    label_y,
+                    label_str,
+                    ha="left",
+                    va="center",
+                    fontsize=7,
+                    fontstyle="italic",
+                    color=label_color,
+                    bbox=dict(boxstyle="round,pad=0.15", facecolor="white", edgecolor="none", alpha=0.85),
+                    zorder=5,
+                )
+        else:
+            # --- Multi-layer span: route BELOW intermediate nodes ---
+            # Find the lowest y of any node in the intermediate layers
+            intermediate_min_y = min(min_y_by_layer.get(ly, global_min_y) for ly in range(layers[f] + 1, layers[t]))
+            # Route just below the bottom edge of the lowest relevant node
+            route_below_y = min(intermediate_min_y, fy, ty) - node_h / 2 - 0.5
+
+            for i, label in enumerate(labels):
+                below_y = route_below_y - long_edge_count * 0.4
+                long_edge_count += 1
+                label_str = str(label)
+
+                if "(no legal PC)" in label_str:
+                    edge_color = "#D32F2F"
+                    linestyle = "--"
+                    label_color = "#D32F2F"
+                elif label_str == "no linking commodity":
+                    edge_color = "#7B1FA2"
+                    linestyle = "--"
+                    label_color = "#7B1FA2"
+                else:
+                    edge_color = "#666666"
+                    linestyle = "-"
+                    label_color = "#444444"
+
+                # Path: right from source → down below intermediates → right across → up to target → right into target
+                bend_x1 = start_x + 0.3
+                bend_x2 = end_x - 0.3
+                path_x = [start_x, bend_x1, bend_x1, bend_x2, bend_x2, end_x]
+                path_y = [fy, fy, below_y, below_y, ty, ty]
+                ax.plot(
+                    path_x,
+                    path_y,
+                    color=edge_color,
+                    linewidth=1.0,
+                    linestyle=linestyle,
+                    zorder=1,
+                    solid_capstyle="round",
+                )
+
+                arrow_len = 0.25
+                ax.annotate(
+                    "",
+                    xy=(end_x, ty),
+                    xytext=(end_x - arrow_len, ty),
+                    arrowprops=dict(arrowstyle="->", color=edge_color, lw=1.2, linestyle=linestyle),
+                    zorder=2,
+                )
+
+                # Label on the horizontal segment below
+                label_x = (bend_x1 + bend_x2) / 2
+                label_y = below_y
+                ax.text(
+                    label_x,
+                    label_y - 0.2,
+                    label_str,
+                    ha="center",
+                    va="top",
+                    fontsize=7,
+                    fontstyle="italic",
+                    color=label_color,
+                    bbox=dict(boxstyle="round,pad=0.15", facecolor="white", edgecolor="none", alpha=0.85),
+                    zorder=5,
+                )
+
+    # --- Legend ---
+    legend_handles = [
+        mpatches.Patch(facecolor=colors["SUPPLY"], edgecolor="#333", label="Supply"),
+        mpatches.Patch(facecolor=colors["PRODUCTION"], edgecolor="#333", label="Production"),
+        mpatches.Patch(facecolor=colors["DEMAND"], edgecolor="#333", label="Demand"),
+    ]
+    ax.legend(handles=legend_handles, loc="upper left", framealpha=0.9, fontsize=9)
+
+    # --- Axes ---
+    margin = 2
+    ax.set_xlim(min(all_x) - margin, max(all_x) + margin)
+    ax.set_ylim(min(all_y) - margin, max(all_y) + margin)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    ax.set_title("Process Network", fontsize=14, fontweight="bold", pad=20)
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
+        print(f"Process graph saved to {save_path}")
+    else:
+        plt.savefig("process_graph.png", dpi=dpi, bbox_inches="tight")
+        print("Process graph saved to process_graph.png")
+
+    plt.close(fig)
 
 
 def plot_cost_curve_for_commodity(cost_curve: list, total_demand: float, image_path: str = "cost_curve.png") -> Figure:

@@ -239,7 +239,20 @@ def read_aggregated_metallic_charge_constraints(
             # Extract the pattern (e.g., "DRI*" -> "DRI")
             pattern = mc_raw.replace("*", "")
             type_field = row["Type"] if pd.notna(row["Type"]) else ""
-            value = row["Value"] if pd.notna(row["Value"]) else 0.0
+
+            # Safely extract and convert value to float
+            raw_value = row["Value"]
+            if pd.notna(raw_value):
+                try:
+                    value = float(raw_value)
+                except (ValueError, TypeError):
+                    logger.warning(
+                        f"Invalid value '{raw_value}' in constraint for {business_case_str} / {mc_raw}. Defaulting to 0.0"
+                    )
+                    value = 0.0
+            else:
+                value = 0.0
+
             unit = row["Unit"] if pd.notna(row["Unit"]) else ""
 
             # Check if we already have this constraint
@@ -477,13 +490,28 @@ def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[st
     side = row["Side"]
     metric_type = row["Metric type"]
     vector = row["Vector"] if pd.notna(row["Vector"]) else ""
-    value = row["Value"] if pd.notna(row["Value"]) else 0.0
+
+    # Safely extract and convert value to float
+    raw_value = row["Value"]
+
+    # Skip rows with no value or invalid values
+    if pd.isna(raw_value):
+        return
+
+    # Try to convert to float, skip if it fails
+    try:
+        # Handle strings like '-', whitespace, etc.
+        if isinstance(raw_value, str):
+            raw_value = raw_value.strip()
+            if raw_value in ["", "-", "N/A", "n/a", "NA"]:
+                return
+        value = float(raw_value)
+    except (ValueError, TypeError):
+        logger.debug(f"Skipping row with invalid value '{raw_value}' for {vector}")
+        return
+
     unit = row["Unit"] if pd.notna(row["Unit"]) else ""
     type_field = row["Type"] if pd.notna(row["Type"]) else ""
-
-    # Skip rows with no value
-    if pd.isna(row["Value"]):
-        return
 
     # Handle constraints (regular ones only - wildcards are handled separately)
     if metric_type == "Constraint":
