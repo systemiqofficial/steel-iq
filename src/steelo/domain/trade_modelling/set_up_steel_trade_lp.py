@@ -134,6 +134,8 @@ def create_process_from_furnace_group(
                 dependent_commodities[tlp.Commodity(name=sec_feedstock)] = primary_feedstock.secondary_feedstock[
                     sec_feedstock
                 ]
+            for en_req in primary_feedstock.energy_requirements:
+                dependent_commodities[tlp.Commodity(name=en_req)] = primary_feedstock.energy_requirements[en_req]
             if primary_feedstock.required_quantity_per_ton_of_product is None:
                 raise ValueError(
                     f"Required quantity per ton of product is None for feedstock {primary_feedstock.name}. It's outputs are: {primary_feedstock.outputs.keys()}"
@@ -264,6 +266,8 @@ def create_process_from_meta_furnace_group(
                 dependent_commodities[tlp.Commodity(name=sec_feedstock)] = primary_feedstock.secondary_feedstock[
                     sec_feedstock
                 ]
+            for en_req in primary_feedstock.energy_requirements:
+                dependent_commodities[tlp.Commodity(name=en_req)] = primary_feedstock.energy_requirements[en_req]
 
             if primary_feedstock.required_quantity_per_ton_of_product is None:
                 raise ValueError(
@@ -1114,7 +1118,6 @@ def set_up_steel_trade_lp(
             logger.info(f"No active carbon border mechanisms for year {year}, skipping adjustments")
     else:
         logger.info("No carbon border mechanisms defined in environment, skipping adjustments")
-
     return lp_model
 
 
@@ -1347,12 +1350,12 @@ def solve_steel_trade_lp_and_return_commodity_allocations(
     return commodity_allocations
 
 
-def identify_bottlenecks(
+def check_if_bottlenecks_identified(
     commodity_allocations: dict[str, CommodityAllocations],
     repository: Repository,
     environment: Environment,
     year: Year,
-):
+) -> bool:
     """Identify production bottlenecks from trade allocation results.
 
     Analyzes commodity allocations to find furnace groups operating at or near capacity,
@@ -1370,7 +1373,7 @@ def identify_bottlenecks(
         - Checks if total allocation from a furnace group approaches its capacity
         - Logs warnings for potential bottlenecks
         - Sets potential_bottleneck_found flag (logged but not returned)
-        - Currently does not return the list of bottlenecks (void return)
+        - Returns True if potential bottlenecks are found, False otherwise
     """
     logger = logging.getLogger(f"{__name__}.identify_bottlenecks")
     potential_bottleneck_found = False
@@ -1381,70 +1384,6 @@ def identify_bottlenecks(
         for fg in plant.furnace_groups
         if fg.status.lower() in environment.config.active_statuses
     ]
-    # Check raw material suppliers
-    for commodity, allocations in commodity_allocations.items():
-        if commodity == "scrap":
-            continue  # scrap is only an issue if we don't have enough iron supply
-
-        # Check if any sources are not suppliers - if so, skip this analysis
-        has_non_supplier_sources = False
-        for source in allocations.allocations.keys():
-            if not hasattr(source, "supplier_id"):
-                has_non_supplier_sources = True
-                break
-
-        if has_non_supplier_sources:
-            continue  # Skip analysis for this commodity if sources aren't all suppliers
-
-        all_suppliers_utilized = True
-        for supplier in repository.suppliers.list():
-            if supplier.commodity != commodity:
-                continue
-            allocations_from_supplier = allocations.get_allocations_from(supplier)
-            allocated_volume = sum(allocations_from_supplier.values())
-            if allocated_volume < supplier.capacity_by_year[year] * 0.99999:
-                all_suppliers_utilized = False
-        if all_suppliers_utilized:
-            potential_bottleneck_found = True
-            logger.warning(
-                f"[TM BOTTLENECK ANALYSIS] All suppliers for {commodity} are fully utilized. Potential bottleneck detected."
-            )
-
-    # Check iron making
-    all_iron_makers_utilized = True
-    for plant, fg in active_furnace_groups:
-        fg_allocated_vols: float = 0
-        for com, alloc in commodity_allocations.items():
-            fg_allocations = alloc.get_allocations_from((plant, fg))
-            fg_allocated_vols += sum(fg_allocations.values())
-        if fg_allocated_vols < fg.capacity * environment.config.capacity_limit * 0.99999:
-            logger.warning(
-                f"[TM BOTTLENECK ANALYSIS] Iron maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized."
-            )
-            all_iron_makers_utilized = False
-    if all_iron_makers_utilized:
-        potential_bottleneck_found = True
-        logger.warning("[TM BOTTLENECK ANALYSIS] All iron makers are fully utilized. Potential bottleneck detected.")
-
-    # Check steel making
-    steel_allocations = commodity_allocations.get("steel")
-    all_steel_makers_utilized = True
-    if steel_allocations:
-        for plant, fg in active_furnace_groups:
-            if fg.technology.product == "steel":
-                fg_allocations = steel_allocations.get_allocations_from((plant, fg))
-                allocated_volume = sum(fg_allocations.values())
-                if allocated_volume < fg.capacity * environment.config.capacity_limit * 0.99999:
-                    logger.warning(
-                        f"[TM BOTTLENECK ANALYSIS] Steel maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized."
-                    )
-                    all_steel_makers_utilized = False
-    if all_steel_makers_utilized:
-        potential_bottleneck_found = True
-        logger.warning("[TM BOTTLENECK ANALYSIS] All steel makers are fully utilized. Potential bottleneck detected.")
-
-    if not potential_bottleneck_found:
-        logger.warning("[TM BOTTLENECK ANALYSIS] No potential bottlenecks found in steel trade allocations.")
     # Summarise supplier headroom for key metallic charges to aid diagnostics
     supplier_list = list(repository.suppliers.list())
     capacity_by_commodity: dict[str, float] = {}
@@ -1475,3 +1414,69 @@ def identify_bottlenecks(
             allocated_from_suppliers * T_TO_KT,
             headroom * T_TO_KT,
         )
+    # Check raw material suppliers
+    for commodity, allocations in commodity_allocations.items():
+        if commodity == "scrap":
+            continue  # scrap is only an issue if we don't have enough iron supply
+
+        # Check if any sources are not suppliers - if so, skip this analysis
+        has_non_supplier_sources = False
+        for source in allocations.allocations.keys():
+            if not hasattr(source, "supplier_id"):
+                has_non_supplier_sources = True
+                break
+
+        if has_non_supplier_sources:
+            continue  # Skip analysis for this commodity if sources aren't all suppliers
+
+        all_suppliers_utilized = True
+        for supplier in repository.suppliers.list():
+            if supplier.commodity != commodity:
+                continue
+            allocations_from_supplier = allocations.get_allocations_from(supplier)
+            allocated_volume = sum(allocations_from_supplier.values())
+            if allocated_volume < supplier.capacity_by_year[year] * 0.99999:
+                all_suppliers_utilized = False
+        if all_suppliers_utilized:
+            potential_bottleneck_found = True
+            logger.warning(
+                f"[TM BOTTLENECK ANALYSIS] All suppliers for {commodity} are fully utilized. Potential bottleneck detected."
+            )
+            return True  # If all suppliers for a key commodity are fully utilized, we can stop here and return True
+
+    # Check iron making
+    all_iron_makers_utilized = True
+    for plant, fg in active_furnace_groups:
+        fg_allocated_vols: float = 0
+        for com, alloc in commodity_allocations.items():
+            fg_allocations = alloc.get_allocations_from((plant, fg))
+            fg_allocated_vols += sum(fg_allocations.values())
+        if fg_allocated_vols < fg.capacity * environment.config.capacity_limit * 0.99999:
+            logger.debug(
+                f"[TM BOTTLENECK ANALYSIS] Iron maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized."
+            )
+            all_iron_makers_utilized = False
+    if all_iron_makers_utilized:
+        potential_bottleneck_found = True
+        logger.warning("[TM BOTTLENECK ANALYSIS] All iron makers are fully utilized. Potential bottleneck detected.")
+        return True  # If all iron makers are fully utilized, we can stop here and return True
+    # Check steel making
+    steel_allocations = commodity_allocations.get("steel")
+    all_steel_makers_utilized = True
+    if steel_allocations:
+        for plant, fg in active_furnace_groups:
+            if fg.technology.product == "steel":
+                fg_allocations = steel_allocations.get_allocations_from((plant, fg))
+                allocated_volume = sum(fg_allocations.values())
+                if allocated_volume < fg.capacity * environment.config.capacity_limit * 0.99999:
+                    logger.debug(
+                        f"[TM BOTTLENECK ANALYSIS] Steel maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized."
+                    )
+                    all_steel_makers_utilized = False
+    if all_steel_makers_utilized:
+        potential_bottleneck_found = True
+        logger.warning("[TM BOTTLENECK ANALYSIS] All steel makers are fully utilized. Potential bottleneck detected.")
+        return True  # If all steel makers are fully utilized, we can stop here and return True
+    if not potential_bottleneck_found:
+        logger.warning("[TM BOTTLENECK ANALYSIS] No potential bottlenecks found in steel trade allocations.")
+    return False

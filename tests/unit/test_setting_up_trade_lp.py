@@ -305,6 +305,7 @@ class DummyFeedstock:
         secondary_feedstock,
         outputs,
         carbon_outputs=None,
+        energy_requirements=None,
     ):
         self.name = name
         self.metallic_charge = metallic_charge
@@ -314,6 +315,7 @@ class DummyFeedstock:
         self.secondary_feedstock = secondary_feedstock
         self.outputs = outputs
         self.carbon_outputs = carbon_outputs or {}
+        self.energy_requirements = energy_requirements or {}
 
     def get_primary_outputs(self, primary_products: list[str] | None = None):
         return self.outputs
@@ -1144,7 +1146,7 @@ def test_adapt_allocation_costs_cbam_no_double_counting():
 
 def test_identify_bottlenecks_empty_allocations():
     """Test bottleneck analysis with empty allocations."""
-    from steelo.domain.trade_modelling.set_up_steel_trade_lp import identify_bottlenecks
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import check_if_bottlenecks_identified
     from steelo.domain.models import CommodityAllocations
 
     year = 2025
@@ -1164,12 +1166,12 @@ def test_identify_bottlenecks_empty_allocations():
     commodity_allocations = {"iron": iron_allocations}
 
     # Should run without errors
-    identify_bottlenecks(commodity_allocations, repo, env, year)
+    check_if_bottlenecks_identified(commodity_allocations, repo, env, year)
 
 
 def test_identify_bottlenecks_skip_scrap():
     """Test that scrap commodity is skipped in bottleneck analysis."""
-    from steelo.domain.trade_modelling.set_up_steel_trade_lp import identify_bottlenecks
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import check_if_bottlenecks_identified
     from steelo.domain.models import CommodityAllocations
 
     year = 2025
@@ -1187,7 +1189,7 @@ def test_identify_bottlenecks_skip_scrap():
     commodity_allocations = {"scrap": scrap_allocations}
 
     # Should complete without analyzing scrap (the function skips scrap)
-    identify_bottlenecks(commodity_allocations, repo, env, year)
+    check_if_bottlenecks_identified(commodity_allocations, repo, env, year)
 
 
 # --- Tests for transportation costs (transport_kpis) ---
