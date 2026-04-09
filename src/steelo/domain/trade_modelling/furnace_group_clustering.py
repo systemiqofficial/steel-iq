@@ -1396,6 +1396,64 @@ def disaggregate_allocations(
 
     logger.info(f"[DISAGGREGATION] Output allocations: {len(result.allocations)} flows")
 
+    # Validate that totals are preserved after disaggregation
+    logger.info("[DISAGGREGATION] === Volume Preservation Validation ===")
+
+    # Helper function to normalize commodity name (treat hot/cold versions as same)
+    def normalize_commodity_name(commodity) -> str:
+        """Normalize commodity name to group hot/cold versions together."""
+        commodity_name = commodity.name if hasattr(commodity, "name") else str(commodity)
+        commodity_name = commodity_name.lower()
+
+        # Map hot versions back to cold for comparison
+        hot_to_cold = {v: k for k, v in COLD_TO_HOT_COMMODITY.items()}
+        if commodity_name in hot_to_cold:
+            return hot_to_cold[commodity_name]
+
+        return commodity_name
+
+    # Group by commodity for validation (using normalized names)
+    input_totals_by_commodity: dict[str, float] = {}
+    output_totals_by_commodity: dict[str, float] = {}
+
+    for (from_pc, to_pc, commodity), volume in clustered_allocations.allocations.items():
+        commodity_name = normalize_commodity_name(commodity)
+        input_totals_by_commodity[commodity_name] = input_totals_by_commodity.get(commodity_name, 0.0) + volume
+
+    for (from_pc, to_pc, commodity), volume in disaggregated_allocs.items():
+        commodity_name = normalize_commodity_name(commodity)
+        output_totals_by_commodity[commodity_name] = output_totals_by_commodity.get(commodity_name, 0.0) + volume
+
+    # Compare totals
+    all_commodities = set(input_totals_by_commodity.keys()) | set(output_totals_by_commodity.keys())
+    max_discrepancy = 0.0
+
+    for commodity_name in sorted(all_commodities):
+        input_total = input_totals_by_commodity.get(commodity_name, 0.0)
+        output_total = output_totals_by_commodity.get(commodity_name, 0.0)
+        discrepancy = output_total - input_total
+        discrepancy_pct = (discrepancy / input_total * 100) if input_total > 0 else 0.0
+        max_discrepancy = max(max_discrepancy, abs(discrepancy))
+
+        if abs(discrepancy) > 0.01:  # Only log if discrepancy > 0.01 tonnes
+            print(
+                f"[DISAGGREGATION] {commodity_name}: Input={input_total:.2f}t, Output={output_total:.2f}t, "
+                f"Discrepancy={discrepancy:+.2f}t ({discrepancy_pct:+.3f}%)"
+            )
+            exit()
+        else:
+            print(
+                f"[DISAGGREGATION] {commodity_name}: Input={input_total:.2f}t, Output={output_total:.2f}t, "
+                f"Discrepancy={discrepancy:+.4f}t (OK)"
+            )
+
+    if max_discrepancy > 1.0:
+        logger.error(f"[DISAGGREGATION] WARNING: Maximum volume discrepancy is {max_discrepancy:.2f} tonnes!")
+    elif max_discrepancy > 0.1:
+        logger.warning(f"[DISAGGREGATION] Maximum volume discrepancy: {max_discrepancy:.4f} tonnes")
+    else:
+        logger.info(f"[DISAGGREGATION] Volume preservation: OK (max discrepancy: {max_discrepancy:.4f}t)")
+
     # Log transportation problem statistics (edge reduction)
     if transportation_stats:
         overall_reduction = (1 - total_used_edges / total_potential_edges) * 100 if total_potential_edges > 0 else 0

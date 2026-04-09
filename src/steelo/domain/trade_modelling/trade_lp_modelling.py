@@ -147,6 +147,14 @@ class Process:
         self.type = type
         self.bill_of_materials = bill_of_materials
 
+    def __eq__(self, other):
+        if not isinstance(other, Process):
+            return False
+        return self.name == other.name
+
+    def __hash__(self):
+        return hash(self.name)
+
     @property
     def products(self):
         """Returns unique list of all commodities producible by this process."""
@@ -481,43 +489,118 @@ class TradeLPModel:
     def get_bom_element(self, bom_element_name: str) -> BOMElement:
         return next(bom_element for bom_element in self.bom_elements if bom_element.name == bom_element_name)
 
+    def generate_process_graph_for_reporting(self):
+        """Generate a graph representing processes (not process centers) and their connections, for reporting purposes."""
+        process_graph = {}
+        for from_process in self.processes:
+            for to_process in self.processes:
+                if from_process == to_process:
+                    continue
+
+                # Collect all commodities accepted by the target process:
+                # primary BOM commodities + dependent (secondary) commodities
+                accepted_commodities = set()
+                for bom_element in to_process.bill_of_materials:
+                    accepted_commodities.add(bom_element.commodity)
+                    if bom_element.dependent_commodities:
+                        accepted_commodities.update(bom_element.dependent_commodities.keys())
+
+                legal_pc = any(
+                    conn.from_process == from_process and conn.to_process == to_process
+                    for conn in self.process_connectors
+                )
+
+                for commodity in from_process.products:
+                    if commodity is None:
+                        continue
+                    linking_commodity = commodity in accepted_commodities
+
+                    if linking_commodity and legal_pc:
+                        label = commodity.name
+                    elif linking_commodity and not legal_pc:
+                        label = f"{commodity.name} (no legal PC)"
+                    elif not linking_commodity and legal_pc:
+                        label = "no linking commodity"
+                    else:
+                        label = None
+
+                    if label is not None:
+                        if from_process not in process_graph:
+                            process_graph[from_process] = {}
+                        if to_process not in process_graph[from_process]:
+                            process_graph[from_process][to_process] = []
+                        if label not in process_graph[from_process][to_process]:
+                            process_graph[from_process][to_process].append(label)
+
+        self.process_graph_for_reporting = process_graph
+
+    def calculate_process_utilization(self) -> dict[str, float]:
+        """Calculate utilization percentage for each process by aggregating across all its process centers.
+
+        Utilization is defined as total outflow / total capacity across all ProcessCenters
+        that share the same Process. Requires that the LP has been solved and allocations exist.
+
+        Returns:
+            Dict mapping process name to utilization percentage (0-100).
+            Processes with zero capacity are reported as 0.0.
+        """
+        if self.allocations is None:
+            return {}
+
+        # Single pass over allocations to sum outflow and inflow per ProcessCenter
+        outflow_by_pc: dict[ProcessCenter, float] = {}
+        inflow_by_pc: dict[ProcessCenter, float] = {}
+        for (from_pc, to_pc, _commodity), volume in self.allocations.allocations.items():
+            outflow_by_pc[from_pc] = outflow_by_pc.get(from_pc, 0.0) + volume
+            inflow_by_pc[to_pc] = inflow_by_pc.get(to_pc, 0.0) + volume
+
+        # Aggregate capacity and throughput per Process
+        # Use inflow for DEMAND processes (% of demand met), outflow for all others
+        capacity_by_process: dict[str, float] = {}
+        allocation_by_process: dict[str, float] = {}
+        for pc in self.process_centers:
+            process_name = pc.process.name
+            capacity_by_process[process_name] = capacity_by_process.get(process_name, 0.0) + pc.capacity
+            if pc.process.type == ProcessType.DEMAND:
+                throughput = inflow_by_pc.get(pc, 0.0)
+            else:
+                throughput = outflow_by_pc.get(pc, 0.0)
+            allocation_by_process[process_name] = allocation_by_process.get(process_name, 0.0) + throughput
+
+        utilization = {}
+        for process_name in capacity_by_process:
+            cap = capacity_by_process[process_name]
+            if cap > 0:
+                utilization[process_name] = (allocation_by_process.get(process_name, 0.0) / cap) * 100
+            else:
+                utilization[process_name] = 0.0
+
+        return utilization
+
     def set_legal_allocations(self):
-        # Standard legal allocations for primary commodities
+        # Precompute accepted commodities per process center (primary + dependent)
+        accepted_by_pc: dict[ProcessCenter, set[Commodity]] = {}
+        for pc in self.process_centers:
+            accepted = set()
+            for bom_element in pc.process.bill_of_materials:
+                accepted.add(bom_element.commodity)
+                if bom_element.dependent_commodities:
+                    accepted.update(bom_element.dependent_commodities.keys())
+            accepted_by_pc[pc] = accepted
+
         legal_allocations = [
             (from_pc, to_pc, commodity)
             for from_pc in self.process_centers
             for to_pc in self.process_centers
             for commodity in from_pc.process.products
             if commodity is not None
-            and commodity in [bom_element.commodity for bom_element in to_pc.process.bill_of_materials]
+            and from_pc.process.type != ProcessType.DEMAND
+            and commodity in accepted_by_pc[to_pc]
             and any(
                 conn.from_process == from_pc.process and conn.to_process == to_pc.process
                 for conn in self.process_connectors
             )
-            and from_pc.process.type != ProcessType.DEMAND
         ]
-
-        # Add legal allocations for dependent commodities that have suppliers
-        dependent_commodity_allocations = []
-        for from_pc in self.process_centers:
-            if from_pc.process.type == ProcessType.SUPPLY:  # Only from suppliers
-                for commodity in from_pc.process.products:
-                    if commodity is None:
-                        continue
-                    # Check if this commodity is a dependent commodity in any destination process
-                    for to_pc in self.process_centers:
-                        if to_pc.process.type == ProcessType.PRODUCTION:
-                            for bom_element in to_pc.process.bill_of_materials:
-                                if bom_element.dependent_commodities:
-                                    if commodity in bom_element.dependent_commodities.keys():
-                                        # Check if there's a process connector allowing this flow
-                                        if any(
-                                            conn.from_process == from_pc.process and conn.to_process == to_pc.process
-                                            for conn in self.process_connectors
-                                        ):
-                                            dependent_commodity_allocations.append((from_pc, to_pc, commodity))
-
-        legal_allocations.extend(dependent_commodity_allocations)
 
         self.legal_allocations = legal_allocations
 

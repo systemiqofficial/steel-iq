@@ -21,7 +21,6 @@ from steelo.domain.commands import (
 from steelo.domain.constants import T_TO_KT, Volumes
 from steelo.domain.events import SteelAllocationsCalculated
 from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
-    identify_bottlenecks,
     set_up_steel_trade_lp,
     solve_steel_trade_lp_and_return_commodity_allocations,
 )
@@ -31,6 +30,7 @@ from steelo.utilities.memory_profiling import MemoryTracker
 from steelo.utilities.plotting import (
     plot_detailed_trade_map,
     plot_trade_allocation_visualization,
+    plot_process_graph,
 )
 
 # from steelo.domain.commands import InstallCarbonCapture
@@ -456,10 +456,6 @@ class AllocationModel:
             )
             logger.info("[DISAGGREGATION] CommodityAllocations created")
 
-        # Explicit LP model cleanup to free memory (Priority 1 memory optimization)
-        del trade_lp
-        gc.collect()
-
         # Post-processing: plotting and CSV export
         postprocess_start = time.time()
 
@@ -523,9 +519,20 @@ class AllocationModel:
                 bus.env.year,
                 demand_met,
             )
-
         if not demand_met:
-            identify_bottlenecks(non_empty_allocations, bus.uow.repository, bus.env, bus.env.year)
+            trade_lp.generate_process_graph_for_reporting()
+            process_utilization = trade_lp.calculate_process_utilization()
+            tm_plots_dir = output_dir / "TM"
+            tm_plots_dir.mkdir(parents=True, exist_ok=True)
+            plot_process_graph(
+                trade_lp=trade_lp,
+                save_path=str(tm_plots_dir / f"bottleneck_analysis_{bus.env.year}.png"),
+                utilization=process_utilization,
+            )
+
+        # Explicit LP model cleanup to free memory (Priority 1 memory optimization)
+        del trade_lp
+        gc.collect()
 
         # for commodity, allocations in commodity_allocations.items():
         #     if len(allocations.allocations) == 0:

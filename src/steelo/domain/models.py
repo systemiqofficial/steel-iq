@@ -8637,6 +8637,11 @@ class Environment:
                         volume,
                     )
                 input_effectiveness[normalized_secondary] = volume
+            if hasattr(feed, "energy_requirements") and feed.energy_requirements:
+                for en_in in feed.energy_requirements or []:
+                    normalized_energy = normalize_name(en_in)
+                    if normalized_energy not in input_effectiveness:
+                        input_effectiveness[normalized_energy] = feed.energy_requirements[en_in]
         # If no inputs matched the most common reductant
         if not input_effectiveness:
             logger.error(
@@ -9395,7 +9400,9 @@ class CommodityAllocations:
         for dc in demand_centers:
             supplied_demand = sum(self.get_allocations_to(dc).values())
             needed_demand = dc.demand_by_year.get(year, Volumes(0))
-            if (supplied_demand + Volumes(1e-3)) < needed_demand:  # small tolerance to avoid floating point issues
+            if (
+                (supplied_demand + Volumes(100)) < needed_demand
+            ):  # tolerance to avoid floating point issues and issues with transport problem integer constraint
                 demand_met = False
                 logger.warning(
                     f"Demand not met for {dc} in {year}: {needed_demand:,.2f} needed, {supplied_demand:,.2f} supplied."
