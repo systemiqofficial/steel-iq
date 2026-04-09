@@ -315,6 +315,48 @@ This ordering prevents double-counting and ensures energy subsidies affect all c
 
 ---
 
+## 8. Opening Renovation Balance
+
+### Purpose
+
+The simulation start year is arbitrary — real-world plants would have accumulated working capital over their operating history. To reflect this, each initial plant's balance is seeded before the first simulation year with the sum of renovation costs across its active furnace groups, scaled by a configurable multiplier:
+
+```
+Plant.balance = Σ (greenfield_capex × renovation_share × capacity × equity_share × multiplier)
+```
+
+Where:
+- `greenfield_capex`: CAPEX per tonne for the FG's technology and region
+- `renovation_share`: fraction of greenfield CAPEX needed for renovation
+- `capacity`: FG capacity in tonnes
+- `equity_share`: equity financing fraction (default 20%)
+- `multiplier`: `opening_balance_multiplier` config parameter (default 1.0)
+
+### Eligible FGs
+
+Only FGs satisfying all of these conditions contribute to the plant's opening balance:
+- Not created by PAM (`created_by_PAM == False`)
+- Active status (operating, operating pre-retirement, operating switching technology)
+- Capacity > 0
+- Technology is not "other"
+
+### What is NOT seeded
+
+- `FG.historic_balance` stays at 0 — it tracks real simulation performance only
+- `FG.balance` is an annual scratch-pad, reset after aggregation
+
+### Configuration
+
+```python
+opening_balance_multiplier: float = 1.0
+```
+
+- `1.0`: plant can afford one renovation per FG (default)
+- `0.5`: half renovation cost, forcing prioritisation
+- `0.0`: disabled (legacy behaviour)
+
+---
+
 ## Interaction Effects
 
 ### Price × Carbon Cost
