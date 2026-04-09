@@ -746,7 +746,7 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
 
         # Pre-compute distances if environment available for massive speedup
         hot_metal_pairs = None
-        if env is not None:
+        if hasattr(env, "precompute_distances_for_hot_metal_check"):
             hot_metal_pairs = env.precompute_distances_for_hot_metal_check(
                 trade_lp.process_centers, config.hot_metal_radius
             )
@@ -952,7 +952,9 @@ def set_up_steel_trade_lp(
     add_suppliers_as_process_centers(repository=repository, lp_model=lp_model, year=year, config=config)
 
     # Now that all process centers are added, update the distance function with the actual list
-    if hasattr(message_bus, "env") and message_bus.env is not None:
+    if hasattr(message_bus, "env") and hasattr(
+        getattr(message_bus, "env", None), "build_distance_function_for_trade_lp"
+    ):
         lp_model._external_distance_function = message_bus.env.build_distance_function_for_trade_lp(
             lp_model.process_centers
         )
@@ -1151,7 +1153,7 @@ def set_up_steel_trade_lp(
         logger.info("No carbon border mechanisms defined in environment, skipping adjustments")
 
     # Log distance cache statistics if available
-    if hasattr(message_bus, "env") and message_bus.env is not None:
+    if hasattr(getattr(message_bus, "env", None), "log_distance_cache_stats"):
         message_bus.env.log_distance_cache_stats()
 
     return lp_model

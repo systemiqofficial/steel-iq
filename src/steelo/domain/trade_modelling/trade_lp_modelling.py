@@ -403,11 +403,16 @@ class TradeLPModel:
         key = (from_iso3, to_iso3, commodity_lower)
         return self._transportation_cost_lookup.get(key, 0.0)
 
+    def _build_pc_name_lookup(self) -> None:
+        """Build a name → ProcessCenter lookup dict for O(1) access."""
+        self._pc_by_name: dict[str, ProcessCenter] = {pc.name: pc for pc in self.process_centers}
+
     def get_distance(self, from_pc_name, to_pc_name, type="pref_economic"):
         """
         Get distance between two process centers.
 
-        Performance optimized to use external distance function when available.
+        Performance optimized to use external distance function when available,
+        and a name-based lookup dict as fallback.
 
         Args:
             from_pc_name: Source process center name
@@ -421,9 +426,12 @@ class TradeLPModel:
         if self._external_distance_function is not None:
             return self._external_distance_function(from_pc_name, to_pc_name)
 
-        # Fallback: Original implementation
-        from_pc = next((pc for pc in self.process_centers if pc.name == from_pc_name), None)
-        to_pc = next((pc for pc in self.process_centers if pc.name == to_pc_name), None)
+        # Fallback: O(1) dict lookup instead of O(n) linear scan
+        if not hasattr(self, "_pc_by_name") or self._pc_by_name is None:
+            self._build_pc_name_lookup()
+
+        from_pc = self._pc_by_name.get(from_pc_name)
+        to_pc = self._pc_by_name.get(to_pc_name)
 
         if from_pc is None or to_pc is None:
             return float("inf")
@@ -464,6 +472,7 @@ class TradeLPModel:
 
     def add_process_centers(self, process_centers: list[ProcessCenter]):
         self.process_centers = self.process_centers + process_centers
+        self._pc_by_name = None  # Invalidate lookup cache
 
     def add_process_connectors(self, process_connectors: list[ProcessConnector]):
         self.process_connectors = self.process_connectors + process_connectors
@@ -578,29 +587,51 @@ class TradeLPModel:
         return utilization
 
     def set_legal_allocations(self):
-        # Precompute accepted commodities per process center (primary + dependent)
-        accepted_by_pc: dict[ProcessCenter, set[Commodity]] = {}
-        for pc in self.process_centers:
-            accepted = set()
-            for bom_element in pc.process.bill_of_materials:
-                accepted.add(bom_element.commodity)
-                if bom_element.dependent_commodities:
-                    accepted.update(bom_element.dependent_commodities.keys())
-            accepted_by_pc[pc] = accepted
+        # Pre-index: set of (from_process, to_process) pairs with a legal connector — O(1) lookup
+        connector_set: set[tuple[Process, Process]] = {
+            (conn.from_process, conn.to_process) for conn in self.process_connectors
+        }
 
+        # Pre-index: primary BOM commodities per process
+        primary_commodities_by_process: dict[Process, set[Commodity]] = {}
+        # Pre-index: dependent (secondary) commodities per process
+        dependent_commodities_by_process: dict[Process, set[Commodity]] = {}
+        for pc in self.process_centers:
+            proc = pc.process
+            if proc not in primary_commodities_by_process:
+                primary = set()
+                dependent = set()
+                for bom_element in proc.bill_of_materials:
+                    primary.add(bom_element.commodity)
+                    if bom_element.dependent_commodities:
+                        dependent.update(bom_element.dependent_commodities.keys())
+                primary_commodities_by_process[proc] = primary
+                dependent_commodities_by_process[proc] = dependent
+
+        # Standard legal allocations for primary commodities (any non-DEMAND source)
         legal_allocations = [
             (from_pc, to_pc, commodity)
             for from_pc in self.process_centers
+            if from_pc.process.type != ProcessType.DEMAND
             for to_pc in self.process_centers
+            if (from_pc.process, to_pc.process) in connector_set
             for commodity in from_pc.process.products
-            if commodity is not None
-            and from_pc.process.type != ProcessType.DEMAND
-            and commodity in accepted_by_pc[to_pc]
-            and any(
-                conn.from_process == from_pc.process and conn.to_process == to_pc.process
-                for conn in self.process_connectors
-            )
+            if commodity is not None and commodity in primary_commodities_by_process.get(to_pc.process, set())
         ]
+
+        # Add legal allocations for dependent commodities (SUPPLY sources only → PRODUCTION destinations)
+        for from_pc in self.process_centers:
+            if from_pc.process.type != ProcessType.SUPPLY:
+                continue
+            for to_pc in self.process_centers:
+                if to_pc.process.type != ProcessType.PRODUCTION:
+                    continue
+                if (from_pc.process, to_pc.process) not in connector_set:
+                    continue
+                dep_commodities = dependent_commodities_by_process.get(to_pc.process, set())
+                for commodity in from_pc.process.products:
+                    if commodity is not None and commodity in dep_commodities:
+                        legal_allocations.append((from_pc, to_pc, commodity))
 
         self.legal_allocations = legal_allocations
 

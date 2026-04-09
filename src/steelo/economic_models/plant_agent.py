@@ -522,13 +522,16 @@ class AllocationModel:
         if not demand_met:
             trade_lp.generate_process_graph_for_reporting()
             process_utilization = trade_lp.calculate_process_utilization()
-            tm_plots_dir = output_dir / "TM"
-            tm_plots_dir.mkdir(parents=True, exist_ok=True)
-            plot_process_graph(
-                trade_lp=trade_lp,
-                save_path=str(tm_plots_dir / f"bottleneck_analysis_{bus.env.year}.png"),
-                utilization=process_utilization,
-            )
+            try:
+                tm_plots_dir = output_dir / "TM"
+                tm_plots_dir.mkdir(parents=True, exist_ok=True)
+                plot_process_graph(
+                    trade_lp=trade_lp,
+                    save_path=str(tm_plots_dir / f"process_graph_pi_{bus.env.year}.png"),
+                    utilization=process_utilization,
+                )
+            except OSError:
+                logger.warning("Could not save bottleneck analysis plot (output directory not writable)")
 
         # Explicit LP model cleanup to free memory (Priority 1 memory optimization)
         del trade_lp
