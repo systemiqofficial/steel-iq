@@ -205,6 +205,28 @@ class ModelRunCreateForm(forms.ModelForm):
         widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.1"}),
     )
 
+    peg_iron_to_steel_price = forms.BooleanField(
+        label="Peg iron price to steel price",
+        initial=False,
+        required=False,
+        help_text="When enabled, iron price is floored at a percentage of the steel price instead of following cost curves alone",
+        widget=forms.CheckboxInput(
+            attrs={"class": "form-check-input field-connected", "id": "id_peg_iron_to_steel_price"}
+        ),
+    )
+
+    iron_to_steel_price_ratio = forms.DecimalField(
+        label="Iron-to-steel price ratio",
+        initial=0.8,
+        min_value=0.0,
+        max_value=1.0,
+        max_digits=3,
+        decimal_places=2,
+        required=False,
+        help_text="Ratio of steel price used as iron price floor when pegging is enabled (0.8 = 80% of steel price)",
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.01"}),
+    )
+
     opening_balance_multiplier = forms.DecimalField(
         label="Plant opening balance multiplier",
         initial=1.0,
@@ -352,6 +374,14 @@ class ModelRunCreateForm(forms.ModelForm):
         initial=True,
         required=False,
         help_text="Include tariffs in trade calculations",
+        widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
+    )
+
+    enable_furnace_group_clustering = forms.BooleanField(
+        label="Enable furnace group clustering",
+        initial=False,
+        required=False,
+        help_text="Speed up trade calculations by grouping similar furnace groups (same technology, reductant, and country) into clusters",
         widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
     )
 
@@ -637,6 +667,8 @@ class ModelRunCreateForm(forms.ModelForm):
             "global_risk_free_rate",
             "steel_price_buffer",
             "iron_price_buffer",
+            "peg_iron_to_steel_price",
+            "iron_to_steel_price_ratio",
             "opening_balance_multiplier",
             "construction_time",
             "consideration_time",
@@ -655,6 +687,7 @@ class ModelRunCreateForm(forms.ModelForm):
             # Policy Settings
             "use_iron_ore_premiums",
             "include_tariffs",
+            "enable_furnace_group_clustering",
             # Demand and Circularity
             "total_steel_demand_scenario",
             "green_steel_demand_scenario",

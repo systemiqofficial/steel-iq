@@ -659,6 +659,12 @@ def create_modelrun(request):
                     if form.cleaned_data.get("iron_price_buffer") is not None
                     else 200.0
                 ),
+                "peg_iron_to_steel_price": form.cleaned_data.get("peg_iron_to_steel_price", False),
+                "iron_to_steel_price_ratio": float(
+                    form.cleaned_data.get("iron_to_steel_price_ratio")
+                    if form.cleaned_data.get("iron_to_steel_price_ratio") is not None
+                    else 0.8
+                ),
                 "opening_balance_multiplier": float(
                     form.cleaned_data.get("opening_balance_multiplier")
                     if form.cleaned_data.get("opening_balance_multiplier") is not None
@@ -688,6 +694,7 @@ def create_modelrun(request):
                 "use_iron_ore_premiums": form.cleaned_data.get("use_iron_ore_premiums", True),
                 "green_steel_emissions_limit": 0.4,  # Hardcoded - no longer user-configurable
                 "include_tariffs": form.cleaned_data.get("include_tariffs", True),
+                "enable_furnace_group_clustering": form.cleaned_data.get("enable_furnace_group_clustering", False),
                 "output_file": output_file,
                 # Add new demand and circularity fields
                 "total_steel_demand_scenario": form.cleaned_data.get(
