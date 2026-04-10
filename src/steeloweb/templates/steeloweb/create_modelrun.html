@@ -69,6 +69,7 @@ function resetEconomicParameters() {
     document.getElementById('id_global_risk_free_rate').value = '0.0209';
     document.getElementById('id_steel_price_buffer').value = '200.0';
     document.getElementById('id_iron_price_buffer').value = '200.0';
+    document.getElementById('id_opening_balance_multiplier').value = '1.0';
 }
 
 function resetPolicySettings() {
@@ -959,6 +960,19 @@ document.head.appendChild(style);
                                         </div>
                                         {% endif %}
                                         <small class="form-text text-muted">{{ form.iron_price_buffer.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.opening_balance_multiplier.id_for_label }}" class="col-sm-3 col-form-label">{{ form.opening_balance_multiplier.label }}:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.opening_balance_multiplier }}
+                                        {% if form.opening_balance_multiplier.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.opening_balance_multiplier.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.opening_balance_multiplier.help_text }}</small>
                                     </div>
                                 </div>
 

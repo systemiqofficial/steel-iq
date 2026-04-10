@@ -627,6 +627,7 @@ class ModelRun(models.Model):
             "global_risk_free_rate",
             "steel_price_buffer",
             "iron_price_buffer",
+            "opening_balance_multiplier",
             # Output paths (optional, will be derived from output_dir if not provided)
             "plots_dir",
             "geo_plots_dir",

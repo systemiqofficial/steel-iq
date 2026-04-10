@@ -659,6 +659,11 @@ def create_modelrun(request):
                     if form.cleaned_data.get("iron_price_buffer") is not None
                     else 200.0
                 ),
+                "opening_balance_multiplier": float(
+                    form.cleaned_data.get("opening_balance_multiplier")
+                    if form.cleaned_data.get("opening_balance_multiplier") is not None
+                    else 1.0
+                ),
                 "construction_time": form.cleaned_data.get("construction_time", 4),
                 "probabilistic_agents": form.cleaned_data.get("probabilistic_agents", True),
                 "probability_of_announcement": float(form.cleaned_data.get("probability_of_announcement") or 0.7),

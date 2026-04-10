@@ -205,6 +205,18 @@ class ModelRunCreateForm(forms.ModelForm):
         widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.1"}),
     )
 
+    opening_balance_multiplier = forms.DecimalField(
+        label="Plant opening balance multiplier",
+        initial=1.0,
+        min_value=0.0,
+        max_value=100.0,
+        max_digits=5,
+        decimal_places=2,
+        required=False,
+        help_text="Scales the opening cash balance for plants at simulation start: 1.0 gives each furnace group enough to fund one renovation, 0.0 starts with empty balances",
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.01"}),
+    )
+
     construction_time = forms.IntegerField(
         initial=4,
         min_value=1,
@@ -625,6 +637,7 @@ class ModelRunCreateForm(forms.ModelForm):
             "global_risk_free_rate",
             "steel_price_buffer",
             "iron_price_buffer",
+            "opening_balance_multiplier",
             "construction_time",
             "consideration_time",
             # Plant Construction Settings
