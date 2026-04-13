@@ -73,18 +73,13 @@ def test_config_factory_from_data_directory(prepared_data_dir):
     """
     Tests that the from_data_directory factory correctly populates path fields.
     """
-    from steelo.simulation import GeoConfig
-
-    # Create a custom GeoConfig with different random_seed
-    custom_geo_config = GeoConfig(random_seed=123)
-
     config = SimulationConfig.from_data_directory(
         data_dir=prepared_data_dir,
         output_dir=Path("/tmp/sim_output"),
         start_year=Year(2025),
         end_year=Year(2030),
-        # Pass the custom geo_config
-        geo_config=custom_geo_config,
+        # Override the top-level random_seed; it is propagated into geo_config in __post_init__.
+        random_seed=123,
     )
 
     # Check that the factory correctly set the data directory

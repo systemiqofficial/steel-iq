@@ -657,6 +657,67 @@ document.head.appendChild(style);
                             </div>
                         </div>
                         
+                        <!-- Simulation Parameters section -->
+                        <div class="card mb-4">
+                            <div class="card-header bg-light">
+                                <h5 class="mb-0">Simulation Parameters</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3 form-check">
+                                    {{ form.randomise_seed }}
+                                    <label for="{{ form.randomise_seed.id_for_label }}" class="form-check-label">
+                                        {{ form.randomise_seed.label }}
+                                    </label>
+                                    <small class="form-text text-muted d-block">{{ form.randomise_seed.help_text }}</small>
+                                </div>
+                                <div class="mb-3 row">
+                                    <label for="{{ form.random_seed.id_for_label }}" class="col-sm-3 col-form-label">Random seed:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.random_seed }}
+                                        {% if form.random_seed.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.random_seed.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.random_seed.help_text }}</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <script>
+                            (function () {
+                                const checkbox = document.getElementById('id_randomise_seed');
+                                const seedInput = document.getElementById('id_random_seed');
+                                if (!checkbox || !seedInput) return;
+                                const DEFAULT_SEED = 42;
+                                // Remember the user's last manually-entered seed so we can restore it on untick.
+                                let lastUserSeed = seedInput.value || String(DEFAULT_SEED);
+                                const drawSeed = () => Math.floor(Math.random() * 0x80000000); // [0, 2^31)
+                                const setLocked = (locked) => {
+                                    seedInput.readOnly = locked;
+                                    seedInput.classList.toggle('bg-light', locked);
+                                    seedInput.classList.toggle('text-muted', locked);
+                                    seedInput.style.cursor = locked ? 'not-allowed' : '';
+                                };
+                                const onChange = () => {
+                                    if (checkbox.checked) {
+                                        lastUserSeed = seedInput.value || lastUserSeed;
+                                        seedInput.value = drawSeed();
+                                        setLocked(true);
+                                    } else {
+                                        seedInput.value = lastUserSeed || String(DEFAULT_SEED);
+                                        setLocked(false);
+                                    }
+                                };
+                                seedInput.addEventListener('input', () => {
+                                    if (!checkbox.checked) lastUserSeed = seedInput.value;
+                                });
+                                checkbox.addEventListener('change', onChange);
+                                // Initial sync (e.g. after a failed POST that re-renders the form).
+                                if (checkbox.checked) setLocked(true);
+                            })();
+                        </script>
+
                         <!-- Simulation Period section -->
                         <div class="card mb-4">
                             <div class="card-header bg-light">

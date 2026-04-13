@@ -892,7 +892,7 @@ def set_up_steel_trade_lp(
     """
     logger = logging.getLogger(f"{__name__}.set_up_steel_trade_lp")
     repository = message_bus.uow.repository
-    lp_model = tlp.TradeLPModel(lp_epsilon=config.lp_epsilon)
+    lp_model = tlp.TradeLPModel(lp_epsilon=config.lp_epsilon, random_seed=config.random_seed)
     modelled_products = config.primary_products
 
     logger.info(f"Setting up LP model with PRIMARY_PRODUCTS: {modelled_products}")
