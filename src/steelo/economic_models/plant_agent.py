@@ -527,7 +527,7 @@ class AllocationModel:
                 tm_plots_dir.mkdir(parents=True, exist_ok=True)
                 plot_process_graph(
                     trade_lp=trade_lp,
-                    save_path=str(tm_plots_dir / f"process_graph_pi_{bus.env.year}.png"),
+                    save_path=str(tm_plots_dir / f"bottleneck_analysis_{bus.env.year}.png"),
                     utilization=process_utilization,
                 )
             except OSError:
