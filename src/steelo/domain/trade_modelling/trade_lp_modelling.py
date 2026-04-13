@@ -146,6 +146,7 @@ class Process:
         self.name = name
         self.type = type
         self.bill_of_materials = bill_of_materials
+        self._products_cache: list[Commodity] | None = None
 
     def __eq__(self, other):
         if not isinstance(other, Process):
@@ -157,8 +158,16 @@ class Process:
 
     @property
     def products(self):
-        """Returns unique list of all commodities producible by this process."""
-        return list({commodity for bom in self.bill_of_materials for commodity in bom.output_commodities})
+        """Returns unique list of all commodities producible by this process.
+
+        Cached after first access — bill_of_materials is treated as immutable
+        after Process construction.
+        """
+        if self._products_cache is None:
+            self._products_cache = list(
+                {commodity for bom in self.bill_of_materials for commodity in bom.output_commodities}
+            )
+        return self._products_cache
 
 
 class ProcessCenter:
@@ -1027,18 +1036,21 @@ class TradeLPModel:
 
     def add_bool_if_process_center_has_incoming_allocations_for_bom_to_params(self):
         """Check if a process has incoming allocations for the bill of materials it needs to produce"""
+        # Pre-index: group allocation variable commodities by their destination PC name.
+        # Avoids re-scanning all allocation variables for every process center.
+        incoming_commodities_by_pc_name: dict[str, list[str]] = {}
+        for _from_pc_name, to_pc_name, commodity_name in self.lp_model.allocation_variables:
+            incoming_commodities_by_pc_name.setdefault(to_pc_name, []).append(commodity_name)
+
+        bom_params = self.lp_model.bom_parameters
+        input_ratio_key = MaterialParameters.INPUT_RATIO.value
+
         self.lp_model.process_center_has_incoming_allocations_for_bom = {}
         for process_center in self.process_centers:
+            pc_name = process_center.name
             self.lp_model.process_center_has_incoming_allocations_for_bom[process_center] = any(
-                (from_pc_name, to_pc_name, commodity_name) in self.lp_model.allocation_variables
-                for from_pc_name, to_pc_name, commodity_name in self.lp_model.allocation_variables
-                if to_pc_name == process_center.name
-                and (
-                    to_pc_name,
-                    commodity_name,
-                    MaterialParameters.INPUT_RATIO.value,
-                )
-                in self.lp_model.bom_parameters
+                (pc_name, commodity_name, input_ratio_key) in bom_params
+                for commodity_name in incoming_commodities_by_pc_name.get(pc_name, [])
             )
 
     @time_function
