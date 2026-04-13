@@ -80,6 +80,29 @@ class ModelRunCreateForm(forms.ModelForm):
         widget=forms.TextInput(attrs={"class": "form-control", "placeholder": "e.g., 'High renewable scenario 2030'"}),
     )
 
+    randomise_seed = forms.BooleanField(
+        label="Randomise seed",
+        initial=False,
+        required=False,
+        help_text=(
+            "Tick to draw a fresh random seed for this run. When unticked, the seed below is used "
+            "so results are reproducible. When ticked, results will vary slightly between runs due "
+            "to stochastic components in agent decisions and the trade LP."
+        ),
+        widget=forms.CheckboxInput(
+            attrs={"class": "form-check-input field-connected", "id": "id_randomise_seed"},
+        ),
+    )
+
+    random_seed = forms.IntegerField(
+        label="Random seed",
+        initial=42,
+        min_value=0,
+        required=False,
+        help_text="Seed shared by the Plant Agent, Geospatial, and Trade LP modules. Ignored when 'Randomise seed' is ticked.",
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected", "id": "id_random_seed"}),
+    )
+
     # Helper method to create widget attrs for connected/unconnected fields
     @staticmethod
     def _connected_attrs(base_class="form-control"):
@@ -617,6 +640,9 @@ class ModelRunCreateForm(forms.ModelForm):
         fields = [
             # General
             "name",
+            # Simulation Parameters
+            "randomise_seed",
+            "random_seed",
             # Years
             "start_year",
             "end_year",
@@ -683,6 +709,16 @@ class ModelRunCreateForm(forms.ModelForm):
         if start_year and end_year:
             if end_year < start_year:
                 raise forms.ValidationError("End year must be after start year.")
+
+        # Randomise seed handling: when the checkbox is ticked, draw a fresh seed;
+        # otherwise keep the user-provided value (default 42). `randomise_seed` is
+        # a UI-only flag and is not part of SimulationConfig, so it is removed here.
+        import secrets
+
+        if cleaned_data.pop("randomise_seed", False):
+            cleaned_data["random_seed"] = secrets.randbelow(2**31)
+        elif cleaned_data.get("random_seed") is None:
+            cleaned_data["random_seed"] = 42
 
         # Set default values for fields that are not required but need values
         if not cleaned_data.get("scrap_generation_scenario"):

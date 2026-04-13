@@ -1,8 +1,11 @@
 import inspect
 import logging
+import random
 
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
+
+import numpy as np
 from .service_layer import handlers, UnitOfWork, MessageBus, SimulationCheckpoint
 from .domain.models import Environment, PlantGroup
 from .adapters.repositories import JsonRepository, InMemoryRepository, Repository
@@ -225,6 +228,11 @@ def bootstrap_simulation(
         LoggingConfig.configure_from_yaml(str(yaml_path), config.log_level)
     else:
         LoggingConfig.configure_base_loggers()
+
+    # Seed Python and NumPy global RNGs. LP solver reads the same seed at solve time.
+    random.seed(config.random_seed)
+    np.random.seed(config.random_seed)
+    logger.info(f"Seeded RNGs with random_seed={config.random_seed}")
 
     # If no repository is provided, create one from JSON files (production behavior)
     repository_json = None
