@@ -371,6 +371,7 @@ class TradeLPModel:
         # Store distance function for optimized lookups
         # If None, falls back to original implementation
         self._external_distance_function = distance_function
+        self._pc_by_name: dict[str, ProcessCenter] | None = None
 
         # Solver options for performance tuning (OPT-4)
         # Default to IPM - equivalent runtime to Simplex but uses ~5GB less memory
@@ -405,7 +406,7 @@ class TradeLPModel:
 
     def _build_pc_name_lookup(self) -> None:
         """Build a name → ProcessCenter lookup dict for O(1) access."""
-        self._pc_by_name: dict[str, ProcessCenter] = {pc.name: pc for pc in self.process_centers}
+        self._pc_by_name = {pc.name: pc for pc in self.process_centers}
 
     def get_distance(self, from_pc_name, to_pc_name, type="pref_economic"):
         """

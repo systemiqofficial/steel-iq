@@ -9020,7 +9020,7 @@ class Environment:
             # Store on the instance
             self.allowed_furnace_transitions[origin] = allowed
 
-    def get_cached_distance(self, from_pc_name: str, to_pc_name: str, process_centers: list = None) -> float:
+    def get_cached_distance(self, from_pc_name: str, to_pc_name: str, process_centers: list | None = None) -> float:
         """
         Get cached distance between two process centers.
 
