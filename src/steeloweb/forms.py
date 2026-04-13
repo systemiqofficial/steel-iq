@@ -99,7 +99,10 @@ class ModelRunCreateForm(forms.ModelForm):
         initial=42,
         min_value=0,
         required=False,
-        help_text="Seed shared by the Plant Agent, Geospatial, and Trade LP modules. Ignored when 'Randomise seed' is ticked.",
+        help_text=(
+            "Seed shared by the Plant Agent, Geospatial, and Trade LP modules. "
+            "Auto-filled with a fresh value when 'Randomise seed' is ticked."
+        ),
         widget=forms.NumberInput(attrs={"class": "form-control field-connected", "id": "id_random_seed"}),
     )
 
@@ -710,15 +713,16 @@ class ModelRunCreateForm(forms.ModelForm):
             if end_year < start_year:
                 raise forms.ValidationError("End year must be after start year.")
 
-        # Randomise seed handling: when the checkbox is ticked, draw a fresh seed;
-        # otherwise keep the user-provided value (default 42). `randomise_seed` is
-        # a UI-only flag and is not part of SimulationConfig, so it is removed here.
+        # Randomise seed handling: client-side JS draws the seed and writes it into
+        # `random_seed` when the box is ticked, so the user sees the value being used.
+        # We trust whatever value arrives, falling back to a fresh seed only as a
+        # defence-in-depth for clients without JS. `randomise_seed` is a UI-only flag
+        # and is not part of SimulationConfig, so it is removed here.
         import secrets
 
-        if cleaned_data.pop("randomise_seed", False):
-            cleaned_data["random_seed"] = secrets.randbelow(2**31)
-        elif cleaned_data.get("random_seed") is None:
-            cleaned_data["random_seed"] = 42
+        randomise = cleaned_data.pop("randomise_seed", False)
+        if cleaned_data.get("random_seed") is None:
+            cleaned_data["random_seed"] = secrets.randbelow(2**31) if randomise else 42
 
         # Set default values for fields that are not required but need values
         if not cleaned_data.get("scrap_generation_scenario"):

@@ -663,9 +663,32 @@ document.head.appendChild(style);
                                 const checkbox = document.getElementById('id_randomise_seed');
                                 const seedInput = document.getElementById('id_random_seed');
                                 if (!checkbox || !seedInput) return;
-                                const sync = () => { seedInput.disabled = checkbox.checked; };
-                                checkbox.addEventListener('change', sync);
-                                sync();
+                                const DEFAULT_SEED = 42;
+                                // Remember the user's last manually-entered seed so we can restore it on untick.
+                                let lastUserSeed = seedInput.value || String(DEFAULT_SEED);
+                                const drawSeed = () => Math.floor(Math.random() * 0x80000000); // [0, 2^31)
+                                const setLocked = (locked) => {
+                                    seedInput.readOnly = locked;
+                                    seedInput.classList.toggle('bg-light', locked);
+                                    seedInput.classList.toggle('text-muted', locked);
+                                    seedInput.style.cursor = locked ? 'not-allowed' : '';
+                                };
+                                const onChange = () => {
+                                    if (checkbox.checked) {
+                                        lastUserSeed = seedInput.value || lastUserSeed;
+                                        seedInput.value = drawSeed();
+                                        setLocked(true);
+                                    } else {
+                                        seedInput.value = lastUserSeed || String(DEFAULT_SEED);
+                                        setLocked(false);
+                                    }
+                                };
+                                seedInput.addEventListener('input', () => {
+                                    if (!checkbox.checked) lastUserSeed = seedInput.value;
+                                });
+                                checkbox.addEventListener('change', onChange);
+                                // Initial sync (e.g. after a failed POST that re-renders the form).
+                                if (checkbox.checked) setLocked(true);
                             })();
                         </script>
 

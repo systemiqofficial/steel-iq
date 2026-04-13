@@ -95,12 +95,21 @@ def test_form_clean_keeps_user_seed_when_checkbox_unticked():
 
 
 @pytest.mark.django_db
-def test_form_clean_draws_fresh_seed_when_checkbox_ticked():
-    """When `randomise_seed` is ticked, `clean()` replaces `random_seed` with a fresh int."""
-    form = steeloweb_forms.ModelRunCreateForm(data=_form_data_with_seed(randomise=True, seed_value=42))
+def test_form_clean_trusts_client_provided_seed_when_checkbox_ticked():
+    """With JS enabled the client writes a fresh seed into `random_seed`; clean() trusts it."""
+    form = steeloweb_forms.ModelRunCreateForm(data=_form_data_with_seed(randomise=True, seed_value=987654321))
+    form.is_valid()
+    assert form.cleaned_data.get("random_seed") == 987654321
+    # `randomise_seed` is a UI-only flag — clean() should strip it.
+    assert "randomise_seed" not in form.cleaned_data
+
+
+@pytest.mark.django_db
+def test_form_clean_draws_fresh_seed_as_fallback_when_no_js():
+    """Defence-in-depth: if `randomise_seed` ticked but `random_seed` is missing (no JS), draw a fresh int."""
+    data = _form_data_with_seed(randomise=True, seed_value=None)
+    form = steeloweb_forms.ModelRunCreateForm(data=data)
     form.is_valid()
     seed = form.cleaned_data.get("random_seed")
     assert isinstance(seed, int)
     assert 0 <= seed < 2**31
-    # `randomise_seed` is a UI-only flag — clean() should strip it.
-    assert "randomise_seed" not in form.cleaned_data
