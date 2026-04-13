@@ -49,8 +49,6 @@ from steelo.domain.constants import (
 if TYPE_CHECKING:
     from steelo.simulation import SimulationConfig
 
-random.seed(42)  # For reproducibility # TODO: Replace by seed from SimulationConfig
-
 
 class UnknownTechnologyError(KeyError):
     """Raised when checking unknown technology."""
