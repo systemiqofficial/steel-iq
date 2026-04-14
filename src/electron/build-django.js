@@ -993,18 +993,6 @@ print("[OK] All NetCDF4 and HDF5 packages are installed")
       
       console.log('[OK] Complete python-build-standalone copied');
 
-      // Remove GNU libiconv from python-build-standalone on macOS.
-      // It exports _libiconv (GNU names) but pyogrio/fiona's libgdal expects _iconv (POSIX names)
-      // from the system /usr/lib/libiconv.2.dylib. DYLD_LIBRARY_PATH causes the bundled GNU version
-      // to shadow the system one, breaking geopandas shapefile reading.
-      if (IS_MAC) {
-        const gnuLibiconv = path.join(pythonDir, 'lib', 'libiconv.2.dylib');
-        if (fs.existsSync(gnuLibiconv)) {
-          fs.unlinkSync(gnuLibiconv);
-          console.log('[OK] Removed GNU libiconv.2.dylib (system libiconv will be used instead)');
-        }
-      }
-
       // CRITICAL: Verify bundled libpython shared library exists
       const libDir = path.join(pythonDir, 'lib');
       let libpythonFound = false;
@@ -1271,6 +1259,24 @@ print("[OK] All NetCDF4 and HDF5 packages are installed")
     }
     
     console.log(`Total HDF5/NetCDF shared libraries copied: ${sharedLibsCopied}`);
+
+    // Remove GNU libiconv from the bundle on macOS.
+    // python-build-standalone and netCDF4 wheels ship a GNU libiconv that exports
+    // _libiconv (GNU names) instead of _iconv (POSIX names). DYLD_LIBRARY_PATH
+    // shadows the system /usr/lib/libiconv.2.dylib, breaking pyogrio/fiona's libgdal.
+    // Must run AFTER all shared-library copying to avoid re-introduction.
+    if (IS_MAC) {
+      const libiconvPaths = [
+        path.join(pythonDir, 'lib', 'libiconv.2.dylib'),
+        path.join(sitePackagesDir, 'netCDF4', '.dylibs', 'libiconv.2.dylib'),
+      ];
+      for (const libPath of libiconvPaths) {
+        if (fs.existsSync(libPath)) {
+          fs.unlinkSync(libPath);
+          console.log(`[OK] Removed GNU libiconv: ${libPath}`);
+        }
+      }
+    }
 
     // Test the portable Python installation
     console.log('Testing portable Python installation...');
