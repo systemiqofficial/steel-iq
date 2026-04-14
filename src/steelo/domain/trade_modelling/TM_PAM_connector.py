@@ -70,14 +70,13 @@ class TM_PAM_connector:
                     }
                 self.processing_energy_cost[fg.furnace_group_id] = per_feed_energy
                 self.chosen_reductant[fg.furnace_group_id] = fg.chosen_reductant
-        self.flat_feedstocks_dict = {
-            entry.name.lower(): entry for key, items in self.dynamic_feedstocks.items() for entry in items
-        }
-        self.feedstock_energy_requirements = {
-            entry.name.lower(): entry.energy_requirements
-            for key, items in self.dynamic_feedstocks.items()
-            for entry in items
-        }
+        self.flat_feedstocks_dict = {}
+        self.feedstock_energy_requirements = {}
+        for _key, items in self.dynamic_feedstocks.items():
+            for entry in items:
+                name_lower = entry.name.lower()
+                self.flat_feedstocks_dict[name_lower] = entry
+                self.feedstock_energy_requirements[name_lower] = entry.energy_requirements
 
         self.plants = [p.plant_id for p in plants.list()]
         # self.furnaces = [fg for p in plants.list() for fg in p.furnace_groups]
@@ -91,21 +90,20 @@ class TM_PAM_connector:
                 key = (kpi.reporter_iso, kpi.partner_iso, kpi.commodity.lower())
                 self.transport_costs[key] = kpi.transportation_cost
 
-        self.iron_furnaces = [
-            fg.furnace_group_id
-            for p in plants.list()
-            for fg in p.furnace_groups
-            if isinstance(fg.technology.product, str) and fg.technology.product.lower() == "iron"
-        ]
-        self.steel_furnaces = [
-            fg.furnace_group_id
-            for p in plants.list()
-            for fg in p.furnace_groups
-            if isinstance(fg.technology.product, str) and fg.technology.product.lower() == "steel"
-        ]
-        self.bof_furnaces = [
-            fg.furnace_group_id for p in plants.list() for fg in p.furnace_groups if fg.technology.name.upper() == "BOF"
-        ]
+        self.iron_furnaces = []
+        self.steel_furnaces = []
+        self.bof_furnaces = []
+        for p in plants.list():
+            for fg in p.furnace_groups:
+                fg_id = fg.furnace_group_id
+                if isinstance(fg.technology.product, str):
+                    product_lower = fg.technology.product.lower()
+                    if product_lower == "iron":
+                        self.iron_furnaces.append(fg_id)
+                    elif product_lower == "steel":
+                        self.steel_furnaces.append(fg_id)
+                if fg.technology.name.upper() == "BOF":
+                    self.bof_furnaces.append(fg_id)
 
         self.G = None
         self.current_year: int | None = None
