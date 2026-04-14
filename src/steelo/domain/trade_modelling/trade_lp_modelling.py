@@ -146,6 +146,7 @@ class Process:
         self.name = name
         self.type = type
         self.bill_of_materials = bill_of_materials
+        self._products_cache: list[Commodity] | None = None
 
     def __eq__(self, other):
         if not isinstance(other, Process):
@@ -157,8 +158,16 @@ class Process:
 
     @property
     def products(self):
-        """Returns unique list of all commodities producible by this process."""
-        return list({commodity for bom in self.bill_of_materials for commodity in bom.output_commodities})
+        """Returns unique list of all commodities producible by this process.
+
+        Cached after first access — bill_of_materials is treated as immutable
+        after Process construction.
+        """
+        if self._products_cache is None:
+            self._products_cache = list(
+                {commodity for bom in self.bill_of_materials for commodity in bom.output_commodities}
+            )
+        return self._products_cache
 
 
 class ProcessCenter:
@@ -347,7 +356,7 @@ class TradeLPModel:
         soft_minimum_capacity_slack_cost: High cost for under-utilization (100k)
     """
 
-    def __init__(self, lp_epsilon: float, random_seed: int):
+    def __init__(self, lp_epsilon: float = 1e-3, distance_function=None, random_seed: int = 42):
         self.process_centers: list[ProcessCenter] = []
         self.process_connectors: list[ProcessConnector] = []
         self.commodities: list[Commodity] = []
@@ -368,6 +377,11 @@ class TradeLPModel:
         self._transportation_cost_lookup: dict[tuple[str, str, str], float] = {}
         self.lp_epsilon = lp_epsilon
         self.random_seed = random_seed
+
+        # Store distance function for optimized lookups
+        # If None, falls back to original implementation
+        self._external_distance_function = distance_function
+        self._pc_by_name: dict[str, ProcessCenter] | None = None
 
         # Solver options for performance tuning (OPT-4)
         # Default to IPM - equivalent runtime to Simplex but uses ~5GB less memory
@@ -400,9 +414,39 @@ class TradeLPModel:
         key = (from_iso3, to_iso3, commodity_lower)
         return self._transportation_cost_lookup.get(key, 0.0)
 
-    def get_distance(self, from_pc_name, to_pc_name, type="haversine"):
-        from_pc = next(pc for pc in self.process_centers if pc.name == from_pc_name)
-        to_pc = next(pc for pc in self.process_centers if pc.name == to_pc_name)
+    def _build_pc_name_lookup(self) -> None:
+        """Build a name → ProcessCenter lookup dict for O(1) access."""
+        self._pc_by_name = {pc.name: pc for pc in self.process_centers}
+
+    def get_distance(self, from_pc_name, to_pc_name, type="pref_economic"):
+        """
+        Get distance between two process centers.
+
+        Performance optimized to use external distance function when available,
+        and a name-based lookup dict as fallback.
+
+        Args:
+            from_pc_name: Source process center name
+            to_pc_name: Destination process center name
+            type: Distance type (ignored when using external function)
+
+        Returns:
+            Distance in km
+        """
+        # Fast path: Use external distance function if provided
+        if self._external_distance_function is not None:
+            return self._external_distance_function(from_pc_name, to_pc_name)
+
+        # Fallback: O(1) dict lookup instead of O(n) linear scan
+        if not hasattr(self, "_pc_by_name") or self._pc_by_name is None:
+            self._build_pc_name_lookup()
+
+        from_pc = self._pc_by_name.get(from_pc_name)
+        to_pc = self._pc_by_name.get(to_pc_name)
+
+        if from_pc is None or to_pc is None:
+            return float("inf")
+
         if type == "haversine":
             return haversine_distance(
                 [
@@ -439,6 +483,7 @@ class TradeLPModel:
 
     def add_process_centers(self, process_centers: list[ProcessCenter]):
         self.process_centers = self.process_centers + process_centers
+        self._pc_by_name = None  # Invalidate lookup cache
 
     def add_process_connectors(self, process_connectors: list[ProcessConnector]):
         self.process_connectors = self.process_connectors + process_connectors
@@ -553,29 +598,51 @@ class TradeLPModel:
         return utilization
 
     def set_legal_allocations(self):
-        # Precompute accepted commodities per process center (primary + dependent)
-        accepted_by_pc: dict[ProcessCenter, set[Commodity]] = {}
-        for pc in self.process_centers:
-            accepted = set()
-            for bom_element in pc.process.bill_of_materials:
-                accepted.add(bom_element.commodity)
-                if bom_element.dependent_commodities:
-                    accepted.update(bom_element.dependent_commodities.keys())
-            accepted_by_pc[pc] = accepted
+        # Pre-index: set of (from_process, to_process) pairs with a legal connector — O(1) lookup
+        connector_set: set[tuple[Process, Process]] = {
+            (conn.from_process, conn.to_process) for conn in self.process_connectors
+        }
 
+        # Pre-index: primary BOM commodities per process
+        primary_commodities_by_process: dict[Process, set[Commodity]] = {}
+        # Pre-index: dependent (secondary) commodities per process
+        dependent_commodities_by_process: dict[Process, set[Commodity]] = {}
+        for pc in self.process_centers:
+            proc = pc.process
+            if proc not in primary_commodities_by_process:
+                primary = set()
+                dependent = set()
+                for bom_element in proc.bill_of_materials:
+                    primary.add(bom_element.commodity)
+                    if bom_element.dependent_commodities:
+                        dependent.update(bom_element.dependent_commodities.keys())
+                primary_commodities_by_process[proc] = primary
+                dependent_commodities_by_process[proc] = dependent
+
+        # Standard legal allocations for primary commodities (any non-DEMAND source)
         legal_allocations = [
             (from_pc, to_pc, commodity)
             for from_pc in self.process_centers
+            if from_pc.process.type != ProcessType.DEMAND
             for to_pc in self.process_centers
+            if (from_pc.process, to_pc.process) in connector_set
             for commodity in from_pc.process.products
-            if commodity is not None
-            and from_pc.process.type != ProcessType.DEMAND
-            and commodity in accepted_by_pc[to_pc]
-            and any(
-                conn.from_process == from_pc.process and conn.to_process == to_pc.process
-                for conn in self.process_connectors
-            )
+            if commodity is not None and commodity in primary_commodities_by_process.get(to_pc.process, set())
         ]
+
+        # Add legal allocations for dependent commodities (SUPPLY sources only → PRODUCTION destinations)
+        for from_pc in self.process_centers:
+            if from_pc.process.type != ProcessType.SUPPLY:
+                continue
+            for to_pc in self.process_centers:
+                if to_pc.process.type != ProcessType.PRODUCTION:
+                    continue
+                if (from_pc.process, to_pc.process) not in connector_set:
+                    continue
+                dep_commodities = dependent_commodities_by_process.get(to_pc.process, set())
+                for commodity in from_pc.process.products:
+                    if commodity is not None and commodity in dep_commodities:
+                        legal_allocations.append((from_pc, to_pc, commodity))
 
         self.legal_allocations = legal_allocations
 
@@ -970,18 +1037,21 @@ class TradeLPModel:
 
     def add_bool_if_process_center_has_incoming_allocations_for_bom_to_params(self):
         """Check if a process has incoming allocations for the bill of materials it needs to produce"""
+        # Pre-index: group allocation variable commodities by their destination PC name.
+        # Avoids re-scanning all allocation variables for every process center.
+        incoming_commodities_by_pc_name: dict[str, list[str]] = {}
+        for _from_pc_name, to_pc_name, commodity_name in self.lp_model.allocation_variables:
+            incoming_commodities_by_pc_name.setdefault(to_pc_name, []).append(commodity_name)
+
+        bom_params = self.lp_model.bom_parameters
+        input_ratio_key = MaterialParameters.INPUT_RATIO.value
+
         self.lp_model.process_center_has_incoming_allocations_for_bom = {}
         for process_center in self.process_centers:
+            pc_name = process_center.name
             self.lp_model.process_center_has_incoming_allocations_for_bom[process_center] = any(
-                (from_pc_name, to_pc_name, commodity_name) in self.lp_model.allocation_variables
-                for from_pc_name, to_pc_name, commodity_name in self.lp_model.allocation_variables
-                if to_pc_name == process_center.name
-                and (
-                    to_pc_name,
-                    commodity_name,
-                    MaterialParameters.INPUT_RATIO.value,
-                )
-                in self.lp_model.bom_parameters
+                (pc_name, commodity_name, input_ratio_key) in bom_params
+                for commodity_name in incoming_commodities_by_pc_name.get(pc_name, [])
             )
 
     @time_function

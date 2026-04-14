@@ -131,7 +131,7 @@ class DummyLPModel:
 
 # Dummy TradeLPModel that stores processes, bom_elements, process centers, connectors, etc.
 class DummyTradeLPModel:
-    def __init__(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42):
+    def __init__(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42, **kwargs):
         self._processes = {}
         self.process_centers = []
         self.bom_elements = {}
@@ -630,7 +630,7 @@ def test_set_up_steel_trade_lp(monkeypatch):
     # Patch DummyTradeLPModel.__init__ using monkeypatch.
     orig_init = ORIGINAL_DUMMY_TRADE_LP_MODEL_INIT
 
-    def init_with_processes(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42):
+    def init_with_processes(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42, **kwargs):
         orig_init(self, lp_epsilon, year, solver_options)
         for proc_name in [
             "BF",
@@ -1239,8 +1239,8 @@ def test_set_up_steel_trade_lp_with_transport_kpis(monkeypatch):
     orig_init = ORIGINAL_DUMMY_TRADE_LP_MODEL_INIT
     transport_costs_added = []
 
-    def init_with_tracking(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42):
-        orig_init(self, lp_epsilon, year, solver_options)
+    def init_with_tracking(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42, **kwargs):
+        orig_init(self, lp_epsilon, year, solver_options, random_seed=random_seed, **kwargs)
         original_add = self.add_transportation_costs
 
         def track_add_transportation_costs(costs):
@@ -1317,8 +1317,8 @@ def test_set_up_steel_trade_lp_with_aggregated_constraints(monkeypatch):
     orig_init = ORIGINAL_DUMMY_TRADE_LP_MODEL_INIT
     constraints_set = {}
 
-    def init_with_constraint_tracking(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42):
-        orig_init(self, lp_epsilon, year, solver_options)
+    def init_with_constraint_tracking(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42, **kwargs):
+        orig_init(self, lp_epsilon, year, solver_options, random_seed=random_seed, **kwargs)
         self.aggregated_commodity_constraints = {}
 
         def track_constraints(value):
@@ -1383,7 +1383,7 @@ def test_set_up_steel_trade_lp_with_secondary_feedstock_constraints(monkeypatch)
     processes_added = []
     centers_added = []
 
-    def init_with_tracking(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42):
+    def init_with_tracking(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42, **kwargs):
         orig_init(self, lp_epsilon, year, solver_options)
         original_add_processes = self.add_processes
         original_add_centers = self.add_process_centers
@@ -1693,8 +1693,8 @@ def test_set_up_steel_trade_lp_with_meta_furnace_groups(monkeypatch):
     # Patch DummyTradeLPModel to have required processes
     orig_init = ORIGINAL_DUMMY_TRADE_LP_MODEL_INIT
 
-    def init_with_processes(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42):
-        orig_init(self, lp_epsilon, year, solver_options)
+    def init_with_processes(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42, **kwargs):
+        orig_init(self, lp_epsilon, year, solver_options, random_seed=random_seed, **kwargs)
         for proc_name in ["BF", "EAF", "demand", "scrap_supply"]:
             self._processes[proc_name] = DummyProcess(proc_name, DummyProcessType.PRODUCTION, [])
 

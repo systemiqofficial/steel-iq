@@ -6756,6 +6756,11 @@ class Environment:
         self.cost_curve: dict[str, list[dict[str, float]]] = {"steel": [], "iron": []}
         self.future_cost_curve: dict[str, list[dict[str, float]]] = {"steel": [], "iron": []}
 
+        # Performance optimization: Distance cache for trade LP
+        # Persists across years to avoid recomputation
+        self._distance_cache: dict[tuple[str, str], float] = {}
+        self._distance_cache_stats = {"hits": 0, "misses": 0, "computations": 0}
+
         # Global technology restrictions - now handled via allowed_techs system
         self.aggregated_metallic_charge_constraints: list[AggregatedMetallicChargeConstraint] = []
 
@@ -9019,6 +9024,107 @@ class Environment:
 
             # Store on the instance
             self.allowed_furnace_transitions[origin] = allowed
+
+    def get_cached_distance(self, from_pc_name: str, to_pc_name: str, process_centers: list | None = None) -> float:
+        """
+        Get cached distance between two process centers.
+
+        Args:
+            from_pc_name: Source process center name
+            to_pc_name: Destination process center name
+            process_centers: Optional list of ProcessCenter objects for fallback computation
+
+        Returns:
+            Distance in km, or float('inf') if not computable
+        """
+        key = (from_pc_name, to_pc_name)
+
+        # Check cache first
+        if key in self._distance_cache:
+            self._distance_cache_stats["hits"] += 1
+            return self._distance_cache[key]
+
+        # Cache miss - need to compute
+        self._distance_cache_stats["misses"] += 1
+
+        if process_centers is None:
+            return float("inf")  # Can't compute without data
+
+        # Find process centers (still O(n) but only on cache miss)
+        from_pc = next((pc for pc in process_centers if pc.name == from_pc_name), None)
+        to_pc = next((pc for pc in process_centers if pc.name == to_pc_name), None)
+
+        if from_pc is None or to_pc is None:
+            distance = float("inf")
+        else:
+            # Use existing method that checks ISO3 cache first
+            distance = from_pc.distance_to_other_processcenter(to_pc)
+            self._distance_cache_stats["computations"] += 1
+
+        # Cache for future use
+        self._distance_cache[key] = distance
+        return distance
+
+    def build_distance_function_for_trade_lp(self, process_centers: list):
+        """
+        Build a distance lookup function for TradeLPModel.
+
+        This creates a closure that captures the process_centers list
+        and can compute/cache distances as needed.
+
+        Args:
+            process_centers: List of ProcessCenter objects for this year
+
+        Returns:
+            Callable[[str, str], float] that returns distances
+        """
+
+        def distance_lookup(from_pc_name: str, to_pc_name: str) -> float:
+            return self.get_cached_distance(from_pc_name, to_pc_name, process_centers)
+
+        return distance_lookup
+
+    def log_distance_cache_stats(self):
+        """Log cache performance statistics."""
+        import logging
+
+        logger = logging.getLogger(f"{__name__}.Environment")
+
+        stats = self._distance_cache_stats
+        total = stats["hits"] + stats["misses"]
+        if total > 0:
+            hit_rate = (stats["hits"] / total) * 100
+            logger.info(
+                f"Distance cache stats: {stats['hits']} hits, {stats['misses']} misses "
+                f"({hit_rate:.1f}% hit rate), {stats['computations']} distances computed, "
+                f"{len(self._distance_cache)} entries cached"
+            )
+
+    def precompute_distances_for_hot_metal_check(self, process_centers: list, hot_metal_radius: float) -> set:
+        """
+        Precompute which PC pairs are within hot metal radius.
+        Returns set of (from_name, to_name) tuples within radius.
+
+        This converts the distance check from 100,000 float comparisons
+        to 100,000 set membership checks (much faster).
+        """
+        import logging
+
+        logger = logging.getLogger(f"{__name__}.Environment")
+
+        within_radius = set()
+
+        for from_pc in process_centers:
+            for to_pc in process_centers:
+                distance = self.get_cached_distance(from_pc.name, to_pc.name, process_centers=process_centers)
+                if distance <= hot_metal_radius:
+                    within_radius.add((from_pc.name, to_pc.name))
+
+        logger.info(
+            f"Pre-computed hot metal radius check: {len(within_radius)} pairs "
+            f"within {hot_metal_radius}km radius out of {len(process_centers) ** 2} total pairs"
+        )
+        return within_radius
 
     def calculate_carbon_costs_of_furnace_groups(self, world_plants: list[Plant]) -> None:
         """
