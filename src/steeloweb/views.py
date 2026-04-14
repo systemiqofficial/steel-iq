@@ -647,6 +647,7 @@ def create_modelrun(request):
             config = {
                 "start_year": form.cleaned_data["start_year"],
                 "end_year": form.cleaned_data["end_year"],
+                "random_seed": form.cleaned_data.get("random_seed", 42),
                 "plant_lifetime": form.cleaned_data.get("plant_lifetime", 20),
                 "global_risk_free_rate": float(form.cleaned_data.get("global_risk_free_rate") or 0.0209),
                 "steel_price_buffer": float(
@@ -670,6 +671,7 @@ def create_modelrun(request):
                     if form.cleaned_data.get("opening_balance_multiplier") is not None
                     else 1.0
                 ),
+                "consideration_time": form.cleaned_data.get("consideration_time", 3),
                 "construction_time": form.cleaned_data.get("construction_time", 4),
                 "probabilistic_agents": form.cleaned_data.get("probabilistic_agents", True),
                 "probability_of_announcement": float(form.cleaned_data.get("probability_of_announcement") or 0.7),
