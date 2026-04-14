@@ -914,7 +914,9 @@ def set_up_steel_trade_lp(
         # We'll update this after process centers are added
         distance_function = None  # Placeholder for now
 
-    lp_model = tlp.TradeLPModel(lp_epsilon=config.lp_epsilon, distance_function=distance_function)
+    lp_model = tlp.TradeLPModel(
+        lp_epsilon=config.lp_epsilon, distance_function=distance_function, random_seed=config.random_seed
+    )
     modelled_products = config.primary_products
 
     logger.info(f"Setting up LP model with PRIMARY_PRODUCTS: {modelled_products}")

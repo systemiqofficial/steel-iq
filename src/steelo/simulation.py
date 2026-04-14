@@ -419,6 +419,11 @@ class SimulationConfig:
     # These carriers keep their raw Excel sign instead of being negated via -abs()
     disposal_cost_outputs: frozenset[str] = field(default_factory=lambda: frozenset({"ironmaking_slag"}))
 
+    # === Randomness ===
+    # Single seed shared by Plant Agent, Geospatial, and Trade LP modules.
+    # Propagated to geo_config.random_seed in __post_init__.
+    random_seed: int = 42
+
     # === Other ===
     # Verbosity
     log_level: int = logging.DEBUG
@@ -511,6 +516,9 @@ class SimulationConfig:
         # Ensure technology_settings is always available (required for the system to function)
         if self.technology_settings is None:
             self.technology_settings = get_default_technology_settings()
+
+        # Single source of truth: propagate top-level seed into nested GeoConfig.
+        self.geo_config.random_seed = self.random_seed
 
         # Handle deprecated parameter - preserve semantics by translating to technology_settings
         if global_bf_ban is not None:

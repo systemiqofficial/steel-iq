@@ -356,7 +356,7 @@ class TradeLPModel:
         soft_minimum_capacity_slack_cost: High cost for under-utilization (100k)
     """
 
-    def __init__(self, lp_epsilon: float = 1e-3, distance_function=None):
+    def __init__(self, lp_epsilon: float = 1e-3, distance_function=None, random_seed: int = 42):
         self.process_centers: list[ProcessCenter] = []
         self.process_connectors: list[ProcessConnector] = []
         self.commodities: list[Commodity] = []
@@ -376,6 +376,7 @@ class TradeLPModel:
         self.transportation_costs: list[TransportationCost] = []
         self._transportation_cost_lookup: dict[tuple[str, str, str], float] = {}
         self.lp_epsilon = lp_epsilon
+        self.random_seed = random_seed
 
         # Store distance function for optimized lookups
         # If None, falls back to original implementation
@@ -1704,14 +1705,14 @@ class TradeLPModel:
         Notes:
             - Uses solver_options for configuration (default: IPM for memory efficiency)
             - Supports warm-starting from previous_solution (simplex only)
-            - Random seed fixed (1337) for reproducibility
+            - Random seed from SimulationConfig.random_seed for reproducibility
             - Does not automatically load solution (call extract_solution() after)
             - Logs detailed diagnostics if model is infeasible
         """
         logger = logging.getLogger(f"{__name__}.solve_lp_model")
         start_time = time.time()
         solver = pyo.SolverFactory("appsi_highs")
-        solver.options["random_seed"] = 1337
+        solver.options["random_seed"] = self.random_seed
 
         # Use configurable solver options for performance tuning (OPT-4)
         solver.options.update(self.solver_options)
