@@ -69,12 +69,18 @@ function resetEconomicParameters() {
     document.getElementById('id_global_risk_free_rate').value = '0.0209';
     document.getElementById('id_steel_price_buffer').value = '200.0';
     document.getElementById('id_iron_price_buffer').value = '200.0';
+    document.getElementById('id_peg_iron_to_steel_price').checked = false;
+    document.getElementById('id_iron_to_steel_price_ratio').value = '0.8';
+    document.getElementById('id_opening_balance_multiplier').value = '1.0';
+    // Trigger change to update ratio field disabled state
+    document.getElementById('id_peg_iron_to_steel_price').dispatchEvent(new Event('change'));
 }
 
 function resetPolicySettings() {
     // Reset policy settings
     document.getElementById('id_use_iron_ore_premiums').checked = true;
     document.getElementById('id_include_tariffs').checked = true;
+    document.getElementById('id_enable_furnace_group_clustering').checked = false;
 }
 
 function resetDemandSettings() {
@@ -271,6 +277,26 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Add change event listener
     probabilisticCheckbox.addEventListener('change', updateProbabilityFields);
+});
+
+// Toggle iron_to_steel_price_ratio based on peg_iron_to_steel_price checkbox
+document.addEventListener('DOMContentLoaded', function() {
+    var pegCheckbox = document.getElementById('id_peg_iron_to_steel_price');
+    var ratioRow = document.getElementById('iron_to_steel_price_ratio_row');
+    var ratioInput = document.getElementById('id_iron_to_steel_price_ratio');
+
+    function updateRatioField() {
+        if (pegCheckbox.checked) {
+            ratioInput.disabled = false;
+            ratioRow.style.opacity = '1';
+        } else {
+            ratioInput.disabled = true;
+            ratioRow.style.opacity = '0.5';
+        }
+    }
+
+    updateRatioField();
+    pegCheckbox.addEventListener('change', updateRatioField);
 });
 
 // Ensure native browser validation runs even if fields still have focus
@@ -1023,6 +1049,49 @@ document.head.appendChild(style);
                                     </div>
                                 </div>
 
+                                <div class="mb-3 row">
+                                    <label for="{{ form.peg_iron_to_steel_price.id_for_label }}" class="col-sm-3 col-form-label">{{ form.peg_iron_to_steel_price.label }}:</label>
+                                    <div class="col-sm-9">
+                                        <div class="form-check">
+                                            {{ form.peg_iron_to_steel_price }}
+                                            <label class="form-check-label" for="{{ form.peg_iron_to_steel_price.id_for_label }}">
+                                                {{ form.peg_iron_to_steel_price.help_text }}
+                                            </label>
+                                        </div>
+                                        {% if form.peg_iron_to_steel_price.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.peg_iron_to_steel_price.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row" id="iron_to_steel_price_ratio_row">
+                                    <label for="{{ form.iron_to_steel_price_ratio.id_for_label }}" class="col-sm-3 col-form-label">{{ form.iron_to_steel_price_ratio.label }}:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.iron_to_steel_price_ratio }}
+                                        {% if form.iron_to_steel_price_ratio.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.iron_to_steel_price_ratio.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.iron_to_steel_price_ratio.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.opening_balance_multiplier.id_for_label }}" class="col-sm-3 col-form-label">{{ form.opening_balance_multiplier.label }}:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.opening_balance_multiplier }}
+                                        {% if form.opening_balance_multiplier.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.opening_balance_multiplier.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.opening_balance_multiplier.help_text }}</small>
+                                    </div>
+                                </div>
+
                                 <div class="text-end">
                                     <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetEconomicParameters()">Return to default settings</button>
                                 </div>
@@ -1069,12 +1138,29 @@ document.head.appendChild(style);
                                     </div>
                                 </div>
 
+                                <div class="mb-3 row">
+                                    <label for="{{ form.enable_furnace_group_clustering.id_for_label }}" class="col-sm-3 col-form-label">{{ form.enable_furnace_group_clustering.label }}:</label>
+                                    <div class="col-sm-9">
+                                        <div class="form-check">
+                                            {{ form.enable_furnace_group_clustering }}
+                                            <label class="form-check-label" for="{{ form.enable_furnace_group_clustering.id_for_label }}">
+                                                {{ form.enable_furnace_group_clustering.help_text }}
+                                            </label>
+                                        </div>
+                                        {% if form.enable_furnace_group_clustering.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.enable_furnace_group_clustering.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
                                 <div class="text-end">
                                     <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetPolicySettings()">Return to default settings</button>
                                 </div>
                             </div>
                         </div>
-                        
+
                         <!-- Demand and Circularity section - commented out as requested -->
                         <!--
                         <div class="card mb-4">

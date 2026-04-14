@@ -1,7 +1,7 @@
 [project]
 name = "steel-model"
-version = "1.2.0"
-description = "Add your description here"
+version = "2.0.0"
+description = "Steel decarbonisation model"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -40,7 +40,7 @@ dependencies = [
     "django",
     "django-environ",
     "django-htmx",
-    "django-tasks>=0.9.0",
+    "django-tasks>=0.9.0,<0.12",
     "whitenoise",
     "rioxarray>=0.19.0",
     "pydeck>=0.9.1",

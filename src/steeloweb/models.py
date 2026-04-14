@@ -627,6 +627,9 @@ class ModelRun(models.Model):
             "global_risk_free_rate",
             "steel_price_buffer",
             "iron_price_buffer",
+            "peg_iron_to_steel_price",
+            "iron_to_steel_price_ratio",
+            "opening_balance_multiplier",
             # Output paths (optional, will be derived from output_dir if not provided)
             "plots_dir",
             "geo_plots_dir",
@@ -663,6 +666,7 @@ class ModelRun(models.Model):
             "chosen_grid_emissions_scenario",
             "use_iron_ore_premiums",
             "green_steel_emissions_limit",
+            "enable_furnace_group_clustering",
             # Feature flags
             "include_infrastructure_cost",
             "include_transport_cost",

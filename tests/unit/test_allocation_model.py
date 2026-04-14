@@ -15,7 +15,7 @@ from steelo.domain.events import SteelAllocationsCalculated
 class TestAllocationModelBusinessLogic:
     """Test core business logic of AllocationModel."""
 
-    def test_tariff_handling_with_tariffs_enabled(self):
+    def test_tariff_handling_with_tariffs_enabled(self, tmp_path):
         """Test that tariff handling works when include_tariffs is True."""
         # Setup
         mock_bus = MagicMock()
@@ -28,7 +28,7 @@ class TestAllocationModelBusinessLogic:
         mock_bus.env.secondary_feedstock_constraints = []
         mock_bus.env.aggregated_metallic_charge_constraints = []
         mock_bus.env.transport_kpis = []
-        mock_bus.env.output_dir = Path("/test/output")
+        mock_bus.env.output_dir = tmp_path
         mock_bus.uow.repository = MagicMock()
 
         # Mock the trade tariff calculation
@@ -46,8 +46,9 @@ class TestAllocationModelBusinessLogic:
                 mock_solve.return_value = {}
 
                 with patch("steelo.economic_models.plant_agent.export_commodity_allocations_to_csv"):
-                    # Act
-                    AllocationModel.run(mock_bus)
+                    with patch("steelo.economic_models.plant_agent.plot_process_graph"):
+                        # Act
+                        AllocationModel.run(mock_bus)
 
         # Assert
         mock_bus.env.get_active_trade_tariffs.assert_called_once()
@@ -56,7 +57,7 @@ class TestAllocationModelBusinessLogic:
         assert "active_trade_tariffs" in call_kwargs
         assert len(call_kwargs["active_trade_tariffs"]) == 1
 
-    def test_tariff_handling_with_tariffs_disabled(self):
+    def test_tariff_handling_with_tariffs_disabled(self, tmp_path):
         """Test that tariff handling is skipped when include_tariffs is False."""
         # Setup
         mock_bus = MagicMock()
@@ -68,7 +69,7 @@ class TestAllocationModelBusinessLogic:
         mock_bus.env.secondary_feedstock_constraints = []
         mock_bus.env.aggregated_metallic_charge_constraints = []
         mock_bus.env.transport_kpis = []
-        mock_bus.env.output_dir = Path("/test/output")
+        mock_bus.env.output_dir = tmp_path
         mock_bus.uow.repository = MagicMock()
 
         mock_bus.env.get_active_trade_tariffs = MagicMock()
@@ -83,8 +84,9 @@ class TestAllocationModelBusinessLogic:
                 mock_solve.return_value = {}
 
                 with patch("steelo.economic_models.plant_agent.export_commodity_allocations_to_csv"):
-                    # Act
-                    AllocationModel.run(mock_bus)
+                    with patch("steelo.economic_models.plant_agent.plot_process_graph"):
+                        # Act
+                        AllocationModel.run(mock_bus)
 
         # Assert - tariffs should not be fetched
         mock_bus.env.get_active_trade_tariffs.assert_not_called()
@@ -350,7 +352,7 @@ class TestAllocationModelVisualization:
 class TestAllocationModelEventHandling:
     """Test event handling and state management."""
 
-    def test_steel_allocations_calculated_event_published(self):
+    def test_steel_allocations_calculated_event_published(self, tmp_path):
         """Test that SteelAllocationsCalculated event is published when allocations exist."""
         # Setup
         mock_bus = MagicMock()
@@ -362,7 +364,7 @@ class TestAllocationModelEventHandling:
         mock_bus.env.secondary_feedstock_constraints = []
         mock_bus.env.aggregated_metallic_charge_constraints = []
         mock_bus.env.transport_kpis = []
-        mock_bus.env.output_dir = Path("/test/output")
+        mock_bus.env.output_dir = tmp_path
         mock_bus.uow.repository = MagicMock()
 
         mock_allocations = {"test": "allocation_data"}
@@ -378,10 +380,11 @@ class TestAllocationModelEventHandling:
                 mock_solve.return_value = {}
 
                 with patch("steelo.economic_models.plant_agent.export_commodity_allocations_to_csv"):
-                    with patch("builtins.open", create=True):
-                        with patch("steelo.economic_models.plant_agent.pickle.dump"):
-                            # Act
-                            AllocationModel.run(mock_bus)
+                    with patch("steelo.economic_models.plant_agent.plot_process_graph"):
+                        with patch("builtins.open", create=True):
+                            with patch("steelo.economic_models.plant_agent.pickle.dump"):
+                                # Act
+                                AllocationModel.run(mock_bus)
 
         # Assert
         mock_bus.handle.assert_called()
@@ -389,7 +392,7 @@ class TestAllocationModelEventHandling:
         assert isinstance(event, SteelAllocationsCalculated)
         assert event.trade_allocations == mock_allocations
 
-    def test_steel_allocations_calculated_event_not_published_when_no_allocations(self):
+    def test_steel_allocations_calculated_event_not_published_when_no_allocations(self, tmp_path):
         """Test that event is not published when allocations don't exist."""
         # Setup
         mock_bus = MagicMock()
@@ -401,7 +404,7 @@ class TestAllocationModelEventHandling:
         mock_bus.env.secondary_feedstock_constraints = []
         mock_bus.env.aggregated_metallic_charge_constraints = []
         mock_bus.env.transport_kpis = []
-        mock_bus.env.output_dir = Path("/test/output")
+        mock_bus.env.output_dir = tmp_path
         mock_bus.uow.repository = MagicMock()
 
         with patch("steelo.economic_models.plant_agent.set_up_steel_trade_lp") as mock_setup:
@@ -415,8 +418,9 @@ class TestAllocationModelEventHandling:
                 mock_solve.return_value = {}
 
                 with patch("steelo.economic_models.plant_agent.export_commodity_allocations_to_csv"):
-                    # Act
-                    AllocationModel.run(mock_bus)
+                    with patch("steelo.economic_models.plant_agent.plot_process_graph"):
+                        # Act
+                        AllocationModel.run(mock_bus)
 
         # Assert
         mock_bus.handle.assert_not_called()
@@ -490,7 +494,7 @@ class TestAllocationModelErrorHandling:
 class TestAllocationModelIntegrationPoints:
     """Test integration with other components."""
 
-    def test_secondary_feedstock_constraints_processing(self):
+    def test_secondary_feedstock_constraints_processing(self, tmp_path):
         """Test that secondary feedstock constraints are processed correctly."""
         # Setup
         mock_bus = MagicMock()
@@ -507,7 +511,7 @@ class TestAllocationModelIntegrationPoints:
         ]
         mock_bus.env.aggregated_metallic_charge_constraints = []
         mock_bus.env.transport_kpis = []
-        mock_bus.env.output_dir = Path("/test/output")
+        mock_bus.env.output_dir = tmp_path
         mock_bus.uow.repository = MagicMock()
 
         mock_filtered_constraints = [mock_bus.env.secondary_feedstock_constraints[1]]
@@ -529,8 +533,9 @@ class TestAllocationModelIntegrationPoints:
                 mock_solve.return_value = {}
 
                 with patch("steelo.economic_models.plant_agent.export_commodity_allocations_to_csv"):
-                    # Act
-                    AllocationModel.run(mock_bus)
+                    with patch("steelo.economic_models.plant_agent.plot_process_graph"):
+                        # Act
+                        AllocationModel.run(mock_bus)
 
         # Assert
         mock_bus.env.relevant_secondary_feedstock_constraints.assert_called_once()
@@ -540,7 +545,7 @@ class TestAllocationModelIntegrationPoints:
         call_kwargs = mock_setup.call_args.kwargs
         assert call_kwargs["secondary_feedstock_constraints"] == mock_filtered_constraints
 
-    def test_aggregated_metallic_charge_constraints(self):
+    def test_aggregated_metallic_charge_constraints(self, tmp_path):
         """Test that aggregated metallic charge constraints are passed correctly."""
         # Setup
         mock_bus = MagicMock()
@@ -556,7 +561,7 @@ class TestAllocationModelIntegrationPoints:
             MagicMock(name="constraint2"),
         ]
         mock_bus.env.transport_kpis = []
-        mock_bus.env.output_dir = Path("/test/output")
+        mock_bus.env.output_dir = tmp_path
         mock_bus.uow.repository = MagicMock()
 
         mock_bus.env.get_active_trade_tariffs = MagicMock()
@@ -575,8 +580,9 @@ class TestAllocationModelIntegrationPoints:
                 mock_solve.return_value = {}
 
                 with patch("steelo.economic_models.plant_agent.export_commodity_allocations_to_csv"):
-                    # Act
-                    AllocationModel.run(mock_bus)
+                    with patch("steelo.economic_models.plant_agent.plot_process_graph"):
+                        # Act
+                        AllocationModel.run(mock_bus)
 
         # Assert
         mock_setup.assert_called_once()

@@ -992,7 +992,19 @@ print("[OK] All NetCDF4 and HDF5 packages are installed")
       }
       
       console.log('[OK] Complete python-build-standalone copied');
-      
+
+      // Remove GNU libiconv from python-build-standalone on macOS.
+      // It exports _libiconv (GNU names) but pyogrio/fiona's libgdal expects _iconv (POSIX names)
+      // from the system /usr/lib/libiconv.2.dylib. DYLD_LIBRARY_PATH causes the bundled GNU version
+      // to shadow the system one, breaking geopandas shapefile reading.
+      if (IS_MAC) {
+        const gnuLibiconv = path.join(pythonDir, 'lib', 'libiconv.2.dylib');
+        if (fs.existsSync(gnuLibiconv)) {
+          fs.unlinkSync(gnuLibiconv);
+          console.log('[OK] Removed GNU libiconv.2.dylib (system libiconv will be used instead)');
+        }
+      }
+
       // CRITICAL: Verify bundled libpython shared library exists
       const libDir = path.join(pythonDir, 'lib');
       let libpythonFound = false;

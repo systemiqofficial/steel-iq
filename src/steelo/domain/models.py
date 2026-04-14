@@ -3963,6 +3963,10 @@ class Plant:
                 logger.debug(f"[FG STRATEGY]   - Capacity: {furnace_group.capacity * T_TO_KT:,.0f} kt")
                 logger.debug(f"[FG STRATEGY]   - Equity share: {furnace_group.equity_share:.1%}")
                 logger.debug(f"[FG STRATEGY]   - Total cost: ${renovate_cost:,.2f}")
+                logger.info(
+                    f"[FG STRATEGY]   - Plant balance: ${self.balance:,.2f}, "
+                    f"headroom: ${self.balance - renovate_cost:,.2f}"
+                )
 
                 # Check affordability
                 if renovate_cost > self.balance:
@@ -4015,6 +4019,9 @@ class Plant:
         logger.debug(f"[FG STRATEGY]   - Capacity: {furnace_group.capacity * T_TO_KT:,.0f} kt")
         logger.debug(f"[FG STRATEGY]   - Equity share: {furnace_group.equity_share:.1%}")
         logger.debug(f"[FG STRATEGY]   - Total cost: ${switch_cost:,.2f}")
+        logger.info(
+            f"[FG STRATEGY]   - Plant balance: ${self.balance:,.2f}, headroom: ${self.balance - switch_cost:,.2f}"
+        )
 
         # Check affordability
         if switch_cost > self.balance:
