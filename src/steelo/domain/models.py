@@ -2183,7 +2183,6 @@ class FurnaceGroup:
         capex_dict: dict[str, float],
         capex_renovation_share: dict[str, float],
         technology_fopex_dict: dict[str, float],
-        _smelter_furnace: bool,
         dynamic_business_cases: dict[str, list[PrimaryFeedstock]],
         chosen_emissions_boundary_for_carbon_costs: str,
         technology_emission_factors: list[TechnologyEmissionFactors],
@@ -4709,7 +4708,7 @@ class PlantGroup:
                             # check if other furnace group produces hot metal and is within hot metal radius of the BOF plant
                             if (
                                 other_fg.technology.name.lower() in ["bf", "esf", "sr"]
-                                and plant.distance_to(other_plant) <= hot_metal_radius
+                                and plant.distance_to(other_plant.location) <= hot_metal_radius
                             ):
                                 fg.has_hot_metal_access = True
                                 plant.has_hot_metal_access = True
