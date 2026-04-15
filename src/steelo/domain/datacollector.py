@@ -23,7 +23,8 @@ class DataCollector:
         self.cost_breakdown: dict[str, dict] = {}
         self.trace_capacity: dict[int, dict[str, float]] = {}
         self.trace_price: dict[int, dict[str, float]] = {}  # {year: {product: price}}
-        # self.trace_cost_curve = {}
+        self.trace_cost_curve: dict[int, dict[str, list[dict]]] = {}  # {year: {product: [per-FG entries]}}
+        self.trace_demand: dict[int, dict[str, float]] = {}  # {year: {product: demand_forecast}}
         self.trace_production: dict[int, float] = {}
         self.step = 0
         self.plant_emissions: dict[int, float] = {}

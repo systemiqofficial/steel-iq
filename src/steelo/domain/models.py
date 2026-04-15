@@ -7766,6 +7766,67 @@ class Environment:
             lag=lag,
         )
 
+    def get_cost_curve_for_plotting(
+        self, world_plants: list["Plant"], iso3_to_region_map: dict[str, str] | None = None
+    ) -> dict[str, list[dict]]:
+        """Return cost curve data matching the exact filtering used for market price calculations.
+
+        Uses the same criteria as _generate_cost_dict(lag=0): active status, capacity > 0,
+        production > MINIMUM_PRODUCTION_VOLUME, utilization > MINIMUM_UTILIZATION_RATE.
+        Enriches each entry with technology name and region for plot coloring.
+
+        Args:
+            world_plants: List of plants (needed to get iso3 per furnace group).
+            iso3_to_region_map: Optional mapping from ISO3 codes to region names
+                (e.g. "CHN" → "China"). Uses Location.region as fallback.
+
+        Returns:
+            Dict mapping product ("steel"/"iron") to a list of per-FG dicts, sorted by
+            unit_cost ascending, each containing: furnace_group_id, technology, region,
+            capacity, unit_cost_of_production, cumulative_capacity.
+        """
+        result: dict[str, list[dict]] = {"steel": [], "iron": []}
+        for plant in world_plants:
+            iso3 = plant.location.iso3 if plant.location else "Unknown"
+            if iso3_to_region_map and iso3 in iso3_to_region_map:
+                region = iso3_to_region_map[iso3]
+            elif plant.location and plant.location.region:
+                region = plant.location.region
+            else:
+                region = "Unknown"
+            for fg in plant.furnace_groups:
+                product = fg.technology.product
+                if not isinstance(product, str) or product.lower() not in result:
+                    continue
+                if (
+                    fg.status.lower() not in self.config.active_statuses
+                    or fg.capacity == 0
+                    or fg.production <= MINIMUM_PRODUCTION_VOLUME_FOR_COST_CURVE
+                    or fg.utilization_rate <= MINIMUM_UTILIZATION_RATE_FOR_COST_CURVE
+                ):
+                    continue
+                result[product.lower()].append(
+                    {
+                        "furnace_group_id": fg.furnace_group_id,
+                        "technology": fg.technology.name,
+                        "region": region,
+                        "iso3": iso3,
+                        "capacity": self.config.capacity_limit * float(fg.capacity),
+                        "unit_cost_of_production": fg.unit_production_cost,
+                    }
+                )
+
+        # Sort by cost and compute cumulative capacity (same as generate_cost_curve)
+        for product in result:
+            entries = sorted(result[product], key=lambda e: e["unit_cost_of_production"])
+            cumulative = 0.0
+            for entry in entries:
+                cumulative += entry["capacity"]
+                entry["cumulative_capacity"] = cumulative
+            result[product] = entries
+
+        return result
+
     def extract_price_from_costcurve(self, demand: float, product: str, future: bool = False) -> float:
         """
         Return the production cost for the first cumulative capacity that meets or exceeds the demand.

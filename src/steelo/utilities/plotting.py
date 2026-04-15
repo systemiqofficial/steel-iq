@@ -3365,6 +3365,166 @@ def plot_cost_curve_step_from_dataframe(
         logger.error(f"Failed to save CSV for cost curve plot: {e}")
 
 
+def plot_cost_curve_from_trace(
+    cost_curve_entries: list[dict],
+    demand: float,
+    product_type: str,
+    year: int,
+    aggregation: str = "region",
+    plot_paths: Optional["PlotPaths"] = None,
+):
+    """Plot cost curve from the exact data used for market price / NPV calculations.
+
+    Unlike plot_cost_curve_step_from_dataframe (which reconstructs from post-processed CSVs),
+    this function uses the traced cost curve data that mirrors Environment._generate_cost_dict
+    filtering: same FGs, same capacity scaling, same ordering. The demand line reflects the
+    demand forecast (not actual production).
+
+    Args:
+        cost_curve_entries: List of per-FG dicts with keys: furnace_group_id, technology,
+            region, iso3, capacity, unit_cost_of_production, cumulative_capacity.
+        demand: Demand forecast in the same units as capacity (tonnes).
+        product_type: "steel" or "iron".
+        year: Simulation year (for title/filename).
+        aggregation: "region" or "technology" — determines bar coloring.
+        plot_paths: PlotPaths with pam_plots_dir for saving.
+    """
+    if not cost_curve_entries:
+        logger.warning(f"No cost curve trace data for {product_type} in {year}. Skipping.")
+        return
+
+    logger.info(
+        f"[MARKET COST CURVE] Plotting {product_type} {year}: {len(cost_curve_entries)} FGs, "
+        f"total capacity={sum(e['capacity'] for e in cost_curve_entries):,.0f}, "
+        f"demand={demand:,.0f}, "
+        f"regions={set(e.get('region', 'Unknown') for e in cost_curve_entries)}"
+    )
+
+    if aggregation == "region":
+        colour_scheme = region2colours
+    elif aggregation == "technology":
+        colour_scheme = tech2colours
+    else:
+        colour_scheme = region2colours
+        aggregation = "region"
+
+    # Entries are already sorted by unit_cost_of_production and have cumulative_capacity
+    fig, ax = plt.subplots(figsize=(10, 6))
+    cum_x = 0.0
+
+    for entry in cost_curve_entries:
+        cost = entry["unit_cost_of_production"]
+        cap = entry["capacity"]
+        agg_label = entry.get(aggregation, "Unknown")
+        color = colour_scheme.get(agg_label, "#8c8c8c")
+
+        x0 = cum_x
+        x1 = cum_x + cap
+        ax.fill_between([x0, x1], [cost, cost], [0, 0], color=color, step="pre", linewidth=0)
+        ax.hlines(y=cost, xmin=x0, xmax=x1, colors="black", linewidth=0.4, zorder=2)
+        cum_x = x1
+
+    # Dashed vertical lines at step boundaries
+    for i in range(len(cost_curve_entries) - 1):
+        boundary_x = cost_curve_entries[i]["cumulative_capacity"]
+        y0 = cost_curve_entries[i]["unit_cost_of_production"]
+        y1 = cost_curve_entries[i + 1]["unit_cost_of_production"]
+        ax.vlines(x=boundary_x, ymin=y0, ymax=y1, colors="gray", linewidth=0.6, linestyle="--", zorder=1)
+
+    total_capacity = cost_curve_entries[-1]["cumulative_capacity"] if cost_curve_entries else 0
+    demand_line_x = min(float(demand), total_capacity) if total_capacity > 0 else 0.0
+
+    # Determine clearing cost (same logic as _compute_market_clearing)
+    clearing_cost = cost_curve_entries[-1]["unit_cost_of_production"]
+    for entry in cost_curve_entries:
+        if entry["cumulative_capacity"] >= demand:
+            clearing_cost = entry["unit_cost_of_production"]
+            break
+
+    # Legend
+    all_labels = {entry.get(aggregation, "Unknown") for entry in cost_curve_entries}
+    legend_handles = [Patch(color=colour_scheme.get(lbl, "#8c8c8c"), label=lbl) for lbl in sorted(all_labels)]
+    ax.legend(handles=legend_handles, title=aggregation.capitalize(), loc="upper left", frameon=False)
+
+    # Axis limits
+    if cum_x > 0:
+        ax.set_xlim(0, max(total_capacity, demand_line_x) * 1.02)
+    else:
+        ax.set_xlim(0, 1)
+
+    max_cost = max(e["unit_cost_of_production"] for e in cost_curve_entries)
+    outlier_cap = 2000.0
+    y_limit = min(max_cost * 1.1, outlier_cap) if max_cost > 0 else 1000
+    ax.set_ylim(0, y_limit)
+
+    ax.set_xlabel("Cumulative Capacity [t]")
+    ax.set_ylabel("Production Cost ($/t)")
+    ax.set_title(f"Cost curve for {product_type} in {year} (as used in market price)")
+
+    # Clearing price / demand lines
+    display_clearing_cost = min(clearing_cost, ax.get_ylim()[1])
+    ax.axhline(y=display_clearing_cost, color="r", linestyle="--", linewidth=1.2, zorder=7)
+    ax.axvline(x=demand_line_x, color="r", linestyle="--", linewidth=1.2, zorder=7)
+
+    annotation_text = f"Market clearing price = {clearing_cost:.1f} $/t"
+    if demand > total_capacity:
+        annotation_text += "\n(Demand exceeds available supply)"
+    x_min, x_max = ax.get_xlim()
+    y_min, y_max = ax.get_ylim()
+    x_span = max(x_max - x_min, 1e-6)
+    y_span = max(y_max - y_min, 1e-6)
+    text_x = min(demand_line_x - 0.1 * x_span, x_max - 0.05 * x_span)
+    if text_x <= x_min:
+        text_x = x_min + 0.05 * x_span
+    text_y = display_clearing_cost + 0.15 * y_span
+    if text_y >= y_max:
+        text_y = y_max - 0.05 * y_span
+    ax.text(
+        text_x,
+        text_y,
+        annotation_text,
+        ha="right",
+        va="bottom",
+        color="black",
+        fontsize=10,
+        bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.8),
+        zorder=6,
+    )
+
+    plt.tight_layout()
+
+    if plot_paths is None or plot_paths.pam_plots_dir is None:
+        raise ValueError("plot_paths with pam_plots_dir must be provided when saving plots")
+    pam_plots_dir = plot_paths.pam_plots_dir
+    pam_plots_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{product_type}_market_cost_curve_by_{aggregation}_{year}"
+    fig.savefig(pam_plots_dir / f"{filename}.png", dpi=300)
+    plt.close()
+
+    # Export CSV
+    try:
+        import csv as csv_mod
+
+        csv_path = pam_plots_dir / f"{filename}.csv"
+        fieldnames = [
+            "furnace_group_id",
+            "technology",
+            "region",
+            "iso3",
+            "capacity",
+            "unit_cost_of_production",
+            "cumulative_capacity",
+        ]
+        with csv_path.open("w", newline="") as f:
+            writer = csv_mod.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(cost_curve_entries)
+        logger.info(f"Saved market cost curve data to {csv_path}")
+    except Exception as e:
+        logger.error(f"Failed to save CSV for market cost curve: {e}")
+
+
 def plot_geo_layers(
     dataset: xr.Dataset,
     plot_paths: Optional["PlotPaths"] = None,

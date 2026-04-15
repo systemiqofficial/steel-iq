@@ -1241,6 +1241,22 @@ class SimulationRunner:
                     f"Year {bus.env.year} prices - Steel: ${prices['steel']:.2f}/t, Iron: ${prices['iron']:.2f}/t"
                 )
 
+                # Capture the actual cost curve and demand forecast used for market price / NPV
+                iso3_to_region = {}
+                if hasattr(bus.env, "country_mappings") and bus.env.country_mappings is not None:
+                    try:
+                        iso3_to_region = bus.env.country_mappings.iso3_to_region()
+                    except Exception:
+                        logger.warning("Could not resolve iso3_to_region mapping for cost curve trace")
+                data_collector.trace_cost_curve[bus.env.year] = bus.env.get_cost_curve_for_plotting(
+                    world_plants=bus.uow.plants.list(),
+                    iso3_to_region_map=iso3_to_region,
+                )
+                data_collector.trace_demand[bus.env.year] = {
+                    "steel": float(bus.env.current_demand),
+                    "iron": float(bus.env.iron_demand),
+                }
+
                 # Collect international iron trade volumes
                 if bus.env.trade_allocations is not None:
                     data_collector.collect_international_iron_trade(
@@ -1318,9 +1334,17 @@ class SimulationRunner:
         plot_map_of_new_plants_operating(data_collector.new_plant_locations, plot_paths=bus.env.plot_paths)
         generate_post_run_cap_prod_plots(
             file_path=output_path,
-            capacity_limit=bus.env.config.capacity_limit,
-            steel_demand=bus.env.current_demand,
-            iron_demand=bus.env.iron_demand,
+            plot_paths=bus.env.plot_paths,
+        )
+
+        # Generate cost curves from traced data (matches exact market price / NPV inputs)
+        from steelo.adapters.dataprocessing.postprocessing.generate_post_run_plots import (
+            generate_market_cost_curve_plots,
+        )
+
+        generate_market_cost_curve_plots(
+            trace_cost_curve=data_collector.trace_cost_curve,
+            trace_demand=data_collector.trace_demand,
             plot_paths=bus.env.plot_paths,
         )
 
