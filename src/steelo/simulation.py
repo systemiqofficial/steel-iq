@@ -1257,6 +1257,30 @@ class SimulationRunner:
                     "iron": float(bus.env.iron_demand),
                 }
 
+                # Log top 20 most expensive producers per product, with cost breakdown
+                for product_type in ("steel", "iron"):
+                    entries = data_collector.trace_cost_curve[bus.env.year].get(product_type, [])
+                    if not entries:
+                        continue
+                    top_20 = sorted(entries, key=lambda e: e["unit_cost_of_production"], reverse=True)[:20]
+                    logger.info(
+                        f"[COST CURVE TOP-20] Year {bus.env.year} — most expensive {product_type} producers "
+                        f"($/t, sorted by total unit cost):"
+                    )
+                    logger.info(
+                        f"  {'fg_id':<32} {'tech':<14} {'iso3':<5} "
+                        f"{'total':>8} {'vopex':>8} {'fopex':>8} {'carbon':>8} {'debt':>8} {'sec_out':>8} {'util':>6}"
+                    )
+                    for e in top_20:
+                        logger.info(
+                            f"  {str(e['furnace_group_id'])[:32]:<32} {str(e['technology'])[:14]:<14} "
+                            f"{str(e['iso3'])[:5]:<5} "
+                            f"{e['unit_cost_of_production']:>8.1f} "
+                            f"{e['unit_vopex']:>8.1f} {e['unit_fopex']:>8.1f} "
+                            f"{e['unit_carbon_cost']:>8.1f} {e['unit_debt_repayment']:>8.1f} "
+                            f"{e['unit_secondary_output_adj']:>8.1f} {e['utilization_rate']:>6.2f}"
+                        )
+
                 # Collect international iron trade volumes
                 if bus.env.trade_allocations is not None:
                     data_collector.collect_international_iron_trade(

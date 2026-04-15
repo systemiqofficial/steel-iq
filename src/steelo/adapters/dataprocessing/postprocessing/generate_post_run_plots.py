@@ -184,13 +184,7 @@ def generate_market_cost_curve_plots(
         logger.warning("No traced cost curve data available. Skipping market cost curve plots.")
         return
 
-    years = sorted(trace_cost_curve.keys())
-    first_year = years[0]
-    last_year = years[-1]
-
-    years_to_plot = list(range(first_year, last_year + 1, 5))
-    if last_year not in years_to_plot:
-        years_to_plot.append(last_year)
+    years_to_plot = sorted(trace_cost_curve.keys())
 
     for year in years_to_plot:
         if year not in trace_cost_curve:

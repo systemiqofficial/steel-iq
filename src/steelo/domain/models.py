@@ -7813,6 +7813,14 @@ class Environment:
                         "iso3": iso3,
                         "capacity": self.config.capacity_limit * float(fg.capacity),
                         "unit_cost_of_production": fg.unit_production_cost,
+                        # Cost breakdown components ($/t)
+                        "unit_vopex": fg.unit_vopex,
+                        "unit_fopex": fg.unit_fopex,
+                        "unit_total_opex": fg.unit_total_opex,
+                        "unit_carbon_cost": fg.carbon_cost_per_unit,
+                        "unit_debt_repayment": fg.unit_current_debt_repayment,
+                        "unit_secondary_output_adj": fg.cost_adjustments_from_secondary_outputs,
+                        "utilization_rate": fg.utilization_rate,
                     }
                 )
 
