@@ -38,6 +38,8 @@ COLD_TO_HOT_COMMODITY = {
     "hbi_high": "dri_high",
     "electrolytic_iron": "liquid_iron",
 }
+# Reverse mapping: hot (close) → cold (distant) for relabeling flows that exceed the radius
+HOT_TO_COLD_COMMODITY = {hot: cold for cold, hot in COLD_TO_HOT_COMMODITY.items()}
 
 
 def _substitute_commodity_by_distance(
@@ -45,19 +47,26 @@ def _substitute_commodity_by_distance(
     distance_km: float,
     config: "SimulationConfig",
 ):
-    """Substitute cold commodity with hot version if distance allows.
+    """Relabel commodity based on transport distance.
 
-    LP uses only cold commodities (pig_iron, hbi_*, electrolytic_iron) to avoid
-    distance-based infeasibility. During disaggregation, we substitute hot versions
-    (hot_metal, dri_*, liquid_iron) when FGs are close enough.
+    Commodities in COLD_TO_HOT_COMMODITY have a hot (close-transport) and cold
+    (long-distance) form that represent the same physical product in different
+    thermal/transport states. We align the label with the actual distance:
+
+    - Cold → Hot when the flow is within `hot_metal_radius` (transport is close enough
+      to keep the product hot, e.g. pig_iron → hot_metal).
+    - Hot → Cold when the flow exceeds `hot_metal_radius` (the LP allocated hot but
+      the actual route is too long, so the physical flow must be the cold form,
+      e.g. dri_high → hbi_high).
 
     Args:
-        commodity: Original commodity from LP (cold version) - can be Commodity object or string
-        distance_km: Distance between source and destination
-        config: Config with hot_metal_radius
+        commodity: Original commodity from LP — can be Commodity object or string.
+        distance_km: Distance between source and destination.
+        config: Config with `hot_metal_radius`.
 
     Returns:
-        Commodity object (hot if close, cold if far) - returns same type as input
+        Commodity with label matching the actual transport distance — returns same
+        type (Commodity object or string) as input.
     """
     # Import here to avoid circular dependency
     from steelo.domain.trade_modelling.trade_lp_modelling import Commodity
@@ -70,16 +79,96 @@ def _substitute_commodity_by_distance(
         commodity_name = str(commodity).lower()
         is_commodity_object = False
 
-    # Check if this is a cold commodity that has a hot equivalent
+    # Cold → Hot when route is short enough to keep the product hot
     if commodity_name in COLD_TO_HOT_COMMODITY:
-        # If within hot metal radius, use hot version
         if distance_km <= config.hot_metal_radius:
             hot_name = COLD_TO_HOT_COMMODITY[commodity_name]
-            # Return same type as input
             return Commodity(name=hot_name) if is_commodity_object else hot_name
+
+    # Hot → Cold when route exceeds the radius (physical flow must be cold form)
+    elif commodity_name in HOT_TO_COLD_COMMODITY:
+        if distance_km > config.hot_metal_radius:
+            cold_name = HOT_TO_COLD_COMMODITY[commodity_name]
+            return Commodity(name=cold_name) if is_commodity_object else cold_name
 
     # Otherwise keep original commodity
     return commodity
+
+
+def _commodity_equivalent_names(commodity) -> set[str]:
+    """Return the commodity name plus its hot/cold equivalent, all lowercased.
+
+    Feedstock and aggregated-constraint data can reference either form (e.g.
+    `hot_metal` or `pig_iron`), so we compare against the full equivalence class.
+    """
+    commodity_name = (commodity.name if hasattr(commodity, "name") else str(commodity)).lower()
+    equivalent_names = {commodity_name}
+    if commodity_name in COLD_TO_HOT_COMMODITY:
+        equivalent_names.add(COLD_TO_HOT_COMMODITY[commodity_name])
+    if commodity_name in HOT_TO_COLD_COMMODITY:
+        equivalent_names.add(HOT_TO_COLD_COMMODITY[commodity_name])
+    return equivalent_names
+
+
+def _destination_has_min_constraint_for_commodity(
+    to_meta_fg: "MetaFurnaceGroup",
+    commodity,
+    aggregated_constraints: list | None = None,
+) -> bool:
+    """Return True if `to_meta_fg`'s technology requires a minimum share of `commodity`.
+
+    Two sources of minimum-share constraints are consulted:
+
+    1. **Individual feedstock constraints** on `PrimaryFeedstock.minimum_share_in_product`
+       (from `to_meta_fg.dynamic_business_case`). A feedstock with
+       `minimum_share_in_product > 0` whose `metallic_charge` matches the commodity
+       (or its hot/cold equivalent) counts as a minimum.
+
+    2. **Aggregated wildcard constraints** (`AggregatedMetallicChargeConstraint`) —
+       e.g. `BOF`, pattern `hot_metal`, `minimum_share=0.70`. We match when the
+       constraint's `technology_name` equals `to_meta_fg.technology_name` AND the
+       commodity's name (or its hot/cold equivalent) starts with `feedstock_pattern`.
+
+    A minimum from either source means we cannot route the commodity via an
+    out-of-radius edge without physically breaking the constraint.
+
+    Args:
+        to_meta_fg: Destination meta-furnace group.
+        commodity: Commodity object (or string) being transported.
+        aggregated_constraints: Optional list of `AggregatedMetallicChargeConstraint`
+            from the environment (typically `bus.env.aggregated_metallic_charge_constraints`).
+
+    Returns:
+        True if any matching minimum-share constraint exists.
+    """
+    equivalent_names = _commodity_equivalent_names(commodity)
+
+    # 1. Individual feedstock minimums
+    if to_meta_fg.dynamic_business_case:
+        for feedstock in to_meta_fg.dynamic_business_case:
+            min_share = getattr(feedstock, "minimum_share_in_product", None)
+            if min_share is None or min_share <= 0:
+                continue
+            fs_charge = str(getattr(feedstock, "metallic_charge", "")).lower()
+            if fs_charge in equivalent_names:
+                return True
+
+    # 2. Aggregated wildcard constraints (e.g. BOF hot_metal* min=0.70)
+    if aggregated_constraints:
+        dest_tech = to_meta_fg.technology_name.lower()
+        for c in aggregated_constraints:
+            min_share = getattr(c, "minimum_share", None)
+            if min_share is None or min_share <= 0:
+                continue
+            if str(getattr(c, "technology_name", "")).lower() != dest_tech:
+                continue
+            pattern = str(getattr(c, "feedstock_pattern", "")).lower()
+            if not pattern:
+                continue
+            if any(name.startswith(pattern) for name in equivalent_names):
+                return True
+
+    return False
 
 
 def _build_transport_cost_lookup(transport_kpis: list | None) -> dict[tuple[str, str, str], float]:
@@ -339,12 +428,53 @@ def cluster_furnace_groups(
     """
     logger.info("[CLUSTERING] Starting furnace group clustering...")
 
-    # Step 1: Collect all active furnace groups with their plants
+    # Step 1: Collect all active furnace groups with their plants.
+    # Drop BOFs that have no active, in-country BF/ESF/SR within hot_metal_radius.
+    #
+    # The domain-model flag fg.has_hot_metal_access (set by PlantGroup.update_hot_metal_access)
+    # is too permissive: PlantGroups can span countries, so a BOF near a border may get access
+    # from a BF in a neighbouring country. Clustering is per-ISO3, so that cross-border BF ends
+    # up in a different cluster and the BOF has no in-cluster source. Similarly, an inactive BF
+    # at the same plant gives the flag but isn't in any cluster.
+    #
+    # We therefore build a location index of active hot-metal producers first, then check each
+    # BOF against it using same-ISO3 + within-radius.
+
+    # 1a. Index active hot-metal producers by country
+    hot_metal_producers_by_iso3: dict[str, list[tuple[FurnaceGroup, Plant]]] = {}
+    for plant in plants:
+        for fg in plant.furnace_groups:
+            if fg.status.lower() in config.active_statuses and fg.technology.name.lower() in ("bf", "esf", "sr"):
+                iso3 = plant.location.iso3
+                hot_metal_producers_by_iso3.setdefault(iso3, []).append((fg, plant))
+
+    # 1b. Collect active FGs, filtering BOFs without an in-country producer within radius
     active_fgs: list[tuple[FurnaceGroup, Plant]] = []
+    filtered_bofs_no_hot_metal = 0
     for plant in plants:
         for fg in plant.furnace_groups:
             if fg.status.lower() in config.active_statuses:
+                if fg.technology.name.lower() == "bof":
+                    iso3 = plant.location.iso3
+                    producers = hot_metal_producers_by_iso3.get(iso3, [])
+                    has_in_country_access = any(
+                        plant.distance_to(p.location) <= config.hot_metal_radius for _, p in producers
+                    )
+                    if not has_in_country_access:
+                        filtered_bofs_no_hot_metal += 1
+                        logger.debug(
+                            f"[CLUSTERING] Filtering BOF FG {fg.furnace_group_id} "
+                            f"(plant {plant.plant_id}, {iso3}): no active BF/ESF/SR "
+                            f"in same country within {config.hot_metal_radius:.0f} km"
+                        )
+                        continue
                 active_fgs.append((fg, plant))
+
+    if filtered_bofs_no_hot_metal > 0:
+        logger.warning(
+            f"[CLUSTERING] Filtered out {filtered_bofs_no_hot_metal} BOF furnace group(s) "
+            f"without in-country hot-metal access within {config.hot_metal_radius:.0f} km"
+        )
 
     logger.info(f"[CLUSTERING] Found {len(active_fgs)} active furnace groups to cluster")
 
@@ -580,16 +710,10 @@ def _is_flow_feasible(commodity, distance_km: float, config: "SimulationConfig")
     Returns:
         True if the flow is feasible, False if it violates distance constraints
     """
-    # Check if clustering is enabled
-    enable_clustering = getattr(config, "enable_furnace_group_clustering", False)
-
-    # When clustering is enabled, all flows are feasible (cold commodities have no distance limits)
-    if enable_clustering:
-        return True
 
     # OLD BEHAVIOR: Apply distance restrictions for backwards compatibility
     # Convert Commodity object to string if needed
-    commodity_name = str(commodity) if hasattr(commodity, "__str__") else commodity
+    commodity_name = commodity.name if hasattr(commodity, "name") else str(commodity)
 
     # Skip distance checks if config doesn't have product lists
     if not hasattr(config, "closely_allocated_products") or not hasattr(config, "distantly_allocated_products"):
@@ -600,11 +724,6 @@ def _is_flow_feasible(commodity, distance_km: float, config: "SimulationConfig")
     # Closely allocated products can only travel short distances
     if commodity_name in config.closely_allocated_products:
         return is_close
-
-    # Distantly allocated products can only travel long distances
-    elif commodity_name in config.distantly_allocated_products:
-        return not is_close
-
     # All other commodities have no distance restrictions
     else:
         return True
@@ -677,6 +796,8 @@ def _solve_batched_transportation_problem(
     config: "SimulationConfig",
     allocation_costs: dict[tuple[str, str], float] | None = None,  # {(source_id, dest_id): $/ton}
     is_hot_commodity: bool = False,  # Whether this commodity is a hot (close) product
+    strict_radius: bool = False,  # If True, radius-violating edges are omitted and solver failure raises
+    context_label: str = "",  # Optional label for error messages (e.g. "hot_metal → BOF cluster X")
 ) -> tuple[dict[tuple[str, str], float], dict]:
     """Solve batched transportation problem for multiple sources and destinations.
 
@@ -711,6 +832,9 @@ def _solve_batched_transportation_problem(
     # Track statistics
     total_pairs = len(source_supplies) * len(dest_demands)
     infeasible_pairs = 0
+    infeasible_pairs_set: set[tuple[str, str]] = set()  # (source_id, dest_id) pairs that violate hot metal radius
+    # (source_id, dest_id) -> (distance_km, source_iso3, dest_iso3) for all infeasible pairs
+    infeasible_edge_metadata: dict[tuple[str, str], tuple[float, str, str]] = {}
 
     # Very high cost for infeasible flows (essentially infinity)
     INFEASIBLE_COST = int(1e9)
@@ -729,7 +853,14 @@ def _solve_batched_transportation_problem(
 
     if not source_supplies_floored or not dest_demands_floored:
         # No valid sources or destinations after flooring
-        return {}, {"total_pairs": 0, "used_edges": 0, "infeasible_pairs": 0}
+        return {}, {
+            "total_pairs": 0,
+            "used_edges": 0,
+            "infeasible_pairs": 0,
+            "infeasible_flow_volume": 0.0,
+            "total_flow_volume": 0.0,
+            "infeasible_edge_details": [],
+        }
 
     # Calculate total volume from FLOORED dictionaries (integers for NetworkX)
     total_supply = sum(source_supplies_floored.values())
@@ -782,6 +913,7 @@ def _solve_batched_transportation_problem(
             if source_location and dest_location:
                 distance_km = _calculate_distance_km(source_location, dest_location)
                 is_feasible = _is_flow_feasible(commodity, distance_km, config)
+                commodity_name = commodity.name if hasattr(commodity, "name") else str(commodity)
             else:
                 # No location data, assume feasible with zero cost
                 distance_km = 0
@@ -805,6 +937,15 @@ def _solve_batched_transportation_problem(
                 # Infeasible flow: use very high cost (but allow as last resort)
                 cost = INFEASIBLE_COST
                 infeasible_pairs += 1
+                infeasible_pairs_set.add((source_id, dest_id))
+                infeasible_edge_metadata[(source_id, dest_id)] = (
+                    distance_km,
+                    source_location.iso3 if source_location else "unknown",
+                    dest_location.iso3 if dest_location else "unknown",
+                )
+                if strict_radius:
+                    # Hard-infeasible: omit the edge entirely so the solver cannot route across it
+                    continue
 
             # Add edge with capacity = total supply (effectively unbounded)
             max_flow = total_supply
@@ -880,12 +1021,84 @@ def _solve_batched_transportation_problem(
                 f"  Edges: {[(u, v, d.get('capacity'), d.get('weight')) for u, v, d in G.edges(data=True)]}"
             )
 
+        if strict_radius:
+            # In strict mode, infeasibility is a hard error — identify which destinations are unreachable
+            unreachable_dests = []
+            for dest_id in dest_demands:
+                dest_node = f"to_{dest_id}"
+                if dest_node in G and not any(u.startswith("from_") for u in G.predecessors(dest_node)):
+                    unreachable_dests.append((dest_id, dest_demands[dest_id]))
+
+            # For small problems, include every node's supply/demand and every edge
+            # (both feasible and blocked) so the infeasibility can be diagnosed inline.
+            debug_details = ""
+            largest_side = max(len(source_supplies), len(dest_demands))
+            if largest_side <= 10:
+                lines = ["", "  Source supplies:"]
+                for sid, supply in sorted(source_supplies.items(), key=lambda x: -x[1]):
+                    loc = source_locations.get(sid)
+                    iso3 = loc.iso3 if loc else "?"
+                    lines.append(f"    {sid} ({iso3}): {supply:.2f}t supply")
+                lines.append("  Destination demands:")
+                for did, demand in sorted(dest_demands.items(), key=lambda x: -x[1]):
+                    loc = dest_locations.get(did)
+                    iso3 = loc.iso3 if loc else "?"
+                    lines.append(f"    {did} ({iso3}): {demand:.2f}t demand")
+                feasible_lines = []
+                # Only show sources that actually participate in the graph (supply > 0).
+                # Sources with 0 supply (e.g. from _reach_based_source_supplies) were never
+                # evaluated for feasibility, so they'd incorrectly appear as "feasible".
+                active_sources = set(source_supplies_floored.keys())
+                for sid in sorted(active_sources):
+                    src_loc = source_locations.get(sid)
+                    for did, dst_loc in dest_locations.items():
+                        if (sid, did) in infeasible_pairs_set:
+                            continue
+                        if src_loc and dst_loc:
+                            dkm = _calculate_distance_km(src_loc, dst_loc)
+                            feasible_lines.append(f"    {sid} → {did}: {dkm:.0f} km  [feasible]")
+                        else:
+                            feasible_lines.append(f"    {sid} → {did}: (no location data)  [feasible]")
+                if feasible_lines:
+                    lines.append("  Feasible edges (within radius):")
+                    lines.extend(feasible_lines)
+                else:
+                    lines.append(
+                        "  Feasible edges (within radius): NONE — every source is out of radius for every destination"
+                    )
+                if infeasible_edge_metadata:
+                    lines.append("  Blocked edges (radius-violating, omitted from graph):")
+                    for (sid, did), (dkm, src_iso3, dst_iso3) in sorted(infeasible_edge_metadata.items()):
+                        lines.append(f"    {sid} ({src_iso3}) → {did} ({dst_iso3}): {dkm:.0f} km  [blocked]")
+                debug_details = "\n" + "\n".join(lines)
+
+            raise RuntimeError(
+                f"[DISAGGREGATION] STRICT-RADIUS transportation problem infeasible "
+                f"for commodity={commodity_name}"
+                f"{f' ({context_label})' if context_label else ''}. "
+                f"{len(unreachable_dests)} destination(s) have no in-radius supplier. "
+                f"Unreachable: {unreachable_dests[:5]}{'...' if len(unreachable_dests) > 5 else ''}. "
+                f"Total supply={total_supply:.2f}, total demand={total_demand:.2f}."
+                f"{debug_details}"
+            )
+
         # Fallback: return empty flows
-        return {}, {"total_pairs": total_pairs, "used_edges": 0, "infeasible_pairs": infeasible_pairs}
+        return {}, {
+            "total_pairs": total_pairs,
+            "used_edges": 0,
+            "infeasible_pairs": infeasible_pairs,
+            "infeasible_flow_volume": 0.0,
+            "total_flow_volume": 0.0,
+            "infeasible_edge_details": [],
+        }
 
     # Extract non-zero flows (ignore source/sink flows)
     result_flows = {}
     used_edges = 0
+    infeasible_flow_volume = 0.0
+    total_flow_volume = 0.0
+    # (distance_km, volume, source_iso3, dest_iso3) for each violated edge that carried flow
+    infeasible_edge_details: list[tuple[float, float, str, str]] = []
 
     for from_node, destinations in flow_dict.items():
         if from_node.startswith("from_"):
@@ -896,6 +1109,11 @@ def _solve_batched_transportation_problem(
                     dest_id = to_node[3:]  # Remove "to_" prefix
                     result_flows[(source_id, dest_id)] = flow_value
                     used_edges += 1
+                    total_flow_volume += flow_value
+                    if (source_id, dest_id) in infeasible_pairs_set:
+                        infeasible_flow_volume += flow_value
+                        dist_km, src_iso3, dst_iso3 = infeasible_edge_metadata[(source_id, dest_id)]
+                        infeasible_edge_details.append((dist_km, flow_value, src_iso3, dst_iso3))
 
     # Scale flows back to original (pre-flooring) total to preserve exact BOM constraints
     # The flow pattern is correct, we just need to scale to match original volumes
@@ -908,11 +1126,36 @@ def _solve_batched_transportation_problem(
             f"to preserve exact BOM (floored: {total_supply}, original: {original_total_supply:.2f})"
         )
 
+    # Log if any flows ended up on radius-violating edges. For substitutable hot commodities
+    # (those with a cold equivalent in HOT_TO_COLD_COMMODITY), this is resolved downstream by
+    # relabeling the flow to the cold commodity — so we log it at INFO level as a substitution
+    # notice rather than WARNING. For non-substitutable cases, it remains a real violation.
+    if infeasible_flow_volume > 1e-6:
+        commodity_name = commodity.name if hasattr(commodity, "name") else str(commodity)
+        violation_pct = (infeasible_flow_volume / total_flow_volume * 100) if total_flow_volume > 0 else 0.0
+        will_be_substituted = commodity_name.lower() in HOT_TO_COLD_COMMODITY
+        if will_be_substituted:
+            cold_name = HOT_TO_COLD_COMMODITY[commodity_name.lower()]
+            logger.info(
+                f"[HOT_METAL_RADIUS] {commodity_name}: {infeasible_flow_volume:.2f}t "
+                f"({violation_pct:.1f}% of {total_flow_volume:.2f}t total) exceeds radius — "
+                f"will be relabeled to {cold_name} in disaggregated output"
+            )
+        else:
+            logger.warning(
+                f"[HOT_METAL_RADIUS] {commodity_name}: {infeasible_flow_volume:.2f}t "
+                f"({violation_pct:.1f}% of {total_flow_volume:.2f}t total) routed across "
+                f"hot-metal-radius-violating edges (last-resort fallback)"
+            )
+
     # Prepare statistics
     stats = {
         "total_pairs": total_pairs,
         "used_edges": used_edges,
         "infeasible_pairs": infeasible_pairs,
+        "infeasible_flow_volume": infeasible_flow_volume,
+        "total_flow_volume": total_flow_volume,
+        "infeasible_edge_details": infeasible_edge_details,
         "reduction_pct": (1 - used_edges / total_pairs) * 100 if total_pairs > 0 else 0,
     }
 
@@ -967,6 +1210,268 @@ def _validate_fg_can_receive_allocation(fg_id: str, plants_repo: "PlantInMemoryR
         return True  # Assume valid on error
 
 
+def _reach_based_source_supplies(
+    source_capacity_shares: dict[str, float],
+    source_locations: dict[str, Location],
+    dest_demands: dict[str, float],
+    dest_locations: dict[str, Location],
+    hot_metal_radius: float,
+    strict_radius: bool = False,
+    context_label: str = "",
+) -> dict[str, float]:
+    """Split cluster supply by the destination capacity each source can physically reach.
+
+    For HOT commodities like hot_metal / dri_*, an intra-cluster flow is only feasible
+    if the specific source and destination furnace groups are within `hot_metal_radius`.
+    A straight capacity-share split (source_supply = total × source_capacity_share) can
+    strand supply at a source FG whose sibling source covers the local demand, while
+    another physically separated source cluster pocket runs short — even when the LP's
+    aggregate numbers balance.
+
+    This helper instead attributes each destination's demand to the source FGs that can
+    reach it, weighted by source capacity share among the reaching sources. The result:
+
+    - Each destination's demand is exactly allocated (across its reaching sources).
+    - Each source's supply equals the sum of demand it was attributed from reachable dests.
+    - Intra-cluster "pockets" (plants separated by > radius) naturally balance locally.
+
+    When locations are missing for a source/dest, the pair is treated as reachable (no
+    distance constraint enforceable).
+
+    Behaviour when a destination has no reaching source depends on `strict_radius`:
+
+    - `strict_radius=False` (default): the destination's demand is dropped from the
+      supply side. Downstream, the substitution fallback relabels the flow to the cold
+      equivalent so the physical commodity is valid even if the LP allocated it as hot.
+    - `strict_radius=True`: raise `RuntimeError`. Use this when the destination has a
+      BOM minimum-share constraint on the hot commodity — any dropped demand would
+      physically violate that minimum, so silent fallback is not acceptable.
+
+    Args:
+        source_capacity_shares: `from_meta_fg.capacity_shares` (fg_id → share ∈ [0, 1]).
+        source_locations: fg_id → Location for every source FG.
+        dest_demands: fg_id → demand volume for valid destinations.
+        dest_locations: fg_id → Location for every destination FG.
+        hot_metal_radius: km; pairs beyond this are considered unreachable.
+        strict_radius: If True, raise when a dest has no in-radius source instead of
+            silently dropping demand.
+        context_label: Optional label included in the strict-mode error message
+            (e.g. "hot_metal → cluster_BOF__DEU (BOF, min-constraint)").
+
+    Returns:
+        fg_id → supply volume for every source FG, including zeros for isolated sources.
+
+    Raises:
+        RuntimeError: If `strict_radius=True` and one or more destinations have no
+            source within `hot_metal_radius`.
+    """
+    supplies: dict[str, float] = {sid: 0.0 for sid in source_capacity_shares}
+    # (dest_id, demand, dest_location, sorted_source_distances) for unreachable dests
+    unreachable: list[tuple[str, float, "Location | None", list[tuple[str, float]]]] = []
+
+    for did, demand in dest_demands.items():
+        dloc = dest_locations.get(did)
+        # Collect sources that can reach this destination, with their capacity shares
+        reaching: list[tuple[str, float]] = []
+        for sid, cap_share in source_capacity_shares.items():
+            sloc = source_locations.get(sid)
+            if sloc is None or dloc is None:
+                # No location data → assume reachable (can't enforce)
+                reaching.append((sid, cap_share))
+                continue
+            if _calculate_distance_km(sloc, dloc) <= hot_metal_radius:
+                reaching.append((sid, cap_share))
+        if not reaching:
+            if strict_radius:
+                # Collect every source distance for this dest so the error can show
+                # how far the nearest in-cluster source is.
+                source_distances: list[tuple[str, float]] = []
+                if dloc is not None:
+                    for sid in source_capacity_shares:
+                        sloc = source_locations.get(sid)
+                        if sloc is not None:
+                            source_distances.append((sid, _calculate_distance_km(sloc, dloc)))
+                    source_distances.sort(key=lambda x: x[1])
+                unreachable.append((did, demand, dloc, source_distances))
+            # Non-strict: silently drop demand; substitution fallback takes over downstream.
+            continue
+        total_reaching_cap = sum(c for _, c in reaching)
+        if total_reaching_cap <= 0:
+            # All reaching sources have zero capacity — split the demand equally
+            per_source = demand / len(reaching)
+            for sid, _ in reaching:
+                supplies[sid] += per_source
+        else:
+            for sid, c in reaching:
+                supplies[sid] += demand * (c / total_reaching_cap)
+
+    if strict_radius and unreachable:
+        total_unmet = sum(demand for _, demand, _, _ in unreachable)
+        header = (
+            f"[DISAGGREGATION] STRICT-RADIUS infeasibility"
+            f"{f' ({context_label})' if context_label else ''}: "
+            f"{len(unreachable)} destination(s) have no source FG within "
+            f"hot_metal_radius={hot_metal_radius:.0f} km. "
+            f"Total unmet demand={total_unmet:.2f}t. "
+            f"The destination technology has a BOM minimum-share constraint on this "
+            f"commodity, so the LP's allocation cannot be physically routed without "
+            f"violating that minimum."
+        )
+        lines = [header]
+        shown = unreachable[:10]
+        for did, demand, dloc, source_distances in shown:
+            iso3 = dloc.iso3 if dloc is not None else "?"
+            lines.append(f"  Dest FG {did} ({iso3}): demand={demand:.2f}t")
+            if source_distances:
+                nearest = source_distances[:3]
+                for sid, d in nearest:
+                    lines.append(f"    nearest source {sid}: {d:.0f} km (> {hot_metal_radius:.0f} km)")
+            else:
+                lines.append("    no source-location data available")
+        if len(unreachable) > 10:
+            lines.append(f"  ... and {len(unreachable) - 10} more unreachable destination(s)")
+        raise RuntimeError("\n".join(lines))
+
+    return supplies
+
+
+def _solve_strict_by_components(
+    source_supplies: dict[str, float],
+    dest_demands: dict[str, float],
+    source_locations: dict[str, "Location"],
+    dest_locations: dict[str, "Location"],
+    commodity,
+    config: "SimulationConfig",
+    allocation_costs: dict[tuple[str, str], float] | None = None,
+    context_label: str = "",
+) -> tuple[dict[tuple[str, str], float], dict]:
+    """Solve a strict-radius transportation problem by connected component.
+
+    Under strict radius, only edges within ``config.hot_metal_radius`` are
+    allowed.  A single cluster may span several geographic pockets that are
+    mutually unreachable.  Running one big min-cost-flow would expose integer-
+    flooring artefacts across pockets (the rebalancing step shifts rounding
+    error to a destination that might be unreachable from the source that lost
+    the fractional ton).
+
+    This helper decomposes the bipartite feasibility graph into connected
+    components.  Within each component every source can (transitively) reach
+    every destination, so the existing per-solve integer rebalancing stays
+    local and can never create cross-pocket infeasibility.
+
+    Supply is normalised per component so that ``component_supply ==
+    component_demand``.  The final flows are rescaled back to the original
+    total volume by ``_solve_batched_transportation_problem``'s built-in
+    rescale step.
+
+    Args:
+        source_supplies: fg_id → supply volume (from ``_reach_based_source_supplies``).
+        dest_demands: fg_id → demand volume.
+        source_locations: fg_id → Location for source FGs.
+        dest_locations: fg_id → Location for destination FGs.
+        commodity: Commodity being transported.
+        config: Simulation config (for ``hot_metal_radius``).
+        allocation_costs: Optional pre-computed ``(source_id, dest_id) → $/ton``.
+        context_label: Label for error messages.
+
+    Returns:
+        Merged ``(flow_dict, stats_dict)`` across all components.
+    """
+    import networkx as nx
+
+    # Only sources with supply > 0 participate in the graph.
+    active_sources = {sid: s for sid, s in source_supplies.items() if s > 1e-6}
+    active_dests = {did: d for did, d in dest_demands.items() if d > 1e-6}
+
+    # Build undirected bipartite feasibility graph.  Prefixes distinguish the
+    # two sides so source/dest FG IDs can overlap (e.g. same plant).
+    fg = nx.Graph()
+    for sid in active_sources:
+        fg.add_node(f"s_{sid}")
+    for did in active_dests:
+        fg.add_node(f"d_{did}")
+
+    for sid in active_sources:
+        sloc = source_locations.get(sid)
+        for did in active_dests:
+            dloc = dest_locations.get(did)
+            if sloc is None or dloc is None:
+                # No location data → assume reachable (can't enforce radius)
+                fg.add_edge(f"s_{sid}", f"d_{did}")
+            elif _calculate_distance_km(sloc, dloc) <= config.hot_metal_radius:
+                fg.add_edge(f"s_{sid}", f"d_{did}")
+
+    components = list(nx.connected_components(fg))
+    logger.info(
+        f"[DISAGGREGATION] Strict-radius decomposition: "
+        f"{len(components)} connected component(s) for {context_label or commodity}"
+    )
+
+    merged_flows: dict[tuple[str, str], float] = {}
+    merged_stats: dict[str, object] = {
+        "total_pairs": 0,
+        "used_edges": 0,
+        "infeasible_pairs": 0,
+        "infeasible_flow_volume": 0.0,
+        "total_flow_volume": 0.0,
+        "infeasible_edge_details": [],
+    }
+
+    for comp_nodes in components:
+        comp_source_ids = {n[2:] for n in comp_nodes if n.startswith("s_")}
+        comp_dest_ids = {n[2:] for n in comp_nodes if n.startswith("d_")}
+
+        comp_supply = {sid: active_sources[sid] for sid in comp_source_ids if sid in active_sources}
+        comp_demand = {did: active_dests[did] for did in comp_dest_ids if did in active_dests}
+
+        if not comp_supply or not comp_demand:
+            # Isolated source(s) with no reachable dest, or vice versa.
+            # _reach_based_source_supplies should have caught this under strict
+            # mode, but guard defensively.
+            if comp_demand:
+                unmet = sum(comp_demand.values())
+                raise RuntimeError(
+                    f"[DISAGGREGATION] Strict-radius component has destinations "
+                    f"with no reachable source ({context_label}). "
+                    f"Unmet demand={unmet:.2f}t, dest FGs={list(comp_demand.keys())[:5]}"
+                )
+            continue  # orphan sources with no destinations — nothing to route
+
+        # Normalise supply within this component so supply == demand.
+        total_s = sum(comp_supply.values())
+        total_d = sum(comp_demand.values())
+        if total_s > 0 and abs(total_s - total_d) > 0.01:
+            scale = total_d / total_s
+            comp_supply = {sid: s * scale for sid, s in comp_supply.items()}
+
+        # Solve this component independently.  strict_radius=True inside the
+        # batched solver ensures individual edges beyond the radius are still
+        # omitted (belt-and-braces; the component graph already guarantees
+        # feasibility, but the solver's own radius check is cheap insurance).
+        flows, stats = _solve_batched_transportation_problem(
+            source_supplies=comp_supply,
+            dest_demands=comp_demand,
+            source_locations=source_locations,
+            dest_locations=dest_locations,
+            commodity=commodity,
+            config=config,
+            allocation_costs=allocation_costs,
+            is_hot_commodity=True,
+            strict_radius=True,
+            context_label=context_label,
+        )
+
+        merged_flows.update(flows)
+        merged_stats["total_pairs"] += stats.get("total_pairs", 0)  # type: ignore[operator]
+        merged_stats["used_edges"] += stats.get("used_edges", 0)  # type: ignore[operator]
+        merged_stats["infeasible_pairs"] += stats.get("infeasible_pairs", 0)  # type: ignore[operator]
+        merged_stats["infeasible_flow_volume"] += stats.get("infeasible_flow_volume", 0.0)  # type: ignore[operator]
+        merged_stats["total_flow_volume"] += stats.get("total_flow_volume", 0.0)  # type: ignore[operator]
+        merged_stats["infeasible_edge_details"] += stats.get("infeasible_edge_details", [])  # type: ignore[operator]
+
+    return merged_flows, merged_stats
+
+
 def _solve_transportation_problem(
     from_meta_fg: MetaFurnaceGroup,
     to_meta_fg: MetaFurnaceGroup,
@@ -977,6 +1482,7 @@ def _solve_transportation_problem(
     transport_cost_lookup: dict[tuple[str, str, str], float] | None = None,
     wtp_lookup: dict[tuple[str, str], float] | None = None,
     is_hot_commodity: bool = False,
+    aggregated_constraints: list | None = None,
 ) -> tuple[dict[tuple[str, str], float], dict]:
     """Solve transportation problem for meta-FG → meta-FG (Case 4).
 
@@ -992,6 +1498,10 @@ def _solve_transportation_problem(
         transport_cost_lookup: Optional transport cost lookup dict
         wtp_lookup: Optional willingness to pay lookup dict
         is_hot_commodity: Flag indicating if the commodity is hot (affects disaggregation logic)
+        aggregated_constraints: Optional list of `AggregatedMetallicChargeConstraint`.
+            Consulted (in addition to per-feedstock minimums) when deciding whether
+            to enforce strict radius on a hot commodity.
+
     Returns:
         Tuple of (flow_dict, stats_dict)
     """
@@ -1006,7 +1516,14 @@ def _solve_transportation_problem(
 
     if not valid_dest_fgs:
         logger.error(f"[DISAGGREGATION] No valid destination FGs with BOMs in {to_meta_fg.meta_furnace_group_id}")
-        return {}, {"total_pairs": 0, "used_edges": 0, "infeasible_pairs": 0}
+        return {}, {
+            "total_pairs": 0,
+            "used_edges": 0,
+            "infeasible_pairs": 0,
+            "infeasible_flow_volume": 0.0,
+            "total_flow_volume": 0.0,
+            "infeasible_edge_details": [],
+        }
 
     # Renormalize shares if some FGs were filtered out
     if total_dest_share < 0.99:  # Some FGs were excluded
@@ -1016,11 +1533,57 @@ def _solve_transportation_problem(
         )
         valid_dest_fgs = {fg_id: share / total_dest_share for fg_id, share in valid_dest_fgs.items()}
 
-    # Prepare supplies (sources) from from_meta_fg
-    source_supplies = {fg_id: total_volume * share for fg_id, share in from_meta_fg.capacity_shares.items()}
+    # Determine if this is a hot commodity (only these need radius-aware splitting)
+    is_hot_commodity = commodity.name in config.closely_allocated_products
+
+    # Strict radius enforcement: for any HOT commodity going to a destination whose
+    # technology has a BOM minimum constraint on that commodity, radius violations
+    # would physically break the min-ratio guarantee. We must route only within-radius
+    # edges and error out if any destination is unreachable. Determined here so the
+    # reach-based supply split can fail fast before the solver runs.
+    strict_radius = is_hot_commodity and _destination_has_min_constraint_for_commodity(
+        to_meta_fg, commodity, aggregated_constraints
+    )
+    context_label = (
+        f"{commodity.name} → {to_meta_fg.meta_furnace_group_id} ({to_meta_fg.technology_name}, min-constraint)"
+        if strict_radius
+        else ""
+    )
 
     # Prepare demands (destinations) from to_meta_fg (only valid FGs)
     dest_demands = {fg_id: total_volume * share for fg_id, share in valid_dest_fgs.items()}
+
+    # Prepare supplies (sources) from from_meta_fg.
+    # For HOT commodities, we split each destination's demand across the source FGs that
+    # can physically reach it (within hot_metal_radius), weighted by source capacity share.
+    # This prevents the LP's capacity-share split from stranding supply at isolated source
+    # FGs whose local sibling source can't serve it — e.g. two plants in the same cluster
+    # 113 km apart each need independent supply/demand balance. Cold commodities don't
+    # need this; the global capacity-share split is fine for them.
+    dest_locations_for_valid = {fg_id: to_meta_fg.constituent_locations[fg_id] for fg_id in valid_dest_fgs}
+    if is_hot_commodity and strict_radius:
+        # Strict radius: only within-radius sources serve each destination.
+        # Supply is sized to exactly cover reachable demand; unreachable destinations
+        # raise a RuntimeError (caught upstream). This is only safe to call when
+        # strict_radius=True because _reach_based_source_supplies silently drops
+        # unreachable demand, which would create a massive supply < demand imbalance
+        # if most FGs in the cluster are beyond the radius.
+        source_supplies = _reach_based_source_supplies(
+            source_capacity_shares=from_meta_fg.capacity_shares,
+            source_locations=from_meta_fg.constituent_locations,
+            dest_demands=dest_demands,
+            dest_locations=dest_locations_for_valid,
+            hot_metal_radius=config.hot_metal_radius,
+            strict_radius=True,
+            context_label=context_label,
+        )
+    else:
+        # Non-strict (cold commodity, or hot commodity with no min-constraint):
+        # use simple proportional supply so total_supply == total_demand.
+        # The solver may route some hot commodity flows beyond hot_metal_radius
+        # (at high penalty cost); _substitute_commodity_by_distance will relabel
+        # those long flows to the cold form (e.g. hot_metal → pig_iron).
+        source_supplies = {fg_id: total_volume * share for fg_id, share in from_meta_fg.capacity_shares.items()}
 
     # Compute allocation costs if lookups provided
     allocation_costs = None
@@ -1032,29 +1595,200 @@ def _solve_transportation_problem(
             source_ids=list(source_supplies.keys()),
             dest_ids=list(dest_demands.keys()),
             source_locations=from_meta_fg.constituent_locations,
-            dest_locations={fg_id: to_meta_fg.constituent_locations[fg_id] for fg_id in valid_dest_fgs},
+            dest_locations=dest_locations_for_valid,
             source_production_costs=source_production_costs,
             commodity_name=commodity_name,
             transport_cost_lookup=transport_cost_lookup,
             wtp_lookup=wtp_lookup,
         )
 
-    if commodity.name in config.closely_allocated_products:
-        is_hot_commodity = True
-    else:
-        is_hot_commodity = False
+    # When strict_radius is on, the cluster may contain geographically separated
+    # pockets. Running one big min-cost-flow over the whole cluster causes integer-
+    # flooring mismatches to propagate across pockets (the rebalancing step shifts
+    # rounding error to a destination that might be unreachable from the source that
+    # lost the fraction). Instead, decompose the problem into connected components
+    # of the feasibility graph — each pocket gets its own balanced sub-problem so
+    # rounding is always local to nodes that can actually cover each other.
+    if strict_radius:
+        return _solve_strict_by_components(
+            source_supplies=source_supplies,
+            dest_demands=dest_demands,
+            source_locations=from_meta_fg.constituent_locations,
+            dest_locations=dest_locations_for_valid,
+            commodity=commodity,
+            config=config,
+            allocation_costs=allocation_costs,
+            context_label=context_label,
+        )
 
-    # Use the batched solver
+    # Non-strict: single batched solve (radius-violating edges get high penalty
+    # but are still allowed; downstream substitution relabels them to the cold form).
     return _solve_batched_transportation_problem(
         source_supplies=source_supplies,
         dest_demands=dest_demands,
         source_locations=from_meta_fg.constituent_locations,
-        dest_locations={fg_id: to_meta_fg.constituent_locations[fg_id] for fg_id in valid_dest_fgs},
+        dest_locations=dest_locations_for_valid,
         commodity=commodity,
         config=config,
         allocation_costs=allocation_costs,
         is_hot_commodity=is_hot_commodity,
     )
+
+
+def _compute_effective_shares_by_cluster(
+    meta_furnace_groups: list[MetaFurnaceGroup],
+    case4_allocs: list,
+    meta_fg_by_id: dict[str, MetaFurnaceGroup],
+    plants_repo: "PlantInMemoryRepository | None",
+    config: "SimulationConfig",
+    aggregated_constraints: list | None = None,
+    case2_batches: dict | None = None,
+) -> dict[str, dict[str, float]]:
+    """Compute per-FG "effective shares" for each cluster, reflecting geographic reality.
+
+    In a cluster whose members span more than `hot_metal_radius`, a naive capacity-share
+    split breaks per-FG BOM balance: the LP sees the cluster as one blob, but physically
+    each FG's output is limited by the demand it can actually reach within radius. To
+    keep downstream allocations BOM-consistent per FG, we compute one share vector per
+    cluster and use it for ALL flows (raw-material inflows, outgoing hot/cold, etc.).
+
+    Per-FG effective output is aggregated from case-4 outgoing flows:
+
+    - **Hot commodities with strict radius** (destination has a BOM min-constraint):
+      each dest FG's demand is attributed to the source FGs that can reach it (within
+      `hot_metal_radius`), weighted by their capacity share among the reachers. This
+      mirrors the supply-side logic in `_solve_transportation_problem` exactly.
+    - **Hot commodities without strict radius** (no min-constraint on destination):
+      capacity-share attribution, same as cold. The transportation solver uses proportional
+      supply for these flows, so the effective shares must match.
+    - **Cold commodities**: capacity-share attribution (no radius constraint).
+    - **Case 2 outgoing (cluster → demand center)**: always capacity-share attribution.
+      This is critical for clusters (e.g. DRI) that have BOTH strict Case 4 outgoing
+      (hot DRI to nearby EAF) and Case 2 outgoing (cold HBI export to demand). An FG
+      that is isolated from all EAF FGs within radius gets zero share from strict Case 4
+      attribution, but still has real production through Case 2. Including Case 2 here
+      ensures that FG's effective_share is non-zero, so it gets raw-material inputs in
+      Case 3 that match its actual Case 2 production.
+
+    After summing, the per-FG totals are normalized to shares. Clusters with no outgoing
+    flows (or zero total) fall back to `capacity_shares`.
+
+    Args:
+        meta_furnace_groups: All clusters in this disaggregation.
+        case4_allocs: List of (from_pc, to_pc, commodity, volume) — cluster→cluster flows.
+        meta_fg_by_id: Lookup from cluster_id → MetaFurnaceGroup.
+        plants_repo: Used to filter destination FGs without valid BOMs (same filter as
+            case-3 / case-4 apply), so effective shares ignore FGs the solver will skip.
+        config: Simulation config (for `hot_metal_radius` and `closely_allocated_products`).
+        aggregated_constraints: Optional aggregated metallic charge constraints. Used to
+            determine whether a hot commodity flow is strict-radius (destination has a
+            min-constraint) or not. Non-strict flows use capacity-share attribution to
+            stay consistent with `_solve_transportation_problem`.
+        case2_batches: Optional Case 2 batches {(from_meta_name, commodity_str): [...]}.
+            Used to include outgoing cluster→demand flows in the effective_share calculation
+            so FGs that export cold product (no strict radius) contribute their capacity
+            share to the totals.
+
+    Returns:
+        `{cluster_id: {fg_id: effective_share, ...}, ...}` — shares sum to 1 per cluster,
+        or equal `capacity_shares` as fallback.
+    """
+    effective_shares: dict[str, dict[str, float]] = {
+        mfg.meta_furnace_group_id: dict(mfg.capacity_shares) for mfg in meta_furnace_groups
+    }
+
+    # Accumulate per-FG output volume per source cluster
+    per_cluster_fg_out: dict[str, dict[str, float]] = {
+        mfg.meta_furnace_group_id: {fg_id: 0.0 for fg_id in mfg.capacity_shares} for mfg in meta_furnace_groups
+    }
+    clusters_with_outgoing: set[str] = set()
+
+    closely_allocated = set(config.closely_allocated_products)
+
+    for from_pc, to_pc, commodity, volume in case4_allocs:
+        src_cluster_id = from_pc.name
+        dst_cluster_id = to_pc.name
+        if src_cluster_id not in meta_fg_by_id or dst_cluster_id not in meta_fg_by_id:
+            continue
+        from_mfg = meta_fg_by_id[src_cluster_id]
+        to_mfg = meta_fg_by_id[dst_cluster_id]
+        clusters_with_outgoing.add(src_cluster_id)
+        per_fg_out = per_cluster_fg_out[src_cluster_id]
+
+        # Filter destination to valid FGs (same filter as case-3 / case-4 use downstream)
+        valid_dest = {
+            fg_id: share
+            for fg_id, share in to_mfg.capacity_shares.items()
+            if _validate_fg_can_receive_allocation(fg_id, plants_repo)
+        }
+        total_valid = sum(valid_dest.values())
+        if total_valid <= 0:
+            continue
+        if total_valid < 0.99:
+            valid_dest = {fg_id: s / total_valid for fg_id, s in valid_dest.items()}
+
+        is_hot = commodity.name in closely_allocated
+        # Only use reach-based attribution when the destination has a min-constraint
+        # (strict_radius=True). For non-strict hot flows the solver uses proportional
+        # supply, so effective shares must also be proportional to stay consistent.
+        is_strict = is_hot and _destination_has_min_constraint_for_commodity(to_mfg, commodity, aggregated_constraints)
+
+        if is_strict:
+            # Reach-based: each dest's demand goes to reaching sources, weighted by capacity share.
+            # Mirrors the supply-side logic in _solve_transportation_problem (strict path).
+            for did, dshare in valid_dest.items():
+                d_demand = volume * dshare
+                dloc = to_mfg.constituent_locations.get(did)
+                reaching: list[tuple[str, float]] = []
+                for sid, cap_share in from_mfg.capacity_shares.items():
+                    sloc = from_mfg.constituent_locations.get(sid)
+                    if sloc is None or dloc is None:
+                        reaching.append((sid, cap_share))
+                    elif _calculate_distance_km(sloc, dloc) <= config.hot_metal_radius:
+                        reaching.append((sid, cap_share))
+                if not reaching:
+                    continue
+                total_cap = sum(c for _, c in reaching)
+                if total_cap <= 0:
+                    per_source = d_demand / len(reaching)
+                    for sid, _ in reaching:
+                        per_fg_out[sid] += per_source
+                else:
+                    for sid, cap_share in reaching:
+                        per_fg_out[sid] += d_demand * (cap_share / total_cap)
+        else:
+            # Cold commodity or non-strict hot: capacity-share attribution.
+            # Non-strict hot flows use proportional supply in the solver, so we must
+            # use capacity shares here too to keep incoming/outgoing shares consistent.
+            for sid, cap_share in from_mfg.capacity_shares.items():
+                per_fg_out[sid] += volume * cap_share
+
+    # Include Case 2 outgoing flows (cluster → demand center).
+    # These are always capacity-share attributed (no radius constraint). An FG that is
+    # geographically isolated from strict-radius Case 4 destinations (e.g. a DRI FG too
+    # far from any EAF) still has real production through cold-form Case 2 exports (HBI).
+    # Without this, such FGs get effective_share=0 and are starved of raw-material inputs
+    # in Case 3 even though they produce and export via Case 2.
+    if case2_batches:
+        for (from_meta_name, _), batch in case2_batches.items():
+            if from_meta_name not in meta_fg_by_id:
+                continue
+            from_mfg = meta_fg_by_id[from_meta_name]
+            clusters_with_outgoing.add(from_meta_name)
+            per_fg_out = per_cluster_fg_out[from_meta_name]
+            volume = sum(v for _, _, _, v in batch)
+            for sid, cap_share in from_mfg.capacity_shares.items():
+                per_fg_out[sid] += volume * cap_share
+
+    # Normalize to shares, skipping clusters with no outgoing
+    for cluster_id in clusters_with_outgoing:
+        per_fg_out = per_cluster_fg_out[cluster_id]
+        total = sum(per_fg_out.values())
+        if total > 0:
+            effective_shares[cluster_id] = {fg_id: out / total for fg_id, out in per_fg_out.items()}
+        # else: keep capacity_shares fallback
+
+    return effective_shares
 
 
 def disaggregate_allocations(
@@ -1064,6 +1798,7 @@ def disaggregate_allocations(
     config: "SimulationConfig",
     transport_kpis: list | None = None,
     willingness_to_pay: list | None = None,
+    aggregated_constraints: list | None = None,
 ) -> "Allocations":
     """Disaggregate allocations from meta-furnace groups to individual furnace groups.
 
@@ -1108,6 +1843,63 @@ def disaggregate_allocations(
 
     # Build lookup dicts
     meta_fg_by_id: dict[str, MetaFurnaceGroup] = {mfg.meta_furnace_group_id: mfg for mfg in meta_furnace_groups}
+
+    # Log which (technology, commodity-or-pattern) pairs have minimum-share constraints.
+    # These pairs trigger strict-radius enforcement when the commodity is hot.
+    # Two sources are collected:
+    #   - Per-feedstock minimums on PrimaryFeedstock.minimum_share_in_product, keyed by
+    #     (technology, metallic_charge). Different reductants can yield different min shares,
+    #     so we track a min..max range.
+    #   - Aggregated wildcard constraints (AggregatedMetallicChargeConstraint) from the
+    #     environment, keyed by (technology, feedstock_pattern + "*").
+    feedstock_mins: dict[tuple[str, str], list[float]] = {}
+    for mfg in meta_furnace_groups:
+        if not mfg.dynamic_business_case:
+            continue
+        tech = mfg.technology_name
+        for feedstock in mfg.dynamic_business_case:
+            min_share = getattr(feedstock, "minimum_share_in_product", None)
+            if min_share is None or min_share <= 0:
+                continue
+            charge = str(getattr(feedstock, "metallic_charge", "")).lower()
+            if not charge:
+                continue
+            feedstock_mins.setdefault((tech, charge), []).append(float(min_share))
+
+    aggregated_mins: dict[tuple[str, str], float] = {}
+    if aggregated_constraints:
+        for c in aggregated_constraints:
+            min_share = getattr(c, "minimum_share", None)
+            if min_share is None or min_share <= 0:
+                continue
+            tech = str(getattr(c, "technology_name", "")).strip()
+            pattern = str(getattr(c, "feedstock_pattern", "")).lower().strip()
+            if not tech or not pattern:
+                continue
+            aggregated_mins[(tech, pattern + "*")] = float(min_share)
+
+    def _is_charge_hot(charge_or_pattern: str) -> bool:
+        """A charge or wildcard pattern triggers strict radius if any matching name is hot."""
+        stripped = charge_or_pattern.rstrip("*")
+        for hot in config.closely_allocated_products:
+            if str(hot).lower().startswith(stripped) or stripped.startswith(str(hot).lower()):
+                return True
+        return False
+
+    if feedstock_mins or aggregated_mins:
+        logger.info("[DISAGGREGATION] Feedstock minimum-share constraints (trigger strict-radius for hot commodities):")
+        for tech, charge in sorted(feedstock_mins.keys()):
+            shares = feedstock_mins[(tech, charge)]
+            lo, hi = min(shares), max(shares)
+            hot_tag = " [hot commodity → strict radius]" if _is_charge_hot(charge) else ""
+            rng = f"{lo:.1%}" if lo == hi else f"{lo:.1%}–{hi:.1%}"
+            logger.info(f"[DISAGGREGATION]   {tech} requires min {rng} {charge}{hot_tag} (per-feedstock)")
+        for tech, pattern in sorted(aggregated_mins.keys()):
+            share = aggregated_mins[(tech, pattern)]
+            hot_tag = " [hot commodity → strict radius]" if _is_charge_hot(pattern) else ""
+            logger.info(f"[DISAGGREGATION]   {tech} requires min {share:.1%} {pattern}{hot_tag} (aggregated wildcard)")
+    else:
+        logger.info("[DISAGGREGATION] No feedstock minimum-share constraints detected across clusters")
 
     # Build ProcessCenter lookup by name for non-meta-FG centers (suppliers, demand)
     pc_by_name: dict[str, "ProcessCenter"] = {}
@@ -1185,6 +1977,38 @@ def disaggregate_allocations(
         f"Case3={len(case3_batches)} batches, Case4={len(case4_allocs)}"
     )
 
+    # Compute per-FG effective shares for each cluster from case-4 outgoing flows.
+    # For clusters whose members span more than hot_metal_radius (geographically split
+    # clusters), these differ from capacity_shares — each FG's share reflects the demand
+    # it can physically reach. We then use these effective shares for ALL flows through
+    # the cluster (incoming raw materials, outgoing hot/cold) so per-FG BOM balance
+    # holds. Clusters without outgoing case-4 flows keep their capacity_shares.
+    effective_shares_by_cluster = _compute_effective_shares_by_cluster(
+        meta_furnace_groups=meta_furnace_groups,
+        case4_allocs=case4_allocs,
+        meta_fg_by_id=meta_fg_by_id,
+        plants_repo=plants_repo,
+        config=config,
+        aggregated_constraints=aggregated_constraints,
+        case2_batches=case2_batches,
+    )
+    # Log any cluster where effective shares diverge from capacity shares (i.e. the
+    # cluster is geographically split — the reach-based split is doing real work here).
+    diverged = 0
+    for mfg in meta_furnace_groups:
+        cid = mfg.meta_furnace_group_id
+        eff = effective_shares_by_cluster[cid]
+        cap = mfg.capacity_shares
+        max_delta = max((abs(eff[k] - cap[k]) for k in cap), default=0.0)
+        if max_delta > 0.01:  # >1 pp divergence worth mentioning
+            diverged += 1
+            logger.info(
+                f"[DISAGGREGATION] Effective shares diverge from capacity shares in {cid} "
+                f"(max Δ {max_delta:.1%}) — cluster likely split by hot-metal radius"
+            )
+    if diverged == 0:
+        logger.info("[DISAGGREGATION] Effective shares match capacity shares in all clusters")
+
     # PASS 2: Process each case
 
     # Case 1: Passthrough (no disaggregation needed)
@@ -1205,8 +2029,11 @@ def disaggregate_allocations(
             demand_pcs[to_pc.name] = to_pc
             total_batch_volume += volume
 
-        # Prepare supplies from FGs in meta-cluster
-        fg_supplies = {fg_id: total_batch_volume * share for fg_id, share in from_meta_fg.capacity_shares.items()}
+        # Prepare supplies from FGs in meta-cluster — use effective shares so per-FG
+        # BOM stays consistent with case-4 outgoing (which may have used reach-based
+        # attribution for geographically split clusters).
+        source_shares = effective_shares_by_cluster[from_meta_fg.meta_furnace_group_id]
+        fg_supplies = {fg_id: total_batch_volume * share for fg_id, share in source_shares.items()}
 
         # Compute allocation costs using LP cost structure
         commodity_name = str(batch[0][2]).lower()
@@ -1242,12 +2069,15 @@ def disaggregate_allocations(
         total_used_edges += stats["used_edges"]
         transportation_stats[(from_meta_name, "suppliers", commodity_str)] = stats
 
-        # Create allocations with commodity substitution
+        # Create allocations with commodity substitution.
+        # Use effective shares (reach-aware for hot commodities, capacity shares elsewhere)
+        # so the per-FG ProcessCenter capacity matches the split used for the flow volumes.
+        source_eff_shares = effective_shares_by_cluster[from_meta_fg.meta_furnace_group_id]
         for (fg_id, supplier_name), flow_volume in flows.items():
             fg_pc = create_fg_process_center(
                 fg_id,
                 from_meta_fg,
-                from_meta_fg.capacity_shares[fg_id],
+                source_eff_shares[fg_id],
                 batch[0][0].process,  # Get process from first from_pc
             )
             supplier_pc = demand_pcs[supplier_name]
@@ -1274,11 +2104,14 @@ def disaggregate_allocations(
             demand_pcs[from_pc.name] = from_pc
             total_batch_volume += volume
 
-        # Filter out FGs without valid BOMs from destination
+        # Filter out FGs without valid BOMs from destination — use EFFECTIVE shares so
+        # incoming raw materials are attributed per-FG in the same proportion as the
+        # cluster's outgoing hot/cold output (preserves per-FG BOM balance).
+        dest_shares = effective_shares_by_cluster[to_meta_fg.meta_furnace_group_id]
         valid_fg_shares = {}
         total_valid_share = 0.0
 
-        for fg_id, share in to_meta_fg.capacity_shares.items():
+        for fg_id, share in dest_shares.items():
             if _validate_fg_can_receive_allocation(fg_id, plants_repo):
                 valid_fg_shares[fg_id] = share
                 total_valid_share += share
@@ -1290,7 +2123,7 @@ def disaggregate_allocations(
         # Renormalize shares if some FGs were filtered out
         if total_valid_share < 0.99:
             logger.warning(
-                f"[DISAGGREGATION] Case 3: Filtered out {len(to_meta_fg.capacity_shares) - len(valid_fg_shares)} "
+                f"[DISAGGREGATION] Case 3: Filtered out {len(dest_shares) - len(valid_fg_shares)} "
                 f"FGs without BOMs from {to_meta_name}"
             )
             valid_fg_shares = {fg_id: share / total_valid_share for fg_id, share in valid_fg_shares.items()}
@@ -1330,13 +2163,16 @@ def disaggregate_allocations(
         total_used_edges += stats["used_edges"]
         transportation_stats[("suppliers", to_meta_name, commodity_str)] = stats
 
-        # Create allocations with commodity substitution
+        # Create allocations with commodity substitution.
+        # Use effective shares so the per-FG ProcessCenter capacity matches the
+        # reach-aware split used when sizing the per-FG demand above.
+        dest_eff_shares = effective_shares_by_cluster[to_meta_fg.meta_furnace_group_id]
         for (supplier_name, fg_id), flow_volume in flows.items():
             supplier_pc = demand_pcs[supplier_name]
             fg_pc = create_fg_process_center(
                 fg_id,
                 to_meta_fg,
-                to_meta_fg.capacity_shares[fg_id],
+                dest_eff_shares[fg_id],
                 batch[0][1].process,  # Get process from first to_pc
             )
 
@@ -1363,6 +2199,7 @@ def disaggregate_allocations(
             plants_repo=plants_repo,
             transport_cost_lookup=transport_cost_lookup,
             wtp_lookup=wtp_lookup,
+            aggregated_constraints=aggregated_constraints,
         )
 
         # Track statistics
@@ -1370,15 +2207,17 @@ def disaggregate_allocations(
         total_used_edges += stats["used_edges"]
         transportation_stats[(from_pc.name, to_pc.name, str(commodity))] = stats
 
-        # Create allocations for non-zero flows with commodity substitution
+        # Create allocations for non-zero flows with commodity substitution.
+        # Use effective shares for per-FG ProcessCenter capacity so it's consistent with
+        # the reach-aware split used to size per-FG supplies/demands in this flow.
+        from_eff_shares = effective_shares_by_cluster[from_meta_fg.meta_furnace_group_id]
+        to_eff_shares = effective_shares_by_cluster[to_meta_fg.meta_furnace_group_id]
         for (from_fg_id, to_fg_id), flow_volume in flows.items():
             # Create ProcessCenters for this pair
             from_fg_pc = create_fg_process_center(
-                from_fg_id, from_meta_fg, from_meta_fg.capacity_shares[from_fg_id], from_pc.process
+                from_fg_id, from_meta_fg, from_eff_shares[from_fg_id], from_pc.process
             )
-            to_fg_pc = create_fg_process_center(
-                to_fg_id, to_meta_fg, to_meta_fg.capacity_shares[to_fg_id], to_pc.process
-            )
+            to_fg_pc = create_fg_process_center(to_fg_id, to_meta_fg, to_eff_shares[to_fg_id], to_pc.process)
 
             # Calculate distance and substitute commodity if close enough
             from_fg_location = from_meta_fg.constituent_locations[from_fg_id]
@@ -1436,13 +2275,12 @@ def disaggregate_allocations(
         max_discrepancy = max(max_discrepancy, abs(discrepancy))
 
         if abs(discrepancy) > 0.01:  # Only log if discrepancy > 0.01 tonnes
-            print(
+            logging.error(
                 f"[DISAGGREGATION] {commodity_name}: Input={input_total:.2f}t, Output={output_total:.2f}t, "
                 f"Discrepancy={discrepancy:+.2f}t ({discrepancy_pct:+.3f}%)"
             )
-            exit()
         else:
-            print(
+            logging.info(
                 f"[DISAGGREGATION] {commodity_name}: Input={input_total:.2f}t, Output={output_total:.2f}t, "
                 f"Discrepancy={discrepancy:+.4f}t (OK)"
             )
@@ -1466,20 +2304,27 @@ def disaggregate_allocations(
 
         # Aggregate by commodity
         commodity_stats: dict[str, dict] = {}
-        for (from_name, to_name, commodity_str), stats in transportation_stats.items():
+        for (*_, commodity_raw), stats in transportation_stats.items():
+            commodity_str = commodity_raw.value if hasattr(commodity_raw, "value") else str(commodity_raw)
             if commodity_str not in commodity_stats:
                 commodity_stats[commodity_str] = {
                     "total_flows": 0,
                     "total_pairs": 0,
                     "total_used_edges": 0,
                     "total_infeasible": 0,
+                    "total_infeasible_flow_volume": 0.0,
+                    "total_flow_volume": 0.0,
+                    "infeasible_edge_details": [],  # list of (distance_km, volume, src_iso3, dst_iso3)
                 }
             commodity_stats[commodity_str]["total_flows"] += 1
             commodity_stats[commodity_str]["total_pairs"] += stats["total_pairs"]
             commodity_stats[commodity_str]["total_used_edges"] += stats["used_edges"]
             commodity_stats[commodity_str]["total_infeasible"] += stats["infeasible_pairs"]
+            commodity_stats[commodity_str]["total_infeasible_flow_volume"] += stats.get("infeasible_flow_volume", 0.0)
+            commodity_stats[commodity_str]["total_flow_volume"] += stats.get("total_flow_volume", 0.0)
+            commodity_stats[commodity_str]["infeasible_edge_details"] += stats.get("infeasible_edge_details", [])
 
-        # Log per-commodity statistics
+        # Log per-commodity edge-reduction statistics
         for commodity_str, stats in sorted(commodity_stats.items()):
             reduction_pct = (
                 (1 - stats["total_used_edges"] / stats["total_pairs"]) * 100 if stats["total_pairs"] > 0 else 0
@@ -1489,6 +2334,55 @@ def disaggregate_allocations(
                 f"{stats['total_pairs']} potential edges → {stats['total_used_edges']} used "
                 f"({reduction_pct:.1f}% reduction)"
             )
+
+        # Log hot-metal radius summary. Distinguish three cases per commodity:
+        #   1. TRUE violation: hot commodity routed beyond radius AND cannot be relabeled
+        #      (no cold equivalent → truly breaks the physical model).
+        #   2. SUBSTITUTION: hot commodity routed beyond radius but has a cold equivalent —
+        #      the output is relabeled to the cold commodity, so no physical violation.
+        #   3. NO violations: either no infeasible pairs, or all pairs respected.
+        logger.info("[DISAGGREGATION] === Hot-Metal Radius Summary ===")
+        any_violations = False
+        for commodity_str, stats in sorted(commodity_stats.items()):
+            infeasible_vol = stats["total_infeasible_flow_volume"]
+            total_vol = stats["total_flow_volume"]
+            details: list[tuple[float, float, str, str]] = stats["infeasible_edge_details"]
+            will_be_substituted = commodity_str.lower() in HOT_TO_COLD_COMMODITY
+            if infeasible_vol > 1e-6:
+                pct = (infeasible_vol / total_vol * 100) if total_vol > 0 else 0.0
+                distances = [d for d, _, _, _ in details]
+                avg_dist = sum(distances) / len(distances)
+                # Top-3 destination countries by affected volume
+                dest_volumes: dict[str, float] = {}
+                for _, vol, _, dst_iso3 in details:
+                    dest_volumes[dst_iso3] = dest_volumes.get(dst_iso3, 0.0) + vol
+                top3 = sorted(dest_volumes.items(), key=lambda x: x[1], reverse=True)[:3]
+                top3_str = ", ".join(f"{iso3} ({v:.1f}t)" for iso3, v in top3)
+
+                if will_be_substituted:
+                    cold_name = HOT_TO_COLD_COMMODITY[commodity_str.lower()]
+                    logger.info(
+                        f"[HOT_METAL_RADIUS]   {commodity_str} → {cold_name} (relabeled): "
+                        f"{infeasible_vol:.2f}t ({pct:.1f}% of {total_vol:.2f}t) exceeded radius | "
+                        f"distance min/avg/max: {min(distances):.0f}/{avg_dist:.0f}/{max(distances):.0f} km"
+                    )
+                    logger.info(f"[HOT_METAL_RADIUS]     top destinations: {top3_str}")
+                else:
+                    any_violations = True
+                    logger.warning(
+                        f"[HOT_METAL_RADIUS]   {commodity_str}: {infeasible_vol:.2f}t violated "
+                        f"({pct:.1f}% of {total_vol:.2f}t total flow) | "
+                        f"distance min/avg/max: {min(distances):.0f}/{avg_dist:.0f}/{max(distances):.0f} km"
+                    )
+                    logger.warning(f"[HOT_METAL_RADIUS]     top destinations: {top3_str}")
+            elif stats["total_infeasible"] > 0:
+                # Radius constraint was active (some pairs were blocked) but all flow respected it
+                logger.info(
+                    f"[HOT_METAL_RADIUS]   {commodity_str}: no violations "
+                    f"({total_vol:.2f}t total flow, {stats['total_infeasible']} pair(s) correctly blocked)"
+                )
+        if not any_violations:
+            logger.info("[HOT_METAL_RADIUS] No unresolved hot-metal radius violations this year")
 
     logger.info("[DISAGGREGATION] Disaggregation complete")
 

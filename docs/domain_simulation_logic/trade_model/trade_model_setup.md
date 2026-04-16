@@ -188,9 +188,14 @@ The model represents the global steel value chain as a network:
 - `active_statuses`: Which furnace states to include (e.g., ["operating", "mothballed"])
 
 **Physical constraints:**
-- `hot_metal_radius`: Maximum hot metal transport distance (~100km)
-- `closely_allocated_products`: Commodities limited to short distances
-- `distantly_allocated_products`: Commodities requiring long transport
+- `hot_metal_radius`: Maximum transport distance for hot commodities (~100km). Enforced in two places:
+  - At LP-build time for international flows (via `fix_to_zero_allocations_where_distance_doesnt_match_commodity()`).
+  - At disaggregation time for per-furnace-group flows, with three layers: BOFs without any in-radius iron producer are filtered from clustering; hot commodities to destinations with a BOM minimum constraint are solved under strict radius (hard error if infeasible); other beyond-radius hot flows are relabeled to their cold equivalent in the output allocation.
+- `closely_allocated_products`: Hot commodities limited to short distances (`hot_metal`, `dri_high`/`dri_mid`/`dri_low`, `liquid_iron`).
+- `distantly_allocated_products`: Cold equivalents that ship globally (`pig_iron`, `hbi_high`/`hbi_mid`/`hbi_low`, `electrolytic_iron`).
+- `enable_furnace_group_clustering`: When enabled, the LP works with meta-furnace-groups (clusters of same-technology-reductant-country FGs) to reduce problem size; the per-FG radius + minimum-ratio enforcement above compensates by running at disaggregation time.
+
+See the "Disaggregation: Hot-Metal Radius + Minimum-Ratio Enforcement" section in `overview_trade_model.md` for full details.
 
 **Economic data:**
 - `primary_products`: Which commodities to optimize (["steel", "iron"])

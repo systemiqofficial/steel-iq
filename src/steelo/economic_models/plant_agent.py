@@ -442,6 +442,7 @@ class AllocationModel:
                 config=bus.env.config,
                 transport_kpis=bus.env.transport_kpis,
                 willingness_to_pay=bus.env.willingness_to_pay,
+                aggregated_constraints=bus.env.aggregated_metallic_charge_constraints,
             )
             # Use disaggregated allocations for TM-PAM connector
             trade_lp_allocations = disaggregated_allocations

@@ -340,12 +340,40 @@ min_share × total_input ≤ sum(matching commodities) ≤ max_share × total_in
 
 ### Distance-Based Filtering
 
-**Problem:** Hot metal cools quickly and can only travel up to ~10-20 km
+**Problem:** Certain commodities can only travel short distances while in their "hot" form. Hot metal cools within a short radius (~100 km); DRI loses its heat premium over similar distances. Their cold counterparts (`pig_iron`, `hbi_*`, `electrolytic_iron`) ship globally.
 
-**Solution:** `fix_to_zero_allocations_where_distance_doesnt_match_commodity()`
-- Fixes hot_metal variables to zero for long distances (similar logic applied to DRI, liquid iron from MOE) 
-- Fixes pig_iron variables to zero for short distances (similar logic applied to HBI, electrolytic iron from MOE)
-- Called before building to reduce problem size
+**Hot/cold commodity pairs:**
+
+| Hot (`closely_allocated_products`) | Cold (`distantly_allocated_products`) |
+|------------------------------------|----------------------------------------|
+| `hot_metal`                        | `pig_iron`                             |
+| `dri_high` / `dri_mid` / `dri_low` | `hbi_high` / `hbi_mid` / `hbi_low`     |
+| `liquid_iron`                      | `electrolytic_iron`                    |
+
+**Solution:** `fix_to_zero_allocations_where_distance_doesnt_match_commodity()` — behavior depends on whether furnace-group clustering is enabled:
+
+- **Clustering disabled (legacy):** The LP fixes hot-commodity flows to zero for all pairs beyond `hot_metal_radius`, and cold-commodity flows to zero for pairs inside the radius. Called before build to reduce problem size.
+- **Clustering enabled:** The LP only blocks *international* hot-commodity flows (different ISO3). Intra-country hot flows are allowed at the LP stage because clusters aggregate furnace groups whose individual locations aren't visible to the LP. The actual per-FG radius check is deferred to **disaggregation** (see below).
+
+---
+
+### Disaggregation: Hot-Metal Radius + Minimum-Ratio Enforcement
+
+After the LP solves at the cluster level, `disaggregate_allocations()` in `furnace_group_clustering.py` splits cluster-to-cluster flows back to individual furnace groups. This is where the per-FG distance and BOM-minimum constraints are enforced.
+
+**Three mechanisms work together:**
+
+1. **BOF filtering at clustering time.** `cluster_furnace_groups()` drops BOF furnace groups with `has_hot_metal_access == False` — BOFs that have no BF/ESF/SR producer within `hot_metal_radius`. These BOFs can't legitimately operate under the hot-metal minimum ratio, so excluding them prevents guaranteed radius violations downstream. The flag is set by `PlantGroup.update_hot_metal_access(hot_metal_radius)` at the start of each PAM year.
+
+2. **Strict radius for min-constrained flows.** When a hot commodity (e.g. `hot_metal`, `dri_high`) is routed to a destination technology that has a `PrimaryFeedstock.minimum_share_in_product > 0` for that commodity, the min-cost-flow solver omits radius-violating edges entirely. If the resulting flow problem is infeasible, the disaggregation raises a `RuntimeError` listing the unreachable destination FGs — the LP has allocated hot material to a destination that physically can't receive it within radius, which would silently break the BOM minimum constraint.
+
+3. **Hot → cold relabeling for non-constrained flows.** When a hot commodity flows beyond the radius *and* the destination has no minimum constraint on it (or the flow is surplus above the minimum), `_substitute_commodity_by_distance()` relabels the output allocation to the cold equivalent (e.g. `dri_high` → `hbi_high`). The flow volume is preserved; only the label changes. This reflects the physical reality that the LP's intra-country hot flow must actually travel as cold material over that distance. Logged at INFO level (not WARNING, since it's expected).
+
+**Logging** — at the start of each disaggregation, the log reports:
+- Which `(technology, commodity)` pairs have minimum-share constraints and whether each triggers strict radius.
+- Per-commodity summary of flows that exceeded the radius, split into "relabeled to cold" (informational) vs "real violations" (warnings with top-3 destination countries).
+
+**Helper:** `_destination_has_min_constraint_for_commodity(to_meta_fg, commodity)` checks `dynamic_business_case` for a feedstock with `minimum_share_in_product > 0` whose `metallic_charge` matches the commodity (or its hot/cold equivalent — feedstock data can use either form).
 
 ---
 

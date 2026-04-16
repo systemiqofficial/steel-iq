@@ -35,7 +35,13 @@ Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()
    - Create new furnace groups
    - Record domain events
 
-2. **Checkpoint** saves state:
+2. **Refresh hot-metal access** (`simulation.py`):
+   - Calls `plant_group.update_hot_metal_access(config.hot_metal_radius)` for each `PlantGroup`
+   - Sets `has_hot_metal_access` on each `Plant` and each `FurnaceGroup` based on whether any BF/ESF/SR producer sits within `hot_metal_radius` of the plant (across plants in the same plant group)
+   - Populates `PlantGroup.hot_metal_access` (BOF `furnace_group_id` → list of in-radius hot-metal producers)
+   - Consumed downstream by `cluster_furnace_groups()` to filter BOFs without hot-metal access, by the PAM's BOF-transition check, and by `PlantGroup.evaluate_expansion()` to skip BOF greenfield options at plants without access
+
+3. **Checkpoint** saves state:
    - Serializes all plants, furnace groups, plant groups
    - Records issued commands for replay
 

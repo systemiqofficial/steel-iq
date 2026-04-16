@@ -1622,8 +1622,9 @@ class FurnaceGroup:
 
         # Validate BOM exists for producing furnaces
         if not self.bill_of_materials:
-            logger.error(f"FurnaceGroup {self.furnace_group_id} has no bill of materials defined.")
-            raise ValueError("Bill of materials must exist for FG with utilization rate > 0")
+            raise ValueError(
+                f"Bill of materials must exist for FG with utilization rate > 0. FurnaceGroup ID: {self.furnace_group_id}, technology: {getattr(self.technology, 'name', '?')}"
+            )
         # Validate materials exist in BOM
         elif not ("materials" in self.bill_of_materials and self.bill_of_materials["materials"]):
             # Get diagnostic info

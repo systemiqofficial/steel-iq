@@ -1223,11 +1223,10 @@ class SimulationRunner:
                                 fg.output_energy_costs,
                                 fg.energy_costs_no_subsidy,
                             )
-
-            Simulation(bus=bus, economic_model=AllocationModel()).run_simulation()
-            Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()
             for plant_group in bus.uow.plant_groups.list():
                 plant_group.update_hot_metal_access(bus.env.config.hot_metal_radius)
+            Simulation(bus=bus, economic_model=AllocationModel()).run_simulation()
+            Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()
             Simulation(bus=bus, economic_model=GeospatialModel()).run_simulation()
             with LoggingConfig.simulation_logging("DebugLogging"):
                 data_collector.collect(

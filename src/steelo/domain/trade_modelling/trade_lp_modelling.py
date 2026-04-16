@@ -62,6 +62,9 @@ class Commodity:
     def __hash__(self):
         return hash(self.name)
 
+    def __repr__(self):
+        return self.name
+
 
 class TransportationCost:
     """Transportation cost class for location-dependent commodity transportation costs"""
