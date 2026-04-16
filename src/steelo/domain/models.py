@@ -8363,7 +8363,7 @@ class Environment:
                     technology_name: {
                         material_name: {
                             "unit_cost": float,        # Average cost per ton
-                            "demand_share_pct": float  # Material's % share of total demand
+                            "input_share_pct": float   # Fraction of total input demand (sums to 1.0)
                         }
                     }
                 }
@@ -8456,8 +8456,8 @@ class Environment:
                     else None
                 )
 
-                # demand share as a percentage
-                demand_share_pct_of_mc = (
+                # input share (fraction of total demand for this technology)
+                input_share_pct_of_mc = (
                     (demand_of_metallic_charge / total_demand_all_mc_for_tech)
                     if total_demand_all_mc_for_tech > 0
                     else None
@@ -8465,7 +8465,7 @@ class Environment:
 
                 stats[tech][mat_name] = {
                     "unit_cost": unit_cost_for_metallic_charge if unit_cost_for_metallic_charge is not None else 0.0,
-                    "demand_share_pct": demand_share_pct_of_mc if demand_share_pct_of_mc is not None else 0.0,
+                    "input_share_pct": input_share_pct_of_mc if input_share_pct_of_mc is not None else 0.0,
                 }
         self._diag_bof_sample_count = tech_contributor_counts.get("BOF", 0)
         if diag.diagnostics_enabled():
@@ -8532,13 +8532,13 @@ class Environment:
                         avg_cost = self.get_average_fallback_material_cost(technology=tech)
                         if avg_cost is not None:
                             bom[metallic_charge]["unit_cost"] = avg_cost
-                            bom[metallic_charge]["demand_share_pct"] = 1.0
+                            bom[metallic_charge]["input_share_pct"] = 1.0
                     else:
                         # Use region-specific cost (Note: get_available_fallback_technologies doesn't take iso3/tech params)
                         specific_cost = self.get_fallback_material_cost(iso3, tech)
                         if specific_cost is not None:
                             bom[metallic_charge]["unit_cost"] = specific_cost
-                            bom[metallic_charge]["demand_share_pct"] = 1.0
+                            bom[metallic_charge]["input_share_pct"] = 1.0
                 else:
                     logger.warning(f"Technology {tech} not found in default_metallic_charge_per_technology mapping")
                 self.avg_boms[tech] = bom
@@ -8818,19 +8818,19 @@ class Environment:
                     skipped_mcs.append(feedstock)
                     continue
 
-            # Extract demand_share_pct and unit_cost
-            demand_share_pct = share_data.get("demand_share_pct")
-            if demand_share_pct is None:
+            # Extract input_share_pct and unit_cost
+            input_share_pct = share_data.get("input_share_pct")
+            if input_share_pct is None:
                 if len(self.avg_boms[tech]) == 1 and "unit_cost" in share_data:
-                    demand_share_pct = 1.0
+                    input_share_pct = 1.0
                     logger.warning(
-                        "[BOM] avg_boms[%s][%s] missing demand_share_pct; defaulting to 1.0 for single-input BOM",
+                        "[BOM] avg_boms[%s][%s] missing input_share_pct; defaulting to 1.0 for single-input BOM",
                         tech,
                         feedstock,
                     )
                 else:
                     raise KeyError(
-                        f"avg_boms missing demand_share_pct for technology {tech!r}, feedstock {feedstock!r}. "
+                        f"avg_boms missing input_share_pct for technology {tech!r}, feedstock {feedstock!r}. "
                         f"share_data keys: {list(share_data.keys())}"
                     )
 
@@ -8845,17 +8845,17 @@ class Environment:
             surviving[normalized_feedstock] = {
                 "feedstock_key": feedstock,
                 "pf": matched_pf,
-                "demand_share_pct": float(demand_share_pct),
+                "input_share_pct": float(input_share_pct),
                 "eff": eff,
                 "unit_cost": float(unit_cost),
             }
             logger.debug(
-                "[AVG_BOM_DIAG] pf_match: tech=%s mc=%s pf=%s eff=%.4f demand_share=%.4f",
+                "[AVG_BOM_DIAG] pf_match: tech=%s mc=%s pf=%s eff=%.4f input_share=%.4f",
                 tech,
                 feedstock,
                 matched_pf,
                 eff,
-                demand_share_pct,
+                input_share_pct,
             )
 
         if skipped_mcs:
@@ -8877,7 +8877,7 @@ class Environment:
             raw_output: dict[str, float] = {}
             for norm_mc, data in surviving.items():
                 if data["eff"] and data["eff"] > 0:
-                    raw_output[norm_mc] = data["demand_share_pct"] / data["eff"]
+                    raw_output[norm_mc] = data["input_share_pct"] / data["eff"]
                 else:
                     raw_output[norm_mc] = 0.0
 
@@ -8898,13 +8898,13 @@ class Environment:
             for norm_mc, data in surviving.items():
                 feedstock = data["feedstock_key"]
                 eff = data["eff"]
-                demand_share_pct_val = data["demand_share_pct"]
+                input_share_pct_val = data["input_share_pct"]
                 unit_cost_val = data["unit_cost"]
                 matched_pf = data["pf"]
                 o_share = output_shares[norm_mc]
 
                 # Materials
-                material_demand = demand_share_pct_val * capacity * eff
+                material_demand = input_share_pct_val * capacity * eff
                 material_cost = unit_cost_val * material_demand
 
                 bom_dict["materials"][feedstock] = {
@@ -8914,6 +8914,7 @@ class Environment:
                     "unit_cost": unit_cost_val,
                     "unit_material_cost": unit_cost_val,
                     "product_volume": capacity,
+                    "demand_share_pct": input_share_pct_val * eff,
                 }
 
                 # Energy — accumulate from PrimaryFeedstock

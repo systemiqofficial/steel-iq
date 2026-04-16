@@ -45,9 +45,9 @@ def test_two_pass_mc_skip_with_warning():
         },
         avg_boms={
             "EAF": {
-                "scrap": {"demand_share_pct": 0.8, "unit_cost": 300.0},
+                "scrap": {"input_share_pct": 0.8, "unit_cost": 300.0},
                 # ghost_metal has no matching PrimaryFeedstock → should be skipped
-                "ghost_metal": {"demand_share_pct": 0.2, "unit_cost": 500.0},
+                "ghost_metal": {"input_share_pct": 0.2, "unit_cost": 500.0},
             },
         },
         avg_utilization={"EAF": {"utilization_rate": 0.8}},
@@ -84,7 +84,7 @@ def test_energy_reconstruction_single_mc():
                 ),
             ],
         },
-        avg_boms={"BF": {"io_high": {"demand_share_pct": 1.0, "unit_cost": 150.0}}},
+        avg_boms={"BF": {"io_high": {"input_share_pct": 1.0, "unit_cost": 150.0}}},
         avg_utilization={},
     )
 
@@ -122,8 +122,8 @@ def test_energy_reconstruction_multi_mc_output_shares():
         },
         avg_boms={
             "EAF": {
-                "scrap": {"demand_share_pct": 0.8, "unit_cost": 300.0},
-                "pig_iron": {"demand_share_pct": 0.2, "unit_cost": 400.0},
+                "scrap": {"input_share_pct": 0.8, "unit_cost": 300.0},
+                "pig_iron": {"input_share_pct": 0.2, "unit_cost": 400.0},
             },
         },
         avg_utilization={},
@@ -172,7 +172,7 @@ def test_cheapest_reductant_fallback():
                 ),
             ],
         },
-        avg_boms={"DRI": {"io_low": {"demand_share_pct": 1.0, "unit_cost": 200.0}}},
+        avg_boms={"DRI": {"io_low": {"input_share_pct": 1.0, "unit_cost": 200.0}}},
         avg_utilization={},
     )
 
@@ -210,7 +210,7 @@ def test_zero_cost_carrier_warning():
                 ),
             ],
         },
-        avg_boms={"DRI+CCU": {"io_low": {"demand_share_pct": 1.0, "unit_cost": 200.0}}},
+        avg_boms={"DRI+CCU": {"io_low": {"input_share_pct": 1.0, "unit_cost": 200.0}}},
         avg_utilization={},
     )
 
@@ -233,7 +233,7 @@ def test_deployed_tech_reorder_noop():
     feed = DummyFeed("scrap", "coke", 1.1, energy_requirements={"electricity": 400.0})
     env = _make_env(
         dynamic_feedstocks={"EAF": [feed]},
-        avg_boms={"EAF": {"scrap": {"demand_share_pct": 1.0, "unit_cost": 300.0}}},
+        avg_boms={"EAF": {"scrap": {"input_share_pct": 1.0, "unit_cost": 300.0}}},
         avg_utilization={"EAF": {"utilization_rate": 0.9}},
     )
 
@@ -248,3 +248,40 @@ def test_deployed_tech_reorder_noop():
     assert utilization == pytest.approx(0.9)
     assert bom["materials"]["scrap"]["demand"] == pytest.approx(110.0)
     assert bom["energy"]["electricity"]["demand"] == pytest.approx(40_000.0)
+
+
+def test_demand_share_pct_in_materials_output():
+    """Output BOM materials include demand_share_pct in TM convention (input_share * eff).
+
+    Two MCs with different effectivenesses — demand_share_pct should NOT sum to 1.0.
+    """
+    env = _make_env(
+        dynamic_feedstocks={
+            "EAF": [
+                DummyFeed("scrap", "coke", 1.09, energy_requirements={"electricity": 400.0}),
+                DummyFeed("pig_iron", "coke", 1.14, energy_requirements={"electricity": 100.0}),
+            ],
+        },
+        avg_boms={
+            "EAF": {
+                "scrap": {"input_share_pct": 0.8, "unit_cost": 300.0},
+                "pig_iron": {"input_share_pct": 0.2, "unit_cost": 400.0},
+            },
+        },
+        avg_utilization={},
+    )
+
+    bom, _, _ = env.get_bom_from_avg_boms(
+        energy_costs={"electricity": 50.0},
+        tech="EAF",
+        capacity=100.0,
+        most_common_reductant="coke",
+    )
+
+    # demand_share_pct = input_share * eff (TM convention)
+    assert bom["materials"]["scrap"]["demand_share_pct"] == pytest.approx(0.8 * 1.09)
+    assert bom["materials"]["pig_iron"]["demand_share_pct"] == pytest.approx(0.2 * 1.14)
+
+    # Verify it does NOT sum to 1.0 (unlike input_share_pct)
+    total = sum(m["demand_share_pct"] for m in bom["materials"].values())
+    assert total != pytest.approx(1.0)

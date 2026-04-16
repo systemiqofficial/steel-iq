@@ -679,7 +679,7 @@ def test_get_bom_from_avg_boms_excludes_metallic_energy_entries():
     pf.outputs = {"steel": Volumes(1.0)}
 
     env.dynamic_feedstocks = {"EAF": [pf], "eaf": [pf]}
-    env.avg_boms = {"EAF": {"dri_mid": {"demand_share_pct": 1.0, "unit_cost": 7000.0}}}
+    env.avg_boms = {"EAF": {"dri_mid": {"input_share_pct": 1.0, "unit_cost": 7000.0}}}
     env.avg_utilization = {"EAF": {"utilization_rate": 0.6}}
     env.energy_costs = {"electricity": 50.0}
     env.primary_products = ["steel"]

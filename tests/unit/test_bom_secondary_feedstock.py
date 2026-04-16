@@ -32,7 +32,7 @@ def test_bom_handles_secondary_feedstock_inputs():
             )
         ]
     }
-    env.avg_boms = {"BF_CHARCOAL": {"io_high": {"demand_share_pct": 1.0, "unit_cost": 100.0}}}
+    env.avg_boms = {"BF_CHARCOAL": {"io_high": {"input_share_pct": 1.0, "unit_cost": 100.0}}}
     bom_dict, utilization, reductant = env.get_bom_from_avg_boms(
         energy_costs={"bio_pci": 0.0, "electricity": 0.0},
         tech="BF_CHARCOAL",
@@ -61,7 +61,7 @@ def test_bom_from_feedstocks_for_dri_esf_ccs_not_empty():
 
     feed = DummyFeed()
     env.dynamic_feedstocks = {"DRI+ESF+CCS": [feed], "dri+esf+ccs": [feed]}
-    env.avg_boms = {"DRI+ESF+CCS": {"io_low": {"demand_share_pct": 1.0, "unit_cost": 200.0}}}
+    env.avg_boms = {"DRI+ESF+CCS": {"io_low": {"input_share_pct": 1.0, "unit_cost": 200.0}}}
     env.avg_utilization = {"DRI+ESF+CCS": {"utilization_rate": 0.6}}
 
     bom_dict, utilization, reductant = env.get_bom_from_avg_boms(
