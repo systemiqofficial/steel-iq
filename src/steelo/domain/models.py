@@ -8911,8 +8911,8 @@ class Environment:
                     "demand": material_demand,
                     "total_cost": material_cost,
                     "total_material_cost": material_cost,
-                    "unit_cost": unit_cost_val,
-                    "unit_material_cost": unit_cost_val,
+                    "unit_cost": material_cost / capacity,
+                    "unit_material_cost": material_cost / capacity,
                     "product_volume": capacity,
                     "demand_share_pct": input_share_pct_val * eff,
                 }

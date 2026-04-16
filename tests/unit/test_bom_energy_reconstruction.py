@@ -285,3 +285,11 @@ def test_demand_share_pct_in_materials_output():
     # Verify it does NOT sum to 1.0 (unlike input_share_pct)
     total = sum(m["demand_share_pct"] for m in bom["materials"].values())
     assert total != pytest.approx(1.0)
+
+    # unit_cost = total_cost / product_volume (per-output, TM convention)
+    # scrap: 300 * 0.8 * 100 * 1.09 / 100 = 300 * 0.8 * 1.09 = 261.6
+    assert bom["materials"]["scrap"]["unit_cost"] == pytest.approx(300.0 * 0.8 * 1.09)
+    # pig_iron: 400 * 0.2 * 100 * 1.14 / 100 = 400 * 0.2 * 1.14 = 91.2
+    assert bom["materials"]["pig_iron"]["unit_cost"] == pytest.approx(400.0 * 0.2 * 1.14)
+    # total_cost unchanged (authoritative value)
+    assert bom["materials"]["scrap"]["total_cost"] == pytest.approx(300.0 * 0.8 * 100.0 * 1.09)
