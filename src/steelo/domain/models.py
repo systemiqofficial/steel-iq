@@ -8703,30 +8703,39 @@ class Environment:
             )
 
         if most_common_reductant is None and feedstocks_for_tech:
-            cheapest_reductant, _ = calculate_energy_costs_and_most_common_reductant(
-                feedstocks_for_tech,
-                energy_costs,
-            )
-            if cheapest_reductant:
-                most_common_reductant = cheapest_reductant
-                logger.warning(
-                    "[AVG_BOM_DIAG] reductant: tech=%s source=cheapest_reductant_fallback chosen=%s",
+            has_reductants = any(f.reductant and str(f.reductant).strip() for f in feedstocks_for_tech)
+            if not has_reductants:
+                # Reductant-free tech (e.g. EAF, BOF) — skip cheapest-reductant calculation
+                most_common_reductant = ""
+                logger.debug(
+                    "[AVG_BOM_DIAG] reductant: tech=%s no reductants in feedstocks, using empty string",
                     tech,
-                    most_common_reductant,
                 )
             else:
-                # Cheapest-reductant returned empty — fall back to first available
-                for feed in feedstocks_for_tech:
-                    if feed.reductant and str(feed.reductant).strip():
-                        most_common_reductant = str(feed.reductant)
-                        break
-                if most_common_reductant is None:
-                    most_common_reductant = ""
-                logger.warning(
-                    "[AVG_BOM_DIAG] reductant: tech=%s cheapest_reductant_failed, using first_available=%s",
-                    tech,
-                    most_common_reductant,
+                cheapest_reductant, _ = calculate_energy_costs_and_most_common_reductant(
+                    feedstocks_for_tech,
+                    energy_costs,
                 )
+                if cheapest_reductant:
+                    most_common_reductant = cheapest_reductant
+                    logger.warning(
+                        "[AVG_BOM_DIAG] reductant: tech=%s source=cheapest_reductant_fallback chosen=%s",
+                        tech,
+                        most_common_reductant,
+                    )
+                else:
+                    # Cheapest-reductant returned empty — fall back to first available
+                    for feed in feedstocks_for_tech:
+                        if feed.reductant and str(feed.reductant).strip():
+                            most_common_reductant = str(feed.reductant)
+                            break
+                    if most_common_reductant is None:
+                        most_common_reductant = ""
+                    logger.warning(
+                        "[AVG_BOM_DIAG] reductant: tech=%s cheapest_reductant_failed, using first_available=%s",
+                        tech,
+                        most_common_reductant,
+                    )
         elif most_common_reductant is not None:
             logger.debug(
                 "[AVG_BOM_DIAG] reductant: tech=%s source=fleet chosen=%s",
@@ -8892,6 +8901,12 @@ class Environment:
             else:
                 output_shares = {mc: raw / total_raw for mc, raw in raw_output.items()}
 
+            logger.debug(
+                "[AVG_BOM_DIAG] output_shares: tech=%s shares=%s",
+                tech,
+                {mc: f"{s:.4f}" for mc, s in output_shares.items()},
+            )
+
             # Pass 2 — build materials + accumulate energy
             energy_accum: dict[str, float] = {}
 
@@ -8916,6 +8931,18 @@ class Environment:
                     "product_volume": capacity,
                     "demand_share_pct": input_share_pct_val * eff,
                 }
+                logger.debug(
+                    "[AVG_BOM_DIAG] material: tech=%s mc=%s input_share=%.4f eff=%.4f "
+                    "demand=%.2f unit_cost_input=%.2f unit_cost_output=%.2f demand_share=%.4f",
+                    tech,
+                    feedstock,
+                    input_share_pct_val,
+                    eff,
+                    material_demand,
+                    unit_cost_val,
+                    material_cost / capacity,
+                    input_share_pct_val * eff,
+                )
 
                 # Energy — accumulate from PrimaryFeedstock
                 if matched_pf is not None:
@@ -8926,7 +8953,7 @@ class Environment:
                         contrib = o_share * float(intensity) * capacity
                         energy_accum[norm_carrier] = energy_accum.get(norm_carrier, 0.0) + contrib
                         logger.debug(
-                            "[AVG_BOM_DEBUG] energy_contrib: tech=%s mc=%s carrier=%s "
+                            "[AVG_BOM_DIAG] energy_contrib: tech=%s mc=%s carrier=%s "
                             "o_share=%.4f intensity=%.4f contrib=%.2f",
                             tech,
                             feedstock,
@@ -8943,7 +8970,7 @@ class Environment:
                         contrib = o_share * float(intensity) * capacity
                         energy_accum[norm_sec] = energy_accum.get(norm_sec, 0.0) + contrib
                         logger.debug(
-                            "[AVG_BOM_DEBUG] energy_contrib_sec: tech=%s mc=%s carrier=%s "
+                            "[AVG_BOM_DIAG] energy_contrib_sec: tech=%s mc=%s carrier=%s "
                             "o_share=%.4f intensity=%.4f contrib=%.2f",
                             tech,
                             feedstock,
@@ -8971,11 +8998,18 @@ class Environment:
                     "product_volume": capacity,
                 }
 
-            logger.warning(
-                "[AVG_BOM_DEBUG] summary: tech=%s materials=%d energy=%d energy_carriers=%s",
+            total_material_cost = sum(m["total_cost"] for m in bom_dict["materials"].values())
+            total_energy_cost = sum(e["total_cost"] for e in bom_dict["energy"].values())
+            logger.info(
+                "[AVG_BOM_DIAG] summary: tech=%s capacity=%.0f reductant=%s "
+                "materials=%d (cost=%.0f) energy=%d (cost=%.0f) carriers=%s",
                 tech,
+                capacity,
+                most_common_reductant,
                 len(bom_dict["materials"]),
+                total_material_cost,
                 len(bom_dict["energy"]),
+                total_energy_cost,
                 list(bom_dict["energy"].keys()),
             )
 
