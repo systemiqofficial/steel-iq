@@ -13,7 +13,6 @@ function_overrides:
   # Suppress noisy functions
   calculate_unit_production_cost: WARNING
   extract_price_from_costcurve: WARNING
-  generate_input_effectiveness_mapping_from_feedstocks: ERROR
 
 external:
   pyomo: ERROR

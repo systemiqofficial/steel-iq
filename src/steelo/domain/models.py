@@ -8619,35 +8619,6 @@ class Environment:
                 logger.debug(
                     f"[BOM] Added to input_effectiveness: {feed.metallic_charge.lower()} = {feed.required_quantity_per_ton_of_product}"
                 )
-            # Include secondary feedstocks and other non-metallic inputs so avg_boms stay aligned with dynamic feedstocks
-            secondary_requirements = feed.secondary_feedstock or {}
-            if not secondary_requirements:
-                continue
-            reductant_matches = (
-                most_common_reductant is None  # Accept any reductant when None
-                or feed.reductant == most_common_reductant
-                or str(feed.reductant).lower() == most_common_reductant
-                or (not most_common_reductant and not feed.reductant)
-            )
-            if not reductant_matches:
-                continue
-            for sec_name, volume in secondary_requirements.items():
-                normalized_secondary = normalize_name(sec_name)
-                if (
-                    normalized_secondary in input_effectiveness
-                ):  # Should not happen, as each secondary feedstock should only appear once per feedstock and reductant combo
-                    logger.warning(
-                        "[BOM] Secondary feedstock %s overwriting %.4f with %.4f",
-                        normalized_secondary,
-                        input_effectiveness[normalized_secondary],
-                        volume,
-                    )
-                input_effectiveness[normalized_secondary] = volume
-            if hasattr(feed, "energy_requirements") and feed.energy_requirements:
-                for en_in in feed.energy_requirements or []:
-                    normalized_energy = normalize_name(en_in)
-                    if normalized_energy not in input_effectiveness:
-                        input_effectiveness[normalized_energy] = feed.energy_requirements[en_in]
         # If no inputs matched the most common reductant
         if not input_effectiveness:
             logger.error(
