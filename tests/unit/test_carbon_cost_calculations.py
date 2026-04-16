@@ -693,6 +693,10 @@ def test_get_bom_from_avg_boms_excludes_metallic_energy_entries():
     assert bom is not None
     assert "dri_mid" not in bom["energy"], "Metallic feedstocks must not appear in BOM energy entries"
     assert bom["materials"]["dri_mid"]["unit_cost"] == pytest.approx(7000.0)
+    # Energy reconstructed from PrimaryFeedstock (electricity intensity=2.0, output_share=1.0, capacity=1000)
+    assert "electricity" in bom["energy"]
+    assert bom["energy"]["electricity"]["demand"] == pytest.approx(2000.0)
+    assert bom["energy"]["electricity"]["unit_cost"] == pytest.approx(50.0)
 
     def test_carbon_cost_magnitude_validation(self):
         """Ensure carbon costs are in realistic ranges for different scenarios."""

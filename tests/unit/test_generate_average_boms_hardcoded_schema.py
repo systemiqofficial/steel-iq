@@ -98,6 +98,9 @@ def test_hardcoded_avg_bom_includes_demand_share_pct(tmp_path: Path) -> None:
     )
     assert bom is not None
     assert bom["materials"]["io_high"]["demand"] == pytest.approx(100.0)
+    # Energy reconstructed from PrimaryFeedstock (intensity=1.0, output_share=1.0, capacity=100)
+    assert "electricity" in bom["energy"]
+    assert bom["energy"]["electricity"]["demand"] == pytest.approx(100.0)
 
 
 def test_get_bom_from_avg_boms_defaults_missing_demand_share_pct_for_single_entry(tmp_path: Path) -> None:
@@ -117,3 +120,4 @@ def test_get_bom_from_avg_boms_defaults_missing_demand_share_pct_for_single_entr
     )
     assert bom is not None
     assert bom["materials"]["io_high"]["demand"] == pytest.approx(100.0)
+    assert bom["energy"]["electricity"]["demand"] == pytest.approx(100.0)
