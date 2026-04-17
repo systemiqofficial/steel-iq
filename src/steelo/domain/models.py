@@ -7427,7 +7427,7 @@ class Environment:
                for each plant's location
             2. Handle special cases based on plant type:
 
-               **New GEO Plants (parent_gem_id="indi"):**
+               **New GEO Plants (parent_gem_id starts with "indi"):**
                - These plants have their own power infrastructure (renewable energy park)
                - Preserve electricity and hydrogen costs from their own power generation if previously set
 
@@ -7476,7 +7476,7 @@ class Environment:
                 logged_countries.add(plant.location.iso3)
 
             # New GEO plants: preserve own power costs; use no_subsidy to avoid compounding
-            if plant.parent_gem_id.lower() == "indi":
+            if plant.parent_gem_id.lower().startswith("indi"):
                 for fg in plant.furnace_groups:
                     if fg.disposal_cost_outputs is None:
                         fg.disposal_cost_outputs = self.config.disposal_cost_outputs

@@ -253,3 +253,11 @@ Returns either:
    - Debug level: Detailed stage-by-stage progress
    - Warning level: Capacity limit violations and errors
    - Info level: Successful expansion approvals
+
+7. **Per-ISO3 Indi Plant Groups**:
+   - New plants created by the GEO module start in a master "indi" plant group (the incubator).
+   - While in "considered" or "announced" status, plants remain in the master group for dynamic cost updates and status transitions.
+   - When a plant transitions to "construction" status, it is moved to a per-country group (`indi_{iso3}`, e.g. `indi_CHN`, `indi_AUS`). These groups are created lazily on first use.
+   - Since `evaluate_expansion` runs once per plant group, this allows each country to independently expand its new plants (one expansion per country per year, rather than one globally).
+   - The construction-to-operating transition (`simulation.py`) iterates all plants regardless of plant group, so moved plants are unaffected.
+   - Plants in indi groups are identified by `parent_gem_id.startswith("indi")` rather than an exact match.

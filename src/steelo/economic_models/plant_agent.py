@@ -13,6 +13,7 @@ from steelo.adapters.geospatial.geospatial_statistics import (
 )
 from steelo.adapters.repositories.in_memory_repository import InMemoryRepository
 from steelo.domain import Year
+from steelo.domain.models import PlantGroup
 from steelo.domain.commands import (
     AddFurnaceGroup,
     ChangeFurnaceGroupStatusToSwitchingTechnology,
@@ -242,6 +243,25 @@ class GeospatialModel:
                 f"operation=geo_update_status year={bus.env.year} duration_s={step_time:.3f} fg_count={len(status_commands)}"
             )
             logger.debug(f"[GEO] Updated status for {len(status_commands)} furnace groups")
+
+        # Move construction-status plants from master indi to per-ISO3 groups
+        moved_count = 0
+        for plant in list(indi_pg.plants):
+            if all(fg.status.lower() == "construction" for fg in plant.furnace_groups):
+                iso3 = plant.location.iso3
+                group_id = f"indi_{iso3}"
+                try:
+                    target = bus.uow.plant_groups.get(group_id)
+                except KeyError:
+                    target = PlantGroup(plant_group_id=group_id, plants=[])
+                    bus.uow.plant_groups.add(target)
+                    logger.info(f"[GEO] Created per-country indi group: {group_id}")
+                target.plants.append(plant)
+                plant.parent_gem_id = group_id
+                indi_pg.plants.remove(plant)
+                moved_count += 1
+        if moved_count:
+            logger.info(f"[GEO] Moved {moved_count} construction plants to per-ISO3 indi groups")
 
         # Identify new business opportunities and prioritize them by NPV
         step_start = time.time()

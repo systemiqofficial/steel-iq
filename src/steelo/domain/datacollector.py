@@ -206,22 +206,19 @@ class DataCollector:
         Collect the locations of new plants set to operating in the given year, as well as how many.
         """
         logger = logging.getLogger(f"{__name__}.collect_new_plant_data")
-        indi_pg = None
-        for pg in self.plant_groups:
-            if pg.plant_group_id == "indi":
-                indi_pg = pg
-
-        if indi_pg is None:
-            logger.warning("No plant group with ID 'indi' found. Skipping new plant data collection.")
+        indi_groups = [pg for pg in self.plant_groups if pg.plant_group_id.startswith("indi")]
+        if not indi_groups:
+            logger.warning("No indi plant groups found. Skipping new plant data collection.")
             return
 
-        for plant in indi_pg.plants:
-            for fg in plant.furnace_groups:
-                self.status_counts[fg.technology.product][year][fg.technology.name][fg.status] += 1
-                if fg.status == "operating" and fg.lifetime.start == year:
-                    self.new_plant_locations[fg.technology.product][year].append(
-                        ({"lat": plant.location.lat, "lon": plant.location.lon})
-                    )
+        for indi_pg in indi_groups:
+            for plant in indi_pg.plants:
+                for fg in plant.furnace_groups:
+                    self.status_counts[fg.technology.product][year][fg.technology.name][fg.status] += 1
+                    if fg.status == "operating" and fg.lifetime.start == year:
+                        self.new_plant_locations[fg.technology.product][year].append(
+                            ({"lat": plant.location.lat, "lon": plant.location.lon})
+                        )
 
     def collect_capex_investments(self, year: Year):
         """
