@@ -366,8 +366,8 @@ class TradeLPModel:
         self.solution_status = None
         self.optimal_solution = None
         self.allocations: Allocations | None = None
-        self.demand_slack_cost = 10000
-        self.soft_minimum_capacity_slack_cost = 10000
+        self.demand_slack_cost = 10_000_000
+        self.soft_minimum_capacity_slack_cost = 100_000
         self.real_life_costs_normalization_factor = 1
         self.tariff_quotas_by_iso3: dict[Tuple[str, str, str], float] = {}
         self.tariff_taxes_by_iso3: dict[Tuple[str, str, str], float] = {}
