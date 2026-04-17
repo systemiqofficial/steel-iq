@@ -3670,6 +3670,7 @@ class Plant:
         tech_opex_subsidies: dict[str, list[Subsidy]] = {},
         tech_debt_subsidies: dict[str, list[Subsidy]] = {},
         most_common_reductant_by_tech: dict[str, str] = {},
+        countries_with_co2_storage: set[str] = set(),
     ) -> commands.Command | None:
         """
         Evaluate the economic strategy for a furnace group using NPV-based decision making.
@@ -3792,8 +3793,11 @@ class Plant:
         if not allowed_techs_in_year:
             raise ValueError(f"[FG STRATEGY] No allowed techs in {current_year}")
 
+        # Skip CCS technologies if the country has no CO2 storage capacity
+        has_co2_storage = self.location.iso3 in countries_with_co2_storage
         filtered_allowed_furnace_transitions = {
-            k: [tech for tech in v if tech in allowed_techs_in_year] for k, v in allowed_furnace_transitions.items()
+            k: [tech for tech in v if tech in allowed_techs_in_year and (has_co2_storage or "ccs" not in tech.lower())]
+            for k, v in allowed_furnace_transitions.items()
         }
 
         logger.debug(
@@ -4871,6 +4875,7 @@ class PlantGroup:
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         environment_most_common_reductant: dict[str, str] = {},
+        countries_with_co2_storage: set[str] = set(),
     ) -> dict[str, tuple[float | None, str, float]]:
         """
         Calculate NPV and optimal technology choice for all plants in the group considering allowed technologies and
@@ -4972,6 +4977,10 @@ class PlantGroup:
 
                 # Skip BOF technology if plant lacks hot metal furnace (prerequisite)
                 if tech == "BOF" and not plant.has_hot_metal_furnace:
+                    continue
+
+                # Skip CCS technologies if the country has no CO2 storage capacity
+                if "ccs" in tech.lower() and plant.location.iso3 not in countries_with_co2_storage:
                     continue
 
                 # Get bill of materials for this technology
@@ -5139,6 +5148,7 @@ class PlantGroup:
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         environment_most_common_reductant: dict[str, str] = {},
+        countries_with_co2_storage: set[str] = set(),
     ) -> commands.Command | None:
         """
         Evaluate and execute the most profitable furnace expansion across all plants in the plant group.
@@ -5238,6 +5248,7 @@ class PlantGroup:
             plant_lifetime=plant_lifetime,
             construction_time=construction_time,
             environment_most_common_reductant=environment_most_common_reductant,
+            countries_with_co2_storage=countries_with_co2_storage,
         )
 
         # ========== STAGE 3: CHECK IF ANY EXPANSION OPTIONS EXIST ==========
@@ -5507,6 +5518,7 @@ class PlantGroup:
         energy_subsidies: dict[str, dict[str, dict[str, list[Subsidy]]]] = {},  # carrier -> iso3 -> tech -> [Subsidy]
         environment_most_common_reductant: dict[str, str] = {},
         disposal_cost_outputs: frozenset[str] | None = None,
+        countries_with_co2_storage: set[str] = set(),
     ) -> commands.Command:
         """
         Identifies new business opportunities for plants at given locations with specific technologies.
@@ -5664,6 +5676,13 @@ class PlantGroup:
             dynamic_business_cases=dynamic_feedstocks,
             disposal_cost_outputs=disposal_cost_outputs,
         )
+        # Skip CCS technologies for countries without CO2 storage capacity
+        for product, sites in npv_dict.items():
+            for site_id in list(sites.keys()):
+                iso3 = site_id[2]
+                if iso3 not in countries_with_co2_storage:
+                    sites[site_id] = {t: n for t, n in sites[site_id].items() if "ccs" not in t.lower()}
+
         npv_counts, npv_total = _count_entries(npv_dict)
         candidate_stats["npv_pairs_total"] = npv_total
         for product, value in npv_counts.items():
@@ -9192,6 +9211,16 @@ class Environment:
 
         self.average_material_cost = feedstocks
         return feedstocks
+
+    @property
+    def countries_with_co2_storage(self) -> set[str]:
+        """Returns ISO3 codes of countries that have CO2 storage capacity > 0 in any year."""
+        countries: set[str] = set()
+        for constraint in self.secondary_feedstock_constraints:
+            if constraint.secondary_feedstock_name == "co2_stored":
+                if any(v > 0 for v in constraint.maximum_constraint_per_year.values()):
+                    countries.update(constraint.region_iso3s)
+        return countries
 
     def relevant_secondary_feedstock_constraints(self):
         """Returns the relevant secondary feedstock constraints for the current year."""

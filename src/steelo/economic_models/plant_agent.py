@@ -277,6 +277,7 @@ class GeospatialModel:
                 energy_subsidies=bus.env.energy_subsidies,
                 environment_most_common_reductant=bus.env.most_common_reductant_by_tech,
                 disposal_cost_outputs=bus.env.config.disposal_cost_outputs,
+                countries_with_co2_storage=bus.env.countries_with_co2_storage,
             )
         )
         step_time = time.time() - step_start
@@ -835,6 +836,7 @@ class PlantAgentsModel:
                         installed_capacity_in_year=bus.env.installed_capacity_in_year,
                         new_plant_capacity_in_year=bus.env.new_plant_capacity_in_year,
                         most_common_reductant_by_tech=bus.env.most_common_reductant_by_tech,
+                        countries_with_co2_storage=bus.env.countries_with_co2_storage,
                     )
                 ) is not None:
                     logger.info(f"[PAM] FG {fg.furnace_group_id} strategy returned command: {type(cmd).__name__}")
@@ -946,6 +948,7 @@ class PlantAgentsModel:
                     new_plant_capacity_in_year=bus.env.new_plant_capacity_in_year,
                     new_capacity_share_from_new_plants=bus.env.config.new_capacity_share_from_new_plants,
                     environment_most_common_reductant=bus.env.most_common_reductant_by_tech,
+                    countries_with_co2_storage=bus.env.countries_with_co2_storage,
                 )
             ) is not None:
                 logger.info(f"[PAM] Plant group {pg.plant_group_id} expansion returned: {type(cmd).__name__}")

@@ -208,6 +208,9 @@ def _load_secondary_feedstock_constraints(env, repository_json):
     else:
         logger.info(f"Total {len(constraints)} secondary feedstock constraints loaded")
 
+    co2_countries = env.countries_with_co2_storage
+    logger.info(f"Countries with CO2 storage (CCS allowed): {sorted(co2_countries)}")
+
 
 def bootstrap_simulation(
     config: "SimulationConfig",
