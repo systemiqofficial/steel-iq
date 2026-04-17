@@ -4970,6 +4970,15 @@ class PlantGroup:
                         f"No greenfield capex data for {tech} in region {iso3_to_region_map[plant.location.iso3]}"
                     )
 
+                # Skip if plant cannot individually afford this technology
+                equity_needed_for_tech = capacity * capex
+                if plant.balance < equity_needed_for_tech:
+                    logger.debug(
+                        f"[PG EXPANSION] Skipping {tech} for plant {plant.plant_id}: "
+                        f"balance ${plant.balance:,.2f} < equity needed ${equity_needed_for_tech:,.2f}"
+                    )
+                    continue
+
                 # Skip BOF technology if plant lacks hot metal furnace (prerequisite)
                 if tech == "BOF" and not plant.has_hot_metal_furnace:
                     continue
