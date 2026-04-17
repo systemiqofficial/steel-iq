@@ -5822,16 +5822,18 @@ class PlantGroup:
                     power_price = float(raw_power_price) if raw_power_price is not None else None
                     no_sub = fg.energy_costs_no_subsidy or fg.energy_costs
                     if power_price is None or math.isnan(power_price):
-                        power_price = no_sub["electricity"]
+                        power_price = no_sub.get("electricity")
                     raw_hydrogen_price = (
                         custom_energy_costs["capped_lcoh"].sel(lat=plant.location.lat, lon=plant.location.lon).values
                     )
                     hydrogen_price = float(raw_hydrogen_price) if raw_hydrogen_price is not None else None
                     if hydrogen_price is None or (hydrogen_price is not None and math.isnan(hydrogen_price)):
-                        hydrogen_price = no_sub["hydrogen"]
+                        hydrogen_price = no_sub.get("hydrogen")
 
-                    new_costs["electricity"] = power_price
-                    new_costs["hydrogen"] = hydrogen_price
+                    if power_price is not None:
+                        new_costs["electricity"] = power_price
+                    if hydrogen_price is not None:
+                        new_costs["hydrogen"] = hydrogen_price
 
                     # Apply energy carrier subsidies
                     active_energy_subs: dict[str, list] = {}
@@ -5843,8 +5845,10 @@ class PlantGroup:
 
                     # Build full energy cost dicts with updated electricity/hydrogen
                     base_costs = dict(fg.energy_costs_no_subsidy or fg.energy_costs)
-                    base_costs["electricity"] = power_price
-                    base_costs["hydrogen"] = hydrogen_price
+                    if power_price is not None:
+                        base_costs["electricity"] = power_price
+                    if hydrogen_price is not None:
+                        base_costs["hydrogen"] = hydrogen_price
 
                     if active_energy_subs:
                         new_energy_costs, new_output_energy_costs, new_energy_costs_no_subsidy = (
@@ -7473,9 +7477,11 @@ class Environment:
                     if fg.disposal_cost_outputs is None:
                         fg.disposal_cost_outputs = self.config.disposal_cost_outputs
                     no_sub = fg.energy_costs_no_subsidy or fg.energy_costs
-                    input_costs["electricity"] = no_sub["electricity"]
-                    input_costs["hydrogen"] = no_sub["hydrogen"]
-                    if fg.energy_costs_no_subsidy:
+                    if "electricity" in no_sub:
+                        input_costs["electricity"] = no_sub["electricity"]
+                    if "hydrogen" in no_sub:
+                        input_costs["hydrogen"] = no_sub["hydrogen"]
+                    if fg.energy_costs_no_subsidy and "electricity" in no_sub:
                         sub_elec = fg.energy_costs.get("electricity", 0)
                         if sub_elec != no_sub["electricity"]:
                             logger.debug(
