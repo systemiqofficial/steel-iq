@@ -5086,9 +5086,9 @@ class PlantGroup:
                     output_costs=plant.furnace_groups[-1].output_energy_costs,
                     disposal_cost_outputs=plant.furnace_groups[-1].disposal_cost_outputs,
                 )
-                logger.debug(
-                    f"[PAM EVAL] {plant.plant_id}/{tech} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
-                )
+                # logger.debug(
+                #     f"[PAM EVAL] {plant.plant_id}/{tech} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
+                # )
 
                 NPV[tech] = cc.calculate_npv_full(
                     capex=capex,
@@ -5214,15 +5214,12 @@ class PlantGroup:
         logger = logging.getLogger(f"{__name__}.PlantGroup.evaluate_expansion")
 
         # ========== STAGE 1: INITIALIZATION ==========
-        logger.debug(f"[PG EXPANSION] Starting expansion evaluation for PlantGroup {self.plant_group_id}")
-        logger.debug(f"[PG EXPANSION]   - Year: {current_year}, Capacity: {capacity:,} kt")
-        logger.debug(f"[PG EXPANSION]   - Balance: ${self.total_balance:,.2f}, Plants: {len(self.plants)}")
         logger.debug(
-            f"[PG EXPANSION]   - Probabilistic: {probabilistic_agents}, Equity share: {equity_share * 100:.0f}%"
+            f"[PG EXPANSION] {self.plant_group_id}: "
+            f"balance=${self.total_balance:,.2f}, plants={len(self.plants)}, year={current_year}"
         )
 
         # ========== STAGE 2: EVALUATE ALL EXPANSION OPTIONS ==========
-        logger.debug("[PG EXPANSION] === Stage 2: Evaluating expansion options ===")
 
         expansion_options = self.evaluate_expansion_options(
             price_series=price_series,
@@ -5255,19 +5252,17 @@ class PlantGroup:
             return None
 
         # Log all expansion options found
-        logger.debug(f"[PG EXPANSION] Found {len(expansion_options)} potential expansion options:")
+        logger.debug(f"[PG EXPANSION] Found {len(expansion_options)} options:")
         for pid, (npv, tech, capex) in expansion_options.items():
             npv_str = "None" if npv is None else f"${npv:,.0f}"
-            logger.debug(f"[PG EXPANSION]   - Plant {pid}: Tech={tech}, NPV={npv_str}, CAPEX=${capex:.2f}/t")
+            logger.debug(f"[PG EXPANSION]   {pid}: {tech} NPV={npv_str} CAPEX=${capex:.2f}/t")
 
         # ========== STAGE 4: SELECT HIGHEST NPV OPTION ==========
         highest_plant_and_tech = max(expansion_options.items(), key=lambda item: item[1][0] or float("-inf"))
         plant_id, (npv, tech, capex) = highest_plant_and_tech
 
-        logger.debug("[PG EXPANSION] === Stage 4: Best option ===")
-        logger.debug(f"[PG EXPANSION]   - Plant: {plant_id}, Tech: {tech}")
         npv_str = "None" if npv is None else f"{npv:,.0f}"
-        logger.debug(f"[PG EXPANSION]   - NPV: ${npv_str}, CAPEX: ${capex:,.2f}/t")
+        logger.debug(f"[PG EXPANSION] Best: {plant_id} {tech} NPV=${npv_str} CAPEX=${capex:,.2f}/t")
 
         # ========== STAGE 5: CHECK NPV PROFITABILITY ==========
         if npv is None or npv <= 0:
@@ -5280,18 +5275,11 @@ class PlantGroup:
         equity_needed = capacity * capex  # Equity to finance up-front cost
 
         if self.total_balance < equity_needed:
-            logger.debug("[PG EXPANSION] === Stage 6: Balance check FAILED ===")
             logger.debug(
-                f"[PG EXPANSION]   - Equity needed: ${equity_needed:,.2f} ({capacity * T_TO_KT:,.0f} kt × ${capex:.2f}/t)"
+                f"[PG EXPANSION] DECISION - No expansion (insufficient funds: "
+                f"${self.total_balance:,.2f} < ${equity_needed:,.2f})"
             )
-            logger.debug(f"[PG EXPANSION]   - Available: ${self.total_balance:,.2f}")
-            logger.debug(f"[PG EXPANSION]   - Shortfall: ${equity_needed - self.total_balance:,.2f}")
-            logger.debug("[PG EXPANSION]   - DECISION - No expansion (insufficient funds)")
             return None
-
-        logger.debug("[PG EXPANSION] === Stage 6: Balance check PASSED ===")
-        logger.debug(f"[PG EXPANSION]   - Equity needed: ${equity_needed:,.2f}")
-        logger.debug(f"[PG EXPANSION]   - Available: ${self.total_balance:,.2f}")
 
         # ========== STAGE 7: PROBABILISTIC ACCEPTANCE ==========
         if probabilistic_agents:
@@ -5304,16 +5292,11 @@ class PlantGroup:
         random_draw = random.random()
 
         if random_draw >= acceptance_probability:
-            logger.debug("[PG EXPANSION] === Stage 7: Probabilistic check FAILED ===")
-            logger.debug(f"[PG EXPANSION]   - Mode: {'Probabilistic' if probabilistic_agents else 'Deterministic'}")
-            logger.debug(f"[PG EXPANSION]   - Investment: ${capacity * capex:,.0f}, NPV: ${npv:,.0f}")
-            logger.debug(f"[PG EXPANSION]   - Acceptance probability: {acceptance_probability:.2%}")
-            logger.debug(f"[PG EXPANSION]   - Random draw: {random_draw:.4f} ≥ {acceptance_probability:.4f}")
-            logger.debug("[PG EXPANSION]   - DECISION - No expansion (probabilistic rejection)")
+            logger.debug(
+                f"[PG EXPANSION] DECISION - No expansion (probabilistic rejection: "
+                f"draw={random_draw:.4f} >= prob={acceptance_probability:.2%})"
+            )
             return None
-
-        logger.debug("[PG EXPANSION] === Stage 7: Probabilistic check PASSED ===")
-        logger.debug(f"[PG EXPANSION]   - Probability: {acceptance_probability:.2%}, Draw: {random_draw:.4f}")
 
         # ========== STAGE 8: CHECK CAPACITY LIMITS ==========
         if (
@@ -5351,12 +5334,12 @@ class PlantGroup:
                 logger.warning("[PG EXPANSION]   - DECISION - No expansion (capacity limit reached)")
                 return None
 
-            logger.debug("[PG EXPANSION] === Stage 8: Capacity limit check PASSED ===")
-            logger.debug(f"[PG EXPANSION]   - Product: {expansion_product}")
-            logger.debug(
-                f"[PG EXPANSION]   - After expansion: {(expansion_and_switch_capacity + capacity) * T_TO_KT:,.0f} kt / "
-                f"{expansion_limit * T_TO_KT:,.0f} kt limit"
-            )
+            # logger.debug("[PG EXPANSION] === Stage 8: Capacity limit check PASSED ===")
+            # logger.debug(f"[PG EXPANSION]   - Product: {expansion_product}")
+            # logger.debug(
+            #     f"[PG EXPANSION]   - After expansion: {(expansion_and_switch_capacity + capacity) * T_TO_KT:,.0f} kt / "
+            #     f"{expansion_limit * T_TO_KT:,.0f} kt limit"
+            # )
 
         # ========== STAGE 9: VALIDATE PLANT AND LOCATION ==========
         # NOTE: Balance deduction does NOT happen here - it occurs at the FurnaceGroup level via command handler.
@@ -5383,9 +5366,9 @@ class PlantGroup:
         if cost_of_debt_original is None:
             raise ValueError(f"No cost of debt data for country: {plant.location.iso3} when expanding plant")
 
-        logger.debug("[PG EXPANSION] === Stage 9: Plant validation ===")
-        logger.debug(f"[PG EXPANSION]   - Plant: {plant_id}, Location: {plant.location.iso3}, Region: {region}")
-        logger.debug(f"[PG EXPANSION]   - Base cost of debt: {cost_of_debt_original:.2%}")
+        # logger.debug("[PG EXPANSION] === Stage 9: Plant validation ===")
+        # logger.debug(f"[PG EXPANSION]   - Plant: {plant_id}, Location: {plant.location.iso3}, Region: {region}")
+        # logger.debug(f"[PG EXPANSION]   - Base cost of debt: {cost_of_debt_original:.2%}")
 
         # ========== STAGE 10: APPLY SUBSIDIES ==========
         from steelo.domain import calculate_costs as cc
@@ -5406,20 +5389,20 @@ class PlantGroup:
         base_capex = region_capex[region][tech]
         capex = cc.calculate_capex_with_subsidies(base_capex, selected_capex_subsidies)
 
-        logger.debug("[PG EXPANSION] === Stage 10: Subsidies applied ===")
-        logger.debug(
-            f"[PG EXPANSION]   - Debt subsidies: {len(selected_debt_subsidies)} active (of {len(all_debt_subsidies)} total)"
-        )
-        logger.debug(
-            f"[PG EXPANSION]   - CAPEX subsidies: {len(selected_capex_subsidies)} active (of {len(all_capex_subsidies)} total)"
-        )
-        logger.debug(
-            f"[PG EXPANSION]   - Cost of debt: {cost_of_debt_original:.2%} → {cost_of_debt:.2%} "
-            f"({(cost_of_debt - cost_of_debt_original) * 100:+.2f} pp)"
-        )
-        logger.debug(
-            f"[PG EXPANSION]   - CAPEX: ${base_capex:.2f}/t → ${capex:.2f}/t (${base_capex - capex:.2f}/t reduction)"
-        )
+        # logger.debug("[PG EXPANSION] === Stage 10: Subsidies applied ===")
+        # logger.debug(
+        #     f"[PG EXPANSION]   - Debt subsidies: {len(selected_debt_subsidies)} active (of {len(all_debt_subsidies)} total)"
+        # )
+        # logger.debug(
+        #     f"[PG EXPANSION]   - CAPEX subsidies: {len(selected_capex_subsidies)} active (of {len(all_capex_subsidies)} total)"
+        # )
+        # logger.debug(
+        #     f"[PG EXPANSION]   - Cost of debt: {cost_of_debt_original:.2%} → {cost_of_debt:.2%} "
+        #     f"({(cost_of_debt - cost_of_debt_original) * 100:+.2f} pp)"
+        # )
+        # logger.debug(
+        #     f"[PG EXPANSION]   - CAPEX: ${base_capex:.2f}/t → ${capex:.2f}/t (${base_capex - capex:.2f}/t reduction)"
+        # )
 
         # ========== STAGE 11: CREATE EXPANSION COMMAND ==========
         furnace_group_id = f"{plant_id}_new_furnace"
@@ -5460,10 +5443,10 @@ class PlantGroup:
             f"[PG EXPANSION]   - Cost of debt: {cost_of_debt_original:.2%} → {cost_of_debt:.2%} (with subsidies)"
         )
 
-        if subsidy_details:
-            logger.debug("[PG EXPANSION] Subsidies included:")
-            for detail in subsidy_details:
-                logger.debug(f"[PG EXPANSION]   {detail}")
+        # if subsidy_details:
+        #     logger.debug("[PG EXPANSION] Subsidies included:")
+        #     for detail in subsidy_details:
+        #         logger.debug(f"[PG EXPANSION]   {detail}")
 
         return commands.AddFurnaceGroup(
             furnace_group_id=furnace_group_id,

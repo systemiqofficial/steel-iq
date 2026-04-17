@@ -5,6 +5,7 @@ features:
   furnace_group_breakdown: true
 
 modules:
+  core: INFO
   geo: INFO
   pam: INFO
   tm: INFO
@@ -14,6 +15,15 @@ function_overrides:
   calculate_unit_production_cost: WARNING
   extract_price_from_costcurve: WARNING
   generate_input_effectiveness_mapping_from_feedstocks: ERROR
+  # Suppress noisy CORE-context functions
+  set_energy_costs: WARNING
+  _seed_opening_balances: WARNING
+  update_furnace_hydrogen_costs: WARNING
+  set_input_cost_in_furnace_groups: WARNING
+  # Debug plant group expansion and indi routing
+  evaluate_expansion_options: DEBUG
+  evaluate_expansion: DEBUG
+  indi_routing: DEBUG
 
 external:
   pyomo: ERROR
