@@ -32,15 +32,18 @@ def test_bom_handles_secondary_feedstock_inputs():
             )
         ]
     }
-    env.avg_boms = {"BF_CHARCOAL": {"bio_pci": {"demand_share_pct": 1.0, "unit_cost": 100.0}}}
+    env.avg_boms = {"BF_CHARCOAL": {"io_high": {"input_share_pct": 1.0, "unit_cost": 100.0}}}
     bom_dict, utilization, reductant = env.get_bom_from_avg_boms(
         energy_costs={"bio_pci": 0.0, "electricity": 0.0},
         tech="BF_CHARCOAL",
         capacity=1.0,
     )
 
-    assert "bio_pci" in bom_dict["materials"]
-    assert bom_dict["materials"]["bio_pci"]["demand"] > 0
+    assert "io_high" in bom_dict["materials"]
+    assert bom_dict["materials"]["io_high"]["demand"] == pytest.approx(1.0)
+    # bio_pci from secondary_feedstock should appear in energy (it's in ENERGY_FEEDSTOCK_KEYS)
+    assert "bio_pci" in bom_dict["energy"]
+    assert bom_dict["energy"]["bio_pci"]["demand"] == pytest.approx(0.5)
 
 
 def test_bom_from_feedstocks_for_dri_esf_ccs_not_empty():
@@ -58,7 +61,7 @@ def test_bom_from_feedstocks_for_dri_esf_ccs_not_empty():
 
     feed = DummyFeed()
     env.dynamic_feedstocks = {"DRI+ESF+CCS": [feed], "dri+esf+ccs": [feed]}
-    env.avg_boms = {"DRI+ESF+CCS": {"io_low": {"demand_share_pct": 1.0, "unit_cost": 200.0}}}
+    env.avg_boms = {"DRI+ESF+CCS": {"io_low": {"input_share_pct": 1.0, "unit_cost": 200.0}}}
     env.avg_utilization = {"DRI+ESF+CCS": {"utilization_rate": 0.6}}
 
     bom_dict, utilization, reductant = env.get_bom_from_avg_boms(
@@ -71,6 +74,11 @@ def test_bom_from_feedstocks_for_dri_esf_ccs_not_empty():
     assert "io_low" in bom_dict["materials"]
     assert bom_dict["materials"]["io_low"]["demand"] > 0
     assert utilization == 0.6
+    # Energy reconstructed from PrimaryFeedstock
+    assert "electricity" in bom_dict["energy"]
+    assert bom_dict["energy"]["electricity"]["demand"] == pytest.approx(100_000.0)
+    assert "coking_coal" in bom_dict["energy"]
+    assert bom_dict["energy"]["coking_coal"]["demand"] == pytest.approx(50.0)
 
 
 def test_bom_from_avg_boms_missing_tech_raises():

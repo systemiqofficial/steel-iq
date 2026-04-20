@@ -23,7 +23,7 @@ class FurnaceGroupTechChanged(Event):
 
     furnace_group_id: str
     technology_name: str
-    capacity: int
+    capacity: float
     is_new_plant: bool = False  # True if this is a new plant, False if it's a switch
 
 
@@ -41,7 +41,7 @@ class FurnaceGroupAdded(Event):
     plant_id: str
     furnace_group_id: str
     technology_name: str
-    capacity: int
+    capacity: float
     is_new_plant: bool = False  # True if this is a new plant, False if it's an expansion
 
 

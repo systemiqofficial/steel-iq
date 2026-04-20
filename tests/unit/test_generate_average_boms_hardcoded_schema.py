@@ -35,7 +35,7 @@ def _make_env(tmp_path: Path) -> Environment:
     return Environment(config=config, tech_switches_csv=tech_switches_csv)
 
 
-def test_hardcoded_avg_bom_includes_demand_share_pct(tmp_path: Path) -> None:
+def test_hardcoded_avg_bom_includes_input_share_pct(tmp_path: Path) -> None:
     env = _make_env(tmp_path)
     env.fallback_material_costs = [
         FallbackMaterialCost(
@@ -88,7 +88,7 @@ def test_hardcoded_avg_bom_includes_demand_share_pct(tmp_path: Path) -> None:
 
     env.generate_average_boms([plant], iso3=None)
 
-    assert env.avg_boms["BF_CHARCOAL"]["io_high"]["demand_share_pct"] == pytest.approx(1.0)
+    assert env.avg_boms["BF_CHARCOAL"]["io_high"]["input_share_pct"] == pytest.approx(1.0)
     assert env.avg_boms["BF_CHARCOAL"]["io_high"]["unit_cost"] == pytest.approx(123.0)
 
     bom, _, _ = env.get_bom_from_avg_boms(
@@ -98,9 +98,12 @@ def test_hardcoded_avg_bom_includes_demand_share_pct(tmp_path: Path) -> None:
     )
     assert bom is not None
     assert bom["materials"]["io_high"]["demand"] == pytest.approx(100.0)
+    # Energy reconstructed from PrimaryFeedstock (intensity=1.0, output_share=1.0, capacity=100)
+    assert "electricity" in bom["energy"]
+    assert bom["energy"]["electricity"]["demand"] == pytest.approx(100.0)
 
 
-def test_get_bom_from_avg_boms_defaults_missing_demand_share_pct_for_single_entry(tmp_path: Path) -> None:
+def test_get_bom_from_avg_boms_defaults_missing_input_share_pct_for_single_entry(tmp_path: Path) -> None:
     env = _make_env(tmp_path)
 
     charcoal_feedstock = PrimaryFeedstock(metallic_charge="io_high", reductant="charcoal", technology="BF_CHARCOAL")
@@ -117,3 +120,4 @@ def test_get_bom_from_avg_boms_defaults_missing_demand_share_pct_for_single_entr
     )
     assert bom is not None
     assert bom["materials"]["io_high"]["demand"] == pytest.approx(100.0)
+    assert bom["energy"]["electricity"]["demand"] == pytest.approx(100.0)

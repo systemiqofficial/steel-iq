@@ -15,6 +15,7 @@ from steelo.domain import events, commands
 from steelo.domain.calculate_costs import (
     calculate_capex_with_subsidies,
     calculate_debt_with_subsidies,
+    calculate_energy_costs_and_most_common_reductant,
     calculate_opex_list_with_subsidies,
     calculate_unit_total_opex,
     calculate_variable_opex,
@@ -3636,7 +3637,7 @@ class Plant:
             events.FurnaceGroupTechChanged(
                 furnace_group_id=furnace_group_id,
                 technology_name=technology_name,
-                capacity=int(furnace_group.capacity),
+                capacity=furnace_group.capacity,
             )
         )
 
@@ -4172,7 +4173,7 @@ class Plant:
         capex_no_subsidy: float,
         cost_of_debt: float,
         cost_of_debt_no_subsidy: float,
-        capacity: int,
+        capacity: float,
         lag: int,
         status: str,
         util_rate: float,
@@ -4311,7 +4312,7 @@ class Plant:
         return furnace_group
 
     def furnace_group_added(
-        self, furnace_group_id: str, plant_id: str, technology_name: str, capacity: int, is_new_plant: bool = False
+        self, furnace_group_id: str, plant_id: str, technology_name: str, capacity: float, is_new_plant: bool = False
     ) -> None:
         """
         Record a FurnaceGroupAdded event to the plant's event list.
@@ -4975,6 +4976,15 @@ class PlantGroup:
                         f"No greenfield capex data for {tech} in region {iso3_to_region_map[plant.location.iso3]}"
                     )
 
+                # Skip if plant cannot individually afford this technology
+                equity_needed_for_tech = capacity * capex
+                if plant.balance < equity_needed_for_tech:
+                    logger.debug(
+                        f"[PG EXPANSION] Skipping {tech} for plant {plant.plant_id}: "
+                        f"balance ${plant.balance:,.2f} < equity needed ${equity_needed_for_tech:,.2f}"
+                    )
+                    continue
+
                 # Skip BOF technology if plant lacks hot metal furnace (prerequisite)
                 if tech == "BOF" and not plant.has_hot_metal_furnace:
                     continue
@@ -5086,9 +5096,9 @@ class PlantGroup:
                     output_costs=plant.furnace_groups[-1].output_energy_costs,
                     disposal_cost_outputs=plant.furnace_groups[-1].disposal_cost_outputs,
                 )
-                logger.debug(
-                    f"[PAM EVAL] {plant.plant_id}/{tech} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
-                )
+                # logger.debug(
+                #     f"[PAM EVAL] {plant.plant_id}/{tech} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
+                # )
 
                 NPV[tech] = cc.calculate_npv_full(
                     capex=capex,
@@ -5215,15 +5225,12 @@ class PlantGroup:
         logger = logging.getLogger(f"{__name__}.PlantGroup.evaluate_expansion")
 
         # ========== STAGE 1: INITIALIZATION ==========
-        logger.debug(f"[PG EXPANSION] Starting expansion evaluation for PlantGroup {self.plant_group_id}")
-        logger.debug(f"[PG EXPANSION]   - Year: {current_year}, Capacity: {capacity:,} kt")
-        logger.debug(f"[PG EXPANSION]   - Balance: ${self.total_balance:,.2f}, Plants: {len(self.plants)}")
         logger.debug(
-            f"[PG EXPANSION]   - Probabilistic: {probabilistic_agents}, Equity share: {equity_share * 100:.0f}%"
+            f"[PG EXPANSION] {self.plant_group_id}: "
+            f"balance=${self.total_balance:,.2f}, plants={len(self.plants)}, year={current_year}"
         )
 
         # ========== STAGE 2: EVALUATE ALL EXPANSION OPTIONS ==========
-        logger.debug("[PG EXPANSION] === Stage 2: Evaluating expansion options ===")
 
         expansion_options = self.evaluate_expansion_options(
             price_series=price_series,
@@ -5257,19 +5264,17 @@ class PlantGroup:
             return None
 
         # Log all expansion options found
-        logger.debug(f"[PG EXPANSION] Found {len(expansion_options)} potential expansion options:")
+        logger.debug(f"[PG EXPANSION] Found {len(expansion_options)} options:")
         for pid, (npv, tech, capex) in expansion_options.items():
             npv_str = "None" if npv is None else f"${npv:,.0f}"
-            logger.debug(f"[PG EXPANSION]   - Plant {pid}: Tech={tech}, NPV={npv_str}, CAPEX=${capex:.2f}/t")
+            logger.debug(f"[PG EXPANSION]   {pid}: {tech} NPV={npv_str} CAPEX=${capex:.2f}/t")
 
         # ========== STAGE 4: SELECT HIGHEST NPV OPTION ==========
         highest_plant_and_tech = max(expansion_options.items(), key=lambda item: item[1][0] or float("-inf"))
         plant_id, (npv, tech, capex) = highest_plant_and_tech
 
-        logger.debug("[PG EXPANSION] === Stage 4: Best option ===")
-        logger.debug(f"[PG EXPANSION]   - Plant: {plant_id}, Tech: {tech}")
         npv_str = "None" if npv is None else f"{npv:,.0f}"
-        logger.debug(f"[PG EXPANSION]   - NPV: ${npv_str}, CAPEX: ${capex:,.2f}/t")
+        logger.debug(f"[PG EXPANSION] Best: {plant_id} {tech} NPV=${npv_str} CAPEX=${capex:,.2f}/t")
 
         # ========== STAGE 5: CHECK NPV PROFITABILITY ==========
         if npv is None or npv <= 0:
@@ -5282,18 +5287,11 @@ class PlantGroup:
         equity_needed = capacity * capex  # Equity to finance up-front cost
 
         if self.total_balance < equity_needed:
-            logger.debug("[PG EXPANSION] === Stage 6: Balance check FAILED ===")
             logger.debug(
-                f"[PG EXPANSION]   - Equity needed: ${equity_needed:,.2f} ({capacity * T_TO_KT:,.0f} kt × ${capex:.2f}/t)"
+                f"[PG EXPANSION] DECISION - No expansion (insufficient funds: "
+                f"${self.total_balance:,.2f} < ${equity_needed:,.2f})"
             )
-            logger.debug(f"[PG EXPANSION]   - Available: ${self.total_balance:,.2f}")
-            logger.debug(f"[PG EXPANSION]   - Shortfall: ${equity_needed - self.total_balance:,.2f}")
-            logger.debug("[PG EXPANSION]   - DECISION - No expansion (insufficient funds)")
             return None
-
-        logger.debug("[PG EXPANSION] === Stage 6: Balance check PASSED ===")
-        logger.debug(f"[PG EXPANSION]   - Equity needed: ${equity_needed:,.2f}")
-        logger.debug(f"[PG EXPANSION]   - Available: ${self.total_balance:,.2f}")
 
         # ========== STAGE 7: PROBABILISTIC ACCEPTANCE ==========
         if probabilistic_agents:
@@ -5306,16 +5304,11 @@ class PlantGroup:
         random_draw = random.random()
 
         if random_draw >= acceptance_probability:
-            logger.debug("[PG EXPANSION] === Stage 7: Probabilistic check FAILED ===")
-            logger.debug(f"[PG EXPANSION]   - Mode: {'Probabilistic' if probabilistic_agents else 'Deterministic'}")
-            logger.debug(f"[PG EXPANSION]   - Investment: ${capacity * capex:,.0f}, NPV: ${npv:,.0f}")
-            logger.debug(f"[PG EXPANSION]   - Acceptance probability: {acceptance_probability:.2%}")
-            logger.debug(f"[PG EXPANSION]   - Random draw: {random_draw:.4f} ≥ {acceptance_probability:.4f}")
-            logger.debug("[PG EXPANSION]   - DECISION - No expansion (probabilistic rejection)")
+            logger.debug(
+                f"[PG EXPANSION] DECISION - No expansion (probabilistic rejection: "
+                f"draw={random_draw:.4f} >= prob={acceptance_probability:.2%})"
+            )
             return None
-
-        logger.debug("[PG EXPANSION] === Stage 7: Probabilistic check PASSED ===")
-        logger.debug(f"[PG EXPANSION]   - Probability: {acceptance_probability:.2%}, Draw: {random_draw:.4f}")
 
         # ========== STAGE 8: CHECK CAPACITY LIMITS ==========
         if (
@@ -5353,12 +5346,12 @@ class PlantGroup:
                 logger.warning("[PG EXPANSION]   - DECISION - No expansion (capacity limit reached)")
                 return None
 
-            logger.debug("[PG EXPANSION] === Stage 8: Capacity limit check PASSED ===")
-            logger.debug(f"[PG EXPANSION]   - Product: {expansion_product}")
-            logger.debug(
-                f"[PG EXPANSION]   - After expansion: {(expansion_and_switch_capacity + capacity) * T_TO_KT:,.0f} kt / "
-                f"{expansion_limit * T_TO_KT:,.0f} kt limit"
-            )
+            # logger.debug("[PG EXPANSION] === Stage 8: Capacity limit check PASSED ===")
+            # logger.debug(f"[PG EXPANSION]   - Product: {expansion_product}")
+            # logger.debug(
+            #     f"[PG EXPANSION]   - After expansion: {(expansion_and_switch_capacity + capacity) * T_TO_KT:,.0f} kt / "
+            #     f"{expansion_limit * T_TO_KT:,.0f} kt limit"
+            # )
 
         # ========== STAGE 9: VALIDATE PLANT AND LOCATION ==========
         # NOTE: Balance deduction does NOT happen here - it occurs at the FurnaceGroup level via command handler.
@@ -5385,9 +5378,9 @@ class PlantGroup:
         if cost_of_debt_original is None:
             raise ValueError(f"No cost of debt data for country: {plant.location.iso3} when expanding plant")
 
-        logger.debug("[PG EXPANSION] === Stage 9: Plant validation ===")
-        logger.debug(f"[PG EXPANSION]   - Plant: {plant_id}, Location: {plant.location.iso3}, Region: {region}")
-        logger.debug(f"[PG EXPANSION]   - Base cost of debt: {cost_of_debt_original:.2%}")
+        # logger.debug("[PG EXPANSION] === Stage 9: Plant validation ===")
+        # logger.debug(f"[PG EXPANSION]   - Plant: {plant_id}, Location: {plant.location.iso3}, Region: {region}")
+        # logger.debug(f"[PG EXPANSION]   - Base cost of debt: {cost_of_debt_original:.2%}")
 
         # ========== STAGE 10: APPLY SUBSIDIES ==========
         from steelo.domain import calculate_costs as cc
@@ -5408,20 +5401,20 @@ class PlantGroup:
         base_capex = region_capex[region][tech]
         capex = cc.calculate_capex_with_subsidies(base_capex, selected_capex_subsidies)
 
-        logger.debug("[PG EXPANSION] === Stage 10: Subsidies applied ===")
-        logger.debug(
-            f"[PG EXPANSION]   - Debt subsidies: {len(selected_debt_subsidies)} active (of {len(all_debt_subsidies)} total)"
-        )
-        logger.debug(
-            f"[PG EXPANSION]   - CAPEX subsidies: {len(selected_capex_subsidies)} active (of {len(all_capex_subsidies)} total)"
-        )
-        logger.debug(
-            f"[PG EXPANSION]   - Cost of debt: {cost_of_debt_original:.2%} → {cost_of_debt:.2%} "
-            f"({(cost_of_debt - cost_of_debt_original) * 100:+.2f} pp)"
-        )
-        logger.debug(
-            f"[PG EXPANSION]   - CAPEX: ${base_capex:.2f}/t → ${capex:.2f}/t (${base_capex - capex:.2f}/t reduction)"
-        )
+        # logger.debug("[PG EXPANSION] === Stage 10: Subsidies applied ===")
+        # logger.debug(
+        #     f"[PG EXPANSION]   - Debt subsidies: {len(selected_debt_subsidies)} active (of {len(all_debt_subsidies)} total)"
+        # )
+        # logger.debug(
+        #     f"[PG EXPANSION]   - CAPEX subsidies: {len(selected_capex_subsidies)} active (of {len(all_capex_subsidies)} total)"
+        # )
+        # logger.debug(
+        #     f"[PG EXPANSION]   - Cost of debt: {cost_of_debt_original:.2%} → {cost_of_debt:.2%} "
+        #     f"({(cost_of_debt - cost_of_debt_original) * 100:+.2f} pp)"
+        # )
+        # logger.debug(
+        #     f"[PG EXPANSION]   - CAPEX: ${base_capex:.2f}/t → ${capex:.2f}/t (${base_capex - capex:.2f}/t reduction)"
+        # )
 
         # ========== STAGE 11: CREATE EXPANSION COMMAND ==========
         furnace_group_id = f"{plant_id}_new_furnace"
@@ -5462,10 +5455,10 @@ class PlantGroup:
             f"[PG EXPANSION]   - Cost of debt: {cost_of_debt_original:.2%} → {cost_of_debt:.2%} (with subsidies)"
         )
 
-        if subsidy_details:
-            logger.debug("[PG EXPANSION] Subsidies included:")
-            for detail in subsidy_details:
-                logger.debug(f"[PG EXPANSION]   {detail}")
+        # if subsidy_details:
+        #     logger.debug("[PG EXPANSION] Subsidies included:")
+        #     for detail in subsidy_details:
+        #         logger.debug(f"[PG EXPANSION]   {detail}")
 
         return commands.AddFurnaceGroup(
             furnace_group_id=furnace_group_id,
@@ -5849,16 +5842,18 @@ class PlantGroup:
                     power_price = float(raw_power_price) if raw_power_price is not None else None
                     no_sub = fg.energy_costs_no_subsidy or fg.energy_costs
                     if power_price is None or math.isnan(power_price):
-                        power_price = no_sub["electricity"]
+                        power_price = no_sub.get("electricity")
                     raw_hydrogen_price = (
                         custom_energy_costs["capped_lcoh"].sel(lat=plant.location.lat, lon=plant.location.lon).values
                     )
                     hydrogen_price = float(raw_hydrogen_price) if raw_hydrogen_price is not None else None
                     if hydrogen_price is None or (hydrogen_price is not None and math.isnan(hydrogen_price)):
-                        hydrogen_price = no_sub["hydrogen"]
+                        hydrogen_price = no_sub.get("hydrogen")
 
-                    new_costs["electricity"] = power_price
-                    new_costs["hydrogen"] = hydrogen_price
+                    if power_price is not None:
+                        new_costs["electricity"] = power_price
+                    if hydrogen_price is not None:
+                        new_costs["hydrogen"] = hydrogen_price
 
                     # Apply energy carrier subsidies
                     active_energy_subs: dict[str, list] = {}
@@ -5870,8 +5865,10 @@ class PlantGroup:
 
                     # Build full energy cost dicts with updated electricity/hydrogen
                     base_costs = dict(fg.energy_costs_no_subsidy or fg.energy_costs)
-                    base_costs["electricity"] = power_price
-                    base_costs["hydrogen"] = hydrogen_price
+                    if power_price is not None:
+                        base_costs["electricity"] = power_price
+                    if hydrogen_price is not None:
+                        base_costs["hydrogen"] = hydrogen_price
 
                     if active_energy_subs:
                         new_energy_costs, new_output_energy_costs, new_energy_costs_no_subsidy = (
@@ -7446,7 +7443,7 @@ class Environment:
                for each plant's location
             2. Handle special cases based on plant type:
 
-               **New GEO Plants (parent_gem_id="indi"):**
+               **New GEO Plants (parent_gem_id starts with "indi"):**
                - These plants have their own power infrastructure (renewable energy park)
                - Preserve electricity and hydrogen costs from their own power generation if previously set
 
@@ -7495,14 +7492,16 @@ class Environment:
                 logged_countries.add(plant.location.iso3)
 
             # New GEO plants: preserve own power costs; use no_subsidy to avoid compounding
-            if plant.parent_gem_id.lower() == "indi":
+            if plant.parent_gem_id.lower().startswith("indi"):
                 for fg in plant.furnace_groups:
                     if fg.disposal_cost_outputs is None:
                         fg.disposal_cost_outputs = self.config.disposal_cost_outputs
                     no_sub = fg.energy_costs_no_subsidy or fg.energy_costs
-                    input_costs["electricity"] = no_sub["electricity"]
-                    input_costs["hydrogen"] = no_sub["hydrogen"]
-                    if fg.energy_costs_no_subsidy:
+                    if "electricity" in no_sub:
+                        input_costs["electricity"] = no_sub["electricity"]
+                    if "hydrogen" in no_sub:
+                        input_costs["hydrogen"] = no_sub["hydrogen"]
+                    if fg.energy_costs_no_subsidy and "electricity" in no_sub:
                         sub_elec = fg.energy_costs.get("electricity", 0)
                         if sub_elec != no_sub["electricity"]:
                             logger.debug(
@@ -8381,7 +8380,7 @@ class Environment:
                     technology_name: {
                         material_name: {
                             "unit_cost": float,        # Average cost per ton
-                            "demand_share_pct": float  # Material's % share of total demand
+                            "input_share_pct": float   # Fraction of total input demand (sums to 1.0)
                         }
                     }
                 }
@@ -8474,8 +8473,8 @@ class Environment:
                     else None
                 )
 
-                # demand share as a percentage
-                demand_share_pct_of_mc = (
+                # input share (fraction of total demand for this technology)
+                input_share_pct_of_mc = (
                     (demand_of_metallic_charge / total_demand_all_mc_for_tech)
                     if total_demand_all_mc_for_tech > 0
                     else None
@@ -8483,7 +8482,7 @@ class Environment:
 
                 stats[tech][mat_name] = {
                     "unit_cost": unit_cost_for_metallic_charge if unit_cost_for_metallic_charge is not None else 0.0,
-                    "demand_share_pct": demand_share_pct_of_mc if demand_share_pct_of_mc is not None else 0.0,
+                    "input_share_pct": input_share_pct_of_mc if input_share_pct_of_mc is not None else 0.0,
                 }
         self._diag_bof_sample_count = tech_contributor_counts.get("BOF", 0)
         if diag.diagnostics_enabled():
@@ -8550,13 +8549,13 @@ class Environment:
                         avg_cost = self.get_average_fallback_material_cost(technology=tech)
                         if avg_cost is not None:
                             bom[metallic_charge]["unit_cost"] = avg_cost
-                            bom[metallic_charge]["demand_share_pct"] = 1.0
+                            bom[metallic_charge]["input_share_pct"] = 1.0
                     else:
                         # Use region-specific cost (Note: get_available_fallback_technologies doesn't take iso3/tech params)
                         specific_cost = self.get_fallback_material_cost(iso3, tech)
                         if specific_cost is not None:
                             bom[metallic_charge]["unit_cost"] = specific_cost
-                            bom[metallic_charge]["demand_share_pct"] = 1.0
+                            bom[metallic_charge]["input_share_pct"] = 1.0
                 else:
                     logger.warning(f"Technology {tech} not found in default_metallic_charge_per_technology mapping")
                 self.avg_boms[tech] = bom
@@ -8637,35 +8636,6 @@ class Environment:
                 logger.debug(
                     f"[BOM] Added to input_effectiveness: {feed.metallic_charge.lower()} = {feed.required_quantity_per_ton_of_product}"
                 )
-            # Include secondary feedstocks and other non-metallic inputs so avg_boms stay aligned with dynamic feedstocks
-            secondary_requirements = feed.secondary_feedstock or {}
-            if not secondary_requirements:
-                continue
-            reductant_matches = (
-                most_common_reductant is None  # Accept any reductant when None
-                or feed.reductant == most_common_reductant
-                or str(feed.reductant).lower() == most_common_reductant
-                or (not most_common_reductant and not feed.reductant)
-            )
-            if not reductant_matches:
-                continue
-            for sec_name, volume in secondary_requirements.items():
-                normalized_secondary = normalize_name(sec_name)
-                if (
-                    normalized_secondary in input_effectiveness
-                ):  # Should not happen, as each secondary feedstock should only appear once per feedstock and reductant combo
-                    logger.warning(
-                        "[BOM] Secondary feedstock %s overwriting %.4f with %.4f",
-                        normalized_secondary,
-                        input_effectiveness[normalized_secondary],
-                        volume,
-                    )
-                input_effectiveness[normalized_secondary] = volume
-            if hasattr(feed, "energy_requirements") and feed.energy_requirements:
-                for en_in in feed.energy_requirements or []:
-                    normalized_energy = normalize_name(en_in)
-                    if normalized_energy not in input_effectiveness:
-                        input_effectiveness[normalized_energy] = feed.energy_requirements[en_in]
         # If no inputs matched the most common reductant
         if not input_effectiveness:
             logger.error(
@@ -8741,28 +8711,61 @@ class Environment:
         feedstocks_for_tech = self.dynamic_feedstocks.get(tech, self.dynamic_feedstocks.get(tech.lower(), []))
         bom_dict: dict[str, dict[str, dict[str, float]]] = {"materials": {}, "energy": {}}
 
-        # Step 3: Build input effectiveness mapping for selected reductant
-        # When most_common_reductant is None, all feedstocks are accepted because avg_boms
-        # will determine the actual mix of metallic charges used
-        logger.debug("[BOM] Step 3: Building input effectiveness")
-        input_effectiveness = self.generate_input_effectiveness_mapping_from_feedstocks(
-            feedstocks_for_tech, most_common_reductant
-        )
+        # Step 3a: Resolve reductant
+        can_reconstruct_energy = bool(feedstocks_for_tech)
+        if not feedstocks_for_tech:
+            logger.warning(
+                "[AVG_BOM_DIAG] reductant: tech=%s no PrimaryFeedstock data, energy reconstruction impossible",
+                tech,
+            )
 
-        # If no reductant was specified but we got feedstocks, extract a reductant to return
-        # This ensures the function returns a non-None reductant for validation purposes
-        if most_common_reductant is None and input_effectiveness and feedstocks_for_tech:
-            for feed in feedstocks_for_tech:
-                if feed.reductant and str(feed.reductant).strip():
-                    most_common_reductant = str(feed.reductant)
-                    logger.debug(
-                        f"[BOM] No reductant specified, extracted first available for return: {most_common_reductant}"
-                    )
-                    break
-            # If still None after checking all feedstocks, use empty string
-            if most_common_reductant is None:
+        if most_common_reductant is None and feedstocks_for_tech:
+            has_reductants = any(f.reductant and str(f.reductant).strip() for f in feedstocks_for_tech)
+            if not has_reductants:
+                # Reductant-free tech (e.g. EAF, BOF) — skip cheapest-reductant calculation
                 most_common_reductant = ""
-                logger.debug("[BOM] All feedstocks have empty reductants, using empty string")
+                logger.debug(
+                    "[AVG_BOM_DIAG] reductant: tech=%s no reductants in feedstocks, using empty string",
+                    tech,
+                )
+            else:
+                cheapest_reductant, _ = calculate_energy_costs_and_most_common_reductant(
+                    feedstocks_for_tech,
+                    energy_costs,
+                )
+                if cheapest_reductant:
+                    most_common_reductant = cheapest_reductant
+                    logger.warning(
+                        "[AVG_BOM_DIAG] reductant: tech=%s source=cheapest_reductant_fallback chosen=%s",
+                        tech,
+                        most_common_reductant,
+                    )
+                else:
+                    # Cheapest-reductant returned empty — fall back to first available
+                    for feed in feedstocks_for_tech:
+                        if feed.reductant and str(feed.reductant).strip():
+                            most_common_reductant = str(feed.reductant)
+                            break
+                    if most_common_reductant is None:
+                        most_common_reductant = ""
+                    logger.warning(
+                        "[AVG_BOM_DIAG] reductant: tech=%s cheapest_reductant_failed, using first_available=%s",
+                        tech,
+                        most_common_reductant,
+                    )
+        elif most_common_reductant is not None:
+            logger.debug(
+                "[AVG_BOM_DIAG] reductant: tech=%s source=fleet chosen=%s",
+                tech,
+                most_common_reductant,
+            )
+
+        # Step 3b: Build input effectiveness mapping for resolved reductant
+        logger.debug("[BOM] Step 3b: Building input effectiveness")
+        input_effectiveness = self.generate_input_effectiveness_mapping_from_feedstocks(
+            feedstocks_for_tech,
+            most_common_reductant,
+        )
 
         # Step 4: Fallback if no average BOM available
         logger.debug("[BOM] Step 4: Checking avg_boms")
@@ -8788,16 +8791,16 @@ class Environment:
 
         logger.debug(f"[BOM] Found avg_boms for {tech}: {self.avg_boms[tech]}")
 
-        # Step 5: Build BOM based on avg_boms and input effectiveness
-        logger.debug("[BOM] Step 5: Building final BOM")
+        # ── Step 5: Two-pass BOM construction ──────────────────────────────
+        # Pass 1 — pre-scan: validate each MC and collect surviving entries
+        surviving: dict[str, dict] = {}
+        skipped_mcs: list[str] = []
+
         for feedstock, share_data in self.avg_boms[tech].items():
             normalized_feedstock = normalize_name(feedstock)
-            logger.debug(f"[BOM] Processing feedstock: {feedstock} (normalized: {normalized_feedstock})")
-            logger.debug(f"[BOM] Share data: {share_data}")
 
-            # Skip carbon outputs - they are tracked separately and don't need input effectiveness
+            # Skip carbon outputs
             if hasattr(self, "carbon_output_keys") and normalized_feedstock in self.carbon_output_keys:
-                logger.debug(f"[BOM] Skipping carbon output: {feedstock}")
                 continue
 
             if not isinstance(share_data, dict):
@@ -8806,25 +8809,54 @@ class Environment:
                     f"expected dict, got {type(share_data).__name__}"
                 )
 
-            # Calculate material demand and cost
+            # (a) Check input_effectiveness
             if normalized_feedstock not in input_effectiveness:
-                raise KeyError(
-                    f"Input effectiveness for feedstock '{feedstock}' not found for technology {tech}. "
-                    f"Available inputs: {list(input_effectiveness.keys())}. "
-                    f"This indicates a mismatch between avg_boms and dynamic_feedstocks data."
+                logger.warning(
+                    "[AVG_BOM_DIAG] pf_match: tech=%s mc=%s skipped, not in input_effectiveness (available: %s)",
+                    tech,
+                    feedstock,
+                    list(input_effectiveness.keys()),
                 )
-            demand_share_pct = share_data.get("demand_share_pct")
-            if demand_share_pct is None:
-                if len(self.avg_boms[tech]) == 1 and "unit_cost" in share_data:
-                    demand_share_pct = 1.0
+                skipped_mcs.append(feedstock)
+                continue
+
+            # (b) Find matching PrimaryFeedstock for (mc, reductant)
+            matched_pf: PrimaryFeedstock | None = None
+            if can_reconstruct_energy:
+                for feed in feedstocks_for_tech:
+                    if normalize_name(feed.metallic_charge) == normalized_feedstock and (
+                        feed.reductant == most_common_reductant
+                        or (
+                            isinstance(feed.reductant, str)
+                            and feed.reductant.lower() == (most_common_reductant or "").lower()
+                        )
+                        or (not most_common_reductant and not feed.reductant)
+                    ):
+                        matched_pf = feed
+                        break
+                if matched_pf is None:
                     logger.warning(
-                        "[BOM] avg_boms[%s][%s] missing demand_share_pct; defaulting to 1.0 for single-input BOM",
+                        "[AVG_BOM_DIAG] pf_match: tech=%s mc=%s reductant=%s no PrimaryFeedstock match, skipping MC",
+                        tech,
+                        feedstock,
+                        most_common_reductant,
+                    )
+                    skipped_mcs.append(feedstock)
+                    continue
+
+            # Extract input_share_pct and unit_cost
+            input_share_pct = share_data.get("input_share_pct")
+            if input_share_pct is None:
+                if len(self.avg_boms[tech]) == 1 and "unit_cost" in share_data:
+                    input_share_pct = 1.0
+                    logger.warning(
+                        "[BOM] avg_boms[%s][%s] missing input_share_pct; defaulting to 1.0 for single-input BOM",
                         tech,
                         feedstock,
                     )
                 else:
                     raise KeyError(
-                        f"avg_boms missing demand_share_pct for technology {tech!r}, feedstock {feedstock!r}. "
+                        f"avg_boms missing input_share_pct for technology {tech!r}, feedstock {feedstock!r}. "
                         f"share_data keys: {list(share_data.keys())}"
                     )
 
@@ -8835,53 +8867,168 @@ class Environment:
                     f"share_data keys: {list(share_data.keys())}"
                 )
 
-            material_demand = float(demand_share_pct) * capacity * input_effectiveness[normalized_feedstock]
-            material_cost = float(unit_cost) * material_demand
+            eff = input_effectiveness[normalized_feedstock]
+            surviving[normalized_feedstock] = {
+                "feedstock_key": feedstock,
+                "pf": matched_pf,
+                "input_share_pct": float(input_share_pct),
+                "eff": eff,
+                "unit_cost": float(unit_cost),
+            }
             logger.debug(
-                "[BOM] Material calculation: demand=%s, cost=%s, unit cost=%s",
-                material_demand,
-                material_cost,
-                unit_cost,
+                "[AVG_BOM_DIAG] pf_match: tech=%s mc=%s pf=%s eff=%.4f input_share=%.4f",
+                tech,
+                feedstock,
+                matched_pf,
+                eff,
+                input_share_pct,
             )
 
-            bom_dict["materials"][feedstock] = {
-                "demand": material_demand,
-                "total_cost": material_cost,
-                "total_material_cost": material_cost,  # Required by calculate_variable_opex
-                "unit_cost": float(unit_cost),
-                "unit_material_cost": float(unit_cost),  # Same as unit_cost for avg_boms
-                "product_volume": capacity,  # Output volume for this furnace
-            }
+        if skipped_mcs:
+            logger.warning(
+                "[AVG_BOM_DIAG] pf_match: tech=%s skipped_mcs=%s (%d of %d)",
+                tech,
+                skipped_mcs,
+                len(skipped_mcs),
+                len(skipped_mcs) + len(surviving),
+            )
 
-            # Calculate energy demand and cost using energy_vopex (only for genuine energy carriers)
-            if normalized_feedstock in ENERGY_FEEDSTOCK_KEYS:
-                energy_cost_per_unit = energy_costs.get(
-                    normalized_feedstock,
-                    energy_costs.get(normalize_name(feedstock), 0.0),
+        if not surviving:
+            logger.warning(
+                "[AVG_BOM_DIAG] pf_match: tech=%s all metallic charges skipped, BOM will be empty",
+                tech,
+            )
+        else:
+            # Compute output shares from input shares and effectiveness
+            raw_output: dict[str, float] = {}
+            for norm_mc, data in surviving.items():
+                if data["eff"] and data["eff"] > 0:
+                    raw_output[norm_mc] = data["input_share_pct"] / data["eff"]
+                else:
+                    raw_output[norm_mc] = 0.0
+
+            total_raw = sum(raw_output.values())
+            if total_raw == 0:
+                logger.warning(
+                    "[AVG_BOM_DIAG] output_shares: tech=%s total_raw=0, using equal shares",
+                    tech,
                 )
-                energy_demand = float(demand_share_pct) * capacity
-                total_energy_cost = energy_cost_per_unit * energy_demand
-                if total_energy_cost < 0:
-                    logger.warning(
-                        "[BOM] Negative energy cost for '%s': unit=$%.6f x demand=%.1f = $%.4f",
-                        feedstock,
-                        energy_cost_per_unit,
-                        energy_demand,
-                        total_energy_cost,
-                    )
-                logger.debug(f"[BOM] Energy calculation: demand={energy_demand}, total_cost={total_energy_cost}")
+                equal_share = 1.0 / len(surviving)
+                output_shares = {mc: equal_share for mc in surviving}
+            else:
+                output_shares = {mc: raw / total_raw for mc, raw in raw_output.items()}
 
-                if energy_demand <= 0:
-                    logger.debug(
-                        f"[BOM] WARNING: Zero energy demand for {feedstock}. Material demand: {material_demand}"
-                    )
+            logger.debug(
+                "[AVG_BOM_DIAG] output_shares: tech=%s shares=%s",
+                tech,
+                {mc: f"{s:.4f}" for mc, s in output_shares.items()},
+            )
 
-                bom_dict["energy"][feedstock] = {
-                    "demand": energy_demand,
-                    "total_cost": total_energy_cost,
-                    "unit_cost": total_energy_cost / energy_demand if energy_demand > 0 else float("inf"),
-                    "product_volume": capacity,  # Required by calculate_variable_opex
+            # Pass 2 — build materials + accumulate energy
+            energy_accum: dict[str, float] = {}
+
+            for norm_mc, data in surviving.items():
+                feedstock = data["feedstock_key"]
+                eff = data["eff"]
+                input_share_pct_val = data["input_share_pct"]
+                unit_cost_val = data["unit_cost"]
+                matched_pf = data["pf"]
+                o_share = output_shares[norm_mc]
+
+                # Materials
+                material_demand = input_share_pct_val * capacity * eff
+                material_cost = unit_cost_val * material_demand
+
+                bom_dict["materials"][feedstock] = {
+                    "demand": material_demand,
+                    "total_cost": material_cost,
+                    "total_material_cost": material_cost,
+                    "unit_cost": material_cost / capacity,
+                    "unit_material_cost": material_cost / capacity,
+                    "product_volume": capacity,
+                    "demand_share_pct": input_share_pct_val * eff,
                 }
+                logger.debug(
+                    "[AVG_BOM_DIAG] material: tech=%s mc=%s input_share=%.4f eff=%.4f "
+                    "demand=%.2f unit_cost_input=%.2f unit_cost_output=%.2f demand_share=%.4f",
+                    tech,
+                    feedstock,
+                    input_share_pct_val,
+                    eff,
+                    material_demand,
+                    unit_cost_val,
+                    material_cost / capacity,
+                    input_share_pct_val * eff,
+                )
+
+                # Energy — accumulate from PrimaryFeedstock
+                if matched_pf is not None:
+                    for carrier, intensity in (matched_pf.energy_requirements or {}).items():
+                        norm_carrier = normalize_name(carrier)
+                        if norm_carrier not in ENERGY_FEEDSTOCK_KEYS:
+                            continue
+                        contrib = o_share * float(intensity) * capacity
+                        energy_accum[norm_carrier] = energy_accum.get(norm_carrier, 0.0) + contrib
+                        logger.debug(
+                            "[AVG_BOM_DIAG] energy_contrib: tech=%s mc=%s carrier=%s "
+                            "o_share=%.4f intensity=%.4f contrib=%.2f",
+                            tech,
+                            feedstock,
+                            norm_carrier,
+                            o_share,
+                            intensity,
+                            contrib,
+                        )
+
+                    for sec_name, intensity in (matched_pf.secondary_feedstock or {}).items():
+                        norm_sec = normalize_name(sec_name)
+                        if norm_sec not in ENERGY_FEEDSTOCK_KEYS:
+                            continue
+                        contrib = o_share * float(intensity) * capacity
+                        energy_accum[norm_sec] = energy_accum.get(norm_sec, 0.0) + contrib
+                        logger.debug(
+                            "[AVG_BOM_DIAG] energy_contrib_sec: tech=%s mc=%s carrier=%s "
+                            "o_share=%.4f intensity=%.4f contrib=%.2f",
+                            tech,
+                            feedstock,
+                            norm_sec,
+                            o_share,
+                            intensity,
+                            contrib,
+                        )
+
+            # Build bom_dict["energy"] from accumulated demands
+            for carrier, demand in energy_accum.items():
+                price = energy_costs.get(carrier, 0.0)
+                total_cost = price * demand
+                if demand > 0 and price == 0:
+                    logger.warning(
+                        "[AVG_BOM_DIAG] energy: tech=%s carrier=%s has demand=%.2f but zero price in energy_costs",
+                        tech,
+                        carrier,
+                        demand,
+                    )
+                bom_dict["energy"][carrier] = {
+                    "demand": demand,
+                    "total_cost": total_cost,
+                    "unit_cost": price,
+                    "product_volume": capacity,
+                }
+
+            total_material_cost = sum(m["total_cost"] for m in bom_dict["materials"].values())
+            total_energy_cost = sum(e["total_cost"] for e in bom_dict["energy"].values())
+            logger.info(
+                "[AVG_BOM_DIAG] summary: tech=%s capacity=%.0f reductant=%s "
+                "materials=%d (cost=%.0f) energy=%d (cost=%.0f) carriers=%s",
+                tech,
+                capacity,
+                most_common_reductant,
+                len(bom_dict["materials"]),
+                total_material_cost,
+                len(bom_dict["energy"]),
+                total_energy_cost,
+                list(bom_dict["energy"].keys()),
+            )
 
         utilization = (
             self.avg_utilization.get(tech, {}).get("utilization_rate", 0.6)

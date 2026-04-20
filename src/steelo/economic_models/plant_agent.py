@@ -13,6 +13,7 @@ from steelo.adapters.geospatial.geospatial_statistics import (
 )
 from steelo.adapters.repositories.in_memory_repository import InMemoryRepository
 from steelo.domain import Year
+from steelo.domain.models import PlantGroup
 from steelo.domain.commands import (
     AddFurnaceGroup,
     ChangeFurnaceGroupStatusToSwitchingTechnology,
@@ -172,6 +173,7 @@ class GeospatialModel:
                     energy_prices=custom_energy_costs,
                     year=bus.env.year,
                     output_dir=bus.env.config.output_dir,
+                    hydrogen_ceiling_percentile=geo_config.hydrogen_ceiling_percentile,
                 )
             except Exception as e:
                 logger.warning(f"Failed to export LCOE/LCOH statistics for year {bus.env.year}: {e}")
@@ -242,6 +244,39 @@ class GeospatialModel:
                 f"operation=geo_update_status year={bus.env.year} duration_s={step_time:.3f} fg_count={len(status_commands)}"
             )
             logger.debug(f"[GEO] Updated status for {len(status_commands)} furnace groups")
+
+        # Move construction-status plants from master indi to per-ISO3 groups
+        indi_logger = logging.getLogger(f"{__name__}.indi_routing")
+        indi_logger.debug(f"[GEO] Indi master group has {len(indi_pg.plants)} plants before routing")
+        moved_count = 0
+        for plant in list(indi_pg.plants):
+            statuses = [fg.status.lower() for fg in plant.furnace_groups]
+            indi_logger.debug(f"[GEO] Plant {plant.plant_id} ({plant.location.iso3}): FG statuses={statuses}")
+            if all(s == "construction" for s in statuses):
+                iso3 = plant.location.iso3
+                group_id = f"indi_{iso3}"
+                try:
+                    target = bus.uow.plant_groups.get(group_id)
+                except KeyError:
+                    target = PlantGroup(plant_group_id=group_id, plants=[])
+                    bus.uow.plant_groups.add(target)
+                    indi_logger.info(f"[GEO] Created per-country indi group: {group_id}")
+                target.plants.append(plant)
+                plant.parent_gem_id = group_id
+                indi_pg.plants.remove(plant)
+                moved_count += 1
+                indi_logger.debug(
+                    f"[GEO] Moved plant {plant.plant_id} ({iso3}) to {group_id} "
+                    f"(group now has {len(target.plants)} plants)"
+                )
+        if moved_count:
+            indi_logger.info(f"[GEO] Moved {moved_count} construction plants to per-ISO3 indi groups")
+        indi_groups = [pg for pg in bus.uow.plant_groups.list() if pg.plant_group_id.startswith("indi_")]
+        if indi_groups:
+            indi_logger.debug(
+                "[GEO] Per-ISO3 indi groups: "
+                + ", ".join(f"{pg.plant_group_id} ({len(pg.plants)} plants)" for pg in indi_groups)
+            )
 
         # Identify new business opportunities and prioritize them by NPV
         step_start = time.time()

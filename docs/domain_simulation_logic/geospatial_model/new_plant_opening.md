@@ -107,6 +107,23 @@ The flow from business opportunity to new plant is as follows:
 
 ```
 
+## Per-ISO3 Plant Group Routing
+
+All new plants start in a single master "indi" plant group, which acts as an incubator for business opportunities in "considered" and "announced" status. When a plant transitions to "construction", it is moved from the master group to a per-country group (`indi_{iso3}`, e.g. `indi_CHN`, `indi_AUS`). These groups are created lazily the first time a plant in that country reaches construction.
+
+**Why this matters:** The plant agent model evaluates expansion (adding a new furnace group to an existing plant) once per plant group per year. With a single "indi" group, only one expansion could occur per year across all new plants globally. Per-ISO3 groups allow one expansion per country per year.
+
+**Lifecycle summary:**
+
+| Status | Plant group | Processed by |
+|--------|------------|--------------|
+| Considered | `indi` (master) | GEO: dynamic cost updates, status tracking |
+| Announced | `indi` (master) | GEO: dynamic cost updates, conversion to construction |
+| Construction | `indi_{iso3}` | Simulation loop: time-based transition to operating |
+| Operating | `indi_{iso3}` | PAM: balance updates, furnace group strategy, expansion |
+
+**Implementation:** The routing runs in `GeospatialModel.run()` (`plant_agent.py`) after status commands are handled and before new opportunities are identified. Plants are identified as GEO-originated by `parent_gem_id.startswith("indi")`.
+
 ## Business Opportunity Identification
 
 The identification process evaluates potential new plant locations and technologies through five sequential steps, selecting the most promising opportunities for detailed multi-year tracking.
