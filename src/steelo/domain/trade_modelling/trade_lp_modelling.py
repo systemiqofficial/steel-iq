@@ -971,6 +971,7 @@ class TradeLPModel:
                 + from_pc.production_cost  # Production cost (carbon cost) at the source process center
                 - willingness_to_pay_value  # Reduce cost for high-WTP destinations
             )
+        # With current slack costs (1e12) this check will never trigger
         # add a check to ensure allocation costs aren't insane:
         for key in self.lp_model.allocation_costs:
             if self.lp_model.allocation_costs[key] >= (
