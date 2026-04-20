@@ -32,6 +32,7 @@ from steelo.utilities.plotting import (
     plot_bar_chart_of_new_plants_by_status,
     plot_map_of_new_plants_operating,
 )
+from .adapters.geospatial.geospatial_statistics import aggregate_lcoe_lcoh_statistics
 from .logging_config import LoggingConfig
 from steelo.domain.constants import T_TO_KT, MT_TO_T
 from steelo.domain.calculate_costs import filter_subsidies_for_year, get_subsidised_energy_costs
@@ -1437,6 +1438,9 @@ class SimulationRunner:
             plt.savefig(price_plot_path, dpi=300, bbox_inches="tight")
             plt.close()
             logger.info(f"Saved market prices plot to {price_plot_path}")
+
+        # Aggregate per-year LCOE/LCOH statistics into stacked CSVs
+        aggregate_lcoe_lcoh_statistics(self.config.output_dir, start_year, end_year)
 
         # Clean up temporary directory
         self._cleanup_temp_dir()

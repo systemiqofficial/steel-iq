@@ -173,6 +173,7 @@ class GeospatialModel:
                     energy_prices=custom_energy_costs,
                     year=bus.env.year,
                     output_dir=bus.env.config.output_dir,
+                    hydrogen_ceiling_percentile=geo_config.hydrogen_ceiling_percentile,
                 )
             except Exception as e:
                 logger.warning(f"Failed to export LCOE/LCOH statistics for year {bus.env.year}: {e}")
