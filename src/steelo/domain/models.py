@@ -4971,6 +4971,15 @@ class PlantGroup:
                         f"No greenfield capex data for {tech} in region {iso3_to_region_map[plant.location.iso3]}"
                     )
 
+                # Skip if plant cannot individually afford this technology
+                equity_needed_for_tech = capacity * capex
+                if plant.balance < equity_needed_for_tech:
+                    logger.debug(
+                        f"[PG EXPANSION] Skipping {tech} for plant {plant.plant_id}: "
+                        f"balance ${plant.balance:,.2f} < equity needed ${equity_needed_for_tech:,.2f}"
+                    )
+                    continue
+
                 # Skip BOF technology if plant lacks hot metal furnace (prerequisite)
                 if tech == "BOF" and not plant.has_hot_metal_furnace:
                     continue
@@ -5078,9 +5087,9 @@ class PlantGroup:
                     output_costs=plant.furnace_groups[-1].output_energy_costs,
                     disposal_cost_outputs=plant.furnace_groups[-1].disposal_cost_outputs,
                 )
-                logger.debug(
-                    f"[PAM EVAL] {plant.plant_id}/{tech} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
-                )
+                # logger.debug(
+                #     f"[PAM EVAL] {plant.plant_id}/{tech} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
+                # )
 
                 NPV[tech] = cc.calculate_npv_full(
                     capex=capex,
@@ -5206,15 +5215,12 @@ class PlantGroup:
         logger = logging.getLogger(f"{__name__}.PlantGroup.evaluate_expansion")
 
         # ========== STAGE 1: INITIALIZATION ==========
-        logger.debug(f"[PG EXPANSION] Starting expansion evaluation for PlantGroup {self.plant_group_id}")
-        logger.debug(f"[PG EXPANSION]   - Year: {current_year}, Capacity: {capacity:,} kt")
-        logger.debug(f"[PG EXPANSION]   - Balance: ${self.total_balance:,.2f}, Plants: {len(self.plants)}")
         logger.debug(
-            f"[PG EXPANSION]   - Probabilistic: {probabilistic_agents}, Equity share: {equity_share * 100:.0f}%"
+            f"[PG EXPANSION] {self.plant_group_id}: "
+            f"balance=${self.total_balance:,.2f}, plants={len(self.plants)}, year={current_year}"
         )
 
         # ========== STAGE 2: EVALUATE ALL EXPANSION OPTIONS ==========
-        logger.debug("[PG EXPANSION] === Stage 2: Evaluating expansion options ===")
 
         expansion_options = self.evaluate_expansion_options(
             price_series=price_series,
@@ -5247,19 +5253,17 @@ class PlantGroup:
             return None
 
         # Log all expansion options found
-        logger.debug(f"[PG EXPANSION] Found {len(expansion_options)} potential expansion options:")
+        logger.debug(f"[PG EXPANSION] Found {len(expansion_options)} options:")
         for pid, (npv, tech, capex) in expansion_options.items():
             npv_str = "None" if npv is None else f"${npv:,.0f}"
-            logger.debug(f"[PG EXPANSION]   - Plant {pid}: Tech={tech}, NPV={npv_str}, CAPEX=${capex:.2f}/t")
+            logger.debug(f"[PG EXPANSION]   {pid}: {tech} NPV={npv_str} CAPEX=${capex:.2f}/t")
 
         # ========== STAGE 4: SELECT HIGHEST NPV OPTION ==========
         highest_plant_and_tech = max(expansion_options.items(), key=lambda item: item[1][0] or float("-inf"))
         plant_id, (npv, tech, capex) = highest_plant_and_tech
 
-        logger.debug("[PG EXPANSION] === Stage 4: Best option ===")
-        logger.debug(f"[PG EXPANSION]   - Plant: {plant_id}, Tech: {tech}")
         npv_str = "None" if npv is None else f"{npv:,.0f}"
-        logger.debug(f"[PG EXPANSION]   - NPV: ${npv_str}, CAPEX: ${capex:,.2f}/t")
+        logger.debug(f"[PG EXPANSION] Best: {plant_id} {tech} NPV=${npv_str} CAPEX=${capex:,.2f}/t")
 
         # ========== STAGE 5: CHECK NPV PROFITABILITY ==========
         if npv is None or npv <= 0:
@@ -5272,18 +5276,11 @@ class PlantGroup:
         equity_needed = capacity * capex  # Equity to finance up-front cost
 
         if self.total_balance < equity_needed:
-            logger.debug("[PG EXPANSION] === Stage 6: Balance check FAILED ===")
             logger.debug(
-                f"[PG EXPANSION]   - Equity needed: ${equity_needed:,.2f} ({capacity * T_TO_KT:,.0f} kt × ${capex:.2f}/t)"
+                f"[PG EXPANSION] DECISION - No expansion (insufficient funds: "
+                f"${self.total_balance:,.2f} < ${equity_needed:,.2f})"
             )
-            logger.debug(f"[PG EXPANSION]   - Available: ${self.total_balance:,.2f}")
-            logger.debug(f"[PG EXPANSION]   - Shortfall: ${equity_needed - self.total_balance:,.2f}")
-            logger.debug("[PG EXPANSION]   - DECISION - No expansion (insufficient funds)")
             return None
-
-        logger.debug("[PG EXPANSION] === Stage 6: Balance check PASSED ===")
-        logger.debug(f"[PG EXPANSION]   - Equity needed: ${equity_needed:,.2f}")
-        logger.debug(f"[PG EXPANSION]   - Available: ${self.total_balance:,.2f}")
 
         # ========== STAGE 7: PROBABILISTIC ACCEPTANCE ==========
         if probabilistic_agents:
@@ -5296,16 +5293,11 @@ class PlantGroup:
         random_draw = random.random()
 
         if random_draw >= acceptance_probability:
-            logger.debug("[PG EXPANSION] === Stage 7: Probabilistic check FAILED ===")
-            logger.debug(f"[PG EXPANSION]   - Mode: {'Probabilistic' if probabilistic_agents else 'Deterministic'}")
-            logger.debug(f"[PG EXPANSION]   - Investment: ${capacity * capex:,.0f}, NPV: ${npv:,.0f}")
-            logger.debug(f"[PG EXPANSION]   - Acceptance probability: {acceptance_probability:.2%}")
-            logger.debug(f"[PG EXPANSION]   - Random draw: {random_draw:.4f} ≥ {acceptance_probability:.4f}")
-            logger.debug("[PG EXPANSION]   - DECISION - No expansion (probabilistic rejection)")
+            logger.debug(
+                f"[PG EXPANSION] DECISION - No expansion (probabilistic rejection: "
+                f"draw={random_draw:.4f} >= prob={acceptance_probability:.2%})"
+            )
             return None
-
-        logger.debug("[PG EXPANSION] === Stage 7: Probabilistic check PASSED ===")
-        logger.debug(f"[PG EXPANSION]   - Probability: {acceptance_probability:.2%}, Draw: {random_draw:.4f}")
 
         # ========== STAGE 8: CHECK CAPACITY LIMITS ==========
         if (
@@ -5343,12 +5335,12 @@ class PlantGroup:
                 logger.warning("[PG EXPANSION]   - DECISION - No expansion (capacity limit reached)")
                 return None
 
-            logger.debug("[PG EXPANSION] === Stage 8: Capacity limit check PASSED ===")
-            logger.debug(f"[PG EXPANSION]   - Product: {expansion_product}")
-            logger.debug(
-                f"[PG EXPANSION]   - After expansion: {(expansion_and_switch_capacity + capacity) * T_TO_KT:,.0f} kt / "
-                f"{expansion_limit * T_TO_KT:,.0f} kt limit"
-            )
+            # logger.debug("[PG EXPANSION] === Stage 8: Capacity limit check PASSED ===")
+            # logger.debug(f"[PG EXPANSION]   - Product: {expansion_product}")
+            # logger.debug(
+            #     f"[PG EXPANSION]   - After expansion: {(expansion_and_switch_capacity + capacity) * T_TO_KT:,.0f} kt / "
+            #     f"{expansion_limit * T_TO_KT:,.0f} kt limit"
+            # )
 
         # ========== STAGE 9: VALIDATE PLANT AND LOCATION ==========
         # NOTE: Balance deduction does NOT happen here - it occurs at the FurnaceGroup level via command handler.
@@ -5375,9 +5367,9 @@ class PlantGroup:
         if cost_of_debt_original is None:
             raise ValueError(f"No cost of debt data for country: {plant.location.iso3} when expanding plant")
 
-        logger.debug("[PG EXPANSION] === Stage 9: Plant validation ===")
-        logger.debug(f"[PG EXPANSION]   - Plant: {plant_id}, Location: {plant.location.iso3}, Region: {region}")
-        logger.debug(f"[PG EXPANSION]   - Base cost of debt: {cost_of_debt_original:.2%}")
+        # logger.debug("[PG EXPANSION] === Stage 9: Plant validation ===")
+        # logger.debug(f"[PG EXPANSION]   - Plant: {plant_id}, Location: {plant.location.iso3}, Region: {region}")
+        # logger.debug(f"[PG EXPANSION]   - Base cost of debt: {cost_of_debt_original:.2%}")
 
         # ========== STAGE 10: APPLY SUBSIDIES ==========
         from steelo.domain import calculate_costs as cc
@@ -5398,20 +5390,20 @@ class PlantGroup:
         base_capex = region_capex[region][tech]
         capex = cc.calculate_capex_with_subsidies(base_capex, selected_capex_subsidies)
 
-        logger.debug("[PG EXPANSION] === Stage 10: Subsidies applied ===")
-        logger.debug(
-            f"[PG EXPANSION]   - Debt subsidies: {len(selected_debt_subsidies)} active (of {len(all_debt_subsidies)} total)"
-        )
-        logger.debug(
-            f"[PG EXPANSION]   - CAPEX subsidies: {len(selected_capex_subsidies)} active (of {len(all_capex_subsidies)} total)"
-        )
-        logger.debug(
-            f"[PG EXPANSION]   - Cost of debt: {cost_of_debt_original:.2%} → {cost_of_debt:.2%} "
-            f"({(cost_of_debt - cost_of_debt_original) * 100:+.2f} pp)"
-        )
-        logger.debug(
-            f"[PG EXPANSION]   - CAPEX: ${base_capex:.2f}/t → ${capex:.2f}/t (${base_capex - capex:.2f}/t reduction)"
-        )
+        # logger.debug("[PG EXPANSION] === Stage 10: Subsidies applied ===")
+        # logger.debug(
+        #     f"[PG EXPANSION]   - Debt subsidies: {len(selected_debt_subsidies)} active (of {len(all_debt_subsidies)} total)"
+        # )
+        # logger.debug(
+        #     f"[PG EXPANSION]   - CAPEX subsidies: {len(selected_capex_subsidies)} active (of {len(all_capex_subsidies)} total)"
+        # )
+        # logger.debug(
+        #     f"[PG EXPANSION]   - Cost of debt: {cost_of_debt_original:.2%} → {cost_of_debt:.2%} "
+        #     f"({(cost_of_debt - cost_of_debt_original) * 100:+.2f} pp)"
+        # )
+        # logger.debug(
+        #     f"[PG EXPANSION]   - CAPEX: ${base_capex:.2f}/t → ${capex:.2f}/t (${base_capex - capex:.2f}/t reduction)"
+        # )
 
         # ========== STAGE 11: CREATE EXPANSION COMMAND ==========
         furnace_group_id = f"{plant_id}_new_furnace"
@@ -5452,10 +5444,10 @@ class PlantGroup:
             f"[PG EXPANSION]   - Cost of debt: {cost_of_debt_original:.2%} → {cost_of_debt:.2%} (with subsidies)"
         )
 
-        if subsidy_details:
-            logger.debug("[PG EXPANSION] Subsidies included:")
-            for detail in subsidy_details:
-                logger.debug(f"[PG EXPANSION]   {detail}")
+        # if subsidy_details:
+        #     logger.debug("[PG EXPANSION] Subsidies included:")
+        #     for detail in subsidy_details:
+        #         logger.debug(f"[PG EXPANSION]   {detail}")
 
         return commands.AddFurnaceGroup(
             furnace_group_id=furnace_group_id,
@@ -5831,16 +5823,18 @@ class PlantGroup:
                     power_price = float(raw_power_price) if raw_power_price is not None else None
                     no_sub = fg.energy_costs_no_subsidy or fg.energy_costs
                     if power_price is None or math.isnan(power_price):
-                        power_price = no_sub["electricity"]
+                        power_price = no_sub.get("electricity")
                     raw_hydrogen_price = (
                         custom_energy_costs["capped_lcoh"].sel(lat=plant.location.lat, lon=plant.location.lon).values
                     )
                     hydrogen_price = float(raw_hydrogen_price) if raw_hydrogen_price is not None else None
                     if hydrogen_price is None or (hydrogen_price is not None and math.isnan(hydrogen_price)):
-                        hydrogen_price = no_sub["hydrogen"]
+                        hydrogen_price = no_sub.get("hydrogen")
 
-                    new_costs["electricity"] = power_price
-                    new_costs["hydrogen"] = hydrogen_price
+                    if power_price is not None:
+                        new_costs["electricity"] = power_price
+                    if hydrogen_price is not None:
+                        new_costs["hydrogen"] = hydrogen_price
 
                     # Apply energy carrier subsidies
                     active_energy_subs: dict[str, list] = {}
@@ -5852,8 +5846,10 @@ class PlantGroup:
 
                     # Build full energy cost dicts with updated electricity/hydrogen
                     base_costs = dict(fg.energy_costs_no_subsidy or fg.energy_costs)
-                    base_costs["electricity"] = power_price
-                    base_costs["hydrogen"] = hydrogen_price
+                    if power_price is not None:
+                        base_costs["electricity"] = power_price
+                    if hydrogen_price is not None:
+                        base_costs["hydrogen"] = hydrogen_price
 
                     if active_energy_subs:
                         new_energy_costs, new_output_energy_costs, new_energy_costs_no_subsidy = (
@@ -7428,7 +7424,7 @@ class Environment:
                for each plant's location
             2. Handle special cases based on plant type:
 
-               **New GEO Plants (parent_gem_id="indi"):**
+               **New GEO Plants (parent_gem_id starts with "indi"):**
                - These plants have their own power infrastructure (renewable energy park)
                - Preserve electricity and hydrogen costs from their own power generation if previously set
 
@@ -7477,14 +7473,16 @@ class Environment:
                 logged_countries.add(plant.location.iso3)
 
             # New GEO plants: preserve own power costs; use no_subsidy to avoid compounding
-            if plant.parent_gem_id.lower() == "indi":
+            if plant.parent_gem_id.lower().startswith("indi"):
                 for fg in plant.furnace_groups:
                     if fg.disposal_cost_outputs is None:
                         fg.disposal_cost_outputs = self.config.disposal_cost_outputs
                     no_sub = fg.energy_costs_no_subsidy or fg.energy_costs
-                    input_costs["electricity"] = no_sub["electricity"]
-                    input_costs["hydrogen"] = no_sub["hydrogen"]
-                    if fg.energy_costs_no_subsidy:
+                    if "electricity" in no_sub:
+                        input_costs["electricity"] = no_sub["electricity"]
+                    if "hydrogen" in no_sub:
+                        input_costs["hydrogen"] = no_sub["hydrogen"]
+                    if fg.energy_costs_no_subsidy and "electricity" in no_sub:
                         sub_elec = fg.energy_costs.get("electricity", 0)
                         if sub_elec != no_sub["electricity"]:
                             logger.debug(

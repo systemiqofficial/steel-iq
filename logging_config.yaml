@@ -5,6 +5,7 @@ features:
   furnace_group_breakdown: true
 
 modules:
+  core: INFO
   geo: INFO
   pam: INFO
   tm: INFO
