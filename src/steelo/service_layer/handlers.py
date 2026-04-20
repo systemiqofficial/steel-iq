@@ -191,6 +191,14 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
     """
     with uow:
         plant = uow.plants.get(cmd.plant_id)
+        # TODO(3h): BOM uses plant.energy_costs (last FG's subsidised costs), not the new
+        # tech's. Impact zero during construction (0% utilisation); refreshed when operational.
+        avg_bom_result = env.get_bom_from_avg_boms(
+            plant.energy_costs or {},
+            cmd.technology_name,
+            cmd.capacity,
+            env.most_common_reductant_by_tech.get(cmd.technology_name, None),
+        )
         new_furnace = plant.generate_new_furnace(
             technology_name=cmd.technology_name,
             product=cmd.product,
@@ -209,20 +217,8 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
                 env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
             ),
             equity_needed=cmd.equity_needed,
-            # TODO(3h): BOM uses plant.energy_costs (last FG's subsidised costs), not the new
-            # tech's. Impact zero during construction (0% utilisation); refreshed when operational.
-            bill_of_materials=env.get_bom_from_avg_boms(
-                plant.energy_costs or {},
-                cmd.technology_name,
-                cmd.capacity,
-                env.most_common_reductant_by_tech.get(cmd.technology_name, None),
-            )[0],
-            chosen_reductant=env.get_bom_from_avg_boms(
-                plant.energy_costs or {},
-                cmd.technology_name,
-                cmd.capacity,
-                env.most_common_reductant_by_tech.get(cmd.technology_name, None),
-            )[2],
+            bill_of_materials=avg_bom_result[0],
+            chosen_reductant=avg_bom_result[2],
             disposal_cost_outputs=env.config.disposal_cost_outputs,
         )
         # Set the subsidies on the new furnace group
