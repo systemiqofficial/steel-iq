@@ -3637,7 +3637,7 @@ class Plant:
             events.FurnaceGroupTechChanged(
                 furnace_group_id=furnace_group_id,
                 technology_name=technology_name,
-                capacity=int(furnace_group.capacity),
+                capacity=furnace_group.capacity,
             )
         )
 
@@ -4169,7 +4169,7 @@ class Plant:
         capex_no_subsidy: float,
         cost_of_debt: float,
         cost_of_debt_no_subsidy: float,
-        capacity: int,
+        capacity: float,
         lag: int,
         status: str,
         util_rate: float,
@@ -4308,7 +4308,7 @@ class Plant:
         return furnace_group
 
     def furnace_group_added(
-        self, furnace_group_id: str, plant_id: str, technology_name: str, capacity: int, is_new_plant: bool = False
+        self, furnace_group_id: str, plant_id: str, technology_name: str, capacity: float, is_new_plant: bool = False
     ) -> None:
         """
         Record a FurnaceGroupAdded event to the plant's event list.
