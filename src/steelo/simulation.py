@@ -1419,14 +1419,14 @@ class SimulationRunner:
                 label="Steel",
                 color="#1f77b4",
             )
-            ax.plot(
-                price_df["year"],
-                price_df["iron_price_usd_per_t"],
-                marker="s",
-                linewidth=2,
-                label="Iron (market price)",
-                color="#ff7f0e",
-            )
+            # ax.plot(
+            #     price_df["year"],
+            #     price_df["iron_price_usd_per_t"],
+            #     marker="s",
+            #     linewidth=2,
+            #     label="Iron (market price)",
+            #     color="#ff7f0e",
+            # )
             if "scrap_price_usd_per_t" in price_df.columns:
                 ax.plot(
                     price_df["year"],
