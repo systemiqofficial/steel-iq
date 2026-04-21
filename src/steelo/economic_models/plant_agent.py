@@ -647,11 +647,10 @@ class PlantAgentsModel:
     Economic decision-making model for steel and iron plant agents.
 
     This model simulates how steel and iron plants make economic decisions about:
-    1. Technology switching (e.g., switching from BF to DRI)
+    1. Technology switching (e.g., switching from BF to DRI, or to a CCS/CCU variant like BF+CCS)
     2. Renovations of existing technologies
     3. Furnace closures at the end of lifetime due to unprofitability
-    4. Carbon capture (CCS/CCU) installation for existing technologies
-    5. Plant expansions (new furnace groups within existing plants)
+    4. Plant expansions (new furnace groups within existing plants)
 
     The model evaluates each furnace group within each plant based on:
     - Current and future market prices for steel and iron
