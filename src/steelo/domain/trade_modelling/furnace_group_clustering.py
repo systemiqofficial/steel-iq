@@ -1699,6 +1699,53 @@ def _solve_strict_by_components(
     return merged_flows, merged_stats
 
 
+def _cap_demands_at_fg_capacities(
+    demands: dict[str, float],
+    meta_fg: MetaFurnaceGroup,
+    context: str,
+) -> dict[str, float]:
+    """Cap per-FG demand volumes at their effective capacities.
+
+    After share renormalization (triggered when some FGs are filtered out), remaining
+    FGs' shares are inflated and can exceed individual physical capacity limits.
+    This function caps each FG at capacity_share × total_capacity, then redistributes
+    any overflow proportionally to FGs that still have headroom.
+
+    IMPORTANT: only call this when `demands` are in OUTPUT-equivalent units (e.g. hot
+    metal, crude steel, pig iron flowing between clusters).  Do NOT use for raw-material
+    input flows (iron ore, coal, scrap, …) whose BOM ratio > 1 means legitimate demand
+    already exceeds output capacity — capping there would truncate valid material flows.
+    """
+    fg_caps = {fg_id: float(meta_fg.total_capacity) * meta_fg.capacity_shares.get(fg_id, 0.0) for fg_id in demands}
+    result = dict(demands)
+    overflow = 0.0
+    for fg_id in result:
+        cap = fg_caps[fg_id]
+        if result[fg_id] > cap + 1.0:
+            logger.warning(
+                f"[DISAGGREGATION] {context}: FG {fg_id} demand {result[fg_id]:.1f}t "
+                f"exceeds effective capacity {cap:.1f}t — capping"
+            )
+            overflow += result[fg_id] - cap
+            result[fg_id] = cap
+
+    if overflow > 1.0:
+        headroom = {fg_id: max(0.0, fg_caps[fg_id] - result[fg_id]) for fg_id in result}
+        total_headroom = sum(headroom.values())
+        if total_headroom >= overflow:
+            for fg_id in result:
+                result[fg_id] += overflow * (headroom[fg_id] / total_headroom)
+        else:
+            for fg_id in result:
+                result[fg_id] = fg_caps[fg_id]
+            unabsorbed = overflow - total_headroom
+            logger.warning(
+                f"[DISAGGREGATION] {context}: {unabsorbed:.1f}t cannot be redistributed "
+                f"— all remaining FGs at effective capacity, volume not fully preserved"
+            )
+    return result
+
+
 def _solve_transportation_problem(
     from_meta_fg: MetaFurnaceGroup,
     to_meta_fg: MetaFurnaceGroup,
@@ -1779,6 +1826,7 @@ def _solve_transportation_problem(
 
     # Prepare demands (destinations) from to_meta_fg (only valid FGs)
     dest_demands = {fg_id: total_volume * share for fg_id, share in valid_dest_fgs.items()}
+    dest_demands = _cap_demands_at_fg_capacities(dest_demands, to_meta_fg, to_meta_fg.meta_furnace_group_id)
 
     # Prepare supplies (sources) from from_meta_fg.
     # For HOT commodities, we split each destination's demand across the source FGs that
@@ -2388,6 +2436,10 @@ def disaggregate_allocations(
 
         # Prepare demands for FGs in meta-cluster (only valid ones)
         fg_demands = {fg_id: total_batch_volume * share for fg_id, share in valid_fg_shares.items()}
+        # NOTE: no capacity cap here — Case 3 volumes are INPUT commodity tonnes (iron ore,
+        # coal, scrap, …) whose BOM ratios can exceed 1.0 relative to the FG's output
+        # capacity, so capping at output capacity would incorrectly truncate raw material
+        # deliveries. Overflow from renormalisation is absorbed naturally by BOM processing.
 
         # Compute allocation costs using LP cost structure
         commodity_name = str(batch[0][2]).lower()
@@ -2523,6 +2575,9 @@ def disaggregate_allocations(
             valid_dest_fgs = {fg_id: s / total_valid for fg_id, s in valid_dest_fgs.items()}
 
         joint_dest_demands = {fg_id: total_lp_volume * share for fg_id, share in valid_dest_fgs.items()}
+        joint_dest_demands = _cap_demands_at_fg_capacities(
+            joint_dest_demands, to_meta_fg, f"Case 4 joint {to_meta_fg_id}"
+        )
         joint_dest_locations = {fg_id: to_meta_fg.constituent_locations[fg_id] for fg_id in valid_dest_fgs}
 
         # Pre-filter BOF FGs that have no reachable BF FG in the contributing source cluster(s).
