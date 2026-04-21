@@ -70,14 +70,15 @@ def calculate_emissions(
     material_bill: dict[str, dict[str, float]],
     business_cases: dict[str, "PrimaryFeedstock"],
     technology_emission_factors: list["TechnologyEmissionFactors"],
-    installed_carbon_capture: float = 0.0,
     grid_emissions: float = 0.0,
 ) -> dict[str, dict[str, float]]:
-    """Calculate total emissions for a furnace group accounting for CCS/CCU technology.
+    """Calculate total emissions for a furnace group.
 
     Computes comprehensive emissions across multiple boundaries (plant_boundary, supply_chain, etc.)
     and scopes (direct, indirect, biomass) based on material consumption, technology emission factors,
-    and grid electricity use. Applies carbon capture reductions to direct emissions.
+    and grid electricity use. CCS/CCU technologies are modelled as distinct technologies (BF+CCS,
+    DRI+CCS, etc.) whose emission factors already reflect post-capture values; no post-hoc subtraction
+    is applied here.
 
     The calculation process:
         1. Match materials in bill to business cases
@@ -85,7 +86,6 @@ def calculate_emissions(
         3. Look up emission factors by technology, reductant, and metallic charge
         4. Compute emissions per boundary/scope using emission factors × production
         5. Add grid emissions to indirect scope
-        6. Apply CCS/CCU: reduce direct_ghg by installed_carbon_capture (floor at 0)
 
     Args:
         material_bill: Dict mapping material names to {"demand": float, "total_cost": float, "unit_cost": float}.
@@ -95,9 +95,6 @@ def calculate_emissions(
         technology_emission_factors: List of TechnologyEmissionFactors objects containing
             emission intensities (tCO2e per tonne product) for each technology/reductant/material
             combination across different boundaries and scopes.
-        installed_carbon_capture: Carbon capture capacity in tCO2e per year. Reduces direct
-            emissions via CCS (Carbon Capture and Storage) or CCU (Carbon Capture and Utilization).
-            Default 0.0 means no capture installed.
         grid_emissions: Total grid electricity emissions in tCO2e, calculated separately.
             Added to indirect_ghg scope. Default 0.0.
 
@@ -105,7 +102,7 @@ def calculate_emissions(
         Nested dict with structure:
             {
                 boundary_name: {  # e.g., "plant_boundary", "supply_chain"
-                    "direct_ghg": float,              # Direct emissions minus carbon capture
+                    "direct_ghg": float,
                     "direct_with_biomass_ghg": float, # Direct including biogenic carbon
                     "indirect_ghg": float             # Indirect emissions plus grid
                 }
@@ -113,8 +110,6 @@ def calculate_emissions(
         Returns empty dict {} if no valid business cases or emission factors found.
 
     Notes:
-        - Carbon capture is subtracted from direct_ghg ONLY, not from other scopes.
-        - Carbon capture cannot create negative emissions (max function ensures >= 0).
         - Production volume calculated as: material_demand / required_quantity_per_ton_of_product
         - Grid emissions added to indirect_ghg for all boundaries.
         - Skips materials with zero/None required_quantity_per_ton_of_product.
@@ -179,14 +174,6 @@ def calculate_emissions(
                 else:
                     for scope, value in emissions.items():
                         total_emissions[convention][scope] += value
-
-        for convention in total_emissions:
-            if "direct_ghg" in total_emissions[convention]:
-                total_emissions[convention]["direct_ghg"] = max(
-                    total_emissions[convention]["direct_ghg"] - installed_carbon_capture, 0
-                )
-            else:
-                total_emissions[convention]["direct_ghg"] = 0.0
 
     return total_emissions
 

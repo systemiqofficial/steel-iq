@@ -34,8 +34,6 @@ from steelo.utilities.plotting import (
     plot_process_graph,
 )
 
-# from steelo.domain.commands import InstallCarbonCapture
-
 # ============================================================================
 # SOLVER CONFIGURATION - Edit this section to experiment with different solver settings
 # ============================================================================
@@ -898,37 +896,6 @@ class PlantAgentsModel:
                         logger.info(f"[PAM] EXECUTING {type(cmd).__name__}")
                         counter += 1
                         bus.handle(cmd)
-
-                # # Evaluate carbon capture and storage (CCS) installation
-                # logger.debug(f"[CLASS PLANT AGENT]: Evaluating CCS strategy for FG {fg.furnace_group_id}")
-                # if (
-                #     cmd := plant.evaluate_ccs_strategy(
-                #         furnace_group_id=fg.furnace_group_id,
-                #         capex=region_capex.get("CCS") or 0.0,
-                #         cost_of_equity=bus.env.industrial_cost_of_equity.get(plant.location.iso3, 0.1)
-                #         if isinstance(bus.env.industrial_cost_of_equity, dict)
-                #         else 0.1,
-                #         dynamic_business_cases=bus.env.dynamic_feedstocks,
-                #         equity_share=0.2,
-                #         available_carbon_storage=bus.env.get_available_carbon_storage(
-                #             lifetime=fg.lifetime.remaining_number_of_years, iso3=plant.location.iso3
-                #         ),
-                #         chosen_emissions_boundary_for_carbon_costs=bus.env.config.chosen_emissions_boundary_for_carbon_costs,
-                #         technology_emission_factors=bus.env.technology_emission_factors,
-                #     )
-                # ) is not None:
-                #     logger.info(
-                #         f"[CLASS PLANT AGENT]: FG {fg.furnace_group_id} CCS evaluation returned: {type(cmd).__name__}"
-                #     )
-                #     if isinstance(cmd, InstallCarbonCapture):
-                #         logger.info(
-                #             f"[CLASS PLANT AGENT]: INSTALLING CCS - Capacity: {cmd.installed_capacity:,.0f} tCO2 for FG {fg.furnace_group_id}"
-                #         )
-                #         bus.env.reserve_carbon_storage(iso3=plant.location.iso3, volume=cmd.installed_capacity)
-                #         fg.installed_carbon_capture += cmd.installed_capacity
-                #         logger.debug(
-                #             f"[CLASS PLANT AGENT]: Total CCS installed for FG: {fg.installed_carbon_capture:,.0f} tCO2"
-                #         )
 
         plant_eval_elapsed = time.time() - plant_eval_start
         logger.info(

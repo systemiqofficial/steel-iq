@@ -1132,7 +1132,6 @@ class FurnaceGroup:
         self.emissions_factor = emissions_factor
         self.technology_emission_factors: list[TechnologyEmissionFactors] = []
         self.emissions = emissions
-        self.installed_carbon_capture = 0.0  # CCS/CCU capacity (tCO2e/year) - reduces direct emissions
         self.transport_emissions = 0.0
 
         # Initialize _carbon_cost from carbon_costs_for_emissions if provided
@@ -2066,7 +2065,6 @@ class FurnaceGroup:
             - Returns early if bill_of_materials is None.
             - Uses calculate_emissions module functions for emission calculations.
             - Incorporates technology_emission_factors for material emission intensities.
-            - Adjusts for installed_carbon_capture if present.
             - Includes grid_emissions in the total calculation.
         """
 
@@ -2086,7 +2084,6 @@ class FurnaceGroup:
             business_cases=matched_business_cases,
             material_bill=self.bill_of_materials["materials"],
             technology_emission_factors=self.technology_emission_factors,
-            installed_carbon_capture=self.installed_carbon_capture,
             grid_emissions=self.grid_emissions,
         )
 
