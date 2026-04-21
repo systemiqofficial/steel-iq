@@ -1126,7 +1126,6 @@ class FurnaceGroup:
         self.energy_vopex_by_carrier = energy_vopex_by_carrier
         self.tech_unit_fopex = tech_unit_fopex
 
-        self.has_ccs_or_ccu = False  # To be updated if carbon capture is installed
         self.grid_emissivity: float | None = None
 
         # Emissions and carbon
@@ -1295,6 +1294,11 @@ class FurnaceGroup:
         self.technology.capex = capex
         # Set baseline capital expenditure without subsidies
         self.technology.capex_no_subsidy = capex_no_subsidy
+
+    @property
+    def is_ccs_or_ccu(self) -> bool:
+        name = self.technology.name.lower()
+        return "ccs" in name or "ccu" in name
 
     @property
     def effective_primary_feedstocks(self) -> list[PrimaryFeedstock]:
@@ -3549,7 +3553,6 @@ class Plant:
         Side Effects:
             - Updates furnace group's technology, lifetime, status, utilization rate, and debt schedules.
             - Appends FurnaceGroupTechChanged event to the plant's event list.
-            - Sets has_ccs_or_ccu flag if technology includes CCS or CCU.
             - Marks furnace group as created_by_PAM.
 
         Raises:
@@ -3566,10 +3569,6 @@ class Plant:
             - See debt_repayment_per_year property for full details on debt accumulation logic.
         """
         furnace_group = self.get_furnace_group(furnace_group_id)
-
-        # Mark CCS/CCU flag if applicable
-        if "ccs" in technology_name.lower() or "ccu" in technology_name.lower():
-            furnace_group.has_ccs_or_ccu = True
 
         # Capture remaining debt from the current technology before switching
         old_remaining_debt = []
@@ -4051,9 +4050,9 @@ class Plant:
 
         # Make final decision with random draw
         random_draw = random.random()
-        fg_has_ccs_or_ccu = furnace_group.has_ccs_or_ccu
+        fg_is_ccs_or_ccu = furnace_group.is_ccs_or_ccu
 
-        if not fg_has_ccs_or_ccu and random_draw < accept_prob:
+        if not fg_is_ccs_or_ccu and random_draw < accept_prob:
             # ===== STAGE 12: Check capacity limits =====
             # Ensure switch doesn't exceed annual capacity expansion limits
             if (
@@ -4158,7 +4157,7 @@ class Plant:
             # Probabilistic rejection or CCS/CCU equipped furnace
             rejection_reason = (
                 "furnace has CCS/CCU"
-                if fg_has_ccs_or_ccu
+                if fg_is_ccs_or_ccu
                 else f"probabilistic rejection ({random_draw:.2%} >= {accept_prob:.2%})"
             )
             logger.debug(f"[FG STRATEGY] DECISION - No action ({rejection_reason})")

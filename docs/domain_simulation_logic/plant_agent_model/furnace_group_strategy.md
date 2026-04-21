@@ -551,7 +551,7 @@ if expansion_and_switch_capacity + furnace_capacity > expansion_limit:
 - `furnace_group.status`: Operating status
 - `furnace_group.historic_balance`: Cumulative profit/loss
 - `furnace_group.lifetime.expired`: Whether renovation is needed
-- `furnace_group.has_ccs_or_ccu`: CCS/CCU equipment flag
+- `furnace_group.is_ccs_or_ccu`: CCS/CCU equipment flag (derived from tech name)
 
 ### External Functions Called
 - `furnace_group.optimal_technology_name()`: Gets NPV analysis
