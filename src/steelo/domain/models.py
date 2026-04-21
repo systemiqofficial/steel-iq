@@ -4708,7 +4708,21 @@ class PlantGroup:
                         for other_fg in other_plant.furnace_groups:
                             # check if other furnace group produces hot metal and is within hot metal radius of the BOF plant
                             if (
-                                other_fg.technology.name.lower() in ["bf", "esf", "sr"]
+                                other_fg.technology.name.lower()
+                                in [
+                                    "bf",
+                                    "dri+esf",
+                                    "sr",
+                                    "bf+ccu",
+                                    "dri+esf+ccu",
+                                    "sr+ccu",
+                                    "bf+ccs",
+                                    "dri+esf+ccs",
+                                    "sr+ccs",
+                                    "bf_charcoal",
+                                    "bf_charcoal+ccu",
+                                    "bf_charcoal+ccs",
+                                ]
                                 and plant.distance_to(other_plant.location) <= hot_metal_radius
                             ):
                                 fg.has_hot_metal_access = True
@@ -7497,7 +7511,7 @@ class Environment:
                 for fg in plant.furnace_groups:
                     if fg.disposal_cost_outputs is None:
                         fg.disposal_cost_outputs = self.config.disposal_cost_outputs
-                    no_sub = fg.energy_costs_no_subsidy or fg.energy_costs
+                    no_sub = {**fg.energy_costs, **(fg.energy_costs_no_subsidy or {})}
                     input_costs["electricity"] = no_sub["electricity"]
                     input_costs["hydrogen"] = no_sub["hydrogen"]
                     if fg.energy_costs_no_subsidy:

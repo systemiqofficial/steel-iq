@@ -347,7 +347,9 @@ class AllocationModel:
 
             logger.info(f"[CLUSTERING] Clustering enabled for year {bus.env.year}")
             meta_furnace_groups, cluster_mapping = cluster_furnace_groups(
-                plants=bus.uow.plants.list(), config=bus.env.config
+                plants=bus.uow.plants.list(),
+                config=bus.env.config,
+                aggregated_constraints=bus.env.aggregated_metallic_charge_constraints or None,
             )
             logger.info(
                 f"[CLUSTERING] Reduced furnace groups from "

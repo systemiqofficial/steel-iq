@@ -359,21 +359,56 @@ min_share × total_input ≤ sum(matching commodities) ≤ max_share × total_in
 
 ### Disaggregation: Hot-Metal Radius + Minimum-Ratio Enforcement
 
-After the LP solves at the cluster level, `disaggregate_allocations()` in `furnace_group_clustering.py` splits cluster-to-cluster flows back to individual furnace groups. This is where the per-FG distance and BOM-minimum constraints are enforced.
+After the LP solves at the cluster level, `disaggregate_allocations()` in `furnace_group_clustering.py` splits cluster-to-cluster flows back to individual furnace groups. This is where per-FG distance constraints, BOM-minimum-share constraints, and bill-of-materials consistency are all enforced.
 
-**Three mechanisms work together:**
+Five mechanisms work together to guarantee physical correctness:
 
-1. **BOF filtering at clustering time.** `cluster_furnace_groups()` drops BOF furnace groups with `has_hot_metal_access == False` — BOFs that have no BF/ESF/SR producer within `hot_metal_radius`. These BOFs can't legitimately operate under the hot-metal minimum ratio, so excluding them prevents guaranteed radius violations downstream. The flag is set by `PlantGroup.update_hot_metal_access(hot_metal_radius)` at the start of each PAM year.
+#### 1. BOF filtering and effective capacity at clustering time
 
-2. **Strict radius for min-constrained flows.** When a hot commodity (e.g. `hot_metal`, `dri_high`) is routed to a destination technology that has a `PrimaryFeedstock.minimum_share_in_product > 0` for that commodity, the min-cost-flow solver omits radius-violating edges entirely. If the resulting flow problem is infeasible, the disaggregation raises a `RuntimeError` listing the unreachable destination FGs — the LP has allocated hot material to a destination that physically can't receive it within radius, which would silently break the BOM minimum constraint.
+`cluster_furnace_groups()` performs two corrections before building clusters:
 
-3. **Hot → cold relabeling for non-constrained flows.** When a hot commodity flows beyond the radius *and* the destination has no minimum constraint on it (or the flow is surplus above the minimum), `_substitute_commodity_by_distance()` relabels the output allocation to the cold equivalent (e.g. `dri_high` → `hbi_high`). The flow volume is preserved; only the label changes. This reflects the physical reality that the LP's intra-country hot flow must actually travel as cold material over that distance. Logged at INFO level (not WARNING, since it's expected).
+- **Isolated BOF filtering.** BOF FGs with no active BF/ESF/SR within `hot_metal_radius` in their country are excluded from their cluster entirely. Without a local iron source they can never satisfy the hot-metal minimum-share constraint, so including them would guarantee a BOM violation.
 
-**Logging** — at the start of each disaggregation, the log reports:
-- Which `(technology, commodity)` pairs have minimum-share constraints and whether each triggers strict radius.
-- Per-commodity summary of flows that exceeded the radius, split into "relabeled to cold" (informational) vs "real violations" (warnings with top-3 destination countries).
+- **Effective BOF cluster capacity.** For each BOF FG, effective capacity = `min(physical_capacity, Σ[reachable_BF_capacity within radius] / min_hot_metal_share)`. The cluster's `total_capacity`, `capacity_shares`, and weighted costs are all derived from these effective capacities. This prevents the LP from allocating more hot metal to a BOF cluster than its geographically reachable BF neighbours can physically supply.
 
-**Helper:** `_destination_has_min_constraint_for_commodity(to_meta_fg, commodity)` checks `dynamic_business_case` for a feedstock with `minimum_share_in_product > 0` whose `metallic_charge` matches the commodity (or its hot/cold equivalent — feedstock data can use either form).
+#### 2. Joint transportation problem for hot-metal disaggregation
+
+When multiple BF clusters contribute hot metal to the same BOF cluster, all contributing flows are solved in a **single joint transportation problem** rather than independently per BF→BOF pair. This guarantees that each BOF FG receives exactly `effective_share × total_LP_hot_metal` regardless of how many source clusters are involved.
+
+The supply vector for the joint problem is computed by `_reach_based_joint_supplies()`: for each BOF FG demand, the volume is distributed to the BF FGs within radius weighted by their LP supply. This makes every geographic pocket self-balancing (`pocket_supply == pocket_demand`), so the per-component normalisation inside `_solve_strict_by_components()` is a no-op (scale = 1). Without this, component-wise normalisation would silently adjust BF FG outputs, causing BF iron-ore inputs to become inconsistent with their actual hot-metal outputs.
+
+BOF FGs whose neighbouring BF uses a **different reductant** (and hence a different cluster key not contributing to this LP flow) are pre-filtered from the joint demand and their share redistributed to the remaining reachable BOF FGs, capped at each FG's effective capacity. This prevents spurious `RuntimeError`s when a BOF FG's only nearby BF is in a different technology cluster.
+
+`_solve_strict_by_components()` decomposes the joint problem into geographically connected components (isolated pockets of BF/BOF pairs separated by more than `hot_metal_radius`). Each pocket is solved as an independent min-cost-flow problem. This prevents integer-flooring artefacts in one region from bleeding into another.
+
+#### 3. Strict radius for min-constrained flows
+
+When a hot commodity (e.g. `hot_metal`, `dri_high`) is routed to a destination technology that has a minimum-share constraint on that commodity — either via `PrimaryFeedstock.minimum_share_in_product > 0` or via an `AggregatedMetallicChargeConstraint` (e.g. BOF hot_metal ≥ 70%) — the min-cost-flow solver **omits** radius-violating edges entirely rather than penalising them. This guarantees the allocation is physically feasible within the radius. If no feasible solution exists, a `RuntimeError` is raised with a full diagnostic of which destinations are unreachable.
+
+`_destination_has_min_constraint_for_commodity(to_meta_fg, commodity)` checks both individual feedstock constraints and aggregated wildcard constraints (matching on technology name and feedstock pattern prefix).
+
+#### 4. Hot → cold relabeling for non-constrained flows
+
+When a hot commodity flows beyond the radius and the destination has no binding minimum constraint on it, `_substitute_commodity_by_distance()` relabels the allocation to the cold equivalent (e.g. `dri_high` → `hbi_high`). The flow volume is preserved; only the label changes. This reflects the physical reality that the LP's intra-country hot flow must actually travel as the cold form over that distance. Logged at INFO level.
+
+#### 5. BOM consistency validation and utilisation correction
+
+After disaggregation, `TMPAMConnector.validate_bom_consistency()` checks every active FG against two criteria (tolerances in parentheses):
+
+- **Mass balance** — `metallic_input / production ∈ [0.99, 1.21]` (±1%).
+- **Min-share** — each feedstock with a minimum share must reach `min_share − 1pp`.
+
+Any violation is logged as WARNING. `correct_utilization_for_supply_constraints()` then acts as a safety net: if a BOF FG received insufficient hot metal to satisfy its minimum share, its production and utilisation are scaled down to the maximum physically achievable level. This handles edge cases (e.g. a technology-cluster mismatch filtered out mid-problem) without crashing the simulation.
+
+Both methods are called from `handlers.py` after each year's disaggregation.
+
+---
+
+**Logging** — at the start of each disaggregation the log reports:
+- Number of joint groups (strict hot) and individual flows.
+- Per joint group: source cluster count, total LP volume, number of connected components.
+- Any BOF FGs pre-filtered due to technology-cluster mismatch.
+- BOM validation summary: counts by check type, and per-FG details for any violations.
 
 ---
 

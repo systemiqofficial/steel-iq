@@ -188,12 +188,15 @@ The model represents the global steel value chain as a network:
 - `active_statuses`: Which furnace states to include (e.g., ["operating", "mothballed"])
 
 **Physical constraints:**
-- `hot_metal_radius`: Maximum transport distance for hot commodities (~100km). Enforced in two places:
-  - At LP-build time for international flows (via `fix_to_zero_allocations_where_distance_doesnt_match_commodity()`).
-  - At disaggregation time for per-furnace-group flows, with three layers: BOFs without any in-radius iron producer are filtered from clustering; hot commodities to destinations with a BOM minimum constraint are solved under strict radius (hard error if infeasible); other beyond-radius hot flows are relabeled to their cold equivalent in the output allocation.
+- `hot_metal_radius`: Maximum transport distance for hot commodities (~5 km by default). Enforced in several layers:
+  1. **LP-build time** — international hot-commodity flows (different ISO3) are fixed to zero via `fix_to_zero_allocations_where_distance_doesnt_match_commodity()`.
+  2. **Clustering** — BOF FGs with no active BF/ESF/SR within radius in the same country are excluded from their cluster. BOF cluster capacity is capped at `min(physical_cap, Σ[reachable_BF_cap] / min_hot_metal_share)` so the LP cannot over-allocate.
+  3. **Disaggregation (strict)** — hot flows to destinations with a BOM minimum-share constraint are solved under strict radius: radius-violating edges are omitted from the min-cost-flow graph entirely.
+  4. **Disaggregation (relabeling)** — hot flows without a binding minimum constraint that exceed the radius are relabeled to their cold equivalent (e.g. `dri_high` → `hbi_high`).
+  5. **Post-disaggregation** — BOM consistency is validated for all active FGs (mass balance ±1%, min-share −1pp); any BOF FG that received insufficient hot metal has its utilisation corrected downward.
 - `closely_allocated_products`: Hot commodities limited to short distances (`hot_metal`, `dri_high`/`dri_mid`/`dri_low`, `liquid_iron`).
 - `distantly_allocated_products`: Cold equivalents that ship globally (`pig_iron`, `hbi_high`/`hbi_mid`/`hbi_low`, `electrolytic_iron`).
-- `enable_furnace_group_clustering`: When enabled, the LP works with meta-furnace-groups (clusters of same-technology-reductant-country FGs) to reduce problem size; the per-FG radius + minimum-ratio enforcement above compensates by running at disaggregation time.
+- `enable_furnace_group_clustering`: When enabled, the LP works with meta-furnace-groups (clusters of same-technology-reductant-country FGs) to reduce problem size; all radius and minimum-ratio enforcement runs at disaggregation time as described above.
 
 See the "Disaggregation: Hot-Metal Radius + Minimum-Ratio Enforcement" section in `overview_trade_model.md` for full details.
 

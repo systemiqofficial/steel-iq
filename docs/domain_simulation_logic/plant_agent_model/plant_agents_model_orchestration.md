@@ -24,9 +24,14 @@ Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()
    - Sets `furnace_group.allocated_volumes`
    - Sets `furnace_group.utilization_rate`
 
-2. **TM-PAM Connector** updates costs:
+2. **TM-PAM Connector** disaggregates cluster flows and updates costs:
+   - Splits LP cluster-level flows to individual FG level via `disaggregate_allocations()`
    - Sets `furnace_group.bill_of_materials`
    - Sets `furnace_group.emissions`
+
+3. **BOM validation and utilisation correction** (`handlers.py`):
+   - `TMPAMConnector.validate_bom_consistency()` checks every active FG for: mass balance (metallic input / production ∈ [0.99, 1.21]), minimum-share constraints (e.g. BOF hot_metal ≥ 70% − 1pp), and zero metallic charge where metallics are required.
+   - `correct_utilization_for_supply_constraints()` scales down production and utilisation for any BOF FG that received insufficient hot metal to meet its minimum share. This is a safety net for edge cases (e.g. technology-cluster mismatch) that survive the structural disaggregation checks.
 
 **After PAM runs:**
 

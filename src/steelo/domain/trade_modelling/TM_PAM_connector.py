@@ -1114,8 +1114,8 @@ class TM_PAM_connector:
         self,
         furnace_groups: list[FurnaceGroup],
         aggregated_constraints: list | None = None,
-        mass_balance_tolerance: float = 0.10,
-        min_share_tolerance: float = 0.02,
+        mass_balance_tolerance: float = 0.01,
+        min_share_tolerance: float = 0.01,
     ) -> list[dict]:
         """Validate BOM balance and minimum-share constraints for all active furnace groups.
 
@@ -1492,6 +1492,16 @@ class TM_PAM_connector:
             fg.set_allocated_volumes(new_production)
             if fg.capacity > 0:
                 fg.utilization_rate = new_production / fg.capacity
+
+            # Scale outgoing graph edges (steel to demand centers) so downstream
+            # demand-satisfaction accounting reflects reduced supply.
+            if self.G is not None and fg_id in self.G.nodes:
+                for _, dest, edge_data in list(self.G.out_edges(fg_id, data=True)):
+                    old_vol = edge_data.get("volume", 0.0)
+                    edge_data["volume"] = old_vol * scale_production
+                    old_alloc = edge_data.get("allocations", 0.0)
+                    if old_alloc:
+                        edge_data["allocations"] = old_alloc * scale_production
 
             # Update BOM demands and costs
             for comm, info in materials.items():

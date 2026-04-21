@@ -171,6 +171,116 @@ def _destination_has_min_constraint_for_commodity(
     return False
 
 
+def _get_hot_metal_min_share_for_fg(
+    fg: "FurnaceGroup",
+    aggregated_constraints: list | None,
+    config: "SimulationConfig",
+) -> float | None:
+    """Extract the maximum hot-metallic-charge minimum-share constraint for a furnace group.
+
+    Checks both individual feedstock constraints (PrimaryFeedstock.minimum_share_in_product)
+    and aggregated wildcard constraints (AggregatedMetallicChargeConstraint).  Only considers
+    feedstocks/patterns that map to a hot commodity in config.closely_allocated_products.
+
+    Args:
+        fg: Furnace group to inspect.
+        aggregated_constraints: Optional list of AggregatedMetallicChargeConstraint.
+        config: Simulation configuration (for closely_allocated_products).
+
+    Returns:
+        Maximum hot-metallic min-share found, or None if no such constraint exists.
+    """
+    tech = fg.technology.name.lower()
+    best_share: float | None = None
+
+    # Build set of hot-commodity base names from config
+    hot_names: set[str] = set()
+    if hasattr(config, "closely_allocated_products"):
+        for h in config.closely_allocated_products:
+            hot_names.add(str(h).lower())
+
+    # 1. Per-feedstock constraints on effective_primary_feedstocks
+    feedstocks = getattr(fg, "effective_primary_feedstocks", None) or []
+    for fs in feedstocks:
+        min_share = getattr(fs, "minimum_share_in_product", None)
+        if not min_share or min_share <= 0:
+            continue
+        charge = str(getattr(fs, "metallic_charge", "")).lower()
+        if not charge:
+            continue
+        # Match charge to any hot commodity (prefix match in either direction)
+        if any(charge.startswith(h) or h.startswith(charge) for h in hot_names):
+            best_share = max(best_share or 0.0, float(min_share))
+
+    # 2. Aggregated wildcard constraints
+    if aggregated_constraints:
+        for c in aggregated_constraints:
+            constraint_min = getattr(c, "minimum_share", None)
+            if not constraint_min or constraint_min <= 0:
+                continue
+            if str(getattr(c, "technology_name", "")).lower() != tech:
+                continue
+            pattern = str(getattr(c, "feedstock_pattern", "")).lower()
+            if not pattern:
+                continue
+            # Match pattern against hot commodities
+            if any(str(h).lower().startswith(pattern) or pattern.startswith(str(h).lower()) for h in hot_names):
+                best_share = max(best_share or 0.0, float(constraint_min))
+
+    return best_share if best_share and best_share > 0 else None
+
+
+def _compute_effective_bof_capacity(
+    fg: "FurnaceGroup",
+    plant: "Plant",
+    hot_metal_producers_by_iso3: dict[str, list[tuple["FurnaceGroup", "Plant"]]],
+    aggregated_constraints: list | None,
+    config: "SimulationConfig",
+) -> float:
+    """Compute the hot-metal-supply-limited effective capacity for a BOF furnace group.
+
+    For non-BOF FGs returns the physical capacity unchanged.  For BOF FGs, caps
+    capacity at ``reachable_hot_metal_supply / min_hot_metal_share`` so the LP cannot
+    assign more production to a BOF FG than its local BF supply can support.
+
+    Args:
+        fg: The furnace group.
+        plant: Plant that contains the FG (used for location/distance calculations).
+        hot_metal_producers_by_iso3: Active BF/ESF/SR groups indexed by ISO3.
+        aggregated_constraints: Aggregated metallic-charge constraints (may be None).
+        config: Simulation configuration.
+
+    Returns:
+        Effective capacity in tonnes.  Always ≤ physical capacity.
+    """
+    physical_cap = float(fg.capacity)
+
+    if fg.technology.name.lower() != "bof":
+        return physical_cap
+
+    min_share = _get_hot_metal_min_share_for_fg(fg, aggregated_constraints, config)
+    if min_share is None or min_share <= 0:
+        return physical_cap
+
+    # Sum BF/ESF/SR capacity within hot_metal_radius of this BOF FG (same ISO3 only,
+    # matching the per-country clustering constraint)
+    iso3 = plant.location.iso3
+    producers = hot_metal_producers_by_iso3.get(iso3, [])
+    reachable_hm_cap = sum(
+        float(bf_fg.capacity)
+        for bf_fg, bf_plant in producers
+        if plant.distance_to(bf_plant.location) <= config.hot_metal_radius
+    )
+
+    if reachable_hm_cap <= 0:
+        # No reachable hot metal — this FG should have been filtered out in step 1b,
+        # but guard here for safety.
+        return 0.0
+
+    cap_from_hm = reachable_hm_cap / min_share
+    return min(physical_cap, cap_from_hm)
+
+
 def _build_transport_cost_lookup(transport_kpis: list | None) -> dict[tuple[str, str, str], float]:
     """Build (from_iso3, to_iso3, commodity) → cost_per_ton lookup from TransportKPI list.
 
@@ -393,7 +503,9 @@ def calculate_center_of_gravity(furnace_groups_with_plants: list[tuple[FurnaceGr
 
 
 def cluster_furnace_groups(
-    plants: list[Plant], config: "SimulationConfig"
+    plants: list[Plant],
+    config: "SimulationConfig",
+    aggregated_constraints: list | None = None,
 ) -> tuple[list[MetaFurnaceGroup], dict[str, list[str]]]:
     """Cluster furnace groups by technology, chosen reductant, and country.
 
@@ -401,9 +513,18 @@ def cluster_furnace_groups(
     meta-furnace groups. Each meta-furnace group represents the aggregated capacity
     and characteristics of all constituent furnace groups.
 
+    For BOF clusters, each FG's capacity is capped at
+    ``reachable_BF_capacity / min_hot_metal_share`` before summing into the cluster
+    total.  This prevents the LP from allocating more BOF production than the local
+    hot-metal supply can support, which would otherwise cause BOM constraint
+    violations during disaggregation.
+
     Args:
         plants: List of all plants in the simulation
         config: Simulation configuration containing active_statuses
+        aggregated_constraints: Optional list of AggregatedMetallicChargeConstraint
+            objects (e.g. BOF hot_metal ≥ 70%).  Used to determine the hot-metal
+            minimum-share when capping BOF effective capacities.
 
     Returns:
         Tuple of:
@@ -547,23 +668,51 @@ def cluster_furnace_groups(
         # Extract constituent FG IDs
         constituent_fg_ids = [fg.furnace_group_id for fg, _ in cluster_fgs]
 
-        # Calculate total capacity
-        total_capacity = Volumes(sum(float(fg.capacity) for fg, _ in cluster_fgs))
+        # Calculate effective capacities.  For BOF FGs these are capped by the
+        # reachable hot-metal supply so the LP doesn't over-allocate production.
+        effective_caps: dict[str, float] = {
+            fg.furnace_group_id: _compute_effective_bof_capacity(
+                fg, plant, hot_metal_producers_by_iso3, aggregated_constraints, config
+            )
+            for fg, plant in cluster_fgs
+        }
+        total_eff_cap = sum(effective_caps.values())
+        total_phys_cap = sum(float(fg.capacity) for fg, _ in cluster_fgs)
+        total_capacity = Volumes(total_eff_cap)
 
-        # Calculate capacity shares
-        if float(total_capacity) > 0:
-            capacity_shares = {fg.furnace_group_id: float(fg.capacity) / float(total_capacity) for fg, _ in cluster_fgs}
+        # Log effective capacity reductions for BOF clusters
+        if cluster_key.technology_name.lower() == "bof" and total_phys_cap > 0:
+            if abs(total_eff_cap - total_phys_cap) > 0.5:
+                reduction_pct = (1.0 - total_eff_cap / total_phys_cap) * 100.0
+                logger.debug(
+                    f"[CLUSTERING] BOF cluster {meta_fg_id}: "
+                    f"physical {total_phys_cap * T_TO_KT:.1f} kt → "
+                    f"effective {total_eff_cap * T_TO_KT:.1f} kt "
+                    f"({reduction_pct:.1f}% reduction from hot-metal supply limit)"
+                )
+                for fg, _ in cluster_fgs:
+                    phys = float(fg.capacity)
+                    eff = effective_caps[fg.furnace_group_id]
+                    if abs(eff - phys) > 0.5:
+                        logger.debug(
+                            f"[CLUSTERING]   FG {fg.furnace_group_id}: {phys * T_TO_KT:.1f} kt → {eff * T_TO_KT:.1f} kt"
+                        )
+
+        # Calculate capacity shares based on effective capacities
+        if total_eff_cap > 0:
+            capacity_shares = {fg_id: eff / total_eff_cap for fg_id, eff in effective_caps.items()}
         else:
-            # Equal shares if all have zero capacity
+            # Equal shares if all effective capacities are zero
             capacity_shares = {fg.furnace_group_id: 1.0 / len(cluster_fgs) for fg, _ in cluster_fgs}
 
-        # Calculate weighted average carbon cost
-        if float(total_capacity) > 0:
-            weighted_avg_carbon_cost = sum(
-                fg.carbon_cost_per_unit * float(fg.capacity) for fg, _ in cluster_fgs
-            ) / float(total_capacity)
+        # Calculate weighted average carbon cost (weighted by effective capacity)
+        if total_eff_cap > 0:
+            weighted_avg_carbon_cost = (
+                sum(fg.carbon_cost_per_unit * effective_caps[fg.furnace_group_id] for fg, _ in cluster_fgs)
+                / total_eff_cap
+            )
         else:
-            # Simple average if all have zero capacity
+            # Simple average if all have zero effective capacity
             weighted_avg_carbon_cost = sum(fg.carbon_cost_per_unit for fg, _ in cluster_fgs) / len(cluster_fgs)
 
         # Store constituent locations for disaggregation
@@ -598,8 +747,8 @@ def cluster_furnace_groups(
                 all_metallic_charges.update(fg.energy_vopex_by_input.keys())
 
         weighted_avg_energy_costs: dict[str, float] = {}
-        if float(total_capacity) > 0:
-            # For each metallic charge, calculate capacity-weighted average
+        if total_eff_cap > 0:
+            # For each metallic charge, calculate effective-capacity-weighted average
             for metallic_charge in all_metallic_charges:
                 total_weighted_cost = 0.0
                 total_weight = 0.0
@@ -607,14 +756,14 @@ def cluster_furnace_groups(
                 for fg, _ in cluster_fgs:
                     if hasattr(fg, "energy_vopex_by_input") and metallic_charge in fg.energy_vopex_by_input:
                         cost = fg.energy_vopex_by_input[metallic_charge]
-                        weight = float(fg.capacity)
+                        weight = effective_caps[fg.furnace_group_id]
                         total_weighted_cost += cost * weight
                         total_weight += weight
 
                 if total_weight > 0:
                     weighted_avg_energy_costs[metallic_charge] = total_weighted_cost / total_weight
                 else:
-                    # No FGs in cluster have this metallic charge with non-zero capacity
+                    # No FGs in cluster have this metallic charge with non-zero effective capacity
                     weighted_avg_energy_costs[metallic_charge] = 0.0
         else:
             # Zero capacity: use simple average
@@ -821,7 +970,6 @@ def _solve_batched_transportation_problem(
         - flow_dict: {(source_id, dest_id): volume} for non-zero flows only
         - stats_dict: Statistics about reduction (total_pairs, used_edges, etc.)
     """
-    print(f"Solving transportation problem for {len(source_supplies)} sources → {len(dest_demands)} destinations...")
     # Build bipartite graph for transportation problem
     G = nx.DiGraph()
 
@@ -1335,6 +1483,85 @@ def _reach_based_source_supplies(
     return supplies
 
 
+def _reach_based_joint_supplies(
+    source_fg_supplies: dict[str, float],
+    source_locations: dict[str, "Location"],
+    dest_demands: dict[str, float],
+    dest_locations: dict[str, "Location"],
+    hot_metal_radius: float,
+    strict_radius: bool = True,
+    context_label: str = "",
+) -> dict[str, float]:
+    """Compute reach-based supplies for a joint multi-source hot-metal disaggregation.
+
+    For each destination BOF FG, distributes its demand to reachable source BF FGs
+    weighted by their LP-allocated supply (``LP_volume × cap_share``).  This gives
+    each geographic pocket a supply that exactly equals its local demand, so the
+    per-component normalisation in ``_solve_strict_by_components`` becomes a no-op
+    (scale factor = 1) and no BF FG output is silently inflated or deflated.
+
+    Key properties of the resulting supply vector:
+    - ``sum(supplies) == sum(dest_demands)``  (total preserved)
+    - For every connected component: ``component_supply == component_demand``
+      (pocket-balanced; no normalisation needed)
+    - In the single-component case: per-source-cluster totals equal the original
+      LP allocations exactly (reach-weighted shares cancel to capacity shares).
+    - BF FG actual outgoing = reach-based supply → consistent with iron-ore inputs
+      when ``_compute_effective_shares_by_cluster`` uses the same attribution.
+
+    Args:
+        source_fg_supplies: BF FG → LP_volume × cap_share (initial absolute supply).
+        source_locations: BF FG → Location.
+        dest_demands: BOF FG → effective_share × total LP hot_metal (target demand).
+        dest_locations: BOF FG → Location.
+        hot_metal_radius: km; pairs beyond this distance are considered unreachable.
+        strict_radius: If True, raise ``RuntimeError`` when a destination has no
+            reachable source.  If False, silently drop the demand.
+        context_label: Optional label included in error messages.
+
+    Returns:
+        BF FG → reach-based supply (sums to total demand).
+
+    Raises:
+        RuntimeError: When ``strict_radius=True`` and a destination has no in-radius
+            source FG.
+    """
+    supplies: dict[str, float] = {sid: 0.0 for sid in source_fg_supplies}
+
+    for did, demand in dest_demands.items():
+        dloc = dest_locations.get(did)
+        reaching: list[tuple[str, float]] = []  # (source_fg_id, supply_weight)
+
+        for sid, fg_supply in source_fg_supplies.items():
+            sloc = source_locations.get(sid)
+            if sloc is None or dloc is None:
+                reaching.append((sid, fg_supply))
+            elif _calculate_distance_km(sloc, dloc) <= hot_metal_radius:
+                reaching.append((sid, fg_supply))
+
+        if not reaching:
+            if strict_radius:
+                raise RuntimeError(
+                    f"[DISAGGREGATION] Reach-based joint supplies: dest FG {did} "
+                    f"has no reachable source FG within {hot_metal_radius:.0f} km"
+                    f"{f' ({context_label})' if context_label else ''}."
+                )
+            # Non-strict: silently drop demand (caller handles the gap).
+            continue
+
+        total_weight = sum(w for _, w in reaching)
+        if total_weight <= 0:
+            # All reaching sources have zero supply — split equally
+            per_source = demand / len(reaching)
+            for sid, _ in reaching:
+                supplies[sid] += per_source
+        else:
+            for sid, weight in reaching:
+                supplies[sid] += demand * (weight / total_weight)
+
+    return supplies
+
+
 def _solve_strict_by_components(
     source_supplies: dict[str, float],
     dest_demands: dict[str, float],
@@ -1705,6 +1932,14 @@ def _compute_effective_shares_by_cluster(
 
     closely_allocated = set(config.closely_allocated_products)
 
+    # Separate strict hot-metal flows (need joint reach-based attribution) from all others.
+    # For non-strict flows the solver uses cap-share supply, so cap-share attribution here
+    # stays consistent.  For strict flows (e.g. hot_metal → BOF with ≥70% min-constraint),
+    # the joint transportation problem uses reach-based supplies so each geographic pocket
+    # is self-balancing.  The source effective-shares computed here must mirror that exactly
+    # so that BF FG iron-ore inputs (Case 3) match actual hot-metal output.
+    joint_strict_groups: dict[tuple[str, str], list] = {}  # (to_id, commodity_name) → flows
+
     for from_pc, to_pc, commodity, volume in case4_allocs:
         src_cluster_id = from_pc.name
         dst_cluster_id = to_pc.name
@@ -1713,9 +1948,39 @@ def _compute_effective_shares_by_cluster(
         from_mfg = meta_fg_by_id[src_cluster_id]
         to_mfg = meta_fg_by_id[dst_cluster_id]
         clusters_with_outgoing.add(src_cluster_id)
-        per_fg_out = per_cluster_fg_out[src_cluster_id]
 
-        # Filter destination to valid FGs (same filter as case-3 / case-4 use downstream)
+        is_hot = commodity.name in closely_allocated
+        is_strict = is_hot and _destination_has_min_constraint_for_commodity(to_mfg, commodity, aggregated_constraints)
+
+        if is_strict:
+            key = (dst_cluster_id, commodity.name)
+            joint_strict_groups.setdefault(key, []).append((from_pc, to_pc, commodity, volume))
+        else:
+            # Cold / non-strict hot: cap-share attribution mirrors what the solver does.
+            per_fg_out = per_cluster_fg_out[src_cluster_id]
+            for sid, cap_share in from_mfg.capacity_shares.items():
+                per_fg_out[sid] += volume * cap_share
+
+    # For each joint strict group, compute reach-based attribution across all source clusters.
+    # This mirrors _reach_based_joint_supplies exactly so effective_shares and actual flows
+    # are always consistent — pocket supply == pocket demand, no component normalisation.
+    for (to_meta_fg_id, commodity_name), group_flows in joint_strict_groups.items():
+        to_mfg = meta_fg_by_id[to_meta_fg_id]
+        total_volume = sum(v for _, _, _, v in group_flows)
+
+        # Build joint source supplies (LP × cap_share for each BF FG)
+        joint_source_supplies: dict[str, float] = {}
+        joint_source_locations_local: dict[str, Location] = {}
+        fg_to_src_cluster: dict[str, str] = {}
+
+        for from_pc, _, _, vol in group_flows:
+            from_mfg = meta_fg_by_id[from_pc.name]
+            for fg_id, cap_share in from_mfg.capacity_shares.items():
+                joint_source_supplies[fg_id] = joint_source_supplies.get(fg_id, 0.0) + vol * cap_share
+                joint_source_locations_local[fg_id] = from_mfg.constituent_locations[fg_id]
+                fg_to_src_cluster[fg_id] = from_pc.name
+
+        # Build destination demands (effective_share × total LP volume for each BOF FG)
         valid_dest = {
             fg_id: share
             for fg_id, share in to_mfg.capacity_shares.items()
@@ -1727,41 +1992,34 @@ def _compute_effective_shares_by_cluster(
         if total_valid < 0.99:
             valid_dest = {fg_id: s / total_valid for fg_id, s in valid_dest.items()}
 
-        is_hot = commodity.name in closely_allocated
-        # Only use reach-based attribution when the destination has a min-constraint
-        # (strict_radius=True). For non-strict hot flows the solver uses proportional
-        # supply, so effective shares must also be proportional to stay consistent.
-        is_strict = is_hot and _destination_has_min_constraint_for_commodity(to_mfg, commodity, aggregated_constraints)
+        joint_dest_demands_local = {fg_id: total_volume * share for fg_id, share in valid_dest.items()}
+        joint_dest_locations_local = {fg_id: to_mfg.constituent_locations[fg_id] for fg_id in valid_dest}
 
-        if is_strict:
-            # Reach-based: each dest's demand goes to reaching sources, weighted by capacity share.
-            # Mirrors the supply-side logic in _solve_transportation_problem (strict path).
-            for did, dshare in valid_dest.items():
-                d_demand = volume * dshare
-                dloc = to_mfg.constituent_locations.get(did)
-                reaching: list[tuple[str, float]] = []
+        # Reach-based attribution: distribute each BOF FG's demand to reachable BF FGs
+        # weighted by their LP supply.  Falls back to cap-share if a BOF FG is unreachable.
+        try:
+            joint_reach_supplies = _reach_based_joint_supplies(
+                source_fg_supplies=joint_source_supplies,
+                source_locations=joint_source_locations_local,
+                dest_demands=joint_dest_demands_local,
+                dest_locations=joint_dest_locations_local,
+                hot_metal_radius=config.hot_metal_radius,
+                strict_radius=True,
+                context_label=f"{commodity_name} → {to_meta_fg_id} (effective-shares)",
+            )
+        except RuntimeError:
+            # Fallback: cap-share attribution (should not normally happen after Part 1 fix)
+            for from_pc, _, _, vol in group_flows:
+                from_mfg = meta_fg_by_id[from_pc.name]
+                per_fg_out = per_cluster_fg_out[from_pc.name]
                 for sid, cap_share in from_mfg.capacity_shares.items():
-                    sloc = from_mfg.constituent_locations.get(sid)
-                    if sloc is None or dloc is None:
-                        reaching.append((sid, cap_share))
-                    elif _calculate_distance_km(sloc, dloc) <= config.hot_metal_radius:
-                        reaching.append((sid, cap_share))
-                if not reaching:
-                    continue
-                total_cap = sum(c for _, c in reaching)
-                if total_cap <= 0:
-                    per_source = d_demand / len(reaching)
-                    for sid, _ in reaching:
-                        per_fg_out[sid] += per_source
-                else:
-                    for sid, cap_share in reaching:
-                        per_fg_out[sid] += d_demand * (cap_share / total_cap)
-        else:
-            # Cold commodity or non-strict hot: capacity-share attribution.
-            # Non-strict hot flows use proportional supply in the solver, so we must
-            # use capacity shares here too to keep incoming/outgoing shares consistent.
-            for sid, cap_share in from_mfg.capacity_shares.items():
-                per_fg_out[sid] += volume * cap_share
+                    per_fg_out[sid] += vol * cap_share
+            continue
+
+        # Accumulate reach-based supply into per-cluster attribution
+        for fg_id, supply in joint_reach_supplies.items():
+            src_cluster = fg_to_src_cluster[fg_id]
+            per_cluster_fg_out[src_cluster][fg_id] = per_cluster_fg_out[src_cluster].get(fg_id, 0.0) + supply
 
     # Include Case 2 outgoing flows (cluster → demand center).
     # These are always capacity-share attributed (no radius constraint). An FG that is
@@ -2184,12 +2442,232 @@ def disaggregate_allocations(
 
             disaggregated_allocs[(supplier_pc, fg_pc, substituted_commodity)] = flow_volume
 
-    # Case 4: Meta-FG → Meta-FG (individual transportation problems)
+    # Case 4: Meta-FG → Meta-FG
+    #
+    # Strict hot-metal flows (e.g. hot_metal → BOF with ≥70% min-share) are solved as a
+    # *joint* transportation problem per destination BOF cluster: all contributing BF
+    # clusters are merged into one supply side so the solver can freely route each BF FG's
+    # output to the nearest BOF FG.  This guarantees each BOF FG receives exactly
+    # effective_share × total_LP_hot_metal — the amount its effective capacity entitles it
+    # to — regardless of how many BF clusters contributed.
+    #
+    # Everything else (cold commodities, non-strict hot) is solved per-flow as before.
+
+    # Separate flows into joint (strict hot) and individual (everything else).
+    case4_joint_groups: dict[tuple[str, str], list] = {}  # (to_id, commodity_name) → flows
+    case4_individual: list = []
+
     for from_pc, to_pc, commodity, volume in case4_allocs:
+        to_mfg = meta_fg_by_id[to_pc.name]
+        is_hot = commodity.name in config.closely_allocated_products
+        strict = is_hot and _destination_has_min_constraint_for_commodity(to_mfg, commodity, aggregated_constraints)
+        if strict:
+            key = (to_pc.name, commodity.name)
+            case4_joint_groups.setdefault(key, []).append((from_pc, to_pc, commodity, volume))
+        else:
+            case4_individual.append((from_pc, to_pc, commodity, volume))
+
+    logger.info(
+        f"[DISAGGREGATION] Case 4: {len(case4_joint_groups)} joint group(s) "
+        f"(strict hot metal), {len(case4_individual)} individual flow(s)"
+    )
+
+    # --- Joint groups: all BF clusters → one BOF cluster, single transportation problem ---
+    for (to_meta_fg_id, commodity_name), group_flows in case4_joint_groups.items():
+        to_meta_fg = meta_fg_by_id[to_meta_fg_id]
+        commodity = group_flows[0][2]
+        total_lp_volume = sum(v for _, _, _, v in group_flows)
+        n_sources = len(group_flows)
+
+        context_label = (
+            f"{commodity_name} → {to_meta_fg_id} ({to_meta_fg.technology_name}, joint {n_sources} source cluster(s))"
+        )
+
+        logger.info(
+            f"[DISAGGREGATION] Case 4 joint: {n_sources} source cluster(s) → "
+            f"{to_meta_fg_id} ({commodity_name}), total {total_lp_volume:.1f}t"
+        )
+
+        # Supply side (initial): each source BF FG gets LP_volume × cap_share.
+        # Multiple flows from different BF clusters are simply accumulated.
+        # This gives an initial absolute supply per BF FG; it will be redistributed
+        # reach-based below to ensure pocket-balanced supplies for _solve_strict_by_components.
+        initial_source_supplies: dict[str, float] = {}
+        joint_source_locations: dict[str, Location] = {}
+        fg_to_from_meta: dict[str, tuple[str, "ProcessCenter"]] = {}
+
+        for from_pc, _, _, vol in group_flows:
+            from_mfg = meta_fg_by_id[from_pc.name]
+            for fg_id, cap_share in from_mfg.capacity_shares.items():
+                fg_supply = vol * cap_share
+                initial_source_supplies[fg_id] = initial_source_supplies.get(fg_id, 0.0) + fg_supply
+                joint_source_locations[fg_id] = from_mfg.constituent_locations[fg_id]
+                fg_to_from_meta[fg_id] = (from_pc.name, from_pc)
+
+        # Demand side: each BOF FG demands effective_share × total LP volume.
+        to_eff_shares = effective_shares_by_cluster[to_meta_fg_id]
+        valid_dest_fgs = {
+            fg_id: share
+            for fg_id, share in to_eff_shares.items()
+            if _validate_fg_can_receive_allocation(fg_id, plants_repo)
+        }
+        total_valid = sum(valid_dest_fgs.values())
+        if not valid_dest_fgs or total_valid <= 0:
+            logger.error(f"[DISAGGREGATION] Case 4 joint: no valid dest FGs in {to_meta_fg_id}, skipping")
+            continue
+        if total_valid < 0.99:
+            logger.warning(
+                f"[DISAGGREGATION] Case 4 joint: renormalising dest shares in {to_meta_fg_id} "
+                f"(filtered {len(to_eff_shares) - len(valid_dest_fgs)} FG(s))"
+            )
+            valid_dest_fgs = {fg_id: s / total_valid for fg_id, s in valid_dest_fgs.items()}
+
+        joint_dest_demands = {fg_id: total_lp_volume * share for fg_id, share in valid_dest_fgs.items()}
+        joint_dest_locations = {fg_id: to_meta_fg.constituent_locations[fg_id] for fg_id in valid_dest_fgs}
+
+        # Pre-filter BOF FGs that have no reachable BF FG in the contributing source cluster(s).
+        # This happens when a BOF FG's neighbouring BF uses a different reductant (different
+        # cluster key) and the LP routed hot metal only from a different BF cluster, so those
+        # BF FGs are absent from joint_source_locations.  The removed FG's demand is
+        # redistributed to the remaining FGs proportionally to their available headroom
+        # (effective capacity − already-allocated demand), so total LP volume is preserved
+        # and no FG is pushed above its effective capacity.
+        unreachable_dest_fgs: set[str] = set()
+        for fg_id, dloc in joint_dest_locations.items():
+            if dloc is None:
+                continue  # no location data — treated as reachable downstream
+            if not any(
+                sloc is not None and _calculate_distance_km(sloc, dloc) <= config.hot_metal_radius
+                for sloc in joint_source_locations.values()
+            ):
+                unreachable_dest_fgs.add(fg_id)
+
+        if unreachable_dest_fgs:
+            logger.warning(
+                f"[DISAGGREGATION] Case 4 joint: {len(unreachable_dest_fgs)} BOF FG(s) in "
+                f"{to_meta_fg_id} have no reachable BF FG in the contributing source cluster(s) "
+                f"(neighbouring BF likely uses a different reductant). Excluded; demand "
+                f"redistributed to reachable FGs. FG(s): "
+                f"{sorted(unreachable_dest_fgs)[:5]}" + ("..." if len(unreachable_dest_fgs) > 5 else "")
+            )
+            joint_dest_demands = {
+                fg_id: v for fg_id, v in joint_dest_demands.items() if fg_id not in unreachable_dest_fgs
+            }
+            joint_dest_locations = {
+                fg_id: v for fg_id, v in joint_dest_locations.items() if fg_id not in unreachable_dest_fgs
+            }
+            if not joint_dest_demands:
+                logger.error(
+                    f"[DISAGGREGATION] Case 4 joint: all dest FGs in {to_meta_fg_id} are "
+                    f"unreachable from the source cluster — skipping"
+                )
+                continue
+
+            # Redistribute removed demand, capped by each remaining FG's effective capacity.
+            # Effective capacity per FG = capacity_share × cluster total_capacity.
+            overflow = total_lp_volume - sum(joint_dest_demands.values())
+            if overflow > 1.0:
+                fg_eff_caps = {
+                    fg_id: to_meta_fg.capacity_shares.get(fg_id, 0.0) * to_meta_fg.total_capacity
+                    for fg_id in joint_dest_demands
+                }
+                fg_headroom = {
+                    fg_id: max(0.0, fg_eff_caps[fg_id] - joint_dest_demands[fg_id]) for fg_id in joint_dest_demands
+                }
+                total_headroom = sum(fg_headroom.values())
+                if total_headroom >= overflow:
+                    for fg_id in joint_dest_demands:
+                        joint_dest_demands[fg_id] += overflow * (fg_headroom[fg_id] / total_headroom)
+                else:
+                    # Remaining FGs collectively at capacity — fill them up and log shortfall
+                    for fg_id in joint_dest_demands:
+                        joint_dest_demands[fg_id] = fg_eff_caps[fg_id]
+                    unabsorbed = overflow - total_headroom
+                    logger.warning(
+                        f"[DISAGGREGATION] Case 4 joint: {unabsorbed:.1f}t of hot metal in "
+                        f"{to_meta_fg_id} cannot be absorbed (remaining FGs at effective capacity). "
+                        f"LP cluster total is not fully preserved for this group."
+                    )
+
+        # Redistribute initial supplies reach-based so that every geographic pocket is
+        # self-balancing (pocket_supply == pocket_demand).  This makes the per-component
+        # normalisation in _solve_strict_by_components a no-op (scale = 1) and ensures
+        # BF FG actual hot-metal outputs are consistent with their iron-ore BOM inputs.
+        joint_source_supplies = _reach_based_joint_supplies(
+            source_fg_supplies=initial_source_supplies,
+            source_locations=joint_source_locations,
+            dest_demands=joint_dest_demands,
+            dest_locations=joint_dest_locations,
+            hot_metal_radius=config.hot_metal_radius,
+            strict_radius=True,
+            context_label=context_label,
+        )
+
+        # Allocation costs: weighted-average production cost across all source clusters.
+        joint_allocation_costs = None
+        if transport_cost_lookup is not None and wtp_lookup is not None:
+            avg_prod_cost = (
+                sum(meta_fg_by_id[fp.name].weighted_avg_carbon_cost * v for fp, _, _, v in group_flows)
+                / total_lp_volume
+            )
+            source_prod_costs = {fg_id: avg_prod_cost for fg_id in joint_source_supplies}
+            joint_allocation_costs = _compute_allocation_costs(
+                source_ids=list(joint_source_supplies.keys()),
+                dest_ids=list(joint_dest_demands.keys()),
+                source_locations=joint_source_locations,
+                dest_locations=joint_dest_locations,
+                source_production_costs=source_prod_costs,
+                commodity_name=commodity_name.lower(),
+                transport_cost_lookup=transport_cost_lookup,
+                wtp_lookup=wtp_lookup,
+            )
+
+        # Solve joint strict-radius transportation problem.
+        # _solve_strict_by_components decomposes geographically isolated pockets so
+        # integer-flooring artefacts stay local and cross-pocket infeasibility is avoided.
+        joint_flows, stats = _solve_strict_by_components(
+            source_supplies=joint_source_supplies,
+            dest_demands=joint_dest_demands,
+            source_locations=joint_source_locations,
+            dest_locations=joint_dest_locations,
+            commodity=commodity,
+            config=config,
+            allocation_costs=joint_allocation_costs,
+            context_label=context_label,
+        )
+
+        # Track statistics
+        total_potential_edges += stats.get("total_pairs", 0)
+        total_used_edges += stats.get("used_edges", 0)
+        transportation_stats[(f"joint_{commodity_name}", to_meta_fg_id, "")] = stats
+
+        # Build allocations from joint flows.
+        from_eff_shares_cache: dict[str, dict[str, float]] = {}
+        to_eff_shares_full = effective_shares_by_cluster[to_meta_fg_id]
+
+        for (from_fg_id, to_fg_id), flow_volume in joint_flows.items():
+            from_meta_id, from_pc = fg_to_from_meta[from_fg_id]
+            from_mfg = meta_fg_by_id[from_meta_id]
+            if from_meta_id not in from_eff_shares_cache:
+                from_eff_shares_cache[from_meta_id] = effective_shares_by_cluster[from_meta_id]
+            from_eff_share = from_eff_shares_cache[from_meta_id].get(from_fg_id, 0.0)
+            to_eff_share = to_eff_shares_full.get(to_fg_id, 0.0)
+
+            from_fg_pc = create_fg_process_center(from_fg_id, from_mfg, from_eff_share, from_pc.process)
+            to_fg_pc = create_fg_process_center(to_fg_id, to_meta_fg, to_eff_share, group_flows[0][1].process)
+
+            from_loc = from_mfg.constituent_locations[from_fg_id]
+            to_loc = to_meta_fg.constituent_locations[to_fg_id]
+            distance_km = _calculate_distance_km(from_loc, to_loc)
+            substituted_commodity = _substitute_commodity_by_distance(commodity, distance_km, config)
+
+            disaggregated_allocs[(from_fg_pc, to_fg_pc, substituted_commodity)] = flow_volume
+
+    # --- Individual flows: cold commodities and non-strict hot ---
+    for from_pc, to_pc, commodity, volume in case4_individual:
         from_meta_fg = meta_fg_by_id[from_pc.name]
         to_meta_fg = meta_fg_by_id[to_pc.name]
 
-        # Solve transportation problem using min-cost flow
         flows, stats = _solve_transportation_problem(
             from_meta_fg=from_meta_fg,
             to_meta_fg=to_meta_fg,
@@ -2207,19 +2685,14 @@ def disaggregate_allocations(
         total_used_edges += stats["used_edges"]
         transportation_stats[(from_pc.name, to_pc.name, str(commodity))] = stats
 
-        # Create allocations for non-zero flows with commodity substitution.
-        # Use effective shares for per-FG ProcessCenter capacity so it's consistent with
-        # the reach-aware split used to size per-FG supplies/demands in this flow.
         from_eff_shares = effective_shares_by_cluster[from_meta_fg.meta_furnace_group_id]
         to_eff_shares = effective_shares_by_cluster[to_meta_fg.meta_furnace_group_id]
         for (from_fg_id, to_fg_id), flow_volume in flows.items():
-            # Create ProcessCenters for this pair
             from_fg_pc = create_fg_process_center(
                 from_fg_id, from_meta_fg, from_eff_shares[from_fg_id], from_pc.process
             )
             to_fg_pc = create_fg_process_center(to_fg_id, to_meta_fg, to_eff_shares[to_fg_id], to_pc.process)
 
-            # Calculate distance and substitute commodity if close enough
             from_fg_location = from_meta_fg.constituent_locations[from_fg_id]
             to_fg_location = to_meta_fg.constituent_locations[to_fg_id]
             distance_km = _calculate_distance_km(from_fg_location, to_fg_location)
