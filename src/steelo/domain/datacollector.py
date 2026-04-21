@@ -124,29 +124,26 @@ class DataCollector:
             if total_cap > 0:
                 result["scrap"] = total_cost / total_cap
 
-        # Weighted-average iron production cost across active iron-producing furnace groups
-        active_statuses = self.env.config.active_statuses
-        total_cap = 0.0
-        total_cost = 0.0
-        for pg in self.plant_groups:
-            for plant in pg.plants:
-                if plant is None:
+        # Weighted-average iron material cost from avg_boms:
+        # for every technology, find any iron-product material and accumulate
+        # share-weighted unit costs across all (tech, iron_material) entries.
+        from steelo.domain.constants import IRON_PRODUCTS
+
+        iron_product_set = set(IRON_PRODUCTS)
+        avg_boms = getattr(self.env, "avg_boms", {})
+        total_share = 0.0
+        total_weighted_cost = 0.0
+        for _tech, materials in avg_boms.items():
+            for mat_name, mat_data in materials.items():
+                if mat_name.lower() not in iron_product_set:
                     continue
-                for fg in plant.furnace_groups:
-                    if getattr(getattr(fg, "technology", None), "product", None) != Commodities.IRON.value:
-                        continue
-                    if fg.status.lower() not in active_statuses or float(fg.capacity) == 0:
-                        continue
-                    try:
-                        cap = float(fg.capacity) * fg.utilization_rate
-                        cost = fg.unit_production_cost
-                    except (AttributeError, ValueError):
-                        continue
-                    if cap > 0 and cost is not None:
-                        total_cap += cap
-                        total_cost += cap * cost
-        if total_cap > 0:
-            result["iron_weighted_avg"] = total_cost / total_cap
+                share = mat_data.get("input_share_pct", 0.0)
+                cost = mat_data.get("unit_cost")
+                if share > 0 and cost is not None:
+                    total_share += share
+                    total_weighted_cost += share * float(cost)
+        if total_share > 0:
+            result["iron_weighted_avg"] = total_weighted_cost / total_share
 
         return result
 
