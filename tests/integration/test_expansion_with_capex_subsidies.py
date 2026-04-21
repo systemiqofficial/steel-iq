@@ -24,6 +24,7 @@ def plant_with_location():
     )
     plant = get_plant(furnace_groups=[fg], plant_id="plant_test")
     plant.location.iso3 = "USA"
+    plant.balance = 1_000_000.0  # Sufficient to afford expansion (capacity=1000, max capex=600/t)
     return plant
 
 

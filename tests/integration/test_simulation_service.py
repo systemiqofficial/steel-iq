@@ -345,7 +345,7 @@ def test_simulation_service_with_plant_agent_events(
             bus.env.avg_boms[tech] = {}
             for material, share in bus.env.default_metallic_charge_per_technology[tech].items():
                 bus.env.avg_boms[tech][material] = {
-                    "demand_share_pct": share * 100,  # Convert to percentage
+                    "input_share_pct": share,
                     "unit_cost": bus.env.average_material_cost.get(material.lower(), {}).get("average_cost", 100.0),
                 }
 

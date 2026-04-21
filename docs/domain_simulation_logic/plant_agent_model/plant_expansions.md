@@ -18,12 +18,15 @@ This function serves as the central expansion decision engine for plant groups, 
 ```mermaid
 graph TD
     A[Start Expansion Evaluation] --> B[Evaluate All Expansion Options]
-    B --> C{Any Options Available?}
+    B -->|Per plant, per tech| B1{Plant balance ≥ equity needed?}
+    B1 -->|No| B2[Skip this plant-tech combo]
+    B1 -->|Yes| B3[Compute NPV]
+    B3 --> C{Any Options Available?}
     C -->|No| D[Return None]
     C -->|Yes| E[Select Highest NPV Option]
     E --> F{NPV > 0?}
     F -->|No| D
-    F -->|Yes| G[Check Balance Sufficiency]
+    F -->|Yes| G[Check Group Balance Sufficiency]
     G --> H{Sufficient Balance?}
     H -->|No| D
     H -->|Yes| I[Probabilistic Acceptance]
@@ -54,6 +57,7 @@ graph TD
 - **Purpose**: Calculate NPV for all possible technology expansions across all plants
 - **Actions**:
   - Call `evaluate_expansion_options()` to get NPV for each plant-technology combination
+  - **Per-plant affordability filter**: For each plant-technology combination, check that the plant's individual balance can cover `capacity × capex` before computing NPV. Plants that cannot afford a given technology are skipped for that technology (but may still be considered for cheaper alternatives).
   - Consider regional CAPEX, subsidies, dynamic feedstocks
   - Pass all subsidy information for proper NPV calculation
 - **Decision**: Which technologies can be built at which plants?
@@ -223,11 +227,11 @@ Returns either:
 
 ## Important Notes
 
-1. **Balance Management**:
-   - Balance check happens in Stage 6 but deduction occurs elsewhere
-   - The command handler deducts equity from FurnaceGroup
-   - FurnaceGroup then updates Plant balance
-   - PlantGroup.total_balance is computed from Plant balances
+1. **Balance Management and the Group vs Plant Asymmetry**:
+   - Stage 6 checks the **plant group's** pooled `total_balance`, but the equity deduction lands on the **individual plant** that receives the new furnace group (via `generate_new_furnace`). No balance is redistributed between plants in a group.
+   - Without mitigation, a plant with a small balance could be selected (best NPV), have a large equity amount deducted, go deeply negative, and have all its furnace group strategies (renovation, technology switches) frozen until it recovers through operational profit.
+   - **Mitigation (per-plant affordability filter)**: In Stage 2, each plant-technology combination is checked against the plant's individual balance (`plant.balance >= capacity * capex`). Plants that cannot afford a technology are excluded from NPV evaluation for that technology. This ensures the winning plant can absorb the cost without going negative.
+   - **Limitation**: The cost is still borne by a single plant rather than shared across the group. A more realistic approach would deduct equity proportionally from all plants in the group, but this is not currently implemented.
 
 2. **Capacity Limits**:
    - Separate limits for iron and steel products
@@ -253,3 +257,11 @@ Returns either:
    - Debug level: Detailed stage-by-stage progress
    - Warning level: Capacity limit violations and errors
    - Info level: Successful expansion approvals
+
+7. **Per-ISO3 Indi Plant Groups**:
+   - New plants created by the GEO module start in a master "indi" plant group (the incubator).
+   - While in "considered" or "announced" status, plants remain in the master group for dynamic cost updates and status transitions.
+   - When a plant transitions to "construction" status, it is moved to a per-country group (`indi_{iso3}`, e.g. `indi_CHN`, `indi_AUS`). These groups are created lazily on first use.
+   - Since `evaluate_expansion` runs once per plant group, this allows each country to independently expand its new plants (one expansion per country per year, rather than one globally).
+   - The construction-to-operating transition (`simulation.py`) iterates all plants regardless of plant group, so moved plants are unaffected.
+   - Plants in indi groups are identified by `parent_gem_id.startswith("indi")` rather than an exact match.

@@ -191,10 +191,18 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
     """
     with uow:
         plant = uow.plants.get(cmd.plant_id)
+        # TODO(3h): BOM uses plant.energy_costs (last FG's subsidised costs), not the new
+        # tech's. Impact zero during construction (0% utilisation); refreshed when operational.
+        avg_bom_result = env.get_bom_from_avg_boms(
+            plant.energy_costs or {},
+            cmd.technology_name,
+            cmd.capacity,
+            env.most_common_reductant_by_tech.get(cmd.technology_name, None),
+        )
         new_furnace = plant.generate_new_furnace(
             technology_name=cmd.technology_name,
             product=cmd.product,
-            capacity=int(cmd.capacity),
+            capacity=cmd.capacity,
             capex=cmd.capex,
             capex_no_subsidy=cmd.capex_no_subsidy,
             cost_of_debt=cmd.cost_of_debt,
@@ -209,20 +217,8 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
                 env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
             ),
             equity_needed=cmd.equity_needed,
-            # TODO(3h): BOM uses plant.energy_costs (last FG's subsidised costs), not the new
-            # tech's. Impact zero during construction (0% utilisation); refreshed when operational.
-            bill_of_materials=env.get_bom_from_avg_boms(
-                plant.energy_costs or {},
-                cmd.technology_name,
-                cmd.capacity,
-                env.most_common_reductant_by_tech.get(cmd.technology_name, None),
-            )[0],
-            chosen_reductant=env.get_bom_from_avg_boms(
-                plant.energy_costs or {},
-                cmd.technology_name,
-                cmd.capacity,
-                env.most_common_reductant_by_tech.get(cmd.technology_name, None),
-            )[2],
+            bill_of_materials=avg_bom_result[0],
+            chosen_reductant=avg_bom_result[2],
             disposal_cost_outputs=env.config.disposal_cost_outputs,
         )
         # Set the subsidies on the new furnace group
@@ -234,7 +230,7 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
             new_furnace.furnace_group_id,
             cmd.plant_id,
             technology_name=cmd.technology_name,
-            capacity=int(cmd.capacity),
+            capacity=cmd.capacity,
             is_new_plant=False,  # This is an expansion to an existing plant
         )
         uow.commit()
@@ -646,7 +642,7 @@ def update_status_of_furnace_group(cmd: commands.UpdateFurnaceGroupStatus, uow: 
                         furnace_group_id=fg.furnace_group_id,
                         plant_id=plant.plant_id,
                         technology_name=fg.technology.name,
-                        capacity=int(fg.capacity),
+                        capacity=fg.capacity,
                         is_new_plant=True,  # This is a new plant being constructed
                     )
 
@@ -715,10 +711,10 @@ def load_checkpoint_handler(
 
 EVENT_HANDLERS: dict[type[events.Event], list[Callable]] = {
     events.FurnaceGroupClosed: [update_cost_curve],
-    events.FurnaceGroupTechChanged: [update_cost_curve, update_capacity_buildout],
+    events.FurnaceGroupTechChanged: [update_cost_curve],
     events.FurnaceGroupRenovated: [update_cost_curve],
     events.FurnaceGroupAdded: [update_future_cost_curve, update_capacity_buildout],
-    events.SinteringCapacityAdded: [update_future_cost_curve, update_capacity_buildout],
+    events.SinteringCapacityAdded: [update_future_cost_curve],
     events.SteelAllocationsCalculated: [update_furnace_utilization_rates, update_cost_curve, update_future_cost_curve],
     events.IterationOver: [finalise_iteration, update_cost_curve],
     events.SaveCheckpoint: [save_checkpoint_handler],
