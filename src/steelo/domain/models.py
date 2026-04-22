@@ -2846,6 +2846,9 @@ class FurnaceGroup:
         dynamic_business_cases: dict[str, list[PrimaryFeedstock]],
         carbon_costs_for_iso3: dict[Year, float],
         status_stats: Counter | None = None,
+        get_co2_headroom: Callable[[str, int, float], float] | None = None,
+        get_co2_need: Callable[["Technology", float, str], float] | None = None,
+        co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
     ) -> commands.Command | None:
         """
         Tracks whether an identified business opportunity remains interesting over time to avoid making
@@ -3022,6 +3025,42 @@ class FurnaceGroup:
             if all(npv > 0 for npv in latest_npvs):
                 if status_stats is not None:
                     status_stats["npv_positive_window"] += 1
+
+                # G2 CO2 storage gate: block considered->announced if country headroom below need.
+                # Blocked opportunity stays considered (no TTL, no discard) - retries next year.
+                if get_co2_headroom is not None and get_co2_need is not None:
+                    own_need = get_co2_need(self.technology, float(self.capacity), self.chosen_reductant or "")
+                    if own_need > 0.0:
+                        lookup_year = int(year) + 1 + construction_time
+                        headroom = get_co2_headroom(location.iso3, lookup_year, 0.0)
+                        firm, reserved, limit = (
+                            co2_storage_diagnostics(location.iso3, lookup_year)
+                            if co2_storage_diagnostics is not None
+                            else (0.0, 0.0, 0.0)
+                        )
+                        if headroom < own_need:
+                            logger.info(
+                                f"[CO2 GATE] gate=G2 decision=blocked iso3={location.iso3} "
+                                f"year={int(year)} lookup_year={lookup_year} "
+                                f"tech={self.technology.name} reductant={self.chosen_reductant} "
+                                f"fg_id={self.furnace_group_id} plant_id={self.get_furnace_plant_id()} "
+                                f"need={own_need:.0f} firm={firm:.0f} reserved={reserved:.0f} "
+                                f"own_contribution=0 limit={limit:.0f} "
+                                f"headroom={headroom:.0f} discarded=false"
+                            )
+                            if status_stats is not None:
+                                status_stats["co2_storage_blocked"] += 1
+                            return None  # stay considered
+                        logger.debug(
+                            f"[CO2 GATE] gate=G2 decision=passed iso3={location.iso3} "
+                            f"year={int(year)} lookup_year={lookup_year} "
+                            f"tech={self.technology.name} reductant={self.chosen_reductant} "
+                            f"fg_id={self.furnace_group_id} plant_id={self.get_furnace_plant_id()} "
+                            f"need={own_need:.0f} firm={firm:.0f} reserved={reserved:.0f} "
+                            f"own_contribution=0 limit={limit:.0f} "
+                            f"headroom={headroom:.0f} discarded=false"
+                        )
+
                 announcement_draw = random.random()
                 if announcement_draw < probability_of_announcement:
                     if status_stats is not None:
@@ -5626,7 +5665,9 @@ class PlantGroup:
         energy_subsidies: dict[str, dict[str, dict[str, list[Subsidy]]]] = {},  # carrier -> iso3 -> tech -> [Subsidy]
         environment_most_common_reductant: dict[str, str] = {},
         disposal_cost_outputs: frozenset[str] | None = None,
-        countries_with_co2_storage: set[str] = set(),
+        get_co2_headroom: Callable[[str, int, float], float] | None = None,
+        get_co2_need_by_name: Callable[[str, float, str], float] | None = None,
+        co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
     ) -> commands.Command:
         """
         Identifies new business opportunities for plants at given locations with specific technologies.
@@ -5784,12 +5825,36 @@ class PlantGroup:
             dynamic_business_cases=dynamic_feedstocks,
             disposal_cost_outputs=disposal_cost_outputs,
         )
-        # Skip CCS technologies for countries without CO2 storage capacity
-        for product, sites in npv_dict.items():
-            for site_id in list(sites.keys()):
-                iso3 = site_id[2]
-                if iso3 not in countries_with_co2_storage:
-                    sites[site_id] = {t: n for t, n in sites[site_id].items() if "ccs" not in t.lower()}
+        # G1 CO2 storage gate: drop CCS techs per (iso3, tech) when annual need exceeds
+        # country headroom at the opportunity's operating-start lookup year.
+        if get_co2_headroom is not None and get_co2_need_by_name is not None:
+            lookup_year = int(target_year) + construction_time
+            dropped_by_iso3: dict[str, set[str]] = {}
+            for product, sites in npv_dict.items():
+                for site_id in list(sites.keys()):
+                    iso3 = site_id[2]
+                    kept_techs: dict[str, float] = {}
+                    for tech, npv in sites[site_id].items():
+                        reductant = environment_most_common_reductant.get(tech, "")
+                        need = get_co2_need_by_name(tech, float(steel_plant_capacity), reductant)
+                        if need > 0.0:
+                            headroom = get_co2_headroom(iso3, lookup_year, 0.0)
+                            if headroom < need:
+                                dropped_by_iso3.setdefault(iso3, set()).add(tech)
+                                continue
+                        kept_techs[tech] = npv
+                    sites[site_id] = kept_techs
+
+            if dropped_by_iso3 and co2_storage_diagnostics is not None:
+                for iso3, dropped_techs in sorted(dropped_by_iso3.items()):
+                    _firm, _reserved, limit = co2_storage_diagnostics(iso3, lookup_year)
+                    headroom = get_co2_headroom(iso3, lookup_year, 0.0)
+                    logger.info(
+                        f"[CO2 GATE] gate=G1 iso3={iso3} year={int(current_year)} "
+                        f"lookup_year={lookup_year} headroom={headroom:.0f} limit={limit:.0f} "
+                        f"dropped_ccs_techs={','.join(sorted(dropped_techs))} "
+                        f"dropped_count={len(dropped_techs)}"
+                    )
 
         npv_counts, npv_total = _count_entries(npv_dict)
         candidate_stats["npv_pairs_total"] = npv_total
@@ -6250,6 +6315,9 @@ class PlantGroup:
                         dynamic_business_cases=dynamic_business_cases,
                         carbon_costs_for_iso3=carbon_costs_for_iso3,
                         status_stats=status_stats,
+                        get_co2_headroom=get_co2_headroom,
+                        get_co2_need=get_co2_need,
+                        co2_storage_diagnostics=co2_storage_diagnostics,
                     )
                     if update_status_cmd:
                         status_change_cmds.append(update_status_cmd)
@@ -9485,16 +9553,6 @@ class Environment:
         self.average_material_cost = feedstocks
         return feedstocks
 
-    @property
-    def countries_with_co2_storage(self) -> set[str]:
-        """Returns ISO3 codes of countries that have CO2 storage capacity > 0 in any year."""
-        countries: set[str] = set()
-        for constraint in self.secondary_feedstock_constraints:
-            if constraint.secondary_feedstock_name == "co2_stored":
-                if any(v > 0 for v in constraint.maximum_constraint_per_year.values()):
-                    countries.update(constraint.region_iso3s)
-        return countries
-
     def get_co2_need(self, tech: "Technology", capacity: float, reductant: str) -> float:
         """Annual tCO2 that a CCS furnace group of the given tech would add to storage.
 
@@ -9635,7 +9693,9 @@ class Environment:
                 self.co2_storage_reserved[iso3] = self.co2_storage_reserved.get(iso3, 0.0) + d * need
                 continue
 
-        for c in sorted(set(self.co2_storage_firm) | set(self.co2_storage_reserved)):
+        countries_with_state = set(self.co2_storage_firm) | set(self.co2_storage_reserved)
+        logger.debug(f"[CO2 SCAN] year={self.year} countries_with_state={len(countries_with_state)}")
+        for c in sorted(countries_with_state):
             logger.debug(
                 f"[CO2 SCAN] year={self.year} iso3={c} "
                 f"firm={self.co2_storage_firm.get(c, 0.0):,.0f} "

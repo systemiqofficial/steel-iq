@@ -14,8 +14,11 @@ function_overrides:
   # Suppress noisy functions
   calculate_unit_production_cost: WARNING
   extract_price_from_costcurve: WARNING
-  # Enable scan counter debug output
+  # CO2 storage gate debug output (scan + single-decision gate passes at DEBUG).
+  # P2/P3/G1 aggregated drop lines are already INFO; P1/G2 drops are INFO, passes DEBUG.
   scan_co2_storage_counters: DEBUG
+  convert_business_opportunity_into_actual_project: DEBUG
+  track_business_opportunities: DEBUG
 
 external:
   pyomo: ERROR

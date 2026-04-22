@@ -314,7 +314,9 @@ class GeospatialModel:
                 energy_subsidies=bus.env.energy_subsidies,
                 environment_most_common_reductant=bus.env.most_common_reductant_by_tech,
                 disposal_cost_outputs=bus.env.config.disposal_cost_outputs,
-                countries_with_co2_storage=bus.env.countries_with_co2_storage,
+                get_co2_headroom=bus.env.get_co2_headroom,
+                get_co2_need_by_name=bus.env.get_co2_need_by_name,
+                co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
             )
         )
         step_time = time.time() - step_start
