@@ -3051,15 +3051,6 @@ class FurnaceGroup:
                             if status_stats is not None:
                                 status_stats["co2_storage_blocked"] += 1
                             return None  # stay considered
-                        logger.debug(
-                            f"[CO2 GATE] gate=G2 decision=passed iso3={location.iso3} "
-                            f"year={int(year)} lookup_year={lookup_year} "
-                            f"tech={self.technology.name} reductant={self.chosen_reductant} "
-                            f"fg_id={self.furnace_group_id} plant_id={self.get_furnace_plant_id()} "
-                            f"need={own_need:.0f} firm={firm:.0f} reserved={reserved:.0f} "
-                            f"own_contribution=0 limit={limit:.0f} "
-                            f"headroom={headroom:.0f} discarded=false"
-                        )
 
                 announcement_draw = random.random()
                 if announcement_draw < probability_of_announcement:
@@ -3204,15 +3195,6 @@ class FurnaceGroup:
                         plant_id=self.furnace_group_id,
                         new_status="discarded",
                     )
-                logger.debug(
-                    f"[CO2 GATE] gate=P1 decision=passed iso3={location.iso3} "
-                    f"year={int(self.lifetime.current)} lookup_year={lookup_year} "
-                    f"tech={self.technology.name} reductant={self.chosen_reductant} "
-                    f"fg_id={self.furnace_group_id} plant_id={self.get_furnace_plant_id()} "
-                    f"need={own_need:.0f} firm={firm:.0f} reserved={reserved:.0f} "
-                    f"own_contribution={own_contribution:.0f} limit={limit:.0f} "
-                    f"headroom={headroom:.0f} discarded=false"
-                )
 
         # Stay in announced state if probability of construction not met
         construction_draw = random.random()
@@ -9694,12 +9676,15 @@ class Environment:
                 continue
 
         countries_with_state = set(self.co2_storage_firm) | set(self.co2_storage_reserved)
-        logger.debug(f"[CO2 SCAN] year={self.year} countries_with_state={len(countries_with_state)}")
         for c in sorted(countries_with_state):
-            logger.debug(
+            firm = self.co2_storage_firm.get(c, 0.0)
+            reserved = self.co2_storage_reserved.get(c, 0.0)
+            limit = self._co2_storage_limit_for_year(c, int(self.year))
+            utilisation_pct = 100.0 * (firm + reserved) / limit if limit > 0 else float("nan")
+            logger.info(
                 f"[CO2 SCAN] year={self.year} iso3={c} "
-                f"firm={self.co2_storage_firm.get(c, 0.0):,.0f} "
-                f"reserved={self.co2_storage_reserved.get(c, 0.0):,.0f}"
+                f"firm={firm:,.0f} reserved={reserved:,.0f} limit={limit:,.0f} "
+                f"utilisation_pct={utilisation_pct:.1f}"
             )
 
     def get_co2_headroom(self, iso3: str, year: int, own_reserved_contribution: float = 0.0) -> float:

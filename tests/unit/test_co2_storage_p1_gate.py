@@ -162,7 +162,7 @@ def test_p1_blocks_and_discards_when_headroom_insufficient(caplog):
 
 
 def test_p1_passes_when_headroom_covers_need(caplog):
-    """headroom >= own_need → no command (falls through to probability draw); DEBUG pass log."""
+    """headroom >= own_need → no command (falls through to probability draw); no gate log."""
     fg = _make_announced_fg(current_year=2030)
     get_co2_headroom, get_co2_need, co2_storage_diagnostics, _ = _build_callables(
         headroom=10_000.0,
@@ -183,15 +183,8 @@ def test_p1_passes_when_headroom_covers_need(caplog):
     assert isinstance(cmd, commands.UpdateFurnaceGroupStatus)
     assert cmd.new_status == "construction"
 
-    # Spec format: passes emit at DEBUG, not INFO
-    debug_lines = [r for r in caplog.records if "[CO2 GATE]" in r.getMessage() and r.levelno == logging.DEBUG]
-    assert len(debug_lines) == 1
-    msg = debug_lines[0].getMessage()
-    assert "decision=passed" in msg
-    assert "discarded=false" in msg
-
-    info_gate_lines = [r for r in caplog.records if "[CO2 GATE]" in r.getMessage() and r.levelno == logging.INFO]
-    assert info_gate_lines == []
+    # Passes emit no [CO2 GATE] line (only blocks are logged, at INFO).
+    assert not any("[CO2 GATE]" in r.getMessage() for r in caplog.records)
 
 
 def test_p1_exempts_own_reserved_contribution():
