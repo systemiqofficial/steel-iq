@@ -964,6 +964,26 @@ class PrimaryFeedstock:
         return return_dict
 
 
+def co2_stored_per_tonne_from_feedstocks(dynamic_business_case: list[PrimaryFeedstock] | None, reductant: str) -> float:
+    """tCO2 stored per tonne of product for a technology's BOM.
+
+    Filters feedstocks to the given reductant and returns the max co2_stored across the
+    remaining feedstocks (metallic-charge alternatives). Falls back to max across all
+    feedstocks when the reductant is absent — a conservative upper bound. Returns 0.0
+    when the BOM is empty/None or carries no co2_stored vector.
+
+    Reductant matching is case- and separator-sensitive by design (BOM-raw casing, e.g.
+    ``Coke+PCI``). Any normalisation on either side would silently fall through to the
+    all-reductants fallback and over-block.
+    """
+    if not dynamic_business_case:
+        return 0.0
+    matching = [pf for pf in dynamic_business_case if pf.reductant == reductant]
+    if not matching:
+        matching = dynamic_business_case
+    return max((pf.carbon_outputs.get("co2_stored", 0.0) for pf in matching), default=0.0)
+
+
 @dataclass
 class Technology:
     name: str
@@ -998,6 +1018,9 @@ class Technology:
         if self.dynamic_business_case is None:
             self.dynamic_business_case = []
         self.dynamic_business_case.append(primary_feedstock)
+
+    def co2_stored_per_tonne_product(self, reductant: str) -> float:
+        return co2_stored_per_tonne_from_feedstocks(self.dynamic_business_case, reductant)
 
     def set_product(self, technology_to_product_map: dict[str, str], primary_products: list[str] | None = None) -> None:
         """
@@ -6740,6 +6763,8 @@ class Environment:
         self.added_capacity: dict[str, float] = {}
         self.switched_capacity: dict[str, float] = {}  # Track technology switches per year
         self.new_plant_capacity: dict[str, float] = {}  # Track capacity from new plants only (separate from expansions)
+        self.co2_storage_firm: dict[str, float] = {}  # iso3 -> tCO2/yr (operating + construction CCS)
+        self.co2_storage_reserved: dict[str, float] = {}  # iso3 -> tCO2/yr (announced CCS, discounted)
         self.capacity_snapshot_by_product: dict[str, float] = {}
         self._diag_bof_baseline_2049: dict[str, dict[str, float]] | None = None
         self._diag_bof_sample_count: int = 0
@@ -9364,6 +9389,163 @@ class Environment:
                 if any(v > 0 for v in constraint.maximum_constraint_per_year.values()):
                     countries.update(constraint.region_iso3s)
         return countries
+
+    def get_co2_need(self, tech: "Technology", capacity: float, reductant: str) -> float:
+        """Annual tCO2 that a CCS furnace group of the given tech would add to storage.
+
+        The single source of truth for need computation. All gates and counter writers
+        must use this helper; inline ``co2_per_t * capacity * capacity_limit`` risks
+        drift between the year-start scan and intra-year handler updates.
+
+        Args:
+            tech: Technology object carrying the ``dynamic_business_case`` BOM.
+            capacity: Nameplate annual tonnes of product (``fg.capacity``).
+            reductant: BOM-raw reductant string (case-preserved). See docstring on
+                ``co2_stored_per_tonne_from_feedstocks`` for matching semantics.
+
+        Returns:
+            tCO2/yr. Multiplied by ``config.capacity_limit`` so the gate matches the
+            LP's effective upper bound (availability factor), avoiding ~5% over-blocking.
+        """
+        per_t = tech.co2_stored_per_tonne_product(reductant)
+        return per_t * capacity * self.config.capacity_limit
+
+    def get_co2_need_by_name(self, tech_name: str, capacity: float, reductant: str) -> float:
+        """Variant of get_co2_need that resolves the BOM by tech name via dynamic_feedstocks.
+
+        Needed for call sites that have only a tech name (e.g. the P2 handler, which runs
+        before a Technology object exists for the new tech). Falls back to a lowercased
+        name lookup — mirrors the pattern used in ``finalise_iteration`` at [handlers.py].
+        """
+        dbc = self.dynamic_feedstocks.get(tech_name) or self.dynamic_feedstocks.get(tech_name.lower(), [])
+        per_t = co2_stored_per_tonne_from_feedstocks(dbc, reductant)
+        return per_t * capacity * self.config.capacity_limit
+
+    def _co2_storage_limit_for_year(self, iso3: str, year: int) -> float:
+        """CO2 storage limit (tCO2/yr) for a country at a given lookup year.
+
+        Gate-specific year-lookup rule: returns the value at ``max(y in defined_years
+        where y <= Y)``. Strict 0 if ``Y`` precedes the earliest defined year; carries
+        the latest value forward beyond the last defined year. Returns 0 if no
+        ``co2_stored`` constraint is defined for the country — reflects the physical
+        reality that CCS cannot be built where storage is not assessed.
+
+        Does NOT modify ``SecondaryFeedstockConstraint.get_constraint_for_year``: the
+        LP depends on its exact-match-or-None semantics for trade allocation.
+        """
+        latest_year: int | None = None
+        latest_value: float = 0.0
+        earliest_year: int | None = None
+        for constraint in self.secondary_feedstock_constraints:
+            if constraint.secondary_feedstock_name != "co2_stored":
+                continue
+            if iso3 not in constraint.region_iso3s:
+                continue
+            for y, v in constraint.maximum_constraint_per_year.items():
+                y_int = int(y)
+                if earliest_year is None or y_int < earliest_year:
+                    earliest_year = y_int
+                if y_int <= year and (latest_year is None or y_int > latest_year):
+                    latest_year = y_int
+                    latest_value = v
+        if latest_year is None:
+            return 0.0
+        return latest_value
+
+    def scan_co2_storage_counters(self, uow) -> None:
+        """Rebuild co2_storage_firm / co2_storage_reserved from current FurnaceGroup state.
+
+        Invoked at year-start (after ``env.year`` is set, before Allocation/PAM/GEO run).
+        Rebuilding from scratch is self-healing: FGs discarded, closed, or dropped in
+        prior years automatically free up storage without requiring explicit unreserve
+        bookkeeping.
+
+        Status-keyed rule:
+
+        - ``operating`` / ``operating pre-retirement`` / ``construction`` → firm, need
+          computed from ``fg.technology`` + ``fg.chosen_reductant``.
+        - ``operating switching technology`` / ``construction switching technology``
+          (committed tech switch in flight) → firm, need computed from
+          ``fg.future_switch_cmd.technology_name`` + ``fg.chosen_reductant`` (old
+          reductant; the new FG hasn't run its reductant-pick economics yet).
+        - ``announced`` → reserved × ``config.co2_storage_reserved_discount_factor``.
+        - ``considered`` / ``discarded`` / ``closed`` → excluded.
+
+        All counter writers (this scan + intra-year handlers) use ``fg.chosen_reductant``
+        so the rebuild is bit-identical to the sum of intra-year increments — handler
+        hooks and the scan never disagree.
+
+        Iterates in deterministic order (sorted by iso3, plant_id, fg_id) so log traces
+        are reproducible independent of the per-iteration random seed.
+        """
+        scan_logger = logging.getLogger(f"{__name__}.Environment.scan_co2_storage_counters")
+
+        self.co2_storage_firm = {}
+        self.co2_storage_reserved = {}
+        d = self.config.co2_storage_reserved_discount_factor
+
+        entries = []
+        for plant in uow.plants.list():
+            for fg in plant.furnace_groups:
+                entries.append((plant.location.iso3, plant.plant_id, fg.furnace_group_id, plant, fg))
+        entries.sort(key=lambda e: (e[0], e[1], e[2]))
+
+        for iso3, _plant_id, _fg_id, _plant, fg in entries:
+            status = fg.status.lower()
+            if status in ("considered", "discarded", "closed"):
+                continue
+
+            if status in ("operating switching technology", "construction switching technology"):
+                if fg.future_switch_cmd is None:
+                    continue
+                need = self.get_co2_need_by_name(fg.future_switch_cmd.technology_name, fg.capacity, fg.chosen_reductant)
+                if need == 0.0:
+                    continue
+                self.co2_storage_firm[iso3] = self.co2_storage_firm.get(iso3, 0.0) + need
+                continue
+
+            if status in ("operating", "operating pre-retirement", "construction"):
+                need = self.get_co2_need(fg.technology, fg.capacity, fg.chosen_reductant)
+                if need == 0.0:
+                    if fg.is_ccs_or_ccu and not fg.technology.dynamic_business_case:
+                        scan_logger.warning(
+                            f"CCS furnace group {fg.furnace_group_id} (tech={fg.technology.name}, "
+                            f"status={fg.status}) has empty dynamic_business_case — contributing 0 to firm. "
+                            f"Check env.dynamic_feedstocks population for this tech name."
+                        )
+                    continue
+                self.co2_storage_firm[iso3] = self.co2_storage_firm.get(iso3, 0.0) + need
+                continue
+
+            if status == "announced":
+                need = self.get_co2_need(fg.technology, fg.capacity, fg.chosen_reductant)
+                if need == 0.0:
+                    if fg.is_ccs_or_ccu and not fg.technology.dynamic_business_case:
+                        scan_logger.warning(
+                            f"Announced CCS furnace group {fg.furnace_group_id} (tech={fg.technology.name}) "
+                            f"has empty dynamic_business_case — contributing 0 to reserved. "
+                            f"Check env.dynamic_feedstocks population for this tech name."
+                        )
+                    continue
+                self.co2_storage_reserved[iso3] = self.co2_storage_reserved.get(iso3, 0.0) + d * need
+                continue
+
+    def get_co2_headroom(self, iso3: str, year: int, own_reserved_contribution: float = 0.0) -> float:
+        """Unified CO2 storage headroom read for all five gates.
+
+        ``headroom = limit - firm - reserved + own_reserved_contribution``.
+
+        ``own_reserved_contribution`` is ``d * own_need`` when the FG being evaluated is
+        itself already in the reserved bucket (P1, status == announced). Every other
+        gate defaults to 0. Exempting the FG's own reserved slot prevents P1 from
+        double-counting its own discounted contribution against itself.
+        """
+        limit = self._co2_storage_limit_for_year(iso3, year)
+        if limit == 0.0:
+            return 0.0
+        firm = self.co2_storage_firm.get(iso3, 0.0)
+        reserved = self.co2_storage_reserved.get(iso3, 0.0)
+        return limit - firm - reserved + own_reserved_contribution
 
     def relevant_secondary_feedstock_constraints(self):
         """Returns the relevant secondary feedstock constraints for the current year."""
