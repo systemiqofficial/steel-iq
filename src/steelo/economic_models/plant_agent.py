@@ -233,6 +233,10 @@ class GeospatialModel:
             chosen_emissions_boundary_for_carbon_costs=bus.env.config.chosen_emissions_boundary_for_carbon_costs,
             carbon_costs=bus.env.carbon_costs,
             dynamic_business_cases=bus.env.dynamic_feedstocks,
+            get_co2_headroom=bus.env.get_co2_headroom,
+            get_co2_need=bus.env.get_co2_need,
+            co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
+            reserved_discount_factor=bus.env.config.co2_storage_reserved_discount_factor,
         )
         if status_commands:
             for command in status_commands:
@@ -868,7 +872,9 @@ class PlantAgentsModel:
                         installed_capacity_in_year=bus.env.installed_capacity_in_year,
                         new_plant_capacity_in_year=bus.env.new_plant_capacity_in_year,
                         most_common_reductant_by_tech=bus.env.most_common_reductant_by_tech,
-                        countries_with_co2_storage=bus.env.countries_with_co2_storage,
+                        get_co2_headroom=bus.env.get_co2_headroom,
+                        get_co2_need_by_name=bus.env.get_co2_need_by_name,
+                        co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
                     )
                 ) is not None:
                     logger.info(f"[PAM] FG {fg.furnace_group_id} strategy returned command: {type(cmd).__name__}")
@@ -949,7 +955,9 @@ class PlantAgentsModel:
                     new_plant_capacity_in_year=bus.env.new_plant_capacity_in_year,
                     new_capacity_share_from_new_plants=bus.env.config.new_capacity_share_from_new_plants,
                     environment_most_common_reductant=bus.env.most_common_reductant_by_tech,
-                    countries_with_co2_storage=bus.env.countries_with_co2_storage,
+                    get_co2_headroom=bus.env.get_co2_headroom,
+                    get_co2_need_by_name=bus.env.get_co2_need_by_name,
+                    co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
                 )
             ) is not None:
                 logger.info(f"[PAM] Plant group {pg.plant_group_id} expansion returned: {type(cmd).__name__}")

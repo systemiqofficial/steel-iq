@@ -3066,6 +3066,11 @@ class FurnaceGroup:
         new_capacity_share_from_new_plants: float,
         location: Location,
         status_stats: Counter | None = None,
+        get_co2_headroom: Callable[[str, int, float], float] | None = None,
+        get_co2_need: Callable[["Technology", float, str], float] | None = None,
+        co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
+        construction_time: int = 4,
+        reserved_discount_factor: float = 0.9,
     ) -> commands.Command | None:
         """
         Convert an announced business opportunity into an actual project (new plant and furnace) with a
@@ -3129,6 +3134,46 @@ class FurnaceGroup:
             if status_stats is not None:
                 status_stats["capacity_limit_blocked"] += 1
             return None  # Stay announced, try again next year
+
+        # P1 CO2 storage gate: block + immediate-discard if announced CCS exceeds country headroom.
+        # Exempts own d*need from headroom (FG already contributes to reserved bucket).
+        if get_co2_headroom is not None and get_co2_need is not None:
+            own_need = get_co2_need(self.technology, float(self.capacity), self.chosen_reductant or "")
+            if own_need > 0.0:
+                lookup_year = int(self.lifetime.current) + construction_time
+                own_contribution = reserved_discount_factor * own_need
+                headroom = get_co2_headroom(location.iso3, lookup_year, own_contribution)
+                firm, reserved, limit = (
+                    co2_storage_diagnostics(location.iso3, lookup_year)
+                    if co2_storage_diagnostics is not None
+                    else (0.0, 0.0, 0.0)
+                )
+                if headroom < own_need:
+                    logger.info(
+                        f"[CO2 GATE] gate=P1 decision=blocked iso3={location.iso3} "
+                        f"year={int(self.lifetime.current)} lookup_year={lookup_year} "
+                        f"tech={self.technology.name} reductant={self.chosen_reductant} "
+                        f"fg_id={self.furnace_group_id} plant_id={self.get_furnace_plant_id()} "
+                        f"need={own_need:.0f} firm={firm:.0f} reserved={reserved:.0f} "
+                        f"own_contribution={own_contribution:.0f} limit={limit:.0f} "
+                        f"headroom={headroom:.0f} discarded=true"
+                    )
+                    if status_stats is not None:
+                        status_stats["co2_storage_blocked"] += 1
+                    return commands.UpdateFurnaceGroupStatus(
+                        fg_id=self.get_furnace_plant_id(),
+                        plant_id=self.furnace_group_id,
+                        new_status="discarded",
+                    )
+                logger.debug(
+                    f"[CO2 GATE] gate=P1 decision=passed iso3={location.iso3} "
+                    f"year={int(self.lifetime.current)} lookup_year={lookup_year} "
+                    f"tech={self.technology.name} reductant={self.chosen_reductant} "
+                    f"fg_id={self.furnace_group_id} plant_id={self.get_furnace_plant_id()} "
+                    f"need={own_need:.0f} firm={firm:.0f} reserved={reserved:.0f} "
+                    f"own_contribution={own_contribution:.0f} limit={limit:.0f} "
+                    f"headroom={headroom:.0f} discarded=false"
+                )
 
         # Stay in announced state if probability of construction not met
         construction_draw = random.random()
@@ -3690,7 +3735,9 @@ class Plant:
         tech_opex_subsidies: dict[str, list[Subsidy]] = {},
         tech_debt_subsidies: dict[str, list[Subsidy]] = {},
         most_common_reductant_by_tech: dict[str, str] = {},
-        countries_with_co2_storage: set[str] = set(),
+        get_co2_headroom: Callable[[str, int, float], float] | None = None,
+        get_co2_need_by_name: Callable[[str, float, str], float] | None = None,
+        co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
     ) -> commands.Command | None:
         """
         Evaluate the economic strategy for a furnace group using NPV-based decision making.
@@ -3813,12 +3860,36 @@ class Plant:
         if not allowed_techs_in_year:
             raise ValueError(f"[FG STRATEGY] No allowed techs in {current_year}")
 
-        # Skip CCS technologies if the country has no CO2 storage capacity
-        has_co2_storage = self.location.iso3 in countries_with_co2_storage
-        filtered_allowed_furnace_transitions = {
-            k: [tech for tech in v if tech in allowed_techs_in_year and (has_co2_storage or "ccs" not in tech.lower())]
-            for k, v in allowed_furnace_transitions.items()
-        }
+        # P2 CO2 storage gate: drop CCS techs whose annual need exceeds country headroom.
+        lookup_year = int(current_year) + construction_time
+        headroom = (
+            get_co2_headroom(self.location.iso3, lookup_year, 0.0) if get_co2_headroom is not None else float("inf")
+        )
+        dropped_ccs_techs: set[str] = set()
+        filtered_allowed_furnace_transitions: dict[str, list[str]] = {}
+        for from_tech, candidates in allowed_furnace_transitions.items():
+            kept: list[str] = []
+            for tech in candidates:
+                if tech not in allowed_techs_in_year:
+                    continue
+                if get_co2_need_by_name is not None:
+                    reductant = most_common_reductant_by_tech.get(tech, "")
+                    need = get_co2_need_by_name(tech, float(furnace_group.capacity), reductant)
+                    if need > 0.0 and need > headroom:
+                        dropped_ccs_techs.add(tech)
+                        continue
+                kept.append(tech)
+            filtered_allowed_furnace_transitions[from_tech] = kept
+
+        if dropped_ccs_techs and co2_storage_diagnostics is not None:
+            _firm, _reserved, limit = co2_storage_diagnostics(self.location.iso3, lookup_year)
+            logger.info(
+                f"[CO2 GATE] gate=P2 iso3={self.location.iso3} year={int(current_year)} "
+                f"lookup_year={lookup_year} fg_id={furnace_group_id} plant_id={self.plant_id} "
+                f"headroom={headroom:.0f} limit={limit:.0f} "
+                f"dropped_ccs_techs={','.join(sorted(dropped_ccs_techs))} "
+                f"dropped_count={len(dropped_ccs_techs)}"
+            )
 
         logger.debug(
             f"[FG STRATEGY] Allowed transitions from {furnace_group.technology.name}: "
@@ -4895,7 +4966,9 @@ class PlantGroup:
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         environment_most_common_reductant: dict[str, str] = {},
-        countries_with_co2_storage: set[str] = set(),
+        get_co2_headroom: Callable[[str, int, float], float] | None = None,
+        get_co2_need_by_name: Callable[[str, float, str], float] | None = None,
+        co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
     ) -> dict[str, tuple[float | None, str, float]]:
         """
         Calculate NPV and optimal technology choice for all plants in the group considering allowed technologies and
@@ -4963,6 +5036,7 @@ class PlantGroup:
         # Evaluate expansion options for each plant in the group
         for plant in self.plants:
             NPV = {}
+            dropped_ccs_techs: set[str] = set()
             excpected_utilisation = plant.aggregate_average_utilisation_rate()
 
             # Retrieve location-specific financial parameters for this plant
@@ -5008,9 +5082,15 @@ class PlantGroup:
                 if tech == "BOF" and not plant.has_hot_metal_furnace:
                     continue
 
-                # Skip CCS technologies if the country has no CO2 storage capacity
-                if "ccs" in tech.lower() and plant.location.iso3 not in countries_with_co2_storage:
-                    continue
+                # P3 CO2 storage gate: skip CCS techs whose annual need exceeds country headroom.
+                if get_co2_need_by_name is not None and get_co2_headroom is not None:
+                    reductant = self.most_common_reductant.get(tech, environment_most_common_reductant.get(tech, ""))
+                    need = get_co2_need_by_name(tech, float(capacity), reductant or "")
+                    if need > 0.0:
+                        headroom = get_co2_headroom(plant.location.iso3, int(current_year) + construction_time, 0.0)
+                        if headroom < need:
+                            dropped_ccs_techs.add(tech)
+                            continue
 
                 # Get bill of materials for this technology
                 if get_bom_from_avg_boms is None:
@@ -5134,6 +5214,18 @@ class PlantGroup:
                     secondary_output_adjustment=secondary_output_adj,
                 )
 
+            if dropped_ccs_techs and co2_storage_diagnostics is not None:
+                lookup_year = int(current_year) + construction_time
+                _firm, _reserved, limit = co2_storage_diagnostics(plant.location.iso3, lookup_year)
+                headroom = (get_co2_headroom or (lambda *_: 0.0))(plant.location.iso3, lookup_year, 0.0)
+                logger.info(
+                    f"[CO2 GATE] gate=P3 iso3={plant.location.iso3} year={int(current_year)} "
+                    f"lookup_year={lookup_year} plant_id={plant.plant_id} "
+                    f"headroom={headroom:.0f} limit={limit:.0f} "
+                    f"dropped_ccs_techs={','.join(sorted(dropped_ccs_techs))} "
+                    f"dropped_count={len(dropped_ccs_techs)}"
+                )
+
             # Select technology with highest NPV for this plant
             if NPV:
                 best_tech = max(NPV, key=lambda k: NPV[k])
@@ -5177,7 +5269,9 @@ class PlantGroup:
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         environment_most_common_reductant: dict[str, str] = {},
-        countries_with_co2_storage: set[str] = set(),
+        get_co2_headroom: Callable[[str, int, float], float] | None = None,
+        get_co2_need_by_name: Callable[[str, float, str], float] | None = None,
+        co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
     ) -> commands.Command | None:
         """
         Evaluate and execute the most profitable furnace expansion across all plants in the plant group.
@@ -5274,7 +5368,9 @@ class PlantGroup:
             plant_lifetime=plant_lifetime,
             construction_time=construction_time,
             environment_most_common_reductant=environment_most_common_reductant,
-            countries_with_co2_storage=countries_with_co2_storage,
+            get_co2_headroom=get_co2_headroom,
+            get_co2_need_by_name=get_co2_need_by_name,
+            co2_storage_diagnostics=co2_storage_diagnostics,
         )
 
         # ========== STAGE 3: CHECK IF ANY EXPANSION OPTIONS EXIST ==========
@@ -6037,6 +6133,10 @@ class PlantGroup:
         dynamic_business_cases: dict[str, list[PrimaryFeedstock]],
         carbon_costs: dict[str, dict[Year, float]],
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list
+        get_co2_headroom: Callable[[str, int, float], float] | None = None,
+        get_co2_need: Callable[["Technology", float, str], float] | None = None,
+        co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
+        reserved_discount_factor: float = 0.9,
     ) -> list[commands.Command]:
         """
         Recalculate the NPV and update the status of all considered and announced business opportunities.
@@ -6115,6 +6215,11 @@ class PlantGroup:
                         new_capacity_share_from_new_plants=new_capacity_share_from_new_plants,
                         location=plant.location,
                         status_stats=status_stats,
+                        get_co2_headroom=get_co2_headroom,
+                        get_co2_need=get_co2_need,
+                        co2_storage_diagnostics=co2_storage_diagnostics,
+                        construction_time=construction_time,
+                        reserved_discount_factor=reserved_discount_factor,
                     )
                     if update_status_cmd:
                         status_change_cmds.append(update_status_cmd)
@@ -9553,6 +9658,30 @@ class Environment:
         firm = self.co2_storage_firm.get(iso3, 0.0)
         reserved = self.co2_storage_reserved.get(iso3, 0.0)
         return limit - firm - reserved + own_reserved_contribution
+
+    def co2_storage_diagnostics(self, iso3: str, year: int) -> tuple[float, float, float]:
+        """Return (firm, reserved, limit) snapshot for [CO2 GATE] log lines.
+
+        Pure read helper that surfaces the three counter components used in gate log
+        lines without passing the full Environment into gate methods. Threaded as a
+        narrow callable alongside ``get_co2_headroom`` / ``get_co2_need`` to preserve
+        the parameter convention used elsewhere in the PAM pipeline.
+
+        Args:
+            iso3: Country ISO3.
+            year: Lookup year for the limit (the operating-start year for the gate
+                being logged — ``current_year + construction_time`` for P1/P2/P3).
+
+        Returns:
+            ``(firm, reserved, limit)`` in tCO2/yr. Firm/reserved default to 0.0 when
+            the country has no entry in the counters; limit follows the same year-lookup
+            rule as ``_co2_storage_limit_for_year`` (strict 0 pre-earliest,
+            carry-forward past-latest, 0 when no ``co2_stored`` constraint defined).
+        """
+        firm = self.co2_storage_firm.get(iso3, 0.0)
+        reserved = self.co2_storage_reserved.get(iso3, 0.0)
+        limit = self._co2_storage_limit_for_year(iso3, year)
+        return firm, reserved, limit
 
     def relevant_secondary_feedstock_constraints(self):
         """Returns the relevant secondary feedstock constraints for the current year."""

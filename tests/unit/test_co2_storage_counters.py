@@ -267,6 +267,72 @@ def test_headroom_zero_before_earliest_year(tmp_path):
     assert env.get_co2_headroom("USA", 2025) == 0.0
 
 
+# ---- co2_storage_diagnostics ----
+
+
+def test_diagnostics_returns_firm_reserved_limit_tuple(tmp_path):
+    """Helper used by gate log lines to surface (firm, reserved, limit) without leaking env."""
+    c = SecondaryFeedstockConstraint(
+        secondary_feedstock_name="co2_stored",
+        region_iso3s=["USA"],
+        maximum_constraint_per_year={Year(2024): 1000.0},
+    )
+    env = _make_env(tmp_path, constraints=[c])
+    env.co2_storage_firm["USA"] = 300.0
+    env.co2_storage_reserved["USA"] = 200.0
+
+    firm, reserved, limit = env.co2_storage_diagnostics("USA", 2025)
+
+    assert firm == pytest.approx(300.0)
+    assert reserved == pytest.approx(200.0)
+    assert limit == pytest.approx(1000.0)
+
+
+def test_diagnostics_reflects_counter_mutation(tmp_path):
+    """Snapshot must observe live counter state — used mid-simulation."""
+    c = SecondaryFeedstockConstraint(
+        secondary_feedstock_name="co2_stored",
+        region_iso3s=["USA"],
+        maximum_constraint_per_year={Year(2024): 500.0},
+    )
+    env = _make_env(tmp_path, constraints=[c])
+
+    firm0, reserved0, limit0 = env.co2_storage_diagnostics("USA", 2025)
+    assert (firm0, reserved0, limit0) == pytest.approx((0.0, 0.0, 500.0))
+
+    env.co2_storage_firm["USA"] = 100.0
+    env.co2_storage_reserved["USA"] = 50.0
+    firm1, reserved1, limit1 = env.co2_storage_diagnostics("USA", 2025)
+
+    assert firm1 == pytest.approx(100.0)
+    assert reserved1 == pytest.approx(50.0)
+    assert limit1 == pytest.approx(500.0)
+
+
+def test_diagnostics_unknown_country_returns_zeros(tmp_path):
+    env = _make_env(tmp_path, constraints=[])
+
+    firm, reserved, limit = env.co2_storage_diagnostics("DEU", 2025)
+
+    assert firm == 0.0
+    assert reserved == 0.0
+    assert limit == 0.0
+
+
+def test_diagnostics_honours_year_lookup_rule(tmp_path):
+    """limit follows strict-0 pre-earliest, carry-forward past-latest."""
+    c = SecondaryFeedstockConstraint(
+        secondary_feedstock_name="co2_stored",
+        region_iso3s=["USA"],
+        maximum_constraint_per_year={Year(2030): 100.0, Year(2040): 200.0},
+    )
+    env = _make_env(tmp_path, constraints=[c])
+
+    assert env.co2_storage_diagnostics("USA", 2025)[2] == 0.0  # pre-earliest
+    assert env.co2_storage_diagnostics("USA", 2035)[2] == pytest.approx(100.0)  # interior
+    assert env.co2_storage_diagnostics("USA", 2060)[2] == pytest.approx(200.0)  # carry-forward
+
+
 # ---- scan_co2_storage_counters ----
 
 
