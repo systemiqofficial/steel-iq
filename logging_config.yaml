@@ -14,6 +14,8 @@ function_overrides:
   # Suppress noisy functions
   calculate_unit_production_cost: WARNING
   extract_price_from_costcurve: WARNING
+  # Enable scan counter debug output
+  scan_co2_storage_counters: DEBUG
 
 external:
   pyomo: ERROR

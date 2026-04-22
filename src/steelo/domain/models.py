@@ -9478,7 +9478,7 @@ class Environment:
         Iterates in deterministic order (sorted by iso3, plant_id, fg_id) so log traces
         are reproducible independent of the per-iteration random seed.
         """
-        scan_logger = logging.getLogger(f"{__name__}.Environment.scan_co2_storage_counters")
+        logger = logging.getLogger(f"{__name__}.Environment.scan_co2_storage_counters")
 
         self.co2_storage_firm = {}
         self.co2_storage_reserved = {}
@@ -9508,7 +9508,7 @@ class Environment:
                 need = self.get_co2_need(fg.technology, fg.capacity, fg.chosen_reductant)
                 if need == 0.0:
                     if fg.is_ccs_or_ccu and not fg.technology.dynamic_business_case:
-                        scan_logger.warning(
+                        logger.warning(
                             f"CCS furnace group {fg.furnace_group_id} (tech={fg.technology.name}, "
                             f"status={fg.status}) has empty dynamic_business_case — contributing 0 to firm. "
                             f"Check env.dynamic_feedstocks population for this tech name."
@@ -9521,7 +9521,7 @@ class Environment:
                 need = self.get_co2_need(fg.technology, fg.capacity, fg.chosen_reductant)
                 if need == 0.0:
                     if fg.is_ccs_or_ccu and not fg.technology.dynamic_business_case:
-                        scan_logger.warning(
+                        logger.warning(
                             f"Announced CCS furnace group {fg.furnace_group_id} (tech={fg.technology.name}) "
                             f"has empty dynamic_business_case — contributing 0 to reserved. "
                             f"Check env.dynamic_feedstocks population for this tech name."
@@ -9529,6 +9529,13 @@ class Environment:
                     continue
                 self.co2_storage_reserved[iso3] = self.co2_storage_reserved.get(iso3, 0.0) + d * need
                 continue
+
+        for c in sorted(set(self.co2_storage_firm) | set(self.co2_storage_reserved)):
+            logger.debug(
+                f"[CO2 SCAN] year={self.year} iso3={c} "
+                f"firm={self.co2_storage_firm.get(c, 0.0):,.0f} "
+                f"reserved={self.co2_storage_reserved.get(c, 0.0):,.0f}"
+            )
 
     def get_co2_headroom(self, iso3: str, year: int, own_reserved_contribution: float = 0.0) -> float:
         """Unified CO2 storage headroom read for all five gates.
