@@ -359,9 +359,11 @@ min_share × total_input ≤ sum(matching commodities) ≤ max_share × total_in
 
 ### Disaggregation: Hot-Metal Radius + Minimum-Ratio Enforcement
 
-After the LP solves at the cluster level, `disaggregate_allocations()` in `furnace_group_clustering.py` splits cluster-to-cluster flows back to individual furnace groups. This is where per-FG distance constraints, BOM-minimum-share constraints, and bill-of-materials consistency are all enforced.
+After the LP solves at the cluster level, `disaggregate_allocations()` in `furnace_group_clustering.py` splits cluster-to-cluster flows back to individual furnace groups. This is where per-FG distance constraints, BOM-minimum-share constraints, physical-capacity caps, and bill-of-materials consistency are all enforced.
 
-Five mechanisms work together to guarantee physical correctness:
+The LP plans at cluster level and is not aware of the `hot_metal_radius` constraint; it can allocate cluster totals that are physically infeasible at the FG level (e.g. a source-cluster pocket that can't reach a destination-cluster pocket). Disaggregation has to project that infeasible LP solution onto something physically consistent — preserving physical capacity and per-FG BOM as hard invariants while allowing cluster-level flows to drift away from LP when necessary.
+
+Nine mechanisms work together:
 
 #### 1. BOF filtering and effective capacity at clustering time
 
@@ -371,36 +373,90 @@ Five mechanisms work together to guarantee physical correctness:
 
 - **Effective BOF cluster capacity.** For each BOF FG, effective capacity = `min(physical_capacity, Σ[reachable_BF_capacity within radius] / min_hot_metal_share)`. The cluster's `total_capacity`, `capacity_shares`, and weighted costs are all derived from these effective capacities. This prevents the LP from allocating more hot metal to a BOF cluster than its geographically reachable BF neighbours can physically supply.
 
-#### 2. Joint transportation problem for hot-metal disaggregation
+#### 2. Joint transportation problem for hot-metal disaggregation (pre-pass)
+
+`disaggregate_allocations()` runs Case 4 joint-strict (hot_metal → BOF with ≥70% min-share) **first**, before Case 2 / Case 3, so we can measure the actual flows and adjust the other cases to stay BOM-consistent with the physical reality.
 
 When multiple BF clusters contribute hot metal to the same BOF cluster, all contributing flows are solved in a **single joint transportation problem** rather than independently per BF→BOF pair. This guarantees that each BOF FG receives exactly `effective_share × total_LP_hot_metal` regardless of how many source clusters are involved.
 
-The supply vector for the joint problem is computed by `_reach_based_joint_supplies()`: for each BOF FG demand, the volume is distributed to the BF FGs within radius weighted by their LP supply. This makes every geographic pocket self-balancing (`pocket_supply == pocket_demand`), so the per-component normalisation inside `_solve_strict_by_components()` is a no-op (scale = 1). Without this, component-wise normalisation would silently adjust BF FG outputs, causing BF iron-ore inputs to become inconsistent with their actual hot-metal outputs.
+The supply vector for the joint problem is computed by `_reach_based_joint_supplies()`: for each BOF FG demand, the volume is distributed to the BF FGs within radius weighted by their LP supply. This makes every geographic pocket self-balancing (`pocket_supply == pocket_demand`).
 
-BOF FGs whose neighbouring BF uses a **different reductant** (and hence a different cluster key not contributing to this LP flow) are pre-filtered from the joint demand and their share redistributed to the remaining reachable BOF FGs, capped at each FG's effective capacity. This prevents spurious `RuntimeError`s when a BOF FG's only nearby BF is in a different technology cluster.
+BOF FGs whose neighbouring BF uses a **different reductant** (and hence a different cluster key not contributing to this LP flow) are pre-filtered from the joint demand and their share redistributed to the remaining reachable BOF FGs, capped at each FG's effective capacity. When *all* BOF FGs in the cluster are unreachable from the contributing source cluster(s), the pre-pass falls back to proportional routing without radius so BOM stays consistent (the hot-metal flow is later relabelled as pig iron by `_substitute_commodity_by_distance`).
 
-`_solve_strict_by_components()` decomposes the joint problem into geographically connected components (isolated pockets of BF/BOF pairs separated by more than `hot_metal_radius`). Each pocket is solved as an independent min-cost-flow problem. This prevents integer-flooring artefacts in one region from bleeding into another.
+`_solve_strict_by_components()` decomposes the joint problem into geographically connected components (isolated pockets of BF/BOF pairs separated by more than `hot_metal_radius`). Each pocket is solved as an independent min-cost-flow problem.
 
-#### 3. Strict radius for min-constrained flows
+#### 3. Per-FG physical-capacity cap
 
-When a hot commodity (e.g. `hot_metal`, `dri_high`) is routed to a destination technology that has a minimum-share constraint on that commodity — either via `PrimaryFeedstock.minimum_share_in_product > 0` or via an `AggregatedMetallicChargeConstraint` (e.g. BOF hot_metal ≥ 70%) — the min-cost-flow solver **omits** radius-violating edges entirely rather than penalising them. This guarantees the allocation is physically feasible within the radius. If no feasible solution exists, a `RuntimeError` is raised with a full diagnostic of which destinations are unreachable.
+`_solve_strict_by_components()` accepts a per-FG `source_capacities` map. Each source FG is capped at `cap_share × LP_volume_for_this_joint_group` — this is the FG's LP share of the current group, and summing across all joint groups a single FG participates in is bounded by `cap_share × total_joint_LP ≤ cap_share × total_capacity = physical capacity`. When scaling pocket supply up to meet demand would push an FG above its cap, the cap holds and pocket **demand is scaled down** instead; the shortfall is recorded in `stats["dest_unmet_demand"]` and propagates downstream.
 
-`_destination_has_min_constraint_for_commodity(to_meta_fg, commodity)` checks both individual feedstock constraints and aggregated wildcard constraints (matching on technology name and feedstock pattern prefix).
+This is the safety net for the case where the LP over-committed a source cluster's pocket relative to what its reachable source FGs can physically produce.
 
-#### 4. Hot → cold relabeling for non-constrained flows
+#### 4. Strict radius for min-constrained flows
 
-When a hot commodity flows beyond the radius and the destination has no binding minimum constraint on it, `_substitute_commodity_by_distance()` relabels the allocation to the cold equivalent (e.g. `dri_high` → `hbi_high`). The flow volume is preserved; only the label changes. This reflects the physical reality that the LP's intra-country hot flow must actually travel as the cold form over that distance. Logged at INFO level.
+When a hot commodity is routed to a destination technology with a minimum-share constraint on that commodity — either via `PrimaryFeedstock.minimum_share_in_product > 0` or via an `AggregatedMetallicChargeConstraint` (e.g. BOF hot_metal ≥ 70%) — the min-cost-flow solver **omits** radius-violating edges entirely rather than penalising them. `_destination_has_min_constraint_for_commodity(to_meta_fg, commodity)` checks both individual feedstock constraints and aggregated wildcard constraints.
 
-#### 5. BOM consistency validation and utilisation correction
+#### 5. Drift computation and Case 2 / Case 3 rebalancing
 
-After disaggregation, `TMPAMConnector.validate_bom_consistency()` checks every active FG against two criteria (tolerances in parentheses):
+Once joint-strict has run, `disaggregate_allocations()` computes a **drift factor** per cluster that participated:
 
-- **Mass balance** — `metallic_input / production ∈ [0.99, 1.21]` (±1%).
-- **Min-share** — each feedstock with a minimum share must reach `min_share − 1pp`.
+```
+drift = actual_flow / LP_flow
+```
 
-Any violation is logged as WARNING. `correct_utilization_for_supply_constraints()` then acts as a safety net: if a BOF FG received insufficient hot metal to satisfy its minimum share, its production and utilisation are scaled down to the maximum physically achievable level. This handles edge cases (e.g. a technology-cluster mismatch filtered out mid-problem) without crashing the simulation.
+* **Source clusters** (BF/SR/DRI): `drift = (actual_joint_output + non_joint_LP_output) / LP_total_output`. Drift < 1 means the cluster's joint-strict output was capped below LP.
+* **Destination clusters** (BOF): `drift = (actual_joint_input + non_joint_LP_input) / LP_total_input`. Drift < 1 means the cluster received less hot metal / pig iron / DRI than the LP planned.
 
-Both methods are called from `handlers.py` after each year's disaggregation.
+Drift then drives two rebalances:
+
+* **Case 2 batches** (cluster → demand centre) are scaled by drift for every drifted cluster. A BOF cluster that couldn't take its full LP hot-metal input ships proportionally less crude steel; a source cluster whose joint-strict output was capped ships proportionally less pig iron / HBI to demand centres. Supplier-side demand centres receive less than the LP promised — the physical consequence of radius constraints the LP didn't model.
+
+* **Case 3 batches** (supplier → cluster) are rebalanced by `_rebalance_case3_for_cluster_drift()`, a min-cost transportation problem that keeps per-supplier totals ≤ LP (mine / scrap capacity is a hard upper bound) and sets per-cluster totals to `LP_demand × drift` (matches actual production × BOM ratio). When Σ supply > Σ demand (common when BOF clusters drift down), supplier supplies scale uniformly down to match — mine capacity is under-utilised rather than exceeded.
+
+#### 6. Effective-shares refresh (post-pre-pass)
+
+For every cluster that participated in joint strict, effective shares are recomputed as
+
+```
+effective_i = (actual_joint_i + cap_share_i × non_joint_LP) / actual_total_cluster
+```
+
+(and the analogous input-side formula for BOF dest clusters). This makes Case 2 per-FG supplies and Case 3 per-FG demands track each FG's *total actual production* — so a FG that absorbed another's pocket demand in joint strict gets proportionally more iron ore, and a FG whose pocket was cut gets less. This is what makes BOM hold at the FG level, not just the cluster level.
+
+**Important**: the refresh happens for every joint-strict-participating cluster, not just those whose cluster-level drift exceeds some threshold. A cluster can have near-unity overall drift (e.g. its joint output is only a small fraction of its total output) while still having individual FGs whose effective shares differ significantly from cap-share — without the universal refresh those FGs' iron-ore attribution would silently drift from their actual production.
+
+#### 7. Hot → cold relabeling for non-constrained flows
+
+When a hot commodity flows beyond the radius and the destination has no binding minimum constraint on it (Case 4 individual), `_substitute_commodity_by_distance()` relabels the allocation to the cold equivalent (e.g. `dri_high` → `hbi_high`, `hot_metal` → `pig_iron`). The flow volume is preserved; only the label changes.
+
+#### 8. Per-FG BOM fix-up
+
+`_bom_fix_up_per_fg()` runs as the final step before validation. For every FG in a cluster that participated in Case 4 joint strict, it:
+
+1. Aggregates the FG's actual incoming volumes by BOM commodity.
+2. Computes the BOM-ideal output: `ideal_j = Σ_X charge_in_j,X / expected_ratio_X`.
+3. If `ideal_j > cap_share × total_capacity`, caps the output at physical capacity and scales the FG's incoming flows down by `physical_cap / ideal_j`. The scaled-down delta represents material the upstream source FG produced but this FG can't accept — it remains at the source side as stranded/unused.
+4. Rescales the FG's outgoing flows (Case 2 / Case 4) so the total matches `ideal_j` (or the capped value).
+
+This removes the systematic error from the linear (effective × drift) approximation: per-FG BOM holds exactly, regardless of how different the FG's commodity mix is from the cluster average.
+
+#### 9. BOM consistency validation
+
+`_validate_disaggregated_allocations()` checks every FG against:
+
+* **Physical capacity** — total outgoing volume ≤ `cap_share × total_cluster_capacity`, with a 1% tolerance.
+* **BOM consistency** — `Σ_X (charge_in_X / expected_ratio_X) / total_out ≈ 1.0` over every active metallic charge the FG's technology accepts, within `BOM_TOL = 0.03` (3%). The tolerance only has to absorb residual numerical noise (solver rounding, commodity-substitution deltas) now that the fix-up pass has removed the systematic ratio-approximation error.
+
+A separate downstream check in `TMPAMConnector.validate_bom_consistency()` then acts as a safety net for min-share constraints, and `correct_utilization_for_supply_constraints()` scales a BOF FG's production down if its hot-metal share fell below the minimum.
+
+---
+
+#### Known limitations
+
+* **LP infeasibility w.r.t. radius.** The LP doesn't model `hot_metal_radius`; cluster-level allocations can be physically infeasible at the pocket level. Cross-cluster borrowing (multi-source joint groups) or supply-capped demand reduction (single-source pockets) are post-hoc repairs — the resulting steel output and supplier-to-cluster routing can deviate from the LP's optimum.
+* **Demand-centre shortfalls.** When a BOF cluster is capacity-constrained on the metallic-charge side, its Case 2 steel shipments drop by the drift factor (and are further adjusted by the per-FG BOM fix-up). Demand centres receive less than the LP promised; we do not redistribute that unmet demand to another cluster.
+* **Mine-capacity soft preservation.** Case 3 Sinkhorn rebalance keeps each supplier's LP total as a hard *upper* bound but will under-utilise that capacity when aggregate drift pushes cluster demand below supplier LP.
+* **Stranded material when a BOF is capacity-capped.** If the BOM-ideal output for a BOF FG exceeds its physical capacity, `_bom_fix_up_per_fg` caps the output and scales its inputs down proportionally. The "scaled-down delta" is material the upstream source FG produced but couldn't ship to this FG — it remains at the source side as stranded/unused, which may show up as a small per-source-FG BOM residual absorbed by `BOM_TOL`.
+* **Downstream reductions are not re-routed.** If a cluster's drift cuts a flow to demand centre X, the demand is simply unfulfilled — no LP re-solve, no reallocation.
 
 ---
 
@@ -408,6 +464,9 @@ Both methods are called from `handlers.py` after each year's disaggregation.
 - Number of joint groups (strict hot) and individual flows.
 - Per joint group: source cluster count, total LP volume, number of connected components.
 - Any BOF FGs pre-filtered due to technology-cluster mismatch.
+- Supply-constrained pockets (supply/demand mismatch + % demand reduction).
+- Cluster drift detected: list of clusters with `|drift − 1| > 1%` and their actual/LP ratio.
+- BOF clusters whose Case 2 shipments are being scaled down.
 - BOM validation summary: counts by check type, and per-FG details for any violations.
 
 ---
