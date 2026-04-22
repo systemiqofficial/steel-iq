@@ -346,11 +346,13 @@ Stage 11-13: Final Checks & Command Generation
 
 ### Stage 4: Filter Allowed Technology Transitions
 **Purpose**: Narrow down technology options based on what's allowed in the current year
-- **Process**: Intersect `allowed_techs[current_year]` with `allowed_furnace_transitions[current_tech]`
+- **Process**: Intersect `allowed_techs[current_year]` with `allowed_furnace_transitions[current_tech]`, then apply the **P2 CO2 storage gate** to drop CCS candidates the country cannot physically support.
+- **P2 gate**: For each surviving CCS tech, the gate computes the plant's annual `get_co2_need(tech, capacity, env-wide reductant)` and compares against `get_co2_headroom(iso3, current_year + construction_time)`. If `need > headroom` the tech is dropped so the NPV race in Stage 5 picks the next-best non-CCS alternative naturally. CCU techs have `co2_stored = 0` in BOM and are never dropped.
 - **Example**:
   - Current tech: BF-BOF
-  - All possible transitions: [BF-BOF, EAF, DRI-EAF, H2-DRI-EAF]
-  - Allowed in 2030: [BF-BOF, EAF, DRI-EAF] (H2-DRI-EAF not yet available)
+  - All possible transitions: [BF-BOF, EAF, DRI-EAF, H2-DRI-EAF, BF+CCS]
+  - Allowed in 2030: [BF-BOF, EAF, DRI-EAF, BF+CCS] (H2-DRI-EAF not yet available)
+  - Plant in a country with no CO2 storage assessed → P2 drops BF+CCS
   - Filtered transitions: [BF-BOF, EAF, DRI-EAF]
 
 ### Stage 5: Calculate NPV for All Technology Options

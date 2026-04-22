@@ -90,6 +90,19 @@ The **Environment** class represents the macro-scale context in our agent-based 
 - **`calculate_demand`:**  
   Computes the total current demand for the simulation year by summing up the demand from all demand centers. The result is stored as `current_demand`, which is then used in pricing and investment decisions.
 
+### CO2 Storage Capacity Tracking
+
+The Environment owns the per-country CO2 storage budget consumed by CCS investment decisions. Two counters are maintained: `co2_storage_firm[iso3]` (annual tCO2/yr from operating and under-construction CCS plants) and `co2_storage_reserved[iso3]` (annual tCO2/yr pledged by announced CCS plants, scaled by a configurable discount factor to reflect their probability of actually being built). Storage limits come from the master Excel "CO2 storage" sheet.
+
+- **`scan_co2_storage_counters(uow)`** — rebuilds both counters from scratch at year-start by walking every FurnaceGroup. Self-healing: closed, discarded, and dropped plants automatically free their reserved slot.
+- **`get_co2_need(tech, capacity, reductant)`** — single source of truth for the annual tCO2 a CCS FG would add to storage, computed as `co2_stored_per_tonne * capacity * capacity_limit`.
+- **`get_co2_headroom(iso3, year, own_reserved_contribution)`** — returns `limit − firm − reserved + own_reserved_contribution`. Read by the five CCS gates (P1/P2/P3 in the plant-agent model, G1/G2 in the geospatial model) to block investment decisions that would exceed a country's annual storage capacity at the plant's operating-start year. Returns 0 when a country has no `co2_stored` constraint — the opposite of the usual "missing = unlimited" convention, reflecting physical reality that storage cannot be built where none has been assessed.
+- **`co2_storage_diagnostics(iso3, year)`** — returns `(firm, reserved, limit)` snapshot for gate log lines.
+
+Intra-year handler hooks also mutate the counters as plants transition between statuses (announced→construction, tech-switch commit, expansion), so gate decisions made later in the same year see earlier commitments.
+
+See [CO2 Storage Capacity Gate](co2_storage_gate.md) for a narrative walkthrough of the five gates, the unified headroom formula, and the design choices behind them.
+
 ## Conclusion
 
 The Environment class is a pivotal component in our agent-based simulation model. By encapsulating both economic (cost, investment, and price prediction) and operational (capacity aggregation and demand management) aspects, it enables a dynamic interplay between micro-level agent actions and macro-level system outcomes. This integration facilitates more realistic simulations, allowing for adaptive responses to evolving market conditions and technological changes.
