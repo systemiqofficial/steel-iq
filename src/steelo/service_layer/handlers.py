@@ -589,10 +589,35 @@ def finalise_iteration(
 
 def add_new_business_opportunities_to_repository(cmd: commands.AddNewBusinessOpportunities, uow: UnitOfWork):
     """
-    Adds business opportunities to the indi plant group with status "considered".
+    Add runtime-born business opportunities to the plant repository and route
+    each plant into its per-country ``indi_<ISO3>`` plant group at birth.
+
+    Each plant's ``parent_gem_id`` is overwritten from the placeholder
+    ``"indi"`` value set by ``PlantGroup.generate_new_plant`` to the
+    per-country group id (``indi_<ISO3>``) before the plant is registered
+    via ``register_plant_in_group``, which creates the group on demand.
+
+    Args:
+        cmd: Command carrying the list of new plants to register.
+        uow: Unit-of-work providing access to the plant and plant-group
+            repositories.
+
+    Notes:
+        Plants are registered through ``register_plant_in_group`` only —
+        ``PlantGroup.generate_new_plant`` no longer appends to any group's
+        plant list. This is the sole registration path for runtime-born
+        plants, and it populates the plant-group reverse-lookup map used
+        elsewhere in the service layer.
     """
+    routing_logger = logging.getLogger(f"{__name__}.add_new_business_opportunities_to_repository")
     with uow:
         uow.plants.add_list(cmd.new_plants)
+        for plant in cmd.new_plants:
+            iso3 = plant.location.iso3
+            target_gid = f"indi_{iso3}"
+            plant.parent_gem_id = target_gid
+            uow.plant_groups.register_plant_in_group(plant, target_gid)
+            routing_logger.info(f"[INDI ROUTING] plant_id={plant.plant_id} iso3={iso3} group_id={target_gid}")
         uow.commit()
 
 

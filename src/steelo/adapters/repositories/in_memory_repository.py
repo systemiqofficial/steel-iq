@@ -1,3 +1,4 @@
+import logging
 from typing import Iterable
 
 from .interface import (
@@ -67,6 +68,34 @@ class PlantGroupInMemoryRepository:
             raise ValueError(f"No plant group found for plant ID: {plant_id}")
         plant_group_id = self.plant_id_to_plantgroup_id[plant_id]
         return self.data[plant_group_id]
+
+    def register_plant_in_group(self, plant: Plant, group_id: str) -> None:
+        """
+        Register a plant into a plant group by ID, creating the group on demand.
+
+        Appends the plant to the group's ``plants`` list, updates the
+        ``plant_id_to_plantgroup_id`` reverse map, and adds the group to
+        ``seen`` unconditionally (dirty-set invariant: re-registering an
+        existing group still marks it as changed for this UoW turn).
+
+        Args:
+            plant: The plant to register.
+            group_id: Target plant group ID. If absent from ``self.data``
+                the group is created with an empty ``plants`` list first.
+        """
+        group_was_created = group_id not in self.data
+        if group_was_created:
+            group = PlantGroup(plant_group_id=group_id, plants=[])
+            self.data[group_id] = group
+        else:
+            group = self.data[group_id]
+        group.plants.append(plant)
+        self.plant_id_to_plantgroup_id[plant.plant_id] = group_id
+        self.seen.add(group)
+        debug_logger = logging.getLogger(f"{__name__}.register_plant_in_group")
+        debug_logger.debug(
+            f"[REPO REGISTER] plant_id={plant.plant_id} group_id={group_id} group_was_created={group_was_created}"
+        )
 
 
 class FurnaceGroupInMemoryRepository:

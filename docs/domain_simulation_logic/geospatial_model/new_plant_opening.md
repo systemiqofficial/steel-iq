@@ -109,20 +109,20 @@ The flow from business opportunity to new plant is as follows:
 
 ## Per-ISO3 Plant Group Routing
 
-All new plants start in a single master "indi" plant group, which acts as an incubator for business opportunities in "considered" and "announced" status. When a plant transitions to "construction", it is moved from the master group to a per-country group (`indi_{iso3}`, e.g. `indi_CHN`, `indi_AUS`). These groups are created lazily the first time a plant in that country reaches construction.
+Every new plant is routed into its per-country group (`indi_{iso3}`, e.g. `indi_CHN`, `indi_AUS`) **at birth** — the moment `add_new_business_opportunities_to_repository` handles the plant. Per-country groups are created lazily on first use. The master `indi` group remains as the dispatch point for candidate generation (`identify_new_business_opportunities_4indi`) but is structurally empty: it never holds plants.
 
-**Why this matters:** The plant agent model evaluates expansion (adding a new furnace group to an existing plant) once per plant group per year. With a single "indi" group, only one expansion could occur per year across all new plants globally. Per-ISO3 groups allow one expansion per country per year.
+**Why this matters:** The plant agent model evaluates expansion (adding a new furnace group to an existing plant) once per plant group per year. With a single "indi" group, only one expansion could occur per year across all new plants globally. Per-ISO3 groups allow one expansion per country per year. Routing at birth also ensures the plant-group reverse-lookup map (`plant_id_to_plantgroup_id`) is populated for runtime-born plants.
 
 **Lifecycle summary:**
 
 | Status | Plant group | Processed by |
 |--------|------------|--------------|
-| Considered | `indi` (master) | GEO: dynamic cost updates, status tracking |
-| Announced | `indi` (master) | GEO: dynamic cost updates, conversion to construction |
+| Considered | `indi_{iso3}` | GEO: dynamic cost updates, status tracking |
+| Announced | `indi_{iso3}` | GEO: dynamic cost updates, conversion to construction |
 | Construction | `indi_{iso3}` | Simulation loop: time-based transition to operating |
 | Operating | `indi_{iso3}` | PAM: balance updates, furnace group strategy, expansion |
 
-**Implementation:** The routing runs in `GeospatialModel.run()` (`plant_agent.py`) after status commands are handled and before new opportunities are identified. Plants are identified as GEO-originated by `parent_gem_id.startswith("indi")`.
+**Implementation:** Routing runs inside the `add_new_business_opportunities_to_repository` handler via `PlantGroupRepository.register_plant_in_group`, which creates the per-country group on demand. The handler also overwrites `plant.parent_gem_id` from the `"indi"` placeholder set by `PlantGroup.generate_new_plant` to `indi_{iso3}`. Plants are identified as GEO-originated by `parent_gem_id.startswith("indi")`.
 
 ## Business Opportunity Identification
 

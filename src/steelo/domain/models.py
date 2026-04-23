@@ -4954,7 +4954,6 @@ class PlantGroup:
         # cost_data has been validated by validate_and_clean_cost_data to ensure these are floats/dicts
         new_furnace.railway_cost = cost_data[product][site_id][technology_name]["railway_cost"]  # type: ignore[assignment]
         new_plant.add_furnace_group(new_furnace)
-        self.plants.append(new_plant)
         return new_plant
 
     def evaluate_expansion_options(
