@@ -65,6 +65,9 @@ class Commodity:
     def __repr__(self):
         return self.name
 
+    def __str__(self) -> str:
+        return self.name
+
 
 class TransportationCost:
     """Transportation cost class for location-dependent commodity transportation costs"""

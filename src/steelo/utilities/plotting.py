@@ -410,6 +410,7 @@ def plot_steel_cost_curve(curve, demand):
     plt.ylabel("Production Cost (US$/t)")
     plt.legend()
     plt.grid(True)
+    plt.ylim(bottom=0)
 
     # Show the plot
     plt.show()
@@ -485,6 +486,7 @@ def plot_cost_curve_per_region(plants: PlantRepository) -> Figure:
     ax.set_ylabel("Cost per Unit [US$/t]", fontsize=12)
     ax.set_title("Cost Curve per Region", fontsize=14)
     ax.grid(True, linestyle="--", alpha=0.6)
+    ax.set_ylim(bottom=0)
 
     # Show the plot
     return fig
@@ -2025,6 +2027,7 @@ def plot_cost_curve_for_commodity(cost_curve: list, total_demand: float, image_p
     plt.title("Cost Curve")
     plt.legend()
     plt.grid(True)
+    plt.ylim(bottom=0)
     plt.tight_layout()
 
     # Save to file
@@ -2273,6 +2276,8 @@ def plot_value_histogram(
 
     if log_scale:
         plt.yscale("log")
+    else:
+        plt.ylim(bottom=0)
 
     plt.xlabel(f"Values of '{var_name}'")
     plt.ylabel("Frequency")
@@ -2621,6 +2626,8 @@ def plot_added_capacity_by_technology(
             ax[i].set_title(f"Added capacity by technology - {product}")
             ax[i].set_xlabel("Year")
             ax[i].set_ylabel(f"Capacity [{units}]")
+    for a in ax:
+        a.set_ylim(bottom=0)
     fig.tight_layout()
     if plot_paths is None or plot_paths.pam_plots_dir is None:
         raise ValueError("plot_paths with pam_plots_dir must be provided when saving plots")
@@ -3583,6 +3590,7 @@ def plot_capex_by_technology_and_year(
     ax.set_ylabel("Total CAPEX (Billion USD)", fontsize=12)
     ax.legend(title="Technology", bbox_to_anchor=(1.05, 1), loc="upper left", frameon=True)
     ax.grid(axis="y", alpha=0.3, linestyle="--")
+    ax.set_ylim(bottom=0)
 
     # Set x-axis to show all years (including years with zero CAPEX)
     ax.set_xticks(range(len(full_year_range)))
@@ -3718,6 +3726,7 @@ def plot_emissions_wedge_by_technology(
     ax.set_ylabel("Total Emissions (Mt CO2e)", fontsize=12)
     ax.legend(title="Technology", bbox_to_anchor=(1.05, 1), loc="upper left", frameon=True)
     ax.grid(axis="y", alpha=0.3, linestyle="--")
+    ax.set_ylim(bottom=0)
 
     # Format x-axis
     years = sorted(df_pivot.index)
@@ -3843,6 +3852,7 @@ def plot_iron_ore_by_quality(
     ax.set_ylabel("Total Consumption (Mt)", fontsize=12)
     ax.legend(title="Quality", bbox_to_anchor=(1.05, 1), loc="upper left", frameon=True)
     ax.grid(axis="y", alpha=0.3, linestyle="--")
+    ax.set_ylim(bottom=0)
 
     # Format x-axis
     years = sorted(df_pivot.index)
@@ -3958,6 +3968,7 @@ def plot_metallic_charges(
     ax.set_ylabel("Total Consumption (Mt)", fontsize=12)
     ax.legend(title="Charge Type", bbox_to_anchor=(1.05, 1), loc="upper left", frameon=True)
     ax.grid(axis="y", alpha=0.3, linestyle="--")
+    ax.set_ylim(bottom=0)
 
     # Format x-axis
     years = sorted(df_pivot.index)

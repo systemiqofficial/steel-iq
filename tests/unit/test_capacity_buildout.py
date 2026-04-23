@@ -60,10 +60,16 @@ def test_furnace_group_added_still_triggers_capacity_buildout():
 
 
 class _FakeUnitOfWork:
-    """Minimal UoW fake that supports context-manager protocol and commit."""
+    """Minimal UoW fake that supports context-manager protocol and commit.
+
+    Provides a ``plants`` repo stub so handlers that look up the plant (e.g. the
+    CO2-storage counter hook in ``update_capacity_buildout``) don't trip over a
+    missing attribute. The stub's ``get`` returns a MagicMock plant whose attribute
+    access chain is also mocked out."""
 
     def __init__(self):
         self.committed = False
+        self.plants = MagicMock()
 
     def __enter__(self):
         return self
@@ -85,6 +91,7 @@ def test_capacity_buildout_adds_to_env_added_capacity():
     technology specified in the FurnaceGroupAdded event.
     """
     env = MagicMock()
+    env.get_co2_need.return_value = 0.0  # non-CCS tech → skip the CO2 counter hook
     uow = _FakeUnitOfWork()
 
     event = events.FurnaceGroupAdded(

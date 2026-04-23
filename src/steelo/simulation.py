@@ -320,6 +320,10 @@ class SimulationConfig:
 
     # === Clustering Configuration ===
     enable_furnace_group_clustering: bool = False  # Feature flag for LP complexity reduction via clustering
+    # When True, FGs that consume/produce a closely-allocated commodity cluster by plant_group_id
+    # instead of iso3, so cold/hot commodity substitution in disaggregation stays local.
+    # When False, all FGs cluster by iso3 (pre-experiment behavior).
+    cluster_hot_metal_techs_by_plant_group: bool = False
 
     # === Plant Agent Module Parameters ===
     probabilistic_agents: bool = True  # Probabilitstic (mimick human decision-making) vs deterministic approach
@@ -379,6 +383,9 @@ class SimulationConfig:
     )  # Probability of a plant being announced after being considered - given a history of positive NPVs of at least `consideration_time` years
     top_n_loctechs_as_business_op: int = 15  # Number of top location-technology combinations to consider as business
     # opportunities per product per year (e.g., 5 for steel and 5 for iron = 10 total)
+    co2_storage_reserved_discount_factor: float = (
+        0.9  # Fraction of an announced CCS plant's CO2 need that counts toward the reserved storage bucket
+    )
 
     # === Scenario and Policy Settings ===
     chosen_demand_scenario: str = "BAU"
@@ -1119,6 +1126,9 @@ class SimulationRunner:
             # Set the environment year to match the loop iteration
             bus.env.year = Year(i)
 
+            # Year-start baseline scan: rebuild CO2 storage counters (firm/reserved) before Allocation/PAM/GEO.
+            bus.env.scan_co2_storage_counters(bus.uow)
+
             # Log plant balance distribution in early years for opening balance verification
             if i <= start_year + 4:
                 balances = [p.balance for p in bus.uow.plants.list()]
@@ -1237,7 +1247,9 @@ class SimulationRunner:
                 )
 
                 # Collect market prices for iron and steel
-                prices = data_collector.collect_market_iron_steel_price()
+                prices = data_collector.collect_market_iron_steel_price(
+                    world_suppliers=bus.uow.repository.suppliers.list()
+                )
                 data_collector.trace_price[bus.env.year] = prices
                 logger.info(
                     f"Year {bus.env.year} prices - Steel: ${prices['steel']:.2f}/t, Iron: ${prices['iron']:.2f}/t"
@@ -1380,16 +1392,20 @@ class SimulationRunner:
         if data_collector.trace_price:
             import pandas as pd
             import matplotlib.pyplot as plt
+            from matplotlib.ticker import MaxNLocator
 
             price_data = []
             for year, prices in sorted(data_collector.trace_price.items()):
-                price_data.append(
-                    {
-                        "year": year,
-                        "steel_price_usd_per_t": prices.get("steel", 0.0),
-                        "iron_price_usd_per_t": prices.get("iron", 0.0),
-                    }
-                )
+                row: dict = {
+                    "year": year,
+                    "steel_price_usd_per_t": prices.get("steel", 0.0),
+                    "iron_price_usd_per_t": prices.get("iron", 0.0),
+                }
+                if "scrap" in prices:
+                    row["scrap_price_usd_per_t"] = prices["scrap"]
+                if "iron_weighted_avg" in prices:
+                    row["iron_weighted_avg_cost_usd_per_t"] = prices["iron_weighted_avg"]
+                price_data.append(row)
 
             price_df = pd.DataFrame(price_data)
 
@@ -1415,23 +1431,44 @@ class SimulationRunner:
                 label="Steel",
                 color="#1f77b4",
             )
-            ax.plot(
-                price_df["year"],
-                price_df["iron_price_usd_per_t"],
-                marker="s",
-                linewidth=2,
-                label="Iron",
-                color="#ff7f0e",
-            )
+            # ax.plot(
+            #     price_df["year"],
+            #     price_df["iron_price_usd_per_t"],
+            #     marker="s",
+            #     linewidth=2,
+            #     label="Iron (market price)",
+            #     color="#ff7f0e",
+            # )
+            if "scrap_price_usd_per_t" in price_df.columns:
+                ax.plot(
+                    price_df["year"],
+                    price_df["scrap_price_usd_per_t"],
+                    marker="^",
+                    linewidth=2,
+                    label="Scrap",
+                    color="#2ca02c",
+                )
+            if "iron_weighted_avg_cost_usd_per_t" in price_df.columns:
+                ax.plot(
+                    price_df["year"],
+                    price_df["iron_weighted_avg_cost_usd_per_t"],
+                    marker="D",
+                    linewidth=2,
+                    label="Iron (weighted avg cost)",
+                    color="#ff7f0e",
+                    alpha=0.6,
+                )
 
             ax.set_xlabel("Year", fontsize=12)
-            ax.set_ylabel("Price (USD/t)", fontsize=12)
-            ax.set_title("Market Prices - Steel and Iron", fontsize=14, fontweight="bold")
+            ax.set_ylabel("Price / Cost (USD/t)", fontsize=12)
+            ax.set_title("Market Prices - Steel, Iron and Scrap", fontsize=14, fontweight="bold")
             ax.legend(fontsize=11)
             ax.grid(True, alpha=0.3)
 
             # Format y-axis with commas for thousands
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f"${x:,.0f}"))
+            ax.set_ylim(bottom=0)
+            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
             plt.tight_layout()
 

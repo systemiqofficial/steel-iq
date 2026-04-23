@@ -20,6 +20,7 @@ import networkx as nx
 from steelo.domain.models import Location, Plant, FurnaceGroup, PrimaryFeedstock, Volumes
 from steelo.domain.constants import T_TO_KT
 from steelo.utilities.utils import normalize_name
+from steelo.utilities.data_processing import normalize_product_name
 from steelo.adapters.geospatial.geospatial_toolbox import haversine_distance
 
 if TYPE_CHECKING:
@@ -350,6 +351,28 @@ def _create_feedstock_signature(fg: FurnaceGroup) -> str:
     return "|".join(feedstock_keys)
 
 
+def _is_affected_by_hot_metal_radius(fg: FurnaceGroup, config: "SimulationConfig") -> bool:
+    """Whether a furnace group consumes or produces a commodity gated by hot_metal_radius.
+
+    Inspects `effective_primary_feedstocks`: any feedstock whose `metallic_charge` or
+    `outputs` key matches `config.closely_allocated_products` marks the FG as affected.
+    Affected FGs cluster by plant group instead of iso3 so the hot/cold commodity
+    substitution in the LP disaggregator stays local.
+    """
+    closely_allocated = {normalize_product_name(p) for p in config.closely_allocated_products}
+
+    feedstocks = getattr(fg, "effective_primary_feedstocks", None) or []
+    for fs in feedstocks:
+        metallic_charge = normalize_product_name(getattr(fs, "metallic_charge", "") or "")
+        if metallic_charge in closely_allocated:
+            return True
+        outputs = getattr(fs, "outputs", None) or {}
+        for output_name in outputs.keys():
+            if normalize_product_name(output_name or "") in closely_allocated:
+                return True
+    return False
+
+
 @dataclass(frozen=True)
 class ClusterKey:
     """Key for grouping furnace groups into clusters.
@@ -358,13 +381,16 @@ class ClusterKey:
 
     Attributes:
         technology_name: Technology type (e.g., "BF", "DRI", "EAF")
-        iso3: Country ISO3 code (e.g., "CHN", "USA", "DEU")
+        location_key: Country ISO3 for techs unaffected by the hot-metal radius,
+            or a plant_group_id for techs that consume/produce a closely-allocated
+            commodity (hot_metal, dri_*, liquid_iron). Plant-group clustering keeps
+            the hot/cold commodity substitution local.
         feedstock_signature: Hash of effective_primary_feedstocks to ensure compatibility
             (includes reductant information, making chosen_reductant redundant)
     """
 
     technology_name: str
-    iso3: str
+    location_key: str
     feedstock_signature: str  # Hashable representation of feedstocks
 
     def __str__(self) -> str:
@@ -372,7 +398,7 @@ class ClusterKey:
         fs_prefix = (
             self.feedstock_signature.split(":")[0] if ":" in self.feedstock_signature else self.feedstock_signature
         )
-        return f"{self.technology_name}_{fs_prefix}_{self.iso3}"
+        return f"{self.technology_name}_{fs_prefix}_{self.location_key}"
 
 
 @dataclass
@@ -401,7 +427,7 @@ class MetaFurnaceGroup:
     Example:
         >>> # Three BF furnaces in China using coke, with total capacity 10,000 t
         >>> meta_fg = MetaFurnaceGroup(
-        ...     cluster_key=ClusterKey("BF", "coke", "CHN"),
+        ...     cluster_key=ClusterKey("BF", "CHN", "coke:io_low"),
         ...     meta_furnace_group_id="cluster_BF_coke_CHN",
         ...     constituent_fg_ids=["plant1_fg0", "plant2_fg0", "plant3_fg0"],
         ...     technology_name="BF",
@@ -431,6 +457,10 @@ class MetaFurnaceGroup:
     capacity_shares: dict[str, float] = field(default_factory=dict)
     constituent_locations: dict[str, Location] = field(default_factory=dict)
     weighted_avg_energy_costs: dict[str, float] = field(default_factory=dict)
+    # Set when the cluster was keyed by plant_group (hot-metal-affected tech with
+    # cluster_hot_metal_techs_by_plant_group on). Used by the LP to restrict hot
+    # commodity flows to within a plant_group. None for iso3-keyed clusters.
+    plant_group_id: str | None = None
 
     def __str__(self) -> str:
         return (
@@ -488,8 +518,9 @@ def calculate_center_of_gravity(furnace_groups_with_plants: list[tuple[FurnaceGr
             sum(plant.location.lon * float(fg.capacity) for fg, plant in furnace_groups_with_plants) / total_capacity
         )
 
-    # Use the first furnace group's location metadata (iso3, country, region)
-    # These should be identical for all FGs in the cluster since we cluster by iso3
+    # Use the first furnace group's location metadata (iso3, country, region).
+    # These should be identical across the cluster: either we clustered by iso3,
+    # or by plant_group_id (which is strictly nested within a single iso3).
     reference_location = furnace_groups_with_plants[0][1].location
 
     return Location(
@@ -601,15 +632,28 @@ def cluster_furnace_groups(
 
     # Step 2: Group by cluster key (including feedstock configuration)
     clusters: dict[ClusterKey, list[tuple[FurnaceGroup, Plant]]] = {}
+    n_plant_group_keyed = 0
+    n_iso3_keyed = 0
     for fg, plant in active_fgs:
         # Extract clustering attributes
         technology_name = fg.technology.name
-        iso3 = plant.location.iso3
         feedstock_signature = _create_feedstock_signature(fg)
+
+        # When the plant-group flag is on, hot-metal-affected techs cluster by plant_group
+        # so cold/hot commodity substitution stays local. Otherwise all techs cluster by iso3.
+        use_plant_group = getattr(config, "cluster_hot_metal_techs_by_plant_group", False) and (
+            _is_affected_by_hot_metal_radius(fg, config)
+        )
+        if use_plant_group:
+            location_key = plant.ultimate_plant_group
+            n_plant_group_keyed += 1
+        else:
+            location_key = plant.location.iso3
+            n_iso3_keyed += 1
 
         cluster_key = ClusterKey(
             technology_name=technology_name,
-            iso3=iso3,
+            location_key=location_key,
             feedstock_signature=feedstock_signature,
         )
 
@@ -617,7 +661,10 @@ def cluster_furnace_groups(
             clusters[cluster_key] = []
         clusters[cluster_key].append((fg, plant))
 
-    logger.info(f"[CLUSTERING] Created {len(clusters)} unique clusters")
+    logger.info(
+        f"[CLUSTERING] Created {len(clusters)} unique clusters "
+        f"({n_plant_group_keyed} FGs keyed by plant_group, {n_iso3_keyed} by iso3)"
+    )
 
     # Filter out FGs without effective_primary_feedstocks from each cluster
     filtered_clusters = {}
@@ -781,6 +828,12 @@ def cluster_furnace_groups(
         # Get chosen_reductant from first FG (should be identical across cluster)
         chosen_reductant = normalize_name(getattr(cluster_fgs[0][0], "chosen_reductant", "") or "unknown")
 
+        # If the cluster was keyed by plant_group (location_key matches the constituent
+        # plants' plant_group, not their iso3), record it so the LP can constrain hot
+        # commodity flows to within a plant_group.
+        reference_iso3 = cluster_fgs[0][1].location.iso3
+        plant_group_id = cluster_key.location_key if cluster_key.location_key != reference_iso3 else None
+
         # Create meta-furnace group
         meta_fg = MetaFurnaceGroup(
             cluster_key=cluster_key,
@@ -795,6 +848,7 @@ def cluster_furnace_groups(
             capacity_shares=capacity_shares,
             constituent_locations=constituent_locations,
             weighted_avg_energy_costs=weighted_avg_energy_costs,
+            plant_group_id=plant_group_id,
         )
 
         meta_furnace_groups.append(meta_fg)
@@ -3793,6 +3847,49 @@ def disaggregate_allocations(
                 )
         if not any_violations:
             logger.info("[HOT_METAL_RADIUS] No unresolved hot-metal radius violations this year")
+    # Hot-metal-radius audit: count disaggregated flows where a closely-allocated
+    # commodity (hot_metal, dri_*, liquid_iron) moves farther than hot_metal_radius.
+    closely_allocated_names = {normalize_product_name(p) for p in getattr(config, "closely_allocated_products", [])}
+    hot_metal_radius = getattr(config, "hot_metal_radius", 0.0)
+    violations_by_commodity: dict[str, dict[str, float]] = {}
+    total_violations = 0
+    total_violation_volume = 0.0
+    total_hot_flows = 0
+    total_hot_volume = 0.0
+    for (from_pc, to_pc, commodity), volume in result.allocations.items():
+        commodity_name = normalize_product_name(commodity.name if hasattr(commodity, "name") else str(commodity))
+        if commodity_name not in closely_allocated_names:
+            continue
+        from_loc = getattr(from_pc, "location", None)
+        to_loc = getattr(to_pc, "location", None)
+        if from_loc is None or to_loc is None:
+            continue
+        distance_km = _calculate_distance_km(from_loc, to_loc)
+        bucket = violations_by_commodity.setdefault(
+            commodity_name, {"flows": 0, "volume": 0.0, "violating_flows": 0, "violating_volume": 0.0}
+        )
+        bucket["flows"] += 1
+        bucket["volume"] += float(volume)
+        total_hot_flows += 1
+        total_hot_volume += float(volume)
+        if distance_km > hot_metal_radius:
+            bucket["violating_flows"] += 1
+            bucket["violating_volume"] += float(volume)
+            total_violations += 1
+            total_violation_volume += float(volume)
+
+    logger.info("[DISAGGREGATION] === Hot Metal Radius Audit ===")
+    logger.info(
+        f"[DISAGGREGATION] Closely-allocated flows: {total_hot_flows} total "
+        f"({total_hot_volume:.0f} t); violating radius={hot_metal_radius}km: "
+        f"{total_violations} flows ({total_violation_volume:.0f} t)"
+    )
+    for commodity_name in sorted(violations_by_commodity):
+        b = violations_by_commodity[commodity_name]
+        logger.info(
+            f"[DISAGGREGATION]   {commodity_name}: {b['violating_flows']}/{b['flows']} flows violate, "
+            f"{b['violating_volume']:.0f}/{b['volume']:.0f} t violate"
+        )
 
     logger.info("[DISAGGREGATION] Disaggregation complete")
 
