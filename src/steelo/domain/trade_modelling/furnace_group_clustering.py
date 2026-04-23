@@ -258,6 +258,10 @@ class MetaFurnaceGroup:
     capacity_shares: dict[str, float] = field(default_factory=dict)
     constituent_locations: dict[str, Location] = field(default_factory=dict)
     weighted_avg_energy_costs: dict[str, float] = field(default_factory=dict)
+    # Set when the cluster was keyed by plant_group (hot-metal-affected tech with
+    # cluster_hot_metal_techs_by_plant_group on). Used by the LP to restrict hot
+    # commodity flows to within a plant_group. None for iso3-keyed clusters.
+    plant_group_id: str | None = None
 
     def __str__(self) -> str:
         return (
@@ -545,6 +549,12 @@ def cluster_furnace_groups(
         # Get chosen_reductant from first FG (should be identical across cluster)
         chosen_reductant = normalize_name(getattr(cluster_fgs[0][0], "chosen_reductant", "") or "unknown")
 
+        # If the cluster was keyed by plant_group (location_key matches the constituent
+        # plants' plant_group, not their iso3), record it so the LP can constrain hot
+        # commodity flows to within a plant_group.
+        reference_iso3 = cluster_fgs[0][1].location.iso3
+        plant_group_id = cluster_key.location_key if cluster_key.location_key != reference_iso3 else None
+
         # Create meta-furnace group
         meta_fg = MetaFurnaceGroup(
             cluster_key=cluster_key,
@@ -559,6 +569,7 @@ def cluster_furnace_groups(
             capacity_shares=capacity_shares,
             constituent_locations=constituent_locations,
             weighted_avg_energy_costs=weighted_avg_energy_costs,
+            plant_group_id=plant_group_id,
         )
 
         meta_furnace_groups.append(meta_fg)
