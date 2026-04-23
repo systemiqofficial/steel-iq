@@ -89,16 +89,63 @@ class DataCollector:
             Commodities.STEEL.value: self.env.regional_steel_capacity,
         }
 
-    def collect_market_iron_steel_price(self, demand: int = 300):
+    def collect_market_iron_steel_price(self, world_suppliers=None):
         """
-        Collect the market price of iron and steel for the given iteration
+        Collect the market price of iron and steel for the given iteration, plus scrap
+        and weighted-average iron production cost when data is available.
+
+        Args:
+            world_suppliers: Optional list of Supplier objects; used to compute the
+                capacity-weighted average scrap market price.
+
+        Returns:
+            dict with keys: "iron", "steel", and optionally "scrap" and
+            "iron_weighted_avg".
         """
-        return {
+        result = {
             Commodities.IRON.value: self.env.extract_price_from_costcurve(self.env.iron_demand, Commodities.IRON.value),
             Commodities.STEEL.value: self.env.extract_price_from_costcurve(
                 self.env.current_demand, Commodities.STEEL.value
             ),
         }
+
+        # Scrap price: capacity-weighted average of scrap supplier production costs
+        if world_suppliers:
+            year = self.env.year
+            scrap_suppliers = [s for s in world_suppliers if s.commodity == "scrap"]
+            total_cap = 0.0
+            total_cost = 0.0
+            for s in scrap_suppliers:
+                cap = float(s.capacity_by_year.get(year, 0.0))
+                cost = s.production_cost_by_year.get(year)
+                if cap > 0 and cost is not None:
+                    total_cap += cap
+                    total_cost += cap * float(cost)
+            if total_cap > 0:
+                result["scrap"] = total_cost / total_cap
+
+        # Weighted-average iron material cost from avg_boms:
+        # for every technology, find any iron-product material and accumulate
+        # share-weighted unit costs across all (tech, iron_material) entries.
+        from steelo.domain.constants import IRON_PRODUCTS
+
+        iron_product_set = set(IRON_PRODUCTS)
+        avg_boms = getattr(self.env, "avg_boms", {})
+        total_share = 0.0
+        total_weighted_cost = 0.0
+        for _tech, materials in avg_boms.items():
+            for mat_name, mat_data in materials.items():
+                if mat_name.lower() not in iron_product_set:
+                    continue
+                share = mat_data.get("input_share_pct", 0.0)
+                cost = mat_data.get("unit_cost")
+                if share > 0 and cost is not None:
+                    total_share += share
+                    total_weighted_cost += share * float(cost)
+        if total_share > 0:
+            result["iron_weighted_avg"] = total_weighted_cost / total_share
+
+        return result
 
     # def collect_params4steel_cost_curve(self):
     #     """

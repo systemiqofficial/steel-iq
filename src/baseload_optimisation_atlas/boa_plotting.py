@@ -23,6 +23,7 @@ def plot_design_distributions(designs: list[dict[str, float]]) -> None:
         ax.hist([design[key] for design in designs], bins=30, edgecolor="black", alpha=0.7)
         ax.set_xlabel(key)
         ax.set_title(f"{key} overscale factor")
+        ax.set_ylim(bottom=0)
 
     plt.tight_layout()
     plt.show()
@@ -51,6 +52,7 @@ def plot_state_of_charge_and_cost(
     plt.subplot(1, 2, 1)
     plt.hist(opt_soc, bins=30)
     plt.title("Battery State of Charge of optimal design (MWh)")
+    plt.ylim(bottom=0)
 
     plt.subplot(1, 2, 2)
     scatter = plt.scatter(
@@ -68,6 +70,7 @@ def plot_state_of_charge_and_cost(
     # Mark the optimal point
     plt.scatter(opt_design["solar"], opt_design["wind"], marker="o", color="red", label="Optimum")
     plt.legend()
+    plt.ylim(bottom=0)
 
     plt.tight_layout()
     plt.show()
