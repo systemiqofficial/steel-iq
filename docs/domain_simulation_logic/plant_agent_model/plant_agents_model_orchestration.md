@@ -24,9 +24,14 @@ Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()
    - Sets `furnace_group.allocated_volumes`
    - Sets `furnace_group.utilization_rate`
 
-2. **TM-PAM Connector** updates costs:
+2. **TM-PAM Connector** disaggregates cluster flows and updates costs:
+   - Splits LP cluster-level flows to individual FG level via `disaggregate_allocations()`
    - Sets `furnace_group.bill_of_materials`
    - Sets `furnace_group.emissions`
+
+3. **BOM validation and utilisation correction** (`handlers.py`):
+   - `TMPAMConnector.validate_bom_consistency()` checks every active FG for: mass balance (metallic input / production ∈ [0.99, 1.21]), minimum-share constraints (e.g. BOF hot_metal ≥ 70% − 1pp), and zero metallic charge where metallics are required.
+   - `correct_utilization_for_supply_constraints()` scales down production and utilisation for any BOF FG that received insufficient hot metal to meet its minimum share. This is a safety net for edge cases (e.g. technology-cluster mismatch) that survive the structural disaggregation checks.
 
 **After PAM runs:**
 
@@ -35,7 +40,13 @@ Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()
    - Create new furnace groups
    - Record domain events
 
-2. **Checkpoint** saves state:
+2. **Refresh hot-metal access** (`simulation.py`):
+   - Calls `plant_group.update_hot_metal_access(config.hot_metal_radius)` for each `PlantGroup`
+   - Sets `has_hot_metal_access` on each `Plant` and each `FurnaceGroup` based on whether any BF/ESF/SR producer sits within `hot_metal_radius` of the plant (across plants in the same plant group)
+   - Populates `PlantGroup.hot_metal_access` (BOF `furnace_group_id` → list of in-radius hot-metal producers)
+   - Consumed downstream by `cluster_furnace_groups()` to filter BOFs without hot-metal access, by the PAM's BOF-transition check, and by `PlantGroup.evaluate_expansion()` to skip BOF greenfield options at plants without access
+
+3. **Checkpoint** saves state:
    - Serializes all plants, furnace groups, plant groups
    - Records issued commands for replay
 

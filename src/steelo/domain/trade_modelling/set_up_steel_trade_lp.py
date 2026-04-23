@@ -712,13 +712,17 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
         - Variables are fixed using pyomo's .fix(0) method
         - This must be called after allocation variables are created but before solving
     """
+    logger = logging.getLogger(f"{__name__}.fix_to_zero_allocations_where_distance_doesnt_match_commodity")
+
     # Check if clustering is enabled (defaults to False for backwards compatibility)
     enable_clustering = getattr(config, "enable_furnace_group_clustering", False)
 
     if enable_clustering:
         # NEW BEHAVIOR: Allow both hot and cold commodities with geographic constraints
-        # Hot commodities are restricted to intra-country allocations
-        # Cold commodities can go anywhere
+        # Hot commodities are restricted to intra-country allocations (or intra-plant-group
+        # when cluster_hot_metal_techs_by_plant_group is on, which keeps flows physically
+        # local).
+        # Cold commodities can go anywhere.
 
         # Build a mapping from process center names to ISO3 codes for quick lookup
         pc_name_to_iso3 = {}
@@ -726,20 +730,50 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
             if pc.location and pc.location.iso3:
                 pc_name_to_iso3[pc.name] = pc.location.iso3
 
+        # When plant-group clustering is on, build pc_name → plant_group_id for meta-FGs
+        # so we can tighten the hot-commodity rule beyond iso3.
+        pc_name_to_plant_group: dict[str, str] = {}
+        use_plant_group_rule = getattr(config, "cluster_hot_metal_techs_by_plant_group", False)
+        if use_plant_group_rule:
+            meta_fgs = getattr(env, "meta_furnace_groups", None) if env is not None else None
+            if meta_fgs:
+                for mfg in meta_fgs:
+                    if mfg.plant_group_id is not None:
+                        pc_name_to_plant_group[mfg.meta_furnace_group_id] = mfg.plant_group_id
+
+        blocked_missing_iso3 = 0
+        blocked_cross_country = 0
+        blocked_cross_plant_group = 0
         for from_pc_name, to_pc_name, comm in trade_lp.lp_model.allocation_variables:
             if comm in config.closely_allocated_products:
-                # Hot commodities can only be allocated within the same country
                 from_iso3 = pc_name_to_iso3.get(from_pc_name)
                 to_iso3 = pc_name_to_iso3.get(to_pc_name)
 
                 # If we can't determine ISO3 codes, be conservative and block the allocation
                 if from_iso3 is None or to_iso3 is None:
                     trade_lp.lp_model.allocation_variables[(from_pc_name, to_pc_name, comm)].fix(0)
-                # If it's an international allocation, block hot commodity flow
-                elif from_iso3 != to_iso3:
+                    blocked_missing_iso3 += 1
+                    continue
+                # Always block cross-country hot commodity flow.
+                if from_iso3 != to_iso3:
                     trade_lp.lp_model.allocation_variables[(from_pc_name, to_pc_name, comm)].fix(0)
-                # Intra-country hot commodity allocations are allowed
-                # (hot metal radius will be enforced during disaggregation)
+                    blocked_cross_country += 1
+                    continue
+                # Same-country: if both sides are plant-group-keyed meta-FGs, require
+                # them to share the same plant_group. Otherwise fall through (allow).
+                if use_plant_group_rule:
+                    from_pg = pc_name_to_plant_group.get(from_pc_name)
+                    to_pg = pc_name_to_plant_group.get(to_pc_name)
+                    if from_pg is not None and to_pg is not None and from_pg != to_pg:
+                        trade_lp.lp_model.allocation_variables[(from_pc_name, to_pc_name, comm)].fix(0)
+                        blocked_cross_plant_group += 1
+
+        logger.info(
+            f"[LP HOT-METAL] Fixed to zero: {blocked_cross_country} cross-country, "
+            f"{blocked_cross_plant_group} cross-plant-group, {blocked_missing_iso3} missing-iso3 "
+            f"(plant_group rule={'on' if use_plant_group_rule else 'off'}, "
+            f"plant-group-keyed PCs={len(pc_name_to_plant_group)})"
+        )
 
     else:
         # OLD BEHAVIOR: Distance-based fixing for backwards compatibility

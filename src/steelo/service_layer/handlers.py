@@ -328,6 +328,26 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
             f"  - {bom_issue_count_materials} furnace groups retained existing material entries\n"
             f"  - {bom_issue_count_energy} furnace groups retained existing energy entries"
         )
+        bom_issues = tmpc.validate_bom_consistency(
+            furnace_groups=fgs,
+            aggregated_constraints=env.aggregated_metallic_charge_constraints,
+        )
+        if bom_issues:
+            logger.warning(
+                f"[BOM-CHECK] Year {env.year}: {len(bom_issues)} BOM consistency issue(s) detected "
+                f"({sum(1 for i in bom_issues if i['check'] == 'empty_bom')} empty_bom, "
+                f"{sum(1 for i in bom_issues if i['check'] == 'zero_metallic')} zero_metallic, "
+                f"{sum(1 for i in bom_issues if i['check'] == 'mass_balance')} mass_balance, "
+                f"{sum(1 for i in bom_issues if 'min_share' in i['check'])} min_share)"
+            )
+            corrected = tmpc.correct_utilization_for_supply_constraints(
+                furnace_groups=fgs,
+                bom_issues=bom_issues,
+            )
+            if corrected:
+                logger.info(
+                    f"[BOM-CHECK] Year {env.year}: corrected utilization for {corrected} supply-constrained FG(s)"
+                )
         tmpc.update_furnace_group_emissions(fgs)
         env.allocation_and_transportation_costs = tmpc.extract_transportation_costs(fgs)
 

@@ -320,6 +320,10 @@ class SimulationConfig:
 
     # === Clustering Configuration ===
     enable_furnace_group_clustering: bool = False  # Feature flag for LP complexity reduction via clustering
+    # When True, FGs that consume/produce a closely-allocated commodity cluster by plant_group_id
+    # instead of iso3, so cold/hot commodity substitution in disaggregation stays local.
+    # When False, all FGs cluster by iso3 (pre-experiment behavior).
+    cluster_hot_metal_techs_by_plant_group: bool = False
 
     # === Plant Agent Module Parameters ===
     probabilistic_agents: bool = True  # Probabilitstic (mimick human decision-making) vs deterministic approach
@@ -1240,7 +1244,8 @@ class SimulationRunner:
                                 fg.output_energy_costs,
                                 fg.energy_costs_no_subsidy,
                             )
-
+            for plant_group in bus.uow.plant_groups.list():
+                plant_group.update_hot_metal_access(bus.env.config.hot_metal_radius)
             Simulation(bus=bus, economic_model=AllocationModel()).run_simulation()
             Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()
             Simulation(bus=bus, economic_model=GeospatialModel()).run_simulation()

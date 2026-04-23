@@ -152,13 +152,23 @@ For each furnace group, extracts from the graph:
 ```python
 {
     "scrap": {
-        "demand": 105.3,          # tonnes required
-        "total_cost": 31590,      # USD
-        "unit_cost": 300          # USD/t
+        "demand": 105.3,                  # input volume (tonnes)
+        "total_cost": 31590,              # USD — includes current step's processing energy
+        "unit_cost": 316,                 # USD per tonne of OUTPUT (total_cost / product_volume)
+        "total_material_cost": 29500,     # USD — excludes current step's processing energy
+        "unit_material_cost": 295,        # USD per tonne of output
+        "product_volume": 100.0,          # output volume used for normalisation (tonnes)
     },
     "dri": { ... }
 }
 ```
+
+Two cost pairs are stored per commodity because downstream consumers need different slices:
+
+- **`total_cost` / `unit_cost`** include the processing energy consumed at **this** furnace group (i.e. everything needed to produce the FG's output, including its own conversion step).
+- **`total_material_cost` / `unit_material_cost`** include upstream material costs, transport, and tariffs, but exclude this FG's own processing energy.
+
+`calculate_variable_opex` consumes `total_material_cost` together with `energy` (which carries this FG's processing energy separately) to avoid double-counting. The distinction originates inside the cost-propagation step: `MaterialCost` on graph nodes tracks the cost of inputs to the FG without its own energy, while `Cost` adds that energy on top.
 
 **Energy** (from edge processing costs):
 ```python
