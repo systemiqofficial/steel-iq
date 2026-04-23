@@ -118,6 +118,27 @@ def run_full_simulation() -> str:
         action="store_true",
         help="Enable furnace group clustering to reduce LP complexity",
     )
+
+    def _str2bool(v: str) -> bool:
+        if v.lower() in ("true", "t", "yes", "y", "1"):
+            return True
+        if v.lower() in ("false", "f", "no", "n", "0"):
+            return False
+        raise argparse.ArgumentTypeError(f"expected a boolean value, got {v!r}")
+
+    parser.add_argument(
+        "--cluster-hot-metal-by-plant-group",
+        type=_str2bool,
+        nargs="?",
+        const=True,
+        default=False,
+        help=(
+            "When clustering is enabled, cluster hot-metal-affected techs "
+            "(those whose feedstocks or outputs include hot_metal/dri_*/liquid_iron) "
+            "by plant_group_id instead of iso3. Accepts bare flag, =True, or =False. "
+            "No effect without --enable-clustering."
+        ),
+    )
     parser.add_argument(
         "--peg-iron-to-steel-price",
         action="store_true",
@@ -251,6 +272,9 @@ def run_full_simulation() -> str:
             if args.enable_clustering:
                 config.enable_furnace_group_clustering = True
                 console.print("[green]Furnace group clustering enabled[/green]")
+            if args.cluster_hot_metal_by_plant_group:
+                config.cluster_hot_metal_techs_by_plant_group = True
+                console.print("[green]Hot-metal-affected techs will cluster by plant_group[/green]")
 
             # Override iron price pegging settings from command line
             if args.peg_iron_to_steel_price:
@@ -328,6 +352,9 @@ def run_full_simulation() -> str:
                 if args.enable_clustering:
                     config.enable_furnace_group_clustering = True
                     console.print("[green]Furnace group clustering enabled[/green]")
+                if args.cluster_hot_metal_by_plant_group:
+                    config.cluster_hot_metal_techs_by_plant_group = True
+                    console.print("[green]Hot-metal-affected techs will cluster by plant_group[/green]")
 
                 # Override iron price pegging settings from command line
                 if args.peg_iron_to_steel_price:
