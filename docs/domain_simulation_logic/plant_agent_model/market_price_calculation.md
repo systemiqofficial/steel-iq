@@ -100,6 +100,25 @@ Plant C: profit = (600 - 600) × 10 = $0M  (marginal plant breaks even)
 
 ---
 
+## Handling Demand Overshoot
+
+When total demand exceeds the cumulative capacity of every producer in the cost curve, there is no intersection of demand and supply — every plant is already running flat out. In that case the market price is set to the marginal (most expensive) producer's cost **plus a configurable buffer**:
+
+```python
+# simplified
+if demand > cost_curve[-1].cumulative_capacity:
+    market_price = cost_curve[-1].production_cost + config.<product>_price_buffer
+```
+
+Two `SimulationConfig` parameters control this:
+
+- `steel_price_buffer` — applied when steel demand exceeds steel capacity.
+- `iron_price_buffer` — applied when iron demand exceeds iron capacity.
+
+The buffer represents the extra willingness-to-pay required to incentivise new capacity when the market is supply-constrained. A `WARNING`-level log line is emitted whenever the buffer is triggered.
+
+---
+
 ## Implementation in PAM
 
 ### Where It's Used
