@@ -350,10 +350,13 @@ min_share × total_input ≤ sum(matching commodities) ≤ max_share × total_in
 | `dri_high` / `dri_mid` / `dri_low` | `hbi_high` / `hbi_mid` / `hbi_low`     |
 | `liquid_iron`                      | `electrolytic_iron`                    |
 
-**Solution:** `fix_to_zero_allocations_where_distance_doesnt_match_commodity()` — behavior depends on whether furnace-group clustering is enabled:
+**Solution:** `fix_to_zero_allocations_where_distance_doesnt_match_commodity()` — behavior depends on whether furnace-group clustering is enabled and how clusters are keyed:
 
 - **Clustering disabled (legacy):** The LP fixes hot-commodity flows to zero for all pairs beyond `hot_metal_radius`, and cold-commodity flows to zero for pairs inside the radius. Called before build to reduce problem size.
-- **Clustering enabled:** The LP only blocks *international* hot-commodity flows (different ISO3). Intra-country hot flows are allowed at the LP stage because clusters aggregate furnace groups whose individual locations aren't visible to the LP. The actual per-FG radius check is deferred to **disaggregation** (see below).
+- **Clustering enabled, iso3 keying:** The LP blocks *international* hot-commodity flows (different ISO3). Intra-country hot flows are allowed at the LP stage because clusters aggregate furnace groups whose individual locations aren't visible to the LP. The actual per-FG radius check is deferred to **disaggregation** (see below).
+- **Clustering enabled, plant-group keying** (`cluster_hot_metal_techs_by_plant_group=True`): The LP additionally blocks hot-commodity flows between meta-furnace-groups that belong to *different plant groups*, even within the same country. This matches the clustering key for hot-metal-affected technologies and limits LP-level hot flows to pairs that can plausibly stay within radius at disaggregation. Supplier / demand-centre edges (which don't have a `plant_group_id`) fall through to the iso3 rule.
+
+A summary line `[LP HOT-METAL] Fixed to zero: X cross-country, Y cross-plant-group, Z missing-iso3 ...` is emitted per year so the operator can see how often each rule bound.
 
 ---
 
@@ -372,6 +375,8 @@ Nine mechanisms work together:
 - **Isolated BOF filtering.** BOF FGs with no active BF/ESF/SR within `hot_metal_radius` in their country are excluded from their cluster entirely. Without a local iron source they can never satisfy the hot-metal minimum-share constraint, so including them would guarantee a BOM violation.
 
 - **Effective BOF cluster capacity.** For each BOF FG, effective capacity = `min(physical_capacity, Σ[reachable_BF_capacity within radius] / min_hot_metal_share)`. The cluster's `total_capacity`, `capacity_shares`, and weighted costs are all derived from these effective capacities. This prevents the LP from allocating more hot metal to a BOF cluster than its geographically reachable BF neighbours can physically supply.
+
+**Cluster key.** The cluster key is `(technology_name, location_key, feedstock_signature)` where `location_key` is `plant.location.iso3` for most FGs, but switches to `plant.ultimate_plant_group` for FGs affected by the hot-metal radius when `cluster_hot_metal_techs_by_plant_group=True`. A FG is considered *affected* by looking at its `effective_primary_feedstocks`: any feedstock whose `metallic_charge` or `outputs` key is in `config.closely_allocated_products` (hot_metal, dri_*, liquid_iron) triggers plant-group keying. The resulting `MetaFurnaceGroup.plant_group_id` is consumed by the LP's cross-plant-group rule above. A log line `[CLUSTERING] Created N clusters (X FGs keyed by plant_group, Y by iso3)` confirms the split per year.
 
 #### 2. Joint transportation problem for hot-metal disaggregation (pre-pass)
 
@@ -468,6 +473,18 @@ A separate downstream check in `TMPAMConnector.validate_bom_consistency()` then 
 - Cluster drift detected: list of clusters with `|drift − 1| > 1%` and their actual/LP ratio.
 - BOF clusters whose Case 2 shipments are being scaled down.
 - BOM validation summary: counts by check type, and per-FG details for any violations.
+
+At the end of disaggregation a **Hot Metal Radius Audit** block reports how many final allocations violate the radius:
+
+```
+[DISAGGREGATION] === Hot Metal Radius Audit ===
+[DISAGGREGATION] Closely-allocated flows: N total (V t); violating radius=5.0km: X flows (Y t)
+[DISAGGREGATION]   hot_metal: X1/N1 flows violate, Y1/V1 t violate
+[DISAGGREGATION]   dri_high:  X2/N2 flows violate, Y2/V2 t violate
+...
+```
+
+A violation is a final disaggregated allocation whose commodity is in `config.closely_allocated_products` and whose source→destination haversine distance exceeds `config.hot_metal_radius`. The counter is purely diagnostic — it doesn't block anything — and is useful for comparing clustering-key choices (iso3 vs plant_group) side-by-side.
 
 ---
 
