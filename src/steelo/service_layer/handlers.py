@@ -90,11 +90,19 @@ def change_furnace_group_status_to_switching_technology(
     """
     with uow:
         plant = uow.plants.get(cmd.plant_id)
+        # Snapshot old reductant BEFORE mutation — matches scan's switching-window rule
+        fg = plant.get_furnace_group(cmd.furnace_group_id)
+        old_reductant = fg.chosen_reductant
         plant.change_furnace_group_status_to_switching_technology(cmd.furnace_group_id, cmd.year_of_switch, cmd.cmd)
 
         # Track the switched capacity - use the NEW technology name and capacity from the embedded command
         if cmd.cmd and hasattr(cmd.cmd, "technology_name") and hasattr(cmd.cmd, "capacity"):
             env.add_switched_capacity(cmd.cmd.technology_name, capacity=Volumes(cmd.cmd.capacity))
+            # P2 counter hook: non-CCS -> CCS switch commits new tech's need to firm (old_need=0 via is_ccs_or_ccu lock)
+            new_need = env.get_co2_need_by_name(cmd.cmd.technology_name, cmd.cmd.capacity, old_reductant)
+            if new_need > 0.0:
+                iso3 = plant.location.iso3
+                env.co2_storage_firm[iso3] = env.co2_storage_firm.get(iso3, 0.0) + new_need
 
         uow.commit()
 
@@ -242,6 +250,15 @@ def update_capacity_buildout(_event: events.FurnaceGroupAdded, uow: UnitOfWork, 
         # Track new plant capacity separately from total capacity to monitor expansions vs new builds
         if _event.is_new_plant:
             env.add_new_plant_capacity(_event.technology_name, capacity=Volumes(_event.capacity))
+        else:
+            # Expansion path only: announced->construction is already counted in update_status_of_furnace_group;
+            # counting here too would double-count and violate firm <= limit.
+            plant = uow.plants.get(_event.plant_id)
+            fg = plant.get_furnace_group(_event.furnace_group_id)
+            need = env.get_co2_need(fg.technology, _event.capacity, fg.chosen_reductant)
+            if need > 0.0:
+                iso3 = plant.location.iso3
+                env.co2_storage_firm[iso3] = env.co2_storage_firm.get(iso3, 0.0) + need
         uow.commit()
 
 
@@ -595,6 +612,8 @@ def update_status_of_furnace_group(cmd: commands.UpdateFurnaceGroupStatus, uow: 
             if fg.furnace_group_id == cmd.fg_id:
                 old_status = fg.status
                 fg.status = cmd.new_status
+                iso3 = plant.location.iso3
+                d = env.config.co2_storage_reserved_discount_factor
                 if fg.status.lower() == "construction":
                     # Set the start year to become operational
                     fg.lifetime = PointInTime(
@@ -617,6 +636,12 @@ def update_status_of_furnace_group(cmd: commands.UpdateFurnaceGroupStatus, uow: 
                         )
                     fg.balance -= env.config.equity_share * capex
 
+                    # announced -> construction: convert the FG's reserved slot into a firm commitment.
+                    need = env.get_co2_need(fg.technology, fg.capacity, fg.chosen_reductant)
+                    if need > 0.0:
+                        env.co2_storage_firm[iso3] = env.co2_storage_firm.get(iso3, 0.0) + need
+                        env.co2_storage_reserved[iso3] = env.co2_storage_reserved.get(iso3, 0.0) - d * need
+
                     # Trigger FurnaceGroupAdded event to update capacity tracking
                     plant.furnace_group_added(
                         furnace_group_id=fg.furnace_group_id,
@@ -629,6 +654,12 @@ def update_status_of_furnace_group(cmd: commands.UpdateFurnaceGroupStatus, uow: 
                     logger.info(
                         f"[STATUS TRANSITION] {old_status} -> construction for {fg.technology.name} FG {fg.furnace_group_id} "
                     )
+                elif fg.status.lower() == "discarded" and old_status.lower() == "announced":
+                    # announced -> discarded: release the FG's reserved slot. The old-status guard is load-bearing:
+                    # the considered -> discarded NPV-TTL path also lands here and would drive reserved negative.
+                    need = env.get_co2_need(fg.technology, fg.capacity, fg.chosen_reductant)
+                    if need > 0.0:
+                        env.co2_storage_reserved[iso3] = env.co2_storage_reserved.get(iso3, 0.0) - d * need
         uow.commit()
 
 

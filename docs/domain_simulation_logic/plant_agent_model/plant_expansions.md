@@ -58,6 +58,7 @@ graph TD
 - **Actions**:
   - Call `evaluate_expansion_options()` to get NPV for each plant-technology combination
   - **Per-plant affordability filter**: For each plant-technology combination, check that the plant's individual balance can cover `capacity × capex` before computing NPV. Plants that cannot afford a given technology are skipped for that technology (but may still be considered for cheaper alternatives).
+  - **P3 CO2 storage gate (pre-NPV)**: For each CCS candidate, the gate computes `get_co2_need_by_name(tech, capacity, reductant)` and compares against `get_co2_headroom(iso3, current_year + construction_time)`. If `need > headroom` the tech is dropped before NPV is computed, so the per-plant NPV race naturally picks the next-best non-CCS alternative (or yields no expansion for that plant). Reductant lookup is two-level (PlantGroup-local first, env fallback) to stay aligned with the downstream `get_bom_from_avg_boms` call — gate and NPV see the same reductant.
   - Consider regional CAPEX, subsidies, dynamic feedstocks
   - Pass all subsidy information for proper NPV calculation
 - **Decision**: Which technologies can be built at which plants?

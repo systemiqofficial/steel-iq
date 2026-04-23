@@ -34,8 +34,6 @@ from steelo.utilities.plotting import (
     plot_process_graph,
 )
 
-# from steelo.domain.commands import InstallCarbonCapture
-
 # ============================================================================
 # SOLVER CONFIGURATION - Edit this section to experiment with different solver settings
 # ============================================================================
@@ -235,6 +233,10 @@ class GeospatialModel:
             chosen_emissions_boundary_for_carbon_costs=bus.env.config.chosen_emissions_boundary_for_carbon_costs,
             carbon_costs=bus.env.carbon_costs,
             dynamic_business_cases=bus.env.dynamic_feedstocks,
+            get_co2_headroom=bus.env.get_co2_headroom,
+            get_co2_need=bus.env.get_co2_need,
+            co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
+            reserved_discount_factor=bus.env.config.co2_storage_reserved_discount_factor,
         )
         if status_commands:
             for command in status_commands:
@@ -312,6 +314,9 @@ class GeospatialModel:
                 energy_subsidies=bus.env.energy_subsidies,
                 environment_most_common_reductant=bus.env.most_common_reductant_by_tech,
                 disposal_cost_outputs=bus.env.config.disposal_cost_outputs,
+                get_co2_headroom=bus.env.get_co2_headroom,
+                get_co2_need_by_name=bus.env.get_co2_need_by_name,
+                co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
             )
         )
         step_time = time.time() - step_start
@@ -648,11 +653,10 @@ class PlantAgentsModel:
     Economic decision-making model for steel and iron plant agents.
 
     This model simulates how steel and iron plants make economic decisions about:
-    1. Technology switching (e.g., switching from BF to DRI)
+    1. Technology switching (e.g., switching from BF to DRI, or to a CCS/CCU variant like BF+CCS)
     2. Renovations of existing technologies
     3. Furnace closures at the end of lifetime due to unprofitability
-    4. Carbon capture (CCS/CCU) installation for existing technologies
-    5. Plant expansions (new furnace groups within existing plants)
+    4. Plant expansions (new furnace groups within existing plants)
 
     The model evaluates each furnace group within each plant based on:
     - Current and future market prices for steel and iron
@@ -870,6 +874,9 @@ class PlantAgentsModel:
                         installed_capacity_in_year=bus.env.installed_capacity_in_year,
                         new_plant_capacity_in_year=bus.env.new_plant_capacity_in_year,
                         most_common_reductant_by_tech=bus.env.most_common_reductant_by_tech,
+                        get_co2_headroom=bus.env.get_co2_headroom,
+                        get_co2_need_by_name=bus.env.get_co2_need_by_name,
+                        co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
                     )
                 ) is not None:
                     logger.info(f"[PAM] FG {fg.furnace_group_id} strategy returned command: {type(cmd).__name__}")
@@ -896,37 +903,6 @@ class PlantAgentsModel:
                         logger.info(f"[PAM] EXECUTING {type(cmd).__name__}")
                         counter += 1
                         bus.handle(cmd)
-
-                # # Evaluate carbon capture and storage (CCS) installation
-                # logger.debug(f"[CLASS PLANT AGENT]: Evaluating CCS strategy for FG {fg.furnace_group_id}")
-                # if (
-                #     cmd := plant.evaluate_ccs_strategy(
-                #         furnace_group_id=fg.furnace_group_id,
-                #         capex=region_capex.get("CCS") or 0.0,
-                #         cost_of_equity=bus.env.industrial_cost_of_equity.get(plant.location.iso3, 0.1)
-                #         if isinstance(bus.env.industrial_cost_of_equity, dict)
-                #         else 0.1,
-                #         dynamic_business_cases=bus.env.dynamic_feedstocks,
-                #         equity_share=0.2,
-                #         available_carbon_storage=bus.env.get_available_carbon_storage(
-                #             lifetime=fg.lifetime.remaining_number_of_years, iso3=plant.location.iso3
-                #         ),
-                #         chosen_emissions_boundary_for_carbon_costs=bus.env.config.chosen_emissions_boundary_for_carbon_costs,
-                #         technology_emission_factors=bus.env.technology_emission_factors,
-                #     )
-                # ) is not None:
-                #     logger.info(
-                #         f"[CLASS PLANT AGENT]: FG {fg.furnace_group_id} CCS evaluation returned: {type(cmd).__name__}"
-                #     )
-                #     if isinstance(cmd, InstallCarbonCapture):
-                #         logger.info(
-                #             f"[CLASS PLANT AGENT]: INSTALLING CCS - Capacity: {cmd.installed_capacity:,.0f} tCO2 for FG {fg.furnace_group_id}"
-                #         )
-                #         bus.env.reserve_carbon_storage(iso3=plant.location.iso3, volume=cmd.installed_capacity)
-                #         fg.installed_carbon_capture += cmd.installed_capacity
-                #         logger.debug(
-                #             f"[CLASS PLANT AGENT]: Total CCS installed for FG: {fg.installed_carbon_capture:,.0f} tCO2"
-                #         )
 
         plant_eval_elapsed = time.time() - plant_eval_start
         logger.info(
@@ -981,6 +957,9 @@ class PlantAgentsModel:
                     new_plant_capacity_in_year=bus.env.new_plant_capacity_in_year,
                     new_capacity_share_from_new_plants=bus.env.config.new_capacity_share_from_new_plants,
                     environment_most_common_reductant=bus.env.most_common_reductant_by_tech,
+                    get_co2_headroom=bus.env.get_co2_headroom,
+                    get_co2_need_by_name=bus.env.get_co2_need_by_name,
+                    co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
                 )
             ) is not None:
                 logger.info(f"[PAM] Plant group {pg.plant_group_id} expansion returned: {type(cmd).__name__}")

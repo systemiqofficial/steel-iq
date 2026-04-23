@@ -101,7 +101,6 @@ def test_calculate_emissions_handles_spaced_reductant():
         material_bill=material_bill,
         business_cases={"io_high": feedstock},
         technology_emission_factors=factors,
-        installed_carbon_capture=0.0,
         grid_emissions=0.0,
     )
 

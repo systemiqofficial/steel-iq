@@ -65,40 +65,6 @@ class ChangeFurnaceGroupStatusToSwitchingTechnology(Command):
 
 
 @dataclass
-class InstallCarbonCapture(Command):
-    """Install carbon capture technology (CCS/CCU) on a furnace group.
-
-    Represents a command to add carbon capture and storage (CCS) or carbon capture
-    and utilization (CCU) capacity to an existing furnace group. The installed capacity
-    reduces direct CO2 emissions from the production process.
-
-    Carbon capture technologies:
-        - CCS (Carbon Capture and Storage): Captures CO2 and stores it permanently underground
-        - CCU (Carbon Capture and Utilization): Captures CO2 and uses it in products/processes
-
-    Attributes:
-        installed_capacity: Annual carbon capture capacity in tCO2e per year. This amount
-            will be subtracted from the furnace group's direct_ghg emissions each year
-            (cannot reduce emissions below zero).
-
-    Example:
-        >>> # Install 500,000 tCO2e/year capture capacity
-        >>> cmd = InstallCarbonCapture(installed_capacity=500000.0)
-        >>> message_bus.handle(cmd)
-        >>> # FurnaceGroup.installed_carbon_capture will be set to 500000.0
-        >>> # Direct emissions reduced accordingly in emissions calculations
-
-    Notes:
-        - Installed capacity should match the furnace group's emission profile and physical constraints.
-        - Typical capture rates range from 60-90% of direct emissions depending on technology.
-        - Economic viability depends on carbon price, capture costs, and subsidy availability.
-        - Only affects direct_ghg scope; indirect and biogenic emissions unchanged.
-    """
-
-    installed_capacity: float
-
-
-@dataclass
 class AddFurnaceGroup(Command):
     """Add a furnace group to a plant."""
 
