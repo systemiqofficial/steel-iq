@@ -75,7 +75,7 @@ PlantGroup (Company/Owner)
 **Key relationships**:
 - Contains multiple `Plant` objects
 - Identified by `plant_group_id` (typically from GEM database)
-- Aggregates `total_balance` across all plants
+- Owns the treasury ``balance`` — a stored ledger credited by the FG sweep and debited by ``deduct_equity``
 
 **Strategic role**:
 - Evaluates expansion options across all plants
@@ -176,7 +176,7 @@ PlantGroup (Company/Owner)
 PlantGroup
     │
     ├── plant_group_id: str
-    ├── total_balance: float
+    ├── balance: float  # stored treasury (ledger)
     └── plants: list[Plant] ────────────────┐
                                             │
                                             ▼

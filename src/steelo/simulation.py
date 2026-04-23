@@ -911,91 +911,100 @@ class Progress:
 
 
 def _seed_opening_balances(
-    plants: list,
+    plant_groups: list,
     env: Any,
     multiplier: float,
     active_statuses: list[str],
 ) -> None:
-    """Seed Plant.balance for initial plants to represent pre-simulation capital.
+    """Seed ``PlantGroup.balance`` for initial groups to represent pre-simulation capital.
+
+    Aggregates the per-FG renovation-share-based opening across every plant in a group,
+    then assigns the sum to ``pg.balance`` once per group. Indi_<iso3> groups created at
+    runtime from greenfield routing are absent from the bootstrap input and therefore
+    carry no seed here — they start at ``0.0`` and accrue from operational P&L.
 
     Args:
-        plants: All plants loaded from input data.
+        plant_groups: All plant groups loaded from input data.
         env: Environment with CAPEX and renovation share data.
-        multiplier: Fraction of renovation cost to seed. 0.0 = disabled, 1.0 = full.
+        multiplier: Fraction of renovation cost to seed. ``0.0`` = disabled, ``1.0`` = full.
         active_statuses: FG statuses eligible for inclusion.
     """
     seed_logger = logging.getLogger(f"{__name__}._seed_opening_balances")
     iso3_to_region = env.country_mappings.iso3_to_region()
     active_lower = [s.lower() for s in active_statuses]
 
-    for plant in plants:
-        plant_opening = 0.0
-        for fg in plant.furnace_groups:
-            if (
-                fg.created_by_PAM
-                or fg.capacity == 0
-                or fg.status.lower() not in active_lower
-                or fg.technology.name.lower() == "other"
-            ):
-                continue
+    for pg in plant_groups:
+        group_opening = 0.0
+        num_fgs_seeded = 0
+        for plant in pg.plants:
+            for fg in plant.furnace_groups:
+                if (
+                    fg.created_by_PAM
+                    or fg.capacity == 0
+                    or fg.status.lower() not in active_lower
+                    or fg.technology.name.lower() == "other"
+                ):
+                    continue
 
-            region = iso3_to_region.get(plant.location.iso3)
-            if region is None:
-                seed_logger.warning(
-                    "[OPENING BALANCE] No region mapping for %s, skipping FG %s",
-                    plant.location.iso3,
+                region = iso3_to_region.get(plant.location.iso3)
+                if region is None:
+                    seed_logger.warning(
+                        "[OPENING BALANCE] No region mapping for %s, skipping FG %s",
+                        plant.location.iso3,
+                        fg.furnace_group_id,
+                    )
+                    continue
+
+                greenfield_capex = (
+                    env.name_to_capex.get(
+                        "greenfield",
+                        {},
+                    )
+                    .get(region, {})
+                    .get(fg.technology.name)
+                )
+                if greenfield_capex is None:
+                    seed_logger.warning(
+                        "[OPENING BALANCE] No greenfield CAPEX for %s in %s, skipping FG %s",
+                        fg.technology.name,
+                        region,
+                        fg.furnace_group_id,
+                    )
+                    continue
+
+                renovation_share = env.capex_renovation_share.get(fg.technology.name)
+                if renovation_share is None:
+                    seed_logger.warning(
+                        "[OPENING BALANCE] No renovation share for %s, skipping FG %s",
+                        fg.technology.name,
+                        fg.furnace_group_id,
+                    )
+                    continue
+
+                renovation_cost = greenfield_capex * renovation_share * fg.capacity * fg.equity_share
+                opening = renovation_cost * multiplier
+                group_opening += opening
+                num_fgs_seeded += 1
+
+                seed_logger.debug(
+                    "[OPENING BALANCE] FG %s (%s): $%s (CAPEX=$%s/t x share=%.2f x cap=%st x equity=%.2f x mult=%s)",
                     fg.furnace_group_id,
-                )
-                continue
-
-            greenfield_capex = (
-                env.name_to_capex.get(
-                    "greenfield",
-                    {},
-                )
-                .get(region, {})
-                .get(fg.technology.name)
-            )
-            if greenfield_capex is None:
-                seed_logger.warning(
-                    "[OPENING BALANCE] No greenfield CAPEX for %s in %s, skipping FG %s",
                     fg.technology.name,
-                    region,
-                    fg.furnace_group_id,
+                    f"{opening:,.2f}",
+                    f"{greenfield_capex:,.2f}",
+                    renovation_share,
+                    f"{fg.capacity:,.0f}",
+                    fg.equity_share,
+                    multiplier,
                 )
-                continue
 
-            renovation_share = env.capex_renovation_share.get(fg.technology.name)
-            if renovation_share is None:
-                seed_logger.warning(
-                    "[OPENING BALANCE] No renovation share for %s, skipping FG %s",
-                    fg.technology.name,
-                    fg.furnace_group_id,
-                )
-                continue
-
-            renovation_cost = greenfield_capex * renovation_share * fg.capacity * fg.equity_share
-            opening = renovation_cost * multiplier
-            plant_opening += opening
-
-            seed_logger.debug(
-                "[OPENING BALANCE] FG %s (%s): $%s (CAPEX=$%s/t x share=%.2f x cap=%st x equity=%.2f x mult=%s)",
-                fg.furnace_group_id,
-                fg.technology.name,
-                f"{opening:,.2f}",
-                f"{greenfield_capex:,.2f}",
-                renovation_share,
-                f"{fg.capacity:,.0f}",
-                fg.equity_share,
-                multiplier,
-            )
-
-        plant.balance = plant_opening
-        if plant_opening > 0:
+        pg.balance = group_opening
+        if group_opening > 0:
             seed_logger.info(
-                "[OPENING BALANCE] Plant %s: $%s",
-                plant.plant_id,
-                f"{plant_opening:,.2f}",
+                "[OPENING BALANCE] Group %s num_fgs_seeded=%d total_opening=%.2f",
+                pg.plant_group_id,
+                num_fgs_seeded,
+                group_opening,
             )
 
 
@@ -1073,10 +1082,10 @@ class SimulationRunner:
             new_plant_group = PlantGroup(plant_group_id=pg_id, plants=plants)
             bus.uow.plant_groups.add(new_plant_group)
 
-        # Seed opening balances for initial plants
+        # Seed opening balances for initial plant groups
         if self.config.opening_balance_multiplier > 0:
             _seed_opening_balances(
-                plants=bus.uow.plants.list(),
+                plant_groups=bus.uow.plant_groups.list(),
                 env=bus.env,
                 multiplier=self.config.opening_balance_multiplier,
                 active_statuses=self.config.active_statuses,
@@ -1125,18 +1134,19 @@ class SimulationRunner:
             # Year-start baseline scan: rebuild CO2 storage counters (firm/reserved) before Allocation/PAM/GEO.
             bus.env.scan_co2_storage_counters(bus.uow)
 
-            # Log plant balance distribution in early years for opening balance verification
+            # Log plant group balance distribution in early years for opening balance verification
             if i <= start_year + 4:
-                balances = [p.balance for p in bus.uow.plants.list()]
-                logger.debug(
-                    "[OPENING BALANCE] Year %d plant balances: min=$%s, max=$%s, mean=$%s, positive=%d/%d",
-                    i,
-                    f"{min(balances):,.0f}",
-                    f"{max(balances):,.0f}",
-                    f"{sum(balances) / len(balances):,.0f}",
-                    sum(1 for b in balances if b > 0),
-                    len(balances),
-                )
+                balances = [pg.balance for pg in bus.uow.plant_groups.list()]
+                if balances:
+                    logger.debug(
+                        "[OPENING BALANCE] Year %d group balances: min=$%s, max=$%s, mean=$%s, positive=%d/%d",
+                        i,
+                        f"{min(balances):,.0f}",
+                        f"{max(balances):,.0f}",
+                        f"{sum(balances) / len(balances):,.0f}",
+                        sum(1 for b in balances if b > 0),
+                        len(balances),
+                    )
 
             # Set demand and plant costs for the year
             bus.env.calculate_demand()

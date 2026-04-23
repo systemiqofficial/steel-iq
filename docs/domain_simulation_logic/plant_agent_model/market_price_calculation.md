@@ -104,9 +104,9 @@ Plant C: profit = (600 - 600) × 10 = $0M  (marginal plant breaks even)
 
 ### Where It's Used
 
-1. **Balance Sheet Updates** (`Plant.update_furnace_and_plant_balance()`):
-   - Uses market price to calculate: `balance = (market_price - unit_cost) × production`
-   - Aggregates to plant and plant group balances
+1. **Balance Sheet Updates** (`PlantGroup.sweep_fg_balances_to_group()`):
+   - Uses market price to compute each FG's annual P&L: `(market_price - unit_cost) × production`
+   - Aggregates every plant's FGs into the group treasury ``balance`` and resets ``fg.balance`` to 0
 
 2. **NPV Calculations** (`FurnaceGroup.optimal_technology_name()`):
    - Uses forecasted market prices for each year, by extracting future demands from current cost curves

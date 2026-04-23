@@ -733,150 +733,164 @@ class PlantAgentsModel:
 
         counter = 0  # Track number of commands executed across all plants
 
-        # Step 4: Process each plant for furnace group decisions
-        # Plants are evaluated in random order to avoid systematic biases in decision-making
+        # Step 4: Process each plant group for furnace group decisions.
+        # Group-first ordering: sweep every FG's annual P&L into the group treasury BEFORE any plant
+        # in the group runs its strategy. This gives all plants in the group equal information about
+        # the year's available wallet. Plant-iteration order within a group remains random.
         plant_eval_start = time.time()
-        logger.info("[PAM] Step 4 - Evaluating furnace group strategies")
-        for plant in random.sample(plants, len(plants)):
+        logger.info("[PAM] Step 4 - Evaluating furnace group strategies (group-first)")
+        step4_plant_groups = bus.uow.plant_groups.list()
+        for pg in random.sample(step4_plant_groups, len(step4_plant_groups)):
+            balance_before_sweep = pg.balance
+            pg.sweep_fg_balances_to_group(
+                market_price=freeze_market_price,
+                active_statuses=bus.env.config.active_statuses,
+            )
             logger.info(
-                f"\n\n[PAM] === Processing plant {plant.plant_id} in {plant.location.iso3} (year {bus.env.year}) === \n"
+                "[PAM STEP 4] plant_group_id=%s num_plants=%d balance_before_sweep=%.2f balance_after_sweep=%.2f",
+                pg.plant_group_id,
+                len(pg.plants),
+                balance_before_sweep,
+                pg.balance,
             )
 
-            # Update financial balances: aggregate furnace group balances into plant balance
-            # This resets furnace group balances to zero after aggregation
-            plant.update_furnace_and_plant_balance(
-                market_price=freeze_market_price, active_statuses=bus.env.config.active_statuses
-            )
-
-            # Retrieve location-specific subsidies for this plant
-            # Empty dicts are returned if no subsidies exist - this is expected behavior
-            tech_capex_subsidies = bus.env.capex_subsidies.get(plant.location.iso3, {})
-            tech_opex_subsidies = bus.env.opex_subsidies.get(plant.location.iso3, {})
-            tech_debt_subsidies = bus.env.debt_subsidies.get(plant.location.iso3, {})
-
-            logger.debug(f"[PAM] Plant group: {plant.parent_gem_id}")
-            logger.debug(f"[PAM] Plant balance before update: ${plant.balance:,.2f}")
-            logger.debug(f"[PAM] Plant balance after FG aggregation: ${plant.balance:,.2f}")
-            logger.debug(f"[PAM] Subsidies for {plant.location.iso3}:")
-            logger.debug(f"[PAM]  - CAPEX: {list(tech_capex_subsidies.keys())}")
-            logger.debug(f"[PAM]  - OPEX:  {list(tech_opex_subsidies.keys())}")
-            logger.debug(f"[PAM]  - DEBT:  {list(tech_debt_subsidies.keys())}")
-
-            # Evaluate each furnace group within the plant in random order
-            for fg in random.sample(plant.furnace_groups, len(plant.furnace_groups)):
-                # Skip furnace groups that should not be evaluated:
-                # - Zero capacity furnace groups
-                # - Inactive statuses (e.g., closed, mothballed)
-                # - Groups currently switching technology
-                # - "Other" technology category (not modeled)
-                # - Products not in the market price dictionary
-                if (
-                    fg.capacity == 0
-                    or fg.status.lower() not in bus.env.config.active_statuses
-                    or fg.status.lower() == "operating switching technology"
-                    or fg.technology.name.lower() == "other"
-                    or fg.technology.product.lower() not in freeze_market_price
-                ):
-                    logger.info(
-                        f"[PAM] == Skipping FG {fg.furnace_group_id} - Tech: {fg.technology.name}, Capacity: {fg.capacity * T_TO_KT:,.0f} kt, Status: {fg.status}, Product: {fg.technology.product} ==\n"
-                    )
-                    continue
-
+            for plant in random.sample(pg.plants, len(pg.plants)):
                 logger.info(
-                    f"\n\n[PAM] == Evaluating FG {fg.furnace_group_id} - Tech: {fg.technology.name}, Capacity: {fg.capacity * T_TO_KT:,.0f} kt, Status: {fg.status}, Product: {fg.technology.product} ==\n"
+                    f"\n\n[PAM] === Processing plant {plant.plant_id} in {plant.location.iso3} "
+                    f"(year {bus.env.year}) === \n"
                 )
-                logger.debug(f"[PAM] FG balance: ${fg.balance:,.2f}, Historic balance: ${fg.historic_balance:,.2f}")
 
-                # Retrieve region-specific CAPEX data for technology switching/renovation
-                if "greenfield" in bus.env.name_to_capex:
-                    # Map the plant's ISO3 code to its region
-                    if bus.env.country_mappings is None:
-                        raise ValueError("Country mapping required for furnace switching (not found in Environment)")
-                    iso3_to_region_mapping = bus.env.country_mappings.iso3_to_region()
-                    if plant.location.iso3 not in iso3_to_region_mapping:
-                        raise ValueError(f"Region mapping not found for ISO3 code {plant.location.iso3}")
-                    region = iso3_to_region_mapping[plant.location.iso3]
-                    region_capex = bus.env.name_to_capex["greenfield"][region]
-                    capex_renovation_share = bus.env.capex_renovation_share
+                # Retrieve location-specific subsidies for this plant
+                # Empty dicts are returned if no subsidies exist - this is expected behavior
+                tech_capex_subsidies = bus.env.capex_subsidies.get(plant.location.iso3, {})
+                tech_opex_subsidies = bus.env.opex_subsidies.get(plant.location.iso3, {})
+                tech_debt_subsidies = bus.env.debt_subsidies.get(plant.location.iso3, {})
 
-                    logger.debug(f"[PAM] Region {region} CAPEX loaded for {plant.location.iso3}")
-                    logger.debug(f"[PAM] Region CAPEX for technologies: {region_capex}")
-                    logger.debug(f"[PAM] Renovation share: {capex_renovation_share}")
-                else:
-                    raise KeyError("Region capex not found in bus.env.name_to_capex.")
+                logger.debug(f"[PAM] Plant group: {plant.parent_gem_id}")
+                logger.debug(f"[PAM] Plant group balance: ${pg.balance:,.2f}")
+                logger.debug(f"[PAM] Subsidies for {plant.location.iso3}:")
+                logger.debug(f"[PAM]  - CAPEX: {list(tech_capex_subsidies.keys())}")
+                logger.debug(f"[PAM]  - OPEX:  {list(tech_opex_subsidies.keys())}")
+                logger.debug(f"[PAM]  - DEBT:  {list(tech_debt_subsidies.keys())}")
 
-                # Get cost of debt for the plant location (before subsidies)
-                cost_of_debt = bus.env.industrial_cost_of_debt.get(plant.location.iso3)
-                if cost_of_debt is None:
-                    raise ValueError(f"Cost of debt not found for ISO3 code {plant.location.iso3}.")
-
-                # Get cost of equity for the plant location
-                cost_of_equity = bus.env.industrial_cost_of_equity.get(plant.location.iso3)
-                if cost_of_equity is None:
-                    raise ValueError(f"Cost of equity not found for ISO3 code {plant.location.iso3}")
-
-                logger.debug(f"[PAM] Cost of debt for {plant.location.iso3}: {cost_of_debt:.2%}")
-                logger.debug(f"[PAM] Cost of equity for {plant.location.iso3}: {cost_of_equity:.2%}")
-
-                # Evaluate potential technology switch or renovation for this furnace group
-                # This considers: switching technology, renovating existing technology, or closing the furnace
-                if (
-                    cmd := plant.evaluate_furnace_group_strategy(
-                        fg.furnace_group_id,
-                        market_price_series=future_price_series,
-                        region_capex=region_capex,
-                        cost_of_debt=cost_of_debt,
-                        cost_of_equity=cost_of_equity,
-                        capex_renovation_share=capex_renovation_share,
-                        get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
-                        allowed_furnace_transitions=bus.env.allowed_furnace_transitions,
-                        dynamic_business_cases=bus.env.dynamic_feedstocks,
-                        probabilistic_agents=bus.env.config.probabilistic_agents,
-                        tech_capex_subsidies=tech_capex_subsidies,
-                        tech_opex_subsidies=tech_opex_subsidies,
-                        tech_debt_subsidies=tech_debt_subsidies,
-                        current_year=bus.env.year,
-                        allowed_techs=bus.env.allowed_techs,
-                        chosen_emissions_boundary_for_carbon_costs=bus.env.config.chosen_emissions_boundary_for_carbon_costs,
-                        technology_emission_factors=bus.env.technology_emission_factors,
-                        tech_to_product=bus.env.technology_to_product,
-                        plant_lifetime=bus.env.config.plant_lifetime,
-                        construction_time=bus.env.config.construction_time,
-                        risk_free_rate=bus.env.config.global_risk_free_rate,
-                        capacity_limit_steel=capacity_limit_pam_steel,
-                        capacity_limit_iron=capacity_limit_pam_iron,
-                        installed_capacity_in_year=bus.env.installed_capacity_in_year,
-                        new_plant_capacity_in_year=bus.env.new_plant_capacity_in_year,
-                        most_common_reductant_by_tech=bus.env.most_common_reductant_by_tech,
-                        get_co2_headroom=bus.env.get_co2_headroom,
-                        get_co2_need_by_name=bus.env.get_co2_need_by_name,
-                        co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
-                    )
-                ) is not None:
-                    logger.info(f"[PAM] FG {fg.furnace_group_id} strategy returned command: {type(cmd).__name__}")
-                    if isinstance(cmd, ChangeFurnaceGroupTechnology):
-                        # Technology switch: operate with old technology during construction period
-                        # After construction_time years, switch to new technology
-                        command_to_execute = ChangeFurnaceGroupStatusToSwitchingTechnology(
-                            plant_id=cmd.plant_id,
-                            furnace_group_id=cmd.furnace_group_id,
-                            year_of_switch=bus.env.year + bus.env.config.construction_time,
-                            cmd=cmd,
-                        )
-                        product_opt = bus.env.technology_to_product.get(cmd.technology_name)
-                        if product_opt is None:
-                            raise ValueError(f"Technology {cmd.technology_name} not found in technology_to_product")
-                        tech_product: str = product_opt
+                # Evaluate each furnace group within the plant in random order
+                for fg in random.sample(plant.furnace_groups, len(plant.furnace_groups)):
+                    # Skip furnace groups that should not be evaluated:
+                    # - Zero capacity furnace groups
+                    # - Inactive statuses (e.g., closed, mothballed)
+                    # - Groups currently switching technology
+                    # - "Other" technology category (not modeled)
+                    # - Products not in the market price dictionary
+                    if (
+                        fg.capacity == 0
+                        or fg.status.lower() not in bus.env.config.active_statuses
+                        or fg.status.lower() == "operating switching technology"
+                        or fg.technology.name.lower() == "other"
+                        or fg.technology.product.lower() not in freeze_market_price
+                    ):
                         logger.info(
-                            f"[PAM] EXECUTING {type(command_to_execute).__name__} - Future command: {cmd}, Tech: {cmd.technology_name}, Product: {tech_product}, Capacity: {cmd.capacity * T_TO_KT:,.0f} kt"
+                            f"[PAM] == Skipping FG {fg.furnace_group_id} - Tech: {fg.technology.name}, Capacity: {fg.capacity * T_TO_KT:,.0f} kt, Status: {fg.status}, Product: {fg.technology.product} ==\n"
                         )
-                        counter += 1
-                        bus.handle(command_to_execute)
+                        continue
+
+                    logger.info(
+                        f"\n\n[PAM] == Evaluating FG {fg.furnace_group_id} - Tech: {fg.technology.name}, Capacity: {fg.capacity * T_TO_KT:,.0f} kt, Status: {fg.status}, Product: {fg.technology.product} ==\n"
+                    )
+                    logger.debug(f"[PAM] FG balance: ${fg.balance:,.2f}, Historic balance: ${fg.historic_balance:,.2f}")
+
+                    # Retrieve region-specific CAPEX data for technology switching/renovation
+                    if "greenfield" in bus.env.name_to_capex:
+                        # Map the plant's ISO3 code to its region
+                        if bus.env.country_mappings is None:
+                            raise ValueError(
+                                "Country mapping required for furnace switching (not found in Environment)"
+                            )
+                        iso3_to_region_mapping = bus.env.country_mappings.iso3_to_region()
+                        if plant.location.iso3 not in iso3_to_region_mapping:
+                            raise ValueError(f"Region mapping not found for ISO3 code {plant.location.iso3}")
+                        region = iso3_to_region_mapping[plant.location.iso3]
+                        region_capex = bus.env.name_to_capex["greenfield"][region]
+                        capex_renovation_share = bus.env.capex_renovation_share
+
+                        logger.debug(f"[PAM] Region {region} CAPEX loaded for {plant.location.iso3}")
+                        logger.debug(f"[PAM] Region CAPEX for technologies: {region_capex}")
+                        logger.debug(f"[PAM] Renovation share: {capex_renovation_share}")
                     else:
-                        # Execute other commands (e.g., CloseFurnaceGroup, RenovateFurnaceGroup)
-                        logger.info(f"[PAM] EXECUTING {type(cmd).__name__}")
-                        counter += 1
-                        bus.handle(cmd)
+                        raise KeyError("Region capex not found in bus.env.name_to_capex.")
+
+                    # Get cost of debt for the plant location (before subsidies)
+                    cost_of_debt = bus.env.industrial_cost_of_debt.get(plant.location.iso3)
+                    if cost_of_debt is None:
+                        raise ValueError(f"Cost of debt not found for ISO3 code {plant.location.iso3}.")
+
+                    # Get cost of equity for the plant location
+                    cost_of_equity = bus.env.industrial_cost_of_equity.get(plant.location.iso3)
+                    if cost_of_equity is None:
+                        raise ValueError(f"Cost of equity not found for ISO3 code {plant.location.iso3}")
+
+                    logger.debug(f"[PAM] Cost of debt for {plant.location.iso3}: {cost_of_debt:.2%}")
+                    logger.debug(f"[PAM] Cost of equity for {plant.location.iso3}: {cost_of_equity:.2%}")
+
+                    # Evaluate potential technology switch or renovation for this furnace group
+                    # This considers: switching technology, renovating existing technology, or closing the furnace
+                    if (
+                        cmd := plant.evaluate_furnace_group_strategy(
+                            fg.furnace_group_id,
+                            plant_group=pg,
+                            market_price_series=future_price_series,
+                            region_capex=region_capex,
+                            cost_of_debt=cost_of_debt,
+                            cost_of_equity=cost_of_equity,
+                            capex_renovation_share=capex_renovation_share,
+                            get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+                            allowed_furnace_transitions=bus.env.allowed_furnace_transitions,
+                            dynamic_business_cases=bus.env.dynamic_feedstocks,
+                            probabilistic_agents=bus.env.config.probabilistic_agents,
+                            tech_capex_subsidies=tech_capex_subsidies,
+                            tech_opex_subsidies=tech_opex_subsidies,
+                            tech_debt_subsidies=tech_debt_subsidies,
+                            current_year=bus.env.year,
+                            allowed_techs=bus.env.allowed_techs,
+                            chosen_emissions_boundary_for_carbon_costs=bus.env.config.chosen_emissions_boundary_for_carbon_costs,
+                            technology_emission_factors=bus.env.technology_emission_factors,
+                            tech_to_product=bus.env.technology_to_product,
+                            plant_lifetime=bus.env.config.plant_lifetime,
+                            construction_time=bus.env.config.construction_time,
+                            risk_free_rate=bus.env.config.global_risk_free_rate,
+                            capacity_limit_steel=capacity_limit_pam_steel,
+                            capacity_limit_iron=capacity_limit_pam_iron,
+                            installed_capacity_in_year=bus.env.installed_capacity_in_year,
+                            new_plant_capacity_in_year=bus.env.new_plant_capacity_in_year,
+                            most_common_reductant_by_tech=bus.env.most_common_reductant_by_tech,
+                            get_co2_headroom=bus.env.get_co2_headroom,
+                            get_co2_need_by_name=bus.env.get_co2_need_by_name,
+                            co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
+                        )
+                    ) is not None:
+                        logger.info(f"[PAM] FG {fg.furnace_group_id} strategy returned command: {type(cmd).__name__}")
+                        if isinstance(cmd, ChangeFurnaceGroupTechnology):
+                            # Technology switch: operate with old technology during construction period
+                            # After construction_time years, switch to new technology
+                            command_to_execute = ChangeFurnaceGroupStatusToSwitchingTechnology(
+                                plant_id=cmd.plant_id,
+                                furnace_group_id=cmd.furnace_group_id,
+                                year_of_switch=bus.env.year + bus.env.config.construction_time,
+                                cmd=cmd,
+                            )
+                            product_opt = bus.env.technology_to_product.get(cmd.technology_name)
+                            if product_opt is None:
+                                raise ValueError(f"Technology {cmd.technology_name} not found in technology_to_product")
+                            tech_product: str = product_opt
+                            logger.info(
+                                f"[PAM] EXECUTING {type(command_to_execute).__name__} - Future command: {cmd}, Tech: {cmd.technology_name}, Product: {tech_product}, Capacity: {cmd.capacity * T_TO_KT:,.0f} kt"
+                            )
+                            counter += 1
+                            bus.handle(command_to_execute)
+                        else:
+                            # Execute other commands (e.g., CloseFurnaceGroup, RenovateFurnaceGroup)
+                            logger.info(f"[PAM] EXECUTING {type(cmd).__name__}")
+                            counter += 1
+                            bus.handle(cmd)
 
         plant_eval_elapsed = time.time() - plant_eval_start
         logger.info(
@@ -898,8 +912,7 @@ class PlantAgentsModel:
 
             # Aggregate financial balance across all plants in the group
             # This is used to determine if the plant group can afford expansion
-            pg.collect_total_plant_balance()
-            logger.debug(f"[PAM] Plant group total balance: ${pg.total_balance:,.2f}")
+            logger.debug(f"[PAM] Plant group balance: ${pg.balance:,.2f}")
             # Evaluate expansion by comparing NPV of adding a new furnace group to status quo
             if (
                 cmd := pg.evaluate_expansion(

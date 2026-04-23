@@ -319,13 +319,12 @@ Stage 11-13: Final Checks & Command Generation
 
 ## Detailed Stage Breakdown
 
-### Stage 1: Check Plant Financial Health
-**Decision**: Can the plant afford to invest?
-- **Check**: `plant.balance >= 0`
-- **If negative**: Return `None` (no action possible)
-- **Rationale**: Negative balance = no capital available for investment
+Affordability is checked per-capex at the point of decision against
+``plant_group.balance`` (renovation in Stage 8, switch in Stage 9). A negative
+group balance does not short-circuit evaluation; the historic-loss closure
+threshold in Stage 2 runs unconditionally.
 
-### Stage 2: Check Furnace Group Status
+### Stage 1: Check Furnace Group Status
 **Decision**: Is the furnace group eligible for strategy evaluation?
 - **Check**: Status is not "operating pre-retirement"
 - **If pre-retirement**: Return `None` (already scheduled to close)
@@ -410,19 +409,19 @@ Stage 11-13: Final Checks & Command Generation
    - Cost = `CAPEX × capacity × equity_share`
 
 2. **Affordability check**:
-   - If `renovation_cost > plant.balance` → Return `CloseFurnaceGroup`
+   - If `renovation_cost > plant_group.balance` → Return `CloseFurnaceGroup`
    - Rationale: Can't afford to renovate, must close
 
 3. **Execute renovation**:
-   - Deduct cost from plant balance: `plant.balance -= renovation_cost`
+   - Debit the group treasury: `plant_group.deduct_equity(renovation_cost, reason="renovation")`
    - Return `RenovateFurnaceGroup` command
 
 **Example Calculation**:
-- Subsidized renovation CAPEX: $160/tonne
+- Subsidised renovation CAPEX: $160/tonne
 - Capacity: 5 Mt
 - Equity share: 30%
 - Renovation cost: $160 × 5,000,000 × 0.30 = $240,000,000
-- Plant balance: $300,000,000 → **Affordable, renovate**
+- Plant group balance: $300,000,000 → **Affordable, renovate**
 
 ### Stage 10: Handle Technology Switch Scenario
 **Condition**: Best technology ≠ current technology
@@ -433,17 +432,17 @@ Stage 11-13: Final Checks & Command Generation
    - Cost = `CAPEX × capacity × equity_share`
 
 2. **Affordability check**:
-   - If `switch_cost > plant.balance` → Return `None`
+   - If `switch_cost > plant_group.balance` → Return `None`
    - Rationale: Can't afford to switch
 
 3. **Continue to probabilistic adoption** (Stage 11)
 
 **Example Calculation**:
-- Subsidized greenfield CAPEX: $650/tonne
+- Subsidised greenfield CAPEX: $650/tonne
 - Capacity: 5 Mt
 - Equity share: 30%
 - Switch cost: $650 × 5,000,000 × 0.30 = $975,000,000
-- Plant balance: $1,200,000,000 → **Affordable, proceed**
+- Plant group balance: $1,200,000,000 → **Affordable, proceed**
 
 ### Stage 11: Probabilistic Adoption Decision
 **Purpose**: Model real-world hesitation in technology adoption (financing risk, permit delays, market uncertainty)
@@ -510,7 +509,7 @@ if expansion_and_switch_capacity + furnace_capacity > expansion_limit:
 
 ### Stage 13: Execute Technology Switch
 **Final Actions**:
-1. **Update plant balance**: `plant.balance -= switch_cost`
+1. **Debit group treasury**: `plant_group.deduct_equity(switch_cost, reason="switch")`
 2. **Generate command**: Return `ChangeFurnaceGroupTechnology`
 
 **Command includes**:
@@ -538,10 +537,9 @@ if expansion_and_switch_capacity + furnace_capacity > expansion_limit:
 
 ### 4. `None`
 - **When**:
-  - Plant has negative balance
   - Furnace group pre-retirement
   - All NPVs negative or zero
-  - Cannot afford switch
+  - Cannot afford switch (group balance too low)
   - Probabilistic rejection
   - Capacity limit exceeded
   - Current tech optimal but lifetime not expired
@@ -549,7 +547,7 @@ if expansion_and_switch_capacity + furnace_capacity > expansion_limit:
 ## Data Dependencies
 
 ### For Strategic Decisions (`evaluate_furnace_group_strategy`)
-- `plant.balance`: Available capital for investment
+- `plant_group.balance`: Group treasury — gates renovation and switch affordability
 - `furnace_group.status`: Operating status
 - `furnace_group.historic_balance`: Cumulative profit/loss
 - `furnace_group.lifetime.expired`: Whether renovation is needed

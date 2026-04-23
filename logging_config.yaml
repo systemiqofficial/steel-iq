@@ -14,9 +14,19 @@ function_overrides:
   # Suppress noisy functions
   calculate_unit_production_cost: WARNING
   extract_price_from_costcurve: WARNING
-  # Indi routing visibility
+  # Indi routing visibility (Stage 1)
   add_new_business_opportunities_to_repository: INFO
   register_plant_in_group: DEBUG
+  # Capex debit tracking (Stage 2: verify invariant A, construction no-debit, expansion equity fix)
+  deduct_equity: INFO
+  add_furnace_group_to_plant: INFO
+  update_status_of_furnace_group: INFO
+  # Balance flow (Stage 2: verify sweep + opening seed + group-first ordering)
+  _seed_opening_balances: INFO
+  sweep_fg_balances_to_group: DEBUG
+  # Expansion decision path (Stage 2: verify probabilistic fix + pre-filter)
+  evaluate_expansion: INFO
+  evaluate_expansion_options: INFO
 
 external:
   pyomo: ERROR

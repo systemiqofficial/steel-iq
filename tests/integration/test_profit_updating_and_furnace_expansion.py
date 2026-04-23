@@ -186,6 +186,12 @@ def test_furnace_group_balance_sheet_updates(bus, mutliple_plants, mocker, count
     for p in mutliple_plants:
         bus.uow.plants.add(p)
 
+    # Wrap all plants in one group so PAM Step 4 can sweep them (post-Stage-2 restructure).
+    from steelo.domain.models import PlantGroup as _PG
+
+    pg_all = _PG(plant_group_id="pg_all", plants=mutliple_plants)
+    bus.uow.plant_groups.add(pg_all)
+
     # Initialize proper capex structure for test environment - would come from initiate capex
     # Get the regions that are actually used by the test plants
     test_iso3_codes = [p.location.iso3 for p in mutliple_plants]
@@ -266,21 +272,24 @@ def test_furnace_group_balance_sheet_updates(bus, mutliple_plants, mocker, count
         "steelo.domain.models.Plant.evaluate_furnace_group_strategy", return_value=None
     )  # Just avoid the furnace evalation right now
 
-    # Mock the balance reset to preserve furnace group balances for testing
-    def mock_update_balance(self, market_price, active_statuses):
-        for fg in self.furnace_groups:
-            if (
-                fg.capacity == 0
-                or fg.status.lower() not in [s.lower() for s in active_statuses]
-                or fg.technology.name.lower() == "other"
-                or fg.technology.product.lower() not in market_price
-            ):
-                continue
-            fg.update_balance_sheet(market_price[fg.technology.product.lower()])
-            self.balance += fg.balance
-            # Don't reset fg.balance to 0 for testing purposes
+    # Mock the sweep to preserve furnace group balances for testing (don't zero fg.balance).
+    def mock_sweep(self, market_price, active_statuses):
+        for plant in self.plants:
+            for fg in plant.furnace_groups:
+                if (
+                    fg.capacity == 0
+                    or fg.status.lower() not in [s.lower() for s in active_statuses]
+                    or fg.technology.name.lower() == "other"
+                    or fg.technology.product.lower() not in market_price
+                ):
+                    continue
+                fg.update_balance_sheet(market_price[fg.technology.product.lower()])
+                self.balance += fg.balance
+                # Don't reset fg.balance to 0 for testing purposes
 
-    mocker.patch.object(bus.uow.plants.list()[0].__class__, "update_furnace_and_plant_balance", mock_update_balance)
+    mocker.patch.object(_PG, "sweep_fg_balances_to_group", mock_sweep)
+    # PAM Step 5 expansion eval is orthogonal to the sweep we're testing; stub it out.
+    mocker.patch.object(_PG, "evaluate_expansion", return_value=None)
 
     # When the simulation is run
     Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()
@@ -324,6 +333,7 @@ def test_total_plant_group_balance_sheet(bus, mutliple_plants, mocker, country_m
         bus.uow.plants.add(p)
 
     pg = PlantGroup(plant_group_id="pg_1", plants=mutliple_plants)
+    bus.uow.plant_groups.add(pg)
 
     # Initialize proper capex structure for test environment
     # Get the regions that are actually used by the test plants
@@ -399,29 +409,30 @@ def test_total_plant_group_balance_sheet(bus, mutliple_plants, mocker, country_m
         "steelo.domain.models.Plant.evaluate_furnace_group_strategy", return_value=None
     )  # Just avoid the furnace evalation right now
 
-    # Mock the balance reset to preserve furnace group balances for testing
-    def mock_update_balance(self, market_price, active_statuses):
-        for fg in self.furnace_groups:
-            if (
-                fg.capacity == 0
-                or fg.status.lower() not in [s.lower() for s in active_statuses]
-                or fg.technology.name.lower() == "other"
-                or fg.technology.product.lower() not in market_price
-            ):
-                continue
-            fg.update_balance_sheet(market_price[fg.technology.product.lower()])
-            self.balance += fg.balance
-            # Don't reset fg.balance to 0 for testing purposes
+    # Mock the group sweep to preserve fg.balance so we can assert the sum on pg.balance.
+    def mock_sweep(self, market_price, active_statuses):
+        for plant in self.plants:
+            for fg in plant.furnace_groups:
+                if (
+                    fg.capacity == 0
+                    or fg.status.lower() not in [s.lower() for s in active_statuses]
+                    or fg.technology.name.lower() == "other"
+                    or fg.technology.product.lower() not in market_price
+                ):
+                    continue
+                fg.update_balance_sheet(market_price[fg.technology.product.lower()])
+                self.balance += fg.balance
+                # Don't reset fg.balance to 0 for testing purposes
 
-    mocker.patch.object(bus.uow.plants.list()[0].__class__, "update_furnace_and_plant_balance", mock_update_balance)
+    mocker.patch.object(PlantGroup, "sweep_fg_balances_to_group", mock_sweep)
+    # PAM Step 5 expansion eval is orthogonal to the sweep we're testing.
+    mocker.patch.object(PlantGroup, "evaluate_expansion", return_value=None)
 
     # When the simulation is run
     Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()
 
-    # Based on production being 70 and market value being 100, the following should be the
-    # furnace balances after one iteration
-    pg.collect_total_plant_balance()
-    assert pg.total_balance == sum(
+    # Group balance equals the sum of furnace P&Ls under the mocked sweep.
+    assert pg.balance == sum(
         [
             280,
             -140,

@@ -3258,7 +3258,6 @@ class Plant:
         self.added_capacity = Volumes(0)
         self.removed_capacity = Volumes(0)
         self.removed_capacity_by_product: dict[str, float] = {}
-        self.balance = 0.0
 
         # cost and capacity
         self.technology_unit_fopex = technology_unit_fopex
@@ -3268,6 +3267,11 @@ class Plant:
 
     def add_furnace_group(self, new_furnace_group: FurnaceGroup) -> None:
         self.furnace_groups.append(new_furnace_group)
+
+    @property
+    def historic_balance(self) -> float:
+        """Lifetime operational P&L summed across all FGs (including closed). Pure derivation."""
+        return sum(fg.historic_balance for fg in self.furnace_groups)
 
     @property
     def ultimate_plant_group(self) -> str:
@@ -3729,6 +3733,7 @@ class Plant:
     def evaluate_furnace_group_strategy(
         self,
         furnace_group_id: str,
+        plant_group: PlantGroup,
         market_price_series: dict,
         region_capex: dict[str, float],
         capex_renovation_share: dict[str, float],
@@ -3764,22 +3769,23 @@ class Plant:
         Evaluate the economic strategy for a furnace group using NPV-based decision making.
 
         Steps:
-        1. Check plant financial health (skip if negative balance)
-        2. Check furnace group status (skip if pre-retirement)
-        3. Check for forced closure (historic losses exceed threshold = CAPEX × capacity)
-        4. Filter allowed technology transitions based on current year
-        5. Calculate NPV for all technology options (adjusted for COSA when switching)
-        6. Check if any technology option is profitable (NPV > 0)
-        7. Identify optimal technology (maximum NPV)
-        8. Select technology (weighted random if probabilistic_agents=True, otherwise optimal)
-        9. If current tech is optimal and lifetime expired: evaluate renovation
-        10. If different tech is optimal: evaluate technology switch
-        11. Check capacity limits for expansions/switches
-        12. Apply probabilistic adoption decision (if enabled)
-        13. Return appropriate command (ChangeFurnaceGroupTechnology, RenovateFurnaceGroup, CloseFurnaceGroup, or None)
+        1. Check furnace group status (skip if pre-retirement)
+        2. Check for forced closure (historic losses exceed threshold = CAPEX × capacity)
+        3. Filter allowed technology transitions based on current year
+        4. Calculate NPV for all technology options (adjusted for COSA when switching)
+        5. Check if any technology option is profitable (NPV > 0)
+        6. Identify optimal technology (maximum NPV)
+        7. Select technology (weighted random if probabilistic_agents=True, otherwise optimal)
+        8. If current tech is optimal and lifetime expired: evaluate renovation (gated on plant_group.balance)
+        9. If different tech is optimal: evaluate technology switch (gated on plant_group.balance)
+        10. Check capacity limits for expansions/switches
+        11. Apply probabilistic adoption decision (if enabled)
+        12. Return appropriate command (ChangeFurnaceGroupTechnology, RenovateFurnaceGroup, CloseFurnaceGroup, or None)
 
         Args:
             furnace_group_id: Unique identifier for the furnace group
+            plant_group: PlantGroup that owns this plant. Its ``balance`` is the treasury
+                used to gate and debit renovation / switch equity.
             market_price_series: Time series of market prices for relevant commodities
             region_capex: Capital costs by technology for the region ($/tonne capacity), without subsidies
             capex_renovation_share: Fraction of greenfield CAPEX needed for renovation by technology (0-1)
@@ -3814,9 +3820,12 @@ class Plant:
             CloseFurnaceGroup for closures) or None if no action is profitable/feasible
 
         Side Effects:
-            Updates self.balance when renovation or technology switch is approved
+            Debits ``plant_group.balance`` via ``plant_group.deduct_equity`` when a
+            renovation or technology switch is approved. No mutation of plant-level
+            state.
         """
         logger = logging.getLogger(f"{__name__}.evaluate_furnace_group_strategy")
+        unmask_logger = logging.getLogger(f"{__name__}.evaluate_furnace_group_strategy.unmask")
         furnace_group = self.get_furnace_group(furnace_group_id)
 
         active_energy_subs = {
@@ -3840,22 +3849,26 @@ class Plant:
         logger.debug(f"[FG STRATEGY]   - Status: {furnace_group.status}")
         logger.debug(f"[FG STRATEGY]   - FG balance: ${furnace_group.balance:,.2f}")
         logger.debug(f"[FG STRATEGY]   - Historic balance: ${furnace_group.historic_balance:,.2f}")
-        logger.debug(f"[FG STRATEGY]   - Plant balance: ${self.balance:,.2f}")
+        logger.debug(f"[FG STRATEGY]   - Plant group balance: ${plant_group.balance:,.2f}")
         logger.debug(f"[FG STRATEGY]   - Location: {self.location.iso3}")
 
-        # ===== STAGE 1: Check plant financial health =====
-        # Negative balance means no investment capacity available
-        if self.balance < 0:
-            logger.debug(f"[FG STRATEGY] DECISION - No action (negative plant balance: ${self.balance:,.2f})")
-            return None
+        # Log when the Stage 1 plant-balance gate would have fired pre-refactor; Stage 3
+        # closure now runs unconditionally on underwater groups.
+        if plant_group.balance < 0:
+            unmask_logger.debug(
+                "[STAGE 1 UNMASK] plant_id=%s plant_group_id=%s plant_group.balance=%.2f",
+                self.plant_id,
+                plant_group.plant_group_id,
+                plant_group.balance,
+            )
 
-        # ===== STAGE 2: Check furnace group status =====
+        # ===== STAGE 1: Check furnace group status =====
         # Skip if already scheduled for retirement
         if furnace_group.status.lower() == "operating pre-retirement":
             logger.debug(f"[FG STRATEGY] DECISION - No action (FG status: {furnace_group.status})")
             return None
 
-        # ===== STAGE 3: Check for forced closure =====
+        # ===== STAGE 2: Check for forced closure =====
         # Close if historic losses exceed the CAPEX value (write-off point)
         current_capex_per_tonne = region_capex.get(furnace_group.technology.name)
         if current_capex_per_tonne is None:
@@ -3875,7 +3888,7 @@ class Plant:
             )
             return commands.CloseFurnaceGroup(plant_id=self.plant_id, furnace_group_id=furnace_group.furnace_group_id)
 
-        # ===== STAGE 4: Filter allowed technology transitions =====
+        # ===== STAGE 3: Filter allowed technology transitions =====
         # Intersect allowed techs for current year with valid furnace transitions
         allowed_techs_in_year = allowed_techs.get(current_year, None)
         if not allowed_techs_in_year:
@@ -3917,7 +3930,7 @@ class Plant:
             f"{filtered_allowed_furnace_transitions.get(furnace_group.technology.name)}"
         )
 
-        # ===== STAGE 5: Calculate NPV for all technology options =====
+        # ===== STAGE 4: Calculate NPV for all technology options =====
         logger.debug("[FG STRATEGY] === Calculating NPV for all technology options ===")
         logger.debug(f"[FG STRATEGY] Fixed opex for technologies: {self.technology_unit_fopex}")
         tech_npv_dict, npv_capex_dict, cosa, bom_dict = furnace_group.optimal_technology_name(
@@ -3953,7 +3966,7 @@ class Plant:
         logger.debug(f"[FG STRATEGY] CAPEX by tech ($/t): {npv_capex_dict}")
         logger.debug(f"[FG STRATEGY] COSA: {cosa_msg}")
 
-        # ===== STAGE 6: Check if any technology option is profitable =====
+        # ===== STAGE 5: Check if any technology option is profitable =====
         best_npv = max(tech_npv_dict.values(), default=0)
         logger.debug(f"[FG STRATEGY] Best NPV across all options: ${best_npv:,.2f}")
 
@@ -3961,7 +3974,7 @@ class Plant:
             logger.debug("[FG STRATEGY] DECISION - No action (all NPVs negative or zero)")
             return None
 
-        # ===== STAGE 7: Identify optimal technology =====
+        # ===== STAGE 6: Identify optimal technology =====
         current_tech = furnace_group.technology.name
         optimal_tech = max(tech_npv_dict, key=lambda k: tech_npv_dict[k])
         is_current_best = current_tech == optimal_tech
@@ -3971,7 +3984,7 @@ class Plant:
             f"Current is best: {is_current_best}"
         )
 
-        # ===== STAGE 8: Technology selection =====
+        # ===== STAGE 7: Technology selection =====
         # Use weighted random selection if current tech is not optimal
         if not is_current_best:
             logger.debug("[FG STRATEGY] Current technology is not optimal, selecting alternative")
@@ -4052,7 +4065,7 @@ class Plant:
         if original_capex_per_tonne is None:
             raise ValueError(f"CAPEX without subsidies for technology {best_tech} not found in region CAPEX dict")
 
-        # ===== STAGE 9: Handle renovation scenario (best tech = current tech) =====
+        # ===== STAGE 8: Handle renovation scenario (best tech = current tech) =====
         if best_tech == current_tech:
             logger.debug("[FG STRATEGY] Best technology is current technology")
 
@@ -4080,25 +4093,29 @@ class Plant:
                 logger.debug(f"[FG STRATEGY]   - Equity share: {furnace_group.equity_share:.1%}")
                 logger.debug(f"[FG STRATEGY]   - Total cost: ${renovate_cost:,.2f}")
                 logger.info(
-                    f"[FG STRATEGY]   - Plant balance: ${self.balance:,.2f}, "
-                    f"headroom: ${self.balance - renovate_cost:,.2f}"
+                    f"[FG STRATEGY] plant_id={self.plant_id} plant_group_id={plant_group.plant_group_id} "
+                    f"renovate_cost=${renovate_cost:,.2f} balance=${plant_group.balance:,.2f} "
+                    f"headroom=${plant_group.balance - renovate_cost:,.2f}"
                 )
 
-                # Check affordability
-                if renovate_cost > self.balance:
+                # Check affordability against group treasury
+                if renovate_cost > plant_group.balance:
                     logger.info(
-                        f"[FG STRATEGY] DECISION - CLOSE FG "
-                        f"(cannot afford renovation: ${renovate_cost:,.2f} > balance ${self.balance:,.2f})"
+                        f"[FG STRATEGY] DECISION - CLOSE FG plant_id={self.plant_id} "
+                        f"plant_group_id={plant_group.plant_group_id} gate_pass=False "
+                        f"(cannot afford renovation: ${renovate_cost:,.2f} > "
+                        f"group balance ${plant_group.balance:,.2f})"
                     )
                     return commands.CloseFurnaceGroup(
                         plant_id=self.plant_id, furnace_group_id=furnace_group.furnace_group_id
                     )
 
-                # Proceed with renovation (update plant balance)
-                self.balance -= renovate_cost
+                # Debit the group treasury via the single-site capex mutation
+                plant_group.deduct_equity(renovate_cost, reason="renovation")
                 logger.info(
-                    f"[FG STRATEGY] DECISION - RENOVATE {best_tech} "
-                    f"(cost: ${renovate_cost:,.2f}, new balance: ${self.balance:,.2f})"
+                    f"[FG STRATEGY] DECISION - RENOVATE {best_tech} plant_id={self.plant_id} "
+                    f"plant_group_id={plant_group.plant_group_id} gate_pass=True "
+                    f"(cost: ${renovate_cost:,.2f}, new group balance: ${plant_group.balance:,.2f})"
                 )
 
                 return commands.RenovateFurnaceGroup(
@@ -4118,7 +4135,7 @@ class Plant:
                 )
                 return None
 
-        # ===== STAGE 10: Handle technology switch scenario =====
+        # ===== STAGE 9: Handle technology switch scenario =====
         logger.debug(f"[FG STRATEGY] Evaluating technology switch from {current_tech} to {best_tech}")
 
         # Get subsidized greenfield CAPEX per tonne
@@ -4136,18 +4153,21 @@ class Plant:
         logger.debug(f"[FG STRATEGY]   - Equity share: {furnace_group.equity_share:.1%}")
         logger.debug(f"[FG STRATEGY]   - Total cost: ${switch_cost:,.2f}")
         logger.info(
-            f"[FG STRATEGY]   - Plant balance: ${self.balance:,.2f}, headroom: ${self.balance - switch_cost:,.2f}"
+            f"[FG STRATEGY] plant_id={self.plant_id} plant_group_id={plant_group.plant_group_id} "
+            f"switch_cost=${switch_cost:,.2f} balance=${plant_group.balance:,.2f} "
+            f"headroom=${plant_group.balance - switch_cost:,.2f}"
         )
 
-        # Check affordability
-        if switch_cost > self.balance:
+        # Check affordability against group treasury
+        if switch_cost > plant_group.balance:
             logger.debug(
-                f"[FG STRATEGY] DECISION - No action "
-                f"(cannot afford switch: ${switch_cost:,.2f} > balance ${self.balance:,.2f})"
+                f"[FG STRATEGY] DECISION - No action plant_id={self.plant_id} "
+                f"plant_group_id={plant_group.plant_group_id} gate_pass=False "
+                f"(cannot afford switch: ${switch_cost:,.2f} > group balance ${plant_group.balance:,.2f})"
             )
             return None
 
-        # ===== STAGE 11: Probabilistic adoption decision =====
+        # ===== STAGE 10: Probabilistic adoption decision =====
         # Simulates real-world hesitation/uncertainty in technology adoption
         # Acceptance probability = exp(-switch_cost / NPV)
         # Higher cost relative to benefit → lower probability
@@ -4165,7 +4185,7 @@ class Plant:
         fg_is_ccs_or_ccu = furnace_group.is_ccs_or_ccu
 
         if not fg_is_ccs_or_ccu and random_draw < accept_prob:
-            # ===== STAGE 12: Check capacity limits =====
+            # ===== STAGE 11: Check capacity limits =====
             # Ensure switch doesn't exceed annual capacity expansion limits
             if (
                 capacity_limit_steel is not None
@@ -4208,14 +4228,14 @@ class Plant:
                     )
                     return None
 
-            # ===== STAGE 13: Execute technology switch =====
-            # Update plant balance and return command
-            self.balance -= switch_cost
+            # ===== STAGE 12: Execute technology switch =====
+            # Debit group treasury and return command
+            plant_group.deduct_equity(switch_cost, reason="switch")
             logger.info(
-                f"[FG STRATEGY] DECISION - SWITCH TECHNOLOGY "
-                f"{current_tech} → {best_tech} "
+                f"[FG STRATEGY] DECISION - SWITCH TECHNOLOGY {current_tech} → {best_tech} "
+                f"plant_id={self.plant_id} plant_group_id={plant_group.plant_group_id} gate_pass=True "
                 f"(NPV: ${tech_npv_dict.get(best_tech, 0):,.2f}, cost: ${switch_cost:,.2f}, "
-                f"new balance: ${self.balance:,.2f})"
+                f"new group balance: ${plant_group.balance:,.2f})"
             )
 
             npv_value = tech_npv_dict.get(best_tech)
@@ -4288,7 +4308,6 @@ class Plant:
         lag: int,
         status: str,
         util_rate: float,
-        equity_needed: float,
         plant_lifetime: int,
         chosen_reductant: str,
         dynamic_business_case: list[PrimaryFeedstock] | None = None,
@@ -4307,8 +4326,11 @@ class Plant:
         3. Initialize a FurnaceGroup with the technology, capacity, status, and financial parameters.
         4. Set energy costs (either inherited from plant or explicitly provided for new plants).
         5. Generate energy VOPEX by reductant and set fixed OPEX based on technology.
-        6. Adjust plant balance for equity investment if status is not "considered".
-        7. Mark the furnace group as created by PAM (Plant Asset Model).
+        6. Mark the furnace group as created by PAM (Plant Asset Model).
+
+        Pure factory; does not mutate any balance. Equity debit for expansion is
+        handled in ``add_furnace_group_to_plant`` via ``plant_group.deduct_equity``.
+        New-plant construction does not debit any treasury.
 
         Args:
             technology_name (str): The name of the technology for the new furnace group.
@@ -4324,7 +4346,6 @@ class Plant:
                 expansion, "considered" if coming from new plant opening.
             util_rate (float): The utilization rate for the new furnace group; set to 0.0 if coming from capacity
                 expansion, since it will be ramped up over time by the trade module.
-            equity_needed (float): The amount of equity investment required for the new furnace group.
             plant_lifetime (int): The expected lifetime of the plant in years.
             chosen_reductant (str): The reductant type chosen for the furnace group (e.g., "hydrogen").
             dynamic_business_case (list[PrimaryFeedstock] | None): Optional list of primary feedstocks for dynamic
@@ -4343,8 +4364,7 @@ class Plant:
             FurnaceGroup: A new FurnaceGroup object with the specified technology and parameters.
 
         Side Effects:
-            - Decreases plant balance by equity_needed if status is not "considered".
-            - Increments the plant's furnace ID counter.
+            Increments the plant's furnace ID counter.
         """
 
         technology = Technology(
@@ -4412,10 +4432,6 @@ class Plant:
             furnace_group.tech_unit_fopex = float(fopex_value)
         else:
             raise ValueError(f"Fixed OPEX for technology {technology_name} not found")
-
-        # Adjust plant balance for equity investment (applies to expansion/switches, not "considered" new plants)
-        if status != "considered":
-            self.balance -= equity_needed
 
         # Mark as model-generated (not from historical data)
         furnace_group.created_by_PAM = True
@@ -4639,48 +4655,6 @@ class Plant:
 
         return agg_util_rate
 
-    def update_furnace_and_plant_balance(self, market_price: dict[str, float], active_statuses: list[str]) -> None:
-        """
-        Update the balance sheet for the plant and all its furnace groups.
-
-        Iterates through all furnace groups, updating each one's balance based on market prices,
-        then aggregates those balances to the plant level. Skips furnace groups that are inactive,
-        have zero capacity, are classified as "other" technology, or produce products not in the market.
-
-        Args:
-            market_price (dict[str, float]): Dictionary mapping product names (lowercase) to their market prices.
-            active_statuses (list[str]): List of status strings considered active for balance updates.
-
-        Side Effects:
-            - Updates each furnace group's balance via update_balance_sheet().
-            - Adds each furnace group's balance to the plant's balance.
-            - Resets each furnace group's balance to zero after aggregation.
-        """
-        logger = logging.getLogger(f"{__name__}.update_furnace_and_plant_balance")
-
-        for fg in self.furnace_groups:
-            # Skip furnace groups that should not be included in balance updates
-            if (
-                fg.capacity == 0
-                or fg.status.lower() not in [s.lower() for s in active_statuses]
-                or fg.technology.name.lower() == "other"
-                or fg.technology.product.lower() not in market_price
-            ):
-                continue
-            logger.debug(f"[BALANCE UPDATE]: FG ID: {fg.furnace_group_id}")
-            logger.debug(f"[BALANCE UPDATE]: FG balance before update: ${fg.balance:,.2f}")
-
-            # Update furnace group balance based on market price for its product
-            fg.update_balance_sheet(market_price[fg.technology.product.lower()])
-            logger.debug(f"[BALANCE UPDATE]: FG balance after update: ${fg.balance:,.2f}")
-
-            # Aggregate furnace group balance to plant level
-            self.balance += fg.balance
-            logger.debug(f"[BALANCE UPDATE]: Plant balance after FG update: ${self.balance:,.2f}")
-
-            # Reset furnace group balance after aggregation
-            fg.balance = 0.0
-
     def update_furnace_technology_emission_factors(
         self, technology_emission_factors: list[TechnologyEmissionFactors]
     ) -> None:
@@ -4809,19 +4783,96 @@ def get_new_plant_id(existent_plant_ids: list[str] = []) -> str:
 
 class PlantGroup:
     def __init__(self, *, plant_group_id: str, plants: list[Plant]) -> None:
+        """
+        A plant group is the treasury owner for its constituent plants.
+
+        Attributes:
+            plant_group_id: authoritative group identifier (e.g. a corporate GEM id
+                or ``indi_<iso3>`` for per-country indi groups).
+            plants: plants currently owned by the group.
+            balance: stored ledger (not derived). Credited by ``sweep_fg_balances_to_group``
+                from operational P&L; debited by ``deduct_equity`` for renovation,
+                switch, and expansion. Greenfield construction does not debit.
+        """
         self.plant_group_id = plant_group_id
         self.plants = plants
-        self.total_balance = 0.0
+        self.balance = 0.0
         self.events: list[events.Event] = []
 
-    def collect_total_plant_balance(self) -> float:
+    def deduct_equity(self, amount: float, reason: str) -> None:
         """
-        Collect the total balance from all plants in the plant group
+        Debit equity against the group treasury.
+
+        Sole mutation site for capex debits. Called by renovation and switch from
+        ``evaluate_furnace_group_strategy`` and by expansion from the
+        ``add_furnace_group_to_plant`` handler. Does not check affordability — gates
+        live at the call sites.
+
+        Args:
+            amount: equity amount in USD (``capex_per_tonne × capacity × equity_share``).
+            reason: one of ``"renovation"``, ``"switch"``, ``"expansion"``. Used only
+                for the structured log line today; forward-compatible for per-reason
+                tracing or aggregation.
+
+        Notes:
+            New-plant construction does not debit any treasury — the 20% equity is
+            external investor money outside the simulated ledger.
         """
-        # print(sum([plant.get_total_balance_sheet() for plant in self.plants]))
-        balances: list[float] = [plant.balance for plant in self.plants]
-        self.total_balance = float(sum(balances))
-        return self.total_balance
+        deduct_logger = logging.getLogger(f"{__name__}.deduct_equity")
+        balance_before = self.balance
+        self.balance -= amount
+        deduct_logger.info(
+            "[DEDUCT EQUITY] reason=%s amount=%.2f plant_group_id=%s balance_before=%.2f balance_after=%.2f",
+            reason,
+            amount,
+            self.plant_group_id,
+            balance_before,
+            self.balance,
+        )
+
+    def sweep_fg_balances_to_group(self, market_price: dict[str, float], active_statuses: list[str]) -> None:
+        """
+        Sweep annual operational P&L from all furnace groups into the group treasury.
+
+        For each plant in the group, iterates the plant's furnace groups. Skips FGs
+        that are inactive, have zero capacity, are classified as "other" technology,
+        or produce a product not in the market. For each eligible FG, runs
+        ``fg.update_balance_sheet`` to set its annual P&L, adds the result to the
+        group's ``balance``, then zeroes ``fg.balance`` so the sweep is idempotent.
+
+        Args:
+            market_price: Dictionary mapping product names (lowercase) to market prices.
+            active_statuses: Status strings considered active for balance updates.
+
+        Side Effects:
+            - Sets ``fg.balance`` to the annual P&L (via ``update_balance_sheet``).
+            - Increments ``self.balance`` by each FG's annual P&L.
+            - Resets ``fg.balance`` to 0.0 after aggregation.
+        """
+        sweep_logger = logging.getLogger(f"{__name__}.sweep_fg_balances_to_group")
+        active_lc = [s.lower() for s in active_statuses]
+
+        for plant in self.plants:
+            for fg in plant.furnace_groups:
+                if (
+                    fg.capacity == 0
+                    or fg.status.lower() not in active_lc
+                    or fg.technology.name.lower() == "other"
+                    or fg.technology.product.lower() not in market_price
+                ):
+                    continue
+
+                fg.update_balance_sheet(market_price[fg.technology.product.lower()])
+                annual_pnl = fg.balance
+                self.balance += annual_pnl
+                sweep_logger.debug(
+                    "[SWEEP] fg_id=%s annual_pnl=%.2f plant_group_id=%s balance=%.2f",
+                    fg.furnace_group_id,
+                    annual_pnl,
+                    self.plant_group_id,
+                    self.balance,
+                )
+                fg.balance = 0.0
 
     @property
     def most_common_reductant(self) -> dict[str, str]:
@@ -4919,10 +4970,8 @@ class PlantGroup:
             technology_unit_fopex={technology_name.lower(): cost_data[product][site_id][technology_name]["fopex"]},  # type: ignore[dict-item]
         )
 
-        # Create new furnace group in plant
-        # cost_data has been validated by prepare_cost_data to ensure capex is numeric
-        capex_value = cost_data[product][site_id][technology_name]["capex"]  # type: ignore[index]
-        equity_needed = equity_share * float(capex_value)  # type: ignore[arg-type]
+        # Create new furnace group in plant. New-plant construction does NOT debit any
+        # treasury (20% equity is external investor money, 80% debt amortises via P&L).
         new_furnace = new_plant.generate_new_furnace(
             technology_name=technology_name,
             product=product,
@@ -4940,7 +4989,6 @@ class PlantGroup:
                 cost_data[product][site_id][technology_name]["utilization_rate"]  # type: ignore[arg-type]
             ),  # average utilization rate for the technology
             chosen_reductant=cost_data[product][site_id][technology_name]["reductant"],  # type: ignore[arg-type]
-            equity_needed=equity_needed,
             lag=int(1e6),  # Set lag to a very high number so that the plant needs to be made operational explicitly
             plant_lifetime=plant_lifetime,
             dynamic_business_case=dynamic_feedstocks,
@@ -5050,6 +5098,11 @@ class PlantGroup:
             raise ValueError(f"No allowed technologies found for year {current_year}")
         logger.info(f"[PG EXPANSION] Allowed technologies in {current_year}: {allowed_techs_in_year}")
 
+        # Pre-filter counters for site #13 log
+        num_pairs_evaluated = 0
+        num_pairs_passed_prefilter = 0
+        num_pairs_dropped_prefilter = 0
+
         # Dictionary to store best NPV and technology choice for each plant
         NPV_p = {}
 
@@ -5089,14 +5142,17 @@ class PlantGroup:
                         f"No greenfield capex data for {tech} in region {iso3_to_region_map[plant.location.iso3]}"
                     )
 
-                # Skip if plant cannot individually afford this technology
-                equity_needed_for_tech = capacity * capex
-                if plant.balance < equity_needed_for_tech:
+                # Skip if the group treasury cannot cover equity for this (plant, tech)
+                num_pairs_evaluated += 1
+                equity_needed_for_tech = capex * capacity * equity_share
+                if self.balance < equity_needed_for_tech:
+                    num_pairs_dropped_prefilter += 1
                     logger.debug(
                         f"[PG EXPANSION] Skipping {tech} for plant {plant.plant_id}: "
-                        f"balance ${plant.balance:,.2f} < equity needed ${equity_needed_for_tech:,.2f}"
+                        f"group balance ${self.balance:,.2f} < equity needed ${equity_needed_for_tech:,.2f}"
                     )
                     continue
+                num_pairs_passed_prefilter += 1
 
                 # Skip BOF technology if plant lacks hot metal furnace (prerequisite)
                 if tech == "BOF" and not plant.has_hot_metal_furnace:
@@ -5257,6 +5313,15 @@ class PlantGroup:
 
                 NPV_p[plant.plant_id] = NPV.get(best_tech), best_tech, best_capex
 
+        logger.info(
+            "[PG EXPANSION OPTIONS] plant_group_id=%s num_pairs_evaluated=%d "
+            "num_pairs_passed_prefilter=%d num_pairs_dropped_prefilter=%d",
+            self.plant_group_id,
+            num_pairs_evaluated,
+            num_pairs_passed_prefilter,
+            num_pairs_dropped_prefilter,
+        )
+
         return NPV_p
 
     def evaluate_expansion(
@@ -5348,10 +5413,11 @@ class PlantGroup:
             - Logs detailed decision-making process at debug level
 
         Note:
-        - Balance deduction does NOT happen here - it occurs at the FurnaceGroup level via command handler.
-          The handler deducts equity from the FurnaceGroup, then FurnaceGroup updates Plant balance,
-          and PlantGroup.total_balance is updated from Plant balances.
-        - Probabilistic acceptance uses formula: exp(-investment_cost / NPV)
+        - Balance deduction does NOT happen here - the ``add_furnace_group_to_plant``
+          handler debits ``plant_group.balance`` via ``plant_group.deduct_equity`` after
+          the factory has attached the new furnace to the plant.
+        - Probabilistic acceptance uses formula: ``exp(-equity_needed / NPV)`` — the
+          equity-basis equity outlay is dimensionally consistent with the equity-basis NPV.
         - Capacity limits distinguish between new plants and expansions/switches
         - All subsidies are filtered to only include those active in the current year
         """
@@ -5360,7 +5426,7 @@ class PlantGroup:
         # ========== STAGE 1: INITIALIZATION ==========
         logger.debug(
             f"[PG EXPANSION] {self.plant_group_id}: "
-            f"balance=${self.total_balance:,.2f}, plants={len(self.plants)}, year={current_year}"
+            f"balance=${self.balance:,.2f}, plants={len(self.plants)}, year={current_year}"
         )
 
         # ========== STAGE 2: EVALUATE ALL EXPANSION OPTIONS ==========
@@ -5419,26 +5485,42 @@ class PlantGroup:
             return None
 
         # ========== STAGE 6: CHECK BALANCE SUFFICIENCY ==========
-        equity_needed = capacity * capex  # Equity to finance up-front cost
+        # Equity = capex × capacity × equity_share
+        investment = capacity * capex
+        equity_needed = investment * equity_share
 
-        if self.total_balance < equity_needed:
+        if self.balance < equity_needed:
             logger.debug(
                 f"[PG EXPANSION] DECISION - No expansion (insufficient funds: "
-                f"${self.total_balance:,.2f} < ${equity_needed:,.2f})"
+                f"${self.balance:,.2f} < ${equity_needed:,.2f})"
             )
             return None
 
         # ========== STAGE 7: PROBABILISTIC ACCEPTANCE ==========
+        # Acceptance: exp(-equity_needed / NPV). Dimensionally consistent with NPV, which is equity-basis
         if probabilistic_agents:
-            # Probabilistic acceptance: exp(-investment/NPV) → higher cost/benefit ratio = lower probability
-            investment_cost = capacity * capex
-            acceptance_probability = math.exp(-investment_cost / npv)
+            acceptance_probability = math.exp(-equity_needed / npv)
         else:
             acceptance_probability = 1
 
         random_draw = random.random()
+        accepted = random_draw < acceptance_probability
 
-        if random_draw >= acceptance_probability:
+        logger.info(
+            "[PG EXPANSION] plant_group_id=%s plant_id=%s tech=%s investment=%.2f "
+            "equity_needed=%.2f npv=%.2f acceptance_probability=%.4f random_draw=%.4f accepted=%s",
+            self.plant_group_id,
+            plant_id,
+            tech,
+            investment,
+            equity_needed,
+            npv,
+            acceptance_probability,
+            random_draw,
+            accepted,
+        )
+
+        if not accepted:
             logger.debug(
                 f"[PG EXPANSION] DECISION - No expansion (probabilistic rejection: "
                 f"draw={random_draw:.4f} >= prob={acceptance_probability:.2%})"
@@ -5489,9 +5571,9 @@ class PlantGroup:
             # )
 
         # ========== STAGE 9: VALIDATE PLANT AND LOCATION ==========
-        # NOTE: Balance deduction does NOT happen here - it occurs at the FurnaceGroup level via command handler.
-        # The handler deducts equity from the FurnaceGroup, then FurnaceGroup updates Plant balance,
-        # and PlantGroup.total_balance is updated from Plant balances.
+        # NOTE: Balance deduction does NOT happen here - the add_furnace_group_to_plant handler
+        # calls plant_group.deduct_equity(cmd.equity_needed, reason="expansion") after the factory
+        # has attached the new furnace to the plant.
 
         # Find the plant and validate location
         plant = next((p for p in self.plants if p.plant_id == plant_id), None)
@@ -5584,7 +5666,7 @@ class PlantGroup:
         logger.info("[PG EXPANSION] ✓ SUCCESS - Expansion approved")
         logger.info(f"[PG EXPANSION]   - Plant: {plant_id}, Technology: {tech}, Product: {product}")
         logger.info(f"[PG EXPANSION]   - Capacity: {capacity * T_TO_KT:,.0f} kt, NPV: ${npv:,.0f}")
-        logger.info(f"[PG EXPANSION]   - Investment: ${capacity * capex:,.0f} (equity: ${equity_needed:,.0f})")
+        logger.info(f"[PG EXPANSION]   - Investment: ${investment:,.0f} (equity to debit: ${equity_needed:,.0f})")
         logger.info(f"[PG EXPANSION]   - CAPEX: ${base_capex:.2f}/t → ${capex:.2f}/t (with subsidies)")
         logger.info(
             f"[PG EXPANSION]   - Cost of debt: {cost_of_debt_original:.2%} → {cost_of_debt:.2%} (with subsidies)"
@@ -8910,7 +8992,7 @@ class Environment:
                 )
                 if cheapest_reductant:
                     most_common_reductant = cheapest_reductant
-                    logger.warning(
+                    logger.info(
                         "[AVG_BOM_DIAG] reductant: tech=%s source=cheapest_reductant_fallback chosen=%s",
                         tech,
                         most_common_reductant,

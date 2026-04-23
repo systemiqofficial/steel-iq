@@ -55,7 +55,7 @@ def _make_fg(tech: Technology, capacity: float = 1000.0) -> FurnaceGroup:
 
 
 def _make_plant(plant_id: str, iso3: str, balance: float = 1e15) -> Plant:
-    """Balance is intentionally huge so the 'cannot afford' skip at line 5006 never fires."""
+    """Balance is intentionally huge so the affordability pre-filter never fires (seeded on the group)."""
     tech = _make_ccs_tech("BF")
     fg = _make_fg(tech)
     fg.set_energy_costs(electricity=0.05, coke=0.1)
@@ -72,12 +72,13 @@ def _make_plant(plant_id: str, iso3: str, balance: float = 1e15) -> Plant:
         steel_capacity=Volumes(1000),
         technology_unit_fopex={},
     )
-    p.balance = balance
     return p
 
 
-def _make_pg(plants: list[Plant]) -> PlantGroup:
-    return PlantGroup(plant_group_id="pg1", plants=plants)
+def _make_pg(plants: list[Plant], balance: float = 1e15) -> PlantGroup:
+    pg = PlantGroup(plant_group_id="pg1", plants=plants)
+    pg.balance = balance
+    return pg
 
 
 def _build_stubs(
@@ -302,7 +303,6 @@ def test_p3_pg_local_reductant_overrides_env_reductant():
         steel_capacity=Volumes(1000),
         technology_unit_fopex={},
     )
-    plant.balance = 1e15
     pg = _make_pg([plant])
 
     captured_reductants: list[str] = []

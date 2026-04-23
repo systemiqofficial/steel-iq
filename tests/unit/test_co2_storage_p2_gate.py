@@ -21,6 +21,7 @@ from steelo.domain.models import (
     FurnaceGroup,
     Location,
     Plant,
+    PlantGroup,
     PointInTime,
     PrimaryFeedstock,
     Technology,
@@ -78,8 +79,14 @@ def _make_plant(iso3: str = "USA") -> Plant:
         steel_capacity=Volumes(1000),
         technology_unit_fopex={},
     )
-    p.balance = 1e15
     return p
+
+
+def _make_plant_and_group(iso3: str = "USA") -> tuple[Plant, "PlantGroup"]:
+    p = _make_plant(iso3=iso3)
+    pg = PlantGroup(plant_group_id="parent", plants=[p])
+    pg.balance = 1e15
+    return p, pg
 
 
 def _build_stubs(
@@ -114,11 +121,16 @@ def _call_evaluate(
     co2_storage_diagnostics,
     most_common_reductant_by_tech: dict[str, str] | None = None,
     current_year: Year = Year(2030),
+    plant_group: PlantGroup | None = None,
 ):
     region_capex = {tech: 500.0 for tech in allowed_techs_list + [plant.furnace_groups[0].technology.name]}
+    if plant_group is None:
+        plant_group = PlantGroup(plant_group_id="parent", plants=[plant])
+        plant_group.balance = 1e15
 
     return plant.evaluate_furnace_group_strategy(
         "fg1",
+        plant_group=plant_group,
         market_price_series={"steel": [500.0] * 30, "hot_metal": [500.0] * 30, "iron": [500.0] * 30},
         region_capex=region_capex,
         capex_renovation_share={},
