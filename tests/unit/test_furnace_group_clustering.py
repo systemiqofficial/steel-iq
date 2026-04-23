@@ -122,11 +122,11 @@ class TestClusterKey:
         """Test creating a cluster key."""
         key = ClusterKey(
             technology_name="BF",
-            iso3="CHN",
+            location_key="CHN",
             feedstock_signature="coke:io_low|coke:io_mid",
         )
         assert key.technology_name == "BF"
-        assert key.iso3 == "CHN"
+        assert key.location_key == "CHN"
         assert key.feedstock_signature == "coke:io_low|coke:io_mid"
 
     def test_cluster_key_string_representation(self):

@@ -1,5 +1,6 @@
 import copy
 import logging
+from typing import Any
 import networkx as nx
 from collections import deque
 from steelo.adapters.repositories.in_memory_repository import (
@@ -1109,6 +1110,433 @@ class TM_PAM_connector:
                         )
 
         return bom_issue_count_materials, bom_issue_count_energy
+
+    def validate_bom_consistency(
+        self,
+        furnace_groups: list[FurnaceGroup],
+        aggregated_constraints: list | None = None,
+        mass_balance_tolerance: float = 0.01,
+        min_share_tolerance: float = 0.01,
+    ) -> list[dict]:
+        """Validate BOM balance and minimum-share constraints for all active furnace groups.
+
+        Two checks are run for every FG with production > 0:
+
+        1. **Mass balance**: the total metallic-charge input (hot_metal, pig_iron, scrap,
+           DRI/HBI, etc.) should be within `mass_balance_tolerance` of the production
+           volume.  A steel furnace using 1 t of metallic charge to produce 1 t of steel
+           should have a ratio close to 1.  Ratios outside [1 - tol, 1 + tol] indicate a
+           disaggregation error (e.g. material stranded at wrong FG).
+
+        2. **Min-share constraints**: for each feedstock whose
+           ``minimum_share_in_product > 0``, the material's actual share of the total
+           metallic-charge input must be ≥ ``minimum_share_in_product - min_share_tolerance``.
+           Aggregated constraints (e.g. BOF hot_metal ≥ 70%) are also checked; both the
+           hot and cold form of a commodity are counted (pig_iron ≡ hot_metal).
+
+        Args:
+            furnace_groups: All furnace groups to check.
+            aggregated_constraints: Optional list of ``AggregatedMetallicChargeConstraint``
+                objects (same ones passed to the LP / disaggregation).
+            mass_balance_tolerance: Relative tolerance for metallic input/output ratio.
+                Default 10 % (0.10).
+            min_share_tolerance: Absolute slack allowed on minimum-share constraints.
+                Default 2 pp (0.02).
+
+        Returns:
+            List of issue dicts.  Each dict contains at least:
+            ``fg_id``, ``technology``, ``check`` (``"empty_bom"``, ``"mass_balance"``,
+            or ``"min_share"``), and ``message``.  All violations are also logged as
+            WARNING.
+        """
+        logger = logging.getLogger(f"{__name__}.validate_bom_consistency")
+
+        # Commodities that count as metallic charge (hot and cold forms).
+        # Pig iron and hot metal are the same material in different transport states;
+        # both count toward any hot_metal minimum.
+        METALLIC_COMMODITIES: set[str] = {
+            "hot_metal",
+            "pig_iron",
+            "dri_low",
+            "dri_mid",
+            "dri_high",
+            "hbi_low",
+            "hbi_mid",
+            "hbi_high",
+            "scrap",
+            "scrap_steel",
+            "electrolytic_iron",
+            "liquid_iron",
+        }
+        # Hot ↔ cold equivalences for min-share matching
+        HOT_COLD_EQUIV: dict[str, str] = {
+            "pig_iron": "hot_metal",
+            "hot_metal": "pig_iron",
+            "hbi_low": "dri_low",
+            "dri_low": "hbi_low",
+            "hbi_mid": "dri_mid",
+            "dri_mid": "hbi_mid",
+            "hbi_high": "dri_high",
+            "dri_high": "hbi_high",
+            "liquid_iron": "electrolytic_iron",
+            "electrolytic_iron": "liquid_iron",
+        }
+
+        def _equiv_names(name: str) -> set[str]:
+            n = name.lower()
+            return {n, HOT_COLD_EQUIV[n]} if n in HOT_COLD_EQUIV else {n}
+
+        issues: list[dict[str, Any]] = []
+
+        for fg in furnace_groups:
+            production = getattr(fg, "allocated_volumes", 0.0) or 0.0
+            if production <= 0:
+                continue
+
+            bom = fg.bill_of_materials
+            if not bom or not bom.get("materials"):
+                issue: dict[str, Any] = {
+                    "fg_id": fg.furnace_group_id,
+                    "technology": fg.technology.name,
+                    "check": "empty_bom",
+                    "message": (
+                        f"FG {fg.furnace_group_id} ({fg.technology.name}): "
+                        f"production={production:.0f}t but BOM materials are empty"
+                    ),
+                }
+                issues.append(issue)
+                logger.warning("[BOM-CHECK] %s", issue["message"])
+                continue
+
+            materials = bom["materials"]
+
+            # --- Check 1: mass balance on metallic charge ---
+            total_metallic_in = sum(
+                float(info.get("demand", 0.0))
+                for comm, info in materials.items()
+                if comm.lower() in METALLIC_COMMODITIES
+            )
+
+            # If total metallic is zero but the FG has at least one metallic-charge
+            # feedstock constraint, it should have received metallic inputs.  A
+            # non-empty BOM that contains only non-metallic materials (e.g. iron_ore
+            # routed to a BOF via a graph bug) would otherwise slip past all checks.
+            if total_metallic_in == 0:
+                feedstocks_needing_metallic = [
+                    fs
+                    for fs in (getattr(fg, "effective_primary_feedstocks", None) or [])
+                    if normalize_name(getattr(fs, "metallic_charge", "")) in METALLIC_COMMODITIES
+                    and getattr(fs, "minimum_share_in_product", 0) > 0
+                ]
+                if feedstocks_needing_metallic:
+                    issue = {
+                        "fg_id": fg.furnace_group_id,
+                        "technology": fg.technology.name,
+                        "check": "zero_metallic",
+                        "message": (
+                            f"FG {fg.furnace_group_id} ({fg.technology.name}): "
+                            f"production={production:.0f}t but BOM contains no metallic-charge materials "
+                            f"(expected: {[getattr(fs, 'metallic_charge', '?') for fs in feedstocks_needing_metallic]})"
+                        ),
+                    }
+                    issues.append(issue)
+                    logger.warning("[BOM-CHECK] zero_metallic: %s", issue["message"])
+
+            if total_metallic_in > 0:
+                ratio = total_metallic_in / production
+                # Yield losses mean slightly more input than output is normal;
+                # ratios well outside [0.9, 1.2] suggest a disaggregation error.
+                lo, hi = 1.0 - mass_balance_tolerance, 1.2 + mass_balance_tolerance
+                if not (lo <= ratio <= hi):
+                    issue = {
+                        "fg_id": fg.furnace_group_id,
+                        "technology": fg.technology.name,
+                        "check": "mass_balance",
+                        "ratio": ratio,
+                        "message": (
+                            f"FG {fg.furnace_group_id} ({fg.technology.name}): "
+                            f"metallic_input={total_metallic_in:.0f}t / production={production:.0f}t "
+                            f"= {ratio:.3f} (expected [{lo:.2f}, {hi:.2f}])"
+                        ),
+                    }
+                    issues.append(issue)
+                    logger.warning("[BOM-CHECK] mass_balance: %s", issue["message"])
+
+            # --- Check 2: per-feedstock minimum shares ---
+            feedstocks = getattr(fg, "effective_primary_feedstocks", None) or []
+            for fs in feedstocks:
+                min_share = getattr(fs, "minimum_share_in_product", None)
+                if not min_share or min_share <= 0:
+                    continue
+
+                equiv = _equiv_names(normalize_name(fs.metallic_charge))
+                actual_demand = sum(
+                    float(info.get("demand", 0.0)) for comm, info in materials.items() if comm.lower() in equiv
+                )
+                actual_share = actual_demand / total_metallic_in if total_metallic_in > 0 else 0.0
+
+                if actual_share < min_share - min_share_tolerance:
+                    issue = {
+                        "fg_id": fg.furnace_group_id,
+                        "technology": fg.technology.name,
+                        "check": "min_share",
+                        "commodity": fs.metallic_charge,
+                        "actual_share": actual_share,
+                        "required_share": min_share,
+                        "message": (
+                            f"FG {fg.furnace_group_id} ({fg.technology.name}): "
+                            f"{fs.metallic_charge} share={actual_share:.1%} "
+                            f"< minimum={min_share:.1%} "
+                            f"(demand={actual_demand:.0f}t / metallic_total={total_metallic_in:.0f}t)"
+                        ),
+                    }
+                    issues.append(issue)
+                    logger.warning("[BOM-CHECK] min_share: %s", issue["message"])
+
+            # --- Check 3: aggregated constraints (e.g. BOF hot_metal ≥ 70%) ---
+            if aggregated_constraints:
+                fg_tech = fg.technology.name.lower()
+                for c in aggregated_constraints:
+                    min_share = getattr(c, "minimum_share", None)
+                    if not min_share or min_share <= 0:
+                        continue
+                    if str(getattr(c, "technology_name", "")).lower() != fg_tech:
+                        continue
+                    pattern = str(getattr(c, "feedstock_pattern", "")).lower()
+                    if not pattern:
+                        continue
+
+                    # Sum demand for all materials whose name (or equivalent) starts with pattern
+                    matching_demand = sum(
+                        float(info.get("demand", 0.0))
+                        for comm, info in materials.items()
+                        if any(n.startswith(pattern) for n in _equiv_names(comm.lower()))
+                    )
+                    actual_share = matching_demand / total_metallic_in if total_metallic_in > 0 else 0.0
+
+                    if actual_share < min_share - min_share_tolerance:
+                        issue = {
+                            "fg_id": fg.furnace_group_id,
+                            "technology": fg.technology.name,
+                            "check": "aggregated_min_share",
+                            "pattern": pattern,
+                            "actual_share": actual_share,
+                            "required_share": min_share,
+                            "message": (
+                                f"FG {fg.furnace_group_id} ({fg.technology.name}): "
+                                f"aggregated constraint '{pattern}*' share={actual_share:.1%} "
+                                f"< minimum={min_share:.1%} "
+                                f"(matching={matching_demand:.0f}t / metallic_total={total_metallic_in:.0f}t)"
+                            ),
+                        }
+                        issues.append(issue)
+                        logger.warning("[BOM-CHECK] aggregated_min_share: %s", issue["message"])
+
+        if issues:
+            logger.warning(
+                "[BOM-CHECK] Found %d BOM consistency issue(s) across %d furnace groups",
+                len(issues),
+                len(furnace_groups),
+            )
+        else:
+            logger.info("[BOM-CHECK] All active furnace groups passed BOM consistency checks")
+
+        return issues
+
+    def correct_utilization_for_supply_constraints(
+        self,
+        furnace_groups: list[FurnaceGroup],
+        bom_issues: list[dict[str, Any]],
+    ) -> int:
+        """Reduce utilization of FGs that cannot receive enough of a constrained material.
+
+        When a FG has a min-share violation (e.g. a BOF receiving only 4.8 % hot_metal
+        instead of the required ≥ 70 %) the LP-assigned production implicitly assumes a
+        supply that is not physically available within ``hot_metal_radius``.  This method
+        corrects by:
+
+        1. Treating the constrained commodity's actual supply as fixed (geography-determined).
+        2. Computing the maximum total metallic charge consistent with that supply and the
+           minimum-share requirement: ``T_new = constrained_supply / required_share``.
+        3. Scaling production and ``utilization_rate`` by ``T_new / T_old``.
+        4. Keeping the constrained commodity's BOM demand unchanged; scaling all other
+           metallic BOM entries down so ``T_new`` is satisfied.
+        5. Scaling non-metallic BOM entries with production.
+
+        For each FG the most-binding violation (smallest ``actual_share / required_share``)
+        is used.
+
+        Args:
+            furnace_groups: All furnace groups.
+            bom_issues: List returned by ``validate_bom_consistency``.
+
+        Returns:
+            Number of FGs whose utilization was corrected.
+        """
+        logger = logging.getLogger(f"{__name__}.correct_utilization_for_supply_constraints")
+
+        METALLIC_COMMODITIES: set[str] = {
+            "hot_metal",
+            "pig_iron",
+            "dri_low",
+            "dri_mid",
+            "dri_high",
+            "hbi_low",
+            "hbi_mid",
+            "hbi_high",
+            "scrap",
+            "scrap_steel",
+            "electrolytic_iron",
+            "liquid_iron",
+        }
+        HOT_COLD_EQUIV: dict[str, str] = {
+            "pig_iron": "hot_metal",
+            "hot_metal": "pig_iron",
+            "hbi_low": "dri_low",
+            "dri_low": "hbi_low",
+            "hbi_mid": "dri_mid",
+            "dri_mid": "hbi_mid",
+            "hbi_high": "dri_high",
+            "dri_high": "hbi_high",
+            "liquid_iron": "electrolytic_iron",
+            "electrolytic_iron": "liquid_iron",
+        }
+
+        def _equiv_names(name: str) -> set[str]:
+            n = name.lower()
+            return {n, HOT_COLD_EQUIV[n]} if n in HOT_COLD_EQUIV else {n}
+
+        # Collect the most-binding min_share / aggregated_min_share issue per FG
+        binding_by_fg: dict[str, dict[str, Any]] = {}
+        for issue in bom_issues:
+            if issue["check"] not in ("min_share", "aggregated_min_share"):
+                continue
+            fg_id = issue["fg_id"]
+            actual_share = issue.get("actual_share", 0.0)
+            required_share = issue.get("required_share", 1.0)
+            scale = actual_share / required_share if required_share > 0 else 1.0
+            if fg_id not in binding_by_fg or scale < binding_by_fg[fg_id]["_scale"]:
+                binding_by_fg[fg_id] = {**issue, "_scale": scale}
+
+        if not binding_by_fg:
+            return 0
+
+        fg_by_id = {fg.furnace_group_id: fg for fg in furnace_groups}
+        corrected = 0
+
+        for fg_id, issue in binding_by_fg.items():
+            fg = fg_by_id.get(fg_id)
+            if fg is None:
+                continue
+
+            bom = fg.bill_of_materials
+            if not bom or not bom.get("materials"):
+                continue
+
+            materials = bom["materials"]
+            total_metallic_in = sum(
+                float(info.get("demand", 0.0))
+                for comm, info in materials.items()
+                if comm.lower() in METALLIC_COMMODITIES
+            )
+            if total_metallic_in <= 0:
+                continue
+
+            # Identify constrained commodity set (hot/cold equivalents count together)
+            commodity_raw = issue.get("commodity") or issue.get("pattern") or ""
+            constrained_equiv = _equiv_names(normalize_name(commodity_raw)) if commodity_raw else set()
+
+            constrained_supply = (
+                sum(
+                    float(info.get("demand", 0.0))
+                    for comm, info in materials.items()
+                    if comm.lower() in constrained_equiv
+                )
+                if constrained_equiv
+                else 0.0
+            )
+
+            required_share = issue["required_share"]
+            if required_share <= 0 or constrained_supply <= 0:
+                continue
+
+            # Maximum total metallic consistent with fixed constrained supply + min-share
+            new_total_metallic = constrained_supply / required_share
+            if new_total_metallic >= total_metallic_in:
+                continue  # No reduction needed (shouldn't happen, but guard)
+
+            scale_production = new_total_metallic / total_metallic_in  # < 1
+
+            # Scale factor for all OTHER metallic materials (excluding constrained commodity)
+            other_metallic_old = total_metallic_in - constrained_supply
+            other_metallic_new = new_total_metallic - constrained_supply
+            scale_other = other_metallic_new / other_metallic_old if other_metallic_old > 0 else 0.0
+
+            old_production = fg.allocated_volumes
+            new_production = old_production * scale_production
+
+            logger.warning(
+                "[UTIL-CORRECT] FG %s (%s): supply-constrained by '%s' (%.1f%% < %.0f%% min). "
+                "Reducing production %.0f → %.0f t, utilization %.1f%% → %.1f%%",
+                fg_id,
+                fg.technology.name,
+                commodity_raw,
+                issue["actual_share"] * 100,
+                required_share * 100,
+                old_production,
+                new_production,
+                (fg.utilization_rate or 0) * 100,
+                (new_production / fg.capacity * 100) if fg.capacity > 0 else 0,
+            )
+
+            # Update production and utilization
+            fg.set_allocated_volumes(new_production)
+            if fg.capacity > 0:
+                fg.utilization_rate = new_production / fg.capacity
+
+            # Scale outgoing graph edges (steel to demand centers) so downstream
+            # demand-satisfaction accounting reflects reduced supply.
+            if self.G is not None and fg_id in self.G.nodes:
+                for _, dest, edge_data in list(self.G.out_edges(fg_id, data=True)):
+                    old_vol = edge_data.get("volume", 0.0)
+                    edge_data["volume"] = old_vol * scale_production
+                    old_alloc = edge_data.get("allocations", 0.0)
+                    if old_alloc:
+                        edge_data["allocations"] = old_alloc * scale_production
+
+            # Update BOM demands and costs
+            for comm, info in materials.items():
+                comm_lower = comm.lower()
+                if comm_lower in constrained_equiv:
+                    # Constrained commodity: demand fixed, but unit_cost rises (less output)
+                    pass
+                elif comm_lower in METALLIC_COMMODITIES:
+                    # Other metallics: reduce to maintain valid share
+                    old_demand = float(info.get("demand", 0.0))
+                    info["demand"] = old_demand * scale_other
+                    if "total_cost" in info:
+                        info["total_cost"] = float(info["total_cost"]) * scale_other
+                else:
+                    # Non-metallic inputs (iron ore, flux, gases): scale with production
+                    old_demand = float(info.get("demand", 0.0))
+                    info["demand"] = old_demand * scale_production
+                    if "total_cost" in info:
+                        info["total_cost"] = float(info["total_cost"]) * scale_production
+
+                # Recompute unit_cost against new production
+                if new_production > 0 and "total_cost" in info:
+                    info["unit_cost"] = float(info["total_cost"]) / new_production
+
+                info["product_volume"] = new_production
+
+            corrected += 1
+
+        if corrected:
+            logger.info(
+                "[UTIL-CORRECT] Corrected utilization for %d FG(s) due to constrained supply",
+                corrected,
+            )
+        return corrected
 
     def update_furnace_group_emissions(self, furnace_groups: list[FurnaceGroup]):
         """Calculate and set emissions for furnace groups based on their bill of materials.

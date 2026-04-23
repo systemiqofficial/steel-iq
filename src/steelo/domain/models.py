@@ -1132,6 +1132,7 @@ class FurnaceGroup:
         self.historical_npv_business_opportunities = historical_npv_business_opportunities
         self.railway_cost = railway_cost
         self.legacy_debt_schedule = legacy_debt_schedule or []  # Track debt from previous tech when switching
+        self.has_hot_metal_access = False
 
         self.applied_subsidies: dict[str, list[Subsidy]] = {
             "capex": [],
@@ -1648,8 +1649,9 @@ class FurnaceGroup:
 
         # Validate BOM exists for producing furnaces
         if not self.bill_of_materials:
-            logger.error(f"FurnaceGroup {self.furnace_group_id} has no bill of materials defined.")
-            raise ValueError("Bill of materials must exist for FG with utilization rate > 0")
+            raise ValueError(
+                f"Bill of materials must exist for FG with utilization rate > 0. FurnaceGroup ID: {self.furnace_group_id}, technology: {getattr(self.technology, 'name', '?')}"
+            )
         # Validate materials exist in BOM
         elif not ("materials" in self.bill_of_materials and self.bill_of_materials["materials"]):
             # Get diagnostic info
@@ -2207,7 +2209,6 @@ class FurnaceGroup:
         capex_dict: dict[str, float],
         capex_renovation_share: dict[str, float],
         technology_fopex_dict: dict[str, float],
-        plant_has_smelter_furnace: bool,
         dynamic_business_cases: dict[str, list[PrimaryFeedstock]],
         chosen_emissions_boundary_for_carbon_costs: str,
         technology_emission_factors: list[TechnologyEmissionFactors],
@@ -2247,7 +2248,6 @@ class FurnaceGroup:
             capex_renovation_share (dict[str, float]): Share of full capex required for renovating existing technology
                 (decimal, e.g., 0.7 for 70%).
             technology_fopex_dict (dict[str, float]): Fixed operating expenses per tonne for each technology ($/tonne).
-            plant_has_smelter_furnace (bool): Whether this plant has a smelter furnace (required for BOF technology).
             dynamic_business_cases (dict[str, list[PrimaryFeedstock]]): Primary feedstock configurations by technology
                 for emissions calculations.
             chosen_emissions_boundary_for_carbon_costs (str): Emission boundary to use for carbon cost calculation.
@@ -2440,7 +2440,7 @@ class FurnaceGroup:
                 continue
 
             # BOF requires smelter furnace (for pig iron production)
-            if tech == "BOF" and not plant_has_smelter_furnace:
+            if tech == "BOF" and not self.has_hot_metal_access:
                 logger.info("[OPTIMAL TECH] SKIPPING BOF - Plant has no smelter furnace (required for BOF)")
                 continue
 
@@ -3265,6 +3265,7 @@ class Plant:
         self.average_steel_cost = average_steel_cost
         self.steel_capacity = steel_capacity
         self.carbon_cost_series: dict[Year, float] = {}
+        self.has_hot_metal_access: bool = False
 
     def add_furnace_group(self, new_furnace_group: FurnaceGroup) -> None:
         self.furnace_groups.append(new_furnace_group)
@@ -3364,16 +3365,6 @@ class Plant:
         """
         for furnace_group in self.furnace_groups:
             if furnace_group.technology.name == "DRI":
-                return True
-        return False
-
-    @property
-    def has_hot_metal_furnace(self) -> bool:
-        """
-        Check if the plant has a hot metal furnace (BF or DRI_smelting)
-        """
-        for furnace_group in self.furnace_groups:
-            if furnace_group.technology.name in ["BF", "ESF", "SR"]:
                 return True
         return False
 
@@ -3929,7 +3920,6 @@ class Plant:
             capex_dict=region_capex,
             capex_renovation_share=capex_renovation_share,
             technology_fopex_dict=self.technology_unit_fopex,
-            plant_has_smelter_furnace=self.has_hot_metal_furnace,
             carbon_cost_series=self.carbon_cost_series,
             dynamic_business_cases=dynamic_business_cases,
             tech_capex_subsidies=tech_capex_subsidies,
@@ -4813,6 +4803,47 @@ class PlantGroup:
         self.plants = plants
         self.total_balance = 0.0
         self.events: list[events.Event] = []
+        self.hot_metal_access: dict[str, list[str]] = defaultdict(
+            list
+        )  # BOF furnace group -> list of furnace groups that produce hot metal for it
+
+    def update_hot_metal_access(self, hot_metal_radius: float) -> None:
+        """Update the hot metal access mapping for BOF furnace groups in the plant group.
+
+        Args:
+            hot_metal_radius: Maximum distance (km) over which hot metal can be transported.
+        """
+        for plant in self.plants:
+            plant.has_hot_metal_access = False  # Initialize hot metal access for the plant
+            for fg in plant.furnace_groups:
+                if fg.technology.name.lower() == "bof":
+                    fg.has_hot_metal_access = False  # Initialize access flag
+                    self.hot_metal_access[fg.furnace_group_id] = []  # Initialize list for this BOF furnace group
+                    # Identify furnace groups that produce hot metal for this BOF group
+                    for other_plant in self.plants:
+                        for other_fg in other_plant.furnace_groups:
+                            # check if other furnace group produces hot metal and is within hot metal radius of the BOF plant
+                            if (
+                                other_fg.technology.name.lower()
+                                in [
+                                    "bf",
+                                    "dri+esf",
+                                    "sr",
+                                    "bf+ccu",
+                                    "dri+esf+ccu",
+                                    "sr+ccu",
+                                    "bf+ccs",
+                                    "dri+esf+ccs",
+                                    "sr+ccs",
+                                    "bf_charcoal",
+                                    "bf_charcoal+ccu",
+                                    "bf_charcoal+ccs",
+                                ]
+                                and plant.distance_to(other_plant.location) <= hot_metal_radius
+                            ):
+                                fg.has_hot_metal_access = True
+                                plant.has_hot_metal_access = True
+                                self.hot_metal_access[fg.furnace_group_id].append(other_fg.furnace_group_id)
 
     def collect_total_plant_balance(self) -> float:
         """
@@ -5100,7 +5131,7 @@ class PlantGroup:
                     continue
 
                 # Skip BOF technology if plant lacks hot metal furnace (prerequisite)
-                if tech == "BOF" and not plant.has_hot_metal_furnace:
+                if tech == "BOF" and not plant.has_hot_metal_access:
                     continue
 
                 # P3 CO2 storage gate: skip CCS techs whose annual need exceeds country headroom.
