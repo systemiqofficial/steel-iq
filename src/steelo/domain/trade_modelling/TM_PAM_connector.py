@@ -1,5 +1,6 @@
 import copy
 import logging
+from typing import Any
 import networkx as nx
 from collections import deque
 from steelo.adapters.repositories.in_memory_repository import (
@@ -1185,7 +1186,7 @@ class TM_PAM_connector:
             n = name.lower()
             return {n, HOT_COLD_EQUIV[n]} if n in HOT_COLD_EQUIV else {n}
 
-        issues: list[dict] = []
+        issues: list[dict[str, Any]] = []
 
         for fg in furnace_groups:
             production = getattr(fg, "allocated_volumes", 0.0) or 0.0
@@ -1194,7 +1195,7 @@ class TM_PAM_connector:
 
             bom = fg.bill_of_materials
             if not bom or not bom.get("materials"):
-                issue = {
+                issue: dict[str, Any] = {
                     "fg_id": fg.furnace_group_id,
                     "technology": fg.technology.name,
                     "check": "empty_bom",
@@ -1345,7 +1346,7 @@ class TM_PAM_connector:
     def correct_utilization_for_supply_constraints(
         self,
         furnace_groups: list[FurnaceGroup],
-        bom_issues: list[dict],
+        bom_issues: list[dict[str, Any]],
     ) -> int:
         """Reduce utilization of FGs that cannot receive enough of a constrained material.
 
@@ -1406,7 +1407,7 @@ class TM_PAM_connector:
             return {n, HOT_COLD_EQUIV[n]} if n in HOT_COLD_EQUIV else {n}
 
         # Collect the most-binding min_share / aggregated_min_share issue per FG
-        binding_by_fg: dict[str, dict] = {}
+        binding_by_fg: dict[str, dict[str, Any]] = {}
         for issue in bom_issues:
             if issue["check"] not in ("min_share", "aggregated_min_share"):
                 continue

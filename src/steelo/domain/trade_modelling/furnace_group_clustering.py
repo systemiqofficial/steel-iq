@@ -1757,7 +1757,7 @@ def _solve_strict_by_components(
                     shortfall = d_before - comp_demand[did]
                     if shortfall > 1.0:
                         merged_stats["dest_unmet_demand"][did] = (  # type: ignore[index]
-                            merged_stats["dest_unmet_demand"].get(did, 0.0) + shortfall  # type: ignore[union-attr]
+                            merged_stats["dest_unmet_demand"].get(did, 0.0) + shortfall  # type: ignore[union-attr,attr-defined]
                         )
                 logger.warning(
                     f"[DISAGGREGATION] Strict-radius pocket is supply-constrained "
@@ -2284,7 +2284,7 @@ def _bom_fix_up_per_fg(
     max_delta_pct = 0.0
 
     for fg_id in all_fg_ids:
-        mfg = fg_to_meta.get(fg_id)
+        mfg = fg_to_meta.get(fg_id)  # type: ignore[assignment]
         if not mfg or mfg.meta_furnace_group_id not in participating_clusters:
             continue
         if not mfg.dynamic_business_case:
@@ -2431,7 +2431,7 @@ def _validate_disaggregated_allocations(
     CAPACITY_TOL = 0.01  # 1% fractional tolerance for LP numerical noise (+1t absolute floor)
     cap_violations: list[str] = []
     for fg_id, total_out in sorted(outgoing_totals.items()):
-        mfg = fg_to_meta.get(fg_id)
+        mfg = fg_to_meta.get(fg_id)  # type: ignore[assignment]
         if not mfg:
             continue
         cap_share = mfg.capacity_shares.get(fg_id, 0.0)
@@ -2470,7 +2470,7 @@ def _validate_disaggregated_allocations(
     # solver, commodity-substitution rounding, etc.).
     bom_violations: list[str] = []
     for fg_id in sorted(all_fg_ids):
-        mfg = fg_to_meta.get(fg_id)
+        mfg = fg_to_meta.get(fg_id)  # type: ignore[assignment]
         if not mfg or not mfg.dynamic_business_case:
             continue
         incoming = incoming_by_fg.get(fg_id, {})
@@ -3369,7 +3369,7 @@ def disaggregate_allocations(
     participating_source_clusters = set(lp_joint_output_by_cluster)
     participating_dest_clusters = set(lp_joint_input_by_bof_cluster)
     for cluster_id in participating_source_clusters | participating_dest_clusters:
-        mfg = meta_fg_by_id.get(cluster_id)
+        mfg = meta_fg_by_id.get(cluster_id)  # type: ignore[assignment]
         if not mfg:
             continue
         if cluster_id in participating_source_clusters:
@@ -3860,8 +3860,8 @@ def disaggregate_allocations(
         commodity_name = normalize_product_name(commodity.name if hasattr(commodity, "name") else str(commodity))
         if commodity_name not in closely_allocated_names:
             continue
-        from_loc = getattr(from_pc, "location", None)
-        to_loc = getattr(to_pc, "location", None)
+        from_loc = getattr(from_pc, "location", None)  # type: ignore[assignment]
+        to_loc = getattr(to_pc, "location", None)  # type: ignore[assignment]
         if from_loc is None or to_loc is None:
             continue
         distance_km = _calculate_distance_km(from_loc, to_loc)
