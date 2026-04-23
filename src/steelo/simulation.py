@@ -1381,6 +1381,7 @@ class SimulationRunner:
         if data_collector.trace_price:
             import pandas as pd
             import matplotlib.pyplot as plt
+            from matplotlib.ticker import MaxNLocator
 
             price_data = []
             for year, prices in sorted(data_collector.trace_price.items()):
@@ -1442,7 +1443,6 @@ class SimulationRunner:
                     price_df["iron_weighted_avg_cost_usd_per_t"],
                     marker="D",
                     linewidth=2,
-                    linestyle="--",
                     label="Iron (weighted avg cost)",
                     color="#ff7f0e",
                     alpha=0.6,
@@ -1456,6 +1456,8 @@ class SimulationRunner:
 
             # Format y-axis with commas for thousands
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f"${x:,.0f}"))
+            ax.set_ylim(bottom=0)
+            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
             plt.tight_layout()
 
