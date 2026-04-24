@@ -3816,7 +3816,6 @@ class Plant:
             state.
         """
         logger = logging.getLogger(f"{__name__}.evaluate_furnace_group_strategy")
-        unmask_logger = logging.getLogger(f"{__name__}.evaluate_furnace_group_strategy.unmask")
         furnace_group = self.get_furnace_group(furnace_group_id)
 
         active_energy_subs = {
@@ -3842,16 +3841,6 @@ class Plant:
         logger.debug(f"[FG STRATEGY]   - Historic balance: ${furnace_group.historic_balance:,.2f}")
         logger.debug(f"[FG STRATEGY]   - Plant group balance: ${plant_group.balance:,.2f}")
         logger.debug(f"[FG STRATEGY]   - Location: {self.location.iso3}")
-
-        # Log when the Stage 1 plant-balance gate would have fired pre-refactor; Stage 3
-        # closure now runs unconditionally on underwater groups.
-        if plant_group.balance < 0:
-            unmask_logger.debug(
-                "[STAGE 1 UNMASK] plant_id=%s plant_group_id=%s plant_group.balance=%.2f",
-                self.plant_id,
-                plant_group.plant_group_id,
-                plant_group.balance,
-            )
 
         # ===== STAGE 1: Check furnace group status =====
         # Skip if already scheduled for retirement
