@@ -98,11 +98,11 @@
     },
     {
       "name": "master-input",
-      "version": "1.3.0",
-      "url": "https://steelo-data.s3.eu-north-1.amazonaws.com/master_input_v1.3.0.xlsx",
-      "size_mb": 56.4,
-      "checksum": "42bf1a5bcda8e13039110214ca51b656fb03cd15cb7ea422634ce13815c592ef",
-      "description": "Master input Excel file containing all simulation input data - Updated 2026-04-10 (v1.3.0)",
+      "version": "2.0.0",
+      "url": "https://steelo-data.s3.eu-north-1.amazonaws.com/master_input_v2.0.0.xlsx",
+      "size_mb": 57.73,
+      "checksum": "0a4a1e9699743f547a833e77a4858d826063a59ab110911ebf5fc46ff929618c",
+      "description": "Master input Excel file containing all simulation input data - Updated 2026-04-24 (v2.0.0)",
       "required": false,
       "files": ["master_input.xlsx"]
     }
