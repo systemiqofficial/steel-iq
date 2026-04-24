@@ -85,7 +85,7 @@ def extract_and_process_stored_dataCollection(
                 "unit_fopex",
                 "unit_production_cost",
                 "debt_repayment_for_current_year",
-                "historic_balance",
+                "furnace_group_profit_and_loss",
             ]
             if "unit_debt_repayment" in plant.columns:
                 fg_cols_to_select.append("unit_debt_repayment")
@@ -210,7 +210,7 @@ def extract_and_process_stored_dataCollection(
                     full_furnace_df[col] = None
         full_furnace_df["plant_id"] = full_furnace_df["furnace_group_id"].apply(lambda x: x.split("_")[0])
         full_furnace_df = (
-            df[["location", "balance"]]
+            df[["location", "plant_profit_and_loss", "plant_group_id", "plant_group_balance"]]
             .reset_index()
             .rename(columns={"index": "plant_id"})
             .merge(full_furnace_df, on="plant_id", how="right")
@@ -317,16 +317,19 @@ def extract_and_process_stored_dataCollection(
     carb_cols = set(c for c in all_cols if c.startswith(CARB_PREFIX))
     non_breakdown_cols = [c for c in all_cols if not c.startswith(CB_PREFIX) and not c.startswith(CARB_PREFIX)]
 
-    # Core columns in explicit order
+    # Core columns in explicit order: identifiers → plant group → plant → commands → furnace group.
     CORE_COLS = [
         "year",
         "region",
         "country",
         "iso3",
+        "plant_group_id",
+        "plant_group_balance",
         "plant_id",
-        "balance",
+        "plant_profit_and_loss",
         "commands",
         "furnace_group_id",
+        "furnace_group_profit_and_loss",
         "technology",
         "product",
     ]

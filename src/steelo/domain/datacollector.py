@@ -597,6 +597,11 @@ class DataCollector:
         self.collect_iron_ore_by_quality(self.env.year)
         self.collect_metallic_charges(self.env.year)
 
+        # Authoritative plant -> group lookup from the live PlantGroup objects (not derived from
+        # parent_gem_id string parsing).
+        collect_logger = logging.getLogger(f"{__name__}.collect")
+        pg_by_plant_id: dict[str, PlantGroup] = {plant.plant_id: pg for pg in world_plant_groups for plant in pg.plants}
+
         plants = {}
         for p in world_plant_list:
             plant_dict = []
@@ -646,7 +651,7 @@ class DataCollector:
                     "unit_production_cost": fg.unit_production_cost,
                     "debt_repayment_per_year": fg.debt_repayment_per_year,
                     "debt_repayment_for_current_year": fg.debt_repayment_for_current_year,
-                    "historic_balance": fg.historic_balance,
+                    "furnace_group_profit_and_loss": fg.historic_balance,
                 }
 
                 if fg.production and fg.production > 0 and has_materials:
@@ -758,7 +763,7 @@ class DataCollector:
                         "unit_production_cost": fg.unit_production_cost,
                         "debt_repayment_per_year": fg.debt_repayment_per_year,
                         "debt_repayment_for_current_year": fg.debt_repayment_for_current_year,
-                        "historic_balance": fg.historic_balance,
+                        "furnace_group_profit_and_loss": fg.historic_balance,
                         "unit_subsidy_capex": 0.0,
                         "unit_subsidy_opex": 0.0,
                         "unit_subsidy_debt": 0.0,
@@ -766,13 +771,26 @@ class DataCollector:
                     }
                 plant_dict.append(record)
 
-            plant_group = p.ultimate_plant_group
+            pg = pg_by_plant_id.get(p.plant_id)
+            if pg is None:
+                collect_logger.warning(
+                    "[ORPHAN PLANT] plant_id=%s parent_gem_id=%s ultimate_plant_group=%s",
+                    p.plant_id,
+                    p.parent_gem_id,
+                    p.ultimate_plant_group,
+                )
+                plant_group_id: str | None = p.ultimate_plant_group
+                plant_group_balance: float | None = None
+            else:
+                plant_group_id = pg.plant_group_id
+                plant_group_balance = pg.balance
 
             plants[p.plant_id] = {
                 "furnace_groups": plant_dict,
-                "plant_group": plant_group,
+                "plant_group_id": plant_group_id,
                 "location": p.location.iso3,
-                "balance": p.balance,
+                "plant_profit_and_loss": sum(fg.historic_balance for fg in p.furnace_groups),
+                "plant_group_balance": plant_group_balance,
             }
 
         # Ensure the TM directory exists

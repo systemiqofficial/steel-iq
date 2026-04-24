@@ -24,7 +24,9 @@ def test_commands_column_included_in_output():
         sample_data_2025 = {
             "plant_001": {
                 "location": "USA",
-                "balance": 1000,
+                "plant_profit_and_loss": 1000,
+                "plant_group_id": "plant_001_group",
+                "plant_group_balance": 1000,
                 "furnace_groups": pd.DataFrame(
                     [
                         {
@@ -39,7 +41,7 @@ def test_commands_column_included_in_output():
                             "unit_fixed_opex": 0.05,
                             "unit_production_cost": 150,
                             "debt_repayment_for_current_year": 10,
-                            "historic_balance": 500,
+                            "furnace_group_profit_and_loss": 500,
                             "emissions_scope1": 2.0,
                             "materials": {"coal": {"demand": 500, "total_cost": 50000, "unit_cost": 100}},
                             "energy": {"electricity": {"demand": 200, "total_cost": 10000, "unit_cost": 50}},
@@ -49,7 +51,9 @@ def test_commands_column_included_in_output():
             },
             "plant_002": {
                 "location": "Germany",
-                "balance": 2000,
+                "plant_profit_and_loss": 2000,
+                "plant_group_id": "plant_002_group",
+                "plant_group_balance": 2000,
                 "furnace_groups": pd.DataFrame(
                     [
                         {
@@ -64,7 +68,7 @@ def test_commands_column_included_in_output():
                             "unit_fixed_opex": 0.05,
                             "unit_production_cost": 150,
                             "debt_repayment_for_current_year": 8,
-                            "historic_balance": 400,
+                            "furnace_group_profit_and_loss": 400,
                             "emissions_scope1": 0.5,
                             "materials": {"scrap": {"demand": 400, "total_cost": 40000, "unit_cost": 100}},
                             "energy": {"electricity": {"demand": 300, "total_cost": 15000, "unit_cost": 50}},
@@ -77,7 +81,9 @@ def test_commands_column_included_in_output():
         sample_data_2026 = {
             "plant_001": {
                 "location": "USA",
-                "balance": 1200,
+                "plant_profit_and_loss": 1200,
+                "plant_group_id": "plant_001_group",
+                "plant_group_balance": 1200,
                 "furnace_groups": pd.DataFrame(
                     [
                         {
@@ -92,7 +98,7 @@ def test_commands_column_included_in_output():
                             "unit_fixed_opex": 0.05,
                             "unit_production_cost": 150,
                             "debt_repayment_for_current_year": 12,
-                            "historic_balance": 600,
+                            "furnace_group_profit_and_loss": 600,
                             "emissions_scope1": 1.0,
                             "materials": {"natural_gas": {"demand": 300, "total_cost": 30000, "unit_cost": 100}},
                             "energy": {"electricity": {"demand": 250, "total_cost": 12500, "unit_cost": 50}},
@@ -102,7 +108,9 @@ def test_commands_column_included_in_output():
             },
             "plant_002": {
                 "location": "Germany",
-                "balance": 2100,
+                "plant_profit_and_loss": 2100,
+                "plant_group_id": "plant_002_group",
+                "plant_group_balance": 2100,
                 "furnace_groups": pd.DataFrame(
                     [
                         {
@@ -117,7 +125,7 @@ def test_commands_column_included_in_output():
                             "unit_fixed_opex": 0.05,
                             "unit_production_cost": 150,
                             "debt_repayment_for_current_year": 9,
-                            "historic_balance": 450,
+                            "furnace_group_profit_and_loss": 450,
                             "emissions_scope1": 0.5,
                             "materials": {"scrap": {"demand": 420, "total_cost": 42000, "unit_cost": 100}},
                             "energy": {"electricity": {"demand": 320, "total_cost": 16000, "unit_cost": 50}},
@@ -208,7 +216,9 @@ def test_feedstock_rows_with_empty_materials_do_not_crash():
         sample_data_2025 = {
             "plant_001": {
                 "location": "USA",
-                "balance": 100,
+                "plant_profit_and_loss": 100,
+                "plant_group_id": "test_group",
+                "plant_group_balance": 100,
                 "furnace_groups": pd.DataFrame(
                     [
                         {
@@ -222,7 +232,7 @@ def test_feedstock_rows_with_empty_materials_do_not_crash():
                             "unit_fopex": 0,
                             "unit_production_cost": 0,
                             "debt_repayment_for_current_year": 0,
-                            "historic_balance": 0,
+                            "furnace_group_profit_and_loss": 0,
                             # The following columns are intentionally all None to mimic empty feedstock data
                             "materials": None,
                             "energy": None,
@@ -257,7 +267,9 @@ def test_commands_column_with_empty_commands_for_year():
         sample_data = {
             "plant_001": {
                 "location": "USA",
-                "balance": 1000,
+                "plant_profit_and_loss": 1000,
+                "plant_group_id": "plant_001_group",
+                "plant_group_balance": 1000,
                 "furnace_groups": pd.DataFrame(
                     [
                         {
@@ -272,7 +284,7 @@ def test_commands_column_with_empty_commands_for_year():
                             "unit_fixed_opex": 0.05,
                             "unit_production_cost": 150,
                             "debt_repayment_for_current_year": 10,
-                            "historic_balance": 500,
+                            "furnace_group_profit_and_loss": 500,
                             "emissions_scope1": 2.0,
                             "materials": {},
                             "energy": {},
@@ -313,7 +325,9 @@ def test_chosen_reductant_values_are_normalized():
         sample_data = {
             "plant_001": {
                 "location": "ARE",
-                "balance": 0,
+                "plant_profit_and_loss": 0,
+                "plant_group_id": "test_group",
+                "plant_group_balance": 0,
                 "furnace_groups": pd.DataFrame(
                     [
                         {
@@ -327,7 +341,7 @@ def test_chosen_reductant_values_are_normalized():
                             "unit_fopex": 0,
                             "unit_production_cost": 0,
                             "debt_repayment_for_current_year": 0,
-                            "historic_balance": 0,
+                            "furnace_group_profit_and_loss": 0,
                             "materials": {"io_low": {"demand": 100, "total_cost": 1000, "unit_cost": 10}},
                             "energy": {},
                         }

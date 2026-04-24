@@ -6,7 +6,7 @@ from functools import partial
 
 from steelo.devdata import get_furnace_group, get_plant
 from steelo.domain import PointInTime, Year, TimeFrame, Volumes
-from steelo.domain.models import CountryMapping, CountryMappingService
+from steelo.domain.models import CountryMapping, CountryMappingService, PlantGroup
 from steelo.domain.commands import ChangeFurnaceGroupTechnology, RenovateFurnaceGroup
 from steelo.simulation_types import get_default_technology_settings
 
@@ -27,8 +27,14 @@ def plant_with_eaf():
     )
     plant = get_plant(furnace_groups=[fg], plant_id="plant_test_eaf")
     plant.location.iso3 = "USA"
-    plant.balance = 1000000  # Positive balance to allow investments
     return plant
+
+
+@pytest.fixture
+def plant_group_with_eaf(plant_with_eaf):
+    pg = PlantGroup(plant_group_id="gem_test_eaf", plants=[plant_with_eaf])
+    pg.balance = 1_000_000  # Positive balance to allow investments
+    return pg
 
 
 @pytest.fixture
@@ -47,8 +53,14 @@ def plant_with_bof():
     )
     plant = get_plant(furnace_groups=[fg], plant_id="plant_test_bof")
     plant.location.iso3 = "USA"
-    plant.balance = 1000000  # Positive balance to allow investments
     return plant
+
+
+@pytest.fixture
+def plant_group_with_bof(plant_with_bof):
+    pg = PlantGroup(plant_group_id="gem_test_bof", plants=[plant_with_bof])
+    pg.balance = 1_000_000  # Positive balance to allow investments
+    return pg
 
 
 @pytest.fixture
@@ -114,7 +126,7 @@ def mock_environment(bus, country_mappings_for_test, tmp_path):
     return bus
 
 
-def test_technology_switching_respects_allowed_techs(mock_environment, plant_with_eaf, mocker):
+def test_technology_switching_respects_allowed_techs(mock_environment, plant_with_eaf, plant_group_with_eaf, mocker):
     """Test that technology switching only happens to allowed technologies."""
     bus = mock_environment
     bus.uow.plants.add(plant_with_eaf)
@@ -217,6 +229,7 @@ def test_technology_switching_respects_allowed_techs(mock_environment, plant_wit
     # Evaluate strategy with DRI not allowed
     command = plant_with_eaf.evaluate_furnace_group_strategy(
         furnace_group_id=furnace_group.furnace_group_id,
+        plant_group=plant_group_with_eaf,
         market_price_series=market_price_series,
         region_capex=bus.env.name_to_capex["greenfield"]["Americas"],
         capex_renovation_share={"EAF": 0.7, "BOF": 0.7, "DRI": 0.7, "BF": 0.7},
@@ -264,7 +277,8 @@ def test_technology_switching_respects_allowed_techs(mock_environment, plant_wit
     )
     plant_with_eaf2 = get_plant(furnace_groups=[fg2], plant_id="plant_test_eaf2")
     plant_with_eaf2.location.iso3 = "USA"
-    plant_with_eaf2.balance = 1000000
+    plant_group_with_eaf2 = PlantGroup(plant_group_id="gem_test_eaf2", plants=[plant_with_eaf2])
+    plant_group_with_eaf2.balance = 1_000_000
     plant_with_eaf2.technology_unit_fopex = {"EAF": 50.0, "BOF": 60.0, "DRI": 70.0, "BF": 65.0}
     plant_with_eaf2.carbon_cost_series = [0.0] * 22
 
@@ -277,6 +291,7 @@ def test_technology_switching_respects_allowed_techs(mock_environment, plant_wit
 
     command_all = plant_with_eaf2.evaluate_furnace_group_strategy(
         furnace_group_id=furnace_group2.furnace_group_id,
+        plant_group=plant_group_with_eaf2,
         market_price_series=market_price_series,
         region_capex=bus.env.name_to_capex["greenfield"]["Americas"],
         capex_renovation_share={"EAF": 0.7, "BOF": 0.7, "DRI": 0.7, "BF": 0.7},
@@ -313,7 +328,7 @@ def test_technology_switching_respects_allowed_techs(mock_environment, plant_wit
             )
 
 
-def test_renovation_respects_allowed_techs(mock_environment, plant_with_bof, mocker):
+def test_renovation_respects_allowed_techs(mock_environment, plant_with_bof, plant_group_with_bof, mocker):
     """Test that renovation only happens for allowed technologies."""
     bus = mock_environment
     bus.uow.plants.add(plant_with_bof)
@@ -373,6 +388,7 @@ def test_renovation_respects_allowed_techs(mock_environment, plant_with_bof, moc
     allowed_techs_no_bof = {Year(year): ["EAF", "DRI", "BF"] for year in range(2020, 2031)}
 
     command_no_bof = plant_with_bof.evaluate_furnace_group_strategy(
+        plant_group=plant_group_with_bof,
         furnace_group_id=furnace_group.furnace_group_id,
         market_price_series=market_price_series,
         region_capex=bus.env.name_to_capex["greenfield"]["Americas"],
@@ -409,6 +425,7 @@ def test_renovation_respects_allowed_techs(mock_environment, plant_with_bof, moc
 
     command_with_bof = plant_with_bof.evaluate_furnace_group_strategy(
         furnace_group_id=furnace_group.furnace_group_id,
+        plant_group=plant_group_with_bof,
         market_price_series=market_price_series,
         region_capex=bus.env.name_to_capex["greenfield"]["Americas"],
         capex_renovation_share={"EAF": 0.7, "BOF": 0.7, "DRI": 0.7, "BF": 0.7},
@@ -438,7 +455,7 @@ def test_renovation_respects_allowed_techs(mock_environment, plant_with_bof, moc
             assert furnace_group.technology.name == "BOF", "Should only renovate if staying with BOF"
 
 
-def test_no_action_when_no_techs_allowed(mock_environment, plant_with_eaf, mocker):
+def test_no_action_when_no_techs_allowed(mock_environment, plant_with_eaf, plant_group_with_eaf, mocker):
     """Test that a ValueError is raised when no technologies are allowed for the current year."""
     bus = mock_environment
     bus.uow.plants.add(plant_with_eaf)
@@ -459,6 +476,7 @@ def test_no_action_when_no_techs_allowed(mock_environment, plant_with_eaf, mocke
     with pytest.raises(ValueError, match=r"\[FG STRATEGY\] No allowed techs in 2025"):
         plant_with_eaf.evaluate_furnace_group_strategy(
             furnace_group_id=furnace_group.furnace_group_id,
+            plant_group=plant_group_with_eaf,
             market_price_series=market_price_series,
             region_capex=bus.env.name_to_capex["greenfield"]["Americas"],
             capex_renovation_share={"EAF": 0.7, "BOF": 0.7, "DRI": 0.7, "BF": 0.7},

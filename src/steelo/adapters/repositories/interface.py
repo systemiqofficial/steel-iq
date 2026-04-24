@@ -101,6 +101,29 @@ class PlantGroupRepository(Protocol):
         """Get a plant group from the repository by plant ID."""
         ...
 
+    def register_plant_in_group(self, plant: Plant, group_id: str) -> None:
+        """
+        Register a plant into a plant group by ID, creating the group on demand.
+
+        Appends the plant to the group's ``plants`` list, updates the
+        ``plant_id_to_plantgroup_id`` reverse map, and adds the group to
+        ``seen`` unconditionally (so UoW change-tracking is coherent even
+        when the group already existed).
+
+        Args:
+            plant: The plant to register.
+            group_id: Target plant group ID. If the group does not yet
+                exist in the repository, it is created with an empty plant
+                list before the plant is appended.
+
+        Notes:
+            Used for runtime-born plants (e.g. opportunities created by
+            ``GeospatialModel.run``), which are routed into per-country
+            ``indi_<ISO3>`` groups at birth rather than being parented to
+            a single master group.
+        """
+        ...
+
 
 @runtime_checkable
 class SupplierRepository(Protocol):

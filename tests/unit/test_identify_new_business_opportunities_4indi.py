@@ -974,8 +974,13 @@ class TestGenerateNewPlant:
         # FurnaceGroup uses default equity_share of 0.2 (not the 0.3 passed to generate_new_plant)
         assert furnace.equity_share == 0.2
 
-    def test_adds_plant_to_plant_group(self, plant_group, cost_data):
-        """Test that the new plant is added to the plant group's plants list."""
+    def test_does_not_add_plant_to_plant_group(self, plant_group, cost_data):
+        """
+        ``generate_new_plant`` is a pure factory: it does not append the new
+        plant to the group's ``plants`` list. Registration is performed by
+        ``add_new_business_opportunities_to_repository`` via
+        ``PlantGroupRepository.register_plant_in_group``.
+        """
         site_id = (40.0, -100.0, "USA")
 
         assert len(plant_group.plants) == 0
@@ -994,7 +999,7 @@ class TestGenerateNewPlant:
             plant_lifetime=30,
         )
 
-        assert len(plant_group.plants) == 1
+        assert len(plant_group.plants) == 0
 
     def test_sets_technology_unit_fopex(self, plant_group, cost_data):
         """Test that technology_unit_fopex is set correctly with lowercase technology name."""

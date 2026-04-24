@@ -602,7 +602,6 @@ def test_generate_new_furnace_path_a_sets_all_three_dicts():
         lag=2,
         status="considered",
         util_rate=0.0,
-        equity_needed=0.0,
         plant_lifetime=20,
         chosen_reductant="hydrogen",
         energy_costs=input_costs,
@@ -637,7 +636,6 @@ def test_generate_new_furnace_path_b_copies_parent_costs():
         lag=2,
         status="construction",
         util_rate=0.0,
-        equity_needed=0.0,
         plant_lifetime=20,
         chosen_reductant="hydrogen",
     )
@@ -667,7 +665,6 @@ def test_generate_new_furnace_normalises_negative_physical_carriers():
         lag=2,
         status="considered",
         util_rate=0.0,
-        equity_needed=0.0,
         plant_lifetime=20,
         chosen_reductant="hydrogen",
         energy_costs={"bf_gas": -0.02, "hydrogen": 5000.0},

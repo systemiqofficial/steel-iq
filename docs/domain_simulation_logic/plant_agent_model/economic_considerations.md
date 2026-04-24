@@ -66,8 +66,8 @@ Decisions require sufficient accumulated profits:
 
 **Investment Capacity**:
 ```python
-equity_needed = capacity × capex × equity_share  # Default: 20% equity
-can_afford = plant_group.total_balance >= equity_needed
+equity_needed = capex × capacity × equity_share  # Default: 20% equity
+can_afford = plant_group.balance >= equity_needed
 ```
 
 **Example**:
