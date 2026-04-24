@@ -1541,7 +1541,10 @@ class SimulationPlot(models.Model):
             # Handle wildcard patterns
             if "*" in pattern:
                 for plot_file in pam_plots_dir.glob(pattern):
-                    plot = cls._create_plot_from_file(modelrun, plot_file, config)
+                    file_config = dict(config)
+                    if config["plot_type"] == cls.PlotType.COST_CURVE:
+                        file_config["title"] = cls._build_cost_curve_title(plot_file, config["title"])
+                    plot = cls._create_plot_from_file(modelrun, plot_file, file_config)
                     if plot:
                         created_plots.append(plot)
             else:
@@ -1552,6 +1555,34 @@ class SimulationPlot(models.Model):
                         created_plots.append(plot)
 
         return created_plots
+
+    @staticmethod
+    def _build_cost_curve_title(plot_file, fallback_title: str) -> str:
+        """Build a year- and aggregation-specific title from a cost-curve filename.
+
+        Args:
+            plot_file: Path to a cost curve plot file, expected to follow the
+                convention ``{product}_cost_curve_by_{aggregation}_{year}.png``
+                (e.g. ``steel_cost_curve_by_region_2025.png``).
+            fallback_title: Title to return if the filename does not match the
+                expected pattern (e.g. ``"Steel Cost Curve"``).
+
+        Returns:
+            A descriptive title such as ``"Steel Cost Curve by Region, 2025"``,
+            or ``fallback_title`` when the filename cannot be parsed.
+        """
+        import re
+
+        match = re.match(
+            r"(?P<product>steel|iron)_cost_curve_by_(?P<aggregation>region|technology)_(?P<year>\d{4})$",
+            plot_file.stem,
+        )
+        if not match:
+            return fallback_title
+        product = match.group("product").title()
+        aggregation = match.group("aggregation").title()
+        year = match.group("year")
+        return f"{product} Cost Curve by {aggregation}, {year}"
 
     @classmethod
     def _create_plot_from_file(cls, modelrun, plot_file, config):

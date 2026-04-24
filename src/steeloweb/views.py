@@ -82,6 +82,14 @@ class ModelRunDetailView(DetailView):
         # Get log file path if available
         context["log_file_path"] = get_log_file_path(self.object.id)
 
+        # Split simulation plots so cost curves can be grouped into collapsible
+        # accordions (one per product) while other plots keep their flat grid.
+        plots_qs = self.object.simulation_plots.all()
+        cost_curve = SimulationPlot.PlotType.COST_CURVE
+        context["simulation_plots_other"] = plots_qs.exclude(plot_type=cost_curve)
+        context["steel_cost_curves"] = plots_qs.filter(plot_type=cost_curve, product_type="steel").order_by("title")
+        context["iron_cost_curves"] = plots_qs.filter(plot_type=cost_curve, product_type="iron").order_by("title")
+
         return context
 
 

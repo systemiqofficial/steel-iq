@@ -371,7 +371,7 @@
                     <div class="mb-4">
                         <h6>Simulation Results</h6>
                         <div class="row">
-                            {% for plot in modelrun.simulation_plots.all %}
+                            {% for plot in simulation_plots_other %}
                             <div class="col-md-6 mb-3">
                                 <div class="card">
                                     <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}">
@@ -388,6 +388,73 @@
                             </div>
                             {% endfor %}
                         </div>
+
+                        {% if steel_cost_curves or iron_cost_curves %}
+                        <div class="accordion" id="costCurvesAccordion">
+                            {% if steel_cost_curves %}
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="steelCostCurvesHeading">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#steelCostCurvesCollapse" aria-expanded="false" aria-controls="steelCostCurvesCollapse">
+                                        Steel Cost Curves ({{ steel_cost_curves|length }})
+                                    </button>
+                                </h2>
+                                <div id="steelCostCurvesCollapse" class="accordion-collapse collapse" aria-labelledby="steelCostCurvesHeading" data-bs-parent="#costCurvesAccordion">
+                                    <div class="accordion-body">
+                                        <div class="row">
+                                            {% for plot in steel_cost_curves %}
+                                            <div class="col-md-6 mb-3">
+                                                <div class="card">
+                                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}">
+                                                        <img src="{{ plot.image.url }}" class="card-img-top" alt="{{ plot.title }}" style="cursor: pointer;">
+                                                    </a>
+                                                    <div class="card-body">
+                                                        <p class="card-text text-center">
+                                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}" class="text-decoration-none">
+                                                                {{ plot.title }}
+                                                            </a>
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+                            {% if iron_cost_curves %}
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="ironCostCurvesHeading">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#ironCostCurvesCollapse" aria-expanded="false" aria-controls="ironCostCurvesCollapse">
+                                        Iron Cost Curves ({{ iron_cost_curves|length }})
+                                    </button>
+                                </h2>
+                                <div id="ironCostCurvesCollapse" class="accordion-collapse collapse" aria-labelledby="ironCostCurvesHeading" data-bs-parent="#costCurvesAccordion">
+                                    <div class="accordion-body">
+                                        <div class="row">
+                                            {% for plot in iron_cost_curves %}
+                                            <div class="col-md-6 mb-3">
+                                                <div class="card">
+                                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}">
+                                                        <img src="{{ plot.image.url }}" class="card-img-top" alt="{{ plot.title }}" style="cursor: pointer;">
+                                                    </a>
+                                                    <div class="card-body">
+                                                        <p class="card-text text-center">
+                                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}" class="text-decoration-none">
+                                                                {{ plot.title }}
+                                                            </a>
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% endif %}
                     </div>
                     {% endif %}
                 </div>
