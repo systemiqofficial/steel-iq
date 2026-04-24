@@ -232,7 +232,7 @@ def bootstrap_simulation(
     # Seed Python and NumPy global RNGs. LP solver reads the same seed at solve time.
     random.seed(config.random_seed)
     np.random.seed(config.random_seed)
-    logger.info(f"Seeded RNGs with random_seed={config.random_seed}")
+    logger.info(f"Random seed = {config.random_seed}")
 
     # If no repository is provided, create one from JSON files (production behavior)
     repository_json = None
@@ -340,23 +340,6 @@ def bootstrap_simulation(
             return normalised
 
         env.carbon_costs = {iso3: _normalise_cost_series(series) for iso3, series in env.carbon_costs.items()}
-        try:
-            price_sample = list(env.carbon_costs.items())[:3]
-            logger.warning(
-                "Carbon-cost dict sample: %s",
-                [
-                    (
-                        iso3,
-                        [
-                            (repr(year_key), type(year_key).__name__, value)
-                            for year_key, value in list(series.items())[:3]
-                        ],
-                    )
-                    for iso3, series in price_sample
-                ],
-            )
-        except Exception:
-            logger.exception("Failed to log carbon cost sample")
         env.initiate_input_costs(input_costs_list=repository_json.input_costs.list())
         env.initiate_dynamic_feedstocks(feedstocks=repository_json.primary_feedstocks.list())
         env.initiate_techno_economic_details(capex_list=repository_json.capex.list())

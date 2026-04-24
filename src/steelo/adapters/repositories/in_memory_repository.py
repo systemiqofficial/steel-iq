@@ -1,4 +1,3 @@
-import logging
 from typing import Iterable
 
 from .interface import (
@@ -83,19 +82,12 @@ class PlantGroupInMemoryRepository:
             group_id: Target plant group ID. If absent from ``self.data``
                 the group is created with an empty ``plants`` list first.
         """
-        group_was_created = group_id not in self.data
-        if group_was_created:
-            group = PlantGroup(plant_group_id=group_id, plants=[])
-            self.data[group_id] = group
-        else:
-            group = self.data[group_id]
+        if group_id not in self.data:
+            self.data[group_id] = PlantGroup(plant_group_id=group_id, plants=[])
+        group = self.data[group_id]
         group.plants.append(plant)
         self.plant_id_to_plantgroup_id[plant.plant_id] = group_id
         self.seen.add(group)
-        debug_logger = logging.getLogger(f"{__name__}.register_plant_in_group")
-        debug_logger.debug(
-            f"[REPO REGISTER] plant_id={plant.plant_id} group_id={group_id} group_was_created={group_was_created}"
-        )
 
 
 class FurnaceGroupInMemoryRepository:

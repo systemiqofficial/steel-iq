@@ -205,7 +205,6 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
           per-(plant, tech) pre-filter in ``evaluate_expansion_options``; the debit here
           is bookkeeping, not a fresh check.
     """
-    logger = logging.getLogger(f"{__name__}.add_furnace_group_to_plant")
     with uow:
         plant = uow.plants.get(cmd.plant_id)
         # TODO(3h): BOM uses plant.energy_costs (last FG's subsidised costs), not the new
@@ -246,16 +245,7 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
         # Debit the group treasury AFTER the furnace has been attached — factory exceptions
         # leave no phantom debit on the wallet.
         plant_group = uow.plant_groups.get_by_plant_id(cmd.plant_id)
-        balance_before = plant_group.balance
         plant_group.deduct_equity(cmd.equity_needed, reason="expansion")
-        logger.info(
-            "[EXPANSION DEBIT] plant_id=%s plant_group_id=%s equity_needed=%.2f balance_before=%.2f balance_after=%.2f",
-            cmd.plant_id,
-            plant_group.plant_group_id,
-            cmd.equity_needed,
-            balance_before,
-            plant_group.balance,
-        )
 
         plant.furnace_group_added(
             new_furnace.furnace_group_id,
@@ -647,15 +637,12 @@ def add_new_business_opportunities_to_repository(cmd: commands.AddNewBusinessOpp
         plants, and it populates the plant-group reverse-lookup map used
         elsewhere in the service layer.
     """
-    routing_logger = logging.getLogger(f"{__name__}.add_new_business_opportunities_to_repository")
     with uow:
         uow.plants.add_list(cmd.new_plants)
         for plant in cmd.new_plants:
-            iso3 = plant.location.iso3
-            target_gid = f"indi_{iso3}"
+            target_gid = f"indi_{plant.location.iso3}"
             plant.parent_gem_id = target_gid
             uow.plant_groups.register_plant_in_group(plant, target_gid)
-            routing_logger.info(f"[INDI ROUTING] plant_id={plant.plant_id} iso3={iso3} group_id={target_gid}")
         uow.commit()
 
 
@@ -672,7 +659,6 @@ def update_status_of_furnace_group(cmd: commands.UpdateFurnaceGroupStatus, uow: 
     Note: Subsidies are updated each year while the plant is under consideration or announced - and
     locked in at construction start time.
     """
-    status_logger = logging.getLogger(f"{__name__}.update_status_of_furnace_group")
     year = env.year
     with uow:
         plant = uow.plants.get(cmd.plant_id)
@@ -695,13 +681,6 @@ def update_status_of_furnace_group(cmd: commands.UpdateFurnaceGroupStatus, uow: 
 
                     # New plants start at 0% utilization, will be ramped up by trade module
                     fg.utilization_rate = 0.0
-
-                    status_logger.info(
-                        "[CONSTRUCTION NO-DEBIT] plant_id=%s fg_id=%s iso3=%s (no-debit, external financing)",
-                        plant.plant_id,
-                        fg.furnace_group_id,
-                        iso3,
-                    )
 
                     # announced -> construction: convert the FG's reserved slot into a firm commitment.
                     need = env.get_co2_need(fg.technology, fg.capacity, fg.chosen_reductant)

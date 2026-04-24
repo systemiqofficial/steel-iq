@@ -109,27 +109,5 @@ def test_announced_to_construction_transition_does_not_debit_group_balance():
     assert fg.status == "construction"
 
 
-def test_construction_no_debit_log_fires(caplog):
-    """The [CONSTRUCTION NO-DEBIT] marker log fires on announced -> construction."""
-    import logging as _logging
-
-    fg = _make_fg("fg-2", capex=500.0)
-    plant = _make_plant(fg)
-    pg = PlantGroup(plant_group_id="indi_DEU", plants=[plant])
-    pg.balance = 1_000_000.0
-    env = _make_env()
-    uow = _make_uow(plant, pg)
-
-    caplog.set_level(_logging.INFO, logger="steelo.service_layer.handlers.update_status_of_furnace_group")
-    cmd = commands.UpdateFurnaceGroupStatus(
-        plant_id=plant.plant_id, fg_id=fg.furnace_group_id, new_status="construction"
-    )
-    update_status_of_furnace_group(cmd, uow, env)
-
-    msgs = [r.getMessage() for r in caplog.records if "[CONSTRUCTION NO-DEBIT]" in r.getMessage()]
-    assert len(msgs) == 1
-    assert "no-debit, external financing" in msgs[0]
-
-
 # Silence unused-import warnings while keeping the import available if tests grow.
 _ = events
