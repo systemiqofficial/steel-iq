@@ -81,6 +81,9 @@ function resetPolicySettings() {
     document.getElementById('id_use_iron_ore_premiums').checked = true;
     document.getElementById('id_include_tariffs').checked = true;
     document.getElementById('id_enable_furnace_group_clustering').checked = false;
+    document.getElementById('id_cluster_hot_metal_techs_by_plant_group').checked = false;
+    // Trigger change to update dependent field disabled state
+    document.getElementById('id_enable_furnace_group_clustering').dispatchEvent(new Event('change'));
 }
 
 function resetDemandSettings() {
@@ -297,6 +300,28 @@ document.addEventListener('DOMContentLoaded', function() {
 
     updateRatioField();
     pegCheckbox.addEventListener('change', updateRatioField);
+});
+
+// Toggle cluster_hot_metal_techs_by_plant_group based on enable_furnace_group_clustering
+// (the second flag is a no-op unless the first is on)
+document.addEventListener('DOMContentLoaded', function() {
+    var parentCheckbox = document.getElementById('id_enable_furnace_group_clustering');
+    var childRow = document.getElementById('cluster_hot_metal_techs_by_plant_group_row');
+    var childCheckbox = document.getElementById('id_cluster_hot_metal_techs_by_plant_group');
+
+    function updateChildField() {
+        if (parentCheckbox.checked) {
+            childCheckbox.disabled = false;
+            childRow.style.opacity = '1';
+        } else {
+            childCheckbox.disabled = true;
+            childCheckbox.checked = false;
+            childRow.style.opacity = '0.5';
+        }
+    }
+
+    updateChildField();
+    parentCheckbox.addEventListener('change', updateChildField);
 });
 
 // Ensure native browser validation runs even if fields still have focus
@@ -1150,6 +1175,23 @@ document.head.appendChild(style);
                                         {% if form.enable_furnace_group_clustering.errors %}
                                         <div class="invalid-feedback d-block">
                                             {{ form.enable_furnace_group_clustering.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row" id="cluster_hot_metal_techs_by_plant_group_row">
+                                    <label for="{{ form.cluster_hot_metal_techs_by_plant_group.id_for_label }}" class="col-sm-3 col-form-label">{{ form.cluster_hot_metal_techs_by_plant_group.label }}:</label>
+                                    <div class="col-sm-9">
+                                        <div class="form-check">
+                                            {{ form.cluster_hot_metal_techs_by_plant_group }}
+                                            <label class="form-check-label" for="{{ form.cluster_hot_metal_techs_by_plant_group.id_for_label }}">
+                                                {{ form.cluster_hot_metal_techs_by_plant_group.help_text }}
+                                            </label>
+                                        </div>
+                                        {% if form.cluster_hot_metal_techs_by_plant_group.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.cluster_hot_metal_techs_by_plant_group.errors }}
                                         </div>
                                         {% endif %}
                                     </div>
