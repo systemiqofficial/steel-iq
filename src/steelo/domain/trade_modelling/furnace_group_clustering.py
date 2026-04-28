@@ -2212,8 +2212,7 @@ def _compute_effective_shares_by_cluster(
 def _bom_fix_up_per_fg(
     disaggregated_allocs: dict,
     meta_furnace_groups: list[MetaFurnaceGroup],
-    participating_clusters: set[str],
-) -> None:
+) -> dict[str, float]:
     """Post-hoc per-FG BOM fix-up — redistribute outgoing flows so per-FG BOM holds exactly.
 
     The drift / effective-share machinery in ``disaggregate_allocations`` distributes
@@ -2222,14 +2221,15 @@ def _bom_fix_up_per_fg(
     supply-constrained pocket and consumes a mix of metallic charges with slightly
     different BOM ratios, per-FG BOM can deviate by several percent from unity.
 
-    This function walks every FG in a cluster that participated in Case 4 joint-strict,
+    This function walks every FG in every cluster with a ``dynamic_business_case``,
     computes each FG's ideal output directly from the BOM equation::
 
         ideal_output = Σ_charge  charge_in / expected_ratio_charge
 
     and rescales the FG's outgoing Case 2 / Case 4 flows so the actual output equals
     the BOM-ideal.  This makes per-FG BOM hold **exactly** regardless of approximation
-    error upstream.
+    error upstream — and applies uniformly to BOF, EAF, BF, DRI, etc., since the
+    invariant ``Σ in/req = out`` holds for any technology.
 
     Physical-capacity handling
     --------------------------
@@ -2250,13 +2250,12 @@ def _bom_fix_up_per_fg(
       Demand centres on the receiving end of Case 2 may therefore receive slightly
       different tonnages than what the cluster-drift scaling produced.  This is the
       physical consequence of BOM: you can only produce what your inputs allow.
-    * Stranded material at upstream source FGs is not explicitly tracked; the
-      post-validator BOM check may show source-side residuals absorbed by
-      ``BOM_TOL``.  This is accepted as "lost" material in the accounting.
+    * Stranded material at upstream source FGs is tracked in ``dumped_per_fg`` and
+      returned to the caller.  When the validator inspects an upstream FG that lost
+      mass to a downstream cap, it adds the dumped tonnage to the FG's ``total_out``
+      so the BOM share equation closes — physically, the source "produced" the mass
+      but it never reached the destination ("dumped to a fictional sink").
     """
-    if not participating_clusters:
-        return
-
     fg_to_meta: dict[str, MetaFurnaceGroup] = {}
     all_fg_ids: set[str] = set()
     for mfg in meta_furnace_groups:
@@ -2282,12 +2281,16 @@ def _bom_fix_up_per_fg(
     capacity_capped_count = 0
     total_stranded = 0.0
     max_delta_pct = 0.0
+    # Per upstream-FG dump tally — populated only when a downstream cap reduces an
+    # incoming edge whose source is a constituent FG.  Returned to the caller and
+    # consumed by the validator so the upstream FG's BOM equation closes via
+    # ``total_out + dumped``.  When no cap fires, this stays empty and behavior
+    # is identical to before.
+    dumped_per_fg: dict[str, float] = {}
 
     for fg_id in all_fg_ids:
         mfg = fg_to_meta.get(fg_id)  # type: ignore[assignment]
-        if not mfg or mfg.meta_furnace_group_id not in participating_clusters:
-            continue
-        if not mfg.dynamic_business_case:
+        if not mfg or not mfg.dynamic_business_case:
             continue
 
         # Extract BOM ratios, mirroring the validator's filter.
@@ -2334,10 +2337,18 @@ def _bom_fix_up_per_fg(
             ideal_output = physical_cap
             capacity_capped_count += 1
 
-        # Apply input scale-down (accepts stranded material at upstream source FGs).
+        # Apply input scale-down.  The same dict key is the upstream source FG's
+        # outgoing edge, so this also reduces the source's outgoing total.  We
+        # credit the lost mass to the source's ``dumped_per_fg`` tally so the
+        # validator can close the source's BOM via ``total_out + dumped``.
         if input_scale < 1.0:
             for key, _ in fg_incoming.get(fg_id, []):
-                disaggregated_allocs[key] = disaggregated_allocs[key] * input_scale
+                from_pc, _, _ = key
+                pre_value = disaggregated_allocs[key]
+                disaggregated_allocs[key] = pre_value * input_scale
+                source_id = from_pc.name
+                if source_id in fg_to_meta:
+                    dumped_per_fg[source_id] = dumped_per_fg.get(source_id, 0.0) + pre_value * (1.0 - input_scale)
 
         # Scale outgoing flows so the FG's total output equals ideal_output exactly.
         outgoing_keys = fg_outgoing.get(fg_id, [])
@@ -2363,11 +2374,23 @@ def _bom_fix_up_per_fg(
             f"{capacity_capped_count} FG(s) physical-capacity-capped "
             f"({total_stranded:.1f}t stranded at upstream source FGs)."
         )
+    if dumped_per_fg:
+        total_dumped = sum(dumped_per_fg.values())
+        logger.warning(
+            f"[DISAGGREGATION] Per-FG BOM fix-up: {total_dumped:.1f}t of upstream output "
+            f"was 'dumped' across {len(dumped_per_fg)} source FG(s) to absorb downstream "
+            f"physical-capacity caps. The source FGs' BOM is preserved by treating the "
+            f"dumped mass as a fictional sink — physically, this material was produced "
+            f"but never shipped to its intended destination."
+        )
+
+    return dumped_per_fg
 
 
 def _validate_disaggregated_allocations(
     disaggregated_allocs: dict,
     meta_furnace_groups: list[MetaFurnaceGroup],
+    dumped_per_fg: dict[str, float] | None = None,
 ) -> None:
     """Raise ValueError if disaggregated allocations violate capacity or BOM constraints.
 
@@ -2393,6 +2416,8 @@ def _validate_disaggregated_allocations(
     by the fix-up pass, which recomputes each FG's output directly from the BOM
     equation using its actual inputs before this validation runs.
     """
+    dumped_per_fg = dumped_per_fg or {}
+
     fg_to_meta: dict[str, MetaFurnaceGroup] = {}
     all_fg_ids: set[str] = set()
     for mfg in meta_furnace_groups:
@@ -2495,13 +2520,18 @@ def _validate_disaggregated_allocations(
             if charge and expected_ratio and expected_ratio > 0 and charge not in charge_expected:
                 charge_expected[charge] = expected_ratio
 
+        # Effective output for the BOM equation includes any "dumped" mass from the
+        # fix-up — material the FG produced but couldn't ship because a downstream
+        # FG was capped.  Adding it here keeps the source's BOM closed (Σ in/req
+        # = total_out + dumped) without polluting outgoing flows with fictional sinks.
+        effective_total_out = total_out + dumped_per_fg.get(fg_id, 0.0)
         total_share = 0.0
         active: list[tuple[str, float, float, float]] = []  # (charge, in, actual_ratio, expected_ratio)
         for charge, expected_ratio in charge_expected.items():
             charge_in = incoming.get(charge, 0.0)
             if charge_in < 1.0:
                 continue  # feedstock not used in this FG
-            actual_ratio = charge_in / total_out
+            actual_ratio = charge_in / effective_total_out
             total_share += actual_ratio / expected_ratio
             active.append((charge, charge_in, actual_ratio, expected_ratio))
 
@@ -3677,18 +3707,20 @@ def disaggregate_allocations(
     # Per-FG BOM fix-up: recompute each FG's output directly from the BOM equation
     # using its actual inputs, and rescale outgoing flows to match.  This removes
     # the residual per-FG BOM error left by the linear (effective × drift) approximation.
-    # Runs on every cluster that participated in Case 4 joint strict — those are the
-    # clusters whose per-FG flows could have been approximated.
-    _bom_fix_up_per_fg(
+    # Runs over every FG with a dynamic_business_case — the BOM invariant
+    # Σ in/req = out holds for any technology, not just joint-strict participants.
+    dumped_per_fg = _bom_fix_up_per_fg(
         disaggregated_allocs=disaggregated_allocs,
         meta_furnace_groups=meta_furnace_groups,
-        participating_clusters=participating_source_clusters | participating_dest_clusters,
     )
 
     # Validate before returning — raises ValueError on capacity or BOM violations.
+    # Pass dumped_per_fg so upstream FGs whose outgoing was reduced by a downstream
+    # cap have their BOM equation closed via total_out + dumped.
     _validate_disaggregated_allocations(
         disaggregated_allocs=disaggregated_allocs,
         meta_furnace_groups=meta_furnace_groups,
+        dumped_per_fg=dumped_per_fg,
     )
 
     # Create new Allocations object
