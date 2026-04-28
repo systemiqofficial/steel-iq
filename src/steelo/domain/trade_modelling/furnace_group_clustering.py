@@ -1769,6 +1769,59 @@ def _solve_strict_by_components(
                 supply_scale = total_d / total_s
                 comp_supply = {sid: s * supply_scale for sid, s in comp_supply.items()}
 
+        # Per-source structural feasibility check.  Even when total supply == total
+        # demand within the component, sub-component reachability (Hall's condition)
+        # can make the transportation problem infeasible — e.g. 3 dests reachable
+        # only by source A whose capped supply is less than their combined demand,
+        # while B/C have surplus they can't ship anywhere because every other dest
+        # is more than the radius from them.  We compute max-flow on the bipartite
+        # supply/demand graph and, if it falls short of the (already balanced) total
+        # demand, scale demand further to the max-flow value and rebalance supply.
+        comp_total = sum(comp_demand.values())
+        if comp_total > 1.0 and len(comp_supply) > 1 and len(comp_demand) > 1:
+            mf = nx.DiGraph()
+            SUPER_SRC = "__mf_src__"
+            SUPER_SNK = "__mf_snk__"
+            for sid, sup in comp_supply.items():
+                mf.add_edge(SUPER_SRC, f"s_{sid}", capacity=sup)
+            for did, dem in comp_demand.items():
+                mf.add_edge(f"d_{did}", SUPER_SNK, capacity=dem)
+            for sid in comp_supply:
+                sloc = source_locations.get(sid)
+                for did in comp_demand:
+                    dloc = dest_locations.get(did)
+                    if sloc is None or dloc is None or (_calculate_distance_km(sloc, dloc) <= config.hot_metal_radius):
+                        mf.add_edge(f"s_{sid}", f"d_{did}", capacity=float("inf"))
+            try:
+                max_flow_value, _ = nx.maximum_flow(mf, SUPER_SRC, SUPER_SNK)
+            except (nx.NetworkXError, nx.NetworkXUnfeasible):
+                max_flow_value = comp_total  # leave it to the downstream solver
+            if max_flow_value < comp_total - 1.0:
+                feasibility_scale = max_flow_value / comp_total
+                pre_demand2 = dict(comp_demand)
+                comp_demand = {did: d * feasibility_scale for did, d in comp_demand.items()}
+                for did, d_before in pre_demand2.items():
+                    extra_shortfall = d_before - comp_demand[did]
+                    if extra_shortfall > 1.0:
+                        merged_stats["dest_unmet_demand"][did] = (  # type: ignore[index]
+                            merged_stats["dest_unmet_demand"].get(did, 0.0) + extra_shortfall  # type: ignore[union-attr,attr-defined]
+                        )
+                # Rebalance supply down to the new (smaller) feasible total so the
+                # downstream solver doesn't try to push surplus through the graph.
+                new_total_d = sum(comp_demand.values())
+                new_total_s = sum(comp_supply.values())
+                if new_total_s > new_total_d + 0.01:
+                    supply_scale = new_total_d / new_total_s
+                    comp_supply = {sid: s * supply_scale for sid, s in comp_supply.items()}
+                logger.warning(
+                    f"[DISAGGREGATION] Strict-radius pocket has per-source reachability "
+                    f"infeasibility ({context_label or commodity}): max-flow="
+                    f"{max_flow_value:.1f}t < balanced total={comp_total:.1f}t; "
+                    f"reducing dest demands by an additional "
+                    f"{(1.0 - feasibility_scale) * 100:.1f}% so every destination's "
+                    f"demand is reachable from its in-radius suppliers."
+                )
+
         # Solve this component independently.  strict_radius=True inside the
         # batched solver ensures individual edges beyond the radius are still
         # omitted (belt-and-braces; the component graph already guarantees
@@ -2268,6 +2321,7 @@ def _bom_fix_up_per_fg(
     # cascades.
     fg_incoming: dict[str, list[tuple[tuple, str]]] = {}
     fg_outgoing: dict[str, list[tuple]] = {}
+    fg_sources: dict[str, set[str]] = {fg_id: set() for fg_id in all_fg_ids}
     for key in list(disaggregated_allocs.keys()):
         from_pc, to_pc, commodity = key
         if from_pc.name in all_fg_ids:
@@ -2276,6 +2330,21 @@ def _bom_fix_up_per_fg(
             comm_name = commodity.name.lower() if hasattr(commodity, "name") else str(commodity).lower()
             comm_for_bom = HOT_TO_COLD_COMMODITY.get(comm_name, comm_name)
             fg_incoming.setdefault(to_pc.name, []).append((key, comm_for_bom))
+            if from_pc.name in all_fg_ids:
+                fg_sources[to_pc.name].add(from_pc.name)
+
+    # Topologically order FGs: sources (upstream) first, sinks (downstream) last.
+    # This guarantees a source's output-rescale happens BEFORE any downstream cap
+    # reduces the source's outgoing edges; dumped_per_fg therefore stays accurate
+    # and downstream caps stay in effect (no rescale undoes them).
+    try:
+        from graphlib import TopologicalSorter
+
+        ordered_fg_ids: list[str] = list(TopologicalSorter(fg_sources).static_order())
+    except Exception:
+        # graphlib raises CycleError on cycles; fall back to deterministic alphabetical
+        # order in that (unlikely) case so the run still completes.
+        ordered_fg_ids = sorted(all_fg_ids)
 
     bom_fixed_count = 0
     capacity_capped_count = 0
@@ -2288,7 +2357,7 @@ def _bom_fix_up_per_fg(
     # is identical to before.
     dumped_per_fg: dict[str, float] = {}
 
-    for fg_id in all_fg_ids:
+    for fg_id in ordered_fg_ids:
         mfg = fg_to_meta.get(fg_id)  # type: ignore[assignment]
         if not mfg or not mfg.dynamic_business_case:
             continue
