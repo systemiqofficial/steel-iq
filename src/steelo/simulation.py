@@ -352,6 +352,11 @@ class SimulationConfig:
     steel_price_buffer: float = 200.0  # USD/tonne - buffer above highest cost curve price when demand exceeds supply
     iron_price_buffer: float = 200.0  # USD/tonne - buffer above highest cost curve price when demand exceeds supply
 
+    # Fraction of total capacity that participates in market clearing; above this triggers shortage buffer
+    # e.g. 0.95 truncates top 5% at price-extraction; 1.0 keeps the full curve
+    steel_market_clearing_share: float = 0.95
+    iron_market_clearing_share: float = 0.95
+
     # Iron price pegging configuration
     peg_iron_to_steel_price: bool = (
         False  # Whether to peg iron price to steel price (minimum of cost curve or % of steel)
@@ -1345,6 +1350,10 @@ class SimulationRunner:
             capacity_limit=bus.env.config.capacity_limit,
             steel_demand=bus.env.current_demand,
             iron_demand=bus.env.iron_demand,
+            steel_market_clearing_share=bus.env.config.steel_market_clearing_share,
+            iron_market_clearing_share=bus.env.config.iron_market_clearing_share,
+            steel_price_buffer=bus.env.config.steel_price_buffer,
+            iron_price_buffer=bus.env.config.iron_price_buffer,
             plot_paths=bus.env.plot_paths,
         )
 

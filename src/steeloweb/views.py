@@ -668,6 +668,16 @@ def create_modelrun(request):
                     if form.cleaned_data.get("iron_price_buffer") is not None
                     else 200.0
                 ),
+                "steel_market_clearing_share": float(
+                    form.cleaned_data.get("steel_market_clearing_share")
+                    if form.cleaned_data.get("steel_market_clearing_share") is not None
+                    else 0.95
+                ),
+                "iron_market_clearing_share": float(
+                    form.cleaned_data.get("iron_market_clearing_share")
+                    if form.cleaned_data.get("iron_market_clearing_share") is not None
+                    else 0.95
+                ),
                 "peg_iron_to_steel_price": form.cleaned_data.get("peg_iron_to_steel_price", False),
                 "iron_to_steel_price_ratio": float(
                     form.cleaned_data.get("iron_to_steel_price_ratio")

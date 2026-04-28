@@ -2727,6 +2727,8 @@ def plot_cost_curve_with_breakdown(
     data_file,
     product_type,
     year,
+    clearing_share: float,
+    price_buffer: float,
     region2colours=region2colours,
     plot_paths: Optional["PlotPaths"] = None,
     show_breakdown: bool = True,
@@ -2997,17 +2999,37 @@ def plot_cost_curve_with_breakdown(
 
             cum_x = x1
 
-    # Add market clearing price and demand lines
-    clearing_cost = cost_df[cost_df["clearing_capacity"] <= demand].iloc[-1].production_cost if not cost_df.empty else 0
+    # Compute clearing price via the shared helper so plot output mirrors the engine.
+    clearing_cost, demand_line_x, total_capacity = _compute_market_clearing(
+        cost_df, demand, clearing_share, price_buffer
+    )
 
     ax.axhline(y=clearing_cost, color="r", linestyle="--", linewidth=1.5, label="Market clearing price")
-    ax.axvline(x=demand, color="r", linestyle="--", linewidth=1.5, label="Demand")
+    ax.axvline(x=demand_line_x, color="r", linestyle="--", linewidth=1.5, label="Demand")
+    share_pct = int(round(clearing_share * 100))
+    if clearing_share < 1.0 and total_capacity > 0:
+        ax.axvline(
+            x=clearing_share * total_capacity,
+            color="gray",
+            linestyle="--",
+            linewidth=1.0,
+            zorder=6,
+            label=f"Market clearing share ({share_pct}%)",
+        )
+
+    annotation_text = f"Market clearing price = {clearing_cost:.1f} $/t"
+    if demand > total_capacity:
+        annotation_text += f"\n(Demand exceeds total supply: boundary cost + ${int(price_buffer)} shortage premium)"
+    elif demand_line_x > clearing_share * total_capacity:
+        annotation_text += (
+            f"\n(Demand exceeds dispatchable {share_pct}%: boundary cost + ${int(price_buffer)} shortage premium)"
+        )
 
     # Add clearing price annotation
     ax.text(
         x=cost_df.iloc[-1]["clearing_capacity"] * 0.7 if not cost_df.empty else 0,
         y=clearing_cost + 30,
-        s=f"Market clearing price = {clearing_cost:.1f} $/t",
+        s=annotation_text,
         ha="center",
         va="bottom",
         color="black",
@@ -3149,9 +3171,34 @@ def _prepare_cost_curve_dataframe(
     return df
 
 
-def _compute_market_clearing(cost_df: pd.DataFrame, demand: float) -> Tuple[float, float, float]:
+def _compute_market_clearing(
+    cost_df: pd.DataFrame,
+    demand: float,
+    clearing_share: float,
+    price_buffer: float,
+) -> Tuple[float, float, float]:
     """
-    Determine clearing cost, vertical demand marker, and total capacity.
+    Determine the displayed clearing cost, vertical demand marker, and total capacity.
+
+    Mirrors ``Environment.extract_price_from_costcurve``: the cost curve is truncated at
+    ``clearing_share * total_capacity`` (entries with ``clearing_capacity <= threshold`` are kept;
+    the boundary furnace and everything above are excluded). When demand falls past the truncated
+    slice (shortage band, including the case where it also exceeds total capacity), the clearing
+    cost is ``last_truncated.production_cost + price_buffer``. At ``clearing_share = 1.0`` (legacy
+    mode) the slice equals the full curve.
+
+    Args:
+        cost_df: Per-furnace dataframe with ``clearing_capacity`` and ``production_cost`` columns,
+            sorted ascending by cost. Returned to the caller untouched.
+        demand: Tonnes demanded for this product/year.
+        clearing_share: Fraction of total cumulative capacity that participates in market clearing
+            (must match the engine value for the same product).
+        price_buffer: Buffer added in the shortage branch (must match the engine value for the
+            same product).
+
+    Returns:
+        ``(clearing_cost, demand_line_x, total_capacity)``. ``demand_line_x`` is clipped to total
+        capacity for plotting purposes.
     """
     if cost_df.empty:
         return 0.0, 0.0, 0.0
@@ -3159,30 +3206,20 @@ def _compute_market_clearing(cost_df: pd.DataFrame, demand: float) -> Tuple[floa
     total_capacity = float(cost_df["clearing_capacity"].iloc[-1])
     demand_line_x = float(min(demand, total_capacity)) if total_capacity > 0 else 0.0
 
-    match_demand = cost_df[cost_df["clearing_capacity"] >= demand]
+    threshold = clearing_share * total_capacity
+    truncated = cost_df[cost_df["clearing_capacity"] <= threshold]
+
+    if truncated.empty:
+        logger.warning(
+            f"Empty truncated cost curve at clearing_share={clearing_share}; "
+            f"degrading to full-curve merit-order for this query."
+        )
+        truncated = cost_df
+
+    match_demand = truncated[truncated["clearing_capacity"] >= demand]
     if match_demand.empty:
-        clearing_cost = float(cost_df["production_cost"].iloc[-1])
-
-        # If the final block is an extreme outlier with negligible capacity, fall back to the
-        # last non-outlier slice so the market-clearing price remains meaningful on the plot.
-        if len(cost_df) > 1 and total_capacity > 0:
-            last_row = cost_df.iloc[-1]
-            prev_rows = cost_df.iloc[:-1]
-            reference_percentile = prev_rows["production_cost"].quantile(0.99)
-            if pd.isna(reference_percentile) or reference_percentile <= 0:
-                reference_percentile = float(prev_rows["production_cost"].max())
-            threshold = float(reference_percentile) * 1.05
-            capacity_share = float(last_row["capacity"]) / total_capacity
-
-            if last_row["production_cost"] > threshold and capacity_share < 0.01:
-                fallback_index = len(cost_df) - 2
-                while fallback_index >= 0:
-                    candidate = cost_df.iloc[fallback_index]
-                    cand_share = float(candidate["capacity"]) / total_capacity
-                    if candidate["production_cost"] <= threshold or cand_share >= 0.01:
-                        clearing_cost = float(candidate["production_cost"])
-                        break
-                    fallback_index -= 1
+        # Shortage band (or beyond): demand exceeds the truncated slice's cumulative.
+        clearing_cost = float(truncated["production_cost"].iloc[-1]) + price_buffer
     else:
         clearing_cost = float(match_demand.iloc[0]["production_cost"])
 
@@ -3196,6 +3233,8 @@ def plot_cost_curve_step_from_dataframe(
     year,
     capacity_limit,
     units,
+    clearing_share: float,
+    price_buffer: float,
     aggregation="region",
     plot_paths: Optional["PlotPaths"] = None,
 ):
@@ -3244,7 +3283,9 @@ def plot_cost_curve_step_from_dataframe(
         logger.warning(f"No data for {product_type} in year {year}. Skipping cost curve plot.")
         return
 
-    clearing_cost, demand_line_x, total_capacity = _compute_market_clearing(cost_df, demand)
+    clearing_cost, demand_line_x, total_capacity = _compute_market_clearing(
+        cost_df, demand, clearing_share, price_buffer
+    )
 
     fig, ax = plt.subplots(figsize=(10, 6))
     cum_x = 0.0
@@ -3291,8 +3332,13 @@ def plot_cost_curve_step_from_dataframe(
     ]
     ax.legend(handles=legend_handles, title=aggregation, loc="upper left", frameon=False)
     annotation_text = f"Market clearing price = {clearing_cost:.1f} $/t"
+    share_pct = int(round(clearing_share * 100))
     if demand > total_capacity:
-        annotation_text += "\n(Demand exceeds available supply)"
+        annotation_text += f"\n(Demand exceeds total supply: boundary cost + ${int(price_buffer)} shortage premium)"
+    elif demand_line_x > clearing_share * total_capacity:
+        annotation_text += (
+            f"\n(Demand exceeds dispatchable {share_pct}%: boundary cost + ${int(price_buffer)} shortage premium)"
+        )
 
     ax.set_title(f"Cost curve for {product_type} in {year}")
 
@@ -3328,6 +3374,15 @@ def plot_cost_curve_step_from_dataframe(
     display_clearing_cost = min(clearing_cost, ax.get_ylim()[1])
     ax.axhline(y=display_clearing_cost, color="r", linestyle="--", linewidth=1.2, zorder=7, clip_on=False)
     ax.axvline(x=demand_line_x, color="r", linestyle="--", linewidth=1.2, zorder=7, clip_on=False)
+    if clearing_share < 1.0 and total_capacity > 0:
+        ax.axvline(
+            x=clearing_share * total_capacity,
+            color="gray",
+            linestyle="--",
+            linewidth=1.0,
+            zorder=6,
+            label=f"Market clearing share ({share_pct}%)",
+        )
     if display_clearing_cost < clearing_cost:
         annotation_text += "\n(clipped for scale)"
 

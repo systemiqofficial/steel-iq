@@ -94,7 +94,8 @@ def test_plot_cost_curve_with_missing_year(sample_output_df, temp_plot_dir):
     # Create PlotPaths object for the test
     plot_paths = PlotPaths(pam_plots_dir=temp_plot_dir / "pam")
 
-    # Test with a year that doesn't exist (2035)
+    # Test with a year that doesn't exist (2035). Legacy mode (share=1.0, no buffer) keeps assertions
+    # focused on the missing-year fallback rather than truncation behaviour.
     plot_cost_curve_step_from_dataframe(
         sample_output_df,
         "steel",
@@ -102,6 +103,8 @@ def test_plot_cost_curve_with_missing_year(sample_output_df, temp_plot_dir):
         year=2035,
         capacity_limit=0.95,
         units="Mt",
+        clearing_share=1.0,
+        price_buffer=0.0,
         plot_paths=plot_paths,
     )
 
@@ -123,6 +126,8 @@ def test_plot_cost_curve_with_existing_year(sample_output_df, temp_plot_dir):
         year=2028,
         capacity_limit=0.95,
         units="Mt",
+        clearing_share=1.0,
+        price_buffer=0.0,
         plot_paths=plot_paths,
     )
 
