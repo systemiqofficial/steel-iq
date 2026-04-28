@@ -8061,117 +8061,193 @@ class Environment:
             lag=lag,
         )
 
+    @staticmethod
+    def _truncate_curve(
+        curve_entries: list[dict[str, float]], share: float
+    ) -> tuple[list[dict[str, float]], dict[str, float] | None]:
+        """
+        Apply the market-clearing-share cutoff to an ascending-cost curve.
+
+        Strict-inequality (Option A): keep entries with ``cumulative_capacity <= share * total``.
+        The boundary furnace (first to strictly exceed the threshold) is excluded along with everything
+        above it. At ``share = 1.0`` the last entry's cumulative equals total, so all entries are kept
+        and behaviour is byte-identical to no truncation.
+
+        Args:
+            curve_entries: Cost-curve entries sorted ascending by production_cost (each with
+                ``cumulative_capacity`` and ``production_cost`` keys).
+            share: Fraction of total cumulative capacity that participates in market clearing.
+
+        Returns:
+            ``(truncated_prefix, last_full_entry)``. ``last_full_entry`` is ``None`` iff
+            ``curve_entries`` is empty; otherwise it is the highest-cost entry of the full curve and
+            is used as the reference for the empty-truncated fallback.
+        """
+        if not curve_entries:
+            return [], None
+        last_full = curve_entries[-1]
+        threshold = share * last_full["cumulative_capacity"]
+        truncated = [e for e in curve_entries if e["cumulative_capacity"] <= threshold]
+        return truncated, last_full
+
     def extract_price_from_costcurve(self, demand: float, product: str, future: bool = False) -> float:
         """
-        Return the production cost for the first cumulative capacity that meets or exceeds the demand.
+        Return the market-clearing price for ``demand`` on the cost curve for ``product``.
+
+        Walks a truncated slice of the cost curve (capped at ``share * total``, where ``share`` is
+        ``steel_market_clearing_share`` or ``iron_market_clearing_share``). Returns the production
+        cost of the first entry whose cumulative capacity meets demand. When demand falls past the
+        truncated slice (shortage band, including the case where it also exceeds total capacity),
+        returns ``last_truncated.production_cost + price_buffer`` for that product.
+
+        For iron with ``peg_iron_to_steel_price`` enabled, the pegging branch's steel reference price
+        is computed against the **truncated** steel slice using ``steel_market_clearing_share``, so
+        the engine returns one consistent steel price to all callers in a given year. Pegging is a
+        floor (``iron_price = max(base_price, steel_price * ratio)``) and applies uniformly — both
+        when iron clears in merit order on its truncated slice **and** when iron is in the shortage
+        branch. This deliberately fixes the pre-truncation engine, which skipped pegging entirely
+        when iron demand exceeded total iron capacity (the case where steel-driven pricing power
+        most clearly should matter).
+
+        Args:
+            demand: Tonnes of the product demanded this year.
+            product: ``"steel"`` or ``"iron"``.
+            future: When True, walk ``self.future_cost_curve`` instead of ``self.cost_curve``.
+
+        Returns:
+            Market price in USD/tonne.
 
         Raises:
-            ValueError: If the cost curve is empty or if demand exceeds maximum cumulative production.
+            KeyError: If ``product`` is empty/None.
+
+        Notes:
+            Empty/missing cost curve returns the default price ``100.0`` with a warning, matching the
+            pre-truncation contract. Empty truncated slice (pathological config — should not happen
+            with the form's ``min_value=0.5`` validator) falls back to ``last_full + buffer`` with a
+            warning. Setting either share to ``1.0`` reproduces legacy behaviour byte-identically.
         """
         logger = logging.getLogger(f"{__name__}.Environment.extract_price_from_costcurve")
 
-        # Get the last entry (the highest capacity)
         if future:
             cost_curve = self.future_cost_curve
             year = "future year"
         else:
             cost_curve = self.cost_curve
             year = f"current year {self.year}"
+
         if not product:
-            # Use the first available product if no product specified
-            first_product = next(iter(cost_curve.keys()))
-            if not cost_curve[first_product]:  # Check if empty
-                logger.warning(f"Empty cost curve for {first_product}. Returning default price.")
-                return 100.0  # Default price when no cost curve
-            last_entry = cost_curve[first_product][-1]
-        else:
-            if product not in cost_curve or not cost_curve[product]:  # Check if empty
-                logger.warning(f"Empty cost curve for {product}. Returning default price.")
-                return 100.0  # Default price when no cost curve
-            last_entry = cost_curve[product][-1]
-        logger.debug(f"[COST CURVE]: Last entry for {product}: {last_entry}")
-        logger.debug(f"[COST CURVE]: {cost_curve[product]}")
-
-        if last_entry["production_cost"] == float("inf"):
-            logger.error(f"[COST CURVE]: Infinte production cost for {product}.")
-
-        # If demand exceeds available capacity, raise an error
-        if demand > last_entry["cumulative_capacity"] and product == "steel":
-            logger.warning(f"Steel demand exceeds production in the {year}")
-            logger.warning(
-                f"Steel demand: {demand * T_TO_KT:,.0f} kt; Steel production: {last_entry['cumulative_capacity'] * T_TO_KT:,.0f} kt"
-            )
-            logger.warning(
-                f"Using highest price ({last_entry['production_cost']}) +{self.config.steel_price_buffer}$ as market price"
-            )
-            return last_entry["production_cost"] + self.config.steel_price_buffer
-
-        elif demand > last_entry["cumulative_capacity"] and product == "iron":
-            logger.warning(f"Iron demand exceeds production in the {year}")
-            logger.warning(
-                f"Iron demand: {demand * T_TO_KT:,.0f} kt; Iron production: {last_entry['cumulative_capacity'] * T_TO_KT:,.0f} kt"
-            )
-            logger.warning(
-                f"Using highest price ({last_entry['production_cost']}) +{self.config.iron_price_buffer}$ as market price"
-            )
-            return last_entry["production_cost"] + self.config.iron_price_buffer
-
-        # Normal case - find first entry that meets or exceeds demand
-        if product:
-            logger.debug(f"[COST CURVE]: Extracting price for product {product} - NORMAL CASE")
-            logger.debug(f"[COST CURVE]: Demand: {demand}")
-
-            # Find the base price from the cost curve
-            base_price = None
-            for entry in cost_curve[product]:
-                logger.debug(f"[COST CURVE]: Checking entry: {entry}")
-                if entry["cumulative_capacity"] >= demand:
-                    logger.debug(f"[COST CURVE]: Satisfies demand: {entry}")
-                    base_price = entry["production_cost"]
-                    break
-
-            if base_price is None:
-                raise ValueError("capacity should always be greater than demand")  # This should never happen
-
-            # Apply iron price pegging if configured (only for current year, not future prices)
-            if product == "iron" and not future and self.config.peg_iron_to_steel_price:
-                # Get steel price using current demand
-                steel_price = None
-                steel_demand = self.current_demand  # Use global steel demand
-
-                # Check if steel cost curve exists
-                if "steel" in cost_curve and cost_curve["steel"]:
-                    # Find steel price from cost curve
-                    for entry in cost_curve["steel"]:
-                        if entry["cumulative_capacity"] >= steel_demand:
-                            steel_price = entry["production_cost"]
-                            break
-
-                    # If steel demand exceeds capacity, use highest price + buffer
-                    if steel_price is None:
-                        last_steel_entry = cost_curve["steel"][-1]
-                        steel_price = last_steel_entry["production_cost"] + self.config.steel_price_buffer
-
-                    # Apply pegging: iron price = max(cost_curve_price, steel_price * ratio)
-                    pegged_price = steel_price * self.config.iron_to_steel_price_ratio
-                    final_price = max(base_price, pegged_price)
-
-                    if final_price != base_price:
-                        logger.info(
-                            f"[IRON PRICE PEGGING]: Applied pegging. Base iron price: ${base_price:.2f}/t, "
-                            f"Steel price: ${steel_price:.2f}/t, Pegged price (at {self.config.iron_to_steel_price_ratio:.0%}): "
-                            f"${pegged_price:.2f}/t, Final iron price: ${final_price:.2f}/t"
-                        )
-
-                    return final_price
-
-            return base_price
-        else:
             raise KeyError(
                 "A product name - lower case - needs to be specified haven't sorted out how to yield both yet"
             )
 
-        raise ValueError("capacity should always be greater than demand")  # This should never happen
+        if product not in cost_curve or not cost_curve[product]:
+            logger.warning(f"Empty cost curve for {product}. Returning default price.")
+            return 100.0
+
+        if product == "steel":
+            share = self.config.steel_market_clearing_share
+            buffer = self.config.steel_price_buffer
+        elif product == "iron":
+            share = self.config.iron_market_clearing_share
+            buffer = self.config.iron_price_buffer
+        else:
+            raise KeyError(f"Unsupported product {product!r}; expected 'steel' or 'iron'.")
+
+        truncated, last_full = self._truncate_curve(cost_curve[product], share)
+        # `last_full` is non-None here because the empty-curve case returned 100.0 above.
+        assert last_full is not None
+
+        if not truncated:
+            logger.warning(
+                f"Empty truncated {product} curve at share={share} in the {year}; degrading to full-curve merit-order."
+            )
+            truncated = list(cost_curve[product])
+
+        last_truncated = truncated[-1]
+
+        if last_truncated["production_cost"] == float("inf"):
+            logger.error(f"[COST CURVE]: Infinite production cost for {product}.")
+
+        if demand > last_truncated["cumulative_capacity"]:
+            label = product.capitalize()
+            total = last_full["cumulative_capacity"]
+            regime = "exceeds total" if demand > total else f"in shortage band (above {share:.0%})"
+            logger.warning(
+                f"{label} demand {regime} in {year}: "
+                f"demand={demand * T_TO_KT:,.0f}kt, "
+                f"dispatchable={last_truncated['cumulative_capacity'] * T_TO_KT:,.0f}kt, "
+                f"total={total * T_TO_KT:,.0f}kt → "
+                f"boundary {last_truncated['production_cost']:.1f} +${buffer:.0f}"
+            )
+            base_price = last_truncated["production_cost"] + buffer
+        else:
+            for entry in truncated:
+                if entry["cumulative_capacity"] >= demand:
+                    base_price = entry["production_cost"]
+                    break
+            else:
+                # Unreachable: the shortage branch above already covers demand > last_truncated.cumulative.
+                raise ValueError(
+                    f"Unreachable: walked the truncated {product} curve without finding an entry "
+                    f"meeting demand={demand}."
+                )
+
+        if product == "iron" and not future and self.config.peg_iron_to_steel_price:
+            steel_demand = self.current_demand
+            steel_share = self.config.steel_market_clearing_share
+            steel_buffer = self.config.steel_price_buffer
+            steel_truncated, steel_last_full = self._truncate_curve(cost_curve.get("steel", []), steel_share)
+
+            if steel_last_full is None:
+                # No steel curve — preserve legacy behaviour (no pegging applied).
+                return base_price
+
+            if not steel_truncated:
+                logger.warning(
+                    f"Empty truncated steel curve for iron pegging at share={steel_share} in {year}; "
+                    f"degrading to full-curve merit-order for pegging reference."
+                )
+                steel_truncated = list(cost_curve["steel"])
+
+            last_steel_truncated = steel_truncated[-1]
+            if steel_demand > last_steel_truncated["cumulative_capacity"]:
+                steel_total = steel_last_full["cumulative_capacity"]
+                regime = (
+                    "exceeds total"
+                    if steel_demand > steel_total
+                    else f"in shortage band (above dispatchable {steel_share:.0%})"
+                )
+                logger.warning(
+                    f"[PEGGING] Steel reference {regime} in {year}: "
+                    f"steel_demand={steel_demand * T_TO_KT:,.0f}kt → boundary "
+                    f"{last_steel_truncated['production_cost']:.1f} +${steel_buffer:.0f}"
+                )
+                steel_price = last_steel_truncated["production_cost"] + steel_buffer
+            else:
+                for entry in steel_truncated:
+                    if entry["cumulative_capacity"] >= steel_demand:
+                        steel_price = entry["production_cost"]
+                        break
+                else:
+                    # Unreachable: the shortage branch above already covers steel_demand > last_steel_truncated.
+                    raise ValueError(
+                        f"Unreachable: walked the truncated steel curve without finding an entry "
+                        f"meeting steel_demand={steel_demand}."
+                    )
+
+            ratio = self.config.iron_to_steel_price_ratio
+            pegged_price = steel_price * ratio
+            final_price = max(base_price, pegged_price)
+
+            if final_price != base_price:
+                logger.info(
+                    f"[PEGGING] Applied: base iron ${base_price:.2f}/t, steel ${steel_price:.2f}/t, "
+                    f"pegged@{ratio:.0%}=${pegged_price:.2f}/t, final ${final_price:.2f}/t"
+                )
+
+            return final_price
+
+        return base_price
 
     def extract_global_average_feedstock_cost(self, world_furances: list[FurnaceGroup]) -> dict[str, float]:
         """

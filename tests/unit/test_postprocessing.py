@@ -78,6 +78,10 @@ def test_generate_post_run_cap_prod_plots_calls_all_functions_with_plot_paths(
         capacity_limit=0.95,
         steel_demand=1000,
         iron_demand=800,
+        steel_market_clearing_share=0.95,
+        iron_market_clearing_share=0.95,
+        steel_price_buffer=200.0,
+        iron_price_buffer=200.0,
         plot_paths=mock_plot_paths,
     )
 
@@ -113,6 +117,10 @@ def test_generate_post_run_cap_prod_plots_works_without_plot_paths(
         capacity_limit=0.95,
         steel_demand=1000,
         iron_demand=800,
+        steel_market_clearing_share=0.95,
+        iron_market_clearing_share=0.95,
+        steel_price_buffer=200.0,
+        iron_price_buffer=200.0,
     )
 
     # Verify plot_added_capacity_by_technology was called with plot_paths=None

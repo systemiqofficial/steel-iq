@@ -859,6 +859,320 @@ def test_biomass_availability_hash():
     assert len(biomass_set) == 2  # biomass1 and biomass2 should be considered the same
 
 
+# ---------------------------------------------------------------------------
+# extract_price_from_costcurve — market clearing share cutoff (Option A)
+# ---------------------------------------------------------------------------
+
+
+# Module-level path populated by the autouse fixture below so each truncation test can
+# construct an Environment without threading the tech-switches CSV through its signature.
+_TECH_CSV_PATH: Path | None = None
+
+
+@pytest.fixture(autouse=True)
+def _autouse_tech_csv(mock_tech_switches_file):
+    """Auto-applied: makes `mock_tech_switches_file` available to `_make_price_env` via a module-level
+    handle so each truncation test can drop the fixture from its signature. The cost is one temp CSV
+    creation per test in this module; the existing engine tests that *also* take the fixture by name
+    still get their own copy (harmless duplication, identical contents)."""
+    global _TECH_CSV_PATH
+    _TECH_CSV_PATH = mock_tech_switches_file
+    yield
+    _TECH_CSV_PATH = None
+
+
+def _make_price_env(
+    *,
+    steel_curve=None,
+    iron_curve=None,
+    steel_share=0.95,
+    iron_share=0.95,
+    steel_buffer=200.0,
+    iron_buffer=200.0,
+    peg_iron_to_steel=False,
+    iron_to_steel_ratio=0.8,
+    current_demand=0.0,
+):
+    """
+    Construct an Environment with a hand-rolled cost curve and configurable share/buffer.
+
+    Bypasses generate_cost_curve so tests can target specific boundary conditions on
+    cumulative_capacity values exactly.
+    """
+    from steelo.simulation_types import TechnologySettings
+
+    config = SimulationConfig(
+        start_year=Year(2025),
+        end_year=Year(2050),
+        master_excel_path=Path(tempfile.gettempdir()) / "master.xlsx",
+        output_dir=Path(tempfile.gettempdir()),
+        technology_settings={
+            "BF": TechnologySettings(allowed=True, from_year=2025, to_year=None),
+        },
+        steel_market_clearing_share=steel_share,
+        iron_market_clearing_share=iron_share,
+        steel_price_buffer=steel_buffer,
+        iron_price_buffer=iron_buffer,
+        peg_iron_to_steel_price=peg_iron_to_steel,
+        iron_to_steel_price_ratio=iron_to_steel_ratio,
+    )
+    env = Environment(config=config, tech_switches_csv=_TECH_CSV_PATH)
+    if steel_curve is not None:
+        env.cost_curve["steel"] = list(steel_curve)
+    if iron_curve is not None:
+        env.cost_curve["iron"] = list(iron_curve)
+    env.current_demand = Volumes(current_demand)
+    return env
+
+
+def test_clearing_share_includes_furnace_at_exact_threshold():
+    """A furnace whose cumulative_capacity equals the threshold exactly is kept (strict `>` rule)."""
+    # share=0.95, total=200 ⇒ threshold=190. Furnace 2 cumulative=190 lands exactly on threshold (kept).
+    # Furnace 3 cumulative=200 strictly exceeds threshold ⇒ it is the marginal and is excluded.
+    curve = [
+        {"cumulative_capacity": 100.0, "production_cost": 50.0},
+        {"cumulative_capacity": 190.0, "production_cost": 70.0},
+        {"cumulative_capacity": 200.0, "production_cost": 999.0},
+    ]
+    env = _make_price_env(steel_curve=curve, steel_share=0.95, steel_buffer=200.0)
+    # Demand inside the kept slice (≤ 190) clears in merit order on the truncated curve.
+    assert env.extract_price_from_costcurve(demand=190.0, product="steel") == 70.0
+    # Demand in the shortage band (190 < d ≤ 200) prices off the boundary furnace excluded curve.
+    assert env.extract_price_from_costcurve(demand=195.0, product="steel") == 70.0 + 200.0
+
+
+def test_clearing_share_excludes_straddler_when_threshold_falls_inside_furnace():
+    """When threshold falls strictly inside a furnace's contribution, that furnace and above are excluded."""
+    # share=0.95, total=210 ⇒ threshold=199.5. Furnace 2 cumulative=200 strictly exceeds 199.5 ⇒ marginal,
+    # excluded along with everything above.
+    curve = [
+        {"cumulative_capacity": 100.0, "production_cost": 50.0},
+        {"cumulative_capacity": 200.0, "production_cost": 70.0},
+        {"cumulative_capacity": 210.0, "production_cost": 999.0},
+    ]
+    env = _make_price_env(steel_curve=curve, steel_share=0.95, steel_buffer=200.0)
+    # last_truncated is the first furnace (cumulative=100, cost=50). Demand=150 lands in shortage band.
+    assert env.extract_price_from_costcurve(demand=150.0, product="steel") == 50.0 + 200.0
+
+
+def test_demand_below_clearing_share_returns_merit_order_price():
+    """Demand inside the truncated slice clears in merit order."""
+    curve = [
+        {"cumulative_capacity": 100.0, "production_cost": 50.0},
+        {"cumulative_capacity": 200.0, "production_cost": 70.0},
+        {"cumulative_capacity": 300.0, "production_cost": 90.0},
+        {"cumulative_capacity": 1000.0, "production_cost": 999.0},
+    ]
+    env = _make_price_env(steel_curve=curve, steel_share=0.95, steel_buffer=200.0)
+    # Demand=250 lands inside the truncated slice (threshold=950); merit order returns the 90/t furnace.
+    assert env.extract_price_from_costcurve(demand=250.0, product="steel") == 90.0
+
+
+def test_demand_in_shortage_band_triggers_buffer():
+    """Demand between truncated cumulative and total triggers last_truncated.cost + buffer."""
+    # share=0.95, total=300 ⇒ threshold=285. Furnace 3 cumulative=300 strictly exceeds 285 ⇒ marginal,
+    # excluded. last_truncated is furnace 2 (cumulative=200, cost=70).
+    curve = [
+        {"cumulative_capacity": 100.0, "production_cost": 50.0},
+        {"cumulative_capacity": 200.0, "production_cost": 70.0},
+        {"cumulative_capacity": 300.0, "production_cost": 999.0},
+    ]
+    env = _make_price_env(steel_curve=curve, steel_share=0.95, steel_buffer=200.0)
+    # Demand=250 lies in the shortage band: 200 < 250 ≤ 300.
+    assert env.extract_price_from_costcurve(demand=250.0, product="steel") == 70.0 + 200.0
+
+
+def test_demand_above_total_capacity_triggers_buffer():
+    """Demand strictly above total uses last_truncated.cost + buffer (no double application)."""
+    curve = [
+        {"cumulative_capacity": 100.0, "production_cost": 50.0},
+        {"cumulative_capacity": 200.0, "production_cost": 70.0},
+        {"cumulative_capacity": 300.0, "production_cost": 999.0},
+    ]
+    env = _make_price_env(steel_curve=curve, steel_share=0.95, steel_buffer=200.0)
+    # Demand far above total. last_truncated is furnace 2 (cost=70). Buffer applied once.
+    assert env.extract_price_from_costcurve(demand=10_000.0, product="steel") == 70.0 + 200.0
+
+
+def test_clearing_share_one_reproduces_current_behaviour():
+    """At share=1.0 the truncated slice equals the full curve across all boundary scenarios."""
+    curve = [
+        {"cumulative_capacity": 100.0, "production_cost": 50.0},
+        {"cumulative_capacity": 200.0, "production_cost": 70.0},
+        {"cumulative_capacity": 300.0, "production_cost": 90.0},
+    ]
+    env = _make_price_env(steel_curve=curve, steel_share=1.0, steel_buffer=200.0)
+    # (1) Demand below the cheapest furnace's cumulative.
+    assert env.extract_price_from_costcurve(demand=50.0, product="steel") == 50.0
+    # (2) Demand exactly equal to the first entry's cumulative.
+    assert env.extract_price_from_costcurve(demand=100.0, product="steel") == 50.0
+    # (3) Demand somewhere mid-curve.
+    assert env.extract_price_from_costcurve(demand=150.0, product="steel") == 70.0
+    # (4) Demand exactly equal to the last entry's cumulative (= total). The strict `>` must keep last entry.
+    assert env.extract_price_from_costcurve(demand=300.0, product="steel") == 90.0
+    # (5) Demand strictly greater than total capacity ⇒ buffer branch on the full curve's last entry.
+    assert env.extract_price_from_costcurve(demand=500.0, product="steel") == 90.0 + 200.0
+
+
+def test_steel_and_iron_clearing_shares_are_independent():
+    """Each product applies its own share against its own total."""
+    steel = [
+        {"cumulative_capacity": 100.0, "production_cost": 50.0},
+        {"cumulative_capacity": 200.0, "production_cost": 70.0},
+        {"cumulative_capacity": 300.0, "production_cost": 999.0},  # boundary at share=0.95 (threshold=285)
+    ]
+    iron = [
+        {"cumulative_capacity": 100.0, "production_cost": 30.0},
+        {"cumulative_capacity": 200.0, "production_cost": 40.0},
+        {"cumulative_capacity": 300.0, "production_cost": 50.0},
+    ]
+    env = _make_price_env(
+        steel_curve=steel,
+        iron_curve=iron,
+        steel_share=0.95,
+        iron_share=1.0,
+        steel_buffer=200.0,
+        iron_buffer=100.0,
+    )
+    # Steel: demand=250 in shortage band (last_truncated=200, cost=70) ⇒ 70 + 200.
+    assert env.extract_price_from_costcurve(demand=250.0, product="steel") == 70.0 + 200.0
+    # Iron at share=1.0: demand=250 walks the full curve and clears at 50/t (third furnace).
+    assert env.extract_price_from_costcurve(demand=250.0, product="iron") == 50.0
+
+
+def test_iron_pegging_uses_truncated_steel_slice():
+    """When peg_iron_to_steel_price is on, the steel reference is computed against the truncated steel slice."""
+    # Steel curve: low-cost bulk at 100/t with 950 capacity, then a 99,999/t outlier in the top 5%.
+    # Without truncation the pegging reference would be 99,999/t (catastrophic floor).
+    # With share=0.95 the outlier is excluded; reference becomes 100/t.
+    steel = [
+        {"cumulative_capacity": 950.0, "production_cost": 100.0},
+        {"cumulative_capacity": 1000.0, "production_cost": 99_999.0},
+    ]
+    iron = [
+        {"cumulative_capacity": 1000.0, "production_cost": 30.0},
+    ]
+    env = _make_price_env(
+        steel_curve=steel,
+        iron_curve=iron,
+        steel_share=0.95,
+        iron_share=1.0,
+        peg_iron_to_steel=True,
+        iron_to_steel_ratio=0.8,
+        current_demand=500.0,  # steel demand inside the truncated slice
+    )
+    # Pegged floor = 100 * 0.8 = 80. Base iron from cost curve = 30. Final = max(30, 80) = 80.
+    assert env.extract_price_from_costcurve(demand=500.0, product="iron") == 80.0
+
+
+def test_iron_pegging_applies_uniformly_in_shortage_band(caplog):
+    """Pegging is a floor and must apply even when iron itself is in the shortage band.
+
+    Pre-truncation engine skipped pegging whenever iron demand exceeded total iron capacity.
+    The new logic deliberately fixes that: pegging fires after base_price is computed in either
+    branch (merit-order on the truncated slice OR shortage = last_truncated + buffer).
+    """
+    import logging
+
+    # Iron curve: total=100, share=0.95 ⇒ threshold=95. Furnace 2 cum=100 > 95 ⇒ excluded.
+    # last_truncated_iron has cum=50, cost=30. iron_buffer=200.
+    # Iron demand=80 lies in iron shortage band (50 < 80 ≤ 100).
+    # ⇒ base_price = last_truncated_iron.cost + iron_buffer = 30 + 200 = 230.
+    iron = [
+        {"cumulative_capacity": 50.0, "production_cost": 30.0},
+        {"cumulative_capacity": 100.0, "production_cost": 999.0},
+    ]
+    # Steel curve: total=1000, share=0.95 ⇒ threshold=950. Furnace 2 cum=1000 > 950 ⇒ excluded.
+    # last_truncated_steel has cum=950, cost=500. Steel demand=500 clears in merit order ⇒ steel_price=500.
+    # Pegged floor = 500 * 0.8 = 400. Final iron = max(230, 400) = 400.
+    steel = [
+        {"cumulative_capacity": 950.0, "production_cost": 500.0},
+        {"cumulative_capacity": 1000.0, "production_cost": 9999.0},
+    ]
+    env = _make_price_env(
+        steel_curve=steel,
+        iron_curve=iron,
+        steel_share=0.95,
+        iron_share=0.95,
+        steel_buffer=200.0,
+        iron_buffer=200.0,
+        peg_iron_to_steel=True,
+        iron_to_steel_ratio=0.8,
+        current_demand=500.0,
+    )
+    with caplog.at_level(logging.WARNING):
+        result = env.extract_price_from_costcurve(demand=80.0, product="iron")
+    # Return value alone proves pegging fired: without pegging the answer would be 30 + 200 = 230
+    # (iron in shortage); with pegging applied uniformly, the steel-driven floor of 400 wins.
+    assert result == pytest.approx(400.0)
+    # Confirm the iron-shortage warning fired with the new band-vs-total distinction.
+    assert any("Iron demand in shortage band" in rec.getMessage() for rec in caplog.records)
+
+
+def test_iron_pegging_empty_truncated_steel_slice_falls_back_to_full_curve_merit_order(caplog):
+    """Empty truncated steel slice ⇒ pegging reference degrades to full-steel-curve merit order.
+
+    A single-entry steel curve at any share < 1.0 produces an empty truncated slice (the lone entry IS
+    the boundary). The pegging branch must walk the full steel curve in this case rather than phantom-
+    buffering the long-tail entry the truncation was designed to exclude.
+    """
+    import logging
+
+    # share=0.5 with one steel furnace (cum=1000). Truncation drops it; pegging falls back to full curve.
+    # current_demand=500 lies well within total_steel_capacity=1000 ⇒ no buffer applied to steel reference.
+    steel = [
+        {"cumulative_capacity": 1000.0, "production_cost": 100.0},
+    ]
+    iron = [
+        {"cumulative_capacity": 1000.0, "production_cost": 30.0},
+    ]
+    env = _make_price_env(
+        steel_curve=steel,
+        iron_curve=iron,
+        steel_share=0.5,
+        iron_share=1.0,
+        steel_buffer=200.0,
+        peg_iron_to_steel=True,
+        iron_to_steel_ratio=0.8,
+        current_demand=500.0,
+    )
+    with caplog.at_level(logging.WARNING):
+        result = env.extract_price_from_costcurve(demand=500.0, product="iron")
+    # steel_price = 100 (full-curve merit-order, no buffer); pegged floor = 100 * 0.8 = 80.
+    # Base iron = 30. Final = max(30, 80) = 80.
+    assert result == pytest.approx(80.0)
+    assert any("Empty truncated steel curve for iron pegging" in rec.getMessage() for rec in caplog.records)
+
+
+def test_empty_truncated_curve_degrades_to_full_curve_merit_order(caplog):
+    """An empty truncated slice degrades to full-curve merit order (no phantom buffer).
+
+    Single-entry curves at any share < 1.0 trigger this: the lone entry IS the boundary, so
+    truncation drops it. The fallback must walk the full curve rather than apply the buffer to
+    last_full (which is the very long-tail entry the truncation was designed to exclude).
+    """
+    import logging
+
+    # Single furnace at cumulative=1000. share=0.5 ⇒ threshold=500. cum=1000>500 ⇒ excluded.
+    curve = [
+        {"cumulative_capacity": 1000.0, "production_cost": 100.0},
+    ]
+    env = _make_price_env(steel_curve=curve, steel_share=0.5, steel_buffer=200.0)
+
+    # demand=300 fits within total=1000 ⇒ full-curve merit-order returns 100 (no buffer).
+    with caplog.at_level(logging.WARNING):
+        result = env.extract_price_from_costcurve(demand=300.0, product="steel")
+    assert result == pytest.approx(100.0)
+    assert any("Empty truncated steel curve" in rec.getMessage() for rec in caplog.records)
+
+    # demand=1500 exceeds total=1000 ⇒ buffer is applied (true shortage).
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        result = env.extract_price_from_costcurve(demand=1500.0, product="steel")
+    assert result == pytest.approx(100.0 + 200.0)
+    assert any("Empty truncated steel curve" in rec.getMessage() for rec in caplog.records)
+
+
 def test_biomass_availability_year_type():
     """Test that year is properly typed as Year."""
     biomass = BiomassAvailability(

@@ -231,6 +231,38 @@ class ModelRunCreateForm(forms.ModelForm):
         widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.1"}),
     )
 
+    steel_market_clearing_share = forms.DecimalField(
+        label="Steel market clearing share",
+        initial=0.95,
+        min_value=0.5,
+        max_value=0.995,
+        max_digits=4,
+        decimal_places=3,
+        required=False,
+        help_text=(
+            "Fraction of total steel cumulative capacity that participates in market clearing in the cost curve; "
+            "demand above this share triggers the steel premium instead of pricing off the long tail "
+            "(default 0.95, max 0.995)."
+        ),
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.01"}),
+    )
+
+    iron_market_clearing_share = forms.DecimalField(
+        label="Iron market clearing share",
+        initial=0.95,
+        min_value=0.5,
+        max_value=0.995,
+        max_digits=4,
+        decimal_places=3,
+        required=False,
+        help_text=(
+            "Fraction of total iron cumulative capacity that participates in market clearing in the cost curve; "
+            "demand above this share triggers the iron premium instead of pricing off the long tail "
+            "(default 0.95, max 0.995)."
+        ),
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.01"}),
+    )
+
     peg_iron_to_steel_price = forms.BooleanField(
         label="Peg iron price to steel price",
         initial=False,
@@ -707,6 +739,8 @@ class ModelRunCreateForm(forms.ModelForm):
             "global_risk_free_rate",
             "steel_price_buffer",
             "iron_price_buffer",
+            "steel_market_clearing_share",
+            "iron_market_clearing_share",
             "peg_iron_to_steel_price",
             "iron_to_steel_price_ratio",
             "opening_balance_multiplier",

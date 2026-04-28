@@ -34,11 +34,23 @@ def generate_post_run_cap_prod_plots(
     capacity_limit,
     steel_demand,
     iron_demand,
+    steel_market_clearing_share: float,
+    iron_market_clearing_share: float,
+    steel_price_buffer: float,
+    iron_price_buffer: float,
     plot_paths: Optional["PlotPaths"] = None,
 ):
     """
-    Generate and store plots related to the post_process collected data file path
+    Generate and store plots related to the post_process collected data file path.
 
+    Args:
+        steel_market_clearing_share: Fraction of steel cumulative capacity that participates in
+            market clearing on the cost-curve plots; must match the engine value so plot and engine
+            agree on the displayed clearing price.
+        iron_market_clearing_share: Same for iron.
+        steel_price_buffer: USD/tonne shortage premium added when demand exceeds the dispatchable
+            slice; must match the engine value.
+        iron_price_buffer: Same for iron.
     """
     # output_df = pd.read_csv(settings.output_dir / "post_processed_2025-06-02 21-41.csv")
     output_df = pd.read_csv(file_path)
@@ -112,6 +124,8 @@ def generate_post_run_cap_prod_plots(
 
             # Generate cost curves by region and technology for both steel and iron
             for product_type, year_demand in [("steel", year_steel_demand), ("iron", year_iron_demand)]:
+                share = steel_market_clearing_share if product_type == "steel" else iron_market_clearing_share
+                buffer = steel_price_buffer if product_type == "steel" else iron_price_buffer
                 for aggregation in ["region", "technology"]:
                     try:
                         plot_cost_curve_step_from_dataframe(
@@ -121,6 +135,8 @@ def generate_post_run_cap_prod_plots(
                             year,
                             capacity_limit,
                             units,
+                            clearing_share=share,
+                            price_buffer=buffer,
                             aggregation=aggregation,
                             plot_paths=plot_paths,
                         )
@@ -136,6 +152,8 @@ def generate_post_run_cap_prod_plots(
             last_year,
             capacity_limit,
             units,
+            clearing_share=steel_market_clearing_share,
+            price_buffer=steel_price_buffer,
             aggregation="region",
             plot_paths=plot_paths,
         )
@@ -146,6 +164,8 @@ def generate_post_run_cap_prod_plots(
             last_year,
             capacity_limit,
             units,
+            clearing_share=iron_market_clearing_share,
+            price_buffer=iron_price_buffer,
             aggregation="region",
             plot_paths=plot_paths,
         )
@@ -156,6 +176,8 @@ def generate_post_run_cap_prod_plots(
             last_year,
             capacity_limit,
             units,
+            clearing_share=steel_market_clearing_share,
+            price_buffer=steel_price_buffer,
             aggregation="technology",
             plot_paths=plot_paths,
         )
@@ -166,6 +188,8 @@ def generate_post_run_cap_prod_plots(
             last_year,
             capacity_limit,
             units,
+            clearing_share=iron_market_clearing_share,
+            price_buffer=iron_price_buffer,
             aggregation="technology",
             plot_paths=plot_paths,
         )

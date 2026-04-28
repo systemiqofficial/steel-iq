@@ -627,6 +627,8 @@ class ModelRun(models.Model):
             "global_risk_free_rate",
             "steel_price_buffer",
             "iron_price_buffer",
+            "steel_market_clearing_share",
+            "iron_market_clearing_share",
             "peg_iron_to_steel_price",
             "iron_to_steel_price_ratio",
             "opening_balance_multiplier",
