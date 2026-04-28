@@ -428,7 +428,7 @@ class SimulationConfig:
     # === Cost Model Settings ===
     # Physical output carriers where positive price = disposal cost (not revenue)
     # These carriers keep their raw Excel sign instead of being negated via -abs()
-    disposal_cost_outputs: frozenset[str] = field(default_factory=lambda: frozenset({"ironmaking_slag"}))
+    disposal_cost_outputs: frozenset[str] = field(default_factory=lambda: frozenset({"steelmaking_slag"}))
 
     # === Randomness ===
     # Single seed shared by Plant Agent, Geospatial, and Trade LP modules.
