@@ -8156,58 +8156,40 @@ class Environment:
         truncated, last_full = self._truncate_curve(cost_curve[product], share)
         # `last_full` is non-None here because the empty-curve case returned 100.0 above.
         assert last_full is not None
-        logger.debug(f"[COST CURVE]: Last full entry for {product}: {last_full}")
-        logger.debug(f"[COST CURVE]: {cost_curve[product]}")
-        logger.debug(
-            f"[COST CURVE TRUNCATION]: product={product}, share={share}, "
-            f"threshold={share * last_full['cumulative_capacity']:.0f}, "
-            f"kept={len(truncated)}/{len(cost_curve[product])} furnaces"
-        )
 
         if not truncated:
             logger.warning(
-                f"Empty truncated cost curve for {product} at share={share} in the {year}; "
-                f"degrading to full-curve merit-order for this query."
+                f"Empty truncated {product} curve at share={share} in the {year}; degrading to full-curve merit-order."
             )
             truncated = list(cost_curve[product])
 
         last_truncated = truncated[-1]
 
         if last_truncated["production_cost"] == float("inf"):
-            logger.error(f"[COST CURVE]: Infinte production cost for {product}.")
+            logger.error(f"[COST CURVE]: Infinite production cost for {product}.")
 
         if demand > last_truncated["cumulative_capacity"]:
-            label = "Steel" if product == "steel" else "Iron"
-            total_capacity = last_full["cumulative_capacity"]
-            if demand > total_capacity:
-                regime = f"exceeds total {label.lower()} capacity"
-            else:
-                regime = f"in {label.lower()} shortage band (above dispatchable share={share}, below total)"
-            logger.warning(f"{label} demand {regime} in the {year}")
+            label = product.capitalize()
+            total = last_full["cumulative_capacity"]
+            regime = "exceeds total" if demand > total else f"in shortage band (above {share:.0%})"
             logger.warning(
-                f"{label} demand: {demand * T_TO_KT:,.0f} kt; "
-                f"Dispatchable {label.lower()} capacity (share={share}): "
-                f"{last_truncated['cumulative_capacity'] * T_TO_KT:,.0f} kt; "
-                f"Total {label.lower()} capacity: {total_capacity * T_TO_KT:,.0f} kt"
+                f"{label} demand {regime} in {year}: "
+                f"demand={demand * T_TO_KT:,.0f}kt, "
+                f"dispatchable={last_truncated['cumulative_capacity'] * T_TO_KT:,.0f}kt, "
+                f"total={total * T_TO_KT:,.0f}kt → "
+                f"boundary {last_truncated['production_cost']:.1f} +${buffer:.0f}"
             )
-            logger.warning(f"Using boundary price ({last_truncated['production_cost']}) +{buffer}$ as market price")
             base_price = last_truncated["production_cost"] + buffer
         else:
-            logger.debug(f"[COST CURVE]: Extracting price for product {product} - NORMAL CASE")
-            logger.debug(f"[COST CURVE]: Demand: {demand}")
-
             for entry in truncated:
-                logger.debug(f"[COST CURVE]: Checking entry: {entry}")
                 if entry["cumulative_capacity"] >= demand:
-                    logger.debug(f"[COST CURVE]: Satisfies demand: {entry}")
                     base_price = entry["production_cost"]
                     break
             else:
-                # Unreachable code path: the shortage branch above (demand > last_truncated.cumulative)
-                # already routes the buffer case. If we got here it's a coding bug, not a real shortage.
+                # Unreachable: the shortage branch above already covers demand > last_truncated.cumulative.
                 raise ValueError(
                     f"Unreachable: walked the truncated {product} curve without finding an entry "
-                    f"meeting demand={demand}, but the shortage branch should have handled this."
+                    f"meeting demand={demand}."
                 )
 
         if product == "iron" and not future and self.config.peg_iron_to_steel_price:
@@ -8218,31 +8200,27 @@ class Environment:
 
             if steel_last_full is None:
                 # No steel curve — preserve legacy behaviour (no pegging applied).
-                logger.debug(
-                    f"[IRON PRICE PEGGING]: No steel cost curve in the {year}; pegging bypassed, "
-                    f"returning base iron price ${base_price:.2f}/t."
-                )
                 return base_price
 
             if not steel_truncated:
                 logger.warning(
-                    f"Empty truncated steel curve for iron pegging at share={steel_share} in the {year}; "
-                    f"degrading to full-steel-curve merit-order for the pegging reference."
+                    f"Empty truncated steel curve for iron pegging at share={steel_share} in {year}; "
+                    f"degrading to full-curve merit-order for pegging reference."
                 )
                 steel_truncated = list(cost_curve["steel"])
 
             last_steel_truncated = steel_truncated[-1]
             if steel_demand > last_steel_truncated["cumulative_capacity"]:
                 steel_total = steel_last_full["cumulative_capacity"]
-                if steel_demand > steel_total:
-                    steel_regime = "exceeds total steel capacity"
-                else:
-                    steel_regime = f"in steel shortage band (above dispatchable share={steel_share}, below total)"
+                regime = (
+                    "exceeds total"
+                    if steel_demand > steel_total
+                    else f"in shortage band (above dispatchable {steel_share:.0%})"
+                )
                 logger.warning(
-                    f"[IRON PRICE PEGGING]: Steel reference {steel_regime} in the {year}; "
-                    f"steel demand: {steel_demand * T_TO_KT:,.0f} kt; "
-                    f"using boundary steel price ({last_steel_truncated['production_cost']}) "
-                    f"+{steel_buffer}$ as pegging reference."
+                    f"[PEGGING] Steel reference {regime} in {year}: "
+                    f"steel_demand={steel_demand * T_TO_KT:,.0f}kt → boundary "
+                    f"{last_steel_truncated['production_cost']:.1f} +${steel_buffer:.0f}"
                 )
                 steel_price = last_steel_truncated["production_cost"] + steel_buffer
             else:
@@ -8251,11 +8229,10 @@ class Environment:
                         steel_price = entry["production_cost"]
                         break
                 else:
-                    # Unreachable code path: the shortage branch above (steel_demand > last_steel_truncated)
-                    # already routes the buffer case. If we got here it's a coding bug, not a real shortage.
+                    # Unreachable: the shortage branch above already covers steel_demand > last_steel_truncated.
                     raise ValueError(
                         f"Unreachable: walked the truncated steel curve without finding an entry "
-                        f"meeting steel_demand={steel_demand}, but the shortage branch should have handled this."
+                        f"meeting steel_demand={steel_demand}."
                     )
 
             ratio = self.config.iron_to_steel_price_ratio
@@ -8264,15 +8241,8 @@ class Environment:
 
             if final_price != base_price:
                 logger.info(
-                    f"[IRON PRICE PEGGING]: Applied pegging. Base iron price: ${base_price:.2f}/t, "
-                    f"Steel price: ${steel_price:.2f}/t, Pegged price (at {ratio:.0%}): "
-                    f"${pegged_price:.2f}/t, Final iron price: ${final_price:.2f}/t"
-                )
-            else:
-                logger.debug(
-                    f"[IRON PRICE PEGGING]: Pegging configured but not binding in the {year}. "
-                    f"Base iron price: ${base_price:.2f}/t, Steel price: ${steel_price:.2f}/t, "
-                    f"Pegged floor (at {ratio:.0%}): ${pegged_price:.2f}/t, returning base."
+                    f"[PEGGING] Applied: base iron ${base_price:.2f}/t, steel ${steel_price:.2f}/t, "
+                    f"pegged@{ratio:.0%}=${pegged_price:.2f}/t, final ${final_price:.2f}/t"
                 )
 
             return final_price

@@ -1106,7 +1106,7 @@ def test_iron_pegging_applies_uniformly_in_shortage_band(caplog):
     # (iron in shortage); with pegging applied uniformly, the steel-driven floor of 400 wins.
     assert result == pytest.approx(400.0)
     # Confirm the iron-shortage warning fired with the new band-vs-total distinction.
-    assert any("iron shortage band" in rec.getMessage() for rec in caplog.records)
+    assert any("Iron demand in shortage band" in rec.getMessage() for rec in caplog.records)
 
 
 def test_iron_pegging_empty_truncated_steel_slice_falls_back_to_full_curve_merit_order(caplog):
@@ -1163,14 +1163,14 @@ def test_empty_truncated_curve_degrades_to_full_curve_merit_order(caplog):
     with caplog.at_level(logging.WARNING):
         result = env.extract_price_from_costcurve(demand=300.0, product="steel")
     assert result == pytest.approx(100.0)
-    assert any("Empty truncated cost curve for steel" in rec.getMessage() for rec in caplog.records)
+    assert any("Empty truncated steel curve" in rec.getMessage() for rec in caplog.records)
 
     # demand=1500 exceeds total=1000 ⇒ buffer is applied (true shortage).
     caplog.clear()
     with caplog.at_level(logging.WARNING):
         result = env.extract_price_from_costcurve(demand=1500.0, product="steel")
     assert result == pytest.approx(100.0 + 200.0)
-    assert any("Empty truncated cost curve for steel" in rec.getMessage() for rec in caplog.records)
+    assert any("Empty truncated steel curve" in rec.getMessage() for rec in caplog.records)
 
 
 def test_biomass_availability_year_type():
