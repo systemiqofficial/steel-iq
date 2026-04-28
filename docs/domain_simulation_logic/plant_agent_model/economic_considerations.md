@@ -284,11 +284,11 @@ if current_year >= start_year and current_year <= end_year:
 
 ### Disposal Cost Outputs
 
-Some physical outputs are waste products where a positive price represents a disposal cost rather than revenue (e.g. ironmaking_slag). These are configured in `SimulationConfig.disposal_cost_outputs` (default: `{"ironmaking_slag"}`).
+Some physical outputs are waste products where a positive price represents a disposal cost rather than revenue (e.g. steelmaking_slag). These are configured in `SimulationConfig.disposal_cost_outputs` (default: `{"steelmaking_slag"}`).
 
 For disposal cost carriers, the secondary output calculation uses the raw price sign instead of `-abs(price)`:
-- **Normal physical output** (e.g. bf_gas): `-abs(price)` → always revenue (negative adjustment)
-- **Disposal cost output** (e.g. ironmaking_slag): raw price → positive price = cost (positive adjustment)
+- **Normal physical output** (e.g. bf_gas, ironmaking_slag): `-abs(price)` → always revenue (negative adjustment)
+- **Disposal cost output** (e.g. steelmaking_slag): raw price → positive price = cost (positive adjustment)
 
 This distinction applies in both `calculate_cost_adjustments_from_secondary_outputs()` and `calculate_cost_breakdown_by_feedstock()`.
 
