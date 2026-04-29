@@ -66,9 +66,8 @@ def mock_plot_paths():
 
 @patch("steelo.adapters.dataprocessing.postprocessing.generate_post_run_plots.SteelPlotter")
 @patch("steelo.adapters.dataprocessing.postprocessing.generate_post_run_plots.plot_added_capacity_by_technology")
-@patch("steelo.adapters.dataprocessing.postprocessing.generate_post_run_plots.plot_cost_curve_step_from_dataframe")
 def test_generate_post_run_cap_prod_plots_calls_all_functions_with_plot_paths(
-    mock_cost_curve, mock_added_capacity, mock_plotter_class, temp_csv_file, mock_plot_paths
+    mock_added_capacity, mock_plotter_class, temp_csv_file, mock_plot_paths
 ):
     """Test that generate_post_run_cap_prod_plots passes plot_paths to all plotting functions."""
     mock_plotter_instance = mock_plotter_class.return_value
@@ -97,17 +96,14 @@ def test_generate_post_run_cap_prod_plots_calls_all_functions_with_plot_paths(
     mock_plotter_instance.plot_capacity_development_by_technology.assert_called_once()
     assert mock_plotter_instance.plot_area_chart_by_region_or_technology.call_count == 8
 
-    # plot_cost_curve is called multiple times (for different years/products)
-    assert mock_cost_curve.call_count >= 1
-    for call_args in mock_cost_curve.call_args_list:
-        assert call_args.kwargs["plot_paths"] == mock_plot_paths
+    # plot_cost_curve_step is called multiple times (for different years/products/aggregations)
+    assert mock_plotter_instance.plot_cost_curve_step.call_count >= 1
 
 
 @patch("steelo.adapters.dataprocessing.postprocessing.generate_post_run_plots.SteelPlotter")
 @patch("steelo.adapters.dataprocessing.postprocessing.generate_post_run_plots.plot_added_capacity_by_technology")
-@patch("steelo.adapters.dataprocessing.postprocessing.generate_post_run_plots.plot_cost_curve_step_from_dataframe")
 def test_generate_post_run_cap_prod_plots_works_without_plot_paths(
-    mock_cost_curve, mock_added_capacity, mock_plotter_class, temp_csv_file
+    mock_added_capacity, mock_plotter_class, temp_csv_file
 ):
     """Test that generate_post_run_cap_prod_plots works when plot_paths is None."""
     mock_plotter_instance = mock_plotter_class.return_value
@@ -135,10 +131,8 @@ def test_generate_post_run_cap_prod_plots_works_without_plot_paths(
     mock_plotter_instance.plot_capacity_development_by_technology.assert_called_once()
     assert mock_plotter_instance.plot_area_chart_by_region_or_technology.call_count == 8
 
-    # plot_cost_curve is called multiple times (for different years/products)
-    assert mock_cost_curve.call_count >= 1
-    for call_args in mock_cost_curve.call_args_list:
-        assert call_args.kwargs["plot_paths"] is None
+    # plot_cost_curve_step is called multiple times (for different years/products/aggregations)
+    assert mock_plotter_instance.plot_cost_curve_step.call_count >= 1
 
 
 def test_plotting_function_signatures():
@@ -146,7 +140,6 @@ def test_plotting_function_signatures():
     from steelo.utilities.plotting import (
         plot_added_capacity_by_technology,
         plot_year_on_year_technology_development,
-        plot_cost_curve_step_from_dataframe,
         plot_area_chart_of_column_by_region_or_technology,
     )
 
@@ -156,7 +149,6 @@ def test_plotting_function_signatures():
     functions_to_check = [
         plot_added_capacity_by_technology,
         plot_year_on_year_technology_development,
-        plot_cost_curve_step_from_dataframe,
         plot_area_chart_of_column_by_region_or_technology,
     ]
 

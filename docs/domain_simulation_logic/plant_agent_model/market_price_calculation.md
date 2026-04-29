@@ -113,17 +113,17 @@ Two `SimulationConfig` parameters control where the dispatchable slice ends:
 
 Setting either to `1.0` reproduces today's behaviour for that product (no truncation; the full curve clears the market).
 
-**Strict-inequality boundary rule.** The dispatchable slice keeps every furnace whose cumulative capacity is *at most* `share × total`. The first furnace to *strictly* exceed that threshold is the "boundary" furnace; it is excluded along with everything more expensive.
+**Strict-inequality boundary rule.** The dispatchable slice keeps every furnace whose cumulative capacity is *at most* `share × total`. The first furnace to *strictly* exceed that threshold is the "boundary" furnace; it is excluded from the truncated slice (so it cannot be the buffer reference), but it is still reachable through the in-band merit-order walk when demand lands inside it.
 
 ```python
 threshold = config.<product>_market_clearing_share * total_capacity
 truncated = [e for e in cost_curve if e.cumulative_capacity <= threshold]
 
-if demand <= truncated[-1].cumulative_capacity:
-    # Merit-order dispatch on the truncated slice.
-    market_price = first(e.production_cost for e in truncated if e.cumulative_capacity >= demand)
+if demand <= threshold:
+    # Merit-order dispatch on the full curve — boundary furnace included at its own cost.
+    market_price = first(e.production_cost for e in cost_curve if e.cumulative_capacity >= demand)
 else:
-    # Shortage band: demand is past the dispatchable slice but may still be below total capacity.
+    # Shortage band: demand exceeds the dispatchable cap.
     market_price = truncated[-1].production_cost + config.<product>_price_buffer
 ```
 
@@ -134,10 +134,12 @@ Two `SimulationConfig` parameters control the shortage premium added when demand
 - `steel_price_buffer` — applied when steel demand exceeds the dispatchable steel slice.
 - `iron_price_buffer` — applied when iron demand exceeds the dispatchable iron slice.
 
-The buffer represents the extra willingness-to-pay required to incentivise new capacity when the market is supply-constrained. It now fires for two distinct cases, both of which emit a `WARNING`-level log line:
+The buffer represents the extra willingness-to-pay required to incentivise new capacity when the market is supply-constrained. It fires when `demand > share × total` and emits a `WARNING`-level log line in two distinct regimes:
 
-1. **Shortage band** — demand sits between `share × total` and `total`. There is unused capacity past the dispatchable slice, but the engine has chosen not to dispatch it (the long tail).
-2. **Demand exceeds total** — no unused capacity remains.
+1. **Shortage band** — `share × total < demand ≤ total`. There is unused capacity past the dispatchable cap, but the engine has chosen not to dispatch it (the long tail).
+2. **Demand exceeds total** — `demand > total`. No unused capacity remains.
+
+When `demand ≤ share × total` the boundary furnace (whose end-cumulative crosses the threshold but whose start fits within it) is reachable at its own production cost via the in-band merit-order walk on the full curve — no buffer is added, even though the furnace itself is excluded from the truncated slice.
 
 ### Worked Example
 
@@ -150,11 +152,12 @@ Building on the 3-plant scenario above (Plants A/B/C with capacities 50/40/30 Mt
 
 | Demand   | Branch                                | Market price                       |
 |----------|---------------------------------------|------------------------------------|
-| 80 Mt    | Merit-order on truncated slice        | $500 (Plant B clears the demand)   |
-| 100 Mt   | Shortage band (90 < 100 ≤ 120)        | $500 + $200 = $700                 |
+| 80 Mt    | Merit-order on full curve             | $500 (Plant B clears the demand)   |
+| 100 Mt   | Merit-order on full curve (100 ≤ 114) | $600 (Plant C clears the demand)   |
+| 116 Mt   | Shortage band (114 < 116 ≤ 120)       | $500 + $200 = $700                 |
 | 130 Mt   | Demand exceeds total (130 > 120)      | $500 + $200 = $700                 |
 
-At `share = 1.0` the dispatchable slice equals the full curve, and the worked example reverts to today's behaviour: 100 Mt clears at $600 (Plant C), 130 Mt triggers $600 + $200.
+At `share = 1.0` the threshold equals total capacity, so the shortage gate only fires when demand strictly exceeds total: 100 Mt clears at $600 (Plant C), 130 Mt triggers $600 + $200.
 
 ---
 

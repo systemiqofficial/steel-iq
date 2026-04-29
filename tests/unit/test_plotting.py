@@ -12,10 +12,10 @@ import tempfile
 from steelo.utilities.plotting import (
     plot_added_capacity_by_technology,
     plot_year_on_year_technology_development,
-    plot_cost_curve_step_from_dataframe,
     plot_area_chart_of_column_by_region_or_technology,
     _copy_deckgl_to_output_dir,
 )
+from steelo.utilities.steeliq_plotter import SteelPlotter, PlotConfig
 from steelo.domain.models import PlotPaths
 
 
@@ -91,24 +91,21 @@ def test_plot_year_on_year_technology_development(sample_output_df, temp_plot_di
 
 def test_plot_cost_curve_with_missing_year(sample_output_df, temp_plot_dir):
     """Test cost curve plot handles missing years gracefully."""
-    # Create PlotPaths object for the test
     plot_paths = PlotPaths(pam_plots_dir=temp_plot_dir / "pam")
+    plotter = SteelPlotter(config=PlotConfig(), plot_paths=plot_paths)
 
-    # Test with a year that doesn't exist (2035). Legacy mode (share=1.0, no buffer) keeps assertions
-    # focused on the missing-year fallback rather than truncation behaviour.
-    plot_cost_curve_step_from_dataframe(
-        sample_output_df,
-        "steel",
+    # Year 2035 is absent from the fixture; the method should fall back to the closest earlier year.
+    plotter.plot_cost_curve_step(
+        data_file=sample_output_df,
+        product_type="steel",
         product_demand=1000,
         year=2035,
         capacity_limit=0.95,
         units="Mt",
         clearing_share=1.0,
         price_buffer=0.0,
-        plot_paths=plot_paths,
     )
 
-    # Should create plot with closest available year (2030)
     plot_files = list((temp_plot_dir / "pam").glob("steel_cost_curve_by_*.png"))
     assert len(plot_files) > 0, "No cost curve plot created"
     assert "2030" in plot_files[0].name, "Should use year 2030 when 2035 not available"
@@ -116,19 +113,18 @@ def test_plot_cost_curve_with_missing_year(sample_output_df, temp_plot_dir):
 
 def test_plot_cost_curve_with_existing_year(sample_output_df, temp_plot_dir):
     """Test cost curve plot with existing year."""
-    # Create PlotPaths object for the test
     plot_paths = PlotPaths(pam_plots_dir=temp_plot_dir / "pam")
+    plotter = SteelPlotter(config=PlotConfig(), plot_paths=plot_paths)
 
-    plot_cost_curve_step_from_dataframe(
-        sample_output_df,
-        "steel",
+    plotter.plot_cost_curve_step(
+        data_file=sample_output_df,
+        product_type="steel",
         product_demand=1000,
         year=2028,
         capacity_limit=0.95,
         units="Mt",
         clearing_share=1.0,
         price_buffer=0.0,
-        plot_paths=plot_paths,
     )
 
     plot_file = temp_plot_dir / "pam" / "steel_cost_curve_by_region_2028.png"
