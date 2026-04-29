@@ -1369,10 +1369,13 @@ class SimulationRunner:
             plotter.plot_capex_by_technology(trace_capex=data_collector.trace_capex)
             logger.info("Generated CAPEX investment plots")
 
-        # Plot emissions stacked area chart by technology
+        # Plot emissions stacked area charts (5 scope views per available boundary)
         if data_collector.trace_emissions:
-            plotter.plot_emissions_by_technology(trace_emissions=data_collector.trace_emissions)
-            logger.info("Generated emissions stacked area chart")
+            plotter.plot_emissions_by_technology(
+                trace_emissions=data_collector.trace_emissions,
+                trace_production_by_product=data_collector.trace_production_by_product,
+            )
+            logger.info("Generated emissions stacked area charts")
 
         # Plot iron ore consumption stacked area chart by quality
         if data_collector.trace_iron_ore:

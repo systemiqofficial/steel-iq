@@ -1442,6 +1442,7 @@ class SimulationPlot(models.Model):
         PRODUCTION_REGION = "production_region", "Production by Region"
         PRODUCTION_TECHNOLOGY = "production_technology", "Production by Technology"
         CAPACITY_REGION = "capacity_region", "Capacity by Region"
+        EMISSIONS = "emissions", "Emissions by Technology"
         OTHER = "other", "Other"
 
     modelrun = models.ForeignKey(ModelRun, on_delete=models.CASCADE, related_name="simulation_plots")
@@ -1533,6 +1534,11 @@ class SimulationPlot(models.Model):
                 "title": "Iron Capacity by Region",
                 "product_type": "iron",
             },
+            {
+                "pattern": "emissions/emissions_*_by_technology__*.png",
+                "plot_type": cls.PlotType.EMISSIONS,
+                "title": "Emissions by Technology",
+            },
         ]
 
         created_plots = []
@@ -1546,6 +1552,8 @@ class SimulationPlot(models.Model):
                     file_config = dict(config)
                     if config["plot_type"] == cls.PlotType.COST_CURVE:
                         file_config["title"] = cls._build_cost_curve_title(plot_file, config["title"])
+                    elif config["plot_type"] == cls.PlotType.EMISSIONS:
+                        file_config["title"] = cls._build_emissions_title(plot_file, config["title"])
                     plot = cls._create_plot_from_file(modelrun, plot_file, file_config)
                     if plot:
                         created_plots.append(plot)
@@ -1585,6 +1593,40 @@ class SimulationPlot(models.Model):
         aggregation = match.group("aggregation").title()
         year = match.group("year")
         return f"{product} Cost Curve by {aggregation}, {year}"
+
+    @staticmethod
+    def _build_emissions_title(plot_file, fallback_title: str) -> str:
+        """Build a scope- and boundary-specific title from an emissions plot filename.
+
+        Filenames follow ``emissions_<scope>_by_technology__<boundary>.png`` where
+        ``scope`` is one of ``direct``, ``direct_with_biomass``, ``indirect``,
+        ``direct_plus_indirect``, ``direct_with_biomass_plus_indirect`` and
+        ``boundary`` is the snake_case emissions boundary (e.g. ``responsible_steel``).
+
+        Args:
+            plot_file: Path to the emissions plot file.
+            fallback_title: Title to return if the filename can't be parsed.
+
+        Returns:
+            A descriptive title such as ``"Direct emissions by Technology, responsible steel"``.
+        """
+        import re
+
+        match = re.match(
+            r"emissions_(?P<scope>.+)_by_technology__(?P<boundary>.+)$",
+            plot_file.stem,
+        )
+        if not match:
+            return fallback_title
+        scope_label = {
+            "direct": "Direct emissions",
+            "direct_with_biomass": "Direct emissions (incl. biogenic)",
+            "indirect": "Indirect emissions",
+            "direct_plus_indirect": "Direct + Indirect emissions",
+            "direct_with_biomass_plus_indirect": "Direct (incl. biogenic) + Indirect emissions",
+        }.get(match.group("scope"), match.group("scope").replace("_", " ").title())
+        boundary = match.group("boundary").replace("_", " ")
+        return f"{scope_label} by Technology, {boundary}"
 
     @classmethod
     def _create_plot_from_file(cls, modelrun, plot_file, config):

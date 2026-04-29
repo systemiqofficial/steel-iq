@@ -62,18 +62,36 @@ def sample_capex_data():
 
 @pytest.fixture
 def sample_emissions_data():
-    """Create sample emissions data for testing."""
-    trace_emissions = defaultdict(lambda: defaultdict(float))
+    """Create sample emissions data shaped as {boundary: {year: {tech: {scope: tCO2e}}}}.
+
+    Includes a single boundary so tests assert against a deterministic file set, and a
+    mix of magnitudes across direct, direct-with-biomass and indirect scopes so the
+    plot exercises both the stacked-area renderer and the scope-split logic.
+    """
     technologies = ["BF-BOF", "DRI-EAF", "Scrap-EAF", "H2-DRI"]
     years = range(2025, 2031)
-
+    by_year: dict[int, dict[str, dict[str, float]]] = {}
     for year in years:
+        per_tech: dict[str, dict[str, float]] = {}
         for tech in technologies:
-            # Simulate emissions that change over time
-            base_emission = 100000000 * (5 - technologies.index(tech))  # More for older tech
-            trace_emissions[year][tech] = base_emission + (year - 2025) * 5000000
+            base = 100_000_000 * (5 - technologies.index(tech))
+            scaled = base + (year - 2025) * 5_000_000
+            per_tech[tech] = {
+                "direct_ghg": scaled * 0.6,
+                "direct_with_biomass_ghg": scaled * 0.6,
+                "indirect_ghg": scaled * 0.4,
+            }
+        by_year[year] = per_tech
+    return {"responsible_steel": by_year}
 
-    return dict(trace_emissions)
+
+@pytest.fixture
+def sample_production_by_product():
+    """Iron and steel production totals by year (tonnes) for the emissions overlay."""
+    return {
+        year: {"iron": 1_500_000_000 + (year - 2025) * 10_000_000, "steel": 1_900_000_000 + (year - 2025) * 12_000_000}
+        for year in range(2025, 2031)
+    }
 
 
 @pytest.fixture
@@ -123,13 +141,34 @@ class TestSteelPlotter:
         assert plot_file.exists(), "CAPEX plot file was not created"
         assert plot_file.stat().st_size > 0, "CAPEX plot file is empty"
 
-    def test_plot_emissions_by_technology_creates_file(self, plotter, plot_paths, sample_emissions_data):
-        """Test that emissions plotting creates a PNG file."""
-        plotter.plot_emissions_by_technology(trace_emissions=sample_emissions_data)
+    def test_plot_emissions_by_technology_creates_file(
+        self,
+        plotter,
+        plot_paths,
+        sample_emissions_data,
+        sample_production_by_product,
+    ):
+        """Test that emissions plotting writes the five scope variants per boundary into the emissions subfolder."""
+        from steelo.utilities.steeliq_plotter import SteelPlotter
 
-        plot_file = plot_paths.pam_plots_dir / "emissions_by_technology_over_time.png"
-        assert plot_file.exists(), "Emissions plot file was not created"
-        assert plot_file.stat().st_size > 0, "Emissions plot file is empty"
+        plotter.plot_emissions_by_technology(
+            trace_emissions=sample_emissions_data,
+            trace_production_by_product=sample_production_by_product,
+        )
+
+        emissions_dir = plot_paths.pam_plots_dir / SteelPlotter.EMISSIONS_SUBDIR
+        boundary = next(iter(sample_emissions_data))
+        expected = [
+            f"emissions_direct_by_technology__{boundary}.png",
+            f"emissions_direct_with_biomass_by_technology__{boundary}.png",
+            f"emissions_indirect_by_technology__{boundary}.png",
+            f"emissions_direct_plus_indirect_by_technology__{boundary}.png",
+            f"emissions_direct_with_biomass_plus_indirect_by_technology__{boundary}.png",
+        ]
+        for filename in expected:
+            plot_file = emissions_dir / filename
+            assert plot_file.exists(), f"{filename} was not created"
+            assert plot_file.stat().st_size > 0, f"{filename} is empty"
 
     def test_plot_iron_ore_by_quality_creates_file(self, plotter, plot_paths, sample_iron_ore_data):
         """Test that iron ore plotting creates a PNG file."""
@@ -155,20 +194,29 @@ class TestSteelPlotter:
         sample_emissions_data,
         sample_iron_ore_data,
         sample_metallic_charges_data,
+        sample_production_by_product,
     ):
-        """Test that all four plotting methods work together."""
-        # Generate all plots
+        """Test that all plotting methods work together; emissions go to their subfolder."""
+        from steelo.utilities.steeliq_plotter import SteelPlotter
+
         plotter.plot_capex_by_technology(trace_capex=sample_capex_data)
-        plotter.plot_emissions_by_technology(trace_emissions=sample_emissions_data)
+        plotter.plot_emissions_by_technology(
+            trace_emissions=sample_emissions_data,
+            trace_production_by_product=sample_production_by_product,
+        )
         plotter.plot_iron_ore_by_quality(trace_iron_ore=sample_iron_ore_data)
         plotter.plot_metallic_charges(trace_metallic_charges=sample_metallic_charges_data)
 
-        # Verify all files exist
-        plot_files = list(plot_paths.pam_plots_dir.glob("*.png"))
-        assert len(plot_files) == 4, f"Expected 4 plot files, but found {len(plot_files)}"
+        # Three top-level PNGs (capex, iron ore, metallic charges) live directly in pam_plots_dir
+        top_level = list(plot_paths.pam_plots_dir.glob("*.png"))
+        assert len(top_level) == 3, f"Expected 3 top-level PNGs, found {len(top_level)}"
 
-        # Verify each has reasonable file size (> 50KB)
-        for plot_file in plot_files:
+        # Five emissions PNGs (one per scope view) live under the emissions subfolder
+        emissions_dir = plot_paths.pam_plots_dir / SteelPlotter.EMISSIONS_SUBDIR
+        emissions_files = list(emissions_dir.glob("*.png"))
+        assert len(emissions_files) == 5, f"Expected 5 emissions PNGs, found {len(emissions_files)}"
+
+        for plot_file in top_level + emissions_files:
             size_kb = plot_file.stat().st_size / 1024
             assert size_kb > 50, f"{plot_file.name} is too small ({size_kb:.1f} KB)"
 
