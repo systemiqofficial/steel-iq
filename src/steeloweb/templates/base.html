@@ -39,7 +39,17 @@
                         </a>
                     </li>
                 </ul>
-                <div class="ms-auto">
+                <div class="ms-auto d-flex align-items-center">
+                    {% if build_info %}
+                    <small class="text-white me-3 d-none d-md-block lh-sm text-end">
+                        <span class="fw-semibold">v{{ build_info.version }}</span>
+                        {% if build_info.is_dev %}<span class="badge bg-warning text-dark ms-1">dev</span>{% endif %}
+                        <br>
+                        {% if build_info.branch %}<span class="opacity-75">branch:</span> {{ build_info.branch }}{% endif %}
+                        {% if build_info.commit %} &middot; <span class="opacity-75">commit:</span> {{ build_info.commit }}{% endif %}
+                        {% if build_info.built_at %} &middot; <span class="opacity-75">date created:</span> {{ build_info.built_at|slice:":10" }}{% endif %}
+                    </small>
+                    {% endif %}
                     <img src="{% static 'steeloweb/images/systemiq-logo-white.png' %}" alt="Systemiq" style="height: 35px;">
                 </div>
             </div>
