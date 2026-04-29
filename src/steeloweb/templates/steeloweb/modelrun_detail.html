@@ -455,6 +455,42 @@
                             {% endif %}
                         </div>
                         {% endif %}
+
+                        {% if emissions_by_boundary %}
+                        <div class="accordion mt-3" id="emissionsAccordion">
+                            {% for boundary, emissions_plots in emissions_by_boundary.items %}
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="emissionsHeading{{ forloop.counter }}">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#emissionsCollapse{{ forloop.counter }}" aria-expanded="false" aria-controls="emissionsCollapse{{ forloop.counter }}">
+                                        Emissions — {{ boundary }} ({{ emissions_plots|length }})
+                                    </button>
+                                </h2>
+                                <div id="emissionsCollapse{{ forloop.counter }}" class="accordion-collapse collapse" aria-labelledby="emissionsHeading{{ forloop.counter }}" data-bs-parent="#emissionsAccordion">
+                                    <div class="accordion-body">
+                                        <div class="row">
+                                            {% for plot in emissions_plots %}
+                                            <div class="col-md-6 mb-3">
+                                                <div class="card">
+                                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}">
+                                                        <img src="{{ plot.image.url }}" class="card-img-top" alt="{{ plot.title }}" style="cursor: pointer;">
+                                                    </a>
+                                                    <div class="card-body">
+                                                        <p class="card-text text-center">
+                                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}" class="text-decoration-none">
+                                                                {{ plot.title }}
+                                                            </a>
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
                     </div>
                     {% endif %}
                 </div>

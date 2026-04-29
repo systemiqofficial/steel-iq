@@ -1487,13 +1487,13 @@ class SimulationPlot(models.Model):
                 "title": "Capacity Development by Technology",
             },
             {
-                "pattern": "steel_cost_curve_*.png",
+                "pattern": "cost_curves/cost_curve_steel_*.png",
                 "plot_type": cls.PlotType.COST_CURVE,
                 "title": "Steel Cost Curve",
                 "product_type": "steel",
             },
             {
-                "pattern": "iron_cost_curve_*.png",
+                "pattern": "cost_curves/cost_curve_iron_*.png",
                 "plot_type": cls.PlotType.COST_CURVE,
                 "title": "Iron Cost Curve",
                 "product_type": "iron",
@@ -1543,12 +1543,17 @@ class SimulationPlot(models.Model):
 
         created_plots = []
 
+        # Emissions and cost-curve charts live in sibling folders to PAM
+        plots_root = pam_plots_dir.parent
+        plots_root_types = {cls.PlotType.EMISSIONS, cls.PlotType.COST_CURVE}
+
         for config in plot_configs:
             pattern = config["pattern"]
+            search_dir = plots_root if config["plot_type"] in plots_root_types else pam_plots_dir
 
             # Handle wildcard patterns
             if "*" in pattern:
-                for plot_file in pam_plots_dir.glob(pattern):
+                for plot_file in search_dir.glob(pattern):
                     file_config = dict(config)
                     if config["plot_type"] == cls.PlotType.COST_CURVE:
                         file_config["title"] = cls._build_cost_curve_title(plot_file, config["title"])
@@ -1558,7 +1563,7 @@ class SimulationPlot(models.Model):
                     if plot:
                         created_plots.append(plot)
             else:
-                plot_file = pam_plots_dir / pattern
+                plot_file = search_dir / pattern
                 if plot_file.exists():
                     plot = cls._create_plot_from_file(modelrun, plot_file, config)
                     if plot:
@@ -1572,8 +1577,8 @@ class SimulationPlot(models.Model):
 
         Args:
             plot_file: Path to a cost curve plot file, expected to follow the
-                convention ``{product}_cost_curve_by_{aggregation}_{year}.png``
-                (e.g. ``steel_cost_curve_by_region_2025.png``).
+                convention ``cost_curve_{product}_by_{aggregation}_{year}.png``
+                (e.g. ``cost_curve_steel_by_region_2025.png``).
             fallback_title: Title to return if the filename does not match the
                 expected pattern (e.g. ``"Steel Cost Curve"``).
 
@@ -1584,7 +1589,7 @@ class SimulationPlot(models.Model):
         import re
 
         match = re.match(
-            r"(?P<product>steel|iron)_cost_curve_by_(?P<aggregation>region|technology)_(?P<year>\d{4})$",
+            r"cost_curve_(?P<product>steel|iron)_by_(?P<aggregation>region|technology)_(?P<year>\d{4})$",
             plot_file.stem,
         )
         if not match:

@@ -156,7 +156,7 @@ class TestSteelPlotter:
             trace_production_by_product=sample_production_by_product,
         )
 
-        emissions_dir = plot_paths.pam_plots_dir / SteelPlotter.EMISSIONS_SUBDIR
+        emissions_dir = plot_paths.plots_dir / SteelPlotter.EMISSIONS_SUBDIR
         boundary = next(iter(sample_emissions_data))
         expected = [
             f"emissions_direct_by_technology__{boundary}.png",
@@ -212,7 +212,7 @@ class TestSteelPlotter:
         assert len(top_level) == 3, f"Expected 3 top-level PNGs, found {len(top_level)}"
 
         # Five emissions PNGs (one per scope view) live under the emissions subfolder
-        emissions_dir = plot_paths.pam_plots_dir / SteelPlotter.EMISSIONS_SUBDIR
+        emissions_dir = plot_paths.plots_dir / SteelPlotter.EMISSIONS_SUBDIR
         emissions_files = list(emissions_dir.glob("*.png"))
         assert len(emissions_files) == 5, f"Expected 5 emissions PNGs, found {len(emissions_files)}"
 
