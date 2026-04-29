@@ -22,8 +22,6 @@ import pydeck as pdk
 import xarray as xr
 import matplotlib.patches as mpatches
 
-from matplotlib.patches import Patch
-
 from steelo.domain import Year
 from steelo.domain.models import CommodityAllocations, DemandCenter, Supplier, Plant, Location, Volumes
 from steelo.domain.trade_modelling.trade_lp_modelling import TradeLPModel
@@ -3008,13 +3006,19 @@ def plot_cost_curve_with_breakdown(
     ax.axvline(x=demand_line_x, color="r", linestyle="--", linewidth=1.5, label="Demand")
     share_pct = int(round(clearing_share * 100))
     if clearing_share < 1.0 and total_capacity > 0:
-        ax.axvline(
-            x=clearing_share * total_capacity,
+        marker_x = clearing_share * total_capacity
+        ax.axvline(x=marker_x, color="gray", linestyle="--", linewidth=1.0, zorder=6)
+        ax.text(
+            marker_x,
+            0.98,
+            f" Market clearing share ({share_pct}%)",
+            transform=ax.get_xaxis_transform(),
+            rotation=90,
+            ha="left",
+            va="top",
             color="gray",
-            linestyle="--",
-            linewidth=1.0,
-            zorder=6,
-            label=f"Market clearing share ({share_pct}%)",
+            fontsize=9,
+            zorder=7,
         )
 
     annotation_text = f"Market clearing price = {clearing_cost:.1f} $/t"
@@ -3180,12 +3184,13 @@ def _compute_market_clearing(
     """
     Determine the displayed clearing cost, vertical demand marker, and total capacity.
 
-    Mirrors ``Environment.extract_price_from_costcurve``: the cost curve is truncated at
-    ``clearing_share * total_capacity`` (entries with ``clearing_capacity <= threshold`` are kept;
-    the boundary furnace and everything above are excluded). When demand falls past the truncated
-    slice (shortage band, including the case where it also exceeds total capacity), the clearing
-    cost is ``last_truncated.production_cost + price_buffer``. At ``clearing_share = 1.0`` (legacy
-    mode) the slice equals the full curve.
+    Mirrors ``Environment.extract_price_from_costcurve``: the shortage gate is
+    ``demand > clearing_share * total_capacity``. When demand fits within the dispatchable cap, the
+    full cost curve is walked and the first entry whose cumulative capacity meets demand sets the
+    price — so the boundary furnace (whose end-cumulative crosses the threshold but whose start
+    fits within it) is reachable at its own cost rather than triggering the premium. When demand
+    exceeds the threshold, the clearing cost is ``last_truncated.production_cost + price_buffer``.
+    At ``clearing_share = 1.0`` (legacy mode) the slice equals the full curve.
 
     Args:
         cost_df: Per-furnace dataframe with ``clearing_capacity`` and ``production_cost`` columns,
@@ -3214,217 +3219,18 @@ def _compute_market_clearing(
             f"Empty truncated cost curve at clearing_share={clearing_share}; "
             f"degrading to full-curve merit-order for this query."
         )
+        # Degenerate share — fall back to legacy full-curve merit-order with no premium.
         truncated = cost_df
+        threshold = total_capacity
 
-    match_demand = truncated[truncated["clearing_capacity"] >= demand]
-    if match_demand.empty:
-        # Shortage band (or beyond): demand exceeds the truncated slice's cumulative.
+    if demand > threshold:
         clearing_cost = float(truncated["production_cost"].iloc[-1]) + price_buffer
     else:
+        # Walk full curve so the boundary furnace is reachable when demand lands inside it.
+        match_demand = cost_df[cost_df["clearing_capacity"] >= demand]
         clearing_cost = float(match_demand.iloc[0]["production_cost"])
 
     return clearing_cost, demand_line_x, total_capacity
-
-
-def plot_cost_curve_step_from_dataframe(
-    data_file,
-    product_type,
-    product_demand,
-    year,
-    capacity_limit,
-    units,
-    clearing_share: float,
-    price_buffer: float,
-    aggregation="region",
-    plot_paths: Optional["PlotPaths"] = None,
-):
-    """
-    cost_df must contain at least:
-      - 'production_cost' (y-value)
-      - 'capacity' (width of each step)
-      - 'region'
-      - 'clearing_capacity' (cumsum of 'capacity', but we only need it to know boundaries)
-    region_to_color should map each region string to an (R, G, B, A) tuple or hex string.
-    """
-    demand = product_demand
-    if (demand is None) or (isinstance(demand, (int, float, np.floating)) and demand <= 0):
-        if "production" in data_file.columns:
-            mask = (data_file["product"] == product_type) & (data_file["year"] == year)
-            demand = float(data_file.loc[mask, "production"].sum())
-        else:
-            demand = 0.0
-
-    if "year" in data_file.columns:
-        available_years = sorted(set(int(y) for y in data_file["year"].dropna()))
-        if year not in available_years and available_years:
-            logger.warning(f"Year {year} not found in data. Available years: {available_years}")
-            lower_years = [y for y in available_years if y <= year]
-            year = max(lower_years) if lower_years else min(available_years)
-            logger.info(f"Using year {year} instead for cost curve plot")
-
-    if aggregation == "region":
-        colour_scheme = region2colours
-    elif aggregation == "technology":
-        colour_scheme = tech2colours
-    else:
-        logger.warning(f"Unsupported aggregation '{aggregation}' for cost curve plot. Defaulting to 'region'.")
-        aggregation = "region"
-        colour_scheme = region2colours
-
-    cost_df = _prepare_cost_curve_dataframe(
-        data_frame=data_file,
-        product_type=product_type,
-        year=year,
-        aggregation=aggregation,
-        capacity_limit=capacity_limit,
-    )
-
-    if cost_df.empty:
-        logger.warning(f"No data for {product_type} in year {year}. Skipping cost curve plot.")
-        return
-
-    clearing_cost, demand_line_x, total_capacity = _compute_market_clearing(
-        cost_df, demand, clearing_share, price_buffer
-    )
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    cum_x = 0.0
-
-    # Loop over each plant (row) in ascending‐cost order, drawing one “filled rectangle” per row:
-    for _, row in cost_df.iterrows():
-        cost = row["production_cost"]
-        cap = row["capacity"]
-        agg_object = row[aggregation]
-
-        color = colour_scheme.get(agg_object, "#8c8c8c")
-
-        x0 = cum_x
-        x1 = cum_x + cap
-
-        # Fill the rectangle from y=0 up to y=cost, between x0 and x1:
-        ax.fill_between(
-            [x0, x1],  # x‐coordinates for the two corners of this step
-            [cost, cost],  # y‐value of the top edge
-            [0, 0],  # y=0 for the bottom edge
-            color=color,
-            step="pre",  # ensures a vertical drop at x0 if needed
-            linewidth=0,  # no border on the fill itself
-        )
-
-        # (Optional) draw a thin black line on top of the fill, to emphasize the step:
-        ax.hlines(y=cost, xmin=x0, xmax=x1, colors="black", linewidth=0.4, zorder=2)
-
-        cum_x = x1
-
-    costs = cost_df["production_cost"].values
-    cum_caps = cost_df["clearing_capacity"].values
-    for i in range(len(cost_df) - 1):
-        boundary_x = cum_caps[i]
-        y0 = costs[i]
-        y1 = costs[i + 1]
-        ax.vlines(x=boundary_x, ymin=y0, ymax=y1, colors="gray", linewidth=0.6, linestyle="--", zorder=1)
-
-    # Set x‐ and y‐limits so the plot is tight:
-
-    # Build a legend that maps each region → its fill color:
-    legend_handles = [
-        Patch(color=color, label=agg) for agg, color in colour_scheme.items() if agg in cost_df[aggregation].values
-    ]
-    ax.legend(handles=legend_handles, title=aggregation, loc="upper left", frameon=False)
-    annotation_text = f"Market clearing price = {clearing_cost:.1f} $/t"
-    share_pct = int(round(clearing_share * 100))
-    if demand > total_capacity:
-        annotation_text += f"\n(Demand exceeds total supply: boundary cost + ${int(price_buffer)} shortage premium)"
-    elif demand_line_x > clearing_share * total_capacity:
-        annotation_text += (
-            f"\n(Demand exceeds dispatchable {share_pct}%: boundary cost + ${int(price_buffer)} shortage premium)"
-        )
-
-    ax.set_title(f"Cost curve for {product_type} in {year}")
-
-    # Set x limits
-    if cum_x > 0:
-        if demand > total_capacity:
-            x_padding = max(total_capacity * 0.02, 1e-6)
-            ax.set_xlim(0, total_capacity + x_padding)
-        else:
-            ax.set_xlim(0, total_capacity)
-    else:
-        ax.set_xlim(0, 1)  # Default if no capacity
-
-    # Set y limits safely
-    max_cost = cost_df["production_cost"].max()
-    if pd.isna(max_cost) or np.isinf(max_cost) or max_cost <= 0:
-        logger.warning(f"Invalid max production cost: {max_cost}. Using default y-axis range.")
-        ax.set_ylim(0, 1000)  # Default reasonable range
-    else:
-        outlier_cap = 2000.0
-        if max_cost > outlier_cap:
-            y_limit = outlier_cap
-        else:
-            upper_percentile = cost_df["production_cost"].quantile(0.995)
-            if pd.notna(upper_percentile) and upper_percentile > 0 and max_cost > upper_percentile * 1.5:
-                y_limit = upper_percentile * 1.1
-            else:
-                y_limit = max_cost * 1.1
-        ax.set_ylim(0, y_limit)
-
-    ax.set_xlabel(f"Cumulative Capacity [{units}]")
-    ax.set_ylabel("Production Cost ($/t)")
-    display_clearing_cost = min(clearing_cost, ax.get_ylim()[1])
-    ax.axhline(y=display_clearing_cost, color="r", linestyle="--", linewidth=1.2, zorder=7, clip_on=False)
-    ax.axvline(x=demand_line_x, color="r", linestyle="--", linewidth=1.2, zorder=7, clip_on=False)
-    if clearing_share < 1.0 and total_capacity > 0:
-        ax.axvline(
-            x=clearing_share * total_capacity,
-            color="gray",
-            linestyle="--",
-            linewidth=1.0,
-            zorder=6,
-            label=f"Market clearing share ({share_pct}%)",
-        )
-    if display_clearing_cost < clearing_cost:
-        annotation_text += "\n(clipped for scale)"
-
-    # Draw market clearing annotation after axis limits are final
-    x_min, x_max = ax.get_xlim()
-    y_min, y_max = ax.get_ylim()
-    x_span = max(x_max - x_min, 1e-6)
-    y_span = max(y_max - y_min, 1e-6)
-    text_x = min(demand_line_x - 0.1 * x_span, x_max - 0.05 * x_span)
-    if text_x <= x_min:
-        text_x = x_min + 0.05 * x_span
-    text_y = display_clearing_cost + 0.15 * y_span
-    if text_y >= y_max:
-        text_y = y_max - 0.05 * y_span
-    ax.text(
-        text_x,
-        text_y,
-        annotation_text,
-        ha="right",
-        va="bottom",
-        color="black",
-        fontsize=10,
-        bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.8),
-        zorder=6,
-    )
-    if plot_paths is None or plot_paths.pam_plots_dir is None:
-        raise ValueError("plot_paths with pam_plots_dir must be provided when saving plots")
-    pam_plots_dir = plot_paths.pam_plots_dir
-    pam_plots_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save PNG
-    filename = f"{product_type}_cost_curve_by_{aggregation}_{year}"
-    fig.savefig(pam_plots_dir / f"{filename}.png", dpi=300)
-    plt.close()
-
-    # Export CSV with the cost curve data
-    try:
-        csv_path = pam_plots_dir / f"{filename}.csv"
-        cost_df.to_csv(csv_path)
-        logger.info(f"Saved chart data to {csv_path}")
-    except Exception as e:
-        logger.error(f"Failed to save CSV for cost curve plot: {e}")
 
 
 def plot_geo_layers(

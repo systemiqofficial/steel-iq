@@ -4,10 +4,7 @@ import pandas as pd
 from typing import Optional, TYPE_CHECKING
 
 from steelo.domain.constants import T_TO_KT, T_TO_MT
-from steelo.utilities.plotting import (
-    plot_added_capacity_by_technology,
-    plot_cost_curve_step_from_dataframe,
-)
+from steelo.utilities.plotting import plot_added_capacity_by_technology
 from steelo.utilities.steeliq_plotter import SteelPlotter, PlotConfig
 
 logger = logging.getLogger(__name__)
@@ -128,70 +125,65 @@ def generate_post_run_cap_prod_plots(
                 buffer = steel_price_buffer if product_type == "steel" else iron_price_buffer
                 for aggregation in ["region", "technology"]:
                     try:
-                        plot_cost_curve_step_from_dataframe(
-                            output_df,
-                            product_type,
-                            year_demand,
-                            year,
-                            capacity_limit,
-                            units,
+                        plotter.plot_cost_curve_step(
+                            data_file=output_df,
+                            product_type=product_type,
+                            product_demand=year_demand,
+                            year=year,
+                            capacity_limit=capacity_limit,
+                            units=units,
                             clearing_share=share,
                             price_buffer=buffer,
                             aggregation=aggregation,
-                            plot_paths=plot_paths,
                         )
                         logger.info(f"Generated {product_type} cost curve by {aggregation} for {year}")
                     except Exception as e:
                         logger.warning(f"Could not generate {product_type} cost curve by {aggregation} for {year}: {e}")
 
         # Also generate the simple cost curve for the last year (backward compatibility)
-        plot_cost_curve_step_from_dataframe(
-            output_df,
-            "steel",
-            steel_demand,
-            last_year,
-            capacity_limit,
-            units,
+        plotter.plot_cost_curve_step(
+            data_file=output_df,
+            product_type="steel",
+            product_demand=steel_demand,
+            year=last_year,
+            capacity_limit=capacity_limit,
+            units=units,
             clearing_share=steel_market_clearing_share,
             price_buffer=steel_price_buffer,
             aggregation="region",
-            plot_paths=plot_paths,
         )
-        plot_cost_curve_step_from_dataframe(
-            output_df,
-            "iron",
-            iron_demand,
-            last_year,
-            capacity_limit,
-            units,
+        plotter.plot_cost_curve_step(
+            data_file=output_df,
+            product_type="iron",
+            product_demand=iron_demand,
+            year=last_year,
+            capacity_limit=capacity_limit,
+            units=units,
             clearing_share=iron_market_clearing_share,
             price_buffer=iron_price_buffer,
             aggregation="region",
-            plot_paths=plot_paths,
         )
-        plot_cost_curve_step_from_dataframe(
-            output_df,
-            "steel",
-            steel_demand,
-            last_year,
-            capacity_limit,
-            units,
+        plotter.plot_cost_curve_step(
+            data_file=output_df,
+            product_type="steel",
+            product_demand=steel_demand,
+            year=last_year,
+            capacity_limit=capacity_limit,
+            units=units,
             clearing_share=steel_market_clearing_share,
             price_buffer=steel_price_buffer,
             aggregation="technology",
-            plot_paths=plot_paths,
         )
-        plot_cost_curve_step_from_dataframe(
-            output_df,
-            "iron",
-            iron_demand,
-            last_year,
-            capacity_limit,
-            units,
+        plotter.plot_cost_curve_step(
+            data_file=output_df,
+            product_type="iron",
+            product_demand=iron_demand,
+            year=last_year,
+            capacity_limit=capacity_limit,
+            units=units,
             clearing_share=iron_market_clearing_share,
             price_buffer=iron_price_buffer,
             aggregation="technology",
-            plot_paths=plot_paths,
         )
 
     # BY REGION - Using SteelPlotter for consistent styling and footers
