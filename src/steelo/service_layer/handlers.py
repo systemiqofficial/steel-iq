@@ -552,7 +552,7 @@ def finalise_iteration(
                     # Fallback to hardcoded value from Excel
                     fallback_cost = env.get_fallback_material_cost(iso3=supplier.location.iso3, technology="BOF")
                     if fallback_cost is not None:
-                        source_cost = fallback_cost * 0.95
+                        source_cost = fallback_cost * 0.90  # Apply a discount to reflect scrap value
                         pricing_source = "fallback"
                     else:
                         # Ultimate fallback if no cost data available
