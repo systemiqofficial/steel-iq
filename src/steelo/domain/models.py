@@ -8094,11 +8094,14 @@ class Environment:
         """
         Return the market-clearing price for ``demand`` on the cost curve for ``product``.
 
-        Walks a truncated slice of the cost curve (capped at ``share * total``, where ``share`` is
-        ``steel_market_clearing_share`` or ``iron_market_clearing_share``). Returns the production
-        cost of the first entry whose cumulative capacity meets demand. When demand falls past the
-        truncated slice (shortage band, including the case where it also exceeds total capacity),
-        returns ``last_truncated.production_cost + price_buffer`` for that product.
+        The shortage gate is ``demand > share * total`` (where ``share`` is
+        ``steel_market_clearing_share`` or ``iron_market_clearing_share``). When demand fits within
+        the dispatchable cap, walks the **full** cost curve and returns the production cost of the
+        first entry whose cumulative capacity meets demand — so the boundary furnace (whose
+        end-cumulative crosses the threshold but whose start fits within it) is reachable at its
+        own cost rather than triggering the premium. When demand exceeds the threshold, returns
+        ``last_truncated.production_cost + price_buffer``, where ``last_truncated`` is the highest
+        furnace whose end-cumulative still fits under the cap.
 
         For iron with ``peg_iron_to_steel_price`` enabled, the pegging branch's steel reference price
         is computed against the **truncated** steel slice using ``steel_market_clearing_share``, so
@@ -8156,21 +8159,24 @@ class Environment:
         truncated, last_full = self._truncate_curve(cost_curve[product], share)
         # `last_full` is non-None here because the empty-curve case returned 100.0 above.
         assert last_full is not None
+        total = last_full["cumulative_capacity"]
+        threshold = share * total
 
         if not truncated:
             logger.warning(
                 f"Empty truncated {product} curve at share={share} in the {year}; degrading to full-curve merit-order."
             )
+            # Degenerate share — fall back to legacy full-curve merit-order with no premium.
             truncated = list(cost_curve[product])
+            threshold = total
 
         last_truncated = truncated[-1]
 
         if last_truncated["production_cost"] == float("inf"):
             logger.error(f"[COST CURVE]: Infinite production cost for {product}.")
 
-        if demand > last_truncated["cumulative_capacity"]:
+        if demand > threshold:
             label = product.capitalize()
-            total = last_full["cumulative_capacity"]
             regime = "exceeds total" if demand > total else f"in shortage band (above {share:.0%})"
             logger.warning(
                 f"{label} demand {regime} in {year}: "
@@ -8181,15 +8187,15 @@ class Environment:
             )
             base_price = last_truncated["production_cost"] + buffer
         else:
-            for entry in truncated:
+            # Walk full curve so the boundary furnace is reachable when demand lands inside it.
+            for entry in cost_curve[product]:
                 if entry["cumulative_capacity"] >= demand:
                     base_price = entry["production_cost"]
                     break
             else:
-                # Unreachable: the shortage branch above already covers demand > last_truncated.cumulative.
+                # Unreachable: demand <= threshold <= total, and the full curve ends at total.
                 raise ValueError(
-                    f"Unreachable: walked the truncated {product} curve without finding an entry "
-                    f"meeting demand={demand}."
+                    f"Unreachable: walked the {product} curve without finding an entry meeting demand={demand}."
                 )
 
         if product == "iron" and not future and self.config.peg_iron_to_steel_price:
@@ -8202,16 +8208,19 @@ class Environment:
                 # No steel curve — preserve legacy behaviour (no pegging applied).
                 return base_price
 
+            steel_total = steel_last_full["cumulative_capacity"]
+            steel_threshold = steel_share * steel_total
+
             if not steel_truncated:
                 logger.warning(
                     f"Empty truncated steel curve for iron pegging at share={steel_share} in {year}; "
                     f"degrading to full-curve merit-order for pegging reference."
                 )
                 steel_truncated = list(cost_curve["steel"])
+                steel_threshold = steel_total
 
             last_steel_truncated = steel_truncated[-1]
-            if steel_demand > last_steel_truncated["cumulative_capacity"]:
-                steel_total = steel_last_full["cumulative_capacity"]
+            if steel_demand > steel_threshold:
                 regime = (
                     "exceeds total"
                     if steel_demand > steel_total
@@ -8224,14 +8233,15 @@ class Environment:
                 )
                 steel_price = last_steel_truncated["production_cost"] + steel_buffer
             else:
-                for entry in steel_truncated:
+                # Walk full steel curve so the boundary furnace is reachable when steel_demand lands inside it.
+                for entry in cost_curve["steel"]:
                     if entry["cumulative_capacity"] >= steel_demand:
                         steel_price = entry["production_cost"]
                         break
                 else:
-                    # Unreachable: the shortage branch above already covers steel_demand > last_steel_truncated.
+                    # Unreachable: steel_demand <= steel_threshold <= steel_total.
                     raise ValueError(
-                        f"Unreachable: walked the truncated steel curve without finding an entry "
+                        f"Unreachable: walked the steel curve without finding an entry "
                         f"meeting steel_demand={steel_demand}."
                     )
 

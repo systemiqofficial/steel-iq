@@ -941,18 +941,33 @@ def test_clearing_share_includes_furnace_at_exact_threshold():
     assert env.extract_price_from_costcurve(demand=195.0, product="steel") == 70.0 + 200.0
 
 
-def test_clearing_share_excludes_straddler_when_threshold_falls_inside_furnace():
-    """When threshold falls strictly inside a furnace's contribution, that furnace and above are excluded."""
-    # share=0.95, total=210 ⇒ threshold=199.5. Furnace 2 cumulative=200 strictly exceeds 199.5 ⇒ marginal,
-    # excluded along with everything above.
+def test_demand_inside_boundary_furnace_uses_boundary_cost():
+    """Demand below threshold but above last_truncated.cumulative still clears at boundary furnace cost."""
+    # share=0.95, total=210 ⇒ threshold=199.5. Furnace 2 cumulative=200 strictly exceeds 199.5 so it is the
+    # boundary furnace — excluded from the truncated slice but reachable via the full-curve walk.
     curve = [
         {"cumulative_capacity": 100.0, "production_cost": 50.0},
         {"cumulative_capacity": 200.0, "production_cost": 70.0},
         {"cumulative_capacity": 210.0, "production_cost": 999.0},
     ]
     env = _make_price_env(steel_curve=curve, steel_share=0.95, steel_buffer=200.0)
-    # last_truncated is the first furnace (cumulative=100, cost=50). Demand=150 lands in shortage band.
-    assert env.extract_price_from_costcurve(demand=150.0, product="steel") == 50.0 + 200.0
+    # Demand=150 sits in the gap (last_truncated.cum=100 < 150 ≤ threshold=199.5). Walks the full curve
+    # and clears on the boundary furnace at its own cost — no buffer applied.
+    assert env.extract_price_from_costcurve(demand=150.0, product="steel") == 70.0
+
+
+def test_clearing_share_excludes_straddler_from_buffer_reference():
+    """When demand exceeds the threshold, the boundary furnace is excluded from the buffer reference."""
+    # share=0.95, total=210 ⇒ threshold=199.5. Boundary furnace (cum=200, cost=70) is excluded from the
+    # truncated slice, so last_truncated is furnace 1 (cum=100, cost=50). Buffer fires off cost=50, not 70.
+    curve = [
+        {"cumulative_capacity": 100.0, "production_cost": 50.0},
+        {"cumulative_capacity": 200.0, "production_cost": 70.0},
+        {"cumulative_capacity": 210.0, "production_cost": 999.0},
+    ]
+    env = _make_price_env(steel_curve=curve, steel_share=0.95, steel_buffer=200.0)
+    # Demand=205 lies strictly above threshold (199.5) ⇒ shortage band ⇒ last_truncated.cost + buffer.
+    assert env.extract_price_from_costcurve(demand=205.0, product="steel") == 50.0 + 200.0
 
 
 def test_demand_below_clearing_share_returns_merit_order_price():
@@ -969,17 +984,17 @@ def test_demand_below_clearing_share_returns_merit_order_price():
 
 
 def test_demand_in_shortage_band_triggers_buffer():
-    """Demand between truncated cumulative and total triggers last_truncated.cost + buffer."""
-    # share=0.95, total=300 ⇒ threshold=285. Furnace 3 cumulative=300 strictly exceeds 285 ⇒ marginal,
-    # excluded. last_truncated is furnace 2 (cumulative=200, cost=70).
+    """Demand strictly above threshold but ≤ total triggers last_truncated.cost + buffer."""
+    # share=0.95, total=300 ⇒ threshold=285. Furnace 3 cumulative=300 strictly exceeds 285 ⇒ boundary,
+    # excluded from the truncated slice. last_truncated is furnace 2 (cumulative=200, cost=70).
     curve = [
         {"cumulative_capacity": 100.0, "production_cost": 50.0},
         {"cumulative_capacity": 200.0, "production_cost": 70.0},
         {"cumulative_capacity": 300.0, "production_cost": 999.0},
     ]
     env = _make_price_env(steel_curve=curve, steel_share=0.95, steel_buffer=200.0)
-    # Demand=250 lies in the shortage band: 200 < 250 ≤ 300.
-    assert env.extract_price_from_costcurve(demand=250.0, product="steel") == 70.0 + 200.0
+    # Demand=290 lies in the shortage band: threshold=285 < 290 ≤ total=300.
+    assert env.extract_price_from_costcurve(demand=290.0, product="steel") == 70.0 + 200.0
 
 
 def test_demand_above_total_capacity_triggers_buffer():
@@ -1034,8 +1049,8 @@ def test_steel_and_iron_clearing_shares_are_independent():
         steel_buffer=200.0,
         iron_buffer=100.0,
     )
-    # Steel: demand=250 in shortage band (last_truncated=200, cost=70) ⇒ 70 + 200.
-    assert env.extract_price_from_costcurve(demand=250.0, product="steel") == 70.0 + 200.0
+    # Steel: demand=290 in shortage band (threshold=285 < 290 ≤ total=300; last_truncated cost=70) ⇒ 70 + 200.
+    assert env.extract_price_from_costcurve(demand=290.0, product="steel") == 70.0 + 200.0
     # Iron at share=1.0: demand=250 walks the full curve and clears at 50/t (third furnace).
     assert env.extract_price_from_costcurve(demand=250.0, product="iron") == 50.0
 
@@ -1076,14 +1091,14 @@ def test_iron_pegging_applies_uniformly_in_shortage_band(caplog):
 
     # Iron curve: total=100, share=0.95 ⇒ threshold=95. Furnace 2 cum=100 > 95 ⇒ excluded.
     # last_truncated_iron has cum=50, cost=30. iron_buffer=200.
-    # Iron demand=80 lies in iron shortage band (50 < 80 ≤ 100).
+    # Iron demand=98 lies strictly above threshold (95 < 98 ≤ 100) ⇒ iron shortage band.
     # ⇒ base_price = last_truncated_iron.cost + iron_buffer = 30 + 200 = 230.
     iron = [
         {"cumulative_capacity": 50.0, "production_cost": 30.0},
         {"cumulative_capacity": 100.0, "production_cost": 999.0},
     ]
     # Steel curve: total=1000, share=0.95 ⇒ threshold=950. Furnace 2 cum=1000 > 950 ⇒ excluded.
-    # last_truncated_steel has cum=950, cost=500. Steel demand=500 clears in merit order ⇒ steel_price=500.
+    # Steel demand=500 ≤ threshold ⇒ walks full curve, clears on furnace 1 (cum=950, cost=500).
     # Pegged floor = 500 * 0.8 = 400. Final iron = max(230, 400) = 400.
     steel = [
         {"cumulative_capacity": 950.0, "production_cost": 500.0},
@@ -1101,7 +1116,7 @@ def test_iron_pegging_applies_uniformly_in_shortage_band(caplog):
         current_demand=500.0,
     )
     with caplog.at_level(logging.WARNING):
-        result = env.extract_price_from_costcurve(demand=80.0, product="iron")
+        result = env.extract_price_from_costcurve(demand=98.0, product="iron")
     # Return value alone proves pegging fired: without pegging the answer would be 30 + 200 = 230
     # (iron in shortage); with pegging applied uniformly, the steel-driven floor of 400 wins.
     assert result == pytest.approx(400.0)

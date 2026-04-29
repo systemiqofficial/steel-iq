@@ -12,6 +12,8 @@ import logging
 from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
 from matplotlib.container import BarContainer
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING, cast
 from dataclasses import dataclass, field
@@ -22,7 +24,12 @@ if TYPE_CHECKING:
     from steelo.adapters.repositories.interface import PlantRepository
 
 # Import global color schemes and constants
-from steelo.utilities.plotting import tech2colours, region2colours
+from steelo.utilities.plotting import (
+    tech2colours,
+    region2colours,
+    _prepare_cost_curve_dataframe,
+    _compute_market_clearing,
+)
 from steelo.domain.constants import T_TO_MT
 
 logger = logging.getLogger(__name__)
@@ -159,7 +166,7 @@ class SteelPlotter:
             style="italic",
         )
 
-    def _style_legend(self, ax, title: str = "", handles=None, labels=None) -> None:
+    def _style_legend(self, ax, title: str = "", handles=None, labels=None):
         """Apply consistent legend styling to an axes.
 
         Args:
@@ -167,6 +174,9 @@ class SteelPlotter:
             title: Legend title
             handles: Optional custom legend handles
             labels: Optional custom legend labels
+
+        Returns:
+            The Legend artist created (or None if no legend was produced).
         """
         if handles is not None and labels is not None:
             legend = ax.legend(
@@ -188,6 +198,7 @@ class SteelPlotter:
             )
         if legend and title:
             legend.get_title().set_fontweight("bold")
+        return legend
 
     def _save_figure(self, fig: Figure, filename: str, subdir: str = "pam_plots_dir") -> Path:
         """Save figure with consistent settings.
@@ -1367,6 +1378,230 @@ class SteelPlotter:
             csv_columns = [col for col in csv_columns if col in cost_df.columns]
             df_export = cost_df[csv_columns].copy()
             self._save_chart_data_to_csv(df_export, filename)
+
+        return self._save_figure(fig, filename)
+
+    def plot_cost_curve_step(
+        self,
+        data_file: pd.DataFrame,
+        product_type: str,
+        product_demand: float,
+        year: int,
+        capacity_limit: float,
+        units: str,
+        clearing_share: float,
+        price_buffer: float,
+        aggregation: str = "region",
+        filename: Optional[str] = None,
+        export_csv: bool = True,
+    ) -> Optional[Path]:
+        """Plot a per-furnace stepped cost curve aggregated by region or technology.
+
+        Args:
+            data_file: Post-processed DataFrame with per-furnace rows for the simulation.
+            product_type: 'steel' or 'iron'.
+            product_demand: Tonnes demanded for the product/year (used to draw the demand line).
+                If None or non-positive, falls back to the sum of `production` for the product/year.
+            year: Year to plot. Falls back to the closest earlier available year if absent.
+            capacity_limit: Multiplier applied to capacity in `_prepare_cost_curve_dataframe`.
+            units: Unit string for the x-axis label (e.g. 'Mt', 'kt', 't').
+            clearing_share: Fraction of cumulative capacity that participates in clearing
+                (must match the engine value for the same product).
+            price_buffer: USD/tonne shortage premium added when demand exceeds the dispatchable
+                slice (must match the engine value for the same product).
+            aggregation: 'region' or 'technology' — drives colour scheme and legend title.
+            filename: Optional override; defaults to `{product_type}_cost_curve_by_{aggregation}_{year}.png`.
+            export_csv: If True, also export the prepared cost-curve dataframe to CSV.
+
+        Returns:
+            Path to saved plot, or None if there is no data to plot.
+
+        Notes:
+            Y-axis is clipped to a 99.5th-percentile band (capped at $2000/t) to keep extreme
+            outliers from compressing the visible range; the clearing-price line annotates
+            "(clipped for scale)" if it falls beyond the visible y-limit.
+        """
+        demand = product_demand
+        if (demand is None) or (isinstance(demand, (int, float, np.floating)) and demand <= 0):
+            if "production" in data_file.columns:
+                mask = (data_file["product"] == product_type) & (data_file["year"] == year)
+                demand = float(data_file.loc[mask, "production"].sum())
+            else:
+                demand = 0.0
+
+        if "year" in data_file.columns:
+            available_years = sorted(set(int(y) for y in data_file["year"].dropna()))
+            if year not in available_years and available_years:
+                self.logger.warning(f"Year {year} not found in data. Available years: {available_years}")
+                lower_years = [y for y in available_years if y <= year]
+                year = max(lower_years) if lower_years else min(available_years)
+                self.logger.info(f"Using year {year} instead for cost curve plot")
+
+        if aggregation == "region":
+            colour_scheme = self.config.region_colors
+        elif aggregation == "technology":
+            colour_scheme = self.config.tech_colors
+        else:
+            self.logger.warning(f"Unsupported aggregation '{aggregation}' for cost curve plot. Defaulting to 'region'.")
+            aggregation = "region"
+            colour_scheme = self.config.region_colors
+
+        cost_df = _prepare_cost_curve_dataframe(
+            data_frame=data_file,
+            product_type=product_type,
+            year=year,
+            aggregation=aggregation,
+            capacity_limit=capacity_limit,
+        )
+
+        if cost_df.empty:
+            self.logger.warning(f"No data for {product_type} in year {year}. Skipping cost curve plot.")
+            return None
+
+        clearing_cost, demand_line_x, total_capacity = _compute_market_clearing(
+            cost_df, demand, clearing_share, price_buffer
+        )
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        cum_x = 0.0
+
+        for _, row in cost_df.iterrows():
+            cost = row["production_cost"]
+            cap = row["capacity"]
+            agg_object = row[aggregation]
+
+            color = colour_scheme.get(agg_object, "#8c8c8c")
+
+            x0 = cum_x
+            x1 = cum_x + cap
+
+            ax.fill_between(
+                [x0, x1],
+                [cost, cost],
+                [0, 0],
+                color=color,
+                step="pre",
+                linewidth=0,
+            )
+
+            ax.hlines(y=cost, xmin=x0, xmax=x1, colors="black", linewidth=0.4, zorder=2)
+
+            cum_x = x1
+
+        costs = cost_df["production_cost"].values
+        cum_caps = cost_df["clearing_capacity"].values
+        for i in range(len(cost_df) - 1):
+            boundary_x = cum_caps[i]
+            y0 = costs[i]
+            y1 = costs[i + 1]
+            ax.vlines(x=boundary_x, ymin=y0, ymax=y1, colors="gray", linewidth=0.6, linestyle="--", zorder=1)
+
+        legend_handles = [
+            Patch(color=color, label=agg) for agg, color in colour_scheme.items() if agg in cost_df[aggregation].values
+        ]
+        first_legend = self._style_legend(
+            ax,
+            title=aggregation.capitalize(),
+            handles=legend_handles,
+            labels=[h.get_label() for h in legend_handles],
+        )
+
+        annotation_text = f"Market clearing price = {clearing_cost:.1f} $/t"
+        share_pct = int(round(clearing_share * 100))
+        if demand > total_capacity:
+            annotation_text += f"\n(Demand exceeds total supply: boundary cost + ${int(price_buffer)} shortage premium)"
+        elif demand_line_x > clearing_share * total_capacity:
+            annotation_text += (
+                f"\n(Demand exceeds dispatchable {share_pct}%: boundary cost + ${int(price_buffer)} shortage premium)"
+            )
+
+        ax.set_title(f"Cost curve for {product_type} in {year}", fontsize=14, fontweight="bold")
+
+        if cum_x > 0:
+            if demand > total_capacity:
+                x_padding = max(total_capacity * 0.02, 1e-6)
+                ax.set_xlim(0, total_capacity + x_padding)
+            else:
+                ax.set_xlim(0, total_capacity)
+        else:
+            ax.set_xlim(0, 1)
+
+        max_cost = cost_df["production_cost"].max()
+        if pd.isna(max_cost) or np.isinf(max_cost) or max_cost <= 0:
+            self.logger.warning(f"Invalid max production cost: {max_cost}. Using default y-axis range.")
+            ax.set_ylim(0, 1000)
+        else:
+            outlier_cap = 2000.0
+            if max_cost > outlier_cap:
+                y_limit = outlier_cap
+            else:
+                upper_percentile = cost_df["production_cost"].quantile(0.995)
+                if pd.notna(upper_percentile) and upper_percentile > 0 and max_cost > upper_percentile * 1.5:
+                    y_limit = upper_percentile * 1.1
+                else:
+                    y_limit = max_cost * 1.1
+            ax.set_ylim(0, y_limit)
+
+        ax.set_xlabel(f"Cumulative Capacity [{units}]", fontsize=12)
+        ax.set_ylabel("Production Cost ($/t)", fontsize=12)
+        ax.grid(True, alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
+
+        display_clearing_cost = min(clearing_cost, ax.get_ylim()[1])
+        ax.axhline(y=display_clearing_cost, color="r", linestyle="--", linewidth=1.2, zorder=7, clip_on=False)
+        ax.axvline(x=demand_line_x, color="green", linestyle="--", linewidth=1.2, zorder=7, clip_on=False)
+        share_marker_drawn = clearing_share < 1.0 and total_capacity > 0
+        if share_marker_drawn:
+            marker_x = clearing_share * total_capacity
+            ax.axvline(x=marker_x, color="dimgray", linestyle="--", linewidth=1.2, zorder=6)
+        if display_clearing_cost < clearing_cost:
+            annotation_text += "\n(clipped for scale)"
+
+        ref_handles = [
+            Line2D([0], [0], color="r", linestyle="--", linewidth=1.5, label="Market clearing price"),
+            Line2D([0], [0], color="green", linestyle="--", linewidth=1.5, label="Demand"),
+        ]
+        if share_marker_drawn:
+            ref_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    color="dimgray",
+                    linestyle="--",
+                    linewidth=1.5,
+                    label=f"Market clearing share ({share_pct}%)",
+                ),
+            )
+        if first_legend is not None:
+            ax.add_artist(first_legend)
+        ref_legend = ax.legend(
+            handles=ref_handles,
+            title="Reference lines",
+            bbox_to_anchor=(1.05, 0.0),
+            loc="lower left",
+            frameon=self.config.legend_frameon,
+            fontsize=self.config.legend_fontsize,
+        )
+        if ref_legend:
+            ref_legend.get_title().set_fontweight("bold")
+
+        ax.text(
+            0.02,
+            0.98,
+            annotation_text,
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            color="black",
+            fontsize=11,
+            bbox=dict(boxstyle="round,pad=0.4", fc="white", ec="gray", alpha=0.85),
+            zorder=6,
+        )
+
+        if filename is None:
+            filename = f"{product_type}_cost_curve_by_{aggregation}_{year}.png"
+
+        if export_csv:
+            self._save_chart_data_to_csv(cost_df, filename)
 
         return self._save_figure(fig, filename)
 
