@@ -39,9 +39,14 @@ class DataCollector:
         self.trace_capex: dict[int, dict[str, dict[str, float]]] = defaultdict(
             lambda: defaultdict(lambda: defaultdict(float))
         )  # {year: {technology: {iso3: total_capex}}}
-        self.trace_emissions: dict[int, dict[str, float]] = defaultdict(
+        # {boundary: {year: {technology: {scope: emissions_tCO2e}}}}
+        # scope in {direct_ghg, direct_with_biomass_ghg, indirect_ghg}
+        self.trace_emissions: dict[str, dict[int, dict[str, dict[str, float]]]] = defaultdict(
+            lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
+        )
+        self.trace_production_by_product: dict[int, dict[str, float]] = defaultdict(
             lambda: defaultdict(float)
-        )  # {year: {technology: total_emissions_tCO2e}}
+        )  # {year: {product: total_production_tonnes}}, product in {iron, steel}
         self.trace_iron_ore: dict[int, dict[str, float]] = defaultdict(
             lambda: defaultdict(float)
         )  # {year: {quality: total_consumption_tonnes}}
@@ -322,52 +327,76 @@ class DataCollector:
 
     def collect_emissions_by_technology(self, year: Year):
         """
-        Collect total emissions by technology for the given year.
+        Collect emissions by boundary, technology and scope, plus production by product, for the given year.
 
-        Aggregates emissions from all operating furnace groups by technology type.
-        Uses the configured emissions boundary (typically "cradle-to-gate") and sums
-        all scopes (scope 1, 2, and 3).
+        Aggregates emissions from all operating furnace groups by technology type, keeping
+        the three scopes (``direct_ghg``, ``direct_with_biomass_ghg``, ``indirect_ghg``)
+        separate so downstream charts can present each view (or sums of compatible views)
+        without double-counting. ``direct_ghg`` and ``direct_with_biomass_ghg`` are
+        alternative accountings of the same direct emissions and must never be added
+        together.
+
+        Every boundary present on a furnace group's ``emissions`` dict is recorded — not
+        just the configured carbon-cost boundary — so charts can be produced per boundary
+        without re-walking the plant graph. The same iteration also accumulates production
+        by product (iron / steel) into ``trace_production_by_product``.
 
         Args:
             year: The year to collect emissions data for
 
         Returns:
-            dict: {technology: total_emissions_tCO2e}
+            dict: {boundary: {technology: {scope: total_emissions_tCO2e}}}.
         """
         logger = logging.getLogger(f"{__name__}.collect_emissions_by_technology")
-        emissions_by_tech: dict[str, float] = defaultdict(float)
-
-        # Get the configured emissions boundary
-        emissions_boundary = self.env.config.chosen_emissions_boundary_for_carbon_costs
+        scopes = ("direct_ghg", "direct_with_biomass_ghg", "indirect_ghg")
+        emissions_by_boundary: dict[str, dict[str, dict[str, float]]] = defaultdict(
+            lambda: defaultdict(lambda: defaultdict(float))
+        )
+        production_by_product: dict[str, float] = defaultdict(float)
 
         for pg in self.plant_groups:
             for plant in pg.plants:
                 for fg in plant.furnace_groups:
-                    # Only collect from operating furnace groups
                     if fg.status.lower() not in self.env.config.active_statuses:
                         continue
 
+                    product = (fg.technology.product or "").lower() if fg.technology.product else ""
+                    if product in ("iron", "steel") and fg.production:
+                        production_by_product[product] += fg.production
+
+                    if not fg.emissions:
+                        continue
+
                     technology = fg.technology.name
+                    for boundary, boundary_data in fg.emissions.items():
+                        if not isinstance(boundary_data, dict):
+                            continue
+                        for scope in scopes:
+                            value = boundary_data.get(scope)
+                            if value is None:
+                                continue
+                            emissions_by_boundary[boundary][technology][scope] += value
 
-                    # Sum emissions across all scopes for the configured boundary
-                    if fg.emissions and emissions_boundary in fg.emissions:
-                        for scope, emission_value in fg.emissions[emissions_boundary].items():
-                            if emission_value and emission_value > 0:
-                                emissions_by_tech[technology] += emission_value
+        for boundary, by_tech in emissions_by_boundary.items():
+            for tech, by_scope in by_tech.items():
+                for scope, value in by_scope.items():
+                    self.trace_emissions[boundary][year][tech][scope] += value
 
-        # Store in trace_emissions for later analysis
-        if emissions_by_tech:
-            for tech, emissions in emissions_by_tech.items():
-                self.trace_emissions[year][tech] += emissions
-
-            # Log summary
-            total_emissions = sum(emissions_by_tech.values())
+            total_direct_plus_indirect = sum(
+                by_scope.get("direct_ghg", 0.0) + by_scope.get("indirect_ghg", 0.0) for by_scope in by_tech.values()
+            )
             logger.info(
-                f"[EMISSIONS] Year {year}: Total emissions = {total_emissions:,.0f} tCO2e across "
-                f"{len(emissions_by_tech)} technologies (boundary: {emissions_boundary})"
+                f"[EMISSIONS] Year {year} ({boundary}): direct+indirect = "
+                f"{total_direct_plus_indirect:,.0f} tCO2e across {len(by_tech)} technologies"
             )
 
-        return dict(emissions_by_tech)
+        for product, tonnes in production_by_product.items():
+            self.trace_production_by_product[year][product] += tonnes
+
+        return {
+            boundary: {tech: dict(by_scope) for tech, by_scope in by_tech.items()}
+            for boundary, by_tech in emissions_by_boundary.items()
+        }
 
     def collect_iron_ore_by_quality(self, year: Year):
         """

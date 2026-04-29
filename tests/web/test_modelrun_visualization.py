@@ -366,27 +366,32 @@ class TestSimulationPlot:
         """Test plot capture with actual plot files."""
         modelrun = ModelRun.objects.create(state=ModelRun.RunState.FINISHED)
 
-        # Create plot directory structure
+        # Create plot directory structure: cost curves and emissions live in sibling
+        # folders to PAM (plots/cost_curves, plots/emissions).
         output_dir = tmp_path
         pam_plots_dir = output_dir / "plots" / "PAM"
+        cost_curves_dir = output_dir / "plots" / "cost_curves"
         pam_plots_dir.mkdir(parents=True)
+        cost_curves_dir.mkdir(parents=True)
 
-        # Create test plot files
-        plot_files = [
+        pam_files = [
             "year2year_added_capacity_by_technology.png",
             "Capacity_development_by_technology.png",
-            "steel_cost_curve_2030.png",
-            "iron_cost_curve_by_region_2030.png",
-            "iron_cost_curve_by_technology_2030.png",
             "steel_production_development_by_region.png",
             "iron_production_development_by_region.png",
             "steel_production_development_by_technology.png",
             "iron_production_development_by_technology.png",
         ]
+        cost_curve_files = [
+            "cost_curve_steel_by_region_2030.png",
+            "cost_curve_iron_by_region_2030.png",
+            "cost_curve_iron_by_technology_2030.png",
+        ]
 
-        for plot_file in plot_files:
-            with open(pam_plots_dir / plot_file, "wb") as f:
-                f.write(b"fake png content")
+        for filename in pam_files:
+            (pam_plots_dir / filename).write_bytes(b"fake png content")
+        for filename in cost_curve_files:
+            (cost_curves_dir / filename).write_bytes(b"fake png content")
 
         # Capture plots
         plots = SimulationPlot.capture_simulation_plots(modelrun, pam_plots_dir=pam_plots_dir)

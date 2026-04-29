@@ -82,13 +82,22 @@ class ModelRunDetailView(DetailView):
         # Get log file path if available
         context["log_file_path"] = get_log_file_path(self.object.id)
 
-        # Split simulation plots so cost curves can be grouped into collapsible
-        # accordions (one per product) while other plots keep their flat grid.
+        # Split simulation plots: cost curves and emissions go into their own
+        # collapsible accordions; everything else keeps the flat grid.
         plots_qs = self.object.simulation_plots.all()
         cost_curve = SimulationPlot.PlotType.COST_CURVE
-        context["simulation_plots_other"] = plots_qs.exclude(plot_type=cost_curve)
+        emissions = SimulationPlot.PlotType.EMISSIONS
+        context["simulation_plots_other"] = plots_qs.exclude(plot_type__in=[cost_curve, emissions])
         context["steel_cost_curves"] = plots_qs.filter(plot_type=cost_curve, product_type="steel").order_by("title")
         context["iron_cost_curves"] = plots_qs.filter(plot_type=cost_curve, product_type="iron").order_by("title")
+
+        # Emissions: group by boundary (parsed from title after the comma) so each
+        # boundary becomes its own collapsible item — five charts per boundary.
+        emissions_by_boundary: dict[str, list] = {}
+        for plot in plots_qs.filter(plot_type=emissions).order_by("title"):
+            boundary = plot.title.rsplit(", ", 1)[1] if ", " in plot.title else "Other"
+            emissions_by_boundary.setdefault(boundary, []).append(plot)
+        context["emissions_by_boundary"] = emissions_by_boundary
 
         return context
 

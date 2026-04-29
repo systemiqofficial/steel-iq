@@ -91,7 +91,7 @@ def test_plot_year_on_year_technology_development(sample_output_df, temp_plot_di
 
 def test_plot_cost_curve_with_missing_year(sample_output_df, temp_plot_dir):
     """Test cost curve plot handles missing years gracefully."""
-    plot_paths = PlotPaths(pam_plots_dir=temp_plot_dir / "pam")
+    plot_paths = PlotPaths(plots_dir=temp_plot_dir, pam_plots_dir=temp_plot_dir / "pam")
     plotter = SteelPlotter(config=PlotConfig(), plot_paths=plot_paths)
 
     # Year 2035 is absent from the fixture; the method should fall back to the closest earlier year.
@@ -106,14 +106,15 @@ def test_plot_cost_curve_with_missing_year(sample_output_df, temp_plot_dir):
         price_buffer=0.0,
     )
 
-    plot_files = list((temp_plot_dir / "pam").glob("steel_cost_curve_by_*.png"))
+    cost_curves_dir = temp_plot_dir / SteelPlotter.COST_CURVES_SUBDIR
+    plot_files = list(cost_curves_dir.glob("cost_curve_steel_by_*.png"))
     assert len(plot_files) > 0, "No cost curve plot created"
     assert "2030" in plot_files[0].name, "Should use year 2030 when 2035 not available"
 
 
 def test_plot_cost_curve_with_existing_year(sample_output_df, temp_plot_dir):
     """Test cost curve plot with existing year."""
-    plot_paths = PlotPaths(pam_plots_dir=temp_plot_dir / "pam")
+    plot_paths = PlotPaths(plots_dir=temp_plot_dir, pam_plots_dir=temp_plot_dir / "pam")
     plotter = SteelPlotter(config=PlotConfig(), plot_paths=plot_paths)
 
     plotter.plot_cost_curve_step(
@@ -127,7 +128,7 @@ def test_plot_cost_curve_with_existing_year(sample_output_df, temp_plot_dir):
         price_buffer=0.0,
     )
 
-    plot_file = temp_plot_dir / "pam" / "steel_cost_curve_by_region_2028.png"
+    plot_file = temp_plot_dir / SteelPlotter.COST_CURVES_SUBDIR / "cost_curve_steel_by_region_2028.png"
     assert plot_file.exists(), f"Plot file not created at {plot_file}"
 
 

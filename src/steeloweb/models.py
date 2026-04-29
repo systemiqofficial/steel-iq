@@ -1442,6 +1442,7 @@ class SimulationPlot(models.Model):
         PRODUCTION_REGION = "production_region", "Production by Region"
         PRODUCTION_TECHNOLOGY = "production_technology", "Production by Technology"
         CAPACITY_REGION = "capacity_region", "Capacity by Region"
+        EMISSIONS = "emissions", "Emissions by Technology"
         OTHER = "other", "Other"
 
     modelrun = models.ForeignKey(ModelRun, on_delete=models.CASCADE, related_name="simulation_plots")
@@ -1486,13 +1487,13 @@ class SimulationPlot(models.Model):
                 "title": "Capacity Development by Technology",
             },
             {
-                "pattern": "steel_cost_curve_*.png",
+                "pattern": "cost_curves/cost_curve_steel_*.png",
                 "plot_type": cls.PlotType.COST_CURVE,
                 "title": "Steel Cost Curve",
                 "product_type": "steel",
             },
             {
-                "pattern": "iron_cost_curve_*.png",
+                "pattern": "cost_curves/cost_curve_iron_*.png",
                 "plot_type": cls.PlotType.COST_CURVE,
                 "title": "Iron Cost Curve",
                 "product_type": "iron",
@@ -1533,24 +1534,36 @@ class SimulationPlot(models.Model):
                 "title": "Iron Capacity by Region",
                 "product_type": "iron",
             },
+            {
+                "pattern": "emissions/emissions_*_by_technology__*.png",
+                "plot_type": cls.PlotType.EMISSIONS,
+                "title": "Emissions by Technology",
+            },
         ]
 
         created_plots = []
 
+        # Emissions and cost-curve charts live in sibling folders to PAM
+        plots_root = pam_plots_dir.parent
+        plots_root_types = {cls.PlotType.EMISSIONS, cls.PlotType.COST_CURVE}
+
         for config in plot_configs:
             pattern = config["pattern"]
+            search_dir = plots_root if config["plot_type"] in plots_root_types else pam_plots_dir
 
             # Handle wildcard patterns
             if "*" in pattern:
-                for plot_file in pam_plots_dir.glob(pattern):
+                for plot_file in search_dir.glob(pattern):
                     file_config = dict(config)
                     if config["plot_type"] == cls.PlotType.COST_CURVE:
                         file_config["title"] = cls._build_cost_curve_title(plot_file, config["title"])
+                    elif config["plot_type"] == cls.PlotType.EMISSIONS:
+                        file_config["title"] = cls._build_emissions_title(plot_file, config["title"])
                     plot = cls._create_plot_from_file(modelrun, plot_file, file_config)
                     if plot:
                         created_plots.append(plot)
             else:
-                plot_file = pam_plots_dir / pattern
+                plot_file = search_dir / pattern
                 if plot_file.exists():
                     plot = cls._create_plot_from_file(modelrun, plot_file, config)
                     if plot:
@@ -1564,8 +1577,8 @@ class SimulationPlot(models.Model):
 
         Args:
             plot_file: Path to a cost curve plot file, expected to follow the
-                convention ``{product}_cost_curve_by_{aggregation}_{year}.png``
-                (e.g. ``steel_cost_curve_by_region_2025.png``).
+                convention ``cost_curve_{product}_by_{aggregation}_{year}.png``
+                (e.g. ``cost_curve_steel_by_region_2025.png``).
             fallback_title: Title to return if the filename does not match the
                 expected pattern (e.g. ``"Steel Cost Curve"``).
 
@@ -1576,7 +1589,7 @@ class SimulationPlot(models.Model):
         import re
 
         match = re.match(
-            r"(?P<product>steel|iron)_cost_curve_by_(?P<aggregation>region|technology)_(?P<year>\d{4})$",
+            r"cost_curve_(?P<product>steel|iron)_by_(?P<aggregation>region|technology)_(?P<year>\d{4})$",
             plot_file.stem,
         )
         if not match:
@@ -1585,6 +1598,40 @@ class SimulationPlot(models.Model):
         aggregation = match.group("aggregation").title()
         year = match.group("year")
         return f"{product} Cost Curve by {aggregation}, {year}"
+
+    @staticmethod
+    def _build_emissions_title(plot_file, fallback_title: str) -> str:
+        """Build a scope- and boundary-specific title from an emissions plot filename.
+
+        Filenames follow ``emissions_<scope>_by_technology__<boundary>.png`` where
+        ``scope`` is one of ``direct``, ``direct_with_biomass``, ``indirect``,
+        ``direct_plus_indirect``, ``direct_with_biomass_plus_indirect`` and
+        ``boundary`` is the snake_case emissions boundary (e.g. ``responsible_steel``).
+
+        Args:
+            plot_file: Path to the emissions plot file.
+            fallback_title: Title to return if the filename can't be parsed.
+
+        Returns:
+            A descriptive title such as ``"Direct emissions by Technology, responsible steel"``.
+        """
+        import re
+
+        match = re.match(
+            r"emissions_(?P<scope>.+)_by_technology__(?P<boundary>.+)$",
+            plot_file.stem,
+        )
+        if not match:
+            return fallback_title
+        scope_label = {
+            "direct": "Direct emissions",
+            "direct_with_biomass": "Direct emissions (incl. biogenic)",
+            "indirect": "Indirect emissions",
+            "direct_plus_indirect": "Direct + Indirect emissions",
+            "direct_with_biomass_plus_indirect": "Direct (incl. biogenic) + Indirect emissions",
+        }.get(match.group("scope"), match.group("scope").replace("_", " ").title())
+        boundary = match.group("boundary").replace("_", " ")
+        return f"{scope_label} by Technology, {boundary}"
 
     @classmethod
     def _create_plot_from_file(cls, modelrun, plot_file, config):
