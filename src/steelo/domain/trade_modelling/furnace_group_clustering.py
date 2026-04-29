@@ -1247,27 +1247,44 @@ def _solve_batched_transportation_problem(
                     iso3 = loc.iso3 if loc else "?"
                     lines.append(f"    {did} ({iso3}): {demand:.2f}t demand")
                 feasible_lines = []
-                # Only show sources that actually participate in the graph (supply > 0).
-                # Sources with 0 supply (e.g. from _reach_based_source_supplies) were never
-                # evaluated for feasibility, so they'd incorrectly appear as "feasible".
+                blocked_in_subproblem_lines = []
+                # Only iterate sources/destinations that participate in THIS sub-problem.
+                # source_locations/dest_locations are shared dicts from the parent joint
+                # cluster and contain entries from sibling components; iterating them
+                # would print radius-distant pairs as "feasible" simply because they were
+                # never evaluated against the radius for this sub-problem. Restrict to
+                # source_supplies_floored / dest_demands keys to get a faithful picture.
                 active_sources = set(source_supplies_floored.keys())
+                active_dests = set(dest_demands.keys())
+                radius_km = config.hot_metal_radius
                 for sid in sorted(active_sources):
                     src_loc = source_locations.get(sid)
-                    for did, dst_loc in dest_locations.items():
+                    for did in sorted(active_dests):
+                        dst_loc = dest_locations.get(did)
                         if (sid, did) in infeasible_pairs_set:
-                            continue
+                            continue  # surfaced separately under "Blocked edges" below
                         if src_loc and dst_loc:
                             dkm = _calculate_distance_km(src_loc, dst_loc)
-                            feasible_lines.append(f"    {sid} → {did}: {dkm:.0f} km  [feasible]")
+                            if dkm > radius_km:
+                                # Edge wasn't in infeasible_pairs_set yet still exceeds the
+                                # radius — flag it so the debug output can't misrepresent it.
+                                blocked_in_subproblem_lines.append(
+                                    f"    {sid} → {did}: {dkm:.0f} km  [out-of-radius, not added to graph]"
+                                )
+                            else:
+                                feasible_lines.append(f"    {sid} → {did}: {dkm:.0f} km  [feasible]")
                         else:
                             feasible_lines.append(f"    {sid} → {did}: (no location data)  [feasible]")
                 if feasible_lines:
-                    lines.append("  Feasible edges (within radius):")
+                    lines.append(f"  Feasible edges (within {radius_km:.0f} km radius):")
                     lines.extend(feasible_lines)
                 else:
                     lines.append(
-                        "  Feasible edges (within radius): NONE — every source is out of radius for every destination"
+                        f"  Feasible edges (within {radius_km:.0f} km radius): NONE — every source is out of radius for every destination"
                     )
+                if blocked_in_subproblem_lines:
+                    lines.append("  Out-of-radius pairs in this sub-problem (not in graph):")
+                    lines.extend(blocked_in_subproblem_lines)
                 if infeasible_edge_metadata:
                     lines.append("  Blocked edges (radius-violating, omitted from graph):")
                     for (sid, did), (dkm, src_iso3, dst_iso3) in sorted(infeasible_edge_metadata.items()):
