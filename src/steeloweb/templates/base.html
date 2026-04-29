@@ -39,24 +39,84 @@
                         </a>
                     </li>
                 </ul>
-                <div class="ms-auto d-flex align-items-center">
-                    {% if build_info %}
-                    <small class="text-white me-3 d-none d-md-block lh-sm text-end">
-                        <span class="fw-semibold">v{{ build_info.version }}</span>
-                        {% if build_info.is_dev %}<span class="badge bg-warning text-dark ms-1">dev</span>{% endif %}
-                        <br>
-                        {% if build_info.branch %}<span class="opacity-75">branch:</span> {{ build_info.branch }}{% endif %}
-                        {% if build_info.commit %} &middot; <span class="opacity-75">commit:</span> {{ build_info.commit }}{% endif %}
-                        {% if build_info.built_at %} &middot; <span class="opacity-75">date created:</span> {{ build_info.built_at|slice:":10" }}{% endif %}
-                    </small>
-                    {% endif %}
-                    <img src="{% static 'steeloweb/images/systemiq-logo-white.png' %}" alt="Systemiq" style="height: 35px;">
+                <div class="ms-auto">
+                    <a href="https://www.systemiq.earth/" target="_blank" rel="noopener noreferrer" title="Systemiq">
+                        <img src="{% static 'steeloweb/images/systemiq-logo-white.png' %}" alt="Systemiq" style="height: 35px;">
+                    </a>
                 </div>
             </div>
         </div>
     </nav>
 
     {% block content %}{% endblock %}
+
+    {% if build_info %}
+    <!-- Page-end version footer -->
+    <footer class="text-center text-muted small py-3 mt-4 border-top">
+        <button type="button" class="btn btn-link btn-sm text-muted p-0 align-baseline" data-bs-toggle="modal" data-bs-target="#aboutModal">
+            STEEL-IQ v{{ build_info.version }}{% if build_info.is_dev %} <span class="badge bg-warning text-dark text-decoration-none">dev</span>{% endif %}
+        </button>
+        <span class="mx-2">&middot;</span>
+        <a href="https://github.com/systemiqofficial/steel-iq" target="_blank" rel="noopener noreferrer" class="text-muted" title="GitHub repository">
+            <i class="fab fa-github"></i>
+        </a>
+        <span class="mx-2">&middot;</span>
+        <a href="https://systemiqofficial.github.io/steel-iq/public_index.html" target="_blank" rel="noopener noreferrer" class="text-muted" title="Documentation">
+            <i class="fas fa-book"></i>
+        </a>
+    </footer>
+
+    <!-- About Modal -->
+    <div class="modal fade" id="aboutModal" tabindex="-1" aria-labelledby="aboutModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="aboutModalLabel">
+                <img src="{% static 'steeloweb/images/Steel-IQ-signet-light.svg' %}" alt="" aria-hidden="true" style="height: 28px; margin-right: 8px; filter: invert(1);">
+                About STEEL-IQ
+            </h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <dl class="row mb-0">
+              <dt class="col-sm-4 text-muted">Version</dt>
+              <dd class="col-sm-8">
+                  v{{ build_info.version }}
+                  {% if build_info.is_dev %}<span class="badge bg-warning text-dark ms-1">dev build</span>{% endif %}
+              </dd>
+              {% if build_info.branch %}
+              <dt class="col-sm-4 text-muted">Branch</dt>
+              <dd class="col-sm-8"><code>{{ build_info.branch }}</code></dd>
+              {% endif %}
+              {% if build_info.commit %}
+              <dt class="col-sm-4 text-muted">Commit</dt>
+              <dd class="col-sm-8"><code>{{ build_info.commit }}</code></dd>
+              {% endif %}
+              {% if build_info.built_at %}
+              <dt class="col-sm-4 text-muted">Built</dt>
+              <dd class="col-sm-8">{{ build_info.built_at|slice:":10" }}</dd>
+              {% endif %}
+            </dl>
+            <hr>
+            <div class="d-flex flex-wrap gap-3">
+                <a href="https://github.com/systemiqofficial/steel-iq" target="_blank" rel="noopener noreferrer">
+                    <i class="fab fa-github me-1"></i>GitHub repository
+                </a>
+                <a href="https://systemiqofficial.github.io/steel-iq/public_index.html" target="_blank" rel="noopener noreferrer">
+                    <i class="fas fa-book me-1"></i>Documentation
+                </a>
+                <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank" rel="noopener noreferrer">
+                    <i class="fas fa-balance-scale me-1"></i>Licence
+                </a>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
 
     <!-- Memory Warning Modal -->
     <div class="modal fade" id="memoryWarningModal" tabindex="-1" aria-hidden="true">
@@ -109,6 +169,17 @@
 
     <!-- Bootstrap JS and dependencies (local vendor) -->
     <script src="{% static 'vendor/bootstrap-5.3.0/js/bootstrap.bundle.min.js' %}"></script>
+
+    <!-- About modal: open when triggered from Electron application menu -->
+    {% if build_info %}
+    <script>
+    if (window.electronAPI?.onShowAbout) {
+        window.electronAPI.onShowAbout(() => {
+            bootstrap.Modal.getOrCreateInstance(document.getElementById('aboutModal')).show();
+        });
+    }
+    </script>
+    {% endif %}
 
     <!-- Toast notification helper -->
     <script>

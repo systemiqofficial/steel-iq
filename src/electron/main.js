@@ -1098,8 +1098,9 @@ function setupApplicationMenu() {
         { type: 'separator' },
         {
           label: 'About STEEL-IQ',
-          click: async () => {
-            await shell.openExternal('https://www.systemiq.earth/reports/steel-iq/');
+          click: () => {
+            const focused = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+            focused?.webContents.send('show-about');
           }
         },
         {
@@ -1294,6 +1295,15 @@ function createWindow(initialUrl = 'http://127.0.0.1:8000/') {
     if (choice === 0) {
       event.preventDefault();
     }
+  });
+
+  // Route target="_blank" clicks (e.g. navbar repo/docs links) to the system
+  // browser instead of opening a new Electron window.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('mailto:')) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' };
   });
 
   // Load Django application
