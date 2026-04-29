@@ -1157,8 +1157,9 @@ def calculate_npv_full(
         unit_carbon_costs_lagged = zeros + unit_carbon_costs
         unit_opex_lagged = [x + y for x, y in zip(unit_opex_lagged, unit_carbon_costs_lagged)]
 
-    # Add secondary output cost adjustment (by-product revenue/cost) to OPEX
-    unit_opex_lagged = [x + secondary_output_adjustment for x in unit_opex_lagged]
+    # Add secondary output cost adjustment (by-product revenue/cost) to OPEX during operational years only
+    secondary_adjustment_lagged = zeros + [secondary_output_adjustment] * len(unit_total_opex_list)
+    unit_opex_lagged = [x + y for x, y in zip(unit_opex_lagged, secondary_adjustment_lagged)]
     func_logger.debug(f"[NPV FULL] Secondary output adjustment: ${secondary_output_adjustment:,.4f}/t applied to OPEX")
 
     # Calculate cash flows
