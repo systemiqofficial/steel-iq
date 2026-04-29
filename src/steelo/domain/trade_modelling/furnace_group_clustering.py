@@ -1044,17 +1044,23 @@ def _solve_batched_transportation_problem(
     # Store original (exact) totals for scaling solution back
     original_total_supply = sum(source_supplies.values())
 
-    # Floor all volumes to integers for NetworkX (requires integer edge weights/capacities)
-    # We'll scale the solution back to preserve exact BOM constraints
-    source_supplies_floored = {k: int(v) for k, v in source_supplies.items()}
-    dest_demands_floored = {k: int(v) for k, v in dest_demands.items()}
+    # Convert to integers for NetworkX (network_simplex requires integer node demands
+    # and edge capacities). We multiply by TRANSPORT_PROBLEM_SCALE before rounding so
+    # the per-entry rounding error is ≤ 0.5/SCALE tons (≈ 0.5 kg at SCALE=1000).
+    # This eliminates the prior bug where plain int(v) per-entry truncation could lose
+    # several tons of supply/demand and break per-pocket Hall's condition that Stage A
+    # had verified only at the float level. SCALE=1000 keeps integer values well under
+    # int64 limits (max ~1e10 for plant-level capacities) and adds <15% solver time.
+    TRANSPORT_PROBLEM_SCALE = 1000
+    source_supplies_int = {k: int(round(v * TRANSPORT_PROBLEM_SCALE)) for k, v in source_supplies.items()}
+    dest_demands_int = {k: int(round(v * TRANSPORT_PROBLEM_SCALE)) for k, v in dest_demands.items()}
 
-    # Filter out zeros AFTER flooring
-    source_supplies_floored = {k: v for k, v in source_supplies_floored.items() if v > 0}
-    dest_demands_floored = {k: v for k, v in dest_demands_floored.items() if v > 0}
+    # Filter out zeros AFTER scaling
+    source_supplies_int = {k: v for k, v in source_supplies_int.items() if v > 0}
+    dest_demands_int = {k: v for k, v in dest_demands_int.items() if v > 0}
 
-    if not source_supplies_floored or not dest_demands_floored:
-        # No valid sources or destinations after flooring
+    if not source_supplies_int or not dest_demands_int:
+        # No valid sources or destinations after scaling
         return {}, {
             "total_pairs": 0,
             "used_edges": 0,
@@ -1064,14 +1070,16 @@ def _solve_batched_transportation_problem(
             "infeasible_edge_details": [],
         }
 
-    # Calculate total volume from FLOORED dictionaries (integers for NetworkX)
-    total_supply = sum(source_supplies_floored.values())
-    total_demand = sum(dest_demands_floored.values())
+    # Calculate total volume from SCALED dictionaries (integers for NetworkX).
+    # These totals are in units of tons * TRANSPORT_PROBLEM_SCALE; flows extracted
+    # from the solver are likewise scaled and divided back at the end.
+    total_supply = sum(source_supplies_int.values())
+    total_demand = sum(dest_demands_int.values())
 
-    # Use floored values for the transportation problem
+    # Use scaled values for the transportation problem
     # Type ignore needed because we're intentionally converting from dict[str, float] to dict[str, int]
-    source_supplies = source_supplies_floored  # type: ignore[assignment]
-    dest_demands = dest_demands_floored  # type: ignore[assignment]
+    source_supplies = source_supplies_int  # type: ignore[assignment]
+    dest_demands = dest_demands_int  # type: ignore[assignment]
 
     # After flooring, adjust demands to match supply exactly (for NetworkX balance requirement)
     diff = total_supply - total_demand
@@ -1202,7 +1210,8 @@ def _solve_batched_transportation_problem(
         logger.error(
             f"[DISAGGREGATION] Batched transportation problem infeasible for commodity={commodity_name}. "
             f"Sources={len(source_supplies)}, Destinations={len(dest_demands)}, "
-            f"Total supply={total_supply:.2f}, Total demand={total_demand:.2f}, "
+            f"Total supply={total_supply / TRANSPORT_PROBLEM_SCALE:.2f}t, "
+            f"Total demand={total_demand / TRANSPORT_PROBLEM_SCALE:.2f}t, "
             f"Infeasible edges={infeasible_pairs}/{total_pairs}. "
             f"Graph: {num_nodes} nodes, {num_edges} edges. "
             f"Source nodes={len(source_nodes_in_graph)}, Dest nodes={len(dest_nodes_in_graph)}, "
@@ -1240,12 +1249,12 @@ def _solve_batched_transportation_problem(
                 for sid, supply in sorted(source_supplies.items(), key=lambda x: -x[1]):
                     loc = source_locations.get(sid)
                     iso3 = loc.iso3 if loc else "?"
-                    lines.append(f"    {sid} ({iso3}): {supply:.2f}t supply")
+                    lines.append(f"    {sid} ({iso3}): {supply / TRANSPORT_PROBLEM_SCALE:.2f}t supply")
                 lines.append("  Destination demands:")
                 for did, demand in sorted(dest_demands.items(), key=lambda x: -x[1]):
                     loc = dest_locations.get(did)
                     iso3 = loc.iso3 if loc else "?"
-                    lines.append(f"    {did} ({iso3}): {demand:.2f}t demand")
+                    lines.append(f"    {did} ({iso3}): {demand / TRANSPORT_PROBLEM_SCALE:.2f}t demand")
                 feasible_lines = []
                 blocked_in_subproblem_lines = []
                 # Only iterate sources/destinations that participate in THIS sub-problem.
@@ -1253,8 +1262,8 @@ def _solve_batched_transportation_problem(
                 # cluster and contain entries from sibling components; iterating them
                 # would print radius-distant pairs as "feasible" simply because they were
                 # never evaluated against the radius for this sub-problem. Restrict to
-                # source_supplies_floored / dest_demands keys to get a faithful picture.
-                active_sources = set(source_supplies_floored.keys())
+                # source_supplies_int / dest_demands keys to get a faithful picture.
+                active_sources = set(source_supplies_int.keys())
                 active_dests = set(dest_demands.keys())
                 radius_km = config.hot_metal_radius
                 for sid in sorted(active_sources):
@@ -1297,7 +1306,8 @@ def _solve_batched_transportation_problem(
                 f"{f' ({context_label})' if context_label else ''}. "
                 f"{len(unreachable_dests)} destination(s) have no in-radius supplier. "
                 f"Unreachable: {unreachable_dests[:5]}{'...' if len(unreachable_dests) > 5 else ''}. "
-                f"Total supply={total_supply:.2f}, total demand={total_demand:.2f}."
+                f"Total supply={total_supply / TRANSPORT_PROBLEM_SCALE:.2f}t, "
+                f"total demand={total_demand / TRANSPORT_PROBLEM_SCALE:.2f}t."
                 f"{debug_details}"
             )
 
@@ -1323,26 +1333,36 @@ def _solve_batched_transportation_problem(
         if from_node.startswith("from_"):
             source_id = from_node[5:]  # Remove "from_" prefix
 
-            for to_node, flow_value in destinations.items():
-                if to_node.startswith("to_") and flow_value > 1e-6:  # Ignore tiny numerical errors
-                    dest_id = to_node[3:]  # Remove "to_" prefix
-                    result_flows[(source_id, dest_id)] = flow_value
-                    used_edges += 1
-                    total_flow_volume += flow_value
-                    if (source_id, dest_id) in infeasible_pairs_set:
-                        infeasible_flow_volume += flow_value
-                        dist_km, src_iso3, dst_iso3 = infeasible_edge_metadata[(source_id, dest_id)]
-                        infeasible_edge_details.append((dist_km, flow_value, src_iso3, dst_iso3))
+            for to_node, flow_value_scaled in destinations.items():
+                if not to_node.startswith("to_"):
+                    continue
+                # Divide solver flows back into tons. The 1e-6 t threshold matches the
+                # pre-scaling code; numerical noise in network_simplex is far below it.
+                flow_value = flow_value_scaled / TRANSPORT_PROBLEM_SCALE
+                if flow_value <= 1e-6:
+                    continue
+                dest_id = to_node[3:]  # Remove "to_" prefix
+                result_flows[(source_id, dest_id)] = flow_value
+                used_edges += 1
+                total_flow_volume += flow_value
+                if (source_id, dest_id) in infeasible_pairs_set:
+                    infeasible_flow_volume += flow_value
+                    dist_km, src_iso3, dst_iso3 = infeasible_edge_metadata[(source_id, dest_id)]
+                    infeasible_edge_details.append((dist_km, flow_value, src_iso3, dst_iso3))
 
-    # Scale flows back to original (pre-flooring) total to preserve exact BOM constraints
-    # The flow pattern is correct, we just need to scale to match original volumes
-    if total_supply > 0 and abs(original_total_supply - total_supply) > 1e-9:
-        scale_factor = original_total_supply / total_supply
+    # Scale flows back to original (pre-rounding) total to preserve exact BOM constraints.
+    # With TRANSPORT_PROBLEM_SCALE=1000 the per-entry rounding error is ≤ 0.5 kg, so this
+    # correction is effectively a no-op (scale_factor ≈ 1.000000…) — kept as belt-and-braces
+    # to absorb any residual sub-gram imbalance from the diff-rebalance step above.
+    actual_total_supply_tons = total_supply / TRANSPORT_PROBLEM_SCALE
+    if actual_total_supply_tons > 0 and abs(original_total_supply - actual_total_supply_tons) > 1e-9:
+        scale_factor = original_total_supply / actual_total_supply_tons
         result_flows = {k: v * scale_factor for k, v in result_flows.items()}
         commodity_name = commodity.name if hasattr(commodity, "name") else str(commodity)
         logger.debug(
             f"[DISAGGREGATION] Scaled flows for {commodity_name} by {scale_factor:.10f} "
-            f"to preserve exact BOM (floored: {total_supply}, original: {original_total_supply:.2f})"
+            f"to preserve exact BOM (post-round total: {actual_total_supply_tons:.6f}t, "
+            f"original: {original_total_supply:.2f}t)"
         )
 
     # Log if any flows ended up on radius-violating edges. For substitutable hot commodities
@@ -1792,8 +1812,15 @@ def _solve_strict_by_components(
         # only by source A whose capped supply is less than their combined demand,
         # while B/C have surplus they can't ship anywhere because every other dest
         # is more than the radius from them.  We compute max-flow on the bipartite
-        # supply/demand graph and, if it falls short of the (already balanced) total
-        # demand, scale demand further to the max-flow value and rebalance supply.
+        # supply/demand graph and, when it falls short of the (already balanced)
+        # total demand, use the max-flow's per-edge flow assignment to set new
+        # supply / demand caps. Reading the actual per-source / per-dest flow values
+        # — instead of uniformly scaling everything by max_flow / total — preserves
+        # Hall's condition by construction: the max-flow assignment IS a feasible
+        # flow under those caps, so the downstream min-cost-flow cannot be
+        # infeasible. Uniform scaling preserved only the global total and could
+        # leave constrained sources still over-supplied relative to the dests they
+        # can reach.
         comp_total = sum(comp_demand.values())
         if comp_total > 1.0 and len(comp_supply) > 1 and len(comp_demand) > 1:
             mf = nx.DiGraph()
@@ -1810,33 +1837,55 @@ def _solve_strict_by_components(
                     if sloc is None or dloc is None or (_calculate_distance_km(sloc, dloc) <= config.hot_metal_radius):
                         mf.add_edge(f"s_{sid}", f"d_{did}", capacity=float("inf"))
             try:
-                max_flow_value, _ = nx.maximum_flow(mf, SUPER_SRC, SUPER_SNK)
+                max_flow_value, flow_dict = nx.maximum_flow(mf, SUPER_SRC, SUPER_SNK)
             except (nx.NetworkXError, nx.NetworkXUnfeasible):
                 max_flow_value = comp_total  # leave it to the downstream solver
+                flow_dict = None
             if max_flow_value < comp_total - 1.0:
-                feasibility_scale = max_flow_value / comp_total
                 pre_demand2 = dict(comp_demand)
-                comp_demand = {did: d * feasibility_scale for did, d in comp_demand.items()}
+                if flow_dict is not None:
+                    # Per-source / per-dest scaling using the max-flow's flow
+                    # assignment.  drainable[s] = total outflow from source s in
+                    # the max-flow result; achievable[d] = total inflow into
+                    # dest d.  By construction Σ drainable = Σ achievable =
+                    # max_flow_value, AND the max-flow assignment is itself a
+                    # feasible flow respecting these per-node caps — so the
+                    # downstream min-cost-flow is guaranteed feasible.
+                    drainable = {sid: float(flow_dict.get(SUPER_SRC, {}).get(f"s_{sid}", 0.0)) for sid in comp_supply}
+                    achievable = {did: float(flow_dict.get(f"d_{did}", {}).get(SUPER_SNK, 0.0)) for did in comp_demand}
+                    comp_supply = drainable
+                    comp_demand = achievable
+                    scaling_mode = "per-source/per-dest from max-flow"
+                else:
+                    # Fallback: max_flow raised. Use uniform scaling — the
+                    # legacy behaviour, retained as a safety net for the very
+                    # rare case where networkx couldn't compute max-flow.
+                    feasibility_scale = max_flow_value / comp_total
+                    comp_demand = {did: d * feasibility_scale for did, d in comp_demand.items()}
+                    new_total_d = sum(comp_demand.values())
+                    new_total_s = sum(comp_supply.values())
+                    if new_total_s > new_total_d + 0.01:
+                        supply_scale = new_total_d / new_total_s
+                        comp_supply = {sid: s * supply_scale for sid, s in comp_supply.items()}
+                    scaling_mode = "uniform (max_flow fallback)"
+
+                # Per-dest unmet demand bookkeeping is the same regardless of
+                # which scaling path we took.
                 for did, d_before in pre_demand2.items():
                     extra_shortfall = d_before - comp_demand[did]
                     if extra_shortfall > 1.0:
                         merged_stats["dest_unmet_demand"][did] = (  # type: ignore[index]
                             merged_stats["dest_unmet_demand"].get(did, 0.0) + extra_shortfall  # type: ignore[union-attr,attr-defined]
                         )
-                # Rebalance supply down to the new (smaller) feasible total so the
-                # downstream solver doesn't try to push surplus through the graph.
-                new_total_d = sum(comp_demand.values())
-                new_total_s = sum(comp_supply.values())
-                if new_total_s > new_total_d + 0.01:
-                    supply_scale = new_total_d / new_total_s
-                    comp_supply = {sid: s * supply_scale for sid, s in comp_supply.items()}
+
+                feasibility_scale = max_flow_value / comp_total
                 logger.warning(
                     f"[DISAGGREGATION] Strict-radius pocket has per-source reachability "
                     f"infeasibility ({context_label or commodity}): max-flow="
                     f"{max_flow_value:.1f}t < balanced total={comp_total:.1f}t; "
-                    f"reducing dest demands by an additional "
-                    f"{(1.0 - feasibility_scale) * 100:.1f}% so every destination's "
-                    f"demand is reachable from its in-radius suppliers."
+                    f"applying {scaling_mode} scaling so every destination's demand is "
+                    f"reachable from its in-radius suppliers (net reduction "
+                    f"{(1.0 - feasibility_scale) * 100:.1f}%)."
                 )
 
         # Solve this component independently.  strict_radius=True inside the
