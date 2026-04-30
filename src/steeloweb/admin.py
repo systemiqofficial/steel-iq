@@ -7,9 +7,9 @@ from .forms import DataPreparationForm
 
 @admin.register(ModelRun)
 class ModelRunAdmin(admin.ModelAdmin):
-    list_display = ("id", "state", "started_at", "finished_at")
+    list_display = ("id", "state", "created_at", "finished_at")
     list_filter = ("state",)
-    readonly_fields = ("started_at",)
+    readonly_fields = ("created_at",)
     search_fields = ("id", "state")
 
 

@@ -172,7 +172,7 @@ def test_log_file_header_format(db, tmp_path):
             f.write("# Steel Model Simulation Log\n")
             f.write(f"# ModelRun ID: {modelrun.id}\n")
             f.write(f"# ModelRun Name: {modelrun.name or '(unnamed)'}\n")
-            f.write(f"# Started: {modelrun.started_at.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"# Created: {modelrun.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"# UUID: {modelrun.log_file_uuid}\n")
             f.write(f"# {'=' * 60}\n\n")
 

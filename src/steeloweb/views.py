@@ -43,7 +43,7 @@ def modelrun_list_fragment(request):
     consistency in filtering, ordering, and select_related optimizations.
     """
     # Reuse the same queryset as the main list view
-    modelruns = ModelRun.objects.all().order_by("-started_at")
+    modelruns = ModelRun.objects.all().order_by("-created_at")
 
     # Future: If ModelRunListView adds select_related() or prefetch_related(),
     # apply the same optimizations here to prevent N+1 queries
@@ -78,6 +78,28 @@ class ModelRunDetailView(DetailView):
         except FileNotFoundError:
             # Technology switches not available - template will handle this gracefully
             context["technology_switches"] = None
+
+        # Sorted, flattened source→target pairs for the Configuration accordion
+        # (alphabetical sort groups all BF entries first, then DRI, etc.)
+        if context["technology_switches"]:
+            context["technology_switches_sorted"] = [
+                (source, target)
+                for source, targets in sorted(context["technology_switches"].items())
+                for target in targets
+            ]
+        else:
+            context["technology_switches_sorted"] = []
+
+        # Sorted per-technology configuration (allowed/from_year/to_year) for accordion
+        tech_settings = (self.object.config or {}).get("technology_settings") or {}
+        context["technology_settings_sorted"] = sorted(tech_settings.items())
+
+        # Capacity limits are stored as tonnes (form value × 1e6). Convert back to Mt for display.
+        cfg = self.object.config or {}
+        cap_iron = cfg.get("capacity_limit_iron")
+        cap_steel = cfg.get("capacity_limit_steel")
+        context["capacity_limit_iron_mt"] = cap_iron / 1_000_000 if cap_iron is not None else None
+        context["capacity_limit_steel_mt"] = cap_steel / 1_000_000 if cap_steel is not None else None
 
         # Get log file path if available
         context["log_file_path"] = get_log_file_path(self.object.id)
@@ -157,7 +179,10 @@ def run_simulation(request, pk):
     request.session.pop("simulation_warning", None)
 
     # Update state to running
+    from django.utils import timezone
+
     modelrun.state = ModelRun.RunState.RUNNING
+    modelrun.run_started_at = timezone.now()
 
     # Start the task and store its ID for tracking
     task_result = run_simulation_task.enqueue(modelrun.pk)
@@ -1591,7 +1616,7 @@ class DataPreparationDetailView(DetailView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         # Add any simulations using this preparation
-        context["simulations"] = ModelRun.objects.filter(data_preparation=self.object).order_by("-started_at")
+        context["simulations"] = ModelRun.objects.filter(data_preparation=self.object).order_by("-created_at")
         return context
 
 

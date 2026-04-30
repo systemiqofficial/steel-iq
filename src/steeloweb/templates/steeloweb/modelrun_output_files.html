@@ -32,7 +32,7 @@
                         </h5>
                         <div class="text-muted">
                             <small>
-                                <i class="fas fa-calendar"></i> Created: {{ modelrun.started_at|date:"Y-m-d H:i" }}
+                                <i class="fas fa-calendar"></i> Created: {{ modelrun.created_at|date:"Y-m-d H:i" }}
                                 {% if modelrun.state == 'finished' %}
                                     | <i class="fas fa-check-circle text-success"></i> Finished: {{ modelrun.finished_at|date:"Y-m-d H:i" }}
                                 {% endif %}

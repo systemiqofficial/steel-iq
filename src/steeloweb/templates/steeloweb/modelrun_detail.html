@@ -125,16 +125,28 @@
                             {% endif %}
                         </dd>
 
+                        <dt class="col-sm-4">Created</dt>
+                        <dd class="col-sm-8">{{ modelrun.created_at }}</dd>
+
                         <dt class="col-sm-4">Started</dt>
-                        <dd class="col-sm-8">{{ modelrun.started_at }}</dd>
+                        <dd class="col-sm-8">{{ modelrun.run_started_at|default:"-" }}</dd>
 
                         <dt class="col-sm-4">Finished</dt>
                         <dd class="col-sm-8">{{ modelrun.finished_at|default:"-" }}</dd>
 
-                        <dt class="col-sm-4">Duration</dt>
+                        <dt class="col-sm-4">Time since creation</dt>
                         <dd class="col-sm-8">
                             {% if modelrun.finished_at %}
-                            {{ modelrun.finished_at|timeuntil:modelrun.started_at }}
+                            {{ modelrun.finished_at|timeuntil:modelrun.created_at }}
+                            {% else %}
+                            -
+                            {% endif %}
+                        </dd>
+
+                        <dt class="col-sm-4">Duration of simulation</dt>
+                        <dd class="col-sm-8">
+                            {% if modelrun.finished_at and modelrun.run_started_at %}
+                            {{ modelrun.finished_at|timeuntil:modelrun.run_started_at }}
                             {% else %}
                             -
                             {% endif %}
@@ -225,20 +237,58 @@
                             <dt class="col-sm-4">Years:</dt>
                             <dd class="col-sm-8">{{ modelrun.config.start_year }} - {{ modelrun.config.end_year }}</dd>
 
-                            {% comment %}
-                            Demand Scenario field is not yet implemented - shows in form but not used by simulation
-                            {% endcomment %}
+                            <dt class="col-sm-4">Furnace group clustering:</dt>
+                            <dd class="col-sm-8">{{ modelrun.config.enable_furnace_group_clustering|yesno:"Enabled,Disabled,—" }}</dd>
 
-                            {% if technology_switches %}
-                            <dt class="col-sm-4">Technology Switches:</dt>
+                            <dt class="col-sm-4">Hot metal cluster by plant group:</dt>
+                            <dd class="col-sm-8">{{ modelrun.config.cluster_hot_metal_techs_by_plant_group|yesno:"Enabled,Disabled,—" }}</dd>
+
+                            <dt class="col-sm-4">Plant agents:</dt>
+                            <dd class="col-sm-8">{{ modelrun.config.probabilistic_agents|yesno:"Probabilistic,Deterministic,—" }}</dd>
+
+                            <dt class="col-sm-4">Iron capacity limit:</dt>
                             <dd class="col-sm-8">
-                                <small class="text-muted">
-                                    {% for source, targets in technology_switches.items %}
-                                        {{ source }} → {{ targets|join:", " }}{% if not forloop.last %}; {% endif %}
-                                    {% endfor %}
-                                </small>
+                                {% if capacity_limit_iron_mt is not None %}{{ capacity_limit_iron_mt|floatformat:"-1" }} Mt{% else %}—{% endif %}
                             </dd>
-                            {% endif %}
+
+                            <dt class="col-sm-4">Steel capacity limit:</dt>
+                            <dd class="col-sm-8">
+                                {% if capacity_limit_steel_mt is not None %}{{ capacity_limit_steel_mt|floatformat:"-1" }} Mt{% else %}—{% endif %}
+                            </dd>
+
+                            <dt class="col-sm-4">Construction time:</dt>
+                            <dd class="col-sm-8">
+                                {% if modelrun.config.construction_time is not None %}{{ modelrun.config.construction_time }} years{% else %}—{% endif %}
+                            </dd>
+
+                            <dt class="col-sm-4">Consideration time:</dt>
+                            <dd class="col-sm-8">
+                                {% if modelrun.config.consideration_time is not None %}{{ modelrun.config.consideration_time }} years{% else %}—{% endif %}
+                            </dd>
+
+                            <dt class="col-sm-4">Steel premium:</dt>
+                            <dd class="col-sm-8">
+                                {% if modelrun.config.steel_price_buffer is not None %}{{ modelrun.config.steel_price_buffer }} USD/t{% else %}—{% endif %}
+                            </dd>
+
+                            <dt class="col-sm-4">Iron premium:</dt>
+                            <dd class="col-sm-8">
+                                {% if modelrun.config.iron_price_buffer is not None %}{{ modelrun.config.iron_price_buffer }} USD/t{% else %}—{% endif %}
+                            </dd>
+
+                            <dt class="col-sm-4">Iron→steel price pegging:</dt>
+                            <dd class="col-sm-8">
+                                {% if modelrun.config.peg_iron_to_steel_price %}
+                                    Enabled (ratio {{ modelrun.config.iron_to_steel_price_ratio }})
+                                {% else %}
+                                    Disabled
+                                {% endif %}
+                            </dd>
+
+                            <dt class="col-sm-4">Hydrogen ceiling percentile:</dt>
+                            <dd class="col-sm-8">
+                                {% if modelrun.config.hydrogen_ceiling_percentile is not None %}{{ modelrun.config.hydrogen_ceiling_percentile }}%{% else %}—{% endif %}
+                            </dd>
 
                             {% if modelrun.config.emissions_boundary %}
                             <dt class="col-sm-4">Emissions Boundary:</dt>
@@ -250,6 +300,63 @@
                             <dd class="col-sm-8">{{ modelrun.config.carbon_tax_amount }} {{ modelrun.config.carbon_tax_currency }}/{{ modelrun.config.carbon_tax_unit }}</dd>
                             {% endif %}
                         </dl>
+
+                        {% if technology_switches_sorted or technology_settings_sorted %}
+                        <div class="accordion mt-3" id="configAccordion">
+                            {% if technology_switches_sorted %}
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="techSwitchesHeading">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#techSwitchesCollapse" aria-expanded="false" aria-controls="techSwitchesCollapse">
+                                        Technology Switches ({{ technology_switches_sorted|length }})
+                                    </button>
+                                </h2>
+                                <div id="techSwitchesCollapse" class="accordion-collapse collapse" aria-labelledby="techSwitchesHeading" data-bs-parent="#configAccordion">
+                                    <div class="accordion-body">
+                                        <ul class="list-unstyled mb-0 small">
+                                            {% for source, target in technology_switches_sorted %}
+                                            <li>{{ source }} → {{ target }}</li>
+                                            {% endfor %}
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            {% if technology_settings_sorted %}
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="techConfigHeading">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#techConfigCollapse" aria-expanded="false" aria-controls="techConfigCollapse">
+                                        Technology Configuration ({{ technology_settings_sorted|length }})
+                                    </button>
+                                </h2>
+                                <div id="techConfigCollapse" class="accordion-collapse collapse" aria-labelledby="techConfigHeading" data-bs-parent="#configAccordion">
+                                    <div class="accordion-body">
+                                        <table class="table table-sm small mb-0">
+                                            <thead>
+                                                <tr>
+                                                    <th>Technology</th>
+                                                    <th class="text-center">Allowed</th>
+                                                    <th>From year</th>
+                                                    <th>To year</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {% for code, settings in technology_settings_sorted %}
+                                                <tr>
+                                                    <td>{{ code }}</td>
+                                                    <td class="text-center">{{ settings.allowed|yesno:"Yes,No,—" }}</td>
+                                                    <td>{{ settings.from_year|default:"—" }}</td>
+                                                    <td>{{ settings.to_year|default:"—" }}</td>
+                                                </tr>
+                                                {% endfor %}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% endif %}
                     </div>
 
                     <!-- Raw Configuration Collapse -->

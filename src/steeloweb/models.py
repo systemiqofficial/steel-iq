@@ -447,7 +447,10 @@ class ModelRun(models.Model):
         default="",
         blank=True,
     )
-    started_at = models.DateTimeField(auto_now_add=True, help_text="When the model run was started")
+    created_at = models.DateTimeField(auto_now_add=True, help_text="When the model run was created")
+    run_started_at = models.DateTimeField(
+        null=True, blank=True, help_text="When the simulation transitioned to RUNNING"
+    )
     finished_at = models.DateTimeField(null=True, blank=True, help_text="When the model run finished")
     updated_at = models.DateTimeField(auto_now=True, help_text="When the model run was last updated")
     output_directory = models.CharField(
@@ -495,13 +498,13 @@ class ModelRun(models.Model):
 
     def __str__(self):
         if self.name:
-            return f"{self.name} - {self.state} ({self.started_at})"
-        return f"ModelRun {self.id} - {self.state} ({self.started_at})"
+            return f"{self.name} - {self.state} ({self.created_at})"
+        return f"ModelRun {self.id} - {self.state} ({self.created_at})"
 
     class Meta:
         verbose_name = "Model Run"
         verbose_name_plural = "Model Runs"
-        ordering = ["-started_at"]
+        ordering = ["-created_at"]
 
     def get_output_path(self) -> Optional[Path]:
         """Return the path to the output directory"""
@@ -1065,6 +1068,7 @@ class ModelRun(models.Model):
         self.error_message = ""
         self.results = {}
         self.progress = {}
+        self.run_started_at = None
         self.finished_at = None
         self.task_id = None
         self.save(
@@ -1073,6 +1077,7 @@ class ModelRun(models.Model):
                 "error_message",
                 "results",
                 "progress",
+                "run_started_at",
                 "finished_at",
                 "task_id",
                 "updated_at",
@@ -1092,7 +1097,7 @@ class ModelRun(models.Model):
         from datetime import timedelta
 
         # Give a grace period after starting - simulations take time to start
-        time_since_start = timezone.now() - self.started_at
+        time_since_start = timezone.now() - self.created_at
         if time_since_start < timedelta(minutes=1):
             return False
 
