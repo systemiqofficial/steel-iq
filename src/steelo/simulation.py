@@ -396,7 +396,7 @@ class SimulationConfig:
     chosen_demand_scenario: str = "BAU"
     chosen_grid_emissions_scenario: str = "Business As Usual"
     scrap_generation_scenario: str = "business_as_usual"
-    chosen_emissions_boundary_for_carbon_costs: str = "responsible_steel"
+    chosen_emissions_boundary_for_carbon_costs: str = "rs-inspired"
     use_iron_ore_premiums: bool = True
     green_steel_emissions_limit: float = 0.4  # in tCO2/tsteel
     # Use InitVar to accept but not store deprecated parameter for backward compatibility
