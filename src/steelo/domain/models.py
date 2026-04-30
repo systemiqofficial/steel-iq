@@ -958,9 +958,8 @@ class PrimaryFeedstock:
             if normalize_product_name(k) in normalized_primary_products
         }
 
-        if self.technology.lower() == "bf":
-            if "hot_metal" in return_dict and "pig_iron" not in return_dict:
-                return_dict["pig_iron"] = return_dict["hot_metal"]
+        if "hot_metal" in return_dict and "pig_iron" not in return_dict:
+            return_dict["pig_iron"] = return_dict["hot_metal"]
         return return_dict
 
 
