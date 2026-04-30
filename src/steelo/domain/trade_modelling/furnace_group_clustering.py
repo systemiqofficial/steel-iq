@@ -1112,6 +1112,21 @@ def _solve_batched_transportation_problem(
         G.add_node(dest_node, demand=0)  # Intermediate nodes have zero demand
         G.add_edge(dest_node, SINK, weight=0, capacity=demand)
 
+    # Slack edge SOURCE→SINK. Tightly-balanced sub-pockets (supply==demand exactly
+    # for some subset of nodes at float level) can flip infeasible after the
+    # ±0.5 kg per-node rounding above; the slack edge lets the solver bypass a
+    # few kg of bipartite flow to absorb that noise. Sized at 2 kg per
+    # participating node — orders of magnitude below the smallest legitimate flow
+    # but enough to absorb the worst-case rounding sum.
+    # Cost is strictly greater than INFEASIBLE_COST so the solver prefers any
+    # bipartite route (real or radius-violating) over slack — slack only carries
+    # flow when no bipartite path exists. We check post-solve whether it
+    # saturated; if so the infeasibility is structural rather than
+    # rounding-induced and we re-raise.
+    slack_capacity_kg = 2 * (len(source_supplies) + len(dest_demands))
+    SLACK_COST = INFEASIBLE_COST * 2
+    G.add_edge(SOURCE, SINK, weight=SLACK_COST, capacity=slack_capacity_kg)
+
     # Add edges between origins and destinations with distance-based costs
     for source_id, supply in source_supplies.items():
         source_location = source_locations.get(source_id)
@@ -1193,6 +1208,12 @@ def _solve_batched_transportation_problem(
     # Solve min-cost flow (demands are set as node attributes)
     try:
         flow_dict = nx.min_cost_flow(G)
+        slack_flow_kg = flow_dict.get(SOURCE, {}).get(SINK, 0)
+        if slack_flow_kg >= slack_capacity_kg:
+            # Slack saturated → bipartite graph couldn't absorb the supply within
+            # sub-kg tolerance. Structural infeasibility, not rounding noise.
+            # Re-raise to fall through to the existing diagnostic path.
+            raise nx.NetworkXUnfeasible(f"rounding-slack saturated ({slack_flow_kg} kg ≥ cap {slack_capacity_kg} kg)")
     except nx.NetworkXUnfeasible:
         commodity_name = commodity.name if hasattr(commodity, "name") else str(commodity)
 
