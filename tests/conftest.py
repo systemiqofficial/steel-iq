@@ -539,6 +539,23 @@ def ready_data_preparation(db, tmp_path):
     tech_file = fixtures_dir / "technologies.json"
     tech_file.write_text(json.dumps(technologies, indent=2))
 
+    # Minimal region_emissivity.json so the form's grid emissions scenario
+    # ChoiceField has at least "Business As Usual" available. Years must be ≥ 2025
+    # to pass the forecast-scenario filter in get_region_emissivity_scenarios().
+    region_emissivity = {
+        "root": [
+            {
+                "iso3": "POL",
+                "country_name": "Poland",
+                "scenario": "Business As Usual",
+                "grid_emissivity": {"2025": {"Electricity": 0.5}, "2050": {"Electricity": 0.3}},
+                "coke_emissivity": {},
+                "gas_emissivity": {},
+            }
+        ]
+    }
+    (fixtures_dir / "region_emissivity.json").write_text(json.dumps(region_emissivity))
+
     # Create required data packages
     core_package, _ = DataPackage.objects.get_or_create(
         name=DataPackage.PackageType.CORE_DATA,

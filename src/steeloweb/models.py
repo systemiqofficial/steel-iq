@@ -1029,6 +1029,28 @@ class ModelRun(models.Model):
 
             config = SimulationConfig(**sim_config_data)
 
+        # Write simulation_config.json and preparation_metadata.json alongside the
+        # other run outputs, mirroring the terminal `run_simulation` CLI layout.
+        if output_path:
+            import json
+            from datetime import datetime
+
+            try:
+                config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
+                (output_path / "simulation_config.json").write_text(json.dumps(config_dict, indent=2, default=str))
+
+                prep_metadata = {
+                    "preparation_time": datetime.now().isoformat(),
+                    "cache_used": True,
+                    "master_excel": str(master_excel_path) if master_excel_path else None,
+                    "cached_from": str(data_dir) if data_dir else None,
+                }
+                (output_path / "preparation_metadata.json").write_text(json.dumps(prep_metadata, indent=2))
+            except Exception as e:
+                logger.warning(
+                    f"Failed to write simulation_config/preparation_metadata JSON for ModelRun {self.id}: {e}"
+                )
+
         def progress_callback(progress):
             # Convert Year objects to integers for JSON serialization
             progress_data = {
