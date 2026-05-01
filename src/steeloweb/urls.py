@@ -54,6 +54,11 @@ urlpatterns = [
     path(
         "modelrun/dataset-metadata-fragment/", views.dataset_metadata_fragment, name="create-modelrun-metadata-fragment"
     ),
+    path(
+        "modelrun/grid-emissions-fragment/",
+        views.grid_emissions_scenario_fragment,
+        name="create-modelrun-grid-emissions-fragment",
+    ),
     # Master Excel URLs
     path("master-excel/", views.MasterExcelFileListView.as_view(), name="master-excel-list"),
     path("master-excel/create/", views.MasterExcelFileCreateView.as_view(), name="master-excel-create"),

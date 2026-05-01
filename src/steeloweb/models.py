@@ -412,6 +412,72 @@ class DataPreparation(models.Model):
             logger.error(f"Unexpected error loading technologies: {e}")
             return {}
 
+    def get_region_emissivity_scenarios(self) -> list[str]:
+        """
+        Get available grid emissivity scenarios from prepared data.
+
+        Reads region_emissivity.json and returns distinct scenario names that have
+        at least one year-of-data ≥ 2025. The cutoff filters out backwards-only
+        scenarios (e.g. "Historical") that would zero out the grid emissivity for
+        every simulated forecast year.
+
+        Returns:
+            Sorted list of scenario names. "Business As Usual" comes first when
+            present, then alphabetical. Empty list if data_directory unset, file
+            missing, or JSON malformed.
+
+        Notes:
+            - Mirrors the defensive pattern used by get_technologies above.
+            - Sheet of origin is the master Excel "Power grid emissivity" tab;
+              scenario names are derived from each unique projection_scenario
+              column value via removeprefix("projection_").replace("_"," ").title().
+        """
+        import json
+        import logging
+
+        logger = logging.getLogger("steeloweb.grid_emissions.ui")
+
+        if not self.data_directory:
+            logger.warning(f"DataPreparation {self.id} has no data_directory")
+            return []
+
+        path = Path(self.data_directory) / "data" / "fixtures" / "region_emissivity.json"
+        if not path.exists():
+            logger.info(f"region_emissivity.json not found at {path}")
+            return []
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in region_emissivity.json: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error reading region_emissivity.json: {e}")
+            return []
+
+        records = data.get("root", []) if isinstance(data, dict) else []
+
+        # Collect scenarios with at least one year ≥ 2025
+        scenarios_with_forecast: set[str] = set()
+        for rec in records:
+            scenario = rec.get("scenario")
+            grid = rec.get("grid_emissivity") or {}
+            if not scenario or not isinstance(grid, dict):
+                continue
+            try:
+                latest_year = max((int(y) for y in grid.keys()), default=0)
+            except (TypeError, ValueError):
+                continue
+            if latest_year >= 2025:
+                scenarios_with_forecast.add(scenario)
+
+        scenarios = sorted(scenarios_with_forecast)
+        if "Business As Usual" in scenarios:
+            scenarios.remove("Business As Usual")
+            scenarios.insert(0, "Business As Usual")
+        return scenarios
+
 
 @dataclass
 class Progress:
@@ -962,6 +1028,28 @@ class ModelRun(models.Model):
                 sim_config_data["geo_config"] = GeoConfig(**geo_config_data)
 
             config = SimulationConfig(**sim_config_data)
+
+        # Write simulation_config.json and preparation_metadata.json alongside the
+        # other run outputs, mirroring the terminal `run_simulation` CLI layout.
+        if output_path:
+            import json
+            from datetime import datetime
+
+            try:
+                config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
+                (output_path / "simulation_config.json").write_text(json.dumps(config_dict, indent=2, default=str))
+
+                prep_metadata = {
+                    "preparation_time": datetime.now().isoformat(),
+                    "cache_used": True,
+                    "master_excel": str(master_excel_path) if master_excel_path else None,
+                    "cached_from": str(data_dir) if data_dir else None,
+                }
+                (output_path / "preparation_metadata.json").write_text(json.dumps(prep_metadata, indent=2))
+            except Exception as e:
+                logger.warning(
+                    f"Failed to write simulation_config/preparation_metadata JSON for ModelRun {self.id}: {e}"
+                )
 
         def progress_callback(progress):
             # Convert Year objects to integers for JSON serialization

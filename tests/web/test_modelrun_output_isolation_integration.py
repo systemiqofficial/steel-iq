@@ -133,6 +133,59 @@ class TestModelRunOutputIsolationIntegration(TransactionTestCase):
                 assert str(model_run.output_directory) in str(config.output_dir)
 
     @patch("steelo.validation.validate_technology_settings")  # Skip validation
+    @patch("steelo.bootstrap.bootstrap_simulation")
+    def test_simulation_writes_config_and_prep_metadata_json(self, mock_bootstrap_simulation, mock_validate):
+        """ModelRun.run() should drop simulation_config.json and preparation_metadata.json
+        into the isolated output directory, mirroring the terminal CLI layout."""
+        import json
+
+        mock_runner_instance = MagicMock()
+        mock_runner_instance.progress_callback = None
+        mock_runner_instance.modelrun_id = None
+        mock_runner_instance.run.return_value = {"status": "success"}
+        mock_bootstrap_simulation.return_value = mock_runner_instance
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(settings, "MEDIA_ROOT", temp_dir):
+                tech_settings = {
+                    "BF": {"allowed": True, "from_year": 2025, "to_year": None},
+                    "BOF": {"allowed": True, "from_year": 2025, "to_year": None},
+                    "EAF": {"allowed": True, "from_year": 2025, "to_year": None},
+                    "DRING": {"allowed": True, "from_year": 2025, "to_year": None},
+                }
+
+                model_run = ModelRun.objects.create(
+                    name="Config JSON Test",
+                    config={
+                        "start_year": 2025,
+                        "end_year": 2026,
+                        "technology_settings": tech_settings,
+                    },
+                    data_preparation=self.data_prep,
+                )
+                model_run.ensure_output_directories()
+
+                model_run.run()
+
+                output_path = Path(model_run.output_directory)
+
+                config_json = output_path / "simulation_config.json"
+                prep_json = output_path / "preparation_metadata.json"
+
+                assert config_json.exists(), "simulation_config.json was not written"
+                assert prep_json.exists(), "preparation_metadata.json was not written"
+
+                config_payload = json.loads(config_json.read_text())
+                assert config_payload["start_year"] == 2025
+                assert config_payload["end_year"] == 2026
+                assert str(output_path) in config_payload["output_dir"]
+
+                prep_payload = json.loads(prep_json.read_text())
+                assert prep_payload["cache_used"] is True
+                assert "preparation_time" in prep_payload
+                assert "master_excel" in prep_payload
+
+    @patch("steelo.validation.validate_technology_settings")  # Skip validation
     @patch("steelo.domain.datacollector.DataCollector")
     @patch("steelo.bootstrap.bootstrap_simulation")
     def test_datacollector_uses_isolated_directory(

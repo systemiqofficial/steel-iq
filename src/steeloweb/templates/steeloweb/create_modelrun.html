@@ -82,6 +82,10 @@ function resetPolicySettings() {
     document.getElementById('id_include_tariffs').checked = true;
     document.getElementById('id_enable_furnace_group_clustering').checked = false;
     document.getElementById('id_cluster_hot_metal_techs_by_plant_group').checked = false;
+    const gridScenario = document.getElementById('id_chosen_grid_emissions_scenario');
+    if (gridScenario && !gridScenario.disabled) {
+        gridScenario.value = 'Business As Usual';
+    }
     // Trigger change to update dependent field disabled state
     document.getElementById('id_enable_furnace_group_clustering').dispatchEvent(new Event('change'));
 }
@@ -1194,6 +1198,48 @@ document.head.appendChild(style);
                                             {{ form.cluster_hot_metal_techs_by_plant_group.errors }}
                                         </div>
                                         {% endif %}
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="id_chosen_grid_emissions_scenario" class="col-sm-3 col-form-label">
+                                        Grid emissivity scenario:
+                                    </label>
+                                    <div class="col-sm-9"
+                                         id="grid-emissions-scenario-wrapper"
+                                         hx-get="{% url 'create-modelrun-grid-emissions-fragment' %}"
+                                         hx-trigger="change from:#id_data_preparation"
+                                         hx-target="this"
+                                         hx-swap="innerHTML"
+                                         hx-include="#id_data_preparation, #id_chosen_grid_emissions_scenario">
+                                        {% if form.fields.chosen_grid_emissions_scenario.choices %}
+                                            {{ form.chosen_grid_emissions_scenario }}
+                                        {% else %}
+                                            <div class="alert alert-warning py-2 mb-2">
+                                                <strong>No grid emissivity scenarios found.</strong>
+                                                Add a <code>projection_&lt;name&gt;</code> row group to the <strong>Power grid emissivity</strong> sheet of the master Excel and re-prepare the data.
+                                            </div>
+                                            <select id="id_chosen_grid_emissions_scenario" class="form-select" disabled>
+                                                <option>No scenarios available — re-prepare data</option>
+                                            </select>
+                                        {% endif %}
+                                        {% if form.chosen_grid_emissions_scenario.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.chosen_grid_emissions_scenario.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted d-block mt-1">
+                                            <strong>Adding a custom scenario:</strong>
+                                            <ul class="mb-0 ps-3">
+                                                <li>Open a new Master Excel (use the provided template)</li>
+                                                <li>Navigate to the <strong>Power grid emissivity</strong> sheet</li>
+                                                <li>Copy the rows for <code>projection_business_as_usual</code></li>
+                                                <li>Paste the rows below and change the values in the carbon-intensity column (<code>ghg_factor_scope_2</code>)</li>
+                                                <li>Rename the <code>projection_scenario</code> cells to <code>projection_&lt;your_name&gt;</code> (e.g. <code>projection_high_renewables</code>)</li>
+                                                <li>Save your new Master Excel, upload and prepare it</li>
+                                                <li>The new scenario will appear here as <strong>"Your Name"</strong> (e.g. <strong>"High Renewables"</strong>)</li>
+                                            </ul>
+                                        </small>
                                     </div>
                                 </div>
 

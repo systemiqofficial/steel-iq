@@ -246,6 +246,9 @@
                             <dt class="col-sm-4">Plant agents:</dt>
                             <dd class="col-sm-8">{{ modelrun.config.probabilistic_agents|yesno:"Probabilistic,Deterministic,—" }}</dd>
 
+                            <dt class="col-sm-4">Grid emissivity scenario:</dt>
+                            <dd class="col-sm-8">{{ modelrun.config.chosen_grid_emissions_scenario|default:"—" }}</dd>
+
                             <dt class="col-sm-4">Iron capacity limit:</dt>
                             <dd class="col-sm-8">
                                 {% if capacity_limit_iron_mt is not None %}{{ capacity_limit_iron_mt|floatformat:"-1" }} Mt{% else %}—{% endif %}
