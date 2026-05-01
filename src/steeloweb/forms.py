@@ -485,6 +485,14 @@ class ModelRunCreateForm(forms.ModelForm):
         widget=forms.Select(attrs={"class": "form-select field-connected"}),
     )
 
+    chosen_grid_emissions_scenario = forms.ChoiceField(
+        choices=[],
+        initial="Business As Usual",
+        required=False,
+        help_text="Trajectory of grid electricity emissivity used to compute indirect emissions for each furnace group.",
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+
     # Placeholder for circularity file selection
     CIRCULARITY_CHOICES = [
         ("", "Default circularity data"),
@@ -723,6 +731,23 @@ class ModelRunCreateForm(forms.ModelForm):
         else:
             self.fields["data_preparation"].empty_label = "No data preparations available"
 
+        # Populate grid emissivity scenario choices from the resolved data preparation.
+        active_prep = None
+        prep_id = (self.data.get("data_preparation") if self.data else None) or self.initial.get("data_preparation")
+        if prep_id:
+            try:
+                active_prep = DataPreparation.objects.get(pk=prep_id, status=DataPreparation.Status.READY)
+            except (DataPreparation.DoesNotExist, ValueError, TypeError):
+                active_prep = None
+        if active_prep is None and ready_preparations.exists():
+            active_prep = ready_preparations.first()
+
+        scenarios = active_prep.get_region_emissivity_scenarios() if active_prep is not None else []
+        self.fields["chosen_grid_emissions_scenario"].choices = [(s, s) for s in scenarios]
+        # Override field-level "Business As Usual" only when it is missing from the prep
+        if scenarios and "Business As Usual" not in scenarios:
+            self.fields["chosen_grid_emissions_scenario"].initial = scenarios[0]
+
     class Meta:
         model = ModelRun
         fields = [
@@ -763,6 +788,7 @@ class ModelRunCreateForm(forms.ModelForm):
             "include_tariffs",
             "enable_furnace_group_clustering",
             "cluster_hot_metal_techs_by_plant_group",
+            "chosen_grid_emissions_scenario",
             # Demand and Circularity
             "total_steel_demand_scenario",
             "green_steel_demand_scenario",

@@ -761,6 +761,9 @@ def create_modelrun(request):
                     "green_steel_demand_scenario", "business_as_usual"
                 ),
                 "scrap_generation_scenario": form.cleaned_data.get("scrap_generation_scenario", "business_as_usual"),
+                "chosen_grid_emissions_scenario": form.cleaned_data.get(
+                    "chosen_grid_emissions_scenario", "Business As Usual"
+                ),
                 "circularity_file": form.cleaned_data.get("circularity_file", ""),
                 # Technology fields will be added after extraction from POST data
                 "hydrogen_subsidies": form.cleaned_data.get("hydrogen_subsidies", False),
@@ -966,6 +969,38 @@ def technologies_fragment(request):
 
 
 @require_http_methods(["GET"])
+@require_http_methods(["GET"])
+def grid_emissions_scenario_fragment(request):
+    """
+    HTMX endpoint: returns the grid emissivity scenario <select> for a given prep.
+
+    Always returns 200 with valid HTML to avoid HTMX error states. Falls back to
+    a disabled empty-state select with instructions when no prep is selected,
+    the prep is not ready, or its region_emissivity.json holds no forecast
+    scenarios.
+    """
+    from django.template.loader import render_to_string
+    from django.http import HttpResponse
+
+    prep_id = request.GET.get("data_preparation")
+    selected = request.GET.get("chosen_grid_emissions_scenario", "Business As Usual")
+
+    scenarios: list[str] = []
+    if prep_id:
+        try:
+            prep = DataPreparation.objects.get(pk=prep_id, status=DataPreparation.Status.READY)
+            scenarios = prep.get_region_emissivity_scenarios()
+        except (DataPreparation.DoesNotExist, ValueError, TypeError):
+            scenarios = []
+
+    html = render_to_string(
+        "steeloweb/partials/_grid_emissions_scenario_select.html",
+        {"scenarios": scenarios, "selected": selected},
+        request=request,
+    )
+    return HttpResponse(html, status=200)
+
+
 def dataset_metadata_fragment(request):
     """
     HTMX endpoint: returns dataset metadata information for a given data preparation.
