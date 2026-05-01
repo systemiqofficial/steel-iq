@@ -344,7 +344,15 @@ class TM_PAM_connector:
             if from_pc.process.type == ProcessType.SUPPLY:
                 self.G.add_node(from_name, product_cost=from_pc.production_cost, unit_cost={})
             else:
-                self.G.add_node(from_name, product_cost={}, unit_cost={})
+                # Producing furnace: stamp own per-unit cost (carbon) so propagation can embed
+                # it into outgoing flows. Consumed via downstream BOMs; never appears in this
+                # furnace's own BOM (built from incoming allocations).
+                self.G.add_node(
+                    from_name,
+                    product_cost={},
+                    unit_cost={},
+                    own_unit_cost=float(from_pc.production_cost or 0.0),
+                )
 
             # Add the destination node, initializing its attrs with same cost logic
             to_name = to_pc.name
@@ -487,6 +495,12 @@ class TM_PAM_connector:
                     export_volume_at_u = export.get(comm, 1.0)
 
                 per_unit_base = base_cost / export_volume_at_u
+                # Embed producing furnaces' own carbon onto outgoing flows. Suppliers
+                # (root nodes) are skipped — their cost already enters via base_cost.
+                if G.in_degree(u) > 0:
+                    own = G.nodes[u].get("own_unit_cost")
+                    if own:
+                        per_unit_base += float(own)
                 unit_cost.update({comm: per_unit_base})
                 if G.out_degree(v) == 0:
                     # print(f"Skipping sink node {v} with no outgoing edges")
