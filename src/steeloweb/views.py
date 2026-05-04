@@ -104,12 +104,24 @@ class ModelRunDetailView(DetailView):
         # Get log file path if available
         context["log_file_path"] = get_log_file_path(self.object.id)
 
-        # Split simulation plots: cost curves and emissions go into their own
-        # collapsible accordions; everything else keeps the flat grid.
+        # Split simulation plots: cost curves, emissions, and the production/capacity
+        # group each go into their own collapsible accordions; anything else falls
+        # through to the flat grid.
         plots_qs = self.object.simulation_plots.all()
         cost_curve = SimulationPlot.PlotType.COST_CURVE
         emissions = SimulationPlot.PlotType.EMISSIONS
-        context["simulation_plots_other"] = plots_qs.exclude(plot_type__in=[cost_curve, emissions])
+        production_capacity = (
+            SimulationPlot.PlotType.PRODUCTION_REGION,
+            SimulationPlot.PlotType.PRODUCTION_TECHNOLOGY,
+            SimulationPlot.PlotType.CAPACITY_REGION,
+            SimulationPlot.PlotType.CAPACITY_TECHNOLOGY,
+        )
+        context["production_and_capacity_plots"] = plots_qs.filter(plot_type__in=production_capacity).order_by(
+            "plot_type", "-product_type", "title"
+        )
+        context["simulation_plots_other"] = plots_qs.exclude(
+            plot_type__in=[cost_curve, emissions, *production_capacity]
+        )
         context["steel_cost_curves"] = plots_qs.filter(plot_type=cost_curve, product_type="steel").order_by("title")
         context["iron_cost_curves"] = plots_qs.filter(plot_type=cost_curve, product_type="iron").order_by("title")
 

@@ -1532,6 +1532,7 @@ class SimulationPlot(models.Model):
         PRODUCTION_REGION = "production_region", "Production by Region"
         PRODUCTION_TECHNOLOGY = "production_technology", "Production by Technology"
         CAPACITY_REGION = "capacity_region", "Capacity by Region"
+        CAPACITY_TECHNOLOGY = "capacity_technology", "Capacity by Technology"
         EMISSIONS = "emissions", "Emissions by Technology"
         OTHER = "other", "Other"
 
@@ -1566,16 +1567,6 @@ class SimulationPlot(models.Model):
 
         # Define plot mappings with metadata
         plot_configs = [
-            {
-                "pattern": "year2year_added_capacity_by_technology.png",
-                "plot_type": cls.PlotType.CAPACITY_ADDED,
-                "title": "Added Capacity by Technology",
-            },
-            {
-                "pattern": "Capacity_development_by_technology.png",
-                "plot_type": cls.PlotType.CAPACITY_DEVELOPMENT,
-                "title": "Capacity Development by Technology",
-            },
             {
                 "pattern": "cost_curves/cost_curve_steel_*.png",
                 "plot_type": cls.PlotType.COST_CURVE,
@@ -1622,6 +1613,18 @@ class SimulationPlot(models.Model):
                 "pattern": "iron_capacity_development_by_region.png",
                 "plot_type": cls.PlotType.CAPACITY_REGION,
                 "title": "Iron Capacity by Region",
+                "product_type": "iron",
+            },
+            {
+                "pattern": "steel_capacity_development_by_technology.png",
+                "plot_type": cls.PlotType.CAPACITY_TECHNOLOGY,
+                "title": "Steel Capacity by Technology",
+                "product_type": "steel",
+            },
+            {
+                "pattern": "iron_capacity_development_by_technology.png",
+                "plot_type": cls.PlotType.CAPACITY_TECHNOLOGY,
+                "title": "Iron Capacity by Technology",
                 "product_type": "iron",
             },
             {

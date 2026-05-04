@@ -363,12 +363,12 @@ class TestSimulationPlot:
         cost_curves_dir.mkdir(parents=True)
 
         pam_files = [
-            "year2year_added_capacity_by_technology.png",
-            "Capacity_development_by_technology.png",
             "steel_production_development_by_region.png",
             "iron_production_development_by_region.png",
             "steel_production_development_by_technology.png",
             "iron_production_development_by_technology.png",
+            "steel_capacity_development_by_technology.png",
+            "iron_capacity_development_by_technology.png",
         ]
         cost_curve_files = [
             "cost_curve_steel_by_region_2030.png",
@@ -389,17 +389,16 @@ class TestSimulationPlot:
 
         # Check plot types
         plot_types = modelrun.simulation_plots.values_list("plot_type", flat=True)
-        assert SimulationPlot.PlotType.CAPACITY_ADDED in plot_types
-        assert SimulationPlot.PlotType.CAPACITY_DEVELOPMENT in plot_types
         assert SimulationPlot.PlotType.COST_CURVE in plot_types
         assert SimulationPlot.PlotType.PRODUCTION_REGION in plot_types
         assert SimulationPlot.PlotType.PRODUCTION_TECHNOLOGY in plot_types
+        assert SimulationPlot.PlotType.CAPACITY_TECHNOLOGY in plot_types
 
         # Check product types
         steel_plots = modelrun.simulation_plots.filter(product_type="steel")
         iron_plots = modelrun.simulation_plots.filter(product_type="iron")
-        assert steel_plots.count() == 3  # cost curve, production by region, production by technology
-        assert iron_plots.count() == 4  # cost curves (x2), production by region, production by technology
+        assert steel_plots.count() == 4  # cost curve, production by region/tech, capacity by tech
+        assert iron_plots.count() == 5  # cost curves (x2), production by region/tech, capacity by tech
 
         # Ensure cost curves keep steel plots ahead of iron plots
         cost_curve_products = list(

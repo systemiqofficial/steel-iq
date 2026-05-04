@@ -499,6 +499,40 @@
                             {% endfor %}
                         </div>
 
+                        {% if production_and_capacity_plots %}
+                        <div class="accordion mb-3" id="productionCapacityAccordion">
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="productionCapacityHeading">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#productionCapacityCollapse" aria-expanded="false" aria-controls="productionCapacityCollapse">
+                                        Production and Capacity ({{ production_and_capacity_plots|length }})
+                                    </button>
+                                </h2>
+                                <div id="productionCapacityCollapse" class="accordion-collapse collapse" aria-labelledby="productionCapacityHeading" data-bs-parent="#productionCapacityAccordion">
+                                    <div class="accordion-body">
+                                        <div class="row">
+                                            {% for plot in production_and_capacity_plots %}
+                                            <div class="col-md-6 mb-3">
+                                                <div class="card">
+                                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" target="_blank" rel="noopener">
+                                                        <img src="{{ plot.image.url }}" class="card-img-top" alt="{{ plot.title }}" style="cursor: pointer;">
+                                                    </a>
+                                                    <div class="card-body">
+                                                        <p class="card-text text-center">
+                                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" class="text-decoration-none" target="_blank" rel="noopener">
+                                                                {{ plot.title }}
+                                                            </a>
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+
                         {% if steel_cost_curves or iron_cost_curves %}
                         <div class="accordion" id="costCurvesAccordion">
                             {% if steel_cost_curves %}

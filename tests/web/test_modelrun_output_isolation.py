@@ -265,14 +265,14 @@ class TestModelRunOutputIsolation:
                 # Create a simple test image
                 test_png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\x0c\x0c\x00\x00\x00\x00IEND\xaeB`\x82"
 
-                (pam_dir / "year2year_added_capacity_by_technology.png").write_bytes(test_png)
+                (pam_dir / "steel_capacity_development_by_technology.png").write_bytes(test_png)
 
                 # Capture plots
                 plots = SimulationPlot.capture_simulation_plots(model_run)
 
                 assert len(plots) == 1
                 assert plots[0].modelrun == model_run
-                assert plots[0].plot_type == SimulationPlot.PlotType.CAPACITY_ADDED
+                assert plots[0].plot_type == SimulationPlot.PlotType.CAPACITY_TECHNOLOGY
 
 
 @pytest.mark.django_db
