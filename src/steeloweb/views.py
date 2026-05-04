@@ -1115,7 +1115,13 @@ def view_cost_map(request, pk, map_type):
             )
             return redirect("modelrun-detail", pk=pk)
 
-        context = {"modelrun": modelrun, "image": image, "title": title, "map_type": map_type}
+        context = {
+            "modelrun": modelrun,
+            "image": image,
+            "title": title,
+            "map_type": map_type,
+            "popup": request.GET.get("popup") == "1",
+        }
         return render(request, "steeloweb/result_map.html", context)
     except ResultImages.DoesNotExist:
         messages.error(request, "No result images available for this model run")
@@ -1148,7 +1154,13 @@ def view_priority_map(request, pk, map_type):
             )
             return redirect("modelrun-detail", pk=pk)
 
-        context = {"modelrun": modelrun, "image": image, "title": title, "map_type": map_type}
+        context = {
+            "modelrun": modelrun,
+            "image": image,
+            "title": title,
+            "map_type": map_type,
+            "popup": request.GET.get("popup") == "1",
+        }
         return render(request, "steeloweb/result_map.html", context)
     except ResultImages.DoesNotExist:
         messages.error(request, "No result images available for this model run")
@@ -1193,6 +1205,7 @@ def view_plant_visualization(request, pk, visualization_type):
             "image": image,
             "title": viz_info["title"],
             "visualization_type": visualization_type,
+            "popup": request.GET.get("popup") == "1",
         }
         return render(request, "steeloweb/result_map.html", context)
     except ResultImages.DoesNotExist:
@@ -1240,6 +1253,7 @@ def view_simulation_plot(request, pk, plot_id):
         "plot": plot,
         "image": plot.image,
         "title": plot.title,
+        "popup": request.GET.get("popup") == "1",
     }
     return render(request, "steeloweb/simulation_plot.html", context)
 

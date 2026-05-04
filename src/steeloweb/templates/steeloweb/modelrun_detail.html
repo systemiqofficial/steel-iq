@@ -415,10 +415,10 @@
                                     <div class="card-header bg-light">Cost Maps</div>
                                     <div class="card-body">
                                         <div class="d-grid gap-2">
-                                            <a href="{% url 'view-cost-map' pk=modelrun.id map_type='lcoe' %}" class="btn btn-outline-primary">
+                                            <a href="{% url 'view-cost-map' pk=modelrun.id map_type='lcoe' %}?popup=1" class="btn btn-outline-primary" target="_blank" rel="noopener">
                                                 <i class="fas fa-map"></i> Levelized Cost of Electricity (LCOE)
                                             </a>
-                                            <a href="{% url 'view-cost-map' pk=modelrun.id map_type='lcoh' %}" class="btn btn-outline-primary">
+                                            <a href="{% url 'view-cost-map' pk=modelrun.id map_type='lcoh' %}?popup=1" class="btn btn-outline-primary" target="_blank" rel="noopener">
                                                 <i class="fas fa-map"></i> Levelized Cost of Hydrogen (LCOH)
                                             </a>
                                         </div>
@@ -430,10 +430,10 @@
                                     <div class="card-header bg-light">Priority Locations</div>
                                     <div class="card-body">
                                         <div class="d-grid gap-2">
-                                            <a href="{% url 'view-priority-map' pk=modelrun.id map_type='iron' %}" class="btn btn-outline-success">
+                                            <a href="{% url 'view-priority-map' pk=modelrun.id map_type='iron' %}?popup=1" class="btn btn-outline-success" target="_blank" rel="noopener">
                                                 <i class="fas fa-map-marked-alt"></i> Top 5% Locations for Iron Production
                                             </a>
-                                            <a href="{% url 'view-priority-map' pk=modelrun.id map_type='steel' %}" class="btn btn-outline-success">
+                                            <a href="{% url 'view-priority-map' pk=modelrun.id map_type='steel' %}?popup=1" class="btn btn-outline-success" target="_blank" rel="noopener">
                                                 <i class="fas fa-map-marked-alt"></i> Top 5% Locations for Steel Production
                                             </a>
                                         </div>
@@ -447,10 +447,10 @@
                                     <div class="card-header bg-light">New Plants Map</div>
                                     <div class="card-body">
                                         <div class="d-grid gap-2">
-                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='iron-construction' %}" class="btn btn-outline-info">
+                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='iron-construction' %}?popup=1" class="btn btn-outline-info" target="_blank" rel="noopener">
                                                 <i class="fas fa-map-marked-alt"></i> Iron Plants Operating Map
                                             </a>
-                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='steel-construction' %}" class="btn btn-outline-info">
+                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='steel-construction' %}?popup=1" class="btn btn-outline-info" target="_blank" rel="noopener">
                                                 <i class="fas fa-map-marked-alt"></i> Steel Plants Operating Map
                                             </a>
                                         </div>
@@ -462,10 +462,10 @@
                                     <div class="card-header bg-light">New Plants by Status</div>
                                     <div class="card-body">
                                         <div class="d-grid gap-2">
-                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='iron-status' %}" class="btn btn-outline-warning">
+                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='iron-status' %}?popup=1" class="btn btn-outline-warning" target="_blank" rel="noopener">
                                                 <i class="fas fa-chart-bar"></i> Iron Plants by Status Chart
                                             </a>
-                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='steel-status' %}" class="btn btn-outline-warning">
+                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='steel-status' %}?popup=1" class="btn btn-outline-warning" target="_blank" rel="noopener">
                                                 <i class="fas fa-chart-bar"></i> Steel Plants by Status Chart
                                             </a>
                                         </div>
@@ -484,12 +484,12 @@
                             {% for plot in simulation_plots_other %}
                             <div class="col-md-6 mb-3">
                                 <div class="card">
-                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}">
+                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" target="_blank" rel="noopener">
                                         <img src="{{ plot.image.url }}" class="card-img-top" alt="{{ plot.title }}" style="cursor: pointer;">
                                     </a>
                                     <div class="card-body">
                                         <p class="card-text text-center">
-                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}" class="text-decoration-none">
+                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" class="text-decoration-none" target="_blank" rel="noopener">
                                                 {{ plot.title }}
                                             </a>
                                         </p>
@@ -514,12 +514,12 @@
                                             {% for plot in steel_cost_curves %}
                                             <div class="col-md-6 mb-3">
                                                 <div class="card">
-                                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}">
+                                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" target="_blank" rel="noopener">
                                                         <img src="{{ plot.image.url }}" class="card-img-top" alt="{{ plot.title }}" style="cursor: pointer;">
                                                     </a>
                                                     <div class="card-body">
                                                         <p class="card-text text-center">
-                                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}" class="text-decoration-none">
+                                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" class="text-decoration-none" target="_blank" rel="noopener">
                                                                 {{ plot.title }}
                                                             </a>
                                                         </p>
@@ -545,12 +545,12 @@
                                             {% for plot in iron_cost_curves %}
                                             <div class="col-md-6 mb-3">
                                                 <div class="card">
-                                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}">
+                                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" target="_blank" rel="noopener">
                                                         <img src="{{ plot.image.url }}" class="card-img-top" alt="{{ plot.title }}" style="cursor: pointer;">
                                                     </a>
                                                     <div class="card-body">
                                                         <p class="card-text text-center">
-                                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}" class="text-decoration-none">
+                                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" class="text-decoration-none" target="_blank" rel="noopener">
                                                                 {{ plot.title }}
                                                             </a>
                                                         </p>
@@ -581,12 +581,12 @@
                                             {% for plot in emissions_plots %}
                                             <div class="col-md-6 mb-3">
                                                 <div class="card">
-                                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}">
+                                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" target="_blank" rel="noopener">
                                                         <img src="{{ plot.image.url }}" class="card-img-top" alt="{{ plot.title }}" style="cursor: pointer;">
                                                     </a>
                                                     <div class="card-body">
                                                         <p class="card-text text-center">
-                                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}" class="text-decoration-none">
+                                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" class="text-decoration-none" target="_blank" rel="noopener">
                                                                 {{ plot.title }}
                                                             </a>
                                                         </p>

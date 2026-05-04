@@ -268,10 +268,15 @@ class TestModelRunDetailWithImages:
         assert "Simulation Results" in content
 
         # Check for links to the image views
-        assert f'href="{reverse("view-cost-map", kwargs={"pk": model_run.id, "map_type": "lcoe"})}"' in content
-        assert f'href="{reverse("view-cost-map", kwargs={"pk": model_run.id, "map_type": "lcoh"})}"' in content
-        assert f'href="{reverse("view-priority-map", kwargs={"pk": model_run.id, "map_type": "iron"})}"' in content
-        assert f'href="{reverse("view-priority-map", kwargs={"pk": model_run.id, "map_type": "steel"})}"' in content
+        assert f'href="{reverse("view-cost-map", kwargs={"pk": model_run.id, "map_type": "lcoe"})}?popup=1"' in content
+        assert f'href="{reverse("view-cost-map", kwargs={"pk": model_run.id, "map_type": "lcoh"})}?popup=1"' in content
+        assert (
+            f'href="{reverse("view-priority-map", kwargs={"pk": model_run.id, "map_type": "iron"})}?popup=1"' in content
+        )
+        assert (
+            f'href="{reverse("view-priority-map", kwargs={"pk": model_run.id, "map_type": "steel"})}?popup=1"'
+            in content
+        )
 
         # Check for text descriptions
         assert "Levelized Cost of Electricity (LCOE)" in content
