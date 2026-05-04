@@ -580,7 +580,9 @@ class AllocationModel:
             output_dir = bus.env.output_dir
             if output_dir is None:
                 raise ValueError("output_dir must be set on bus.env")
-            with open(output_dir / f"steel_trade_allocations_{bus.env.year}.pkl", "wb") as f:
+            tm_dir = output_dir / "TM"
+            tm_dir.mkdir(parents=True, exist_ok=True)
+            with open(tm_dir / f"steel_trade_allocations_{bus.env.year}.pkl", "wb") as f:
                 pickle.dump(trade_lp_allocations, f)
             if (event := SteelAllocationsCalculated(trade_allocations=trade_lp_allocations)) is not None:
                 bus.handle(event)

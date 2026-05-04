@@ -50,79 +50,190 @@
             </div>
 
             <!-- Files by Directory -->
-            {% if files_by_directory %}
-                {% for dir_name, files in files_by_directory.items %}
-                <div class="card mb-4">
-                    <div class="card-header">
-                        <h5 class="mb-0">
-                            <i class="fas fa-folder"></i> {{ dir_name }}
-                            <span class="badge bg-secondary ms-2">{{ files|length }} file{{ files|length|pluralize }}</span>
-                        </h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="table-responsive">
-                            <table class="table table-sm table-hover">
-                                <thead>
-                                    <tr>
-                                        <th style="width: 40%;">File Name</th>
-                                        <th>Type</th>
-                                        <th class="text-end">Size</th>
-                                        <th class="text-center">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for file in files %}
-                                    <tr>
-                                        <td>
-                                            <i class="fas {{ file.icon }} text-muted me-2"></i>
-                                            {% if file.is_viewable %}
-                                                <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}" 
-                                                   class="text-decoration-none">
-                                                    {{ file.name }}
-                                                </a>
-                                            {% elif file.is_image %}
-                                                <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}" 
-                                                   class="text-decoration-none"
-                                                   target="_blank">
-                                                    {{ file.name }}
-                                                </a>
-                                            {% else %}
-                                                {{ file.name }}
-                                            {% endif %}
-                                        </td>
-                                        <td class="text-muted">{{ file.type }}</td>
-                                        <td class="text-end text-muted">{{ file.size_display }}</td>
-                                        <td class="text-center">
-                                            <div class="btn-group btn-group-sm" role="group">
-                                                {% if file.is_viewable %}
-                                                    <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}" 
-                                                       class="btn btn-outline-primary"
-                                                       title="View {{ file.name }}">
-                                                        <i class="fas fa-eye"></i>
-                                                    </a>
-                                                {% elif file.is_image %}
-                                                    <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}" 
-                                                       class="btn btn-outline-primary"
-                                                       target="_blank"
-                                                       title="View {{ file.name }}">
-                                                        <i class="fas fa-image"></i>
-                                                    </a>
-                                                {% endif %}
-                                                <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}?download=1" 
-                                                   class="btn btn-outline-secondary"
-                                                   title="Download {{ file.name }}">
-                                                    <i class="fas fa-download"></i>
-                                                </a>
+            {% if sections %}
+                <div class="accordion mb-4" id="outputFilesAccordion"
+                     style="--bs-accordion-active-bg: var(--bs-accordion-bg);
+                            --bs-accordion-active-color: inherit;
+                            --bs-accordion-btn-focus-box-shadow: none;
+                            --bs-accordion-btn-focus-border-color: var(--bs-accordion-border-color);">
+                    {% for section in sections %}
+                    <div class="accordion-item">
+                        <h2 class="accordion-header" id="outputFilesHeading{{ forloop.counter }}">
+                            <button class="accordion-button collapsed" type="button"
+                                    data-bs-toggle="collapse"
+                                    data-bs-target="#outputFilesCollapse{{ forloop.counter }}"
+                                    aria-expanded="false"
+                                    aria-controls="outputFilesCollapse{{ forloop.counter }}">
+                                <i class="fas fa-folder me-2"></i>
+                                <span class="fw-semibold">{{ section.name }}</span>
+                                {% if section.subsections %}
+                                    <span class="badge bg-secondary ms-2">{{ section.subsections|length }} folder{{ section.subsections|length|pluralize }}</span>
+                                {% else %}
+                                    <span class="badge bg-secondary ms-2">{{ section.files|length }} file{{ section.files|length|pluralize }}</span>
+                                {% endif %}
+                            </button>
+                        </h2>
+                        <div id="outputFilesCollapse{{ forloop.counter }}"
+                             class="accordion-collapse collapse"
+                             aria-labelledby="outputFilesHeading{{ forloop.counter }}"
+                             data-bs-parent="#outputFilesAccordion">
+                            <div class="accordion-body">
+                                {% if section.subsections %}
+                                    <div class="accordion" id="innerAccordion{{ forloop.counter }}"
+                                         style="--bs-accordion-active-bg: var(--bs-accordion-bg);
+                                                --bs-accordion-active-color: inherit;
+                                                --bs-accordion-btn-focus-box-shadow: none;
+                                                --bs-accordion-btn-focus-border-color: var(--bs-accordion-border-color);">
+                                        {% for sub in section.subsections %}
+                                        <div class="accordion-item">
+                                            <h2 class="accordion-header" id="innerHeading{{ forloop.parentloop.counter }}_{{ forloop.counter }}">
+                                                <button class="accordion-button collapsed" type="button"
+                                                        data-bs-toggle="collapse"
+                                                        data-bs-target="#innerCollapse{{ forloop.parentloop.counter }}_{{ forloop.counter }}"
+                                                        aria-expanded="false"
+                                                        aria-controls="innerCollapse{{ forloop.parentloop.counter }}_{{ forloop.counter }}">
+                                                    <i class="fas fa-folder me-2"></i>
+                                                    <span class="fw-semibold">{{ sub.name }}</span>
+                                                    <span class="badge bg-secondary ms-2">{{ sub.files|length }} file{{ sub.files|length|pluralize }}</span>
+                                                </button>
+                                            </h2>
+                                            <div id="innerCollapse{{ forloop.parentloop.counter }}_{{ forloop.counter }}"
+                                                 class="accordion-collapse collapse"
+                                                 aria-labelledby="innerHeading{{ forloop.parentloop.counter }}_{{ forloop.counter }}"
+                                                 data-bs-parent="#innerAccordion{{ forloop.parentloop.counter }}">
+                                                <div class="accordion-body">
+                                                    <div class="table-responsive">
+                                                        <table class="table table-sm table-hover">
+                                                            <thead>
+                                                                <tr>
+                                                                    <th style="width: 40%;">File Name</th>
+                                                                    <th>Type</th>
+                                                                    <th class="text-end">Size</th>
+                                                                    <th class="text-center">Actions</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody>
+                                                                {% for file in sub.files %}
+                                                                <tr>
+                                                                    <td>
+                                                                        <i class="fas {{ file.icon }} text-muted me-2"></i>
+                                                                        {% if file.is_viewable %}
+                                                                            <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}"
+                                                                               class="text-decoration-none">
+                                                                                {{ file.name }}
+                                                                            </a>
+                                                                        {% elif file.is_image %}
+                                                                            <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}"
+                                                                               class="text-decoration-none"
+                                                                               target="_blank">
+                                                                                {{ file.name }}
+                                                                            </a>
+                                                                        {% else %}
+                                                                            {{ file.name }}
+                                                                        {% endif %}
+                                                                    </td>
+                                                                    <td class="text-muted">{{ file.type }}</td>
+                                                                    <td class="text-end text-muted">{{ file.size_display }}</td>
+                                                                    <td class="text-center">
+                                                                        <div class="btn-group btn-group-sm" role="group">
+                                                                            {% if file.is_viewable %}
+                                                                                <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}"
+                                                                                   class="btn btn-outline-primary"
+                                                                                   title="View {{ file.name }}">
+                                                                                    <i class="fas fa-eye"></i>
+                                                                                </a>
+                                                                            {% elif file.is_image %}
+                                                                                <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}"
+                                                                                   class="btn btn-outline-primary"
+                                                                                   target="_blank"
+                                                                                   title="View {{ file.name }}">
+                                                                                    <i class="fas fa-image"></i>
+                                                                                </a>
+                                                                            {% endif %}
+                                                                            <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}?download=1"
+                                                                               class="btn btn-outline-secondary"
+                                                                               title="Download {{ file.name }}">
+                                                                                <i class="fas fa-download"></i>
+                                                                            </a>
+                                                                        </div>
+                                                                    </td>
+                                                                </tr>
+                                                                {% endfor %}
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                </div>
                                             </div>
-                                        </td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
+                                        </div>
+                                        {% endfor %}
+                                    </div>
+                                {% else %}
+                                    <div class="table-responsive">
+                                        <table class="table table-sm table-hover">
+                                            <thead>
+                                                <tr>
+                                                    <th style="width: 40%;">File Name</th>
+                                                    <th>Type</th>
+                                                    <th class="text-end">Size</th>
+                                                    <th class="text-center">Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {% for file in section.files %}
+                                                <tr>
+                                                    <td>
+                                                        <i class="fas {{ file.icon }} text-muted me-2"></i>
+                                                        {% if file.is_viewable %}
+                                                            <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}"
+                                                               class="text-decoration-none">
+                                                                {{ file.name }}
+                                                            </a>
+                                                        {% elif file.is_image %}
+                                                            <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}"
+                                                               class="text-decoration-none"
+                                                               target="_blank">
+                                                                {{ file.name }}
+                                                            </a>
+                                                        {% else %}
+                                                            {{ file.name }}
+                                                        {% endif %}
+                                                    </td>
+                                                    <td class="text-muted">{{ file.type }}</td>
+                                                    <td class="text-end text-muted">{{ file.size_display }}</td>
+                                                    <td class="text-center">
+                                                        <div class="btn-group btn-group-sm" role="group">
+                                                            {% if file.is_viewable %}
+                                                                <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}"
+                                                                   class="btn btn-outline-primary"
+                                                                   title="View {{ file.name }}">
+                                                                    <i class="fas fa-eye"></i>
+                                                                </a>
+                                                            {% elif file.is_image %}
+                                                                <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}"
+                                                                   class="btn btn-outline-primary"
+                                                                   target="_blank"
+                                                                   title="View {{ file.name }}">
+                                                                    <i class="fas fa-image"></i>
+                                                                </a>
+                                                            {% endif %}
+                                                            <a href="{% url 'view-modelrun-output-file' pk=modelrun.pk filepath=file.relative_path %}?download=1"
+                                                               class="btn btn-outline-secondary"
+                                                               title="Download {{ file.name }}">
+                                                                <i class="fas fa-download"></i>
+                                                            </a>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                                {% endfor %}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                {% endif %}
+                            </div>
                         </div>
                     </div>
+                    {% endfor %}
                 </div>
-                {% endfor %}
             {% else %}
                 <div class="alert alert-warning">
                     <i class="fas fa-exclamation-triangle"></i>

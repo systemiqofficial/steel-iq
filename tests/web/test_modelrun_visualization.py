@@ -37,10 +37,8 @@ class TestModelRunVisualization:
     def test_capture_result_csv_no_csv_files(self, tmp_path):
         """Test CSV capture when no CSV files exist."""
         modelrun = ModelRun.objects.create(state=ModelRun.RunState.RUNNING)
-        output_dir = tmp_path / "TM"
-        output_dir.mkdir(parents=True)
 
-        result = modelrun.capture_result_csv(output_dir=output_dir)
+        result = modelrun.capture_result_csv(output_dir=tmp_path)
 
         assert result is False
         assert not modelrun.result_csv
@@ -48,15 +46,12 @@ class TestModelRunVisualization:
     def test_capture_result_csv_single_file(self, tmp_path, media_root):
         """Test CSV capture with a single CSV file."""
         modelrun = ModelRun.objects.create(state=ModelRun.RunState.RUNNING)
-        output_dir = tmp_path / "TM"
-        output_dir.mkdir(parents=True)
 
-        # Create a test CSV file
-        csv_file = output_dir / "post_processed_2025-06-20 10-30.csv"
+        csv_file = tmp_path / "post_processed_2025-06-20_10-30.csv"
         csv_content = "year,location,technology,production\n2025,USA,BF-BOF,1000\n"
         csv_file.write_text(csv_content)
 
-        result = modelrun.capture_result_csv(output_dir=output_dir.parent)
+        result = modelrun.capture_result_csv(output_dir=tmp_path)
 
         assert result is True
         assert modelrun.result_csv
@@ -66,24 +61,20 @@ class TestModelRunVisualization:
     def test_capture_result_csv_multiple_files(self, tmp_path, media_root):
         """Test CSV capture selects the most recent file."""
         modelrun = ModelRun.objects.create(state=ModelRun.RunState.RUNNING)
-        output_dir = tmp_path / "TM"
-        output_dir.mkdir(parents=True)
 
-        # Create multiple CSV files with different timestamps
-        old_file = output_dir / "post_processed_2025-06-19 10-30.csv"
+        old_file = tmp_path / "post_processed_2025-06-19_10-30.csv"
         old_file.write_text("old data")
-        old_file.touch()  # Ensure it exists
+        old_file.touch()
 
-        # Wait a moment to ensure different mtime
         import time
 
         time.sleep(0.01)
 
-        new_file = output_dir / "post_processed_2025-06-20 10-30.csv"
+        new_file = tmp_path / "post_processed_2025-06-20_10-30.csv"
         new_content = "year,location,technology,production\n2025,USA,EAF,2000\n"
         new_file.write_text(new_content)
 
-        result = modelrun.capture_result_csv(output_dir=output_dir.parent)
+        result = modelrun.capture_result_csv(output_dir=tmp_path)
 
         assert result is True
         assert modelrun.result_csv
@@ -92,19 +83,16 @@ class TestModelRunVisualization:
     def test_capture_result_csv_exception_handling(self, tmp_path, monkeypatch):
         """Test CSV capture handles exceptions gracefully."""
         modelrun = ModelRun.objects.create(state=ModelRun.RunState.RUNNING)
-        output_dir = tmp_path / "TM"
-        output_dir.mkdir(parents=True)
 
-        csv_file = output_dir / "post_processed_2025-06-20 10-30.csv"
+        csv_file = tmp_path / "post_processed_2025-06-20_10-30.csv"
         csv_file.write_text("test data")
 
-        # Mock open to raise an exception
         def mock_open(*args, **kwargs):
             raise IOError("Cannot read file")
 
         monkeypatch.setattr("builtins.open", mock_open)
 
-        result = modelrun.capture_result_csv(output_dir=output_dir.parent)
+        result = modelrun.capture_result_csv(output_dir=tmp_path)
 
         assert result is False
 

@@ -203,10 +203,8 @@ class TestModelRunOutputIsolation:
                 model_run.ensure_output_directories()
                 output_path = Path(model_run.output_directory)
 
-                # Create a test CSV file in the TM directory
-                tm_dir = output_path / "TM"
-                tm_dir.mkdir(exist_ok=True)
-                csv_file = tm_dir / "post_processed_2024-01-01.csv"
+                # Create a test CSV file at the run's root output path
+                csv_file = output_path / "post_processed_2024-01-01_00-00.csv"
                 csv_file.write_text("col1,col2\nval1,val2\n")
 
                 # Capture the CSV

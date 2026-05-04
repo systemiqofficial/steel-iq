@@ -1235,13 +1235,10 @@ class ModelRun(models.Model):
             if not output_dir:
                 raise ValueError("ModelRun must have an output path set")
 
-        # Append TM subdirectory
-        output_dir = output_dir / "TM"
-
         if not output_dir.exists():
             return False
 
-        # Find the most recent post_processed CSV file
+        # Find the most recent post_processed CSV file (now at the run's root)
         csv_files = list(output_dir.glob("post_processed_*.csv"))
         if not csv_files:
             return False
