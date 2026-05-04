@@ -1176,6 +1176,36 @@ def find_iso3s_of_trade_bloc(country_mappings: list, bloc_name: str, negation: b
     return iso3_codes
 
 
+def _resolve_iso3_or_bloc_entry(entry: str, country_mappings: list, supported_blocs: list[str]) -> list[str]:
+    """Resolve a tariff sheet 'From ISO3' / 'To ISO3' entry to a list of iso3 codes.
+
+    Recognized forms:
+        - "DEU"     → ["DEU"]
+        - "EU"      → all iso3s where mapping.EU is True
+        - "NOT EU"  → all iso3s where mapping.EU is False
+        - "NOT DEU" → all known iso3s except "DEU"
+        - "*"       → ["*"] (kept as a literal wildcard for downstream matching)
+
+    For "NOT <X>", <X> is first looked up as a trade bloc; if it is not a known bloc,
+    it is treated as a single iso3 code and negated against the full iso3 list from
+    ``country_mappings``. Raises ``ValueError`` if <X> is neither.
+    """
+    if entry.startswith("NOT "):
+        target = entry[4:]
+        if target in supported_blocs:
+            return find_iso3s_of_trade_bloc(country_mappings, target, negation=True)
+        all_iso3s = [c.iso3 for c in country_mappings] if country_mappings else []
+        if target not in all_iso3s:
+            raise ValueError(
+                f"'NOT {target}' references neither a known trade bloc nor a known iso3. "
+                f"Available trade blocs: {', '.join(supported_blocs) if supported_blocs else '(none)'}"
+            )
+        return [iso3 for iso3 in all_iso3s if iso3 != target]
+    if entry in supported_blocs:
+        return find_iso3s_of_trade_bloc(country_mappings, entry)
+    return [entry]
+
+
 def read_carbon_costs(carbon_cost_excel_path: Path, sheet_name="Carbon cost") -> list[CarbonCostSeries]:
     """
     Read carbon costs from an Excel file and return a list of CarbonCostSeries objects.
@@ -1436,24 +1466,8 @@ def read_tariffs(tariff_excel_path: str, tariff_sheet_name: str, country_mapping
         from_iso3_entry = row["From ISO3"]
         to_iso3_entry = row["To ISO3"]
 
-        # Process "From ISO3" entry
-        # if it starts with a NOT (then it's the negation of a trade bloc)
-        if from_iso3_entry.startswith("NOT "):
-            from_iso3_bloc = from_iso3_entry[4:]
-            from_iso3_list = find_iso3s_of_trade_bloc(country_mappings, from_iso3_bloc, negation=True)
-        elif from_iso3_entry in supported_blocs:
-            from_iso3_list = find_iso3s_of_trade_bloc(country_mappings, from_iso3_entry)
-        else:
-            from_iso3_list = [from_iso3_entry]
-
-        # Process "To ISO3" entry
-        if to_iso3_entry.startswith("NOT "):
-            to_iso3_bloc = to_iso3_entry[4:]
-            to_iso3_list = find_iso3s_of_trade_bloc(country_mappings, to_iso3_bloc, negation=True)
-        elif to_iso3_entry in supported_blocs:
-            to_iso3_list = find_iso3s_of_trade_bloc(country_mappings, to_iso3_entry)
-        else:
-            to_iso3_list = [to_iso3_entry]
+        from_iso3_list = _resolve_iso3_or_bloc_entry(from_iso3_entry, country_mappings, supported_blocs)
+        to_iso3_list = _resolve_iso3_or_bloc_entry(to_iso3_entry, country_mappings, supported_blocs)
 
         for from_iso3 in from_iso3_list:
             for to_iso3 in to_iso3_list:
