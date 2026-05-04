@@ -1101,6 +1101,19 @@ def get_modelrun_progress(request, pk):
     return render(request, "steeloweb/includes/progress_bar.html", context)
 
 
+def _missing_image_response(request, pk, message):
+    """Render a popup-only message when ?popup=1, else flash + redirect to detail.
+
+    Without this, the redirect lands on the full modelrun-detail page inside the
+    popup window, exposing the whole site UI when only an "X not available"
+    notice is wanted.
+    """
+    if request.GET.get("popup") == "1":
+        return render(request, "steeloweb/popup_message.html", {"popup": True, "message": message})
+    messages.error(request, message)
+    return redirect("modelrun-detail", pk=pk)
+
+
 def view_cost_map(request, pk, map_type):
     """
     View for displaying cost maps (LCOE or LCOH)
@@ -1120,12 +1133,12 @@ def view_cost_map(request, pk, map_type):
             raise Http404("Invalid map type")
 
         if not image:
-            messages.error(
+            return _missing_image_response(
                 request,
+                pk,
                 f"{title} not available for this model run. "
                 f"This may occur if plot generation failed or certain configuration options were selected.",
             )
-            return redirect("modelrun-detail", pk=pk)
 
         context = {
             "modelrun": modelrun,
@@ -1136,8 +1149,7 @@ def view_cost_map(request, pk, map_type):
         }
         return render(request, "steeloweb/result_map.html", context)
     except ResultImages.DoesNotExist:
-        messages.error(request, "No result images available for this model run")
-        return redirect("modelrun-detail", pk=pk)
+        return _missing_image_response(request, pk, "No result images available for this model run")
 
 
 def view_priority_map(request, pk, map_type):
@@ -1159,12 +1171,12 @@ def view_priority_map(request, pk, map_type):
             raise Http404("Invalid map type")
 
         if not image:
-            messages.error(
+            return _missing_image_response(
                 request,
+                pk,
                 f"{title} not available for this model run. "
                 f"This may occur if plot generation failed or certain configuration options were selected.",
             )
-            return redirect("modelrun-detail", pk=pk)
 
         context = {
             "modelrun": modelrun,
@@ -1175,8 +1187,7 @@ def view_priority_map(request, pk, map_type):
         }
         return render(request, "steeloweb/result_map.html", context)
     except ResultImages.DoesNotExist:
-        messages.error(request, "No result images available for this model run")
-        return redirect("modelrun-detail", pk=pk)
+        return _missing_image_response(request, pk, "No result images available for this model run")
 
 
 def view_plant_visualization(request, pk, visualization_type):
@@ -1209,8 +1220,9 @@ def view_plant_visualization(request, pk, visualization_type):
         image = getattr(result_images, viz_info["field"])
 
         if not image:
-            messages.error(request, f"No {viz_info['title']} visualization available for this model run")
-            return redirect("modelrun-detail", pk=pk)
+            return _missing_image_response(
+                request, pk, f"No {viz_info['title']} visualization available for this model run"
+            )
 
         context = {
             "modelrun": modelrun,
@@ -1221,8 +1233,7 @@ def view_plant_visualization(request, pk, visualization_type):
         }
         return render(request, "steeloweb/result_map.html", context)
     except ResultImages.DoesNotExist:
-        messages.error(request, "No result images available for this model run")
-        return redirect("modelrun-detail", pk=pk)
+        return _missing_image_response(request, pk, "No result images available for this model run")
 
 
 def upload_circularity_data(request, modelrun_id=None):
