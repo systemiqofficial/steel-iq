@@ -3879,10 +3879,52 @@ def disaggregate_allocations(
         dumped_per_fg=dumped_per_fg,
     )
 
+    # Inherit cluster-level per-tonne LP costs onto each disaggregated FG-pair flow.
+    # The LP objective coefficient is identical for every constituent FG within a
+    # (from_cluster, to_cluster) pair, so we map disaggregated keys back to their
+    # cluster pair (suppliers/demand centres pass through unchanged) and copy the
+    # cost across. Hot/cold substitution (see line above) means the disaggregated
+    # commodity may not match the LP commodity exactly — fall back to the equivalent.
+    fg_to_cluster_id = {
+        fg_id: meta_fg.meta_furnace_group_id for meta_fg in meta_furnace_groups for fg_id in meta_fg.constituent_fg_ids
+    }
+    cluster_costs_by_name: dict[tuple[str, str, str], float] = {}
+    if clustered_allocations.allocation_costs is not None:
+        for (c_from, c_to, c_comm), cost in clustered_allocations.allocation_costs.items():
+            cluster_costs_by_name[(c_from.name, c_to.name, c_comm.name.lower())] = cost
+
+    disaggregated_costs: dict = {}
+    matched_count = 0
+    unmatched_examples: list[tuple] = []
+    for from_pc, to_pc, comm in disaggregated_allocs:
+        from_key = fg_to_cluster_id.get(from_pc.name, from_pc.name)
+        to_key = fg_to_cluster_id.get(to_pc.name, to_pc.name)
+        matched: float = 0.0
+        found = False
+        for comm_name in _commodity_equivalent_names(comm):
+            cost = cluster_costs_by_name.get((from_key, to_key, comm_name))
+            if cost is not None:
+                matched = cost
+                matched_count += 1
+                found = True
+                break
+        if not found and len(unmatched_examples) < 10:
+            unmatched_examples.append((from_pc.name, to_pc.name, comm.name, from_key, to_key))
+        disaggregated_costs[(from_pc, to_pc, comm)] = matched
+    logger.info(
+        f"[DISAGGREGATION] Cost lookup: matched {matched_count}/{len(disaggregated_allocs)} flows "
+        f"(cluster cost map size: {len(cluster_costs_by_name)})"
+    )
+    for ex in unmatched_examples:
+        logger.info(
+            f"[DISAGGREGATION] Unmatched: from_pc={ex[0]}, to_pc={ex[1]}, comm={ex[2]}, "
+            f"resolved cluster keys: from={ex[3]}, to={ex[4]}"
+        )
+
     # Create new Allocations object
     result = Allocations(
         allocations=disaggregated_allocs,
-        allocation_costs=None,  # Costs will be recalculated by TM_PAM_connector
+        allocation_costs=disaggregated_costs if disaggregated_costs else None,
     )
 
     logger.info(f"[DISAGGREGATION] Output allocations: {len(result.allocations)} flows")
