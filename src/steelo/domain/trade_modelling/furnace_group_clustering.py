@@ -3890,8 +3890,8 @@ def disaggregate_allocations(
     }
     cluster_costs_by_name: dict[tuple[str, str, str], float] = {}
     if clustered_allocations.allocation_costs is not None:
-        for (c_from, c_to, c_comm), cost in clustered_allocations.allocation_costs.items():
-            cluster_costs_by_name[(c_from.name, c_to.name, c_comm.name.lower())] = cost
+        for (c_from, c_to, c_comm), c_cost in clustered_allocations.allocation_costs.items():
+            cluster_costs_by_name[(c_from.name, c_to.name, c_comm.name.lower())] = c_cost
 
     disaggregated_costs: dict = {}
     matched_count = 0
@@ -3902,9 +3902,9 @@ def disaggregate_allocations(
         matched: float = 0.0
         found = False
         for comm_name in _commodity_equivalent_names(comm):
-            cost = cluster_costs_by_name.get((from_key, to_key, comm_name))
-            if cost is not None:
-                matched = cost
+            looked_up = cluster_costs_by_name.get((from_key, to_key, comm_name))
+            if looked_up is not None:
+                matched = looked_up
                 matched_count += 1
                 found = True
                 break
