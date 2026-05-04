@@ -1105,9 +1105,10 @@ class ModelRun(models.Model):
         # Check time since last update
         time_since_update = timezone.now() - self.updated_at
 
-        # Simulations can take 30+ minutes per iteration, so we use a generous timeout
-        # to avoid false positives. Only flag as stuck after 45 minutes of no updates.
-        timeout = timedelta(minutes=45)
+        # Simulations can take 30+ minutes per iteration, and queued runs may wait
+        # behind a long-running run on the single worker. Use a generous timeout
+        # until a dedicated queue/status is implemented.
+        timeout = timedelta(hours=8)
 
         return time_since_update > timeout
 
@@ -1193,8 +1194,10 @@ class ModelRun(models.Model):
         # Tasks now send heartbeat every 30 seconds, so lack of updates indicates crash
         time_since_update = timezone.now() - self.updated_at
 
-        # If no heartbeat for 25 minutes, worker likely crashed (heartbeat is every 30 seconds)
-        if time_since_update > timedelta(minutes=25):
+        # If no heartbeat for 8 hours, worker likely crashed. The threshold is
+        # generous to avoid auto-failing runs that are queued behind a long-running
+        # run on the single worker. Tighten once a dedicated queue/status exists.
+        if time_since_update > timedelta(hours=8):
             self.state = self.RunState.FAILED
             self.error_message = (
                 f"Worker process crashed or was terminated - no heartbeat for {self.time_since_last_update}."
