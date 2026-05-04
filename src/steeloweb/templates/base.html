@@ -19,6 +19,7 @@
     {% block extra_css %}{% endblock %}
 </head>
 <body hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+    {% if not popup %}
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
         <div class="container">
             <a class="navbar-brand" href="{% url 'modelrun-list' %}">
@@ -47,10 +48,11 @@
             </div>
         </div>
     </nav>
+    {% endif %}
 
     {% block content %}{% endblock %}
 
-    {% if build_info %}
+    {% if build_info and not popup %}
     <!-- Page-end version footer -->
     <footer class="text-center text-muted small py-3 mt-4 border-top">
         <button type="button" class="btn btn-link btn-sm text-muted p-0 align-baseline" data-bs-toggle="modal" data-bs-target="#aboutModal">

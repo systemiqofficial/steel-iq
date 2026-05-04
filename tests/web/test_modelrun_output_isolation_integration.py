@@ -92,7 +92,7 @@ class TestModelRunOutputIsolationIntegration(TransactionTestCase):
                     # Write test files that would normally be created by simulation
                     (tm_dir / "datacollection_post_allocation_2025.pkl").write_bytes(b"test pickle data")
                     (tm_dir / "steel_cost_curve_2025.png").write_bytes(b"test image data")
-                    (tm_dir / "post_processed_2025-01-01.csv").write_text("col1,col2\nval1,val2\n")
+                    (output_path / "post_processed_2025-01-01_00-00.csv").write_text("col1,col2\nval1,val2\n")
 
                     plots_dir = output_path / "plots"
                     plots_dir.mkdir(parents=True, exist_ok=True)
@@ -121,7 +121,7 @@ class TestModelRunOutputIsolationIntegration(TransactionTestCase):
                 # Check TM outputs
                 assert (output_path / "TM" / "datacollection_post_allocation_2025.pkl").exists()
                 assert (output_path / "TM" / "steel_cost_curve_2025.png").exists()
-                assert (output_path / "TM" / "post_processed_2025-01-01.csv").exists()
+                assert (output_path / "post_processed_2025-01-01_00-00.csv").exists()
 
                 # Check plot outputs
                 assert (output_path / "plots" / "GEO" / "new_steel_plants_by_status.png").exists()
@@ -312,10 +312,11 @@ class TestModelRunOutputIsolationIntegration(TransactionTestCase):
             assert "TM" in csv_path
             assert "steel_trade_allocations_2025.csv" in csv_path
 
-            # Verify pickle file was saved to isolated directory
+            # Verify pickle file was saved to isolated TM directory
             mock_open.assert_called()
             pickle_path = str(mock_open.call_args[0][0])
             assert str(mock_env.output_dir) in pickle_path
+            assert "TM" in pickle_path
             assert "steel_trade_allocations_2025.pkl" in pickle_path
 
     def test_concurrent_model_runs_isolation(self):

@@ -1333,9 +1333,7 @@ class SimulationRunner:
         output_path = extract_and_process_stored_dataCollection(
             commands=commands,
             data_dir=self.config.output_dir / "TM",
-            output_path=self.config.output_dir
-            / "TM"
-            / f"post_processed_{datetime.now().strftime('%Y-%m-%d %H-%M')}.csv",
+            output_path=self.config.output_dir / f"post_processed_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.csv",
             store=True,
             cost_breakdown_columns=[f"cost_breakdown - {k}" for k in bus.env.cost_breakdown_keys],
             carbon_breakdown_columns=[f"carbon_breakdown - {k}" for k in bus.env.carbon_breakdown_keys],

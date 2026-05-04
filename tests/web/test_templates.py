@@ -85,23 +85,28 @@ class TestResultMapTemplate:
         assert "Simulation Results" in content
 
         # Check for links to the image views
-        assert f'href="{reverse("view-cost-map", kwargs={"pk": model_run.id, "map_type": "lcoe"})}"' in content
-        assert f'href="{reverse("view-cost-map", kwargs={"pk": model_run.id, "map_type": "lcoh"})}"' in content
-        assert f'href="{reverse("view-priority-map", kwargs={"pk": model_run.id, "map_type": "iron"})}"' in content
-        assert f'href="{reverse("view-priority-map", kwargs={"pk": model_run.id, "map_type": "steel"})}"' in content
+        assert f'href="{reverse("view-cost-map", kwargs={"pk": model_run.id, "map_type": "lcoe"})}?popup=1"' in content
+        assert f'href="{reverse("view-cost-map", kwargs={"pk": model_run.id, "map_type": "lcoh"})}?popup=1"' in content
+        assert (
+            f'href="{reverse("view-priority-map", kwargs={"pk": model_run.id, "map_type": "iron"})}?popup=1"' in content
+        )
+        assert (
+            f'href="{reverse("view-priority-map", kwargs={"pk": model_run.id, "map_type": "steel"})}?popup=1"'
+            in content
+        )
 
         # Check for the cost map links
         lcoe_url = reverse("view-cost-map", kwargs={"pk": model_run.id, "map_type": "lcoe"})
         lcoh_url = reverse("view-cost-map", kwargs={"pk": model_run.id, "map_type": "lcoh"})
-        assert f'href="{lcoe_url}"' in content
-        assert f'href="{lcoh_url}"' in content
+        assert f'href="{lcoe_url}?popup=1"' in content
+        assert f'href="{lcoh_url}?popup=1"' in content
         assert "Levelized Cost of Electricity (LCOE)" in content
         assert "Levelized Cost of Hydrogen (LCOH)" in content
 
         # Check for the priority map links
         iron_url = reverse("view-priority-map", kwargs={"pk": model_run.id, "map_type": "iron"})
         steel_url = reverse("view-priority-map", kwargs={"pk": model_run.id, "map_type": "steel"})
-        assert f'href="{iron_url}"' in content
-        assert f'href="{steel_url}"' in content
+        assert f'href="{iron_url}?popup=1"' in content
+        assert f'href="{steel_url}?popup=1"' in content
         assert "Top 5% Locations for Iron Production" in content
         assert "Top 5% Locations for Steel Production" in content

@@ -104,12 +104,24 @@ class ModelRunDetailView(DetailView):
         # Get log file path if available
         context["log_file_path"] = get_log_file_path(self.object.id)
 
-        # Split simulation plots: cost curves and emissions go into their own
-        # collapsible accordions; everything else keeps the flat grid.
+        # Split simulation plots: cost curves, emissions, and the production/capacity
+        # group each go into their own collapsible accordions; anything else falls
+        # through to the flat grid.
         plots_qs = self.object.simulation_plots.all()
         cost_curve = SimulationPlot.PlotType.COST_CURVE
         emissions = SimulationPlot.PlotType.EMISSIONS
-        context["simulation_plots_other"] = plots_qs.exclude(plot_type__in=[cost_curve, emissions])
+        production_capacity = (
+            SimulationPlot.PlotType.PRODUCTION_REGION,
+            SimulationPlot.PlotType.PRODUCTION_TECHNOLOGY,
+            SimulationPlot.PlotType.CAPACITY_REGION,
+            SimulationPlot.PlotType.CAPACITY_TECHNOLOGY,
+        )
+        context["production_and_capacity_plots"] = plots_qs.filter(plot_type__in=production_capacity).order_by(
+            "plot_type", "-product_type", "title"
+        )
+        context["simulation_plots_other"] = plots_qs.exclude(
+            plot_type__in=[cost_curve, emissions, *production_capacity]
+        )
         context["steel_cost_curves"] = plots_qs.filter(plot_type=cost_curve, product_type="steel").order_by("title")
         context["iron_cost_curves"] = plots_qs.filter(plot_type=cost_curve, product_type="iron").order_by("title")
 
@@ -1115,7 +1127,13 @@ def view_cost_map(request, pk, map_type):
             )
             return redirect("modelrun-detail", pk=pk)
 
-        context = {"modelrun": modelrun, "image": image, "title": title, "map_type": map_type}
+        context = {
+            "modelrun": modelrun,
+            "image": image,
+            "title": title,
+            "map_type": map_type,
+            "popup": request.GET.get("popup") == "1",
+        }
         return render(request, "steeloweb/result_map.html", context)
     except ResultImages.DoesNotExist:
         messages.error(request, "No result images available for this model run")
@@ -1148,7 +1166,13 @@ def view_priority_map(request, pk, map_type):
             )
             return redirect("modelrun-detail", pk=pk)
 
-        context = {"modelrun": modelrun, "image": image, "title": title, "map_type": map_type}
+        context = {
+            "modelrun": modelrun,
+            "image": image,
+            "title": title,
+            "map_type": map_type,
+            "popup": request.GET.get("popup") == "1",
+        }
         return render(request, "steeloweb/result_map.html", context)
     except ResultImages.DoesNotExist:
         messages.error(request, "No result images available for this model run")
@@ -1193,6 +1217,7 @@ def view_plant_visualization(request, pk, visualization_type):
             "image": image,
             "title": viz_info["title"],
             "visualization_type": visualization_type,
+            "popup": request.GET.get("popup") == "1",
         }
         return render(request, "steeloweb/result_map.html", context)
     except ResultImages.DoesNotExist:
@@ -1240,6 +1265,7 @@ def view_simulation_plot(request, pk, plot_id):
         "plot": plot,
         "image": plot.image,
         "title": plot.title,
+        "popup": request.GET.get("popup") == "1",
     }
     return render(request, "steeloweb/simulation_plot.html", context)
 
@@ -1907,62 +1933,90 @@ class ModelRunOutputFilesView(DetailView):
     template_name = "steeloweb/modelrun_output_files.html"
     context_object_name = "modelrun"
 
+    # Explicit overrides win over the general humanise rule.
+    FOLDER_DISPLAY_OVERRIDES = {
+        "plots": "Simulation Plots",
+        "GEO": "Geospatial",
+        "PAM": "Plant Agent Module",
+        "TM": "Trade Module",
+    }
+
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         modelrun = self.object
 
-        # Check if output directory exists
         if not modelrun.output_directory:
-            context["files_by_directory"] = {}
+            context["sections"] = []
             return context
 
         from pathlib import Path
 
         output_path = Path(modelrun.output_directory)
         if not output_path.exists():
-            context["files_by_directory"] = {}
+            context["sections"] = []
             return context
 
-        # Group files by subdirectory
-        files_by_directory = {}
+        sections: list[dict] = []
 
-        # Define the directories we want to scan
-        directories_to_scan = [
-            ("TM", "Trade Module"),
-            ("plots/GEO", "Geospatial Plots"),
-            ("plots/PAM", "Simulation Plots"),
-            (".", "Root Directory"),  # For files in the root output directory
-        ]
+        # Subfolder sections: nest by child folders if present, else list files flat.
+        for sub_dir in ("plots", "Data", "TM"):
+            section = self._build_section(self._humanise_folder_name(sub_dir), output_path / sub_dir, output_path)
+            if section:
+                sections.append(section)
 
-        for dir_path, display_name in directories_to_scan:
-            full_path = output_path / dir_path if dir_path != "." else output_path
+        # Root directory: list only top-level files (don't recurse into known subfolders).
+        root_files = self._list_files(output_path, output_path)
+        if root_files:
+            sections.append({"name": "Root Directory", "files": root_files})
 
-            if full_path.exists() and full_path.is_dir():
-                files = []
-
-                # List all files in this directory (non-recursive)
-                for item in full_path.iterdir():
-                    if item.is_file() and not item.name.startswith("."):
-                        # Get file info
-                        file_info = {
-                            "name": item.name,
-                            "size": item.stat().st_size,
-                            "size_display": self._format_file_size(item.stat().st_size),
-                            "type": self._get_file_type(item.name),
-                            "icon": self._get_file_icon(item.name),
-                            "relative_path": str(item.relative_to(output_path)),
-                            "is_viewable": self._is_viewable(item.name),
-                            "is_image": self._is_image(item.name),
-                        }
-                        files.append(file_info)
-
-                # Sort files by name
-                if files:
-                    files.sort(key=lambda x: x["name"].lower())
-                    files_by_directory[display_name] = files
-
-        context["files_by_directory"] = files_by_directory
+        context["sections"] = sections
         return context
+
+    def _humanise_folder_name(self, name):
+        if name in self.FOLDER_DISPLAY_OVERRIDES:
+            return self.FOLDER_DISPLAY_OVERRIDES[name]
+        parts = name.split("_")
+        return " ".join(p.title() if p.islower() else p for p in parts)
+
+    def _build_section(self, name, dir_path, output_path):
+        if not (dir_path.exists() and dir_path.is_dir()):
+            return None
+        subfolders = sorted(
+            (p for p in dir_path.iterdir() if p.is_dir() and not p.name.startswith(".")),
+            key=lambda p: p.name.lower(),
+        )
+        if subfolders:
+            subsections = []
+            for sub in subfolders:
+                files = self._list_files(sub, output_path)
+                if files:
+                    subsections.append({"name": self._humanise_folder_name(sub.name), "files": files})
+            if subsections:
+                return {"name": name, "subsections": subsections}
+            return None
+        files = self._list_files(dir_path, output_path)
+        if files:
+            return {"name": name, "files": files}
+        return None
+
+    def _list_files(self, dir_path, output_path):
+        files = []
+        for item in dir_path.iterdir():
+            if item.is_file() and not item.name.startswith("."):
+                files.append(
+                    {
+                        "name": item.name,
+                        "size": item.stat().st_size,
+                        "size_display": self._format_file_size(item.stat().st_size),
+                        "type": self._get_file_type(item.name),
+                        "icon": self._get_file_icon(item.name),
+                        "relative_path": str(item.relative_to(output_path)),
+                        "is_viewable": self._is_viewable(item.name),
+                        "is_image": self._is_image(item.name),
+                    }
+                )
+        files.sort(key=lambda x: x["name"].lower())
+        return files
 
     def _format_file_size(self, size_bytes):
         """Format file size in human readable format"""

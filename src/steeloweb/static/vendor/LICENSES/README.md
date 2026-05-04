@@ -10,6 +10,7 @@ This directory contains license files for all third-party libraries that are bun
 | Font Awesome Free | 6.0.0 | Font Awesome Free License | FontAwesome-LICENSE.txt |
 | Highlight.js | 11.9.0 | BSD 3-Clause License | Highlightjs-LICENSE.txt |
 | Deck.gl | 8.9.35 | MIT License | Deckgl-LICENSE.txt |
+| html2canvas | 1.4.1 | MIT License | Html2canvas-LICENSE.txt |
 
 ## Libraries NOT Included
 
@@ -42,4 +43,5 @@ When updating vendored libraries, ensure:
 - Font Awesome: https://github.com/FortAwesome/Font-Awesome
 - Highlight.js: https://github.com/highlightjs/highlight.js
 - Deck.gl: https://github.com/visgl/deck.gl
+- html2canvas: https://github.com/niklasvh/html2canvas
 - Mapbox GL JS: https://github.com/mapbox/mapbox-gl-js (CDN only)
