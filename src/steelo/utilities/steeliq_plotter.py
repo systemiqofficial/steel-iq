@@ -2053,6 +2053,77 @@ class SteelPlotter:
 
         return self._save_figure(fig, filename, subdir="plots_dir")
 
+    def plot_market_prices(
+        self,
+        price_df: pd.DataFrame,
+        start_year: int,
+        end_year: int,
+        export_csv: bool = True,
+    ) -> Optional[Path]:
+        """Plot market prices over time as a line chart.
+
+        Renders steel, scrap, and iron weighted-average cost lines (whichever columns are
+        present) using the standard SteelPlotter styling: side legend, dashed gridlines, and
+        the bottom-right Steel-IQ footer applied via ``_save_figure``.
+
+        Args:
+            price_df: DataFrame with a ``year`` column and any of:
+                ``steel_price_usd_per_t``, ``scrap_price_usd_per_t``,
+                ``iron_weighted_avg_cost_usd_per_t``.
+            start_year: First year in the price series; used in the output filename.
+            end_year: Last year in the price series; used in the output filename.
+            export_csv: If True, also export the price data to CSV alongside the PNG.
+
+        Returns:
+            Path to the saved plot, or None if there is no data to plot.
+        """
+        if price_df.empty or "year" not in price_df.columns:
+            self.logger.warning("No market price data to plot")
+            return None
+
+        series_specs = [
+            ("steel_price_usd_per_t", "Steel", "o", "#1f77b4", 1.0),
+            ("scrap_price_usd_per_t", "Scrap", "^", "#2ca02c", 1.0),
+            ("iron_weighted_avg_cost_usd_per_t", "Iron (weighted avg cost)", "D", "#ff7f0e", 0.6),
+        ]
+
+        fig, ax = plt.subplots(figsize=self.config.default_figsize_wide)
+        plotted_any = False
+        for column, label, marker, color, alpha in series_specs:
+            if column not in price_df.columns:
+                continue
+            ax.plot(
+                price_df["year"],
+                price_df[column],
+                marker=marker,
+                linewidth=2,
+                label=label,
+                color=color,
+                alpha=alpha,
+            )
+            plotted_any = True
+
+        if not plotted_any:
+            self.logger.warning("No recognised market price columns to plot")
+            plt.close(fig)
+            return None
+
+        ax.set_title("Market Prices - Steel, Iron and Scrap", fontsize=14, fontweight="bold")
+        ax.set_xlabel("Year", fontsize=12)
+        ax.set_ylabel("Price / Cost (USD/t)", fontsize=12)
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _p: f"${x:,.0f}"))
+        ax.set_ylim(bottom=0)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.grid(True, alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
+
+        self._style_legend(ax, title="Series")
+
+        filename = f"market_prices_{start_year}_{end_year}.png"
+        if export_csv:
+            self._save_chart_data_to_csv(price_df, filename, subdir="pam_plots_dir")
+
+        return self._save_figure(fig, filename, subdir="pam_plots_dir")
+
     # Original grouped-bar version — superseded by the stacked variant below. Kept commented for revert.
     # def plot_capacity_development_by_technology(
     #     self,
