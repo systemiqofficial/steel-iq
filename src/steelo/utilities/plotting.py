@@ -2038,6 +2038,7 @@ def plot_screenshot(
     data,
     var=None,
     title=None,
+    subtitle=None,
     var_type="diverging",
     max_val=None,
     min_val=None,
@@ -2115,7 +2116,22 @@ def plot_screenshot(
     ax.add_feature(cfeature.COASTLINE)  # type: ignore[attr-defined]
     ax.add_feature(cfeature.BORDERS, linestyle=":")  # type: ignore[attr-defined]
     if title:
-        plt.title(title)
+        # Extra top padding only when a subtitle needs to fit between title and map.
+        if subtitle:
+            plt.title(title, pad=18)
+        else:
+            plt.title(title)
+    if subtitle:
+        ax.text(
+            0.5,
+            1.005,
+            subtitle,
+            transform=ax.transAxes,
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            color="grey",
+        )
     if save_name:
         # Ensure the directory exists before saving
         if plot_paths is None or plot_paths.geo_plots_dir is None:

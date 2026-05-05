@@ -105,7 +105,15 @@ def get_candidate_locations_for_opening_new_plants(
         # Always added; required as for the energy costs of new plants. New plants' energy costs usually correspond to the power mix used for
         # location prioritization, with one exception: If the power mix is set to "Not included" for location prioritization, the grid power
         # price is used to set the energy costs of new plants. Reason: A plant cannot operate with zero energy costs.
-        global_ds = add_power_price(global_ds, env.year, env.input_costs, baseload_coverage, geo_paths=geo_paths)
+        global_ds = add_power_price(
+            global_ds,
+            env.year,
+            env.input_costs,
+            baseload_coverage,
+            geo_paths=geo_paths,
+            start_year=int(env.config.start_year),
+            end_year=int(env.config.end_year),
+        )
 
     with time_step("add_capped_hydrogen_price", geo_timer_logger):
         # Always added; required as for the energy costs of new plants
@@ -118,6 +126,8 @@ def get_candidate_locations_for_opening_new_plants(
             baseload_coverage,
             geo_config,
             geo_paths=geo_paths,
+            start_year=int(env.config.start_year),
+            end_year=int(env.config.end_year),
         )
 
     with time_step("add_capex_proxy_for_steel_and_iron_making_tech", geo_timer_logger):
@@ -139,6 +149,8 @@ def get_candidate_locations_for_opening_new_plants(
                 env.config.active_statuses,
                 geo_config,
                 geo_paths=geo_paths,
+                start_year=int(env.config.start_year),
+                end_year=int(env.config.end_year),
             )
 
     with time_step("add_landtype_factor", geo_timer_logger, skip=not geo_config.include_lulc_cost):
@@ -156,6 +168,8 @@ def get_candidate_locations_for_opening_new_plants(
             env.config.plant_lifetime,
             geo_config,
             geo_paths=geo_paths,
+            start_year=int(env.config.start_year),
+            end_year=int(env.config.end_year),
         )
 
     # Extract energy prices for all locations; needed for NPV calculation later on
