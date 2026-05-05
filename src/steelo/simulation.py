@@ -132,7 +132,7 @@ def _log_memory_usage(operation: str, **metadata: object) -> None:
     if peak_rss_mb is not None:
         parts.append(f"ru_maxrss_mb={peak_rss_mb:.1f}")
 
-    logger.info(" ".join(parts))
+    logger.warning(" ".join(parts))
 
 
 class Simulation:
