@@ -99,12 +99,16 @@ class PlotConfig:
         if not self.metallic_charge_colors:
             # Metallic charges: Thematically grouped colors
             # - Scrap: Gray (recycled metal)
-            # - DRI/HBI: Shades of blue (related direct reduction products)
+            # - DRI/HBI: Blue gradients (light=low, dark=high quality), mirroring io_* convention
             # - Pig iron/Hot metal: Dark grays (molten/intermediate products)
             self.metallic_charge_colors = {
                 "scrap": "#708090",  # slate gray - recycled metal
-                "dri": "#4682B4",  # steel blue - direct reduced iron
-                "hbi": "#87CEEB",  # sky blue - hot briquetted iron (lighter, related to DRI)
+                "dri_low": "#B0C4DE",  # light steel blue
+                "dri_mid": "#4682B4",  # steel blue
+                "dri_high": "#1F4E79",  # dark steel blue
+                "hbi_low": "#CFE7F5",  # pale sky blue
+                "hbi_mid": "#87CEEB",  # sky blue
+                "hbi_high": "#3A8FBF",  # deeper sky blue
                 "pig_iron": "#2F4F4F",  # dark slate gray - molten intermediate
                 "hot_metal": "#696969",  # dim gray - molten metal (similar to pig iron)
             }
@@ -1063,7 +1067,11 @@ class SteelPlotter:
         ax.set_title("Metallic Charge Consumption Over Time", fontsize=14, fontweight="bold")
         ax.set_xlabel("Year", fontsize=12)
         ax.set_ylabel("Total Consumption (Mt)", fontsize=12)
-        self._style_legend(ax, title="Charge Type")
+        legend_charges = self._legend_order_for_stack(df_pivot)
+        charge_handles = [
+            Patch(facecolor=self._get_metallic_charge_color(charge), label=charge) for charge in legend_charges
+        ]
+        self._style_legend(ax, title="Charge Type", handles=charge_handles, labels=legend_charges)
         ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
 
         # X-axis formatting
