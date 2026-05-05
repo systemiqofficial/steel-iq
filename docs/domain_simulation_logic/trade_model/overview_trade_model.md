@@ -350,6 +350,8 @@ min_share × total_input ≤ sum(matching commodities) ≤ max_share × total_in
 | `dri_high` / `dri_mid` / `dri_low` | `hbi_high` / `hbi_mid` / `hbi_low`     |
 | `liquid_iron`                      | `electrolytic_iron`                    |
 
+**Implicit `pig_iron` output for all hot-metal producers.** `PrimaryFeedstock.get_primary_outputs()` mirrors any `hot_metal` output as `pig_iron` when the feedstock does not already declare one (regardless of technology — previously only BF had this mirror). This means smelting-reduction, charcoal-BF and any other hot-metal-producing tech can supply `pig_iron` flows to remote demand centres after the hot→cold relabeling described below, not just BF.
+
 **Solution:** `fix_to_zero_allocations_where_distance_doesnt_match_commodity()` — behavior depends on whether furnace-group clustering is enabled and how clusters are keyed:
 
 - **Clustering disabled (legacy):** The LP fixes hot-commodity flows to zero for all pairs beyond `hot_metal_radius`, and cold-commodity flows to zero for pairs inside the radius. Called before build to reduce problem size.
@@ -389,6 +391,8 @@ The supply vector for the joint problem is computed by `_reach_based_joint_suppl
 BOF FGs whose neighbouring BF uses a **different reductant** (and hence a different cluster key not contributing to this LP flow) are pre-filtered from the joint demand and their share redistributed to the remaining reachable BOF FGs, capped at each FG's effective capacity. When *all* BOF FGs in the cluster are unreachable from the contributing source cluster(s), the pre-pass falls back to proportional routing without radius so BOM stays consistent (the hot-metal flow is later relabelled as pig iron by `_substitute_commodity_by_distance`).
 
 `_solve_strict_by_components()` decomposes the joint problem into geographically connected components (isolated pockets of BF/BOF pairs separated by more than `hot_metal_radius`). Each pocket is solved as an independent min-cost-flow problem.
+
+Each min-cost-flow graph carries a small `SOURCE → SINK` **slack edge** (capacity = `2 kg × (sources + destinations)`, cost > `INFEASIBLE_COST`). Sub-pockets where supply equals demand at float level can flip infeasible after the ±0.5 kg per-node integer rounding the solver requires; the slack edge absorbs that few-kg noise without competing with any real bipartite route. If post-solve the slack edge is saturated, the infeasibility is structural rather than rounding-induced and `NetworkXUnfeasible` is re-raised so the existing diagnostic path runs.
 
 #### 3. Per-FG physical-capacity cap
 
@@ -486,6 +490,8 @@ At the end of disaggregation a **Hot Metal Radius Audit** block reports how many
 
 A violation is a final disaggregated allocation whose commodity is in `config.closely_allocated_products` and whose source→destination haversine distance exceeds `config.hot_metal_radius`. The counter is purely diagnostic — it doesn't block anything — and is useful for comparing clustering-key choices (iso3 vs plant_group) side-by-side.
 
+**Allocation-cost back-fill onto disaggregated flows.** The clustered LP records per-edge `allocation_costs` keyed by `(from_cluster, to_cluster, commodity)`. After disaggregation, each per-FG flow inherits its cluster-pair's per-tonne cost — the LP objective coefficient is identical for every constituent FG within a cluster pair, so the lookup is unambiguous. Hot/cold relabeled flows match against the cluster's original commodity via `_commodity_equivalent_names()` (e.g. a disaggregated `pig_iron` flow falls back to the cluster's `hot_metal` cost). Suppliers and demand centres pass through unchanged. Match counts and the first ten unmatched examples are logged at info level. The result is that `Allocations.allocation_costs` is now populated under clustering (previously it was `None`, forcing `TM_PAM_connector` to recompute everything from scratch), making per-FG LP-level edge costs visible to downstream reporting.
+
 ---
 
 ### Transportation Cost System
@@ -495,6 +501,14 @@ A violation is a final disaggregated allocation whose commodity is in `config.cl
 2. **Modern:** Location-specific `TransportationCost` per country-pair-commodity
 
 **Performance:** O(1) lookup using pre-built dictionary
+
+#### Process-centre distance caching
+
+`Environment` carries a process-centre distance cache (`_distance_cache: dict[(from_pc_name, to_pc_name), float]`) that persists across simulation years. The first time any caller asks for the distance between two PC names — under the legacy `cost_per_km` mode, during `precompute_distances_for_hot_metal_check()`, or via the closure produced by `build_distance_function_for_trade_lp()` — it is computed via `ProcessCenter.distance_to_other_processcenter` (which itself uses the underlying ISO3 distance cache) and stored. Subsequent years reuse the result without recomputation.
+
+LP setup uses `Environment.build_distance_function_for_trade_lp(process_centers)` to build a closure and assigns it to `lp_model._external_distance_function`, replacing the previous in-LP haversine pass. The hot-metal radius check is precomputed once per year via `precompute_distances_for_hot_metal_check(process_centers, hot_metal_radius)`, which returns the set of `(from_name, to_name)` pairs within radius — converting the in-loop check from O(N²) float comparisons to set-membership lookups.
+
+`Environment.log_distance_cache_stats()` is invoked at the end of LP setup and reports `hits`, `misses`, `computations` and entry count at info level.
 
 ---
 

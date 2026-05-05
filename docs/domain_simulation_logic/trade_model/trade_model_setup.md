@@ -85,6 +85,17 @@ The model represents the global steel value chain as a network:
 - Production/extraction cost
 - One process type per commodity (e.g., all scrap sources "scrap_supply")
 
+**Per-year supplier fields.** `Supplier` exposes time-varying capacity, production cost, mine cost and mine price as dicts keyed by `Year`:
+
+| Field | Lookup |
+|-------|--------|
+| `capacity_by_year[year]` | Volumes (tonnes) available that year |
+| `production_cost_by_year[year]` | Production / extraction cost ($/t) |
+| `mine_cost_by_year[year]` | Mine-level cost ($/t), iron-ore mines only |
+| `mine_price_by_year[year]` | Mine-level price ($/t), iron-ore mines only |
+
+Trade-LP setup, the average-commodity-price calculation in `Environment.calculate_average_commodity_price_per_region()`, and downstream callers all read the value for the current simulation year. The same per-year structure applies to non-mine suppliers (scrap, etc.) — they simply populate a flat constant across years if their underlying input has no annual variation. Suppliers whose `production_cost_by_year` does not contain the current year are silently skipped from the average-price calculation.
+
 ---
 
 ### 3. Constraint Functions
@@ -101,6 +112,18 @@ The model represents the global steel value chain as a network:
 - Wildcard support for country groups (e.g., "any country to EU")
 - Handles iron product families (hot metal, pig iron, DRI → "iron")
 - Accumulates multiple taxes on same route
+
+**`From ISO3` / `To ISO3` syntax in the `Tariffs` master-input sheet.** Each entry resolves to a list of ISO3 codes via `_resolve_iso3_or_bloc_entry()`:
+
+| Entry | Resolves to |
+|-------|-------------|
+| `<ISO3>` (e.g. `CHN`) | The single country |
+| `<bloc>` (e.g. `EU`) | All countries flagged for that bloc on the `Country mapping` sheet |
+| `NOT <bloc>` (e.g. `NOT EU`) | All countries *not* flagged for that bloc |
+| `NOT <ISO3>` (e.g. `NOT DEU`) | All known countries except that one |
+| `*` | Kept as a literal wildcard for downstream matching |
+
+Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASEAN`, `RCEP`. Membership comes from boolean columns on each `CountryMapping` record (the legacy `Trade bloc definitions` sheet with one column per region marked `X` is no longer read). For `NOT <X>`, the resolver first looks up `<X>` as a bloc and falls back to treating it as an ISO3 code; an unknown `<X>` raises `ValueError` rather than silently producing the universe. Adding a new bloc requires (a) adding a boolean column to the `Country mapping` sheet, (b) adding the field to the `CountryMapping` model, and (c) appending the bloc name to `supported_blocs` in `read_tariffs()` / `find_iso3s_of_trade_bloc()`.
 
 ---
 

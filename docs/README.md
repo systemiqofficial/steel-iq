@@ -111,6 +111,7 @@ domain_simulation_logic/geospatial_model/baseload_optimization_atlas
 domain_simulation_logic/geospatial_model/overview_geospatial_model
 domain_simulation_logic/trade_model/overview_trade_model
 domain_simulation_logic/trade_model/trade_model_setup
+domain_simulation_logic/outputs_and_postprocessing
 ```
 
 ```{toctree}
