@@ -77,6 +77,8 @@ myst_enable_extensions = [
     "fieldlist",  # Field lists
 ]
 
+myst_heading_anchors = 3
+
 # Suppress warnings for known issues in existing documentation
 # These should be fixed over time but don't block the documentation build
 suppress_warnings = [

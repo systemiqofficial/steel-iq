@@ -95,14 +95,19 @@ Key options:
 
 ```shell
 ❯ steelo-data-recreate -h
-usage: steelo-data-recreate [-h] [--force-download] [--master-excel MASTER_EXCEL]
-                            [--track-timing] [--list-packages]
-                            [package_name] [output_dir]
+usage: steelo-data-recreate [-h] [--package PACKAGE] [--output-dir OUTPUT_DIR]
+                            [--cache-dir CACHE_DIR] [--force-download]
 
 Recreate JSON repositories from downloaded data packages (similar to recreate_sample_data).
 ```
 
-Use `steelo-data-recreate` when you already have the packaged data archives and only need to regenerate the JSON repositories or inspect package contents.
+Key options:
+- `--package`: Specific package to recreate from (defaults to all required packages).
+- `--output-dir`: Output directory for the JSON repositories (default: `./data/repositories`).
+- `--cache-dir`: Cache directory for downloaded data.
+- `--force-download`: Force re-download of packages instead of using cached archives.
+
+Use `steelo-data-recreate` when you already have the packaged data archives and only need to regenerate the JSON repositories.
 
 ## List Available Binaries
 

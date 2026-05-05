@@ -117,6 +117,8 @@ Extracts and processes bills of materials (BOM) to accurately assess the materia
 - `calculate_cost_breakdown_by_feedstock()` - Detailed cost breakdown for each feedstock option
 - `calculate_carbon_breakdown_by_feedstock()` - Physical carbon intensity (tCO2/t-product) by feedstock. Sign convention: carbon_inputs negated (consumed), carbon_outputs positive (stored/slipped/utilised)
 
+**Data-driven cost-breakdown columns.** `calculate_cost_breakdown_by_feedstock()` accepts an optional `cost_breakdown_keys` argument — the canonical list of normalised carrier/feedstock keys produced once at simulation start by walking dynamic feedstocks and consolidating via `normalize_energy_key`. The list is propagated through `Environment.cost_breakdown_keys` and onto each `FurnaceGroup`, then re-emitted by the post-processor as `cost_breakdown - <key>` columns (with deterministic column ordering and zero-padded missing keys). The previous hardcoded `STANDARD_COST_BREAKDOWN_COLUMNS` list and ad-hoc rename map (`fluxes` / `lime` → `burnt lime`) have been removed; new energy carriers and feedstocks now appear in the post-processed CSV automatically without code edits.
+
 ### Operating Expenditure Calculation
 Computes both variable and fixed operating expenditures based on input cost data and capital investment ratios. Returns 0 for unit costs when utilization is zero (no production means no unit cost).
 

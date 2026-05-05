@@ -191,9 +191,11 @@ Start
      - Operating costs and revenues
      - Carbon costs
      - Debt service
-     - Secondary output adjustment (constant snapshot from current year)
+     - Secondary output adjustment (constant snapshot from current year, applied during operational years only)
 - **Key parameters**: Capacity, utilization, lifetime, financing costs
 - **Note**: Secondary output adjustment is included in NPV for both brownfield (renovation) and greenfield (technology switch) paths, as well as COSA baseline. This captures by-product revenue (e.g., bf_gas, bof_gas, cog, ironmaking_slag), disposal costs (e.g., steelmaking_slag — see `disposal_cost_outputs` in SimulationConfig), and carbon output costs (e.g., co2_stored) in investment decisions.
+- **Construction-year alignment**: `calculate_npv_full` lags the secondary-output adjustment with `zeros` of length `construction_time` so it only contributes during operational years. Earlier code applied the constant to every year of the cash-flow series, including construction — that double-counted upcoming by-product revenue against capex, biasing greenfield NPVs upward.
+- **Greenfield BOM shape**: `Environment.get_bom_from_avg_boms()` produces the BOM dict consumed by `calculate_variable_opex()` on the greenfield path. Each `materials[<feedstock>]` entry must include `total_material_cost` and each `energy[<carrier>]` entry must include `product_volume`; without these keys VOPEX silently collapsed and greenfield NPV was undervalued.
 
 ### Stage 9: Adjust NPV for COSA
 - **Decision**: Is this a technology switch?
