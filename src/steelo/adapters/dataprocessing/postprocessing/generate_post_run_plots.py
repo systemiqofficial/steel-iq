@@ -36,6 +36,7 @@ def generate_post_run_cap_prod_plots(
     iron_market_clearing_share: float,
     steel_price_buffer: float,
     iron_price_buffer: float,
+    steel_demand_by_year: dict[int, float],
     plot_paths: Optional["PlotPaths"] = None,
 ):
     """
@@ -49,6 +50,9 @@ def generate_post_run_cap_prod_plots(
         steel_price_buffer: USD/tonne shortage premium added when demand exceeds the dispatchable
             slice; must match the engine value.
         iron_price_buffer: Same for iron.
+        steel_demand_by_year: ``{year: env.current_demand_at_year}`` captured during the
+            simulation. Steel cost-curve charts clear against this demand so the chart price
+            matches the engine's runtime price. Iron continues to use realised production.
     """
     # output_df = pd.read_csv(settings.output_dir / "post_processed_2025-06-02 21-41.csv")
     output_df = pd.read_csv(file_path)
@@ -65,6 +69,7 @@ def generate_post_run_cap_prod_plots(
         output_df["production"] = output_df["production"] * T_TO_KT
         steel_demand = steel_demand * T_TO_KT
         iron_demand = iron_demand * T_TO_KT
+        steel_demand_by_year = {y: d * T_TO_KT for y, d in steel_demand_by_year.items()}
         units = "kt"
         units_pa = "ktpa"
     elif capacity_mean >= 1e6:
@@ -72,6 +77,7 @@ def generate_post_run_cap_prod_plots(
         output_df["production"] = output_df["production"] * T_TO_MT
         steel_demand = steel_demand * T_TO_MT
         iron_demand = iron_demand * T_TO_MT
+        steel_demand_by_year = {y: d * T_TO_MT for y, d in steel_demand_by_year.items()}
         units = "Mt"
         units_pa = "Mtpa"
     else:
@@ -100,8 +106,9 @@ def generate_post_run_cap_prod_plots(
         last_year = None
 
     if last_year:
-        # Recompute demand with duplicate furnace rows collapsed so the cost curve lines are accurate.
-        steel_demand = _sum_unique_furnace_output(output_df, "steel", last_year)
+        # Steel uses the engine's recorded current_demand so the chart matches the line plot.
+        # Iron stays on realised production (capped by available supply) per modelling intent.
+        steel_demand = steel_demand_by_year[last_year]
         iron_demand = _sum_unique_furnace_output(output_df, "iron", last_year)
 
         # Generate cost curve plots in 5-year increments
@@ -119,8 +126,8 @@ def generate_post_run_cap_prod_plots(
 
         # Generate cost curve plots for each selected year
         for year in years_to_plot:
-            # Compute demand for this specific year
-            year_steel_demand = _sum_unique_furnace_output(output_df, "steel", year)
+            # Steel demand: engine's recorded current_demand. Iron: realised production sum.
+            year_steel_demand = steel_demand_by_year[year]
             year_iron_demand = _sum_unique_furnace_output(output_df, "iron", year)
 
             # Generate cost curves by region and technology for both steel and iron

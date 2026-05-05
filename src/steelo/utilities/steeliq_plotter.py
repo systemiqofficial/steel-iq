@@ -2059,6 +2059,7 @@ class SteelPlotter:
         start_year: int,
         end_year: int,
         export_csv: bool = True,
+        name_suffix: str = "",
     ) -> Optional[Path]:
         """Plot market prices over time as a line chart.
 
@@ -2073,6 +2074,7 @@ class SteelPlotter:
             start_year: First year in the price series; used in the output filename.
             end_year: Last year in the price series; used in the output filename.
             export_csv: If True, also export the price data to CSV alongside the PNG.
+            name_suffix: Optional string appended to the filename stem (e.g. ``"_new"``).
 
         Returns:
             Path to the saved plot, or None if there is no data to plot.
@@ -2118,7 +2120,7 @@ class SteelPlotter:
 
         self._style_legend(ax, title="Series")
 
-        filename = f"market_prices_{start_year}_{end_year}.png"
+        filename = f"market_prices_{start_year}_{end_year}{name_suffix}.png"
         if export_csv:
             self._save_chart_data_to_csv(price_df, filename, subdir="pam_plots_dir")
 

@@ -80,6 +80,7 @@ def test_generate_post_run_cap_prod_plots_calls_all_functions_with_plot_paths(
         iron_market_clearing_share=0.95,
         steel_price_buffer=200.0,
         iron_price_buffer=200.0,
+        steel_demand_by_year={2025: 1000.0, 2026: 1000.0},
         plot_paths=mock_plot_paths,
     )
 
@@ -109,6 +110,7 @@ def test_generate_post_run_cap_prod_plots_works_without_plot_paths(mock_plotter_
         iron_market_clearing_share=0.95,
         steel_price_buffer=200.0,
         iron_price_buffer=200.0,
+        steel_demand_by_year={2025: 1000.0, 2026: 1000.0},
     )
 
     # Verify SteelPlotter was instantiated with plot_paths=None
