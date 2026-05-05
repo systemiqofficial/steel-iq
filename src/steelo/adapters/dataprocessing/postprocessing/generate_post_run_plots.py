@@ -82,6 +82,7 @@ def generate_post_run_cap_prod_plots(
     # Use SteelPlotter for capacity development to get consistent styling and footer
     plotter = SteelPlotter(config=PlotConfig(), plot_paths=plot_paths)
     plotter.plot_capacity_development_by_technology(data_file=output_df, units=units_pa)
+    plotter.plot_capacity_development_by_technology_stacked(data_file=output_df, units=units_pa)
 
     # Get the first and last years available in the data for cost curves
     if "year" in output_df.columns:

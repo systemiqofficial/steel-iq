@@ -2136,6 +2136,77 @@ class SteelPlotter:
 
         return self._save_figure(fig, filename)
 
+    def plot_capacity_development_by_technology_stacked(
+        self,
+        data_file: pd.DataFrame,
+        units: str = "Mt",
+        filename: str = "Capacity_development_by_technology_stacked.png",
+        export_csv: bool = True,
+    ) -> Optional[Path]:
+        """Plot year-on-year capacity development as a stacked bar chart split by sign.
+
+        Additions stack upward and retirements stack downward, so net change per year
+        and the technology mix on each side are both readable at a glance.
+
+        Args:
+            data_file: DataFrame with columns: furnace_group_id, year, technology, capacity, product
+            units: Unit string for y-axis label (e.g., "Mt", "ktpa")
+            filename: Output filename for the plot
+            export_csv: If True, also export chart data to CSV (default: True)
+
+        Returns:
+            Path to saved plot, or None if no data
+        """
+        required_cols = ["furnace_group_id", "year", "technology", "capacity", "product"]
+        missing_cols = [col for col in required_cols if col not in data_file.columns]
+        if missing_cols:
+            raise ValueError(f"DataFrame missing required columns: {missing_cols}")
+
+        data_file = data_file.copy()
+
+        for tech in data_file["technology"].unique():
+            self._ensure_tech_color(tech)
+
+        by_technology = (
+            data_file.drop_duplicates(subset=["furnace_group_id", "year"])
+            .groupby(["year", "technology"])["capacity"]
+            .sum()
+            .unstack("technology")
+            .fillna(0)
+        )
+        capacity_diff = by_technology.diff().dropna(how="all")
+
+        if capacity_diff.empty:
+            return None
+
+        positives = capacity_diff.clip(lower=0)
+        negatives = capacity_diff.clip(upper=0)
+        colours = [self.config.tech_colors.get(tech, "brown") for tech in capacity_diff.columns]
+
+        fig, ax = plt.subplots(figsize=self.config.default_figsize_wide)
+        positives.plot(ax=ax, kind="bar", stacked=True, color=colours, width=0.8, legend=False)
+        negatives.plot(ax=ax, kind="bar", stacked=True, color=colours, width=0.8, legend=False)
+
+        ax.axhline(0, color="black", linewidth=0.8)
+        ax.set_title("Year-on-Year Capacity Development by Technology", fontsize=14, fontweight="bold")
+        ax.set_xlabel("Year", fontsize=12)
+        ax.set_ylabel(f"Capacity change [{units}]", fontsize=12)
+
+        legend_techs = self._legend_order_for_stack(capacity_diff)
+        tech_handles = [
+            Patch(facecolor=self.config.tech_colors.get(tech, "brown"), label=tech) for tech in legend_techs
+        ]
+        self._style_legend(ax, title="Technology", handles=tech_handles, labels=legend_techs)
+        ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
+        ax.tick_params(axis="x", rotation=45)
+
+        fig.tight_layout()
+
+        if export_csv:
+            self._save_chart_data_to_csv(capacity_diff, filename)
+
+        return self._save_figure(fig, filename)
+
     def plot_area_chart_by_region_or_technology(
         self,
         dataframe: pd.DataFrame,
