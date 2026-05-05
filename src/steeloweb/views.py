@@ -111,6 +111,7 @@ class ModelRunDetailView(DetailView):
         cost_curve = SimulationPlot.PlotType.COST_CURVE
         emissions = SimulationPlot.PlotType.EMISSIONS
         production_capacity = (
+            SimulationPlot.PlotType.CAPACITY_DEVELOPMENT,
             SimulationPlot.PlotType.PRODUCTION_REGION,
             SimulationPlot.PlotType.PRODUCTION_TECHNOLOGY,
             SimulationPlot.PlotType.CAPACITY_REGION,
