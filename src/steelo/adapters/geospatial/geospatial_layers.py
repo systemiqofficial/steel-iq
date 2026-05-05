@@ -391,7 +391,16 @@ def add_baseload_power_price(
             save_name=f"optimal_lcoe_{str(target_year)}_p{str(p)}",
             plot_paths=plot_paths_obj,
         )
-    plot_value_histogram(ds, var_name="lcoe", bins=100, log_scale=True, plot_paths=plot_paths_obj)
+    plot_value_histogram(
+        ds,
+        var_name="lcoe",
+        bins=100,
+        log_scale=True,
+        plot_paths=plot_paths_obj,
+        title="LCOE distribution across feasible grid cells (USD/kWh)",
+        subtitle=f"{100 - p}% baseload + {p}% grid · year {target_year} · cell count on log scale",
+        xlabel="LCOE (USD/kWh)",
+    )
 
     return ds
 
@@ -515,7 +524,17 @@ def add_power_price(
             save_name=f"power_price_100cov_{str(year)}",
             plot_paths=plot_paths_obj,
         )
-    plot_value_histogram(ds, var_name="power_price", bins=100, log_scale=True, plot_paths=plot_paths_obj)
+    p = int((1 - baseload_coverage) * 100)
+    plot_value_histogram(
+        ds,
+        var_name="power_price",
+        bins=100,
+        log_scale=True,
+        plot_paths=plot_paths_obj,
+        title="Power price distribution across feasible grid cells (USD/kWh)",
+        subtitle=f"Grid + baseload mix at {100 - p}% baseload + {p}% grid · year {year} · cell count on log scale",
+        xlabel="Power price (USD/kWh)",
+    )
 
     return ds
 
@@ -738,7 +757,7 @@ def add_cost_of_infrastructure(ds: xr.Dataset, environment: "Environment", geo_p
 
         plot_screenshot(
             ds["rail_cost"].where(ds["feasibility_mask"] > 0) * USD_TO_MioUSD,  # Convert USD to Mio USD
-            title="Rail Buildout Cost (Mio USD)",
+            title="Rail Buildout Cost (Million USD)",
             var_type="sequential",
             max_val=6000,
             save_name="rail_cost",
@@ -817,16 +836,17 @@ def add_transportation_costs(
 
     # Plot distances
     plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
+    distance_plot_titles = {
+        "feedstock_distance_iron": f"Feedstock distance for new iron plant in {year} (km)",
+        "feedstock_distance_steel": f"Feedstock distance for new steel plant in {year} (km)",
+        "demand_distance_iron": f"Demand distance from new iron plant in {year} (km)",
+        "demand_distance_steel": f"Demand distance from new steel plant in {year} (km)",
+    }
     if is_milestone_year:
-        for var in [
-            "feedstock_distance_iron",
-            "feedstock_distance_steel",
-            "demand_distance_iron",
-            "demand_distance_steel",
-        ]:
+        for var, title in distance_plot_titles.items():
             plot_screenshot(
                 ds_[var],
-                title=f"{var} (km)",
+                title=title,
                 var_type="sequential",
                 save_name=f"{var}_{str(year)}",
                 plot_paths=plot_paths_obj,
@@ -848,16 +868,21 @@ def add_transportation_costs(
 
     # Plot transportation costs
     plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
+    cost_plot_titles = {
+        "feedstock_transportation_cost_per_ton_iron": (
+            f"Feedstock transport cost for new iron plant in {year} (USD/ton)"
+        ),
+        "feedstock_transportation_cost_per_ton_steel": (
+            f"Feedstock transport cost for new steel plant in {year} (USD/ton)"
+        ),
+        "demand_transportation_cost_per_ton_iron": (f"Demand transport cost from new iron plant in {year} (USD/ton)"),
+        "demand_transportation_cost_per_ton_steel": (f"Demand transport cost from new steel plant in {year} (USD/ton)"),
+    }
     if is_milestone_year:
-        for var in [
-            "feedstock_transportation_cost_per_ton_iron",
-            "feedstock_transportation_cost_per_ton_steel",
-            "demand_transportation_cost_per_ton_iron",
-            "demand_transportation_cost_per_ton_steel",
-        ]:
+        for var, title in cost_plot_titles.items():
             plot_screenshot(
                 ds[var].where(ds["feasibility_mask"] > 0),
-                title=f"{var} (USD)",
+                title=title,
                 var_type="sequential",
                 save_name=f"{var}_{str(year)}",
                 plot_paths=plot_paths_obj,

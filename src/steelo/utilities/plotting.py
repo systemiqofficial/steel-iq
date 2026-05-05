@@ -2259,7 +2259,15 @@ def plot_bubble_map(
 
 
 def plot_value_histogram(
-    ds, var_name=None, bins=50, threshold=None, log_scale=False, plot_paths: Optional["PlotPaths"] = None
+    ds,
+    var_name=None,
+    bins=50,
+    threshold=None,
+    log_scale=False,
+    plot_paths: Optional["PlotPaths"] = None,
+    title: str | None = None,
+    subtitle: str | None = None,
+    xlabel: str | None = None,
 ) -> None:
     """
     Plots a histogram of the values in the selected xarray variable.
@@ -2270,6 +2278,9 @@ def plot_value_histogram(
     - bins (int or array): Number of histogram bins or array of bin edges.
     - threshold (float, optional): If provided, adds a vertical line for threshold.
     - log_scale (bool): Whether to use logarithmic y-axis.
+    - title (str, optional): Custom plot title; falls back to a generic one if omitted.
+    - subtitle (str, optional): Smaller grey caption rendered below the title.
+    - xlabel (str, optional): Custom x-axis label; defaults to ``"Values of '{var_name}'"``.
     """
     if var_name is None:
         var_name = list(ds.data_vars)[0]
@@ -2282,28 +2293,38 @@ def plot_value_histogram(
     values = values[values >= 0.01]  # Filter out negative values
 
     # Plot histogram
-    plt.figure(figsize=(8, 5))
-    plt.hist(values, bins=bins, color="skyblue", edgecolor="black")
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.hist(values, bins=bins, color="skyblue", edgecolor="black")
 
     if threshold is not None:
-        plt.axvline(threshold, color="red", linestyle="--", linewidth=2, label=f"Threshold = {threshold}")
+        ax.axvline(threshold, color="red", linestyle="--", linewidth=2, label=f"Threshold = {threshold}")
 
     if log_scale:
-        plt.yscale("log")
+        ax.set_yscale("log")
     else:
-        plt.ylim(bottom=0)
+        ax.set_ylim(bottom=0)
 
-    plt.xlabel(f"Values of '{var_name}'")
-    plt.ylabel("Frequency")
-    if log_scale:
-        plt.title(f"Logarithmic Histogram of '{var_name}'")
-        plt.ylabel("Log Frequency")
-    else:
-        plt.title(f"Histogram of '{var_name}'")
+    ax.set_xlabel(xlabel if xlabel is not None else f"Values of '{var_name}'")
+    ax.set_ylabel("Log Frequency" if log_scale else "Frequency")
+    if title is None:
+        title = f"Logarithmic Histogram of '{var_name}'" if log_scale else f"Histogram of '{var_name}'"
+    # Extra top padding when a subtitle needs to fit between title and axes.
+    ax.set_title(title, pad=18 if subtitle else None)
+    if subtitle:
+        ax.text(
+            0.5,
+            1.005,
+            subtitle,
+            transform=ax.transAxes,
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            color="grey",
+        )
     if threshold is not None:
-        plt.legend()
-    plt.grid(True, linestyle="--", alpha=0.6)
-    plt.tight_layout()
+        ax.legend()
+    ax.grid(True, linestyle="--", alpha=0.6)
+    fig.tight_layout()
 
     # Ensure the directory exists before saving
     if plot_paths is None or plot_paths.geo_plots_dir is None:
@@ -2336,8 +2357,8 @@ def plot_global_grid_with_iso3(grid, plot_paths: "PlotPaths") -> None:
         cmap="tab20",
         s=1,
     )
-    plt.colorbar(label="ISO3 Codes")
-    plt.title("Global Grid with ISO3 Codes")
+    plt.colorbar(label="ISO3 colour index")
+    plt.title("Geospatial grid cells coloured by country (ISO3)")
     # Ensure the directory exists before saving
     if plot_paths is None or plot_paths.geo_plots_dir is None:
         raise ValueError("plot_paths with geo_plots_dir must be provided when saving plots")

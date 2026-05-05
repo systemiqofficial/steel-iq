@@ -145,10 +145,11 @@ def calculate_outgoing_cashflow_proxy(
         plot_screenshot(
             inversed_cashflow,
             title=f"Priority map for new {product} plants in {year}",
+            subtitle=f"{100 - p}% baseload + {p}% grid",
             var_type="binary",
             max_val=1,
             min_val=0.7,
-            save_name=f"priority_heatmap_{product}_{str(year)}_p{str(int((1 - baseload_coverage) * 100))}",
+            save_name=f"priority_heatmap_{product}_{str(year)}_p{str(p)}",
             plot_paths=plot_paths_obj,
         )
 
@@ -402,7 +403,7 @@ def calculate_priority_location_kpi(
             plot_screenshot(
                 ds_masked[f"top{str(geo_config.priority_pct)}_{product}_wlottery"],
                 var_type="binary",
-                title=f"Top {geo_config.priority_pct}% locations for {product} production",
+                title=f"Top {geo_config.priority_pct}% locations for {product} production in {year}",
                 save_name=f"top{str(geo_config.priority_pct)}_priority_locations_{product}_{str(year)}",
                 plot_paths=plot_paths_obj,
             )
