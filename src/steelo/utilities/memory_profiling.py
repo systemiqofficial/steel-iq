@@ -54,9 +54,7 @@ class MemoryTracker:
         delta_mb = rss_mb - self.last_checkpoint_rss
 
         year_str = f"year={year} " if year is not None else ""
-        logger.warning(
-            f"operation=memory_checkpoint {year_str}phase={phase} rss_mb={rss_mb:.1f} delta_mb={delta_mb:.1f}"
-        )
+        logger.info(f"operation=memory_checkpoint {year_str}phase={phase} rss_mb={rss_mb:.1f} delta_mb={delta_mb:.1f}")
 
         self.last_checkpoint_rss = rss_mb
         return rss_mb
