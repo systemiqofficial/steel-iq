@@ -1035,6 +1035,13 @@ class SteelPlotter:
         df = pd.DataFrame(data_rows)
         df["consumption_mt"] = df["consumption"] / 1e6
 
+        # Exclude io_* charges — shown separately in the iron ore consumption chart
+        df = df[~df["charge_type"].str.lower().str.startswith("io_")]
+
+        if df.empty:
+            self.logger.warning("No metallic charge data to plot after excluding iron ore")
+            return None
+
         # Pivot
         df_pivot = df.pivot(index="year", columns="charge_type", values="consumption_mt")
         df_pivot = df_pivot.fillna(0)
