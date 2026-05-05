@@ -430,7 +430,11 @@ class SteelPlotter:
         ax.set_title(f"CAPEX Investments by Technology{location_str}", fontsize=14, fontweight="bold")
         ax.set_xlabel("Year", fontsize=12)
         ax.set_ylabel("Total CAPEX (Billion USD)", fontsize=12)
-        self._style_legend(ax, title="Technology")
+        legend_techs = self._legend_order_for_stack(capex_by_year_tech)
+        tech_handles = [
+            Patch(facecolor=self.config.tech_colors.get(tech, "brown"), label=tech) for tech in legend_techs
+        ]
+        self._style_legend(ax, title="Technology", handles=tech_handles, labels=legend_techs)
         ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
 
         # X-axis formatting
@@ -989,7 +993,11 @@ class SteelPlotter:
         ax.set_title("Iron Ore Consumption by Quality Over Time", fontsize=14, fontweight="bold")
         ax.set_xlabel("Year", fontsize=12)
         ax.set_ylabel("Total Consumption (Mt)", fontsize=12)
-        self._style_legend(ax, title="Quality")
+        legend_qualities = self._legend_order_for_stack(df_pivot)
+        quality_handles = [
+            Patch(facecolor=self._get_iron_ore_quality_color(quality), label=quality) for quality in legend_qualities
+        ]
+        self._style_legend(ax, title="Quality", handles=quality_handles, labels=legend_qualities)
         ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
 
         # X-axis formatting
@@ -1155,7 +1163,11 @@ class SteelPlotter:
         ax.set_title("International Iron Product Trade Volumes Over Time", fontsize=14, fontweight="bold")
         ax.set_xlabel("Year", fontsize=12)
         ax.set_ylabel("Total Trade Volume (Mt)", fontsize=12)
-        self._style_legend(ax, title="Iron Product")
+        legend_products = self._legend_order_for_stack(df_pivot)
+        product_handles = [
+            Patch(facecolor=iron_product_colors.get(product, "#808080"), label=product) for product in legend_products
+        ]
+        self._style_legend(ax, title="Iron Product", handles=product_handles, labels=legend_products)
         ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
 
         # X-axis formatting
@@ -2231,14 +2243,17 @@ class SteelPlotter:
         ax.set_ylabel(f"{column_name.replace('_', ' ').title()} [{units}]", fontsize=12)
 
         # Fix region/technology colors if needed (pandas sometimes doesn't apply them correctly)
+        handles, labels = ax.get_legend_handles_labels()
         if pivot_columns == ["region"] or pivot_columns == ["technology"]:
-            handles, labels = ax.get_legend_handles_labels()
             for handle, label in zip(handles, labels):
-                if label in colour_map:
-                    if hasattr(handle, "set_facecolor"):
-                        handle.set_facecolor(colour_map[label])
+                if label in colour_map and hasattr(handle, "set_facecolor"):
+                    handle.set_facecolor(colour_map[label])
 
-        self._style_legend(ax, title=legend_title)
+        # Order legend top-to-bottom to match the visual stack - Excludes all-zero columns
+        label_to_handle = {str(lbl): h for h, lbl in zip(handles, labels)}
+        ordered_labels = [str(c) for c in self._legend_order_for_stack(df_pivot) if str(c) in label_to_handle]
+        ordered_handles = [label_to_handle[lbl] for lbl in ordered_labels]
+        self._style_legend(ax, title=legend_title, handles=ordered_handles, labels=ordered_labels)
 
         # Set x-axis to show only integer years
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
