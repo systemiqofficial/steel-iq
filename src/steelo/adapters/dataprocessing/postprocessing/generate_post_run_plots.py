@@ -4,7 +4,8 @@ import pandas as pd
 from typing import Optional, TYPE_CHECKING
 
 from steelo.domain.constants import T_TO_KT, T_TO_MT
-from steelo.utilities.plotting import plot_added_capacity_by_technology
+
+# from steelo.utilities.plotting import plot_added_capacity_by_technology  # superseded by stacked variant
 from steelo.utilities.steeliq_plotter import SteelPlotter, PlotConfig
 
 logger = logging.getLogger(__name__)
@@ -77,12 +78,14 @@ def generate_post_run_cap_prod_plots(
         units = "t"
         units_pa = "tpa"
 
-    plot_added_capacity_by_technology(output_df, units_pa, plot_paths=plot_paths)
+    # Superseded by plot_capacity_development_by_technology_stacked, which carries the same info
+    # with retirements visible. Kept commented out for now in case we need to re-enable.
+    # plot_added_capacity_by_technology(output_df, units_pa, plot_paths=plot_paths)
 
     # Use SteelPlotter for capacity development to get consistent styling and footer
     plotter = SteelPlotter(config=PlotConfig(), plot_paths=plot_paths)
-    plotter.plot_capacity_development_by_technology(data_file=output_df, units=units_pa)
-    plotter.plot_capacity_development_by_technology_stacked(data_file=output_df, units=units_pa)
+    plotter.plot_capacity_development_by_technology(data_file=output_df, product_type="steel", units=units_pa)
+    plotter.plot_capacity_development_by_technology(data_file=output_df, product_type="iron", units=units_pa)
 
     # Get the first and last years available in the data for cost curves
     if "year" in output_df.columns:

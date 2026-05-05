@@ -1631,6 +1631,18 @@ class SimulationPlot(models.Model):
                 "product_type": "iron",
             },
             {
+                "pattern": "Capacity_development_by_technology_steel.png",
+                "plot_type": cls.PlotType.CAPACITY_TECHNOLOGY,
+                "title": "Steel Capacity Year-on-Year Change by Technology",
+                "product_type": "steel",
+            },
+            {
+                "pattern": "Capacity_development_by_technology_iron.png",
+                "plot_type": cls.PlotType.CAPACITY_TECHNOLOGY,
+                "title": "Iron Capacity Year-on-Year Change by Technology",
+                "product_type": "iron",
+            },
+            {
                 "pattern": "emissions/emissions_*_by_technology__*.png",
                 "plot_type": cls.PlotType.EMISSIONS,
                 "title": "Emissions by Technology",

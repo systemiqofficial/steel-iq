@@ -2053,105 +2053,82 @@ class SteelPlotter:
 
         return self._save_figure(fig, filename, subdir="plots_dir")
 
+    # Original grouped-bar version — superseded by the stacked variant below. Kept commented for revert.
+    # def plot_capacity_development_by_technology(
+    #     self,
+    #     data_file: pd.DataFrame,
+    #     units: str = "Mt",
+    #     filename: str = "Capacity_development_by_technology.png",
+    #     export_csv: bool = True,
+    # ) -> Optional[Path]:
+    #     """Plot year-on-year capacity development by technology.
+    #
+    #     Shows the change in capacity for each technology from year to year as a grouped bar chart.
+    #     """
+    #     required_cols = ["furnace_group_id", "year", "technology", "capacity", "product"]
+    #     missing_cols = [col for col in required_cols if col not in data_file.columns]
+    #     if missing_cols:
+    #         raise ValueError(f"DataFrame missing required columns: {missing_cols}")
+    #
+    #     data_file = data_file.copy()
+    #
+    #     unique_techs = data_file["technology"].unique()
+    #     tech_colors = {}
+    #     for tech in unique_techs:
+    #         tech_colors[tech] = self._ensure_tech_color(tech)
+    #
+    #     by_technology = (
+    #         data_file.drop_duplicates(subset=["furnace_group_id", "year"])
+    #         .groupby(["year", "technology"])["capacity"]
+    #         .sum()
+    #         .unstack("technology")
+    #     )
+    #     by_technology = by_technology.fillna(0)
+    #     capacity_diff = by_technology.diff()
+    #
+    #     fig, ax = plt.subplots(figsize=self.config.default_figsize_wide)
+    #     capacity_diff.plot(
+    #         ax=ax,
+    #         kind="bar",
+    #         stacked=False,
+    #         ylabel=f"Capacity [{units}]",
+    #         xlabel="Year",
+    #         legend=True,
+    #         color=tech_colors,
+    #     )
+    #
+    #     ax.set_title("Year-on-Year Capacity Development by Technology", fontsize=14, fontweight="bold")
+    #     self._style_legend(ax, title="Technology")
+    #     ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
+    #     ax.tick_params(axis="x", rotation=45)
+    #     self._ensure_y_axis_starts_at_zero(ax)
+    #     fig.tight_layout()
+    #
+    #     if export_csv:
+    #         self._save_chart_data_to_csv(capacity_diff, filename)
+    #
+    #     return self._save_figure(fig, filename)
+
     def plot_capacity_development_by_technology(
         self,
         data_file: pd.DataFrame,
+        product_type: str = "steel",
         units: str = "Mt",
-        filename: str = "Capacity_development_by_technology.png",
+        filename: Optional[str] = None,
         export_csv: bool = True,
     ) -> Optional[Path]:
-        """Plot year-on-year capacity development by technology.
+        """Plot year-on-year capacity change by technology, split by sign.
 
-        Shows the change in capacity for each technology from year to year as a grouped bar chart.
+        Additions stack upward and retirements stack downward around a y=0 line, so
+        the net change per year and the technology mix on each side are both readable
+        at a glance. Filtered to a single product so iron and steel fleets are charted
+        separately.
 
         Args:
             data_file: DataFrame with columns: furnace_group_id, year, technology, capacity, product
+            product_type: Product to filter on, e.g. "steel" or "iron" (default: "steel")
             units: Unit string for y-axis label (e.g., "Mt", "ktpa")
-            filename: Output filename for the plot
-            export_csv: If True, also export chart data to CSV (default: True)
-
-        Returns:
-            Path to saved plot, or None if no data
-
-        Raises:
-            ValueError: If required columns are missing from data_file
-        """
-        # Validate required columns
-        required_cols = ["furnace_group_id", "year", "technology", "capacity", "product"]
-        missing_cols = [col for col in required_cols if col not in data_file.columns]
-        if missing_cols:
-            raise ValueError(f"DataFrame missing required columns: {missing_cols}")
-
-        data_file = data_file.copy()
-
-        # Get unique technologies and ensure all have colors
-        unique_techs = data_file["technology"].unique()
-        tech_colors = {}
-        for tech in unique_techs:
-            tech_colors[tech] = self._ensure_tech_color(tech)
-
-        # Calculate year-on-year development by technology
-        by_technology = (
-            data_file.drop_duplicates(subset=["furnace_group_id", "year"])
-            .groupby(["year", "technology"])["capacity"]
-            .sum()
-            .unstack("technology")
-        )
-
-        # Fill missing values with 0 to ensure all technologies appear in diff
-        by_technology = by_technology.fillna(0)
-
-        # Calculate year-on-year difference
-        capacity_diff = by_technology.diff()
-
-        # Create the plot
-        fig, ax = plt.subplots(figsize=self.config.default_figsize_wide)
-
-        capacity_diff.plot(
-            ax=ax,
-            kind="bar",
-            stacked=False,
-            ylabel=f"Capacity [{units}]",
-            xlabel="Year",
-            legend=True,
-            color=tech_colors,
-        )
-
-        # Styling
-        ax.set_title("Year-on-Year Capacity Development by Technology", fontsize=14, fontweight="bold")
-        self._style_legend(ax, title="Technology")
-        ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
-
-        # Rotate x-axis labels for better readability
-        ax.tick_params(axis="x", rotation=45)
-
-        # Ensure y-axis starts at 0
-        self._ensure_y_axis_starts_at_zero(ax)
-
-        fig.tight_layout()
-
-        # Export CSV if requested
-        if export_csv:
-            self._save_chart_data_to_csv(capacity_diff, filename)
-
-        return self._save_figure(fig, filename)
-
-    def plot_capacity_development_by_technology_stacked(
-        self,
-        data_file: pd.DataFrame,
-        units: str = "Mt",
-        filename: str = "Capacity_development_by_technology_stacked.png",
-        export_csv: bool = True,
-    ) -> Optional[Path]:
-        """Plot year-on-year capacity development as a stacked bar chart split by sign.
-
-        Additions stack upward and retirements stack downward, so net change per year
-        and the technology mix on each side are both readable at a glance.
-
-        Args:
-            data_file: DataFrame with columns: furnace_group_id, year, technology, capacity, product
-            units: Unit string for y-axis label (e.g., "Mt", "ktpa")
-            filename: Output filename for the plot
+            filename: Output filename. If None, derived from product_type.
             export_csv: If True, also export chart data to CSV (default: True)
 
         Returns:
@@ -2163,6 +2140,14 @@ class SteelPlotter:
             raise ValueError(f"DataFrame missing required columns: {missing_cols}")
 
         data_file = data_file.copy()
+        data_file = data_file[data_file["product"] == product_type]
+
+        if data_file.empty:
+            self.logger.warning(f"No data for product type '{product_type}' to plot")
+            return None
+
+        if filename is None:
+            filename = f"Capacity_development_by_technology_{product_type}.png"
 
         for tech in data_file["technology"].unique():
             self._ensure_tech_color(tech)
@@ -2188,7 +2173,11 @@ class SteelPlotter:
         negatives.plot(ax=ax, kind="bar", stacked=True, color=colours, width=0.8, legend=False)
 
         ax.axhline(0, color="black", linewidth=0.8)
-        ax.set_title("Year-on-Year Capacity Development by Technology", fontsize=14, fontweight="bold")
+        ax.set_title(
+            f"Year-on-Year Capacity Development by Technology — {product_type.title()}",
+            fontsize=14,
+            fontweight="bold",
+        )
         ax.set_xlabel("Year", fontsize=12)
         ax.set_ylabel(f"Capacity change [{units}]", fontsize=12)
 

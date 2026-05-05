@@ -268,9 +268,9 @@ class TestSteelPlotter:
 
         df = pd.DataFrame(data)
 
-        plotter.plot_capacity_development_by_technology(data_file=df, units="Mt")
+        plotter.plot_capacity_development_by_technology(data_file=df, product_type="steel", units="Mt")
 
-        plot_file = plot_paths.pam_plots_dir / "Capacity_development_by_technology.png"
+        plot_file = plot_paths.pam_plots_dir / "Capacity_development_by_technology_steel.png"
         assert plot_file.exists(), "Capacity development plot file was not created"
         assert plot_file.stat().st_size > 0, "Capacity development plot file is empty"
 
