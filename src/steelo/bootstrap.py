@@ -1,8 +1,11 @@
 import inspect
 import logging
+import random
 
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
+
+import numpy as np
 from .service_layer import handlers, UnitOfWork, MessageBus, SimulationCheckpoint
 from .domain.models import Environment, PlantGroup
 from .adapters.repositories import JsonRepository, InMemoryRepository, Repository
@@ -106,12 +109,48 @@ def bootstrap(
     )
 
 
+def _load_aggregated_metallic_charge_constraints(env, fixtures_dir):
+    """Load aggregated metallic charge constraints from JSON file if available."""
+    import logging
+    import json
+    from .domain.models import AggregatedMetallicChargeConstraint
+
+    logger = logging.getLogger(__name__)
+    constraints = []
+
+    if fixtures_dir:
+        constraints_path = fixtures_dir / "aggregated_metallic_charge_constraints.json"
+        if constraints_path.exists():
+            try:
+                with open(constraints_path, "r") as f:
+                    constraints_data = json.load(f)
+
+                for c in constraints_data:
+                    constraint = AggregatedMetallicChargeConstraint(
+                        technology_name=c["technology_name"],
+                        feedstock_pattern=c["feedstock_pattern"],
+                        minimum_share=c.get("minimum_share"),
+                        maximum_share=c.get("maximum_share"),
+                    )
+                    constraints.append(constraint)
+
+                logger.info(f"Loaded {len(constraints)} aggregated metallic charge constraints from {constraints_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load aggregated metallic charge constraints: {e}")
+
+    env.initiate_aggregated_metallic_charge_constraints(constraints)
+    if not constraints:
+        logger.info("No aggregated metallic charge constraints available, using empty list")
+    else:
+        logger.info(f"Total {len(constraints)} aggregated metallic charge constraints loaded")
+
+
 def _load_secondary_feedstock_constraints(env, repository_json):
     """Load secondary feedstock constraints from biomass availability data (includes CO2 storage)."""
     import logging
     from .domain.models import SecondaryFeedstockConstraint
     from .domain import Year
-    from .adapters.dataprocessing.excel_reader import normalize_commodity_name
+    from .utilities.utils import normalize_name
 
     logger = logging.getLogger(__name__)
     constraints = []
@@ -149,15 +188,15 @@ def _load_secondary_feedstock_constraints(env, repository_json):
         for commodity, regions in aggregated_constraints.items():
             for region_tuple, year_constraints in regions.items():
                 constraint = SecondaryFeedstockConstraint(
-                    secondary_feedstock_name=normalize_commodity_name(commodity),
+                    secondary_feedstock_name=normalize_name(commodity),
                     region_iso3s=list(region_tuple),
                     maximum_constraint_per_year={Year(y): v for y, v in year_constraints.items()},
                 )
                 constraints.append(constraint)
 
         # Log breakdown of constraint types
-        biomass_constraints = [c for c in constraints if "bio-pci" == c.secondary_feedstock_name]
-        co2_constraints = [c for c in constraints if "co2 - stored" == c.secondary_feedstock_name]
+        biomass_constraints = [c for c in constraints if "bio_pci" == c.secondary_feedstock_name]
+        co2_constraints = [c for c in constraints if "co2_stored" == c.secondary_feedstock_name]
 
         logger.info(f"Loaded {len(biomass_constraints)} biomass secondary feedstock constraints")
         logger.info(f"Loaded {len(co2_constraints)} CO2 storage secondary feedstock constraints")
@@ -181,6 +220,19 @@ def bootstrap_simulation(
     encapsulating all data loading, repository population, and dependency injection.
     """
     from .simulation import SimulationRunner
+    from .logging_config import LoggingConfig
+
+    # Configure logging from YAML early (before data loading emits logs)
+    yaml_path = Path(__file__).parent.parent.parent / "logging_config.yaml"
+    if yaml_path.exists():
+        LoggingConfig.configure_from_yaml(str(yaml_path), config.log_level)
+    else:
+        LoggingConfig.configure_base_loggers()
+
+    # Seed Python and NumPy global RNGs. LP solver reads the same seed at solve time.
+    random.seed(config.random_seed)
+    np.random.seed(config.random_seed)
+    logger.info(f"Random seed = {config.random_seed}")
 
     # If no repository is provided, create one from JSON files (production behavior)
     repository_json = None
@@ -221,6 +273,7 @@ def bootstrap_simulation(
             fopex_path=fixtures_dir / "fopex.json",
             carbon_border_mechanisms_path=fixtures_dir / "carbon_border_mechanisms.json",
             fallback_material_costs_path=fixtures_dir / "fallback_material_costs.json",
+            willingness_to_pay_path=fixtures_dir / "willingness_to_pay.json",
             current_simulation_year=int(config.start_year),
         )
 
@@ -234,11 +287,13 @@ def bootstrap_simulation(
 
         # Apply use_iron_ore_premiums flag to iron ore supplier costs
         for supplier in repository.suppliers.list():
-            if config.use_iron_ore_premiums and supplier.mine_price is not None:
-                supplier.production_cost = supplier.mine_price
-            elif not config.use_iron_ore_premiums and supplier.mine_cost is not None:
-                supplier.production_cost = supplier.mine_cost
-            # If mine_cost/mine_price are None (e.g., for scrap suppliers), keep existing production_cost
+            if config.use_iron_ore_premiums and supplier.mine_price_by_year:
+                # Copy mine_price_by_year to production_cost_by_year
+                supplier.production_cost_by_year = supplier.mine_price_by_year.copy()
+            elif not config.use_iron_ore_premiums and supplier.mine_cost_by_year:
+                # Copy mine_cost_by_year to production_cost_by_year
+                supplier.production_cost_by_year = supplier.mine_cost_by_year.copy()
+            # If mine_cost/mine_price dictionaries are empty (e.g., for scrap suppliers), keep existing production_cost_by_year
 
         # Plant groups setup from SimulationRunner.setup()
         plant_groups = []
@@ -285,35 +340,20 @@ def bootstrap_simulation(
             return normalised
 
         env.carbon_costs = {iso3: _normalise_cost_series(series) for iso3, series in env.carbon_costs.items()}
-        try:
-            price_sample = list(env.carbon_costs.items())[:3]
-            logger.warning(
-                "Carbon-cost dict sample: %s",
-                [
-                    (
-                        iso3,
-                        [
-                            (repr(year_key), type(year_key).__name__, value)
-                            for year_key, value in list(series.items())[:3]
-                        ],
-                    )
-                    for iso3, series in price_sample
-                ],
-            )
-        except Exception:
-            logger.exception("Failed to log carbon cost sample")
         env.initiate_input_costs(input_costs_list=repository_json.input_costs.list())
         env.initiate_dynamic_feedstocks(feedstocks=repository_json.primary_feedstocks.list())
         env.initiate_techno_economic_details(capex_list=repository_json.capex.list())
         env.initiate_capex_subsidies(subsidies=repository_json.subsidies.list())
         env.initiate_opex_subsidies(subsidies=repository_json.subsidies.list())
         env.initiate_debt_subsidies(subsidies=repository_json.subsidies.list())
+        env.initiate_energy_subsidies(subsidies=repository_json.subsidies.list())
         env.initiate_industrial_asset_cost_of_capital(repository_json.cost_of_capital.list())
         env.initiate_grid_emissivity(emissivities=repository_json.region_emissivity.list())
         env.initiate_gas_coke_emissivity(emissivities=repository_json.region_emissivity.list())
         env.set_trade_tariffs(trade_tariffs=repository_json.trade_tariffs.list())
         env.set_legal_process_connectors(legal_process_connectors=repository_json.legal_process_connectors.list())
         env.carbon_border_mechanisms = repository_json.carbon_border_mechanisms.list()
+        env.willingness_to_pay = repository_json.willingness_to_pay.list()
         env.railway_costs = repository_json.railway_costs.list()
         env.transport_emissions = repository_json.transport_emissions.list()
         env.transport_kpis = repository_json.transport_emissions.list()
@@ -340,6 +380,7 @@ def bootstrap_simulation(
 
         # Load secondary feedstock constraints from biomass availability data
         _load_secondary_feedstock_constraints(env, repository_json)
+        _load_aggregated_metallic_charge_constraints(env, fixtures_dir)
 
         # Initialize virgin iron demand (required for PlantAgentsModel)
         env.initialize_virgin_iron_demand(
@@ -354,6 +395,7 @@ def bootstrap_simulation(
             env.initiate_industrial_asset_cost_of_capital(repository.cost_of_capital)
         # Initialize empty secondary feedstock constraints for test repositories
         env.initiate_secondary_feedstock_constraints([])
+        env.initiate_aggregated_metallic_charge_constraints([])
 
     # Set configuration attributes
     # Note: global_bf_ban removed - now handled via allowed_techs system

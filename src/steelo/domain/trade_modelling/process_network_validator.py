@@ -13,8 +13,6 @@ from steelo.domain.models import LegalProcessConnector, UnknownTechnologyError, 
 if TYPE_CHECKING:
     from steelo.simulation import SimulationConfig
 
-logger = logging.getLogger(__name__)
-
 
 def validate_process_network_connectivity(
     repository: InMemoryRepository,
@@ -43,6 +41,7 @@ def validate_process_network_connectivity(
         - 'technology_info': Complete mapping of all technologies and their I/O
         - 'graph': NetworkX graph for further analysis
     """
+    logger = logging.getLogger(f"{__name__}.validate_process_network_connectivity")
     import networkx as nx
 
     # Build a graph of technology connectivity

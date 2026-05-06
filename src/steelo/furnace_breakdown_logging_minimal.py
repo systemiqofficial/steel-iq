@@ -184,6 +184,7 @@ class FurnaceBreakdownLogger:
             "unit_fopex": getattr(fg, "unit_fopex", 0),
             "energy_cost_dict": getattr(fg, "energy_cost_dict", {}),
             "bill_of_materials": getattr(fg, "bill_of_materials", None),
+            "energy_costs_no_subsidy": getattr(fg, "energy_costs_no_subsidy", {}),
         }
 
         # Commodity price
@@ -202,20 +203,26 @@ class FurnaceBreakdownLogger:
         except Exception:
             data["commodity_price"] = 0
 
+        # Energy costs (current, possibly subsidised)
+        data["energy_costs"] = getattr(fg, "energy_costs", {})
+        data["energy_costs_no_subsidy"] = getattr(fg, "energy_costs_no_subsidy", {})
+
         # Applied subsidies tracking
         data["subsidies"] = {}
         if hasattr(fg, "applied_subsidies") and fg.applied_subsidies:
-            # Track each type of subsidy
-            for subsidy_type in ["capex", "debt", "opex"]:
+            # Track each type of subsidy (financial + all energy carriers)
+            financial_types = ["capex", "debt", "opex"]
+            energy_carriers = sorted(k for k in fg.applied_subsidies if k not in financial_types)
+            for subsidy_type in financial_types + energy_carriers:
                 if subsidy_type in fg.applied_subsidies:
                     subsidies_list = fg.applied_subsidies[subsidy_type]
                     if subsidies_list:
                         data["subsidies"][subsidy_type] = {"count": len(subsidies_list), "details": []}
                         for subsidy in subsidies_list:
                             subsidy_info = {
-                                "name": getattr(subsidy, "subsidy_name", "Unknown"),
-                                "absolute": getattr(subsidy, "absolute_subsidy", 0),
-                                "relative": getattr(subsidy, "relative_subsidy", 0),
+                                "name": getattr(subsidy, "scenario_name", "Unknown"),
+                                "type": getattr(subsidy, "subsidy_type", "absolute"),
+                                "amount": getattr(subsidy, "subsidy_amount", 0),
                                 "start_year": getattr(subsidy, "start_year", 0),
                                 "end_year": getattr(subsidy, "end_year", 0),
                             }
@@ -333,12 +340,29 @@ class FurnaceBreakdownLogger:
             if operations.get("unit_fopex", 0) > 0:
                 logging.info(f"    Unit FOPEX: ${operations['unit_fopex']:,.0f}")
 
-            # Energy costs
-            energy_costs = operations.get("energy_cost_dict", {})
-            if energy_costs:
-                energy_items = [f"{k}: ${v:,.0f}" for k, v in energy_costs.items() if v > 0]
-                if energy_items:
-                    logging.info(f"    Energy Costs: {', '.join(energy_items[:3])}")  # Show first 3
+        # Energy carrier subsidy effect (show before -> after if subsidised)
+        energy_costs = fg_data.get("energy_costs", {})
+        no_sub = fg_data.get("energy_costs_no_subsidy", {})
+        subsidies = fg_data.get("subsidies", {})
+
+        subsidy_lines = []
+        for carrier in sorted(no_sub.keys()):
+            carrier_subs = subsidies.get(carrier, {})
+            if not carrier_subs:
+                continue
+            original_price = no_sub[carrier]
+            current_price = energy_costs.get(carrier, original_price)
+            if original_price > 0 and current_price != original_price:
+                reduction = original_price - current_price
+                pct = reduction / original_price * 100
+                names = [d.get("name", "?") for d in carrier_subs.get("details", [])]
+                subsidy_lines.append(
+                    f"    [{carrier.upper()} SUBSIDY] ${original_price:.6f} -> ${current_price:.6f} "
+                    f"(-${reduction:.6f}, -{pct:.1f}%) | {names}"
+                )
+
+        for line in subsidy_lines:
+            logging.info(line)
 
         # Financial information
         financial = fg_data["financial"]

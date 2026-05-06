@@ -74,6 +74,8 @@ class PrimaryFeedstockInDb(BaseModel):
     required_quantity_per_ton_of_product: Optional[float] = None
     secondary_feedstock: dict[str, float] = Field(default_factory=dict)
     energy_requirements: dict[str, float] = Field(default_factory=dict)
+    carbon_inputs: dict[str, float] = Field(default_factory=dict)
+    carbon_outputs: dict[str, float] = Field(default_factory=dict)
     maximum_share_in_product: Optional[float] = None
     minimum_share_in_product: Optional[float] = None
     outputs: dict[str, float] = Field(default_factory=dict)
@@ -99,6 +101,8 @@ class PrimaryFeedstockInDb(BaseModel):
         obj.required_quantity_per_ton_of_product = self.required_quantity_per_ton_of_product  # type: ignore
         obj.secondary_feedstock = self.secondary_feedstock.copy()
         obj.energy_requirements = self.energy_requirements.copy()
+        obj.carbon_inputs = self.carbon_inputs.copy()
+        obj.carbon_outputs = self.carbon_outputs.copy()
         obj.maximum_share_in_product = self.maximum_share_in_product
         obj.minimum_share_in_product = self.minimum_share_in_product
         obj.outputs = self.outputs.copy()
@@ -117,6 +121,8 @@ class PrimaryFeedstockInDb(BaseModel):
             required_quantity_per_ton_of_product=pf.required_quantity_per_ton_of_product,
             secondary_feedstock=pf.secondary_feedstock.copy(),
             energy_requirements=pf.energy_requirements.copy(),
+            carbon_inputs=pf.carbon_inputs.copy(),
+            carbon_outputs=pf.carbon_outputs.copy(),
             maximum_share_in_product=pf.maximum_share_in_product,
             minimum_share_in_product=pf.minimum_share_in_product,
             outputs=pf.outputs.copy(),
@@ -205,6 +211,8 @@ class FurnaceGroupInDb(BaseModel):
             dbc_dict = dbc_in_db.model_dump()
             feedstock = PrimaryFeedstock(**dbc_dict)
             feedstock.energy_requirements = dbc_dict.get("energy_requirements") or {}
+            feedstock.carbon_inputs = dbc_dict.get("carbon_inputs") or {}
+            feedstock.carbon_outputs = dbc_dict.get("carbon_outputs") or {}
             feedstock.outputs = dbc_dict.get("outputs") or {}
             feedstock.secondary_feedstock = dbc_dict.get("secondary_feedstock") or {}
             feedstock.maximum_share_in_product = dbc_dict.get("maximum_share_in_product")
@@ -787,6 +795,28 @@ class PlantGroupJsonRepository:
             locked[pg.plant_group_id] = pg
         self._write_models(list(locked.values()))
 
+    def register_plant_in_group(self, plant: Plant, group_id: str) -> None:
+        """
+        Register a plant into a plant group by ID, creating the group on demand.
+
+        Mirrors the in-memory repository semantics for protocol symmetry:
+        get-or-create the group, append the plant, persist, and add the
+        resulting domain group to ``seen``. Runtime routing correctness
+        comes from the in-memory repository; this path exists so the
+        JSON-backed code path stays consistent.
+
+        Args:
+            plant: The plant to register.
+            group_id: Target plant group ID. If absent from the JSON
+                store the group is created with an empty plant list.
+        """
+        locked = self._fetch_all()
+        if group_id not in locked:
+            locked[group_id] = PlantGroupInDb(plant_group_id=group_id, plants=[])
+        locked[group_id].plants.append(PlantInDb.from_domain(plant))
+        self._write_models(list(locked.values()))
+        self.seen.add(locked[group_id].to_domain(self.plant_lifetime, self.metadata, self.current_simulation_year))
+
 
 class FurnaceGroupJsonRepository:
     """
@@ -992,9 +1022,9 @@ class SupplierInDb(BaseModel):
     location: LocationInDb
     commodity: str
     capacity_by_year: dict[Year, Volumes]
-    production_cost: float
-    mine_cost: float | None = None
-    mine_price: float | None = None
+    production_cost_by_year: dict[Year, float]
+    mine_cost_by_year: dict[Year, float] | None = None
+    mine_price_by_year: dict[Year, float] | None = None
 
     @property
     def to_domain(self) -> Supplier:
@@ -1004,9 +1034,9 @@ class SupplierInDb(BaseModel):
             location=location,
             commodity=self.commodity,
             capacity_by_year=self.capacity_by_year,
-            production_cost=self.production_cost,
-            mine_cost=self.mine_cost,
-            mine_price=self.mine_price,
+            production_cost_by_year=self.production_cost_by_year,
+            mine_cost_by_year=self.mine_cost_by_year,
+            mine_price_by_year=self.mine_price_by_year,
         )
 
     @classmethod
@@ -1017,9 +1047,9 @@ class SupplierInDb(BaseModel):
             location=location_in_db,
             commodity=supplier.commodity,
             capacity_by_year=supplier.capacity_by_year,
-            production_cost=supplier.production_cost,
-            mine_cost=supplier.mine_cost,
-            mine_price=supplier.mine_price,
+            production_cost_by_year=supplier.production_cost_by_year,
+            mine_cost_by_year=supplier.mine_cost_by_year,
+            mine_price_by_year=supplier.mine_price_by_year,
         )
 
     def __lt__(self, other: Self) -> bool:
@@ -1102,7 +1132,7 @@ class SupplierJsonRepository:
                     existing.location.lat != supplier_in_db.location.lat
                     or existing.location.lon != supplier_in_db.location.lon
                     or existing.commodity != supplier_in_db.commodity
-                    or existing.production_cost != supplier_in_db.production_cost
+                    or existing.production_cost_by_year != supplier_in_db.production_cost_by_year
                 ):
                     raise ValueError(
                         f"Duplicate supplier_id {supplier_in_db.supplier_id} with different data. "
@@ -2196,8 +2226,8 @@ class SubsidyInDb(BaseModel):
     end_year: Year
     technology_name: str
     cost_item: str
-    absolute_subsidy: float
-    relative_subsidy: float
+    subsidy_type: str
+    subsidy_amount: float
     subsidy_name: str = Field(..., description="Unique subsidy identifier")
 
     def __lt__(self, other: "SubsidyInDb") -> bool:
@@ -2212,8 +2242,8 @@ class SubsidyInDb(BaseModel):
             end_year=self.end_year,
             technology_name=self.technology_name,
             cost_item=self.cost_item,
-            absolute_subsidy=self.absolute_subsidy,
-            relative_subsidy=self.relative_subsidy,
+            subsidy_type=self.subsidy_type,
+            subsidy_amount=self.subsidy_amount,
         )
 
     @classmethod
@@ -2225,8 +2255,8 @@ class SubsidyInDb(BaseModel):
             end_year=domain.end_year,
             technology_name=domain.technology_name,
             cost_item=domain.cost_item,
-            absolute_subsidy=domain.absolute_subsidy,
-            relative_subsidy=domain.relative_subsidy,
+            subsidy_type=domain.subsidy_type,
+            subsidy_amount=domain.subsidy_amount,
             subsidy_name=domain.subsidy_name,
         )
 
@@ -2288,6 +2318,101 @@ class SubsidyJsonRepository:
         locked = self._fetch_all()
         for s_in_db in subsidies_in_db:
             locked[s_in_db.subsidy_name] = s_in_db
+        self._write_models(list(locked.values()))
+
+    def to_json(self) -> str:
+        """Get raw JSON of all entries."""
+        entries = list(self.all.values())
+        json_lines = [e.model_dump_json(indent=2) for e in entries]
+        return "[\n" + ",\n".join(json_lines) + "\n]"
+
+
+class WillingnessToPayInDb(BaseModel):
+    region_or_iso3: str
+    commodity: str
+    value: float
+
+    def __lt__(self, other: "WillingnessToPayInDb") -> bool:
+        return (self.region_or_iso3, self.commodity) < (other.region_or_iso3, other.commodity)
+
+    @property
+    def to_domain(self):
+        from steelo.domain import WillingnessToPay
+
+        return WillingnessToPay(
+            region_or_iso3=self.region_or_iso3,
+            commodity=self.commodity,
+            value=self.value,
+        )
+
+    @classmethod
+    def from_domain(cls, domain) -> "WillingnessToPayInDb":
+        return cls(
+            region_or_iso3=domain.region_or_iso3,
+            commodity=domain.commodity,
+            value=domain.value,
+        )
+
+
+class WillingnessToPayListInDb(BaseModel):
+    root: list[WillingnessToPayInDb]
+
+
+class WillingnessToPayJsonRepository:
+    """
+    Repository for storing WillingnessToPay entries in a JSON file.
+    Uses Pydantic models for serialization/deserialization.
+    """
+
+    _all: dict[str, WillingnessToPayInDb] | None = None
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def _fetch_all(self) -> dict[str, WillingnessToPayInDb]:
+        if not self.path.exists():
+            return {}
+        raw = self.path.read_text(encoding="utf-8")
+        wrapper = WillingnessToPayListInDb.model_validate_json(raw)
+        return {f"{item.region_or_iso3}_{item.commodity}": item for item in wrapper.root}
+
+    @property
+    def all(self) -> dict[str, WillingnessToPayInDb]:
+        if self._all is None:
+            self._all = self._fetch_all()
+        return self._all
+
+    def get(self, iso3: str, commodity: str):
+        """Return a domain-level WillingnessToPay for the given iso3 and commodity."""
+        key = f"{iso3}_{commodity}"
+        return self.all[key].to_domain
+
+    def list(self):
+        """List all WillingnessToPay domain entries."""
+        return [item.to_domain for item in self.all.values()]
+
+    def _write_models(self, models: List[WillingnessToPayInDb]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        models.sort()
+        wrapper = WillingnessToPayListInDb(root=models)
+        self.path.write_text(wrapper.model_dump_json(indent=2), encoding="utf-8")
+        self._all = None
+
+    def add(self, item) -> None:
+        """Add or overwrite a single WillingnessToPay entry."""
+        db_item = WillingnessToPayInDb.from_domain(item)
+        locked = self._fetch_all()
+        key = f"{db_item.region_or_iso3}_{db_item.commodity}"
+        locked[key] = db_item
+        self._write_models(list(locked.values()))
+
+    def add_list(self, items) -> None:
+        """Add or overwrite multiple WillingnessToPay entries."""
+        items_in_db = [WillingnessToPayInDb.from_domain(t) for t in items]
+        locked = self._fetch_all()
+        for item_in_db in items_in_db:
+            key = f"{item_in_db.region_or_iso3}_{item_in_db.commodity}"
+            locked[key] = item_in_db
         self._write_models(list(locked.values()))
 
     def to_json(self) -> str:
@@ -2683,8 +2808,8 @@ class BiomassAvailabilityJsonRepository:
     ) -> dict[str, dict[tuple[str, ...], dict[int, float]]]:
         """
         Convert biomass and CO2 storage availability to secondary feedstock constraints format.
-        Returns: {"bio-pci": {(iso3_codes_tuple): total_availability},
-                  "co2 - stored": {(iso3_codes_tuple): total_availability}}
+        Returns: {"bio_pci": {(iso3_codes_tuple): total_availability},
+                  "co2_stored": {(iso3_codes_tuple): total_availability}}
         """
         from collections import defaultdict
 
@@ -2698,13 +2823,13 @@ class BiomassAvailabilityJsonRepository:
 
             # Determine the constraint type based on the metric
             if item.metric and "co2" in item.metric.lower():
-                constraint_type = "co2 - stored"  # Lowercase to match BOM normalization
+                constraint_type = "co2_stored"
             else:
-                constraint_type = "bio-pci"
+                constraint_type = "bio_pci"
 
             # Map region to ISO3 codes
             # For CO2 storage, country field contains ISO3 directly
-            if constraint_type == "co2 - stored" and item.country:
+            if constraint_type == "co2_stored" and item.country:
                 iso3_codes = [item.country]  # Country field contains ISO3 for CO2 storage
             else:
                 iso3_codes = self._map_region_to_iso3_codes(item.region, item.country, country_mapping)
@@ -2718,10 +2843,10 @@ class BiomassAvailabilityJsonRepository:
                     constraints[constraint_type][iso3_tuple].get(int(year), 0.0) + item.availability
                 )
 
-        # Always return bio-pci key even if empty for backward compatibility
+        # Always return bio_pci key even if empty for backward compatibility
         result = dict(constraints)
-        if "bio-pci" not in result:
-            result["bio-pci"] = {}
+        if "bio_pci" not in result:
+            result["bio_pci"] = {}
         return result
 
     def _map_region_to_iso3_codes(self, region: str, country: Optional[str], country_mapping: Any) -> List[str]:
@@ -2969,6 +3094,7 @@ class JsonRepository:
     fopex: FOPEXRepository
     carbon_border_mechanisms: CarbonBorderMechanismJsonRepository
     fallback_material_costs: "FallbackMaterialCostJsonRepository"
+    willingness_to_pay: WillingnessToPayJsonRepository
 
     def __init__(
         self,
@@ -2998,6 +3124,7 @@ class JsonRepository:
         fopex_path: Optional[Path] = None,
         carbon_border_mechanisms_path: Optional[Path] = None,
         fallback_material_costs_path: Optional[Path] = None,
+        willingness_to_pay_path: Optional[Path] = None,
         current_simulation_year: Optional[int] = None,
     ) -> None:
         self.plants = PlantJsonRepository(
@@ -3094,6 +3221,18 @@ class JsonRepository:
             temp_file.write("[]")  # Empty JSON array
             temp_file.close()
             self.fallback_material_costs = FallbackMaterialCostJsonRepository(Path(temp_file.name))
+
+        # Handle optional willingness_to_pay_path by creating empty repository
+        if willingness_to_pay_path:
+            self.willingness_to_pay = WillingnessToPayJsonRepository(willingness_to_pay_path)
+        else:
+            # Create a temporary empty file for default behavior
+            import tempfile
+
+            temp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+            temp_file.write('{"root": []}')  # Empty JSON object with root array
+            temp_file.close()
+            self.willingness_to_pay = WillingnessToPayJsonRepository(Path(temp_file.name))
 
 
 @dataclass

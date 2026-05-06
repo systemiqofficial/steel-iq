@@ -566,11 +566,31 @@ class TestPrepareDataWithMasterExcel:
 
     def test_prepare_data_reuses_existing(self, mocker):
         """Test that existing preparations are reused."""
-        # Create existing preparation
+        # Create existing preparation at the manifest-declared versions, since
+        # the view resolves package rows from the manifest.
         from steeloweb.models import DataPackage
+        from steelo.data.manager import DataManager
 
-        core = DataPackage.objects.create(name="core-data", version="v1.0.3", source_type=DataPackage.SourceType.S3)
-        geo = DataPackage.objects.create(name="geo-data", version="v1.1.0", source_type=DataPackage.SourceType.S3)
+        manifest = DataManager().manifest
+
+        def _normalize(version: str) -> str:
+            return version if version.startswith("v") else f"v{version}"
+
+        core_manifest = manifest.get_package("core-data")
+        geo_manifest = manifest.get_package("geo-data")
+        assert core_manifest is not None
+        assert geo_manifest is not None
+
+        core = DataPackage.objects.create(
+            name="core-data",
+            version=_normalize(core_manifest.version),
+            source_type=DataPackage.SourceType.S3,
+        )
+        geo = DataPackage.objects.create(
+            name="geo-data",
+            version=_normalize(geo_manifest.version),
+            source_type=DataPackage.SourceType.S3,
+        )
 
         existing_prep = DataPreparation.objects.create(
             name="Existing",

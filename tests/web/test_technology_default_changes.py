@@ -70,7 +70,7 @@ class TestTechnologyDefaults:
         response = client.post(reverse("create-modelrun"), data=clean_data)
         assert response.status_code == 302, "Form submission should succeed"
 
-        model_run = ModelRun.objects.latest("started_at")
+        model_run = ModelRun.objects.latest("created_at")
         # Technology settings should be in the new format
         tech_settings = model_run.config.get("technology_settings", {})
         assert tech_settings.get("ESF", {}).get("allowed") is True, "ESF should be True in saved config"
@@ -90,7 +90,7 @@ class TestTechnologyDefaults:
         response = client.post(reverse("create-modelrun"), data=form_data)
         assert response.status_code == 302, "Form submission should succeed"
 
-        model_run = ModelRun.objects.latest("started_at")
+        model_run = ModelRun.objects.latest("created_at")
 
         # Should respect explicit False values in technology_settings
         tech_settings = model_run.config.get("technology_settings", {})

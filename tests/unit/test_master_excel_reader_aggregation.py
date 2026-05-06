@@ -68,7 +68,7 @@ def master_excel_with_duplicates():
 def test_duplicate_plant_ids_should_be_aggregated(master_excel_with_duplicates):
     """Test that duplicate Plant IDs are aggregated into single plants with multiple furnace groups."""
     reader = MasterExcelReader(master_excel_with_duplicates)
-    plants, _ = reader.read_plants(simulation_start_year=Year(2025))  # Unpack tuple
+    plants, _, _ = reader.read_plants(simulation_start_year=Year(2025))  # Unpack tuple (3 values)
 
     # Should have 3 unique plants (not 5 rows)
     assert len(plants) == 3, f"Expected 3 unique plants, got {len(plants)}"
@@ -114,7 +114,7 @@ def test_duplicate_plant_ids_should_be_aggregated(master_excel_with_duplicates):
 def test_plant_attributes_preserved_during_aggregation(master_excel_with_duplicates):
     """Test that plant-level attributes are preserved when aggregating duplicate IDs."""
     reader = MasterExcelReader(master_excel_with_duplicates)
-    plants, _ = reader.read_plants(simulation_start_year=Year(2025))  # Unpack tuple
+    plants, _, _ = reader.read_plants(simulation_start_year=Year(2025))  # Unpack tuple (3 values)
 
     # Find the Rizhao Steel plant
     rizhao_plant = next((p for p in plants if p.plant_id == "P100000120240"), None)
@@ -131,7 +131,7 @@ def test_plant_attributes_preserved_during_aggregation(master_excel_with_duplica
 def test_furnace_group_ids_remain_unique(master_excel_with_duplicates):
     """Test that furnace group IDs remain unique even when aggregating plants."""
     reader = MasterExcelReader(master_excel_with_duplicates)
-    plants, _ = reader.read_plants(simulation_start_year=Year(2025))  # Unpack tuple
+    plants, _, _ = reader.read_plants(simulation_start_year=Year(2025))  # Unpack tuple (3 values)
 
     # Collect all furnace group IDs
     all_furnace_group_ids = []
@@ -155,7 +155,7 @@ def test_furnace_group_ids_remain_unique(master_excel_with_duplicates):
 def test_single_plant_ids_not_affected(master_excel_with_duplicates):
     """Test that plants without duplicate IDs are not affected by aggregation."""
     reader = MasterExcelReader(master_excel_with_duplicates)
-    plants, _ = reader.read_plants(simulation_start_year=Year(2025))  # Unpack tuple
+    plants, _, _ = reader.read_plants(simulation_start_year=Year(2025))  # Unpack tuple (3 values)
 
     # Find plants with single occurrences
     single_occurrence_plants = [p for p in plants if p.plant_id in ["P200000220240", "P300000320240"]]
@@ -177,7 +177,7 @@ def test_single_plant_ids_not_affected(master_excel_with_duplicates):
 def test_aggregation_preserves_different_start_dates(master_excel_with_duplicates):
     """Test that different start dates for furnace groups are preserved during aggregation."""
     reader = MasterExcelReader(master_excel_with_duplicates)
-    plants, _ = reader.read_plants(simulation_start_year=Year(2025))  # Unpack tuple
+    plants, _, _ = reader.read_plants(simulation_start_year=Year(2025))  # Unpack tuple (3 values)
 
     # Find Rizhao Steel plant
     rizhao_plant = next((p for p in plants if p.plant_id == "P100000120240"), None)
@@ -196,7 +196,7 @@ def test_aggregation_preserves_different_start_dates(master_excel_with_duplicate
 def test_total_capacity_preserved_after_aggregation(master_excel_with_duplicates):
     """Test that total capacity across all plants is preserved after aggregation."""
     reader = MasterExcelReader(master_excel_with_duplicates)
-    plants, _ = reader.read_plants(simulation_start_year=Year(2025))  # Unpack tuple
+    plants, _, _ = reader.read_plants(simulation_start_year=Year(2025))  # Unpack tuple (3 values)
 
     # Calculate total capacity
     total_iron_capacity = 0

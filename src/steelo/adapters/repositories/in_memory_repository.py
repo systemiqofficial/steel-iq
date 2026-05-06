@@ -68,6 +68,27 @@ class PlantGroupInMemoryRepository:
         plant_group_id = self.plant_id_to_plantgroup_id[plant_id]
         return self.data[plant_group_id]
 
+    def register_plant_in_group(self, plant: Plant, group_id: str) -> None:
+        """
+        Register a plant into a plant group by ID, creating the group on demand.
+
+        Appends the plant to the group's ``plants`` list, updates the
+        ``plant_id_to_plantgroup_id`` reverse map, and adds the group to
+        ``seen`` unconditionally (dirty-set invariant: re-registering an
+        existing group still marks it as changed for this UoW turn).
+
+        Args:
+            plant: The plant to register.
+            group_id: Target plant group ID. If absent from ``self.data``
+                the group is created with an empty ``plants`` list first.
+        """
+        if group_id not in self.data:
+            self.data[group_id] = PlantGroup(plant_group_id=group_id, plants=[])
+        group = self.data[group_id]
+        group.plants.append(plant)
+        self.plant_id_to_plantgroup_id[plant.plant_id] = group_id
+        self.seen.add(group)
+
 
 class FurnaceGroupInMemoryRepository:
     def __init__(self) -> None:

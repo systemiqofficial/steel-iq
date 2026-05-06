@@ -113,6 +113,43 @@ def run_full_simulation() -> str:
         default=None,
         help="Path to BOA-generated baseload power simulation output directory (overrides default)",
     )
+    parser.add_argument(
+        "--enable-clustering",
+        action="store_true",
+        help="Enable furnace group clustering to reduce LP complexity",
+    )
+
+    def _str2bool(v: str) -> bool:
+        if v.lower() in ("true", "t", "yes", "y", "1"):
+            return True
+        if v.lower() in ("false", "f", "no", "n", "0"):
+            return False
+        raise argparse.ArgumentTypeError(f"expected a boolean value, got {v!r}")
+
+    parser.add_argument(
+        "--cluster-hot-metal-by-plant-group",
+        type=_str2bool,
+        nargs="?",
+        const=True,
+        default=False,
+        help=(
+            "When clustering is enabled, cluster hot-metal-affected techs "
+            "(those whose feedstocks or outputs include hot_metal/dri_*/liquid_iron) "
+            "by plant_group_id instead of iso3. Accepts bare flag, =True, or =False. "
+            "No effect without --enable-clustering."
+        ),
+    )
+    parser.add_argument(
+        "--peg-iron-to-steel-price",
+        action="store_true",
+        help="Enable iron price pegging to steel price (default: disabled)",
+    )
+    parser.add_argument(
+        "--iron-to-steel-price-ratio",
+        type=float,
+        default=0.8,
+        help="Ratio of steel price for iron floor when pegging is enabled (default: 0.8 = 80%%)",
+    )
 
     # Parse the command-line arguments
     try:
@@ -231,6 +268,22 @@ def run_full_simulation() -> str:
 
             config = SimulationConfig.from_data_directory(**config_kwargs)
 
+            # Override clustering setting from command line
+            if args.enable_clustering:
+                config.enable_furnace_group_clustering = True
+                console.print("[green]Furnace group clustering enabled[/green]")
+            if args.cluster_hot_metal_by_plant_group:
+                config.cluster_hot_metal_techs_by_plant_group = True
+                console.print("[green]Hot-metal-affected techs will cluster by plant_group[/green]")
+
+            # Override iron price pegging settings from command line
+            if args.peg_iron_to_steel_price:
+                config.peg_iron_to_steel_price = True
+                config.iron_to_steel_price_ratio = args.iron_to_steel_price_ratio
+                console.print(
+                    f"[green]Iron price pegging enabled at {args.iron_to_steel_price_ratio:.0%} of steel price[/green]"
+                )
+
             # Save config and metadata
             config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
             config_path = output_dir / "simulation_config.json"
@@ -294,6 +347,22 @@ def run_full_simulation() -> str:
                     console.print(f"[blue]Using custom baseload power simulation directory: {baseload_dir}[/blue]")
 
                 config = SimulationConfig.from_data_directory(**config_kwargs)
+
+                # Override clustering setting from command line
+                if args.enable_clustering:
+                    config.enable_furnace_group_clustering = True
+                    console.print("[green]Furnace group clustering enabled[/green]")
+                if args.cluster_hot_metal_by_plant_group:
+                    config.cluster_hot_metal_techs_by_plant_group = True
+                    console.print("[green]Hot-metal-affected techs will cluster by plant_group[/green]")
+
+                # Override iron price pegging settings from command line
+                if args.peg_iron_to_steel_price:
+                    config.peg_iron_to_steel_price = True
+                    config.iron_to_steel_price_ratio = args.iron_to_steel_price_ratio
+                    console.print(
+                        f"[green]Iron price pegging enabled at {args.iron_to_steel_price_ratio:.0%} of steel price[/green]"
+                    )
 
                 # Save config and metadata
                 config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}

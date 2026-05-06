@@ -90,7 +90,6 @@ class TestDRITransitions(TestCase):
                                 capex_dict={},
                                 capex_renovation_share={},
                                 technology_fopex_dict={},
-                                plant_has_smelter_furnace=False,
                                 dynamic_business_cases={},
                                 allowed_furnace_transitions={},  # Empty dict to test the fix
                             )

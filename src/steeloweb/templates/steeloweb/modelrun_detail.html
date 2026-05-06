@@ -125,16 +125,28 @@
                             {% endif %}
                         </dd>
 
+                        <dt class="col-sm-4">Created</dt>
+                        <dd class="col-sm-8">{{ modelrun.created_at }}</dd>
+
                         <dt class="col-sm-4">Started</dt>
-                        <dd class="col-sm-8">{{ modelrun.started_at }}</dd>
+                        <dd class="col-sm-8">{{ modelrun.run_started_at|default:"-" }}</dd>
 
                         <dt class="col-sm-4">Finished</dt>
                         <dd class="col-sm-8">{{ modelrun.finished_at|default:"-" }}</dd>
 
-                        <dt class="col-sm-4">Duration</dt>
+                        <dt class="col-sm-4">Time since creation</dt>
                         <dd class="col-sm-8">
                             {% if modelrun.finished_at %}
-                            {{ modelrun.finished_at|timeuntil:modelrun.started_at }}
+                            {{ modelrun.finished_at|timeuntil:modelrun.created_at }}
+                            {% else %}
+                            -
+                            {% endif %}
+                        </dd>
+
+                        <dt class="col-sm-4">Duration of simulation</dt>
+                        <dd class="col-sm-8">
+                            {% if modelrun.finished_at and modelrun.run_started_at %}
+                            {{ modelrun.finished_at|timeuntil:modelrun.run_started_at }}
                             {% else %}
                             -
                             {% endif %}
@@ -225,20 +237,61 @@
                             <dt class="col-sm-4">Years:</dt>
                             <dd class="col-sm-8">{{ modelrun.config.start_year }} - {{ modelrun.config.end_year }}</dd>
 
-                            {% comment %}
-                            Demand Scenario field is not yet implemented - shows in form but not used by simulation
-                            {% endcomment %}
+                            <dt class="col-sm-4">Furnace group clustering:</dt>
+                            <dd class="col-sm-8">{{ modelrun.config.enable_furnace_group_clustering|yesno:"Enabled,Disabled,—" }}</dd>
 
-                            {% if technology_switches %}
-                            <dt class="col-sm-4">Technology Switches:</dt>
+                            <dt class="col-sm-4">Hot metal cluster by plant group:</dt>
+                            <dd class="col-sm-8">{{ modelrun.config.cluster_hot_metal_techs_by_plant_group|yesno:"Enabled,Disabled,—" }}</dd>
+
+                            <dt class="col-sm-4">Plant agents:</dt>
+                            <dd class="col-sm-8">{{ modelrun.config.probabilistic_agents|yesno:"Probabilistic,Deterministic,—" }}</dd>
+
+                            <dt class="col-sm-4">Grid emissivity scenario:</dt>
+                            <dd class="col-sm-8">{{ modelrun.config.chosen_grid_emissions_scenario|default:"—" }}</dd>
+
+                            <dt class="col-sm-4">Iron capacity limit:</dt>
                             <dd class="col-sm-8">
-                                <small class="text-muted">
-                                    {% for source, targets in technology_switches.items %}
-                                        {{ source }} → {{ targets|join:", " }}{% if not forloop.last %}; {% endif %}
-                                    {% endfor %}
-                                </small>
+                                {% if capacity_limit_iron_mt is not None %}{{ capacity_limit_iron_mt|floatformat:"-1" }} Mt/year{% else %}—{% endif %}
                             </dd>
-                            {% endif %}
+
+                            <dt class="col-sm-4">Steel capacity limit:</dt>
+                            <dd class="col-sm-8">
+                                {% if capacity_limit_steel_mt is not None %}{{ capacity_limit_steel_mt|floatformat:"-1" }} Mt/year{% else %}—{% endif %}
+                            </dd>
+
+                            <dt class="col-sm-4">Construction time:</dt>
+                            <dd class="col-sm-8">
+                                {% if modelrun.config.construction_time is not None %}{{ modelrun.config.construction_time }} years{% else %}—{% endif %}
+                            </dd>
+
+                            <dt class="col-sm-4">Consideration time:</dt>
+                            <dd class="col-sm-8">
+                                {% if modelrun.config.consideration_time is not None %}{{ modelrun.config.consideration_time }} years{% else %}—{% endif %}
+                            </dd>
+
+                            <dt class="col-sm-4">Steel premium:</dt>
+                            <dd class="col-sm-8">
+                                {% if modelrun.config.steel_price_buffer is not None %}{{ modelrun.config.steel_price_buffer }} USD/t{% else %}—{% endif %}
+                            </dd>
+
+                            <dt class="col-sm-4">Iron premium:</dt>
+                            <dd class="col-sm-8">
+                                {% if modelrun.config.iron_price_buffer is not None %}{{ modelrun.config.iron_price_buffer }} USD/t{% else %}—{% endif %}
+                            </dd>
+
+                            <dt class="col-sm-4">Iron→steel price pegging:</dt>
+                            <dd class="col-sm-8">
+                                {% if modelrun.config.peg_iron_to_steel_price %}
+                                    Enabled (ratio {{ modelrun.config.iron_to_steel_price_ratio }})
+                                {% else %}
+                                    Disabled
+                                {% endif %}
+                            </dd>
+
+                            <dt class="col-sm-4">Hydrogen ceiling percentile:</dt>
+                            <dd class="col-sm-8">
+                                {% if modelrun.config.hydrogen_ceiling_percentile is not None %}{{ modelrun.config.hydrogen_ceiling_percentile }}%{% else %}—{% endif %}
+                            </dd>
 
                             {% if modelrun.config.emissions_boundary %}
                             <dt class="col-sm-4">Emissions Boundary:</dt>
@@ -250,6 +303,63 @@
                             <dd class="col-sm-8">{{ modelrun.config.carbon_tax_amount }} {{ modelrun.config.carbon_tax_currency }}/{{ modelrun.config.carbon_tax_unit }}</dd>
                             {% endif %}
                         </dl>
+
+                        {% if technology_switches_sorted or technology_settings_sorted %}
+                        <div class="accordion mt-3" id="configAccordion">
+                            {% if technology_switches_sorted %}
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="techSwitchesHeading">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#techSwitchesCollapse" aria-expanded="false" aria-controls="techSwitchesCollapse">
+                                        Technology Switches ({{ technology_switches_sorted|length }})
+                                    </button>
+                                </h2>
+                                <div id="techSwitchesCollapse" class="accordion-collapse collapse" aria-labelledby="techSwitchesHeading" data-bs-parent="#configAccordion">
+                                    <div class="accordion-body">
+                                        <ul class="list-unstyled mb-0 small">
+                                            {% for source, target in technology_switches_sorted %}
+                                            <li>{{ source }} → {{ target }}</li>
+                                            {% endfor %}
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            {% if technology_settings_sorted %}
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="techConfigHeading">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#techConfigCollapse" aria-expanded="false" aria-controls="techConfigCollapse">
+                                        Technology Configuration ({{ technology_settings_sorted|length }})
+                                    </button>
+                                </h2>
+                                <div id="techConfigCollapse" class="accordion-collapse collapse" aria-labelledby="techConfigHeading" data-bs-parent="#configAccordion">
+                                    <div class="accordion-body">
+                                        <table class="table table-sm small mb-0">
+                                            <thead>
+                                                <tr>
+                                                    <th>Technology</th>
+                                                    <th class="text-center">Allowed</th>
+                                                    <th>From year</th>
+                                                    <th>To year</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {% for code, settings in technology_settings_sorted %}
+                                                <tr>
+                                                    <td>{{ code }}</td>
+                                                    <td class="text-center">{{ settings.allowed|yesno:"Yes,No,—" }}</td>
+                                                    <td>{{ settings.from_year|default:"—" }}</td>
+                                                    <td>{{ settings.to_year|default:"—" }}</td>
+                                                </tr>
+                                                {% endfor %}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% endif %}
                     </div>
 
                     <!-- Raw Configuration Collapse -->
@@ -305,10 +415,10 @@
                                     <div class="card-header bg-light">Cost Maps</div>
                                     <div class="card-body">
                                         <div class="d-grid gap-2">
-                                            <a href="{% url 'view-cost-map' pk=modelrun.id map_type='lcoe' %}" class="btn btn-outline-primary">
+                                            <a href="{% url 'view-cost-map' pk=modelrun.id map_type='lcoe' %}?popup=1" class="btn btn-outline-primary" target="_blank" rel="noopener">
                                                 <i class="fas fa-map"></i> Levelized Cost of Electricity (LCOE)
                                             </a>
-                                            <a href="{% url 'view-cost-map' pk=modelrun.id map_type='lcoh' %}" class="btn btn-outline-primary">
+                                            <a href="{% url 'view-cost-map' pk=modelrun.id map_type='lcoh' %}?popup=1" class="btn btn-outline-primary" target="_blank" rel="noopener">
                                                 <i class="fas fa-map"></i> Levelized Cost of Hydrogen (LCOH)
                                             </a>
                                         </div>
@@ -320,10 +430,10 @@
                                     <div class="card-header bg-light">Priority Locations</div>
                                     <div class="card-body">
                                         <div class="d-grid gap-2">
-                                            <a href="{% url 'view-priority-map' pk=modelrun.id map_type='iron' %}" class="btn btn-outline-success">
+                                            <a href="{% url 'view-priority-map' pk=modelrun.id map_type='iron' %}?popup=1" class="btn btn-outline-success" target="_blank" rel="noopener">
                                                 <i class="fas fa-map-marked-alt"></i> Top 5% Locations for Iron Production
                                             </a>
-                                            <a href="{% url 'view-priority-map' pk=modelrun.id map_type='steel' %}" class="btn btn-outline-success">
+                                            <a href="{% url 'view-priority-map' pk=modelrun.id map_type='steel' %}?popup=1" class="btn btn-outline-success" target="_blank" rel="noopener">
                                                 <i class="fas fa-map-marked-alt"></i> Top 5% Locations for Steel Production
                                             </a>
                                         </div>
@@ -337,10 +447,10 @@
                                     <div class="card-header bg-light">New Plants Map</div>
                                     <div class="card-body">
                                         <div class="d-grid gap-2">
-                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='iron-construction' %}" class="btn btn-outline-info">
+                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='iron-construction' %}?popup=1" class="btn btn-outline-info" target="_blank" rel="noopener">
                                                 <i class="fas fa-map-marked-alt"></i> Iron Plants Operating Map
                                             </a>
-                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='steel-construction' %}" class="btn btn-outline-info">
+                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='steel-construction' %}?popup=1" class="btn btn-outline-info" target="_blank" rel="noopener">
                                                 <i class="fas fa-map-marked-alt"></i> Steel Plants Operating Map
                                             </a>
                                         </div>
@@ -352,10 +462,10 @@
                                     <div class="card-header bg-light">New Plants by Status</div>
                                     <div class="card-body">
                                         <div class="d-grid gap-2">
-                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='iron-status' %}" class="btn btn-outline-warning">
+                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='iron-status' %}?popup=1" class="btn btn-outline-warning" target="_blank" rel="noopener">
                                                 <i class="fas fa-chart-bar"></i> Iron Plants by Status Chart
                                             </a>
-                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='steel-status' %}" class="btn btn-outline-warning">
+                                            <a href="{% url 'view-plant-visualization' pk=modelrun.id visualization_type='steel-status' %}?popup=1" class="btn btn-outline-warning" target="_blank" rel="noopener">
                                                 <i class="fas fa-chart-bar"></i> Steel Plants by Status Chart
                                             </a>
                                         </div>
@@ -371,15 +481,15 @@
                     <div class="mb-4">
                         <h6>Simulation Results</h6>
                         <div class="row">
-                            {% for plot in modelrun.simulation_plots.all %}
+                            {% for plot in simulation_plots_other %}
                             <div class="col-md-6 mb-3">
                                 <div class="card">
-                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}">
+                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" target="_blank" rel="noopener">
                                         <img src="{{ plot.image.url }}" class="card-img-top" alt="{{ plot.title }}" style="cursor: pointer;">
                                     </a>
                                     <div class="card-body">
                                         <p class="card-text text-center">
-                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}" class="text-decoration-none">
+                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" class="text-decoration-none" target="_blank" rel="noopener">
                                                 {{ plot.title }}
                                             </a>
                                         </p>
@@ -388,6 +498,177 @@
                             </div>
                             {% endfor %}
                         </div>
+
+                        {% if production_and_capacity_plots %}
+                        <div class="accordion mb-3" id="productionCapacityAccordion">
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="productionCapacityHeading">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#productionCapacityCollapse" aria-expanded="false" aria-controls="productionCapacityCollapse">
+                                        Production and Capacity ({{ production_and_capacity_plots|length }})
+                                    </button>
+                                </h2>
+                                <div id="productionCapacityCollapse" class="accordion-collapse collapse" aria-labelledby="productionCapacityHeading" data-bs-parent="#productionCapacityAccordion">
+                                    <div class="accordion-body">
+                                        <div class="row">
+                                            {% for plot in production_and_capacity_plots %}
+                                            <div class="col-md-6 mb-3">
+                                                <div class="card">
+                                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" target="_blank" rel="noopener">
+                                                        <img src="{{ plot.image.url }}" class="card-img-top" alt="{{ plot.title }}" style="cursor: pointer;">
+                                                    </a>
+                                                    <div class="card-body">
+                                                        <p class="card-text text-center">
+                                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" class="text-decoration-none" target="_blank" rel="noopener">
+                                                                {{ plot.title }}
+                                                            </a>
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+
+                        {% if market_prices_plots %}
+                        <div class="accordion mb-3" id="marketPricesAccordion">
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="marketPricesHeading">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#marketPricesCollapse" aria-expanded="false" aria-controls="marketPricesCollapse">
+                                        Market Prices ({{ market_prices_plots|length }})
+                                    </button>
+                                </h2>
+                                <div id="marketPricesCollapse" class="accordion-collapse collapse" aria-labelledby="marketPricesHeading" data-bs-parent="#marketPricesAccordion">
+                                    <div class="accordion-body">
+                                        <div class="row">
+                                            {% for plot in market_prices_plots %}
+                                            <div class="col-md-6 mb-3">
+                                                <div class="card">
+                                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" target="_blank" rel="noopener">
+                                                        <img src="{{ plot.image.url }}" class="card-img-top" alt="{{ plot.title }}" style="cursor: pointer;">
+                                                    </a>
+                                                    <div class="card-body">
+                                                        <p class="card-text text-center">
+                                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" class="text-decoration-none" target="_blank" rel="noopener">
+                                                                {{ plot.title }}
+                                                            </a>
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+
+                        {% if steel_cost_curves or iron_cost_curves %}
+                        <div class="accordion" id="costCurvesAccordion">
+                            {% if steel_cost_curves %}
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="steelCostCurvesHeading">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#steelCostCurvesCollapse" aria-expanded="false" aria-controls="steelCostCurvesCollapse">
+                                        Steel Cost Curves ({{ steel_cost_curves|length }})
+                                    </button>
+                                </h2>
+                                <div id="steelCostCurvesCollapse" class="accordion-collapse collapse" aria-labelledby="steelCostCurvesHeading" data-bs-parent="#costCurvesAccordion">
+                                    <div class="accordion-body">
+                                        <div class="row">
+                                            {% for plot in steel_cost_curves %}
+                                            <div class="col-md-6 mb-3">
+                                                <div class="card">
+                                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" target="_blank" rel="noopener">
+                                                        <img src="{{ plot.image.url }}" class="card-img-top" alt="{{ plot.title }}" style="cursor: pointer;">
+                                                    </a>
+                                                    <div class="card-body">
+                                                        <p class="card-text text-center">
+                                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" class="text-decoration-none" target="_blank" rel="noopener">
+                                                                {{ plot.title }}
+                                                            </a>
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+                            {% if iron_cost_curves %}
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="ironCostCurvesHeading">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#ironCostCurvesCollapse" aria-expanded="false" aria-controls="ironCostCurvesCollapse">
+                                        Iron Cost Curves ({{ iron_cost_curves|length }})
+                                    </button>
+                                </h2>
+                                <div id="ironCostCurvesCollapse" class="accordion-collapse collapse" aria-labelledby="ironCostCurvesHeading" data-bs-parent="#costCurvesAccordion">
+                                    <div class="accordion-body">
+                                        <div class="row">
+                                            {% for plot in iron_cost_curves %}
+                                            <div class="col-md-6 mb-3">
+                                                <div class="card">
+                                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" target="_blank" rel="noopener">
+                                                        <img src="{{ plot.image.url }}" class="card-img-top" alt="{{ plot.title }}" style="cursor: pointer;">
+                                                    </a>
+                                                    <div class="card-body">
+                                                        <p class="card-text text-center">
+                                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" class="text-decoration-none" target="_blank" rel="noopener">
+                                                                {{ plot.title }}
+                                                            </a>
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+
+                        {% if emissions_by_boundary %}
+                        <div class="accordion mt-3" id="emissionsAccordion">
+                            {% for boundary, emissions_plots in emissions_by_boundary.items %}
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="emissionsHeading{{ forloop.counter }}">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#emissionsCollapse{{ forloop.counter }}" aria-expanded="false" aria-controls="emissionsCollapse{{ forloop.counter }}">
+                                        Emissions — {{ boundary }} ({{ emissions_plots|length }})
+                                    </button>
+                                </h2>
+                                <div id="emissionsCollapse{{ forloop.counter }}" class="accordion-collapse collapse" aria-labelledby="emissionsHeading{{ forloop.counter }}" data-bs-parent="#emissionsAccordion">
+                                    <div class="accordion-body">
+                                        <div class="row">
+                                            {% for plot in emissions_plots %}
+                                            <div class="col-md-6 mb-3">
+                                                <div class="card">
+                                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" target="_blank" rel="noopener">
+                                                        <img src="{{ plot.image.url }}" class="card-img-top" alt="{{ plot.title }}" style="cursor: pointer;">
+                                                    </a>
+                                                    <div class="card-body">
+                                                        <p class="card-text text-center">
+                                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" class="text-decoration-none" target="_blank" rel="noopener">
+                                                                {{ plot.title }}
+                                                            </a>
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
                     </div>
                     {% endif %}
                 </div>

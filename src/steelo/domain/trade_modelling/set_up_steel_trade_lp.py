@@ -25,8 +25,6 @@ from collections import defaultdict
 import pyomo.environ as pyo
 from steelo.domain.constants import LP_TOLERANCE, T_TO_KT
 
-logger = logging.getLogger(__name__)
-
 
 def _ensure_secondary_feedstock_supplier(
     repository: Repository,
@@ -40,7 +38,7 @@ def _ensure_secondary_feedstock_supplier(
     """
     Guarantee that a synthetic supplier exists for secondary feedstock constraints.
 
-    The LP injects virtual supply process centers (e.g. ``bio-pci_supply_process_center``) so the
+    The LP injects virtual supply process centers (e.g. ``bio_pci_supply_process_center``) so the
     constraint can be enforced. Downstream, those nodes must map to Supplier objects when
     allocations are translated back into domain entities. We therefore create (or update) an
     in-memory Supplier with the matching identifier and per-year capacity.
@@ -49,12 +47,20 @@ def _ensure_secondary_feedstock_supplier(
     try:
         supplier = repository.suppliers.get(supplier_id)
     except KeyError:
+        # Create constant production cost dictionary for all years in simulation horizon
+        # Synthetic source: no additional cost beyond LP allocation costs
+        from steelo.adapters.dataprocessing.excel_reader import EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR
+
+        production_cost_by_year = {Year(y): 0.0 for y in range(EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR + 1)}
+
         supplier = Supplier(
             supplier_id=supplier_id,
             location=location,
             commodity=commodity,
             capacity_by_year={year: capacity_as_volume},
-            production_cost=0.0,  # synthetic source: no additional cost beyond LP allocation costs
+            production_cost_by_year=production_cost_by_year,
+            mine_cost_by_year={},
+            mine_price_by_year={},
         )
         add_method = getattr(repository.suppliers, "add", None)
         if callable(add_method):
@@ -93,6 +99,7 @@ def create_process_from_furnace_group(
         - Raises ValueError if required_quantity_per_ton_of_product is None
         - Adds new BOMElements to lp_model for reuse across furnace groups
     """
+    logger = logging.getLogger(f"{__name__}.create_process_from_furnace_group")
     boms = []
     if furnace_group.technology.dynamic_business_case is None:
         return tlp.Process(
@@ -114,7 +121,7 @@ def create_process_from_furnace_group(
                     f"WARNING: Feedstock {primary_feedstock.name} has no primary outputs. "
                     f"Outputs: {list(primary_feedstock.outputs.keys())}, "
                     f"Primary products considered: {config.primary_products}. "
-                    f"Skipping this feedstock."
+                    "Skipping this feedstock."
                 )
                 continue
             else:
@@ -127,10 +134,24 @@ def create_process_from_furnace_group(
                 dependent_commodities[tlp.Commodity(name=sec_feedstock)] = primary_feedstock.secondary_feedstock[
                     sec_feedstock
                 ]
+            for en_req in primary_feedstock.energy_requirements:
+                dependent_commodities[tlp.Commodity(name=en_req)] = primary_feedstock.energy_requirements[en_req]
             if primary_feedstock.required_quantity_per_ton_of_product is None:
                 raise ValueError(
                     f"Required quantity per ton of product is None for feedstock {primary_feedstock.name}. It's outputs are: {primary_feedstock.outputs.keys()}"
                 )
+            # Bridge carbon outputs (e.g. co2_stored) into dependent_commodities so that
+            # regional availability constraints can be enforced by the LP. carbon_outputs
+            # values are in tCO2/t-product-output; dividing by required_quantity converts
+            # to tCO2/t-primary-input, which is the unit the LP dependent-commodity ratio
+            # expects. If no supply process exists for a given carbon output (i.e. no
+            # constraint is configured), set_legal_allocations will simply find no allocation
+            # variable and the equality constraint is skipped harmlessly.
+            req_qty = primary_feedstock.required_quantity_per_ton_of_product
+            for co_key, co_amount in (primary_feedstock.carbon_outputs or {}).items():
+                if co_amount:  # skip zero-valued outputs — no LP effect and avoids noisy warnings
+                    dependent_commodities[tlp.Commodity(name=co_key)] = co_amount / req_qty
+
             output_commodities = [tlp.Commodity(name=oc) for oc in primary_commodities]
 
             # energy_vopex_by_input is calculated as $ per ton of OUTPUT (from dynamic business case)
@@ -151,8 +172,12 @@ def create_process_from_furnace_group(
                 output_commodities=output_commodities,
                 parameters={
                     tlp.MaterialParameters.INPUT_RATIO.value: primary_feedstock.required_quantity_per_ton_of_product,
-                    tlp.MaterialParameters.MAXIMUM_RATIO.value: primary_feedstock.maximum_share_in_product,
-                    tlp.MaterialParameters.MINIMUM_RATIO.value: primary_feedstock.minimum_share_in_product,
+                    tlp.MaterialParameters.MAXIMUM_RATIO.value: primary_feedstock.maximum_share_in_product
+                    if primary_feedstock.maximum_share_in_product != 1.0
+                    else None,  # Only set max ratio if it's less than 100% to avoid redundant constraints
+                    tlp.MaterialParameters.MINIMUM_RATIO.value: primary_feedstock.minimum_share_in_product
+                    if primary_feedstock.minimum_share_in_product != 0.0
+                    else None,  # Only set min ratio if it's greater than 0% to avoid redundant constraints
                 },
                 dependent_commodities=dependent_commodities,
                 energy_cost=energy_cost_per_ton_input,
@@ -167,11 +192,140 @@ def create_process_from_furnace_group(
     return process
 
 
-def add_furnace_groups_as_process_centers(repository, lp_model: tlp.TradeLPModel, config: "SimulationConfig"):
+def create_process_from_meta_furnace_group(
+    meta_fg, lp_model: tlp.TradeLPModel, config: "SimulationConfig"
+) -> tlp.Process:
+    """Create a production process from a meta-furnace group for the LP model.
+
+    Similar to create_process_from_furnace_group but adapted for clustered MetaFurnaceGroup objects.
+    Uses the dynamic business case from the cluster (should be identical across all constituent FGs)
+    and capacity-weighted average energy costs.
+
+    Args:
+        meta_fg: MetaFurnaceGroup containing aggregated technology and feedstock specifications
+        lp_model: The trade LP model to add BOM elements to (reuses existing BOMs if found)
+        config: Simulation configuration containing primary products list
+
+    Returns:
+        Process object of type PRODUCTION with bill of materials for the technology
+
+    Notes:
+        - Returns empty process if meta_fg has no dynamic business case
+        - Skips feedstocks with NaN metallic charge values
+        - Logs warnings for feedstocks with no primary outputs
+        - Raises ValueError if required_quantity_per_ton_of_product is None
+        - Uses capacity-weighted average energy costs from meta_fg.weighted_avg_energy_costs
+        - All constituent FGs in cluster should have identical dynamic_business_case structure
+    """
+    logger = logging.getLogger(f"{__name__}.create_process_from_meta_furnace_group")
+    boms = []
+
+    if meta_fg.dynamic_business_case is None:
+        return tlp.Process(
+            name=meta_fg.technology_name,
+            type=tlp.ProcessType.PRODUCTION,
+            bill_of_materials=[],
+        )
+
+    # Filter feedstocks by chosen_reductant (similar to effective_primary_feedstocks property)
+    # Don't filter if chosen_reductant is "unknown" or empty
+    relevant_feedstocks = (
+        [fs for fs in meta_fg.dynamic_business_case if fs.reductant == meta_fg.chosen_reductant]
+        if (meta_fg.chosen_reductant and meta_fg.chosen_reductant != "unknown")
+        else meta_fg.dynamic_business_case
+    )
+
+    for primary_feedstock in relevant_feedstocks:
+        try:
+            bom = lp_model.get_bom_element(primary_feedstock.name)
+        except StopIteration:
+            # Filter out NaN metallic charge values
+            if type(primary_feedstock.metallic_charge) is float:
+                continue
+
+            primary_commodities = list(primary_feedstock.get_primary_outputs(config.primary_products).keys())
+
+            # Log warning and skip this feedstock if it has no primary outputs
+            if len(primary_commodities) == 0:
+                logger.warning(
+                    f"WARNING: Feedstock {primary_feedstock.name} has no primary outputs. "
+                    f"Outputs: {list(primary_feedstock.outputs.keys())}, "
+                    f"Primary products considered: {config.primary_products}. "
+                    "Skipping this feedstock."
+                )
+                continue
+            else:
+                logger.info(
+                    f"Feedstock {primary_feedstock.name} has primary outputs: {primary_commodities} "
+                    f"(from total outputs: {list(primary_feedstock.outputs.keys())})"
+                )
+
+            # Build dependent commodities (secondary feedstocks)
+            dependent_commodities = {}
+            for sec_feedstock in primary_feedstock.secondary_feedstock:
+                dependent_commodities[tlp.Commodity(name=sec_feedstock)] = primary_feedstock.secondary_feedstock[
+                    sec_feedstock
+                ]
+            for en_req in primary_feedstock.energy_requirements:
+                dependent_commodities[tlp.Commodity(name=en_req)] = primary_feedstock.energy_requirements[en_req]
+
+            if primary_feedstock.required_quantity_per_ton_of_product is None:
+                raise ValueError(
+                    f"Required quantity per ton of product is None for feedstock {primary_feedstock.name}. "
+                    f"Its outputs are: {primary_feedstock.outputs.keys()}"
+                )
+
+            # Bridge carbon outputs into dependent_commodities
+            req_qty = primary_feedstock.required_quantity_per_ton_of_product
+            for co_key, co_amount in (primary_feedstock.carbon_outputs or {}).items():
+                if co_amount:  # skip zero-valued outputs
+                    dependent_commodities[tlp.Commodity(name=co_key)] = co_amount / req_qty
+
+            output_commodities = [tlp.Commodity(name=oc) for oc in primary_commodities]
+
+            # Get capacity-weighted average energy cost for this metallic charge
+            # energy_vopex_by_input is in $ per ton of OUTPUT
+            # need to convert to $ per ton of INPUT by dividing by required_quantity_per_ton_of_product
+            energy_cost_per_ton_output = meta_fg.weighted_avg_energy_costs.get(primary_feedstock.metallic_charge, 0.0)
+            energy_cost_per_ton_input = (
+                energy_cost_per_ton_output / primary_feedstock.required_quantity_per_ton_of_product
+            )
+
+            bom = tlp.BOMElement(
+                name=primary_feedstock.name,
+                commodity=tlp.Commodity(name=primary_feedstock.metallic_charge),
+                output_commodities=output_commodities,
+                parameters={
+                    tlp.MaterialParameters.INPUT_RATIO.value: primary_feedstock.required_quantity_per_ton_of_product,
+                    tlp.MaterialParameters.MAXIMUM_RATIO.value: primary_feedstock.maximum_share_in_product
+                    if primary_feedstock.maximum_share_in_product != 1.0
+                    else None,
+                    tlp.MaterialParameters.MINIMUM_RATIO.value: primary_feedstock.minimum_share_in_product
+                    if primary_feedstock.minimum_share_in_product != 0.0
+                    else None,
+                },
+                dependent_commodities=dependent_commodities,
+                energy_cost=energy_cost_per_ton_input,
+            )
+            lp_model.add_bom_elements([bom])
+        boms.append(bom)
+
+    process = tlp.Process(
+        name=meta_fg.technology_name,
+        type=tlp.ProcessType.PRODUCTION,
+        bill_of_materials=boms,
+    )
+    return process
+
+
+def add_furnace_groups_as_process_centers(
+    repository, lp_model: tlp.TradeLPModel, config: "SimulationConfig", furnace_groups_override: list[Any] | None = None
+):
     """Convert steel furnace groups into production process centers for the LP model.
 
     Creates ProcessCenter objects for each active furnace group in the repository. Each process
     center represents a production facility with its technology, capacity, location, and costs.
+    Can accept either individual FurnaceGroup objects or clustered MetaFurnaceGroup objects.
 
     Args:
         repository: Repository containing plants with furnace groups
@@ -181,36 +335,72 @@ def add_furnace_groups_as_process_centers(repository, lp_model: tlp.TradeLPModel
             - capacity_limit: Safety factor to scale capacities (typically 0.95)
             - soft_minimum_capacity_percentage: Target minimum utilization
             - primary_products: List of primary products for BOM creation
+        furnace_groups_override: Optional list of MetaFurnaceGroup objects to use instead
+            of extracting from repository. When provided, uses clustered furnace groups.
 
     Notes:
-        - Only includes furnace groups with status in config.active_statuses
+        - Only includes furnace groups with status in config.active_statuses (when using repository)
         - Reuses Process objects across furnace groups with the same technology
         - Capacity is scaled by config.capacity_limit (e.g., 0.95 for 95% availability)
-        - Production cost is set to furnace_group.carbon_cost_per_unit
+        - Production cost is set to furnace_group.carbon_cost_per_unit or weighted_avg_carbon_cost
         - Creates new processes on-the-fly using create_process_from_furnace_group()
+        - MetaFurnaceGroup objects use capacity-weighted centroid locations
     """
     process_centers = []
-    for plant in repository.plants.list():
-        for furnace_group in plant.furnace_groups:
-            if furnace_group.status.lower() not in config.active_statuses:
-                continue
 
-            process = lp_model.get_process(furnace_group.technology.name)
+    if furnace_groups_override is not None:
+        # Use provided meta-furnace groups
+        logger = logging.getLogger(f"{__name__}.add_furnace_groups_as_process_centers")
+        logger.info(f"Using {len(furnace_groups_override)} meta-furnace groups (clustered mode)")
+
+        for meta_fg in furnace_groups_override:
+            # Get or create process for this technology
+            process = lp_model.get_process(meta_fg.technology_name)
             if process is None:
-                process = create_process_from_furnace_group(
-                    furnace_group=furnace_group, lp_model=lp_model, config=config
+                logger.info(
+                    f"Creating new process for technology: {meta_fg.technology_name}, dynamic_business_case: {meta_fg.dynamic_business_case}"
                 )
+                process = create_process_from_meta_furnace_group(meta_fg=meta_fg, lp_model=lp_model, config=config)
+                logger.info(f"Created process {process.name} with {len(process.bill_of_materials)} BOMs")
                 lp_model.add_processes([process])
+            else:
+                logger.info(f"Reusing existing process for technology: {meta_fg.technology_name}")
 
             process_center = tlp.ProcessCenter(
-                name=furnace_group.furnace_group_id,
+                name=meta_fg.meta_furnace_group_id,
                 process=process,
-                capacity=config.capacity_limit * furnace_group.capacity,
-                location=plant.location,
-                production_cost=furnace_group.carbon_cost_per_unit,  # setting production cost to carbon cost per unit
+                capacity=config.capacity_limit * meta_fg.total_capacity,
+                location=meta_fg.location,  # This is the capacity-weighted centroid
+                production_cost=meta_fg.weighted_avg_carbon_cost,
                 soft_minimum_capacity=config.soft_minimum_capacity_percentage,
             )
+            logger.info(
+                f"Created ProcessCenter {process_center.name} with capacity {process_center.capacity} and {len(process.bill_of_materials)} BOMs"
+            )
             process_centers.append(process_center)
+    else:
+        # Original behavior: extract from repository
+        for plant in repository.plants.list():
+            for furnace_group in plant.furnace_groups:
+                if furnace_group.status.lower() not in config.active_statuses:
+                    continue
+
+                process = lp_model.get_process(furnace_group.technology.name)
+                if process is None:
+                    process = create_process_from_furnace_group(
+                        furnace_group=furnace_group, lp_model=lp_model, config=config
+                    )
+                    lp_model.add_processes([process])
+
+                process_center = tlp.ProcessCenter(
+                    name=furnace_group.furnace_group_id,
+                    process=process,
+                    capacity=config.capacity_limit * furnace_group.capacity,
+                    location=plant.location,
+                    production_cost=furnace_group.carbon_cost_per_unit,
+                    soft_minimum_capacity=config.soft_minimum_capacity_percentage,
+                )
+                process_centers.append(process_center)
 
     lp_model.add_process_centers(process_centers)
 
@@ -273,10 +463,11 @@ def add_suppliers_as_process_centers(repository, lp_model: tlp.TradeLPModel, yea
         - Creates one Process per commodity (e.g., "iron_ore_supply", "coal_supply")
         - Each supplier becomes a separate ProcessCenter
         - Capacity is set to supplier.capacity_by_year[year]
-        - Production cost is set to supplier.production_cost
+        - Production cost is set to supplier.production_cost_by_year[year]
         - Handles both string and enum commodity types via isinstance checks
         - Skips suppliers if their commodity's supply process is not found
     """
+    logger = logging.getLogger(f"{__name__}.add_suppliers_as_process_centers")
     supply_process_centers = []
     supply_processes = []
     supplied_commodities = set([sup.commodity for sup in repository.suppliers.list()])
@@ -321,12 +512,14 @@ def add_suppliers_as_process_centers(repository, lp_model: tlp.TradeLPModel, yea
                 year,
             )
             continue
+        # Get production cost for this year, fallback to 0 if not defined
+        production_cost = supplier.production_cost_by_year.get(year, 0.0)
         process_center = tlp.ProcessCenter(
             name=supplier.supplier_id,
             process=supplier_process,
             capacity=capacity,
             location=supplier.location,
-            production_cost=supplier.production_cost,
+            production_cost=production_cost,
         )
         supply_process_centers.append(process_center)
 
@@ -361,6 +554,7 @@ def enforce_trade_tariffs_on_allocations(
         - NaN values are skipped
         - Tariff data added via lp_model.add_tariff_information(quota_dict, tax_dict)
     """
+    logger = logging.getLogger(f"{__name__}.enforce_trade_tariffs_on_allocations")
     from steelo.domain.constants import IRON_PRODUCTS
 
     quota_dict: dict[tuple[str, str, str], float] = {}
@@ -492,14 +686,19 @@ def enforce_trade_tariffs_on_allocations(
 
 
 def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
-    trade_lp: tlp.TradeLPModel, config: "SimulationConfig"
+    trade_lp: tlp.TradeLPModel, config: "SimulationConfig", env=None
 ):
     """Fix allocation variables to zero based on commodity-specific distance constraints.
 
-    Applies distance-based restrictions to prevent certain commodities from traveling
-    inappropriate distances. Some processes produce hot and cold metal variations.
-    Hot metal can only travel short distances, while other products like pig iron are
-    made to be transported over longer distances.
+    When clustering is enabled:
+        - Hot commodities are restricted to intra-country allocations only
+        - Cold commodities can be allocated anywhere (both domestic and international)
+        - Hot metal radius is NOT applied here, will be handled during disaggregation
+        - This ensures BOF hot metal minimum constraints can be satisfied in LP
+
+    When clustering is disabled (backwards compatibility):
+        - Applies distance-based restrictions for both hot and cold commodities
+        - Hot metal can only travel short distances, cold products travel long distances
 
     Args:
         trade_lp: The trade LP model with allocation variables to constrain
@@ -507,26 +706,106 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
             - hot_metal_radius: Maximum distance for hot metal transport (km, typically ~100)
             - closely_allocated_products: Products limited to short distances (e.g., ["hot_metal"])
             - distantly_allocated_products: Products requiring longer distances (e.g., ["pig_iron", "steel"])
+            - enable_furnace_group_clustering: Whether clustering is enabled (optional)
 
     Notes:
-        - For distances <= hot_metal_radius: fixes distantly_allocated_products to zero
-        - For distances > hot_metal_radius: fixes closely_allocated_products to zero
         - Variables are fixed using pyomo's .fix(0) method
         - This must be called after allocation variables are created but before solving
     """
-    for from_pc, to_pc, comm in trade_lp.lp_model.allocation_variables:
-        distance = trade_lp.get_distance(from_pc, to_pc)
-        # if the distance is within our hot metal radius
-        if distance <= config.hot_metal_radius:
-            # and if the commodity is one that is usually transported over long distances
-            if comm in config.distantly_allocated_products:
-                # Set the allocation to zero
-                trade_lp.lp_model.allocation_variables[(from_pc, to_pc, comm)].fix(0)
-        else:  # if the distance is outside our hot metal radius
-            # and the commodity can only be transported over short distances
+    logger = logging.getLogger(f"{__name__}.fix_to_zero_allocations_where_distance_doesnt_match_commodity")
+
+    # Check if clustering is enabled (defaults to False for backwards compatibility)
+    enable_clustering = getattr(config, "enable_furnace_group_clustering", False)
+
+    if enable_clustering:
+        # NEW BEHAVIOR: Allow both hot and cold commodities with geographic constraints
+        # Hot commodities are restricted to intra-country allocations (or intra-plant-group
+        # when cluster_hot_metal_techs_by_plant_group is on, which keeps flows physically
+        # local).
+        # Cold commodities can go anywhere.
+
+        # Build a mapping from process center names to ISO3 codes for quick lookup
+        pc_name_to_iso3 = {}
+        for pc in trade_lp.process_centers:
+            if pc.location and pc.location.iso3:
+                pc_name_to_iso3[pc.name] = pc.location.iso3
+
+        # When plant-group clustering is on, build pc_name → plant_group_id for meta-FGs
+        # so we can tighten the hot-commodity rule beyond iso3.
+        pc_name_to_plant_group: dict[str, str] = {}
+        use_plant_group_rule = getattr(config, "cluster_hot_metal_techs_by_plant_group", False)
+        if use_plant_group_rule:
+            meta_fgs = getattr(env, "meta_furnace_groups", None) if env is not None else None
+            if meta_fgs:
+                for mfg in meta_fgs:
+                    if mfg.plant_group_id is not None:
+                        pc_name_to_plant_group[mfg.meta_furnace_group_id] = mfg.plant_group_id
+
+        blocked_missing_iso3 = 0
+        blocked_cross_country = 0
+        blocked_cross_plant_group = 0
+        for from_pc_name, to_pc_name, comm in trade_lp.lp_model.allocation_variables:
             if comm in config.closely_allocated_products:
-                # Set the allocation to zero
-                trade_lp.lp_model.allocation_variables[(from_pc, to_pc, comm)].fix(0)
+                from_iso3 = pc_name_to_iso3.get(from_pc_name)
+                to_iso3 = pc_name_to_iso3.get(to_pc_name)
+
+                # If we can't determine ISO3 codes, be conservative and block the allocation
+                if from_iso3 is None or to_iso3 is None:
+                    trade_lp.lp_model.allocation_variables[(from_pc_name, to_pc_name, comm)].fix(0)
+                    blocked_missing_iso3 += 1
+                    continue
+                # Always block cross-country hot commodity flow.
+                if from_iso3 != to_iso3:
+                    trade_lp.lp_model.allocation_variables[(from_pc_name, to_pc_name, comm)].fix(0)
+                    blocked_cross_country += 1
+                    continue
+                # Same-country: if both sides are plant-group-keyed meta-FGs, require
+                # them to share the same plant_group. Otherwise fall through (allow).
+                if use_plant_group_rule:
+                    from_pg = pc_name_to_plant_group.get(from_pc_name)
+                    to_pg = pc_name_to_plant_group.get(to_pc_name)
+                    if from_pg is not None and to_pg is not None and from_pg != to_pg:
+                        trade_lp.lp_model.allocation_variables[(from_pc_name, to_pc_name, comm)].fix(0)
+                        blocked_cross_plant_group += 1
+
+        logger.info(
+            f"[LP HOT-METAL] Fixed to zero: {blocked_cross_country} cross-country, "
+            f"{blocked_cross_plant_group} cross-plant-group, {blocked_missing_iso3} missing-iso3 "
+            f"(plant_group rule={'on' if use_plant_group_rule else 'off'}, "
+            f"plant-group-keyed PCs={len(pc_name_to_plant_group)})"
+        )
+
+    else:
+        # OLD BEHAVIOR: Distance-based fixing for backwards compatibility
+
+        # Pre-compute distances if environment available for massive speedup
+        hot_metal_pairs = None
+        if hasattr(env, "precompute_distances_for_hot_metal_check"):
+            hot_metal_pairs = env.precompute_distances_for_hot_metal_check(
+                trade_lp.process_centers, config.hot_metal_radius
+            )
+
+        for from_pc, to_pc, comm in trade_lp.lp_model.allocation_variables:
+            if hot_metal_pairs is not None:
+                # Fast path: O(1) set membership check
+                is_within_radius = (from_pc, to_pc) in hot_metal_pairs
+            else:
+                # Fallback: Original distance calculation
+                distance = trade_lp.get_distance(from_pc, to_pc)
+                is_within_radius = distance <= config.hot_metal_radius
+
+            # if the distance is within our hot metal radius
+            if is_within_radius:
+                # and if the commodity is one that is usually transported over long distances
+                if comm in config.distantly_allocated_products:
+                    # Set the allocation to zero
+                    trade_lp.lp_model.allocation_variables[(from_pc, to_pc, comm)].fix(0)
+            else:  # if the distance is outside our hot metal radius
+                # and the commodity can only be transported over short distances
+                if comm in config.closely_allocated_products:
+                    # Set the allocation to zero
+                    trade_lp.lp_model.allocation_variables[(from_pc, to_pc, comm)].fix(0)
+
     return trade_lp
 
 
@@ -609,6 +888,7 @@ def set_up_steel_trade_lp(
     secondary_feedstock_constraints: dict[Any, Any] | None = None,
     aggregated_metallic_charge_constraints: list[AggregatedMetallicChargeConstraint] | None = None,
     transport_kpis: list[TransportKPI] | None = None,
+    furnace_groups_override: list[Any] | None = None,
 ) -> tlp.TradeLPModel:
     """Set up the linear programming model for steel trade optimization.
 
@@ -639,6 +919,10 @@ def set_up_steel_trade_lp(
             ratio constraints (e.g., minimum scrap share in EAF)
         transport_kpis: Optional list of TransportKPI objects with location-specific costs
             and emissions per country-commodity pair
+        furnace_groups_override: Optional list of MetaFurnaceGroup objects to use instead of
+            extracting furnace groups from repository. When provided, uses clustered meta-furnace
+            groups for reduced LP complexity. If None, extracts individual furnace groups from
+            all plants in the repository.
 
     Returns:
         TradeLPModel: Configured LP model ready for solving with:
@@ -652,16 +936,30 @@ def set_up_steel_trade_lp(
         - Model is not solved by this function - call solve_steel_trade_lp_and_return_commodity_allocations()
         - Distance constraints and tariffs are applied before model building
         - Process centers reuse Process objects when multiple furnaces have same technology
+        - When using furnace_groups_override with MetaFurnaceGroup objects, the LP will use
+          capacity-weighted centroids for distance calculations
     """
+    logger = logging.getLogger(f"{__name__}.set_up_steel_trade_lp")
     repository = message_bus.uow.repository
-    lp_model = tlp.TradeLPModel(lp_epsilon=config.lp_epsilon)
+
+    # Build distance function if environment available
+    distance_function = None
+    if hasattr(message_bus, "env") and message_bus.env is not None:
+        # We'll update this after process centers are added
+        distance_function = None  # Placeholder for now
+
+    lp_model = tlp.TradeLPModel(
+        lp_epsilon=config.lp_epsilon, distance_function=distance_function, random_seed=config.random_seed
+    )
     modelled_products = config.primary_products
 
     logger.info(f"Setting up LP model with PRIMARY_PRODUCTS: {modelled_products}")
     for commodity in modelled_products:
         lp_model.add_commodities([tlp.Commodity(name=commodity)])
 
-    add_furnace_groups_as_process_centers(repository=repository, lp_model=lp_model, config=config)
+    add_furnace_groups_as_process_centers(
+        repository=repository, lp_model=lp_model, config=config, furnace_groups_override=furnace_groups_override
+    )
     add_demand_centers_as_process_centers(repository=repository, lp_model=lp_model, year=year)
     secondary_supply_locations: dict[str, tlp.Location] = {}
     if secondary_feedstock_constraints:
@@ -689,6 +987,15 @@ def set_up_steel_trade_lp(
 
     add_suppliers_as_process_centers(repository=repository, lp_model=lp_model, year=year, config=config)
 
+    # Now that all process centers are added, update the distance function with the actual list
+    if hasattr(message_bus, "env") and hasattr(
+        getattr(message_bus, "env", None), "build_distance_function_for_trade_lp"
+    ):
+        lp_model._external_distance_function = message_bus.env.build_distance_function_for_trade_lp(
+            lp_model.process_centers
+        )
+        logger.info(f"Distance function updated with {len(lp_model.process_centers)} process centers")
+
     # Add location-specific transportation costs
     if transport_kpis is not None:
         transportation_costs = []
@@ -710,6 +1017,9 @@ def set_up_steel_trade_lp(
     # Convert new format aggregated constraints to old format for LP model
     if aggregated_metallic_charge_constraints and len(aggregated_metallic_charge_constraints) > 0:
         converted_constraints: dict[tuple[str, str], dict[str, float]] = {}
+        logger.info(
+            f"Converting {len(aggregated_metallic_charge_constraints)} aggregated metallic charge constraints for LP model"
+        )
         for constraint in aggregated_metallic_charge_constraints:
             key = (constraint.technology_name, constraint.feedstock_pattern)
             converted_constraints[key] = {}
@@ -717,7 +1027,13 @@ def set_up_steel_trade_lp(
                 converted_constraints[key]["minimum"] = constraint.minimum_share
             if constraint.maximum_share is not None:
                 converted_constraints[key]["maximum"] = constraint.maximum_share
+            logger.debug(
+                f"  Converted constraint: {constraint.technology_name} {constraint.feedstock_pattern} min={constraint.minimum_share} max={constraint.maximum_share}"
+            )
         lp_model.aggregated_commodity_constraints = converted_constraints
+        logger.info(f"Set {len(converted_constraints)} aggregated commodity constraints on LP model")
+    else:
+        logger.warning("No aggregated metallic charge constraints provided to set_up_steel_trade_lp")
 
     new_sf_constraints: defaultdict[Any, dict[Any, Any]] = defaultdict(dict)
     if secondary_feedstock_constraints:
@@ -837,8 +1153,14 @@ def set_up_steel_trade_lp(
         if pc is not None and pc.from_process is not None and pc.to_process is not None
     ]
     lp_model.add_process_connectors(valid_process_connectors)
-    lp_model.build_lp_model()
-    lp_model = fix_to_zero_allocations_where_distance_doesnt_match_commodity(trade_lp=lp_model, config=config)
+
+    # Get willingness to pay from environment
+    willingness_to_pay_list = getattr(message_bus.env, "willingness_to_pay", [])
+
+    lp_model.build_lp_model(willingness_to_pay_list=willingness_to_pay_list)
+    lp_model = fix_to_zero_allocations_where_distance_doesnt_match_commodity(
+        trade_lp=lp_model, config=config, env=message_bus.env if hasattr(message_bus, "env") else None
+    )
 
     # Apply carbon border mechanisms if available
     if (
@@ -866,18 +1188,138 @@ def set_up_steel_trade_lp(
     else:
         logger.info("No carbon border mechanisms defined in environment, skipping adjustments")
 
-    # lp_model.lp_model.secondary_feedstock_constraints.pprint()
-    # print(
-    #     f"Number of secondary feedstock constraints from data: {len(secondary_feedstock_constraints) if secondary_feedstock_constraints else 0}"
-    # )
-    # print(f"Length max feedstock parameters: {len(lp_model.lp_model.max_secondary_feedstock_allocation)}")
-    # print(f"length secondary_feedstock_index_set: {len(lp_model.lp_model.secondary_feedstock_index_set)}")
-    # print(
-    #     f"Number of created secondary feedstock constraints in LP model: {len(lp_model.lp_model.secondary_feedstock_constraints)}"
-    # )
-    # exit()
+    # Log distance cache statistics if available
+    if hasattr(getattr(message_bus, "env", None), "log_distance_cache_stats"):
+        message_bus.env.log_distance_cache_stats()
 
     return lp_model
+
+
+def create_commodity_allocations_from_allocations(
+    allocations: "tlp.Allocations", repository: InMemoryRepository, commodities: list["tlp.Commodity"]
+) -> dict[str, CommodityAllocations]:
+    """Convert raw Allocations to CommodityAllocations by mapping to domain objects.
+
+    Takes an Allocations object (typically after disaggregation) and creates
+    CommodityAllocations by looking up Plants, FurnaceGroups, Suppliers, and
+    DemandCenters from the repository.
+
+    Args:
+        allocations: Raw allocations from LP (with individual FG ProcessCenters)
+        repository: Repository for looking up domain objects
+        commodities: List of commodities from the LP model
+
+    Returns:
+        dict[str, CommodityAllocations]: Dictionary mapping commodity names to allocations
+    """
+    logger = logging.getLogger(f"{__name__}.create_commodity_allocations_from_allocations")
+
+    commodity_allocations = {}
+    for commodity in commodities:
+        commodity_allocations[commodity.name] = CommodityAllocations(
+            commodity=commodity.name, allocations={}, allocation_costs={}
+        )
+
+    if allocations is None or len(allocations.allocations) == 0:
+        logger.warning("No allocations to convert to CommodityAllocations")
+        return commodity_allocations
+
+    logger.info(f"Converting {len(allocations.allocations)} raw allocations to CommodityAllocations")
+
+    # Iterate over all allocations
+    for (from_pc, to_pc, comm), alloc_value in allocations.allocations.items():
+        if alloc_value <= LP_TOLERANCE:
+            continue  # Skip zero or negative allocations
+
+        # Map source
+        if from_pc.process.type == tlp.ProcessType.SUPPLY:
+            supplier = repository.suppliers.get(from_pc.name)
+            source = supplier
+        else:
+            furnace_group_id = from_pc.name
+            # Find the plant that owns the furnace group
+            plant_id = furnace_group_id.split("_")[0]
+            plant = repository.plants.get(plant_id)
+            furnace_group = plant.get_furnace_group(furnace_group_id)
+            source = (plant, furnace_group)  # type: ignore[assignment]
+
+        # Map destination
+        if to_pc.process.type == tlp.ProcessType.DEMAND:
+            demand_id = to_pc.name
+            demand_center = repository.demand_centers.get(demand_id)
+            destination = demand_center
+        else:
+            to_plant_id = to_pc.name.split("_")[0]
+            to_plant = repository.plants.get(to_plant_id)
+            to_furnace_group = to_plant.get_furnace_group(to_pc.name)
+            destination = (to_plant, to_furnace_group)  # type: ignore[assignment]
+
+        volume = alloc_value
+        cost = allocations.get_allocation_cost(from_pc, to_pc, comm) if allocations.allocation_costs else 0.0
+
+        # Add to commodity allocations
+        if comm.name not in commodity_allocations:
+            commodity_allocations[comm.name] = CommodityAllocations(
+                commodity=comm.name, allocations={}, allocation_costs={}
+            )
+
+        if source not in commodity_allocations[comm.name].allocations:
+            commodity_allocations[comm.name].allocations[source] = {}
+        if source not in commodity_allocations[comm.name].allocation_costs:
+            commodity_allocations[comm.name].allocation_costs[source] = {}
+
+        commodity_allocations[comm.name].allocations[source][destination] = Volumes(volume)
+        commodity_allocations[comm.name].allocation_costs[source][destination] = cost
+
+    # Log statistics
+    for commodity_name, allocs in commodity_allocations.items():
+        count = sum(len(dests) for dests in allocs.allocations.values())
+        if count > 0:
+            logger.info(f"Commodity {commodity_name}: {count} allocations")
+
+    return commodity_allocations
+
+
+def solve_lp_only(trade_lp: tlp.TradeLPModel) -> dict[str, CommodityAllocations]:
+    """Solve the LP without creating CommodityAllocations (used when clustering).
+
+    This is a simplified version used when clustering is enabled. It just solves
+    the LP and extracts the solution, returning empty CommodityAllocations.
+    The actual CommodityAllocations will be created after disaggregation.
+
+    Args:
+        trade_lp: Configured TradeLPModel ready for solving
+
+    Returns:
+        Empty dict of CommodityAllocations (to be populated after disaggregation)
+    """
+    logger = logging.getLogger(f"{__name__}.solve_lp_only")
+    result = trade_lp.solve_lp_model()
+
+    # Check if the solution is not optimal
+    if result.solver.termination_condition != pyo.TerminationCondition.optimal:
+        logger.error(f"\nLP solver terminated with: {result.solver.termination_condition}")
+        logger.error("Returning empty allocations due to non-optimal solution.")
+        commodity_allocations = {}
+        for commodity in trade_lp.commodities:
+            commodity_allocations[commodity.name] = CommodityAllocations(
+                commodity=commodity.name, allocations={}, allocation_costs={}
+            )
+        return commodity_allocations
+
+    trade_lp.extract_solution()
+
+    # Return empty CommodityAllocations - will be populated after disaggregation
+    commodity_allocations = {}
+    for commodity in trade_lp.commodities:
+        commodity_allocations[commodity.name] = CommodityAllocations(
+            commodity=commodity.name, allocations={}, allocation_costs={}
+        )
+
+    logger.info(
+        f"LP solved successfully. Total allocations: {len(trade_lp.allocations.allocations) if trade_lp.allocations else 0}"
+    )
+    return commodity_allocations
 
 
 def solve_steel_trade_lp_and_return_commodity_allocations(
@@ -909,6 +1351,7 @@ def solve_steel_trade_lp_and_return_commodity_allocations(
             - DEMAND → DemandCenter
         - Logs detailed statistics about allocation counts per commodity
     """
+    logger = logging.getLogger(f"{__name__}.solve_steel_trade_lp_and_return_commodity_allocations")
     result = trade_lp.solve_lp_model()
 
     # Check if the solution is not optimal
@@ -981,12 +1424,12 @@ def solve_steel_trade_lp_and_return_commodity_allocations(
     return commodity_allocations
 
 
-def identify_bottlenecks(
+def check_if_bottlenecks_identified(
     commodity_allocations: dict[str, CommodityAllocations],
     repository: Repository,
     environment: Environment,
     year: Year,
-):
+) -> bool:
     """Identify production bottlenecks from trade allocation results.
 
     Analyzes commodity allocations to find furnace groups operating at or near capacity,
@@ -1004,8 +1447,9 @@ def identify_bottlenecks(
         - Checks if total allocation from a furnace group approaches its capacity
         - Logs warnings for potential bottlenecks
         - Sets potential_bottleneck_found flag (logged but not returned)
-        - Currently does not return the list of bottlenecks (void return)
+        - Returns True if potential bottlenecks are found, False otherwise
     """
+    logger = logging.getLogger(f"{__name__}.identify_bottlenecks")
     potential_bottleneck_found = False
 
     active_furnace_groups = [
@@ -1014,71 +1458,6 @@ def identify_bottlenecks(
         for fg in plant.furnace_groups
         if fg.status.lower() in environment.config.active_statuses
     ]
-    # Check raw material suppliers
-    for commodity, allocations in commodity_allocations.items():
-        if commodity == "scrap":
-            continue  # scrap is only an issue if we don't have enough iron supply
-
-        # Check if any sources are not suppliers - if so, skip this analysis
-        has_non_supplier_sources = False
-        for source in allocations.allocations.keys():
-            if not hasattr(source, "supplier_id"):
-                has_non_supplier_sources = True
-                break
-
-        if has_non_supplier_sources:
-            continue  # Skip analysis for this commodity if sources aren't all suppliers
-
-        all_suppliers_utilized = True
-        for supplier in repository.suppliers.list():
-            if supplier.commodity != commodity:
-                continue
-            allocations_from_supplier = allocations.get_allocations_from(supplier)
-            allocated_volume = sum(allocations_from_supplier.values())
-            if allocated_volume < supplier.capacity_by_year[year] * 0.99999:
-                all_suppliers_utilized = False
-        if all_suppliers_utilized:
-            potential_bottleneck_found = True
-            logger.warning(
-                f"[TM BOTTLENECK ANALYSIS] All suppliers for {commodity} are fully utilized. Potential bottleneck detected."
-            )
-
-    # Check iron making
-    all_iron_makers_utilized = True
-    for plant, fg in active_furnace_groups:
-        fg_allocated_vols: float = 0
-        for com, alloc in commodity_allocations.items():
-            fg_allocations = alloc.get_allocations_from((plant, fg))
-            fg_allocated_vols += sum(fg_allocations.values())
-        if fg_allocated_vols < fg.capacity * environment.config.capacity_limit * 0.99999:
-            logger.warning(
-                f"[TM BOTTLENECK ANALYSIS] Iron maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized."
-            )
-            all_iron_makers_utilized = False
-    if all_iron_makers_utilized:
-        potential_bottleneck_found = True
-        logger.warning("[TM BOTTLENECK ANALYSIS] All iron makers are fully utilized. Potential bottleneck detected.")
-
-    # Check steel making
-    steel_allocations = commodity_allocations.get("steel")
-    all_steel_makers_utilized = True
-    if steel_allocations:
-        for plant, fg in active_furnace_groups:
-            if fg.technology.product == "steel":
-                fg_allocations = steel_allocations.get_allocations_from((plant, fg))
-                allocated_volume = sum(fg_allocations.values())
-                if allocated_volume < fg.capacity * environment.config.capacity_limit * 0.99999:
-                    logger.warning(
-                        f"[TM BOTTLENECK ANALYSIS] Steel maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized."
-                    )
-                    all_steel_makers_utilized = False
-    if all_steel_makers_utilized:
-        potential_bottleneck_found = True
-        logger.warning("[TM BOTTLENECK ANALYSIS] All steel makers are fully utilized. Potential bottleneck detected.")
-
-    if not potential_bottleneck_found:
-        logger.warning("[TM BOTTLENECK ANALYSIS] No potential bottlenecks found in steel trade allocations.")
-
     # Summarise supplier headroom for key metallic charges to aid diagnostics
     supplier_list = list(repository.suppliers.list())
     capacity_by_commodity: dict[str, float] = {}
@@ -1109,3 +1488,69 @@ def identify_bottlenecks(
             allocated_from_suppliers * T_TO_KT,
             headroom * T_TO_KT,
         )
+    # Check raw material suppliers
+    for commodity, allocations in commodity_allocations.items():
+        if commodity == "scrap":
+            continue  # scrap is only an issue if we don't have enough iron supply
+
+        # Check if any sources are not suppliers - if so, skip this analysis
+        has_non_supplier_sources = False
+        for source in allocations.allocations.keys():
+            if not hasattr(source, "supplier_id"):
+                has_non_supplier_sources = True
+                break
+
+        if has_non_supplier_sources:
+            continue  # Skip analysis for this commodity if sources aren't all suppliers
+
+        all_suppliers_utilized = True
+        for supplier in repository.suppliers.list():
+            if supplier.commodity != commodity:
+                continue
+            allocations_from_supplier = allocations.get_allocations_from(supplier)
+            allocated_volume = sum(allocations_from_supplier.values())
+            if allocated_volume < supplier.capacity_by_year[year] * 0.99999:
+                all_suppliers_utilized = False
+        if all_suppliers_utilized:
+            potential_bottleneck_found = True
+            logger.warning(
+                f"[TM BOTTLENECK ANALYSIS] All suppliers for {commodity} are fully utilized. Potential bottleneck detected."
+            )
+            return True  # If all suppliers for a key commodity are fully utilized, we can stop here and return True
+
+    # Check iron making
+    all_iron_makers_utilized = True
+    for plant, fg in active_furnace_groups:
+        fg_allocated_vols: float = 0
+        for com, alloc in commodity_allocations.items():
+            fg_allocations = alloc.get_allocations_from((plant, fg))
+            fg_allocated_vols += sum(fg_allocations.values())
+        if fg_allocated_vols < fg.capacity * environment.config.capacity_limit * 0.99999:
+            logger.debug(
+                f"[TM BOTTLENECK ANALYSIS] Iron maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized."
+            )
+            all_iron_makers_utilized = False
+    if all_iron_makers_utilized:
+        potential_bottleneck_found = True
+        logger.warning("[TM BOTTLENECK ANALYSIS] All iron makers are fully utilized. Potential bottleneck detected.")
+        return True  # If all iron makers are fully utilized, we can stop here and return True
+    # Check steel making
+    steel_allocations = commodity_allocations.get("steel")
+    all_steel_makers_utilized = True
+    if steel_allocations:
+        for plant, fg in active_furnace_groups:
+            if fg.technology.product == "steel":
+                fg_allocations = steel_allocations.get_allocations_from((plant, fg))
+                allocated_volume = sum(fg_allocations.values())
+                if allocated_volume < fg.capacity * environment.config.capacity_limit * 0.99999:
+                    logger.debug(
+                        f"[TM BOTTLENECK ANALYSIS] Steel maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized."
+                    )
+                    all_steel_makers_utilized = False
+    if all_steel_makers_utilized:
+        potential_bottleneck_found = True
+        logger.warning("[TM BOTTLENECK ANALYSIS] All steel makers are fully utilized. Potential bottleneck detected.")
+        return True  # If all steel makers are fully utilized, we can stop here and return True
+    if not potential_bottleneck_found:
+        logger.warning("[TM BOTTLENECK ANALYSIS] No potential bottlenecks found in steel trade allocations.")
+    return False

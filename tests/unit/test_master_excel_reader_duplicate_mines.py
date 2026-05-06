@@ -24,11 +24,11 @@ class TestDuplicateMineHandling:
             {
                 "Region": ["Australia", "Australia"],
                 "Products": ["IO_low", "IO_low"],
-                "capacity": [100, 100],  # Same capacity
-                "costs": [50, 50],  # Same cost
+                "capacity Mtpa 2025": [100, 100],  # Same capacity
+                "costs $/t 2025": [50, 50],  # Same cost
                 "lat": [-25.0, -25.0],  # Same coordinates
                 "lon": [133.0, 133.0],
-                "price": [0, 0],  # Same price (as in real data)
+                "price $/t 2025": [0, 0],  # Same price (as in real data)
             }
         )
 
@@ -55,11 +55,11 @@ class TestDuplicateMineHandling:
             {
                 "Region": ["China", "China", "Mauritania", "Mauritania"],
                 "Products": ["IO_low", "IO_low", "IO_mid", "IO_mid"],
-                "capacity": [1, 3, 28, 8],  # Different capacities
-                "costs": [65, 65, 45, 45],  # Same costs within region
+                "capacity Mtpa 2025": [1, 3, 28, 8],  # Different capacities
+                "costs $/t 2025": [65, 65, 45, 45],  # Same costs within region
                 "lat": [31.93, 31.93, 22.67, 22.67],  # Same coordinates
                 "lon": [118.7, 118.7, -12.67, -12.67],
-                "price": [0, 0, 0, 0],
+                "price $/t 2025": [0, 0, 0, 0],
             }
         )
 
@@ -99,11 +99,11 @@ class TestDuplicateMineHandling:
             {
                 "Region": ["China", "China", "China"],
                 "Products": ["IO_mid", "IO_mid", "IO_mid"],
-                "capacity": [100, 150, 200],  # Different capacities
-                "costs": [40, 42, 45],  # Different costs
+                "capacity Mtpa 2025": [100, 150, 200],  # Different capacities
+                "costs $/t 2025": [40, 42, 45],  # Different costs
                 "lat": [35.0, 35.0, 35.0],  # Same coordinates
                 "lon": [104.0, 104.0, 104.0],
-                "price": [0, 0, 0],
+                "price $/t 2025": [0, 0, 0],
             }
         )
 
@@ -139,11 +139,11 @@ class TestDuplicateMineHandling:
             {
                 "Region": regions,
                 "Products": products,
-                "capacity": [10 + i * 0.5 for i in range(169)],  # Varying capacities
-                "costs": [40 + (i % 30) for i in range(169)],  # Varying costs
+                "capacity Mtpa 2025": [10 + i * 0.5 for i in range(169)],  # Varying capacities
+                "costs $/t 2025": [40 + (i % 30) for i in range(169)],  # Varying costs
                 "lat": [20.0 + (i % 50) * 0.1 for i in range(169)],  # Some duplicate coordinates
                 "lon": [100.0 + (i % 50) * 0.1 for i in range(169)],
-                "price": [0] * 169,
+                "price $/t 2025": [0] * 169,
             }
         )
 

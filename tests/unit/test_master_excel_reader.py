@@ -148,7 +148,7 @@ class TestMasterExcelReaderValidation:
 
             reader = MasterExcelReader(Path(tf.name))
             with reader:
-                plants, _ = reader.read_plants()  # Unpack tuple
+                plants, _, _ = reader.read_plants()  # Unpack tuple (3 values)
                 # Should return empty list as all plants are skipped
                 assert len(plants) == 0
 
@@ -179,7 +179,7 @@ class TestMasterExcelReaderValidation:
 
             reader = MasterExcelReader(Path(tf.name))
             with reader:
-                plants, _ = reader.read_plants()  # Unpack tuple
+                plants, _, _ = reader.read_plants()  # Unpack tuple (3 values)
 
                 # Check we got all plants
                 assert len(plants) == 3
@@ -247,7 +247,7 @@ class TestMasterExcelReaderValidation:
 
             reader = MasterExcelReader(Path(tf.name))
             with reader:
-                plants, _ = reader.read_plants()  # Unpack tuple
+                plants, _, _ = reader.read_plants()  # Unpack tuple (3 values)
 
                 # Should skip rows with None plant_id, None lat/lon, invalid lat
                 assert len(plants) == 1
@@ -282,7 +282,7 @@ class TestMasterExcelReaderValidation:
 
             reader = MasterExcelReader(Path(tf.name))
             with reader:
-                plants, _ = reader.read_plants()  # Unpack tuple
+                plants, _, _ = reader.read_plants()  # Unpack tuple (3 values)
 
                 # P001: Should have 3 furnace groups (BF, BOF, EAF - no auto Prep Sinter)
                 p1 = next(p for p in plants if p.plant_id == "P001")
@@ -336,7 +336,7 @@ class TestMasterExcelReaderValidation:
 
             reader = MasterExcelReader(Path(tf.name))
             with reader:
-                plants, _ = reader.read_plants()  # Unpack tuple
+                plants, _, _ = reader.read_plants()  # Unpack tuple (3 values)
 
                 # P001: OHF + EAF -> Should have only EAF with combined capacity
                 p1 = next(p for p in plants if p.plant_id == "P001")

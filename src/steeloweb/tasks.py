@@ -71,7 +71,7 @@ def run_simulation_task(modelrun_id: int) -> None:
                 f.write("# Steel Model Simulation Log\n")
                 f.write(f"# ModelRun ID: {modelrun_id}\n")
                 f.write(f"# ModelRun Name: {modelrun.name or '(unnamed)'}\n")
-                f.write(f"# Started: {modelrun.started_at.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"# Created: {modelrun.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"# UUID: {modelrun.log_file_uuid}\n")
                 f.write(f"# {'=' * 60}\n\n")
 

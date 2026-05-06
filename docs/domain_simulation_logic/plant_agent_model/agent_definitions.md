@@ -42,6 +42,15 @@ PlantGroup (Company/Owner)
 - `equity_share`, `cost_of_debt`, `total_investment`
 - `unit_production_cost` (total cost per tonne)
 
+**Energy cost attributes** (three parallel dicts, all keyed by normalised carrier name):
+- `energy_costs`: Input-side subsidised prices — used for BOM, VOPEX, reductant selection. For subsidised carriers: `max(0, price - subsidy)`. Set via `set_energy_costs()` which applies `abs()` to non-co2 carriers and `normalize_name()` to keys.
+- `output_energy_costs`: Output-side subsidised prices — used for by-product revenue calculations. For physical carriers: `price + subsidy`; for carbon carriers (co2_*): `price - subsidy`.
+- `energy_costs_no_subsidy`: Original unsubsidised prices for all carriers. Used as baseline to prevent subsidy compounding (indi plants) and for future per-tech subsidy calculations.
+- `disposal_cost_outputs`: `frozenset[str] | None` — carrier names where positive price represents a disposal cost rather than revenue (e.g. `{"steelmaking_slag"}`). Set from `SimulationConfig.disposal_cost_outputs` during bootstrap. These carriers keep their raw price sign in secondary output calculations instead of being negated via `-abs()`.
+
+**Subsidy tracking**:
+- `applied_subsidies`: `dict[str, list[Subsidy]]` — keys are `"capex"`, `"opex"`, `"debt"`, plus dynamic carrier keys (e.g., `"hydrogen"`, `"electricity"`) for energy subsidies applied in the current year
+
 ### 2. Plant (models.py:2692)
 **What it represents**: A physical production facility at a specific geographic location.
 
@@ -66,7 +75,7 @@ PlantGroup (Company/Owner)
 **Key relationships**:
 - Contains multiple `Plant` objects
 - Identified by `plant_group_id` (typically from GEM database)
-- Aggregates `total_balance` across all plants
+- Owns the treasury ``balance`` — a stored ledger credited by the FG sweep and debited by ``deduct_equity``
 
 **Strategic role**:
 - Evaluates expansion options across all plants
@@ -167,7 +176,7 @@ PlantGroup (Company/Owner)
 PlantGroup
     │
     ├── plant_group_id: str
-    ├── total_balance: float
+    ├── balance: float  # stored treasury (ledger)
     └── plants: list[Plant] ────────────────┐
                                             │
                                             ▼
@@ -241,10 +250,11 @@ All costs are normalized to **per-unit-of-production** basis (USD/tonne):
 - Carbon costs → emissions per tonne × carbon price
 
 ### 4. Subsidies
-Three types, each with absolute and relative components:
+Four categories, each with absolute and relative components:
 - **CAPEX**: Reduces upfront investment → affects NPV and affordability
 - **OPEX**: Reduces operating costs → affects profitability
 - **Debt**: Reduces interest rates → affects debt repayment costs
+- **Energy carriers**: Reduces energy/feedstock costs for any carrier (hydrogen, electricity, natural_gas, etc.) → affects VOPEX and by-product revenue via dual-sided pricing
 
 Time-bounded: Only applied if `start_year <= current_year <= end_year`
 

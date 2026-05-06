@@ -62,7 +62,7 @@ from steelo.adapters.dataprocessing.preprocessing.raw_plant_data_processing impo
     add_historical_production_data,
     split_into_plant_and_furnace_group,
 )
-from steelo.config import PRODUCTION_GEM_DATA_YEARS
+from steelo.domain.constants import PRODUCTION_GEM_DATA_YEARS
 
 # Hardcoded constant (for testing only)
 SIMULATION_START_YEAR = 2025
@@ -142,7 +142,7 @@ def test_split_spatial_coordinates_invalid_input(caplog):
     with caplog.at_level(logging.WARNING):
         _result = split_spatial_coordinates(data_invalid)
 
-    assert any("Invalid coordinates found" in record.message for record in caplog.records)
+    assert any("Invalid coordinates found" in record.getMessage() for record in caplog.records)
 
 
 # ---------------------------------------------- Test filter_inactive_plants ------------------------------------------

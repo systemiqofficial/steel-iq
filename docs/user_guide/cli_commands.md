@@ -9,6 +9,7 @@ The main command to run a steel model simulation with automatic data preparation
 usage: run_simulation [-h] [--start-year START_YEAR] [--end-year END_YEAR]
                      [--output-dir OUTPUT_DIR] [--log-level LOG_LEVEL]
                      [--cache-stats] [--clear-cache] [--force-refresh] [--no-cache]
+                     [--peg-iron-to-steel-price] [--iron-to-steel-price-ratio RATIO]
                      [additional options...]
 
 Run a steel model simulation with automatic caching
@@ -23,6 +24,13 @@ options:
   --log-level LOG_LEVEL
                         Logging level (default: WARNING)
 
+price configuration:
+  --peg-iron-to-steel-price
+                        Enable iron price pegging to steel price (default: disabled)
+  --iron-to-steel-price-ratio RATIO
+                        Ratio of steel price for iron floor when pegging is enabled
+                        (default: 0.8 = 80%)
+
 caching options:
   --cache-stats         Show cache statistics and exit
   --clear-cache         Clear preparation cache and exit (Note: use 'steelo-cache clear' for complete cleanup)
@@ -32,16 +40,22 @@ caching options:
 Examples:
   # Run simulation with default settings
   run_simulation
-  
+
   # Run shorter simulation
   run_simulation --start-year 2025 --end-year 2030
-  
+
+  # Enable iron price pegging with default 80% ratio
+  run_simulation --peg-iron-to-steel-price
+
+  # Enable iron price pegging with custom 75% ratio
+  run_simulation --peg-iron-to-steel-price --iron-to-steel-price-ratio 0.75
+
   # View cache statistics
   run_simulation --cache-stats
-  
+
   # Clear cache
   run_simulation --clear-cache
-  
+
   # Force fresh preparation
   run_simulation --force-refresh
 ```
@@ -51,6 +65,7 @@ Examples:
 - **Fast Reruns**: Reuses cached data when running with same inputs
 - **Backward Compatibility**: Creates symlinks at `data/` and `output/`
 - **Cache Management**: Built-in commands to view and manage cache
+- **Iron Price Pegging**: Optionally peg iron prices to steel prices to ensure minimum value ratios (new feature)
 
 ## Data Preparation Commands
 
@@ -80,14 +95,19 @@ Key options:
 
 ```shell
 ❯ steelo-data-recreate -h
-usage: steelo-data-recreate [-h] [--force-download] [--master-excel MASTER_EXCEL]
-                            [--track-timing] [--list-packages]
-                            [package_name] [output_dir]
+usage: steelo-data-recreate [-h] [--package PACKAGE] [--output-dir OUTPUT_DIR]
+                            [--cache-dir CACHE_DIR] [--force-download]
 
 Recreate JSON repositories from downloaded data packages (similar to recreate_sample_data).
 ```
 
-Use `steelo-data-recreate` when you already have the packaged data archives and only need to regenerate the JSON repositories or inspect package contents.
+Key options:
+- `--package`: Specific package to recreate from (defaults to all required packages).
+- `--output-dir`: Output directory for the JSON repositories (default: `./data/repositories`).
+- `--cache-dir`: Cache directory for downloaded data.
+- `--force-download`: Force re-download of packages instead of using cached archives.
+
+Use `steelo-data-recreate` when you already have the packaged data archives and only need to regenerate the JSON repositories.
 
 ## List Available Binaries
 

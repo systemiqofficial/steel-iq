@@ -37,10 +37,8 @@ class TestModelRunVisualization:
     def test_capture_result_csv_no_csv_files(self, tmp_path):
         """Test CSV capture when no CSV files exist."""
         modelrun = ModelRun.objects.create(state=ModelRun.RunState.RUNNING)
-        output_dir = tmp_path / "TM"
-        output_dir.mkdir(parents=True)
 
-        result = modelrun.capture_result_csv(output_dir=output_dir)
+        result = modelrun.capture_result_csv(output_dir=tmp_path)
 
         assert result is False
         assert not modelrun.result_csv
@@ -48,15 +46,12 @@ class TestModelRunVisualization:
     def test_capture_result_csv_single_file(self, tmp_path, media_root):
         """Test CSV capture with a single CSV file."""
         modelrun = ModelRun.objects.create(state=ModelRun.RunState.RUNNING)
-        output_dir = tmp_path / "TM"
-        output_dir.mkdir(parents=True)
 
-        # Create a test CSV file
-        csv_file = output_dir / "post_processed_2025-06-20 10-30.csv"
+        csv_file = tmp_path / "post_processed_2025-06-20_10-30.csv"
         csv_content = "year,location,technology,production\n2025,USA,BF-BOF,1000\n"
         csv_file.write_text(csv_content)
 
-        result = modelrun.capture_result_csv(output_dir=output_dir.parent)
+        result = modelrun.capture_result_csv(output_dir=tmp_path)
 
         assert result is True
         assert modelrun.result_csv
@@ -66,24 +61,20 @@ class TestModelRunVisualization:
     def test_capture_result_csv_multiple_files(self, tmp_path, media_root):
         """Test CSV capture selects the most recent file."""
         modelrun = ModelRun.objects.create(state=ModelRun.RunState.RUNNING)
-        output_dir = tmp_path / "TM"
-        output_dir.mkdir(parents=True)
 
-        # Create multiple CSV files with different timestamps
-        old_file = output_dir / "post_processed_2025-06-19 10-30.csv"
+        old_file = tmp_path / "post_processed_2025-06-19_10-30.csv"
         old_file.write_text("old data")
-        old_file.touch()  # Ensure it exists
+        old_file.touch()
 
-        # Wait a moment to ensure different mtime
         import time
 
         time.sleep(0.01)
 
-        new_file = output_dir / "post_processed_2025-06-20 10-30.csv"
+        new_file = tmp_path / "post_processed_2025-06-20_10-30.csv"
         new_content = "year,location,technology,production\n2025,USA,EAF,2000\n"
         new_file.write_text(new_content)
 
-        result = modelrun.capture_result_csv(output_dir=output_dir.parent)
+        result = modelrun.capture_result_csv(output_dir=tmp_path)
 
         assert result is True
         assert modelrun.result_csv
@@ -92,19 +83,16 @@ class TestModelRunVisualization:
     def test_capture_result_csv_exception_handling(self, tmp_path, monkeypatch):
         """Test CSV capture handles exceptions gracefully."""
         modelrun = ModelRun.objects.create(state=ModelRun.RunState.RUNNING)
-        output_dir = tmp_path / "TM"
-        output_dir.mkdir(parents=True)
 
-        csv_file = output_dir / "post_processed_2025-06-20 10-30.csv"
+        csv_file = tmp_path / "post_processed_2025-06-20_10-30.csv"
         csv_file.write_text("test data")
 
-        # Mock open to raise an exception
         def mock_open(*args, **kwargs):
             raise IOError("Cannot read file")
 
         monkeypatch.setattr("builtins.open", mock_open)
 
-        result = modelrun.capture_result_csv(output_dir=output_dir.parent)
+        result = modelrun.capture_result_csv(output_dir=tmp_path)
 
         assert result is False
 
@@ -366,27 +354,32 @@ class TestSimulationPlot:
         """Test plot capture with actual plot files."""
         modelrun = ModelRun.objects.create(state=ModelRun.RunState.FINISHED)
 
-        # Create plot directory structure
+        # Create plot directory structure: cost curves and emissions live in sibling
+        # folders to PAM (plots/cost_curves, plots/emissions).
         output_dir = tmp_path
         pam_plots_dir = output_dir / "plots" / "PAM"
+        cost_curves_dir = output_dir / "plots" / "cost_curves"
         pam_plots_dir.mkdir(parents=True)
+        cost_curves_dir.mkdir(parents=True)
 
-        # Create test plot files
-        plot_files = [
-            "year2year_added_capacity_by_technology.png",
-            "Capacity_development_by_technology.png",
-            "steel_cost_curve_2030.png",
-            "iron_cost_curve_by_region_2030.png",
-            "iron_cost_curve_by_technology_2030.png",
+        pam_files = [
             "steel_production_development_by_region.png",
             "iron_production_development_by_region.png",
             "steel_production_development_by_technology.png",
             "iron_production_development_by_technology.png",
+            "steel_capacity_development_by_technology.png",
+            "iron_capacity_development_by_technology.png",
+        ]
+        cost_curve_files = [
+            "cost_curve_steel_by_region_2030.png",
+            "cost_curve_iron_by_region_2030.png",
+            "cost_curve_iron_by_technology_2030.png",
         ]
 
-        for plot_file in plot_files:
-            with open(pam_plots_dir / plot_file, "wb") as f:
-                f.write(b"fake png content")
+        for filename in pam_files:
+            (pam_plots_dir / filename).write_bytes(b"fake png content")
+        for filename in cost_curve_files:
+            (cost_curves_dir / filename).write_bytes(b"fake png content")
 
         # Capture plots
         plots = SimulationPlot.capture_simulation_plots(modelrun, pam_plots_dir=pam_plots_dir)
@@ -396,17 +389,16 @@ class TestSimulationPlot:
 
         # Check plot types
         plot_types = modelrun.simulation_plots.values_list("plot_type", flat=True)
-        assert SimulationPlot.PlotType.CAPACITY_ADDED in plot_types
-        assert SimulationPlot.PlotType.CAPACITY_DEVELOPMENT in plot_types
         assert SimulationPlot.PlotType.COST_CURVE in plot_types
         assert SimulationPlot.PlotType.PRODUCTION_REGION in plot_types
         assert SimulationPlot.PlotType.PRODUCTION_TECHNOLOGY in plot_types
+        assert SimulationPlot.PlotType.CAPACITY_TECHNOLOGY in plot_types
 
         # Check product types
         steel_plots = modelrun.simulation_plots.filter(product_type="steel")
         iron_plots = modelrun.simulation_plots.filter(product_type="iron")
-        assert steel_plots.count() == 3  # cost curve, production by region, production by technology
-        assert iron_plots.count() == 4  # cost curves (x2), production by region, production by technology
+        assert steel_plots.count() == 4  # cost curve, production by region/tech, capacity by tech
+        assert iron_plots.count() == 5  # cost curves (x2), production by region/tech, capacity by tech
 
         # Ensure cost curves keep steel plots ahead of iron plots
         cost_curve_products = list(

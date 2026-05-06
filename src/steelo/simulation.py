@@ -32,8 +32,10 @@ from steelo.utilities.plotting import (
     plot_bar_chart_of_new_plants_by_status,
     plot_map_of_new_plants_operating,
 )
+from .adapters.geospatial.geospatial_statistics import aggregate_lcoe_lcoh_statistics
 from .logging_config import LoggingConfig
 from steelo.domain.constants import T_TO_KT, MT_TO_T
+from steelo.domain.calculate_costs import filter_subsidies_for_year, get_subsidised_energy_costs
 from .furnace_breakdown_logging_minimal import FurnaceBreakdownLogger
 
 if TYPE_CHECKING:
@@ -316,6 +318,13 @@ class SimulationConfig:
         default_factory=lambda: ["hbi_high", "hbi_mid", "hbi_low", "pig_iron", "electrolytic_iron"]
     )
 
+    # === Clustering Configuration ===
+    enable_furnace_group_clustering: bool = False  # Feature flag for LP complexity reduction via clustering
+    # When True, FGs that consume/produce a closely-allocated commodity cluster by plant_group_id
+    # instead of iso3, so cold/hot commodity substitution in disaggregation stays local.
+    # When False, all FGs cluster by iso3 (pre-experiment behavior).
+    cluster_hot_metal_techs_by_plant_group: bool = False
+
     # === Plant Agent Module Parameters ===
     probabilistic_agents: bool = True  # Probabilitstic (mimick human decision-making) vs deterministic approach
     plant_lifetime: int = 20  # Years
@@ -336,9 +345,23 @@ class SimulationConfig:
     equity_share: float = 0.2  # 20%
     global_risk_free_rate: float = 0.0209  # 2.09% risk-free rate
 
+    # Multiplier on renovation cost used to seed initial plant balances
+    opening_balance_multiplier: float = 1.0  # 1.0 = can afford one renovation per FG, 0.0 = disabled
+
     # Price increase when demand exceeds supply
     steel_price_buffer: float = 200.0  # USD/tonne - buffer above highest cost curve price when demand exceeds supply
     iron_price_buffer: float = 200.0  # USD/tonne - buffer above highest cost curve price when demand exceeds supply
+
+    # Fraction of total capacity that participates in market clearing; above this triggers shortage buffer
+    # e.g. 0.95 truncates top 5% at price-extraction; 1.0 keeps the full curve
+    steel_market_clearing_share: float = 0.95
+    iron_market_clearing_share: float = 0.95
+
+    # Iron price pegging configuration
+    peg_iron_to_steel_price: bool = (
+        False  # Whether to peg iron price to steel price (minimum of cost curve or % of steel)
+    )
+    iron_to_steel_price_ratio: float = 0.8  # Ratio of steel price for iron floor (80% default)
 
     # Capacity
     ## Furnace group capacity expansion size and initial capacity of new plants (in tonnes)
@@ -365,12 +388,15 @@ class SimulationConfig:
     )  # Probability of a plant being announced after being considered - given a history of positive NPVs of at least `consideration_time` years
     top_n_loctechs_as_business_op: int = 15  # Number of top location-technology combinations to consider as business
     # opportunities per product per year (e.g., 5 for steel and 5 for iron = 10 total)
+    co2_storage_reserved_discount_factor: float = (
+        0.9  # Fraction of an announced CCS plant's CO2 need that counts toward the reserved storage bucket
+    )
 
     # === Scenario and Policy Settings ===
     chosen_demand_scenario: str = "BAU"
     chosen_grid_emissions_scenario: str = "Business As Usual"
     scrap_generation_scenario: str = "business_as_usual"
-    chosen_emissions_boundary_for_carbon_costs: str = "responsible_steel"
+    chosen_emissions_boundary_for_carbon_costs: str = "rs-inspired"
     use_iron_ore_premiums: bool = True
     green_steel_emissions_limit: float = 0.4  # in tCO2/tsteel
     # Use InitVar to accept but not store deprecated parameter for backward compatibility
@@ -403,6 +429,16 @@ class SimulationConfig:
     excel_reader_start_year: int = 2020
     excel_reader_end_year: int = 2050
     demand_sheet_name: str = "Steel_Demand_Chris Bataille"
+
+    # === Cost Model Settings ===
+    # Physical output carriers where positive price = disposal cost (not revenue)
+    # These carriers keep their raw Excel sign instead of being negated via -abs()
+    disposal_cost_outputs: frozenset[str] = field(default_factory=lambda: frozenset({"steelmaking_slag"}))
+
+    # === Randomness ===
+    # Single seed shared by Plant Agent, Geospatial, and Trade LP modules.
+    # Propagated to geo_config.random_seed in __post_init__.
+    random_seed: int = 42
 
     # === Other ===
     # Verbosity
@@ -458,6 +494,7 @@ class SimulationConfig:
                 transport_emissions_path=fixtures_dir / "transport_emissions.json",
                 biomass_availability_path=fixtures_dir / "biomass_availability.json",
                 technology_emission_factors_path=fixtures_dir / "technology_emission_factors.json",
+                willingness_to_pay_path=fixtures_dir / "willingness_to_pay.json",
                 current_simulation_year=int(self.start_year),
             )
 
@@ -496,6 +533,9 @@ class SimulationConfig:
         if self.technology_settings is None:
             self.technology_settings = get_default_technology_settings()
 
+        # Single source of truth: propagate top-level seed into nested GeoConfig.
+        self.geo_config.random_seed = self.random_seed
+
         # Handle deprecated parameter - preserve semantics by translating to technology_settings
         if global_bf_ban is not None:
             import warnings
@@ -520,6 +560,9 @@ class SimulationConfig:
                 self.technology_settings["BFBOF"] = TechnologySettings(
                     allowed=False, from_year=start_year_int, to_year=None
                 )
+
+        if self.opening_balance_multiplier < 0:
+            raise ValueError("opening_balance_multiplier must be >= 0.0")
 
         # Convert strings to Path objects if needed
         self.output_dir = Path(self.output_dir)
@@ -876,6 +919,104 @@ class Progress:
     current_year: Year | None = None
 
 
+def _seed_opening_balances(
+    plant_groups: list,
+    env: Any,
+    multiplier: float,
+    active_statuses: list[str],
+) -> None:
+    """Seed ``PlantGroup.balance`` for initial groups to represent pre-simulation capital.
+
+    Aggregates the per-FG renovation-share-based opening across every plant in a group,
+    then assigns the sum to ``pg.balance`` once per group. Indi_<iso3> groups created at
+    runtime from greenfield routing are absent from the bootstrap input and therefore
+    carry no seed here — they start at ``0.0`` and accrue from operational P&L.
+
+    Args:
+        plant_groups: All plant groups loaded from input data.
+        env: Environment with CAPEX and renovation share data.
+        multiplier: Fraction of renovation cost to seed. ``0.0`` = disabled, ``1.0`` = full.
+        active_statuses: FG statuses eligible for inclusion.
+    """
+    seed_logger = logging.getLogger(f"{__name__}._seed_opening_balances")
+    iso3_to_region = env.country_mappings.iso3_to_region()
+    active_lower = [s.lower() for s in active_statuses]
+
+    for pg in plant_groups:
+        group_opening = 0.0
+        num_fgs_seeded = 0
+        for plant in pg.plants:
+            for fg in plant.furnace_groups:
+                if (
+                    fg.created_by_PAM
+                    or fg.capacity == 0
+                    or fg.status.lower() not in active_lower
+                    or fg.technology.name.lower() == "other"
+                ):
+                    continue
+
+                region = iso3_to_region.get(plant.location.iso3)
+                if region is None:
+                    seed_logger.warning(
+                        "[OPENING BALANCE] No region mapping for %s, skipping FG %s",
+                        plant.location.iso3,
+                        fg.furnace_group_id,
+                    )
+                    continue
+
+                greenfield_capex = (
+                    env.name_to_capex.get(
+                        "greenfield",
+                        {},
+                    )
+                    .get(region, {})
+                    .get(fg.technology.name)
+                )
+                if greenfield_capex is None:
+                    seed_logger.warning(
+                        "[OPENING BALANCE] No greenfield CAPEX for %s in %s, skipping FG %s",
+                        fg.technology.name,
+                        region,
+                        fg.furnace_group_id,
+                    )
+                    continue
+
+                renovation_share = env.capex_renovation_share.get(fg.technology.name)
+                if renovation_share is None:
+                    seed_logger.warning(
+                        "[OPENING BALANCE] No renovation share for %s, skipping FG %s",
+                        fg.technology.name,
+                        fg.furnace_group_id,
+                    )
+                    continue
+
+                renovation_cost = greenfield_capex * renovation_share * fg.capacity * fg.equity_share
+                opening = renovation_cost * multiplier
+                group_opening += opening
+                num_fgs_seeded += 1
+
+                seed_logger.debug(
+                    "[OPENING BALANCE] FG %s (%s): $%s (CAPEX=$%s/t x share=%.2f x cap=%st x equity=%.2f x mult=%s)",
+                    fg.furnace_group_id,
+                    fg.technology.name,
+                    f"{opening:,.2f}",
+                    f"{greenfield_capex:,.2f}",
+                    renovation_share,
+                    f"{fg.capacity:,.0f}",
+                    fg.equity_share,
+                    multiplier,
+                )
+
+        pg.balance = group_opening
+        if group_opening > 0:
+            seed_logger.info(
+                "[OPENING BALANCE] Group %s num_fgs_seeded=%d total_opening=%.2f",
+                pg.plant_group_id,
+                num_fgs_seeded,
+                group_opening,
+            )
+
+
 class SimulationRunner:
     """
     A class that orchestrates the full simulation process.
@@ -902,6 +1043,8 @@ class SimulationRunner:
         )
         # Initialize furnace breakdown logger for better debugging
         self.furnace_logger = FurnaceBreakdownLogger()
+
+        # Note: Logging is now configured in bootstrap_simulation() before data loading
 
     def _update_geo_paths_for_static_files(self) -> None:
         """Update geo_paths to use temporary directory for static files."""
@@ -948,6 +1091,15 @@ class SimulationRunner:
             new_plant_group = PlantGroup(plant_group_id=pg_id, plants=plants)
             bus.uow.plant_groups.add(new_plant_group)
 
+        # Seed opening balances for initial plant groups
+        if self.config.opening_balance_multiplier > 0:
+            _seed_opening_balances(
+                plant_groups=bus.uow.plant_groups.list(),
+                env=bus.env,
+                multiplier=self.config.opening_balance_multiplier,
+                active_statuses=self.config.active_statuses,
+            )
+
         # Report initial progress before processing any simulation year
         progress = Progress(start_year=start_year, end_year=end_year, current_year=start_year - 1)
         self.progress_callback(progress)
@@ -988,6 +1140,23 @@ class SimulationRunner:
             # Set the environment year to match the loop iteration
             bus.env.year = Year(i)
 
+            # Year-start baseline scan: rebuild CO2 storage counters (firm/reserved) before Allocation/PAM/GEO.
+            bus.env.scan_co2_storage_counters(bus.uow)
+
+            # Log plant group balance distribution in early years for opening balance verification
+            if i <= start_year + 4:
+                balances = [pg.balance for pg in bus.uow.plant_groups.list()]
+                if balances:
+                    logger.debug(
+                        "[OPENING BALANCE] Year %d group balances: min=$%s, max=$%s, mean=$%s, positive=%d/%d",
+                        i,
+                        f"{min(balances):,.0f}",
+                        f"{max(balances):,.0f}",
+                        f"{sum(balances) / len(balances):,.0f}",
+                        sum(1 for b in balances if b > 0),
+                        len(balances),
+                    )
+
             # Set demand and plant costs for the year
             bus.env.calculate_demand()
             bus.env.pass_fopex_for_iso3_to_plants(bus.uow.plants.list())
@@ -997,9 +1166,46 @@ class SimulationRunner:
                 bus.env.calculate_capped_hydrogen_costs_per_country()
             )  # Calculate for all countries once per year (iso3 -> cost)
             logging.info(f"\n Steel demand in year {bus.env.year}: \t {bus.env.current_demand * T_TO_KT:,.0f} kt \n")
+
+            # Initialise OPEX subsidies for Year 1 (subsequent years handled by finalise_iteration)
+            if i == start_year:
+                for plant in bus.uow.plants.list():
+                    for fg in plant.furnace_groups:
+                        all_opex_subs = bus.env.opex_subsidies.get(plant.location.iso3, {}).get(fg.technology.name, [])
+                        active_opex_subs = filter_subsidies_for_year(all_opex_subs, bus.env.year)
+                        fg.applied_subsidies["opex"] = active_opex_subs
+
             for plant in bus.uow.plants.list():
                 plant.update_furnace_tech_unit_fopex()
                 plant.update_furnace_hydrogen_costs(capped_hydrogen_cost_dict)
+
+                # Apply energy carrier subsidies to energy_costs (after H2 price update)
+                for fg in plant.furnace_groups:
+                    active_energy_subs: dict[str, list] = {}
+                    for carrier, carrier_subs in bus.env.energy_subsidies.items():
+                        all_subs = carrier_subs.get(plant.location.iso3, {}).get(fg.technology.name, [])
+                        active = filter_subsidies_for_year(all_subs, bus.env.year)
+                        if active:
+                            active_energy_subs[carrier] = active
+
+                    if active_energy_subs:
+                        input_costs, output_costs, no_subsidy_prices = get_subsidised_energy_costs(
+                            fg.energy_costs, active_energy_subs
+                        )
+                        fg.set_subsidised_energy_costs(
+                            input_costs,
+                            output_costs,
+                            no_subsidy_prices,
+                            active_energy_subs,
+                        )
+                        price_changes = ", ".join(
+                            f"{c}: ${no_subsidy_prices[c]:.4f}->${input_costs.get(c, no_subsidy_prices[c]):.4f}"
+                            for c in sorted(no_subsidy_prices)
+                        )
+                        logging.debug(
+                            f"[ENERGY SUBS] {plant.location.iso3}/{fg.technology.name} "
+                            f"FG:{fg.furnace_group_id} Year={bus.env.year} | {price_changes}"
+                        )
 
                 # Set carbon costs for the plant based on its location
                 if plant.location.iso3 in bus.env.carbon_costs:
@@ -1034,7 +1240,17 @@ class SimulationRunner:
                             logging.info(
                                 f"Transitioned furnace group {fg.furnace_group_id} from construction to operating"
                             )
-
+                            logging.debug(
+                                "[OPERATING] FG %s now operating: "
+                                "energy_costs=%s output_energy_costs=%s "
+                                "energy_costs_no_subsidy=%s",
+                                fg.furnace_group_id,
+                                fg.energy_costs,
+                                fg.output_energy_costs,
+                                fg.energy_costs_no_subsidy,
+                            )
+            for plant_group in bus.uow.plant_groups.list():
+                plant_group.update_hot_metal_access(bus.env.config.hot_metal_radius)
             Simulation(bus=bus, economic_model=AllocationModel()).run_simulation()
             Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()
             Simulation(bus=bus, economic_model=GeospatialModel()).run_simulation()
@@ -1045,11 +1261,27 @@ class SimulationRunner:
                     year=bus.env.year,
                 )
 
+                # Collect market prices for iron and steel
+                prices = data_collector.collect_market_iron_steel_price(
+                    world_suppliers=bus.uow.repository.suppliers.list()
+                )
+                prices["steel_demand"] = float(bus.env.current_demand)
+                data_collector.trace_price[bus.env.year] = prices
+                logger.info(
+                    f"Year {bus.env.year} prices - Steel: ${prices['steel']:.2f}/t, Iron: ${prices['iron']:.2f}/t"
+                )
+
+                # Collect international iron trade volumes
+                if bus.env.trade_allocations is not None:
+                    data_collector.collect_international_iron_trade(
+                        year=bus.env.year, trade_allocations=bus.env.trade_allocations
+                    )
+
             commands[bus.env.year] = bus.collect_commands()
 
             with LoggingConfig.simulation_logging("DebugLogging"):
-                if LoggingConfig.ENABLE_FURNACE_GROUP_DEBUG:
-                    logging.info(f"\n========== FURNACE GROUP DEBUG - YEAR {bus.env.year} ==========")
+                if LoggingConfig.FURNACE_GROUP_BREAKDOWN:
+                    logging.info(f"========== FURNACE GROUP DEBUG - YEAR {bus.env.year} ==========\n")
 
                     # Use the new FurnaceBreakdownLogger for all plants
                     self.furnace_logger.log_all_furnace_groups(bus=bus, commands=commands)
@@ -1102,21 +1334,121 @@ class SimulationRunner:
         output_path = extract_and_process_stored_dataCollection(
             commands=commands,
             data_dir=self.config.output_dir / "TM",
-            output_path=self.config.output_dir
-            / "TM"
-            / f"post_processed_{datetime.now().strftime('%Y-%m-%d %H-%M')}.csv",
+            output_path=self.config.output_dir / f"post_processed_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.csv",
             store=True,
+            cost_breakdown_columns=[f"cost_breakdown - {k}" for k in bus.env.cost_breakdown_keys],
+            carbon_breakdown_columns=[f"carbon_breakdown - {k}" for k in bus.env.carbon_breakdown_keys],
+            carbon_input_columns=[f"carbon_breakdown - {k}" for k in bus.env.carbon_input_keys],
+            iso3_to_country_map=bus.env.country_mappings.code_to_country_map,
+            iso3_to_region_map=bus.env.country_mappings.iso3_to_region(),
         )
         plot_bar_chart_of_new_plants_by_status(data_collector.status_counts, plot_paths=bus.env.plot_paths)
         plot_map_of_new_plants_operating(data_collector.new_plant_locations, plot_paths=bus.env.plot_paths)
+        steel_demand_by_year = {
+            year: float(prices["steel_demand"]) for year, prices in data_collector.trace_price.items()
+        }
         generate_post_run_cap_prod_plots(
             file_path=output_path,
             capacity_limit=bus.env.config.capacity_limit,
             steel_demand=bus.env.current_demand,
             iron_demand=bus.env.iron_demand,
+            steel_market_clearing_share=bus.env.config.steel_market_clearing_share,
+            iron_market_clearing_share=bus.env.config.iron_market_clearing_share,
+            steel_price_buffer=bus.env.config.steel_price_buffer,
+            iron_price_buffer=bus.env.config.iron_price_buffer,
             plot_paths=bus.env.plot_paths,
-            iso3_to_region_map=bus.env.country_mappings.iso3_to_region(),
+            steel_demand_by_year=steel_demand_by_year,
         )
+
+        # Generate plots using SteelPlotter class for consistent styling
+        from steelo.utilities.steeliq_plotter import SteelPlotter, PlotConfig
+
+        # Create plotter with default configuration
+        plot_config = PlotConfig()
+        plotter = SteelPlotter(config=plot_config, plot_paths=bus.env.plot_paths)
+
+        # Plot CAPEX investments by technology and year
+        if data_collector.trace_capex:
+            plotter.plot_capex_by_technology(trace_capex=data_collector.trace_capex)
+            logger.info("Generated CAPEX investment plots")
+
+        # Plot emissions stacked area charts (5 scope views per available boundary)
+        if data_collector.trace_emissions:
+            plotter.plot_emissions_by_technology(
+                trace_emissions=data_collector.trace_emissions,
+                trace_production_by_product=data_collector.trace_production_by_product,
+            )
+            logger.info("Generated emissions stacked area charts")
+
+        # Plot iron ore consumption stacked area chart by quality
+        if data_collector.trace_iron_ore:
+            plotter.plot_iron_ore_by_quality(trace_iron_ore=data_collector.trace_iron_ore)
+            logger.info("Generated iron ore consumption chart")
+
+        # Plot metallic charges consumption stacked area chart
+        if data_collector.trace_metallic_charges:
+            plotter.plot_metallic_charges(trace_metallic_charges=data_collector.trace_metallic_charges)
+            logger.info("Generated metallic charges consumption chart")
+
+        # Plot international iron trade volumes stacked area chart
+        if data_collector.trace_international_iron_trade:
+            plotter.plot_international_iron_trade(
+                trace_international_iron_trade=data_collector.trace_international_iron_trade
+            )
+            logger.info("Generated international iron trade wedge chart")
+
+            # Export international iron trade data to CSV
+            import pandas as pd
+
+            trade_data = []
+            for year, products in sorted(data_collector.trace_international_iron_trade.items()):
+                for product, volume in products.items():
+                    trade_data.append({"year": year, "iron_product": product, "volume_tonnes": volume})
+
+            if trade_data:
+                trade_df = pd.DataFrame(trade_data)
+                data_dir = self.config.output_dir / "data"
+                data_dir.mkdir(parents=True, exist_ok=True)
+                trade_csv_path = data_dir / f"international_iron_trade_{start_year}_{end_year}.csv"
+                trade_df.to_csv(trade_csv_path, index=False)
+                logger.info(f"Saved international iron trade data to {trade_csv_path}")
+
+        # Export market prices to CSV and plot
+        if data_collector.trace_price:
+            import pandas as pd
+
+            price_data = []
+            for year, prices in sorted(data_collector.trace_price.items()):
+                row: dict = {
+                    "year": year,
+                    "steel_price_usd_per_t": prices.get("steel", 0.0),
+                    "iron_price_usd_per_t": prices.get("iron", 0.0),
+                }
+                if "scrap" in prices:
+                    row["scrap_price_usd_per_t"] = prices["scrap"]
+                if "iron_weighted_avg" in prices:
+                    row["iron_weighted_avg_cost_usd_per_t"] = prices["iron_weighted_avg"]
+                price_data.append(row)
+
+            price_df = pd.DataFrame(price_data)
+
+            # Save CSV to output/data directory (for backward compatibility)
+            data_dir = self.config.output_dir / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            price_csv_path = data_dir / f"market_prices_{start_year}_{end_year}.csv"
+            price_df.to_csv(price_csv_path, index=False)
+            logger.info(f"Saved market prices to {price_csv_path}")
+
+            price_plot_path = plotter.plot_market_prices(
+                price_df=price_df,
+                start_year=start_year,
+                end_year=end_year,
+            )
+            if price_plot_path is not None:
+                logger.info(f"Saved market prices plot to {price_plot_path}")
+
+        # Aggregate per-year LCOE/LCOH statistics into stacked CSVs
+        aggregate_lcoe_lcoh_statistics(self.config.output_dir, start_year, end_year)
 
         # Clean up temporary directory
         self._cleanup_temp_dir()

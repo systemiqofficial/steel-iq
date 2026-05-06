@@ -2,6 +2,7 @@ import math
 from pathlib import Path
 from typing import cast
 
+import numpy as np
 import pandas as pd
 import pycountry
 import pickle
@@ -26,12 +27,14 @@ from steelo.domain import (
     AggregatedMetallicChargeConstraint,
     FOPEX,
     CarbonBorderMechanism,
+    WillingnessToPay,
 )
 from ...domain.models import TransportKPI, TechnologyEmissionFactors, FallbackMaterialCost
 import logging
 
 from ...domain.models import LegalProcessConnector
 from ...utilities.data_processing import normalize_product_name
+from steelo.utilities.utils import normalize_name
 
 # Import only true constants from global_variables
 from steelo.domain.constants import (
@@ -57,44 +60,11 @@ logger.setLevel(logging.DEBUG)
 """
 A note on units:
 - iron and steel volumes should be read in tonnes (t), and handled as tons throughout the code.
-- Secondary feedstock should be read in as the unit that is defined in the BOMs, usually kilograms, costs need to be given as per that unit as well.
+- Secondary feedstock quantities are converted to t/t at read time via _convert_units.
+  All USD/kg prices are converted to USD/t to match.
 - Energy should be converted to kWh.
 - currencies should be in USD.
 """
-
-# Mapping of commodities whose consumption is expressed in t/t (tonnes per tonne) that require
-# USD/kg to USD/t conversion when loading prices from master Excel.
-# These materials have their usage in the BOM expressed as tonnes per tonne of product,
-# so their prices must be converted from USD/kg to USD/t (multiply by 1000).
-#
-# IMPORTANT: Only include commodities whose BOM consumption ultimately uses tonnes per tonne.
-# Hydrogen now falls into this bucket because BOM ingestion normalises its kg/t requirement to tonnes.
-#
-# NOTE: Keys must match the normalized commodity names after lowercasing and space-to-underscore
-# conversion. "Bio-PCI" in Excel becomes "bio-pci" (hyphen preserved), not "bio_pci".
-MATERIALS_REQUIRING_KG_TO_T_PRICE_CONVERSION = {
-    "bio-pci",  # Bio-PCI: consumption in t/t, price needs conversion from USD/kg to USD/t
-    "pci",  # PCI: consumption in t/t, price needs conversion from USD/kg to USD/t
-    "coke",  # Coke: consumption in t/t, price needs conversion from USD/kg to USD/t
-    "coking_coal",  # Coking coal: consumption in t/t, price needs conversion from USD/kg to USD/t
-    "hydrogen",  # Hydrogen consumption stored in t/t after BOM processing; convert price to USD/t for consistency
-}
-
-
-def normalize_commodity_name(commodity: str) -> str:
-    """Normalize metallic charge names to match expected format.
-
-    Examples:
-    - "Hot metal" -> "hot_metal"
-    - "Pig iron" -> "pig_iron"
-    - "DRI low" -> "dri_low"
-    """
-    if not commodity:
-        return commodity
-    # Convert to lowercase and replace spaces with underscores
-    normalized = commodity.lower().replace(" ", "_")
-    return normalized
-
 
 translate_country_names = {
     "Dem. Rep. of the Congo": "Congo DRC",
@@ -165,12 +135,12 @@ def read_regional_input_prices_from_master_excel(
     rename_map = {}
     for col in input_cost_stacked.columns:
         if col not in ["iso-3 code", "year"]:
-            rename_map[col] = col.replace(" ", "_")
+            rename_map[col] = normalize_name(col)
     input_cost_stacked = input_cost_stacked.rename(columns=rename_map)
     ## Update unit mapping keys to match normalized commodity names (lowercase + spaces to underscores)
     unit_mapping_lower = {}
     for commodity, unit in unit_mapping.items():
-        commodity_normalized = commodity.lower().replace(" ", "_")
+        commodity_normalized = normalize_name(commodity)
         unit_mapping_lower[commodity_normalized] = unit
 
     # 3) Convert units to match BOM requirements based on Unit column
@@ -189,18 +159,8 @@ def read_regional_input_prices_from_master_excel(
             # Convert from USD/GJ to USD/kWh
             input_cost_stacked.loc[:, commodity] *= PERGJ_TO_PERkWh
         elif unit == "USD/kg":
-            # Selective conversion: materials with t/t consumption need USD/kg → USD/t conversion
-            # Materials with kg/t consumption (e.g., hydrogen) should remain in USD/kg
-            if commodity in MATERIALS_REQUIRING_KG_TO_T_PRICE_CONVERSION:
-                # Convert from USD/kg to USD/t for materials consumed in tonnes per tonne
-                # (multiply by 1000 kg/t to get USD/t from USD/kg)
-                input_cost_stacked.loc[:, commodity] *= T_TO_KG
-                logging.info(
-                    f"Converting {commodity} price from USD/kg to USD/t (multiply by {T_TO_KG}) for t/t consumption"
-                )
-            else:
-                # Keep in USD/kg for materials consumed in kg/t (e.g., hydrogen)
-                logging.info(f"Keeping {commodity} price in USD/kg (consumption in kg/t, no conversion needed)")
+            # All BOM quantities normalised to t/t; convert all USD/kg → USD/t
+            input_cost_stacked.loc[:, commodity] *= T_TO_KG
         elif unit == "USD/t":
             pass
         else:
@@ -279,7 +239,20 @@ def read_aggregated_metallic_charge_constraints(
             # Extract the pattern (e.g., "DRI*" -> "DRI")
             pattern = mc_raw.replace("*", "")
             type_field = row["Type"] if pd.notna(row["Type"]) else ""
-            value = row["Value"] if pd.notna(row["Value"]) else 0.0
+
+            # Safely extract and convert value to float
+            raw_value = row["Value"]
+            if pd.notna(raw_value):
+                try:
+                    value = float(raw_value)
+                except (ValueError, TypeError):
+                    logger.warning(
+                        f"Invalid value '{raw_value}' in constraint for {business_case_str} / {mc_raw}. Defaulting to 0.0"
+                    )
+                    value = 0.0
+            else:
+                value = 0.0
+
             unit = row["Unit"] if pd.notna(row["Unit"]) else ""
 
             # Check if we already have this constraint
@@ -328,7 +301,7 @@ def read_aggregated_metallic_charge_constraints(
 
 def read_dynamic_business_cases(
     dynamic_business_cases_excel_path: str, excel_sheet: str
-) -> dict[str, list[PrimaryFeedstock]]:
+) -> tuple[dict[str, list[PrimaryFeedstock]], list[AggregatedMetallicChargeConstraint]]:
     """
     Read and process dynamic business cases from Excel to create PrimaryFeedstock objects.
 
@@ -339,16 +312,18 @@ def read_dynamic_business_cases(
     Process:
     1. Create feedstocks for each technology + metallic_charge + reductant combination
     2. Data rows populate feedstock properties (materials, energy, outputs, constraints)
-    3. Wildcard constraints (e.g., DRI*, HBI*) are read separately and applied to matching feedstocks
+    3. Wildcard constraints (e.g., DRI*, HBI*) are read separately and returned as aggregated constraints
 
     Args:
         dynamic_business_cases_excel_path: Path to the Excel file containing Bill of Materials
         excel_sheet: Name of the sheet to read (typically "Bill of Materials")
 
     Returns:
-        Dictionary mapping technology names (lowercase) to lists of PrimaryFeedstock objects.
-        Each feedstock represents a unique technology-metallic_charge-reductant combination
-        with associated materials, energy requirements, outputs, and constraints.
+        Tuple of:
+        - Dictionary mapping technology names (lowercase) to lists of PrimaryFeedstock objects.
+          Each feedstock represents a unique technology-metallic_charge-reductant combination
+          with associated materials, energy requirements, outputs, and constraints.
+        - List of AggregatedMetallicChargeConstraint objects for wildcard constraints
     """
     df = pd.read_excel(dynamic_business_cases_excel_path, sheet_name=excel_sheet)
 
@@ -381,11 +356,11 @@ def read_dynamic_business_cases(
             mc_raw = row["Metallic charge"] if row["Metallic charge"] and row["Metallic charge"] != "nan" else ""
             # Skip wildcards when collecting unique values
             if mc_raw and "*" not in mc_raw:
-                mc = normalize_commodity_name(mc_raw)
+                mc = normalize_name(mc_raw)
                 if mc:
                     metallic_charges.add(mc)
 
-            red = row["Reductant"].lower() if row["Reductant"] and row["Reductant"] != "nan" else ""
+            red = normalize_name(row["Reductant"]) if row["Reductant"] and row["Reductant"] != "nan" else ""
             if red and "*" not in red:
                 reductants.add(red)
 
@@ -412,7 +387,7 @@ def read_dynamic_business_cases(
         # Now process all rows for this business case
         for _, row in group.iterrows():
             mc_raw = row["Metallic charge"] if row["Metallic charge"] and row["Metallic charge"] != "nan" else ""
-            red = row["Reductant"].lower() if row["Reductant"] and row["Reductant"] != "nan" else ""
+            red = normalize_name(row["Reductant"]) if row["Reductant"] and row["Reductant"] != "nan" else ""
 
             # Check for wildcards in metallic charge
             if mc_raw and "*" in mc_raw:
@@ -421,19 +396,16 @@ def read_dynamic_business_cases(
                     continue
                 else:
                     # For non-constraint rows, apply to matching feedstocks
-                    pattern = normalize_commodity_name(mc_raw.replace("*", ""))
+                    pattern = normalize_name(mc_raw.replace("*", ""))
                     for key, feedstock in feedstocks_dict.items():
-                        if (
-                            feedstock.technology.lower() == technology.lower()
-                            and feedstock.metallic_charge.lower().startswith(pattern)
-                        ):
+                        if feedstock.technology == technology.lower() and feedstock.metallic_charge.startswith(pattern):
                             _process_row(row.to_dict(), feedstock, feedstocks_dict)
             elif mc_raw:
-                mc = normalize_commodity_name(mc_raw)
+                mc = normalize_name(mc_raw)
                 if not red:
                     # Apply to all feedstocks with this metallic charge
                     for key, feedstock in feedstocks_dict.items():
-                        if feedstock.technology.lower() == technology.lower() and feedstock.metallic_charge == mc:
+                        if feedstock.technology == technology.lower() and feedstock.metallic_charge == mc:
                             _process_row(row.to_dict(), feedstock, feedstocks_dict)
                 else:
                     # Apply to specific combination
@@ -443,12 +415,12 @@ def read_dynamic_business_cases(
             elif red and not mc_raw:
                 # Apply to all feedstocks with this reductant
                 for key, feedstock in feedstocks_dict.items():
-                    if feedstock.technology.lower() == technology.lower() and feedstock.reductant == red:
+                    if feedstock.technology == technology.lower() and feedstock.reductant == red:
                         _process_row(row.to_dict(), feedstock, feedstocks_dict)
             else:
                 # Apply to all feedstocks of this technology (if neither mc nor red specified)
                 for key, feedstock in feedstocks_dict.items():
-                    if feedstock.technology.lower() == technology.lower():
+                    if feedstock.technology == technology.lower():
                         _process_row(row.to_dict(), feedstock, feedstocks_dict)
 
     # Organize by technology (use uppercase keys for backward compatibility)
@@ -474,28 +446,16 @@ def read_dynamic_business_cases(
     for feedstock_list in technology_feedstocks.values():
         feedstock_list.sort(key=lambda fs: (fs.metallic_charge, fs.reductant))
 
-    # Apply aggregated constraints from wildcards to matching feedstocks
+    # Read aggregated constraints from wildcards - these will be passed to the environment
+    # and NOT applied to individual feedstocks
     aggregated_constraints = read_aggregated_metallic_charge_constraints(dynamic_business_cases_excel_path, excel_sheet)
 
+    logger.info(f"Read {len(aggregated_constraints)} aggregated metallic charge constraints")
     for constraint in aggregated_constraints:
-        # Find all feedstocks that match this constraint pattern
-        # Ensure proper capitalization for technology names
-        technology = constraint.technology_name.upper()
-        pattern = constraint.feedstock_pattern.lower()
-
-        if technology in technology_feedstocks:
-            for feedstock in technology_feedstocks[technology]:
-                # Check if the feedstock's metallic charge matches the pattern
-                if feedstock.metallic_charge.lower().startswith(pattern):
-                    # Apply the constraint to this feedstock
-                    if constraint.minimum_share is not None:
-                        feedstock.minimum_share_in_product = constraint.minimum_share
-                    if constraint.maximum_share is not None:
-                        feedstock.maximum_share_in_product = constraint.maximum_share
-                    logger.debug(
-                        f"Applied constraint to {feedstock.technology}_{feedstock.metallic_charge}: "
-                        f"min={constraint.minimum_share}, max={constraint.maximum_share}"
-                    )
+        logger.info(
+            f"  Aggregated constraint: {constraint.technology_name} {constraint.feedstock_pattern}* "
+            f"min={constraint.minimum_share}, max={constraint.maximum_share}"
+        )
 
     # Set default constraints (0.0 to 1.0) for any feedstock without constraints
     for tech_key, feedstock_list in technology_feedstocks.items():
@@ -511,7 +471,7 @@ def read_dynamic_business_cases(
                     f"Setting default maximum constraint (1.0) for {feedstock.technology}_{feedstock.metallic_charge}_{feedstock.reductant}"
                 )
 
-    return technology_feedstocks
+    return technology_feedstocks, aggregated_constraints
 
 
 def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[str, PrimaryFeedstock]):
@@ -530,13 +490,28 @@ def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[st
     side = row["Side"]
     metric_type = row["Metric type"]
     vector = row["Vector"] if pd.notna(row["Vector"]) else ""
-    value = row["Value"] if pd.notna(row["Value"]) else 0.0
+
+    # Safely extract and convert value to float
+    raw_value = row["Value"]
+
+    # Skip rows with no value or invalid values
+    if pd.isna(raw_value):
+        return
+
+    # Try to convert to float, skip if it fails
+    try:
+        # Handle strings like '-', whitespace, etc.
+        if isinstance(raw_value, str):
+            raw_value = raw_value.strip()
+            if raw_value in ["", "-", "N/A", "n/a", "NA"]:
+                return
+        value = float(raw_value)
+    except (ValueError, TypeError):
+        logger.debug(f"Skipping row with invalid value '{raw_value}' for {vector}")
+        return
+
     unit = row["Unit"] if pd.notna(row["Unit"]) else ""
     type_field = row["Type"] if pd.notna(row["Type"]) else ""
-
-    # Skip rows with no value
-    if pd.isna(row["Value"]):
-        return
 
     # Handle constraints (regular ones only - wildcards are handled separately)
     if metric_type == "Constraint":
@@ -559,7 +534,7 @@ def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[st
     if metric_type.lower() in ["materials", "feedstock", "reductant"]:
         if side == "Input":
             # Check if this is the primary feedstock (Vector matches metallic charge)
-            if vector and normalize_commodity_name(vector) == feedstock.metallic_charge.lower():
+            if vector and normalize_name(vector) == feedstock.metallic_charge.lower():
                 # For primary feedstock, keep the original unit logic
                 if "t/t" in unit.lower():
                     feedstock.required_quantity_per_ton_of_product = float(value)
@@ -570,17 +545,36 @@ def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[st
                     logger.warning(f"Unexpected unit '{unit}' for primary material requirement")
                     feedstock.required_quantity_per_ton_of_product = float(value)
             else:
-                # Secondary feedstock - store with original units (usually kg/t)
+                # Secondary feedstock - convert units at read time (kg/t → t/t)
                 if vector:
-                    feedstock.add_secondary_feedstock(normalize_commodity_name(vector), value)
+                    converted = _convert_units(value, unit, metric_type)
+                    logger.debug(
+                        "Secondary feedstock %s: %s %s -> %s (converted)",
+                        normalize_name(vector),
+                        value,
+                        unit,
+                        converted,
+                    )
+                    feedstock.add_secondary_feedstock(normalize_name(vector), converted)
         elif side == "Output":
-            # Outputs - keep original values
+            # Outputs - convert units at read time (kg/t → t/t, tCO2/t as-is)
             if vector:
-                # Handle steel/liquid steel naming using Commodities
-                output_name = normalize_commodity_name(vector)
-                if output_name == Commodities.LIQUID_STEEL.value.lower():
-                    output_name = Commodities.STEEL.value
-                feedstock.add_output(name=output_name, amount=Volumes(float(value)))
+                output_name = normalize_name(vector)
+                converted = _convert_units(value, unit, metric_type)
+                logger.debug(
+                    "Output %s: %s %s -> %s (converted)",
+                    output_name,
+                    value,
+                    unit,
+                    converted,
+                )
+                if output_name.startswith("co2"):
+                    feedstock.add_carbon_output(output_name, converted)
+                else:
+                    # Handle steel/liquid steel naming using Commodities
+                    if output_name == Commodities.LIQUID_STEEL.value.lower():
+                        output_name = Commodities.STEEL.value
+                    feedstock.add_output(name=output_name, amount=Volumes(converted))
 
     # Handle energy
     elif metric_type.lower() in ["energy", "heat", "machine drive", "machine_drive", "others"]:
@@ -588,10 +582,18 @@ def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[st
         converted_value = _convert_units(value, unit, metric_type)
         if side == "Input":
             if vector:
-                feedstock.add_energy_requirement(normalize_commodity_name(vector), converted_value)
+                normalised = normalize_name(vector)
+                if normalised.startswith("co2"):
+                    feedstock.add_carbon_input(normalised, converted_value)
+                else:
+                    feedstock.add_energy_requirement(normalised, converted_value)
         elif side == "Output":
             if vector:
-                feedstock.add_output(name=normalize_commodity_name(vector), amount=Volumes(converted_value))
+                normalised = normalize_name(vector)
+                if normalised.startswith("co2"):
+                    feedstock.add_carbon_output(normalised, converted_value)
+                else:
+                    feedstock.add_output(name=normalised, amount=Volumes(converted_value))
 
 
 def _convert_units(value: float, unit: str, metric_type: str) -> float:
@@ -600,7 +602,8 @@ def _convert_units(value: float, unit: str, metric_type: str) -> float:
 
     Conversions:
     - Energy units: GJ/t -> kWh/t (*277.78), MWh/t -> kWh/t (*1000)
-    - Material units: kept as-is (t/t, kg/t)
+    - Material units: t/t kept as-is, kg*/t converted to t/t (*0.001)
+      Handles patterns like "kg/t", "kg H2/t DRI", "kg H2/t HM"
     - Percentages: kept as-is
 
     Args:
@@ -619,7 +622,8 @@ def _convert_units(value: float, unit: str, metric_type: str) -> float:
     # Material units
     if "t/t" in unit_lower:
         return value
-    elif "kg/t" in unit_lower:
+    elif "kg/t" in unit_lower or (unit_lower.startswith("kg") and "/t" in unit_lower):
+        # Matches "kg/t", "kg H2/t DRI", "kg H2/t HM", etc.
         return value * KG_TO_T
     elif "tco2/t" in unit_lower:
         return value
@@ -631,10 +635,6 @@ def _convert_units(value: float, unit: str, metric_type: str) -> float:
         return value * GJ_TO_KWH
     elif "mwh/t" in unit_lower:
         return value * MWH_TO_KWH
-    elif "kg/t" in unit_lower and metric_type.lower() in ["energy", "heat", "machine drive", "reductant"]:
-        # For things like hydrogen or PCI which are measured in kg/t
-        return value
-
     # Percentage (for constraints)
     elif "%" in unit_lower:
         return value
@@ -690,37 +690,44 @@ def read_mines_as_suppliers(mine_data_excel_path: str, mine_data_sheet_name: str
             duplicates = [id for id in supplier_ids if supplier_ids.count(id) > 1]
             raise ValueError(f"Duplicate supplier IDs generated: {set(duplicates)}")
 
-        # 2. Total capacity preservation
-        # Strip whitespace from column names in excel_df if not already done
-        if "capacity" not in excel_df.columns and " capacity" in excel_df.columns:
-            excel_df.columns = excel_df.columns.str.strip()
-        excel_total = excel_df["capacity"].sum()
-        # Get capacity for any year (they're all the same)
-        supplier_total = sum(
-            list(s.capacity_by_year.values())[0] / MT_TO_T  # Convert back to Mt
-            for s in suppliers
-        )
-        tolerance = 0.01  # Allow small rounding differences
-
-        if abs(excel_total - supplier_total) > tolerance:
-            raise ValueError(f"Total capacity mismatch: Excel={excel_total:.2f} Mt, Suppliers={supplier_total:.2f} Mt")
-
-        # 3. Per-product capacity preservation
-        for product in excel_df["Products"].unique():
-            excel_product = excel_df[excel_df["Products"] == product]["capacity"].sum()
-            commodity = Commodities(normalize_product_name(product)).value
-            supplier_product = sum(
-                list(s.capacity_by_year.values())[0] / MT_TO_T for s in suppliers if s.commodity == commodity
+        # 2. Total capacity preservation (check against first capacity column found)
+        capacity_cols = [col for col in excel_df.columns if col.startswith("Capacity [Mt] ")]
+        if capacity_cols:
+            # Use the first capacity column for validation
+            first_cap_col = capacity_cols[0]
+            excel_total = excel_df[first_cap_col].sum()
+            # Get capacity for the same year from suppliers
+            validation_year = Year(int(first_cap_col.split()[-1]))
+            supplier_total = sum(
+                s.capacity_by_year.get(validation_year, Volumes(0)) / MT_TO_T  # Convert back to Mt
+                for s in suppliers
             )
-            if abs(excel_product - supplier_product) > tolerance:
+            tolerance = 0.01  # Allow small rounding differences
+
+            if abs(excel_total - supplier_total) > tolerance:
                 raise ValueError(
-                    f"{product} capacity mismatch: Excel={excel_product:.2f} Mt, Suppliers={supplier_product:.2f} Mt"
+                    f"Total capacity mismatch for {validation_year}: Excel={excel_total:.2f} Mt, Suppliers={supplier_total:.2f} Mt"
                 )
+
+            # 3. Per-product capacity preservation
+            for product in excel_df["Products"].unique():
+                excel_product = excel_df[excel_df["Products"] == product][first_cap_col].sum()
+                commodity = Commodities(normalize_product_name(product)).value
+                supplier_product = sum(
+                    s.capacity_by_year.get(validation_year, Volumes(0)) / MT_TO_T
+                    for s in suppliers
+                    if s.commodity == commodity
+                )
+                if abs(excel_product - supplier_product) > tolerance:
+                    raise ValueError(
+                        f"{product} capacity mismatch for {validation_year}: Excel={excel_product:.2f} Mt, Suppliers={supplier_product:.2f} Mt"
+                    )
 
         # 4. Data type and range validation
         for supplier in suppliers:
-            first_capacity = list(supplier.capacity_by_year.values())[0]
-            assert first_capacity >= 0, f"Negative capacity: {supplier.supplier_id}"
+            # Validate all capacity values
+            for year, capacity in supplier.capacity_by_year.items():
+                assert capacity >= 0, f"Negative capacity for {supplier.supplier_id} in {year}"
             assert -90 <= supplier.location.lat <= 90, f"Invalid latitude: {supplier.supplier_id}"
             assert -180 <= supplier.location.lon <= 180, f"Invalid longitude: {supplier.supplier_id}"
 
@@ -729,10 +736,39 @@ def read_mines_as_suppliers(mine_data_excel_path: str, mine_data_sheet_name: str
     # Strip whitespace from column names to handle Excel inconsistencies
     mine_data_df.columns = mine_data_df.columns.str.strip()
 
+    # Extract year-specific columns dynamically - support both formats:
+    # Old format: "Capacity [Mt] 2025", "Production Cost [$/t] 2025", "Mine Price [$/t] 2025"
+    # New format: "capacity Mtpa 2025", "costs $/t 2025", "price $/t 2025"
+    capacity_cols = [
+        col for col in mine_data_df.columns if col.startswith("Capacity [Mt] ") or col.startswith("capacity Mtpa ")
+    ]
+    mine_price_cols = [
+        col for col in mine_data_df.columns if col.startswith("Mine Price [$/t] ") or col.startswith("price $/t ")
+    ]
+    production_cost_cols = [
+        col for col in mine_data_df.columns if col.startswith("Production Cost [$/t] ") or col.startswith("costs $/t ")
+    ]
+
+    # Add logging to help debug
+    logging.info(f"Reading iron ore mines from '{mine_data_sheet_name}' sheet")
+    logging.info(f"  Total rows in sheet: {len(mine_data_df)}")
+    logging.info(f"  Capacity columns found: {len(capacity_cols)} columns")
+    logging.info(f"  Production cost columns found: {len(production_cost_cols)} columns")
+    logging.info(f"  Mine price columns found: {len(mine_price_cols)} columns")
+
+    def extract_year_from_column(col_name: str) -> int:
+        """Extract year from column name like 'Capacity [Mt] 2025' or 'capacity Mtpa 2025'"""
+        return int(col_name.split()[-1])
+
     mines: list[Supplier] = []
+    skipped_rows = 0
     for row_num, (idx, row) in enumerate(mine_data_df.iterrows()):
-        if row["capacity"] == 0:
+        # Check if any capacity column has non-zero value
+        has_capacity = any(row.get(col, 0) > 0 for col in capacity_cols)
+        if not has_capacity:
+            skipped_rows += 1
             continue
+
         # Create a unique location for each mine (not reused)
         mine_location = Location(
             lat=row["lat"],
@@ -742,37 +778,66 @@ def read_mines_as_suppliers(mine_data_excel_path: str, mine_data_sheet_name: str
             iso3=translate_mine_regions_to_iso3.get(row["Region"], ""),
         )
         product = row["Products"]
-        cap_by_year = {
-            Year(year): Volumes(int(row["capacity"] * MT_TO_T))
-            for year in range(EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR + 1)
-        }
+
+        # Parse year-specific capacities
+        cap_by_year = {}
+        for col in capacity_cols:
+            year = Year(extract_year_from_column(col))
+            capacity_value = row.get(col, 0)
+            if pd.notna(capacity_value):
+                cap_by_year[year] = Volumes(int(capacity_value * MT_TO_T))
+            else:
+                cap_by_year[year] = Volumes(0)
+
+        # Parse year-specific mine prices
+        mine_price_by_year = {}
+        for col in mine_price_cols:
+            year = Year(extract_year_from_column(col))
+            price_value = row.get(col)
+            if pd.notna(price_value):
+                mine_price_by_year[year] = float(price_value)
+
+        # Parse year-specific production costs
+        production_cost_by_year = {}
+        for col in production_cost_cols:
+            year = Year(extract_year_from_column(col))
+            cost_value = row.get(col)
+            if pd.notna(cost_value):
+                production_cost_by_year[year] = float(cost_value)
+
+        # If mine_price is not available for a year, use production_cost as fallback
+        for year in cap_by_year.keys():
+            if year not in mine_price_by_year and year in production_cost_by_year:
+                mine_price_by_year[year] = production_cost_by_year[year]
 
         # Generate unique supplier ID - use row_num which is guaranteed to be an int
-        supplier_id = generate_supplier_id(row, mine_location, product, row_index=row_num)
+        # For backward compatibility with old ID generation, use first capacity value
+        first_capacity_mt = list(cap_by_year.values())[0] / MT_TO_T if cap_by_year else 0
+        first_cost = list(production_cost_by_year.values())[0] if production_cost_by_year else 0
+        row_for_id = row.copy()
+        row_for_id["capacity"] = first_capacity_mt
+        row_for_id["costs"] = first_cost
+        supplier_id = generate_supplier_id(row_for_id, mine_location, product, row_index=row_num)
 
-        # Read both costs and price columns for iron ore premiums support
-        # Handle NaN values: if price column exists but cell is empty, fall back to costs
-        price_value = row.get("price")
-        if price_value is None or pd.isna(price_value):
-            mine_price = row["costs"]
-        else:
-            mine_price = price_value
-
-        # Default production_cost to costs (will be overridden by bootstrap based on flag)
         mine = Supplier(
             supplier_id=supplier_id,
             commodity=Commodities(normalize_product_name(product)).value,
             location=mine_location,
             capacity_by_year=cap_by_year,
-            production_cost=row["costs"],
-            mine_cost=row["costs"],
-            mine_price=mine_price,
+            production_cost_by_year=production_cost_by_year,
+            mine_cost_by_year=production_cost_by_year,  # Using production_cost as mine_cost
+            mine_price_by_year=mine_price_by_year,
         )
         mines.append(mine)
 
+    # Log summary
+    logging.info(f"  Processed {len(mines)} iron ore mines")
+    logging.info(f"  Skipped {skipped_rows} rows (zero capacity)")
+    if mines:
+        commodities = set(m.commodity for m in mines)
+        logging.info(f"  Commodities: {commodities}")
     # Validate the suppliers before returning
     validate_suppliers(mines, mine_data_df)
-
     return mines
 
 
@@ -947,15 +1012,22 @@ def refine_scrap_centers_for_major_countries(old_centers):
             for year in years:
                 amount_by_year[Year(year)] = old_center.capacity_by_year[Year(year)] * center["share"]
 
-            # Create new center with the new location and amount_by_year
+            # Create constant production cost dictionary for all years in simulation horizon
+            # This initial value of 450 will be overwritten annually in handlers.py based on BOF hot_metal costs
+            production_cost_by_year = {
+                Year(year): 450.0 for year in range(EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR + 1)
+            }
 
+            # Create new center with the new location and amount_by_year
             new_centers.append(
                 Supplier(
                     commodity=Commodities.SCRAP.value,
                     supplier_id=new_id,
                     location=location,
                     capacity_by_year=amount_by_year,
-                    production_cost=450,
+                    production_cost_by_year=production_cost_by_year,
+                    mine_cost_by_year={},
+                    mine_price_by_year={},
                 )
             )
             center_counter += 1
@@ -1027,12 +1099,21 @@ def read_scrap_as_suppliers(
                 scrap_by_year[Year(year)] = Volumes(KT_TO_T * int(row[col]))
             except ValueError:
                 continue
+
+        # Create constant production cost dictionary for all years in simulation horizon
+        # This initial value of 450 will be overwritten annually in handlers.py based on BOF hot_metal costs
+        production_cost_by_year = {
+            Year(year): 450.0 for year in range(EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR + 1)
+        }
+
         supply_center = Supplier(
             commodity=Commodities.SCRAP.value,
             supplier_id=f"{scrap_location.country}_scrap",
             location=scrap_location,
             capacity_by_year=scrap_by_year,
-            production_cost=450,
+            production_cost_by_year=production_cost_by_year,
+            mine_cost_by_year={},
+            mine_price_by_year={},
         )
         supply_centers.append(supply_center)
 
@@ -1040,24 +1121,89 @@ def read_scrap_as_suppliers(
     return refine_scrap_centers_for_major_countries(supply_centers)
 
 
-def find_iso3s_of_region(region_df: pd.DataFrame, region: str, negation=False) -> list[str]:
+def find_iso3s_of_trade_bloc(country_mappings: list, bloc_name: str, negation: bool = False) -> list[str]:
     """
-    Find the ISO3 codes of a given region in the region DataFrame.
+    Find the ISO3 codes of countries in a given trade bloc using CountryMapping objects.
+
+    This function dynamically detects trade bloc memberships based on boolean attributes
+    in the CountryMapping objects, allowing any trade bloc column in the Excel sheet to be used.
 
     Args:
-        region_df (pd.DataFrame): DataFrame containing region data.
-        region (str): The name of the region to search for.
-        negation (bool): If True, return ISO3 codes not in the specified region.
+        country_mappings: List of CountryMapping objects.
+        bloc_name: The name of the trade bloc (e.g., EU, EFTA/EUCU, OECD, NAFTA, etc.).
+                   Special characters like "/" are normalized to "_".
+        negation: If True, return ISO3 codes not in the specified trade bloc.
 
     Returns:
-        list[str]: List of ISO3 codes for the specified region.
+        List of ISO3 codes for the specified trade bloc.
+
+    Raises:
+        ValueError: If the bloc_name is not found as an attribute in any CountryMapping object.
     """
-    if region not in region_df.columns:
-        raise ValueError(f"Region '{region}' not found in the DataFrame.")
-    if negation:
-        return list(region_df[region_df[region] != "X"]["ISO 3-letter code"].values)
-    else:
-        return list(region_df[region_df[region] == "X"]["ISO 3-letter code"].values)
+    # Normalize bloc name to match CountryMapping attributes
+    # Replace special characters that might be in Excel column names
+    bloc_name_normalized = bloc_name.replace("/", "_").replace(" ", "_").replace("-", "_")
+
+    # Special case: EUCU maps to EUCJ for backwards compatibility
+    bloc_name_normalized = bloc_name_normalized.replace("EUCU", "EUCJ")
+
+    # Verify that at least one country mapping has this attribute
+    if country_mappings and not hasattr(country_mappings[0], bloc_name_normalized):
+        # Try to find similar attributes to provide helpful error message
+        available_blocs = [
+            attr
+            for attr in dir(country_mappings[0])
+            if not attr.startswith("_") and isinstance(getattr(country_mappings[0], attr, None), bool)
+        ]
+        raise ValueError(
+            f"Trade bloc '{bloc_name}' (normalized to '{bloc_name_normalized}') not found in country mappings. "
+            f"Available trade blocs: {', '.join(available_blocs)}"
+        )
+
+    iso3_codes = []
+    for country in country_mappings:
+        # Get the boolean value for this trade bloc
+        is_member = getattr(country, bloc_name_normalized, False)
+
+        # Apply negation logic
+        if negation:
+            if not is_member:
+                iso3_codes.append(country.iso3)
+        else:
+            if is_member:
+                iso3_codes.append(country.iso3)
+
+    return iso3_codes
+
+
+def _resolve_iso3_or_bloc_entry(entry: str, country_mappings: list, supported_blocs: list[str]) -> list[str]:
+    """Resolve a tariff sheet 'From ISO3' / 'To ISO3' entry to a list of iso3 codes.
+
+    Recognized forms:
+        - "DEU"     → ["DEU"]
+        - "EU"      → all iso3s where mapping.EU is True
+        - "NOT EU"  → all iso3s where mapping.EU is False
+        - "NOT DEU" → all known iso3s except "DEU"
+        - "*"       → ["*"] (kept as a literal wildcard for downstream matching)
+
+    For "NOT <X>", <X> is first looked up as a trade bloc; if it is not a known bloc,
+    it is treated as a single iso3 code and negated against the full iso3 list from
+    ``country_mappings``. Raises ``ValueError`` if <X> is neither.
+    """
+    if entry.startswith("NOT "):
+        target = entry[4:]
+        if target in supported_blocs:
+            return find_iso3s_of_trade_bloc(country_mappings, target, negation=True)
+        all_iso3s = [c.iso3 for c in country_mappings] if country_mappings else []
+        if target not in all_iso3s:
+            raise ValueError(
+                f"'NOT {target}' references neither a known trade bloc nor a known iso3. "
+                f"Available trade blocs: {', '.join(supported_blocs) if supported_blocs else '(none)'}"
+            )
+        return [iso3 for iso3 in all_iso3s if iso3 != target]
+    if entry in supported_blocs:
+        return find_iso3s_of_trade_bloc(country_mappings, entry)
+    return [entry]
 
 
 def read_carbon_costs(carbon_cost_excel_path: Path, sheet_name="Carbon cost") -> list[CarbonCostSeries]:
@@ -1259,10 +1405,42 @@ def read_regional_emissivities(excel_path: Path, grid_sheet_name: str, gas_sheet
     return grid_emissivity_list
 
 
-def read_tariffs(tariff_excel_path: str, tariff_sheet_name: str, region_sheet_name: str) -> list[TradeTariff]:
+def read_tariffs(tariff_excel_path: str, tariff_sheet_name: str, country_mappings: list) -> list[TradeTariff]:
+    """
+    Read tariff data from an Excel file and return a list of TradeTariff objects.
+
+    Trade bloc names in the "From ISO3" and "To ISO3" columns are automatically detected
+    from the available boolean attributes in the CountryMapping objects.
+
+    Args:
+        tariff_excel_path: Path to the Excel file containing tariff data.
+        tariff_sheet_name: Name of the sheet in the Excel file to read from.
+        country_mappings: List of CountryMapping objects used to resolve trade bloc names.
+
+    Returns:
+        List of TradeTariff objects.
+    """
     tariff_df = pd.read_excel(tariff_excel_path, sheet_name=tariff_sheet_name)
-    region_df = pd.read_excel(tariff_excel_path, sheet_name=region_sheet_name)
     tariffs = []
+
+    # Dynamically detect available trade blocs from country_mappings
+    # Get all boolean attributes from the first country mapping object
+    supported_blocs = []
+    if country_mappings:
+        supported_blocs = [
+            attr
+            for attr in dir(country_mappings[0])
+            if not attr.startswith("_") and isinstance(getattr(country_mappings[0], attr, None), bool)
+        ]
+        # Add common variants with "/" for Excel column names (e.g., EFTA/EUCU)
+        # This allows the tariff sheet to use either EFTA_EUCJ or EFTA/EUCU
+        if "EFTA_EUCJ" in supported_blocs:
+            supported_blocs.append("EFTA/EUCU")
+
+    logger.info(
+        f"Detected {len(supported_blocs)} available trade blocs for tariff processing: {', '.join(supported_blocs)}"
+    )
+
     # Drop rows with NaN values in the 'Tariff scenario name' column
     tariff_df = tariff_df.dropna(subset=["Tariff scenario name"])
     # tariff_df["Metric (Volume/Emissions)"] = tariff_df["Metric (Volume/Emissions)"].fillna("")
@@ -1287,21 +1465,9 @@ def read_tariffs(tariff_excel_path: str, tariff_sheet_name: str, region_sheet_na
 
         from_iso3_entry = row["From ISO3"]
         to_iso3_entry = row["To ISO3"]
-        # if it starts with a NOT (then it's the negation of a region)
-        if from_iso3_entry.startswith("NOT "):
-            from_iso3_region = from_iso3_entry[4:]
-            from_iso3_list = find_iso3s_of_region(region_df, from_iso3_region, negation=True)
-        elif from_iso3_entry in region_df.columns:
-            from_iso3_list = find_iso3s_of_region(region_df, from_iso3_entry)
-        else:
-            from_iso3_list = [from_iso3_entry]
-        if to_iso3_entry.startswith("NOT "):
-            to_iso3_region = to_iso3_entry[4:]
-            to_iso3_list = find_iso3s_of_region(region_df, to_iso3_region, negation=True)
-        elif to_iso3_entry in region_df.columns:
-            to_iso3_list = find_iso3s_of_region(region_df, to_iso3_entry)
-        else:
-            to_iso3_list = [to_iso3_entry]
+
+        from_iso3_list = _resolve_iso3_or_bloc_entry(from_iso3_entry, country_mappings, supported_blocs)
+        to_iso3_list = _resolve_iso3_or_bloc_entry(to_iso3_entry, country_mappings, supported_blocs)
 
         for from_iso3 in from_iso3_list:
             for to_iso3 in to_iso3_list:
@@ -1373,7 +1539,7 @@ def read_capex_and_learning_rate_data(
         if pd.isna(product):
             product = ""
         else:
-            product = normalize_commodity_name(str(product))  # Normalize to lowercase
+            product = normalize_name(str(product))  # Normalize to lowercase
 
         # Handle empty or invalid values for greenfield and renovation capex
         greenfield = row.get("Greenfield", 0.0)
@@ -1511,6 +1677,9 @@ def read_country_mappings(excel_path: Path, sheet_name: str = "Country mapping")
     Reads country mapping data from the specified Excel sheet and converts it
     into a list of CountryMapping domain objects.
 
+    Trade bloc membership columns (columns containing True/False values) are
+    automatically detected and added as boolean attributes to each CountryMapping object.
+
     Args:
         excel_path: Path to the master input Excel file.
         sheet_name: The name of the sheet to read.
@@ -1524,33 +1693,86 @@ def read_country_mappings(excel_path: Path, sheet_name: str = "Country mapping")
         logger.error(f"Sheet '{sheet_name}' not found in {excel_path}")
         return []
 
+    # Define the core columns that should not be treated as trade bloc memberships
+    core_columns = {
+        "Country",
+        "ISO 2-letter code",
+        "ISO 3-letter code",
+        "irena_name",
+        "irena_region",
+        "region_for_outputs",
+        "ssp_region",
+        "gem_country",
+        "eu_or_non_eu",
+        "ws_region",
+        "tiam-ucl_region",
+    }
+
+    # Detect boolean columns (trade bloc memberships)
+    # These are columns with True/False values that aren't in the core set
+    boolean_columns = []
+    for col in df.columns:
+        if col not in core_columns:
+            # Check if the column contains boolean-like values
+            # Sample the first few non-null values to determine if it's boolean
+            non_null_values = df[col].dropna()
+            if len(non_null_values) > 0:
+                # Check if values are boolean, or numeric 0/1, or string true/false variants
+                sample_values = non_null_values.head(10)
+                is_boolean = all(
+                    isinstance(val, (bool, np.bool_))
+                    or (isinstance(val, (int, float, np.integer, np.floating)) and val in [0, 1, 0.0, 1.0])
+                    or (isinstance(val, str) and val.lower() in ["true", "false", "yes", "no", "0", "1"])
+                    for val in sample_values
+                )
+                if is_boolean:
+                    boolean_columns.append(col)
+
+    if boolean_columns:
+        logger.info(f"Detected {len(boolean_columns)} trade bloc membership columns: {', '.join(boolean_columns)}")
+
     mappings = []
     for idx, row in df.iterrows():
         try:
-            mapping = CountryMapping(
-                country=str(row["Country"]),
-                iso2=str(row["ISO 2-letter code"]),
-                iso3=str(row["ISO 3-letter code"]),
-                irena_name=str(row["irena_name"]),
-                irena_region=str(row["irena_region"]) if pd.notna(row["irena_region"]) else None,
-                region_for_outputs=str(row["region_for_outputs"]),
-                ssp_region=str(row["ssp_region"]),
-                gem_country=str(row["gem_country"]) if pd.notna(row["gem_country"]) else None,
-                eu_region=(
+            # Build the base mapping with core attributes
+            # Type hint to allow str, None, and bool values
+            mapping_kwargs: dict[str, str | None | bool] = {
+                "country": str(row["Country"]),
+                "iso2": str(row["ISO 2-letter code"]),
+                "iso3": str(row["ISO 3-letter code"]),
+                "irena_name": str(row["irena_name"]),
+                "irena_region": str(row["irena_region"]) if pd.notna(row["irena_region"]) else None,
+                "region_for_outputs": str(row["region_for_outputs"]),
+                "ssp_region": str(row["ssp_region"]),
+                "gem_country": str(row["gem_country"]) if pd.notna(row["gem_country"]) else None,
+                "eu_region": (
                     str(row["eu_or_non_eu"]) if "eu_or_non_eu" in row and pd.notna(row["eu_or_non_eu"]) else None
                 ),
-                ws_region=str(row["ws_region"]) if pd.notna(row["ws_region"]) else None,
-                tiam_ucl_region=str(row["tiam-ucl_region"]),
-                # CBAM-related region memberships
-                # Debug: Check if the issue is with row.get() or with the row object
-                EU=bool(row["EU"]) if "EU" in row else False,
-                EFTA_EUCJ=bool(row["EFTA/EUCU"]) if "EFTA/EUCU" in row else False,
-                OECD=bool(row["OECD"]) if "OECD" in row else False,
-                NAFTA=bool(row["NAFTA"]) if "NAFTA" in row else False,
-                Mercosur=bool(row["Mercosur"]) if "Mercosur" in row else False,
-                ASEAN=bool(row["ASEAN"]) if "ASEAN" in row else False,
-                RCEP=bool(row["RCEP"]) if "RCEP" in row else False,
-            )
+                "ws_region": str(row["ws_region"]) if pd.notna(row["ws_region"]) else None,
+                "tiam_ucl_region": str(row["tiam-ucl_region"]),
+            }
+
+            # Add boolean columns dynamically
+            for col in boolean_columns:
+                if col in row:
+                    val = row[col]
+                    # Convert to boolean, handling various input formats
+                    if pd.isna(val):
+                        boolean_val = False
+                    elif isinstance(val, (bool, np.bool_)):
+                        boolean_val = bool(val)
+                    elif isinstance(val, (int, float, np.integer, np.floating)):
+                        boolean_val = bool(val)
+                    elif isinstance(val, str):
+                        boolean_val = val.lower() in ["true", "yes", "1"]
+                    else:
+                        boolean_val = False
+
+                    # Normalize column name for attribute (replace special chars with underscores)
+                    attr_name = col.replace("/", "_").replace(" ", "_").replace("-", "_")
+                    mapping_kwargs[attr_name] = boolean_val
+
+            mapping = CountryMapping(**mapping_kwargs)  # type: ignore[arg-type]
             mappings.append(mapping)
         except Exception as e:
             # idx from iterrows is always an integer for standard DataFrames
@@ -1572,6 +1794,9 @@ def read_carbon_border_mechanisms(excel_path: Path, sheet_name: str = "CBAM") ->
     - Row 2: "Year CBAM ends" - end year
     - Row 3: "Common carbon cost across the bloc?" - not used
 
+    The function dynamically detects trade bloc columns (any column except the first
+    descriptor column) and processes them as potential carbon border mechanisms.
+
     Args:
         excel_path: Path to the master input Excel file.
         sheet_name: The name of the sheet to read (default: "CBAM").
@@ -1587,22 +1812,27 @@ def read_carbon_border_mechanisms(excel_path: Path, sheet_name: str = "CBAM") ->
 
     mechanisms = []
 
-    # Define the mechanism columns and their corresponding region columns
-    # Note: Fixed EFTA/EUCU to match actual Excel column name
-    mechanism_configs = [
-        ("EU", "EU"),
-        ("EFTA/EUCU", "EFTA_EUCJ"),  # Excel has EFTA/EUCU, region mapping uses EFTA_EUCJ
-        ("OECD", "OECD"),
-        ("NAFTA", "NAFTA"),
-        ("Mercosur", "Mercosur"),
-        ("ASEAN", "ASEAN"),
-        ("RCEP", "RCEP"),
-    ]
-
     # Check that we have at least 3 rows (active, start year, end year)
     if len(df) < 3:
         logger.warning(f"CBAM sheet has insufficient rows ({len(df)}) - expected at least 3")
         return []
+
+    # Dynamically detect mechanism columns
+    # Skip the first column (assumed to be the row descriptor/label column)
+    # All other columns are potential mechanisms
+    mechanism_configs = []
+    for col in df.columns[1:]:  # Skip first column
+        # Normalize the column name to match CountryMapping attributes
+        region_column = col.replace("/", "_").replace(" ", "_").replace("-", "_")
+        # Special case: EUCU maps to EUCJ
+        region_column = region_column.replace("EUCU", "EUCJ")
+        mechanism_configs.append((col, region_column))
+
+    if mechanism_configs:
+        logger.info(
+            f"Detected {len(mechanism_configs)} potential CBAM mechanism columns: "
+            f"{', '.join(col for col, _ in mechanism_configs)}"
+        )
 
     # Process each mechanism
     for mechanism_name, region_column in mechanism_configs:
@@ -1736,46 +1966,248 @@ def read_hydrogen_capex_opex(
     return hydrogen_capex_opex
 
 
+def _normalize_cost_item(cost_item: str | None, row_index: int) -> str | None:
+    """
+    Normalize cost item to standard values.
+
+    Non-financial cost items (i.e. not opex/capex/cost of debt) are treated as energy carrier
+    names and normalised with normalize_name() to match energy_costs dict keys.
+
+    Args:
+        cost_item: Raw cost item string from Excel (e.g. "opex", "hydrogen", "natural gas")
+        row_index: Row index for logging purposes
+
+    Returns:
+        Normalized cost item string, or None if row should be skipped.
+    """
+    from steelo.utilities.utils import normalize_name
+
+    if cost_item is None or (isinstance(cost_item, float) and math.isnan(cost_item)) or str(cost_item).strip() == "":
+        return "opex"
+
+    normalized = str(cost_item).strip().lower()
+
+    # Financial cost items
+    if normalized in ("opex",):
+        return "opex"
+    elif normalized in ("capex",):
+        return "capex"
+    elif normalized in ("cost of debt", "debt"):
+        return "cost of debt"
+    # Known aliases
+    elif normalized == "h2":
+        return "hydrogen"
+    elif normalized in ("co2 storage", "co2_storage", "co2-storage"):
+        return "co2_stored"
+    # Everything else is an energy carrier — normalise to match energy_costs keys
+    else:
+        return normalize_name(normalized)
+
+
+def _expand_technology_pattern(pattern: str | None, all_technologies: list[str]) -> list[str]:
+    """
+    Expand technology pattern to list of matching technologies.
+
+    Args:
+        pattern: Technology name, empty for all, or wildcard with '*' suffix
+        all_technologies: List of all available technology names
+
+    Returns:
+        List of matching technology names. Returns all_technologies for empty pattern.
+    """
+    if pattern is None or (isinstance(pattern, float) and math.isnan(pattern)) or str(pattern).strip() == "":
+        return all_technologies
+
+    pattern_str = str(pattern).strip()
+
+    if pattern_str.endswith("*"):
+        prefix = pattern_str[:-1]
+        matches = [tech for tech in all_technologies if prefix in tech]
+        if not matches:
+            logging.warning(f"Wildcard pattern '{pattern_str}' matched no technologies")
+            return []
+        return matches
+    else:
+        if pattern_str not in all_technologies:
+            logging.warning(f"Technology '{pattern_str}' not found in available technologies")
+            return []
+        return [pattern_str]
+
+
+def _parse_subsidy_type(subsidy_type: str | None, cost_item: str, row_index: int) -> str | None:
+    """
+    Parse subsidy type from Excel, defaulting based on cost item.
+
+    Args:
+        subsidy_type: Raw subsidy type from Excel ("Absolute", "Relative", or empty)
+        cost_item: Normalized cost item
+        row_index: Row index for logging purposes
+
+    Returns:
+        "absolute", "relative", or None if row should be skipped.
+    """
+    if (
+        subsidy_type is None
+        or (isinstance(subsidy_type, float) and math.isnan(subsidy_type))
+        or str(subsidy_type).strip() == ""
+    ):
+        return "absolute"  # Default
+
+    normalized = str(subsidy_type).strip().lower()
+
+    if normalized == "relative":
+        if cost_item == "cost of debt":
+            logging.warning(f"Skipping row {row_index}: relative subsidies not supported for cost of debt")
+            return None
+        return "relative"
+
+    return "absolute"
+
+
 def read_subsidies(
-    excel_path: Path, subsidies_sheet: str = "Subsidies", trade_bloc_sheet: str = "Trade bloc definitions"
+    excel_path: Path,
+    subsidies_sheet: str = "Subsidies",
+    country_mapping_sheet: str = "Country mapping",
+    techno_economic_sheet: str = "Techno-economic details",
 ) -> list[Subsidy]:
     """
     Read subsidies data from Excel sheet and return domain objects.
+
+    Supports the new subsidies format with:
+    - Single 'Subsidy amount' + 'Subsidy type' columns
+    - Technology wildcard matching (e.g., 'CCS*' matches all CCS technologies)
+    - Cost item normalization (OPEX, CAPEX, COST OF DEBT)
+    - Percentage values as whole numbers (10 = 10%), converted to decimal internally
+
     Args:
         excel_path: Path to the Excel file
         subsidies_sheet: Name of the sheet containing subsidies data
-        trade_bloc_sheet: Name of the sheet containing trade bloc definitions
+        country_mapping_sheet: Name of the sheet containing country mappings with trade bloc columns
+        techno_economic_sheet: Name of the sheet containing technology names
+
     Returns:
         List of Subsidy domain objects
     """
+    logger = logging.getLogger(__name__)
 
     subsidies_df = pd.read_excel(excel_path, sheet_name=subsidies_sheet)
-    trade_blocs_df = pd.read_excel(excel_path, sheet_name=trade_bloc_sheet)
-    trade_blocs_df = trade_blocs_df.set_index("ISO 3-letter code")
-    column_renames = {
-        "ISO3/Trade bloc": "iso3",
-        "Technology (if not specified, then all)": "technology_name",
-        "Cost item (if not specified, then applied to total OPEX for the year)": "cost_item",
-        "Absolute subsidy [USD/functional unit]": "absolute_subsidy",
-        "Relative subsidy [%]": "relative_subsidy",
-        "Start year": "start_year",
-        "End year": "end_year",
-        "Scenario name": "scenario_name",
-    }
-    rows_to_drop = ["Functional unit"]
+    country_df = pd.read_excel(excel_path, sheet_name=country_mapping_sheet)
+    # Trade bloc columns are columns containing only True/False values
+    trade_bloc_columns = [
+        col
+        for col in country_df.columns
+        if country_df[col].dtype == bool or set(country_df[col].dropna().unique()).issubset({True, False})
+    ]
+
+    # Get all technology names from techno-economic details sheet
+    techno_df = pd.read_excel(excel_path, sheet_name=techno_economic_sheet)
+    all_technologies = techno_df["Technology"].dropna().unique().tolist()
+
+    # Normalize column names to handle headers with newlines and descriptions
+    def normalize_subsidy_column(col: str) -> str:
+        """Normalize column names by taking first line and extracting key terms."""
+        # Take first line before any newline
+        col = col.split("\n")[0].strip()
+        # Map common patterns to normalized names
+        col_lower = col.lower()
+        if "location" in col_lower:
+            return "Location"
+        elif "technology" in col_lower:
+            return "Technology"
+        elif "cost item" in col_lower:
+            return "Cost item"
+        elif "subsidy type" in col_lower:
+            return "Subsidy type"
+        elif "subsidy amount" in col_lower:
+            return "Subsidy amount"
+        elif "start year" in col_lower:
+            return "Start year"
+        elif "end year" in col_lower:
+            return "End year"
+        elif "scenario" in col_lower:
+            return "Scenario name"
+        return col
+
+    # Apply normalization to column names
+    subsidies_df.columns = [normalize_subsidy_column(col) for col in subsidies_df.columns]
+
+    # Only keep required columns (ignore any after End year like notes)
+    required_columns = [
+        "Scenario name",
+        "Location",
+        "Technology",
+        "Cost item",
+        "Subsidy type",
+        "Subsidy amount",
+        "Start year",
+        "End year",
+    ]
+
+    # Validate required columns exist
+    missing_cols = [col for col in required_columns if col not in subsidies_df.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns in subsidies sheet: {missing_cols}")
+
+    subsidies_df = subsidies_df[required_columns]
+
     subsidies = []
     for _index, row in subsidies_df.iterrows():
-        region = row["ISO3/Trade bloc"]
+        row_idx = _index if isinstance(_index, int) else 0  # type: int
+        # Skip rows with empty subsidy amount
+        subsidy_amount = row["Subsidy amount"]
+        if pd.isna(subsidy_amount):
+            logger.warning(f"Skipping row {_index}: empty subsidy amount")
+            continue
 
-        if region in trade_blocs_df.columns:
-            iso3_list = trade_blocs_df[region].dropna().index.tolist()
+        # Normalize cost item
+        cost_item = _normalize_cost_item(row["Cost item"], row_idx)
+        if cost_item is None:
+            continue
+
+        # Parse subsidy type
+        subsidy_type = _parse_subsidy_type(row["Subsidy type"], cost_item, row_idx)
+        if subsidy_type is None:
+            continue
+
+        # Convert percentage values to decimal
+        # - Relative subsidies: percentage to decimal (e.g., 10% -> 0.1)
+        # - Cost of debt absolute: percentage points to decimal (e.g., 5 -> 0.05)
+        # - Other absolute subsidies: keep as-is (e.g., USD/t output)
+        if subsidy_type == "relative":
+            subsidy_amount = float(subsidy_amount) / 100
+        elif cost_item == "cost_of_debt":
+            # Absolute cost of debt subsidy is given as percentage point reduction
+            subsidy_amount = float(subsidy_amount) / 100
+        else:
+            subsidy_amount = float(subsidy_amount)
+
+        # Expand trade bloc to ISO3 list
+        region = row["Location"]
+        if region in trade_bloc_columns:
+            iso3_list = country_df[country_df[region]]["ISO 3-letter code"].tolist()
         else:
             iso3_list = [region]
-        for iso3 in iso3_list:
-            row_dict = row.drop(rows_to_drop).dropna().rename(index=column_renames).to_dict()
-            row_dict["iso3"] = iso3
 
-            subsidies.append(Subsidy(**row_dict))
+        # Expand technology pattern
+        technology_list = _expand_technology_pattern(row["Technology"], all_technologies)
+
+        # Create subsidies for each ISO3 and technology combination
+        for iso3 in iso3_list:
+            for technology in technology_list:
+                subsidies.append(
+                    Subsidy(
+                        scenario_name=row["Scenario name"],
+                        iso3=iso3,
+                        start_year=Year(int(row["Start year"])),
+                        end_year=Year(int(row["End year"])),
+                        technology_name=technology,
+                        cost_item=cost_item,
+                        subsidy_type=subsidy_type,
+                        subsidy_amount=subsidy_amount,
+                    )
+                )
+
+    logger.info(f"Read {len(subsidies)} subsidies from '{subsidies_sheet}'")
     return subsidies
 
 
@@ -1953,7 +2385,7 @@ def read_co2_storage_availability(excel_path: Path, sheet_name: str = "CO2 stora
                     availability = BiomassAvailability(
                         region="",  # Empty region since we use ISO3 directly
                         country=country_iso3,  # Store ISO3 in country field
-                        metric="co2 - stored",  # Use normalized lowercase name to match BOM normalization
+                        metric="co2_stored",  # Use normalized lowercase name to match BOM normalization
                         scenario=scenario,
                         unit=unit,
                         year=Year(int(year)),
@@ -2054,10 +2486,8 @@ def read_technology_emission_factors(
             technology = technology.replace("CHARCOAL", "BF_CHARCOAL")
 
             boundary = str(row["Boundary"]) if pd.notna(row["Boundary"]) else ""
-            metallic_charge = (
-                normalize_commodity_name(row["Metallic charge"]) if pd.notna(row["Metallic charge"]) else ""
-            )
-            reductant = normalize_commodity_name(str(row["Reductant"])) if pd.notna(row["Reductant"]) else ""
+            metallic_charge = normalize_name(row["Metallic charge"]) if pd.notna(row["Metallic charge"]) else ""
+            reductant = normalize_name(str(row["Reductant"])) if pd.notna(row["Reductant"]) else ""
             direct_ghg_factor = float(row["Direct"]) if pd.notna(row["Direct"]) else 0.0
             direct_with_biomass_ghg_factor = (
                 float(row["Direct with biomass"]) if pd.notna(row["Direct with biomass"]) else 0.0
@@ -2276,10 +2706,11 @@ def read_fallback_bom_definitions(excel_path: Path, sheet_name: str = "Fallback 
                 technology = business_case_raw.split("_")[-1].upper()  # extract technology from business case
 
             # if technology is charcoal, rename to BF_CHARCOAL
-            technology = technology.replace("CHARCOAL", "BF_CHARCOAL")
+            if "BF_CHARCOAL" not in technology:
+                technology = technology.replace("CHARCOAL", "BF_CHARCOAL")
 
             # Normalize metallic charge using the same normalization as in BOM reading
-            metallic_charge = normalize_commodity_name(metallic_charge_raw)
+            metallic_charge = normalize_name(metallic_charge_raw)
 
             default_metallic_charge_per_technology[technology] = metallic_charge
             logger.debug(f"Mapped {business_case_raw} -> {technology} -> {metallic_charge}")
@@ -2292,3 +2723,108 @@ def read_fallback_bom_definitions(excel_path: Path, sheet_name: str = "Fallback 
         f"Read {len(default_metallic_charge_per_technology)} default metallic charge mappings from '{sheet_name}'"
     )
     return default_metallic_charge_per_technology
+
+
+def read_willingness_to_pay(
+    excel_path: Path,
+    country_mappings: list[CountryMapping],
+    sheet_name: str = "Willingness to pay",
+) -> list[WillingnessToPay]:
+    """
+    Reads willingness to pay data from the specified Excel sheet.
+
+    The sheet should have the following columns:
+    - "region or iso3": Either an ISO3 country code (e.g., "CAN") or a region/trade bloc name (e.g., "EU")
+    - "Commodity": The commodity name (e.g., "steel")
+    - "Willingness to pay": The willingness to pay value (numeric)
+
+    When a region/trade bloc name is used (e.g., "EU"), the function expands it to all countries
+    that have that boolean column set to True in the country mappings.
+
+    Args:
+        excel_path: Path to the master input Excel file.
+        country_mappings: List of CountryMapping objects to resolve regions to ISO3 codes.
+        sheet_name: The name of the sheet to read (default: "Willingness to pay").
+
+    Returns:
+        A list of WillingnessToPay objects, with one entry per ISO3/commodity combination.
+    """
+    try:
+        df = pd.read_excel(excel_path, sheet_name=sheet_name)
+    except ValueError:
+        logger.error(f"Sheet '{sheet_name}' not found in {excel_path}")
+        return []
+
+    # Create mappings for quick lookup
+    iso3_to_mapping = {m.iso3: m for m in country_mappings}
+
+    # Get all valid ISO3 codes
+    valid_iso3s = set(iso3_to_mapping.keys())
+
+    willingness_to_pay_entries = []
+
+    for idx, row in df.iterrows():
+        row_num = int(str(idx)) + 2
+        try:
+            region_or_iso3_raw = str(row["region or iso3"]).strip()
+            commodity_raw = str(row["Commodity"]).strip()
+            value_raw = row["Willingness to pay"]
+
+            # Skip empty rows
+            if not region_or_iso3_raw or pd.isna(value_raw):
+                continue
+
+            # Convert value to float
+            try:
+                value = float(value_raw)
+            except (ValueError, TypeError):
+                logger.warning(f"Row {row_num}: Invalid willingness to pay value '{value_raw}' - skipping")
+                continue
+
+            # Determine if this is an ISO3 code or a region/trade bloc
+            if region_or_iso3_raw in valid_iso3s:
+                # Direct ISO3 mapping
+                entry = WillingnessToPay(
+                    region_or_iso3=region_or_iso3_raw,
+                    commodity=commodity_raw,
+                    value=value,
+                )
+                willingness_to_pay_entries.append(entry)
+            else:
+                # Try to interpret as a region/trade bloc attribute
+                # Normalize the attribute name (replace special chars with underscores)
+                attr_name = region_or_iso3_raw.replace("/", "_").replace(" ", "_").replace("-", "_")
+
+                # Find all countries that have this attribute set to True
+                matching_iso3s = []
+                for mapping in country_mappings:
+                    # Check if the mapping has this attribute and it's True
+                    if hasattr(mapping, attr_name) and getattr(mapping, attr_name) is True:
+                        matching_iso3s.append(mapping.iso3)
+
+                if matching_iso3s:
+                    # Create a WillingnessToPay entry for each matching ISO3
+                    for iso3 in matching_iso3s:
+                        entry = WillingnessToPay(
+                            region_or_iso3=iso3,
+                            commodity=commodity_raw,
+                            value=value,
+                        )
+                        willingness_to_pay_entries.append(entry)
+                    logger.debug(
+                        f"Expanded '{region_or_iso3_raw}' to {len(matching_iso3s)} countries for commodity '{commodity_raw}'"
+                    )
+                else:
+                    logger.warning(
+                        f"Row {row_num}: '{region_or_iso3_raw}' is not a valid ISO3 code or trade bloc attribute - skipping"
+                    )
+
+        except KeyError as e:
+            logger.warning(f"Row {row_num}: Missing required column {e} - skipping")
+            continue
+        except Exception as e:
+            logger.warning(f"Row {row_num}: Error processing row: {e} - skipping")
+            continue
+
+    logger.info(f"Successfully read {len(willingness_to_pay_entries)} willingness to pay entries from '{sheet_name}'")
+    return willingness_to_pay_entries

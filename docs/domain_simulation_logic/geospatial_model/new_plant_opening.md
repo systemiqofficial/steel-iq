@@ -13,7 +13,7 @@ Business opportunities progress through the following stages:
 
 The system updates the costs and status of business opportunities each simulation year:
 1. **Update Dynamic Costs**
-   - Refresh CAPEX, cost of debt, electricity, and hydrogen prices
+   - Refresh CAPEX, cost of debt, and energy prices for all carriers
    - Apply subsidies based on earliest construction start year
    - Update bill of materials with new energy prices
 
@@ -43,7 +43,7 @@ The flow from business opportunity to new plant is as follows:
         |
         | [Each year]:
         | update_dynamic_costs_for_business_opportunities()
-        | - Update CAPEX, cost of debt, electricity & hydrogen prices (with subsidies)
+        | - Update CAPEX, cost of debt, and energy prices for all carriers (with subsidies)
         |
         | track_business_opportunities()
         | - Recalculate NPV with updated costs/prices
@@ -68,7 +68,7 @@ The flow from business opportunity to new plant is as follows:
         |                                                                       |
         | [Each year]:                                                          |
         | update_dynamic_costs_for_business_opportunities()                     |
-        | - Update CAPEX, cost of debt, electricity & hydrogen prices (with subsidies) |
+        | - Update CAPEX, cost of debt, and energy prices for all carriers (with subsidies) |
         |                                                                       |
         | convert_business_opportunity_                                         |
         | into_actual_project()                                                 |
@@ -106,6 +106,23 @@ The flow from business opportunity to new plant is as follows:
     DISCARDED <-----------------------------------------------------------------+
 
 ```
+
+## Per-ISO3 Plant Group Routing
+
+Every new plant is routed into its per-country group (`indi_{iso3}`, e.g. `indi_CHN`, `indi_AUS`) **at birth** — the moment `add_new_business_opportunities_to_repository` handles the plant. Per-country groups are created lazily on first use. The master `indi` group remains as the dispatch point for candidate generation (`identify_new_business_opportunities_4indi`) but is structurally empty: it never holds plants.
+
+**Why this matters:** The plant agent model evaluates expansion (adding a new furnace group to an existing plant) once per plant group per year. With a single "indi" group, only one expansion could occur per year across all new plants globally. Per-ISO3 groups allow one expansion per country per year. Routing at birth also ensures the plant-group reverse-lookup map (`plant_id_to_plantgroup_id`) is populated for runtime-born plants.
+
+**Lifecycle summary:**
+
+| Status | Plant group | Processed by |
+|--------|------------|--------------|
+| Considered | `indi_{iso3}` | GEO: dynamic cost updates, status tracking |
+| Announced | `indi_{iso3}` | GEO: dynamic cost updates, conversion to construction |
+| Construction | `indi_{iso3}` | Simulation loop: time-based transition to operating |
+| Operating | `indi_{iso3}` | PAM: balance updates, furnace group strategy, expansion |
+
+**Implementation:** Routing runs inside the `add_new_business_opportunities_to_repository` handler via `PlantGroupRepository.register_plant_in_group`, which creates the per-country group on demand. The handler also overwrites `plant.parent_gem_id` from the `"indi"` placeholder set by `PlantGroup.generate_new_plant` to `indi_{iso3}`. Plants are identified as GEO-originated by `parent_gem_id.startswith("indi")`.
 
 ## Business Opportunity Identification
 
@@ -173,7 +190,7 @@ Subsidies are often announced years before plants are built. Standard NPV using 
 | **Cost of Equity** | Return required by investors | No subsidies | Financing period |
 | **OPEX - Variable** | Materials + energy from bill of materials × unit costs | OPEX subsidies: Operation years | Annual (plant lifetime) |
 | **OPEX - Fixed** | Fixed operating costs per tonne | OPEX subsidies: Operation years | Annual (plant lifetime) |
-| **Energy Costs** | Electricity and hydrogen prices | No subsidies | Annual (plant lifetime) |
+| **Energy Costs** | Energy prices for all carriers (electricity, hydrogen, gas, etc.) | Energy subsidies: Target year | Annual (plant lifetime) |
 | **Carbon Costs** | Emissions × carbon price trajectory | No subsidies | Annual (plant lifetime) |
 | **Revenue** | Production capacity × utilization rate × market price projections | N/A | Annual (plant lifetime) |
 | **Discount Rate** | Weighted average cost of capital (WACC = debt share × cost of debt + equity share × cost of equity) | Applied to debt portion only | NPV calculation |
@@ -211,9 +228,12 @@ Updates dynamic costs for all CONSIDERED and ANNOUNCED business opportunities ea
 **Updated Costs:**
 - CAPEX (with subsidies for target construction year)
 - Cost of debt (with subsidies for target construction year)
-- Electricity price (custom power mix: LCOE from baseload power optimization and/or grid price)
-- Hydrogen price (calculated from electricity price, including regional cap and intraregional trade, if allowed)
-- Bill of materials (updated with new energy prices)
+- Energy prices for all carriers, carried as three dicts:
+  - `energy_costs`: subsidised input prices (reduced by subsidy) — used for BOM and VOPEX
+  - `output_energy_costs`: subsidised output prices (increased by subsidy for physical carriers) — used for by-product revenue
+  - `energy_costs_no_subsidy`: original unsubsidised prices — used as baseline for yearly refresh
+- Electricity and hydrogen prices sourced from the geospatial layer (custom power mix / capped LCOH); other carriers from the furnace group's existing cost base
+- Bill of materials (updated with new subsidised input energy prices)
 
 **Note:** For more information on the electricity and hydrogen prices see related documentation [Priority Location Selection](priority_location_selection.md).
 

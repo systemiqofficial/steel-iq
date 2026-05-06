@@ -232,7 +232,7 @@ class TestPrepareDataForBusinessOpportunity:
     def mock_get_bom(self):
         """Mock function for getting bill of materials."""
 
-        def _get_bom(_energy_costs, tech, _capacity):
+        def _get_bom(_energy_costs, tech, _capacity, _most_common_reductant=None):
             if tech == "EAF":
                 return (
                     {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
@@ -253,7 +253,7 @@ class TestPrepareDataForBusinessOpportunity:
                 )
             ]
         }
-        energy_costs = {"USA": {Year(2025): {"electricity": 50.0, "hydrogen": 3.5}}}
+        energy_costs = {"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}}  # USD/kWh, USD/t
         capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
         cost_of_debt_all_locs = {"USA": 0.05}
         cost_of_equity_all_locs = {"USA": 0.08}
@@ -278,7 +278,10 @@ class TestPrepareDataForBusinessOpportunity:
             capex_subsidies={},
             debt_subsidies={},
             opex_subsidies={},
+            energy_subsidies={},
             carbon_costs=carbon_costs,
+            most_common_reductant={},
+            environment_most_common_reductant={},
         )
 
         # Verify structure
@@ -334,7 +337,10 @@ class TestPrepareDataForBusinessOpportunity:
                 capex_subsidies={},
                 debt_subsidies={},
                 opex_subsidies={},
+                energy_subsidies={},
                 carbon_costs=carbon_costs,
+                most_common_reductant={},
+                environment_most_common_reductant={},
             )
 
     def test_apply_capex_subsidies(self, mock_get_bom):
@@ -347,7 +353,7 @@ class TestPrepareDataForBusinessOpportunity:
                 )
             ]
         }
-        energy_costs = {"USA": {Year(2025): {"electricity": 50.0, "hydrogen": 3.5}}}
+        energy_costs = {"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}}  # USD/kWh, USD/t
         capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
         cost_of_debt_all_locs = {"USA": 0.05}
         cost_of_equity_all_locs = {"USA": 0.08}
@@ -362,7 +368,8 @@ class TestPrepareDataForBusinessOpportunity:
             end_year=Year(2035),
             technology_name="EAF",
             cost_item="capex",
-            relative_subsidy=0.2,  # 20% reduction
+            subsidy_type="relative",
+            subsidy_amount=0.2,  # 20% reduction (stored as decimal)
         )
 
         cost_data = prepare_cost_data_for_business_opportunity(
@@ -382,7 +389,10 @@ class TestPrepareDataForBusinessOpportunity:
             capex_subsidies={"USA": {"EAF": [capex_subsidy]}},
             debt_subsidies={},
             opex_subsidies={},
+            energy_subsidies={},
             carbon_costs=carbon_costs,
+            most_common_reductant={},
+            environment_most_common_reductant={},
         )
 
         site_id = (40.0, -100.0, "USA")
@@ -390,6 +400,88 @@ class TestPrepareDataForBusinessOpportunity:
 
         # CAPEX should be reduced by 20%
         assert eaf_data["capex"] == 800.0  # 1000 * (1 - 0.2)
+
+    def test_apply_hydrogen_and_electricity_subsidies(self, mock_get_bom):
+        """Test that H2 and electricity subsidies reduce energy costs."""
+        product_to_tech = {"steel": ["EAF"]}
+        best_locations_subset = {
+            "steel": [
+                NewPlantLocation(
+                    Latitude=40.0,
+                    Longitude=-100.0,
+                    iso3="USA",
+                    power_price=0.05,
+                    capped_lcoh=5.0,
+                    rail_cost=10.0,  # capped_lcoh in USD/kg
+                )
+            ]
+        }
+        energy_costs = {
+            "USA": {Year(2025): {"electricity": 0.05, "hydrogen": 5000.0, "natural_gas": 0.03}}
+        }  # USD/kWh, USD/t, USD/kWh
+        capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
+        cost_of_debt_all_locs = {"USA": 0.05}
+        cost_of_equity_all_locs = {"USA": 0.08}
+        fopex_all_locs_techs = {"USA": {"eaf": 50.0}}
+        iso3_to_region_map = {"USA": "Americas"}
+        carbon_costs = {"USA": {Year(2030): 50.0}}
+
+        h2_subsidy = Subsidy(
+            scenario_name="test_h2",
+            iso3="USA",
+            start_year=Year(2025),
+            end_year=Year(2035),
+            technology_name="EAF",
+            cost_item="hydrogen",
+            subsidy_type="absolute",
+            subsidy_amount=1000.0,  # USD/t reduction
+        )
+        elec_subsidy = Subsidy(
+            scenario_name="test_elec",
+            iso3="USA",
+            start_year=Year(2025),
+            end_year=Year(2035),
+            technology_name="EAF",
+            cost_item="electricity",
+            subsidy_type="relative",
+            subsidy_amount=0.2,  # 20% reduction
+        )
+
+        cost_data = prepare_cost_data_for_business_opportunity(
+            product_to_tech=product_to_tech,
+            best_locations_subset=best_locations_subset,
+            current_year=Year(2025),
+            target_year=Year(2030),
+            energy_costs=energy_costs,
+            capex_dict_all_locs_techs=capex_dict_all_locs_techs,
+            cost_of_debt_all_locs=cost_of_debt_all_locs,
+            cost_of_equity_all_locs=cost_of_equity_all_locs,
+            fopex_all_locs_techs=fopex_all_locs_techs,
+            steel_plant_capacity=100.0,
+            get_bom_from_avg_boms=mock_get_bom,
+            iso3_to_region_map=iso3_to_region_map,
+            global_risk_free_rate=0.03,
+            capex_subsidies={},
+            debt_subsidies={},
+            opex_subsidies={},
+            energy_subsidies={
+                "hydrogen": {"USA": {"EAF": [h2_subsidy]}},
+                "electricity": {"USA": {"EAF": [elec_subsidy]}},
+            },
+            carbon_costs=carbon_costs,
+            most_common_reductant={},
+            environment_most_common_reductant={},
+        )
+
+        site_id = (40.0, -100.0, "USA")
+        eaf_data = cost_data["steel"][site_id]["EAF"]
+
+        # H2 price from capped_lcoh=5000.0, with $1000 absolute subsidy -> 4000.0
+        assert eaf_data["energy_costs"]["hydrogen"] == 4000.0
+        # Electricity from power_price=0.05, with 20% relative subsidy -> 0.04
+        assert eaf_data["energy_costs"]["electricity"] == 0.04
+        # Natural gas should be unchanged
+        assert eaf_data["energy_costs"]["natural_gas"] == 0.03
 
     def test_missing_data_raises_error(self, mock_get_bom):
         """Test that missing data for parameters raises ValueError."""
@@ -401,7 +493,7 @@ class TestPrepareDataForBusinessOpportunity:
                 )
             ]
         }
-        energy_costs = {"USA": {Year(2025): {"electricity": 50.0, "hydrogen": 3.5}}}
+        energy_costs = {"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}}  # USD/kWh, USD/t
         capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
         cost_of_debt_all_locs = {"USA": 0.05}
         cost_of_equity_all_locs = {"USA": 0.08}
@@ -428,14 +520,17 @@ class TestPrepareDataForBusinessOpportunity:
                 capex_subsidies={},
                 debt_subsidies={},
                 opex_subsidies={},
+                energy_subsidies={},
                 carbon_costs=carbon_costs,
+                most_common_reductant={},
+                environment_most_common_reductant={},
             )
 
     def test_multiple_locations_and_techs(self):
         """Test preparing cost data for multiple locations and technologies."""
         product_to_tech = {"steel": ["EAF"], "iron": ["DRI"]}
 
-        def _get_bom_multi(_energy_costs, tech, _capacity):
+        def _get_bom_multi(_energy_costs, tech, _capacity, _most_common_reductant=None):
             if tech in ["EAF", "DRI"]:
                 return (
                     {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
@@ -460,9 +555,9 @@ class TestPrepareDataForBusinessOpportunity:
             ],
         }
         energy_costs = {
-            "USA": {Year(2025): {"electricity": 50.0, "hydrogen": 3.5}},
-            "DEU": {Year(2025): {"electricity": 60.0, "hydrogen": 4.0}},
-            "CHN": {Year(2025): {"electricity": 40.0, "hydrogen": 3.0}},
+            "USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}},  # USD/kWh, USD/t
+            "DEU": {Year(2025): {"electricity": 0.06, "hydrogen": 4000.0}},  # USD/kWh, USD/t
+            "CHN": {Year(2025): {"electricity": 0.04, "hydrogen": 3000.0}},  # USD/kWh, USD/t
         }
         capex_dict_all_locs_techs = {
             "Americas": {"EAF": 1000.0},
@@ -500,7 +595,10 @@ class TestPrepareDataForBusinessOpportunity:
             capex_subsidies={},
             debt_subsidies={},
             opex_subsidies={},
+            energy_subsidies={},
             carbon_costs=carbon_costs,
+            most_common_reductant={},
+            environment_most_common_reductant={},
         )
 
         # Verify all products are present
@@ -681,7 +779,7 @@ class TestIdentifyNewBusinessOpportunities4indi:
             "consideration_time": 2,
             "construction_time": 3,
             "plant_lifetime": 30,
-            "input_costs": {"USA": {Year(2025): {"electricity": 50.0, "hydrogen": 3.5}}},
+            "input_costs": {"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}},  # USD/kWh, USD/t
             "locations": {
                 "steel": [
                     NewPlantLocation(
@@ -723,7 +821,7 @@ class TestIdentifyNewBusinessOpportunities4indi:
     def mock_get_bom(self):
         """Mock function for getting bill of materials."""
 
-        def _get_bom(_energy_costs, _tech, _capacity):
+        def _get_bom(_energy_costs, _tech, _capacity, _most_common_reductant=None):
             return (
                 {
                     "energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}},
@@ -760,7 +858,7 @@ class TestGenerateNewPlant:
                         "reductant": "scrap",
                         "railway_cost": 10.0,
                         "bom": {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
-                        "energy_costs": {"electricity": 50.0, "hydrogen": 3.5},
+                        "energy_costs": {"electricity": 0.05, "hydrogen": 3500.0},  # USD/kWh, USD/t
                     }
                 }
             }
@@ -876,8 +974,13 @@ class TestGenerateNewPlant:
         # FurnaceGroup uses default equity_share of 0.2 (not the 0.3 passed to generate_new_plant)
         assert furnace.equity_share == 0.2
 
-    def test_adds_plant_to_plant_group(self, plant_group, cost_data):
-        """Test that the new plant is added to the plant group's plants list."""
+    def test_does_not_add_plant_to_plant_group(self, plant_group, cost_data):
+        """
+        ``generate_new_plant`` is a pure factory: it does not append the new
+        plant to the group's ``plants`` list. Registration is performed by
+        ``add_new_business_opportunities_to_repository`` via
+        ``PlantGroupRepository.register_plant_in_group``.
+        """
         site_id = (40.0, -100.0, "USA")
 
         assert len(plant_group.plants) == 0
@@ -896,7 +999,7 @@ class TestGenerateNewPlant:
             plant_lifetime=30,
         )
 
-        assert len(plant_group.plants) == 1
+        assert len(plant_group.plants) == 0
 
     def test_sets_technology_unit_fopex(self, plant_group, cost_data):
         """Test that technology_unit_fopex is set correctly with lowercase technology name."""

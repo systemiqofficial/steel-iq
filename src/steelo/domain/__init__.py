@@ -29,6 +29,7 @@ from .models import (
     SecondaryFeedstockConstraint,
     CarbonBorderMechanism,
     FOPEX,
+    WillingnessToPay,
 )
 from .events import Event
 from .commands import Command
@@ -67,4 +68,5 @@ __all__ = [
     "SecondaryFeedstockConstraint",
     "CarbonBorderMechanism",
     "FOPEX",
+    "WillingnessToPay",
 ]

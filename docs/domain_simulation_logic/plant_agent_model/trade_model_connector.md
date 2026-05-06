@@ -114,8 +114,10 @@ Propagates costs forward through the graph using breadth-first search:
 2. **BFS traversal**: Process nodes layer by layer
 3. **For each edge (u → v)**:
    - Get base cost from source node `u` (raw material cost or accumulated upstream cost)
+   - Add the producer's own per-unit carbon (when `u` is a producing furnace, see below)
    - Add processing energy cost at destination `v`
    - Add transport cost for this shipment
+   - Add tariff cost for this shipment (looked up via `get_tariff_cost(from_iso, to_iso, commodity)`)
    - Multiply by volume shipped
    - Accumulate total cost at destination node `v`
 4. **Normalize**: Divide total cost by total outgoing volume to get per-unit cost
@@ -124,6 +126,16 @@ Propagates costs forward through the graph using breadth-first search:
 - `product_cost`: Total accumulated cost by commodity
 - `unit_cost`: Cost per tonne by commodity
 - `allocations`: Volume and cost breakdown by commodity
+
+#### Producer carbon propagation
+
+Each producing furnace's carbon — `ProcessCenter.production_cost`, equal to the furnace group's `carbon_cost_per_unit` — is stamped onto the graph node as `own_unit_cost` during `create_graph()`. During BFS, when an edge leaves a producing node, `own_unit_cost` is added to `per_unit_base` so it embeds onto outgoing flows. The addition is guarded by `G.in_degree(u) > 0` so root supplier nodes are skipped — their cost already enters via `base_cost` and would otherwise double-count.
+
+**Invariant: own carbon flows out, never inward.** The producer's BOM is built from its incoming allocations only, so it never picks up its own self-carbon. Carbon enters the producer's own economics later via `unit_production_cost = unit_total_opex + carbon_cost_per_unit`; embedding it on incoming edges as well would double-count.
+
+#### Tariff propagation
+
+Tariff taxes from `Allocations.tariff_taxes` (carried over from the LP solution) are stored on the connector and looked up per edge via `get_tariff_cost(from_iso, to_iso, commodity)`. The lookup checks the exact `(from, to, commodity)` key first, then the three wildcard variants `(*, to, comm)` / `(from, *, comm)` / `(from, to, *)`, summing every match — mirroring the LP's `return_potential_tariff_keys` logic. The resulting per-tonne tariff is added to each edge's `material_tariff_transportation_cost` and propagates downstream alongside material and transport costs.
 
 ---
 
@@ -152,13 +164,23 @@ For each furnace group, extracts from the graph:
 ```python
 {
     "scrap": {
-        "demand": 105.3,          # tonnes required
-        "total_cost": 31590,      # USD
-        "unit_cost": 300          # USD/t
+        "demand": 105.3,                  # input volume (tonnes)
+        "total_cost": 31590,              # USD — includes current step's processing energy
+        "unit_cost": 316,                 # USD per tonne of OUTPUT (total_cost / product_volume)
+        "total_material_cost": 29500,     # USD — excludes current step's processing energy
+        "unit_material_cost": 295,        # USD per tonne of output
+        "product_volume": 100.0,          # output volume used for normalisation (tonnes)
     },
     "dri": { ... }
 }
 ```
+
+Two cost pairs are stored per commodity because downstream consumers need different slices:
+
+- **`total_cost` / `unit_cost`** include the processing energy consumed at **this** furnace group (i.e. everything needed to produce the FG's output, including its own conversion step).
+- **`total_material_cost` / `unit_material_cost`** include upstream material costs, transport, and tariffs, but exclude this FG's own processing energy.
+
+`calculate_variable_opex` consumes `total_material_cost` together with `energy` (which carries this FG's processing energy separately) to avoid double-counting. The distinction originates inside the cost-propagation step: `MaterialCost` on graph nodes tracks the cost of inputs to the FG without its own energy, while `Cost` adds that energy on top.
 
 **Energy** (from edge processing costs):
 ```python

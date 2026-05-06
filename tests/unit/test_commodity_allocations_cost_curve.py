@@ -90,11 +90,11 @@ def test_create_cost_curve_for_steel_from_suppliers():
 
     # Create mock suppliers
     supplier1 = Mock(spec=Supplier)
-    supplier1.production_cost = 50.0
+    supplier1.production_cost_by_year = {2025: 50.0}
     supplier1.capacity_by_year = {2025: Volumes(1000.0)}
 
     supplier2 = Mock(spec=Supplier)
-    supplier2.production_cost = 60.0
+    supplier2.production_cost_by_year = {2025: 60.0}
     supplier2.capacity_by_year = {2025: Volumes(2000.0)}
 
     # Create allocations

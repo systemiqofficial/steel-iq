@@ -14,9 +14,9 @@ All calculations are normalized to per-unit-of-production basis, support time-va
 ## Functional Modules
 
 ### Subsidy Management
-Handles time-varying subsidies for CAPEX, OPEX, and cost of debt. Subsidies are automatically filtered by year and applied to reduce costs. Bounds checking prevents costs from going negative or below floors (CAPEX/OPEX ≥ 0, Cost_of_Debt ≥ Risk_Free_Rate).
+Handles time-varying subsidies for CAPEX, OPEX, cost of debt, and energy carriers. Subsidies are automatically filtered by year and applied to reduce costs. Bounds checking prevents costs from going negative or below floors (CAPEX/OPEX/Energy ≥ 0, Cost_of_Debt ≥ Risk_Free_Rate).
 
-Three types of subsidies are supported:
+Four categories of subsidies are supported:
 
 1. **CAPEX subsidies**: Reduce upfront investment costs
    - Absolute: Fixed dollar amount per unit (e.g., $50/t)
@@ -30,21 +30,94 @@ Three types of subsidies are supported:
    - Absolute only: Percentage point reduction (e.g., -2% points)
    - Relative subsidies are ignored for debt
 
+4. **Energy carrier subsidies**: Reduce energy/feedstock costs for any carrier
+   - Applies to any carrier in the `energy_costs` dict (hydrogen, electricity, natural_gas, coal, bf_gas, bof_gas, cog, etc.)
+   - Absolute: Fixed amount in the carrier's native unit (e.g., $1000/t H2, $0.02/kWh electricity)
+   - Relative: Percentage reduction (e.g., 20% off)
+   - Each carrier can have multiple subsidies that stack
+
 All subsidies are time-bound with `start_year` and `end_year`, automatically filtered each simulation year.
 
+#### Energy Carrier Subsidies — Dual-Sided Pricing
+
+Energy subsidies modify both input and output energy cost dictionaries **before** downstream calculations, affecting BOM generation, energy VOPEX, reductant selection, by-product revenue, and NPV calculations.
+
+A single subsidy simultaneously affects both sides:
+
+| Side | Formula | Effect |
+|------|---------|--------|
+| **Input** (consumption cost) | `max(0, price - absolute_sum - price × relative_sum)` | Cheaper to consume; floored at zero |
+| **Physical output** (by-product revenue) | `price + absolute_sum + price × relative_sum` | More profitable to sell |
+| **Carbon output** (co2_* carriers) | `price - absolute_sum - price × relative_sum` | Reduces storage cost / increases credit |
+
+`get_subsidised_energy_costs()` returns a 3-tuple: `(input_costs, output_costs, no_subsidy_prices)`.
+
+- `input_costs`: Subsidised prices for consumption (input side)
+- `output_costs`: Subsidised prices for by-product revenue (output side)
+- `no_subsidy_prices`: Original unsubsidised prices for all carriers (not just subsidised ones)
+
+**Key behaviours:**
+- Multiple subsidies stack (both absolute and relative are summed)
+- Input price floors at zero (free energy, but never negative)
+- Output prices have no floor (subsidy always increases revenue)
+- Carbon carriers (`co2_*`) use input-side formula for both sides (subsidy reduces cost, not increases revenue)
+- Zero-priced carriers are skipped (zero = free/absent; subsidy would create phantom revenue)
+- Original prices stored in `energy_costs_no_subsidy` on FurnaceGroup for baseline reference
+- LCOH calculations use unsubsidised electricity prices (by design)
+
+#### Negative Subsidies (Taxes/Penalties)
+
+Subsidies can have negative `subsidy_amount` values, which act as taxes or penalties that **increase** costs instead of reducing them.
+
+**Formula:** `cost_with_subsidy = cost - subsidy_amount`
+
+| subsidy_amount | Calculation | Effect |
+|----------------|-------------|--------|
+| +100 (positive) | `500 - 100 = 400` | Cost decreases |
+| -100 (negative) | `500 - (-100) = 600` | Cost increases |
+| -25% relative | `400 - (400 × -0.25) = 500` | 25% cost increase |
+
+**Use cases:**
+- Carbon penalties on high-emission technologies
+- Environmental surcharges
+- Regulatory fees
+
+**Floor behaviour:** The final input cost cannot go negative (no "money back"). CAPEX/OPEX floor at 0, COST OF DEBT floors at risk-free rate.
+
 **Functions:**
-- `filter_active_subsidies()` - Filters subsidies to only those active in the current year
+- `filter_subsidies_for_year()` - Filters subsidies to only those active in a specific year
+- `collect_active_subsidies_over_period()` - Collects unique subsidies active during any year in a period (with deduplication)
 - `calculate_capex_with_subsidies()` - Applies absolute and relative subsidies to CAPEX
 - `calculate_opex_with_subsidies()` - Applies absolute and relative subsidies to OPEX (floor at 0)
 - `calculate_opex_list_with_subsidies()` - Generates time-varying OPEX with year-specific subsidies
 - `calculate_debt_with_subsidies()` - Cost-of-debt subsidies; absolute point reductions only; floored at risk-free rate
+- `calculate_energy_price_with_subsidies()` - Applies absolute and relative subsidies to a single energy carrier price
+- `get_subsidised_energy_costs()` - Applies energy subsidies to all carriers; returns 3-tuple `(input_costs, output_costs, no_subsidy_prices)`
+
+#### Subsidy Filtering Functions
+
+Two functions handle subsidy filtering for different use cases:
+
+**`filter_subsidies_for_year(subsidies, year)`** - Use for single-year filtering:
+- CAPEX subsidies (applied at construction start)
+- Debt subsidies (applied at financing decision)
+- Current-year OPEX tracking
+
+**`collect_active_subsidies_over_period(subsidies, start_year, end_year)`** - Use for multi-year collection:
+- OPEX subsidies over plant lifetime (for NPV calculations)
+- Any scenario requiring subsidies across multiple years
+
+The period function uses `set()` internally for deduplication - a subsidy spanning 2025-2030 appears once, not six times. The `end_year` is exclusive (matches Python `range()` convention).
 
 ### Cost Breakdown Analysis
 Extracts and processes bills of materials (BOM) to accurately assess the material and energy costs associated with production. Returns nested dictionaries with cost breakdowns by output product or feedstock.
 
 **Functions:**
-- `calculate_cost_breakdown()` - Calculates normalized cost breakdown per unit of production
+- `calculate_cost_breakdown()` - Calculates normalised cost breakdown per unit of production
 - `calculate_cost_breakdown_by_feedstock()` - Detailed cost breakdown for each feedstock option
+- `calculate_carbon_breakdown_by_feedstock()` - Physical carbon intensity (tCO2/t-product) by feedstock. Sign convention: carbon_inputs negated (consumed), carbon_outputs positive (stored/slipped/utilised)
+
+**Data-driven cost-breakdown columns.** `calculate_cost_breakdown_by_feedstock()` accepts an optional `cost_breakdown_keys` argument — the canonical list of normalised carrier/feedstock keys produced once at simulation start by walking dynamic feedstocks and consolidating via `normalize_energy_key`. The list is propagated through `Environment.cost_breakdown_keys` and onto each `FurnaceGroup`, then re-emitted by the post-processor as `cost_breakdown - <key>` columns (with deterministic column ordering and zero-padded missing keys). The previous hardcoded `STANDARD_COST_BREAKDOWN_COLUMNS` list and ad-hoc rename map (`fluxes` / `lime` → `burnt lime`) have been removed; new energy carriers and feedstocks now appear in the post-processed CSV automatically without code edits.
 
 ### Operating Expenditure Calculation
 Computes both variable and fixed operating expenditures based on input cost data and capital investment ratios. Returns 0 for unit costs when utilization is zero (no production means no unit cost).
@@ -53,7 +126,7 @@ Computes both variable and fixed operating expenditures based on input cost data
 - `calculate_variable_opex()` - Weighted average of material and energy costs. Accepts flexible input formats: unit_cost as float or `{"Value": float, "Unit": str}`, and uses `demand` or `demand_share_pct` for weighting.
 - `calculate_unit_total_opex()` - Sums variable and fixed OPEX per unit (returns 0 if utilization is 0)
 - `calculate_unit_production_cost()` - Total unit cost including OPEX, carbon costs, debt repayment, and secondary output adjustments
-- `calculate_cost_adjustments_from_secondary_outputs()` - Computes average per-unit cost adjustment from secondary outputs (by-products)
+- `calculate_cost_adjustments_from_secondary_outputs()` - Computes average per-unit cost adjustment from secondary outputs (by-products). Uses `output_energy_costs` (output-side subsidised prices) for energy carriers. Physical outputs generate revenue (negative adjustment via `-abs(price)`), **except** carriers in `disposal_cost_outputs` which keep their raw price sign (positive = disposal cost, e.g. steelmaking_slag). Carbon outputs (co2_*) may be a cost or credit depending on sign. This adjustment is included in all 4 NPV call sites (brownfield renovation, greenfield switch, new plant evaluation, expansion evaluation) and COSA baseline
 
 ### Debt Repayment
 Generates debt repayment schedules using straight-line amortization (constant principal, declining interest) and calculates debt payment breakdowns.

@@ -13,7 +13,7 @@ from steelo.domain.models import CountryMappingService, Location, PlotPaths, Vol
 from steelo.utilities.variable_matching import POWER_MIX_TO_COVERAGE_MAP
 from steelo.adapters.geospatial.geospatial_toolbox import distance_to_closest_location, generate_grid
 from steelo.domain.constants import MWH_TO_KWH, T_TO_MT
-from steelo.logging_config import geo_layers_logger
+import logging
 
 
 def get_baseload_coverage(included_power_mix: str) -> float:
@@ -61,7 +61,8 @@ def calculate_lcoh_from_power_price(
     Returns:
         Dataset with added 'lcoh' variable containing levelized cost of hydrogen for each grid point
     """
-    geo_layers_logger.info("[GEO LAYERS] Calculating LCOH from power price.")
+    logger = logging.getLogger(f"{__name__}.calculate_lcoh_from_power_price")
+    logger.info("[GEO LAYERS] Calculating LCOH from power price.")
 
     # Energy consumption of the electrolyser
     energy_consumption = hydrogen_efficiency.get(Year(year))
@@ -131,7 +132,8 @@ def calculate_regional_hydrogen_ceiling(
     Note:
         If no LCOH data is available for a region, the ceiling is set to the global maximum LCOH (equivalent to no ceiling).
     """
-    geo_layers_logger.info("[GEO LAYERS] Calculating regional hydrogen ceiling based on LCOH values.")
+    logger = logging.getLogger(f"{__name__}.calculate_regional_hydrogen_ceiling")
+    logger.info("[GEO LAYERS] Calculating regional hydrogen ceiling based on LCOH values.")
 
     # Get connected regions for hydrogen trade and the countries within them
     tiam_ucl_region_to_iso3: dict[str, list[str]] = {}
@@ -151,13 +153,13 @@ def calculate_regional_hydrogen_ceiling(
         region_lcoh = ds["lcoh"].where(ds["tiam_ucl_region"] == region, drop=True)
         if region_lcoh.size == 0 or len(region_lcoh.values[~np.isnan(region_lcoh.values)]) == 0:
             if region != "Rest of World":  # Normal that RoW has no data
-                geo_layers_logger.warning(
+                logger.warning(
                     f"[GEO LAYERS] No LCOH data available for region {region}. Hydrogen ceiling cannot be calculated. LCOH set to global maximum."
                 )
             regional_ceiling_dict[region] = np.nanmax(ds["lcoh"].values)
         else:
             regional_ceiling_dict[region] = np.nanpercentile(region_lcoh.values, hydrogen_ceiling_percentile)
-            geo_layers_logger.debug(
+            logger.debug(
                 f"[GEO LAYERS] The {hydrogen_ceiling_percentile}th percentile of LCOH in {region} is: {regional_ceiling_dict[region]} USD/kg"
             )
 
@@ -264,18 +266,17 @@ def get_weighted_location_dict_from_demand_centers(repository: Repository, year:
     Note:
         Demand is accumulated for centers at the same location.
     """
+    logger = logging.getLogger(f"{__name__}.get_weighted_location_dict_from_demand_centers")
     weighted_loc_dict: dict[Location, float] = {}
     demand_centers = repository.demand_centers.list()
     for demand_center in demand_centers:
         # Skip demand centers with no location or no demand for the given year
         if demand_center.center_of_gravity is None:
-            geo_layers_logger.warning(f"[GEO LAYERS] Demand center {demand_center.demand_center_id} has no location.")
+            logger.warning(f"[GEO LAYERS] Demand center {demand_center.demand_center_id} has no location.")
             continue
         year_obj = Year(year)
         if year_obj not in demand_center.demand_by_year:
-            geo_layers_logger.warning(
-                f"[GEO LAYERS] Demand center {demand_center.demand_center_id} has no demand for year {year}"
-            )
+            logger.warning(f"[GEO LAYERS] Demand center {demand_center.demand_center_id} has no demand for year {year}")
             continue
 
         # Accumulate demand for centers at the same location
@@ -317,6 +318,7 @@ def calculate_distance_to_demand_and_feedstock(
     Note:
         Scrap is not considered as feedstock in this KPI for simplicity.
     """
+    logger = logging.getLogger(f"{__name__}.calculate_distance_to_demand_and_feedstock")
     from steelo.utilities.plotting import plot_bubble_map
 
     # Create spatial grid
@@ -326,7 +328,7 @@ def calculate_distance_to_demand_and_feedstock(
     lons = np.array(sorted(set(grid.x)))
 
     # Iron ore mines
-    geo_layers_logger.info("[GEO LAYERS] Calculating distances to iron ore mines.")
+    logger.info("[GEO LAYERS] Calculating distances to iron ore mines.")
     iron_feedstock_locations_weight: dict[Location, float | int | Volumes] = {}
     iron_ore_suppliers = [
         supplier
@@ -334,7 +336,7 @@ def calculate_distance_to_demand_and_feedstock(
         if supplier.commodity.lower() in ["io_low", "io_mid", "io_high"]
     ]
     if not iron_ore_suppliers:
-        geo_layers_logger.warning("[GEO LAYERS] No iron ore suppliers found in the repository.")
+        logger.warning("[GEO LAYERS] No iron ore suppliers found in the repository.")
     for supplier in iron_ore_suppliers:
         if supplier.location is None:
             continue
@@ -354,7 +356,7 @@ def calculate_distance_to_demand_and_feedstock(
     )
 
     # Iron plants
-    geo_layers_logger.info("[GEO LAYERS] Calculating distances to iron plants.")
+    logger.info("[GEO LAYERS] Calculating distances to iron plants.")
     iron_loc_dict = get_weighted_location_dict_from_plants(
         repository, product_type="iron", active_statuses=active_statuses
     )
@@ -365,7 +367,7 @@ def calculate_distance_to_demand_and_feedstock(
     )
 
     # Steel plants
-    geo_layers_logger.info("[GEO LAYERS] Calculating distances to steel plants.")
+    logger.info("[GEO LAYERS] Calculating distances to steel plants.")
     steel_loc_dict = get_weighted_location_dict_from_plants(
         repository, product_type="steel", active_statuses=active_statuses
     )
@@ -376,7 +378,7 @@ def calculate_distance_to_demand_and_feedstock(
     )
 
     # Demand centers
-    geo_layers_logger.info("[GEO LAYERS] Calculating distances to demand centers.")
+    logger.info("[GEO LAYERS] Calculating distances to demand centers.")
     demand_loc_dict = get_weighted_location_dict_from_demand_centers(repository, year)
     dist_to_demand_centers = distance_to_closest_location(
         demand_loc_dict,

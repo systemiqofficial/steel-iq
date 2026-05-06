@@ -8,7 +8,8 @@
             <span class="text-muted">-</span>
         {% endif %}
     </td>
-    <td>{{ run.started_at }}</td>
+    <td>{{ run.created_at }}</td>
+    <td>{{ run.run_started_at|default:"-" }}</td>
     <td>
         {% if run.state == 'running' %}
         <span class="badge bg-primary">{{ run.get_state_display }}</span>
@@ -31,8 +32,8 @@
         {% endif %}
     </td>
     <td>
-        {% if run.finished_at %}
-        {{ run.finished_at|timeuntil:run.started_at }}
+        {% if run.finished_at and run.run_started_at %}
+        {{ run.finished_at|timeuntil:run.run_started_at }}
         {% else %}
         -
         {% endif %}

@@ -8,19 +8,16 @@ import logging
 import time
 import functools
 from steelo.adapters.geospatial.geospatial_toolbox import haversine_distance
-# import steelo.domain.trade_modelling.willingness_to_pay as willingness_to_pay
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 
 def time_function(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
+        logger = logging.getLogger(f"{__name__}.{func.__name__}")
         start_time = time.time()
         result = func(*args, **kwargs)
         end_time = time.time()
-        logging.info(f"{func.__name__} took {end_time - start_time:.4f} seconds")
+        logger.info(f"{func.__name__} took {end_time - start_time:.4f} seconds")
         return result
 
     return wrapper
@@ -64,6 +61,12 @@ class Commodity:
 
     def __hash__(self):
         return hash(self.name)
+
+    def __repr__(self):
+        return self.name
+
+    def __str__(self) -> str:
+        return self.name
 
 
 class TransportationCost:
@@ -149,11 +152,28 @@ class Process:
         self.name = name
         self.type = type
         self.bill_of_materials = bill_of_materials
+        self._products_cache: list[Commodity] | None = None
+
+    def __eq__(self, other):
+        if not isinstance(other, Process):
+            return False
+        return self.name == other.name
+
+    def __hash__(self):
+        return hash(self.name)
 
     @property
     def products(self):
-        """Returns unique list of all commodities producible by this process."""
-        return list({commodity for bom in self.bill_of_materials for commodity in bom.output_commodities})
+        """Returns unique list of all commodities producible by this process.
+
+        Cached after first access — bill_of_materials is treated as immutable
+        after Process construction.
+        """
+        if self._products_cache is None:
+            self._products_cache = list(
+                {commodity for bom in self.bill_of_materials for commodity in bom.output_commodities}
+            )
+        return self._products_cache
 
 
 class ProcessCenter:
@@ -224,15 +244,19 @@ class Allocations:
     Attributes:
         allocations: Dict mapping (from, to, commodity) → flow quantity (tons/year)
         allocation_costs: Optional dict mapping (from, to, commodity) → total cost
+        tariff_taxes: Optional dict mapping (from_iso3, to_iso3, commodity) → tariff cost per unit.
+            Passed through to TM_PAM_connector so tariffs can be propagated into BOM material costs.
     """
 
     def __init__(
         self,
         allocations: dict[Tuple[ProcessCenter, ProcessCenter, Commodity], float],
         allocation_costs: dict[Tuple[ProcessCenter, ProcessCenter, Commodity], float] | None = None,
+        tariff_taxes: dict[tuple[str, str, str], float] | None = None,
     ):
         self.allocations = allocations
         self.allocation_costs = allocation_costs
+        self.tariff_taxes = tariff_taxes
 
     def get_allocation(
         self, from_processcenter: ProcessCenter, to_processcenter: ProcessCenter, commodity: Commodity
@@ -338,7 +362,7 @@ class TradeLPModel:
         soft_minimum_capacity_slack_cost: High cost for under-utilization (100k)
     """
 
-    def __init__(self, lp_epsilon: float = 1e-3):
+    def __init__(self, lp_epsilon: float = 1e-3, distance_function=None, random_seed: int = 42):
         self.process_centers: list[ProcessCenter] = []
         self.process_connectors: list[ProcessConnector] = []
         self.commodities: list[Commodity] = []
@@ -358,6 +382,12 @@ class TradeLPModel:
         self.transportation_costs: list[TransportationCost] = []
         self._transportation_cost_lookup: dict[tuple[str, str, str], float] = {}
         self.lp_epsilon = lp_epsilon
+        self.random_seed = random_seed
+
+        # Store distance function for optimized lookups
+        # If None, falls back to original implementation
+        self._external_distance_function = distance_function
+        self._pc_by_name: dict[str, ProcessCenter] | None = None
 
         # Solver options for performance tuning (OPT-4)
         # Default to IPM - equivalent runtime to Simplex but uses ~5GB less memory
@@ -390,9 +420,39 @@ class TradeLPModel:
         key = (from_iso3, to_iso3, commodity_lower)
         return self._transportation_cost_lookup.get(key, 0.0)
 
-    def get_distance(self, from_pc_name, to_pc_name, type="haversine"):
-        from_pc = next(pc for pc in self.process_centers if pc.name == from_pc_name)
-        to_pc = next(pc for pc in self.process_centers if pc.name == to_pc_name)
+    def _build_pc_name_lookup(self) -> None:
+        """Build a name → ProcessCenter lookup dict for O(1) access."""
+        self._pc_by_name = {pc.name: pc for pc in self.process_centers}
+
+    def get_distance(self, from_pc_name, to_pc_name, type="pref_economic"):
+        """
+        Get distance between two process centers.
+
+        Performance optimized to use external distance function when available,
+        and a name-based lookup dict as fallback.
+
+        Args:
+            from_pc_name: Source process center name
+            to_pc_name: Destination process center name
+            type: Distance type (ignored when using external function)
+
+        Returns:
+            Distance in km
+        """
+        # Fast path: Use external distance function if provided
+        if self._external_distance_function is not None:
+            return self._external_distance_function(from_pc_name, to_pc_name)
+
+        # Fallback: O(1) dict lookup instead of O(n) linear scan
+        if not hasattr(self, "_pc_by_name") or self._pc_by_name is None:
+            self._build_pc_name_lookup()
+
+        from_pc = self._pc_by_name.get(from_pc_name)
+        to_pc = self._pc_by_name.get(to_pc_name)
+
+        if from_pc is None or to_pc is None:
+            return float("inf")
+
         if type == "haversine":
             return haversine_distance(
                 [
@@ -418,24 +478,27 @@ class TradeLPModel:
         self.commodities = self.commodities + commodities
 
     def add_processes(self, processes: list[Process]):
+        logger = logging.getLogger(f"{__name__}.add_processes")
         for proc in processes:
             if not proc.products == []:
                 for product in proc.products:
                     if product not in self.commodities and product is not None:
-                        logging.info(f"Commodity {product} implicitly added to commodities")
+                        logger.info(f"Commodity {product} implicitly added to commodities")
                         self.add_commodities([product])
         self.processes = self.processes + processes
 
     def add_process_centers(self, process_centers: list[ProcessCenter]):
         self.process_centers = self.process_centers + process_centers
+        self._pc_by_name = None  # Invalidate lookup cache
 
     def add_process_connectors(self, process_connectors: list[ProcessConnector]):
         self.process_connectors = self.process_connectors + process_connectors
 
     def add_bom_elements(self, bom_elements: list[BOMElement]):
+        logger = logging.getLogger(f"{__name__}.add_bom_elements")
         for element in bom_elements:
             if element.commodity not in self.commodities:
-                logging.info(f"Commodity {element.commodity.name} implicitly added to commodities")
+                logger.info(f"Commodity {element.commodity.name} implicitly added to commodities")
                 self.add_commodities([element.commodity])
         self.bom_elements = self.bom_elements + bom_elements
 
@@ -452,43 +515,140 @@ class TradeLPModel:
     def get_bom_element(self, bom_element_name: str) -> BOMElement:
         return next(bom_element for bom_element in self.bom_elements if bom_element.name == bom_element_name)
 
+    def generate_process_graph_for_reporting(self):
+        """Generate a graph representing processes (not process centers) and their connections, for reporting purposes."""
+        process_graph = {}
+        for from_process in self.processes:
+            for to_process in self.processes:
+                if from_process == to_process:
+                    continue
+
+                # Collect all commodities accepted by the target process:
+                # primary BOM commodities + dependent (secondary) commodities
+                accepted_commodities = set()
+                for bom_element in to_process.bill_of_materials:
+                    accepted_commodities.add(bom_element.commodity)
+                    if bom_element.dependent_commodities:
+                        accepted_commodities.update(bom_element.dependent_commodities.keys())
+
+                legal_pc = any(
+                    conn.from_process == from_process and conn.to_process == to_process
+                    for conn in self.process_connectors
+                )
+
+                for commodity in from_process.products:
+                    if commodity is None:
+                        continue
+                    linking_commodity = commodity in accepted_commodities
+
+                    if linking_commodity and legal_pc:
+                        label = commodity.name
+                    elif linking_commodity and not legal_pc:
+                        label = f"{commodity.name} (no legal PC)"
+                    elif not linking_commodity and legal_pc:
+                        label = "no linking commodity"
+                    else:
+                        label = None
+
+                    if label is not None:
+                        if from_process not in process_graph:
+                            process_graph[from_process] = {}
+                        if to_process not in process_graph[from_process]:
+                            process_graph[from_process][to_process] = []
+                        if label not in process_graph[from_process][to_process]:
+                            process_graph[from_process][to_process].append(label)
+
+        self.process_graph_for_reporting = process_graph
+
+    def calculate_process_utilization(self) -> dict[str, float]:
+        """Calculate utilization percentage for each process by aggregating across all its process centers.
+
+        Utilization is defined as total outflow / total capacity across all ProcessCenters
+        that share the same Process. Requires that the LP has been solved and allocations exist.
+
+        Returns:
+            Dict mapping process name to utilization percentage (0-100).
+            Processes with zero capacity are reported as 0.0.
+        """
+        if self.allocations is None:
+            return {}
+
+        # Single pass over allocations to sum outflow and inflow per ProcessCenter
+        outflow_by_pc: dict[ProcessCenter, float] = {}
+        inflow_by_pc: dict[ProcessCenter, float] = {}
+        for (from_pc, to_pc, _commodity), volume in self.allocations.allocations.items():
+            outflow_by_pc[from_pc] = outflow_by_pc.get(from_pc, 0.0) + volume
+            inflow_by_pc[to_pc] = inflow_by_pc.get(to_pc, 0.0) + volume
+
+        # Aggregate capacity and throughput per Process
+        # Use inflow for DEMAND processes (% of demand met), outflow for all others
+        capacity_by_process: dict[str, float] = {}
+        allocation_by_process: dict[str, float] = {}
+        for pc in self.process_centers:
+            process_name = pc.process.name
+            capacity_by_process[process_name] = capacity_by_process.get(process_name, 0.0) + pc.capacity
+            if pc.process.type == ProcessType.DEMAND:
+                throughput = inflow_by_pc.get(pc, 0.0)
+            else:
+                throughput = outflow_by_pc.get(pc, 0.0)
+            allocation_by_process[process_name] = allocation_by_process.get(process_name, 0.0) + throughput
+
+        utilization = {}
+        for process_name in capacity_by_process:
+            cap = capacity_by_process[process_name]
+            if cap > 0:
+                utilization[process_name] = (allocation_by_process.get(process_name, 0.0) / cap) * 100
+            else:
+                utilization[process_name] = 0.0
+
+        return utilization
+
     def set_legal_allocations(self):
-        # Standard legal allocations for primary commodities
+        # Pre-index: set of (from_process, to_process) pairs with a legal connector — O(1) lookup
+        connector_set: set[tuple[Process, Process]] = {
+            (conn.from_process, conn.to_process) for conn in self.process_connectors
+        }
+
+        # Pre-index: primary BOM commodities per process
+        primary_commodities_by_process: dict[Process, set[Commodity]] = {}
+        # Pre-index: dependent (secondary) commodities per process
+        dependent_commodities_by_process: dict[Process, set[Commodity]] = {}
+        for pc in self.process_centers:
+            proc = pc.process
+            if proc not in primary_commodities_by_process:
+                primary = set()
+                dependent = set()
+                for bom_element in proc.bill_of_materials:
+                    primary.add(bom_element.commodity)
+                    if bom_element.dependent_commodities:
+                        dependent.update(bom_element.dependent_commodities.keys())
+                primary_commodities_by_process[proc] = primary
+                dependent_commodities_by_process[proc] = dependent
+
+        # Standard legal allocations for primary commodities (any non-DEMAND source)
         legal_allocations = [
             (from_pc, to_pc, commodity)
             for from_pc in self.process_centers
+            if from_pc.process.type != ProcessType.DEMAND
             for to_pc in self.process_centers
+            if (from_pc.process, to_pc.process) in connector_set
             for commodity in from_pc.process.products
-            if commodity is not None
-            and commodity in [bom_element.commodity for bom_element in to_pc.process.bill_of_materials]
-            and any(
-                conn.from_process == from_pc.process and conn.to_process == to_pc.process
-                for conn in self.process_connectors
-            )
-            and from_pc.process.type != ProcessType.DEMAND
+            if commodity is not None and commodity in primary_commodities_by_process.get(to_pc.process, set())
         ]
 
-        # Add legal allocations for dependent commodities that have suppliers
-        dependent_commodity_allocations = []
+        # Add legal allocations for dependent commodities (SUPPLY sources only → PRODUCTION destinations)
         for from_pc in self.process_centers:
-            if from_pc.process.type == ProcessType.SUPPLY:  # Only from suppliers
+            if from_pc.process.type != ProcessType.SUPPLY:
+                continue
+            for to_pc in self.process_centers:
+                if to_pc.process.type != ProcessType.PRODUCTION:
+                    continue
+                if (from_pc.process, to_pc.process) not in connector_set:
+                    continue
+                dep_commodities = dependent_commodities_by_process.get(to_pc.process, set())
                 for commodity in from_pc.process.products:
-                    if commodity is None:
-                        continue
-                    # Check if this commodity is a dependent commodity in any destination process
-                    for to_pc in self.process_centers:
-                        if to_pc.process.type == ProcessType.PRODUCTION:
-                            for bom_element in to_pc.process.bill_of_materials:
-                                if bom_element.dependent_commodities:
-                                    if commodity in bom_element.dependent_commodities.keys():
-                                        # Check if there's a process connector allowing this flow
-                                        if any(
-                                            conn.from_process == from_pc.process and conn.to_process == to_pc.process
-                                            for conn in self.process_connectors
-                                        ):
-                                            dependent_commodity_allocations.append((from_pc, to_pc, commodity))
-
-        legal_allocations.extend(dependent_commodity_allocations)
+                    if commodity is not None and commodity in dep_commodities:
+                        legal_allocations.append((from_pc, to_pc, commodity))
 
         self.legal_allocations = legal_allocations
 
@@ -798,39 +958,53 @@ class TradeLPModel:
     @time_function
     def add_allocation_costs_as_parameters_to_lp(self):
         """Add the allocation costs as parameters to the LP model. Needed for the objective function."""
+        logger = logging.getLogger(f"{__name__}.add_allocation_costs_as_parameters_to_lp")
         self.lp_model.allocation_costs = {}
         for from_pc, to_pc, commodity in self.legal_allocations:
             # Get location-specific transportation cost
             transportation_cost = self.get_transportation_cost(
                 from_pc.location.iso3, to_pc.location.iso3, commodity.name
             )
+
+            # Get willingness to pay for this destination and commodity
+            wtp_key = (to_pc.location.iso3, commodity.name)
+            willingness_to_pay_value = self.lp_model.willingness_to_pay.get(wtp_key, 0)
+
             self.lp_model.allocation_costs[from_pc.name, to_pc.name, commodity.name] = (
                 transportation_cost  # Location-specific transportation cost per ton
                 + self.lp_model.bom_energy_costs.get((to_pc.name, commodity.name), 0)
                 + self.lp_model.tariff_tax[from_pc.name, to_pc.name, commodity.name]
                 + from_pc.production_cost  # Production cost (carbon cost) at the source process center
-                # - self.lp_model.willingness_to_pay[to_pc.name]
+                - willingness_to_pay_value  # Reduce cost for high-WTP destinations
             )
         # add a check to ensure allocation costs aren't insane:
         for key in self.lp_model.allocation_costs:
             if self.lp_model.allocation_costs[key] >= (
                 self.demand_slack_cost * 0.2
             ):  # if higher than 20% of demand slack
-                logging.warning(
-                    f"High allocation cost {self.lp_model.allocation_costs[key]} for allocation {key}, higher than 20% of demand slack cost {self.demand_slack_cost}. Automatically setting demand slack cost higher."
+                logger.warning(
+                    f"High allocation cost {self.lp_model.allocation_costs[key]} for allocation {key}, "
+                    f"higher than 20% of demand slack cost {self.demand_slack_cost}. "
+                    "Automatically setting demand slack cost higher."
                 )
 
-    # @time_function
-    # def add_willingness_to_pay_as_parameters_to_lp(self):
-    #     """Add the willingness to pay as parameters to the LP model. Needed for the objective function."""
-    #     self.lp_model.willingness_to_pay = {}
-    #     for process_center in self.process_centers:
-    #         if process_center.process.type == ProcessType.DEMAND and process_center.location.iso3 is not None:
-    #             self.lp_model.willingness_to_pay[process_center.name] = willingness_to_pay.get_willingness_to_pay(
-    #                 process_center.location.iso3
-    #             )
-    #         else:
-    #             self.lp_model.willingness_to_pay[process_center.name] = 0
+    @time_function
+    def add_willingness_to_pay_as_parameters_to_lp(self, willingness_to_pay_list):
+        """
+        Add willingness to pay as parameters to the LP model.
+
+        Creates a lookup dictionary mapping (iso3, commodity) to willingness to pay value.
+        This will be used when calculating allocation costs to reduce the cost of sending
+        commodities to regions/countries that have a high willingness to pay.
+
+        Args:
+            willingness_to_pay_list: List of WillingnessToPay objects from the environment
+        """
+        # Build lookup dictionary: (iso3, commodity) -> value
+        self.lp_model.willingness_to_pay = {}
+        for wtp in willingness_to_pay_list:
+            key = (wtp.region_or_iso3, wtp.commodity.lower())
+            self.lp_model.willingness_to_pay[key] = wtp.value
 
     @time_function
     def add_objective_function_to_lp(self):
@@ -869,18 +1043,21 @@ class TradeLPModel:
 
     def add_bool_if_process_center_has_incoming_allocations_for_bom_to_params(self):
         """Check if a process has incoming allocations for the bill of materials it needs to produce"""
+        # Pre-index: group allocation variable commodities by their destination PC name.
+        # Avoids re-scanning all allocation variables for every process center.
+        incoming_commodities_by_pc_name: dict[str, list[str]] = {}
+        for _from_pc_name, to_pc_name, commodity_name in self.lp_model.allocation_variables:
+            incoming_commodities_by_pc_name.setdefault(to_pc_name, []).append(commodity_name)
+
+        bom_params = self.lp_model.bom_parameters
+        input_ratio_key = MaterialParameters.INPUT_RATIO.value
+
         self.lp_model.process_center_has_incoming_allocations_for_bom = {}
         for process_center in self.process_centers:
+            pc_name = process_center.name
             self.lp_model.process_center_has_incoming_allocations_for_bom[process_center] = any(
-                (from_pc_name, to_pc_name, commodity_name) in self.lp_model.allocation_variables
-                for from_pc_name, to_pc_name, commodity_name in self.lp_model.allocation_variables
-                if to_pc_name == process_center.name
-                and (
-                    to_pc_name,
-                    commodity_name,
-                    MaterialParameters.INPUT_RATIO.value,
-                )
-                in self.lp_model.bom_parameters
+                (pc_name, commodity_name, input_ratio_key) in bom_params
+                for commodity_name in incoming_commodities_by_pc_name.get(pc_name, [])
             )
 
     @time_function
@@ -1017,6 +1194,7 @@ class TradeLPModel:
             - Multiple primary inputs can share the same dependent commodity
             - Process centers with no incoming connections are still checked (per Ioana's 20.05 note)
         """
+        logger = logging.getLogger(f"{__name__}.add_dependent_commodities_consistency_constraints_to_lp")
         model = self.lp_model
 
         # 1) Create dictionaries of sets
@@ -1261,35 +1439,63 @@ class TradeLPModel:
     @time_function
     def add_aggregate_commodity_constraint_parameters(self):
         """Add the aggregate commodity constraints parameters to the LP model. Needed for the aggregate commodity constraints."""
+        logger = logging.getLogger(f"{__name__}.add_aggregate_commodity_constraint_parameters")
+
         self.tech_to_process_centers = {}
         for pc in self.process_centers:
             if pc.process.type == ProcessType.PRODUCTION:
-                tech = pc.process.technology.name
+                tech = pc.process.name
                 if tech not in self.tech_to_process_centers:
                     self.tech_to_process_centers[tech] = []
                 self.tech_to_process_centers[tech].append(pc.name)
+
+        logger.info(f"Technologies found in process centers: {list(self.tech_to_process_centers.keys())}")
+
         self.lp_model.minimum_aggregate_commodity_constraints_params = {}
         self.lp_model.maximum_aggregate_commodity_constraints_params = {}
+
+        if not self.aggregated_commodity_constraints:
+            logger.warning("No aggregated commodity constraints to process")
+            return
+
+        logger.info(f"Processing {len(self.aggregated_commodity_constraints)} aggregated commodity constraints")
+
         for tech, commodity_mask in self.aggregated_commodity_constraints:
+            logger.debug(f"Processing constraint for tech={tech}, pattern={commodity_mask}")
+
+            if tech not in self.tech_to_process_centers:
+                logger.warning(
+                    f"Technology '{tech}' from constraint not found in process centers (available: {list(self.tech_to_process_centers.keys())})"
+                )
+                continue
+
             if "minimum" in self.aggregated_commodity_constraints[(tech, commodity_mask)]:
                 for pc_name in self.tech_to_process_centers[tech]:
                     self.lp_model.minimum_aggregate_commodity_constraints_params[pc_name, commodity_mask] = (
                         self.aggregated_commodity_constraints[(tech, commodity_mask)]["minimum"]
                     )
+                logger.debug(
+                    f"  Added min constraint for {len(self.tech_to_process_centers[tech])} {tech} process centers"
+                )
+
             if "maximum" in self.aggregated_commodity_constraints[(tech, commodity_mask)]:
                 for pc_name in self.tech_to_process_centers[tech]:
                     self.lp_model.maximum_aggregate_commodity_constraints_params[pc_name, commodity_mask] = (
                         self.aggregated_commodity_constraints[(tech, commodity_mask)]["maximum"]
                     )
+                logger.debug(
+                    f"  Added max constraint for {len(self.tech_to_process_centers[tech])} {tech} process centers"
+                )
 
     @time_function
     def add_aggregate_commodity_constraints_to_lp(self):
-        """Add the aggregate commodity constraints to the LP model. The sum of allocations for a commodity must equal the total demand for that commodity."""
-        self.lp_model.allocations_that_produce_same_outputs_agg = {}
+        """Add the aggregate commodity constraints to the LP model. Enforces min/max ratios for aggregated commodities."""
+        self.lp_model.all_inbound_allocations_agg = {}
         self.lp_model.allocations_of_bom_commodity_agg = {}
 
+        logger = logging.getLogger(f"{__name__}.add_aggregate_commodity_constraints_to_lp")
+
         inbound_arcs = self.lp_model.inbound_arcs
-        feedstock_outputs = self.lp_model.feedstock_outputs
 
         for pc in self.process_centers:
             # skip if not production
@@ -1297,93 +1503,116 @@ class TradeLPModel:
                 continue
 
             pc_name = pc.name
-            # feedstock_outputs_for_pc is a dict: c -> primary_outputs_of_feedstock[pc_name, c]
-            feedstock_outputs_for_pc = feedstock_outputs[pc_name]
+            pc_technology = pc.process.name  # Get the technology name (e.g., "BOF", "EAF")
 
             # arcs_into_pc is the list of (f, t, c) that come into pc_name
             arcs_into_pc = inbound_arcs[pc_name]
 
-            # ensure that all feedstocks that are part of the mask have the same output:
-            reference_outputs = None
-
+            # Check each aggregated commodity constraint
             for tech, commodity_mask in self.aggregated_commodity_constraints:
-                for c in feedstock_outputs_for_pc:
-                    if commodity_mask in c:
-                        if reference_outputs is None:
-                            reference_outputs = feedstock_outputs_for_pc[c]
-                        elif feedstock_outputs_for_pc[c] != reference_outputs:
-                            raise ValueError(
-                                f"Feedstock {c} has different outputs than the reference outputs {reference_outputs} for process center {pc_name}."
-                            )
-                same_output_set = set()
+                # Only apply constraints to matching technology
+                if tech != pc_technology:
+                    continue
+
+                # Collect all incoming allocations (denominator for ratio)
+                all_inbound_set = set(arcs_into_pc)  # All incoming allocations
+
+                # Collect allocations matching the commodity mask (numerator for ratio)
                 bom_commodity_set = set()
 
                 # Loop only over arcs leading into pc_name
                 for f, t, c in arcs_into_pc:
-                    # same_output_set: feedstock that yields the same "primary output" as the commodity mask
-                    if c in feedstock_outputs_for_pc and feedstock_outputs_for_pc[c] == reference_outputs:
-                        same_output_set.add((f, t, c))
-
-                    # bom_commodity_set: arcs for which c is part of the commodity mask
+                    # Check if commodity matches the pattern (e.g., "hot_metal" in c for mask "hot_metal")
                     if commodity_mask in c:
                         bom_commodity_set.add((f, t, c))
 
-                self.lp_model.allocations_that_produce_same_outputs_agg[pc_name, commodity_mask] = same_output_set
+                # Store the sets for this process center and commodity mask
+                self.lp_model.all_inbound_allocations_agg[pc_name, commodity_mask] = all_inbound_set
                 self.lp_model.allocations_of_bom_commodity_agg[pc_name, commodity_mask] = bom_commodity_set
 
+                # Log what we found
+                if bom_commodity_set:
+                    logger.debug(
+                        f"Found {len(bom_commodity_set)} allocations matching pattern '{commodity_mask}' "
+                        f"out of {len(all_inbound_set)} total for {pc_technology} process center {pc_name}"
+                    )
+
         def agg_maximum_ratio_rule(model, pc, comm_mask):
-            if (
-                not model.allocations_that_produce_same_outputs_agg[pc, comm_mask]
-                or not model.allocations_of_bom_commodity_agg[pc, comm_mask]
-            ):
+            # Skip if no allocations exist for this process center and commodity mask
+            if (pc, comm_mask) not in model.all_inbound_allocations_agg:
                 return pyo.Constraint.Skip
-            # direct summation
-            total_same_output = pyo.quicksum(
-                model.allocation_variables[idx]
-                for idx in model.allocations_that_produce_same_outputs_agg[pc, comm_mask]
+
+            if not model.all_inbound_allocations_agg.get(
+                (pc, comm_mask), set()
+            ) or not model.allocations_of_bom_commodity_agg.get((pc, comm_mask), set()):
+                return pyo.Constraint.Skip
+
+            # Total of ALL incoming allocations (denominator)
+            total_all_inbound = pyo.quicksum(
+                model.allocation_variables[idx] for idx in model.all_inbound_allocations_agg[pc, comm_mask]
             )
+
+            # Total of allocations matching the commodity mask (numerator)
             total_bom_commodity = pyo.quicksum(
                 model.allocation_variables[idx] for idx in model.allocations_of_bom_commodity_agg[pc, comm_mask]
             )
+
+            # Constraint: bom_commodity / all_inbound <= maximum_ratio
+            # Rearranged: bom_commodity - maximum_ratio * all_inbound <= 0
             return (
                 total_bom_commodity
-                - total_same_output * model.maximum_aggregate_commodity_constraints_params[pc, comm_mask]
+                - total_all_inbound * model.maximum_aggregate_commodity_constraints_params[pc, comm_mask]
                 <= 0
             )
 
         def agg_minimum_ratio_rule(model, pc, comm_mask):
-            if (
-                not model.allocations_that_produce_same_outputs_agg[pc, comm_mask]
-                or not model.allocations_of_bom_commodity_agg[pc, comm_mask]
-            ):
+            # Skip if no allocations exist for this process center and commodity mask
+            if (pc, comm_mask) not in model.all_inbound_allocations_agg:
                 return pyo.Constraint.Skip
-            # direct summation
-            total_same_output = pyo.quicksum(
-                model.allocation_variables[idx]
-                for idx in model.allocations_that_produce_same_outputs_agg[pc, comm_mask]
+
+            if not model.all_inbound_allocations_agg.get(
+                (pc, comm_mask), set()
+            ) or not model.allocations_of_bom_commodity_agg.get((pc, comm_mask), set()):
+                return pyo.Constraint.Skip
+
+            # Total of ALL incoming allocations (denominator)
+            total_all_inbound = pyo.quicksum(
+                model.allocation_variables[idx] for idx in model.all_inbound_allocations_agg[pc, comm_mask]
             )
+
+            # Total of allocations matching the commodity mask (numerator)
             total_bom_commodity = pyo.quicksum(
                 model.allocation_variables[idx] for idx in model.allocations_of_bom_commodity_agg[pc, comm_mask]
             )
+
+            # Constraint: bom_commodity / all_inbound >= minimum_ratio
+            # Rearranged: bom_commodity - minimum_ratio * all_inbound >= 0
             return (
                 total_bom_commodity
-                - total_same_output * model.minimum_aggregate_commodity_constraints_params[pc, comm_mask]
+                - total_all_inbound * model.minimum_aggregate_commodity_constraints_params[pc, comm_mask]
                 >= 0
             )
 
+        # Log how many constraints we're creating
+        max_constraints = list(self.lp_model.maximum_aggregate_commodity_constraints_params.keys())
+        min_constraints = list(self.lp_model.minimum_aggregate_commodity_constraints_params.keys())
+
+        if max_constraints:
+            logger.info(f"Creating {len(max_constraints)} aggregate maximum ratio constraints")
+        if min_constraints:
+            logger.info(f"Creating {len(min_constraints)} aggregate minimum ratio constraints")
+            for pc_name, comm_mask in min_constraints[:5]:  # Log first 5 for debugging
+                logger.debug(
+                    f"  Min constraint for {pc_name}, pattern '{comm_mask}': {self.lp_model.minimum_aggregate_commodity_constraints_params[pc_name, comm_mask]}"
+                )
+
         self.lp_model.aggregate_commodity_maximum_ratio_constraints = pyo.Constraint(
-            [
-                (pc_name, comm_mask)
-                for (pc_name, comm_mask) in self.lp_model.maximum_aggregate_commodity_constraints_params.keys()
-            ],
+            max_constraints,
             rule=agg_maximum_ratio_rule,
         )
 
         self.lp_model.aggregate_commodity_minimum_ratio_constraints = pyo.Constraint(
-            [
-                (pc_name, comm_mask)
-                for (pc_name, comm_mask) in self.lp_model.minimum_aggregate_commodity_constraints_params.keys()
-            ],
+            min_constraints,
             rule=agg_minimum_ratio_rule,
         )
 
@@ -1409,12 +1638,15 @@ class TradeLPModel:
         for pc in self.process_centers:
             self.lp_model.process_center_type[pc.name] = pc.process.type.value
 
-    def build_lp_model(self):
+    def build_lp_model(self, willingness_to_pay_list=None):
         """Build the complete Pyomo LP model with all variables, parameters, and constraints.
 
         This orchestrates the construction of the optimization problem by calling all the
         component-building methods in the correct order. Must be called after adding all
         process centers, processes, commodities, and connectors to the model.
+
+        Args:
+            willingness_to_pay_list: List of WillingnessToPay objects (optional, defaults to empty list)
 
         Steps:
             1. Determine legal allocations (valid flows based on process connectors)
@@ -1425,18 +1657,17 @@ class TradeLPModel:
 
         After calling this method, the model is ready to solve with solve_lp_model().
         """
+        if willingness_to_pay_list is None:
+            willingness_to_pay_list = []
         self.set_legal_allocations()
         # Add variables:
         self.add_allocation_variables_to_lp()
 
-        if self.aggregated_commodity_constraints is not None:
-            self.add_aggregate_commodity_constraint_parameters()
-            self.add_aggregate_commodity_constraints_to_lp()
         self.add_demand_slack_variables_to_lp()
         self.add_minimum_capacity_slack_variables_to_lp()
         # Add parameters:
         self.add_bom_parameters_as_parameters_to_lp()
-        # self.add_willingness_to_pay_as_parameters_to_lp()
+        self.add_willingness_to_pay_as_parameters_to_lp(willingness_to_pay_list)
         self.add_primary_outputs_of_feedstock_as_parameter_to_lp()
         self.add_allocation_maps_to_parameters()
         self.add_allocation_keys_subject_to_sf_constraints_as_parameters_to_lp()
@@ -1452,6 +1683,9 @@ class TradeLPModel:
         self.add_allocation_costs_as_parameters_to_lp()
         self.add_process_center_type_as_parameter_to_lp()
         # Add constraints:
+        if self.aggregated_commodity_constraints is not None:
+            self.add_aggregate_commodity_constraint_parameters()
+            self.add_aggregate_commodity_constraints_to_lp()
         self.add_production_constraints_to_lp()
         self.add_demand_constraint_to_lp()
         self.add_bom_inflow_constraints_to_lp()
@@ -1477,13 +1711,14 @@ class TradeLPModel:
         Notes:
             - Uses solver_options for configuration (default: IPM for memory efficiency)
             - Supports warm-starting from previous_solution (simplex only)
-            - Random seed fixed (1337) for reproducibility
+            - Random seed from SimulationConfig.random_seed for reproducibility
             - Does not automatically load solution (call extract_solution() after)
             - Logs detailed diagnostics if model is infeasible
         """
+        logger = logging.getLogger(f"{__name__}.solve_lp_model")
         start_time = time.time()
         solver = pyo.SolverFactory("appsi_highs")
-        solver.options["random_seed"] = 1337
+        solver.options["random_seed"] = self.random_seed
 
         # Use configurable solver options for performance tuning (OPT-4)
         solver.options.update(self.solver_options)
@@ -1519,31 +1754,49 @@ class TradeLPModel:
 
         # Check if solution was found
         if result.solver.termination_condition == pyo.TerminationCondition.infeasible:
-            logging.error("\n=== LP SOLVER DIAGNOSTICS ===")
-            logging.error(f"Termination condition: {result.solver.termination_condition}")
-            logging.error(f"Solver status: {result.solver.status}")
-            logging.error("\nModel statistics:")
-            logging.error(f"- Variables: {self.lp_model.nvariables()}")
-            logging.error(f"- Constraints: {self.lp_model.nconstraints()}")
-            logging.error(f"- Process centers: {len(self.process_centers)}")
+            logger.error("\n=== LP SOLVER DIAGNOSTICS ===")
+            logger.error(f"Termination condition: {result.solver.termination_condition}")
+            logger.error(f"Solver status: {result.solver.status}")
+            logger.error("\nModel statistics:")
+            logger.error(f"- Variables: {self.lp_model.nvariables()}")
+            logger.error(f"- Constraints: {self.lp_model.nconstraints()}")
+            logger.error(f"- Process centers: {len(self.process_centers)}")
 
             # Check for dependent commodities constraints
             if hasattr(self.lp_model, "dependent_commodities_constraints"):
                 dep_constraints = len(self.lp_model.dependent_commodities_constraints)
-                logging.error(f"- Dependent commodity constraints: {dep_constraints}")
+                logger.error(f"- Dependent commodity constraints: {dep_constraints}")
                 if dep_constraints > 0:
-                    logging.error("  WARNING: Dependent commodities constraints are active!")
-                    logging.error("  Check if all dependent commodities have suppliers defined")
+                    logger.error("  WARNING: Dependent commodities constraints are active!")
+                    logger.error("  Check if all dependent commodities have suppliers defined")
 
-            logging.error("\nThe model is infeasible - no solution exists that satisfies all constraints.")
-            logging.error("Possible causes:")
-            logging.error("  1. Demand exceeds available supply chain capacity")
-            logging.error("  2. Missing process connectors prevent required flows")
-            logging.error("  3. Dependent commodities (e.g., limestone) have no suppliers")
-            logging.error("  4. Trade quotas/tariffs block necessary routes")
+            logger.error("\nThe model is infeasible - no solution exists that satisfies all constraints.")
+            logger.error("Possible causes:")
+            logger.error("  1. Demand exceeds available supply chain capacity")
+            logger.error("  2. Missing process connectors prevent required flows")
+            logger.error("  3. Dependent commodities (e.g., limestone) have no suppliers")
+            logger.error("  4. Trade quotas/tariffs block necessary routes")
         elif result.solver.termination_condition == pyo.TerminationCondition.optimal:
             # Load the solution if optimal
             self.lp_model.solutions.load_from(result)
+
+            # Calculate and report unfulfilled demand percentage
+            total_demand = 0
+            total_unfulfilled = 0
+            for dc in self.process_centers:
+                if dc.process.type == ProcessType.DEMAND and dc.capacity is not None:
+                    demand = dc.capacity
+                    slack = pyo.value(self.lp_model.demand_slack_variable[dc.name])
+                    total_demand += demand
+                    total_unfulfilled += slack
+
+            if total_demand > 0:
+                unfulfilled_pct = (total_unfulfilled / total_demand) * 100
+                logger.info(
+                    f"LP Solution: {unfulfilled_pct:.2f}% of demand remains unfulfilled ({total_unfulfilled:,.0f} / {total_demand:,.0f} tons)"
+                )
+            else:
+                logger.info("LP Solution: No demand centers found")
 
         return result
 
@@ -1579,7 +1832,11 @@ class TradeLPModel:
                     from_pc_name, to_pc_name, commodity_name
                 ]
 
-        self.allocations = Allocations(allocations=allocations, allocation_costs=allocation_costs)
+        self.allocations = Allocations(
+            allocations=allocations,
+            allocation_costs=allocation_costs,
+            tariff_taxes=dict(self.tariff_taxes_by_iso3) if self.tariff_taxes_by_iso3 else None,
+        )
         # self.allocations.validate_allocations()
 
     def get_solution_for_warm_start(self) -> dict[tuple[str, str, str], float]:

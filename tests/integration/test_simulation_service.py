@@ -258,6 +258,11 @@ def test_simulation_service_with_plant_agent_events(
     if not hasattr(bus.env, "industrial_cost_of_debt") or not bus.env.industrial_cost_of_debt:
         bus.env.industrial_cost_of_debt = {"DEU": 0.04}
 
+    # Provide per-country unit FOPEX so PlantGroup.evaluate_expansion_options finds data for DEU.
+    # Lookup in the domain code is case-insensitive (``.get(tech.lower())``) — keys are lowercased.
+    if not hasattr(bus.env, "fopex_by_country") or not bus.env.fopex_by_country:
+        bus.env.fopex_by_country = {"DEU": {tech: 50.0 for tech in ["bf", "bof", "eaf", "dri"]}}
+
     # Set allowed transitions for all technologies (overwrite fixture defaults)
     bus.env.allowed_furnace_transitions["BFBOF"] = ["EAF", "BOF", "BFBOF"]  # Can switch to other steel techs
     bus.env.allowed_furnace_transitions["EAF"] = ["BOF", "EAF"]  # EAF can switch to BOF
@@ -268,9 +273,16 @@ def test_simulation_service_with_plant_agent_events(
     assert Year(2025) in allowed_techs_dict, f"Year 2025 not in allowed_techs: {list(allowed_techs_dict.keys())}"
     assert allowed_techs_dict[Year(2025)], f"No allowed techs for 2025: {allowed_techs_dict}"
 
-    # Ensure positive plant balance for technology switches and renovations
+    # Ensure positive plant group balance for technology switches and renovations
     # With 64kt capacity and $400/t capex, renovation cost is about $10M (64000 * 400 * 0.4)
-    plant.balance = 50000000.0  # $50M balance to afford technology switches and renovations
+    from steelo.domain.models import PlantGroup
+
+    plant_group = PlantGroup(plant_group_id="sim_test_pg", plants=[plant])
+    plant_group.balance = 50_000_000.0  # $50M balance for switches/renovations
+    bus.uow.plant_groups.add(plant_group)
+    # PAM Step 5 expansion eval is orthogonal to these events; stub it out so the minimal
+    # test environment doesn't need full BOM/FOPEX data for every tech.
+    mocker.patch.object(plant_group, "evaluate_expansion", return_value=None)
 
     # Initialize test environment with proper economic data for NPV calculations
     from steelo.domain.models import PrimaryFeedstock
@@ -345,7 +357,7 @@ def test_simulation_service_with_plant_agent_events(
             bus.env.avg_boms[tech] = {}
             for material, share in bus.env.default_metallic_charge_per_technology[tech].items():
                 bus.env.avg_boms[tech][material] = {
-                    "demand_share_pct": share * 100,  # Convert to percentage
+                    "input_share_pct": share,
                     "unit_cost": bus.env.average_material_cost.get(material.lower(), {}).get("average_cost", 100.0),
                 }
 
@@ -641,9 +653,15 @@ def test_simulation_service_with_multiple_plant_furnaces(bus, logged_events, mul
         }
     # Given a plant with mutiple furnace groups
     plant = get_plant(furnace_groups=multi_furnace_groups)
-    # Set positive balance to afford renovations and technology switches
-    plant.balance = 50000000.0  # $50M balance
     bus.uow.plants.add(plant)
+    # Set positive group balance to afford renovations and technology switches
+    from steelo.domain.models import PlantGroup
+
+    plant_group = PlantGroup(plant_group_id="multi_fg_pg", plants=[plant])
+    plant_group.balance = 50_000_000.0  # $50M balance
+    bus.uow.plant_groups.add(plant_group)
+    # PAM Step 5 expansion eval is orthogonal to these events; stub it out.
+    mocker.patch.object(plant_group, "evaluate_expansion", return_value=None)
 
     # Ensure config is set for this test
     if bus.env.config is None:
@@ -702,12 +720,12 @@ def test_simulation_service_with_multiple_plant_furnaces(bus, logged_events, mul
         bus.env.name_to_capex["default"] = bus.env.name_to_capex["greenfield"].copy()
 
     # Initialize missing dynamic_feedstocks to prevent KeyError
-    technologies = ["BF", "BOF", "EAF", "DRI", "SR", "MoE", "ESF", "CCUS", "Prep Sinter", "BFBOF"]
+    technologies = ["BF", "BOF", "EAF", "DRI", "SR", "MOE", "ESF"]
     if not hasattr(bus.env, "dynamic_feedstocks") or not bus.env.dynamic_feedstocks:
         bus.env.dynamic_feedstocks = {tech: [] for tech in technologies}
 
     # Set allowed transitions for all technologies (overwrite fixture defaults)
-    bus.env.allowed_furnace_transitions["BFBOF"] = ["EAF", "BOF", "BFBOF"]  # Can switch to other steel techs
+    bus.env.allowed_furnace_transitions["BF"] = ["BF", "DRI"]  # BF can switch to DRI
     bus.env.allowed_furnace_transitions["EAF"] = ["BOF", "EAF"]  # EAF can switch to BOF
 
     # Initialize industrial_cost_of_debt for DEU
@@ -717,6 +735,10 @@ def test_simulation_service_with_multiple_plant_furnaces(bus, logged_events, mul
     # Initialize industrial_cost_of_equity for DEU
     if not hasattr(bus.env, "industrial_cost_of_equity") or not bus.env.industrial_cost_of_equity:
         bus.env.industrial_cost_of_equity = {"DEU": 0.08}
+
+    # Provide per-country unit FOPEX for PlantGroup.evaluate_expansion_options.
+    if not hasattr(bus.env, "fopex_by_country") or not bus.env.fopex_by_country:
+        bus.env.fopex_by_country = {"DEU": {tech: 50.0 for tech in ["bf", "bof", "eaf", "dri"]}}
 
     # Initialize virgin_iron_demand for PlantAgentsModel
     from steelo.domain.models import VirginIronDemand
@@ -729,18 +751,18 @@ def test_simulation_service_with_multiple_plant_furnaces(bus, logged_events, mul
     # For test hardcode the demand first
     bus.env.current_demand = 150
 
-    # Mock optimal_technology_name for all EAF furnace groups to prevent COSA calculation issues
-    # This test is focused on the simulation running successfully with multiple furnaces
+    # Mock optimal_technology_name for every furnace group to prevent COSA/avg_boms lookups
+    # in the test's minimal environment. This test is focused on the simulation running
+    # successfully with multiple furnaces, not on the specific technology-choice economics.
+    # (Pre-Stage-2, the negative-plant-balance gate masked these calls; now Stage 1 runs always.)
     for fg in multi_furnace_groups:
-        if fg.technology.name == "EAF":
-            # Return a mock that keeps the current technology optimal
-            mock_return = (
-                {fg.technology.name: 300000.0},  # Positive NPV for current tech
-                {fg.technology.name: 400},  # Capex
-                0.0,  # No COSA
-                {fg.technology.name: {}},  # BOM
-            )
-            mocker.patch.object(fg, "optimal_technology_name", return_value=mock_return)
+        mock_return = (
+            {fg.technology.name: 300000.0},  # Positive NPV for current tech
+            {fg.technology.name: 400},  # Capex
+            0.0,  # No COSA
+            {fg.technology.name: {}},  # BOM
+        )
+        mocker.patch.object(fg, "optimal_technology_name", return_value=mock_return)
 
     # When the simulation is run
     Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()

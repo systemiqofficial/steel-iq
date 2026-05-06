@@ -258,7 +258,9 @@ def get_test_suppliers() -> list[Supplier]:
             location=Location(lat=52.5200, lon=13.4050, country="Germany", region="Europe", iso3="DEU"),
             commodity="scrap",
             capacity_by_year={Year(2025): Volumes(2000), Year(2026): Volumes(2000), Year(2027): Volumes(2000)},
-            production_cost=300.0,
+            production_cost_by_year={Year(2025): 300.0, Year(2026): 300.0, Year(2027): 300.0},
+            mine_cost_by_year={},
+            mine_price_by_year={},
         )
     )
 
@@ -268,7 +270,9 @@ def get_test_suppliers() -> list[Supplier]:
             location=Location(lat=48.8566, lon=2.3522, country="France", region="Europe", iso3="FRA"),
             commodity="scrap",
             capacity_by_year={Year(2025): Volumes(1500), Year(2026): Volumes(1500), Year(2027): Volumes(1500)},
-            production_cost=320.0,
+            production_cost_by_year={Year(2025): 320.0, Year(2026): 320.0, Year(2027): 320.0},
+            mine_cost_by_year={},
+            mine_price_by_year={},
         )
     )
 
@@ -279,7 +283,9 @@ def get_test_suppliers() -> list[Supplier]:
             location=Location(lat=-20.0, lon=118.0, country="Australia", region="Oceania", iso3="AUS"),
             commodity="io_high",
             capacity_by_year={Year(2025): Volumes(5000), Year(2026): Volumes(5000), Year(2027): Volumes(5000)},
-            production_cost=50.0,
+            production_cost_by_year={Year(2025): 50.0, Year(2026): 50.0, Year(2027): 50.0},
+            mine_cost_by_year={Year(2025): 50.0, Year(2026): 50.0, Year(2027): 50.0},
+            mine_price_by_year={Year(2025): 60.0, Year(2026): 60.0, Year(2027): 60.0},
         )
     )
 
@@ -289,7 +295,9 @@ def get_test_suppliers() -> list[Supplier]:
             location=Location(lat=-15.0, lon=-47.0, country="Brazil", region="South America", iso3="BRA"),
             commodity="io_mid",
             capacity_by_year={Year(2025): Volumes(4000), Year(2026): Volumes(4000), Year(2027): Volumes(4000)},
-            production_cost=60.0,
+            production_cost_by_year={Year(2025): 60.0, Year(2026): 60.0, Year(2027): 60.0},
+            mine_cost_by_year={Year(2025): 60.0, Year(2026): 60.0, Year(2027): 60.0},
+            mine_price_by_year={Year(2025): 70.0, Year(2026): 70.0, Year(2027): 70.0},
         )
     )
 
@@ -299,7 +307,9 @@ def get_test_suppliers() -> list[Supplier]:
             location=Location(lat=20.0, lon=77.0, country="India", region="Asia", iso3="IND"),
             commodity="io_low",
             capacity_by_year={Year(2025): Volumes(3000), Year(2026): Volumes(3000), Year(2027): Volumes(3000)},
-            production_cost=40.0,
+            production_cost_by_year={Year(2025): 40.0, Year(2026): 40.0, Year(2027): 40.0},
+            mine_cost_by_year={Year(2025): 40.0, Year(2026): 40.0, Year(2027): 40.0},
+            mine_price_by_year={Year(2025): 50.0, Year(2026): 50.0, Year(2027): 50.0},
         )
     )
 
@@ -310,7 +320,9 @@ def get_test_suppliers() -> list[Supplier]:
             location=Location(lat=60.0, lon=18.0, country="Sweden", region="Europe", iso3="SWE"),
             commodity="pellets_high",
             capacity_by_year={Year(2025): Volumes(2000), Year(2026): Volumes(2000), Year(2027): Volumes(2000)},
-            production_cost=80.0,
+            production_cost_by_year={Year(2025): 80.0, Year(2026): 80.0, Year(2027): 80.0},
+            mine_cost_by_year={Year(2025): 80.0, Year(2026): 80.0, Year(2027): 80.0},
+            mine_price_by_year={Year(2025): 90.0, Year(2026): 90.0, Year(2027): 90.0},
         )
     )
 
@@ -320,7 +332,9 @@ def get_test_suppliers() -> list[Supplier]:
             location=Location(lat=45.0, lon=-75.0, country="Canada", region="North America", iso3="CAN"),
             commodity="pellets_mid",
             capacity_by_year={Year(2025): Volumes(1800), Year(2026): Volumes(1800), Year(2027): Volumes(1800)},
-            production_cost=75.0,
+            production_cost_by_year={Year(2025): 75.0, Year(2026): 75.0, Year(2027): 75.0},
+            mine_cost_by_year={Year(2025): 75.0, Year(2026): 75.0, Year(2027): 75.0},
+            mine_price_by_year={Year(2025): 85.0, Year(2026): 85.0, Year(2027): 85.0},
         )
     )
 
@@ -331,7 +345,9 @@ def get_test_suppliers() -> list[Supplier]:
             location=Location(lat=40.0, lon=-100.0, country="USA", region="North America", iso3="USA"),
             commodity="scrap",  # Using SCRAP as placeholder for coal
             capacity_by_year={Year(2025): Volumes(10000), Year(2026): Volumes(10000), Year(2027): Volumes(10000)},
-            production_cost=100.0,
+            production_cost_by_year={Year(2025): 100.0, Year(2026): 100.0, Year(2027): 100.0},
+            mine_cost_by_year={},
+            mine_price_by_year={},
         )
     )
 
@@ -341,7 +357,9 @@ def get_test_suppliers() -> list[Supplier]:
             location=Location(lat=51.0, lon=7.0, country="Germany", region="Europe", iso3="DEU"),
             commodity="scrap",  # Using SCRAP as placeholder for coke
             capacity_by_year={Year(2025): Volumes(3000), Year(2026): Volumes(3000), Year(2027): Volumes(3000)},
-            production_cost=200.0,
+            production_cost_by_year={Year(2025): 200.0, Year(2026): 200.0, Year(2027): 200.0},
+            mine_cost_by_year={},
+            mine_price_by_year={},
         )
     )
 

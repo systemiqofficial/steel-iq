@@ -1,5 +1,6 @@
 import copy
 import logging
+from typing import Any
 import networkx as nx
 from collections import deque
 from steelo.adapters.repositories.in_memory_repository import (
@@ -9,16 +10,16 @@ from steelo.domain.models import PrimaryFeedstock, FurnaceGroup, TransportKPI
 from steelo.domain.trade_modelling.trade_lp_modelling import Allocations, ProcessType
 from steelo.domain.constants import LP_TOLERANCE
 from steelo.domain import diagnostics as diag
+from steelo.utilities.utils import normalize_name
 
 
 # logging.getLogger().setLevel(logging.WARNING)  # Commented out to avoid setting root logger
-logger = logging.getLogger(__name__)
 
 
 class TM_PAM_connector:
     """
-    class to connect the trade module with the PAM model - containing various methods to extract data from the trade module and update
-    the unit production costs and utilisation rates of the furnace groups
+    Connects the trade module with the PAM model — extracts data from the
+    trade module and updates unit production costs and utilisation rates.
     """
 
     def __init__(
@@ -55,9 +56,6 @@ class TM_PAM_connector:
         self.chosen_reductant = {}
         self.processing_energy_cost = {}
 
-        def _normalize_energy_label(value: str) -> str:
-            return str(value).lower().replace(" ", "_").replace("-", "_")
-
         for p in plants.list():
             for fg in p.furnace_groups:
                 per_feed_energy: dict[str, dict[str, dict[str, float] | float]] = {}
@@ -66,23 +64,20 @@ class TM_PAM_connector:
                 for commodity, total_cost in feed_totals.items():
                     normalized_commodity = str(commodity).lower()
                     breakdown = feed_breakdowns.get(commodity) or feed_breakdowns.get(str(commodity).lower()) or {}
-                    normalized_breakdown = {
-                        _normalize_energy_label(carrier): float(cost) for carrier, cost in breakdown.items()
-                    }
+                    normalized_breakdown = {normalize_name(carrier): float(cost) for carrier, cost in breakdown.items()}
                     per_feed_energy[normalized_commodity] = {
                         "total": float(total_cost),
                         "carriers": normalized_breakdown,
                     }
                 self.processing_energy_cost[fg.furnace_group_id] = per_feed_energy
                 self.chosen_reductant[fg.furnace_group_id] = fg.chosen_reductant
-        self.flat_feedstocks_dict = {
-            entry.name.lower(): entry for key, items in self.dynamic_feedstocks.items() for entry in items
-        }
-        self.feedstock_energy_requirements = {
-            entry.name.lower(): entry.energy_requirements
-            for key, items in self.dynamic_feedstocks.items()
-            for entry in items
-        }
+        self.flat_feedstocks_dict = {}
+        self.feedstock_energy_requirements = {}
+        for _key, items in self.dynamic_feedstocks.items():
+            for entry in items:
+                name_lower = entry.name.lower()
+                self.flat_feedstocks_dict[name_lower] = entry
+                self.feedstock_energy_requirements[name_lower] = entry.energy_requirements
 
         self.plants = [p.plant_id for p in plants.list()]
         # self.furnaces = [fg for p in plants.list() for fg in p.furnace_groups]
@@ -96,21 +91,20 @@ class TM_PAM_connector:
                 key = (kpi.reporter_iso, kpi.partner_iso, kpi.commodity.lower())
                 self.transport_costs[key] = kpi.transportation_cost
 
-        self.iron_furnaces = [
-            fg.furnace_group_id
-            for p in plants.list()
-            for fg in p.furnace_groups
-            if isinstance(fg.technology.product, str) and fg.technology.product.lower() == "iron"
-        ]
-        self.steel_furnaces = [
-            fg.furnace_group_id
-            for p in plants.list()
-            for fg in p.furnace_groups
-            if isinstance(fg.technology.product, str) and fg.technology.product.lower() == "steel"
-        ]
-        self.bof_furnaces = [
-            fg.furnace_group_id for p in plants.list() for fg in p.furnace_groups if fg.technology.name.upper() == "BOF"
-        ]
+        self.iron_furnaces = []
+        self.steel_furnaces = []
+        self.bof_furnaces = []
+        for p in plants.list():
+            for fg in p.furnace_groups:
+                fg_id = fg.furnace_group_id
+                if isinstance(fg.technology.product, str):
+                    product_lower = fg.technology.product.lower()
+                    if product_lower == "iron":
+                        self.iron_furnaces.append(fg_id)
+                    elif product_lower == "steel":
+                        self.steel_furnaces.append(fg_id)
+                if fg.technology.name.upper() == "BOF":
+                    self.bof_furnaces.append(fg_id)
 
         self.G = None
         self.current_year: int | None = None
@@ -130,6 +124,32 @@ class TM_PAM_connector:
         """
         key = (from_iso, to_iso, commodity.lower())
         return self.transport_costs.get(key, 0.0)  # Default to 0 if not found
+
+    def get_tariff_cost(self, from_iso: str, to_iso: str, commodity: str) -> float:
+        """Retrieve tariff cost between two countries for a specific commodity.
+
+        Supports wildcard keys: checks exact match first, then wildcard source,
+        wildcard destination, and wildcard commodity. All matching tariffs are summed,
+        mirroring the LP's ``return_potential_tariff_keys`` logic.
+
+        Args:
+            from_iso: Source country ISO3 code.
+            to_iso: Destination country ISO3 code.
+            commodity: Commodity name (case-insensitive).
+
+        Returns:
+            Tariff cost per ton in USD. Returns 0.0 if no tariffs apply.
+        """
+        comm = commodity.lower()
+        total = 0.0
+        for key in [
+            (from_iso, to_iso, comm),
+            ("*", to_iso, comm),
+            (from_iso, "*", comm),
+            (from_iso, to_iso, "*"),
+        ]:
+            total += self.tariff_taxes.get(key, 0.0)
+        return total
 
     def process_energy_cost(
         self,
@@ -156,9 +176,8 @@ class TM_PAM_connector:
             - Energy requirements are defined per feedstock type in PrimaryFeedstock objects.
         """
         global_cost_dict = dict(
-            flexible=1.05506 * 6, electricity=0.150, coke=0.05, pci=0, hydrogen=6.61, bio_pci=0.05, coal=98.6
+            natural_gas=1.05506 * 6, electricity=0.150, coke=0.05, pci=0, hydrogen=6.61, bio_pci=0.05, coal=98.6
         )
-        global_cost_dict["natural gas"] = 1.05506 * 6
 
         process_energy_cost = 0.0
         plant_id = furnace.split("_")[0]
@@ -172,12 +191,12 @@ class TM_PAM_connector:
         # p.get_energy_costs() # THis function doesn't exist but let's get it.
         for key, value in self.feedstock_energy_requirements[process].items():
             # if the plant has the attribute
-            if hasattr(plant_energy_cost, key.lower().replace("-", "_")):
-                process_energy_cost += getattr(plant_energy_cost, key.lower().replace("-", "_")) * value
+            if hasattr(plant_energy_cost, normalize_name(key)):
+                process_energy_cost += getattr(plant_energy_cost, normalize_name(key)) * value
             else:
                 # logging.debug(f"Key {key} not found in global cost dict or plant")
 
-                process_energy_cost += float(global_cost_dict[key.lower().replace("-", "_")]) * value
+                process_energy_cost += float(global_cost_dict[normalize_name(key)]) * value
         return process_energy_cost
 
     def calculate_allocations_for_graph(
@@ -253,6 +272,12 @@ class TM_PAM_connector:
         - Uses `self.processing_energy_cost` to fetch energy costs per process.
         - Uses `self.flat_feedstocks_dict` to lookup primary outputs and efficiencies.
         """
+        logger = logging.getLogger(f"{__name__}.create_graph")
+
+        # Store tariff taxes for edge attribute lookup
+        self.tariff_taxes: dict[tuple[str, str, str], float] = solved_trade_allocations.tariff_taxes or {}
+        logger.debug("[TARIFF] Loaded %d tariff entries", len(self.tariff_taxes))
+
         # Initialize an empty directed multigraph
         self.G = nx.MultiDiGraph()
 
@@ -289,19 +314,21 @@ class TM_PAM_connector:
                 "volume": alloc_value,
                 # 2. Transport cost from TransportKPI data
                 "transport_cost": self.get_transport_cost(from_pc.location.iso3, to_pc.location.iso3, commodity),
-                # 3. Processing energy cost, if defined for this destination
+                # 3. Tariff cost from LP tariff taxes (import/export duties)
+                "tariff_cost": self.get_tariff_cost(from_pc.location.iso3, to_pc.location.iso3, commodity),
+                # 4. Processing energy cost, if defined for this destination
                 "processing_energy_cost": total_energy_cost,
                 "processing_energy_breakdown": energy_breakdown,
-                # 4. Process identifier and commodity tag
+                # 5. Process identifier and commodity tag
                 "process": process,
                 "commodity": commodity,
-                # 5. Primary output of this process, if in the flat feedstocks map
+                # 6. Primary output of this process, if in the flat feedstocks map
                 "output": (
                     next(iter(self.flat_feedstocks_dict[process].get_primary_outputs()), None)
                     if process in self.flat_feedstocks_dict
                     else None
                 ),
-                # 6. Process efficiency (required quantity per ton of product)
+                # 7. Process efficiency (required quantity per ton of product)
                 "process_efficiency": (
                     self.flat_feedstocks_dict[process].required_quantity_per_ton_of_product
                     if process in self.flat_feedstocks_dict
@@ -317,7 +344,15 @@ class TM_PAM_connector:
             if from_pc.process.type == ProcessType.SUPPLY:
                 self.G.add_node(from_name, product_cost=from_pc.production_cost, unit_cost={})
             else:
-                self.G.add_node(from_name, product_cost={}, unit_cost={})
+                # Producing furnace: stamp own per-unit cost (carbon) so propagation can embed
+                # it into outgoing flows. Consumed via downstream BOMs; never appears in this
+                # furnace's own BOM (built from incoming allocations).
+                self.G.add_node(
+                    from_name,
+                    product_cost={},
+                    unit_cost={},
+                    own_unit_cost=float(from_pc.production_cost or 0.0),
+                )
 
             # Add the destination node, initializing its attrs with same cost logic
             to_name = to_pc.name
@@ -336,6 +371,15 @@ class TM_PAM_connector:
             # Finally, add the directed edge with all computed attributes
             self.G.add_edge(from_name, to_name, key=commodity, **edge_attrs)  # allow parallel edges keyed by commodity
 
+            if edge_attrs["tariff_cost"] > 0:
+                logger.debug(
+                    "[TARIFF] %s -> %s (%s): tariff=$%.2f/t",
+                    from_name,
+                    to_name,
+                    commodity,
+                    edge_attrs["tariff_cost"],
+                )
+
     def propage_cost_forward_by_layers_and_normalize(
         self,
         source_attr="product_cost",
@@ -350,10 +394,10 @@ class TM_PAM_connector:
         """
         Propagate per-unit costs forward through the process-center graph and normalize by outgoing volumes.
 
-        Starting from “root” nodes (those with no incoming edges), this does a breadth-first pass
+        Starting from "root" nodes (those with no incoming edges), this does a breadth-first pass
         to accumulate all cost components (source, processing energy, transport) along each edge,
         weighted by shipped volume.  Once accumulated in each target node under `source_attr`,
-        it then computes `unit_cost_attr` by dividing total cost per commodity by that node’s
+        it then computes `unit_cost_attr` by dividing total cost per commodity by that node's
         total outgoing volume for the same commodity.
 
         Args
@@ -386,7 +430,7 @@ class TM_PAM_connector:
             1. Per-commodity cumulative costs in `node[source_attr]` (a dict).
             2. Per-commodity unit costs in `node[unit_cost_attr]`.
         - Prints the number of edges processed (for debugging).
-        - Prints each node’s computed unit cost (for debugging).
+        - Prints each node's computed unit cost (for debugging).
 
         Notes
         -----
@@ -394,7 +438,8 @@ class TM_PAM_connector:
         - Skips any sink node (no outgoing edges) in propagation phase.
         - Leaves zero-volume edges effectively ignored in normalization.
         """
-        # Make a copy so we don’t mutate the original in the middle of traversal
+        logger = logging.getLogger(f"{__name__}.propage_cost_forward_by_layers_and_normalize")
+        # Make a copy so we don't mutate the original in the middle of traversal
         G = self.G.copy()
 
         # Identify “roots” = nodes with zero in-degree
@@ -412,7 +457,10 @@ class TM_PAM_connector:
             unit_cost = {}
 
             if allocation_attr in G.nodes[u]:
-                export = {}
+                # Initialize export dict if it doesn't exist
+                if export_attr not in G.nodes[u]:
+                    G.nodes[u][export_attr] = {}
+                # Accumulate export volumes by commodity
                 for src, v, comm, edata in self.G.out_edges(u, keys=True, data=True):
                     G.nodes[u][export_attr][comm] = G.nodes[u][export_attr].get(comm, 0) + edata.get(volume_attr, 0)
             # If G[u] is also a to-node
@@ -433,21 +481,52 @@ class TM_PAM_connector:
                 else:
                     base_cost = float(node_cost)
 
-                # Normalize by total exported volume of that commodity at u, if available
+                # Normalize by export volume
                 export = G.nodes[u].get(export_attr, {})
-                export_volume_at_u = export.get(comm, 1.0)
+
+                # For multi-output processes (e.g., BF producing hot_metal AND pig_iron),
+                # divide total input cost by TOTAL output volume across all commodities
+                # to avoid inflating per-unit costs
+                if isinstance(node_cost, dict) and G.in_degree(u) > 0 and len(export) > 1:
+                    # Multi-output process: use total export volume
+                    export_volume_at_u = sum(export.values())
+                else:
+                    # Single-output process or supplier: use commodity-specific volume
+                    export_volume_at_u = export.get(comm, 1.0)
+
                 per_unit_base = base_cost / export_volume_at_u
+                # Embed producing furnaces' own carbon onto outgoing flows. Suppliers
+                # (root nodes) are skipped — their cost already enters via base_cost.
+                if G.in_degree(u) > 0:
+                    own = G.nodes[u].get("own_unit_cost")
+                    if own:
+                        per_unit_base += float(own)
                 unit_cost.update({comm: per_unit_base})
                 if G.out_degree(v) == 0:
                     # print(f"Skipping sink node {v} with no outgoing edges")
                     continue
                 # Calculate cost components separately
-                # Material cost includes upstream material + all upstream energy + all transport
+                # Material cost includes upstream material + all upstream energy + transport + tariffs
                 # We want to track the material cost EXCLUDING the current step's energy
                 volume = edata.get(volume_attr, 0.0)
-                material_and_transport_cost = (per_unit_base + edata.get(transport_attr, 0.0)) * volume
+                material_tariff_transportation_cost = (
+                    per_unit_base + edata.get(transport_attr, 0.0) + edata.get("tariff_cost", 0.0)
+                ) * volume
                 current_step_energy_cost = edata.get(process_attr, 0.0) * volume
-                edge_cost = material_and_transport_cost + current_step_energy_cost
+                edge_cost = material_tariff_transportation_cost + current_step_energy_cost
+
+                tariff_unit = edata.get("tariff_cost", 0.0)
+                if tariff_unit > 0:
+                    logger.debug(
+                        "[COST PROP] %s -> %s (%s): base=$%.2f transport=$%.2f tariff=$%.2f energy=$%.2f",
+                        u,
+                        v,
+                        comm,
+                        per_unit_base,
+                        edata.get(transport_attr, 0.0),
+                        tariff_unit,
+                        edata.get(process_attr, 0.0),
+                    )
 
                 if (
                     diag.diagnostics_enabled()
@@ -459,7 +538,7 @@ class TM_PAM_connector:
                     transport_unit = edata.get(transport_attr, 0.0)
                     energy_unit = edata.get(process_attr, 0.0)
                     base_unit = per_unit_base
-                    total_unit = base_unit + transport_unit + energy_unit
+                    total_unit = base_unit + transport_unit + tariff_unit + energy_unit
                     delta = total_unit - base_unit
                     delta_pct = (delta / base_unit * 100) if base_unit else None
                     if delta > 500 or (delta_pct is not None and delta_pct > 100):
@@ -467,14 +546,17 @@ class TM_PAM_connector:
                         diag.append_text(
                             f"cost_propagation/{self.current_year}.txt",
                             [
-                                "node={node}, source={src}, commodity={comm}, base={base:.2f}, "
-                                "transport={transport:.2f}, energy={energy:.2f}, total={total:.2f}, "
-                                "delta={delta:.2f}, delta_pct={delta_pct}".format(
+                                "node={node}, source={src}, commodity={comm}, "
+                                "base={base:.2f}, transport={transport:.2f}, "
+                                "tariff={tariff:.2f}, energy={energy:.2f}, "
+                                "total={total:.2f}, delta={delta:.2f}, "
+                                "delta_pct={delta_pct}".format(
                                     node=v,
                                     src=u,
                                     comm=comm,
                                     base=base_unit,
                                     transport=transport_unit,
+                                    tariff=tariff_unit,
                                     energy=energy_unit,
                                     total=total_unit,
                                     delta=delta,
@@ -490,11 +572,12 @@ class TM_PAM_connector:
 
                 # Accumulate cost and volume
                 # Store both total cost and material cost (excluding current step's energy)
-                # MaterialCost includes upstream material + ALL upstream costs (including upstream energy) + current transport
+                # MaterialCost includes upstream material + ALL upstream costs
+                # (including upstream energy) + current transport + tariffs
                 # EXCLUDES the current step's processing energy
                 prev = G.nodes[v][allocation_attr].get(comm, {"Cost": 0.0, "MaterialCost": 0.0, "Volume": 0.0})
                 prev["Cost"] += edge_cost  # Total cost including current step's energy
-                prev["MaterialCost"] += material_and_transport_cost  # Excludes current step's energy only
+                prev["MaterialCost"] += material_tariff_transportation_cost  # Excludes current step's energy only
                 prev["Volume"] += volume
                 G.nodes[v][allocation_attr][comm] = prev
                 G.nodes[v][source_attr][comm] = prev["Cost"]
@@ -615,9 +698,8 @@ class TM_PAM_connector:
             Calls in sequence: create_graph() → calculate_allocations_for_graph() →
             validate_edge_attributes() → propage_cost_forward_by_layers_and_normalize().
         """
-        logging.debug(
-            f"[NETWORK DEBUG] Setting up network with {len(solved_trade_allocations.allocations)} total allocations"
-        )
+        logger = logging.getLogger(f"{__name__}.set_up_network_and_propagate_costs")
+        logger.debug(f"[NETWORK] Setting up network with {len(solved_trade_allocations.allocations)} total allocations")
 
         if len(solved_trade_allocations.allocations) == 0:
             raise ValueError("No allocations found in the solved trade allocations. Please check the input data.")
@@ -672,24 +754,21 @@ class TM_PAM_connector:
             - Logs debug information about edge counts and volumes.
             - Must be called after set_up_network_and_propagate_costs().
         """
+        logger = logging.getLogger(f"{__name__}.TM_PAM_connector.update_exported_volumes")
         for fg in furnace_groups:
             exported_volumes = 0.0
             if self.G is not None and fg.furnace_group_id in self.G.nodes:
                 outgoing_edges = list(self.G.out_edges(fg.furnace_group_id, data=True))
-                logger.debug(f"[ALLOCATION DEBUG] FG {fg.furnace_group_id}: Found {len(outgoing_edges)} outgoing edges")
+                logger.debug(f"[ALLOCATION] FG {fg.furnace_group_id}: Found {len(outgoing_edges)} outgoing edges")
                 for _, dest, edge_data in outgoing_edges:
                     volume = edge_data.get(volume_attribute, 0)
                     exported_volumes += volume
-                    logger.debug(f"[ALLOCATION DEBUG] FG {fg.furnace_group_id} -> {dest}: volume = {volume}")
+                    logger.debug(f"[ALLOCATION] FG {fg.furnace_group_id} -> {dest}: volume = {volume}")
                 fg.set_allocated_volumes(exported_volumes)
-                logger.debug(
-                    f"[ALLOCATION DEBUG] FG {fg.furnace_group_id}: total allocated_volumes = {exported_volumes}"
-                )
+                logger.debug(f"[ALLOCATION] FG {fg.furnace_group_id}: total allocated_volumes = {exported_volumes}")
             else:
                 fg.set_allocated_volumes(0.0)
-                logger.debug(
-                    f"[ALLOCATION DEBUG] FG {fg.furnace_group_id}: allocated_volumes = 0.0 (no outgoing edges)"
-                )
+                logger.debug(f"[ALLOCATION] FG {fg.furnace_group_id}: allocated_volumes = 0.0 (no outgoing edges)")
 
     def extract_transportation_costs(
         self,
@@ -754,12 +833,13 @@ class TM_PAM_connector:
             - Utilization rate is capped between 0.0 and capacity (no explicit cap applied).
             - Zero-capacity furnaces get utilization_rate = 0.
         """
+        logger = logging.getLogger(f"{__name__}.update_furnace_group_utilisation")
         self.update_exported_volumes(furnace_groups=furnace_groups, volume_attribute=volume_attribute)
         for fg in furnace_groups:
             fg.utilization_rate = fg.allocated_volumes / fg.capacity if fg.capacity > 0 else 0
             if fg.capacity <= 0:
                 # raise Warning(f"Furnace group capacity is 0 for {fg.furnace_group_id}")
-                logging.debug(
+                logger.debug(
                     f"Furnace group capacity is 0 for {fg.furnace_group_id} \n and allocation is {fg.allocated_volumes}"
                 )
 
@@ -800,25 +880,32 @@ class TM_PAM_connector:
             - Logs detailed debug information to "update_bill_of_materials" logger.
         """
         # Create a custom logger specifically for this function
-        bom_logger = logging.getLogger("steelo.domain.trade_modelling.TM_PAM_connector.update_bill_of_materials")
+        logger = logging.getLogger("steelo.domain.trade_modelling.TM_PAM_connector.update_bill_of_materials")
 
-        bom_logger.debug(f"[BOM DEBUG] Starting update_bill_of_materials for {len(furnace_groups)} furnace groups")
+        logger.debug(
+            "[BOM] Starting update_bill_of_materials for %d furnace groups",
+            len(furnace_groups),
+        )
         if self.G is not None:
-            bom_logger.debug(f"[BOM DEBUG] Graph has {len(self.G.nodes)} nodes and {len(self.G.edges)} edges")
+            logger.debug(
+                "[BOM] Graph has %d nodes and %d edges",
+                len(self.G.nodes),
+                len(self.G.edges),
+            )
         else:
-            bom_logger.debug("[BOM DEBUG] Graph is None!")
+            logger.debug("[BOM] Graph is None!")
 
         bom_issue_count_materials = 0
         bom_issue_count_energy = 0
         for fg in furnace_groups:
-            bom_logger.debug(
-                f"[BOM DEBUG] Starting BOM update for FG {fg.furnace_group_id} - Tech: {fg.technology.name}, Status: {fg.status}"
+            logger.debug(
+                f"[BOM] Starting BOM update for FG {fg.furnace_group_id} - Tech: {fg.technology.name}, Status: {fg.status}"
             )
             _ = {"materials": [], "energy": []}
             product_volume = 0.0
             if self.G is not None:
                 in_edges = list(self.G.in_edges(fg.furnace_group_id))
-                bom_logger.debug(f"[BOM DEBUG] FG {fg.furnace_group_id}: Found {len(in_edges)} incoming edges")
+                logger.debug(f"[BOM] FG {fg.furnace_group_id}: Found {len(in_edges)} incoming edges")
                 for edges in in_edges:
                     edge_data = self.G.get_edge_data(*edges)
                     for commodity, attr_dict in edge_data.items():
@@ -837,7 +924,7 @@ class TM_PAM_connector:
                                 {commodity: {"demand": attr_dict["volume"], "unit_cost": processing_energy_cost}}
                             )
             else:
-                bom_logger.debug(f"[BOM DEBUG] FG {fg.furnace_group_id}: Graph is None, no edges to process")
+                logger.debug(f"[BOM] FG {fg.furnace_group_id}: Graph is None, no edges to process")
 
             if self.G is not None and fg.furnace_group_id in self.G.nodes:
                 export_dict = self.G.nodes[fg.furnace_group_id].get("export", {}) or {}
@@ -845,21 +932,19 @@ class TM_PAM_connector:
             if product_volume <= 0:
                 product_volume = float(fg.production) if getattr(fg, "production", 0.0) else 0.0
             if product_volume <= 0:
-                bom_logger.warning(
-                    "[BOM DEBUG] FG %s: Unable to determine product volume; falling back to input-based costs",
+                logger.warning(
+                    "[BOM] FG %s: Unable to determine product volume; falling back to input-based costs",
                     fg.furnace_group_id,
                 )
 
             collect: dict[str, dict[str, dict[str, float]]] = {"materials": {}, "energy": {}}
 
             # Log the raw procurement data
-            bom_logger.debug(
-                f"[BOM DEBUG] FG {fg.furnace_group_id}: Processing procurement data with keys: {list(_.keys())}"
-            )
+            logger.debug(f"[BOM] FG {fg.furnace_group_id}: Processing procurement data with keys: {list(_.keys())}")
 
             for key, procurement_dict in _.items():
-                bom_logger.debug(
-                    f"[BOM DEBUG] FG {fg.furnace_group_id}: Processing key '{key}' with {len(procurement_dict)} items"
+                logger.debug(
+                    f"[BOM] FG {fg.furnace_group_id}: Processing key '{key}' with {len(procurement_dict)} items"
                 )
                 for commodity_dict in procurement_dict:
                     for commodity, demand_cost in commodity_dict.items():
@@ -884,28 +969,22 @@ class TM_PAM_connector:
                             else 0.0
                         )
 
-            bom_logger.debug(f"[BOM DEBUG] FG {fg.furnace_group_id}: energy items = {len(collect['energy'])}")
+            logger.debug(f"[BOM] FG {fg.furnace_group_id}: energy items = {len(collect['energy'])}")
 
             if self.G is None:
-                bom_logger.debug(
-                    f"[BOM DEBUG] FG {fg.furnace_group_id}: Graph is None - unable to populate materials allocation"
-                )
+                logger.debug(f"[BOM] FG {fg.furnace_group_id}: Graph is None - unable to populate materials allocation")
             elif fg.furnace_group_id not in self.G.nodes:
                 logger.warning(
                     f"Furnace group {fg.furnace_group_id} not found in graph nodes during bill of materials update"
                 )
-                bom_logger.debug(f"[BOM DEBUG] FG {fg.furnace_group_id} NOT FOUND in graph nodes!")
+                logger.debug(f"[BOM] FG {fg.furnace_group_id} NOT FOUND in graph nodes!")
             else:
-                bom_logger.debug(f"[BOM DEBUG] FG {fg.furnace_group_id}: Checking graph for materials allocation")
+                logger.debug(f"[BOM] FG {fg.furnace_group_id}: Checking graph for materials allocation")
                 node_allocations = self.G.nodes[fg.furnace_group_id].get("allocations", {})
-                bom_logger.debug(
-                    f"[BOM DEBUG] FG {fg.furnace_group_id}: found {len(node_allocations)} allocations in graph node"
-                )
+                logger.debug(f"[BOM] FG {fg.furnace_group_id}: found {len(node_allocations)} allocations in graph node")
 
                 if not node_allocations:
-                    bom_logger.debug(
-                        f"[BOM DEBUG] FG {fg.furnace_group_id}: No allocations available to populate materials BOM"
-                    )
+                    logger.debug(f"[BOM] FG {fg.furnace_group_id}: No allocations available to populate materials BOM")
 
                 for comm, attr_dict in node_allocations.items():
                     volume = attr_dict["Volume"]
@@ -926,9 +1005,17 @@ class TM_PAM_connector:
                     if product_volume <= 0 and volume > 0:
                         collect["materials"][comm]["product_volume"] = volume
 
-            bom_logger.debug(
-                f"[BOM DEBUG] FG {fg.furnace_group_id}: Final BOM materials = {list(collect['materials'].keys())}"
-            )
+                    if material_cost > 0 and material_cost != cost:
+                        logger.debug(
+                            "[BOM] FG %s: %s total_material_cost=$%.2f (total_cost=$%.2f, diff=$%.2f incl. tariffs)",
+                            fg.furnace_group_id,
+                            comm,
+                            material_cost,
+                            cost,
+                            cost - material_cost,
+                        )
+
+            logger.debug(f"[BOM] FG {fg.furnace_group_id}: Final BOM materials = {list(collect['materials'].keys())}")
 
             util_rate = getattr(fg, "utilization_rate", None)
             if util_rate is not None and util_rate <= 0:
@@ -941,16 +1028,16 @@ class TM_PAM_connector:
 
                 if not collect["materials"] and not collect["energy"]:
                     if existing_bom and (existing_bom.get("materials") or existing_bom.get("energy")):
-                        bom_logger.warning(
-                            "[BOM DEBUG] FG %s: Trade module returned no materials/energy "
+                        logger.warning(
+                            "[BOM] FG %s: Trade module returned no materials/energy "
                             "(production=%s). Preserving existing BOM with %d material entries.",
                             fg.furnace_group_id,
                             getattr(fg, "production", None),
                             len(existing_bom.get("materials", {})),
                         )
                         continue
-                    bom_logger.warning(
-                        "[BOM DEBUG] FG %s: Trade module returned no materials/energy "
+                    logger.warning(
+                        "[BOM] FG %s: Trade module returned no materials/energy "
                         "(production=%s) and no existing BOM found.",
                         fg.furnace_group_id,
                         getattr(fg, "production", None),
@@ -985,30 +1072,30 @@ class TM_PAM_connector:
                     merged_bom["materials"] = collect["materials"]
                     _ensure_material_shares(merged_bom["materials"])
                 elif merged_bom.get("materials"):
-                    bom_logger.error(
-                        "[BOM DEBUG] FG %s: Preserving %d existing material entries (no new allocations).",
+                    logger.error(
+                        "[BOM] FG %s: Preserving %d existing material entries (no new allocations).",
                         fg.furnace_group_id,
                         len(merged_bom["materials"]),
                     )
                     bom_issue_count_materials += 1
                 else:
-                    bom_logger.warning(
-                        "[BOM DEBUG] FG %s: No material allocations available; BOM materials remain empty.",
+                    logger.warning(
+                        "[BOM] FG %s: No material allocations available; BOM materials remain empty.",
                         fg.furnace_group_id,
                     )
 
                 if collect["energy"]:
                     merged_bom["energy"] = collect["energy"]
                 elif merged_bom.get("energy"):
-                    bom_logger.error(
-                        "[BOM DEBUG] FG %s: Preserving %d existing energy entries (no new allocations).",
+                    logger.error(
+                        "[BOM] FG %s: Preserving %d existing energy entries (no new allocations).",
                         fg.furnace_group_id,
                         len(merged_bom["energy"]),
                     )
                     bom_issue_count_energy += 1
                 else:
-                    bom_logger.debug(
-                        "[BOM DEBUG] FG %s: No energy allocations available; BOM energy remains empty.",
+                    logger.debug(
+                        "[BOM] FG %s: No energy allocations available; BOM energy remains empty.",
                         fg.furnace_group_id,
                     )
 
@@ -1038,6 +1125,433 @@ class TM_PAM_connector:
 
         return bom_issue_count_materials, bom_issue_count_energy
 
+    def validate_bom_consistency(
+        self,
+        furnace_groups: list[FurnaceGroup],
+        aggregated_constraints: list | None = None,
+        mass_balance_tolerance: float = 0.01,
+        min_share_tolerance: float = 0.01,
+    ) -> list[dict]:
+        """Validate BOM balance and minimum-share constraints for all active furnace groups.
+
+        Two checks are run for every FG with production > 0:
+
+        1. **Mass balance**: the total metallic-charge input (hot_metal, pig_iron, scrap,
+           DRI/HBI, etc.) should be within `mass_balance_tolerance` of the production
+           volume.  A steel furnace using 1 t of metallic charge to produce 1 t of steel
+           should have a ratio close to 1.  Ratios outside [1 - tol, 1 + tol] indicate a
+           disaggregation error (e.g. material stranded at wrong FG).
+
+        2. **Min-share constraints**: for each feedstock whose
+           ``minimum_share_in_product > 0``, the material's actual share of the total
+           metallic-charge input must be ≥ ``minimum_share_in_product - min_share_tolerance``.
+           Aggregated constraints (e.g. BOF hot_metal ≥ 70%) are also checked; both the
+           hot and cold form of a commodity are counted (pig_iron ≡ hot_metal).
+
+        Args:
+            furnace_groups: All furnace groups to check.
+            aggregated_constraints: Optional list of ``AggregatedMetallicChargeConstraint``
+                objects (same ones passed to the LP / disaggregation).
+            mass_balance_tolerance: Relative tolerance for metallic input/output ratio.
+                Default 10 % (0.10).
+            min_share_tolerance: Absolute slack allowed on minimum-share constraints.
+                Default 2 pp (0.02).
+
+        Returns:
+            List of issue dicts.  Each dict contains at least:
+            ``fg_id``, ``technology``, ``check`` (``"empty_bom"``, ``"mass_balance"``,
+            or ``"min_share"``), and ``message``.  All violations are also logged as
+            WARNING.
+        """
+        logger = logging.getLogger(f"{__name__}.validate_bom_consistency")
+
+        # Commodities that count as metallic charge (hot and cold forms).
+        # Pig iron and hot metal are the same material in different transport states;
+        # both count toward any hot_metal minimum.
+        METALLIC_COMMODITIES: set[str] = {
+            "hot_metal",
+            "pig_iron",
+            "dri_low",
+            "dri_mid",
+            "dri_high",
+            "hbi_low",
+            "hbi_mid",
+            "hbi_high",
+            "scrap",
+            "scrap_steel",
+            "electrolytic_iron",
+            "liquid_iron",
+        }
+        # Hot ↔ cold equivalences for min-share matching
+        HOT_COLD_EQUIV: dict[str, str] = {
+            "pig_iron": "hot_metal",
+            "hot_metal": "pig_iron",
+            "hbi_low": "dri_low",
+            "dri_low": "hbi_low",
+            "hbi_mid": "dri_mid",
+            "dri_mid": "hbi_mid",
+            "hbi_high": "dri_high",
+            "dri_high": "hbi_high",
+            "liquid_iron": "electrolytic_iron",
+            "electrolytic_iron": "liquid_iron",
+        }
+
+        def _equiv_names(name: str) -> set[str]:
+            n = name.lower()
+            return {n, HOT_COLD_EQUIV[n]} if n in HOT_COLD_EQUIV else {n}
+
+        issues: list[dict[str, Any]] = []
+
+        for fg in furnace_groups:
+            production = getattr(fg, "allocated_volumes", 0.0) or 0.0
+            if production <= 0:
+                continue
+
+            bom = fg.bill_of_materials
+            if not bom or not bom.get("materials"):
+                issue: dict[str, Any] = {
+                    "fg_id": fg.furnace_group_id,
+                    "technology": fg.technology.name,
+                    "check": "empty_bom",
+                    "message": (
+                        f"FG {fg.furnace_group_id} ({fg.technology.name}): "
+                        f"production={production:.0f}t but BOM materials are empty"
+                    ),
+                }
+                issues.append(issue)
+                logger.warning("[BOM-CHECK] %s", issue["message"])
+                continue
+
+            materials = bom["materials"]
+
+            # --- Check 1: mass balance on metallic charge ---
+            total_metallic_in = sum(
+                float(info.get("demand", 0.0))
+                for comm, info in materials.items()
+                if comm.lower() in METALLIC_COMMODITIES
+            )
+
+            # If total metallic is zero but the FG has at least one metallic-charge
+            # feedstock constraint, it should have received metallic inputs.  A
+            # non-empty BOM that contains only non-metallic materials (e.g. iron_ore
+            # routed to a BOF via a graph bug) would otherwise slip past all checks.
+            if total_metallic_in == 0:
+                feedstocks_needing_metallic = [
+                    fs
+                    for fs in (getattr(fg, "effective_primary_feedstocks", None) or [])
+                    if normalize_name(getattr(fs, "metallic_charge", "")) in METALLIC_COMMODITIES
+                    and getattr(fs, "minimum_share_in_product", 0) > 0
+                ]
+                if feedstocks_needing_metallic:
+                    issue = {
+                        "fg_id": fg.furnace_group_id,
+                        "technology": fg.technology.name,
+                        "check": "zero_metallic",
+                        "message": (
+                            f"FG {fg.furnace_group_id} ({fg.technology.name}): "
+                            f"production={production:.0f}t but BOM contains no metallic-charge materials "
+                            f"(expected: {[getattr(fs, 'metallic_charge', '?') for fs in feedstocks_needing_metallic]})"
+                        ),
+                    }
+                    issues.append(issue)
+                    logger.warning("[BOM-CHECK] zero_metallic: %s", issue["message"])
+
+            if total_metallic_in > 0:
+                ratio = total_metallic_in / production
+                # Yield losses mean slightly more input than output is normal;
+                # ratios well outside [0.9, 1.2] suggest a disaggregation error.
+                lo, hi = 1.0 - mass_balance_tolerance, 1.2 + mass_balance_tolerance
+                if not (lo <= ratio <= hi):
+                    issue = {
+                        "fg_id": fg.furnace_group_id,
+                        "technology": fg.technology.name,
+                        "check": "mass_balance",
+                        "ratio": ratio,
+                        "message": (
+                            f"FG {fg.furnace_group_id} ({fg.technology.name}): "
+                            f"metallic_input={total_metallic_in:.0f}t / production={production:.0f}t "
+                            f"= {ratio:.3f} (expected [{lo:.2f}, {hi:.2f}])"
+                        ),
+                    }
+                    issues.append(issue)
+                    logger.warning("[BOM-CHECK] mass_balance: %s", issue["message"])
+
+            # --- Check 2: per-feedstock minimum shares ---
+            feedstocks = getattr(fg, "effective_primary_feedstocks", None) or []
+            for fs in feedstocks:
+                min_share = getattr(fs, "minimum_share_in_product", None)
+                if not min_share or min_share <= 0:
+                    continue
+
+                equiv = _equiv_names(normalize_name(fs.metallic_charge))
+                actual_demand = sum(
+                    float(info.get("demand", 0.0)) for comm, info in materials.items() if comm.lower() in equiv
+                )
+                actual_share = actual_demand / total_metallic_in if total_metallic_in > 0 else 0.0
+
+                if actual_share < min_share - min_share_tolerance:
+                    issue = {
+                        "fg_id": fg.furnace_group_id,
+                        "technology": fg.technology.name,
+                        "check": "min_share",
+                        "commodity": fs.metallic_charge,
+                        "actual_share": actual_share,
+                        "required_share": min_share,
+                        "message": (
+                            f"FG {fg.furnace_group_id} ({fg.technology.name}): "
+                            f"{fs.metallic_charge} share={actual_share:.1%} "
+                            f"< minimum={min_share:.1%} "
+                            f"(demand={actual_demand:.0f}t / metallic_total={total_metallic_in:.0f}t)"
+                        ),
+                    }
+                    issues.append(issue)
+                    logger.warning("[BOM-CHECK] min_share: %s", issue["message"])
+
+            # --- Check 3: aggregated constraints (e.g. BOF hot_metal ≥ 70%) ---
+            if aggregated_constraints:
+                fg_tech = fg.technology.name.lower()
+                for c in aggregated_constraints:
+                    min_share = getattr(c, "minimum_share", None)
+                    if not min_share or min_share <= 0:
+                        continue
+                    if str(getattr(c, "technology_name", "")).lower() != fg_tech:
+                        continue
+                    pattern = str(getattr(c, "feedstock_pattern", "")).lower()
+                    if not pattern:
+                        continue
+
+                    # Sum demand for all materials whose name (or equivalent) starts with pattern
+                    matching_demand = sum(
+                        float(info.get("demand", 0.0))
+                        for comm, info in materials.items()
+                        if any(n.startswith(pattern) for n in _equiv_names(comm.lower()))
+                    )
+                    actual_share = matching_demand / total_metallic_in if total_metallic_in > 0 else 0.0
+
+                    if actual_share < min_share - min_share_tolerance:
+                        issue = {
+                            "fg_id": fg.furnace_group_id,
+                            "technology": fg.technology.name,
+                            "check": "aggregated_min_share",
+                            "pattern": pattern,
+                            "actual_share": actual_share,
+                            "required_share": min_share,
+                            "message": (
+                                f"FG {fg.furnace_group_id} ({fg.technology.name}): "
+                                f"aggregated constraint '{pattern}*' share={actual_share:.1%} "
+                                f"< minimum={min_share:.1%} "
+                                f"(matching={matching_demand:.0f}t / metallic_total={total_metallic_in:.0f}t)"
+                            ),
+                        }
+                        issues.append(issue)
+                        logger.warning("[BOM-CHECK] aggregated_min_share: %s", issue["message"])
+
+        if issues:
+            logger.warning(
+                "[BOM-CHECK] Found %d BOM consistency issue(s) across %d furnace groups",
+                len(issues),
+                len(furnace_groups),
+            )
+        else:
+            logger.info("[BOM-CHECK] All active furnace groups passed BOM consistency checks")
+
+        return issues
+
+    def correct_utilization_for_supply_constraints(
+        self,
+        furnace_groups: list[FurnaceGroup],
+        bom_issues: list[dict[str, Any]],
+    ) -> int:
+        """Reduce utilization of FGs that cannot receive enough of a constrained material.
+
+        When a FG has a min-share violation (e.g. a BOF receiving only 4.8 % hot_metal
+        instead of the required ≥ 70 %) the LP-assigned production implicitly assumes a
+        supply that is not physically available within ``hot_metal_radius``.  This method
+        corrects by:
+
+        1. Treating the constrained commodity's actual supply as fixed (geography-determined).
+        2. Computing the maximum total metallic charge consistent with that supply and the
+           minimum-share requirement: ``T_new = constrained_supply / required_share``.
+        3. Scaling production and ``utilization_rate`` by ``T_new / T_old``.
+        4. Keeping the constrained commodity's BOM demand unchanged; scaling all other
+           metallic BOM entries down so ``T_new`` is satisfied.
+        5. Scaling non-metallic BOM entries with production.
+
+        For each FG the most-binding violation (smallest ``actual_share / required_share``)
+        is used.
+
+        Args:
+            furnace_groups: All furnace groups.
+            bom_issues: List returned by ``validate_bom_consistency``.
+
+        Returns:
+            Number of FGs whose utilization was corrected.
+        """
+        logger = logging.getLogger(f"{__name__}.correct_utilization_for_supply_constraints")
+
+        METALLIC_COMMODITIES: set[str] = {
+            "hot_metal",
+            "pig_iron",
+            "dri_low",
+            "dri_mid",
+            "dri_high",
+            "hbi_low",
+            "hbi_mid",
+            "hbi_high",
+            "scrap",
+            "scrap_steel",
+            "electrolytic_iron",
+            "liquid_iron",
+        }
+        HOT_COLD_EQUIV: dict[str, str] = {
+            "pig_iron": "hot_metal",
+            "hot_metal": "pig_iron",
+            "hbi_low": "dri_low",
+            "dri_low": "hbi_low",
+            "hbi_mid": "dri_mid",
+            "dri_mid": "hbi_mid",
+            "hbi_high": "dri_high",
+            "dri_high": "hbi_high",
+            "liquid_iron": "electrolytic_iron",
+            "electrolytic_iron": "liquid_iron",
+        }
+
+        def _equiv_names(name: str) -> set[str]:
+            n = name.lower()
+            return {n, HOT_COLD_EQUIV[n]} if n in HOT_COLD_EQUIV else {n}
+
+        # Collect the most-binding min_share / aggregated_min_share issue per FG
+        binding_by_fg: dict[str, dict[str, Any]] = {}
+        for issue in bom_issues:
+            if issue["check"] not in ("min_share", "aggregated_min_share"):
+                continue
+            fg_id = issue["fg_id"]
+            actual_share = issue.get("actual_share", 0.0)
+            required_share = issue.get("required_share", 1.0)
+            scale = actual_share / required_share if required_share > 0 else 1.0
+            if fg_id not in binding_by_fg or scale < binding_by_fg[fg_id]["_scale"]:
+                binding_by_fg[fg_id] = {**issue, "_scale": scale}
+
+        if not binding_by_fg:
+            return 0
+
+        fg_by_id = {fg.furnace_group_id: fg for fg in furnace_groups}
+        corrected = 0
+
+        for fg_id, issue in binding_by_fg.items():
+            fg = fg_by_id.get(fg_id)
+            if fg is None:
+                continue
+
+            bom = fg.bill_of_materials
+            if not bom or not bom.get("materials"):
+                continue
+
+            materials = bom["materials"]
+            total_metallic_in = sum(
+                float(info.get("demand", 0.0))
+                for comm, info in materials.items()
+                if comm.lower() in METALLIC_COMMODITIES
+            )
+            if total_metallic_in <= 0:
+                continue
+
+            # Identify constrained commodity set (hot/cold equivalents count together)
+            commodity_raw = issue.get("commodity") or issue.get("pattern") or ""
+            constrained_equiv = _equiv_names(normalize_name(commodity_raw)) if commodity_raw else set()
+
+            constrained_supply = (
+                sum(
+                    float(info.get("demand", 0.0))
+                    for comm, info in materials.items()
+                    if comm.lower() in constrained_equiv
+                )
+                if constrained_equiv
+                else 0.0
+            )
+
+            required_share = issue["required_share"]
+            if required_share <= 0 or constrained_supply <= 0:
+                continue
+
+            # Maximum total metallic consistent with fixed constrained supply + min-share
+            new_total_metallic = constrained_supply / required_share
+            if new_total_metallic >= total_metallic_in:
+                continue  # No reduction needed (shouldn't happen, but guard)
+
+            scale_production = new_total_metallic / total_metallic_in  # < 1
+
+            # Scale factor for all OTHER metallic materials (excluding constrained commodity)
+            other_metallic_old = total_metallic_in - constrained_supply
+            other_metallic_new = new_total_metallic - constrained_supply
+            scale_other = other_metallic_new / other_metallic_old if other_metallic_old > 0 else 0.0
+
+            old_production = fg.allocated_volumes
+            new_production = old_production * scale_production
+
+            logger.warning(
+                "[UTIL-CORRECT] FG %s (%s): supply-constrained by '%s' (%.1f%% < %.0f%% min). "
+                "Reducing production %.0f → %.0f t, utilization %.1f%% → %.1f%%",
+                fg_id,
+                fg.technology.name,
+                commodity_raw,
+                issue["actual_share"] * 100,
+                required_share * 100,
+                old_production,
+                new_production,
+                (fg.utilization_rate or 0) * 100,
+                (new_production / fg.capacity * 100) if fg.capacity > 0 else 0,
+            )
+
+            # Update production and utilization
+            fg.set_allocated_volumes(new_production)
+            if fg.capacity > 0:
+                fg.utilization_rate = new_production / fg.capacity
+
+            # Scale outgoing graph edges (steel to demand centers) so downstream
+            # demand-satisfaction accounting reflects reduced supply.
+            if self.G is not None and fg_id in self.G.nodes:
+                for _, dest, edge_data in list(self.G.out_edges(fg_id, data=True)):
+                    old_vol = edge_data.get("volume", 0.0)
+                    edge_data["volume"] = old_vol * scale_production
+                    old_alloc = edge_data.get("allocations", 0.0)
+                    if old_alloc:
+                        edge_data["allocations"] = old_alloc * scale_production
+
+            # Update BOM demands and costs
+            for comm, info in materials.items():
+                comm_lower = comm.lower()
+                if comm_lower in constrained_equiv:
+                    # Constrained commodity: demand fixed, but unit_cost rises (less output)
+                    pass
+                elif comm_lower in METALLIC_COMMODITIES:
+                    # Other metallics: reduce to maintain valid share
+                    old_demand = float(info.get("demand", 0.0))
+                    info["demand"] = old_demand * scale_other
+                    if "total_cost" in info:
+                        info["total_cost"] = float(info["total_cost"]) * scale_other
+                else:
+                    # Non-metallic inputs (iron ore, flux, gases): scale with production
+                    old_demand = float(info.get("demand", 0.0))
+                    info["demand"] = old_demand * scale_production
+                    if "total_cost" in info:
+                        info["total_cost"] = float(info["total_cost"]) * scale_production
+
+                # Recompute unit_cost against new production
+                if new_production > 0 and "total_cost" in info:
+                    info["unit_cost"] = float(info["total_cost"]) / new_production
+
+                info["product_volume"] = new_production
+
+            corrected += 1
+
+        if corrected:
+            logger.info(
+                "[UTIL-CORRECT] Corrected utilization for %d FG(s) due to constrained supply",
+                corrected,
+            )
+        return corrected
+
     def update_furnace_group_emissions(self, furnace_groups: list[FurnaceGroup]):
         """Calculate and set emissions for furnace groups based on their bill of materials.
 
@@ -1057,6 +1571,7 @@ class TM_PAM_connector:
             - Emissions calculation uses material volumes and emission factors from BOM.
             - Requires fg.bill_of_materials["materials"] to be non-empty.
         """
+        logger = logging.getLogger(f"{__name__}.TM_PAM_connector.update_furnace_group_emissions")
         # self.update_exported_volumes(furnace_groups=furnace_groups)
         for fg in furnace_groups:
             if fg.bill_of_materials and fg.bill_of_materials["materials"]:
@@ -1065,10 +1580,10 @@ class TM_PAM_connector:
                 # Log why emissions are being set to empty
                 if not fg.bill_of_materials:
                     logger.warning(
-                        f"[EMISSIONS DEBUG] FG {fg.furnace_group_id}: No bill_of_materials, setting emissions to empty dict"
+                        f"[EMISSIONS] FG {fg.furnace_group_id}: No bill_of_materials, setting emissions to empty dict"
                     )
                 elif not fg.bill_of_materials.get("materials"):
                     logger.warning(
-                        f"[EMISSIONS DEBUG] FG {fg.furnace_group_id}: Empty materials in BOM, setting emissions to empty dict"
+                        f"[EMISSIONS] FG {fg.furnace_group_id}: Empty materials in BOM, setting emissions to empty dict"
                     )
                 fg.emissions = {}

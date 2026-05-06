@@ -37,6 +37,7 @@ from ..adapters.dataprocessing.excel_reader import (
     read_fopex,
     read_carbon_border_mechanisms,
     read_fallback_material_costs,
+    read_willingness_to_pay,
 )
 from ..adapters.repositories.json_repository import (
     BiomassAvailabilityJsonRepository,
@@ -60,6 +61,7 @@ from ..adapters.repositories.json_repository import (
     FOPEXRepository,
     CarbonBorderMechanismJsonRepository,
     FallbackMaterialCostJsonRepository,
+    WillingnessToPayJsonRepository,
 )
 from ..domain.calculate_costs import calculate_lcoh_from_electricity_country_level
 
@@ -269,15 +271,22 @@ def recreate_mines_and_scrap_as_suppliers_data(
         location_csv=location_path,
         gravity_distances_pkl_path=gravity_path,
     )
+    console.print(f"[blue]  Read {len(scrap_suppliers)} scrap suppliers[/blue]")
+
     mine_suppliers = read_mines_as_suppliers(
         mine_data_excel_path=str(master_excel_path),
         mine_data_sheet_name=mines_sheet_name,
         location_csv=location_path,
     )
+    console.print(f"[blue]  Read {len(mine_suppliers)} iron ore mine suppliers[/blue]")
+
     suppliers = scrap_suppliers + mine_suppliers
     write_repository = SupplierJsonRepository(json_path)
     write_repository.add_list(suppliers)
     console.print(f"[green]Sample mine/scrap suppliers data written to[/green]: {json_path}")
+    console.print(
+        f"[green]  Total suppliers: {len(suppliers)} ({len(scrap_suppliers)} scrap + {len(mine_suppliers)} mines)[/green]"
+    )
     return write_repository
 
 
@@ -285,15 +294,30 @@ def recreate_tarrifs_data(
     json_path: Path,
     tariff_excel_path: str,
     tariff_sheet_name: str = "Tariffs",
-    trade_bloc_sheet_name: str = "Trade bloc definitions",
+    country_mapping_sheet_name: str = "Country mapping",
 ) -> TariffJsonRepository:
     """
     Recreate the JSON sample tariffs data from the current Excel file.
+
+    Args:
+        json_path: Path to output JSON file.
+        tariff_excel_path: Path to Excel file containing tariff data.
+        tariff_sheet_name: Name of the tariff sheet in the Excel file.
+        country_mapping_sheet_name: Name of the country mapping sheet in the Excel file.
+
+    Returns:
+        TariffJsonRepository containing the loaded tariffs.
     """
+    # Load country mappings from the Excel file
+    country_mappings = read_country_mappings(
+        excel_path=Path(tariff_excel_path),
+        sheet_name=country_mapping_sheet_name,
+    )
+
     tariffs = read_tariffs(
         tariff_excel_path=tariff_excel_path,
         tariff_sheet_name=tariff_sheet_name,
-        region_sheet_name=trade_bloc_sheet_name,
+        country_mappings=country_mappings,
     )
     # Start by deleting the existing file if it exists
     if json_path.exists():
@@ -310,7 +334,7 @@ def recreate_subsidy_data(
     json_path: Path,
     excel_path: Path,
     subsidies_sheet_name: str = "Subsidies",
-    trade_bloc_sheet_name: str = "Trade bloc definitions",
+    country_mapping_sheet_name: str = "Country mapping",
 ) -> SubsidyJsonRepository:
     """
     Recreate the JSON sample subsidy data from the current Excel file.
@@ -318,12 +342,45 @@ def recreate_subsidy_data(
     console.print(f"[blue]Reading subsidy data from Excel[/blue]: {excel_path}")
 
     subsidy_data = read_subsidies(
-        excel_path, subsidies_sheet=subsidies_sheet_name, trade_bloc_sheet=trade_bloc_sheet_name
+        excel_path, subsidies_sheet=subsidies_sheet_name, country_mapping_sheet=country_mapping_sheet_name
     )
 
     repo = SubsidyJsonRepository(json_path)
     repo.add_list(subsidy_data)
     console.print(f"[green]Writing subsidy data to[/green]: {json_path}")
+
+    return repo
+
+
+def recreate_willingness_to_pay_data(
+    json_path: Path,
+    excel_path: Path,
+    country_mappings: list,
+    willingness_to_pay_sheet_name: str = "Willingness to pay",
+) -> WillingnessToPayJsonRepository:
+    """
+    Recreate the JSON willingness to pay data from the current Excel file.
+
+    Args:
+        json_path: Path to the JSON file to write
+        excel_path: Path to the Excel file to read from
+        country_mappings: List of CountryMapping objects for resolving regions
+        willingness_to_pay_sheet_name: Name of the sheet in Excel (default: "Willingness to pay")
+
+    Returns:
+        The repository instance pointing to the newly written JSON
+    """
+    console.print(f"[blue]Reading willingness to pay data from Excel[/blue]: {excel_path}")
+
+    wtp_data = read_willingness_to_pay(
+        excel_path,
+        country_mappings=country_mappings,
+        sheet_name=willingness_to_pay_sheet_name,
+    )
+
+    repo = WillingnessToPayJsonRepository(json_path)
+    repo.add_list(wtp_data)
+    console.print(f"[green]Writing willingness to pay data to[/green]: {json_path}")
 
     return repo
 
@@ -470,10 +527,11 @@ def recreate_primary_feedstock_data(
     repo = PrimaryFeedstockJsonRepository(primary_feedstock_json_path)
 
     # 3) If an Excel path is provided, read from it and write those entries:
-    pf_dict = read_dynamic_business_cases(str(excel_path), excel_sheet=bom_excel_sheet)
+    pf_dict, aggregated_constraints = read_dynamic_business_cases(str(excel_path), excel_sheet=bom_excel_sheet)
     # Flatten the dict to get a single list of PrimaryFeedstock objects
     pf_list = [pf for pf_list in pf_dict.values() for pf in pf_list]
     repo.add_list(pf_list)
+    # Note: aggregated_constraints are not stored in the repository - they should be added to environment
 
     return repo
 

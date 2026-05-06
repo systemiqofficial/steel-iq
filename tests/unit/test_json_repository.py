@@ -294,7 +294,9 @@ def test_supplier_repository_preserves_all_unique_suppliers(tmp_path):
             location=location,
             commodity="io_low",
             capacity_by_year={Year(2024): Volumes(100_000_000)},
-            production_cost=50 + i,
+            production_cost_by_year={Year(2024): 50.0 + i},
+            mine_cost_by_year={},
+            mine_price_by_year={},
         )
         suppliers.append(supplier)
 
@@ -340,14 +342,18 @@ def test_supplier_repository_fails_on_duplicate_ids(tmp_path):
         location=location1,
         commodity="io_low",
         capacity_by_year={Year(2024): Volumes(100_000_000)},
-        production_cost=50,
+        production_cost_by_year={Year(2024): 50.0},
+        mine_cost_by_year={},
+        mine_price_by_year={},
     )
     supplier2 = Supplier(
         supplier_id="Australia_IO_low",  # Same ID
         location=location2,
         commodity="io_low",
         capacity_by_year={Year(2024): Volumes(200_000_000)},
-        production_cost=45,
+        production_cost_by_year={Year(2024): 45.0},
+        mine_cost_by_year={},
+        mine_price_by_year={},
     )
 
     # This should raise an error once we implement duplicate detection

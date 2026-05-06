@@ -122,8 +122,13 @@ def test_update_costs_for_considered_plant_no_subsidies(
     assert cmd.new_cost_of_debt_no_subsidy == 0.05
     assert cmd.new_capex == 1000.0  # From capex_dict_all_locs["Americas"]["EAF"]
     assert cmd.new_capex_no_subsidy == 1000.0
-    assert cmd.new_electricity_cost == pytest.approx(50.0)  # Geospatial layer already in USD/kWh-equivalent
-    assert cmd.new_hydrogen_cost == 3.5  # From mock_custom_energy_costs
+    assert cmd.new_energy_costs["electricity"] == pytest.approx(50.0)
+    assert cmd.new_energy_costs["hydrogen"] == 3.5
+    # No subsidies → all three dicts should be equal
+    assert cmd.new_output_energy_costs["electricity"] == pytest.approx(50.0)
+    assert cmd.new_output_energy_costs["hydrogen"] == 3.5
+    assert cmd.new_energy_costs_no_subsidy["electricity"] == pytest.approx(50.0)
+    assert cmd.new_energy_costs_no_subsidy["hydrogen"] == 3.5
     assert cmd.new_bill_of_materials is not None
     assert cmd.new_bill_of_materials["energy"]["electricity"]["unit_cost"] == pytest.approx(50.0)
     assert cmd.new_bill_of_materials["energy"]["hydrogen"]["unit_cost"] == 3.5
@@ -225,7 +230,8 @@ def test_update_costs_with_capex_subsidies(
         end_year=Year(2035),
         technology_name="DRI",
         cost_item="capex",
-        relative_subsidy=0.3,
+        subsidy_type="relative",
+        subsidy_amount=0.3,  # 30% reduction (stored as decimal)
     )
 
     capex_subsidies = {
@@ -296,7 +302,8 @@ def test_update_costs_with_debt_subsidies(
         end_year=Year(2030),
         technology_name="EAF",
         cost_item="debt",
-        absolute_subsidy=0.02,
+        subsidy_type="absolute",
+        subsidy_amount=0.02,  # 2% absolute reduction
     )
 
     debt_subsidies = {
@@ -452,13 +459,17 @@ def test_skip_furnace_group_with_missing_capex(mock_custom_energy_costs, cost_de
 
 
 def test_skip_furnace_group_with_no_cost_changes(
-    mock_custom_energy_costs, capex_dict_all_locs, cost_debt_all_locs, iso3_to_region_map
+    mock_custom_energy_costs,
+    capex_dict_all_locs,
+    cost_debt_all_locs,
+    iso3_to_region_map,
 ):
     """Test that furnace groups with no cost changes are skipped.
 
-    NOTE: This test expects a command because even if scalar costs match,
-    the BOM will be updated with new energy prices.
+    When all scalar costs, energy_costs, and output_energy_costs match,
+    no command should be emitted.
     """
+    energy = {"electricity": 50.0, "hydrogen": 3.5}
     fg = get_furnace_group(
         fg_id="fg_no_change",
         tech_name="EAF",
@@ -474,10 +485,18 @@ def test_skip_furnace_group_with_no_cost_changes(
     # Set costs to match what will be calculated
     fg.cost_of_debt = 0.05  # Matches cost_debt_all_locs["USA"]
     fg.technology.capex = 1000.0  # Matches capex_dict_all_locs["Americas"]["EAF"]
-    fg.energy_costs = {"electricity": 50.0, "hydrogen": 3.5}  # Matches mock values
+    fg.energy_costs = dict(energy)  # Matches mock values
+    fg.output_energy_costs = dict(energy)
+    fg.energy_costs_no_subsidy = dict(energy)
 
     plant = get_plant(plant_id="plant_no_change", furnace_groups=[fg])
-    plant.location = Location(lat=40.0, lon=-100.0, country="USA", region="Americas", iso3="USA")
+    plant.location = Location(
+        lat=40.0,
+        lon=-100.0,
+        country="USA",
+        region="Americas",
+        iso3="USA",
+    )
 
     plant_group = PlantGroup(plant_group_id="test_group", plants=[plant])
 
@@ -492,14 +511,8 @@ def test_skip_furnace_group_with_no_cost_changes(
         global_risk_free_rate=0.02,
     )
 
-    # Verify - should create command because BOM is included in new_costs
-    assert len(commands) == 1
-    cmd = commands[0]
-    # Scalar values should match
-    assert cmd.new_cost_of_debt == 0.05
-    assert cmd.new_capex == 1000.0
-    assert cmd.new_electricity_cost == pytest.approx(50.0)
-    assert cmd.new_hydrogen_cost == 3.5
+    # Verify - no command emitted because all costs match
+    assert len(commands) == 0
 
 
 def test_multiple_plants_mixed_statuses(
@@ -628,7 +641,8 @@ def test_considered_plant_with_historical_npv(
         end_year=Year(2027),
         technology_name="EAF",
         cost_item="capex",
-        relative_subsidy=0.5,  # 50% reduction
+        subsidy_type="relative",
+        subsidy_amount=0.5,  # 50% reduction (stored as decimal)
     )
 
     capex_subsidy_late = Subsidy(
@@ -638,7 +652,8 @@ def test_considered_plant_with_historical_npv(
         end_year=Year(2035),
         technology_name="EAF",
         cost_item="capex",
-        relative_subsidy=0.3,  # 30% reduction
+        subsidy_type="relative",
+        subsidy_amount=0.3,  # 30% reduction (stored as decimal)
     )
 
     capex_subsidies = {
@@ -671,7 +686,10 @@ def test_considered_plant_with_historical_npv(
 
 
 def test_furnace_group_without_bill_of_materials(
-    mock_custom_energy_costs, capex_dict_all_locs, cost_debt_all_locs, iso3_to_region_map
+    mock_custom_energy_costs,
+    capex_dict_all_locs,
+    cost_debt_all_locs,
+    iso3_to_region_map,
 ):
     """Test handling furnace group without bill_of_materials."""
     fg = get_furnace_group(
@@ -692,7 +710,13 @@ def test_furnace_group_without_bill_of_materials(
     fg.bill_of_materials = None  # No BOM
 
     plant = get_plant(plant_id="plant_no_bom", furnace_groups=[fg])
-    plant.location = Location(lat=40.0, lon=-100.0, country="USA", region="Americas", iso3="USA")
+    plant.location = Location(
+        lat=40.0,
+        lon=-100.0,
+        country="USA",
+        region="Americas",
+        iso3="USA",
+    )
 
     plant_group = PlantGroup(plant_group_id="test_group", plants=[plant])
 
@@ -711,3 +735,114 @@ def test_furnace_group_without_bill_of_materials(
     assert len(commands) == 1
     cmd = commands[0]
     assert cmd.new_bill_of_materials is None
+
+
+def test_update_costs_with_energy_subsidies(
+    mock_custom_energy_costs,
+    capex_dict_all_locs,
+    cost_debt_all_locs,
+    iso3_to_region_map,
+):
+    """Test that energy subsidies populate all three energy cost dicts correctly.
+
+    With a hydrogen subsidy, the command should carry:
+    - new_energy_costs: subsidised input prices (hydrogen reduced)
+    - new_output_energy_costs: subsidised output prices (hydrogen increased)
+    - new_energy_costs_no_subsidy: original unsubsidised prices
+    """
+    fg = get_furnace_group(
+        fg_id="fg_energy_sub",
+        tech_name="DRI",
+        capacity=150,
+        lifetime=PointInTime(
+            current=Year(2025),
+            time_frame=TimeFrame(start=Year(2027), end=Year(2047)),
+            plant_lifetime=20,
+        ),
+        utilization_rate=0.7,
+    )
+    fg.status = "considered"
+    fg.cost_of_debt = 0.06
+    fg.technology.capex = 3000.0
+    fg.energy_costs = {"electricity": 60.0, "hydrogen": 5.0, "natural_gas": 0.03}
+    fg.energy_costs_no_subsidy = {
+        "electricity": 60.0,
+        "hydrogen": 5.0,
+        "natural_gas": 0.03,
+    }
+    fg.output_energy_costs = {
+        "electricity": 60.0,
+        "hydrogen": 5.0,
+        "natural_gas": 0.03,
+    }
+    fg.bill_of_materials = {
+        "energy": {
+            "electricity": {"unit_cost": 60.0, "demand": 0.4},
+            "hydrogen": {"unit_cost": 5.0, "demand": 0.8},
+        },
+        "materials": {
+            "iron_ore": {"unit_cost": 100.0, "demand": 1.5},
+        },
+    }
+
+    plant = get_plant(plant_id="plant_energy_sub", furnace_groups=[fg])
+    plant.location = Location(
+        lat=40.0,
+        lon=-100.0,
+        country="USA",
+        region="Americas",
+        iso3="USA",
+    )
+
+    plant_group = PlantGroup(plant_group_id="test_group", plants=[plant])
+
+    # Hydrogen subsidy: $1.0/kg absolute reduction
+    h2_subsidy = Subsidy(
+        scenario_name="test",
+        iso3="USA",
+        start_year=Year(2026),
+        end_year=Year(2035),
+        technology_name="DRI",
+        cost_item="hydrogen",
+        subsidy_type="absolute",
+        subsidy_amount=1.0,
+    )
+
+    energy_subsidies = {
+        "hydrogen": {
+            "USA": {
+                "DRI": [h2_subsidy],
+            },
+        },
+    }
+
+    commands = plant_group.update_dynamic_costs_for_business_opportunities(
+        current_year=Year(2025),
+        consideration_time=3,
+        custom_energy_costs=mock_custom_energy_costs,
+        capex_dict_all_locs=capex_dict_all_locs,
+        cost_debt_all_locs=cost_debt_all_locs,
+        iso3_to_region_map=iso3_to_region_map,
+        global_risk_free_rate=0.02,
+        capex_subsidies={},
+        debt_subsidies={},
+        energy_subsidies=energy_subsidies,
+    )
+
+    assert len(commands) == 1
+    cmd = commands[0]
+
+    # Mock provides: electricity=50.0, hydrogen=3.5
+    # Hydrogen subsidy: $1.0 absolute → input=max(0, 3.5-1.0)=2.5, output=3.5+1.0=4.5
+    assert cmd.new_energy_costs["electricity"] == pytest.approx(50.0)
+    assert cmd.new_energy_costs["hydrogen"] == pytest.approx(2.5)
+    assert cmd.new_output_energy_costs["electricity"] == pytest.approx(50.0)
+    assert cmd.new_output_energy_costs["hydrogen"] == pytest.approx(4.5)
+    assert cmd.new_energy_costs_no_subsidy["electricity"] == pytest.approx(50.0)
+    assert cmd.new_energy_costs_no_subsidy["hydrogen"] == pytest.approx(3.5)
+    # natural_gas should be carried through from base costs
+    assert "natural_gas" in cmd.new_energy_costs
+    assert "natural_gas" in cmd.new_output_energy_costs
+    # BOM hydrogen should use subsidised input price
+    assert cmd.new_bill_of_materials is not None
+    assert cmd.new_bill_of_materials["energy"]["hydrogen"]["unit_cost"] == pytest.approx(2.5)

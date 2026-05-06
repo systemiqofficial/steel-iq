@@ -20,9 +20,12 @@ class TestReadMinesAsSuppliers:
             {
                 "Region": ["Australia", "Australia", "Australia", "Brazil", "Brazil", "China", "China"],
                 "Products": ["IO_low", "IO_low", "IO_mid", "IO_high", "IO_high", "IO_mid", "IO_mid"],
-                "capacity": [100, 200, 150, 300, 250, 180, 220],
-                "costs": [50, 45, 48, 60, 55, 40, 42],
-                "price": [60, 55, 58, 70, 65, 50, 52],  # price = costs + premium
+                "capacity Mtpa 2025": [100, 200, 150, 300, 250, 180, 220],
+                "capacity Mtpa 2030": [100, 200, 150, 300, 250, 180, 220],
+                "costs $/t 2025": [50, 45, 48, 60, 55, 40, 42],
+                "costs $/t 2030": [50, 45, 48, 60, 55, 40, 42],
+                "price $/t 2025": [60, 55, 58, 70, 65, 50, 52],  # price = costs + premium
+                "price $/t 2030": [60, 55, 58, 70, 65, 50, 52],
                 "lat": [-25.0, -26.0, -24.0, -15.0, -16.0, 35.0, 34.0],
                 "lon": [133.0, 134.0, 132.0, -47.0, -48.0, 104.0, 105.0],
                 "Mine": ["Mine A", "Mine B", "Mine C", "Mine D", "Mine E", "Mine F", "Mine G"],
@@ -66,7 +69,7 @@ class TestReadMinesAsSuppliers:
         # Setup: Create mock Excel file with known total capacity
         excel_path = tmp_path / "test_mines.xlsx"
         mock_excel_data.to_excel(excel_path, sheet_name="Iron ore mines", index=False)
-        expected_total_capacity = mock_excel_data["capacity"].sum()
+        expected_total_capacity = mock_excel_data["capacity Mtpa 2025"].sum()
 
         # Act: Read mines
         with patch("steelo.adapters.dataprocessing.excel_reader.translate_mine_regions_to_iso3", return_value={}):
@@ -77,9 +80,11 @@ class TestReadMinesAsSuppliers:
             )
 
         # Assert: Sum of all supplier capacities equals Excel total
-        # Get capacity for any year (they're all the same in current implementation)
+        # Check capacity for 2025
+        from steelo.domain import Year
+
         actual_total_capacity = sum(
-            list(s.capacity_by_year.values())[0] / 1_000_000  # Convert back to Mt
+            s.capacity_by_year.get(Year(2025), 0) / 1_000_000  # Convert back to Mt
             for s in suppliers
         )
 
@@ -97,8 +102,12 @@ class TestReadMinesAsSuppliers:
             {
                 "Region": ["Australia", "Australia"],
                 "Products": ["IO_low", "IO_low"],
-                "capacity": [100, 200],
-                "costs": [50, 45],
+                "capacity Mtpa 2025": [100, 200],
+                "capacity Mtpa 2030": [100, 200],
+                "costs $/t 2025": [50, 45],
+                "costs $/t 2030": [50, 45],
+                "price $/t 2025": [60, 55],
+                "price $/t 2030": [60, 55],
                 "lat": [-25.0, -26.0],
                 "lon": [133.0, 134.0],
                 "Mine": ["Mine A", None],  # One missing mine name
@@ -155,8 +164,12 @@ class TestReadMinesAsSuppliers:
             {
                 "Region": ["Australia", "Australia", "Brazil", "China", "China"],
                 "Products": ["IO_low", "IO_low", "IO_high", "IO_mid", "IO_mid"],
-                "capacity": [100, 150, 200, 120, 180],  # IO_low: 250, IO_high: 200, IO_mid: 300
-                "costs": [50, 45, 60, 40, 42],
+                "capacity Mtpa 2025": [100, 150, 200, 120, 180],  # IO_low: 250, IO_high: 200, IO_mid: 300
+                "capacity Mtpa 2030": [100, 150, 200, 120, 180],
+                "costs $/t 2025": [50, 45, 60, 40, 42],
+                "costs $/t 2030": [50, 45, 60, 40, 42],
+                "price $/t 2025": [60, 55, 70, 50, 52],
+                "price $/t 2030": [60, 55, 70, 50, 52],
                 "lat": [-25.0, -26.0, -15.0, 35.0, 34.0],
                 "lon": [133.0, 134.0, -47.0, 104.0, 105.0],
                 "Mine": ["A", "B", "C", "D", "E"],
@@ -180,12 +193,14 @@ class TestReadMinesAsSuppliers:
             )
 
         # Assert: Check capacity by product
+        from steelo.domain import Year
+
         actual_by_product = {}
         for product in ["IO_low", "IO_high", "IO_mid"]:
             commodity = product.lower()  # IO_low -> io_low
             product_suppliers = [s for s in suppliers if s.commodity == commodity]
             total = sum(
-                list(s.capacity_by_year.values())[0] / 1_000_000  # Convert to Mt
+                s.capacity_by_year.get(Year(2025), 0) / 1_000_000  # Convert to Mt
                 for s in product_suppliers
             )
             actual_by_product[product] = total
@@ -271,9 +286,12 @@ class TestIronOrePremiumsSupport:
             {
                 "Region": ["Australia", "Brazil"],
                 "Products": ["IO_low", "IO_high"],
-                "capacity": [100, 200],
-                "costs": [50, 60],
-                "price": [65, 75],  # price = costs + premium
+                "capacity Mtpa 2025": [100, 200],
+                "capacity Mtpa 2030": [100, 200],
+                "costs $/t 2025": [50, 60],
+                "costs $/t 2030": [50, 60],
+                "price $/t 2025": [65, 75],  # price = costs + premium
+                "price $/t 2030": [65, 75],
                 "lat": [-25.0, -15.0],
                 "lon": [133.0, -47.0],
                 "Mine": ["Mine A", "Mine B"],
@@ -290,21 +308,34 @@ class TestIronOrePremiumsSupport:
                 location_csv=mock_location_csv,
             )
 
-        # Assert: Both mine_cost and mine_price are populated
+        # Assert: Both mine_cost and mine_price dictionaries are populated
+        from steelo.domain import Year
+
         assert len(suppliers) == 2
         for supplier in suppliers:
-            assert supplier.mine_cost is not None, f"mine_cost should be populated for {supplier.supplier_id}"
-            assert supplier.mine_price is not None, f"mine_price should be populated for {supplier.supplier_id}"
+            assert supplier.mine_cost_by_year is not None, (
+                f"mine_cost_by_year should be populated for {supplier.supplier_id}"
+            )
+            assert supplier.mine_price_by_year is not None, (
+                f"mine_price_by_year should be populated for {supplier.supplier_id}"
+            )
+            assert len(supplier.mine_cost_by_year) > 0, (
+                f"mine_cost_by_year should have values for {supplier.supplier_id}"
+            )
+            assert len(supplier.mine_price_by_year) > 0, (
+                f"mine_price_by_year should have values for {supplier.supplier_id}"
+            )
 
-        # Assert: Values match the Excel data
+        # Assert: Values match the Excel data for 2025
         supplier_0 = suppliers[0]
-        assert supplier_0.mine_cost == 50 or supplier_0.mine_cost == 60
-        if supplier_0.mine_cost == 50:
-            assert supplier_0.mine_price == 65
-            assert supplier_0.production_cost == 50  # Defaults to costs
+        mine_cost_2025 = supplier_0.mine_cost_by_year.get(Year(2025))
+        assert mine_cost_2025 == 50 or mine_cost_2025 == 60
+        if mine_cost_2025 == 50:
+            assert supplier_0.mine_price_by_year.get(Year(2025)) == 65
+            assert supplier_0.production_cost_by_year.get(Year(2025)) == 50  # Defaults to costs
         else:
-            assert supplier_0.mine_price == 75
-            assert supplier_0.production_cost == 60
+            assert supplier_0.mine_price_by_year.get(Year(2025)) == 75
+            assert supplier_0.production_cost_by_year.get(Year(2025)) == 60
 
     def test_missing_price_column_falls_back_to_costs(self, mock_location_csv, tmp_path):
         """Test that if price column is missing, mine_price falls back to costs."""
@@ -313,9 +344,11 @@ class TestIronOrePremiumsSupport:
             {
                 "Region": ["Australia"],
                 "Products": ["IO_low"],
-                "capacity": [100],
-                "costs": [50],
-                # No "price" column
+                "capacity Mtpa 2025": [100],
+                "capacity Mtpa 2030": [100],
+                "costs $/t 2025": [50],
+                "costs $/t 2030": [50],
+                # No "price" columns
                 "lat": [-25.0],
                 "lon": [133.0],
                 "Mine": ["Mine A"],
@@ -333,11 +366,13 @@ class TestIronOrePremiumsSupport:
             )
 
         # Assert: mine_price falls back to costs
+        from steelo.domain import Year
+
         assert len(suppliers) == 1
         supplier = suppliers[0]
-        assert supplier.mine_cost == 50
-        assert supplier.mine_price == 50  # Falls back to costs
-        assert supplier.production_cost == 50
+        assert supplier.mine_cost_by_year.get(Year(2025)) == 50
+        assert supplier.mine_price_by_year.get(Year(2025)) == 50  # Falls back to costs
+        assert supplier.production_cost_by_year.get(Year(2025)) == 50
 
     def test_nan_price_values_fall_back_to_costs(self, mock_location_csv, tmp_path):
         """Test that NaN values in price column fall back to costs."""
@@ -346,9 +381,12 @@ class TestIronOrePremiumsSupport:
             {
                 "Region": ["Australia", "Brazil", "China"],
                 "Products": ["IO_low", "IO_high", "IO_mid"],
-                "capacity": [100, 200, 150],
-                "costs": [50, 60, 55],
-                "price": [65, float("nan"), 70],  # Brazil has NaN price
+                "capacity Mtpa 2025": [100, 200, 150],
+                "capacity Mtpa 2030": [100, 200, 150],
+                "costs $/t 2025": [50, 60, 55],
+                "costs $/t 2030": [50, 60, 55],
+                "price $/t 2025": [65, float("nan"), 70],  # Brazil has NaN price
+                "price $/t 2030": [65, float("nan"), 70],
                 "lat": [-25.0, -15.0, 35.0],
                 "lon": [133.0, -47.0, 104.0],
                 "Mine": ["Mine A", "Mine B", "Mine C"],
@@ -366,21 +404,22 @@ class TestIronOrePremiumsSupport:
             )
 
         # Assert: All suppliers have numeric mine_price (no NaN)
+        from steelo.domain import Year
+
         assert len(suppliers) == 3
         for supplier in suppliers:
-            assert pd.notna(supplier.mine_price), f"mine_price should not be NaN for {supplier.supplier_id}"
-            assert isinstance(supplier.mine_price, (int, float)), (
-                f"mine_price should be numeric for {supplier.supplier_id}"
-            )
+            mine_price = supplier.mine_price_by_year.get(Year(2025))
+            assert pd.notna(mine_price), f"mine_price should not be NaN for {supplier.supplier_id}"
+            assert isinstance(mine_price, (int, float)), f"mine_price should be numeric for {supplier.supplier_id}"
 
         # Assert: Brazil mine (with NaN price) falls back to costs
         brazil_supplier = [s for s in suppliers if s.location.region == "Brazil"][0]
-        assert brazil_supplier.mine_cost == 60
-        assert brazil_supplier.mine_price == 60  # Falls back to costs because original was NaN
-        assert brazil_supplier.production_cost == 60
+        assert brazil_supplier.mine_cost_by_year.get(Year(2025)) == 60
+        assert brazil_supplier.mine_price_by_year.get(Year(2025)) == 60  # Falls back to costs because original was NaN
+        assert brazil_supplier.production_cost_by_year.get(Year(2025)) == 60
 
         # Assert: Other mines use their actual price values
         australia_supplier = [s for s in suppliers if s.location.region == "Australia"][0]
-        assert australia_supplier.mine_cost == 50
-        assert australia_supplier.mine_price == 65  # Uses actual price value
-        assert australia_supplier.production_cost == 50
+        assert australia_supplier.mine_cost_by_year.get(Year(2025)) == 50
+        assert australia_supplier.mine_price_by_year.get(Year(2025)) == 65  # Uses actual price value
+        assert australia_supplier.production_cost_by_year.get(Year(2025)) == 50

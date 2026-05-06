@@ -1,0 +1,27 @@
+{% if scenarios %}
+    <select name="chosen_grid_emissions_scenario" id="id_chosen_grid_emissions_scenario" class="form-select">
+        {% for scenario in scenarios %}
+            <option value="{{ scenario }}"{% if scenario == selected %} selected{% endif %}>{{ scenario }}</option>
+        {% endfor %}
+    </select>
+{% else %}
+    <div class="alert alert-warning py-2 mb-2">
+        <strong>No grid emissivity scenarios found.</strong>
+        Add a <code>projection_&lt;name&gt;</code> row group to the <strong>Power grid emissivity</strong> sheet of the master Excel and re-prepare the data.
+    </div>
+    <select id="id_chosen_grid_emissions_scenario" class="form-select" disabled>
+        <option>No scenarios available — re-prepare data</option>
+    </select>
+{% endif %}
+<small class="form-text text-muted d-block mt-1">
+    <strong>Adding a custom scenario:</strong>
+    <ul class="mb-0 ps-3">
+        <li>Open a new Master Excel (use the provided template)</li>
+        <li>Navigate to the <strong>Power grid emissivity</strong> sheet</li>
+        <li>Copy the rows for <code>projection_business_as_usual</code></li>
+        <li>Paste the rows below and change the values in the carbon-intensity column (<code>ghg_factor_scope_2</code>)</li>
+        <li>Rename the <code>projection_scenario</code> cells to <code>projection_&lt;your_name&gt;</code> (e.g. <code>projection_high_renewables</code>)</li>
+        <li>Save your new Master Excel, upload and prepare it</li>
+        <li>The new scenario will appear here as <strong>"Your Name"</strong> (e.g. <strong>"High Renewables"</strong>)</li>
+    </ul>
+</small>

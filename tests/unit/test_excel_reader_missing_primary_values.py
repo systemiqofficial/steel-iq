@@ -68,7 +68,7 @@ class TestMissingPrimaryValues:
         mock_read_excel.return_value = data
 
         # This should not raise ValueError - both BOF feedstocks should be skipped
-        result = read_dynamic_business_cases("dummy.xlsx", "Bill of Materials")
+        result, aggregated_constraints = read_dynamic_business_cases("dummy.xlsx", "Bill of Materials")
 
         # BOF should not be in result since all its feedstocks were skipped
         assert "BOF" not in result
@@ -120,10 +120,10 @@ class TestMissingPrimaryValues:
         mock_read_excel.return_value = data
 
         with caplog.at_level("WARNING"):
-            read_dynamic_business_cases("dummy.xlsx", "Bill of Materials")
+            result, aggregated_constraints = read_dynamic_business_cases("dummy.xlsx", "Bill of Materials")
 
         # Should have warnings about feedstocks being skipped due to no primary value
-        warnings = [record.message for record in caplog.records if record.levelname == "WARNING"]
+        warnings = [record.getMessage() for record in caplog.records if record.levelname == "WARNING"]
         # Check that we have warnings about skipping feedstocks
         assert any("Skipping feedstock" in w and "no primary value" in w for w in warnings)
         # Should have at least one warning (for the feedstock with coke)

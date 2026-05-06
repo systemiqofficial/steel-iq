@@ -1,0 +1,20 @@
+version: 1
+global_level: WARNING
+
+features:
+  furnace_group_breakdown: true
+
+modules:
+  core: INFO
+  geo: INFO
+  pam: INFO
+  tm: INFO
+
+function_overrides:
+  # Suppress noisy functions
+  calculate_unit_production_cost: WARNING
+  extract_price_from_costcurve: WARNING
+  get_bom_from_avg_boms: WARNING
+
+external:
+  pyomo: ERROR

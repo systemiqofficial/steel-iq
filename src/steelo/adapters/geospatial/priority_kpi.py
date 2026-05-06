@@ -30,6 +30,8 @@ def calculate_outgoing_cashflow_proxy(
     plant_lifetime: int,
     geo_config: "GeoConfig",
     geo_paths: "GeoDataPaths",
+    start_year: int | None = None,
+    end_year: int | None = None,
 ) -> xr.DataArray:
     """
     Calculate an outgoing cashflow proxy for each location in the dataset. Combines all cost variables into a single KPI using the CAPEX multiplication factor logic.
@@ -50,12 +52,17 @@ def calculate_outgoing_cashflow_proxy(
         plant_lifetime: Plant operational lifetime in years
         geo_config: Configuration for geospatial calculations (transport costs, LULC, infrastructure)
         geo_paths: Paths to geospatial data files for plotting outputs
+        start_year: Simulation start year. Used together with ``end_year`` to limit the
+            outgoing-cashflow and priority-heatmap plots to milestone years (start, end,
+            and every 10 years after start). If either bound is None, every year is plotted.
+        end_year: Simulation end year. See ``start_year`` for plotting behaviour.
 
     Returns:
         DataArray containing outgoing cashflow proxy values (USD) for each location
 
     Side Effects:
-        Generates and saves plots of outgoing cashflow and priority heatmaps
+        Generates and saves plots of outgoing cashflow and priority heatmaps (milestone
+        years only)
     """
     logger.info(
         f"Calculating outgoing cashflow for {product} with capex share {capex_share * 100}% and energy consumption {energy_consumption_per_t} TWh."
@@ -108,14 +115,24 @@ def calculate_outgoing_cashflow_proxy(
             "No top locations identified to build new plants - all data is NaN/masked. "
             "This may indicate invalid input data or over-aggressive masking."
         )
-    plot_screenshot(
-        masked_cashflow * USD_TO_BioUSD,
-        title=f"Outgoing cashflow for {product} in {year} (Bio USD)",
-        var_type="sequential",
-        max_val=40,
-        save_name=f"outgoing_cashflow_proxy_{product}_{str(year)}_p{str(int((1 - baseload_coverage) * 100))}",
-        plot_paths=plot_paths_obj,
+    is_milestone_year = (
+        start_year is None
+        or end_year is None
+        or year == start_year
+        or year == end_year
+        or (year - start_year) % 10 == 0
     )
+    p = int((1 - baseload_coverage) * 100)
+    if is_milestone_year:
+        plot_screenshot(
+            masked_cashflow * USD_TO_BioUSD,
+            title=f"Lifetime cost proxy for new {product} plant in {year} (Billion USD)",
+            subtitle=(f"CAPEX + {plant_lifetime}-yr power, transport & rail · {100 - p}% baseload + {p}% grid"),
+            var_type="sequential",
+            max_val=40,
+            save_name=f"lifetime_cost_proxy_{product}_{str(year)}_p{str(p)}",
+            plot_paths=plot_paths_obj,
+        )
     min_val = masked_cashflow.min(skipna=True)
     max_val = masked_cashflow.max(skipna=True)
     ## Handle edge case where all values are identical (avoid division by zero by setting all to 0.5 - standardized mid-point)
@@ -124,15 +141,17 @@ def calculate_outgoing_cashflow_proxy(
     else:
         standardized_cashflow = (masked_cashflow - min_val) / (max_val - min_val)
     inversed_cashflow = 1 - standardized_cashflow
-    plot_screenshot(
-        inversed_cashflow,
-        title=f"Priority map for new {product} plants in {year}",
-        var_type="binary",
-        max_val=1,
-        min_val=0.7,
-        save_name=f"priority_heatmap_{product}_{str(year)}_p{str(int((1 - baseload_coverage) * 100))}",
-        plot_paths=plot_paths_obj,
-    )
+    if is_milestone_year:
+        plot_screenshot(
+            inversed_cashflow,
+            title=f"Priority map for new {product} plants in {year}",
+            subtitle=f"{100 - p}% baseload + {p}% grid",
+            var_type="binary",
+            max_val=1,
+            min_val=0.7,
+            save_name=f"priority_heatmap_{product}_{str(year)}_p{str(p)}",
+            plot_paths=plot_paths_obj,
+        )
 
     # Ensure return type is always xr.DataArray
     if isinstance(outgoing_cashflow, xr.DataArray):
@@ -292,6 +311,8 @@ def calculate_priority_location_kpi(
     plant_lifetime: int,
     geo_config: "GeoConfig",
     geo_paths: "GeoDataPaths",
+    start_year: int | None = None,
+    end_year: int | None = None,
 ) -> dict[str, list[dict[Any, Any]]]:
     """
     Calculate the priority location KPI for steel and iron production.
@@ -312,6 +333,11 @@ def calculate_priority_location_kpi(
         plant_lifetime: Plant operational lifetime in years
         geo_config: Configuration for geospatial calculations (priority percentage, transport costs, etc.)
         geo_paths: Paths to geospatial data files for plotting outputs
+        start_year: Simulation start year. Used together with ``end_year`` to limit the
+            top-priority-locations plot to milestone years (start, end, and every 5 years
+            after start), and forwarded to ``calculate_outgoing_cashflow_proxy`` (decadal
+            milestones for the priority heatmap). If either bound is None, every year is plotted.
+        end_year: Simulation end year. See ``start_year`` for plotting behaviour.
 
     Returns:
         Dictionary mapping product types ("iron", "steel") to lists of location dictionaries, each containing:
@@ -323,12 +349,17 @@ def calculate_priority_location_kpi(
             - capped_lcoh: Capped levelized cost of hydrogen (USD/kg)
 
     Side Effects:
-        Generates and saves plots of outgoing cashflow, priority heatmaps, and top location maps
+        Generates and saves plots of outgoing cashflow and priority heatmaps (decadal
+        milestones), and top location maps (5-year milestones).
     """
     logger.info(f"Identifying the top {geo_config.priority_pct}% priority locations.")
 
     # Mask all variables with the feasibility mask and remove NaN values
     ds_masked = ds.where(ds["feasibility_mask"] > 0)
+
+    is_top_locations_milestone_year = (
+        start_year is None or end_year is None or year == start_year or year == end_year or (year - start_year) % 5 == 0
+    )
 
     # Combine all variables into a single KPI using the CAPEX multiplication factor logic
     top_locations = {}
@@ -347,6 +378,8 @@ def calculate_priority_location_kpi(
             plant_lifetime=plant_lifetime,
             geo_config=geo_config,
             geo_paths=geo_paths,
+            start_year=start_year,
+            end_year=end_year,
         )
 
         # Get the top X% locations (bottom X% of the price distribution)
@@ -365,14 +398,15 @@ def calculate_priority_location_kpi(
             )
         )
 
-        plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
-        plot_screenshot(
-            ds_masked[f"top{str(geo_config.priority_pct)}_{product}_wlottery"],
-            var_type="binary",
-            title=f"Top {geo_config.priority_pct}% locations for {product} production",
-            save_name=f"top{str(geo_config.priority_pct)}_priority_locations_{product}_{str(year)}",
-            plot_paths=plot_paths_obj,
-        )
+        if is_top_locations_milestone_year:
+            plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
+            plot_screenshot(
+                ds_masked[f"top{str(geo_config.priority_pct)}_{product}_wlottery"],
+                var_type="binary",
+                title=f"Top {geo_config.priority_pct}% locations for {product} production in {year}",
+                save_name=f"top{str(geo_config.priority_pct)}_priority_locations_{product}_{str(year)}",
+                plot_paths=plot_paths_obj,
+            )
 
         # For each location, pass NPV calculation inputs
         for row in top_locations_wlottery[product].itertuples():

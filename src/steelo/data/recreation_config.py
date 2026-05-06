@@ -279,6 +279,14 @@ FILE_RECREATION_SPECS = {
         dependencies=[],
         description="Fallback material costs from master Excel",
     ),
+    "willingness_to_pay.json": FileRecreationSpec(
+        filename="willingness_to_pay.json",
+        recreate_function="recreate_willingness_to_pay_data",
+        source_type="master-excel",
+        master_excel_sheet="Willingness to pay",
+        dependencies=["country_mappings.json"],
+        description="Willingness to pay by region/country and commodity from master Excel",
+    ),
 }
 
 

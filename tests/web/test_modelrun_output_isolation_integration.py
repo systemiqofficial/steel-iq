@@ -92,7 +92,7 @@ class TestModelRunOutputIsolationIntegration(TransactionTestCase):
                     # Write test files that would normally be created by simulation
                     (tm_dir / "datacollection_post_allocation_2025.pkl").write_bytes(b"test pickle data")
                     (tm_dir / "steel_cost_curve_2025.png").write_bytes(b"test image data")
-                    (tm_dir / "post_processed_2025-01-01.csv").write_text("col1,col2\nval1,val2\n")
+                    (output_path / "post_processed_2025-01-01_00-00.csv").write_text("col1,col2\nval1,val2\n")
 
                     plots_dir = output_path / "plots"
                     plots_dir.mkdir(parents=True, exist_ok=True)
@@ -121,7 +121,7 @@ class TestModelRunOutputIsolationIntegration(TransactionTestCase):
                 # Check TM outputs
                 assert (output_path / "TM" / "datacollection_post_allocation_2025.pkl").exists()
                 assert (output_path / "TM" / "steel_cost_curve_2025.png").exists()
-                assert (output_path / "TM" / "post_processed_2025-01-01.csv").exists()
+                assert (output_path / "post_processed_2025-01-01_00-00.csv").exists()
 
                 # Check plot outputs
                 assert (output_path / "plots" / "GEO" / "new_steel_plants_by_status.png").exists()
@@ -131,6 +131,59 @@ class TestModelRunOutputIsolationIntegration(TransactionTestCase):
                 mock_bootstrap_simulation.assert_called_once()
                 config = mock_bootstrap_simulation.call_args[0][0]
                 assert str(model_run.output_directory) in str(config.output_dir)
+
+    @patch("steelo.validation.validate_technology_settings")  # Skip validation
+    @patch("steelo.bootstrap.bootstrap_simulation")
+    def test_simulation_writes_config_and_prep_metadata_json(self, mock_bootstrap_simulation, mock_validate):
+        """ModelRun.run() should drop simulation_config.json and preparation_metadata.json
+        into the isolated output directory, mirroring the terminal CLI layout."""
+        import json
+
+        mock_runner_instance = MagicMock()
+        mock_runner_instance.progress_callback = None
+        mock_runner_instance.modelrun_id = None
+        mock_runner_instance.run.return_value = {"status": "success"}
+        mock_bootstrap_simulation.return_value = mock_runner_instance
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(settings, "MEDIA_ROOT", temp_dir):
+                tech_settings = {
+                    "BF": {"allowed": True, "from_year": 2025, "to_year": None},
+                    "BOF": {"allowed": True, "from_year": 2025, "to_year": None},
+                    "EAF": {"allowed": True, "from_year": 2025, "to_year": None},
+                    "DRING": {"allowed": True, "from_year": 2025, "to_year": None},
+                }
+
+                model_run = ModelRun.objects.create(
+                    name="Config JSON Test",
+                    config={
+                        "start_year": 2025,
+                        "end_year": 2026,
+                        "technology_settings": tech_settings,
+                    },
+                    data_preparation=self.data_prep,
+                )
+                model_run.ensure_output_directories()
+
+                model_run.run()
+
+                output_path = Path(model_run.output_directory)
+
+                config_json = output_path / "simulation_config.json"
+                prep_json = output_path / "preparation_metadata.json"
+
+                assert config_json.exists(), "simulation_config.json was not written"
+                assert prep_json.exists(), "preparation_metadata.json was not written"
+
+                config_payload = json.loads(config_json.read_text())
+                assert config_payload["start_year"] == 2025
+                assert config_payload["end_year"] == 2026
+                assert str(output_path) in config_payload["output_dir"]
+
+                prep_payload = json.loads(prep_json.read_text())
+                assert prep_payload["cache_used"] is True
+                assert "preparation_time" in prep_payload
+                assert "master_excel" in prep_payload
 
     @patch("steelo.validation.validate_technology_settings")  # Skip validation
     @patch("steelo.domain.datacollector.DataCollector")
@@ -259,10 +312,11 @@ class TestModelRunOutputIsolationIntegration(TransactionTestCase):
             assert "TM" in csv_path
             assert "steel_trade_allocations_2025.csv" in csv_path
 
-            # Verify pickle file was saved to isolated directory
+            # Verify pickle file was saved to isolated TM directory
             mock_open.assert_called()
             pickle_path = str(mock_open.call_args[0][0])
             assert str(mock_env.output_dir) in pickle_path
+            assert "TM" in pickle_path
             assert "steel_trade_allocations_2025.pkl" in pickle_path
 
     def test_concurrent_model_runs_isolation(self):

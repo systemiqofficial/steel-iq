@@ -2,6 +2,8 @@ import logging
 from typing import TYPE_CHECKING, TypedDict, Any
 import math
 
+from steelo.utilities.utils import normalize_name
+
 from steelo.domain.calculate_emissions import (
     calculate_emissions,
     calculate_emissions_cost_series,
@@ -12,15 +14,7 @@ from steelo.domain.calculate_emissions import (
 if TYPE_CHECKING:
     from steelo.domain.models import PrimaryFeedstock, Subsidy, CountryMappingService, TechnologyEmissionFactors
 from collections import Counter
-from steelo.domain.constants import KG_TO_T, MWH_TO_KWH, Year
-
-unit_production_cost_logger = logging.getLogger(f"{__name__}.calculate_unit_production_cost")
-logger = logging.getLogger(__name__)
-
-SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION = {
-    "coking_coal",  # Stored in kg/t in dynamic business cases, priced in USD/t
-    "bio_pci",
-}
+from steelo.domain.constants import MWH_TO_KWH, Year
 
 # Normalized keys that represent genuine energy carriers. Any secondary-feedstock entry whose normalized
 # name is not in this set is treated as a material input and must not be double-counted as energy.
@@ -33,8 +27,6 @@ ENERGY_FEEDSTOCK_KEYS = {
     "coke",
     "pci",
     "bio_pci",
-    "heat",
-    "flexible",
     "bf_gas",
     "bof_gas",
     "cog",
@@ -44,10 +36,6 @@ ENERGY_FEEDSTOCK_KEYS = {
     "lime",
     "olivine",
 }
-
-
-def _normalize_energy_key(name: str) -> str:
-    return str(name).lower().replace(" ", "_").replace("-", "_")
 
 
 def _coerce_to_float(value: Any) -> float | None:
@@ -74,34 +62,158 @@ def _coerce_to_float(value: Any) -> float | None:
     return None
 
 
-def filter_active_subsidies(subsidies: list["Subsidy"], current_year: "Year") -> list["Subsidy"]:
+def filter_subsidies_for_year(subsidies: list["Subsidy"], year: "Year") -> list["Subsidy"]:
     """
-    Filter subsidies to only include those active in the current year.
+    Filter subsidies to only include those active in the specified year.
 
-    A subsidy is considered active if the current year falls within its validity period (inclusive of both
+    A subsidy is considered active if the year falls within its validity period (inclusive of both
     start_year and end_year).
 
     Args:
-        subsidies (list[Subsidy]): List of Subsidy objects with start_year and end_year attributes.
-        current_year (Year): The current simulation year to check against.
+        subsidies: List of Subsidy objects with start_year and end_year attributes.
+        year: The year to check against.
 
     Returns:
-        list[Subsidy]: List of subsidies that are active in the current year. Returns empty list if no subsidies
-            are provided or if none are active.
+        List of subsidies that are active in the specified year. Returns empty list if no subsidies
+        are provided or if none are active.
 
     Note:
-        - The filtering uses inclusive bounds: a subsidy is active if current_year >= start_year AND
-          current_year <= end_year.
-        - When filtering subsidies across multiple years in a loop, the same subsidy object may appear multiple
-          times in the accumulated results if it spans multiple years. Use `list(set(accumulated_subsidies))`
-          to deduplicate before applying subsidies.
+        For collecting subsidies across multiple years, use `collect_active_subsidies_over_period` instead.
     """
     if not subsidies:
         return []
-    else:
-        return [
-            subsidy for subsidy in subsidies if current_year >= subsidy.start_year and current_year <= subsidy.end_year
-        ]
+    active = [subsidy for subsidy in subsidies if year >= subsidy.start_year and year <= subsidy.end_year]
+    return active
+
+
+def collect_active_subsidies_over_period(
+    subsidies: list["Subsidy"], start_year: "Year", end_year: "Year"
+) -> list["Subsidy"]:
+    """
+    Collect unique subsidies active during any year in [start_year, end_year).
+
+    Args:
+        subsidies: List of Subsidy objects with start_year and end_year attributes.
+        start_year: First year of the period (inclusive).
+        end_year: Last year of the period (exclusive, matching Python range convention).
+
+    Returns:
+        List of unique subsidies active during any year in the period.
+    """
+    active: set["Subsidy"] = set()
+    for year in range(start_year, end_year):
+        active.update(filter_subsidies_for_year(subsidies, Year(year)))
+    return list(active)
+
+
+def _compute_total_subsidy(
+    energy_price: float,
+    energy_subsidies: list["Subsidy"],
+) -> float:
+    """Accumulate the total subsidy amount from a list of subsidies.
+
+    Args:
+        energy_price: Base price used for relative subsidy calculations.
+        energy_subsidies: Active subsidies for a single carrier.
+
+    Returns:
+        float: Total subsidy value. May be negative if subsidy_amount is
+            negative (representing a fine, tax, or surcharge).
+    """
+    total = 0.0
+    for subsidy in energy_subsidies:
+        if subsidy.subsidy_type == "absolute":
+            total += subsidy.subsidy_amount
+        elif subsidy.subsidy_type == "relative":
+            total += energy_price * subsidy.subsidy_amount
+    return total
+
+
+def calculate_energy_price_with_subsidies(
+    energy_price: float,
+    energy_subsidies: list["Subsidy"],
+) -> float:
+    """Apply subsidies to an energy price (input-side: reduces cost, floored at 0).
+
+    Args:
+        energy_price: Base price before subsidy (USD/unit for the carrier).
+        energy_subsidies: List of active subsidies for this energy carrier.
+
+    Returns:
+        float: Subsidised price (floored at 0).
+    """
+    logger = logging.getLogger(f"{__name__}.calculate_energy_price_with_subsidies")
+    total_subsidy = _compute_total_subsidy(energy_price, energy_subsidies)
+    result = max(0.0, energy_price - total_subsidy)
+    logger.debug(
+        "[ENERGY SUBS] price=$%.4f total_subsidy=$%.4f result=$%.4f (from %d subsidies)",
+        energy_price,
+        total_subsidy,
+        result,
+        len(energy_subsidies),
+    )
+    return result
+
+
+def get_subsidised_energy_costs(
+    energy_costs: dict[str, float],
+    energy_subsidies: dict[str, list["Subsidy"]],
+) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
+    """Create input and output energy cost dicts with subsidies applied.
+
+    A subsidy simultaneously:
+    - Reduces the input cost (cheaper to consume): ``max(0, price - subsidy)``
+    - For physical carriers: increases output profit: ``price + subsidy``
+    - For carbon carriers (co2_*): reduces output cost/increases credit: ``price - subsidy``
+
+    Args:
+        energy_costs: Original energy costs dict {carrier: price}.
+        energy_subsidies: Active subsidies per carrier {carrier_name: [Subsidy, ...]}.
+
+    Returns:
+        tuple: (input_costs, output_costs, no_subsidy_prices)
+        - input_costs: subsidised prices for consumption (BOM energy, VOPEX).
+        - output_costs: subsidised prices for by-product revenue.
+        - no_subsidy_prices: original (unsubsidised) prices for all carriers.
+
+    Raises:
+        KeyError: If subsidies provided for a carrier not present in energy_costs.
+    """
+    import copy
+
+    logger = logging.getLogger(f"{__name__}.get_subsidised_energy_costs")
+    input_costs = copy.copy(energy_costs)
+    output_costs = copy.copy(energy_costs)
+    no_subsidy_prices = copy.copy(energy_costs)
+
+    for carrier, subs in energy_subsidies.items():
+        if not subs:
+            continue
+        if carrier not in energy_costs:
+            raise KeyError(
+                f"'{carrier}' subsidies provided but '{carrier}' key not found in energy_costs. "
+                f"Available keys: {list(energy_costs.keys())}"
+            )
+        price = energy_costs[carrier]
+        no_subsidy_prices[carrier] = price
+        input_costs[carrier] = calculate_energy_price_with_subsidies(price, subs)
+        total_subsidy = _compute_total_subsidy(price, subs)
+        # Physical carriers: subsidy increases output revenue (price + subsidy)
+        # Carbon carriers (co2_*): subsidy reduces cost/increases credit (price - subsidy)
+        if carrier.startswith("co2"):
+            output_costs[carrier] = price - total_subsidy
+        else:
+            output_costs[carrier] = price + total_subsidy
+        logger.debug(
+            "[ENERGY SUBS] carrier '%s': base=$%.4f input=$%.4f output=$%.4f (%d subsidies)",
+            carrier,
+            price,
+            input_costs[carrier],
+            output_costs[carrier],
+            len(subs),
+        )
+
+    return input_costs, output_costs, no_subsidy_prices
 
 
 def calculate_cost_breakdown_by_feedstock(
@@ -110,6 +222,9 @@ def calculate_cost_breakdown_by_feedstock(
     dynamic_business_cases: list["PrimaryFeedstock"],
     energy_costs: dict[str, float],
     energy_vopex_breakdown_by_input: dict[str, dict[str, float]] | None = None,
+    cost_breakdown_keys: list[str] | None = None,
+    output_costs: dict[str, float] | None = None,
+    disposal_cost_outputs: frozenset[str] | None = None,
 ) -> dict:
     """
     Calculate detailed cost breakdown by feedstock type for a furnace group.
@@ -117,37 +232,33 @@ def calculate_cost_breakdown_by_feedstock(
     Uses actual BOM energy and distributes it proportionally across feedstocks based on their
     energy intensity (from dynamic business cases) and usage share (demand_share_pct).
 
+    Secondary output revenues (by-products with prices in ``output_costs``) are included as
+    negative values. Carriers in ``disposal_cost_outputs`` keep their raw price sign
+    (positive = disposal cost).
+
     Args:
-        bill_of_materials (dict[str, dict[str, dict[str, float]]]): Nested dictionary containing materials and energy data.
-        chosen_reductant (str): Selected reductant type (e.g., 'coke', 'natural_gas') to filter business cases.
-        dynamic_business_cases (list[PrimaryFeedstock]): List of primary feedstock options with energy requirements.
-        energy_costs (dict[str, float]): Energy costs by type (kept for backward compatibility).
-        energy_vopex_breakdown_by_input (dict[str, dict[str, float]] | None): Unused parameter for compatibility.
+        bill_of_materials: Nested dictionary containing materials and energy data.
+        chosen_reductant: Selected reductant type (e.g., 'coke', 'natural_gas') to filter
+            business cases.
+        dynamic_business_cases: List of primary feedstock options with energy requirements.
+        energy_costs: Unused, kept for backward compatibility.
+        energy_vopex_breakdown_by_input: Unused, kept for backward compatibility.
+        cost_breakdown_keys: Canonical list of normalised carrier/feedstock keys
+            that should appear in every feedstock's breakdown. Missing keys are zero-padded.
+            Derived from primary_feedstocks.json. When None, no zero-padding is applied.
+        output_costs: Energy costs for output-side revenue pricing (USD/unit). Physical
+            carriers use -abs(price); carbon carriers (co2_*) keep their sign.
 
     Returns:
-        dict: Dictionary with cost breakdown by feedstock type. Each feedstock key maps to a dictionary containing:
-            - Material cost (incl. transport and tariffs)
-            - Individual energy carrier costs (weighted proportionally)
-            Returns empty dict if no matching feedstocks are found.
+        dict: Dictionary with cost breakdown by feedstock type. Each feedstock key maps to a
+            dictionary containing material cost, energy carrier costs, and output revenue
+            adjustments. Returns empty dict if no matching feedstocks are found.
     """
+    logger = logging.getLogger(f"{__name__}.calculate_cost_breakdown_by_feedstock")
     breakdown: dict[str, dict[str, float]] = {}
 
     if not bill_of_materials or not bill_of_materials.get("materials"):
         return breakdown
-
-    # Rename map to match STANDARD_COST_BREAKDOWN_COLUMNS
-    rename_map = {
-        "coking_coal": "coking coal",
-        "burnt_dolomite": "burnt dolomite",
-        "burnt_lime": "fluxes",
-        "burnt lime": "fluxes",
-        "lime": "fluxes",
-        "bio_pci": "bio-pci",
-        "natural_gas": "natural gas",
-        "bf_gas": "bf gas",
-        "bof_gas": "bof gas",
-        "flexible": "heat",
-    }
 
     # Get BOM energy (same source as calculate_variable_opex)
     bom_energy = bill_of_materials.get("energy", {})
@@ -168,26 +279,24 @@ def calculate_cost_breakdown_by_feedstock(
 
         # Get energy requirements by carrier
         for energy_key, amount in (dbc.energy_requirements or {}).items():
-            normalized_key = _normalize_energy_key(energy_key)
+            normalized_key = normalize_name(energy_key)
             if normalized_key in ENERGY_FEEDSTOCK_KEYS:
                 carrier_amounts[normalized_key] = carrier_amounts.get(normalized_key, 0.0) + (
                     _coerce_to_float(amount) or 0.0
                 )
 
-        # Add secondary feedstock by carrier
+        # Add secondary feedstock by carrier (already in t/t after excel_reader conversion)
         for secondary_key, amount in (dbc.secondary_feedstock or {}).items():
-            normalized_secondary = _normalize_energy_key(secondary_key)
+            normalized_secondary = normalize_name(secondary_key)
             if normalized_secondary in ENERGY_FEEDSTOCK_KEYS:
-                converted_amount = (
-                    (amount * KG_TO_T)
-                    if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION
-                    else amount
-                )
-                carrier_amounts[normalized_secondary] = (
-                    carrier_amounts.get(normalized_secondary, 0.0) + converted_amount
-                )
+                carrier_amounts[normalized_secondary] = carrier_amounts.get(normalized_secondary, 0.0) + amount
 
         feedstock_carrier_intensities[dbc_lower] = carrier_amounts
+
+    logger.debug(
+        "feedstock_carrier_intensities: %s",
+        {k: sorted(v.keys()) for k, v in feedstock_carrier_intensities.items()},
+    )
 
     # Build cost breakdown for each feedstock
     for dbc in dynamic_business_cases:
@@ -205,9 +314,10 @@ def calculate_cost_breakdown_by_feedstock(
         material_unit_cost = _coerce_to_float(material_entry.get("unit_material_cost")) or 0.0
         feed_breakdown["material cost (incl. transport and tariffs)"] = material_unit_cost
 
+        demand_share = _coerce_to_float(material_entry.get("demand_share_pct", 1.0)) or 1.0
+
         # Distribute BOM energy proportionally if available
         if bom_energy and metallic_charge_lower in feedstock_carrier_intensities:
-            demand_share = _coerce_to_float(material_entry.get("demand_share_pct", 1.0)) or 1.0
             feedstock_carriers = feedstock_carrier_intensities[metallic_charge_lower]
 
             # Distribute BOM energy carrier-by-carrier
@@ -219,7 +329,7 @@ def calculate_cost_breakdown_by_feedstock(
                 if carrier_unit_cost == 0:
                     continue
 
-                normalized_carrier = _normalize_energy_key(carrier)
+                normalized_carrier = normalize_name(carrier)
 
                 # Check if this feedstock uses this carrier
                 feedstock_carrier_intensity = feedstock_carriers.get(normalized_carrier, 0.0)
@@ -245,13 +355,134 @@ def calculate_cost_breakdown_by_feedstock(
                     # This feedstock's share of THIS carrier's cost
                     carrier_weight = (demand_share * feedstock_carrier_intensity) / total_weighted_intensity_for_carrier
 
-                    target_key = rename_map.get(normalized_carrier, normalized_carrier.replace("_", " "))
-
                     # Weighted energy cost for this feedstock and carrier
                     weighted_cost = carrier_unit_cost * carrier_weight
-                    feed_breakdown[target_key] = feed_breakdown.get(target_key, 0.0) + weighted_cost
+                    feed_breakdown[normalized_carrier] = feed_breakdown.get(normalized_carrier, 0.0) + weighted_cost
+
+        # Add output revenue/cost for by-products
+        # Physical outputs (dbc.outputs): revenue via -abs(price), unless disposal cost
+        # Carbon outputs (dbc.carbon_outputs): keep output_costs sign
+        if output_costs:
+            all_outputs = {**(dbc.outputs or {}), **(dbc.carbon_outputs or {})}
+            primary_output_keys = set(dbc.get_primary_outputs().keys())
+            physical_output_keys = set(normalize_name(k) for k in (dbc.outputs or {}).keys())
+            if all_outputs:
+                logger.debug(
+                    "outputs for %s: all=%s primary(excluded)=%s",
+                    dbc.metallic_charge,
+                    sorted(all_outputs.keys()),
+                    sorted(primary_output_keys),
+                )
+            for output_key, output_amount in all_outputs.items():
+                normalized_output = normalize_name(output_key)
+                if normalized_output in primary_output_keys:
+                    continue
+                if normalized_output not in output_costs:
+                    continue
+                amount = _coerce_to_float(output_amount) or 0.0
+                if amount == 0:
+                    continue
+                # Physical outputs are revenue unless disposal cost; carbon outputs keep sign
+                raw_price = output_costs[normalized_output]
+                if normalized_output in physical_output_keys:
+                    if disposal_cost_outputs and normalized_output in disposal_cost_outputs:
+                        effective_price = raw_price  # positive = disposal cost
+                    else:
+                        effective_price = -abs(raw_price)  # revenue
+                else:
+                    effective_price = raw_price  # carbon outputs keep sign
+                revenue = amount * effective_price * demand_share
+                logger.debug(
+                    "[COST BREAKDOWN] output '%s'%s: amount=%.4f x price=$%.4f x share=%.4f = $%.4f",
+                    normalized_output,
+                    " [disposal]" if disposal_cost_outputs and normalized_output in disposal_cost_outputs else "",
+                    amount,
+                    effective_price,
+                    demand_share,
+                    revenue,
+                )
+                feed_breakdown[normalized_output] = feed_breakdown.get(normalized_output, 0.0) + revenue
 
         breakdown[metallic_charge_lower] = feed_breakdown
+
+    # Zero-pad: ensure every feedstock sub-dict includes all canonical keys
+    if cost_breakdown_keys:
+        for feed_breakdown in breakdown.values():
+            for key in cost_breakdown_keys:
+                if key not in feed_breakdown:
+                    feed_breakdown[key] = 0.0
+
+    for fs_name, fs_data in breakdown.items():
+        cost_keys = {
+            k: round(v, 4)
+            for k, v in fs_data.items()
+            if isinstance(v, (int, float)) and k in (cost_breakdown_keys or [])
+        }
+        if cost_keys:
+            logger.debug("breakdown %s costs: %s", fs_name, cost_keys)
+
+    return breakdown
+
+
+def calculate_carbon_breakdown_by_feedstock(
+    bill_of_materials: dict[str, dict[str, dict[str, float]]],
+    chosen_reductant: str,
+    dynamic_business_cases: list["PrimaryFeedstock"],
+    carbon_breakdown_keys: list[str] | None = None,
+) -> dict[str, dict[str, float]]:
+    """Calculate physical carbon intensity breakdown by feedstock (tCO2/t-product).
+
+    For each feedstock matching the chosen reductant, reports carbon_inputs
+    (negated — CO2 consumed by CCS/CCU) and carbon_outputs (positive — CO2
+    stored/slipped/utilised) scaled by demand_share.  Summing all values for
+    a feedstock gives the mass-balance residual (approx 0 when balanced).
+
+    Args:
+        bill_of_materials: BOM with ``materials`` sub-dict containing ``demand_share_pct``.
+        chosen_reductant: Reductant filter for matching DBCs.
+        dynamic_business_cases: List of PrimaryFeedstock with carbon_inputs/carbon_outputs.
+        carbon_breakdown_keys: Canonical keys for zero-padding.  When ``None``, no padding.
+
+    Returns:
+        Dict mapping feedstock name to ``{carbon_key: tCO2/t-product}``.
+    """
+    breakdown: dict[str, dict[str, float]] = {}
+
+    if not bill_of_materials or not bill_of_materials.get("materials"):
+        return breakdown
+
+    for dbc in dynamic_business_cases:
+        metallic_charge_lower = dbc.metallic_charge.lower()
+        if metallic_charge_lower not in bill_of_materials["materials"]:
+            continue
+        if dbc.reductant != chosen_reductant:
+            continue
+
+        material_entry = bill_of_materials["materials"][metallic_charge_lower]
+        demand_share = _coerce_to_float(material_entry.get("demand_share_pct", 1.0)) or 1.0
+
+        feed_carbon: dict[str, float] = {}
+
+        # Carbon inputs — negative (consumed by CCS/CCU)
+        for key, amount in (dbc.carbon_inputs or {}).items():
+            normalized = normalize_name(key)
+            val = -(_coerce_to_float(amount) or 0.0) * demand_share
+            feed_carbon[normalized] = feed_carbon.get(normalized, 0.0) + val
+
+        # Carbon outputs — positive (stored / slipped / utilised)
+        for key, amount in (dbc.carbon_outputs or {}).items():
+            normalized = normalize_name(key)
+            val = (_coerce_to_float(amount) or 0.0) * demand_share
+            feed_carbon[normalized] = feed_carbon.get(normalized, 0.0) + val
+
+        breakdown[metallic_charge_lower] = feed_carbon
+
+    # Zero-pad with canonical keys
+    if carbon_breakdown_keys:
+        for feed_carbon in breakdown.values():
+            for key in carbon_breakdown_keys:
+                if key not in feed_carbon:
+                    feed_carbon[key] = 0.0
 
     return breakdown
 
@@ -306,23 +537,16 @@ def calculate_cost_breakdown(
 
                 combined_energy: dict[str, float] = {}
                 for energy_key, amount in energy_requirements.items():
-                    normalized_key = _normalize_energy_key(energy_key)
+                    normalized_key = normalize_name(energy_key)
                     if normalized_key not in ENERGY_FEEDSTOCK_KEYS:
                         continue
                     combined_energy[normalized_key] = combined_energy.get(normalized_key, 0.0) + amount
 
                 for secondary_key, amount in secondary_feedstock.items():
-                    normalized_secondary = _normalize_energy_key(secondary_key)
+                    normalized_secondary = normalize_name(secondary_key)
                     if normalized_secondary not in ENERGY_FEEDSTOCK_KEYS:
                         continue
-                    converted_amount = (
-                        amount * KG_TO_T
-                        if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION
-                        else amount
-                    )
-                    combined_energy[normalized_secondary] = (
-                        combined_energy.get(normalized_secondary, 0.0) + converted_amount
-                    )
+                    combined_energy[normalized_secondary] = combined_energy.get(normalized_secondary, 0.0) + amount
 
                 total_dict = combined_energy
 
@@ -330,14 +554,14 @@ def calculate_cost_breakdown(
                 _nrg = {
                     key: (
                         value
-                        * (energy_costs.get(key) or energy_costs.get(_normalize_energy_key(key)) or 0.0)
+                        * (energy_costs.get(key) or energy_costs.get(normalize_name(key)) or 0.0)
                         * material_demand
                         / dbc.required_quantity_per_ton_of_product
                         if dbc.required_quantity_per_ton_of_product
                         else 0.0
                     )
                     for key, value in total_dict.items()
-                    if key in energy_costs or _normalize_energy_key(key) in energy_costs
+                    if key in energy_costs or normalize_name(key) in energy_costs
                 }
 
                 # Initialize or accumulate costs for this output product
@@ -382,6 +606,7 @@ def calculate_variable_opex(materials_cost_data: dict, energy_cost_data: dict) -
         - Energy costs are summed across all energy carriers and divided by product volume
         - This matches the cost_breakdown calculation which uses unit_material_cost + energy breakdown
     """
+    logger = logging.getLogger(f"{__name__}.calculate_variable_opex")
 
     def calculate_material_total(materials_data: dict[str, dict[str, Any]]) -> float | None:
         """
@@ -408,11 +633,16 @@ def calculate_variable_opex(materials_cost_data: dict, energy_cost_data: dict) -
 
         # Sum total material costs across all materials (excluding current step's energy)
         total_material_cost = 0.0
-        for _, item in materials_data.items():
+        for mat_name, item in materials_data.items():
             # Use total_material_cost which excludes current step's energy
             # This matches what cost_breakdown uses (unit_material_cost)
             item_cost = _coerce_to_float(item.get("total_material_cost")) or 0.0
             total_material_cost += item_cost
+            logger.debug(
+                "[VOPEX] material '%s': total_material_cost=$%.4f",
+                mat_name,
+                item_cost,
+            )
 
         if product_volume and product_volume > 0 and total_material_cost > 0:
             unit_material_cost = total_material_cost / product_volume
@@ -443,9 +673,14 @@ def calculate_variable_opex(materials_cost_data: dict, energy_cost_data: dict) -
 
         # Sum total energy costs across all energy carriers
         total_energy_cost = 0.0
-        for _, item in energy_data.items():
+        for carrier_name, item in energy_data.items():
             item_cost = _coerce_to_float(item.get("total_cost")) or 0.0
             total_energy_cost += item_cost
+            logger.debug(
+                "[VOPEX] energy carrier '%s': total_cost=$%.4f",
+                carrier_name,
+                item_cost,
+            )
 
         if product_volume and product_volume > 0 and total_energy_cost > 0:
             unit_energy_cost = total_energy_cost / product_volume
@@ -473,6 +708,28 @@ def calculate_variable_opex(materials_cost_data: dict, energy_cost_data: dict) -
     material_unit_cost = calculate_material_total(materials_cost_data)
     # Calculate energy cost as total cost / total output
     energy_unit_cost = calculate_energy_total(energy_cost_data)
+
+    # Warn when cost component is None despite data being present
+    if energy_unit_cost is None and energy_cost_data:
+        logger.warning(
+            "[VOPEX] Energy cost is None despite energy data present "
+            "(total_energy_cost <= 0 or no product_volume). Carriers: %s",
+            list(energy_cost_data.keys()),
+        )
+    if material_unit_cost is None and materials_cost_data:
+        logger.warning(
+            "[VOPEX] Material cost is None despite material data present "
+            "(total_material_cost <= 0 or no product_volume). Materials: %s",
+            list(materials_cost_data.keys()),
+        )
+
+    # Log VOPEX component summary
+    logger.debug(
+        "[VOPEX] material=$%.4f/t energy=$%.4f/t total=$%.4f/t",
+        material_unit_cost or 0.0,
+        energy_unit_cost or 0.0,
+        (material_unit_cost or 0.0) + (energy_unit_cost or 0.0),
+    )
 
     # Handle cases where one or both unit costs are None
     if material_unit_cost is None and energy_unit_cost is None:
@@ -831,20 +1088,23 @@ def calculate_npv_full(
     construction_time: int,
     carbon_costs: list[float] | None = None,
     infrastructure_costs: float = 0.0,
+    secondary_output_adjustment: float = 0.0,
 ) -> float:
     """
     Calculate the full net present value (NPV) for a technology investment.
 
     Computes NPV by calculating total investment, debt repayment schedule, applying construction
-    time lags, adding carbon costs to OPEX, and discounting net cash flows to present value.
+    time lags, adding carbon costs and secondary output adjustments to OPEX, and discounting
+    net cash flows to present value.
 
     Steps:
     1. Calculate total investment (CAPEX * capacity + infrastructure costs) and expected production
     2. Generate debt repayment schedule over the project lifetime
     3. Apply construction time lag to debt repayments and OPEX
     4. Add carbon costs to OPEX (if provided and production > 0)
-    5. Calculate gross and net cash flows
-    6. Discount to present value using cost of equity
+    5. Add secondary output cost adjustment to OPEX (by-product revenue/cost)
+    6. Calculate gross and net cash flows
+    7. Discount to present value using cost of equity
 
     Args:
         capex (float): The capital expenditure per unit capacity ($/unit).
@@ -860,6 +1120,9 @@ def calculate_npv_full(
         carbon_costs (list[float] | None): List of total carbon costs per period ($). Defaults to None.
         infrastructure_costs (float): Additional infrastructure costs like rail (applies to new plants only).
             Defaults to 0.0.
+        secondary_output_adjustment (float): Per-unit cost adjustment from secondary outputs ($/unit).
+            Negative values represent by-product revenue (reduce cost), positive values represent
+            additional costs. Applied as a constant across all operational years. Defaults to 0.0.
 
     Returns:
         float: The calculated NPV for the technology investment.
@@ -894,6 +1157,11 @@ def calculate_npv_full(
         unit_carbon_costs_lagged = zeros + unit_carbon_costs
         unit_opex_lagged = [x + y for x, y in zip(unit_opex_lagged, unit_carbon_costs_lagged)]
 
+    # Add secondary output cost adjustment (by-product revenue/cost) to OPEX during operational years only
+    secondary_adjustment_lagged = zeros + [secondary_output_adjustment] * len(unit_total_opex_list)
+    unit_opex_lagged = [x + y for x, y in zip(unit_opex_lagged, secondary_adjustment_lagged)]
+    func_logger.debug(f"[NPV FULL] Secondary output adjustment: ${secondary_output_adjustment:,.4f}/t applied to OPEX")
+
     # Calculate cash flows
     gross_cash_flow = calculate_gross_cash_flow(
         total_opex=unit_opex_lagged, price_series=price_series, expected_production=expected_production
@@ -905,7 +1173,8 @@ def calculate_npv_full(
     func_logger.debug(f"[NPV FULL] Expected production: {expected_production:,.0f} kt")
     func_logger.debug(f"[NPV FULL] Debt repayment: {debt_repayment}")
     func_logger.debug(f"[NPV FULL] Debt repayment lagged: {debt_repayment_lagged}")
-    func_logger.debug(f"[NPV FULL] OPEX list: {unit_opex_lagged}")
+    func_logger.debug(f"[NPV FULL] Secondary output adjustment: ${secondary_output_adjustment:,.4f}/t")
+    func_logger.debug(f"[NPV FULL] OPEX list (incl. carbon + secondary): {unit_opex_lagged}")
     func_logger.debug(f"[NPV FULL] Gross cash flow: {gross_cash_flow}")
     func_logger.debug(f"[NPV FULL] Net cash flow: {net_cash_flow}")
 
@@ -991,6 +1260,7 @@ def calculate_business_opportunity_npvs(
     technology_emission_factors: list["TechnologyEmissionFactors"],
     chosen_emissions_boundary_for_carbon_costs: str,
     dynamic_business_cases: dict[str, list["PrimaryFeedstock"]],
+    disposal_cost_outputs: frozenset[str] | None = None,
 ) -> dict[str, dict[tuple[float, float, str], dict[str, float]]]:
     """
     Calculates the NPV for a series of business opportunities. If the calculation fails, it returns a very
@@ -1014,6 +1284,7 @@ def calculate_business_opportunity_npvs(
         technology_emission_factors: List of technology-specific emission factors
         chosen_emissions_boundary_for_carbon_costs: Emission boundary for carbon cost calculation
         dynamic_business_cases: Dictionary mapping technology to list of primary feedstocks
+        disposal_cost_outputs: Carrier names where positive price = disposal cost.
 
     Returns:
         Dictionary mapping product -> site_id -> technology -> NPV.
@@ -1028,9 +1299,9 @@ def calculate_business_opportunity_npvs(
         - cost_data has been validated by validate_and_clean_cost_data to ensure all required fields are
           present with correct types (floats for costs, dict for bom).
     """
-    from steelo.domain.calculate_costs import calculate_npv_full, filter_active_subsidies
-    from steelo.logging_config import new_plant_logger
+    from steelo.domain.calculate_costs import calculate_npv_full, collect_active_subsidies_over_period
 
+    logger = logging.getLogger(f"{__name__}.calculate_business_opportunity_npvs")
     npv_dict: dict[str, dict[tuple[float, float, str], dict[str, float]]] = {}  # product -> site_id -> tech -> NPV
     for prod, sites in cost_data.items():
         npv_dict[prod] = {}
@@ -1043,9 +1314,9 @@ def calculate_business_opportunity_npvs(
 
                 # Calculate unit total opex with subsidies applied for earliest possible operation years
                 all_opex_subsidies: list["Subsidy"] = bo_costs.get("all_opex_subsidies", [])  # type: ignore[assignment]
-                selected_opex_subsidies = []
-                for year in range(start_year, end_year):
-                    selected_opex_subsidies.extend(filter_active_subsidies(all_opex_subsidies, Year(year)))
+                selected_opex_subsidies = collect_active_subsidies_over_period(
+                    all_opex_subsidies, start_year=start_year, end_year=end_year
+                )
                 bom = bo_costs["bom"]
                 assert isinstance(bom, dict), f"Expected bom to be dict, got {type(bom)}"
                 unit_vopex = calculate_variable_opex(bom["materials"], bom["energy"])
@@ -1054,7 +1325,7 @@ def calculate_business_opportunity_npvs(
                 unit_total_opex = unit_vopex + unit_fopex
                 unit_total_opex_list = calculate_opex_list_with_subsidies(
                     opex=unit_total_opex,
-                    opex_subsidies=list(set(selected_opex_subsidies)),
+                    opex_subsidies=selected_opex_subsidies,
                     start_year=start_year,
                     end_year=end_year,
                 )
@@ -1088,6 +1359,17 @@ def calculate_business_opportunity_npvs(
                     end_year=end_year,
                 )
 
+                # Calculate secondary output cost adjustment (by-product revenue/cost)
+                secondary_output_adj = calculate_cost_adjustments_from_secondary_outputs(
+                    bill_of_materials=bom,
+                    dynamic_business_cases=list(matched_business_cases.values()),
+                    output_costs=bo_costs["output_costs"],
+                    disposal_cost_outputs=disposal_cost_outputs,
+                )
+                logger.debug(
+                    f"[NEW PLANT NPV] {prod}/{tech} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
+                )
+
                 # Calculate NPV
                 npv_value = calculate_npv_full(
                     capex=bo_costs["capex"],  # type: ignore[arg-type]
@@ -1102,12 +1384,14 @@ def calculate_business_opportunity_npvs(
                     equity_share=equity_share,
                     infrastructure_costs=bo_costs["railway_cost"],  # type: ignore[arg-type]
                     carbon_costs=carbon_cost_list,
+                    secondary_output_adjustment=secondary_output_adj,
                 )
 
                 # Set to very negative NPV if calculation returned NaN
                 if math.isnan(npv_value):
-                    new_plant_logger.warning(
-                        f"NPV calculation returned NaN for product {prod} - site {site_id} - technology {tech}. Returning -inf."
+                    logger.warning(
+                        f"NPV calculation returned NaN for product {prod} - site {site_id} - "
+                        f"technology {tech}. Returning -inf."
                     )
                     npv_dict[prod][site_id][tech] = float("-inf")
                 else:
@@ -1202,16 +1486,23 @@ def calculate_capex_with_subsidies(capex: float, capex_subsidies: list["Subsidy"
 
     Returns:
         float: The final CAPEX after applying subsidies (minimum value of 0).
+
+    Note:
+        Negative subsidy_amount values act as taxes/penalties (increase cost).
+        Result is floored at 0 - subsidies cannot make costs negative.
     """
     # If no capex subsidies in the list, return original capex
     if capex_subsidies == []:
         return capex
 
-    # Sum all applicable subsidies (both absolute and relative)
+    # Sum all applicable subsidies based on subsidy_type
     capex_total_subsidy = 0.0
     for subsidy in capex_subsidies:
-        capex_total_subsidy += subsidy.absolute_subsidy
-        capex_total_subsidy += capex * subsidy.relative_subsidy
+        if subsidy.subsidy_type == "absolute":
+            capex_total_subsidy += subsidy.subsidy_amount
+        elif subsidy.subsidy_type == "relative":
+            # subsidy_amount stored as decimal (e.g., 0.1 = 10%)
+            capex_total_subsidy += capex * subsidy.subsidy_amount
 
     # Apply total subsidy, ensuring CAPEX doesn't go below zero
     return max(0.0, capex - capex_total_subsidy)
@@ -1230,16 +1521,23 @@ def calculate_opex_with_subsidies(opex: float, opex_subsidies: list["Subsidy"]) 
 
     Returns:
         float: The final OPEX after applying subsidies (minimum value of 0).
+
+    Note:
+        Negative subsidy_amount values act as taxes/penalties (increase cost).
+        Result is floored at 0 - subsidies cannot make costs negative.
     """
     # If no opex subsidies in the list, return original opex
     if opex_subsidies == []:
         return opex
 
-    # Sum all applicable subsidies (both absolute and relative)
+    # Sum all applicable subsidies based on subsidy_type
     opex_total_subsidy = 0.0
     for subsidy in opex_subsidies:
-        opex_total_subsidy += subsidy.absolute_subsidy
-        opex_total_subsidy += opex * subsidy.relative_subsidy
+        if subsidy.subsidy_type == "absolute":
+            opex_total_subsidy += subsidy.subsidy_amount
+        elif subsidy.subsidy_type == "relative":
+            # subsidy_amount stored as decimal (e.g., 0.1 = 10%)
+            opex_total_subsidy += opex * subsidy.subsidy_amount
 
     # Apply total subsidy, ensuring OPEX doesn't go below zero
     return max(0.0, opex - opex_total_subsidy)
@@ -1310,7 +1608,7 @@ def calculate_energy_costs_and_most_common_reductant(
         metallic_input = str(dbc.metallic_charge)
         energy_requirements_dict: dict[str, float] = {}
         for energy_name, amount in (dbc.energy_requirements or {}).items():
-            normalized_energy = _normalize_energy_key(energy_name)
+            normalized_energy = normalize_name(energy_name)
             if normalized_energy not in ENERGY_FEEDSTOCK_KEYS:
                 continue
             energy_requirements_dict[normalized_energy] = energy_requirements_dict.get(normalized_energy, 0.0) + amount
@@ -1319,18 +1617,13 @@ def calculate_energy_costs_and_most_common_reductant(
         if not energy_requirements_dict and not secondary_feedstock_dict:
             continue
 
-        # Combine energy requirements and secondary feedstock with proper units
+        # Combine secondary feedstock (already in t/t) with energy requirements
         for secondary_key, amount in secondary_feedstock_dict.items():
-            normalized_secondary = _normalize_energy_key(secondary_key)
+            normalized_secondary = normalize_name(secondary_key)
             if normalized_secondary not in ENERGY_FEEDSTOCK_KEYS:
                 continue
-            converted_amount = (
-                amount * KG_TO_T
-                if normalized_secondary in SECONDARY_FEEDSTOCKS_REQUIRING_KG_TO_T_CONVERSION
-                else amount
-            )
             energy_requirements_dict[normalized_secondary] = (
-                energy_requirements_dict.get(normalized_secondary, 0.0) + converted_amount
+                energy_requirements_dict.get(normalized_secondary, 0.0) + amount
             )
 
         if not energy_requirements_dict:
@@ -1344,7 +1637,7 @@ def calculate_energy_costs_and_most_common_reductant(
 
         # Sum energy costs for all energy types
         for energy_type, volume in energy_requirements_dict.items():
-            normalized_energy_type = _normalize_energy_key(energy_type)
+            normalized_energy_type = normalize_name(energy_type)
             price = energy_costs.get(normalized_energy_type, energy_costs.get(energy_type, 0.0))
             energy_vopex_by_input[metallic_input][dbc.reductant] += volume * price
 
@@ -1385,8 +1678,12 @@ def calculate_debt_with_subsidies(cost_of_debt: float, debt_subsidies: list["Sub
     Returns:
         float: The effective cost of debt after applying subsidies (minimum value of risk_free_rate).
 
-    Note: Relative subsidies are ignored for cost of debt calculations; only absolute subsidies are applied.
+    Note:
+        Relative subsidies are ignored for cost of debt calculations; only absolute subsidies are applied.
+        Negative subsidy_amount values act as taxes/penalties (increase cost of debt).
+        Result is floored at risk_free_rate - subsidies cannot reduce cost below risk-free rate.
     """
+    logger = logging.getLogger(f"{__name__}.calculate_debt_with_subsidies")
     # If no cost of debt subsidies in the list, return original cost of debt
     if debt_subsidies == []:
         return cost_of_debt
@@ -1394,9 +1691,10 @@ def calculate_debt_with_subsidies(cost_of_debt: float, debt_subsidies: list["Sub
     # Sum all absolute subsidies (percentage point reductions only)
     debt_total_subsidy = 0.0
     for subsidy in debt_subsidies:
-        debt_total_subsidy += subsidy.absolute_subsidy
-
-    logging.info("Ignoring all relative subsidies for subsidised cost of debt calculations")
+        if subsidy.subsidy_type == "absolute":
+            debt_total_subsidy += subsidy.subsidy_amount
+        else:
+            logger.info("Ignoring relative subsidy for cost of debt calculation")
 
     # Apply subsidy, ensuring cost of debt doesn't go below risk-free rate
     return max(risk_free_rate, cost_of_debt - debt_total_subsidy)
@@ -1415,29 +1713,46 @@ def calculate_lcoh_from_electricity_country_level(
     year: "Year",
 ) -> dict[str, float]:
     """
-    Calculate LCOH (Levelized Cost of Hydrogen) for each country based on electricity prices.
+    Calculate LCOH (Levelised Cost of Hydrogen) for each country based on electricity prices.
 
-    Formula: LCOH (USD/kg) = electrolyser energy consumption (MWh/kg) * electricity price (USD/kWh) +
-    CAPEX and OPEX components for each country and year (USD/kg)
+    Formula:
+        LCOH (USD/kg) = energy_consumption (MWh/kg) × 1000 × electricity_price (USD/kWh) + capex_opex (USD/kg)
+                      = (kWh/kg) × (USD/kWh) + (USD/kg)
+                      = USD/kg
+
+    The returned LCOH is in USD/kg. When applied to furnace groups via update_furnace_hydrogen_costs(),
+    it is converted to USD/t (×1000) to match the BOM consumption units (t/t after normalisation).
 
     Args:
-        electricity_by_country: Dictionary mapping ISO3 codes to electricity prices (USD/kWh)
-        hydrogen_efficiency: Dictionary mapping years to hydrogen efficiency values (MWh/kg H2)
-        hydrogen_capex_opex: Dictionary mapping ISO3 codes to year->CAPEX+OPEX values (USD/kg)
-        year: Current year
+        electricity_by_country: Dictionary mapping ISO3 codes to electricity prices (USD/kWh).
+            Already converted from USD/MWh by excel_reader.
+        hydrogen_efficiency: Dictionary mapping years to electrolyser energy consumption (MWh/kg H2).
+            From "Hydrogen efficiency" sheet in master Excel.
+        hydrogen_capex_opex: Dictionary mapping ISO3 codes to year->CAPEX+OPEX values (USD/kg).
+            From "Hydrogen CAPEX_OPEX component" sheet in master Excel.
+        year: Current simulation year.
 
     Returns:
-        Dictionary mapping ISO3 codes to LCOH values (USD/kg)
+        Dictionary mapping ISO3 codes to LCOH values (USD/kg).
 
     Raises:
-        ValueError: If required data is missing for calculation
+        ValueError: If required data is missing for calculation.
     """
+    logger = logging.getLogger(f"{__name__}.calculate_lcoh_from_electricity_country_level")
+
     if year not in hydrogen_efficiency:
         raise ValueError(f"Hydrogen efficiency not found for year {year}")
 
     # Energy consumption of the electrolyser
     energy_consumption = hydrogen_efficiency[year]  # MWh/kg H2
     energy_consumption_kwh = energy_consumption * MWH_TO_KWH  # Convert MWh to kWh
+
+    logger.debug(
+        "[ENERGY UNITS] LCOH calc year %s: electrolyser efficiency %.4f MWh/kg = %.2f kWh/kg",
+        year,
+        energy_consumption,
+        energy_consumption_kwh,
+    )
 
     lcoh_by_country = {}
     for iso3, electricity_price in electricity_by_country.items():
@@ -1448,8 +1763,18 @@ def calculate_lcoh_from_electricity_country_level(
             raise ValueError(f"Hydrogen CAPEX/OPEX not found for country {iso3} in year {year}")
         capex_opex = hydrogen_capex_opex[iso3][year]
 
-        # Calculate LCOH
+        # Calculate LCOH: (kWh/kg) × (USD/kWh) + (USD/kg) = USD/kg
         lcoh_by_country[iso3] = energy_consumption_kwh * electricity_price + capex_opex
+
+    # Log a sample of LCOH values for verification
+    sample_countries = list(lcoh_by_country.keys())[:3]
+    for iso3 in sample_countries:
+        logger.debug(
+            "[ENERGY UNITS] LCOH %s year %s: %.2f USD/kg",
+            iso3,
+            year,
+            lcoh_by_country[iso3],
+        )
 
     return lcoh_by_country
 
@@ -1476,6 +1801,8 @@ def calculate_regional_hydrogen_ceiling_country_level(
     Raises:
         ValueError: If no LCOH values are provided
     """
+    logger = logging.getLogger(f"{__name__}.calculate_regional_hydrogen_ceiling_country_level")
+
     import numpy as np
     from collections import defaultdict
 
@@ -1585,7 +1912,8 @@ def apply_hydrogen_price_cap_country_level(
 def calculate_cost_adjustments_from_secondary_outputs(
     bill_of_materials,
     dynamic_business_cases,
-    input_costs,
+    output_costs,
+    disposal_cost_outputs: frozenset[str] | None = None,
 ) -> float:
     """
     Calculate per-unit cost adjustments from secondary outputs (by-products).
@@ -1593,7 +1921,15 @@ def calculate_cost_adjustments_from_secondary_outputs(
     The adjustment is expressed in USD per tonne of product. Revenues from by-products will
     return negative values (reducing production cost) while additional costs will return positive
     values.
+
+    Args:
+        bill_of_materials: BOM dict with "materials" key.
+        dynamic_business_cases: List of PrimaryFeedstock objects.
+        output_costs: Energy costs used for output revenue pricing (USD/unit).
+        disposal_cost_outputs: Carrier names where positive price = disposal cost.
+            These keep their raw price sign instead of being negated via -abs().
     """
+    logger = logging.getLogger(f"{__name__}.calculate_cost_adjustments_from_secondary_outputs")
     if "materials" not in bill_of_materials or not dynamic_business_cases:
         return 0.0
 
@@ -1602,8 +1938,11 @@ def calculate_cost_adjustments_from_secondary_outputs(
         return 0.0
 
     dbc_by_metallic_charge = {dbc.metallic_charge: dbc for dbc in dynamic_business_cases}
-    adjustments_outputs = {output: price for output, price in input_costs.items()}
-    # NOTE: By-product revenues must be provided as negative values in input_costs (e.g., slag: -10 USD/t).
+    adjustments_outputs = {output: price for output, price in output_costs.items()}
+    # NOTE: Physical by-product outputs (dbc.outputs) are normally revenue, so their price
+    # is negated via -abs(price). Exception: carriers in disposal_cost_outputs keep their
+    # raw sign (positive = disposal cost). Carbon outputs (dbc.carbon_outputs) always keep
+    # their sign (positive = storage cost, negative = credit).
 
     total_adjustments = 0.0
     total_product_volume = 0.0
@@ -1627,11 +1966,49 @@ def calculate_cost_adjustments_from_secondary_outputs(
 
         total_product_volume += product_volume
 
-        material_adjustment = sum(
-            product_volume * adjustments_outputs[output] * dbc.outputs[output]  # multiply by output amounts per unit
-            for output in (dbc.outputs or {})
-            if output in adjustments_outputs
-        )
+        # Physical outputs: revenue via -abs(price), unless disposal cost output
+        physical_outputs = dbc.outputs or {}
+        material_adjustment = 0.0
+        for output in physical_outputs:
+            if output in adjustments_outputs:
+                if disposal_cost_outputs and output in disposal_cost_outputs:
+                    effective_price = adjustments_outputs[output]  # positive = disposal cost
+                else:
+                    effective_price = -abs(adjustments_outputs[output])  # revenue
+                carrier_adj = product_volume * effective_price * physical_outputs[output]
+                material_adjustment += carrier_adj
+                logger.debug(
+                    "[SECONDARY OUTPUTS] physical '%s' (%s)%s: vol=%.1f x price=$%.6f x qty=%.4f = $%.4f",
+                    output,
+                    material,
+                    " [disposal]" if disposal_cost_outputs and output in disposal_cost_outputs else "",
+                    product_volume,
+                    effective_price,
+                    physical_outputs[output],
+                    carrier_adj,
+                )
+        # Carbon outputs: keep output_costs sign (positive = cost, negative = credit)
+        carbon_outputs = dbc.carbon_outputs or {}
+        for output in carbon_outputs:
+            if output in adjustments_outputs:
+                carrier_adj = product_volume * adjustments_outputs[output] * carbon_outputs[output]
+                material_adjustment += carrier_adj
+                logger.debug(
+                    "[SECONDARY OUTPUTS] carbon '%s' (%s): vol=%.1f x price=$%.6f x qty=%.4f = $%.4f",
+                    output,
+                    material,
+                    product_volume,
+                    adjustments_outputs[output],
+                    carbon_outputs[output],
+                    carrier_adj,
+                )
         total_adjustments += material_adjustment
 
-    return total_adjustments / total_product_volume if total_product_volume > 0 else 0.0
+    result = total_adjustments / total_product_volume if total_product_volume > 0 else 0.0
+    if result != 0.0:
+        logger.debug(
+            "[SECONDARY OUTPUTS] total adjustment: $%.4f/t (from %d materials)",
+            result,
+            len(materials),
+        )
+    return result

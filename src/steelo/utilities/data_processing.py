@@ -6,21 +6,21 @@ from various sources (Excel, JSON, etc.) to ensure consistency throughout
 the codebase.
 """
 
+from steelo.utilities.utils import normalize_name
+
 
 def normalize_product_name(name: str) -> str:
     """
-    Normalize product names to use underscores instead of spaces for consistency.
+    Normalize product names for consistency.
 
-    This ensures that product names from Excel data (e.g., "hot metal") match
-    the programmatic constants (e.g., "hot_metal") used throughout the codebase.
-
-    Also converts liquid_steel to steel for consistency.
+    Delegates to ``normalize_name()`` for canonical lowercase/underscore form,
+    then applies the liquid_steel → steel mapping.
 
     Args:
-        name: The product name to normalize
+        name: The product name to normalise.
 
     Returns:
-        The normalized product name with spaces replaced by underscores and lowercased
+        The normalised product name.
 
     Examples:
         >>> normalize_product_name("hot metal")
@@ -34,7 +34,7 @@ def normalize_product_name(name: str) -> str:
         >>> normalize_product_name("liquid_steel")
         'steel'
     """
-    normalized = name.lower().replace(" ", "_")
+    normalized = normalize_name(name)
 
     # Apply the same liquid_steel -> steel conversion as in excel reader
     if normalized == "liquid_steel":

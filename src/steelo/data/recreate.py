@@ -40,6 +40,7 @@ from .recreation_functions import (
     recreate_technology_emission_factors_data,
     recreate_fopex_data,
     recreate_fallback_material_costs,
+    recreate_willingness_to_pay_data,
 )
 
 
@@ -177,7 +178,7 @@ class DataRecreator:
             #         json_path=output_paths["tariffs"],
             #         tariff_excel_path=available_files["tariff_excel"],
             #         tariff_sheet_name="Trade_tariffs for model",
-            #         trade_bloc_sheet_name="Trade_bloc definitions",
+            #         country_mapping_sheet_name="Country mapping",
             #     )
 
             # console.print("[blue]Recreating carbon costs data...[/blue]")
@@ -223,7 +224,7 @@ class DataRecreator:
                     json_path=output_paths["tariffs"],
                     tariff_excel_path=str(master_excel_path),
                     tariff_sheet_name="Tariffs",
-                    trade_bloc_sheet_name="Trade bloc definitions",
+                    country_mapping_sheet_name="Country mapping",
                 )
                 console.print(f"  ✓ Created {output_paths['tariffs'].name} [SOURCE: master-excel - Tariffs sheet]")
 
@@ -232,7 +233,7 @@ class DataRecreator:
                     json_path=output_paths["subsidies"],
                     excel_path=master_excel_path,
                     subsidies_sheet_name="Subsidies",
-                    trade_bloc_sheet_name="Trade bloc definitions",
+                    country_mapping_sheet_name="Country mapping",
                 )
                 console.print(f"  ✓ Created {output_paths['subsidies'].name} [SOURCE: master-excel - Subsidies sheet]")
 
@@ -464,6 +465,7 @@ class DataRecreator:
             "recreate_fopex_data": recreate_fopex_data,
             "recreate_carbon_border_mechanisms_data": recreate_carbon_border_mechanisms_data,
             "recreate_fallback_material_costs": recreate_fallback_material_costs,
+            "recreate_willingness_to_pay_data": recreate_willingness_to_pay_data,
         }
 
         if isinstance(spec.recreate_function, str):
@@ -507,14 +509,14 @@ class DataRecreator:
                     json_path=output_path,
                     tariff_excel_path=str(master_excel_path),
                     tariff_sheet_name=spec.master_excel_sheet,
-                    trade_bloc_sheet_name="Trade bloc definitions",
+                    country_mapping_sheet_name="Country mapping",
                 )
             elif spec.recreate_function == "recreate_subsidy_data":
                 func(
                     json_path=output_path,
                     excel_path=master_excel_path,
                     subsidies_sheet_name=spec.master_excel_sheet,
-                    trade_bloc_sheet_name="Trade bloc definitions",
+                    country_mapping_sheet_name="Country mapping",
                 )
             elif spec.recreate_function == "recreate_carbon_costs_data":
                 func(
@@ -604,6 +606,17 @@ class DataRecreator:
                     excel_path=master_excel_path,
                     sheet_name=spec.master_excel_sheet,
                 )
+            elif spec.recreate_function == "recreate_willingness_to_pay_data":
+                # Need to read country mappings first
+                from ..adapters.dataprocessing.excel_reader import read_country_mappings
+
+                country_mappings = read_country_mappings(master_excel_path)
+                func(
+                    json_path=output_path,
+                    excel_path=master_excel_path,
+                    country_mappings=country_mappings,
+                    willingness_to_pay_sheet_name=spec.master_excel_sheet or "Willingness to pay",
+                )
             elif spec.recreate_function == "recreate_plants_data":
                 # Special handling for plants - read directly from master Excel
                 from ..adapters.dataprocessing.master_excel_reader import MasterExcelReader
@@ -640,13 +653,13 @@ class DataRecreator:
 
                 # Read dynamic business cases from Bill of Materials sheet
                 console.print("  [dim]Reading dynamic business cases from Bill of Materials sheet[/dim]")
-                dynamic_feedstocks_dict = read_dynamic_business_cases(
+                dynamic_feedstocks_dict, aggregated_constraints = read_dynamic_business_cases(
                     str(master_excel_path), excel_sheet="Bill of Materials"
                 )
 
                 # Note: We're not loading gravity distances for now as they need proper JSON serialization
                 with MasterExcelReader(master_excel_path) as reader:
-                    plants, canonical_metadata = reader.read_plants(
+                    plants, canonical_metadata, aggregated_metallic_constraints = reader.read_plants(
                         dynamic_feedstocks_dict=dynamic_feedstocks_dict,
                         geocoder_coordinates=geocoder_coordinates,
                         simulation_start_year=2025,  # TODO: Make this configurable
@@ -660,6 +673,26 @@ class DataRecreator:
                     master_excel_path=master_excel_path,
                     master_excel_version="v1.0",  # TODO: Extract from Excel or config
                 )
+
+                # Save aggregated metallic charge constraints to JSON
+                if aggregated_constraints:
+                    import json
+
+                    constraints_path = output_dir / "aggregated_metallic_charge_constraints.json"
+                    constraints_data = [
+                        {
+                            "technology_name": c.technology_name,
+                            "feedstock_pattern": c.feedstock_pattern,
+                            "minimum_share": c.minimum_share,
+                            "maximum_share": c.maximum_share,
+                        }
+                        for c in aggregated_metallic_constraints
+                    ]
+                    with open(constraints_path, "w") as f:
+                        json.dump(constraints_data, f, indent=2)
+                    console.print(
+                        f"  [dim]Saved {len(aggregated_metallic_constraints)} aggregated metallic charge constraints[/dim]"
+                    )
             elif spec.recreate_function == "recreate_plant_groups_data":
                 func(
                     plants_json_path=output_dir / "plants.json",

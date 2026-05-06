@@ -116,7 +116,7 @@ def test_post_modelrun_with_scenario_options(mock_technology_extraction, client,
     assert response.status_code == 302  # Should redirect on success
 
     # Get the latest model run
-    modelrun = ModelRun.objects.latest("started_at")
+    modelrun = ModelRun.objects.latest("created_at")
 
     # Check that the scenario options were saved in the config
     assert modelrun.config["total_steel_demand_scenario"] == "accelerated_transition"
