@@ -99,12 +99,16 @@ class PlotConfig:
         if not self.metallic_charge_colors:
             # Metallic charges: Thematically grouped colors
             # - Scrap: Gray (recycled metal)
-            # - DRI/HBI: Shades of blue (related direct reduction products)
+            # - DRI/HBI: Blue gradients (light=low, dark=high quality), mirroring io_* convention
             # - Pig iron/Hot metal: Dark grays (molten/intermediate products)
             self.metallic_charge_colors = {
                 "scrap": "#708090",  # slate gray - recycled metal
-                "dri": "#4682B4",  # steel blue - direct reduced iron
-                "hbi": "#87CEEB",  # sky blue - hot briquetted iron (lighter, related to DRI)
+                "dri_low": "#B0C4DE",  # light steel blue
+                "dri_mid": "#4682B4",  # steel blue
+                "dri_high": "#1F4E79",  # dark steel blue
+                "hbi_low": "#CFE7F5",  # pale sky blue
+                "hbi_mid": "#87CEEB",  # sky blue
+                "hbi_high": "#3A8FBF",  # deeper sky blue
                 "pig_iron": "#2F4F4F",  # dark slate gray - molten intermediate
                 "hot_metal": "#696969",  # dim gray - molten metal (similar to pig iron)
             }
@@ -426,7 +430,11 @@ class SteelPlotter:
         ax.set_title(f"CAPEX Investments by Technology{location_str}", fontsize=14, fontweight="bold")
         ax.set_xlabel("Year", fontsize=12)
         ax.set_ylabel("Total CAPEX (Billion USD)", fontsize=12)
-        self._style_legend(ax, title="Technology")
+        legend_techs = self._legend_order_for_stack(capex_by_year_tech)
+        tech_handles = [
+            Patch(facecolor=self.config.tech_colors.get(tech, "brown"), label=tech) for tech in legend_techs
+        ]
+        self._style_legend(ax, title="Technology", handles=tech_handles, labels=legend_techs)
         ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
 
         # X-axis formatting
@@ -985,7 +993,11 @@ class SteelPlotter:
         ax.set_title("Iron Ore Consumption by Quality Over Time", fontsize=14, fontweight="bold")
         ax.set_xlabel("Year", fontsize=12)
         ax.set_ylabel("Total Consumption (Mt)", fontsize=12)
-        self._style_legend(ax, title="Quality")
+        legend_qualities = self._legend_order_for_stack(df_pivot)
+        quality_handles = [
+            Patch(facecolor=self._get_iron_ore_quality_color(quality), label=quality) for quality in legend_qualities
+        ]
+        self._style_legend(ax, title="Quality", handles=quality_handles, labels=legend_qualities)
         ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
 
         # X-axis formatting
@@ -1035,6 +1047,13 @@ class SteelPlotter:
         df = pd.DataFrame(data_rows)
         df["consumption_mt"] = df["consumption"] / 1e6
 
+        # Exclude io_* charges — shown separately in the iron ore consumption chart
+        df = df[~df["charge_type"].str.lower().str.startswith("io_")]
+
+        if df.empty:
+            self.logger.warning("No metallic charge data to plot after excluding iron ore")
+            return None
+
         # Pivot
         df_pivot = df.pivot(index="year", columns="charge_type", values="consumption_mt")
         df_pivot = df_pivot.fillna(0)
@@ -1056,7 +1075,11 @@ class SteelPlotter:
         ax.set_title("Metallic Charge Consumption Over Time", fontsize=14, fontweight="bold")
         ax.set_xlabel("Year", fontsize=12)
         ax.set_ylabel("Total Consumption (Mt)", fontsize=12)
-        self._style_legend(ax, title="Charge Type")
+        legend_charges = self._legend_order_for_stack(df_pivot)
+        charge_handles = [
+            Patch(facecolor=self._get_metallic_charge_color(charge), label=charge) for charge in legend_charges
+        ]
+        self._style_legend(ax, title="Charge Type", handles=charge_handles, labels=legend_charges)
         ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
 
         # X-axis formatting
@@ -1140,7 +1163,11 @@ class SteelPlotter:
         ax.set_title("International Iron Product Trade Volumes Over Time", fontsize=14, fontweight="bold")
         ax.set_xlabel("Year", fontsize=12)
         ax.set_ylabel("Total Trade Volume (Mt)", fontsize=12)
-        self._style_legend(ax, title="Iron Product")
+        legend_products = self._legend_order_for_stack(df_pivot)
+        product_handles = [
+            Patch(facecolor=iron_product_colors.get(product, "#808080"), label=product) for product in legend_products
+        ]
+        self._style_legend(ax, title="Iron Product", handles=product_handles, labels=legend_products)
         ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
 
         # X-axis formatting
@@ -2026,84 +2053,215 @@ class SteelPlotter:
 
         return self._save_figure(fig, filename, subdir="plots_dir")
 
+    def plot_market_prices(
+        self,
+        price_df: pd.DataFrame,
+        start_year: int,
+        end_year: int,
+        export_csv: bool = True,
+    ) -> Optional[Path]:
+        """Plot market prices over time as a line chart.
+
+        Renders steel, scrap, and iron weighted-average cost lines (whichever columns are
+        present) using the standard SteelPlotter styling: side legend, dashed gridlines, and
+        the bottom-right Steel-IQ footer applied via ``_save_figure``.
+
+        Args:
+            price_df: DataFrame with a ``year`` column and any of:
+                ``steel_price_usd_per_t``, ``scrap_price_usd_per_t``,
+                ``iron_weighted_avg_cost_usd_per_t``.
+            start_year: First year in the price series; used in the output filename.
+            end_year: Last year in the price series; used in the output filename.
+            export_csv: If True, also export the price data to CSV alongside the PNG.
+
+        Returns:
+            Path to the saved plot, or None if there is no data to plot.
+        """
+        if price_df.empty or "year" not in price_df.columns:
+            self.logger.warning("No market price data to plot")
+            return None
+
+        series_specs = [
+            ("steel_price_usd_per_t", "Steel", "o", "#1f77b4", 1.0),
+            ("scrap_price_usd_per_t", "Scrap", "^", "#2ca02c", 1.0),
+            ("iron_weighted_avg_cost_usd_per_t", "Iron (weighted avg cost)", "D", "#ff7f0e", 0.6),
+        ]
+
+        fig, ax = plt.subplots(figsize=self.config.default_figsize_wide)
+        plotted_any = False
+        for column, label, marker, color, alpha in series_specs:
+            if column not in price_df.columns:
+                continue
+            ax.plot(
+                price_df["year"],
+                price_df[column],
+                marker=marker,
+                linewidth=2,
+                label=label,
+                color=color,
+                alpha=alpha,
+            )
+            plotted_any = True
+
+        if not plotted_any:
+            self.logger.warning("No recognised market price columns to plot")
+            plt.close(fig)
+            return None
+
+        ax.set_title("Market Prices - Steel, Iron and Scrap", fontsize=14, fontweight="bold")
+        ax.set_xlabel("Year", fontsize=12)
+        ax.set_ylabel("Price / Cost (USD/t)", fontsize=12)
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _p: f"${x:,.0f}"))
+        ax.set_ylim(bottom=0)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax.grid(True, alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
+
+        self._style_legend(ax, title="Series")
+
+        filename = f"market_prices_{start_year}_{end_year}.png"
+        if export_csv:
+            self._save_chart_data_to_csv(price_df, filename, subdir="pam_plots_dir")
+
+        return self._save_figure(fig, filename, subdir="pam_plots_dir")
+
+    # Original grouped-bar version — superseded by the stacked variant below. Kept commented for revert.
+    # def plot_capacity_development_by_technology(
+    #     self,
+    #     data_file: pd.DataFrame,
+    #     units: str = "Mt",
+    #     filename: str = "Capacity_development_by_technology.png",
+    #     export_csv: bool = True,
+    # ) -> Optional[Path]:
+    #     """Plot year-on-year capacity development by technology.
+    #
+    #     Shows the change in capacity for each technology from year to year as a grouped bar chart.
+    #     """
+    #     required_cols = ["furnace_group_id", "year", "technology", "capacity", "product"]
+    #     missing_cols = [col for col in required_cols if col not in data_file.columns]
+    #     if missing_cols:
+    #         raise ValueError(f"DataFrame missing required columns: {missing_cols}")
+    #
+    #     data_file = data_file.copy()
+    #
+    #     unique_techs = data_file["technology"].unique()
+    #     tech_colors = {}
+    #     for tech in unique_techs:
+    #         tech_colors[tech] = self._ensure_tech_color(tech)
+    #
+    #     by_technology = (
+    #         data_file.drop_duplicates(subset=["furnace_group_id", "year"])
+    #         .groupby(["year", "technology"])["capacity"]
+    #         .sum()
+    #         .unstack("technology")
+    #     )
+    #     by_technology = by_technology.fillna(0)
+    #     capacity_diff = by_technology.diff()
+    #
+    #     fig, ax = plt.subplots(figsize=self.config.default_figsize_wide)
+    #     capacity_diff.plot(
+    #         ax=ax,
+    #         kind="bar",
+    #         stacked=False,
+    #         ylabel=f"Capacity [{units}]",
+    #         xlabel="Year",
+    #         legend=True,
+    #         color=tech_colors,
+    #     )
+    #
+    #     ax.set_title("Year-on-Year Capacity Development by Technology", fontsize=14, fontweight="bold")
+    #     self._style_legend(ax, title="Technology")
+    #     ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
+    #     ax.tick_params(axis="x", rotation=45)
+    #     self._ensure_y_axis_starts_at_zero(ax)
+    #     fig.tight_layout()
+    #
+    #     if export_csv:
+    #         self._save_chart_data_to_csv(capacity_diff, filename)
+    #
+    #     return self._save_figure(fig, filename)
+
     def plot_capacity_development_by_technology(
         self,
         data_file: pd.DataFrame,
+        product_type: str = "steel",
         units: str = "Mt",
-        filename: str = "Capacity_development_by_technology.png",
+        filename: Optional[str] = None,
         export_csv: bool = True,
     ) -> Optional[Path]:
-        """Plot year-on-year capacity development by technology.
+        """Plot year-on-year capacity change by technology, split by sign.
 
-        Shows the change in capacity for each technology from year to year as a grouped bar chart.
+        Additions stack upward and retirements stack downward around a y=0 line, so
+        the net change per year and the technology mix on each side are both readable
+        at a glance. Filtered to a single product so iron and steel fleets are charted
+        separately.
 
         Args:
             data_file: DataFrame with columns: furnace_group_id, year, technology, capacity, product
+            product_type: Product to filter on, e.g. "steel" or "iron" (default: "steel")
             units: Unit string for y-axis label (e.g., "Mt", "ktpa")
-            filename: Output filename for the plot
+            filename: Output filename. If None, derived from product_type.
             export_csv: If True, also export chart data to CSV (default: True)
 
         Returns:
             Path to saved plot, or None if no data
-
-        Raises:
-            ValueError: If required columns are missing from data_file
         """
-        # Validate required columns
         required_cols = ["furnace_group_id", "year", "technology", "capacity", "product"]
         missing_cols = [col for col in required_cols if col not in data_file.columns]
         if missing_cols:
             raise ValueError(f"DataFrame missing required columns: {missing_cols}")
 
         data_file = data_file.copy()
+        data_file = data_file[data_file["product"] == product_type]
 
-        # Get unique technologies and ensure all have colors
-        unique_techs = data_file["technology"].unique()
-        tech_colors = {}
-        for tech in unique_techs:
-            tech_colors[tech] = self._ensure_tech_color(tech)
+        if data_file.empty:
+            self.logger.warning(f"No data for product type '{product_type}' to plot")
+            return None
 
-        # Calculate year-on-year development by technology
+        if filename is None:
+            filename = f"Capacity_development_by_technology_{product_type}.png"
+
+        for tech in data_file["technology"].unique():
+            self._ensure_tech_color(tech)
+
         by_technology = (
             data_file.drop_duplicates(subset=["furnace_group_id", "year"])
             .groupby(["year", "technology"])["capacity"]
             .sum()
             .unstack("technology")
+            .fillna(0)
         )
+        capacity_diff = by_technology.diff().dropna(how="all")
 
-        # Fill missing values with 0 to ensure all technologies appear in diff
-        by_technology = by_technology.fillna(0)
+        if capacity_diff.empty:
+            return None
 
-        # Calculate year-on-year difference
-        capacity_diff = by_technology.diff()
+        positives = capacity_diff.clip(lower=0)
+        negatives = capacity_diff.clip(upper=0)
+        colours = [self.config.tech_colors.get(tech, "brown") for tech in capacity_diff.columns]
 
-        # Create the plot
         fig, ax = plt.subplots(figsize=self.config.default_figsize_wide)
+        positives.plot(ax=ax, kind="bar", stacked=True, color=colours, width=0.8, legend=False)
+        negatives.plot(ax=ax, kind="bar", stacked=True, color=colours, width=0.8, legend=False)
 
-        capacity_diff.plot(
-            ax=ax,
-            kind="bar",
-            stacked=False,
-            ylabel=f"Capacity [{units}]",
-            xlabel="Year",
-            legend=True,
-            color=tech_colors,
+        ax.axhline(0, color="black", linewidth=0.8)
+        ax.set_title(
+            f"Year-on-Year Capacity Development by Technology — {product_type.title()}",
+            fontsize=14,
+            fontweight="bold",
         )
+        ax.set_xlabel("Year", fontsize=12)
+        ax.set_ylabel(f"Capacity change [{units}]", fontsize=12)
 
-        # Styling
-        ax.set_title("Year-on-Year Capacity Development by Technology", fontsize=14, fontweight="bold")
-        self._style_legend(ax, title="Technology")
+        legend_techs = self._legend_order_for_stack(capacity_diff)
+        tech_handles = [
+            Patch(facecolor=self.config.tech_colors.get(tech, "brown"), label=tech) for tech in legend_techs
+        ]
+        self._style_legend(ax, title="Technology", handles=tech_handles, labels=legend_techs)
         ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
-
-        # Rotate x-axis labels for better readability
         ax.tick_params(axis="x", rotation=45)
-
-        # Ensure y-axis starts at 0
-        self._ensure_y_axis_starts_at_zero(ax)
 
         fig.tight_layout()
 
-        # Export CSV if requested
         if export_csv:
             self._save_chart_data_to_csv(capacity_diff, filename)
 
@@ -2216,14 +2374,17 @@ class SteelPlotter:
         ax.set_ylabel(f"{column_name.replace('_', ' ').title()} [{units}]", fontsize=12)
 
         # Fix region/technology colors if needed (pandas sometimes doesn't apply them correctly)
+        handles, labels = ax.get_legend_handles_labels()
         if pivot_columns == ["region"] or pivot_columns == ["technology"]:
-            handles, labels = ax.get_legend_handles_labels()
             for handle, label in zip(handles, labels):
-                if label in colour_map:
-                    if hasattr(handle, "set_facecolor"):
-                        handle.set_facecolor(colour_map[label])
+                if label in colour_map and hasattr(handle, "set_facecolor"):
+                    handle.set_facecolor(colour_map[label])
 
-        self._style_legend(ax, title=legend_title)
+        # Order legend top-to-bottom to match the visual stack - Excludes all-zero columns
+        label_to_handle = {str(lbl): h for h, lbl in zip(handles, labels)}
+        ordered_labels = [str(c) for c in self._legend_order_for_stack(df_pivot) if str(c) in label_to_handle]
+        ordered_handles = [label_to_handle[lbl] for lbl in ordered_labels]
+        self._style_legend(ax, title=legend_title, handles=ordered_handles, labels=ordered_labels)
 
         # Set x-axis to show only integer years
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))

@@ -439,8 +439,8 @@ class DataCollector:
                     for material_name, material_data in materials.items():
                         material_lower = material_name.lower()
 
-                        # Check if this is an iron ore related material
-                        is_iron_ore = any(keyword in material_lower for keyword in iron_ore_keywords)
+                        # Prefix match — substring match misclassifies e.g. "bio_pci" as "io_"
+                        is_iron_ore = any(material_lower.startswith(keyword) for keyword in iron_ore_keywords)
 
                         if is_iron_ore:
                             # Get the demand (total consumption in tonnes)

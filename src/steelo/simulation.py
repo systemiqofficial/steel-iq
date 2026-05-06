@@ -1265,6 +1265,7 @@ class SimulationRunner:
                 prices = data_collector.collect_market_iron_steel_price(
                     world_suppliers=bus.uow.repository.suppliers.list()
                 )
+                prices["steel_demand"] = float(bus.env.current_demand)
                 data_collector.trace_price[bus.env.year] = prices
                 logger.info(
                     f"Year {bus.env.year} prices - Steel: ${prices['steel']:.2f}/t, Iron: ${prices['iron']:.2f}/t"
@@ -1343,6 +1344,9 @@ class SimulationRunner:
         )
         plot_bar_chart_of_new_plants_by_status(data_collector.status_counts, plot_paths=bus.env.plot_paths)
         plot_map_of_new_plants_operating(data_collector.new_plant_locations, plot_paths=bus.env.plot_paths)
+        steel_demand_by_year = {
+            year: float(prices["steel_demand"]) for year, prices in data_collector.trace_price.items()
+        }
         generate_post_run_cap_prod_plots(
             file_path=output_path,
             capacity_limit=bus.env.config.capacity_limit,
@@ -1353,6 +1357,7 @@ class SimulationRunner:
             steel_price_buffer=bus.env.config.steel_price_buffer,
             iron_price_buffer=bus.env.config.iron_price_buffer,
             plot_paths=bus.env.plot_paths,
+            steel_demand_by_year=steel_demand_by_year,
         )
 
         # Generate plots using SteelPlotter class for consistent styling
@@ -1411,8 +1416,6 @@ class SimulationRunner:
         # Export market prices to CSV and plot
         if data_collector.trace_price:
             import pandas as pd
-            import matplotlib.pyplot as plt
-            from matplotlib.ticker import MaxNLocator
 
             price_data = []
             for year, prices in sorted(data_collector.trace_price.items()):
@@ -1436,66 +1439,13 @@ class SimulationRunner:
             price_df.to_csv(price_csv_path, index=False)
             logger.info(f"Saved market prices to {price_csv_path}")
 
-            # Also save CSV alongside the plot in pam_plots_dir for consistency with other charts
-            pam_csv_path = bus.env.plot_paths.pam_plots_dir / f"market_prices_{start_year}_{end_year}.csv"
-            price_df.to_csv(pam_csv_path, index=False)
-            logger.info(f"Saved market prices CSV alongside plot to {pam_csv_path}")
-
-            # Create line plot of prices over time
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.plot(
-                price_df["year"],
-                price_df["steel_price_usd_per_t"],
-                marker="o",
-                linewidth=2,
-                label="Steel",
-                color="#1f77b4",
+            price_plot_path = plotter.plot_market_prices(
+                price_df=price_df,
+                start_year=start_year,
+                end_year=end_year,
             )
-            # ax.plot(
-            #     price_df["year"],
-            #     price_df["iron_price_usd_per_t"],
-            #     marker="s",
-            #     linewidth=2,
-            #     label="Iron (market price)",
-            #     color="#ff7f0e",
-            # )
-            if "scrap_price_usd_per_t" in price_df.columns:
-                ax.plot(
-                    price_df["year"],
-                    price_df["scrap_price_usd_per_t"],
-                    marker="^",
-                    linewidth=2,
-                    label="Scrap",
-                    color="#2ca02c",
-                )
-            if "iron_weighted_avg_cost_usd_per_t" in price_df.columns:
-                ax.plot(
-                    price_df["year"],
-                    price_df["iron_weighted_avg_cost_usd_per_t"],
-                    marker="D",
-                    linewidth=2,
-                    label="Iron (weighted avg cost)",
-                    color="#ff7f0e",
-                    alpha=0.6,
-                )
-
-            ax.set_xlabel("Year", fontsize=12)
-            ax.set_ylabel("Price / Cost (USD/t)", fontsize=12)
-            ax.set_title("Market Prices - Steel, Iron and Scrap", fontsize=14, fontweight="bold")
-            ax.legend(fontsize=11)
-            ax.grid(True, alpha=0.3)
-
-            # Format y-axis with commas for thousands
-            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f"${x:,.0f}"))
-            ax.set_ylim(bottom=0)
-            ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-
-            plt.tight_layout()
-
-            price_plot_path = bus.env.plot_paths.pam_plots_dir / f"market_prices_{start_year}_{end_year}.png"
-            plt.savefig(price_plot_path, dpi=300, bbox_inches="tight")
-            plt.close()
-            logger.info(f"Saved market prices plot to {price_plot_path}")
+            if price_plot_path is not None:
+                logger.info(f"Saved market prices plot to {price_plot_path}")
 
         # Aggregate per-year LCOE/LCOH statistics into stacked CSVs
         aggregate_lcoe_lcoh_statistics(self.config.output_dir, start_year, end_year)

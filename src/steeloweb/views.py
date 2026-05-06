@@ -111,6 +111,7 @@ class ModelRunDetailView(DetailView):
         cost_curve = SimulationPlot.PlotType.COST_CURVE
         emissions = SimulationPlot.PlotType.EMISSIONS
         production_capacity = (
+            SimulationPlot.PlotType.CAPACITY_DEVELOPMENT,
             SimulationPlot.PlotType.PRODUCTION_REGION,
             SimulationPlot.PlotType.PRODUCTION_TECHNOLOGY,
             SimulationPlot.PlotType.CAPACITY_REGION,
@@ -2013,7 +2014,7 @@ class ModelRunOutputFilesView(DetailView):
     def _list_files(self, dir_path, output_path):
         files = []
         for item in dir_path.iterdir():
-            if item.is_file() and not item.name.startswith("."):
+            if item.is_file() and not item.name.startswith(".") and item.suffix.lower() != ".pkl":
                 files.append(
                     {
                         "name": item.name,
@@ -2051,7 +2052,6 @@ class ModelRunOutputFilesView(DetailView):
             "xlsx": "Excel File",
             "xls": "Excel File",
             "log": "Log File",
-            "pkl": "Pickle File",
             "parquet": "Parquet File",
         }
         return types.get(ext, f"{ext.upper()} File")
@@ -2070,7 +2070,6 @@ class ModelRunOutputFilesView(DetailView):
             "xlsx": "fa-file-excel",
             "xls": "fa-file-excel",
             "log": "fa-file-alt",
-            "pkl": "fa-file-archive",
             "parquet": "fa-database",
         }
         return icons.get(ext, "fa-file")
