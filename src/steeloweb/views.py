@@ -1584,22 +1584,35 @@ def prepare_data_with_master_excel(request, pk):
     # (Handles both confirmed warnings and cases where status changed to 'ok')
     request.session.pop(f"data_prep_warning_{pk}", None)
 
-    # Get or create data packages
+    # Get or create data packages at the versions declared in the manifest.
+    # Why: hardcoded versions drift behind the manifest and mislabel packages
+    # in the UI even though the actual extraction reads the manifest.
+    manager = DataManager()
+    core_manifest = manager.manifest.get_package("core-data")
+    geo_manifest = manager.manifest.get_package("geo-data")
+
+    if not core_manifest or not geo_manifest:
+        messages.error(request, "Unable to locate core-data or geo-data package definitions in manifest.json")
+        return redirect("master-excel-detail", pk=pk)
+
+    def _normalize_version(version: str) -> str:
+        return version if version.startswith("v") else f"v{version}"
+
     core_package, _ = DataPackage.objects.get_or_create(
         name="core-data",
-        version="v1.0.3",
+        version=_normalize_version(core_manifest.version),
         defaults={
             "source_type": DataPackage.SourceType.S3,
-            "source_url": "s3://steelo-data/core-data-v1.0.3.zip",
+            "source_url": core_manifest.url,
         },
     )
 
     geo_package, _ = DataPackage.objects.get_or_create(
         name="geo-data",
-        version="v1.1.0",
+        version=_normalize_version(geo_manifest.version),
         defaults={
             "source_type": DataPackage.SourceType.S3,
-            "source_url": "s3://steelo-data/geo-data-v1.1.0.zip",
+            "source_url": geo_manifest.url,
         },
     )
 
