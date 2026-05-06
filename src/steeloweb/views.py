@@ -110,6 +110,7 @@ class ModelRunDetailView(DetailView):
         plots_qs = self.object.simulation_plots.all()
         cost_curve = SimulationPlot.PlotType.COST_CURVE
         emissions = SimulationPlot.PlotType.EMISSIONS
+        market_prices = SimulationPlot.PlotType.MARKET_PRICES
         production_capacity = (
             SimulationPlot.PlotType.CAPACITY_DEVELOPMENT,
             SimulationPlot.PlotType.PRODUCTION_REGION,
@@ -120,8 +121,9 @@ class ModelRunDetailView(DetailView):
         context["production_and_capacity_plots"] = plots_qs.filter(plot_type__in=production_capacity).order_by(
             "plot_type", "-product_type", "title"
         )
+        context["market_prices_plots"] = plots_qs.filter(plot_type=market_prices).order_by("title")
         context["simulation_plots_other"] = plots_qs.exclude(
-            plot_type__in=[cost_curve, emissions, *production_capacity]
+            plot_type__in=[cost_curve, emissions, market_prices, *production_capacity]
         )
         context["steel_cost_curves"] = plots_qs.filter(plot_type=cost_curve, product_type="steel").order_by("title")
         context["iron_cost_curves"] = plots_qs.filter(plot_type=cost_curve, product_type="iron").order_by("title")

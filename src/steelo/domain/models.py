@@ -43,6 +43,8 @@ from steelo.domain.constants import (
     T_TO_KT,
     T_TO_KG,
     MioUSD_TO_USD,
+    MINIMUM_UTILIZATION_RATE_FOR_COST_CURVE,
+    MINIMUM_PRODUCTION_VOLUME_FOR_COST_CURVE,
 )
 
 if TYPE_CHECKING:
@@ -7939,6 +7941,8 @@ class Environment:
                     fg.technology.product not in assets
                     or fg.status.lower() not in self.config.active_statuses
                     or fg.capacity == 0
+                    or fg.production <= MINIMUM_PRODUCTION_VOLUME_FOR_COST_CURVE
+                    or fg.utilization_rate <= MINIMUM_UTILIZATION_RATE_FOR_COST_CURVE
                 ):
                     continue
 

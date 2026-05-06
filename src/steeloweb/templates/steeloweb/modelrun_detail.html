@@ -251,12 +251,12 @@
 
                             <dt class="col-sm-4">Iron capacity limit:</dt>
                             <dd class="col-sm-8">
-                                {% if capacity_limit_iron_mt is not None %}{{ capacity_limit_iron_mt|floatformat:"-1" }} Mt{% else %}—{% endif %}
+                                {% if capacity_limit_iron_mt is not None %}{{ capacity_limit_iron_mt|floatformat:"-1" }} Mt/year{% else %}—{% endif %}
                             </dd>
 
                             <dt class="col-sm-4">Steel capacity limit:</dt>
                             <dd class="col-sm-8">
-                                {% if capacity_limit_steel_mt is not None %}{{ capacity_limit_steel_mt|floatformat:"-1" }} Mt{% else %}—{% endif %}
+                                {% if capacity_limit_steel_mt is not None %}{{ capacity_limit_steel_mt|floatformat:"-1" }} Mt/year{% else %}—{% endif %}
                             </dd>
 
                             <dt class="col-sm-4">Construction time:</dt>
@@ -511,6 +511,40 @@
                                     <div class="accordion-body">
                                         <div class="row">
                                             {% for plot in production_and_capacity_plots %}
+                                            <div class="col-md-6 mb-3">
+                                                <div class="card">
+                                                    <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" target="_blank" rel="noopener">
+                                                        <img src="{{ plot.image.url }}" class="card-img-top" alt="{{ plot.title }}" style="cursor: pointer;">
+                                                    </a>
+                                                    <div class="card-body">
+                                                        <p class="card-text text-center">
+                                                            <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" class="text-decoration-none" target="_blank" rel="noopener">
+                                                                {{ plot.title }}
+                                                            </a>
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+
+                        {% if market_prices_plots %}
+                        <div class="accordion mb-3" id="marketPricesAccordion">
+                            <div class="accordion-item">
+                                <h2 class="accordion-header" id="marketPricesHeading">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#marketPricesCollapse" aria-expanded="false" aria-controls="marketPricesCollapse">
+                                        Market Prices ({{ market_prices_plots|length }})
+                                    </button>
+                                </h2>
+                                <div id="marketPricesCollapse" class="accordion-collapse collapse" aria-labelledby="marketPricesHeading" data-bs-parent="#marketPricesAccordion">
+                                    <div class="accordion-body">
+                                        <div class="row">
+                                            {% for plot in market_prices_plots %}
                                             <div class="col-md-6 mb-3">
                                                 <div class="card">
                                                     <a href="{% url 'view-simulation-plot' pk=modelrun.id plot_id=plot.id %}?popup=1" target="_blank" rel="noopener">

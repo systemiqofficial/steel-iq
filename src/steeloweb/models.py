@@ -1537,6 +1537,7 @@ class SimulationPlot(models.Model):
         CAPACITY_REGION = "capacity_region", "Capacity by Region"
         CAPACITY_TECHNOLOGY = "capacity_technology", "Capacity by Technology"
         EMISSIONS = "emissions", "Emissions by Technology"
+        MARKET_PRICES = "market_prices", "Market Prices"
         OTHER = "other", "Other"
 
     modelrun = models.ForeignKey(ModelRun, on_delete=models.CASCADE, related_name="simulation_plots")
@@ -1646,6 +1647,11 @@ class SimulationPlot(models.Model):
                 "pattern": "emissions/emissions_*_by_technology__*.png",
                 "plot_type": cls.PlotType.EMISSIONS,
                 "title": "Emissions by Technology",
+            },
+            {
+                "pattern": "market_prices_*.png",
+                "plot_type": cls.PlotType.MARKET_PRICES,
+                "title": "Market Prices",
             },
         ]
 
