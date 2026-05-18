@@ -145,6 +145,18 @@ def _load_aggregated_metallic_charge_constraints(env, fixtures_dir):
         logger.info(f"Total {len(constraints)} aggregated metallic charge constraints loaded")
 
 
+def _load_trqs(env, master_excel_path, country_mappings):
+    """Read TRQs directly from the master Excel and populate env.all_trqs / env.active_trqs."""
+    from .adapters.dataprocessing.excel_reader import read_trqs
+
+    try:
+        trqs = read_trqs(master_excel_path, country_mappings=country_mappings)
+        env.set_trqs(trqs)
+        logger.info(f"Loaded {len(trqs)} TRQ(s) from master Excel")
+    except Exception as e:
+        logger.warning(f"Could not load TRQs from master Excel (sheet 'TRQs' may be absent): {e}")
+
+
 def _load_secondary_feedstock_constraints(env, repository_json):
     """Load secondary feedstock constraints from biomass availability data (includes CO2 storage)."""
     import logging
@@ -351,6 +363,7 @@ def bootstrap_simulation(
         env.initiate_grid_emissivity(emissivities=repository_json.region_emissivity.list())
         env.initiate_gas_coke_emissivity(emissivities=repository_json.region_emissivity.list())
         env.set_trade_tariffs(trade_tariffs=repository_json.trade_tariffs.list())
+        _load_trqs(env, config.master_excel_path, repository_json.country_mappings.get_all())
         env.set_legal_process_connectors(legal_process_connectors=repository_json.legal_process_connectors.list())
         env.carbon_border_mechanisms = repository_json.carbon_border_mechanisms.list()
         env.willingness_to_pay = repository_json.willingness_to_pay.list()

@@ -6577,6 +6577,62 @@ class TradeTariff:
         return self.tariff_name == other.tariff_name
 
 
+class TariffRateQuota:
+    """A tariff rate quota (TRQ) granting a tariff-free import allowance up to a volume threshold.
+
+    Imports within the quota (tariff_free_quota tonnes) enter duty-free.  Imports above
+    that threshold are subject to out_of_quota_tariff_rate.  Where several exporters draw
+    from a common pool, shared_quota_id links the relevant TRQ objects so the model can
+    enforce a single aggregate cap.
+
+    Args:
+        name: Descriptive label for the TRQ (e.g. "EU 2026 safeguards").
+        from_iso3s: ISO3 codes of the exporting countries (list to support trade-bloc expansion).
+        to_iso3s: ISO3 codes (or trade-bloc identifiers) of the importing region (list).
+        commodity: Commodity covered (e.g. "steel").
+        tariff_free_quota: In-quota volume allowance in tonnes.
+        out_of_quota_tariff_rate: Ad-valorem rate applied above the quota (0–100 scale).
+        start_year: First year the TRQ is in force (inclusive).
+        end_year: Last year the TRQ is in force (inclusive).
+        shared_quota_id: Optional identifier linking TRQs that draw from one shared pool.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        from_iso3s: list[str],
+        to_iso3s: list[str],
+        commodity: str,
+        tariff_free_quota: float,
+        out_of_quota_tariff_rate: float,
+        start_year: "Year",
+        end_year: "Year",
+        shared_quota_id: str | None = None,
+    ) -> None:
+        self.name = name
+        self.from_iso3s = from_iso3s
+        self.to_iso3s = to_iso3s
+        self.commodity = commodity
+        self.tariff_free_quota = tariff_free_quota
+        self.out_of_quota_tariff_rate = out_of_quota_tariff_rate
+        self.start_year = start_year
+        self.end_year = end_year
+        self.shared_quota_id = shared_quota_id
+
+    def __repr__(self) -> str:
+        return f"TariffRateQuota: <{self.name} | {self.from_iso3s} → {self.to_iso3s}>"
+
+    def __hash__(self):
+        return hash((self.name, tuple(sorted(self.from_iso3s)), tuple(sorted(self.to_iso3s))))
+
+    def __eq__(self, other) -> bool:
+        return (self.name, sorted(self.from_iso3s), sorted(self.to_iso3s)) == (
+            other.name,
+            sorted(other.from_iso3s),
+            sorted(other.to_iso3s),
+        )
+
+
 class Subsidy:
     """Financial subsidy reducing costs for specific technologies and regions.
 
@@ -7034,6 +7090,9 @@ class Environment:
 
         # Initialize trade tariffs as empty list
         self.trade_tariffs: list[TradeTariff] = []
+        # Tariff rate quotas — full list and the year-filtered active subset
+        self.all_trqs: list[TariffRateQuota] = []
+        self.active_trqs: list[TariffRateQuota] = []
         # Initialize legal process connectors as empty list
         self.legal_process_connectors: list[LegalProcessConnector] = []
         # Initialize dynamic feedstocks as empty dict
@@ -8697,6 +8756,19 @@ class Environment:
 
     def set_trade_tariffs(self, trade_tariffs: list[TradeTariff]) -> None:
         self.trade_tariffs = trade_tariffs
+
+    def set_trqs(self, trqs: list[TariffRateQuota]) -> None:
+        """Store the full list of TRQs and immediately refresh active_trqs for the current year."""
+        self.all_trqs = trqs
+        self.update_active_trqs()
+
+    def update_active_trqs(self) -> None:
+        """Recompute active_trqs from all_trqs for the current environment year.
+
+        A TRQ is active when self.year falls within [start_year, end_year] (both inclusive).
+        Call this once per year after advancing env.year.
+        """
+        self.active_trqs = [trq for trq in self.all_trqs if trq.start_year <= self.year <= trq.end_year]
 
     def set_legal_process_connectors(self, legal_process_connectors: list[LegalProcessConnector]) -> None:
         self.legal_process_connectors = legal_process_connectors
