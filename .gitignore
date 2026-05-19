@@ -56,3 +56,4 @@ trade_lp_variables.csv
 .claude/
 claude.md
 specs
+docs/architecture/trq_gateway_lp_plan.md
