@@ -143,6 +143,7 @@ class DummyTradeLPModel:
         self.year = year
         self.solver_options = solver_options or {}
         self.transportation_costs = []
+        self.trq_covered_routes: set = set()
 
     @property
     def processes(self):

@@ -6577,6 +6577,21 @@ class TradeTariff:
         return self.tariff_name == other.tariff_name
 
 
+@dataclass
+class TRQTier:
+    """One tariff tier within a TariffRateQuota.
+
+    Attributes:
+        capacity: Maximum volume (tonnes) allowed at this tariff rate.
+            None means unlimited (always the final tier).
+        tariff_rate: Ad-valorem rate for this tier, 0–100 scale
+            (e.g. 50 for 50 %).
+    """
+
+    capacity: float | None
+    tariff_rate: float
+
+
 class TariffRateQuota:
     """A tariff rate quota (TRQ) granting a tariff-free import allowance up to a volume threshold.
 
@@ -6618,6 +6633,20 @@ class TariffRateQuota:
         self.start_year = start_year
         self.end_year = end_year
         self.shared_quota_id = shared_quota_id
+
+    @property
+    def tiers(self) -> list["TRQTier"]:
+        """Return the two-tier structure derived from the stored fields.
+
+        Tier 0: duty-free up to tariff_free_quota tonnes.
+        Tier 1: out_of_quota_tariff_rate above that, no volume cap.
+
+        For future multi-tier support use TariffRateQuota.from_tiers().
+        """
+        return [
+            TRQTier(capacity=self.tariff_free_quota, tariff_rate=0.0),
+            TRQTier(capacity=None, tariff_rate=self.out_of_quota_tariff_rate),
+        ]
 
     def __repr__(self) -> str:
         return f"TariffRateQuota: <{self.name} | {self.from_iso3s} → {self.to_iso3s}>"

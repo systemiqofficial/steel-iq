@@ -36,6 +36,7 @@ class ProcessType(Enum):
     PRODUCTION = "production"
     SUPPLY = "supply"
     DEMAND = "demand"
+    GATEWAY = "gateway"  # TRQ pass-through node; no BOM, enforced via flow conservation
 
 
 class Commodity:
@@ -401,6 +402,11 @@ class TradeLPModel:
         # Warm-start support (OPT-2) - previous year's solution for faster convergence
         self.previous_solution: dict[tuple[str, str, str], float] | None = None
 
+        # TRQ gateway support — populated by enforce_trqs_via_gateways() before build_lp_model()
+        self.trq_gateway_nodes: list = []  # list[TRQGatewayNode]
+        self.trq_covered_routes: set[tuple[str, str, str]] = set()
+        self.gateway_arc_costs: dict[tuple[str, str, str], float] = {}
+
     def add_transportation_costs(self, transportation_costs: list[TransportationCost]) -> None:
         """Add transportation costs to the model."""
         self.transportation_costs.extend(transportation_costs)
@@ -676,7 +682,11 @@ class TradeLPModel:
             return pyo.quicksum(model.allocation_variables[idx] for idx in idx_set) <= model.capacities[pc_name]
 
         self.lp_model.production_constraints = pyo.Constraint(
-            [pc.name for pc in self.process_centers if pc.process.type in [ProcessType.PRODUCTION, ProcessType.SUPPLY]],
+            [
+                pc.name
+                for pc in self.process_centers
+                if pc.process.type in [ProcessType.PRODUCTION, ProcessType.SUPPLY, ProcessType.GATEWAY]
+            ],
             rule=production_rule,
         )
 
@@ -1638,6 +1648,113 @@ class TradeLPModel:
         for pc in self.process_centers:
             self.lp_model.process_center_type[pc.name] = pc.process.type.value
 
+    # ------------------------------------------------------------------
+    # TRQ gateway injection helpers
+    # ------------------------------------------------------------------
+
+    def _inject_trq_gateway_arcs(self) -> None:
+        """Extend legal_allocations with gateway arcs and remove covered direct arcs.
+
+        Called inside build_lp_model() after set_legal_allocations() and before
+        add_allocation_variables_to_lp().  Modifies self.legal_allocations in-place.
+        """
+        if not self.trq_gateway_nodes:
+            return
+
+        logger_local = logging.getLogger(f"{__name__}._inject_trq_gateway_arcs")
+
+        # Build fast lookups from existing process centers
+        pc_by_name: dict[str, ProcessCenter] = {pc.name: pc for pc in self.process_centers}
+        prod_pcs_by_iso3: dict[str, list[ProcessCenter]] = {}
+        demand_pcs_by_iso3: dict[str, list[ProcessCenter]] = {}
+        for pc in self.process_centers:
+            iso3 = pc.location.iso3 if pc.location else None
+            if iso3 is None or iso3 == "__GWY__":
+                continue
+            if pc.process.type == ProcessType.PRODUCTION:
+                prod_pcs_by_iso3.setdefault(iso3, []).append(pc)
+            elif pc.process.type == ProcessType.DEMAND:
+                demand_pcs_by_iso3.setdefault(iso3, []).append(pc)
+
+        # Remove direct plant → DC arcs for TRQ-covered routes
+        filtered: list[tuple[ProcessCenter, ProcessCenter, Commodity]] = []
+        removed = 0
+        for from_pc, to_pc, commodity in self.legal_allocations:
+            key = (from_pc.location.iso3, to_pc.location.iso3, commodity.name)
+            if key in self.trq_covered_routes:
+                removed += 1
+                continue
+            filtered.append((from_pc, to_pc, commodity))
+        self.legal_allocations = filtered
+        logger_local.info(f"Removed {removed} direct plant→DC arcs covered by TRQ gateways")
+
+        # Add gateway arcs
+        added = 0
+        for gw in self.trq_gateway_nodes:
+            gw_pc = pc_by_name.get(gw.node_id)
+            if gw_pc is None:
+                logger_local.warning(f"Gateway process center {gw.node_id} not found; skipping")
+                continue
+            commodity = Commodity(gw.commodity)
+            # Plant → gateway
+            for from_iso3 in gw.from_iso3s:
+                for plant_pc in prod_pcs_by_iso3.get(from_iso3, []):
+                    self.legal_allocations.append((plant_pc, gw_pc, commodity))
+                    added += 1
+            # Gateway → demand center
+            for to_iso3 in gw.to_iso3s:
+                for dc_pc in demand_pcs_by_iso3.get(to_iso3, []):
+                    self.legal_allocations.append((gw_pc, dc_pc, commodity))
+                    added += 1
+
+        logger_local.info(f"Injected {added} TRQ gateway arcs into legal_allocations")
+
+    def _override_gateway_arc_costs(self) -> None:
+        """Replace allocation_costs for all gateway arcs with pre-computed values.
+
+        Called inside build_lp_model() after add_allocation_costs_as_parameters_to_lp().
+        Standard cost computation doesn't know about gateway semantics, so we overwrite.
+        """
+        if not self.gateway_arc_costs:
+            return
+        overridden = 0
+        for key, cost in self.gateway_arc_costs.items():
+            if key in self.lp_model.allocation_costs:
+                self.lp_model.allocation_costs[key] = cost
+                overridden += 1
+        logging.getLogger(f"{__name__}._override_gateway_arc_costs").info(
+            f"Overrode costs for {overridden} gateway arcs"
+        )
+
+    def _add_gateway_flow_conservation_constraints(self) -> None:
+        """Enforce flow conservation at every gateway node: inflow == outflow.
+
+        Without this constraint, the LP could route steel into a gateway
+        without distributing it onward, or supply demand centres from a gateway
+        that received nothing.  Called inside build_lp_model() after
+        add_production_constraints_to_lp().
+        """
+        if not self.trq_gateway_nodes:
+            return
+
+        gateway_names = {gw.node_id for gw in self.trq_gateway_nodes}
+        inbound_arcs = self.lp_model.inbound_arcs
+        outbound_arcs = self.lp_model.outbound_arcs
+
+        def gateway_conservation_rule(model, gw_name):
+            in_arcs = inbound_arcs.get(gw_name, [])
+            out_arcs = outbound_arcs.get(gw_name, [])
+            if not in_arcs or not out_arcs:
+                return pyo.Constraint.Skip
+            return pyo.quicksum(model.allocation_variables[arc] for arc in in_arcs) == pyo.quicksum(
+                model.allocation_variables[arc] for arc in out_arcs
+            )
+
+        self.lp_model.gateway_flow_conservation = pyo.Constraint(list(gateway_names), rule=gateway_conservation_rule)
+        logging.getLogger(f"{__name__}._add_gateway_flow_conservation_constraints").info(
+            f"Added flow-conservation constraints for {len(gateway_names)} gateway nodes"
+        )
+
     def build_lp_model(self, willingness_to_pay_list=None):
         """Build the complete Pyomo LP model with all variables, parameters, and constraints.
 
@@ -1660,6 +1777,7 @@ class TradeLPModel:
         if willingness_to_pay_list is None:
             willingness_to_pay_list = []
         self.set_legal_allocations()
+        self._inject_trq_gateway_arcs()  # removes covered direct arcs, adds gateway arcs
         # Add variables:
         self.add_allocation_variables_to_lp()
 
@@ -1681,12 +1799,14 @@ class TradeLPModel:
         self.add_tariff_quotas_and_tax_as_parameters()
         self.add_bom_energy_costs_as_parameter_to_lp()
         self.add_allocation_costs_as_parameters_to_lp()
+        self._override_gateway_arc_costs()  # replace standard costs with TRQ-aware costs
         self.add_process_center_type_as_parameter_to_lp()
         # Add constraints:
         if self.aggregated_commodity_constraints is not None:
             self.add_aggregate_commodity_constraint_parameters()
             self.add_aggregate_commodity_constraints_to_lp()
         self.add_production_constraints_to_lp()
+        self._add_gateway_flow_conservation_constraints()  # inflow == outflow at gateways
         self.add_demand_constraint_to_lp()
         self.add_bom_inflow_constraints_to_lp()
         self.add_minimum_and_maximum_ratio_constraints_to_lp()

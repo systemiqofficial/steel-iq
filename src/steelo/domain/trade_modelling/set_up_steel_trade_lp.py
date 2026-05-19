@@ -16,6 +16,12 @@ from steelo.domain.models import (
     Environment,
     Supplier,
 )
+from steelo.domain.trade_modelling.trq_gateway import (
+    build_trq_gateway_nodes,
+    create_gateway_process_centers,
+    compute_gateway_arc_costs,
+    collect_trq_covered_routes,
+)
 import steelo.domain.trade_modelling.trade_lp_modelling as tlp
 from steelo.service_layer.message_bus import MessageBus
 
@@ -526,6 +532,56 @@ def add_suppliers_as_process_centers(repository, lp_model: tlp.TradeLPModel, yea
     lp_model.add_process_centers(supply_process_centers)
 
 
+def enforce_trqs_via_gateways(
+    message_bus: MessageBus,
+    lp_model: tlp.TradeLPModel,
+) -> None:
+    """Inject TRQ gateway nodes into the LP model before it is built.
+
+    Reads active_trqs from the environment, creates one gateway ProcessCenter per
+    (TRQ, tier) combination, pre-computes arc costs, and records the set of routes
+    that are now handled by gateways so that enforce_trade_tariffs_on_allocations
+    can skip them.
+
+    Must be called after all plant/demand/supplier process centers have been added
+    and after transportation costs have been registered, but BEFORE build_lp_model().
+    """
+    logger_local = logging.getLogger(f"{__name__}.enforce_trqs_via_gateways")
+    active_trqs = getattr(message_bus.env, "active_trqs", [])
+    if not active_trqs:
+        logger_local.info("No active TRQs — skipping gateway injection")
+        return
+
+    gateway_nodes = build_trq_gateway_nodes(active_trqs)
+    if not gateway_nodes:
+        return
+
+    gateway_pcs = create_gateway_process_centers(gateway_nodes)
+    lp_model.add_process_centers(gateway_pcs)
+    logger_local.info(f"Added {len(gateway_pcs)} gateway process centers to LP model")
+
+    average_prices = getattr(message_bus.env, "average_commodity_price_per_region", {})
+    transport_lookup = lp_model._transportation_cost_lookup
+
+    arc_costs = compute_gateway_arc_costs(
+        gateway_nodes=gateway_nodes,
+        process_centers=lp_model.process_centers,
+        average_commodity_price_per_region=average_prices,
+        transport_lookup=transport_lookup,
+    )
+
+    covered_routes = collect_trq_covered_routes(gateway_nodes)
+
+    lp_model.trq_gateway_nodes = gateway_nodes
+    lp_model.gateway_arc_costs = arc_costs
+    lp_model.trq_covered_routes = covered_routes
+
+    logger_local.info(
+        f"TRQ gateway setup complete: {len(gateway_nodes)} nodes, "
+        f"{len(arc_costs)} arc costs, {len(covered_routes)} covered routes"
+    )
+
+
 def enforce_trade_tariffs_on_allocations(
     message_bus: MessageBus, active_trade_tariffs: list[TradeTariff], lp_model: tlp.TradeLPModel
 ):
@@ -560,7 +616,15 @@ def enforce_trade_tariffs_on_allocations(
     quota_dict: dict[tuple[str, str, str], float] = {}
     tax_dict: dict[tuple[str, str, str], float] = {}
     average_commodity_price_per_region = message_bus.env.average_commodity_price_per_region
+    trq_covered = lp_model.trq_covered_routes  # routes already handled by TRQ gateways
     for trade_tariff in active_trade_tariffs:
+        commodity_key = trade_tariff.commodity.lower() if trade_tariff.commodity else ""
+        if (trade_tariff.from_iso3, trade_tariff.to_iso3, commodity_key) in trq_covered:
+            logger.debug(
+                f"Skipping TradeTariff {trade_tariff.tariff_name} "
+                f"({trade_tariff.from_iso3}→{trade_tariff.to_iso3}): handled by TRQ gateway"
+            )
+            continue
         if trade_tariff.commodity is not None and trade_tariff.commodity.lower() in IRON_PRODUCTS:
             cost_commodity = "iron"
         else:
@@ -1010,6 +1074,9 @@ def set_up_steel_trade_lp(
             transportation_costs.append(transport_cost)
 
         lp_model.add_transportation_costs(transportation_costs)
+
+    # Inject TRQ gateway nodes before tariff enforcement so covered routes can be skipped
+    enforce_trqs_via_gateways(message_bus, lp_model)
 
     if active_trade_tariffs is not None:
         enforce_trade_tariffs_on_allocations(message_bus, active_trade_tariffs, lp_model=lp_model)
@@ -1554,3 +1621,99 @@ def check_if_bottlenecks_identified(
     if not potential_bottleneck_found:
         logger.warning("[TM BOTTLENECK ANALYSIS] No potential bottlenecks found in steel trade allocations.")
     return False
+
+
+def read_trq_gateway_results(
+    lp_model: tlp.TradeLPModel,
+) -> list[dict]:
+    """Extract and attribute TRQ gateway flows after the LP has been solved.
+
+    For each gateway node, reads the inbound (plant → gateway) and outbound
+    (gateway → demand-center) flows from the solved LP and returns a flat list of
+    records that can be merged into trade-allocation reporting.
+
+    Each record contains:
+        - from_iso3: exporting country
+        - to_iso3: importing country
+        - commodity: commodity name
+        - volume_t: flow in tonnes
+        - tariff_cost_usd_per_t: tariff cost applied on the plant→gateway arc
+        - transport_cost_usd_per_t: transport cost on the gateway→DC arc
+        - gateway_node_id: the gateway that routed the flow
+        - tier_index: which tariff tier was used
+
+    Volume is attributed to destination countries proportionally to gateway→DC outflows.
+
+    Args:
+        lp_model: A solved TradeLPModel with gateway nodes injected.
+
+    Returns:
+        List of attribution records (empty if no TRQ gateways or no flow).
+    """
+    logger_local = logging.getLogger(f"{__name__}.read_trq_gateway_results")
+    if not lp_model.trq_gateway_nodes:
+        return []
+
+    gateway_ids = {gw.node_id for gw in lp_model.trq_gateway_nodes}
+    allocation_vars = lp_model.lp_model.allocation_variables
+    allocation_costs = getattr(lp_model.lp_model, "allocation_costs", {})
+
+    # Index solved flows by gateway
+    inbound: dict[str, list[tuple[str, float, float]]] = {}  # gw_id → [(from_pc_name, vol, tariff_cost)]
+    outbound: dict[str, list[tuple[str, float, float]]] = {}  # gw_id → [(to_pc_name, vol, transport_cost)]
+
+    for (f, t, c), var in allocation_vars.items():
+        try:
+            vol = float(var.value or 0.0)
+        except (TypeError, AttributeError):
+            vol = 0.0
+        if vol <= 0.0:
+            continue
+        if t in gateway_ids:
+            cost = allocation_costs.get((f, t, c), 0.0)
+            inbound.setdefault(t, []).append((f, vol, cost))
+        if f in gateway_ids:
+            cost = allocation_costs.get((f, t, c), 0.0)
+            outbound.setdefault(f, []).append((t, vol, cost))
+
+    # Build pc → iso3 lookup
+    pc_iso3: dict[str, str] = {pc.name: (pc.location.iso3 or "") for pc in lp_model.process_centers}
+
+    records: list[dict] = []
+    gateway_by_id = {gw.node_id: gw for gw in lp_model.trq_gateway_nodes}
+
+    for gw_id in gateway_ids:
+        gw = gateway_by_id[gw_id]
+        in_flows = inbound.get(gw_id, [])
+        out_flows = outbound.get(gw_id, [])
+        if not in_flows or not out_flows:
+            continue
+
+        total_out = sum(vol for _, vol, _ in out_flows)
+        if total_out == 0.0:
+            continue
+
+        for from_pc_name, in_vol, tariff_cost_per_t in in_flows:
+            from_iso3 = pc_iso3.get(from_pc_name, "")
+            # Attribute this plant's inflow to each destination proportionally
+            for to_pc_name, out_vol, transport_cost_per_t in out_flows:
+                to_iso3 = pc_iso3.get(to_pc_name, "")
+                share = out_vol / total_out
+                attributed_vol = in_vol * share
+                if attributed_vol <= 0.0:
+                    continue
+                records.append(
+                    {
+                        "from_iso3": from_iso3,
+                        "to_iso3": to_iso3,
+                        "commodity": gw.commodity,
+                        "volume_t": attributed_vol,
+                        "tariff_cost_usd_per_t": tariff_cost_per_t,
+                        "transport_cost_usd_per_t": transport_cost_per_t,
+                        "gateway_node_id": gw_id,
+                        "tier_index": gw.tier_index,
+                    }
+                )
+
+    logger_local.info(f"Extracted {len(records)} TRQ gateway attribution records")
+    return records
