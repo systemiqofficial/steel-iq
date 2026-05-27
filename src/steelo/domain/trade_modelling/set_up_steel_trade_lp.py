@@ -1432,6 +1432,7 @@ def solve_steel_trade_lp_and_return_commodity_allocations(
         return commodity_allocations
 
     trade_lp.extract_solution()
+    collapse_gateway_arcs(trade_lp)
 
     commodity_allocations = {}
     for commodity in trade_lp.commodities:
@@ -1459,6 +1460,16 @@ def solve_steel_trade_lp_and_return_commodity_allocations(
     for (from_pc, to_pc, comm), alloc_value in trade_lp.allocations.allocations.items():
         if alloc_value <= LP_TOLERANCE:
             continue  # Skip zero or negative allocations
+
+        # Defensive guard: collapse_gateway_arcs() should have dissolved all gateway arcs
+        # before this loop. If any remain, skip and warn — they cannot be mapped to
+        # repository objects.
+        if from_pc.process.type == tlp.ProcessType.GATEWAY or to_pc.process.type == tlp.ProcessType.GATEWAY:
+            logger.warning(
+                f"Unexpected gateway arc after collapse: ({from_pc.name}, {to_pc.name}, {comm.name}) "
+                f"— skipping. This indicates a bug in collapse_gateway_arcs()."
+            )
+            continue
 
         if from_pc.process.type == tlp.ProcessType.SUPPLY:
             supplier = repository.suppliers.get(from_pc.name)
@@ -1621,6 +1632,141 @@ def check_if_bottlenecks_identified(
     if not potential_bottleneck_found:
         logger.warning("[TM BOTTLENECK ANALYSIS] No potential bottlenecks found in steel trade allocations.")
     return False
+
+
+def collapse_gateway_arcs(trade_lp: tlp.TradeLPModel) -> None:
+    """Dissolve TRQ gateway nodes from trade_lp.allocations into direct plant→DC arcs.
+
+    After the LP solves, allocations contain plant→gateway and gateway→DC arcs that
+    cannot be mapped to domain objects (gateway nodes are not in any repository) and
+    that the TM-PAM connector cannot cost correctly (gateway iso3 = "__GWY__").
+
+    This function:
+    1. Attributes each plant's gateway inflow to DC destinations proportionally to
+       the gateway's outflow shares: vol(plant→DC) = vol(plant→gw) × (vol(gw→DC) / total_out).
+    2. Emits direct (plant_pc, dc_pc, commodity) arcs with combined tariff + transport cost.
+    3. Removes all gateway arcs from trade_lp.allocations.
+    4. Injects volume-weighted TRQ tariff rates into allocations.tariff_taxes so
+       TM-PAM's get_tariff_cost() returns the correct value for collapsed routes.
+    """
+    logger_local = logging.getLogger(f"{__name__}.collapse_gateway_arcs")
+    if not trade_lp.trq_gateway_nodes:
+        return
+
+    gateway_ids = {gw.node_id for gw in trade_lp.trq_gateway_nodes}
+    allocs = trade_lp.allocations.allocations
+    alloc_costs = trade_lp.allocations.allocation_costs or {}
+
+    # Index gateway arcs from solved allocations
+    inbound: dict = {}  # gw_pc → [(plant_pc, comm, vol, tariff_cost_per_t)]
+    outbound: dict = {}  # gw_pc → [(dc_pc, comm, vol, transport_cost_per_t)]
+    to_remove = []
+
+    for (from_pc, to_pc, comm), vol in allocs.items():
+        if to_pc.name in gateway_ids:
+            tariff_cost = trade_lp.gateway_arc_costs.get((from_pc.name, to_pc.name, comm.name), 0.0)
+            inbound.setdefault(to_pc, []).append((from_pc, comm, vol, tariff_cost))
+            to_remove.append((from_pc, to_pc, comm))
+        elif from_pc.name in gateway_ids:
+            transport_cost = trade_lp.gateway_arc_costs.get((from_pc.name, to_pc.name, comm.name), 0.0)
+            outbound.setdefault(from_pc, []).append((to_pc, comm, vol, transport_cost))
+            to_remove.append((from_pc, to_pc, comm))
+
+    for key in to_remove:
+        allocs.pop(key, None)
+        alloc_costs.pop(key, None)
+
+    # Tariff accumulation for TM-PAM injection (volume-weighted average per ISO3 route)
+    tariff_numerator: dict[tuple[str, str, str], float] = {}
+    tariff_denominator: dict[tuple[str, str, str], float] = {}
+
+    # Gateways that appear only in outbound (no inbound) indicate phantom supply;
+    # the LP constraint fix should prevent this, but log if it still occurs.
+    phantom_gateways = set(outbound.keys()) - set(inbound.keys())
+    if phantom_gateways:
+        logger_local.error(
+            f"[TRQ] {len(phantom_gateways)} gateway(s) have outbound flow with NO inbound — "
+            f"phantom supply leaked through; check _add_gateway_flow_conservation_constraints. "
+            f"Gateways: {[gw.name for gw in phantom_gateways]}"
+        )
+        for gw_pc in phantom_gateways:
+            for to_remove_key in [(gw_pc, dc_pc, comm) for dc_pc, comm, _, _ in outbound[gw_pc]]:
+                allocs.pop(to_remove_key, None)
+                alloc_costs.pop(to_remove_key, None)
+
+    for gw_pc, in_flows in inbound.items():
+        out_flows = outbound.get(gw_pc, [])
+        if not out_flows:
+            logger_local.warning(f"Gateway {gw_pc.name} has inbound flow but no outbound — volume lost")
+            continue
+
+        total_out_by_comm: dict = {}
+        for _, comm, vol, _ in out_flows:
+            total_out_by_comm[comm] = total_out_by_comm.get(comm, 0.0) + vol
+
+        for plant_pc, comm, plant_vol, tariff_cost in in_flows:
+            total_out = total_out_by_comm.get(comm, 0.0)
+            if total_out <= 0.0:
+                continue
+            for dc_pc, out_comm, dc_vol, transport_cost in out_flows:
+                if out_comm != comm:
+                    continue
+                attributed_vol = plant_vol * (dc_vol / total_out)
+                if attributed_vol <= LP_TOLERANCE:
+                    continue
+
+                key = (plant_pc, dc_pc, comm)
+                existing_vol = allocs.get(key, 0.0)
+                combined_cost = tariff_cost + transport_cost
+                if existing_vol > 0 and key in alloc_costs:
+                    alloc_costs[key] = (alloc_costs[key] * existing_vol + combined_cost * attributed_vol) / (
+                        existing_vol + attributed_vol
+                    )
+                else:
+                    alloc_costs[key] = combined_cost
+                allocs[key] = existing_vol + attributed_vol
+
+                from_iso3 = plant_pc.location.iso3 or ""
+                to_iso3 = dc_pc.location.iso3 or ""
+                route_key = (from_iso3, to_iso3, comm.name)
+                tariff_numerator[route_key] = tariff_numerator.get(route_key, 0.0) + tariff_cost * attributed_vol
+                tariff_denominator[route_key] = tariff_denominator.get(route_key, 0.0) + attributed_vol
+
+    if trade_lp.allocations.allocation_costs is None:
+        trade_lp.allocations.allocation_costs = alloc_costs
+
+    # Inject TRQ tariff rates into allocations.tariff_taxes for TM-PAM
+    if trade_lp.allocations.tariff_taxes is None:
+        trade_lp.allocations.tariff_taxes = {}
+    for route_key, total_vol in tariff_denominator.items():
+        if total_vol > 0:
+            avg_tariff = tariff_numerator[route_key] / total_vol
+            if avg_tariff > 0:
+                trade_lp.allocations.tariff_taxes[route_key] = (
+                    trade_lp.allocations.tariff_taxes.get(route_key, 0.0) + avg_tariff
+                )
+
+    # Diagnostic: summarise which DCs received collapsed gateway volume
+    dc_vol_by_iso3: dict[str, float] = {}
+    for (plant_pc, dc_pc, comm), vol in allocs.items():
+        if dc_pc.process.type == tlp.ProcessType.DEMAND:
+            iso3 = dc_pc.location.iso3 if dc_pc.location else "?"
+            dc_vol_by_iso3[iso3] = dc_vol_by_iso3.get(iso3, 0.0) + vol
+    gw_supplied_iso3s = {iso3 for iso3, v in dc_vol_by_iso3.items() if v > 0}
+
+    # Log gateways with inbound but no outbound (volume loss indicator)
+    gateways_with_no_outbound = [gw_pc.name for gw_pc in inbound if not outbound.get(gw_pc)]
+    if gateways_with_no_outbound:
+        logger_local.warning(
+            f"[TRQ] {len(gateways_with_no_outbound)} gateway(s) had inbound flow but zero "
+            f"outbound (volume dropped): {gateways_with_no_outbound}"
+        )
+
+    logger_local.info(
+        f"Collapsed {len(to_remove)} gateway arcs → {len(allocs)} direct plant→DC arcs; "
+        f"injected {len(tariff_denominator)} TRQ tariff rates; "
+        f"gateway-supplied ISO3s ({len(gw_supplied_iso3s)}): {sorted(gw_supplied_iso3s)}"
+    )
 
 
 def read_trq_gateway_results(

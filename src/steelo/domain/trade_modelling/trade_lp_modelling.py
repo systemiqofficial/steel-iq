@@ -1676,6 +1676,21 @@ class TradeLPModel:
             elif pc.process.type == ProcessType.DEMAND:
                 demand_pcs_by_iso3.setdefault(iso3, []).append(pc)
 
+        # Log which ISO3 codes the TRQ to_iso3s expect vs. what demand PCs exist
+        all_trq_to_iso3s: set[str] = set()
+        for gw in self.trq_gateway_nodes:
+            all_trq_to_iso3s.update(gw.to_iso3s)
+        demand_dc_iso3s = set(demand_pcs_by_iso3.keys())
+        trq_to_without_dc = all_trq_to_iso3s - demand_dc_iso3s
+        if trq_to_without_dc:
+            logger_local.warning(
+                f"[TRQ] {len(trq_to_without_dc)} TRQ to_iso3s have no demand PC "
+                f"(pre-check): {sorted(trq_to_without_dc)}"
+            )
+        logger_local.info(
+            f"[TRQ] TRQ to_iso3s: {sorted(all_trq_to_iso3s)}; demand PCs available for: {sorted(demand_dc_iso3s)}"
+        )
+
         # Remove direct plant → DC arcs for TRQ-covered routes
         filtered: list[tuple[ProcessCenter, ProcessCenter, Commodity]] = []
         removed = 0
@@ -1690,6 +1705,8 @@ class TradeLPModel:
 
         # Add gateway arcs
         added = 0
+        dc_arcs_by_iso3: dict[str, int] = {}  # diagnostic: gateway→DC arc count per import country
+        missing_dc_iso3s: set[str] = set()  # to_iso3s with no demand PC
         for gw in self.trq_gateway_nodes:
             gw_pc = pc_by_name.get(gw.node_id)
             if gw_pc is None:
@@ -1703,24 +1720,53 @@ class TradeLPModel:
                     added += 1
             # Gateway → demand center
             for to_iso3 in gw.to_iso3s:
-                for dc_pc in demand_pcs_by_iso3.get(to_iso3, []):
-                    self.legal_allocations.append((gw_pc, dc_pc, commodity))
-                    added += 1
+                dcs = demand_pcs_by_iso3.get(to_iso3, [])
+                if dcs:
+                    for dc_pc in dcs:
+                        self.legal_allocations.append((gw_pc, dc_pc, commodity))
+                        added += 1
+                        dc_arcs_by_iso3[to_iso3] = dc_arcs_by_iso3.get(to_iso3, 0) + 1
+                else:
+                    missing_dc_iso3s.add(to_iso3)
 
         logger_local.info(f"Injected {added} TRQ gateway arcs into legal_allocations")
+        if missing_dc_iso3s:
+            logger_local.warning(
+                f"[TRQ] {len(missing_dc_iso3s)} TRQ to_iso3s had no demand process center "
+                f"(gateway→DC arcs NOT created): {sorted(missing_dc_iso3s)}"
+            )
+        if dc_arcs_by_iso3:
+            logger_local.info(
+                f"[TRQ] Gateway→DC arc counts by import country "
+                f"({sum(dc_arcs_by_iso3.values())} total): "
+                + ", ".join(f"{iso3}={n}" for iso3, n in sorted(dc_arcs_by_iso3.items()))
+            )
 
     def _override_gateway_arc_costs(self) -> None:
         """Replace allocation_costs for all gateway arcs with pre-computed values.
 
         Called inside build_lp_model() after add_allocation_costs_as_parameters_to_lp().
         Standard cost computation doesn't know about gateway semantics, so we overwrite.
+
+        For plant→tier-0 (duty-free) arcs, a small ordering nudge (1e-3 × production_cost)
+        is added to lp_model.allocation_costs so the LP prefers cheaper plants for the
+        duty-free quota when capacity allows.  gateway_arc_costs is left untouched so that
+        collapse_gateway_arcs() and PAM always see the real tariff and transport costs.
         """
         if not self.gateway_arc_costs:
             return
+        tier0_ids = {gw.node_id for gw in self.trq_gateway_nodes if gw.tier_index == 0}
+        pc_by_name = {pc.name: pc for pc in self.process_centers}
         overridden = 0
         for key, cost in self.gateway_arc_costs.items():
             if key in self.lp_model.allocation_costs:
-                self.lp_model.allocation_costs[key] = cost
+                from_name, to_name, _ = key
+                nudge = 0.0
+                if to_name in tier0_ids:
+                    plant_pc = pc_by_name.get(from_name)
+                    if plant_pc is not None:
+                        nudge = 1e-3 * plant_pc.production_cost
+                self.lp_model.allocation_costs[key] = cost + nudge
                 overridden += 1
         logging.getLogger(f"{__name__}._override_gateway_arc_costs").info(
             f"Overrode costs for {overridden} gateway arcs"
@@ -1741,19 +1787,33 @@ class TradeLPModel:
         inbound_arcs = self.lp_model.inbound_arcs
         outbound_arcs = self.lp_model.outbound_arcs
 
+        logger_local = logging.getLogger(f"{__name__}._add_gateway_flow_conservation_constraints")
+
+        # Warn about gateways with no inbound arcs — they would be unconstrained sources
+        # unless we explicitly force their outbound to zero.
+        for gw_name in gateway_names:
+            if not inbound_arcs.get(gw_name) and outbound_arcs.get(gw_name):
+                logger_local.warning(
+                    f"[TRQ] Gateway {gw_name} has no inbound arcs (no active plants from its "
+                    f"from_iso3s). Forcing all outbound arcs to 0 to prevent phantom supply."
+                )
+
         def gateway_conservation_rule(model, gw_name):
             in_arcs = inbound_arcs.get(gw_name, [])
             out_arcs = outbound_arcs.get(gw_name, [])
-            if not in_arcs or not out_arcs:
+            if not out_arcs:
+                # No outbound arcs at all — nothing to constrain.
                 return pyo.Constraint.Skip
+            if not in_arcs:
+                # Gateway exists but has no supplying plants: force all outbound to zero
+                # to prevent it from acting as a phantom (unconstrained) supply source.
+                return pyo.quicksum(model.allocation_variables[arc] for arc in out_arcs) == 0
             return pyo.quicksum(model.allocation_variables[arc] for arc in in_arcs) == pyo.quicksum(
                 model.allocation_variables[arc] for arc in out_arcs
             )
 
         self.lp_model.gateway_flow_conservation = pyo.Constraint(list(gateway_names), rule=gateway_conservation_rule)
-        logging.getLogger(f"{__name__}._add_gateway_flow_conservation_constraints").info(
-            f"Added flow-conservation constraints for {len(gateway_names)} gateway nodes"
-        )
+        logger_local.info(f"Added flow-conservation constraints for {len(gateway_names)} gateway nodes")
 
     def build_lp_model(self, willingness_to_pay_list=None):
         """Build the complete Pyomo LP model with all variables, parameters, and constraints.
