@@ -1707,6 +1707,13 @@ class TradeLPModel:
         added = 0
         dc_arcs_by_iso3: dict[str, int] = {}  # diagnostic: gateway→DC arc count per import country
         missing_dc_iso3s: set[str] = set()  # to_iso3s with no demand PC
+        # Diagnostic + guard: only plants that actually PRODUCE the gateway's commodity may
+        # supply it. set_legal_allocations() enforces `commodity in from_pc.process.products`
+        # for every direct plant→DC arc; without the same check here a plant producing only
+        # intermediates (e.g. BF hot metal, DRI) gets wired to a "steel" gateway and, after
+        # collapse_gateway_arcs(), surfaces as a "steel" flow whose source_tech is BF/DRI.
+        # We skip those arcs and log how many were dropped so the suppression is auditable.
+        commodity_mismatches: dict[tuple[str, str], int] = {}  # (gateway_commodity, plant_product_set) → count
         for gw in self.trq_gateway_nodes:
             gw_pc = pc_by_name.get(gw.node_id)
             if gw_pc is None:
@@ -1716,6 +1723,17 @@ class TradeLPModel:
             # Plant → gateway
             for from_iso3 in gw.from_iso3s:
                 for plant_pc in prod_pcs_by_iso3.get(from_iso3, []):
+                    if commodity not in plant_pc.process.products:
+                        product_names = ",".join(sorted(p.name for p in plant_pc.process.products)) or "<none>"
+                        commodity_mismatches[(commodity.name, product_names)] = (
+                            commodity_mismatches.get((commodity.name, product_names), 0) + 1
+                        )
+                        logger_local.debug(
+                            f"[TRQ] Skipping plant '{plant_pc.name}' ({from_iso3}) → gateway "
+                            f"'{gw.node_id}': process produces [{product_names}], not "
+                            f"'{commodity.name}'. Would otherwise mislabel a '{commodity.name}' flow."
+                        )
+                        continue
                     self.legal_allocations.append((plant_pc, gw_pc, commodity))
                     added += 1
             # Gateway → demand center
@@ -1730,6 +1748,17 @@ class TradeLPModel:
                     missing_dc_iso3s.add(to_iso3)
 
         logger_local.info(f"Injected {added} TRQ gateway arcs into legal_allocations")
+        if commodity_mismatches:
+            total_mismatched = sum(commodity_mismatches.values())
+            logger_local.warning(
+                f"[TRQ] Skipped {total_mismatched} plant→gateway arc(s) where the plant does NOT "
+                f"produce the gateway commodity. Creating them would report the gateway commodity "
+                f"with a source_tech from the plant's real furnace group (e.g. 'steel' flow with "
+                f"BF/DRI source_tech). Breakdown (gateway_commodity ← plant_products: count): "
+                + "; ".join(
+                    f"{gw_comm} ← [{prods}]: {n}" for (gw_comm, prods), n in sorted(commodity_mismatches.items())
+                )
+            )
         if missing_dc_iso3s:
             logger_local.warning(
                 f"[TRQ] {len(missing_dc_iso3s)} TRQ to_iso3s had no demand process center "

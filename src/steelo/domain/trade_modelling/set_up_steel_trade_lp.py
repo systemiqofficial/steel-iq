@@ -1375,6 +1375,12 @@ def solve_lp_only(trade_lp: tlp.TradeLPModel) -> dict[str, CommodityAllocations]
         return commodity_allocations
 
     trade_lp.extract_solution()
+    # Dissolve TRQ gateway arcs back into direct plant→DC arcs (and inject TRQ tariffs
+    # into allocations.tariff_taxes) BEFORE disaggregation runs. Mirrors the non-clustering
+    # path in solve_steel_trade_lp_and_return_commodity_allocations(). Without this, the
+    # synthetic "__GWY__" gateway nodes would leak into disaggregate_allocations(), which
+    # has no concept of gateways, and TRQ tariffs would never reach the TM-PAM connector.
+    collapse_gateway_arcs(trade_lp)
 
     # Return empty CommodityAllocations - will be populated after disaggregation
     commodity_allocations = {}

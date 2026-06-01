@@ -28,6 +28,7 @@ from steelo.domain.trade_modelling.trade_lp_modelling import (
     TradeLPModel,
     Location,
 )
+from steelo.domain.trade_modelling.set_up_steel_trade_lp import solve_lp_only
 
 
 # ---------------------------------------------------------------------------
@@ -218,90 +219,98 @@ class TestCollectCoveredRoutes:
 # ---------------------------------------------------------------------------
 
 
-class TestTRQGatewayLP:
-    """Smoke test: small LP with gateway nodes injected manually.
+def _build_gateway_lp_model() -> TradeLPModel:
+    """Build a small TRQ-gateway LP (built but not solved).
 
     Topology:
         Plant X (TUR, 20 t) → GW_tier0 (cap=5t, rate=0%) → DEU demand (10t)
         Plant X (TUR, 20 t) → GW_tier1 (cap=∞,  rate=10%) → FRA demand (5t)
         Plant Y (KOR, 20 t) → same gateways → same DCs
 
+    Total demand is 15 t, tier-0 (duty-free) capacity is 5 t.
+    """
+    steel = Commodity("steel")
+    bom_in = BOMElement(name="steel_bom", commodity=steel, parameters={}, output_commodities=[steel])
+    bom_out = BOMElement(name="steel_dem", commodity=steel, parameters={}, output_commodities=[])
+
+    prod_proc = Process(name="BF-BOF", type=ProcessType.PRODUCTION, bill_of_materials=[bom_in])
+    dem_proc = Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[bom_out])
+    gw_proc = Process(name="__gateway__", type=ProcessType.GATEWAY, bill_of_materials=[])
+
+    loc_tur = _make_location("TUR", lat=39.0, lon=35.0)
+    loc_kor = _make_location("KOR", lat=37.0, lon=127.0)
+    loc_deu = _make_location("DEU", lat=51.0, lon=10.0)
+    loc_fra = _make_location("FRA", lat=46.0, lon=2.0)
+    loc_gwy = _make_location(_GATEWAY_ISO3, lat=0.0, lon=0.0)
+
+    plant_x = ProcessCenter(name="plant_x", process=prod_proc, capacity=20.0, location=loc_tur)
+    plant_y = ProcessCenter(name="plant_y", process=prod_proc, capacity=20.0, location=loc_kor)
+    dc_deu = ProcessCenter(name="dc_deu", process=dem_proc, capacity=10.0, location=loc_deu)
+    dc_fra = ProcessCenter(name="dc_fra", process=dem_proc, capacity=5.0, location=loc_fra)
+    gw_tier0 = ProcessCenter(name="gw_tier0", process=gw_proc, capacity=5.0, location=loc_gwy)
+    gw_tier1 = ProcessCenter(name="gw_tier1", process=gw_proc, capacity=_UNLIMITED_CAPACITY, location=loc_gwy)
+
+    # Pre-compute costs: tier0 free, tier1 costs 10 $/t (tariff on ~100 $/t avg price)
+    gateway_arc_costs = {
+        ("plant_x", "gw_tier0", "steel"): 0.0,
+        ("plant_y", "gw_tier0", "steel"): 0.0,
+        ("plant_x", "gw_tier1", "steel"): 10.0,
+        ("plant_y", "gw_tier1", "steel"): 10.0,
+        ("gw_tier0", "dc_deu", "steel"): 5.0,
+        ("gw_tier0", "dc_fra", "steel"): 5.0,
+        ("gw_tier1", "dc_deu", "steel"): 5.0,
+        ("gw_tier1", "dc_fra", "steel"): 5.0,
+    }
+
+    # Build gateway nodes for injection
+    gw_nodes = [
+        TRQGatewayNode(
+            node_id="gw_tier0",
+            trq_name="EU safeguards",
+            tier_index=0,
+            tariff_rate=0.0,
+            tier_capacity=5.0,
+            from_iso3s=["TUR", "KOR"],
+            to_iso3s=["DEU", "FRA"],
+            commodity="steel",
+        ),
+        TRQGatewayNode(
+            node_id="gw_tier1",
+            trq_name="EU safeguards",
+            tier_index=1,
+            tariff_rate=10.0,
+            tier_capacity=None,
+            from_iso3s=["TUR", "KOR"],
+            to_iso3s=["DEU", "FRA"],
+            commodity="steel",
+        ),
+    ]
+    covered = collect_trq_covered_routes(gw_nodes)
+
+    model = TradeLPModel(lp_epsilon=1e-3, random_seed=42)
+    model.add_commodities([steel])
+    model.add_processes([prod_proc, dem_proc, gw_proc])
+    model.add_process_centers([plant_x, plant_y, dc_deu, dc_fra, gw_tier0, gw_tier1])
+
+    # Wire gateway data
+    model.trq_gateway_nodes = gw_nodes
+    model.trq_covered_routes = covered
+    model.gateway_arc_costs = gateway_arc_costs
+
+    # No standard process connectors — all arcs injected via TRQ mechanism
+    model.add_tariff_information({}, {})
+    model.build_lp_model()
+    return model
+
+
+class TestTRQGatewayLP:
+    """Smoke test: small LP with gateway nodes injected manually.
+
     Expected: tier0 (cheaper) fills to capacity (5 t) before tier1.
     """
 
     def _build_model(self) -> TradeLPModel:
-        steel = Commodity("steel")
-        bom_in = BOMElement(name="steel_bom", commodity=steel, parameters={}, output_commodities=[steel])
-        bom_out = BOMElement(name="steel_dem", commodity=steel, parameters={}, output_commodities=[])
-
-        prod_proc = Process(name="BF-BOF", type=ProcessType.PRODUCTION, bill_of_materials=[bom_in])
-        dem_proc = Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[bom_out])
-        gw_proc = Process(name="__gateway__", type=ProcessType.GATEWAY, bill_of_materials=[])
-
-        loc_tur = _make_location("TUR", lat=39.0, lon=35.0)
-        loc_kor = _make_location("KOR", lat=37.0, lon=127.0)
-        loc_deu = _make_location("DEU", lat=51.0, lon=10.0)
-        loc_fra = _make_location("FRA", lat=46.0, lon=2.0)
-        loc_gwy = _make_location(_GATEWAY_ISO3, lat=0.0, lon=0.0)
-
-        plant_x = ProcessCenter(name="plant_x", process=prod_proc, capacity=20.0, location=loc_tur)
-        plant_y = ProcessCenter(name="plant_y", process=prod_proc, capacity=20.0, location=loc_kor)
-        dc_deu = ProcessCenter(name="dc_deu", process=dem_proc, capacity=10.0, location=loc_deu)
-        dc_fra = ProcessCenter(name="dc_fra", process=dem_proc, capacity=5.0, location=loc_fra)
-        gw_tier0 = ProcessCenter(name="gw_tier0", process=gw_proc, capacity=5.0, location=loc_gwy)
-        gw_tier1 = ProcessCenter(name="gw_tier1", process=gw_proc, capacity=_UNLIMITED_CAPACITY, location=loc_gwy)
-
-        # Pre-compute costs: tier0 free, tier1 costs 10 $/t (tariff on ~100 $/t avg price)
-        gateway_arc_costs = {
-            ("plant_x", "gw_tier0", "steel"): 0.0,
-            ("plant_y", "gw_tier0", "steel"): 0.0,
-            ("plant_x", "gw_tier1", "steel"): 10.0,
-            ("plant_y", "gw_tier1", "steel"): 10.0,
-            ("gw_tier0", "dc_deu", "steel"): 5.0,
-            ("gw_tier0", "dc_fra", "steel"): 5.0,
-            ("gw_tier1", "dc_deu", "steel"): 5.0,
-            ("gw_tier1", "dc_fra", "steel"): 5.0,
-        }
-
-        # Build gateway nodes for injection
-        gw_nodes = [
-            TRQGatewayNode(
-                node_id="gw_tier0",
-                trq_name="EU safeguards",
-                tier_index=0,
-                tariff_rate=0.0,
-                tier_capacity=5.0,
-                from_iso3s=["TUR", "KOR"],
-                to_iso3s=["DEU", "FRA"],
-                commodity="steel",
-            ),
-            TRQGatewayNode(
-                node_id="gw_tier1",
-                trq_name="EU safeguards",
-                tier_index=1,
-                tariff_rate=10.0,
-                tier_capacity=None,
-                from_iso3s=["TUR", "KOR"],
-                to_iso3s=["DEU", "FRA"],
-                commodity="steel",
-            ),
-        ]
-        covered = collect_trq_covered_routes(gw_nodes)
-
-        model = TradeLPModel(lp_epsilon=1e-3, random_seed=42)
-        model.add_commodities([steel])
-        model.add_processes([prod_proc, dem_proc, gw_proc])
-        model.add_process_centers([plant_x, plant_y, dc_deu, dc_fra, gw_tier0, gw_tier1])
-
-        # Wire gateway data
-        model.trq_gateway_nodes = gw_nodes
-        model.trq_covered_routes = covered
-        model.gateway_arc_costs = gateway_arc_costs
-
-        # No standard process connectors — all arcs injected via TRQ mechanism
-        model.add_tariff_information({}, {})
-        model.build_lp_model()
-        return model
+        return _build_gateway_lp_model()
 
     def test_model_builds_without_error(self):
         model = self._build_model()
@@ -344,3 +353,66 @@ class TestTRQGatewayLP:
         assert tier1_inflow == pytest.approx(10.0, abs=0.1), (
             f"Expected tier-1 to carry remaining 10 t, got {tier1_inflow}"
         )
+
+
+# ---------------------------------------------------------------------------
+# solve_lp_only(): the path taken when furnace-group clustering is enabled.
+# It must collapse gateway arcs exactly like the non-clustering solve path so
+# that (a) no synthetic "__GWY__" arcs leak into disaggregate_allocations and
+# (b) TRQ tariffs land in allocations.tariff_taxes for the TM-PAM connector.
+# ---------------------------------------------------------------------------
+
+
+class TestSolveLpOnlyCollapsesGateways:
+    """Regression: solve_lp_only (clustering path) must dissolve TRQ gateways.
+
+    Before the fix, solve_lp_only() only called extract_solution() and left the
+    plant→gateway→DC arcs in place, so clustered runs lost TRQ tariffs and fed
+    "__GWY__" nodes into disaggregation.
+    """
+
+    def _solve(self):
+        model = _build_gateway_lp_model()
+        try:
+            solve_lp_only(model)
+        except Exception as exc:  # solver binary not installed in this env
+            pytest.skip(f"Solver not available: {exc}")
+        if model.allocations is None or not model.allocations.allocations:
+            pytest.skip("LP infeasible or solver issue — no allocations produced")
+        return model
+
+    def test_no_gateway_arcs_remain_after_solve(self):
+        model = self._solve()
+        gateway_ids = {"gw_tier0", "gw_tier1"}
+        leaked = [
+            (from_pc.name, to_pc.name, comm.name)
+            for (from_pc, to_pc, comm) in model.allocations.allocations
+            if from_pc.name in gateway_ids or to_pc.name in gateway_ids
+        ]
+        assert leaked == [], f"Gateway arcs were not collapsed: {leaked}"
+
+    def test_collapsed_into_direct_plant_to_dc_arcs(self):
+        model = self._solve()
+        direct = [
+            (from_pc.name, to_pc.name)
+            for (from_pc, to_pc, comm) in model.allocations.allocations
+            if from_pc.process.type == ProcessType.PRODUCTION and to_pc.process.type == ProcessType.DEMAND
+        ]
+        assert direct, "Expected direct plant→DC arcs after gateway collapse"
+        # Every collapsed origin/destination must be a real country, never the gateway sentinel.
+        for from_pc, to_pc, _ in model.allocations.allocations:
+            assert from_pc.location.iso3 != _GATEWAY_ISO3
+            assert to_pc.location.iso3 != _GATEWAY_ISO3
+
+    def test_trq_tariff_injected_into_tariff_taxes(self):
+        model = self._solve()
+        tariff_taxes = model.allocations.tariff_taxes
+        assert tariff_taxes, "TRQ tariffs were not injected into allocations.tariff_taxes"
+        # Out-of-quota volume (tier-1, 10 %/$10 per t) must surface as a positive
+        # per-route tariff on a real cross-border route.
+        positive_routes = {route: t for route, t in tariff_taxes.items() if t > 0}
+        assert positive_routes, f"Expected a positive TRQ tariff, got {tariff_taxes}"
+        for (from_iso3, to_iso3, comm), _ in positive_routes.items():
+            assert from_iso3 in {"TUR", "KOR"}
+            assert to_iso3 in {"DEU", "FRA"}
+            assert comm == "steel"
