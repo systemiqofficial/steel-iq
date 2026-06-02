@@ -1140,6 +1140,9 @@ class SimulationRunner:
             # Set the environment year to match the loop iteration
             bus.env.year = Year(i)
 
+            # Refresh active TRQs for this year before any trade or allocation logic runs.
+            bus.env.update_active_trqs()
+
             # Year-start baseline scan: rebuild CO2 storage counters (firm/reserved) before Allocation/PAM/GEO.
             bus.env.scan_co2_storage_counters(bus.uow)
 

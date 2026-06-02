@@ -75,6 +75,7 @@ class DummyProcessType:
     PRODUCTION = "PRODUCTION"
     DEMAND = "DEMAND"
     SUPPLY = "SUPPLY"
+    GATEWAY = "GATEWAY"
 
 
 class DummyMaterialParameters:
@@ -153,6 +154,9 @@ class DummyTradeLPModel:
         self.year = year
         self.solver_options = solver_options or {}
         self.transportation_costs = []
+        self.trq_covered_routes: set = set()
+        self.trq_gateway_nodes: list = []
+        self.gateway_arc_costs: dict = {}
 
     @property
     def processes(self):

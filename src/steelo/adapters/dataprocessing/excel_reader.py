@@ -15,6 +15,7 @@ from steelo.domain import (
     PrimaryFeedstock,
     Supplier,
     TradeTariff,
+    TariffRateQuota,
     CarbonCostSeries,
     InputCosts,
     RegionEmissivity,
@@ -2955,3 +2956,155 @@ def read_green_steel_definitions(
         logger.info(f"  Level {level}: y <= {grade.b} - {grade.m}*x")
     logger.info(f"Successfully loaded {len(green_steel_grades)} green steel grade definitions")
     return green_steel_grades
+
+
+def read_trqs(
+    excel_path: Path,
+    sheet_name: str = "TRQs",
+    country_mappings: list[CountryMapping] | None = None,
+) -> list[TariffRateQuota]:
+    """Read tariff rate quota data from an Excel sheet and return TariffRateQuota objects.
+
+    Each row defines a bilateral TRQ.  The "From region/ISO3" and "To region/ISO3" columns
+    accept either an individual ISO3 code or a trade-bloc name (e.g. "EU"); the latter is
+    expanded to all member ISO3s via country_mappings and stored as a list on the object.
+
+    Rows that share a non-blank "Shared quota id" are merged into one TariffRateQuota.
+    Within such a group either all from_iso3s or all to_iso3s must be identical; the
+    varying side is collected into a single list.  A ValueError is raised if neither side
+    is constant across the group.
+
+    Expected columns (exact names):
+        - "Tariff name"
+        - "From region/ISO3"
+        - "To region/ISO3"
+        - "Commodity"
+        - "Tariff-free quota"
+        - "Shared quota id"          (may be blank)
+        - "Out-of-quota tariff rate" (numeric or "50%" string)
+        - "Start year"
+        - "End year"
+
+    Args:
+        excel_path: Path to the master Excel file.
+        sheet_name: Name of the TRQ sheet (default "TRQs").
+        country_mappings: List of CountryMapping objects used to resolve trade-bloc names.
+            Pass None to skip bloc expansion (each entry is treated as a raw ISO3).
+
+    Returns:
+        List of TariffRateQuota objects.  Rows without a shared quota id produce one object
+        each; rows sharing a quota id are collapsed into a single object.
+    """
+    df = pd.read_excel(excel_path, sheet_name=sheet_name)
+    df = df.dropna(subset=["Tariff name"])
+
+    supported_blocs: list[str] = []
+    if country_mappings:
+        supported_blocs = [
+            attr
+            for attr in dir(country_mappings[0])
+            if not attr.startswith("_") and isinstance(getattr(country_mappings[0], attr, None), bool)
+        ]
+
+    # --- Pass 1: parse every row into an intermediate record ---
+    raw: list[dict] = []
+    for _, row in df.iterrows():
+        quota_val = row.get("Tariff-free quota")
+        if pd.isna(quota_val):
+            continue
+
+        start_raw = row.get("Start year")
+        end_raw = row.get("End year")
+        start_year = Year(int(start_raw)) if not pd.isna(start_raw) else Year(2000)
+        end_year = Year(int(end_raw)) if not pd.isna(end_raw) else Year(2100)
+
+        rate_raw = row.get("Out-of-quota tariff rate", 0)
+        if isinstance(rate_raw, str):
+            rate = float(rate_raw.strip().rstrip("%"))
+        elif pd.isna(rate_raw):
+            rate = 0.0
+        else:
+            rate = float(rate_raw)
+            if rate <= 1.0:
+                rate = rate * 100
+
+        shared_quota_id_raw = row.get("Shared quota id")
+        shared_quota_id = None if pd.isna(shared_quota_id_raw) else str(shared_quota_id_raw).strip()
+
+        from_iso3s = _resolve_iso3_or_bloc_entry(
+            str(row["From region/ISO3"]).strip(), country_mappings or [], supported_blocs
+        )
+        to_iso3s = _resolve_iso3_or_bloc_entry(
+            str(row["To region/ISO3"]).strip(), country_mappings or [], supported_blocs
+        )
+
+        raw.append(
+            dict(
+                name=str(row["Tariff name"]).strip(),
+                from_iso3s=from_iso3s,
+                to_iso3s=to_iso3s,
+                commodity=normalize_product_name(str(row["Commodity"]).strip()),
+                tariff_free_quota=float(quota_val),
+                out_of_quota_tariff_rate=rate,
+                start_year=start_year,
+                end_year=end_year,
+                shared_quota_id=shared_quota_id,
+            )
+        )
+
+    # --- Pass 2: emit one TRQ per standalone row; merge shared-quota groups ---
+    trqs: list[TariffRateQuota] = []
+
+    standalone = [r for r in raw if r["shared_quota_id"] is None]
+    for r in standalone:
+        trqs.append(TariffRateQuota(**r))
+
+    shared_groups: dict[str, list[dict]] = {}
+    for r in raw:
+        if r["shared_quota_id"] is not None:
+            shared_groups.setdefault(r["shared_quota_id"], []).append(r)
+
+    for quota_id, rows in shared_groups.items():
+        from_sets = [frozenset(r["from_iso3s"]) for r in rows]
+        to_sets = [frozenset(r["to_iso3s"]) for r in rows]
+        from_all_same = all(s == from_sets[0] for s in from_sets)
+        to_all_same = all(s == to_sets[0] for s in to_sets)
+
+        if not from_all_same and not to_all_same:
+            raise ValueError(
+                f"Shared quota '{quota_id}': neither the from_iso3s nor the to_iso3s are "
+                f"identical across all rows. Exactly one side must be constant so the "
+                f"varying side can be merged."
+            )
+
+        if to_all_same:
+            # "to" is constant — collect all distinct "from" ISO3s
+            seen: set[str] = set()
+            merged_from = [iso3 for r in rows for iso3 in r["from_iso3s"] if not (iso3 in seen or seen.add(iso3))]  # type: ignore[func-returns-value]
+            merged_to = list(rows[0]["to_iso3s"])
+        else:
+            # "from" is constant — collect all distinct "to" ISO3s
+            merged_from = list(rows[0]["from_iso3s"])
+            seen = set()
+            merged_to = [iso3 for r in rows for iso3 in r["to_iso3s"] if not (iso3 in seen or seen.add(iso3))]  # type: ignore[func-returns-value]
+
+        first = rows[0]
+        trqs.append(
+            TariffRateQuota(
+                name=first["name"],
+                from_iso3s=merged_from,
+                to_iso3s=merged_to,
+                commodity=first["commodity"],
+                tariff_free_quota=first["tariff_free_quota"],
+                out_of_quota_tariff_rate=first["out_of_quota_tariff_rate"],
+                start_year=first["start_year"],
+                end_year=first["end_year"],
+                shared_quota_id=quota_id,
+            )
+        )
+
+    logger.info(
+        f"Successfully read {len(trqs)} TRQ entries from sheet '{sheet_name}' "
+        f"({len(standalone)} standalone, {len(shared_groups)} shared-quota groups)"
+    )
+    return trqs

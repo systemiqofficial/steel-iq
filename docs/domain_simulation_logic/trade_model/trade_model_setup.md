@@ -100,8 +100,36 @@ Trade-LP setup, the average-commodity-price calculation in `Environment.calculat
 
 ### 3. Constraint Functions
 
+#### `enforce_trqs_via_gateways()`
+**Purpose:** Models Tariff Rate Quotas (TRQs) by injecting virtual gateway nodes into the LP before it is built.
+
+**What a TRQ is:** A trade policy with a duty-free volume allowance (quota) and a higher out-of-quota (OOQ) tariff rate above that threshold. EU safeguard measures on steel imports are a typical example.
+
+**Gateway node approach:** Each TRQ tier becomes a virtual pass-through node in the LP network:
+```
+plant → gateway_tier_0  (capacity = tariff-free quota,  arc cost = 0 tariff)
+plant → gateway_tier_1  (capacity = unlimited,           arc cost = OOQ rate × commodity price)
+gateway_tier_k → demand center  (arc cost = avg transport from exporting countries)
+```
+Because the LP minimises cost, it fills the duty-free tier first with no explicit ordering constraints needed.
+
+**Shared quotas:** Multiple exporting countries that share one quota pool are merged into a single TRQ object (same `shared_quota_id`) with a combined `from_iso3s` list. They all feed through the same gateway node, so the capacity constraint automatically covers the combined volume.
+
+**Data pipeline:** TRQs are read from the `TRQs` sheet of the master Excel file via `read_trqs()` and stored on `Environment.active_trqs`, which is refreshed each simulation year based on `start_year` / `end_year`.
+
+**Route guard:** TRQ-covered `(from_iso3, to_iso3, commodity)` triples are recorded in `lp_model.trq_covered_routes`. The `enforce_trade_tariffs_on_allocations()` function skips any `TradeTariff` on a covered route to avoid double-counting. Note: this guard currently skips *all* trade tariffs on TRQ routes, including additive instruments like CBAM — see known limitations below.
+
+**Known limitation — TM-PAM connector:** After solving, `trade_lp.allocations` contains raw `plant → gateway` and `gateway → DC` arcs. The domain mapping loop in `solve_steel_trade_lp_and_return_commodity_allocations()` and the TM-PAM connector both expect direct `plant → DC` arcs and have no knowledge of gateway nodes (which carry `iso3 = "__GWY__"`). A `collapse_gateway_arcs()` pre-processing step is needed between `extract_solution()` and domain mapping to:
+1. Dissolve each `plant → gateway → DC` chain into a direct `plant → DC` arc.
+2. Attribute volume proportionally to gateway outflow shares.
+3. Inject the correct tariff cost into `tariff_taxes_by_iso3` so TM-PAM picks it up via `get_tariff_cost()`.
+
+This step is not yet implemented; TRQ-governed flows currently produce zero tariff cost in PAM output.
+
+---
+
 #### `enforce_trade_tariffs_on_allocations()`
-**Purpose:** Applies trade policy restrictions to cross-border flows.
+**Purpose:** Applies flat trade policy restrictions to cross-border flows.
 
 **Supports three tariff types:**
 1. **Volume quotas**: Maximum tons per year on a route
@@ -123,6 +151,7 @@ Trade-LP setup, the average-commodity-price calculation in `Environment.calculat
 - Handles iron product families (hot metal, pig iron, DRI → "iron")
 - Accumulates multiple taxes on same route
 - Green steel exemptions reduce effective tariff: `effective_tariff = base_tariff × exemption_fraction`
+- Skips routes already covered by a TRQ gateway (see `enforce_trqs_via_gateways` above)
 
 **`From ISO3` / `To ISO3` syntax in the `Tariffs` master-input sheet.** Each entry resolves to a list of ISO3 codes via `_resolve_iso3_or_bloc_entry()`:
 

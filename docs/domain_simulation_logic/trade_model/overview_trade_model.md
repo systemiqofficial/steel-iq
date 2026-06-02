@@ -73,7 +73,22 @@ The model is a **network flow optimization problem**:
 
 ---
 
-### 5. `ProcessConnector`
+### 5. `TRQGatewayNode` (virtual LP node)
+
+**Purpose:** Represents one tariff tier of one Tariff Rate Quota as a pass-through node in the LP network.
+
+**What it models:**
+- One node per TRQ tier (typically two: duty-free + out-of-quota)
+- `tier_capacity`: the tariff-free quota volume (None = unlimited for the OOQ tier)
+- `tariff_rate`: 0 % for tier 0, OOQ rate for tier 1+
+- `from_iso3s` / `to_iso3s`: which exporting and importing countries this TRQ covers
+- `iso3 = "__GWY__"` (sentinel): ensures the node never matches real tariff or transport lookups
+
+**Key insight:** Gateway nodes are LP implementation details, not domain entities. They are dissolved back into direct `plant → DC` arcs after solving via `collapse_gateway_arcs()` (pending implementation) before reaching the TM-PAM connector.
+
+---
+
+### 6. `ProcessConnector`
 
 **Purpose:** Defines which technology-to-technology flows are allowed
 
@@ -294,6 +309,32 @@ sum(flows matching tariff pattern) ≤ quota_limit
 
 ---
 
+### 6. TRQ Gateway Capacity Constraint
+
+**Purpose:** Enforce each TRQ tier's volume cap (the tariff-free quota)
+
+**Formulation:**
+```
+sum(all plant → gateway_tier_k flows) ≤ tier_capacity
+```
+
+The unlimited OOQ tier (`tier_capacity = 1e9`) is also subject to this constraint but never binds in practice. Because the LP minimises cost, it fills the zero-tariff tier first without any explicit ordering constraint.
+
+---
+
+### 7. TRQ Gateway Flow Conservation Constraint
+
+**Purpose:** Prevent steel appearing or disappearing at gateway nodes
+
+**Formulation:**
+```
+sum(inbound flows to gateway) = sum(outbound flows from gateway)
+```
+
+One constraint per gateway node. Combined with the capacity constraint above, this ensures all steel entering a tier is distributed to destination countries and none is created from nothing.
+
+---
+
 ### 6. Secondary Feedstock Constraints
 
 **Purpose:** Regional limits on secondary material availability
@@ -509,6 +550,35 @@ A violation is a final disaggregated allocation whose commodity is in `config.cl
 LP setup uses `Environment.build_distance_function_for_trade_lp(process_centers)` to build a closure and assigns it to `lp_model._external_distance_function`, replacing the previous in-LP haversine pass. The hot-metal radius check is precomputed once per year via `precompute_distances_for_hot_metal_check(process_centers, hot_metal_radius)`, which returns the set of `(from_name, to_name)` pairs within radius — converting the in-loop check from O(N²) float comparisons to set-membership lookups.
 
 `Environment.log_distance_cache_stats()` is invoked at the end of LP setup and reports `hits`, `misses`, `computations` and entry count at info level.
+
+---
+
+### Tariff Rate Quotas (TRQs)
+
+**What they are:** Trade policies with a duty-free volume allowance and a higher out-of-quota (OOQ) tariff above that threshold. EU steel safeguard measures are a typical example.
+
+**How they are modelled — gateway nodes:**
+
+Each TRQ produces one virtual gateway node per tier. Plant → gateway arcs carry the tariff cost for that tier (zero for the duty-free tier); gateway → DC arcs carry transport cost. The LP fills the cheapest gateway first by cost minimisation alone:
+
+```
+plant → gateway_tier_0  (capacity = tariff-free quota,  tariff cost = 0)
+plant → gateway_tier_1  (capacity = ∞,                  tariff cost = OOQ rate × price)
+gateway_k → demand_center (transport cost = avg over exporting countries)
+```
+
+**Shared quotas:** Countries sharing one quota pool are merged into a single `TariffRateQuota` with a combined `from_iso3s` list. They all feed through the same gateway, so one capacity constraint enforces the shared limit.
+
+**Data pipeline:**
+```
+Master Excel "TRQs" sheet → read_trqs() → Environment.active_trqs (refreshed each year)
+    → build_trq_gateway_nodes() → create_gateway_process_centers()
+    → injected into LP via enforce_trqs_via_gateways()
+```
+
+**Interaction with flat tariffs:** Routes covered by a TRQ are excluded from `enforce_trade_tariffs_on_allocations()` to avoid double-counting. This guard currently skips *all* trade tariffs on TRQ routes, including additive instruments (e.g. CBAM). See `trq_gateway_lp_plan.md` for the known limitation.
+
+**Post-solve — gateway arc collapsing (pending):** After solving, gateway arcs must be collapsed into direct `plant → DC` arcs before domain mapping and the TM-PAM connector. Without this step, the domain mapping loop crashes (gateway nodes are not in any repository) and TM-PAM reports zero tariff and transport cost for TRQ-governed flows. See `trq_gateway_lp_plan.md` open question 5 for the full design.
 
 ---
 
