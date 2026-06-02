@@ -139,10 +139,13 @@ This step is not yet implemented; TRQ-governed flows currently produce zero tari
 **Green Steel Tariff Exemptions:**
 - Steel producers with green steel certification can receive tariff reductions
 - Eligibility: Furnace group must achieve minimum green steel grade level (configurable via `GREEN_STEEL_ELIGIBILITY_MINIMUM_LEVEL` in constants.py)
-- Exemption specified as fraction (0.0-1.0) in tariff data:
+- Exemption specified as a decimal fraction (0.0-1.0) in tariff data:
   - 0.0 = no tariff applied (full exemption)
   - 1.0 = full tariff applied (no exemption)
   - 0.5 = 50% of tariff applied
+  - Note: the master-input column is labelled `Green Steel Exemption [% of original tax]`, but
+    values must be entered as decimals (e.g. `0.5`, not `50`), consistent with how `Tax [%]` is
+    stored. No `/100` conversion is applied on read.
 - **Only applies to steel tariffs**, not iron or other commodities
 - For meta furnace groups (clusters): uses production-weighted average green steel grade
 

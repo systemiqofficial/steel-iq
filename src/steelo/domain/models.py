@@ -6630,7 +6630,11 @@ class TradeTariff:
         metric: Measurement unit or basis for the tariff (e.g., "USD/tonne", "percent").
         commodity: Specific commodity name this tariff applies to (e.g., "steel", "iron_ore").
             None means applies to all commodities on this route.
-        green_steel_exemption: Percentage exemption for green steel (0-100) relative to the original tax. None if no exemption.
+        green_steel_exemption: Decimal fraction (0.0-1.0) of the original tariff applied to
+            green-steel-eligible flows. 0.0 = no tariff (full exemption), 1.0 = full tariff
+            (no exemption), 0.5 = half the tariff applied. None if no exemption.
+            Note: the input column is labelled "% of original tax" but values are entered as
+            decimals (e.g. 0.5 for 50%), consistent with tax_percentage.
 
     Attributes:
         tariff_id: Unique identifier string (UUID format).
@@ -6644,7 +6648,8 @@ class TradeTariff:
         end_date: End year.
         metric: Measurement unit.
         commodity: Applicable commodity.
-        green_steel_exemption: Percentage exemption for green steel (0-100) relative to the original tax. None if no exemption.
+        green_steel_exemption: Decimal fraction (0.0-1.0) of the original tariff applied to
+            green-steel-eligible flows. 0.0 = full exemption, 1.0 = full tariff. None if no exemption.
     Example:
         >>> tariff = TradeTariff(
         ...     tariff_name="EU_Steel_Import_25pct",
