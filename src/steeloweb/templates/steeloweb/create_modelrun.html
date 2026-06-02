@@ -69,12 +69,25 @@ function resetEconomicParameters() {
     document.getElementById('id_global_risk_free_rate').value = '0.0209';
     document.getElementById('id_steel_price_buffer').value = '200.0';
     document.getElementById('id_iron_price_buffer').value = '200.0';
+    document.getElementById('id_peg_iron_to_steel_price').checked = false;
+    document.getElementById('id_iron_to_steel_price_ratio').value = '0.8';
+    document.getElementById('id_opening_balance_multiplier').value = '1.0';
+    // Trigger change to update ratio field disabled state
+    document.getElementById('id_peg_iron_to_steel_price').dispatchEvent(new Event('change'));
 }
 
 function resetPolicySettings() {
     // Reset policy settings
     document.getElementById('id_use_iron_ore_premiums').checked = true;
     document.getElementById('id_include_tariffs').checked = true;
+    document.getElementById('id_enable_furnace_group_clustering').checked = false;
+    document.getElementById('id_cluster_hot_metal_techs_by_plant_group').checked = false;
+    const gridScenario = document.getElementById('id_chosen_grid_emissions_scenario');
+    if (gridScenario && !gridScenario.disabled) {
+        gridScenario.value = 'Business As Usual';
+    }
+    // Trigger change to update dependent field disabled state
+    document.getElementById('id_enable_furnace_group_clustering').dispatchEvent(new Event('change'));
 }
 
 function resetDemandSettings() {
@@ -271,6 +284,48 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Add change event listener
     probabilisticCheckbox.addEventListener('change', updateProbabilityFields);
+});
+
+// Toggle iron_to_steel_price_ratio based on peg_iron_to_steel_price checkbox
+document.addEventListener('DOMContentLoaded', function() {
+    var pegCheckbox = document.getElementById('id_peg_iron_to_steel_price');
+    var ratioRow = document.getElementById('iron_to_steel_price_ratio_row');
+    var ratioInput = document.getElementById('id_iron_to_steel_price_ratio');
+
+    function updateRatioField() {
+        if (pegCheckbox.checked) {
+            ratioInput.disabled = false;
+            ratioRow.style.opacity = '1';
+        } else {
+            ratioInput.disabled = true;
+            ratioRow.style.opacity = '0.5';
+        }
+    }
+
+    updateRatioField();
+    pegCheckbox.addEventListener('change', updateRatioField);
+});
+
+// Toggle cluster_hot_metal_techs_by_plant_group based on enable_furnace_group_clustering
+// (the second flag is a no-op unless the first is on)
+document.addEventListener('DOMContentLoaded', function() {
+    var parentCheckbox = document.getElementById('id_enable_furnace_group_clustering');
+    var childRow = document.getElementById('cluster_hot_metal_techs_by_plant_group_row');
+    var childCheckbox = document.getElementById('id_cluster_hot_metal_techs_by_plant_group');
+
+    function updateChildField() {
+        if (parentCheckbox.checked) {
+            childCheckbox.disabled = false;
+            childRow.style.opacity = '1';
+        } else {
+            childCheckbox.disabled = true;
+            childCheckbox.checked = false;
+            childRow.style.opacity = '0.5';
+        }
+    }
+
+    updateChildField();
+    parentCheckbox.addEventListener('change', updateChildField);
 });
 
 // Ensure native browser validation runs even if fields still have focus
@@ -631,6 +686,67 @@ document.head.appendChild(style);
                             </div>
                         </div>
                         
+                        <!-- Simulation Parameters section -->
+                        <div class="card mb-4">
+                            <div class="card-header bg-light">
+                                <h5 class="mb-0">Simulation Parameters</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3 form-check">
+                                    {{ form.randomise_seed }}
+                                    <label for="{{ form.randomise_seed.id_for_label }}" class="form-check-label">
+                                        {{ form.randomise_seed.label }}
+                                    </label>
+                                    <small class="form-text text-muted d-block">{{ form.randomise_seed.help_text }}</small>
+                                </div>
+                                <div class="mb-3 row">
+                                    <label for="{{ form.random_seed.id_for_label }}" class="col-sm-3 col-form-label">Random seed:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.random_seed }}
+                                        {% if form.random_seed.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.random_seed.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.random_seed.help_text }}</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <script>
+                            (function () {
+                                const checkbox = document.getElementById('id_randomise_seed');
+                                const seedInput = document.getElementById('id_random_seed');
+                                if (!checkbox || !seedInput) return;
+                                const DEFAULT_SEED = 42;
+                                // Remember the user's last manually-entered seed so we can restore it on untick.
+                                let lastUserSeed = seedInput.value || String(DEFAULT_SEED);
+                                const drawSeed = () => Math.floor(Math.random() * 0x80000000); // [0, 2^31)
+                                const setLocked = (locked) => {
+                                    seedInput.readOnly = locked;
+                                    seedInput.classList.toggle('bg-light', locked);
+                                    seedInput.classList.toggle('text-muted', locked);
+                                    seedInput.style.cursor = locked ? 'not-allowed' : '';
+                                };
+                                const onChange = () => {
+                                    if (checkbox.checked) {
+                                        lastUserSeed = seedInput.value || lastUserSeed;
+                                        seedInput.value = drawSeed();
+                                        setLocked(true);
+                                    } else {
+                                        seedInput.value = lastUserSeed || String(DEFAULT_SEED);
+                                        setLocked(false);
+                                    }
+                                };
+                                seedInput.addEventListener('input', () => {
+                                    if (!checkbox.checked) lastUserSeed = seedInput.value;
+                                });
+                                checkbox.addEventListener('change', onChange);
+                                // Initial sync (e.g. after a failed POST that re-renders the form).
+                                if (checkbox.checked) setLocked(true);
+                            })();
+                        </script>
+
                         <!-- Simulation Period section -->
                         <div class="card mb-4">
                             <div class="card-header bg-light">
@@ -962,6 +1078,49 @@ document.head.appendChild(style);
                                     </div>
                                 </div>
 
+                                <div class="mb-3 row">
+                                    <label for="{{ form.peg_iron_to_steel_price.id_for_label }}" class="col-sm-3 col-form-label">{{ form.peg_iron_to_steel_price.label }}:</label>
+                                    <div class="col-sm-9">
+                                        <div class="form-check">
+                                            {{ form.peg_iron_to_steel_price }}
+                                            <label class="form-check-label" for="{{ form.peg_iron_to_steel_price.id_for_label }}">
+                                                {{ form.peg_iron_to_steel_price.help_text }}
+                                            </label>
+                                        </div>
+                                        {% if form.peg_iron_to_steel_price.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.peg_iron_to_steel_price.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row" id="iron_to_steel_price_ratio_row">
+                                    <label for="{{ form.iron_to_steel_price_ratio.id_for_label }}" class="col-sm-3 col-form-label">{{ form.iron_to_steel_price_ratio.label }}:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.iron_to_steel_price_ratio }}
+                                        {% if form.iron_to_steel_price_ratio.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.iron_to_steel_price_ratio.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.iron_to_steel_price_ratio.help_text }}</small>
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="{{ form.opening_balance_multiplier.id_for_label }}" class="col-sm-3 col-form-label">{{ form.opening_balance_multiplier.label }}:</label>
+                                    <div class="col-sm-9">
+                                        {{ form.opening_balance_multiplier }}
+                                        {% if form.opening_balance_multiplier.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.opening_balance_multiplier.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted">{{ form.opening_balance_multiplier.help_text }}</small>
+                                    </div>
+                                </div>
+
                                 <div class="text-end">
                                     <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetEconomicParameters()">Return to default settings</button>
                                 </div>
@@ -1008,12 +1167,88 @@ document.head.appendChild(style);
                                     </div>
                                 </div>
 
+                                <div class="mb-3 row">
+                                    <label for="{{ form.enable_furnace_group_clustering.id_for_label }}" class="col-sm-3 col-form-label">{{ form.enable_furnace_group_clustering.label }}:</label>
+                                    <div class="col-sm-9">
+                                        <div class="form-check">
+                                            {{ form.enable_furnace_group_clustering }}
+                                            <label class="form-check-label" for="{{ form.enable_furnace_group_clustering.id_for_label }}">
+                                                {{ form.enable_furnace_group_clustering.help_text }}
+                                            </label>
+                                        </div>
+                                        {% if form.enable_furnace_group_clustering.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.enable_furnace_group_clustering.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row" id="cluster_hot_metal_techs_by_plant_group_row">
+                                    <label for="{{ form.cluster_hot_metal_techs_by_plant_group.id_for_label }}" class="col-sm-3 col-form-label">{{ form.cluster_hot_metal_techs_by_plant_group.label }}:</label>
+                                    <div class="col-sm-9">
+                                        <div class="form-check">
+                                            {{ form.cluster_hot_metal_techs_by_plant_group }}
+                                            <label class="form-check-label" for="{{ form.cluster_hot_metal_techs_by_plant_group.id_for_label }}">
+                                                {{ form.cluster_hot_metal_techs_by_plant_group.help_text }}
+                                            </label>
+                                        </div>
+                                        {% if form.cluster_hot_metal_techs_by_plant_group.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.cluster_hot_metal_techs_by_plant_group.errors }}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+
+                                <div class="mb-3 row">
+                                    <label for="id_chosen_grid_emissions_scenario" class="col-sm-3 col-form-label">
+                                        Grid emissivity scenario:
+                                    </label>
+                                    <div class="col-sm-9"
+                                         id="grid-emissions-scenario-wrapper"
+                                         hx-get="{% url 'create-modelrun-grid-emissions-fragment' %}"
+                                         hx-trigger="change from:#id_data_preparation"
+                                         hx-target="this"
+                                         hx-swap="innerHTML"
+                                         hx-include="#id_data_preparation, #id_chosen_grid_emissions_scenario">
+                                        {% if form.fields.chosen_grid_emissions_scenario.choices %}
+                                            {{ form.chosen_grid_emissions_scenario }}
+                                        {% else %}
+                                            <div class="alert alert-warning py-2 mb-2">
+                                                <strong>No grid emissivity scenarios found.</strong>
+                                                Add a <code>projection_&lt;name&gt;</code> row group to the <strong>Power grid emissivity</strong> sheet of the master Excel and re-prepare the data.
+                                            </div>
+                                            <select id="id_chosen_grid_emissions_scenario" class="form-select" disabled>
+                                                <option>No scenarios available — re-prepare data</option>
+                                            </select>
+                                        {% endif %}
+                                        {% if form.chosen_grid_emissions_scenario.errors %}
+                                        <div class="invalid-feedback d-block">
+                                            {{ form.chosen_grid_emissions_scenario.errors }}
+                                        </div>
+                                        {% endif %}
+                                        <small class="form-text text-muted d-block mt-1">
+                                            <strong>Adding a custom scenario:</strong>
+                                            <ul class="mb-0 ps-3">
+                                                <li>Open a new Master Excel (use the provided template)</li>
+                                                <li>Navigate to the <strong>Power grid emissivity</strong> sheet</li>
+                                                <li>Copy the rows for <code>projection_business_as_usual</code></li>
+                                                <li>Paste the rows below and change the values in the carbon-intensity column (<code>ghg_factor_scope_2</code>)</li>
+                                                <li>Rename the <code>projection_scenario</code> cells to <code>projection_&lt;your_name&gt;</code> (e.g. <code>projection_high_renewables</code>)</li>
+                                                <li>Save your new Master Excel, upload and prepare it</li>
+                                                <li>The new scenario will appear here as <strong>"Your Name"</strong> (e.g. <strong>"High Renewables"</strong>)</li>
+                                            </ul>
+                                        </small>
+                                    </div>
+                                </div>
+
                                 <div class="text-end">
                                     <button type="button" class="btn btn-sm btn-outline-secondary" onclick="resetPolicySettings()">Return to default settings</button>
                                 </div>
                             </div>
                         </div>
-                        
+
                         <!-- Demand and Circularity section - commented out as requested -->
                         <!--
                         <div class="card mb-4">

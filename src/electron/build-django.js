@@ -40,6 +40,39 @@ fs.cpSync(djangoSource, path.join(buildDir, 'django'), { recursive: true });
 fs.cpSync(steeloweb, path.join(buildDir, 'steeloweb'), { recursive: true });
 fs.cpSync(steelo, path.join(buildDir, 'steelo'), { recursive: true });
 
+// Capture build metadata (version, git state, timestamp) for display in the UI
+console.log('Capturing build metadata...');
+const gitCapture = (args) => {
+  try {
+    return execSync(`git ${args}`, {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+    }).trim() || null;
+  } catch {
+    return null;
+  }
+};
+const electronPackageJson = JSON.parse(
+  fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')
+);
+// On GitHub Actions, prefer the runner's env vars: shallow checkouts leave a
+// detached HEAD, so `git rev-parse --abbrev-ref HEAD` returns "HEAD" instead
+// of the branch name.
+const ghBranch = process.env.GITHUB_REF_TYPE === 'branch' ? process.env.GITHUB_REF_NAME : null;
+const ghCommit = process.env.GITHUB_SHA ? process.env.GITHUB_SHA.slice(0, 7) : null;
+const buildInfo = {
+  version: electronPackageJson.version,
+  commit: ghCommit || gitCapture('rev-parse --short HEAD'),
+  branch: ghBranch || gitCapture('rev-parse --abbrev-ref HEAD'),
+  built_at: new Date().toISOString(),
+};
+fs.writeFileSync(
+  path.join(buildDir, 'build_info.json'),
+  JSON.stringify(buildInfo, null, 2)
+);
+console.log(`Build info: v${buildInfo.version} ${buildInfo.branch}@${buildInfo.commit}`);
+
 // Copy project files needed for dependencies
 const pyprojectPath = path.join(projectRoot, 'pyproject.toml');
 if (fs.existsSync(pyprojectPath)) {
@@ -992,7 +1025,7 @@ print("[OK] All NetCDF4 and HDF5 packages are installed")
       }
       
       console.log('[OK] Complete python-build-standalone copied');
-      
+
       // CRITICAL: Verify bundled libpython shared library exists
       const libDir = path.join(pythonDir, 'lib');
       let libpythonFound = false;
@@ -1259,6 +1292,24 @@ print("[OK] All NetCDF4 and HDF5 packages are installed")
     }
     
     console.log(`Total HDF5/NetCDF shared libraries copied: ${sharedLibsCopied}`);
+
+    // Remove GNU libiconv from the bundle on macOS.
+    // python-build-standalone and netCDF4 wheels ship a GNU libiconv that exports
+    // _libiconv (GNU names) instead of _iconv (POSIX names). DYLD_LIBRARY_PATH
+    // shadows the system /usr/lib/libiconv.2.dylib, breaking pyogrio/fiona's libgdal.
+    // Must run AFTER all shared-library copying to avoid re-introduction.
+    if (IS_MAC) {
+      const libiconvPaths = [
+        path.join(pythonDir, 'lib', 'libiconv.2.dylib'),
+        path.join(sitePackagesDir, 'netCDF4', '.dylibs', 'libiconv.2.dylib'),
+      ];
+      for (const libPath of libiconvPaths) {
+        if (fs.existsSync(libPath)) {
+          fs.unlinkSync(libPath);
+          console.log(`[OK] Removed GNU libiconv: ${libPath}`);
+        }
+      }
+    }
 
     // Test the portable Python installation
     console.log('Testing portable Python installation...');

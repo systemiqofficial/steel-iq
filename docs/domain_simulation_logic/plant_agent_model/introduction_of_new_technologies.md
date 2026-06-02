@@ -34,6 +34,8 @@ Limits reflect time to build:
 - Carbon capture and storage networks (e.g., for BF+CCS or BF+CCU)
 - Renewable electricity generation (e.g., for electric furnaces)
 
+For CO2 storage specifically, an annual per-country budget is enforced by five pre-investment gates so plants cannot commit to CCS beyond what a country can physically store. Two at opportunity-generation time (G1: drop CCS candidates at NPV time; G2: block considered → announced) sit on the geospatial side; three at plant-agent state transitions (P1: block announced → construction, with immediate discard to prevent hoarding of the reserved slot; P2: drop CCS candidates in the tech-switch pre-NPV filter; P3: drop CCS candidates in the expansion pre-NPV filter). All five gates read a unified `Environment.get_co2_headroom(iso3, operating-start-year)` helper backed by firm/reserved counters that are rebuilt every year and updated intra-year as plants transition. See [CO2 Storage Capacity Gate](../co2_storage_gate.md) for the full walkthrough.
+
 ### Learning Curve
 Early adopters face:
 - Higher costs (economies of scale not yet achieved)

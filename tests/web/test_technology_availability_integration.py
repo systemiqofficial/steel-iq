@@ -46,7 +46,7 @@ def test_technology_availability_form_to_simulation(mock_technology_extraction, 
     assert response.status_code == 302  # Redirect after success
 
     # Get created ModelRun
-    model_run = ModelRun.objects.latest("started_at")
+    model_run = ModelRun.objects.latest("created_at")
 
     # Verify technology settings are stored in the new technology_settings format
     tech_settings = model_run.config.get("technology_settings", {})
@@ -80,7 +80,7 @@ def test_technology_availability_defaults(mock_technology_extraction, client, va
     assert response.status_code == 302
 
     # Get created ModelRun
-    model_run = ModelRun.objects.latest("started_at")
+    model_run = ModelRun.objects.latest("created_at")
 
     # Verify default values in technology_settings structure
     tech_settings = model_run.config.get("technology_settings", {})
@@ -133,7 +133,7 @@ def test_partial_year_restrictions(mock_technology_extraction, client, valid_mod
     response = client.post(reverse("create-modelrun"), data=form_data)
     assert response.status_code == 302
 
-    model_run = ModelRun.objects.latest("started_at")
+    model_run = ModelRun.objects.latest("created_at")
     tech_settings = model_run.config.get("technology_settings", {})
 
     assert tech_settings.get("BF", {}).get("from_year") == 2027  # Integer comparison
@@ -180,6 +180,6 @@ def test_each_technology_can_be_disabled(
     response = client.post(reverse("create-modelrun"), data=form_data)
     assert response.status_code == 302
 
-    model_run = ModelRun.objects.latest("started_at")
+    model_run = ModelRun.objects.latest("created_at")
     tech_settings = model_run.config.get("technology_settings", {})
     assert tech_settings.get(tech_key, {}).get("allowed") is False

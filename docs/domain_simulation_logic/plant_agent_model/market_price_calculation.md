@@ -100,13 +100,74 @@ Plant C: profit = (600 - 600) × 10 = $0M  (marginal plant breaks even)
 
 ---
 
+## Handling Demand Overshoot
+
+The market price is set against a **dispatchable slice** of the cost curve, not the full curve. The slice is capped at a configurable fraction of total cumulative capacity (default 95% per product). Any demand falling above the dispatchable slice — whether the slice is short of total capacity or above it — triggers a shortage premium on top of the slice's boundary cost. This avoids the unrealistic outcome where a thin sliver of high-cost outlier capacity at the top of the curve sets the price whenever the market gets tight.
+
+### Dispatchable Share Cutoff
+
+Two `SimulationConfig` parameters control where the dispatchable slice ends:
+
+- `steel_market_clearing_share` — fraction of steel total cumulative capacity that participates in market clearing (default `0.95`, range `0.5–1.0`).
+- `iron_market_clearing_share` — same for iron.
+
+Setting either to `1.0` reproduces today's behaviour for that product (no truncation; the full curve clears the market).
+
+**Strict-inequality boundary rule.** The dispatchable slice keeps every furnace whose cumulative capacity is *at most* `share × total`. The first furnace to *strictly* exceed that threshold is the "boundary" furnace; it is excluded from the truncated slice (so it cannot be the buffer reference), but it is still reachable through the in-band merit-order walk when demand lands inside it.
+
+```python
+threshold = config.<product>_market_clearing_share * total_capacity
+truncated = [e for e in cost_curve if e.cumulative_capacity <= threshold]
+
+if demand <= threshold:
+    # Merit-order dispatch on the full curve — boundary furnace included at its own cost.
+    market_price = first(e.production_cost for e in cost_curve if e.cumulative_capacity >= demand)
+else:
+    # Shortage band: demand exceeds the dispatchable cap.
+    market_price = truncated[-1].production_cost + config.<product>_price_buffer
+```
+
+### Shortage Premium
+
+Two `SimulationConfig` parameters control the shortage premium added when demand falls past the dispatchable slice:
+
+- `steel_price_buffer` — applied when steel demand exceeds the dispatchable steel slice.
+- `iron_price_buffer` — applied when iron demand exceeds the dispatchable iron slice.
+
+The buffer represents the extra willingness-to-pay required to incentivise new capacity when the market is supply-constrained. It fires when `demand > share × total` and emits a `WARNING`-level log line in two distinct regimes:
+
+1. **Shortage band** — `share × total < demand ≤ total`. There is unused capacity past the dispatchable cap, but the engine has chosen not to dispatch it (the long tail).
+2. **Demand exceeds total** — `demand > total`. No unused capacity remains.
+
+When `demand ≤ share × total` the boundary furnace (whose end-cumulative crosses the threshold but whose start fits within it) is reachable at its own production cost via the in-band merit-order walk on the full curve — no buffer is added, even though the furnace itself is excluded from the truncated slice.
+
+### Worked Example
+
+Building on the 3-plant scenario above (Plants A/B/C with capacities 50/40/30 Mt and LCOS 400/500/600 $/t, `total = 120` Mt):
+
+- `steel_market_clearing_share = 0.95` ⇒ `threshold = 0.95 × 120 = 114` Mt.
+- Plant A (cum=50) and Plant B (cum=90) are below threshold ⇒ kept.
+- Plant C (cum=120) strictly exceeds 114 ⇒ Plant C is the boundary, excluded.
+- The dispatchable slice is `[A, B]`; `last_truncated.production_cost = $500`.
+
+| Demand   | Branch                                | Market price                       |
+|----------|---------------------------------------|------------------------------------|
+| 80 Mt    | Merit-order on full curve             | $500 (Plant B clears the demand)   |
+| 100 Mt   | Merit-order on full curve (100 ≤ 114) | $600 (Plant C clears the demand)   |
+| 116 Mt   | Shortage band (114 < 116 ≤ 120)       | $500 + $200 = $700                 |
+| 130 Mt   | Demand exceeds total (130 > 120)      | $500 + $200 = $700                 |
+
+At `share = 1.0` the threshold equals total capacity, so the shortage gate only fires when demand strictly exceeds total: 100 Mt clears at $600 (Plant C), 130 Mt triggers $600 + $200.
+
+---
+
 ## Implementation in PAM
 
 ### Where It's Used
 
-1. **Balance Sheet Updates** (`Plant.update_furnace_and_plant_balance()`):
-   - Uses market price to calculate: `balance = (market_price - unit_cost) × production`
-   - Aggregates to plant and plant group balances
+1. **Balance Sheet Updates** (`PlantGroup.sweep_fg_balances_to_group()`):
+   - Uses market price to compute each FG's annual P&L: `(market_price - unit_cost) × production`
+   - Aggregates every plant's FGs into the group treasury ``balance`` and resets ``fg.balance`` to 0
 
 2. **NPV Calculations** (`FurnaceGroup.optimal_technology_name()`):
    - Uses forecasted market prices for each year, by extracting future demands from current cost curves
@@ -148,9 +209,11 @@ iron_to_steel_price_ratio: float = 0.8  # Minimum ratio of steel price (default:
 
 When `peg_iron_to_steel_price = True`:
 
-1. **Calculate Base Iron Price**: Extract iron price from the cost curve based on demand
-2. **Calculate Steel Price**: Extract steel price from the cost curve based on steel demand
+1. **Calculate Base Iron Price**: Extract iron price from the dispatchable iron slice (truncated at `iron_market_clearing_share`).
+2. **Calculate Steel Price**: Extract steel price from the dispatchable **steel** slice (truncated at `steel_market_clearing_share`). This is the same value the engine returns to other callers in the same year, so the pegging reference and the headline steel price never disagree.
 3. **Apply Pegging**: `iron_price = max(base_iron_price, steel_price × ratio)`
+
+If the truncated steel slice is empty (a pathological share that drops every steel furnace), the pegging branch falls back to `last_full_steel.production_cost + steel_price_buffer` for the steel reference, mirroring the main empty-truncated semantics, and emits a `WARNING` log line.
 
 ### Example
 
@@ -176,6 +239,19 @@ Iron price pegging reflects real-world market dynamics where:
 - Iron (especially DRI/HBI) trades at a premium relative to its production cost
 - Steel prices set a floor for iron prices due to substitution economics
 - Integrated steelmakers have pricing power in iron markets
+
+---
+
+## Plot Visualisation
+
+The per-year cost-curve PNGs in `pam_plots_dir` reflect the dispatchable share cutoff:
+
+- **Vertical dashed marker** at `x = share × total_capacity`, labelled `Market clearing share (95%)` (or whatever percentage is configured), drawn whenever `share < 1.0`.
+- **Annotation** alongside the clearing-price line. When demand falls past the dispatchable slice, the annotation extends with one of:
+  - `(Demand exceeds dispatchable 95%: boundary cost + $200 shortage premium)` — shortage band.
+  - `(Demand exceeds total supply: boundary cost + $200 shortage premium)` — demand strictly above total capacity.
+
+The bars and the per-plot CSV export still cover the **full** cost curve — every furnace contributes a bar, the x-axis spans full cumulative capacity, and capacity inventory remains intact. Truncation only changes where the engine sets the price (the red dashed clearing-price line + annotation) and adds the new vertical marker. This keeps the visualisation honest about installed capacity while making the dispatchable slice immediately legible.
 
 ---
 

@@ -20,11 +20,11 @@ import folium
 import math
 import pydeck as pdk
 import xarray as xr
-
-from matplotlib.patches import Patch
+import matplotlib.patches as mpatches
 
 from steelo.domain import Year
 from steelo.domain.models import CommodityAllocations, DemandCenter, Supplier, Plant, Location, Volumes
+from steelo.domain.trade_modelling.trade_lp_modelling import TradeLPModel
 from steelo.adapters.repositories.interface import PlantRepository
 
 
@@ -408,6 +408,7 @@ def plot_steel_cost_curve(curve, demand):
     plt.ylabel("Production Cost (US$/t)")
     plt.legend()
     plt.grid(True)
+    plt.ylim(bottom=0)
 
     # Show the plot
     plt.show()
@@ -483,6 +484,7 @@ def plot_cost_curve_per_region(plants: PlantRepository) -> Figure:
     ax.set_ylabel("Cost per Unit [US$/t]", fontsize=12)
     ax.set_title("Cost Curve per Region", fontsize=14)
     ax.grid(True, linestyle="--", alpha=0.6)
+    ax.set_ylim(bottom=0)
 
     # Show the plot
     return fig
@@ -1614,6 +1616,374 @@ def plot_detailed_trade_map(
         print("=" * 80)
 
 
+def plot_process_graph(
+    trade_lp: TradeLPModel, save_path=None, dpi=150, show_broken_edges=True, utilization: dict[str, float] | None = None
+):
+    """Plot the process graph as a left-to-right layered network map.
+
+    Supply nodes on the left, demand on the right, production in between.
+    Edges are orthogonal (right-angle) lines labelled with commodity names.
+
+    Args:
+        save_path: Optional file path to save the figure (e.g. 'graph.png').
+        dpi: Resolution for saved figure.
+        show_broken_edges: Whether to highlight edges that are broken or incomplete.
+        utilization: Optional dict mapping process name to utilization percentage (0-100).
+            If provided, utilization is shown in node labels.
+    """
+    graph = trade_lp.process_graph_for_reporting
+
+    if not show_broken_edges:
+        # filter out edges with no process connectors or missing commodities
+        filtered_graph: dict[Any, dict[Any, list[str]]] = {}
+        for fp in graph:
+            for tp in graph[fp]:
+                keys = (fp, tp)
+                label_list = graph[fp][tp]
+                new_label_list = []
+                for label in label_list if isinstance(label_list, list) else [label_list]:
+                    if "no linking commodity" in label.lower() or "no legal pc" in label.lower():
+                        # delete from label_list:
+                        continue
+                    new_label_list.append(label)
+                if new_label_list not in ([], ["(no legal PC)", "no linking commodity"]):
+                    fp, tp = keys
+                    filtered_graph.setdefault(fp, {})[tp] = new_label_list
+        graph = filtered_graph
+
+    # --- Collect nodes and edges, deduplicating by process name ---
+    nodes_by_name: dict[str, Any] = {}  # name → Process (keeps first instance seen)
+    edges = []  # list of (from, to, commodity)
+    for from_p, targets in graph.items():
+        nodes_by_name.setdefault(from_p.name, from_p)
+        for to_p, commodities in targets.items():
+            nodes_by_name.setdefault(to_p.name, to_p)
+            # Support both list values (new) and single values (legacy)
+            if isinstance(commodities, list):
+                for c in commodities:
+                    edges.append((nodes_by_name[from_p.name], nodes_by_name[to_p.name], c))
+            else:
+                edges.append((nodes_by_name[from_p.name], nodes_by_name[to_p.name], commodities))
+
+    # Also include any processes not in the graph dict
+    for p in getattr(trade_lp, "processes", []):
+        nodes_by_name.setdefault(p.name, p)
+
+    all_nodes = set(nodes_by_name.values())
+
+    # --- Categorise by type ---
+    supply = [n for n in all_nodes if n.type.name == "SUPPLY"]
+    demand = [n for n in all_nodes if n.type.name == "DEMAND"]
+    production = [n for n in all_nodes if n.type.name == "PRODUCTION"]
+
+    # --- Assign layers via longest-path from supply nodes ---
+    layers = {n: 0 for n in supply}
+
+    # Build adjacency from edges
+    adj = defaultdict(set)
+    for f, t, _ in edges:
+        adj[f].add(t)
+
+    # Initialise production nodes
+    for n in production:
+        layers[n] = 1
+
+    # Iterative relaxation (longest path)
+    # Guard against cycles with a max iteration limit
+    demand_set = set(demand)
+    max_iterations = len(all_nodes) + 1
+    for _ in range(max_iterations):
+        changed = False
+        for f, t, _ in edges:
+            if f in layers and t not in demand_set:
+                new_layer = layers[f] + 1
+                if t not in layers or new_layer > layers[t]:
+                    layers[t] = new_layer
+                    changed = True
+        if not changed:
+            break
+
+    max_prod_layer = max((layers[n] for n in production if n in layers), default=0)
+    for d in demand:
+        layers[d] = max_prod_layer + 1
+
+    # --- Position nodes per layer ---
+    layer_groups = defaultdict(list)
+    for node in all_nodes:
+        if node in layers:
+            layer_groups[layers[node]].append(node)
+
+    # Sort nodes within each layer alphabetically for determinism
+    for layer_idx in layer_groups:
+        layer_groups[layer_idx].sort(key=lambda n: n.name)
+
+    x_gap = 5.0
+    y_gap = 2.5
+    node_w = 2.8
+    node_h = 1.2 if utilization else 0.9
+
+    pos = {}
+    for layer_idx, nodes in layer_groups.items():
+        x = layer_idx * x_gap
+        n = len(nodes)
+        for i, node in enumerate(nodes):
+            y = -(i - (n - 1) / 2) * y_gap
+            pos[node] = (x, y)
+
+    # --- Figure sizing ---
+    if not pos:
+        # Nothing to draw
+        return
+    all_x = [p[0] for p in pos.values()]
+    all_y = [p[1] for p in pos.values()]
+    fig_w = max(12, (max(all_x) - min(all_x)) + 6)
+    fig_h = max(6, (max(all_y) - min(all_y)) + 4)
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+    # --- Colour palette ---
+    colors = {
+        "SUPPLY": "#90CAF9",
+        "PRODUCTION": "#A5D6A7",
+        "DEMAND": "#EF9A9A",
+    }
+
+    # --- Draw nodes ---
+    for node, (x, y) in pos.items():
+        c = colors.get(node.type.name, "#E0E0E0")
+        rect = mpatches.FancyBboxPatch(
+            (x - node_w / 2, y - node_h / 2),
+            node_w,
+            node_h,
+            boxstyle="round,pad=0.1",
+            facecolor=c,
+            edgecolor="#333333",
+            linewidth=1.5,
+            zorder=3,
+        )
+        ax.add_patch(rect)
+
+        # Build label: process name + utilization if available
+        label_text = node.name
+        if utilization and node.name in utilization:
+            label_text += f"\n{utilization[node.name]:.1f}%"
+
+        ax.text(
+            x,
+            y,
+            label_text,
+            ha="center",
+            va="center",
+            fontsize=9,
+            fontweight="bold",
+            zorder=4,
+        )
+
+    # --- Group edges by (from, to) for parallel-edge offsetting ---
+    edge_groups = defaultdict(list)
+    for f, t, c in edges:
+        label = c.name if hasattr(c, "name") else str(c)
+        edge_groups[(f, t)].append(label)
+
+    # Prioritise real commodity labels over error labels
+    error_markers = ("(no legal PC)", "no linking commodity")
+    for key in edge_groups:
+        labels = edge_groups[key]
+        valid = [lbl for lbl in labels if not any(err in lbl for err in error_markers)]
+        if valid:
+            edge_groups[key] = valid
+        # else: keep the error labels as-is so the issue is still visible
+
+    # Merge parallel labels into a single comma-separated string per edge
+    for key in edge_groups:
+        edge_groups[key] = [", ".join(edge_groups[key])]
+
+    # Precompute the lowest node center y across all layers for routing long edges below
+    global_min_y = min(ny for (nx, ny) in pos.values())
+    min_y_by_layer: dict[int, float] = {}
+    for node, (nx, ny) in pos.items():
+        layer_idx = layers[node]
+        if layer_idx not in min_y_by_layer or ny < min_y_by_layer[layer_idx]:
+            min_y_by_layer[layer_idx] = ny
+
+    # Track midpoint x offsets globally to avoid overlaps across different pairs
+    # that share the same layer gap
+    layer_gap_usage: defaultdict[tuple[int, int], int] = defaultdict(int)
+    # Separate counter for long edges routed below
+    long_edge_count = 0
+
+    for (f, t), labels in edge_groups.items():
+        # Filter out None edges
+        labels = [lbl for lbl in labels if lbl is not None and str(lbl) != "None"]
+        if not labels:
+            continue
+
+        fx, fy = pos[f]
+        tx, ty = pos[t]
+        n_edges = len(labels)
+        layer_span = layers[t] - layers[f]
+
+        start_x = fx + node_w / 2
+        end_x = tx - node_w / 2
+
+        if layer_span <= 1:
+            # --- Single-layer span: standard orthogonal routing ---
+            base_mid_x = (start_x + end_x) / 2
+
+            gap_key = (layers[f], layers[t])
+            gap_offset_base = layer_gap_usage[gap_key]
+            layer_gap_usage[gap_key] += n_edges
+
+            edge_spacing = 0.35
+            for i, label in enumerate(labels):
+                idx = gap_offset_base + i
+                total_in_gap = gap_offset_base + n_edges
+                offset = (idx - (total_in_gap - 1) / 2) * edge_spacing
+
+                mid_x = base_mid_x + offset
+                label_str = str(label)
+
+                if "(no legal PC)" in label_str:
+                    edge_color = "#D32F2F"
+                    linestyle = "--"
+                    label_color = "#D32F2F"
+                elif label_str == "no linking commodity":
+                    edge_color = "#7B1FA2"
+                    linestyle = "--"
+                    label_color = "#7B1FA2"
+                else:
+                    edge_color = "#666666"
+                    linestyle = "-"
+                    label_color = "#444444"
+
+                path_x = [start_x, mid_x, mid_x, end_x]
+                path_y = [fy, fy, ty, ty]
+                ax.plot(
+                    path_x,
+                    path_y,
+                    color=edge_color,
+                    linewidth=1.0,
+                    linestyle=linestyle,
+                    zorder=1,
+                    solid_capstyle="round",
+                )
+
+                arrow_len = 0.25
+                ax.annotate(
+                    "",
+                    xy=(end_x, ty),
+                    xytext=(end_x - arrow_len, ty),
+                    arrowprops=dict(arrowstyle="->", color=edge_color, lw=1.2, linestyle=linestyle),
+                    zorder=2,
+                )
+
+                label_x = mid_x
+                label_y = (fy + ty) / 2
+                ax.text(
+                    label_x + 0.1,
+                    label_y,
+                    label_str,
+                    ha="left",
+                    va="center",
+                    fontsize=7,
+                    fontstyle="italic",
+                    color=label_color,
+                    bbox=dict(boxstyle="round,pad=0.15", facecolor="white", edgecolor="none", alpha=0.85),
+                    zorder=5,
+                )
+        else:
+            # --- Multi-layer span: route BELOW intermediate nodes ---
+            # Find the lowest y of any node in the intermediate layers
+            intermediate_min_y = min(min_y_by_layer.get(ly, global_min_y) for ly in range(layers[f] + 1, layers[t]))
+            # Route just below the bottom edge of the lowest relevant node
+            route_below_y = min(intermediate_min_y, fy, ty) - node_h / 2 - 0.5
+
+            for i, label in enumerate(labels):
+                below_y = route_below_y - long_edge_count * 0.4
+                long_edge_count += 1
+                label_str = str(label)
+
+                if "(no legal PC)" in label_str:
+                    edge_color = "#D32F2F"
+                    linestyle = "--"
+                    label_color = "#D32F2F"
+                elif label_str == "no linking commodity":
+                    edge_color = "#7B1FA2"
+                    linestyle = "--"
+                    label_color = "#7B1FA2"
+                else:
+                    edge_color = "#666666"
+                    linestyle = "-"
+                    label_color = "#444444"
+
+                # Path: right from source → down below intermediates → right across → up to target → right into target
+                bend_x1 = start_x + 0.3
+                bend_x2 = end_x - 0.3
+                path_x = [start_x, bend_x1, bend_x1, bend_x2, bend_x2, end_x]
+                path_y = [fy, fy, below_y, below_y, ty, ty]
+                ax.plot(
+                    path_x,
+                    path_y,
+                    color=edge_color,
+                    linewidth=1.0,
+                    linestyle=linestyle,
+                    zorder=1,
+                    solid_capstyle="round",
+                )
+
+                arrow_len = 0.25
+                ax.annotate(
+                    "",
+                    xy=(end_x, ty),
+                    xytext=(end_x - arrow_len, ty),
+                    arrowprops=dict(arrowstyle="->", color=edge_color, lw=1.2, linestyle=linestyle),
+                    zorder=2,
+                )
+
+                # Label on the horizontal segment below
+                label_x = (bend_x1 + bend_x2) / 2
+                label_y = below_y
+                ax.text(
+                    label_x,
+                    label_y - 0.2,
+                    label_str,
+                    ha="center",
+                    va="top",
+                    fontsize=7,
+                    fontstyle="italic",
+                    color=label_color,
+                    bbox=dict(boxstyle="round,pad=0.15", facecolor="white", edgecolor="none", alpha=0.85),
+                    zorder=5,
+                )
+
+    # --- Legend ---
+    legend_handles = [
+        mpatches.Patch(facecolor=colors["SUPPLY"], edgecolor="#333", label="Supply"),
+        mpatches.Patch(facecolor=colors["PRODUCTION"], edgecolor="#333", label="Production"),
+        mpatches.Patch(facecolor=colors["DEMAND"], edgecolor="#333", label="Demand"),
+    ]
+    ax.legend(handles=legend_handles, loc="upper left", framealpha=0.9, fontsize=9)
+
+    # --- Axes ---
+    margin = 2
+    ax.set_xlim(min(all_x) - margin, max(all_x) + margin)
+    ax.set_ylim(min(all_y) - margin, max(all_y) + margin)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    ax.set_title("Process Network", fontsize=14, fontweight="bold", pad=20)
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
+        print(f"Process graph saved to {save_path}")
+    else:
+        plt.savefig("process_graph.png", dpi=dpi, bbox_inches="tight")
+        print("Process graph saved to process_graph.png")
+
+    plt.close(fig)
+
+
 def plot_cost_curve_for_commodity(cost_curve: list, total_demand: float, image_path: str = "cost_curve.png") -> Figure:
     """
     Plots and saves the cost curve to the specified path.
@@ -1655,6 +2025,7 @@ def plot_cost_curve_for_commodity(cost_curve: list, total_demand: float, image_p
     plt.title("Cost Curve")
     plt.legend()
     plt.grid(True)
+    plt.ylim(bottom=0)
     plt.tight_layout()
 
     # Save to file
@@ -1667,6 +2038,7 @@ def plot_screenshot(
     data,
     var=None,
     title=None,
+    subtitle=None,
     var_type="diverging",
     max_val=None,
     min_val=None,
@@ -1744,7 +2116,22 @@ def plot_screenshot(
     ax.add_feature(cfeature.COASTLINE)  # type: ignore[attr-defined]
     ax.add_feature(cfeature.BORDERS, linestyle=":")  # type: ignore[attr-defined]
     if title:
-        plt.title(title)
+        # Extra top padding only when a subtitle needs to fit between title and map.
+        if subtitle:
+            plt.title(title, pad=18)
+        else:
+            plt.title(title)
+    if subtitle:
+        ax.text(
+            0.5,
+            1.005,
+            subtitle,
+            transform=ax.transAxes,
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            color="grey",
+        )
     if save_name:
         # Ensure the directory exists before saving
         if plot_paths is None or plot_paths.geo_plots_dir is None:
@@ -1872,7 +2259,15 @@ def plot_bubble_map(
 
 
 def plot_value_histogram(
-    ds, var_name=None, bins=50, threshold=None, log_scale=False, plot_paths: Optional["PlotPaths"] = None
+    ds,
+    var_name=None,
+    bins=50,
+    threshold=None,
+    log_scale=False,
+    plot_paths: Optional["PlotPaths"] = None,
+    title: str | None = None,
+    subtitle: str | None = None,
+    xlabel: str | None = None,
 ) -> None:
     """
     Plots a histogram of the values in the selected xarray variable.
@@ -1883,6 +2278,9 @@ def plot_value_histogram(
     - bins (int or array): Number of histogram bins or array of bin edges.
     - threshold (float, optional): If provided, adds a vertical line for threshold.
     - log_scale (bool): Whether to use logarithmic y-axis.
+    - title (str, optional): Custom plot title; falls back to a generic one if omitted.
+    - subtitle (str, optional): Smaller grey caption rendered below the title.
+    - xlabel (str, optional): Custom x-axis label; defaults to ``"Values of '{var_name}'"``.
     """
     if var_name is None:
         var_name = list(ds.data_vars)[0]
@@ -1895,26 +2293,38 @@ def plot_value_histogram(
     values = values[values >= 0.01]  # Filter out negative values
 
     # Plot histogram
-    plt.figure(figsize=(8, 5))
-    plt.hist(values, bins=bins, color="skyblue", edgecolor="black")
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.hist(values, bins=bins, color="skyblue", edgecolor="black")
 
     if threshold is not None:
-        plt.axvline(threshold, color="red", linestyle="--", linewidth=2, label=f"Threshold = {threshold}")
+        ax.axvline(threshold, color="red", linestyle="--", linewidth=2, label=f"Threshold = {threshold}")
 
     if log_scale:
-        plt.yscale("log")
-
-    plt.xlabel(f"Values of '{var_name}'")
-    plt.ylabel("Frequency")
-    if log_scale:
-        plt.title(f"Logarithmic Histogram of '{var_name}'")
-        plt.ylabel("Log Frequency")
+        ax.set_yscale("log")
     else:
-        plt.title(f"Histogram of '{var_name}'")
+        ax.set_ylim(bottom=0)
+
+    ax.set_xlabel(xlabel if xlabel is not None else f"Values of '{var_name}'")
+    ax.set_ylabel("Log Frequency" if log_scale else "Frequency")
+    if title is None:
+        title = f"Logarithmic Histogram of '{var_name}'" if log_scale else f"Histogram of '{var_name}'"
+    # Extra top padding when a subtitle needs to fit between title and axes.
+    ax.set_title(title, pad=18 if subtitle else None)
+    if subtitle:
+        ax.text(
+            0.5,
+            1.005,
+            subtitle,
+            transform=ax.transAxes,
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            color="grey",
+        )
     if threshold is not None:
-        plt.legend()
-    plt.grid(True, linestyle="--", alpha=0.6)
-    plt.tight_layout()
+        ax.legend()
+    ax.grid(True, linestyle="--", alpha=0.6)
+    fig.tight_layout()
 
     # Ensure the directory exists before saving
     if plot_paths is None or plot_paths.geo_plots_dir is None:
@@ -1947,8 +2357,8 @@ def plot_global_grid_with_iso3(grid, plot_paths: "PlotPaths") -> None:
         cmap="tab20",
         s=1,
     )
-    plt.colorbar(label="ISO3 Codes")
-    plt.title("Global Grid with ISO3 Codes")
+    plt.colorbar(label="ISO3 colour index")
+    plt.title("Geospatial grid cells coloured by country (ISO3)")
     # Ensure the directory exists before saving
     if plot_paths is None or plot_paths.geo_plots_dir is None:
         raise ValueError("plot_paths with geo_plots_dir must be provided when saving plots")
@@ -2251,6 +2661,8 @@ def plot_added_capacity_by_technology(
             ax[i].set_title(f"Added capacity by technology - {product}")
             ax[i].set_xlabel("Year")
             ax[i].set_ylabel(f"Capacity [{units}]")
+    for a in ax:
+        a.set_ylim(bottom=0)
     fig.tight_layout()
     if plot_paths is None or plot_paths.pam_plots_dir is None:
         raise ValueError("plot_paths with pam_plots_dir must be provided when saving plots")
@@ -2350,6 +2762,8 @@ def plot_cost_curve_with_breakdown(
     data_file,
     product_type,
     year,
+    clearing_share: float,
+    price_buffer: float,
     region2colours=region2colours,
     plot_paths: Optional["PlotPaths"] = None,
     show_breakdown: bool = True,
@@ -2620,17 +3034,43 @@ def plot_cost_curve_with_breakdown(
 
             cum_x = x1
 
-    # Add market clearing price and demand lines
-    clearing_cost = cost_df[cost_df["clearing_capacity"] <= demand].iloc[-1].production_cost if not cost_df.empty else 0
+    # Compute clearing price via the shared helper so plot output mirrors the engine.
+    clearing_cost, demand_line_x, total_capacity = _compute_market_clearing(
+        cost_df, demand, clearing_share, price_buffer
+    )
 
     ax.axhline(y=clearing_cost, color="r", linestyle="--", linewidth=1.5, label="Market clearing price")
-    ax.axvline(x=demand, color="r", linestyle="--", linewidth=1.5, label="Demand")
+    ax.axvline(x=demand_line_x, color="r", linestyle="--", linewidth=1.5, label="Demand")
+    share_pct = int(round(clearing_share * 100))
+    if clearing_share < 1.0 and total_capacity > 0:
+        marker_x = clearing_share * total_capacity
+        ax.axvline(x=marker_x, color="gray", linestyle="--", linewidth=1.0, zorder=6)
+        ax.text(
+            marker_x,
+            0.98,
+            f" Market clearing share ({share_pct}%)",
+            transform=ax.get_xaxis_transform(),
+            rotation=90,
+            ha="left",
+            va="top",
+            color="gray",
+            fontsize=9,
+            zorder=7,
+        )
+
+    annotation_text = f"Market clearing price = {clearing_cost:.1f} $/t"
+    if demand > total_capacity:
+        annotation_text += f"\n(Demand exceeds total supply: boundary cost + ${int(price_buffer)} shortage premium)"
+    elif demand_line_x > clearing_share * total_capacity:
+        annotation_text += (
+            f"\n(Demand exceeds dispatchable {share_pct}%: boundary cost + ${int(price_buffer)} shortage premium)"
+        )
 
     # Add clearing price annotation
     ax.text(
         x=cost_df.iloc[-1]["clearing_capacity"] * 0.7 if not cost_df.empty else 0,
         y=clearing_cost + 30,
-        s=f"Market clearing price = {clearing_cost:.1f} $/t",
+        s=annotation_text,
         ha="center",
         va="bottom",
         color="black",
@@ -2772,9 +3212,35 @@ def _prepare_cost_curve_dataframe(
     return df
 
 
-def _compute_market_clearing(cost_df: pd.DataFrame, demand: float) -> Tuple[float, float, float]:
+def _compute_market_clearing(
+    cost_df: pd.DataFrame,
+    demand: float,
+    clearing_share: float,
+    price_buffer: float,
+) -> Tuple[float, float, float]:
     """
-    Determine clearing cost, vertical demand marker, and total capacity.
+    Determine the displayed clearing cost, vertical demand marker, and total capacity.
+
+    Mirrors ``Environment.extract_price_from_costcurve``: the shortage gate is
+    ``demand > clearing_share * total_capacity``. When demand fits within the dispatchable cap, the
+    full cost curve is walked and the first entry whose cumulative capacity meets demand sets the
+    price — so the boundary furnace (whose end-cumulative crosses the threshold but whose start
+    fits within it) is reachable at its own cost rather than triggering the premium. When demand
+    exceeds the threshold, the clearing cost is ``last_truncated.production_cost + price_buffer``.
+    At ``clearing_share = 1.0`` (legacy mode) the slice equals the full curve.
+
+    Args:
+        cost_df: Per-furnace dataframe with ``clearing_capacity`` and ``production_cost`` columns,
+            sorted ascending by cost. Returned to the caller untouched.
+        demand: Tonnes demanded for this product/year.
+        clearing_share: Fraction of total cumulative capacity that participates in market clearing
+            (must match the engine value for the same product).
+        price_buffer: Buffer added in the shortage branch (must match the engine value for the
+            same product).
+
+    Returns:
+        ``(clearing_cost, demand_line_x, total_capacity)``. ``demand_line_x`` is clipped to total
+        capacity for plotting purposes.
     """
     if cost_df.empty:
         return 0.0, 0.0, 0.0
@@ -2782,217 +3248,26 @@ def _compute_market_clearing(cost_df: pd.DataFrame, demand: float) -> Tuple[floa
     total_capacity = float(cost_df["clearing_capacity"].iloc[-1])
     demand_line_x = float(min(demand, total_capacity)) if total_capacity > 0 else 0.0
 
-    match_demand = cost_df[cost_df["clearing_capacity"] >= demand]
-    if match_demand.empty:
-        clearing_cost = float(cost_df["production_cost"].iloc[-1])
+    threshold = clearing_share * total_capacity
+    truncated = cost_df[cost_df["clearing_capacity"] <= threshold]
 
-        # If the final block is an extreme outlier with negligible capacity, fall back to the
-        # last non-outlier slice so the market-clearing price remains meaningful on the plot.
-        if len(cost_df) > 1 and total_capacity > 0:
-            last_row = cost_df.iloc[-1]
-            prev_rows = cost_df.iloc[:-1]
-            reference_percentile = prev_rows["production_cost"].quantile(0.99)
-            if pd.isna(reference_percentile) or reference_percentile <= 0:
-                reference_percentile = float(prev_rows["production_cost"].max())
-            threshold = float(reference_percentile) * 1.05
-            capacity_share = float(last_row["capacity"]) / total_capacity
+    if truncated.empty:
+        logger.warning(
+            f"Empty truncated cost curve at clearing_share={clearing_share}; "
+            f"degrading to full-curve merit-order for this query."
+        )
+        # Degenerate share — fall back to legacy full-curve merit-order with no premium.
+        truncated = cost_df
+        threshold = total_capacity
 
-            if last_row["production_cost"] > threshold and capacity_share < 0.01:
-                fallback_index = len(cost_df) - 2
-                while fallback_index >= 0:
-                    candidate = cost_df.iloc[fallback_index]
-                    cand_share = float(candidate["capacity"]) / total_capacity
-                    if candidate["production_cost"] <= threshold or cand_share >= 0.01:
-                        clearing_cost = float(candidate["production_cost"])
-                        break
-                    fallback_index -= 1
+    if demand > threshold:
+        clearing_cost = float(truncated["production_cost"].iloc[-1]) + price_buffer
     else:
+        # Walk full curve so the boundary furnace is reachable when demand lands inside it.
+        match_demand = cost_df[cost_df["clearing_capacity"] >= demand]
         clearing_cost = float(match_demand.iloc[0]["production_cost"])
 
     return clearing_cost, demand_line_x, total_capacity
-
-
-def plot_cost_curve_step_from_dataframe(
-    data_file,
-    product_type,
-    product_demand,
-    year,
-    capacity_limit,
-    units,
-    aggregation="region",
-    plot_paths: Optional["PlotPaths"] = None,
-):
-    """
-    cost_df must contain at least:
-      - 'production_cost' (y-value)
-      - 'capacity' (width of each step)
-      - 'region'
-      - 'clearing_capacity' (cumsum of 'capacity', but we only need it to know boundaries)
-    region_to_color should map each region string to an (R, G, B, A) tuple or hex string.
-    """
-    demand = product_demand
-    if (demand is None) or (isinstance(demand, (int, float, np.floating)) and demand <= 0):
-        if "production" in data_file.columns:
-            mask = (data_file["product"] == product_type) & (data_file["year"] == year)
-            demand = float(data_file.loc[mask, "production"].sum())
-        else:
-            demand = 0.0
-
-    if "year" in data_file.columns:
-        available_years = sorted(set(int(y) for y in data_file["year"].dropna()))
-        if year not in available_years and available_years:
-            logger.warning(f"Year {year} not found in data. Available years: {available_years}")
-            lower_years = [y for y in available_years if y <= year]
-            year = max(lower_years) if lower_years else min(available_years)
-            logger.info(f"Using year {year} instead for cost curve plot")
-
-    if aggregation == "region":
-        colour_scheme = region2colours
-    elif aggregation == "technology":
-        colour_scheme = tech2colours
-    else:
-        logger.warning(f"Unsupported aggregation '{aggregation}' for cost curve plot. Defaulting to 'region'.")
-        aggregation = "region"
-        colour_scheme = region2colours
-
-    cost_df = _prepare_cost_curve_dataframe(
-        data_frame=data_file,
-        product_type=product_type,
-        year=year,
-        aggregation=aggregation,
-        capacity_limit=capacity_limit,
-    )
-
-    if cost_df.empty:
-        logger.warning(f"No data for {product_type} in year {year}. Skipping cost curve plot.")
-        return
-
-    clearing_cost, demand_line_x, total_capacity = _compute_market_clearing(cost_df, demand)
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    cum_x = 0.0
-
-    # Loop over each plant (row) in ascending‐cost order, drawing one “filled rectangle” per row:
-    for _, row in cost_df.iterrows():
-        cost = row["production_cost"]
-        cap = row["capacity"]
-        agg_object = row[aggregation]
-
-        color = colour_scheme.get(agg_object, "#8c8c8c")
-
-        x0 = cum_x
-        x1 = cum_x + cap
-
-        # Fill the rectangle from y=0 up to y=cost, between x0 and x1:
-        ax.fill_between(
-            [x0, x1],  # x‐coordinates for the two corners of this step
-            [cost, cost],  # y‐value of the top edge
-            [0, 0],  # y=0 for the bottom edge
-            color=color,
-            step="pre",  # ensures a vertical drop at x0 if needed
-            linewidth=0,  # no border on the fill itself
-        )
-
-        # (Optional) draw a thin black line on top of the fill, to emphasize the step:
-        ax.hlines(y=cost, xmin=x0, xmax=x1, colors="black", linewidth=0.4, zorder=2)
-
-        cum_x = x1
-
-    costs = cost_df["production_cost"].values
-    cum_caps = cost_df["clearing_capacity"].values
-    for i in range(len(cost_df) - 1):
-        boundary_x = cum_caps[i]
-        y0 = costs[i]
-        y1 = costs[i + 1]
-        ax.vlines(x=boundary_x, ymin=y0, ymax=y1, colors="gray", linewidth=0.6, linestyle="--", zorder=1)
-
-    # Set x‐ and y‐limits so the plot is tight:
-
-    # Build a legend that maps each region → its fill color:
-    legend_handles = [
-        Patch(color=color, label=agg) for agg, color in colour_scheme.items() if agg in cost_df[aggregation].values
-    ]
-    ax.legend(handles=legend_handles, title=aggregation, loc="upper left", frameon=False)
-    annotation_text = f"Market clearing price = {clearing_cost:.1f} $/t"
-    if demand > total_capacity:
-        annotation_text += "\n(Demand exceeds available supply)"
-
-    ax.set_title(f"Cost curve for {product_type} in {year}")
-
-    # Set x limits
-    if cum_x > 0:
-        if demand > total_capacity:
-            x_padding = max(total_capacity * 0.02, 1e-6)
-            ax.set_xlim(0, total_capacity + x_padding)
-        else:
-            ax.set_xlim(0, total_capacity)
-    else:
-        ax.set_xlim(0, 1)  # Default if no capacity
-
-    # Set y limits safely
-    max_cost = cost_df["production_cost"].max()
-    if pd.isna(max_cost) or np.isinf(max_cost) or max_cost <= 0:
-        logger.warning(f"Invalid max production cost: {max_cost}. Using default y-axis range.")
-        ax.set_ylim(0, 1000)  # Default reasonable range
-    else:
-        outlier_cap = 2000.0
-        if max_cost > outlier_cap:
-            y_limit = outlier_cap
-        else:
-            upper_percentile = cost_df["production_cost"].quantile(0.995)
-            if pd.notna(upper_percentile) and upper_percentile > 0 and max_cost > upper_percentile * 1.5:
-                y_limit = upper_percentile * 1.1
-            else:
-                y_limit = max_cost * 1.1
-        ax.set_ylim(0, y_limit)
-
-    ax.set_xlabel(f"Cumulative Capacity [{units}]")
-    ax.set_ylabel("Production Cost ($/t)")
-    display_clearing_cost = min(clearing_cost, ax.get_ylim()[1])
-    ax.axhline(y=display_clearing_cost, color="r", linestyle="--", linewidth=1.2, zorder=7, clip_on=False)
-    ax.axvline(x=demand_line_x, color="r", linestyle="--", linewidth=1.2, zorder=7, clip_on=False)
-    if display_clearing_cost < clearing_cost:
-        annotation_text += "\n(clipped for scale)"
-
-    # Draw market clearing annotation after axis limits are final
-    x_min, x_max = ax.get_xlim()
-    y_min, y_max = ax.get_ylim()
-    x_span = max(x_max - x_min, 1e-6)
-    y_span = max(y_max - y_min, 1e-6)
-    text_x = min(demand_line_x - 0.1 * x_span, x_max - 0.05 * x_span)
-    if text_x <= x_min:
-        text_x = x_min + 0.05 * x_span
-    text_y = display_clearing_cost + 0.15 * y_span
-    if text_y >= y_max:
-        text_y = y_max - 0.05 * y_span
-    ax.text(
-        text_x,
-        text_y,
-        annotation_text,
-        ha="right",
-        va="bottom",
-        color="black",
-        fontsize=10,
-        bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="gray", alpha=0.8),
-        zorder=6,
-    )
-    if plot_paths is None or plot_paths.pam_plots_dir is None:
-        raise ValueError("plot_paths with pam_plots_dir must be provided when saving plots")
-    pam_plots_dir = plot_paths.pam_plots_dir
-    pam_plots_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save PNG
-    filename = f"{product_type}_cost_curve_by_{aggregation}_{year}"
-    fig.savefig(pam_plots_dir / f"{filename}.png", dpi=300)
-    plt.close()
-
-    # Export CSV with the cost curve data
-    try:
-        csv_path = pam_plots_dir / f"{filename}.csv"
-        cost_df.to_csv(csv_path)
-        logger.info(f"Saved chart data to {csv_path}")
-    except Exception as e:
-        logger.error(f"Failed to save CSV for cost curve plot: {e}")
 
 
 def plot_geo_layers(
@@ -3213,6 +3488,7 @@ def plot_capex_by_technology_and_year(
     ax.set_ylabel("Total CAPEX (Billion USD)", fontsize=12)
     ax.legend(title="Technology", bbox_to_anchor=(1.05, 1), loc="upper left", frameon=True)
     ax.grid(axis="y", alpha=0.3, linestyle="--")
+    ax.set_ylim(bottom=0)
 
     # Set x-axis to show all years (including years with zero CAPEX)
     ax.set_xticks(range(len(full_year_range)))
@@ -3271,116 +3547,6 @@ def plot_capex_by_technology_and_year(
     )
     logger.info(
         f"[CAPEX PLOT] Max annual CAPEX: ${max_annual_capex:.2f}B, Min non-zero tech CAPEX: ${min_nonzero_capex:.3f}B"
-    )
-
-
-def plot_emissions_wedge_by_technology(
-    trace_emissions: dict[int, dict[str, float]],
-    plot_paths: Optional["PlotPaths"] = None,
-):
-    """
-    Plot emissions by technology over time as a stacked area chart.
-
-    Creates a stacked area chart showing how emissions from each technology evolve
-    over time, similar to the capacity development charts. The y-axis shows total
-    emissions with each technology's contribution stacked.
-
-    Args:
-        trace_emissions: Nested dict {year: {technology: total_emissions_tCO2e}}
-                        from DataCollector.trace_emissions
-        plot_paths: Plot output paths (must include pam_plots_dir)
-
-    Raises:
-        ValueError: If plot_paths is None or pam_plots_dir is not set
-
-    Example:
-        >>> trace_emissions = {
-        ...     2025: {'EAF': 50000, 'BOF': 120000, 'DRI': 30000},
-        ...     2030: {'EAF': 60000, 'BOF': 100000, 'DRI': 40000},
-        ... }
-        >>> plot_emissions_wedge_by_technology(trace_emissions, plot_paths)
-    """
-    if not trace_emissions:
-        logger.warning("No emissions data to plot (trace_emissions is empty)")
-        return
-
-    if plot_paths is None or plot_paths.pam_plots_dir is None:
-        raise ValueError("plot_paths with pam_plots_dir must be provided when saving emissions plots")
-
-    # Convert nested dict to DataFrame
-    data_rows = []
-    for year, techs in trace_emissions.items():
-        for tech, emissions in techs.items():
-            data_rows.append({"year": year, "technology": tech, "emissions": emissions})
-
-    if not data_rows:
-        logger.warning("No emissions data to plot after conversion")
-        return
-
-    df = pd.DataFrame(data_rows)
-
-    # Convert to Mt CO2e for readability
-    df["emissions_mt"] = df["emissions"] / 1e6
-
-    # Pivot to get technologies as columns
-    df_pivot = df.pivot(index="year", columns="technology", values="emissions_mt")
-    df_pivot = df_pivot.fillna(0)
-
-    # Ensure all technologies have colors
-    for tech in df_pivot.columns:
-        if tech not in tech2colours:
-            tech2colours[tech] = "brown"
-            logger.warning(f"No color defined for technology '{tech}', using brown")
-
-    # Create stacked area chart
-    fig, ax = plt.subplots(figsize=(12, 7))
-
-    df_pivot.plot.area(
-        ax=ax,
-        color=[tech2colours.get(tech, "brown") for tech in df_pivot.columns],
-        alpha=0.8,
-        linewidth=2,
-    )
-
-    # Formatting
-    ax.set_title("Emissions by Technology Over Time", fontsize=14, fontweight="bold")
-    ax.set_xlabel("Year", fontsize=12)
-    ax.set_ylabel("Total Emissions (Mt CO2e)", fontsize=12)
-    ax.legend(title="Technology", bbox_to_anchor=(1.05, 1), loc="upper left", frameon=True)
-    ax.grid(axis="y", alpha=0.3, linestyle="--")
-
-    # Format x-axis
-    years = sorted(df_pivot.index)
-    ax.set_xlim(years[0], years[-1])
-
-    # Set integer ticks for years
-    ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=min(len(years), 20)))
-
-    fig.tight_layout()
-
-    # Save plot
-    pam_plots_dir = plot_paths.pam_plots_dir
-    pam_plots_dir.mkdir(parents=True, exist_ok=True)
-    output_path = pam_plots_dir / "emissions_by_technology_over_time.png"
-    fig.savefig(output_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-
-    logger.info(f"Saved emissions stacked area chart to {output_path}")
-
-    # Export CSV with the data
-    try:
-        csv_path = pam_plots_dir / "emissions_by_technology_over_time.csv"
-        df_pivot.to_csv(csv_path)
-        logger.info(f"Saved emissions chart data to {csv_path}")
-    except Exception as e:
-        logger.error(f"Failed to save CSV for emissions plot: {e}")
-
-    # Log summary statistics
-    total_emissions_all_years = df["emissions"].sum()
-    max_annual_emissions = df.groupby("year")["emissions"].sum().max() / 1e6
-    logger.info(
-        f"[EMISSIONS PLOT] Total emissions across all years: {total_emissions_all_years / 1e6:.2f} Mt CO2e "
-        f"({len(years)} years, max annual: {max_annual_emissions:.2f} Mt CO2e)"
     )
 
 
@@ -3473,6 +3639,7 @@ def plot_iron_ore_by_quality(
     ax.set_ylabel("Total Consumption (Mt)", fontsize=12)
     ax.legend(title="Quality", bbox_to_anchor=(1.05, 1), loc="upper left", frameon=True)
     ax.grid(axis="y", alpha=0.3, linestyle="--")
+    ax.set_ylim(bottom=0)
 
     # Format x-axis
     years = sorted(df_pivot.index)
@@ -3588,6 +3755,7 @@ def plot_metallic_charges(
     ax.set_ylabel("Total Consumption (Mt)", fontsize=12)
     ax.legend(title="Charge Type", bbox_to_anchor=(1.05, 1), loc="upper left", frameon=True)
     ax.grid(axis="y", alpha=0.3, linestyle="--")
+    ax.set_ylim(bottom=0)
 
     # Format x-axis
     years = sorted(df_pivot.index)

@@ -254,7 +254,7 @@ def test_trade_lp_model_basic_build_and_solve(location_mock_factory):
     solves it, and checks that the solution is feasible.
     """
     # Create model
-    model = TradeLPModel()
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
 
     # Create Commodities
     iron_ore = Commodity("iron_ore")
@@ -346,7 +346,7 @@ def test_trade_lp_model_infeasible_demand(location_mock_factory):
     Test that if we want more steel than we can possibly produce or supply,
     the solver doesn't fail with infeasibility (because of the demand slack).
     """
-    model = TradeLPModel()
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
 
     # Create Commodities
     iron_ore = Commodity("iron_ore")
@@ -455,7 +455,7 @@ def test_tariff_info_injection(location_mock_factory):
     pc1 = ProcessCenter("PC1", process=None, capacity=10, location=location_mock_factory(1, 2, iso3="AAA"))
     pc2 = ProcessCenter("PC2", process=None, capacity=10, location=location_mock_factory(3, 4, iso3="BBB"))
 
-    model = TradeLPModel()
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
     model.add_commodities([c])
     model.add_process_centers([pc1, pc2])
     model.process_connectors = []
@@ -486,7 +486,7 @@ def test_bom_parameters_are_added():
     proc = Process(name="Converter", type=ProcessType.PRODUCTION, bill_of_materials=[bom])
     pc = ProcessCenter(name="PC1", process=proc, capacity=100.0, location=None)
 
-    model = TradeLPModel()
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
     model.add_commodities([com_input, com_output])
     model.add_bom_elements([bom])
     model.add_process_centers([pc])
@@ -503,7 +503,7 @@ def test_primary_output_of_feedstock_mapping():
     proc = Process("Melter", ProcessType.PRODUCTION, [bom])
     pc = ProcessCenter("PC1", proc, 100, location=None)
 
-    model = TradeLPModel()
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
     model.add_commodities([com_input, com_output])
     model.add_process_centers([pc])
     model.add_bom_elements([bom])
@@ -518,7 +518,7 @@ def test_demand_slack_variable_creation():
     demand_proc = Process("Consumer", ProcessType.DEMAND, [])
     pc = ProcessCenter("PC_Demand", demand_proc, 60.0, location=None)
 
-    model = TradeLPModel()
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
     model.add_process_centers([pc])
     model.lp_model = pyo.ConcreteModel()
     model.add_demand_slack_variables_to_lp()
@@ -532,7 +532,7 @@ def test_getters_from_model():
     p = Process("Smelter", ProcessType.PRODUCTION, [])
     bom = BOMElement("CopperBOM", c, c, {MaterialParameters.INPUT_RATIO: 1.1})
 
-    model = TradeLPModel()
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
     model.add_commodities([c])
     model.add_processes([p])
     model.add_bom_elements([bom])
@@ -600,7 +600,7 @@ def test_transportation_cost_repr():
 
 def test_add_transportation_costs(location_mock_factory):
     """Test adding transportation costs to the model."""
-    model = TradeLPModel()
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
 
     tc1 = TransportationCost(from_iso3="USA", to_iso3="CHN", commodity="steel", cost_per_ton=25.0)
     tc2 = TransportationCost(from_iso3="DEU", to_iso3="FRA", commodity="iron", cost_per_ton=15.0)
@@ -614,7 +614,7 @@ def test_add_transportation_costs(location_mock_factory):
 
 def test_get_transportation_cost(location_mock_factory):
     """Test retrieving transportation costs from the model."""
-    model = TradeLPModel()
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
 
     tc1 = TransportationCost(from_iso3="USA", to_iso3="CHN", commodity="steel", cost_per_ton=25.0)
     tc2 = TransportationCost(from_iso3="DEU", to_iso3="FRA", commodity="iron", cost_per_ton=15.0)
@@ -635,7 +635,7 @@ def test_get_transportation_cost(location_mock_factory):
 
 def test_get_distance_haversine(location_mock_factory):
     """Test get_distance using haversine calculation."""
-    model = TradeLPModel()
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
 
     loc1 = location_mock_factory(lat=10.0, lon=20.0, iso3="USA")
     loc2 = location_mock_factory(lat=10.5, lon=20.5, iso3="CHN")
@@ -659,7 +659,7 @@ def test_get_distance_haversine(location_mock_factory):
 
 def test_add_process_center_type_as_parameter():
     """Test adding process center type as parameter to LP model."""
-    model = TradeLPModel()
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
 
     supply_proc = Process(name="Supply", type=ProcessType.SUPPLY, bill_of_materials=[])
     demand_proc = Process(name="Demand", type=ProcessType.DEMAND, bill_of_materials=[])
@@ -735,7 +735,7 @@ def test_allocations_validate_with_none_capacity():
 
 def test_tradelp_add_tariff_information():
     """Test adding tariff information to TradeLPModel."""
-    model = TradeLPModel()
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
 
     quota_dict = {("USA", "CHN", "steel"): 1000.0}
     tax_dict = {("USA", "CHN", "steel"): 0.25}
@@ -748,7 +748,7 @@ def test_tradelp_add_tariff_information():
 
 def test_tradelp_add_processes_adds_implicit_commodities():
     """Test that add_processes adds products as commodities if not already present."""
-    model = TradeLPModel()
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
     c_output = Commodity("steel")
 
     bom_elem = BOMElement(name="BOM1", commodity=Commodity("iron_ore"), output_commodities=[c_output], parameters={})
@@ -767,7 +767,7 @@ def test_tradelp_add_processes_adds_implicit_commodities():
 
 def test_tradelp_add_bom_elements_adds_implicit_commodities():
     """Test that add_bom_elements adds commodities if not already present."""
-    model = TradeLPModel()
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
     c_input = Commodity("iron_ore")
 
     bom_elem = BOMElement(name="BOM1", commodity=c_input, output_commodities=[Commodity("steel")], parameters={})
@@ -784,7 +784,7 @@ def test_tradelp_add_bom_elements_adds_implicit_commodities():
 
 def test_get_distance_pref_economic(location_mock_factory):
     """Test get_distance with pref_economic type."""
-    model = TradeLPModel()
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
 
     loc1 = location_mock_factory(lat=10.0, lon=20.0, iso3="USA")
     loc2 = location_mock_factory(lat=10.5, lon=20.5, iso3="CHN")
@@ -801,7 +801,7 @@ def test_get_distance_pref_economic(location_mock_factory):
 
 def test_get_distance_invalid_type_raises_error(location_mock_factory):
     """Test that get_distance raises ValueError for unknown distance type."""
-    model = TradeLPModel()
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
 
     loc1 = location_mock_factory(lat=10.0, lon=20.0, iso3="USA")
     loc2 = location_mock_factory(lat=10.5, lon=20.5, iso3="CHN")

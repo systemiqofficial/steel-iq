@@ -197,6 +197,8 @@ def create_process_from_furnace_group(
                 dependent_commodities[tlp.Commodity(name=sec_feedstock)] = primary_feedstock.secondary_feedstock[
                     sec_feedstock
                 ]
+            for en_req in primary_feedstock.energy_requirements:
+                dependent_commodities[tlp.Commodity(name=en_req)] = primary_feedstock.energy_requirements[en_req]
             if primary_feedstock.required_quantity_per_ton_of_product is None:
                 raise ValueError(
                     f"Required quantity per ton of product is None for feedstock {primary_feedstock.name}. It's outputs are: {primary_feedstock.outputs.keys()}"
@@ -327,6 +329,8 @@ def create_process_from_meta_furnace_group(
                 dependent_commodities[tlp.Commodity(name=sec_feedstock)] = primary_feedstock.secondary_feedstock[
                     sec_feedstock
                 ]
+            for en_req in primary_feedstock.energy_requirements:
+                dependent_commodities[tlp.Commodity(name=en_req)] = primary_feedstock.energy_requirements[en_req]
 
             if primary_feedstock.required_quantity_per_ton_of_product is None:
                 raise ValueError(
@@ -790,7 +794,7 @@ def enforce_trade_tariffs_on_allocations(
 
 
 def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
-    trade_lp: tlp.TradeLPModel, config: "SimulationConfig"
+    trade_lp: tlp.TradeLPModel, config: "SimulationConfig", env=None
 ):
     """Fix allocation variables to zero based on commodity-specific distance constraints.
 
@@ -816,13 +820,17 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
         - Variables are fixed using pyomo's .fix(0) method
         - This must be called after allocation variables are created but before solving
     """
+    logger = logging.getLogger(f"{__name__}.fix_to_zero_allocations_where_distance_doesnt_match_commodity")
+
     # Check if clustering is enabled (defaults to False for backwards compatibility)
     enable_clustering = getattr(config, "enable_furnace_group_clustering", False)
 
     if enable_clustering:
         # NEW BEHAVIOR: Allow both hot and cold commodities with geographic constraints
-        # Hot commodities are restricted to intra-country allocations
-        # Cold commodities can go anywhere
+        # Hot commodities are restricted to intra-country allocations (or intra-plant-group
+        # when cluster_hot_metal_techs_by_plant_group is on, which keeps flows physically
+        # local).
+        # Cold commodities can go anywhere.
 
         # Build a mapping from process center names to ISO3 codes for quick lookup
         pc_name_to_iso3 = {}
@@ -830,27 +838,72 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
             if pc.location and pc.location.iso3:
                 pc_name_to_iso3[pc.name] = pc.location.iso3
 
+        # When plant-group clustering is on, build pc_name → plant_group_id for meta-FGs
+        # so we can tighten the hot-commodity rule beyond iso3.
+        pc_name_to_plant_group: dict[str, str] = {}
+        use_plant_group_rule = getattr(config, "cluster_hot_metal_techs_by_plant_group", False)
+        if use_plant_group_rule:
+            meta_fgs = getattr(env, "meta_furnace_groups", None) if env is not None else None
+            if meta_fgs:
+                for mfg in meta_fgs:
+                    if mfg.plant_group_id is not None:
+                        pc_name_to_plant_group[mfg.meta_furnace_group_id] = mfg.plant_group_id
+
+        blocked_missing_iso3 = 0
+        blocked_cross_country = 0
+        blocked_cross_plant_group = 0
         for from_pc_name, to_pc_name, comm in trade_lp.lp_model.allocation_variables:
             if comm in config.closely_allocated_products:
-                # Hot commodities can only be allocated within the same country
                 from_iso3 = pc_name_to_iso3.get(from_pc_name)
                 to_iso3 = pc_name_to_iso3.get(to_pc_name)
 
                 # If we can't determine ISO3 codes, be conservative and block the allocation
                 if from_iso3 is None or to_iso3 is None:
                     trade_lp.lp_model.allocation_variables[(from_pc_name, to_pc_name, comm)].fix(0)
-                # If it's an international allocation, block hot commodity flow
-                elif from_iso3 != to_iso3:
+                    blocked_missing_iso3 += 1
+                    continue
+                # Always block cross-country hot commodity flow.
+                if from_iso3 != to_iso3:
                     trade_lp.lp_model.allocation_variables[(from_pc_name, to_pc_name, comm)].fix(0)
-                # Intra-country hot commodity allocations are allowed
-                # (hot metal radius will be enforced during disaggregation)
+                    blocked_cross_country += 1
+                    continue
+                # Same-country: if both sides are plant-group-keyed meta-FGs, require
+                # them to share the same plant_group. Otherwise fall through (allow).
+                if use_plant_group_rule:
+                    from_pg = pc_name_to_plant_group.get(from_pc_name)
+                    to_pg = pc_name_to_plant_group.get(to_pc_name)
+                    if from_pg is not None and to_pg is not None and from_pg != to_pg:
+                        trade_lp.lp_model.allocation_variables[(from_pc_name, to_pc_name, comm)].fix(0)
+                        blocked_cross_plant_group += 1
+
+        logger.info(
+            f"[LP HOT-METAL] Fixed to zero: {blocked_cross_country} cross-country, "
+            f"{blocked_cross_plant_group} cross-plant-group, {blocked_missing_iso3} missing-iso3 "
+            f"(plant_group rule={'on' if use_plant_group_rule else 'off'}, "
+            f"plant-group-keyed PCs={len(pc_name_to_plant_group)})"
+        )
 
     else:
         # OLD BEHAVIOR: Distance-based fixing for backwards compatibility
+
+        # Pre-compute distances if environment available for massive speedup
+        hot_metal_pairs = None
+        if hasattr(env, "precompute_distances_for_hot_metal_check"):
+            hot_metal_pairs = env.precompute_distances_for_hot_metal_check(
+                trade_lp.process_centers, config.hot_metal_radius
+            )
+
         for from_pc, to_pc, comm in trade_lp.lp_model.allocation_variables:
-            distance = trade_lp.get_distance(from_pc, to_pc)
+            if hot_metal_pairs is not None:
+                # Fast path: O(1) set membership check
+                is_within_radius = (from_pc, to_pc) in hot_metal_pairs
+            else:
+                # Fallback: Original distance calculation
+                distance = trade_lp.get_distance(from_pc, to_pc)
+                is_within_radius = distance <= config.hot_metal_radius
+
             # if the distance is within our hot metal radius
-            if distance <= config.hot_metal_radius:
+            if is_within_radius:
                 # and if the commodity is one that is usually transported over long distances
                 if comm in config.distantly_allocated_products:
                     # Set the allocation to zero
@@ -996,7 +1049,16 @@ def set_up_steel_trade_lp(
     """
     logger = logging.getLogger(f"{__name__}.set_up_steel_trade_lp")
     repository = message_bus.uow.repository
-    lp_model = tlp.TradeLPModel(lp_epsilon=config.lp_epsilon)
+
+    # Build distance function if environment available
+    distance_function = None
+    if hasattr(message_bus, "env") and message_bus.env is not None:
+        # We'll update this after process centers are added
+        distance_function = None  # Placeholder for now
+
+    lp_model = tlp.TradeLPModel(
+        lp_epsilon=config.lp_epsilon, distance_function=distance_function, random_seed=config.random_seed
+    )
     modelled_products = config.primary_products
 
     logger.info(f"Setting up LP model with PRIMARY_PRODUCTS: {modelled_products}")
@@ -1036,6 +1098,15 @@ def set_up_steel_trade_lp(
             )
 
     add_suppliers_as_process_centers(repository=repository, lp_model=lp_model, year=year, config=config)
+
+    # Now that all process centers are added, update the distance function with the actual list
+    if hasattr(message_bus, "env") and hasattr(
+        getattr(message_bus, "env", None), "build_distance_function_for_trade_lp"
+    ):
+        lp_model._external_distance_function = message_bus.env.build_distance_function_for_trade_lp(
+            lp_model.process_centers
+        )
+        logger.info(f"Distance function updated with {len(lp_model.process_centers)} process centers")
 
     # Add location-specific transportation costs
     if transport_kpis is not None:
@@ -1199,7 +1270,9 @@ def set_up_steel_trade_lp(
     willingness_to_pay_list = getattr(message_bus.env, "willingness_to_pay", [])
 
     lp_model.build_lp_model(willingness_to_pay_list=willingness_to_pay_list)
-    lp_model = fix_to_zero_allocations_where_distance_doesnt_match_commodity(trade_lp=lp_model, config=config)
+    lp_model = fix_to_zero_allocations_where_distance_doesnt_match_commodity(
+        trade_lp=lp_model, config=config, env=message_bus.env if hasattr(message_bus, "env") else None
+    )
 
     # Apply carbon border mechanisms if available
     if (
@@ -1226,6 +1299,10 @@ def set_up_steel_trade_lp(
             logger.info(f"No active carbon border mechanisms for year {year}, skipping adjustments")
     else:
         logger.info("No carbon border mechanisms defined in environment, skipping adjustments")
+
+    # Log distance cache statistics if available
+    if hasattr(getattr(message_bus, "env", None), "log_distance_cache_stats"):
+        message_bus.env.log_distance_cache_stats()
 
     return lp_model
 
@@ -1459,12 +1536,12 @@ def solve_steel_trade_lp_and_return_commodity_allocations(
     return commodity_allocations
 
 
-def identify_bottlenecks(
+def check_if_bottlenecks_identified(
     commodity_allocations: dict[str, CommodityAllocations],
     repository: Repository,
     environment: Environment,
     year: Year,
-):
+) -> bool:
     """Identify production bottlenecks from trade allocation results.
 
     Analyzes commodity allocations to find furnace groups operating at or near capacity,
@@ -1482,7 +1559,7 @@ def identify_bottlenecks(
         - Checks if total allocation from a furnace group approaches its capacity
         - Logs warnings for potential bottlenecks
         - Sets potential_bottleneck_found flag (logged but not returned)
-        - Currently does not return the list of bottlenecks (void return)
+        - Returns True if potential bottlenecks are found, False otherwise
     """
     logger = logging.getLogger(f"{__name__}.identify_bottlenecks")
     potential_bottleneck_found = False
@@ -1493,70 +1570,6 @@ def identify_bottlenecks(
         for fg in plant.furnace_groups
         if fg.status.lower() in environment.config.active_statuses
     ]
-    # Check raw material suppliers
-    for commodity, allocations in commodity_allocations.items():
-        if commodity == "scrap":
-            continue  # scrap is only an issue if we don't have enough iron supply
-
-        # Check if any sources are not suppliers - if so, skip this analysis
-        has_non_supplier_sources = False
-        for source in allocations.allocations.keys():
-            if not hasattr(source, "supplier_id"):
-                has_non_supplier_sources = True
-                break
-
-        if has_non_supplier_sources:
-            continue  # Skip analysis for this commodity if sources aren't all suppliers
-
-        all_suppliers_utilized = True
-        for supplier in repository.suppliers.list():
-            if supplier.commodity != commodity:
-                continue
-            allocations_from_supplier = allocations.get_allocations_from(supplier)
-            allocated_volume = sum(allocations_from_supplier.values())
-            if allocated_volume < supplier.capacity_by_year[year] * 0.99999:
-                all_suppliers_utilized = False
-        if all_suppliers_utilized:
-            potential_bottleneck_found = True
-            logger.warning(
-                f"[TM BOTTLENECK ANALYSIS] All suppliers for {commodity} are fully utilized. Potential bottleneck detected."
-            )
-
-    # Check iron making
-    all_iron_makers_utilized = True
-    for plant, fg in active_furnace_groups:
-        fg_allocated_vols: float = 0
-        for com, alloc in commodity_allocations.items():
-            fg_allocations = alloc.get_allocations_from((plant, fg))
-            fg_allocated_vols += sum(fg_allocations.values())
-        if fg_allocated_vols < fg.capacity * environment.config.capacity_limit * 0.99999:
-            logger.warning(
-                f"[TM BOTTLENECK ANALYSIS] Iron maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized."
-            )
-            all_iron_makers_utilized = False
-    if all_iron_makers_utilized:
-        potential_bottleneck_found = True
-        logger.warning("[TM BOTTLENECK ANALYSIS] All iron makers are fully utilized. Potential bottleneck detected.")
-
-    # Check steel making
-    steel_allocations = commodity_allocations.get("steel")
-    all_steel_makers_utilized = True
-    if steel_allocations:
-        for plant, fg in active_furnace_groups:
-            if fg.technology.product == "steel":
-                fg_allocations = steel_allocations.get_allocations_from((plant, fg))
-                allocated_volume = sum(fg_allocations.values())
-                if allocated_volume < fg.capacity * environment.config.capacity_limit * 0.99999:
-                    logger.warning(
-                        f"[TM BOTTLENECK ANALYSIS] Steel maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized."
-                    )
-                    all_steel_makers_utilized = False
-    if all_steel_makers_utilized:
-        potential_bottleneck_found = True
-        logger.warning("[TM BOTTLENECK ANALYSIS] All steel makers are fully utilized. Potential bottleneck detected.")
-
-    if not potential_bottleneck_found:
-        logger.warning("[TM BOTTLENECK ANALYSIS] No potential bottlenecks found in steel trade allocations.")
     # Summarise supplier headroom for key metallic charges to aid diagnostics
     supplier_list = list(repository.suppliers.list())
     capacity_by_commodity: dict[str, float] = {}
@@ -1587,3 +1600,69 @@ def identify_bottlenecks(
             allocated_from_suppliers * T_TO_KT,
             headroom * T_TO_KT,
         )
+    # Check raw material suppliers
+    for commodity, allocations in commodity_allocations.items():
+        if commodity == "scrap":
+            continue  # scrap is only an issue if we don't have enough iron supply
+
+        # Check if any sources are not suppliers - if so, skip this analysis
+        has_non_supplier_sources = False
+        for source in allocations.allocations.keys():
+            if not hasattr(source, "supplier_id"):
+                has_non_supplier_sources = True
+                break
+
+        if has_non_supplier_sources:
+            continue  # Skip analysis for this commodity if sources aren't all suppliers
+
+        all_suppliers_utilized = True
+        for supplier in repository.suppliers.list():
+            if supplier.commodity != commodity:
+                continue
+            allocations_from_supplier = allocations.get_allocations_from(supplier)
+            allocated_volume = sum(allocations_from_supplier.values())
+            if allocated_volume < supplier.capacity_by_year[year] * 0.99999:
+                all_suppliers_utilized = False
+        if all_suppliers_utilized:
+            potential_bottleneck_found = True
+            logger.warning(
+                f"[TM BOTTLENECK ANALYSIS] All suppliers for {commodity} are fully utilized. Potential bottleneck detected."
+            )
+            return True  # If all suppliers for a key commodity are fully utilized, we can stop here and return True
+
+    # Check iron making
+    all_iron_makers_utilized = True
+    for plant, fg in active_furnace_groups:
+        fg_allocated_vols: float = 0
+        for com, alloc in commodity_allocations.items():
+            fg_allocations = alloc.get_allocations_from((plant, fg))
+            fg_allocated_vols += sum(fg_allocations.values())
+        if fg_allocated_vols < fg.capacity * environment.config.capacity_limit * 0.99999:
+            logger.debug(
+                f"[TM BOTTLENECK ANALYSIS] Iron maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized."
+            )
+            all_iron_makers_utilized = False
+    if all_iron_makers_utilized:
+        potential_bottleneck_found = True
+        logger.warning("[TM BOTTLENECK ANALYSIS] All iron makers are fully utilized. Potential bottleneck detected.")
+        return True  # If all iron makers are fully utilized, we can stop here and return True
+    # Check steel making
+    steel_allocations = commodity_allocations.get("steel")
+    all_steel_makers_utilized = True
+    if steel_allocations:
+        for plant, fg in active_furnace_groups:
+            if fg.technology.product == "steel":
+                fg_allocations = steel_allocations.get_allocations_from((plant, fg))
+                allocated_volume = sum(fg_allocations.values())
+                if allocated_volume < fg.capacity * environment.config.capacity_limit * 0.99999:
+                    logger.debug(
+                        f"[TM BOTTLENECK ANALYSIS] Steel maker {fg.furnace_group_id} of technology {fg.technology.name} and status {fg.status} is not fully utilized."
+                    )
+                    all_steel_makers_utilized = False
+    if all_steel_makers_utilized:
+        potential_bottleneck_found = True
+        logger.warning("[TM BOTTLENECK ANALYSIS] All steel makers are fully utilized. Potential bottleneck detected.")
+        return True  # If all steel makers are fully utilized, we can stop here and return True
+    if not potential_bottleneck_found:
+        logger.warning("[TM BOTTLENECK ANALYSIS] No potential bottlenecks found in steel trade allocations.")
+    return False

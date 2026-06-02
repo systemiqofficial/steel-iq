@@ -12,7 +12,7 @@ class TestModelRun:
         model_run = ModelRun.objects.create()
         assert model_run.id is not None
         assert model_run.state == ModelRun.RunState.CREATED
-        assert model_run.started_at is not None
+        assert model_run.created_at is not None
         assert model_run.finished_at is None
         assert model_run.config == {}
 
@@ -57,11 +57,11 @@ class TestModelRun:
     def test_modelrun_string_representation(self):
         """Test the string representation of ModelRun."""
         model_run = ModelRun.objects.create()
-        expected_str = f"ModelRun {model_run.id} - {model_run.state} ({model_run.started_at})"
+        expected_str = f"ModelRun {model_run.id} - {model_run.state} ({model_run.created_at})"
         assert str(model_run) == expected_str
 
     def test_modelrun_ordering(self):
-        """Test that ModelRuns are ordered by started_at descending."""
+        """Test that ModelRuns are ordered by created_at descending."""
         # Create runs with different times
         now = timezone.now()
 
@@ -69,18 +69,18 @@ class TestModelRun:
         test_config = {"test_ordering": True}
 
         older_run = ModelRun.objects.create(config=test_config)
-        older_run.started_at = now - timedelta(hours=2)
+        older_run.created_at = now - timedelta(hours=2)
         older_run.save()
 
         middle_run = ModelRun.objects.create(config=test_config)
-        middle_run.started_at = now - timedelta(hours=1)
+        middle_run.created_at = now - timedelta(hours=1)
         middle_run.save()
 
         recent_run = ModelRun.objects.create(config=test_config)
         # recent_run uses default current time
 
         # Query only our test runs and check their order
-        test_runs = list(ModelRun.objects.filter(config=test_config).order_by("-started_at"))
+        test_runs = list(ModelRun.objects.filter(config=test_config).order_by("-created_at"))
 
         # Verify order is newest to oldest
         assert len(test_runs) == 3
@@ -89,8 +89,8 @@ class TestModelRun:
         assert test_runs[2].id == older_run.id
 
         # Double-check the timestamps are in correct order
-        assert test_runs[0].started_at > test_runs[1].started_at
-        assert test_runs[1].started_at > test_runs[2].started_at
+        assert test_runs[0].created_at > test_runs[1].created_at
+        assert test_runs[1].created_at > test_runs[2].created_at
 
     def test_is_finished(self):
         modelrun = ModelRun(state=ModelRun.RunState.FINISHED)

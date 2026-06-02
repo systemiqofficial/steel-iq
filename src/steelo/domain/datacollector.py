@@ -39,9 +39,14 @@ class DataCollector:
         self.trace_capex: dict[int, dict[str, dict[str, float]]] = defaultdict(
             lambda: defaultdict(lambda: defaultdict(float))
         )  # {year: {technology: {iso3: total_capex}}}
-        self.trace_emissions: dict[int, dict[str, float]] = defaultdict(
+        # {boundary: {year: {technology: {scope: emissions_tCO2e}}}}
+        # scope in {direct_ghg, direct_with_biomass_ghg, indirect_ghg}
+        self.trace_emissions: dict[str, dict[int, dict[str, dict[str, float]]]] = defaultdict(
+            lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
+        )
+        self.trace_production_by_product: dict[int, dict[str, float]] = defaultdict(
             lambda: defaultdict(float)
-        )  # {year: {technology: total_emissions_tCO2e}}
+        )  # {year: {product: total_production_tonnes}}, product in {iron, steel}
         self.trace_iron_ore: dict[int, dict[str, float]] = defaultdict(
             lambda: defaultdict(float)
         )  # {year: {quality: total_consumption_tonnes}}
@@ -89,16 +94,63 @@ class DataCollector:
             Commodities.STEEL.value: self.env.regional_steel_capacity,
         }
 
-    def collect_market_iron_steel_price(self, demand: int = 300):
+    def collect_market_iron_steel_price(self, world_suppliers=None):
         """
-        Collect the market price of iron and steel for the given iteration
+        Collect the market price of iron and steel for the given iteration, plus scrap
+        and weighted-average iron production cost when data is available.
+
+        Args:
+            world_suppliers: Optional list of Supplier objects; used to compute the
+                capacity-weighted average scrap market price.
+
+        Returns:
+            dict with keys: "iron", "steel", and optionally "scrap" and
+            "iron_weighted_avg".
         """
-        return {
+        result = {
             Commodities.IRON.value: self.env.extract_price_from_costcurve(self.env.iron_demand, Commodities.IRON.value),
             Commodities.STEEL.value: self.env.extract_price_from_costcurve(
                 self.env.current_demand, Commodities.STEEL.value
             ),
         }
+
+        # Scrap price: capacity-weighted average of scrap supplier production costs
+        if world_suppliers:
+            year = self.env.year
+            scrap_suppliers = [s for s in world_suppliers if s.commodity == "scrap"]
+            total_cap = 0.0
+            total_cost = 0.0
+            for s in scrap_suppliers:
+                cap = float(s.capacity_by_year.get(year, 0.0))
+                cost = s.production_cost_by_year.get(year)
+                if cap > 0 and cost is not None:
+                    total_cap += cap
+                    total_cost += cap * float(cost)
+            if total_cap > 0:
+                result["scrap"] = total_cost / total_cap
+
+        # Weighted-average iron material cost from avg_boms:
+        # for every technology, find any iron-product material and accumulate
+        # share-weighted unit costs across all (tech, iron_material) entries.
+        from steelo.domain.constants import IRON_PRODUCTS
+
+        iron_product_set = set(IRON_PRODUCTS)
+        avg_boms = getattr(self.env, "avg_boms", {})
+        total_share = 0.0
+        total_weighted_cost = 0.0
+        for _tech, materials in avg_boms.items():
+            for mat_name, mat_data in materials.items():
+                if mat_name.lower() not in iron_product_set:
+                    continue
+                share = mat_data.get("input_share_pct", 0.0)
+                cost = mat_data.get("unit_cost")
+                if share > 0 and cost is not None:
+                    total_share += share
+                    total_weighted_cost += share * float(cost)
+        if total_share > 0:
+            result["iron_weighted_avg"] = total_weighted_cost / total_share
+
+        return result
 
     # def collect_params4steel_cost_curve(self):
     #     """
@@ -206,22 +258,19 @@ class DataCollector:
         Collect the locations of new plants set to operating in the given year, as well as how many.
         """
         logger = logging.getLogger(f"{__name__}.collect_new_plant_data")
-        indi_pg = None
-        for pg in self.plant_groups:
-            if pg.plant_group_id == "indi":
-                indi_pg = pg
-
-        if indi_pg is None:
-            logger.warning("No plant group with ID 'indi' found. Skipping new plant data collection.")
+        indi_groups = [pg for pg in self.plant_groups if pg.plant_group_id.startswith("indi")]
+        if not indi_groups:
+            logger.warning("No indi plant groups found. Skipping new plant data collection.")
             return
 
-        for plant in indi_pg.plants:
-            for fg in plant.furnace_groups:
-                self.status_counts[fg.technology.product][year][fg.technology.name][fg.status] += 1
-                if fg.status == "operating" and fg.lifetime.start == year:
-                    self.new_plant_locations[fg.technology.product][year].append(
-                        ({"lat": plant.location.lat, "lon": plant.location.lon})
-                    )
+        for indi_pg in indi_groups:
+            for plant in indi_pg.plants:
+                for fg in plant.furnace_groups:
+                    self.status_counts[fg.technology.product][year][fg.technology.name][fg.status] += 1
+                    if fg.status == "operating" and fg.lifetime.start == year:
+                        self.new_plant_locations[fg.technology.product][year].append(
+                            ({"lat": plant.location.lat, "lon": plant.location.lon})
+                        )
 
     def collect_capex_investments(self, year: Year):
         """
@@ -278,52 +327,76 @@ class DataCollector:
 
     def collect_emissions_by_technology(self, year: Year):
         """
-        Collect total emissions by technology for the given year.
+        Collect emissions by boundary, technology and scope, plus production by product, for the given year.
 
-        Aggregates emissions from all operating furnace groups by technology type.
-        Uses the configured emissions boundary (typically "cradle-to-gate") and sums
-        all scopes (scope 1, 2, and 3).
+        Aggregates emissions from all operating furnace groups by technology type, keeping
+        the three scopes (``direct_ghg``, ``direct_with_biomass_ghg``, ``indirect_ghg``)
+        separate so downstream charts can present each view (or sums of compatible views)
+        without double-counting. ``direct_ghg`` and ``direct_with_biomass_ghg`` are
+        alternative accountings of the same direct emissions and must never be added
+        together.
+
+        Every boundary present on a furnace group's ``emissions`` dict is recorded — not
+        just the configured carbon-cost boundary — so charts can be produced per boundary
+        without re-walking the plant graph. The same iteration also accumulates production
+        by product (iron / steel) into ``trace_production_by_product``.
 
         Args:
             year: The year to collect emissions data for
 
         Returns:
-            dict: {technology: total_emissions_tCO2e}
+            dict: {boundary: {technology: {scope: total_emissions_tCO2e}}}.
         """
         logger = logging.getLogger(f"{__name__}.collect_emissions_by_technology")
-        emissions_by_tech: dict[str, float] = defaultdict(float)
-
-        # Get the configured emissions boundary
-        emissions_boundary = self.env.config.chosen_emissions_boundary_for_carbon_costs
+        scopes = ("direct_ghg", "direct_with_biomass_ghg", "indirect_ghg")
+        emissions_by_boundary: dict[str, dict[str, dict[str, float]]] = defaultdict(
+            lambda: defaultdict(lambda: defaultdict(float))
+        )
+        production_by_product: dict[str, float] = defaultdict(float)
 
         for pg in self.plant_groups:
             for plant in pg.plants:
                 for fg in plant.furnace_groups:
-                    # Only collect from operating furnace groups
                     if fg.status.lower() not in self.env.config.active_statuses:
                         continue
 
+                    product = (fg.technology.product or "").lower() if fg.technology.product else ""
+                    if product in ("iron", "steel") and fg.production:
+                        production_by_product[product] += fg.production
+
+                    if not fg.emissions:
+                        continue
+
                     technology = fg.technology.name
+                    for boundary, boundary_data in fg.emissions.items():
+                        if not isinstance(boundary_data, dict):
+                            continue
+                        for scope in scopes:
+                            value = boundary_data.get(scope)
+                            if value is None:
+                                continue
+                            emissions_by_boundary[boundary][technology][scope] += value
 
-                    # Sum emissions across all scopes for the configured boundary
-                    if fg.emissions and emissions_boundary in fg.emissions:
-                        for scope, emission_value in fg.emissions[emissions_boundary].items():
-                            if emission_value and emission_value > 0:
-                                emissions_by_tech[technology] += emission_value
+        for boundary, by_tech in emissions_by_boundary.items():
+            for tech, by_scope in by_tech.items():
+                for scope, value in by_scope.items():
+                    self.trace_emissions[boundary][year][tech][scope] += value
 
-        # Store in trace_emissions for later analysis
-        if emissions_by_tech:
-            for tech, emissions in emissions_by_tech.items():
-                self.trace_emissions[year][tech] += emissions
-
-            # Log summary
-            total_emissions = sum(emissions_by_tech.values())
+            total_direct_plus_indirect = sum(
+                by_scope.get("direct_ghg", 0.0) + by_scope.get("indirect_ghg", 0.0) for by_scope in by_tech.values()
+            )
             logger.info(
-                f"[EMISSIONS] Year {year}: Total emissions = {total_emissions:,.0f} tCO2e across "
-                f"{len(emissions_by_tech)} technologies (boundary: {emissions_boundary})"
+                f"[EMISSIONS] Year {year} ({boundary}): direct+indirect = "
+                f"{total_direct_plus_indirect:,.0f} tCO2e across {len(by_tech)} technologies"
             )
 
-        return dict(emissions_by_tech)
+        for product, tonnes in production_by_product.items():
+            self.trace_production_by_product[year][product] += tonnes
+
+        return {
+            boundary: {tech: dict(by_scope) for tech, by_scope in by_tech.items()}
+            for boundary, by_tech in emissions_by_boundary.items()
+        }
 
     def collect_iron_ore_by_quality(self, year: Year):
         """
@@ -366,8 +439,8 @@ class DataCollector:
                     for material_name, material_data in materials.items():
                         material_lower = material_name.lower()
 
-                        # Check if this is an iron ore related material
-                        is_iron_ore = any(keyword in material_lower for keyword in iron_ore_keywords)
+                        # Prefix match — substring match misclassifies e.g. "bio_pci" as "io_"
+                        is_iron_ore = any(material_lower.startswith(keyword) for keyword in iron_ore_keywords)
 
                         if is_iron_ore:
                             # Get the demand (total consumption in tonnes)
@@ -553,6 +626,11 @@ class DataCollector:
         self.collect_iron_ore_by_quality(self.env.year)
         self.collect_metallic_charges(self.env.year)
 
+        # Authoritative plant -> group lookup from the live PlantGroup objects (not derived from
+        # parent_gem_id string parsing).
+        collect_logger = logging.getLogger(f"{__name__}.collect")
+        pg_by_plant_id: dict[str, PlantGroup] = {plant.plant_id: pg for pg in world_plant_groups for plant in pg.plants}
+
         plants = {}
         for p in world_plant_list:
             plant_dict = []
@@ -602,7 +680,7 @@ class DataCollector:
                     "unit_production_cost": fg.unit_production_cost,
                     "debt_repayment_per_year": fg.debt_repayment_per_year,
                     "debt_repayment_for_current_year": fg.debt_repayment_for_current_year,
-                    "historic_balance": fg.historic_balance,
+                    "furnace_group_profit_and_loss": fg.historic_balance,
                 }
 
                 if fg.production and fg.production > 0 and has_materials:
@@ -650,6 +728,48 @@ class DataCollector:
                         for boundary in fg.emissions:
                             for scope in fg.emissions[boundary]:
                                 record[f"emissions_{boundary}_{scope}"] = fg.emissions[boundary][scope]
+
+                    # Subsidy tracking - calculate $/t (per unit production)
+                    unit_subsidies: dict[str, float] = {
+                        "capex": 0.0,
+                        "opex": 0.0,
+                        "debt": 0.0,
+                    }
+                    if hasattr(fg, "applied_subsidies") and fg.applied_subsidies:
+                        # CAPEX subsidies (use base capex from technology for relative)
+                        capex_base = fg.technology.capex_no_subsidy if fg.technology.capex_no_subsidy else 0
+                        for sub in fg.applied_subsidies.get("capex", []):
+                            if sub.subsidy_type == "absolute":
+                                unit_subsidies["capex"] += sub.subsidy_amount
+                            elif sub.subsidy_type == "relative" and capex_base > 0:
+                                unit_subsidies["capex"] += capex_base * sub.subsidy_amount
+
+                        # OPEX subsidies (use unit_total_opex_no_subsidy for relative)
+                        opex_base = fg.unit_total_opex_no_subsidy if hasattr(fg, "unit_total_opex_no_subsidy") else 0
+                        for sub in fg.applied_subsidies.get("opex", []):
+                            if sub.subsidy_type == "absolute":
+                                unit_subsidies["opex"] += sub.subsidy_amount
+                            elif sub.subsidy_type == "relative" and opex_base > 0:
+                                unit_subsidies["opex"] += opex_base * sub.subsidy_amount
+
+                        # Debt subsidies (only absolute - relative affects interest rate, not $/t)
+                        for sub in fg.applied_subsidies.get("debt", []):
+                            if sub.subsidy_type == "absolute":
+                                unit_subsidies["debt"] += sub.subsidy_amount
+
+                    # Energy subsidies: (price_before - price_after) * consumption_per_tonne
+                    if hasattr(fg, "energy_costs_no_subsidy") and fg.energy_costs_no_subsidy:
+                        for carrier, price_before in fg.energy_costs_no_subsidy.items():
+                            price_after = fg.energy_costs.get(carrier, 0) if fg.energy_costs else 0
+                            carrier_data = energy.get(carrier, {}) if energy else {}
+                            if carrier_data.get("unit_cost", 0) > 0 and fg.production > 0:
+                                per_t = carrier_data.get("demand", 0) / fg.production
+                                unit_subsidies[carrier] = (price_before - price_after) * per_t
+
+                    for key, value in unit_subsidies.items():
+                        record[f"unit_subsidy_{key}"] = value
+                    record["unit_subsidy_total"] = sum(unit_subsidies.values())
+
                 else:
                     record = {
                         "furnace_group_id": fg.furnace_group_id,
@@ -672,17 +792,34 @@ class DataCollector:
                         "unit_production_cost": fg.unit_production_cost,
                         "debt_repayment_per_year": fg.debt_repayment_per_year,
                         "debt_repayment_for_current_year": fg.debt_repayment_for_current_year,
-                        "historic_balance": fg.historic_balance,
+                        "furnace_group_profit_and_loss": fg.historic_balance,
+                        "unit_subsidy_capex": 0.0,
+                        "unit_subsidy_opex": 0.0,
+                        "unit_subsidy_debt": 0.0,
+                        "unit_subsidy_total": 0.0,
                     }
                 plant_dict.append(record)
 
-            plant_group = p.ultimate_plant_group
+            pg = pg_by_plant_id.get(p.plant_id)
+            if pg is None:
+                collect_logger.warning(
+                    "[ORPHAN PLANT] plant_id=%s parent_gem_id=%s ultimate_plant_group=%s",
+                    p.plant_id,
+                    p.parent_gem_id,
+                    p.ultimate_plant_group,
+                )
+                plant_group_id: str | None = p.ultimate_plant_group
+                plant_group_balance: float | None = None
+            else:
+                plant_group_id = pg.plant_group_id
+                plant_group_balance = pg.balance
 
             plants[p.plant_id] = {
                 "furnace_groups": plant_dict,
-                "plant_group": plant_group,
+                "plant_group_id": plant_group_id,
                 "location": p.location.iso3,
-                "balance": p.balance,
+                "plant_profit_and_loss": sum(fg.historic_balance for fg in p.furnace_groups),
+                "plant_group_balance": plant_group_balance,
             }
 
         # Ensure the TM directory exists

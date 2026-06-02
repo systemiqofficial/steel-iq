@@ -66,8 +66,8 @@ Decisions require sufficient accumulated profits:
 
 **Investment Capacity**:
 ```python
-equity_needed = capacity × capex × equity_share  # Default: 20% equity
-can_afford = plant_group.total_balance >= equity_needed
+equity_needed = capex × capacity × equity_share  # Default: 20% equity
+can_afford = plant_group.balance >= equity_needed
 ```
 
 **Example**:
@@ -241,32 +241,36 @@ When multiple technologies have positive NPV:
 ## 7. Subsidies
 
 ### Subsidy Types
-Five categories, each reducing costs:
+Four categories, each reducing costs:
 
 1. **CAPEX Subsidies**: Reduce upfront investment
    ```python
-   subsidized_capex = base_capex - absolute - (base_capex × relative)
+   subsidised_capex = base_capex - absolute - (base_capex × relative)
    ```
 
 2. **OPEX Subsidies**: Reduce operating costs
    ```python
-   subsidized_opex = base_opex - absolute - (base_opex × relative)
+   subsidised_opex = base_opex - absolute - (base_opex × relative)
    ```
 
 3. **Debt Subsidies**: Reduce interest rates (absolute points only)
    ```python
-   subsidized_rate = base_rate - absolute_points
+   subsidised_rate = base_rate - absolute_points
    ```
 
-4. **Hydrogen Subsidies**: Reduce H2 feedstock costs
-   ```python
-   subsidised_h2_price = base_price - absolute - (base_price × relative)
-   ```
+4. **Energy Carrier Subsidies**: Reduce energy/feedstock costs for any carrier (hydrogen, electricity, natural_gas, coal, bf_gas, bof_gas, cog, etc.)
 
-5. **Electricity Subsidies**: Reduce electricity costs
-   ```python
-   subsidised_elec_price = base_price - absolute - (base_price × relative)
-   ```
+### Dual-Sided Energy Subsidies
+
+Energy carrier subsidies have a unique dual-sided effect — a single subsidy simultaneously reduces the cost of consuming a carrier (input side) and increases the revenue from selling it as a by-product (output side):
+
+| Side | Formula | Example (H2 @ $3000/t, $500/t subsidy) |
+|------|---------|----------------------------------------|
+| **Input** | `max(0, price - subsidy)` | `max(0, 3000 - 500)` = $2500/t |
+| **Physical output** | `price + subsidy` | `3000 + 500` = $3500/t |
+| **Carbon output** (co2_*) | `price - subsidy` | Reduces storage cost |
+
+This means a hydrogen subsidy both makes hydrogen cheaper to consume (favouring H2-DRI) and increases by-product hydrogen revenue for technologies that produce it.
 
 ### Time-Bounded Application
 Subsidies active only within specified years:
@@ -278,18 +282,28 @@ if current_year >= start_year and current_year <= end_year:
     apply_subsidy()
 ```
 
+### Disposal Cost Outputs
+
+Some physical outputs are waste products where a positive price represents a disposal cost rather than revenue (e.g. steelmaking_slag). These are configured in `SimulationConfig.disposal_cost_outputs` (default: `{"steelmaking_slag"}`).
+
+For disposal cost carriers, the secondary output calculation uses the raw price sign instead of `-abs(price)`:
+- **Normal physical output** (e.g. bf_gas, ironmaking_slag): `-abs(price)` → always revenue (negative adjustment)
+- **Disposal cost output** (e.g. steelmaking_slag): raw price → positive price = cost (positive adjustment)
+
+This distinction applies in both `calculate_cost_adjustments_from_secondary_outputs()` and `calculate_cost_breakdown_by_feedstock()`.
+
 ### Economic Impact
 - Lower CAPEX → Higher NPV → More likely to switch/expand
 - Lower OPEX → Higher profits → Faster balance sheet recovery
 - Lower debt cost → Lower unit production cost → More competitive
-- Lower H2 cost → Lower VOPEX for H2-consuming technologies → Higher NPV
-- Lower electricity cost → Lower VOPEX for electricity-intensive technologies → Higher NPV
+- Lower energy costs → Lower VOPEX + higher by-product revenue → Higher NPV
+- Dual-sided subsidies create a double benefit: reduced input costs AND increased output revenue
 
 ### Application Order
-Energy subsidies (H2/electricity) are applied differently from other subsidy types:
+Energy carrier subsidies are applied differently from other subsidy types:
 
-1. **Energy subsidies applied first**: Modify the `energy_costs` dictionary before downstream calculations
-2. **Downstream effects propagate**: BOM, VOPEX, and NPV calculations automatically use subsidised prices
+1. **Energy subsidies applied first**: Modify both `energy_costs` (input) and `output_energy_costs` (output) dictionaries before downstream calculations
+2. **Downstream effects propagate**: BOM, VOPEX, secondary output adjustments, and NPV calculations automatically use the appropriate subsidised prices
 3. **OPEX subsidies applied later**: Applied to the total OPEX after energy costs are calculated
 
 This ordering prevents double-counting and ensures energy subsidies affect all cost calculations that depend on energy prices.
@@ -298,6 +312,48 @@ This ordering prevents double-counting and ensures energy subsidies affect all c
 - Target emerging technologies to accelerate adoption
 - Temporary incentives bridge "valley of death" until learning-by-doing reduces costs
 - Geographic targeting supports regional industrial policy
+
+---
+
+## 8. Opening Renovation Balance
+
+### Purpose
+
+The simulation start year is arbitrary — real-world plants would have accumulated working capital over their operating history. To reflect this, each initial plant's balance is seeded before the first simulation year with the sum of renovation costs across its active furnace groups, scaled by a configurable multiplier:
+
+```
+Plant.balance = Σ (greenfield_capex × renovation_share × capacity × equity_share × multiplier)
+```
+
+Where:
+- `greenfield_capex`: CAPEX per tonne for the FG's technology and region
+- `renovation_share`: fraction of greenfield CAPEX needed for renovation
+- `capacity`: FG capacity in tonnes
+- `equity_share`: equity financing fraction (default 20%)
+- `multiplier`: `opening_balance_multiplier` config parameter (default 1.0)
+
+### Eligible FGs
+
+Only FGs satisfying all of these conditions contribute to the plant's opening balance:
+- Not created by PAM (`created_by_PAM == False`)
+- Active status (operating, operating pre-retirement, operating switching technology)
+- Capacity > 0
+- Technology is not "other"
+
+### What is NOT seeded
+
+- `FG.historic_balance` stays at 0 — it tracks real simulation performance only
+- `FG.balance` is an annual scratch-pad, reset after aggregation
+
+### Configuration
+
+```python
+opening_balance_multiplier: float = 1.0
+```
+
+- `1.0`: plant can afford one renovation per FG (default)
+- `0.5`: half renovation cost, forcing prioritisation
+- `0.0`: disabled (legacy behaviour)
 
 ---
 

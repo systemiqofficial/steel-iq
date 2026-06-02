@@ -111,6 +111,7 @@ def test_evaluate_expansion_without_subsidies(
     bus.uow.plants.add(plant_with_location)
 
     pg = PlantGroup(plant_group_id="pg_test", plants=[plant_with_location])
+    pg.balance = 1_000_000.0  # Sufficient to afford expansion (capacity=1000, max capex=600/t)
     bus.uow.plant_groups.add(pg)
 
     # Mock get_bom_from_avg_boms
@@ -179,6 +180,7 @@ def test_evaluate_expansion_with_absolute_capex_subsidy(
     bus.uow.plants.add(plant_with_location)
 
     pg = PlantGroup(plant_group_id="pg_test", plants=[plant_with_location])
+    pg.balance = 1_000_000.0  # Sufficient to afford expansion (capacity=1000, max capex=600/t)
     bus.uow.plant_groups.add(pg)
 
     # Mock get_bom_from_avg_boms
@@ -262,6 +264,7 @@ def test_evaluate_expansion_with_relative_capex_subsidy(
     bus.uow.plants.add(plant_with_location)
 
     pg = PlantGroup(plant_group_id="pg_test", plants=[plant_with_location])
+    pg.balance = 1_000_000.0  # Sufficient to afford expansion (capacity=1000, max capex=600/t)
     bus.uow.plant_groups.add(pg)
 
     # Mock get_bom_from_avg_boms
@@ -342,6 +345,7 @@ def test_evaluate_expansion_with_combined_subsidies(
     bus.uow.plants.add(plant_with_location)
 
     pg = PlantGroup(plant_group_id="pg_test", plants=[plant_with_location])
+    pg.balance = 1_000_000.0  # Sufficient to afford expansion (capacity=1000, max capex=600/t)
     bus.uow.plant_groups.add(pg)
 
     # Mock get_bom_from_avg_boms with higher NPV for BOF to ensure it's selected
@@ -445,6 +449,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
     bus.uow.plants.add(plant_with_location)
 
     pg = PlantGroup(plant_group_id="pg_test", plants=[plant_with_location])
+    pg.balance = 1_000_000.0  # Sufficient to afford expansion (capacity=1000, max capex=600/t)
     bus.uow.plant_groups.add(pg)
 
     # Mock get_bom_from_avg_boms to make DRI and BF more attractive

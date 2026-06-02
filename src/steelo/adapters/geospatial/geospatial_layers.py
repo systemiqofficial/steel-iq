@@ -262,7 +262,12 @@ def add_feasibility_mask(ds: xr.Dataset, geo_config: "GeoConfig", geo_paths: "Ge
 
 
 def add_baseload_power_price(
-    ds: xr.Dataset, baseload_coverage: float, target_year: int, geo_paths: "GeoDataPaths"
+    ds: xr.Dataset,
+    baseload_coverage: float,
+    target_year: int,
+    geo_paths: "GeoDataPaths",
+    start_year: int | None = None,
+    end_year: int | None = None,
 ) -> xr.Dataset:
     """
     Add pre-calculated baseload power price to the dataset.
@@ -276,12 +281,16 @@ def add_baseload_power_price(
         baseload_coverage: Baseload power coverage percentage (0.0 to 1.0)
         target_year: Simulation year for which to retrieve/interpolate LCOE
         geo_paths: Paths to geospatial data files (baseload power simulation directory)
+        start_year: Simulation start year. Used together with ``end_year`` to limit the
+            optimal-LCOE map plot to milestone years (start, end, and every 5 years after
+            start). If either bound is None, every year is plotted.
+        end_year: Simulation end year. See ``start_year`` for plotting behaviour.
 
     Returns:
         Dataset with added 'lcoe' variable containing baseload power price (USD/kWh)
 
     Side Effects:
-        - Generates and saves plot of optimal LCOE and histogram
+        - Generates and saves plot of optimal LCOE (milestone years only) and histogram
     """
     logger = logging.getLogger(f"{__name__}.add_baseload_power_price")
     # Ensure required paths are provided
@@ -363,16 +372,35 @@ def add_baseload_power_price(
     else:
         ds = xr.merge([ds, baseload_lcoe_year])
 
-    plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
-    plot_screenshot(
-        ds["lcoe"].where(ds["feasibility_mask"] > 0) * PERkWh_TO_PERMWh,  # USD/kWh to USD/MWh
-        title=f"Optimal LCOE for {100 - p}% coverage in {target_year} (USD/MWh)",
-        var_type="sequential",
-        max_val=200,
-        save_name=f"optimal_lcoe_{str(target_year)}_p{str(p)}",
-        plot_paths=plot_paths_obj,
+    # Only plot the optimal-LCOE map on milestone years to avoid one map per simulation year.
+    is_milestone_year = (
+        start_year is None
+        or end_year is None
+        or target_year == start_year
+        or target_year == end_year
+        or (target_year - start_year) % 5 == 0
     )
-    plot_value_histogram(ds, var_name="lcoe", bins=100, log_scale=True, plot_paths=plot_paths_obj)
+
+    plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
+    if is_milestone_year:
+        plot_screenshot(
+            ds["lcoe"].where(ds["feasibility_mask"] > 0) * PERkWh_TO_PERMWh,  # USD/kWh to USD/MWh
+            title=f"Optimal LCOE for {100 - p}% coverage in {target_year} (USD/MWh)",
+            var_type="sequential",
+            max_val=200,
+            save_name=f"optimal_lcoe_{str(target_year)}_p{str(p)}",
+            plot_paths=plot_paths_obj,
+        )
+    plot_value_histogram(
+        ds,
+        var_name="lcoe",
+        bins=100,
+        log_scale=True,
+        plot_paths=plot_paths_obj,
+        title="LCOE distribution across feasible grid cells (USD/kWh)",
+        subtitle=f"{100 - p}% baseload + {p}% grid · year {target_year} · cell count on log scale",
+        xlabel="LCOE (USD/kWh)",
+    )
 
     return ds
 
@@ -429,6 +457,8 @@ def add_power_price(
     input_costs: dict[str, dict[int, dict[str, float]]],
     baseload_coverage: float,
     geo_paths: "GeoDataPaths",
+    start_year: int | None = None,
+    end_year: int | None = None,
 ) -> xr.Dataset:
     """
     Calculate combined power price from grid and baseload sources.
@@ -443,12 +473,17 @@ def add_power_price(
         input_costs: Dictionary mapping ISO3 codes to year-specific costs including electricity prices
         baseload_coverage: Percentage of power requirement covered by own baseload installation (0.0 to 1.0)
         geo_paths: Paths to geospatial data files
+        start_year: Simulation start year. Used together with ``end_year`` to limit the
+            power-price map to milestone years (start, end, and every 5 years after start),
+            and forwarded to ``add_baseload_power_price`` for the optimal-LCOE map.
+            If either bound is None, every year is plotted.
+        end_year: Simulation end year. See ``start_year`` for plotting behaviour.
 
     Returns:
         Dataset with added 'power_price' variable containing combined power price (USD/kWh)
 
     Side Effects:
-        - Generates and saves plot of power prices and histogram
+        - Generates and saves plot of power prices (milestone years only) and histogram (every year)
 
     Note:
         The baseload LCOE is already calculated for the specified coverage percentage, so no additional
@@ -461,23 +496,45 @@ def add_power_price(
     )
     ds = add_grid_power_price(ds, input_costs, year, geo_paths=geo_paths)
     if baseload_coverage > 0:
-        ds = add_baseload_power_price(ds, baseload_coverage, year, geo_paths=geo_paths)
+        ds = add_baseload_power_price(
+            ds,
+            baseload_coverage,
+            year,
+            geo_paths=geo_paths,
+            start_year=start_year,
+            end_year=end_year,
+        )
         ds["power_price"] = ds["grid_price"] * (1 - baseload_coverage) + ds["lcoe"]
         title = "Power Price - combination of baseload and grid for full coverage (USD/MWh)"
     else:
         ds["power_price"] = ds["grid_price"]
         title = "Power Price - grid only (USD/MWh)"
 
-    plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
-    plot_screenshot(
-        ds["power_price"].where(ds["feasibility_mask"] > 0) * PERkWh_TO_PERMWh,  # USD/kWh to USD/MWh
-        title=title,
-        var_type="sequential",
-        max_val=200,
-        save_name=f"power_price_100cov_{str(year)}",
-        plot_paths=plot_paths_obj,
+    is_milestone_year = (
+        start_year is None or end_year is None or year == start_year or year == end_year or (year - start_year) % 5 == 0
     )
-    plot_value_histogram(ds, var_name="power_price", bins=100, log_scale=True, plot_paths=plot_paths_obj)
+
+    plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
+    if is_milestone_year:
+        plot_screenshot(
+            ds["power_price"].where(ds["feasibility_mask"] > 0) * PERkWh_TO_PERMWh,  # USD/kWh to USD/MWh
+            title=title,
+            var_type="sequential",
+            max_val=200,
+            save_name=f"power_price_100cov_{str(year)}",
+            plot_paths=plot_paths_obj,
+        )
+    p = int((1 - baseload_coverage) * 100)
+    plot_value_histogram(
+        ds,
+        var_name="power_price",
+        bins=100,
+        log_scale=True,
+        plot_paths=plot_paths_obj,
+        title="Power price distribution across feasible grid cells (USD/kWh)",
+        subtitle=f"Grid + baseload mix at {100 - p}% baseload + {p}% grid · year {year} · cell count on log scale",
+        xlabel="Power price (USD/kWh)",
+    )
 
     return ds
 
@@ -491,6 +548,8 @@ def add_capped_hydrogen_price(
     baseload_coverage: float,
     geo_config: "GeoConfig",
     geo_paths: "GeoDataPaths",
+    start_year: int | None = None,
+    end_year: int | None = None,
 ) -> xr.Dataset:
     """
     Calculate and apply regional ceilings to hydrogen prices for each grid cell.
@@ -509,12 +568,16 @@ def add_capped_hydrogen_price(
         baseload_coverage: Baseload power coverage percentage (0.0 to 1.0)
         geo_config: Configuration containing hydrogen ceiling percentile and trade settings
         geo_paths: Paths to geospatial data files for plotting outputs
+        start_year: Simulation start year. Used together with ``end_year`` to limit the
+            capped-LCOH map plot to milestone years (start, end, and every 5 years after
+            start). If either bound is None, every year is plotted.
+        end_year: Simulation end year. See ``start_year`` for plotting behaviour.
 
     Returns:
         Dataset with added 'capped_lcoh' variable containing capped hydrogen prices (USD/kg)
 
     Side Effects:
-        - Generates and saves plot of capped LCOH
+        - Generates and saves plot of capped LCOH (milestone years only)
     """
     logger = logging.getLogger(f"{__name__}.add_capped_hydrogen_price")
     logger.info("[GEO LAYERS] Adding (capped) LCOH (Levelized Cost of Hydrogen) to the dataset.")
@@ -523,16 +586,21 @@ def add_capped_hydrogen_price(
     regional_ceiling = calculate_regional_hydrogen_ceiling(ds, country_mappings, geo_config.hydrogen_ceiling_percentile)
     ds = apply_hydrogen_price_cap(ds, regional_ceiling, geo_config)
 
-    plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
-    plot_screenshot(
-        ds["capped_lcoh"].where(ds["feasibility_mask"] > 0),
-        title=f"Optimal (capped) LCOH in {year} (USD/kg)",
-        var_type="sequential",
-        min_val=1,
-        max_val=7,
-        save_name=f"lcoh_{str(year)}_p{str(int((1 - baseload_coverage) * 100))}",
-        plot_paths=plot_paths_obj,
+    is_milestone_year = (
+        start_year is None or end_year is None or year == start_year or year == end_year or (year - start_year) % 5 == 0
     )
+
+    if is_milestone_year:
+        plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
+        plot_screenshot(
+            ds["capped_lcoh"].where(ds["feasibility_mask"] > 0),
+            title=f"Optimal (capped) LCOH in {year} (USD/kg)",
+            var_type="sequential",
+            min_val=1,
+            max_val=7,
+            save_name=f"lcoh_{str(year)}_p{str(int((1 - baseload_coverage) * 100))}",
+            plot_paths=plot_paths_obj,
+        )
 
     return ds
 
@@ -689,7 +757,7 @@ def add_cost_of_infrastructure(ds: xr.Dataset, environment: "Environment", geo_p
 
         plot_screenshot(
             ds["rail_cost"].where(ds["feasibility_mask"] > 0) * USD_TO_MioUSD,  # Convert USD to Mio USD
-            title="Rail Buildout Cost (Mio USD)",
+            title="Rail Buildout Cost (Million USD)",
             var_type="sequential",
             max_val=6000,
             save_name="rail_cost",
@@ -706,6 +774,8 @@ def add_transportation_costs(
     active_statuses: list[str],
     geo_config: "GeoConfig",
     geo_paths: "GeoDataPaths",
+    start_year: int | None = None,
+    end_year: int | None = None,
 ) -> xr.Dataset:
     """
     Add transportation costs for feedstock and demand for both iron and steel production.
@@ -721,6 +791,10 @@ def add_transportation_costs(
         active_statuses: List of statuses considered as active (e.g., ["operating", "operating pre-retirement"])
         geo_config: Configuration containing transportation cost rates per km per ton
         geo_paths: Paths to geospatial data files for plotting outputs
+        start_year: Simulation start year. Used together with ``end_year`` to limit plotting
+            to milestone years (start, end, and every 10 years after start). If either
+            ``start_year`` or ``end_year`` is None, every year is plotted.
+        end_year: Simulation end year. See ``start_year`` for plotting behaviour.
 
     Returns:
         Dataset with added transportation cost variables:
@@ -730,7 +804,9 @@ def add_transportation_costs(
             - demand_transportation_cost_per_ton_steel: Cost to transport steel to demand centers (USD/ton)
 
     Side Effects:
-        - Plots distance and transportation cost maps to geo_paths.geo_plots_dir
+        - Plots distance and transportation cost maps to geo_paths.geo_plots_dir for the
+          start year, end year, and every 10th year after the start year in between
+          (e.g., for 2025-2050: 2025, 2035, 2045, 2050).
     """
     logger = logging.getLogger(f"{__name__}.add_transportation_costs")
     logger.info("[GEO LAYERS] Adding transportation costs to demand and feedstock for both iron and steel production.")
@@ -749,16 +825,32 @@ def add_transportation_costs(
         ]
     )
 
+    # Only plot on milestone years to avoid producing one map per simulation year.
+    is_milestone_year = (
+        start_year is None
+        or end_year is None
+        or year == start_year
+        or year == end_year
+        or (year - start_year) % 10 == 0
+    )
+
     # Plot distances
     plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
-    for var in ["feedstock_distance_iron", "feedstock_distance_steel", "demand_distance_iron", "demand_distance_steel"]:
-        plot_screenshot(
-            ds_[var],
-            title=f"{var} (km)",
-            var_type="sequential",
-            save_name=f"{var}_{str(year)}",
-            plot_paths=plot_paths_obj,
-        )
+    distance_plot_titles = {
+        "feedstock_distance_iron": f"Feedstock distance for new iron plant in {year} (km)",
+        "feedstock_distance_steel": f"Feedstock distance for new steel plant in {year} (km)",
+        "demand_distance_iron": f"Demand distance from new iron plant in {year} (km)",
+        "demand_distance_steel": f"Demand distance from new steel plant in {year} (km)",
+    }
+    if is_milestone_year:
+        for var, title in distance_plot_titles.items():
+            plot_screenshot(
+                ds_[var],
+                title=title,
+                var_type="sequential",
+                save_name=f"{var}_{str(year)}",
+                plot_paths=plot_paths_obj,
+            )
 
     # Calculate transportation costs per ton for each location
     ds["feedstock_transportation_cost_per_ton_iron"] = (
@@ -776,19 +868,25 @@ def add_transportation_costs(
 
     # Plot transportation costs
     plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
-    for var in [
-        "feedstock_transportation_cost_per_ton_iron",
-        "feedstock_transportation_cost_per_ton_steel",
-        "demand_transportation_cost_per_ton_iron",
-        "demand_transportation_cost_per_ton_steel",
-    ]:
-        plot_screenshot(
-            ds[var].where(ds["feasibility_mask"] > 0),
-            title=f"{var} (USD)",
-            var_type="sequential",
-            save_name=f"{var}_{str(year)}",
-            plot_paths=plot_paths_obj,
-        )
+    cost_plot_titles = {
+        "feedstock_transportation_cost_per_ton_iron": (
+            f"Feedstock transport cost for new iron plant in {year} (USD/ton)"
+        ),
+        "feedstock_transportation_cost_per_ton_steel": (
+            f"Feedstock transport cost for new steel plant in {year} (USD/ton)"
+        ),
+        "demand_transportation_cost_per_ton_iron": (f"Demand transport cost from new iron plant in {year} (USD/ton)"),
+        "demand_transportation_cost_per_ton_steel": (f"Demand transport cost from new steel plant in {year} (USD/ton)"),
+    }
+    if is_milestone_year:
+        for var, title in cost_plot_titles.items():
+            plot_screenshot(
+                ds[var].where(ds["feasibility_mask"] > 0),
+                title=title,
+                var_type="sequential",
+                save_name=f"{var}_{str(year)}",
+                plot_paths=plot_paths_obj,
+            )
 
     return ds
 

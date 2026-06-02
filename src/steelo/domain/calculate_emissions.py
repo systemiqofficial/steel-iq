@@ -70,14 +70,15 @@ def calculate_emissions(
     material_bill: dict[str, dict[str, float]],
     business_cases: dict[str, "PrimaryFeedstock"],
     technology_emission_factors: list["TechnologyEmissionFactors"],
-    installed_carbon_capture: float = 0.0,
     grid_emissions: float = 0.0,
 ) -> dict[str, dict[str, float]]:
-    """Calculate total emissions for a furnace group accounting for CCS/CCU technology.
+    """Calculate total emissions for a furnace group.
 
     Computes comprehensive emissions across multiple boundaries (plant_boundary, supply_chain, etc.)
     and scopes (direct, indirect, biomass) based on material consumption, technology emission factors,
-    and grid electricity use. Applies carbon capture reductions to direct emissions.
+    and grid electricity use. CCS/CCU technologies are modelled as distinct technologies (BF+CCS,
+    DRI+CCS, etc.) whose emission factors already reflect post-capture values; no post-hoc subtraction
+    is applied here.
 
     The calculation process:
         1. Match materials in bill to business cases
@@ -85,7 +86,6 @@ def calculate_emissions(
         3. Look up emission factors by technology, reductant, and metallic charge
         4. Compute emissions per boundary/scope using emission factors × production
         5. Add grid emissions to indirect scope
-        6. Apply CCS/CCU: reduce direct_ghg by installed_carbon_capture (floor at 0)
 
     Args:
         material_bill: Dict mapping material names to {"demand": float, "total_cost": float, "unit_cost": float}.
@@ -95,9 +95,6 @@ def calculate_emissions(
         technology_emission_factors: List of TechnologyEmissionFactors objects containing
             emission intensities (tCO2e per tonne product) for each technology/reductant/material
             combination across different boundaries and scopes.
-        installed_carbon_capture: Carbon capture capacity in tCO2e per year. Reduces direct
-            emissions via CCS (Carbon Capture and Storage) or CCU (Carbon Capture and Utilization).
-            Default 0.0 means no capture installed.
         grid_emissions: Total grid electricity emissions in tCO2e, calculated separately.
             Added to indirect_ghg scope. Default 0.0.
 
@@ -105,7 +102,7 @@ def calculate_emissions(
         Nested dict with structure:
             {
                 boundary_name: {  # e.g., "plant_boundary", "supply_chain"
-                    "direct_ghg": float,              # Direct emissions minus carbon capture
+                    "direct_ghg": float,
                     "direct_with_biomass_ghg": float, # Direct including biogenic carbon
                     "indirect_ghg": float             # Indirect emissions plus grid
                 }
@@ -113,8 +110,6 @@ def calculate_emissions(
         Returns empty dict {} if no valid business cases or emission factors found.
 
     Notes:
-        - Carbon capture is subtracted from direct_ghg ONLY, not from other scopes.
-        - Carbon capture cannot create negative emissions (max function ensures >= 0).
         - Production volume calculated as: material_demand / required_quantity_per_ton_of_product
         - Grid emissions added to indirect_ghg for all boundaries.
         - Skips materials with zero/None required_quantity_per_ton_of_product.
@@ -179,14 +174,6 @@ def calculate_emissions(
                 else:
                     for scope, value in emissions.items():
                         total_emissions[convention][scope] += value
-
-        for convention in total_emissions:
-            if "direct_ghg" in total_emissions[convention]:
-                total_emissions[convention]["direct_ghg"] = max(
-                    total_emissions[convention]["direct_ghg"] - installed_carbon_capture, 0
-                )
-            else:
-                total_emissions[convention]["direct_ghg"] = 0.0
 
     return total_emissions
 
@@ -259,141 +246,6 @@ def calculate_emissions_cost_series(
             emissions[chosen_emission_boundary]["direct_ghg"] * carbon_price_dict.get(year, 0.0)
             for year in range(start_year, end_year + 1)
         ]
-
-
-# def find_emission_key(material_name: str, emissions_dict: dict[str, dict[str, float]]) -> str | None:
-#     """
-#     Case-insensitive lookup: returns the exact key from emissions_dict
-#     whose lowercase matches material_name.lower(), or None if no match.
-#     """
-#     mat_l = material_name.lower().strip()
-
-#     for k in emissions_dict:
-#         if k.lower().strip() == mat_l:
-#             return k
-#     return None
-
-
-# def compute_emissions_for_convention(
-#     total_dict: dict[str, float],
-#     emissions_factors: dict[str, dict[str, float]],
-#     optional_emission_factors: dict[str, dict[str, float]] = {},
-# ) -> tuple[dict[str, float], float]:
-#     """
-#     Computes the emissions for a given material bill and emissions factors.
-
-#     Args:
-#         - total_dict: a dict mapping material names → quantities (tons)
-#         - emissions_factors: a dict mapping material names → dict of scope names and their emission factors
-#         - optional_emission_factors: a dict mapping carrier name to emission factors (e.g. regional_grid_emissions)
-#     Returns:
-#       - emissions_by_scope: a dict mapping each scope name → total tons CO₂e
-#       - total_emissions: sum of all non‐NaN scope contributions
-#     """
-#     # Initialize accumulator:
-#     for key in optional_emission_factors:
-#         if key in emissions_factors:
-#             emissions_factors[key].update(optional_emission_factors[key])
-#     scopes = next(iter(emissions_factors.values())).keys()  # Get the scopes from the first factor
-#     emissions_by_scope: dict[str, float] = {scope: 0.0 for scope in scopes}
-#     # print(total_dict)
-#     for material, qty in total_dict.items():
-#         if qty == 0:
-#             continue
-#         # 4a) Find the matching key in emissions_factors (case‐insensitive)
-#         match_key = find_emission_key(material, emissions_factors)
-#         if match_key is None:
-#             logging.debug(f"Couldn't find emission factor and material: {material}, {emissions_factors}")
-#             # No factor available for this material—skip or warn
-#             # e.g. you could log: print(f"No emission factor found for {material!r}")
-#             continue
-#         else:
-#             factors = emissions_factors[match_key]
-
-#         # 4b) For each scope, if factor is not NaN, multiply by quantity:
-#         for scope in scopes:
-#             factor = factors.get(scope, math.nan)
-#             if factor is not None and not math.isnan(factor):
-#                 emissions_by_scope[scope] += qty * factor
-
-#     # 4c) Sum up all the non‐NaN scope contributions for a single “total”:
-#     total_emissions = sum(emissions_by_scope.values())
-#     return emissions_by_scope, total_emissions
-
-
-# def calculate_emissions_old(
-#     material_bill: dict[str, dict[str, float]],
-#     business_cases: dict[str, "PrimaryFeedstock"],
-#     optional_emissions_intensity: dict[str, dict[str, float]] | None = {},
-#     installed_carbon_capture: float = 0.0,
-# ) -> dict[str, dict[str, dict[str, float]]]:
-#     """
-#     Calculate the total emissions for a given material bill and business cases.
-
-#     Args:
-#         material_bill (dict): A dictionary containing the material bill with material names as keys and their
-#                                 respective quantities as values.
-#         business_cases (dict): A dictionary containing business cases with material names as keys and their
-#                                 respective business case objects as values.
-#         optional_emissions_intensity (dict): A dictionary containing optional emissions intensity values for a specific energy carrier (e.g. regional_grid_emissions).
-#     """
-#     total_emissions: dict[str, dict[str, dict[str, float]]] = {}
-#     for material, bc in business_cases.items():
-#         if bc.required_quantity_per_ton_of_product is None or bc.required_quantity_per_ton_of_product == 0:
-#             continue  # Skip if no valid quantity
-
-#         if material not in material_bill:
-#             continue
-
-#         if "demand" in material_bill[material]:
-#             amount_of_product = material_bill[material]["demand"] / bc.required_quantity_per_ton_of_product
-#         else:
-#             amount_of_product = material_bill[material]["demand_share_pct"]
-
-#         total_dict = {bc.metallic_charge: bc.required_quantity_per_ton_of_product or 0.0}
-#         total_dict.update(bc.secondary_feedstock)
-#         total_dict.update(bc.energy_requirements)
-
-#         convention_emissions = {}
-#         # Check if emissions data exists for this business case
-#         if bc.name not in bc.emissions:
-#             logger.warning(f"No emissions data found for business case: {bc.name}")
-#             continue
-
-#         # we create a copy of the emissions factors to avoid modifying the original data
-#         iterating_emissions = {
-#             conv: {
-#                 material: scope_dict.copy()  # copies the innermost dict[str,float]
-#                 for material, scope_dict in material_map.items()
-#             }
-#             for conv, material_map in bc.emissions[bc.name].items()
-#         }
-
-#         for convention, emissions_factors in iterating_emissions.items():
-#             em_by_scope, _ = compute_emissions_for_convention(
-#                 total_dict, emissions_factors.copy(), optional_emissions_intensity
-#             )
-#             convention_emissions[convention] = {key: value * amount_of_product for key, value in em_by_scope.items()}
-
-#         if not total_emissions:
-#             total_emissions.update(convention_emissions)
-#         else:
-#             for convention, emissions in convention_emissions.items():
-#                 if convention not in total_emissions:
-#                     total_emissions[convention] = emissions
-#                 else:
-#                     for scope, value in emissions.items():
-#                         total_emissions[convention][scope] += value
-
-#         for convention in total_emissions:
-#             if "ghg_factor_scope_1" in total_emissions[convention]:
-#                 total_emissions[convention]["ghg_factor_scope_1"] = max(
-#                     total_emissions[convention]["ghg_factor_scope_1"] - installed_carbon_capture, 0
-#                 )
-#             else:
-#                 total_emissions[convention]["ghg_factor_scope_1"] = 0.0
-
-#     return total_emissions
 
 
 def calculate_emissions_cost_in_year(

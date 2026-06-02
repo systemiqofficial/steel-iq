@@ -18,6 +18,7 @@ def export_lcoe_lcoh_statistics_by_country(
     energy_prices: xr.Dataset,
     year: "Year",
     output_dir: Path,
+    hydrogen_ceiling_percentile: float = 100.0,
 ) -> None:
     """
     Calculate and export LCOE and LCOH statistics by country to separate files.
@@ -31,6 +32,7 @@ def export_lcoe_lcoh_statistics_by_country(
         energy_prices: xarray Dataset containing iso3, power_price (LCOE in USD/kWh), and capped_lcoh (LCOH in USD/kg)
         year: Current simulation year
         output_dir: Base output directory (will save to output_dir/data/)
+        hydrogen_ceiling_percentile: Hydrogen ceiling percentile from GeoConfig (0-100).
 
     Returns:
         None (saves two separate CSV files to disk: lcoe_stats_{year}.csv and lcoh_stats_{year}.csv)
@@ -74,6 +76,7 @@ def export_lcoe_lcoh_statistics_by_country(
         country_stats = {
             "country": country,
             "year": year,
+            "hydrogen_ceiling_pct": hydrogen_ceiling_percentile,
             # LCOE statistics (in USD/MWh)
             "lcoe_avg_usd_per_mwh": float(np.mean(lcoe_values_mwh)),
             "lcoe_min_usd_per_mwh": float(np.min(lcoe_values_mwh)),
@@ -121,6 +124,7 @@ def export_lcoe_lcoh_statistics_by_country(
     lcoh_columns = [
         "country",
         "year",
+        "hydrogen_ceiling_pct",
         "lcoh_avg_usd_per_kg",
         "lcoh_min_usd_per_kg",
         "lcoh_max_usd_per_kg",
@@ -134,12 +138,16 @@ def export_lcoe_lcoh_statistics_by_country(
     lcoe_df = stats_df[lcoe_columns]
     lcoh_df = stats_df[lcoh_columns]
 
-    # Save LCOE to separate CSV
-    lcoe_output_path = data_dir / f"lcoe_stats_{year}.csv"
+    # Save LCOE to its own subfolder
+    lcoe_dir = data_dir / "LCOE"
+    lcoe_dir.mkdir(parents=True, exist_ok=True)
+    lcoe_output_path = lcoe_dir / f"lcoe_stats_{year}.csv"
     lcoe_df.to_csv(lcoe_output_path, index=False, float_format="%.4f")
 
-    # Save LCOH to separate CSV
-    lcoh_output_path = data_dir / f"lcoh_stats_{year}.csv"
+    # Save LCOH to its own subfolder
+    lcoh_dir = data_dir / "LCOH"
+    lcoh_dir.mkdir(parents=True, exist_ok=True)
+    lcoh_output_path = lcoh_dir / f"lcoh_stats_{year}.csv"
     lcoh_df.to_csv(lcoh_output_path, index=False, float_format="%.4f")
 
     logger.info(f"Exported LCOE statistics for {len(statistics)} countries to {lcoe_output_path}")
@@ -270,12 +278,52 @@ def export_overbuild_factor_statistics_by_country(
     # Sort by country for readability
     stats_df = stats_df.sort_values("country").reset_index(drop=True)
 
-    # Ensure data directory exists
+    # Ensure data directory and factor subfolder exist (e.g. data/solar_factors)
     data_dir = output_dir / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
+    factor_subdir = data_dir / f"{factor_name.replace('_factor', '')}_factors"
+    factor_subdir.mkdir(parents=True, exist_ok=True)
 
     # Save to CSV
-    output_path = data_dir / f"{factor_name}_stats_{year}.csv"
+    output_path = factor_subdir / f"{factor_name}_stats_{year}.csv"
     stats_df.to_csv(output_path, index=False, float_format="%.4f")
 
     logger.info(f"Exported {factor_name} statistics for {len(statistics)} countries to {output_path}")
+
+
+def aggregate_lcoe_lcoh_statistics(
+    output_dir: Path,
+    start_year: int,
+    end_year: int,
+) -> None:
+    """Concatenate per-year LCOE/LCOH stat CSVs into one stacked CSV per metric.
+
+    Reads all ``lcoe_stats_{year}.csv`` files from *output_dir*/data/LCOE and
+    ``lcoh_stats_{year}.csv`` files from *output_dir*/data/LCOH, concatenates
+    them, and writes aggregated files named ``lcoe_stats_{start_year}_{end_year}.csv``
+    / ``lcoh_stats_{start_year}_{end_year}.csv`` back into the same subfolders.
+
+    Args:
+        output_dir: Base output directory (expects a ``data/`` subdirectory).
+        start_year: Simulation start year (used in output filename).
+        end_year: Simulation end year (used in output filename).
+    """
+    data_dir = output_dir / "data"
+    if not data_dir.exists():
+        logger.warning("Data directory %s does not exist — skipping LCOE/LCOH aggregation", data_dir)
+        return
+
+    for prefix, subdir in (("lcoe_stats", "LCOE"), ("lcoh_stats", "LCOH")):
+        src_dir = data_dir / subdir
+        if not src_dir.exists():
+            continue
+        per_year_files = sorted(src_dir.glob(f"{prefix}_*.csv"))
+        # Exclude any previously aggregated file (filename contains a year range like 2020_2050)
+        per_year_files = [f for f in per_year_files if f.stem.removeprefix(f"{prefix}_").isdigit()]
+        if not per_year_files:
+            continue
+
+        combined = pd.concat([pd.read_csv(f) for f in per_year_files], ignore_index=True)
+        combined = combined.sort_values(["year", "country"]).reset_index(drop=True)
+        agg_path = src_dir / f"{prefix}_{start_year}_{end_year}.csv"
+        combined.to_csv(agg_path, index=False, float_format="%.4f")
+        logger.info("Saved aggregated %s (%d years) to %s", prefix, len(per_year_files), agg_path)

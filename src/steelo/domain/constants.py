@@ -140,7 +140,7 @@ TECHNOLOGY_SPECIFIC_DEFAULTS: dict[str, dict[str, Any]] = {
     "DRI": {"allowed": True, "from_year": 2025},
     # Special technologies
     "ESF": {"allowed": False, "from_year": 2030},  # Electro-Smelting Furnace disabled by default
-    "MOE": {"allowed": False, "from_year": 2030},  # Molten Oxide Electrolysis disabled by default
+    "MOE": {"allowed": True, "from_year": 2030},  # Molten Oxide Electrolysis
     "SR": {"allowed": True, "from_year": 2030},  # Smelting Reduction
     # Advanced technologies (normalized codes)
     "EWIN": {"allowed": True, "from_year": 2030},  # Electrowinning (E-WIN → EWIN)

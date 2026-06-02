@@ -90,11 +90,19 @@ def change_furnace_group_status_to_switching_technology(
     """
     with uow:
         plant = uow.plants.get(cmd.plant_id)
+        # Snapshot old reductant BEFORE mutation — matches scan's switching-window rule
+        fg = plant.get_furnace_group(cmd.furnace_group_id)
+        old_reductant = fg.chosen_reductant
         plant.change_furnace_group_status_to_switching_technology(cmd.furnace_group_id, cmd.year_of_switch, cmd.cmd)
 
         # Track the switched capacity - use the NEW technology name and capacity from the embedded command
         if cmd.cmd and hasattr(cmd.cmd, "technology_name") and hasattr(cmd.cmd, "capacity"):
             env.add_switched_capacity(cmd.cmd.technology_name, capacity=Volumes(cmd.cmd.capacity))
+            # P2 counter hook: non-CCS -> CCS switch commits new tech's need to firm (old_need=0 via is_ccs_or_ccu lock)
+            new_need = env.get_co2_need_by_name(cmd.cmd.technology_name, cmd.cmd.capacity, old_reductant)
+            if new_need > 0.0:
+                iso3 = plant.location.iso3
+                env.co2_storage_firm[iso3] = env.co2_storage_firm.get(iso3, 0.0) + new_need
 
         uow.commit()
 
@@ -163,17 +171,21 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
     """
     Handle the AddFurnaceGroup command to add a new furnace group to an existing plant.
 
-    Retrieves the plant from the repository, generates a new furnace with the specified technology and capacity,
-    applies subsidies, and adds it to the plant as an expansion. The new furnace starts in construction status
-    with zero utilization.
+    Retrieves the plant from the repository, generates a new furnace with the specified
+    technology and capacity, applies subsidies, attaches it to the plant as an expansion,
+    and debits the plant group treasury for the equity portion of the investment.
+
+    Order is load-bearing: (1) factory → (2) attach to plant → (3) debit. If the factory
+    raises (e.g. missing tech metadata), no phantom debit remains on the group wallet.
 
     Args:
-        cmd (commands.AddFurnaceGroup): Command containing furnace_group_id, plant_id, technology_name, capacity,
-            product, equity_needed, npv, financial parameters (capex, capex_no_subsidy, cost_of_debt,
+        cmd (commands.AddFurnaceGroup): Command containing furnace_group_id, plant_id,
+            technology_name, capacity, product, equity_needed (capex × capacity × equity_share),
+            npv, financial parameters (capex, capex_no_subsidy, cost_of_debt,
             cost_of_debt_no_subsidy), and subsidy lists (capex_subsidies, debt_subsidies).
         uow (UnitOfWork): Unit of work for managing the transaction and accessing repositories.
-        env (Environment): Environment containing the simulation configuration, current year, dynamic_feedstocks data,
-            and bill of materials information.
+        env (Environment): Environment containing the simulation configuration, current year,
+            dynamic_feedstocks data, and bill of materials information.
 
     Side Effects:
         - Creates a new furnace group in construction status with zero utilization.
@@ -181,6 +193,7 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
         - Sets applied_subsidies["debt"] to the debt_subsidies list from the command.
         - Adds the furnace group to the plant.
         - Increments the plant's added_capacity counter.
+        - Debits ``plant_group.balance`` by ``cmd.equity_needed`` via ``deduct_equity``.
         - Logs a FurnaceGroupAdded event.
         - Commits the changes to the repository.
 
@@ -188,13 +201,24 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
         - Both subsidized (capex, cost_of_debt) and non-subsidized (capex_no_subsidy, cost_of_debt_no_subsidy)
           financial parameters are passed to enable tracking of subsidy impact.
         - The subsidy lists are stored in the furnace's applied_subsidies dictionary for later reference.
+        - Affordability was already gated at Stage 6 of ``evaluate_expansion`` and at the
+          per-(plant, tech) pre-filter in ``evaluate_expansion_options``; the debit here
+          is bookkeeping, not a fresh check.
     """
     with uow:
         plant = uow.plants.get(cmd.plant_id)
+        # TODO(3h): BOM uses plant.energy_costs (last FG's subsidised costs), not the new
+        # tech's. Impact zero during construction (0% utilisation); refreshed when operational.
+        avg_bom_result = env.get_bom_from_avg_boms(
+            plant.energy_costs or {},
+            cmd.technology_name,
+            cmd.capacity,
+            env.most_common_reductant_by_tech.get(cmd.technology_name, None),
+        )
         new_furnace = plant.generate_new_furnace(
             technology_name=cmd.technology_name,
             product=cmd.product,
-            capacity=int(cmd.capacity),
+            capacity=cmd.capacity,
             capex=cmd.capex,
             capex_no_subsidy=cmd.capex_no_subsidy,
             cost_of_debt=cmd.cost_of_debt,
@@ -208,30 +232,26 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
                 cmd.technology_name,
                 env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
             ),
-            equity_needed=cmd.equity_needed,
-            bill_of_materials=env.get_bom_from_avg_boms(
-                plant.energy_costs or {},
-                cmd.technology_name,
-                cmd.capacity,
-                env.most_common_reductant_by_tech.get(cmd.technology_name, None),
-            )[0],
-            chosen_reductant=env.get_bom_from_avg_boms(
-                plant.energy_costs or {},
-                cmd.technology_name,
-                cmd.capacity,
-                env.most_common_reductant_by_tech.get(cmd.technology_name, None),
-            )[2],
+            bill_of_materials=avg_bom_result[0],
+            chosen_reductant=avg_bom_result[2],
+            disposal_cost_outputs=env.config.disposal_cost_outputs,
         )
         # Set the subsidies on the new furnace group
         new_furnace.applied_subsidies["capex"] = cmd.capex_subsidies
         new_furnace.applied_subsidies["debt"] = cmd.debt_subsidies
         plant.add_furnace_group(new_furnace)
         plant.added_capacity = Volumes(plant.added_capacity + cmd.capacity)
+
+        # Debit the group treasury AFTER the furnace has been attached — factory exceptions
+        # leave no phantom debit on the wallet.
+        plant_group = uow.plant_groups.get_by_plant_id(cmd.plant_id)
+        plant_group.deduct_equity(cmd.equity_needed, reason="expansion")
+
         plant.furnace_group_added(
             new_furnace.furnace_group_id,
             cmd.plant_id,
             technology_name=cmd.technology_name,
-            capacity=int(cmd.capacity),
+            capacity=cmd.capacity,
             is_new_plant=False,  # This is an expansion to an existing plant
         )
         uow.commit()
@@ -243,6 +263,15 @@ def update_capacity_buildout(_event: events.FurnaceGroupAdded, uow: UnitOfWork, 
         # Track new plant capacity separately from total capacity to monitor expansions vs new builds
         if _event.is_new_plant:
             env.add_new_plant_capacity(_event.technology_name, capacity=Volumes(_event.capacity))
+        else:
+            # Expansion path only: announced->construction is already counted in update_status_of_furnace_group;
+            # counting here too would double-count and violate firm <= limit.
+            plant = uow.plants.get(_event.plant_id)
+            fg = plant.get_furnace_group(_event.furnace_group_id)
+            need = env.get_co2_need(fg.technology, _event.capacity, fg.chosen_reductant)
+            if need > 0.0:
+                iso3 = plant.location.iso3
+                env.co2_storage_firm[iso3] = env.co2_storage_firm.get(iso3, 0.0) + need
         uow.commit()
 
 
@@ -289,6 +318,26 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
             f"  - {bom_issue_count_materials} furnace groups retained existing material entries\n"
             f"  - {bom_issue_count_energy} furnace groups retained existing energy entries"
         )
+        bom_issues = tmpc.validate_bom_consistency(
+            furnace_groups=fgs,
+            aggregated_constraints=env.aggregated_metallic_charge_constraints,
+        )
+        if bom_issues:
+            logger.warning(
+                f"[BOM-CHECK] Year {env.year}: {len(bom_issues)} BOM consistency issue(s) detected "
+                f"({sum(1 for i in bom_issues if i['check'] == 'empty_bom')} empty_bom, "
+                f"{sum(1 for i in bom_issues if i['check'] == 'zero_metallic')} zero_metallic, "
+                f"{sum(1 for i in bom_issues if i['check'] == 'mass_balance')} mass_balance, "
+                f"{sum(1 for i in bom_issues if 'min_share' in i['check'])} min_share)"
+            )
+            corrected = tmpc.correct_utilization_for_supply_constraints(
+                furnace_groups=fgs,
+                bom_issues=bom_issues,
+            )
+            if corrected:
+                logger.info(
+                    f"[BOM-CHECK] Year {env.year}: corrected utilization for {corrected} supply-constrained FG(s)"
+                )
         tmpc.update_furnace_group_emissions(fgs)
         env.allocation_and_transportation_costs = tmpc.extract_transportation_costs(fgs)
 
@@ -339,8 +388,7 @@ def finalise_iteration(
        a. Update current year in lifetime tracking
        b. Execute scheduled technology switches if the future_switch_year matches current year
        c. Handle end-of-life transitions: close operating furnaces or switch to construction mode for technology switches
-       d. Reset balance for the next iteration
-       e. Update OPEX subsidies based on active subsidies for the current year
+       d. Update OPEX subsidies based on active subsidies for the current year
 
     Note: Construction → operating transition happens in simulation.py at the START of each year iteration,
     before AllocationModel runs. This ensures newly operational plants get their BOMs populated by the trade
@@ -368,7 +416,6 @@ def finalise_iteration(
         - Updates furnace group statuses (construction → operating, operating → closed, etc.).
         - Executes scheduled technology switches when future_switch_year matches current year.
         - Updates furnace group applied OPEX subsidies for the current year.
-        - Resets furnace group balances to zero.
         - Updates supplier production costs based on material costs.
         - Resets capacity tracking counters in env.
         - Updates CAPEX reduction ratios, CAPEX values, input costs, technology availability, and grid emissivity.
@@ -469,10 +516,7 @@ def finalise_iteration(
                             time_frame=TimeFrame(start=year_start, end=year_end),
                         )
 
-                # Step 3e: Reset balance for the next iteration
-                fg.balance = 0
-
-                # Step 3f: Update OPEX subsidies based on active subsidies for the current year
+                # Step 3e: Update OPEX subsidies based on active subsidies for the current year
                 all_opex_subsidies = env.opex_subsidies.get(plant.location.iso3, {}).get(fg.technology.name, [])
                 active_opex_subsidies = filter_subsidies_for_year(all_opex_subsidies, env.year)
                 fg.applied_subsidies["opex"] = active_opex_subsidies
@@ -508,7 +552,7 @@ def finalise_iteration(
                     # Fallback to hardcoded value from Excel
                     fallback_cost = env.get_fallback_material_cost(iso3=supplier.location.iso3, technology="BOF")
                     if fallback_cost is not None:
-                        source_cost = fallback_cost * 0.95
+                        source_cost = fallback_cost * 0.90  # Apply a discount to reflect scrap value
                         pricing_source = "fallback"
                     else:
                         # Ultimate fallback if no cost data available
@@ -573,21 +617,47 @@ def finalise_iteration(
 
 def add_new_business_opportunities_to_repository(cmd: commands.AddNewBusinessOpportunities, uow: UnitOfWork):
     """
-    Adds business opportunities to the indi plant group with status "considered".
+    Add runtime-born business opportunities to the plant repository and route
+    each plant into its per-country ``indi_<ISO3>`` plant group at birth.
+
+    Each plant's ``parent_gem_id`` is overwritten from the placeholder
+    ``"indi"`` value set by ``PlantGroup.generate_new_plant`` to the
+    per-country group id (``indi_<ISO3>``) before the plant is registered
+    via ``register_plant_in_group``, which creates the group on demand.
+
+    Args:
+        cmd: Command carrying the list of new plants to register.
+        uow: Unit-of-work providing access to the plant and plant-group
+            repositories.
+
+    Notes:
+        Plants are registered through ``register_plant_in_group`` only —
+        ``PlantGroup.generate_new_plant`` no longer appends to any group's
+        plant list. This is the sole registration path for runtime-born
+        plants, and it populates the plant-group reverse-lookup map used
+        elsewhere in the service layer.
     """
     with uow:
         uow.plants.add_list(cmd.new_plants)
+        for plant in cmd.new_plants:
+            target_gid = f"indi_{plant.location.iso3}"
+            plant.parent_gem_id = target_gid
+            uow.plant_groups.register_plant_in_group(plant, target_gid)
         uow.commit()
 
 
 def update_status_of_furnace_group(cmd: commands.UpdateFurnaceGroupStatus, uow: UnitOfWork, env: Environment):
     """
-    Updates the status of a furnace group. If the furnace group is moved into construction, it also sets the start year,
-    resets the utilization rate to 0 (so that the trade module can ramp it up over time), subtracts the equity needed, and
-    triggers FurnaceGroupAdded event to ensure proper (capacity) tracking.
+    Updates the status of a furnace group. If the furnace group is moved into construction, it also
+    sets the start year, resets the utilization rate to 0 (so that the trade module can ramp it up
+    over time), and triggers a FurnaceGroupAdded event to ensure proper capacity tracking.
 
-    Note: Subsidies are updated each year while the plant is under consideration or announced - and locked in at
-    construction start time.
+    New-plant construction does NOT debit any treasury. The 20% equity is external investor money
+    outside the simulated ledger; the 80% debt is amortised via operational P&L once the plant is
+    running. This transition is explicitly a no-debit event.
+
+    Note: Subsidies are updated each year while the plant is under consideration or announced - and
+    locked in at construction start time.
     """
     year = env.year
     with uow:
@@ -596,6 +666,8 @@ def update_status_of_furnace_group(cmd: commands.UpdateFurnaceGroupStatus, uow: 
             if fg.furnace_group_id == cmd.fg_id:
                 old_status = fg.status
                 fg.status = cmd.new_status
+                iso3 = plant.location.iso3
+                d = env.config.co2_storage_reserved_discount_factor
                 if fg.status.lower() == "construction":
                     # Set the start year to become operational
                     fg.lifetime = PointInTime(
@@ -610,40 +682,43 @@ def update_status_of_furnace_group(cmd: commands.UpdateFurnaceGroupStatus, uow: 
                     # New plants start at 0% utilization, will be ramped up by trade module
                     fg.utilization_rate = 0.0
 
-                    # Subtract equity needed from balance
-                    capex = fg.technology.capex if fg.technology.capex is not None else 0.0
-                    if capex == 0.0:
-                        logger.warning(
-                            f"FG {fg.furnace_group_id} in new plant {plant.plant_id} has no CAPEX set, cannot deduce equity from balance."
-                        )
-                    fg.balance -= env.config.equity_share * capex
+                    # announced -> construction: convert the FG's reserved slot into a firm commitment.
+                    need = env.get_co2_need(fg.technology, fg.capacity, fg.chosen_reductant)
+                    if need > 0.0:
+                        env.co2_storage_firm[iso3] = env.co2_storage_firm.get(iso3, 0.0) + need
+                        env.co2_storage_reserved[iso3] = env.co2_storage_reserved.get(iso3, 0.0) - d * need
 
                     # Trigger FurnaceGroupAdded event to update capacity tracking
                     plant.furnace_group_added(
                         furnace_group_id=fg.furnace_group_id,
                         plant_id=plant.plant_id,
                         technology_name=fg.technology.name,
-                        capacity=int(fg.capacity),
+                        capacity=fg.capacity,
                         is_new_plant=True,  # This is a new plant being constructed
                     )
 
                     logger.info(
                         f"[STATUS TRANSITION] {old_status} -> construction for {fg.technology.name} FG {fg.furnace_group_id} "
                     )
+                elif fg.status.lower() == "discarded" and old_status.lower() == "announced":
+                    # announced -> discarded: release the FG's reserved slot. The old-status guard is load-bearing:
+                    # the considered -> discarded NPV-TTL path also lands here and would drive reserved negative.
+                    need = env.get_co2_need(fg.technology, fg.capacity, fg.chosen_reductant)
+                    if need > 0.0:
+                        env.co2_storage_reserved[iso3] = env.co2_storage_reserved.get(iso3, 0.0) - d * need
         uow.commit()
 
 
 def update_dynamic_costs(cmd: commands.UpdateDynamicCosts, uow: UnitOfWork, env: Environment):
-    """
-    Updates the dynamic costs for a furnace group.
+    """Update dynamic costs for a furnace group in a business opportunity.
 
-    This handler applies the yearly updated costs to a furnace group:
+    Applies yearly updated costs to a furnace group:
         - Cost of debt (with subsidies, if applicable)
         - CAPEX (with subsidies, if applicable)
-        - Electricity costs from own renewable energy parc or grid
-        - Hydrogen costs from own renewable energy parc or grid
+        - Energy costs for all carriers (subsidised input, output, and unsubsidised)
         - Bill of materials with updated energy prices
     """
+    logger = logging.getLogger(f"{__name__}.update_dynamic_costs")
     with uow:
         plant = uow.plants.get(cmd.plant_id)
         for fg in plant.furnace_groups:
@@ -652,10 +727,19 @@ def update_dynamic_costs(cmd: commands.UpdateDynamicCosts, uow: UnitOfWork, env:
                 fg.cost_of_debt_no_subsidy = cmd.new_cost_of_debt_no_subsidy
                 fg.technology.capex = cmd.new_capex
                 fg.technology.capex_no_subsidy = cmd.new_capex_no_subsidy
-                fg.energy_costs["electricity"] = cmd.new_electricity_cost
-                fg.energy_costs["hydrogen"] = cmd.new_hydrogen_cost
+                fg.energy_costs = cmd.new_energy_costs
+                fg.output_energy_costs = cmd.new_output_energy_costs
+                fg.energy_costs_no_subsidy = cmd.new_energy_costs_no_subsidy
                 if cmd.new_bill_of_materials is not None:
                     fg.bill_of_materials = cmd.new_bill_of_materials
+                logger.debug(
+                    "[HANDLER] UpdateDynamicCosts %s/%s: energy_costs=%s output=%s no_sub=%s",
+                    cmd.plant_id,
+                    cmd.furnace_group_id,
+                    cmd.new_energy_costs,
+                    cmd.new_output_energy_costs,
+                    cmd.new_energy_costs_no_subsidy,
+                )
         uow.commit()
 
 
@@ -684,10 +768,10 @@ def load_checkpoint_handler(
 
 EVENT_HANDLERS: dict[type[events.Event], list[Callable]] = {
     events.FurnaceGroupClosed: [update_cost_curve],
-    events.FurnaceGroupTechChanged: [update_cost_curve, update_capacity_buildout],
+    events.FurnaceGroupTechChanged: [update_cost_curve],
     events.FurnaceGroupRenovated: [update_cost_curve],
     events.FurnaceGroupAdded: [update_future_cost_curve, update_capacity_buildout],
-    events.SinteringCapacityAdded: [update_future_cost_curve, update_capacity_buildout],
+    events.SinteringCapacityAdded: [update_future_cost_curve],
     events.SteelAllocationsCalculated: [update_furnace_utilization_rates, update_cost_curve, update_future_cost_curve],
     events.IterationOver: [finalise_iteration, update_cost_curve],
     events.SaveCheckpoint: [save_checkpoint_handler],

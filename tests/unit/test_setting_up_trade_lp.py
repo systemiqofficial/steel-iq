@@ -141,7 +141,7 @@ class DummyLPModel:
 
 # Dummy TradeLPModel that stores processes, bom_elements, process centers, connectors, etc.
 class DummyTradeLPModel:
-    def __init__(self, lp_epsilon=1e-3, year=None, solver_options=None):
+    def __init__(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42, **kwargs):
         self._processes = {}
         self.process_centers = []
         self.bom_elements = {}
@@ -319,6 +319,7 @@ class DummyFeedstock:
         secondary_feedstock,
         outputs,
         carbon_outputs=None,
+        energy_requirements=None,
     ):
         self.name = name
         self.metallic_charge = metallic_charge
@@ -328,6 +329,7 @@ class DummyFeedstock:
         self.secondary_feedstock = secondary_feedstock
         self.outputs = outputs
         self.carbon_outputs = carbon_outputs or {}
+        self.energy_requirements = energy_requirements or {}
 
     def get_primary_outputs(self, primary_products: list[str] | None = None):
         return self.outputs
@@ -449,6 +451,7 @@ def create_mock_config():
         closely_allocated_products: list[str] = field(default_factory=lambda: ["hot_metal"])
         distantly_allocated_products: list[str] = field(default_factory=lambda: ["pig_iron"])
         lp_epsilon: float = 1e-3
+        random_seed: int = 42
         start_year: Year = Year(2025)
         end_year: Year = Year(2050)
 
@@ -641,7 +644,7 @@ def test_set_up_steel_trade_lp(monkeypatch):
     # Patch DummyTradeLPModel.__init__ using monkeypatch.
     orig_init = ORIGINAL_DUMMY_TRADE_LP_MODEL_INIT
 
-    def init_with_processes(self, lp_epsilon=1e-3, year=None, solver_options=None):
+    def init_with_processes(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42, **kwargs):
         orig_init(self, lp_epsilon, year, solver_options)
         for proc_name in [
             "BF",
@@ -1160,7 +1163,7 @@ def test_adapt_allocation_costs_cbam_no_double_counting():
 
 def test_identify_bottlenecks_empty_allocations():
     """Test bottleneck analysis with empty allocations."""
-    from steelo.domain.trade_modelling.set_up_steel_trade_lp import identify_bottlenecks
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import check_if_bottlenecks_identified
     from steelo.domain.models import CommodityAllocations
 
     year = 2025
@@ -1180,12 +1183,12 @@ def test_identify_bottlenecks_empty_allocations():
     commodity_allocations = {"iron": iron_allocations}
 
     # Should run without errors
-    identify_bottlenecks(commodity_allocations, repo, env, year)
+    check_if_bottlenecks_identified(commodity_allocations, repo, env, year)
 
 
 def test_identify_bottlenecks_skip_scrap():
     """Test that scrap commodity is skipped in bottleneck analysis."""
-    from steelo.domain.trade_modelling.set_up_steel_trade_lp import identify_bottlenecks
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import check_if_bottlenecks_identified
     from steelo.domain.models import CommodityAllocations
 
     year = 2025
@@ -1203,7 +1206,7 @@ def test_identify_bottlenecks_skip_scrap():
     commodity_allocations = {"scrap": scrap_allocations}
 
     # Should complete without analyzing scrap (the function skips scrap)
-    identify_bottlenecks(commodity_allocations, repo, env, year)
+    check_if_bottlenecks_identified(commodity_allocations, repo, env, year)
 
 
 # --- Tests for transportation costs (transport_kpis) ---
@@ -1252,8 +1255,8 @@ def test_set_up_steel_trade_lp_with_transport_kpis(monkeypatch):
     orig_init = ORIGINAL_DUMMY_TRADE_LP_MODEL_INIT
     transport_costs_added = []
 
-    def init_with_tracking(self, lp_epsilon=1e-3, year=None, solver_options=None):
-        orig_init(self, lp_epsilon, year, solver_options)
+    def init_with_tracking(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42, **kwargs):
+        orig_init(self, lp_epsilon, year, solver_options, random_seed=random_seed, **kwargs)
         original_add = self.add_transportation_costs
 
         def track_add_transportation_costs(costs):
@@ -1330,8 +1333,8 @@ def test_set_up_steel_trade_lp_with_aggregated_constraints(monkeypatch):
     orig_init = ORIGINAL_DUMMY_TRADE_LP_MODEL_INIT
     constraints_set = {}
 
-    def init_with_constraint_tracking(self, lp_epsilon=1e-3, year=None, solver_options=None):
-        orig_init(self, lp_epsilon, year, solver_options)
+    def init_with_constraint_tracking(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42, **kwargs):
+        orig_init(self, lp_epsilon, year, solver_options, random_seed=random_seed, **kwargs)
         self.aggregated_commodity_constraints = {}
 
         def track_constraints(value):
@@ -1396,7 +1399,7 @@ def test_set_up_steel_trade_lp_with_secondary_feedstock_constraints(monkeypatch)
     processes_added = []
     centers_added = []
 
-    def init_with_tracking(self, lp_epsilon=1e-3, year=None, solver_options=None):
+    def init_with_tracking(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42, **kwargs):
         orig_init(self, lp_epsilon, year, solver_options)
         original_add_processes = self.add_processes
         original_add_centers = self.add_process_centers
@@ -1706,8 +1709,8 @@ def test_set_up_steel_trade_lp_with_meta_furnace_groups(monkeypatch):
     # Patch DummyTradeLPModel to have required processes
     orig_init = ORIGINAL_DUMMY_TRADE_LP_MODEL_INIT
 
-    def init_with_processes(self, lp_epsilon=1e-3, year=None, solver_options=None):
-        orig_init(self, lp_epsilon, year, solver_options)
+    def init_with_processes(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42, **kwargs):
+        orig_init(self, lp_epsilon, year, solver_options, random_seed=random_seed, **kwargs)
         for proc_name in ["BF", "EAF", "demand", "scrap_supply"]:
             self._processes[proc_name] = DummyProcess(proc_name, DummyProcessType.PRODUCTION, [])
 

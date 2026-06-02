@@ -15,7 +15,7 @@ from typing import Any
 project = "Steel Model"
 author = "Steel Model Team"
 copyright = "2025, Steel Model Team"
-version = "1.2.0"  # Can be automated from pyproject.toml later
+version = "2.0.0"  # Can be automated from pyproject.toml later
 release = version
 
 # Track whether we are building the public site (set via `-t public`)
@@ -76,6 +76,8 @@ myst_enable_extensions = [
     "tasklist",  # Task lists (- [ ] and - [x])
     "fieldlist",  # Field lists
 ]
+
+myst_heading_anchors = 3
 
 # Suppress warnings for known issues in existing documentation
 # These should be fixed over time but don't block the documentation build

@@ -210,8 +210,10 @@ class FurnaceBreakdownLogger:
         # Applied subsidies tracking
         data["subsidies"] = {}
         if hasattr(fg, "applied_subsidies") and fg.applied_subsidies:
-            # Track each type of subsidy
-            for subsidy_type in ["capex", "debt", "opex", "hydrogen", "electricity"]:
+            # Track each type of subsidy (financial + all energy carriers)
+            financial_types = ["capex", "debt", "opex"]
+            energy_carriers = sorted(k for k in fg.applied_subsidies if k not in financial_types)
+            for subsidy_type in financial_types + energy_carriers:
                 if subsidy_type in fg.applied_subsidies:
                     subsidies_list = fg.applied_subsidies[subsidy_type]
                     if subsidies_list:
@@ -338,40 +340,29 @@ class FurnaceBreakdownLogger:
             if operations.get("unit_fopex", 0) > 0:
                 logging.info(f"    Unit FOPEX: ${operations['unit_fopex']:,.0f}")
 
-        # H2/Electricity subsidy effect (show before -> after if subsidised)
+        # Energy carrier subsidy effect (show before -> after if subsidised)
         energy_costs = fg_data.get("energy_costs", {})
         no_sub = fg_data.get("energy_costs_no_subsidy", {})
         subsidies = fg_data.get("subsidies", {})
 
-        h2_subs = subsidies.get("hydrogen", {})
-        elec_subs = subsidies.get("electricity", {})
-
-        if h2_subs or elec_subs:
-            h2_before = no_sub.get("hydrogen", 0)
-            h2_after = energy_costs.get("hydrogen", h2_before)
-            elec_before = no_sub.get("electricity", 0)
-            elec_after = energy_costs.get("electricity", elec_before)
-
-            subsidy_lines = []
-            if h2_subs and h2_before > 0:
-                h2_reduction = h2_before - h2_after
-                h2_pct = (h2_reduction / h2_before * 100) if h2_before > 0 else 0
-                h2_names = [d.get("name", "?") for d in h2_subs.get("details", [])]
+        subsidy_lines = []
+        for carrier in sorted(no_sub.keys()):
+            carrier_subs = subsidies.get(carrier, {})
+            if not carrier_subs:
+                continue
+            original_price = no_sub[carrier]
+            current_price = energy_costs.get(carrier, original_price)
+            if original_price > 0 and current_price != original_price:
+                reduction = original_price - current_price
+                pct = reduction / original_price * 100
+                names = [d.get("name", "?") for d in carrier_subs.get("details", [])]
                 subsidy_lines.append(
-                    f"    [H2 SUBSIDY] ${h2_before:.2f} -> ${h2_after:.2f}/t "
-                    f"(-${h2_reduction:.2f}, -{h2_pct:.1f}%) | {h2_names}"
-                )
-            if elec_subs and elec_before > 0:
-                elec_reduction = elec_before - elec_after
-                elec_pct = (elec_reduction / elec_before * 100) if elec_before > 0 else 0
-                elec_names = [d.get("name", "?") for d in elec_subs.get("details", [])]
-                subsidy_lines.append(
-                    f"    [ELEC SUBSIDY] ${elec_before:.6f} -> ${elec_after:.6f}/kWh "
-                    f"(-${elec_reduction:.6f}, -{elec_pct:.1f}%) | {elec_names}"
+                    f"    [{carrier.upper()} SUBSIDY] ${original_price:.6f} -> ${current_price:.6f} "
+                    f"(-${reduction:.6f}, -{pct:.1f}%) | {names}"
                 )
 
-            for line in subsidy_lines:
-                logging.info(line)
+        for line in subsidy_lines:
+            logging.info(line)
 
         # Financial information
         financial = fg_data["financial"]

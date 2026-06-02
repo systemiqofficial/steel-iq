@@ -1,8 +1,11 @@
 import inspect
 import logging
+import random
 
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
+
+import numpy as np
 from .service_layer import handlers, UnitOfWork, MessageBus, SimulationCheckpoint
 from .domain.models import Environment, PlantGroup
 from .adapters.repositories import JsonRepository, InMemoryRepository, Repository
@@ -226,6 +229,11 @@ def bootstrap_simulation(
     else:
         LoggingConfig.configure_base_loggers()
 
+    # Seed Python and NumPy global RNGs. LP solver reads the same seed at solve time.
+    random.seed(config.random_seed)
+    np.random.seed(config.random_seed)
+    logger.info(f"Random seed = {config.random_seed}")
+
     # If no repository is provided, create one from JSON files (production behavior)
     repository_json = None
     fixtures_dir = None  # Initialize to None
@@ -332,31 +340,13 @@ def bootstrap_simulation(
             return normalised
 
         env.carbon_costs = {iso3: _normalise_cost_series(series) for iso3, series in env.carbon_costs.items()}
-        try:
-            price_sample = list(env.carbon_costs.items())[:3]
-            logger.warning(
-                "Carbon-cost dict sample: %s",
-                [
-                    (
-                        iso3,
-                        [
-                            (repr(year_key), type(year_key).__name__, value)
-                            for year_key, value in list(series.items())[:3]
-                        ],
-                    )
-                    for iso3, series in price_sample
-                ],
-            )
-        except Exception:
-            logger.exception("Failed to log carbon cost sample")
         env.initiate_input_costs(input_costs_list=repository_json.input_costs.list())
         env.initiate_dynamic_feedstocks(feedstocks=repository_json.primary_feedstocks.list())
         env.initiate_techno_economic_details(capex_list=repository_json.capex.list())
         env.initiate_capex_subsidies(subsidies=repository_json.subsidies.list())
         env.initiate_opex_subsidies(subsidies=repository_json.subsidies.list())
         env.initiate_debt_subsidies(subsidies=repository_json.subsidies.list())
-        env.initiate_hydrogen_subsidies(subsidies=repository_json.subsidies.list())
-        env.initiate_electricity_subsidies(subsidies=repository_json.subsidies.list())
+        env.initiate_energy_subsidies(subsidies=repository_json.subsidies.list())
         env.initiate_industrial_asset_cost_of_capital(repository_json.cost_of_capital.list())
         env.initiate_grid_emissivity(emissivities=repository_json.region_emissivity.list())
         env.initiate_gas_coke_emissivity(emissivities=repository_json.region_emissivity.list())

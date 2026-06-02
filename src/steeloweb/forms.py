@@ -80,6 +80,32 @@ class ModelRunCreateForm(forms.ModelForm):
         widget=forms.TextInput(attrs={"class": "form-control", "placeholder": "e.g., 'High renewable scenario 2030'"}),
     )
 
+    randomise_seed = forms.BooleanField(
+        label="Randomise seed",
+        initial=False,
+        required=False,
+        help_text=(
+            "Tick to draw a fresh random seed for this run. When unticked, the seed below is used "
+            "so results are reproducible. When ticked, results will vary slightly between runs due "
+            "to stochastic components in agent decisions and the trade LP."
+        ),
+        widget=forms.CheckboxInput(
+            attrs={"class": "form-check-input field-connected", "id": "id_randomise_seed"},
+        ),
+    )
+
+    random_seed = forms.IntegerField(
+        label="Random seed",
+        initial=42,
+        min_value=0,
+        required=False,
+        help_text=(
+            "Seed shared by the Plant Agent, Geospatial, and Trade LP modules. "
+            "Auto-filled with a fresh value when 'Randomise seed' is ticked."
+        ),
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected", "id": "id_random_seed"}),
+    )
+
     # Helper method to create widget attrs for connected/unconnected fields
     @staticmethod
     def _connected_attrs(base_class="form-control"):
@@ -203,6 +229,72 @@ class ModelRunCreateForm(forms.ModelForm):
         required=False,
         help_text="Addition to the iron price when demand exceeds supply to incentivize more capacity buildout (USD/tonne)",
         widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.1"}),
+    )
+
+    steel_market_clearing_share = forms.DecimalField(
+        label="Steel market clearing share",
+        initial=0.95,
+        min_value=0.5,
+        max_value=0.995,
+        max_digits=4,
+        decimal_places=3,
+        required=False,
+        help_text=(
+            "Fraction of total steel cumulative capacity that participates in market clearing in the cost curve; "
+            "demand above this share triggers the steel premium instead of pricing off the long tail "
+            "(default 0.95, max 0.995)."
+        ),
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.01"}),
+    )
+
+    iron_market_clearing_share = forms.DecimalField(
+        label="Iron market clearing share",
+        initial=0.95,
+        min_value=0.5,
+        max_value=0.995,
+        max_digits=4,
+        decimal_places=3,
+        required=False,
+        help_text=(
+            "Fraction of total iron cumulative capacity that participates in market clearing in the cost curve; "
+            "demand above this share triggers the iron premium instead of pricing off the long tail "
+            "(default 0.95, max 0.995)."
+        ),
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.01"}),
+    )
+
+    peg_iron_to_steel_price = forms.BooleanField(
+        label="Peg iron price to steel price",
+        initial=False,
+        required=False,
+        help_text="When enabled, iron price is floored at a percentage of the steel price instead of following cost curves alone",
+        widget=forms.CheckboxInput(
+            attrs={"class": "form-check-input field-connected", "id": "id_peg_iron_to_steel_price"}
+        ),
+    )
+
+    iron_to_steel_price_ratio = forms.DecimalField(
+        label="Iron-to-steel price ratio",
+        initial=0.8,
+        min_value=0.0,
+        max_value=1.0,
+        max_digits=3,
+        decimal_places=2,
+        required=False,
+        help_text="Ratio of steel price used as iron price floor when pegging is enabled (0.8 = 80% of steel price)",
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.01"}),
+    )
+
+    opening_balance_multiplier = forms.DecimalField(
+        label="Plant opening balance multiplier",
+        initial=1.0,
+        min_value=0.0,
+        max_value=100.0,
+        max_digits=5,
+        decimal_places=2,
+        required=False,
+        help_text="Scales the opening cash balance for plants at simulation start: 1.0 gives each furnace group enough to fund one renovation, 0.0 starts with empty balances",
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.01"}),
     )
 
     construction_time = forms.IntegerField(
@@ -343,6 +435,25 @@ class ModelRunCreateForm(forms.ModelForm):
         widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
     )
 
+    enable_furnace_group_clustering = forms.BooleanField(
+        label="Enable furnace group clustering",
+        initial=False,
+        required=False,
+        help_text="Speed up trade calculations by grouping similar furnace groups (same technology, reductant, and country) into clusters",
+        widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
+    )
+
+    cluster_hot_metal_techs_by_plant_group = forms.BooleanField(
+        label="Cluster hot metal technologies by plant group",
+        initial=False,
+        required=False,
+        help_text=(
+            "Cluster furnace groups consuming/producing closely-allocated commodities by plant group "
+            "instead of country, keeping cold/hot commodity substitution local (requires clustering on)"
+        ),
+        widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
+    )
+
     # Demand and Circularity fields
     total_steel_demand_scenario = forms.ChoiceField(
         choices=SCENARIO_CHOICES,
@@ -372,6 +483,14 @@ class ModelRunCreateForm(forms.ModelForm):
         required=False,
         help_text="Select scenario for scrap generation and circularity",
         widget=forms.Select(attrs={"class": "form-select field-connected"}),
+    )
+
+    chosen_grid_emissions_scenario = forms.ChoiceField(
+        choices=[],
+        initial="Business As Usual",
+        required=False,
+        help_text="Trajectory of grid electricity emissivity used to compute indirect emissions for each furnace group.",
+        widget=forms.Select(attrs={"class": "form-select"}),
     )
 
     # Placeholder for circularity file selection
@@ -612,11 +731,31 @@ class ModelRunCreateForm(forms.ModelForm):
         else:
             self.fields["data_preparation"].empty_label = "No data preparations available"
 
+        # Populate grid emissivity scenario choices from the resolved data preparation.
+        active_prep = None
+        prep_id = (self.data.get("data_preparation") if self.data else None) or self.initial.get("data_preparation")
+        if prep_id:
+            try:
+                active_prep = DataPreparation.objects.get(pk=prep_id, status=DataPreparation.Status.READY)
+            except (DataPreparation.DoesNotExist, ValueError, TypeError):
+                active_prep = None
+        if active_prep is None and ready_preparations.exists():
+            active_prep = ready_preparations.first()
+
+        scenarios = active_prep.get_region_emissivity_scenarios() if active_prep is not None else []
+        self.fields["chosen_grid_emissions_scenario"].choices = [(s, s) for s in scenarios]
+        # Override field-level "Business As Usual" only when it is missing from the prep
+        if scenarios and "Business As Usual" not in scenarios:
+            self.fields["chosen_grid_emissions_scenario"].initial = scenarios[0]
+
     class Meta:
         model = ModelRun
         fields = [
             # General
             "name",
+            # Simulation Parameters
+            "randomise_seed",
+            "random_seed",
             # Years
             "start_year",
             "end_year",
@@ -625,6 +764,11 @@ class ModelRunCreateForm(forms.ModelForm):
             "global_risk_free_rate",
             "steel_price_buffer",
             "iron_price_buffer",
+            "steel_market_clearing_share",
+            "iron_market_clearing_share",
+            "peg_iron_to_steel_price",
+            "iron_to_steel_price_ratio",
+            "opening_balance_multiplier",
             "construction_time",
             "consideration_time",
             # Plant Construction Settings
@@ -642,6 +786,9 @@ class ModelRunCreateForm(forms.ModelForm):
             # Policy Settings
             "use_iron_ore_premiums",
             "include_tariffs",
+            "enable_furnace_group_clustering",
+            "cluster_hot_metal_techs_by_plant_group",
+            "chosen_grid_emissions_scenario",
             # Demand and Circularity
             "total_steel_demand_scenario",
             "green_steel_demand_scenario",
@@ -683,6 +830,23 @@ class ModelRunCreateForm(forms.ModelForm):
         if start_year and end_year:
             if end_year < start_year:
                 raise forms.ValidationError("End year must be after start year.")
+
+        # Randomise seed handling: client-side JS draws the seed and writes it into
+        # `random_seed` when the box is ticked, so the user sees the value being used.
+        # We trust whatever value arrives, falling back to a fresh seed only as a
+        # defence-in-depth for clients without JS. `randomise_seed` is a UI-only flag
+        # and is not part of SimulationConfig, so it is removed here.
+        import secrets
+
+        randomise = cleaned_data.pop("randomise_seed", False)
+        if cleaned_data.get("random_seed") is None:
+            cleaned_data["random_seed"] = secrets.randbelow(2**31) if randomise else 42
+
+        # cluster_hot_metal_techs_by_plant_group is a no-op unless
+        # enable_furnace_group_clustering is also on; coerce to False so the
+        # stored config reflects actual runtime behaviour.
+        if not cleaned_data.get("enable_furnace_group_clustering"):
+            cleaned_data["cluster_hot_metal_techs_by_plant_group"] = False
 
         # Set default values for fields that are not required but need values
         if not cleaned_data.get("scrap_generation_scenario"):

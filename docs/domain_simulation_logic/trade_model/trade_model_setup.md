@@ -85,6 +85,17 @@ The model represents the global steel value chain as a network:
 - Production/extraction cost
 - One process type per commodity (e.g., all scrap sources "scrap_supply")
 
+**Per-year supplier fields.** `Supplier` exposes time-varying capacity, production cost, mine cost and mine price as dicts keyed by `Year`:
+
+| Field | Lookup |
+|-------|--------|
+| `capacity_by_year[year]` | Volumes (tonnes) available that year |
+| `production_cost_by_year[year]` | Production / extraction cost ($/t) |
+| `mine_cost_by_year[year]` | Mine-level cost ($/t), iron-ore mines only |
+| `mine_price_by_year[year]` | Mine-level price ($/t), iron-ore mines only |
+
+Trade-LP setup, the average-commodity-price calculation in `Environment.calculate_average_commodity_price_per_region()`, and downstream callers all read the value for the current simulation year. The same per-year structure applies to non-mine suppliers (scrap, etc.) — they simply populate a flat constant across years if their underlying input has no annual variation. Suppliers whose `production_cost_by_year` does not contain the current year are silently skipped from the average-price calculation.
+
 ---
 
 ### 3. Constraint Functions
@@ -113,17 +124,30 @@ The model represents the global steel value chain as a network:
 - Accumulates multiple taxes on same route
 - Green steel exemptions reduce effective tariff: `effective_tariff = base_tariff × exemption_fraction`
 
+**`From ISO3` / `To ISO3` syntax in the `Tariffs` master-input sheet.** Each entry resolves to a list of ISO3 codes via `_resolve_iso3_or_bloc_entry()`:
+
+| Entry | Resolves to |
+|-------|-------------|
+| `<ISO3>` (e.g. `CHN`) | The single country |
+| `<bloc>` (e.g. `EU`) | All countries flagged for that bloc on the `Country mapping` sheet |
+| `NOT <bloc>` (e.g. `NOT EU`) | All countries *not* flagged for that bloc |
+| `NOT <ISO3>` (e.g. `NOT DEU`) | All known countries except that one |
+| `*` | Kept as a literal wildcard for downstream matching |
+
+Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASEAN`, `RCEP`. Membership comes from boolean columns on each `CountryMapping` record (the legacy `Trade bloc definitions` sheet with one column per region marked `X` is no longer read). For `NOT <X>`, the resolver first looks up `<X>` as a bloc and falls back to treating it as an ISO3 code; an unknown `<X>` raises `ValueError` rather than silently producing the universe. Adding a new bloc requires (a) adding a boolean column to the `Country mapping` sheet, (b) adding the field to the `CountryMapping` model, and (c) appending the bloc name to `supported_blocs` in `read_tariffs()` / `find_iso3s_of_trade_bloc()`.
+
 ---
 
 #### `fix_to_zero_allocations_where_distance_doesnt_match_commodity()`
-**Purpose:** Enforces physical distance constraints on commodity transport.
+**Purpose:** Enforces physical locality constraints on commodity transport at the LP stage.
 
-**Logic:**
-- **Hot metal**: Can only travel short distances (~100km) due to cooling
-- **Pig iron/steel**: Made for long-distance transport
-- Fixes LP variables to zero for infeasible distance-commodity pairs
+**Three modes, selected by config:**
 
-**Applied before solving** and reduces model size.
+1. **Clustering disabled (legacy):** Distance-based fixing against `hot_metal_radius` — hot commodities zeroed beyond the radius, cold commodities zeroed inside it.
+2. **Clustering enabled, iso3 keying:** Hot commodities are fixed to zero across iso3 boundaries; cold commodities remain free. Per-FG radius enforcement is deferred to disaggregation.
+3. **Clustering enabled, plant-group keying** (`cluster_hot_metal_techs_by_plant_group=True`): hot commodities are additionally zeroed between meta-furnace-groups with different `plant_group_id`. Same-plant-group pairs, and pairs involving non-meta-FG process centres (suppliers / demand), fall through to the iso3 rule.
+
+**Applied before solving** and reduces model size. Emits a `[LP HOT-METAL] Fixed to zero: X cross-country, Y cross-plant-group, Z missing-iso3 ...` summary per year.
 
 ---
 
@@ -199,9 +223,19 @@ The model represents the global steel value chain as a network:
 - `active_statuses`: Which furnace states to include (e.g., ["operating", "mothballed"])
 
 **Physical constraints:**
-- `hot_metal_radius`: Maximum hot metal transport distance (~100km)
-- `closely_allocated_products`: Commodities limited to short distances
-- `distantly_allocated_products`: Commodities requiring long transport
+- `hot_metal_radius`: Maximum transport distance for hot commodities (~5 km by default). Enforced in several layers:
+  1. **LP-build time** — international hot-commodity flows (different ISO3) are fixed to zero via `fix_to_zero_allocations_where_distance_doesnt_match_commodity()`. When `cluster_hot_metal_techs_by_plant_group=True`, hot flows between meta-FGs with different `plant_group_id` are additionally zeroed.
+  2. **Clustering** — BOF FGs with no active BF/ESF/SR within radius in the same country are excluded from their cluster. BOF cluster capacity is capped at `min(physical_cap, Σ[reachable_BF_cap] / min_hot_metal_share)` so the LP cannot over-allocate.
+  3. **Disaggregation pre-pass (strict)** — hot flows to destinations with a BOM minimum-share constraint are solved under strict radius with per-FG physical-capacity caps: radius-violating edges are omitted from the min-cost-flow graph, and when a geographic pocket can't physically meet its demand, destination demand is scaled down (producing downstream shortfalls the drift mechanism rebalances).
+  4. **Drift + rebalance** — clusters whose actual joint-strict flow differs from LP get their Case 2 (cluster → demand) batches scaled by the drift factor and their Case 3 (supplier → cluster) batches rebalanced so per-cluster demand matches actual production × BOM ratio while per-supplier totals stay below LP (mine capacity hard-bounded).
+  5. **Disaggregation (relabeling)** — hot flows without a binding minimum constraint that exceed the radius are relabeled to their cold equivalent (e.g. `dri_high` → `hbi_high`, `hot_metal` → `pig_iron`).
+  6. **Post-disaggregation** — physical capacity and BOM consistency are validated for every FG; any BOF FG that received insufficient hot metal has its utilisation corrected downward.
+- `closely_allocated_products`: Hot commodities limited to short distances (`hot_metal`, `dri_high`/`dri_mid`/`dri_low`, `liquid_iron`).
+- `distantly_allocated_products`: Cold equivalents that ship globally (`pig_iron`, `hbi_high`/`hbi_mid`/`hbi_low`, `electrolytic_iron`).
+- `enable_furnace_group_clustering`: When enabled, the LP works with meta-furnace-groups (clusters of same-technology-reductant-country FGs) to reduce problem size; all radius and minimum-ratio enforcement runs at disaggregation time as described above.
+- `cluster_hot_metal_techs_by_plant_group`: When clustering is enabled, FGs whose `effective_primary_feedstocks` touch a closely-allocated commodity (as `metallic_charge` or `outputs`) cluster by `plant.ultimate_plant_group` instead of `iso3`. Stored on each `MetaFurnaceGroup.plant_group_id` and consumed by the LP's cross-plant-group zero-fix rule (#1 above). Non-affected techs keep iso3 keying; the `[CLUSTERING]` log line reports the split per year. No effect when `enable_furnace_group_clustering` is off.
+
+See the "Disaggregation: Hot-Metal Radius + Minimum-Ratio Enforcement" section in `overview_trade_model.md` for full details.
 
 **Economic data:**
 - `primary_products`: Which commodities to optimize (["steel", "iron"])

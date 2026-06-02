@@ -222,6 +222,10 @@ class SimulationCheckpoint:
     def _serialize_repository(self, uow: UnitOfWork) -> dict:
         """
         Serialize repository state using JsonRepository export functionality.
+
+        Plant group entries carry exactly three fields — ``plant_group_id``, ``plants``
+        (list of plant ids), and ``balance``. The restore path is not yet wired;
+        ``LoadCheckpoint`` is tracked separately.
         """
         # Use the JsonRepository's export functionality if available
         # Otherwise, manually serialize domain objects
@@ -235,6 +239,14 @@ class SimulationCheckpoint:
             ],
             "suppliers": [
                 s.to_dict() if hasattr(s, "to_dict") else s.__dict__ for s in uow.repository.suppliers.list()
+            ],
+            "plant_groups": [
+                {
+                    "plant_group_id": pg.plant_group_id,
+                    "plants": [p.plant_id for p in pg.plants],
+                    "balance": pg.balance,
+                }
+                for pg in uow.repository.plant_groups.list()
             ],
             # Add other repository collections as needed
         }

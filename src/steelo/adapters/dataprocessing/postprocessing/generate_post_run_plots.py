@@ -4,10 +4,8 @@ import pandas as pd
 from typing import Optional, TYPE_CHECKING
 
 from steelo.domain.constants import T_TO_KT, T_TO_MT
-from steelo.utilities.plotting import (
-    plot_added_capacity_by_technology,
-    plot_cost_curve_step_from_dataframe,
-)
+
+# from steelo.utilities.plotting import plot_added_capacity_by_technology  # superseded by stacked variant
 from steelo.utilities.steeliq_plotter import SteelPlotter, PlotConfig
 
 logger = logging.getLogger(__name__)
@@ -34,11 +32,27 @@ def generate_post_run_cap_prod_plots(
     capacity_limit,
     steel_demand,
     iron_demand,
+    steel_market_clearing_share: float,
+    iron_market_clearing_share: float,
+    steel_price_buffer: float,
+    iron_price_buffer: float,
+    steel_demand_by_year: dict[int, float],
     plot_paths: Optional["PlotPaths"] = None,
 ):
     """
-    Generate and store plots related to the post_process collected data file path
+    Generate and store plots related to the post_process collected data file path.
 
+    Args:
+        steel_market_clearing_share: Fraction of steel cumulative capacity that participates in
+            market clearing on the cost-curve plots; must match the engine value so plot and engine
+            agree on the displayed clearing price.
+        iron_market_clearing_share: Same for iron.
+        steel_price_buffer: USD/tonne shortage premium added when demand exceeds the dispatchable
+            slice; must match the engine value.
+        iron_price_buffer: Same for iron.
+        steel_demand_by_year: ``{year: env.current_demand_at_year}`` captured during the
+            simulation. Steel cost-curve charts clear against this demand so the chart price
+            matches the engine's runtime price. Iron continues to use realised production.
     """
     # output_df = pd.read_csv(settings.output_dir / "post_processed_2025-06-02 21-41.csv")
     output_df = pd.read_csv(file_path)
@@ -55,6 +69,7 @@ def generate_post_run_cap_prod_plots(
         output_df["production"] = output_df["production"] * T_TO_KT
         steel_demand = steel_demand * T_TO_KT
         iron_demand = iron_demand * T_TO_KT
+        steel_demand_by_year = {y: d * T_TO_KT for y, d in steel_demand_by_year.items()}
         units = "kt"
         units_pa = "ktpa"
     elif capacity_mean >= 1e6:
@@ -62,17 +77,21 @@ def generate_post_run_cap_prod_plots(
         output_df["production"] = output_df["production"] * T_TO_MT
         steel_demand = steel_demand * T_TO_MT
         iron_demand = iron_demand * T_TO_MT
+        steel_demand_by_year = {y: d * T_TO_MT for y, d in steel_demand_by_year.items()}
         units = "Mt"
         units_pa = "Mtpa"
     else:
         units = "t"
         units_pa = "tpa"
 
-    plot_added_capacity_by_technology(output_df, units_pa, plot_paths=plot_paths)
+    # Superseded by plot_capacity_development_by_technology_stacked, which carries the same info
+    # with retirements visible. Kept commented out for now in case we need to re-enable.
+    # plot_added_capacity_by_technology(output_df, units_pa, plot_paths=plot_paths)
 
     # Use SteelPlotter for capacity development to get consistent styling and footer
     plotter = SteelPlotter(config=PlotConfig(), plot_paths=plot_paths)
-    plotter.plot_capacity_development_by_technology(data_file=output_df, units=units_pa)
+    plotter.plot_capacity_development_by_technology(data_file=output_df, product_type="steel", units=units_pa)
+    plotter.plot_capacity_development_by_technology(data_file=output_df, product_type="iron", units=units_pa)
 
     # Get the first and last years available in the data for cost curves
     if "year" in output_df.columns:
@@ -87,8 +106,9 @@ def generate_post_run_cap_prod_plots(
         last_year = None
 
     if last_year:
-        # Recompute demand with duplicate furnace rows collapsed so the cost curve lines are accurate.
-        steel_demand = _sum_unique_furnace_output(output_df, "steel", last_year)
+        # Steel uses the engine's recorded current_demand so the chart matches the line plot.
+        # Iron stays on realised production (capped by available supply) per modelling intent.
+        steel_demand = steel_demand_by_year[last_year]
         iron_demand = _sum_unique_furnace_output(output_df, "iron", last_year)
 
         # Generate cost curve plots in 5-year increments
@@ -106,68 +126,75 @@ def generate_post_run_cap_prod_plots(
 
         # Generate cost curve plots for each selected year
         for year in years_to_plot:
-            # Compute demand for this specific year
-            year_steel_demand = _sum_unique_furnace_output(output_df, "steel", year)
+            # Steel demand: engine's recorded current_demand. Iron: realised production sum.
+            year_steel_demand = steel_demand_by_year[year]
             year_iron_demand = _sum_unique_furnace_output(output_df, "iron", year)
 
             # Generate cost curves by region and technology for both steel and iron
             for product_type, year_demand in [("steel", year_steel_demand), ("iron", year_iron_demand)]:
+                share = steel_market_clearing_share if product_type == "steel" else iron_market_clearing_share
+                buffer = steel_price_buffer if product_type == "steel" else iron_price_buffer
                 for aggregation in ["region", "technology"]:
                     try:
-                        plot_cost_curve_step_from_dataframe(
-                            output_df,
-                            product_type,
-                            year_demand,
-                            year,
-                            capacity_limit,
-                            units,
+                        plotter.plot_cost_curve_step(
+                            data_file=output_df,
+                            product_type=product_type,
+                            product_demand=year_demand,
+                            year=year,
+                            capacity_limit=capacity_limit,
+                            units=units,
+                            clearing_share=share,
+                            price_buffer=buffer,
                             aggregation=aggregation,
-                            plot_paths=plot_paths,
                         )
                         logger.info(f"Generated {product_type} cost curve by {aggregation} for {year}")
                     except Exception as e:
                         logger.warning(f"Could not generate {product_type} cost curve by {aggregation} for {year}: {e}")
 
         # Also generate the simple cost curve for the last year (backward compatibility)
-        plot_cost_curve_step_from_dataframe(
-            output_df,
-            "steel",
-            steel_demand,
-            last_year,
-            capacity_limit,
-            units,
+        plotter.plot_cost_curve_step(
+            data_file=output_df,
+            product_type="steel",
+            product_demand=steel_demand,
+            year=last_year,
+            capacity_limit=capacity_limit,
+            units=units,
+            clearing_share=steel_market_clearing_share,
+            price_buffer=steel_price_buffer,
             aggregation="region",
-            plot_paths=plot_paths,
         )
-        plot_cost_curve_step_from_dataframe(
-            output_df,
-            "iron",
-            iron_demand,
-            last_year,
-            capacity_limit,
-            units,
+        plotter.plot_cost_curve_step(
+            data_file=output_df,
+            product_type="iron",
+            product_demand=iron_demand,
+            year=last_year,
+            capacity_limit=capacity_limit,
+            units=units,
+            clearing_share=iron_market_clearing_share,
+            price_buffer=iron_price_buffer,
             aggregation="region",
-            plot_paths=plot_paths,
         )
-        plot_cost_curve_step_from_dataframe(
-            output_df,
-            "steel",
-            steel_demand,
-            last_year,
-            capacity_limit,
-            units,
+        plotter.plot_cost_curve_step(
+            data_file=output_df,
+            product_type="steel",
+            product_demand=steel_demand,
+            year=last_year,
+            capacity_limit=capacity_limit,
+            units=units,
+            clearing_share=steel_market_clearing_share,
+            price_buffer=steel_price_buffer,
             aggregation="technology",
-            plot_paths=plot_paths,
         )
-        plot_cost_curve_step_from_dataframe(
-            output_df,
-            "iron",
-            iron_demand,
-            last_year,
-            capacity_limit,
-            units,
+        plotter.plot_cost_curve_step(
+            data_file=output_df,
+            product_type="iron",
+            product_demand=iron_demand,
+            year=last_year,
+            capacity_limit=capacity_limit,
+            units=units,
+            clearing_share=iron_market_clearing_share,
+            price_buffer=iron_price_buffer,
             aggregation="technology",
-            plot_paths=plot_paths,
         )
 
     # BY REGION - Using SteelPlotter for consistent styling and footers

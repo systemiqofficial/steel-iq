@@ -28,7 +28,7 @@ To experiment with bespoke datasets:
    ```bash
    run_simulation \
      --plants-json ./my_data/plants.json \
-     --demand-xlsx ./my_data/demand.xlsx \
+     --demand-excel ./my_data/demand.xlsx \
      --output-dir ./custom_run
    ```
 
@@ -106,44 +106,43 @@ The programmatic approach gives you full control over the simulation configurati
 
 ```python
 from pathlib import Path
+from steelo.bootstrap import bootstrap_simulation
 from steelo.simulation import SimulationConfig
-from steelo.simulation_runner import create_simulation_runner
 from steelo.domain import Year
 
 config = SimulationConfig.from_data_directory(
     start_year=Year(2025),
     end_year=Year(2030),
     data_dir=Path("./data"),
-    output_dir=Path("./test_outputs")
+    output_dir=Path("./test_outputs"),
 )
 
-runner = create_simulation_runner(config)
+runner = bootstrap_simulation(config)
 results = runner.run()
 
-# Access results
-print(f"Final steel price: {results['price']}")
-print(f"Total production: {results['production']}")
+# results is {"price": trace_price, "cost": cost_breakdown,
+#             "capacity": trace_capacity, "production": trace_production}
+# trace_price has shape {year: {product: price_usd_per_t}}
+print(f"2030 steel price: {results['price'][2030]['steel']}")
+print(f"2030 production: {results['production'][2030]}")
 ```
 
 ### Custom Paths Example
 
+`SimulationConfig.from_data_directory()` accepts override kwargs that are forwarded to `SimulationConfig.__init__`. Use it to point at a non-default data directory and tweak any config field — including `plots_dir`, `start_year`/`end_year`, `scrap_generation_scenario`, and so on:
+
 ```python
-config = SimulationConfig(
-    # Custom output paths
-    output_dir=Path("./custom_outputs"),
-    plots_dir=Path("./custom_outputs/plots"),
-    
-    # Custom input data
-    plants_json_path=Path("./my_data/plants.json"),
-    demand_center_xlsx=Path("./my_data/demand.xlsx"),
-    cost_of_x_csv=Path("./my_data/cost_of_x.json"),
-    
-    # Time and parameters
+config = SimulationConfig.from_data_directory(
     start_year=Year(2025),
     end_year=Year(2050),
+    data_dir=Path("./my_data"),                      # contains master_input.xlsx + fixtures/
+    output_dir=Path("./custom_outputs"),
+    plots_dir=Path("./custom_outputs/plots"),        # defaults to output_dir/plots
     scrap_generation_scenario="high_recycling",
 )
 ```
+
+Per-file path overrides (e.g. swapping in a single plants JSON or demand Excel) are exposed through the CLI's `--plants-json`, `--demand-excel`, `--location-csv` and `--cost-of-x-csv` flags rather than as `SimulationConfig` fields. For programmatic single-file overrides, point `data_dir` at a directory that contains the customised files using the standard layout.
 
 ### Technology Constraints Example
 
@@ -405,7 +404,7 @@ uv run src/django/manage.py prepare_default_data
 
 # Start services
 uv run src/django/manage.py runserver
-uv run src/django/manage.py db_worker  # in separate terminal
+uv run src/django/manage.py steelo_worker  # in separate terminal
 ```
 
 ### Detailed Steps
@@ -447,7 +446,7 @@ This command will:
 - `--geo-version`: Specific version of geo-data to use (e.g., '1.1.0-dev')
 - `--master-excel-id`: ID of a MasterExcelFile to use (if you've uploaded one)
 - `--quiet`: Hide detailed output (only show summary)
-- `--no-check-files`: Skip file existence checking
+- `--with-master-excel`: Include the master Excel file in preparation (default: True; deprecated flag — master Excel is always used)
 
 Note: The master Excel file is now mandatory for data preparation. The command uses a centralized data preparation service that ensures consistent file tracking across all data preparation methods.
 
@@ -464,7 +463,7 @@ In a separate terminal, start the task worker that handles simulation execution:
 
 ```bash
 # Start the background worker for running simulations
-uv run src/django/manage.py db_worker
+uv run src/django/manage.py steelo_worker
 ```
 
 The worker ensures the web interface remains responsive during long-running simulations.

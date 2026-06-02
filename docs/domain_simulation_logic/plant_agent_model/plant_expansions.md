@@ -18,12 +18,15 @@ This function serves as the central expansion decision engine for plant groups, 
 ```mermaid
 graph TD
     A[Start Expansion Evaluation] --> B[Evaluate All Expansion Options]
-    B --> C{Any Options Available?}
+    B -->|Per plant, per tech| B1{Plant balance ≥ equity needed?}
+    B1 -->|No| B2[Skip this plant-tech combo]
+    B1 -->|Yes| B3[Compute NPV]
+    B3 --> C{Any Options Available?}
     C -->|No| D[Return None]
     C -->|Yes| E[Select Highest NPV Option]
     E --> F{NPV > 0?}
     F -->|No| D
-    F -->|Yes| G[Check Balance Sufficiency]
+    F -->|Yes| G[Check Group Balance Sufficiency]
     G --> H{Sufficient Balance?}
     H -->|No| D
     H -->|Yes| I[Probabilistic Acceptance]
@@ -48,12 +51,14 @@ graph TD
   - Log plant group ID, current year, capacity requirements
   - Log available balance and number of plants
   - Log configuration (probabilistic agents, equity share)
-- **Key Variables**: `self.plant_group_id`, `current_year`, `capacity`, `self.total_balance`
+- **Key Variables**: `self.plant_group_id`, `current_year`, `capacity`, `self.balance`
 
 ### Stage 2: Evaluate All Expansion Options
 - **Purpose**: Calculate NPV for all possible technology expansions across all plants
 - **Actions**:
   - Call `evaluate_expansion_options()` to get NPV for each plant-technology combination
+  - **Per-(plant, tech) affordability pre-filter**: For each combination, check that the group treasury can cover `capex × capacity × equity_share` before computing NPV. Combinations the group cannot afford are skipped so max-NPV selection picks from affordable candidates only.
+  - **P3 CO2 storage gate (pre-NPV)**: For each CCS candidate, the gate computes `get_co2_need_by_name(tech, capacity, reductant)` and compares against `get_co2_headroom(iso3, current_year + construction_time)`. If `need > headroom` the tech is dropped before NPV is computed, so the per-plant NPV race naturally picks the next-best non-CCS alternative (or yields no expansion for that plant). Reductant lookup is two-level (PlantGroup-local first, env fallback) to stay aligned with the downstream `get_bom_from_avg_boms` call — gate and NPV see the same reductant.
   - Consider regional CAPEX, subsidies, dynamic feedstocks
   - Pass all subsidy information for proper NPV calculation
 - **Decision**: Which technologies can be built at which plants?
@@ -85,19 +90,21 @@ graph TD
 
 ### Stage 6: Check Balance Sufficiency
 - **Purpose**: Verify plant group has sufficient funds for equity portion
-- **Calculation**: `equity_needed = capacity × capex`
+- **Calculation**: `equity_needed = capex × capacity × equity_share`
 - **Decision Point**: Does plant group have enough balance?
 - **Actions**:
-  - Compare `self.total_balance` with `equity_needed`
+  - Compare `self.balance` with `equity_needed`
   - If insufficient: Log shortfall and return None
   - If sufficient: Log success and continue
-- **Note**: Balance deduction happens at FurnaceGroup level, not here
-- **Example**: 2,500 kt capacity × $500/t = $1,250,000 equity needed
+- **Note**: The debit lands in the ``add_furnace_group_to_plant`` handler via
+  ``plant_group.deduct_equity(cmd.equity_needed, reason="expansion")`` once the
+  factory has attached the new furnace to the plant.
+- **Example**: 2,500 kt capacity × $500/t × 20% equity_share = $250,000 equity needed
 
 ### Stage 7: Probabilistic Acceptance
 - **Purpose**: Model investment decision uncertainty
 - **Calculation**:
-  - Probabilistic mode: `probability = exp(-(investment_cost) / NPV)`
+  - Probabilistic mode: `probability = exp(-equity_needed / NPV)`
   - Deterministic mode: `probability = 1.0`
 - **Actions**:
   - Generate random number [0, 1]
@@ -217,17 +224,23 @@ Returns either:
 
 ## Side Effects
 
-- **NO Balance Deduction Here**: Balance deduction happens at the FurnaceGroup level via command handler, not in this function
+- **No balance mutation in this function**: The debit is performed by the
+  ``add_furnace_group_to_plant`` handler, which calls
+  ``plant_group.deduct_equity(cmd.equity_needed, reason="expansion")`` after the
+  factory has attached the new furnace to the plant.
 - **Command Creation**: Generates AddFurnaceGroup command for message bus processing
 - **Logging**: Extensive debug logging throughout the decision process
 
 ## Important Notes
 
-1. **Balance Management**:
-   - Balance check happens in Stage 6 but deduction occurs elsewhere
-   - The command handler deducts equity from FurnaceGroup
-   - FurnaceGroup then updates Plant balance
-   - PlantGroup.total_balance is computed from Plant balances
+1. **Balance is pooled at the plant group**:
+   - Both the Stage 2 pre-filter and the Stage 6 gate read ``plant_group.balance``.
+     The equity debit lands on the same group wallet; no plant carries an individual balance.
+   - A lower-balance plant can still "win" max-NPV within the group — the cost
+     is absorbed by the shared treasury, not the plant. This makes sibling plants'
+     operational P&L fungible for group-level expansion financing.
+   - The pre-filter drops `(plant, tech)` pairs the group cannot afford so max-NPV
+     picks from genuinely affordable candidates; Stage 6 is a redundant defensive check.
 
 2. **Capacity Limits**:
    - Separate limits for iron and steel products
@@ -253,3 +266,10 @@ Returns either:
    - Debug level: Detailed stage-by-stage progress
    - Warning level: Capacity limit violations and errors
    - Info level: Successful expansion approvals
+
+7. **Per-ISO3 Indi Plant Groups**:
+   - New plants created by the GEO module are routed into their per-country group (`indi_{iso3}`, e.g. `indi_CHN`, `indi_AUS`) **at birth** by the `AddNewBusinessOpportunities` handler. The per-country group is created lazily on first use via `PlantGroupRepository.register_plant_in_group`.
+   - The master `indi` plant group is the dispatch point for candidate generation (`identify_new_business_opportunities_4indi`) and remains structurally empty — it never holds plants.
+   - Since `evaluate_expansion` runs once per plant group, per-country groups let each country independently expand its new plants (one expansion per country per year, rather than one globally).
+   - The construction-to-operating transition (`simulation.py`) iterates all plants regardless of plant group, so routing is unaffected.
+   - Plants in indi groups are identified by `parent_gem_id.startswith("indi")` rather than an exact match.

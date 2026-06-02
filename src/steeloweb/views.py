@@ -43,7 +43,7 @@ def modelrun_list_fragment(request):
     consistency in filtering, ordering, and select_related optimizations.
     """
     # Reuse the same queryset as the main list view
-    modelruns = ModelRun.objects.all().order_by("-started_at")
+    modelruns = ModelRun.objects.all().order_by("-created_at")
 
     # Future: If ModelRunListView adds select_related() or prefetch_related(),
     # apply the same optimizations here to prevent N+1 queries
@@ -79,8 +79,62 @@ class ModelRunDetailView(DetailView):
             # Technology switches not available - template will handle this gracefully
             context["technology_switches"] = None
 
+        # Sorted, flattened source→target pairs for the Configuration accordion
+        # (alphabetical sort groups all BF entries first, then DRI, etc.)
+        if context["technology_switches"]:
+            context["technology_switches_sorted"] = [
+                (source, target)
+                for source, targets in sorted(context["technology_switches"].items())
+                for target in targets
+            ]
+        else:
+            context["technology_switches_sorted"] = []
+
+        # Sorted per-technology configuration (allowed/from_year/to_year) for accordion
+        tech_settings = (self.object.config or {}).get("technology_settings") or {}
+        context["technology_settings_sorted"] = sorted(tech_settings.items())
+
+        # Capacity limits are stored as tonnes (form value × 1e6). Convert back to Mt for display.
+        cfg = self.object.config or {}
+        cap_iron = cfg.get("capacity_limit_iron")
+        cap_steel = cfg.get("capacity_limit_steel")
+        context["capacity_limit_iron_mt"] = cap_iron / 1_000_000 if cap_iron is not None else None
+        context["capacity_limit_steel_mt"] = cap_steel / 1_000_000 if cap_steel is not None else None
+
         # Get log file path if available
         context["log_file_path"] = get_log_file_path(self.object.id)
+
+        # Split simulation plots: cost curves, emissions, and the production/capacity
+        # group each go into their own collapsible accordions; anything else falls
+        # through to the flat grid.
+        plots_qs = self.object.simulation_plots.all()
+        cost_curve = SimulationPlot.PlotType.COST_CURVE
+        emissions = SimulationPlot.PlotType.EMISSIONS
+        market_prices = SimulationPlot.PlotType.MARKET_PRICES
+        production_capacity = (
+            SimulationPlot.PlotType.CAPACITY_DEVELOPMENT,
+            SimulationPlot.PlotType.PRODUCTION_REGION,
+            SimulationPlot.PlotType.PRODUCTION_TECHNOLOGY,
+            SimulationPlot.PlotType.CAPACITY_REGION,
+            SimulationPlot.PlotType.CAPACITY_TECHNOLOGY,
+        )
+        context["production_and_capacity_plots"] = plots_qs.filter(plot_type__in=production_capacity).order_by(
+            "plot_type", "-product_type", "title"
+        )
+        context["market_prices_plots"] = plots_qs.filter(plot_type=market_prices).order_by("title")
+        context["simulation_plots_other"] = plots_qs.exclude(
+            plot_type__in=[cost_curve, emissions, market_prices, *production_capacity]
+        )
+        context["steel_cost_curves"] = plots_qs.filter(plot_type=cost_curve, product_type="steel").order_by("title")
+        context["iron_cost_curves"] = plots_qs.filter(plot_type=cost_curve, product_type="iron").order_by("title")
+
+        # Emissions: group by boundary (parsed from title after the comma) so each
+        # boundary becomes its own collapsible item — five charts per boundary.
+        emissions_by_boundary: dict[str, list] = {}
+        for plot in plots_qs.filter(plot_type=emissions).order_by("title"):
+            boundary = plot.title.rsplit(", ", 1)[1] if ", " in plot.title else "Other"
+            emissions_by_boundary.setdefault(boundary, []).append(plot)
+        context["emissions_by_boundary"] = emissions_by_boundary
 
         return context
 
@@ -140,7 +194,10 @@ def run_simulation(request, pk):
     request.session.pop("simulation_warning", None)
 
     # Update state to running
+    from django.utils import timezone
+
     modelrun.state = ModelRun.RunState.RUNNING
+    modelrun.run_started_at = timezone.now()
 
     # Start the task and store its ID for tracking
     task_result = run_simulation_task.enqueue(modelrun.pk)
@@ -647,6 +704,7 @@ def create_modelrun(request):
             config = {
                 "start_year": form.cleaned_data["start_year"],
                 "end_year": form.cleaned_data["end_year"],
+                "random_seed": form.cleaned_data.get("random_seed", 42),
                 "plant_lifetime": form.cleaned_data.get("plant_lifetime", 20),
                 "global_risk_free_rate": float(form.cleaned_data.get("global_risk_free_rate") or 0.0209),
                 "steel_price_buffer": float(
@@ -659,6 +717,28 @@ def create_modelrun(request):
                     if form.cleaned_data.get("iron_price_buffer") is not None
                     else 200.0
                 ),
+                "steel_market_clearing_share": float(
+                    form.cleaned_data.get("steel_market_clearing_share")
+                    if form.cleaned_data.get("steel_market_clearing_share") is not None
+                    else 0.95
+                ),
+                "iron_market_clearing_share": float(
+                    form.cleaned_data.get("iron_market_clearing_share")
+                    if form.cleaned_data.get("iron_market_clearing_share") is not None
+                    else 0.95
+                ),
+                "peg_iron_to_steel_price": form.cleaned_data.get("peg_iron_to_steel_price", False),
+                "iron_to_steel_price_ratio": float(
+                    form.cleaned_data.get("iron_to_steel_price_ratio")
+                    if form.cleaned_data.get("iron_to_steel_price_ratio") is not None
+                    else 0.8
+                ),
+                "opening_balance_multiplier": float(
+                    form.cleaned_data.get("opening_balance_multiplier")
+                    if form.cleaned_data.get("opening_balance_multiplier") is not None
+                    else 1.0
+                ),
+                "consideration_time": form.cleaned_data.get("consideration_time", 3),
                 "construction_time": form.cleaned_data.get("construction_time", 4),
                 "probabilistic_agents": form.cleaned_data.get("probabilistic_agents", True),
                 "probability_of_announcement": float(form.cleaned_data.get("probability_of_announcement") or 0.7),
@@ -683,6 +763,10 @@ def create_modelrun(request):
                 "use_iron_ore_premiums": form.cleaned_data.get("use_iron_ore_premiums", True),
                 "green_steel_emissions_limit": 0.4,  # Hardcoded - no longer user-configurable
                 "include_tariffs": form.cleaned_data.get("include_tariffs", True),
+                "enable_furnace_group_clustering": form.cleaned_data.get("enable_furnace_group_clustering", False),
+                "cluster_hot_metal_techs_by_plant_group": form.cleaned_data.get(
+                    "cluster_hot_metal_techs_by_plant_group", False
+                ),
                 "output_file": output_file,
                 # Add new demand and circularity fields
                 "total_steel_demand_scenario": form.cleaned_data.get(
@@ -692,6 +776,9 @@ def create_modelrun(request):
                     "green_steel_demand_scenario", "business_as_usual"
                 ),
                 "scrap_generation_scenario": form.cleaned_data.get("scrap_generation_scenario", "business_as_usual"),
+                "chosen_grid_emissions_scenario": form.cleaned_data.get(
+                    "chosen_grid_emissions_scenario", "Business As Usual"
+                ),
                 "circularity_file": form.cleaned_data.get("circularity_file", ""),
                 # Technology fields will be added after extraction from POST data
                 "hydrogen_subsidies": form.cleaned_data.get("hydrogen_subsidies", False),
@@ -897,6 +984,38 @@ def technologies_fragment(request):
 
 
 @require_http_methods(["GET"])
+@require_http_methods(["GET"])
+def grid_emissions_scenario_fragment(request):
+    """
+    HTMX endpoint: returns the grid emissivity scenario <select> for a given prep.
+
+    Always returns 200 with valid HTML to avoid HTMX error states. Falls back to
+    a disabled empty-state select with instructions when no prep is selected,
+    the prep is not ready, or its region_emissivity.json holds no forecast
+    scenarios.
+    """
+    from django.template.loader import render_to_string
+    from django.http import HttpResponse
+
+    prep_id = request.GET.get("data_preparation")
+    selected = request.GET.get("chosen_grid_emissions_scenario", "Business As Usual")
+
+    scenarios: list[str] = []
+    if prep_id:
+        try:
+            prep = DataPreparation.objects.get(pk=prep_id, status=DataPreparation.Status.READY)
+            scenarios = prep.get_region_emissivity_scenarios()
+        except (DataPreparation.DoesNotExist, ValueError, TypeError):
+            scenarios = []
+
+    html = render_to_string(
+        "steeloweb/partials/_grid_emissions_scenario_select.html",
+        {"scenarios": scenarios, "selected": selected},
+        request=request,
+    )
+    return HttpResponse(html, status=200)
+
+
 def dataset_metadata_fragment(request):
     """
     HTMX endpoint: returns dataset metadata information for a given data preparation.
@@ -985,6 +1104,19 @@ def get_modelrun_progress(request, pk):
     return render(request, "steeloweb/includes/progress_bar.html", context)
 
 
+def _missing_image_response(request, pk, message):
+    """Render a popup-only message when ?popup=1, else flash + redirect to detail.
+
+    Without this, the redirect lands on the full modelrun-detail page inside the
+    popup window, exposing the whole site UI when only an "X not available"
+    notice is wanted.
+    """
+    if request.GET.get("popup") == "1":
+        return render(request, "steeloweb/popup_message.html", {"popup": True, "message": message})
+    messages.error(request, message)
+    return redirect("modelrun-detail", pk=pk)
+
+
 def view_cost_map(request, pk, map_type):
     """
     View for displaying cost maps (LCOE or LCOH)
@@ -1004,18 +1136,23 @@ def view_cost_map(request, pk, map_type):
             raise Http404("Invalid map type")
 
         if not image:
-            messages.error(
+            return _missing_image_response(
                 request,
+                pk,
                 f"{title} not available for this model run. "
                 f"This may occur if plot generation failed or certain configuration options were selected.",
             )
-            return redirect("modelrun-detail", pk=pk)
 
-        context = {"modelrun": modelrun, "image": image, "title": title, "map_type": map_type}
+        context = {
+            "modelrun": modelrun,
+            "image": image,
+            "title": title,
+            "map_type": map_type,
+            "popup": request.GET.get("popup") == "1",
+        }
         return render(request, "steeloweb/result_map.html", context)
     except ResultImages.DoesNotExist:
-        messages.error(request, "No result images available for this model run")
-        return redirect("modelrun-detail", pk=pk)
+        return _missing_image_response(request, pk, "No result images available for this model run")
 
 
 def view_priority_map(request, pk, map_type):
@@ -1037,18 +1174,23 @@ def view_priority_map(request, pk, map_type):
             raise Http404("Invalid map type")
 
         if not image:
-            messages.error(
+            return _missing_image_response(
                 request,
+                pk,
                 f"{title} not available for this model run. "
                 f"This may occur if plot generation failed or certain configuration options were selected.",
             )
-            return redirect("modelrun-detail", pk=pk)
 
-        context = {"modelrun": modelrun, "image": image, "title": title, "map_type": map_type}
+        context = {
+            "modelrun": modelrun,
+            "image": image,
+            "title": title,
+            "map_type": map_type,
+            "popup": request.GET.get("popup") == "1",
+        }
         return render(request, "steeloweb/result_map.html", context)
     except ResultImages.DoesNotExist:
-        messages.error(request, "No result images available for this model run")
-        return redirect("modelrun-detail", pk=pk)
+        return _missing_image_response(request, pk, "No result images available for this model run")
 
 
 def view_plant_visualization(request, pk, visualization_type):
@@ -1081,19 +1223,20 @@ def view_plant_visualization(request, pk, visualization_type):
         image = getattr(result_images, viz_info["field"])
 
         if not image:
-            messages.error(request, f"No {viz_info['title']} visualization available for this model run")
-            return redirect("modelrun-detail", pk=pk)
+            return _missing_image_response(
+                request, pk, f"No {viz_info['title']} visualization available for this model run"
+            )
 
         context = {
             "modelrun": modelrun,
             "image": image,
             "title": viz_info["title"],
             "visualization_type": visualization_type,
+            "popup": request.GET.get("popup") == "1",
         }
         return render(request, "steeloweb/result_map.html", context)
     except ResultImages.DoesNotExist:
-        messages.error(request, "No result images available for this model run")
-        return redirect("modelrun-detail", pk=pk)
+        return _missing_image_response(request, pk, "No result images available for this model run")
 
 
 def upload_circularity_data(request, modelrun_id=None):
@@ -1136,6 +1279,7 @@ def view_simulation_plot(request, pk, plot_id):
         "plot": plot,
         "image": plot.image,
         "title": plot.title,
+        "popup": request.GET.get("popup") == "1",
     }
     return render(request, "steeloweb/simulation_plot.html", context)
 
@@ -1442,22 +1586,35 @@ def prepare_data_with_master_excel(request, pk):
     # (Handles both confirmed warnings and cases where status changed to 'ok')
     request.session.pop(f"data_prep_warning_{pk}", None)
 
-    # Get or create data packages
+    # Get or create data packages at the versions declared in the manifest.
+    # Why: hardcoded versions drift behind the manifest and mislabel packages
+    # in the UI even though the actual extraction reads the manifest.
+    manager = DataManager()
+    core_manifest = manager.manifest.get_package("core-data")
+    geo_manifest = manager.manifest.get_package("geo-data")
+
+    if not core_manifest or not geo_manifest:
+        messages.error(request, "Unable to locate core-data or geo-data package definitions in manifest.json")
+        return redirect("master-excel-detail", pk=pk)
+
+    def _normalize_version(version: str) -> str:
+        return version if version.startswith("v") else f"v{version}"
+
     core_package, _ = DataPackage.objects.get_or_create(
         name="core-data",
-        version="v1.0.3",
+        version=_normalize_version(core_manifest.version),
         defaults={
             "source_type": DataPackage.SourceType.S3,
-            "source_url": "s3://steelo-data/core-data-v1.0.3.zip",
+            "source_url": core_manifest.url,
         },
     )
 
     geo_package, _ = DataPackage.objects.get_or_create(
         name="geo-data",
-        version="v1.1.0",
+        version=_normalize_version(geo_manifest.version),
         defaults={
             "source_type": DataPackage.SourceType.S3,
-            "source_url": "s3://steelo-data/geo-data-v1.1.0.zip",
+            "source_url": geo_manifest.url,
         },
     )
 
@@ -1547,7 +1704,7 @@ class DataPreparationDetailView(DetailView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         # Add any simulations using this preparation
-        context["simulations"] = ModelRun.objects.filter(data_preparation=self.object).order_by("-started_at")
+        context["simulations"] = ModelRun.objects.filter(data_preparation=self.object).order_by("-created_at")
         return context
 
 
@@ -1803,62 +1960,90 @@ class ModelRunOutputFilesView(DetailView):
     template_name = "steeloweb/modelrun_output_files.html"
     context_object_name = "modelrun"
 
+    # Explicit overrides win over the general humanise rule.
+    FOLDER_DISPLAY_OVERRIDES = {
+        "plots": "Simulation Plots",
+        "GEO": "Geospatial",
+        "PAM": "Plant Agent Module",
+        "TM": "Trade Module",
+    }
+
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         modelrun = self.object
 
-        # Check if output directory exists
         if not modelrun.output_directory:
-            context["files_by_directory"] = {}
+            context["sections"] = []
             return context
 
         from pathlib import Path
 
         output_path = Path(modelrun.output_directory)
         if not output_path.exists():
-            context["files_by_directory"] = {}
+            context["sections"] = []
             return context
 
-        # Group files by subdirectory
-        files_by_directory = {}
+        sections: list[dict] = []
 
-        # Define the directories we want to scan
-        directories_to_scan = [
-            ("TM", "Trade Module"),
-            ("plots/GEO", "Geospatial Plots"),
-            ("plots/PAM", "Simulation Plots"),
-            (".", "Root Directory"),  # For files in the root output directory
-        ]
+        # Subfolder sections: nest by child folders if present, else list files flat.
+        for sub_dir in ("plots", "Data", "TM"):
+            section = self._build_section(self._humanise_folder_name(sub_dir), output_path / sub_dir, output_path)
+            if section:
+                sections.append(section)
 
-        for dir_path, display_name in directories_to_scan:
-            full_path = output_path / dir_path if dir_path != "." else output_path
+        # Root directory: list only top-level files (don't recurse into known subfolders).
+        root_files = self._list_files(output_path, output_path)
+        if root_files:
+            sections.append({"name": "Root Directory", "files": root_files})
 
-            if full_path.exists() and full_path.is_dir():
-                files = []
-
-                # List all files in this directory (non-recursive)
-                for item in full_path.iterdir():
-                    if item.is_file() and not item.name.startswith("."):
-                        # Get file info
-                        file_info = {
-                            "name": item.name,
-                            "size": item.stat().st_size,
-                            "size_display": self._format_file_size(item.stat().st_size),
-                            "type": self._get_file_type(item.name),
-                            "icon": self._get_file_icon(item.name),
-                            "relative_path": str(item.relative_to(output_path)),
-                            "is_viewable": self._is_viewable(item.name),
-                            "is_image": self._is_image(item.name),
-                        }
-                        files.append(file_info)
-
-                # Sort files by name
-                if files:
-                    files.sort(key=lambda x: x["name"].lower())
-                    files_by_directory[display_name] = files
-
-        context["files_by_directory"] = files_by_directory
+        context["sections"] = sections
         return context
+
+    def _humanise_folder_name(self, name):
+        if name in self.FOLDER_DISPLAY_OVERRIDES:
+            return self.FOLDER_DISPLAY_OVERRIDES[name]
+        parts = name.split("_")
+        return " ".join(p.title() if p.islower() else p for p in parts)
+
+    def _build_section(self, name, dir_path, output_path):
+        if not (dir_path.exists() and dir_path.is_dir()):
+            return None
+        subfolders = sorted(
+            (p for p in dir_path.iterdir() if p.is_dir() and not p.name.startswith(".")),
+            key=lambda p: p.name.lower(),
+        )
+        if subfolders:
+            subsections = []
+            for sub in subfolders:
+                files = self._list_files(sub, output_path)
+                if files:
+                    subsections.append({"name": self._humanise_folder_name(sub.name), "files": files})
+            if subsections:
+                return {"name": name, "subsections": subsections}
+            return None
+        files = self._list_files(dir_path, output_path)
+        if files:
+            return {"name": name, "files": files}
+        return None
+
+    def _list_files(self, dir_path, output_path):
+        files = []
+        for item in dir_path.iterdir():
+            if item.is_file() and not item.name.startswith(".") and item.suffix.lower() != ".pkl":
+                files.append(
+                    {
+                        "name": item.name,
+                        "size": item.stat().st_size,
+                        "size_display": self._format_file_size(item.stat().st_size),
+                        "type": self._get_file_type(item.name),
+                        "icon": self._get_file_icon(item.name),
+                        "relative_path": str(item.relative_to(output_path)),
+                        "is_viewable": self._is_viewable(item.name),
+                        "is_image": self._is_image(item.name),
+                    }
+                )
+        files.sort(key=lambda x: x["name"].lower())
+        return files
 
     def _format_file_size(self, size_bytes):
         """Format file size in human readable format"""
@@ -1882,7 +2067,6 @@ class ModelRunOutputFilesView(DetailView):
             "xlsx": "Excel File",
             "xls": "Excel File",
             "log": "Log File",
-            "pkl": "Pickle File",
             "parquet": "Parquet File",
         }
         return types.get(ext, f"{ext.upper()} File")
@@ -1901,7 +2085,6 @@ class ModelRunOutputFilesView(DetailView):
             "xlsx": "fa-file-excel",
             "xls": "fa-file-excel",
             "log": "fa-file-alt",
-            "pkl": "fa-file-archive",
             "parquet": "fa-database",
         }
         return icons.get(ext, "fa-file")

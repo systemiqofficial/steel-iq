@@ -7,5 +7,6 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   version: process.versions.electron,
-  openLogFile: (logFilePath) => ipcRenderer.invoke('open-log-file', logFilePath)
+  openLogFile: (logFilePath) => ipcRenderer.invoke('open-log-file', logFilePath),
+  onShowAbout: (callback) => ipcRenderer.on('show-about', () => callback()),
 });

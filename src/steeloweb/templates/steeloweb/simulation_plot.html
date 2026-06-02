@@ -1,9 +1,11 @@
 {% extends "base.html" %}
+{% load static %}
 
 {% block title %}{{ title }} - Model Run #{{ modelrun.id }}{% endblock %}
 
 {% block content %}
 <div class="container mt-4">
+    {% if not popup %}
     <div class="d-flex justify-content-between align-items-center mb-4">
         <h1>{{ title }}</h1>
         <div>
@@ -14,25 +16,62 @@
     </div>
 
     {% include "steeloweb/partials/messages.html" %}
+    {% endif %}
 
-    <div class="card mb-4">
+    <div class="card mb-4" id="chartCard">
         <div class="card-header">
-            <h5 class="card-title mb-0">{{ title }}</h5>
+            <div class="d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">{{ title }}</h5>
+                <span class="badge bg-secondary">{% if modelrun.name %}{{ modelrun.name }} {% endif %}#{{ modelrun.id }}</span>
+            </div>
         </div>
         <div class="card-body text-center">
-            <img src="{{ image.url }}" alt="{{ title }}" class="img-fluid">
+            <img src="{{ image.url }}" alt="{{ title }}" class="img-fluid" crossorigin="anonymous">
         </div>
         <div class="card-footer">
             <div class="d-flex justify-content-between align-items-center">
-                <p class="text-muted mb-0">
-                    Results from model run #{{ modelrun.id }}
-                    {% if plot.product_type %}
-                    - {{ plot.product_type|title }}
-                    {% endif %}
-                </p>
-                <span class="badge bg-secondary">{{ plot.get_plot_type_display }}</span>
+                <p class="text-muted mb-0">Results from model run {% if modelrun.name %}{{ modelrun.name }} {% endif %}#{{ modelrun.id }}</p>
+                {% if build_info %}<span class="badge bg-secondary">STEEL-IQ v{{ build_info.version }}</span>{% endif %}
             </div>
         </div>
     </div>
+
+    <div class="d-flex justify-content-end mb-4">
+        <button id="downloadCardBtn" type="button" class="btn btn-primary"
+                data-filename="{{ modelrun.name|default:modelrun.id|slugify }}_{{ title|slugify }}.png">
+            <i class="fas fa-download"></i> Download This Card
+        </button>
+    </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'vendor/html2canvas-1.4.1/html2canvas.min.js' %}"></script>
+<script>
+document.getElementById('downloadCardBtn').addEventListener('click', async function () {
+    const btn = this;
+    const card = document.getElementById('chartCard');
+    const filename = btn.dataset.filename || 'chart.png';
+    const originalHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Rendering…';
+    try {
+        const img = card.querySelector('img');
+        const scale = Math.max(2, Math.min(5, (img && img.naturalWidth && img.clientWidth) ? img.naturalWidth / img.clientWidth : 2));
+        const canvas = await html2canvas(card, { backgroundColor: '#ffffff', scale, useCORS: true });
+        const link = document.createElement('a');
+        link.href = canvas.toDataURL('image/png');
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    } catch (err) {
+        console.error('Download failed:', err);
+        alert('Could not render the card to an image.');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalHtml;
+    }
+});
+</script>
 {% endblock %}

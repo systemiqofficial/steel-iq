@@ -185,12 +185,17 @@ Start
   2. Get market price for product type
   3. Calculate operating subsidies
   4. Apply capex subsidies
-  5. Calculate full NPV including:
+  5. Calculate secondary output adjustment (by-product revenue/cost from `output_energy_costs`)
+  6. Calculate full NPV including:
      - Capex (after subsidies)
      - Operating costs and revenues
      - Carbon costs
      - Debt service
+     - Secondary output adjustment (constant snapshot from current year, applied during operational years only)
 - **Key parameters**: Capacity, utilization, lifetime, financing costs
+- **Note**: Secondary output adjustment is included in NPV for both brownfield (renovation) and greenfield (technology switch) paths, as well as COSA baseline. This captures by-product revenue (e.g., bf_gas, bof_gas, cog, ironmaking_slag), disposal costs (e.g., steelmaking_slag — see `disposal_cost_outputs` in SimulationConfig), and carbon output costs (e.g., co2_stored) in investment decisions.
+- **Construction-year alignment**: `calculate_npv_full` lags the secondary-output adjustment with `zeros` of length `construction_time` so it only contributes during operational years. Earlier code applied the constant to every year of the cash-flow series, including construction — that double-counted upcoming by-product revenue against capex, biasing greenfield NPVs upward.
+- **Greenfield BOM shape**: `Environment.get_bom_from_avg_boms()` produces the BOM dict consumed by `calculate_variable_opex()` on the greenfield path. Each `materials[<feedstock>]` entry must include `total_material_cost` and each `energy[<carrier>]` entry must include `product_volume`; without these keys VOPEX silently collapsed and greenfield NPV was undervalued.
 
 ### Stage 9: Adjust NPV for COSA
 - **Decision**: Is this a technology switch?
@@ -316,13 +321,12 @@ Stage 11-13: Final Checks & Command Generation
 
 ## Detailed Stage Breakdown
 
-### Stage 1: Check Plant Financial Health
-**Decision**: Can the plant afford to invest?
-- **Check**: `plant.balance >= 0`
-- **If negative**: Return `None` (no action possible)
-- **Rationale**: Negative balance = no capital available for investment
+Affordability is checked per-capex at the point of decision against
+``plant_group.balance`` (renovation in Stage 8, switch in Stage 9). A negative
+group balance does not short-circuit evaluation; the historic-loss closure
+threshold in Stage 2 runs unconditionally.
 
-### Stage 2: Check Furnace Group Status
+### Stage 1: Check Furnace Group Status
 **Decision**: Is the furnace group eligible for strategy evaluation?
 - **Check**: Status is not "operating pre-retirement"
 - **If pre-retirement**: Return `None` (already scheduled to close)
@@ -343,11 +347,13 @@ Stage 11-13: Final Checks & Command Generation
 
 ### Stage 4: Filter Allowed Technology Transitions
 **Purpose**: Narrow down technology options based on what's allowed in the current year
-- **Process**: Intersect `allowed_techs[current_year]` with `allowed_furnace_transitions[current_tech]`
+- **Process**: Intersect `allowed_techs[current_year]` with `allowed_furnace_transitions[current_tech]`, then apply the **P2 CO2 storage gate** to drop CCS candidates the country cannot physically support.
+- **P2 gate**: For each surviving CCS tech, the gate computes the plant's annual `get_co2_need(tech, capacity, env-wide reductant)` and compares against `get_co2_headroom(iso3, current_year + construction_time)`. If `need > headroom` the tech is dropped so the NPV race in Stage 5 picks the next-best non-CCS alternative naturally. CCU techs have `co2_stored = 0` in BOM and are never dropped.
 - **Example**:
   - Current tech: BF-BOF
-  - All possible transitions: [BF-BOF, EAF, DRI-EAF, H2-DRI-EAF]
-  - Allowed in 2030: [BF-BOF, EAF, DRI-EAF] (H2-DRI-EAF not yet available)
+  - All possible transitions: [BF-BOF, EAF, DRI-EAF, H2-DRI-EAF, BF+CCS]
+  - Allowed in 2030: [BF-BOF, EAF, DRI-EAF, BF+CCS] (H2-DRI-EAF not yet available)
+  - Plant in a country with no CO2 storage assessed → P2 drops BF+CCS
   - Filtered transitions: [BF-BOF, EAF, DRI-EAF]
 
 ### Stage 5: Calculate NPV for All Technology Options
@@ -405,19 +411,19 @@ Stage 11-13: Final Checks & Command Generation
    - Cost = `CAPEX × capacity × equity_share`
 
 2. **Affordability check**:
-   - If `renovation_cost > plant.balance` → Return `CloseFurnaceGroup`
+   - If `renovation_cost > plant_group.balance` → Return `CloseFurnaceGroup`
    - Rationale: Can't afford to renovate, must close
 
 3. **Execute renovation**:
-   - Deduct cost from plant balance: `plant.balance -= renovation_cost`
+   - Debit the group treasury: `plant_group.deduct_equity(renovation_cost, reason="renovation")`
    - Return `RenovateFurnaceGroup` command
 
 **Example Calculation**:
-- Subsidized renovation CAPEX: $160/tonne
+- Subsidised renovation CAPEX: $160/tonne
 - Capacity: 5 Mt
 - Equity share: 30%
 - Renovation cost: $160 × 5,000,000 × 0.30 = $240,000,000
-- Plant balance: $300,000,000 → **Affordable, renovate**
+- Plant group balance: $300,000,000 → **Affordable, renovate**
 
 ### Stage 10: Handle Technology Switch Scenario
 **Condition**: Best technology ≠ current technology
@@ -428,17 +434,17 @@ Stage 11-13: Final Checks & Command Generation
    - Cost = `CAPEX × capacity × equity_share`
 
 2. **Affordability check**:
-   - If `switch_cost > plant.balance` → Return `None`
+   - If `switch_cost > plant_group.balance` → Return `None`
    - Rationale: Can't afford to switch
 
 3. **Continue to probabilistic adoption** (Stage 11)
 
 **Example Calculation**:
-- Subsidized greenfield CAPEX: $650/tonne
+- Subsidised greenfield CAPEX: $650/tonne
 - Capacity: 5 Mt
 - Equity share: 30%
 - Switch cost: $650 × 5,000,000 × 0.30 = $975,000,000
-- Plant balance: $1,200,000,000 → **Affordable, proceed**
+- Plant group balance: $1,200,000,000 → **Affordable, proceed**
 
 ### Stage 11: Probabilistic Adoption Decision
 **Purpose**: Model real-world hesitation in technology adoption (financing risk, permit delays, market uncertainty)
@@ -505,7 +511,7 @@ if expansion_and_switch_capacity + furnace_capacity > expansion_limit:
 
 ### Stage 13: Execute Technology Switch
 **Final Actions**:
-1. **Update plant balance**: `plant.balance -= switch_cost`
+1. **Debit group treasury**: `plant_group.deduct_equity(switch_cost, reason="switch")`
 2. **Generate command**: Return `ChangeFurnaceGroupTechnology`
 
 **Command includes**:
@@ -533,10 +539,9 @@ if expansion_and_switch_capacity + furnace_capacity > expansion_limit:
 
 ### 4. `None`
 - **When**:
-  - Plant has negative balance
   - Furnace group pre-retirement
   - All NPVs negative or zero
-  - Cannot afford switch
+  - Cannot afford switch (group balance too low)
   - Probabilistic rejection
   - Capacity limit exceeded
   - Current tech optimal but lifetime not expired
@@ -544,11 +549,11 @@ if expansion_and_switch_capacity + furnace_capacity > expansion_limit:
 ## Data Dependencies
 
 ### For Strategic Decisions (`evaluate_furnace_group_strategy`)
-- `plant.balance`: Available capital for investment
+- `plant_group.balance`: Group treasury — gates renovation and switch affordability
 - `furnace_group.status`: Operating status
 - `furnace_group.historic_balance`: Cumulative profit/loss
 - `furnace_group.lifetime.expired`: Whether renovation is needed
-- `furnace_group.has_ccs_or_ccu`: CCS/CCU equipment flag
+- `furnace_group.is_ccs_or_ccu`: CCS/CCU equipment flag (derived from tech name)
 
 ### External Functions Called
 - `furnace_group.optimal_technology_name()`: Gets NPV analysis

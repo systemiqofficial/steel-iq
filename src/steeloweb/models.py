@@ -412,6 +412,72 @@ class DataPreparation(models.Model):
             logger.error(f"Unexpected error loading technologies: {e}")
             return {}
 
+    def get_region_emissivity_scenarios(self) -> list[str]:
+        """
+        Get available grid emissivity scenarios from prepared data.
+
+        Reads region_emissivity.json and returns distinct scenario names that have
+        at least one year-of-data ≥ 2025. The cutoff filters out backwards-only
+        scenarios (e.g. "Historical") that would zero out the grid emissivity for
+        every simulated forecast year.
+
+        Returns:
+            Sorted list of scenario names. "Business As Usual" comes first when
+            present, then alphabetical. Empty list if data_directory unset, file
+            missing, or JSON malformed.
+
+        Notes:
+            - Mirrors the defensive pattern used by get_technologies above.
+            - Sheet of origin is the master Excel "Power grid emissivity" tab;
+              scenario names are derived from each unique projection_scenario
+              column value via removeprefix("projection_").replace("_"," ").title().
+        """
+        import json
+        import logging
+
+        logger = logging.getLogger("steeloweb.grid_emissions.ui")
+
+        if not self.data_directory:
+            logger.warning(f"DataPreparation {self.id} has no data_directory")
+            return []
+
+        path = Path(self.data_directory) / "data" / "fixtures" / "region_emissivity.json"
+        if not path.exists():
+            logger.info(f"region_emissivity.json not found at {path}")
+            return []
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in region_emissivity.json: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error reading region_emissivity.json: {e}")
+            return []
+
+        records = data.get("root", []) if isinstance(data, dict) else []
+
+        # Collect scenarios with at least one year ≥ 2025
+        scenarios_with_forecast: set[str] = set()
+        for rec in records:
+            scenario = rec.get("scenario")
+            grid = rec.get("grid_emissivity") or {}
+            if not scenario or not isinstance(grid, dict):
+                continue
+            try:
+                latest_year = max((int(y) for y in grid.keys()), default=0)
+            except (TypeError, ValueError):
+                continue
+            if latest_year >= 2025:
+                scenarios_with_forecast.add(scenario)
+
+        scenarios = sorted(scenarios_with_forecast)
+        if "Business As Usual" in scenarios:
+            scenarios.remove("Business As Usual")
+            scenarios.insert(0, "Business As Usual")
+        return scenarios
+
 
 @dataclass
 class Progress:
@@ -447,7 +513,10 @@ class ModelRun(models.Model):
         default="",
         blank=True,
     )
-    started_at = models.DateTimeField(auto_now_add=True, help_text="When the model run was started")
+    created_at = models.DateTimeField(auto_now_add=True, help_text="When the model run was created")
+    run_started_at = models.DateTimeField(
+        null=True, blank=True, help_text="When the simulation transitioned to RUNNING"
+    )
     finished_at = models.DateTimeField(null=True, blank=True, help_text="When the model run finished")
     updated_at = models.DateTimeField(auto_now=True, help_text="When the model run was last updated")
     output_directory = models.CharField(
@@ -495,13 +564,13 @@ class ModelRun(models.Model):
 
     def __str__(self):
         if self.name:
-            return f"{self.name} - {self.state} ({self.started_at})"
-        return f"ModelRun {self.id} - {self.state} ({self.started_at})"
+            return f"{self.name} - {self.state} ({self.created_at})"
+        return f"ModelRun {self.id} - {self.state} ({self.created_at})"
 
     class Meta:
         verbose_name = "Model Run"
         verbose_name_plural = "Model Runs"
-        ordering = ["-started_at"]
+        ordering = ["-created_at"]
 
     def get_output_path(self) -> Optional[Path]:
         """Return the path to the output directory"""
@@ -627,6 +696,11 @@ class ModelRun(models.Model):
             "global_risk_free_rate",
             "steel_price_buffer",
             "iron_price_buffer",
+            "steel_market_clearing_share",
+            "iron_market_clearing_share",
+            "peg_iron_to_steel_price",
+            "iron_to_steel_price_ratio",
+            "opening_balance_multiplier",
             # Output paths (optional, will be derived from output_dir if not provided)
             "plots_dir",
             "geo_plots_dir",
@@ -663,6 +737,8 @@ class ModelRun(models.Model):
             "chosen_grid_emissions_scenario",
             "use_iron_ore_premiums",
             "green_steel_emissions_limit",
+            "enable_furnace_group_clustering",
+            "cluster_hot_metal_techs_by_plant_group",
             # Feature flags
             "include_infrastructure_cost",
             "include_transport_cost",
@@ -953,6 +1029,28 @@ class ModelRun(models.Model):
 
             config = SimulationConfig(**sim_config_data)
 
+        # Write simulation_config.json and preparation_metadata.json alongside the
+        # other run outputs, mirroring the terminal `run_simulation` CLI layout.
+        if output_path:
+            import json
+            from datetime import datetime
+
+            try:
+                config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
+                (output_path / "simulation_config.json").write_text(json.dumps(config_dict, indent=2, default=str))
+
+                prep_metadata = {
+                    "preparation_time": datetime.now().isoformat(),
+                    "cache_used": True,
+                    "master_excel": str(master_excel_path) if master_excel_path else None,
+                    "cached_from": str(data_dir) if data_dir else None,
+                }
+                (output_path / "preparation_metadata.json").write_text(json.dumps(prep_metadata, indent=2))
+            except Exception as e:
+                logger.warning(
+                    f"Failed to write simulation_config/preparation_metadata JSON for ModelRun {self.id}: {e}"
+                )
+
         def progress_callback(progress):
             # Convert Year objects to integers for JSON serialization
             progress_data = {
@@ -1007,9 +1105,10 @@ class ModelRun(models.Model):
         # Check time since last update
         time_since_update = timezone.now() - self.updated_at
 
-        # Simulations can take 30+ minutes per iteration, so we use a generous timeout
-        # to avoid false positives. Only flag as stuck after 45 minutes of no updates.
-        timeout = timedelta(minutes=45)
+        # Simulations can take 30+ minutes per iteration, and queued runs may wait
+        # behind a long-running run on the single worker. Use a generous timeout
+        # until a dedicated queue/status is implemented.
+        timeout = timedelta(hours=8)
 
         return time_since_update > timeout
 
@@ -1058,6 +1157,7 @@ class ModelRun(models.Model):
         self.error_message = ""
         self.results = {}
         self.progress = {}
+        self.run_started_at = None
         self.finished_at = None
         self.task_id = None
         self.save(
@@ -1066,6 +1166,7 @@ class ModelRun(models.Model):
                 "error_message",
                 "results",
                 "progress",
+                "run_started_at",
                 "finished_at",
                 "task_id",
                 "updated_at",
@@ -1085,7 +1186,7 @@ class ModelRun(models.Model):
         from datetime import timedelta
 
         # Give a grace period after starting - simulations take time to start
-        time_since_start = timezone.now() - self.started_at
+        time_since_start = timezone.now() - self.created_at
         if time_since_start < timedelta(minutes=1):
             return False
 
@@ -1093,8 +1194,10 @@ class ModelRun(models.Model):
         # Tasks now send heartbeat every 30 seconds, so lack of updates indicates crash
         time_since_update = timezone.now() - self.updated_at
 
-        # If no heartbeat for 25 minutes, worker likely crashed (heartbeat is every 30 seconds)
-        if time_since_update > timedelta(minutes=25):
+        # If no heartbeat for 8 hours, worker likely crashed. The threshold is
+        # generous to avoid auto-failing runs that are queued behind a long-running
+        # run on the single worker. Tighten once a dedicated queue/status exists.
+        if time_since_update > timedelta(hours=8):
             self.state = self.RunState.FAILED
             self.error_message = (
                 f"Worker process crashed or was terminated - no heartbeat for {self.time_since_last_update}."
@@ -1135,13 +1238,10 @@ class ModelRun(models.Model):
             if not output_dir:
                 raise ValueError("ModelRun must have an output path set")
 
-        # Append TM subdirectory
-        output_dir = output_dir / "TM"
-
         if not output_dir.exists():
             return False
 
-        # Find the most recent post_processed CSV file
+        # Find the most recent post_processed CSV file (now at the run's root)
         csv_files = list(output_dir.glob("post_processed_*.csv"))
         if not csv_files:
             return False
@@ -1435,6 +1535,9 @@ class SimulationPlot(models.Model):
         PRODUCTION_REGION = "production_region", "Production by Region"
         PRODUCTION_TECHNOLOGY = "production_technology", "Production by Technology"
         CAPACITY_REGION = "capacity_region", "Capacity by Region"
+        CAPACITY_TECHNOLOGY = "capacity_technology", "Capacity by Technology"
+        EMISSIONS = "emissions", "Emissions by Technology"
+        MARKET_PRICES = "market_prices", "Market Prices"
         OTHER = "other", "Other"
 
     modelrun = models.ForeignKey(ModelRun, on_delete=models.CASCADE, related_name="simulation_plots")
@@ -1469,23 +1572,13 @@ class SimulationPlot(models.Model):
         # Define plot mappings with metadata
         plot_configs = [
             {
-                "pattern": "year2year_added_capacity_by_technology.png",
-                "plot_type": cls.PlotType.CAPACITY_ADDED,
-                "title": "Added Capacity by Technology",
-            },
-            {
-                "pattern": "Capacity_development_by_technology.png",
-                "plot_type": cls.PlotType.CAPACITY_DEVELOPMENT,
-                "title": "Capacity Development by Technology",
-            },
-            {
-                "pattern": "steel_cost_curve_*.png",
+                "pattern": "cost_curves/cost_curve_steel_*.png",
                 "plot_type": cls.PlotType.COST_CURVE,
                 "title": "Steel Cost Curve",
                 "product_type": "steel",
             },
             {
-                "pattern": "iron_cost_curve_*.png",
+                "pattern": "cost_curves/cost_curve_iron_*.png",
                 "plot_type": cls.PlotType.COST_CURVE,
                 "title": "Iron Cost Curve",
                 "product_type": "iron",
@@ -1526,27 +1619,133 @@ class SimulationPlot(models.Model):
                 "title": "Iron Capacity by Region",
                 "product_type": "iron",
             },
+            {
+                "pattern": "steel_capacity_development_by_technology.png",
+                "plot_type": cls.PlotType.CAPACITY_TECHNOLOGY,
+                "title": "Steel Capacity by Technology",
+                "product_type": "steel",
+            },
+            {
+                "pattern": "iron_capacity_development_by_technology.png",
+                "plot_type": cls.PlotType.CAPACITY_TECHNOLOGY,
+                "title": "Iron Capacity by Technology",
+                "product_type": "iron",
+            },
+            {
+                "pattern": "Capacity_development_by_technology_steel.png",
+                "plot_type": cls.PlotType.CAPACITY_DEVELOPMENT,
+                "title": "Steel Capacity Year-on-Year Change by Technology",
+                "product_type": "steel",
+            },
+            {
+                "pattern": "Capacity_development_by_technology_iron.png",
+                "plot_type": cls.PlotType.CAPACITY_DEVELOPMENT,
+                "title": "Iron Capacity Year-on-Year Change by Technology",
+                "product_type": "iron",
+            },
+            {
+                "pattern": "emissions/emissions_*_by_technology__*.png",
+                "plot_type": cls.PlotType.EMISSIONS,
+                "title": "Emissions by Technology",
+            },
+            {
+                "pattern": "market_prices_*.png",
+                "plot_type": cls.PlotType.MARKET_PRICES,
+                "title": "Market Prices",
+            },
         ]
 
         created_plots = []
 
+        # Emissions and cost-curve charts live in sibling folders to PAM
+        plots_root = pam_plots_dir.parent
+        plots_root_types = {cls.PlotType.EMISSIONS, cls.PlotType.COST_CURVE}
+
         for config in plot_configs:
             pattern = config["pattern"]
+            search_dir = plots_root if config["plot_type"] in plots_root_types else pam_plots_dir
 
             # Handle wildcard patterns
             if "*" in pattern:
-                for plot_file in pam_plots_dir.glob(pattern):
-                    plot = cls._create_plot_from_file(modelrun, plot_file, config)
+                for plot_file in search_dir.glob(pattern):
+                    file_config = dict(config)
+                    if config["plot_type"] == cls.PlotType.COST_CURVE:
+                        file_config["title"] = cls._build_cost_curve_title(plot_file, config["title"])
+                    elif config["plot_type"] == cls.PlotType.EMISSIONS:
+                        file_config["title"] = cls._build_emissions_title(plot_file, config["title"])
+                    plot = cls._create_plot_from_file(modelrun, plot_file, file_config)
                     if plot:
                         created_plots.append(plot)
             else:
-                plot_file = pam_plots_dir / pattern
+                plot_file = search_dir / pattern
                 if plot_file.exists():
                     plot = cls._create_plot_from_file(modelrun, plot_file, config)
                     if plot:
                         created_plots.append(plot)
 
         return created_plots
+
+    @staticmethod
+    def _build_cost_curve_title(plot_file, fallback_title: str) -> str:
+        """Build a year- and aggregation-specific title from a cost-curve filename.
+
+        Args:
+            plot_file: Path to a cost curve plot file, expected to follow the
+                convention ``cost_curve_{product}_by_{aggregation}_{year}.png``
+                (e.g. ``cost_curve_steel_by_region_2025.png``).
+            fallback_title: Title to return if the filename does not match the
+                expected pattern (e.g. ``"Steel Cost Curve"``).
+
+        Returns:
+            A descriptive title such as ``"Steel Cost Curve by Region, 2025"``,
+            or ``fallback_title`` when the filename cannot be parsed.
+        """
+        import re
+
+        match = re.match(
+            r"cost_curve_(?P<product>steel|iron)_by_(?P<aggregation>region|technology)_(?P<year>\d{4})$",
+            plot_file.stem,
+        )
+        if not match:
+            return fallback_title
+        product = match.group("product").title()
+        aggregation = match.group("aggregation").title()
+        year = match.group("year")
+        return f"{product} Cost Curve by {aggregation}, {year}"
+
+    @staticmethod
+    def _build_emissions_title(plot_file, fallback_title: str) -> str:
+        """Build a scope- and boundary-specific title from an emissions plot filename.
+
+        Filenames follow ``emissions_<scope>_by_technology__<boundary>.png`` where
+        ``scope`` is one of ``direct``, ``direct_with_biomass``, ``indirect``,
+        ``direct_plus_indirect``, ``direct_with_biomass_plus_indirect`` and
+        ``boundary`` is the snake_case emissions boundary (e.g. ``responsible_steel``).
+
+        Args:
+            plot_file: Path to the emissions plot file.
+            fallback_title: Title to return if the filename can't be parsed.
+
+        Returns:
+            A descriptive title such as ``"Direct emissions by Technology, responsible steel"``.
+        """
+        import re
+
+        match = re.match(
+            r"emissions_(?P<scope>.+)_by_technology__(?P<boundary>.+)$",
+            plot_file.stem,
+        )
+        if not match:
+            return fallback_title
+        scope_label = {
+            "direct": "Direct emissions",
+            "direct_with_biomass": "Direct emissions (incl. biogenic)",
+            "indirect": "Indirect emissions",
+            "direct_plus_indirect": "Direct + Indirect emissions",
+            "direct_with_biomass_plus_indirect": "Direct (incl. biogenic) + Indirect emissions",
+        }.get(match.group("scope"), match.group("scope").replace("_", " ").title())
+        boundary = match.group("boundary").replace("_", " ")
+        return f"{scope_label} by Technology, {boundary}"
 
     @classmethod
     def _create_plot_from_file(cls, modelrun, plot_file, config):

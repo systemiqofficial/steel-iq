@@ -240,7 +240,20 @@ def read_aggregated_metallic_charge_constraints(
             # Extract the pattern (e.g., "DRI*" -> "DRI")
             pattern = mc_raw.replace("*", "")
             type_field = row["Type"] if pd.notna(row["Type"]) else ""
-            value = row["Value"] if pd.notna(row["Value"]) else 0.0
+
+            # Safely extract and convert value to float
+            raw_value = row["Value"]
+            if pd.notna(raw_value):
+                try:
+                    value = float(raw_value)
+                except (ValueError, TypeError):
+                    logger.warning(
+                        f"Invalid value '{raw_value}' in constraint for {business_case_str} / {mc_raw}. Defaulting to 0.0"
+                    )
+                    value = 0.0
+            else:
+                value = 0.0
+
             unit = row["Unit"] if pd.notna(row["Unit"]) else ""
 
             # Check if we already have this constraint
@@ -478,13 +491,28 @@ def _process_row(row: dict, feedstock: PrimaryFeedstock, all_feedstocks: dict[st
     side = row["Side"]
     metric_type = row["Metric type"]
     vector = row["Vector"] if pd.notna(row["Vector"]) else ""
-    value = row["Value"] if pd.notna(row["Value"]) else 0.0
+
+    # Safely extract and convert value to float
+    raw_value = row["Value"]
+
+    # Skip rows with no value or invalid values
+    if pd.isna(raw_value):
+        return
+
+    # Try to convert to float, skip if it fails
+    try:
+        # Handle strings like '-', whitespace, etc.
+        if isinstance(raw_value, str):
+            raw_value = raw_value.strip()
+            if raw_value in ["", "-", "N/A", "n/a", "NA"]:
+                return
+        value = float(raw_value)
+    except (ValueError, TypeError):
+        logger.debug(f"Skipping row with invalid value '{raw_value}' for {vector}")
+        return
+
     unit = row["Unit"] if pd.notna(row["Unit"]) else ""
     type_field = row["Type"] if pd.notna(row["Type"]) else ""
-
-    # Skip rows with no value
-    if pd.isna(row["Value"]):
-        return
 
     # Handle constraints (regular ones only - wildcards are handled separately)
     if metric_type == "Constraint":
@@ -1149,6 +1177,36 @@ def find_iso3s_of_trade_bloc(country_mappings: list, bloc_name: str, negation: b
     return iso3_codes
 
 
+def _resolve_iso3_or_bloc_entry(entry: str, country_mappings: list, supported_blocs: list[str]) -> list[str]:
+    """Resolve a tariff sheet 'From ISO3' / 'To ISO3' entry to a list of iso3 codes.
+
+    Recognized forms:
+        - "DEU"     → ["DEU"]
+        - "EU"      → all iso3s where mapping.EU is True
+        - "NOT EU"  → all iso3s where mapping.EU is False
+        - "NOT DEU" → all known iso3s except "DEU"
+        - "*"       → ["*"] (kept as a literal wildcard for downstream matching)
+
+    For "NOT <X>", <X> is first looked up as a trade bloc; if it is not a known bloc,
+    it is treated as a single iso3 code and negated against the full iso3 list from
+    ``country_mappings``. Raises ``ValueError`` if <X> is neither.
+    """
+    if entry.startswith("NOT "):
+        target = entry[4:]
+        if target in supported_blocs:
+            return find_iso3s_of_trade_bloc(country_mappings, target, negation=True)
+        all_iso3s = [c.iso3 for c in country_mappings] if country_mappings else []
+        if target not in all_iso3s:
+            raise ValueError(
+                f"'NOT {target}' references neither a known trade bloc nor a known iso3. "
+                f"Available trade blocs: {', '.join(supported_blocs) if supported_blocs else '(none)'}"
+            )
+        return [iso3 for iso3 in all_iso3s if iso3 != target]
+    if entry in supported_blocs:
+        return find_iso3s_of_trade_bloc(country_mappings, entry)
+    return [entry]
+
+
 def read_carbon_costs(carbon_cost_excel_path: Path, sheet_name="Carbon cost") -> list[CarbonCostSeries]:
     """
     Read carbon costs from an Excel file and return a list of CarbonCostSeries objects.
@@ -1409,24 +1467,8 @@ def read_tariffs(tariff_excel_path: str, tariff_sheet_name: str, country_mapping
         from_iso3_entry = row["From ISO3"]
         to_iso3_entry = row["To ISO3"]
 
-        # Process "From ISO3" entry
-        # if it starts with a NOT (then it's the negation of a trade bloc)
-        if from_iso3_entry.startswith("NOT "):
-            from_iso3_bloc = from_iso3_entry[4:]
-            from_iso3_list = find_iso3s_of_trade_bloc(country_mappings, from_iso3_bloc, negation=True)
-        elif from_iso3_entry in supported_blocs:
-            from_iso3_list = find_iso3s_of_trade_bloc(country_mappings, from_iso3_entry)
-        else:
-            from_iso3_list = [from_iso3_entry]
-
-        # Process "To ISO3" entry
-        if to_iso3_entry.startswith("NOT "):
-            to_iso3_bloc = to_iso3_entry[4:]
-            to_iso3_list = find_iso3s_of_trade_bloc(country_mappings, to_iso3_bloc, negation=True)
-        elif to_iso3_entry in supported_blocs:
-            to_iso3_list = find_iso3s_of_trade_bloc(country_mappings, to_iso3_entry)
-        else:
-            to_iso3_list = [to_iso3_entry]
+        from_iso3_list = _resolve_iso3_or_bloc_entry(from_iso3_entry, country_mappings, supported_blocs)
+        to_iso3_list = _resolve_iso3_or_bloc_entry(to_iso3_entry, country_mappings, supported_blocs)
 
         for from_iso3 in from_iso3_list:
             for to_iso3 in to_iso3_list:
@@ -1930,35 +1972,40 @@ def read_hydrogen_capex_opex(
 
 def _normalize_cost_item(cost_item: str | None, row_index: int) -> str | None:
     """
-    Normalize cost item to standard values: 'opex', 'capex', 'cost of debt'.
+    Normalize cost item to standard values.
+
+    Non-financial cost items (i.e. not opex/capex/cost of debt) are treated as energy carrier
+    names and normalised with normalize_name() to match energy_costs dict keys.
 
     Args:
-        cost_item: Raw cost item string from Excel
+        cost_item: Raw cost item string from Excel (e.g. "opex", "hydrogen", "natural gas")
         row_index: Row index for logging purposes
 
     Returns:
         Normalized cost item string, or None if row should be skipped.
     """
-    logger = logging.getLogger(__name__)
+    from steelo.utilities.utils import normalize_name
 
     if cost_item is None or (isinstance(cost_item, float) and math.isnan(cost_item)) or str(cost_item).strip() == "":
         return "opex"
 
     normalized = str(cost_item).strip().lower()
 
+    # Financial cost items
     if normalized in ("opex",):
         return "opex"
     elif normalized in ("capex",):
         return "capex"
     elif normalized in ("cost of debt", "debt"):
         return "cost of debt"
-    elif normalized in ("hydrogen", "h2"):
+    # Known aliases
+    elif normalized == "h2":
         return "hydrogen"
-    elif normalized in ("electricity",):
-        return "electricity"
+    elif normalized in ("co2 storage", "co2_storage", "co2-storage"):
+        return "co2_stored"
+    # Everything else is an energy carrier — normalise to match energy_costs keys
     else:
-        logger.warning(f"Skipping row {row_index}: unknown cost item '{cost_item}'")
-        return None
+        return normalize_name(normalized)
 
 
 def _expand_technology_pattern(pattern: str | None, all_technologies: list[str]) -> list[str]:

@@ -795,6 +795,28 @@ class PlantGroupJsonRepository:
             locked[pg.plant_group_id] = pg
         self._write_models(list(locked.values()))
 
+    def register_plant_in_group(self, plant: Plant, group_id: str) -> None:
+        """
+        Register a plant into a plant group by ID, creating the group on demand.
+
+        Mirrors the in-memory repository semantics for protocol symmetry:
+        get-or-create the group, append the plant, persist, and add the
+        resulting domain group to ``seen``. Runtime routing correctness
+        comes from the in-memory repository; this path exists so the
+        JSON-backed code path stays consistent.
+
+        Args:
+            plant: The plant to register.
+            group_id: Target plant group ID. If absent from the JSON
+                store the group is created with an empty plant list.
+        """
+        locked = self._fetch_all()
+        if group_id not in locked:
+            locked[group_id] = PlantGroupInDb(plant_group_id=group_id, plants=[])
+        locked[group_id].plants.append(PlantInDb.from_domain(plant))
+        self._write_models(list(locked.values()))
+        self.seen.add(locked[group_id].to_domain(self.plant_lifetime, self.metadata, self.current_simulation_year))
+
 
 class FurnaceGroupJsonRepository:
     """
