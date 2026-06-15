@@ -2984,6 +2984,8 @@ def read_trqs(
         - "Out-of-quota tariff rate" (numeric or "50%" string)
         - "Start year"
         - "End year"
+        - "Green Steel Exemption [% of original tax]"  (optional; decimal fraction 0.0-1.0,
+          e.g. 0.5 for 50% of the out-of-quota tariff applied; blank/missing = no exemption)
 
     Args:
         excel_path: Path to the master Excel file.
@@ -3031,6 +3033,11 @@ def read_trqs(
         shared_quota_id_raw = row.get("Shared quota id")
         shared_quota_id = None if pd.isna(shared_quota_id_raw) else str(shared_quota_id_raw).strip()
 
+        # Green steel exemption: decimal fraction (0.0-1.0) of the out-of-quota tariff applied to
+        # green-steel-eligible flows. Read raw (no 0-100 scaling), mirroring TradeTariff.
+        exemption_raw = row.get("Green Steel Exemption [% of original tax]")
+        green_steel_exemption = None if pd.isna(exemption_raw) else float(exemption_raw)
+
         from_iso3s = _resolve_iso3_or_bloc_entry(
             str(row["From region/ISO3"]).strip(), country_mappings or [], supported_blocs
         )
@@ -3049,6 +3056,7 @@ def read_trqs(
                 start_year=start_year,
                 end_year=end_year,
                 shared_quota_id=shared_quota_id,
+                green_steel_exemption=green_steel_exemption,
             )
         )
 
@@ -3100,6 +3108,7 @@ def read_trqs(
                 start_year=first["start_year"],
                 end_year=first["end_year"],
                 shared_quota_id=quota_id,
+                green_steel_exemption=first["green_steel_exemption"],
             )
         )
 

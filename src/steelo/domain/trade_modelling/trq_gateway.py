@@ -46,6 +46,8 @@ class TRQGatewayNode:
         to_iso3s: Eligible importing ISO3 codes.
         commodity: Commodity name (e.g. "steel").
         shared_quota_id: Shared pool identifier, or None.
+        green_steel_exemption: Decimal fraction (0.0-1.0) of this tier's tariff applied to
+            green-steel-eligible flows, or None for no exemption. See TariffRateQuota.
     """
 
     node_id: str
@@ -57,6 +59,7 @@ class TRQGatewayNode:
     to_iso3s: list[str]
     commodity: str
     shared_quota_id: str | None = None
+    green_steel_exemption: float | None = None
 
     @property
     def effective_capacity(self) -> float:
@@ -92,6 +95,7 @@ def build_trq_gateway_nodes(active_trqs: list[TariffRateQuota]) -> list[TRQGatew
                     to_iso3s=list(trq.to_iso3s),
                     commodity=trq.commodity,
                     shared_quota_id=trq.shared_quota_id,
+                    green_steel_exemption=trq.green_steel_exemption,
                 )
             )
     logger.info(f"Built {len(nodes)} TRQ gateway nodes from {len(active_trqs)} active TRQs")
@@ -230,7 +234,25 @@ def compute_gateway_arc_costs(
                         f"tariff cost for gateway {gw.node_id} set to 0."
                     )
             for plant_pc in production_pcs_by_iso3.get(from_iso3, []):
-                costs[(plant_pc.name, gw.node_id, commodity)] = tariff_cost
+                # Green steel exemption: green-steel-eligible plants pay only a fraction of the
+                # out-of-quota tariff. Mirrors the normal-tariff path (effective = base × fraction);
+                # steel only, and only when this TRQ defines an exemption. Tier-0 tariff_cost is 0,
+                # so this naturally affects only the out-of-quota tier.
+                arc_tariff_cost = tariff_cost
+                if (
+                    commodity == "steel"
+                    and plant_pc.green_steel_eligible
+                    and gw.green_steel_exemption is not None
+                    and tariff_cost > 0
+                ):
+                    arc_tariff_cost = tariff_cost * gw.green_steel_exemption
+                    logger.debug(
+                        f"[GREEN STEEL EXEMPTION/TRQ] {plant_pc.name} → {gw.node_id} (steel): "
+                        f"Base tariff: ${tariff_cost:.2f}/t, "
+                        f"Exemption: {gw.green_steel_exemption * 100:.0f}%, "
+                        f"Effective: ${arc_tariff_cost:.2f}/t"
+                    )
+                costs[(plant_pc.name, gw.node_id, commodity)] = arc_tariff_cost
 
         # --- Gateway → demand-center arcs: transport cost ---
         for to_iso3 in gw.to_iso3s:

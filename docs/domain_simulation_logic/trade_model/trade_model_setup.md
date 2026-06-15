@@ -113,18 +113,21 @@ gateway_tier_k → demand center  (arc cost = avg transport from exporting count
 ```
 Because the LP minimises cost, it fills the duty-free tier first with no explicit ordering constraints needed.
 
-**Shared quotas:** Multiple exporting countries that share one quota pool are merged into a single TRQ object (same `shared_quota_id`) with a combined `from_iso3s` list. They all feed through the same gateway node, so the capacity constraint automatically covers the combined volume.
+**Green steel exemption (TRQs):** A TRQ may carry a `green_steel_exemption` (decimal fraction `0.0`–`1.0`, read from the optional `Green Steel Exemption [% of original tax]` column on the `TRQs` sheet), mirroring `TradeTariff`. In `compute_gateway_arc_costs()` the out-of-quota plant→gateway tariff is scaled per plant: green-steel-eligible plants pay `OOQ rate × price × green_steel_exemption`, while ineligible plants pay the full tariff. Eligibility is the same `green_steel_eligible` flag set on each plant ProcessCenter as for normal tariffs. The exemption only affects the out-of-quota tier (the duty-free tier is `0` tariff regardless). `0.0` = full exemption, `1.0` = no exemption; omitting the value applies the full tariff to all plants.
+
+**Shared quotas:** Multiple exporting countries that share one quota pool are merged into a single TRQ object (same `shared_quota_id`) with a combined `from_iso3s` list. They all feed through the same gateway node, so the capacity constraint automatically covers the combined volume. The merged TRQ takes its `green_steel_exemption` (and other metadata) from the first row of the group.
 
 **Data pipeline:** TRQs are read from the `TRQs` sheet of the master Excel file via `read_trqs()` and stored on `Environment.active_trqs`, which is refreshed each simulation year based on `start_year` / `end_year`.
 
-**Route guard:** TRQ-covered `(from_iso3, to_iso3, commodity)` triples are recorded in `lp_model.trq_covered_routes`. The `enforce_trade_tariffs_on_allocations()` function skips any `TradeTariff` on a covered route to avoid double-counting. Note: this guard currently skips *all* trade tariffs on TRQ routes, including additive instruments like CBAM — see known limitations below.
+**Route guard:** TRQ-covered `(from_iso3, to_iso3, commodity)` triples are recorded in `lp_model.trq_covered_routes`. The `enforce_trade_tariffs_on_allocations()` function skips any `TradeTariff` on a covered route to avoid double-counting. Note: this guard currently skips *all* trade tariffs on TRQ routes, including additive instruments like CBAM, which therefore are not applied on top of the TRQ tariff on those routes — a known limitation.
 
-**Known limitation — TM-PAM connector:** After solving, `trade_lp.allocations` contains raw `plant → gateway` and `gateway → DC` arcs. The domain mapping loop in `solve_steel_trade_lp_and_return_commodity_allocations()` and the TM-PAM connector both expect direct `plant → DC` arcs and have no knowledge of gateway nodes (which carry `iso3 = "__GWY__"`). A `collapse_gateway_arcs()` pre-processing step is needed between `extract_solution()` and domain mapping to:
-1. Dissolve each `plant → gateway → DC` chain into a direct `plant → DC` arc.
-2. Attribute volume proportionally to gateway outflow shares.
-3. Inject the correct tariff cost into `tariff_taxes_by_iso3` so TM-PAM picks it up via `get_tariff_cost()`.
+**Gateway collapse (TM-PAM connector):** After solving, `trade_lp.allocations` contains raw `plant → gateway` and `gateway → DC` arcs, which the domain mapping loop and the TM-PAM connector cannot use directly — they expect direct `plant → DC` arcs and have no concept of gateway nodes (which carry `iso3 = "__GWY__"`). `collapse_gateway_arcs()` (in `set_up_steel_trade_lp.py`) runs between `extract_solution()` and domain mapping to bridge this. It is called from **both** solve paths — `solve_steel_trade_lp_and_return_commodity_allocations()` (non-clustering) and `solve_lp_only()` (clustering) — so TRQ tariffs reach PAM in either case. The step:
+1. Dissolves each `plant → gateway → DC` chain into a direct `plant → DC` arc.
+2. Attributes volume proportionally to gateway outflow shares: `vol(plant→DC) = vol(plant→gw) × (vol(gw→DC) / total_gw_outflow)`.
+3. Reads the per-plant tariff from `gateway_arc_costs` (so green-steel-eligible plants carry their already-reduced tariff) and injects a volume-weighted average into `allocations.tariff_taxes`, keyed by `(from_iso3, to_iso3, commodity)`, so TM-PAM picks it up via `get_tariff_cost()`.
+4. Removes all gateway arcs from `allocations`.
 
-This step is not yet implemented; TRQ-governed flows currently produce zero tariff cost in PAM output.
+**Granularity caveat:** because the injected `tariff_taxes` are keyed by ISO3 route (not by plant), the per-plant green steel exemption is flattened to a volume-weighted average across all plants of the same origin country shipping the same out-of-quota route. The LP objective and the per-arc `allocation_costs` remain correct per plant; only the ISO3-keyed value PAM consumes is blended. This matches the existing granularity of normal (non-TRQ) tariffs, which are inherently ISO3-keyed.
 
 ---
 

@@ -6740,6 +6740,12 @@ class TariffRateQuota:
         start_year: First year the TRQ is in force (inclusive).
         end_year: Last year the TRQ is in force (inclusive).
         shared_quota_id: Optional identifier linking TRQs that draw from one shared pool.
+        green_steel_exemption: Decimal fraction (0.0-1.0) of the out-of-quota tariff applied to
+            green-steel-eligible flows. 0.0 = no out-of-quota tariff (full exemption), 1.0 = full
+            tariff (no exemption), 0.5 = half the out-of-quota tariff applied. None if no exemption.
+            Mirrors TradeTariff.green_steel_exemption: the input column is labelled "% of original
+            tax" but values are entered as decimals (e.g. 0.5 for 50%). Only affects the
+            out-of-quota tier (the in-quota tier is duty-free regardless).
     """
 
     def __init__(
@@ -6753,6 +6759,7 @@ class TariffRateQuota:
         start_year: "Year",
         end_year: "Year",
         shared_quota_id: str | None = None,
+        green_steel_exemption: float | None = None,
     ) -> None:
         self.name = name
         self.from_iso3s = from_iso3s
@@ -6763,6 +6770,7 @@ class TariffRateQuota:
         self.start_year = start_year
         self.end_year = end_year
         self.shared_quota_id = shared_quota_id
+        self.green_steel_exemption = green_steel_exemption
 
     @property
     def tiers(self) -> list["TRQTier"]:
