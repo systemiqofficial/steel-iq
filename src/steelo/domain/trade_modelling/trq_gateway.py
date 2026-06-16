@@ -4,11 +4,12 @@ This module turns active TariffRateQuota objects into gateway process-center nod
 that are injected into the LP before it is built.  The gateway approach models tiered
 tariffs as a network of pass-through nodes:
 
-    plant → gateway_tier_0 (capacity = tariff_free_quota, cost = 0 tariff)
+    plant → gateway_tier_0 (capacity = tariff_free_quota, cost = in-quota rate × price)
     plant → gateway_tier_1 (capacity = ∞,                cost = OOQ rate × price)
     gateway_tier_k → demand_center (cost = avg transport from from_iso3s)
 
-Because the LP minimises total cost, it fills the cheapest (duty-free) gateway first
+The in-quota tariff rate defaults to 0 (duty-free), so by default the tier-0 arc cost is 0.
+Because the LP minimises total cost, it fills the cheaper (in-quota) gateway first
 without any explicit ordering constraints.
 """
 
@@ -235,9 +236,10 @@ def compute_gateway_arc_costs(
                     )
             for plant_pc in production_pcs_by_iso3.get(from_iso3, []):
                 # Green steel exemption: green-steel-eligible plants pay only a fraction of the
-                # out-of-quota tariff. Mirrors the normal-tariff path (effective = base × fraction);
-                # steel only, and only when this TRQ defines an exemption. Tier-0 tariff_cost is 0,
-                # so this naturally affects only the out-of-quota tier.
+                # tariff. Mirrors the normal-tariff path (effective = base × fraction); steel only,
+                # and only when this TRQ defines an exemption. Applies to any tier with a non-zero
+                # tariff — historically only the out-of-quota tier (tier-0 tariff_cost was 0), but
+                # also the in-quota tier when in_quota_tariff_rate > 0.
                 arc_tariff_cost = tariff_cost
                 if (
                     commodity == "steel"

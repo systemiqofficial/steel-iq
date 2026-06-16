@@ -6737,15 +6737,18 @@ class TariffRateQuota:
         commodity: Commodity covered (e.g. "steel").
         tariff_free_quota: In-quota volume allowance in tonnes.
         out_of_quota_tariff_rate: Ad-valorem rate applied above the quota (0–100 scale).
+        in_quota_tariff_rate: Ad-valorem rate applied to volumes within the quota (0–100 scale).
+            Defaults to 0.0 (the historical assumption that in-quota volumes enter duty-free).
         start_year: First year the TRQ is in force (inclusive).
         end_year: Last year the TRQ is in force (inclusive).
         shared_quota_id: Optional identifier linking TRQs that draw from one shared pool.
-        green_steel_exemption: Decimal fraction (0.0-1.0) of the out-of-quota tariff applied to
-            green-steel-eligible flows. 0.0 = no out-of-quota tariff (full exemption), 1.0 = full
-            tariff (no exemption), 0.5 = half the out-of-quota tariff applied. None if no exemption.
+        green_steel_exemption: Decimal fraction (0.0-1.0) of the tariff applied to
+            green-steel-eligible flows. 0.0 = no tariff (full exemption), 1.0 = full
+            tariff (no exemption), 0.5 = half the tariff applied. None if no exemption.
             Mirrors TradeTariff.green_steel_exemption: the input column is labelled "% of original
-            tax" but values are entered as decimals (e.g. 0.5 for 50%). Only affects the
-            out-of-quota tier (the in-quota tier is duty-free regardless).
+            tax" but values are entered as decimals (e.g. 0.5 for 50%). Applies to any tier with a
+            non-zero tariff — historically only the out-of-quota tier, but now also the in-quota
+            tier when in_quota_tariff_rate > 0.
     """
 
     def __init__(
@@ -6760,6 +6763,7 @@ class TariffRateQuota:
         end_year: "Year",
         shared_quota_id: str | None = None,
         green_steel_exemption: float | None = None,
+        in_quota_tariff_rate: float = 0.0,
     ) -> None:
         self.name = name
         self.from_iso3s = from_iso3s
@@ -6767,6 +6771,7 @@ class TariffRateQuota:
         self.commodity = commodity
         self.tariff_free_quota = tariff_free_quota
         self.out_of_quota_tariff_rate = out_of_quota_tariff_rate
+        self.in_quota_tariff_rate = in_quota_tariff_rate
         self.start_year = start_year
         self.end_year = end_year
         self.shared_quota_id = shared_quota_id
@@ -6776,13 +6781,13 @@ class TariffRateQuota:
     def tiers(self) -> list["TRQTier"]:
         """Return the two-tier structure derived from the stored fields.
 
-        Tier 0: duty-free up to tariff_free_quota tonnes.
+        Tier 0: in_quota_tariff_rate (0.0 = duty-free) up to tariff_free_quota tonnes.
         Tier 1: out_of_quota_tariff_rate above that, no volume cap.
 
         For future multi-tier support use TariffRateQuota.from_tiers().
         """
         return [
-            TRQTier(capacity=self.tariff_free_quota, tariff_rate=0.0),
+            TRQTier(capacity=self.tariff_free_quota, tariff_rate=self.in_quota_tariff_rate),
             TRQTier(capacity=None, tariff_rate=self.out_of_quota_tariff_rate),
         ]
 

@@ -2982,6 +2982,7 @@ def read_trqs(
         - "Tariff-free quota"
         - "Shared quota id"          (may be blank)
         - "Out-of-quota tariff rate" (numeric or "50%" string)
+        - "In-quota tariff rate"     (optional; numeric or "50%" string; blank/missing = 0%)
         - "Start year"
         - "End year"
         - "Green Steel Exemption [% of original tax]"  (optional; decimal fraction 0.0-1.0,
@@ -3008,6 +3009,22 @@ def read_trqs(
             if not attr.startswith("_") and isinstance(getattr(country_mappings[0], attr, None), bool)
         ]
 
+    def parse_tariff_rate(value) -> float:
+        """Parse a tariff-rate cell into a 0–100 ad-valorem rate.
+
+        Accepts numeric values or "50%"-style strings.  Blank/NaN → 0.0.  Bare numbers
+        at or below 1.0 are treated as decimal fractions and scaled to the 0–100 range
+        (e.g. 0.5 → 50).
+        """
+        if isinstance(value, str):
+            return float(value.strip().rstrip("%"))
+        if pd.isna(value):
+            return 0.0
+        rate = float(value)
+        if rate <= 1.0:
+            rate = rate * 100
+        return rate
+
     # --- Pass 1: parse every row into an intermediate record ---
     raw: list[dict] = []
     for _, row in df.iterrows():
@@ -3020,15 +3037,8 @@ def read_trqs(
         start_year = Year(int(start_raw)) if not pd.isna(start_raw) else Year(2000)
         end_year = Year(int(end_raw)) if not pd.isna(end_raw) else Year(2100)
 
-        rate_raw = row.get("Out-of-quota tariff rate", 0)
-        if isinstance(rate_raw, str):
-            rate = float(rate_raw.strip().rstrip("%"))
-        elif pd.isna(rate_raw):
-            rate = 0.0
-        else:
-            rate = float(rate_raw)
-            if rate <= 1.0:
-                rate = rate * 100
+        rate = parse_tariff_rate(row.get("Out-of-quota tariff rate", 0))
+        in_quota_rate = parse_tariff_rate(row.get("In-quota tariff rate", 0))
 
         shared_quota_id_raw = row.get("Shared quota id")
         shared_quota_id = None if pd.isna(shared_quota_id_raw) else str(shared_quota_id_raw).strip()
@@ -3053,6 +3063,7 @@ def read_trqs(
                 commodity=normalize_product_name(str(row["Commodity"]).strip()),
                 tariff_free_quota=float(quota_val),
                 out_of_quota_tariff_rate=rate,
+                in_quota_tariff_rate=in_quota_rate,
                 start_year=start_year,
                 end_year=end_year,
                 shared_quota_id=shared_quota_id,
@@ -3105,6 +3116,7 @@ def read_trqs(
                 commodity=first["commodity"],
                 tariff_free_quota=first["tariff_free_quota"],
                 out_of_quota_tariff_rate=first["out_of_quota_tariff_rate"],
+                in_quota_tariff_rate=first["in_quota_tariff_rate"],
                 start_year=first["start_year"],
                 end_year=first["end_year"],
                 shared_quota_id=quota_id,
