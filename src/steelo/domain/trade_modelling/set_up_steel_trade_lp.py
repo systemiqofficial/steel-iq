@@ -1771,9 +1771,13 @@ def collapse_gateway_arcs(trade_lp: tlp.TradeLPModel) -> None:
     if not trade_lp.trq_gateway_nodes:
         return
 
+    allocations = trade_lp.allocations
+    if allocations is None:
+        return
+
     gateway_ids = {gw.node_id for gw in trade_lp.trq_gateway_nodes}
-    allocs = trade_lp.allocations.allocations
-    alloc_costs = trade_lp.allocations.allocation_costs or {}
+    allocs = allocations.allocations
+    alloc_costs = allocations.allocation_costs or {}
 
     # Index gateway arcs from solved allocations
     inbound: dict = {}  # gw_pc → [(plant_pc, comm, vol, tariff_cost_per_t)]
@@ -1850,19 +1854,17 @@ def collapse_gateway_arcs(trade_lp: tlp.TradeLPModel) -> None:
                 tariff_numerator[route_key] = tariff_numerator.get(route_key, 0.0) + tariff_cost * attributed_vol
                 tariff_denominator[route_key] = tariff_denominator.get(route_key, 0.0) + attributed_vol
 
-    if trade_lp.allocations.allocation_costs is None:
-        trade_lp.allocations.allocation_costs = alloc_costs
+    if allocations.allocation_costs is None:
+        allocations.allocation_costs = alloc_costs
 
     # Inject TRQ tariff rates into allocations.tariff_taxes for TM-PAM
-    if trade_lp.allocations.tariff_taxes is None:
-        trade_lp.allocations.tariff_taxes = {}
+    if allocations.tariff_taxes is None:
+        allocations.tariff_taxes = {}
     for route_key, total_vol in tariff_denominator.items():
         if total_vol > 0:
             avg_tariff = tariff_numerator[route_key] / total_vol
             if avg_tariff > 0:
-                trade_lp.allocations.tariff_taxes[route_key] = (
-                    trade_lp.allocations.tariff_taxes.get(route_key, 0.0) + avg_tariff
-                )
+                allocations.tariff_taxes[route_key] = allocations.tariff_taxes.get(route_key, 0.0) + avg_tariff
 
     # Diagnostic: summarise which DCs received collapsed gateway volume
     dc_vol_by_iso3: dict[str, float] = {}

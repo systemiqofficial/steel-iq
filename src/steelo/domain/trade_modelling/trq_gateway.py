@@ -19,6 +19,12 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from steelo.domain.models import (
+    TRQ_STEEL_TYPE_ANY,
+    TRQ_STEEL_TYPE_CONVENTIONAL,
+    TRQ_STEEL_TYPE_GREEN,
+)
+
 if TYPE_CHECKING:
     from steelo.domain.models import TariffRateQuota
     import steelo.domain.trade_modelling.trade_lp_modelling as tlp
@@ -47,8 +53,9 @@ class TRQGatewayNode:
         to_iso3s: Eligible importing ISO3 codes.
         commodity: Commodity name (e.g. "steel").
         shared_quota_id: Shared pool identifier, or None.
-        green_steel_exemption: Decimal fraction (0.0-1.0) of this tier's tariff applied to
-            green-steel-eligible flows, or None for no exemption. See TariffRateQuota.
+        steel_type: Which steel this TRQ applies to (TRQ_STEEL_TYPE_ANY / _CONVENTIONAL / _GREEN).
+            Determines which plants (by green-steel eligibility) may flow through this gateway.
+            See TariffRateQuota.
     """
 
     node_id: str
@@ -60,11 +67,28 @@ class TRQGatewayNode:
     to_iso3s: list[str]
     commodity: str
     shared_quota_id: str | None = None
-    green_steel_exemption: float | None = None
+    steel_type: str = TRQ_STEEL_TYPE_ANY
 
     @property
     def effective_capacity(self) -> float:
         return self.tier_capacity if self.tier_capacity is not None else _UNLIMITED_CAPACITY
+
+
+def trq_steel_type_applies_to_plant(steel_type: str, plant_green_eligible: bool) -> bool:
+    """Return True if a plant is subject to a TRQ restricted to `steel_type`.
+
+    - TRQ_STEEL_TYPE_ANY: all steel is subject.
+    - TRQ_STEEL_TYPE_GREEN: only green-steel-eligible plants are subject.
+    - TRQ_STEEL_TYPE_CONVENTIONAL: only non-green (conventional) plants are subject.
+
+    Plants not subject to the TRQ are fully exempt: they bypass the gateway and keep their
+    direct plant→demand-centre arc, so they are never counted against the quota.
+    """
+    if steel_type == TRQ_STEEL_TYPE_GREEN:
+        return plant_green_eligible
+    if steel_type == TRQ_STEEL_TYPE_CONVENTIONAL:
+        return not plant_green_eligible
+    return True  # TRQ_STEEL_TYPE_ANY (or unrecognised) → applies to all plants
 
 
 def build_trq_gateway_nodes(active_trqs: list[TariffRateQuota]) -> list[TRQGatewayNode]:
@@ -96,7 +120,7 @@ def build_trq_gateway_nodes(active_trqs: list[TariffRateQuota]) -> list[TRQGatew
                     to_iso3s=list(trq.to_iso3s),
                     commodity=trq.commodity,
                     shared_quota_id=trq.shared_quota_id,
-                    green_steel_exemption=trq.green_steel_exemption,
+                    steel_type=trq.steel_type,
                 )
             )
     logger.info(f"Built {len(nodes)} TRQ gateway nodes from {len(active_trqs)} active TRQs")
@@ -235,26 +259,13 @@ def compute_gateway_arc_costs(
                         f"tariff cost for gateway {gw.node_id} set to 0."
                     )
             for plant_pc in production_pcs_by_iso3.get(from_iso3, []):
-                # Green steel exemption: green-steel-eligible plants pay only a fraction of the
-                # tariff. Mirrors the normal-tariff path (effective = base × fraction); steel only,
-                # and only when this TRQ defines an exemption. Applies to any tier with a non-zero
-                # tariff — historically only the out-of-quota tier (tier-0 tariff_cost was 0), but
-                # also the in-quota tier when in_quota_tariff_rate > 0.
-                arc_tariff_cost = tariff_cost
-                if (
-                    commodity == "steel"
-                    and plant_pc.green_steel_eligible
-                    and gw.green_steel_exemption is not None
-                    and tariff_cost > 0
-                ):
-                    arc_tariff_cost = tariff_cost * gw.green_steel_exemption
-                    logger.debug(
-                        f"[GREEN STEEL EXEMPTION/TRQ] {plant_pc.name} → {gw.node_id} (steel): "
-                        f"Base tariff: ${tariff_cost:.2f}/t, "
-                        f"Exemption: {gw.green_steel_exemption * 100:.0f}%, "
-                        f"Effective: ${arc_tariff_cost:.2f}/t"
-                    )
-                costs[(plant_pc.name, gw.node_id, commodity)] = arc_tariff_cost
+                # Steel-type scope: a plant only flows through this gateway if the TRQ's steel_type
+                # applies to it (green plant ↔ green TRQ, conventional plant ↔ conventional TRQ,
+                # any TRQ ↔ both). Non-subject plants are fully exempt — no gateway arc is created,
+                # so they keep their direct plant→DC arc and are never counted against the quota.
+                if not trq_steel_type_applies_to_plant(gw.steel_type, plant_pc.green_steel_eligible):
+                    continue
+                costs[(plant_pc.name, gw.node_id, commodity)] = tariff_cost
 
         # --- Gateway → demand-center arcs: transport cost ---
         for to_iso3 in gw.to_iso3s:
@@ -268,24 +279,28 @@ def compute_gateway_arc_costs(
 
 def collect_trq_covered_routes(
     gateway_nodes: list[TRQGatewayNode],
-) -> set[tuple[str, str, str]]:
-    """Return the set of (from_iso3, to_iso3, commodity) triples covered by TRQ gateways.
+) -> dict[tuple[str, str, str], set[str]]:
+    """Map each (from_iso3, to_iso3, commodity) route to the steel-type scopes covering it.
 
     Only duty-free (tier 0) gateways are used to identify covered routes — if a route is
     governed by a TRQ it is covered regardless of which tier steel ends up flowing through.
+
+    Because coverage now depends on steel type, a route may map to several scopes (e.g. a
+    conventional-steel TRQ and a green-steel TRQ on the same lane). A direct plant→DC arc is
+    only removed if at least one covering scope applies to that specific plant — see
+    trq_steel_type_applies_to_plant and TradeLPModel._inject_trq_gateway_arcs.
 
     Args:
         gateway_nodes: All gateway nodes for the current year.
 
     Returns:
-        Set of (from_iso3, to_iso3, commodity) tuples that should NOT be served by
-        direct plant→DC arcs.
+        Dict mapping (from_iso3, to_iso3, commodity) → set of steel-type scopes covering it.
     """
-    covered: set[tuple[str, str, str]] = set()
+    covered: dict[tuple[str, str, str], set[str]] = {}
     # Use tier-0 nodes as the canonical representative of each TRQ
     for gw in gateway_nodes:
         if gw.tier_index == 0:
             for from_iso3 in gw.from_iso3s:
                 for to_iso3 in gw.to_iso3s:
-                    covered.add((from_iso3, to_iso3, gw.commodity))
+                    covered.setdefault((from_iso3, to_iso3, gw.commodity), set()).add(gw.steel_type)
     return covered

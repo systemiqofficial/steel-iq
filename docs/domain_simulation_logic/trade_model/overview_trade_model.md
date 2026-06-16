@@ -78,10 +78,11 @@ The model is a **network flow optimization problem**:
 **Purpose:** Represents one tariff tier of one Tariff Rate Quota as a pass-through node in the LP network.
 
 **What it models:**
-- One node per TRQ tier (typically two: duty-free + out-of-quota)
+- One node per TRQ tier (typically two: in-quota + out-of-quota)
 - `tier_capacity`: the tariff-free quota volume (None = unlimited for the OOQ tier)
-- `tariff_rate`: 0 % for tier 0, OOQ rate for tier 1+
+- `tariff_rate`: in-quota rate for tier 0 (0 % by default), OOQ rate for tier 1+
 - `from_iso3s` / `to_iso3s`: which exporting and importing countries this TRQ covers
+- `steel_type`: which steel the TRQ applies to (`any` / `conventional` / `green`); plants not matching are fully exempt and bypass the gateway
 - `iso3 = "__GWY__"` (sentinel): ensures the node never matches real tariff or transport lookups
 
 **Key insight:** Gateway nodes are LP implementation details, not domain entities. They are dissolved back into direct `plant → DC` arcs after solving via `collapse_gateway_arcs()` (pending implementation) before reaching the TM-PAM connector.
@@ -559,13 +560,15 @@ LP setup uses `Environment.build_distance_function_for_trade_lp(process_centers)
 
 **How they are modelled — gateway nodes:**
 
-Each TRQ produces one virtual gateway node per tier. Plant → gateway arcs carry the tariff cost for that tier (zero for the duty-free tier); gateway → DC arcs carry transport cost. The LP fills the cheapest gateway first by cost minimisation alone:
+Each TRQ produces one virtual gateway node per tier. Plant → gateway arcs carry the tariff cost for that tier (the in-quota tier is duty-free by default but may carry an in-quota rate); gateway → DC arcs carry transport cost. The LP fills the cheaper (in-quota) gateway first by cost minimisation alone:
 
 ```
-plant → gateway_tier_0  (capacity = tariff-free quota,  tariff cost = 0)
+plant → gateway_tier_0  (capacity = tariff-free quota,  tariff cost = in-quota rate × price, default 0)
 plant → gateway_tier_1  (capacity = ∞,                  tariff cost = OOQ rate × price)
 gateway_k → demand_center (transport cost = avg over exporting countries)
 ```
+
+**Steel-type scope:** A TRQ's `Commodity` column sets which steel it applies to (`steel`/`steel (any)`, `conventional steel`, or `green steel`), stored as `steel_type`. Plants not matching the scope (e.g. a green-steel-eligible plant under a `conventional steel` TRQ) are fully exempt: they get no gateway arc, keep their direct plant→DC arc, and never count against the quota.
 
 **Shared quotas:** Countries sharing one quota pool are merged into a single `TariffRateQuota` with a combined `from_iso3s` list. They all feed through the same gateway, so one capacity constraint enforces the shared limit.
 

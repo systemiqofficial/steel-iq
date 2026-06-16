@@ -31,7 +31,14 @@ from steelo.domain import (
     WillingnessToPay,
     GreenSteelGrade,
 )
-from ...domain.models import TransportKPI, TechnologyEmissionFactors, FallbackMaterialCost
+from ...domain.models import (
+    TransportKPI,
+    TechnologyEmissionFactors,
+    FallbackMaterialCost,
+    TRQ_STEEL_TYPE_ANY,
+    TRQ_STEEL_TYPE_CONVENTIONAL,
+    TRQ_STEEL_TYPE_GREEN,
+)
 import logging
 
 from ...domain.models import LegalProcessConnector
@@ -2978,15 +2985,16 @@ def read_trqs(
         - "Tariff name"
         - "From region/ISO3"
         - "To region/ISO3"
-        - "Commodity"
+        - "Commodity"                Encodes both the commodity and a steel-type scope:
+          "steel" / "steel (any)" → applies to all steel; "conventional steel" → applies only to
+          non-green steel (green steel fully exempt); "green steel" → applies only to green steel.
+          Non-steel commodities are read as-is with steel_type = "any".
         - "Tariff-free quota"
         - "Shared quota id"          (may be blank)
         - "Out-of-quota tariff rate" (numeric or "50%" string)
         - "In-quota tariff rate"     (optional; numeric or "50%" string; blank/missing = 0%)
         - "Start year"
         - "End year"
-        - "Green Steel Exemption [% of original tax]"  (optional; decimal fraction 0.0-1.0,
-          e.g. 0.5 for 50% of the out-of-quota tariff applied; blank/missing = no exemption)
 
     Args:
         excel_path: Path to the master Excel file.
@@ -3025,6 +3033,25 @@ def read_trqs(
             rate = rate * 100
         return rate
 
+    def parse_commodity_and_steel_type(raw_commodity: str) -> tuple[str, str]:
+        """Split a TRQ commodity cell into (normalised LP commodity, steel-type scope).
+
+        The commodity column encodes both the commodity and which steel the TRQ applies to.
+        Matching is case-insensitive and tolerant of punctuation/spacing:
+            "green steel"        → ("steel", TRQ_STEEL_TYPE_GREEN)
+            "conventional steel" → ("steel", TRQ_STEEL_TYPE_CONVENTIONAL)
+            "steel" / "steel (any)" → ("steel", TRQ_STEEL_TYPE_ANY)
+        Any non-steel commodity is normalised as-is with steel_type = TRQ_STEEL_TYPE_ANY.
+        """
+        text = raw_commodity.strip().lower()
+        if "steel" in text:
+            if "green" in text:
+                return "steel", TRQ_STEEL_TYPE_GREEN
+            if "conventional" in text:
+                return "steel", TRQ_STEEL_TYPE_CONVENTIONAL
+            return "steel", TRQ_STEEL_TYPE_ANY
+        return normalize_product_name(raw_commodity), TRQ_STEEL_TYPE_ANY
+
     # --- Pass 1: parse every row into an intermediate record ---
     raw: list[dict] = []
     for _, row in df.iterrows():
@@ -3043,10 +3070,7 @@ def read_trqs(
         shared_quota_id_raw = row.get("Shared quota id")
         shared_quota_id = None if pd.isna(shared_quota_id_raw) else str(shared_quota_id_raw).strip()
 
-        # Green steel exemption: decimal fraction (0.0-1.0) of the out-of-quota tariff applied to
-        # green-steel-eligible flows. Read raw (no 0-100 scaling), mirroring TradeTariff.
-        exemption_raw = row.get("Green Steel Exemption [% of original tax]")
-        green_steel_exemption = None if pd.isna(exemption_raw) else float(exemption_raw)
+        commodity, steel_type = parse_commodity_and_steel_type(str(row["Commodity"]))
 
         from_iso3s = _resolve_iso3_or_bloc_entry(
             str(row["From region/ISO3"]).strip(), country_mappings or [], supported_blocs
@@ -3060,14 +3084,14 @@ def read_trqs(
                 name=str(row["Tariff name"]).strip(),
                 from_iso3s=from_iso3s,
                 to_iso3s=to_iso3s,
-                commodity=normalize_product_name(str(row["Commodity"]).strip()),
+                commodity=commodity,
                 tariff_free_quota=float(quota_val),
                 out_of_quota_tariff_rate=rate,
                 in_quota_tariff_rate=in_quota_rate,
                 start_year=start_year,
                 end_year=end_year,
                 shared_quota_id=shared_quota_id,
-                green_steel_exemption=green_steel_exemption,
+                steel_type=steel_type,
             )
         )
 
@@ -3120,7 +3144,7 @@ def read_trqs(
                 start_year=first["start_year"],
                 end_year=first["end_year"],
                 shared_quota_id=quota_id,
-                green_steel_exemption=first["green_steel_exemption"],
+                steel_type=first["steel_type"],
             )
         )
 

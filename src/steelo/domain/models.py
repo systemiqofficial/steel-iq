@@ -6722,6 +6722,16 @@ class TRQTier:
     tariff_rate: float
 
 
+# Steel-type scope of a TRQ, derived from its commodity column. Determines which plants
+# (by green-steel eligibility) are subject to the quota:
+#   - ANY:          all steel is subject to the TRQ.
+#   - CONVENTIONAL: only non-green (conventional) steel is subject; green steel is fully exempt.
+#   - GREEN:        only green steel is subject; conventional steel is not.
+TRQ_STEEL_TYPE_ANY = "any"
+TRQ_STEEL_TYPE_CONVENTIONAL = "conventional"
+TRQ_STEEL_TYPE_GREEN = "green"
+
+
 class TariffRateQuota:
     """A tariff rate quota (TRQ) granting a tariff-free import allowance up to a volume threshold.
 
@@ -6734,7 +6744,8 @@ class TariffRateQuota:
         name: Descriptive label for the TRQ (e.g. "EU 2026 safeguards").
         from_iso3s: ISO3 codes of the exporting countries (list to support trade-bloc expansion).
         to_iso3s: ISO3 codes (or trade-bloc identifiers) of the importing region (list).
-        commodity: Commodity covered (e.g. "steel").
+        commodity: LP commodity covered (e.g. "steel"). The input commodity column also encodes a
+            steel-type scope (see steel_type); this field holds the normalised LP commodity only.
         tariff_free_quota: In-quota volume allowance in tonnes.
         out_of_quota_tariff_rate: Ad-valorem rate applied above the quota (0–100 scale).
         in_quota_tariff_rate: Ad-valorem rate applied to volumes within the quota (0–100 scale).
@@ -6742,13 +6753,11 @@ class TariffRateQuota:
         start_year: First year the TRQ is in force (inclusive).
         end_year: Last year the TRQ is in force (inclusive).
         shared_quota_id: Optional identifier linking TRQs that draw from one shared pool.
-        green_steel_exemption: Decimal fraction (0.0-1.0) of the tariff applied to
-            green-steel-eligible flows. 0.0 = no tariff (full exemption), 1.0 = full
-            tariff (no exemption), 0.5 = half the tariff applied. None if no exemption.
-            Mirrors TradeTariff.green_steel_exemption: the input column is labelled "% of original
-            tax" but values are entered as decimals (e.g. 0.5 for 50%). Applies to any tier with a
-            non-zero tariff — historically only the out-of-quota tier, but now also the in-quota
-            tier when in_quota_tariff_rate > 0.
+        steel_type: Which steel the TRQ applies to, one of TRQ_STEEL_TYPE_ANY /
+            TRQ_STEEL_TYPE_CONVENTIONAL / TRQ_STEEL_TYPE_GREEN. Parsed from the commodity column
+            ("steel"/"steel (any)" → any, "conventional steel" → conventional, "green steel" →
+            green). Steel not subject to the TRQ (e.g. green steel under a conventional-steel TRQ)
+            is fully exempt: it bypasses the quota gateway and is never counted against the cap.
     """
 
     def __init__(
@@ -6762,8 +6771,8 @@ class TariffRateQuota:
         start_year: "Year",
         end_year: "Year",
         shared_quota_id: str | None = None,
-        green_steel_exemption: float | None = None,
         in_quota_tariff_rate: float = 0.0,
+        steel_type: str = TRQ_STEEL_TYPE_ANY,
     ) -> None:
         self.name = name
         self.from_iso3s = from_iso3s
@@ -6775,7 +6784,7 @@ class TariffRateQuota:
         self.start_year = start_year
         self.end_year = end_year
         self.shared_quota_id = shared_quota_id
-        self.green_steel_exemption = green_steel_exemption
+        self.steel_type = steel_type
 
     @property
     def tiers(self) -> list["TRQTier"]:

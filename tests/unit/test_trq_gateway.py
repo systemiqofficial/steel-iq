@@ -10,13 +10,21 @@ Covers:
 
 import pytest
 
-from steelo.domain.models import TariffRateQuota, TRQTier, Year
+from steelo.domain.models import (
+    TariffRateQuota,
+    TRQTier,
+    Year,
+    TRQ_STEEL_TYPE_ANY,
+    TRQ_STEEL_TYPE_CONVENTIONAL,
+    TRQ_STEEL_TYPE_GREEN,
+)
 from steelo.domain.trade_modelling.trq_gateway import (
     TRQGatewayNode,
     build_trq_gateway_nodes,
     compute_gateway_arc_costs,
     gateway_to_country_transport_cost,
     collect_trq_covered_routes,
+    trq_steel_type_applies_to_plant,
     _GATEWAY_ISO3,
     _UNLIMITED_CAPACITY,
 )
@@ -44,7 +52,7 @@ def _make_trq(
     tariff_free_quota=1000.0,
     out_of_quota_tariff_rate=50.0,
     shared_quota_id=None,
-    green_steel_exemption=None,
+    steel_type=TRQ_STEEL_TYPE_ANY,
 ) -> TariffRateQuota:
     return TariffRateQuota(
         name=name,
@@ -56,7 +64,7 @@ def _make_trq(
         start_year=Year(2026),
         end_year=Year(2034),
         shared_quota_id=shared_quota_id,
-        green_steel_exemption=green_steel_exemption,
+        steel_type=steel_type,
     )
 
 
@@ -150,29 +158,47 @@ class TestBuildTRQGatewayNodes:
     def test_empty_trq_list(self):
         assert build_trq_gateway_nodes([]) == []
 
-    def test_green_steel_exemption_propagated(self):
-        trq = _make_trq(green_steel_exemption=0.5)
+    def test_steel_type_propagated(self):
+        trq = _make_trq(steel_type=TRQ_STEEL_TYPE_GREEN)
         nodes = build_trq_gateway_nodes([trq])
         for node in nodes:
-            assert node.green_steel_exemption == 0.5
+            assert node.steel_type == TRQ_STEEL_TYPE_GREEN
 
-    def test_green_steel_exemption_defaults_to_none(self):
+    def test_steel_type_defaults_to_any(self):
         nodes = build_trq_gateway_nodes([_make_trq()])
         for node in nodes:
-            assert node.green_steel_exemption is None
+            assert node.steel_type == TRQ_STEEL_TYPE_ANY
 
 
 # ---------------------------------------------------------------------------
-# Green steel exemption applied to plant → gateway tariff arcs
+# trq_steel_type_applies_to_plant — eligibility matcher
 # ---------------------------------------------------------------------------
 
 
-class TestGreenSteelExemptionArcCosts:
-    """compute_gateway_arc_costs() should reduce the out-of-quota tariff for
-    green-steel-eligible plants by the exemption fraction, leaving ineligible
-    plants (and the duty-free tier) untouched."""
+class TestSteelTypeMatcher:
+    def test_any_applies_to_all(self):
+        assert trq_steel_type_applies_to_plant(TRQ_STEEL_TYPE_ANY, True) is True
+        assert trq_steel_type_applies_to_plant(TRQ_STEEL_TYPE_ANY, False) is True
 
-    def _setup(self, exemption):
+    def test_green_applies_only_to_green(self):
+        assert trq_steel_type_applies_to_plant(TRQ_STEEL_TYPE_GREEN, True) is True
+        assert trq_steel_type_applies_to_plant(TRQ_STEEL_TYPE_GREEN, False) is False
+
+    def test_conventional_applies_only_to_conventional(self):
+        assert trq_steel_type_applies_to_plant(TRQ_STEEL_TYPE_CONVENTIONAL, False) is True
+        assert trq_steel_type_applies_to_plant(TRQ_STEEL_TYPE_CONVENTIONAL, True) is False
+
+
+# ---------------------------------------------------------------------------
+# Steel-type scope applied to plant → gateway tariff arcs
+# ---------------------------------------------------------------------------
+
+
+class TestSteelTypeArcCosts:
+    """compute_gateway_arc_costs() should create gateway arcs only for plants the TRQ's
+    steel_type applies to, and charge the full tariff (no green-steel discount)."""
+
+    def _setup(self, steel_type):
         """Two TUR plants — one green-steel-eligible, one not — feeding one DEU DC
         through a 2-tier TRQ. OOQ rate 50%, avg price 100 ⇒ base OOQ tariff 50 $/t."""
         prod_proc = _make_steel_process()
@@ -189,11 +215,7 @@ class TestGreenSteelExemptionArcCosts:
         dc = ProcessCenter(name="dc_deu", process=dem_proc, capacity=10.0, location=loc_deu)
 
         nodes = build_trq_gateway_nodes(
-            [
-                _make_trq(
-                    from_iso3s=["TUR"], to_iso3s=["DEU"], out_of_quota_tariff_rate=50.0, green_steel_exemption=exemption
-                )
-            ]
+            [_make_trq(from_iso3s=["TUR"], to_iso3s=["DEU"], out_of_quota_tariff_rate=50.0, steel_type=steel_type)]
         )
         costs = compute_gateway_arc_costs(
             gateway_nodes=nodes,
@@ -201,33 +223,30 @@ class TestGreenSteelExemptionArcCosts:
             average_commodity_price_per_region={("steel", "TUR"): 100.0},
             transport_lookup={("TUR", "DEU", "steel"): 5.0},
         )
-        # tier_1 node id is the OOQ tier
         tier1 = next(n for n in nodes if n.tier_index == 1)
         tier0 = next(n for n in nodes if n.tier_index == 0)
         return costs, tier0.node_id, tier1.node_id
 
-    def test_eligible_plant_pays_reduced_ooq_tariff(self):
-        costs, _, tier1_id = self._setup(exemption=0.5)
-        # Base OOQ tariff = 50% * 100 = 50; with 0.5 exemption fraction ⇒ 25
-        assert costs[("plant_green", tier1_id, "steel")] == pytest.approx(25.0)
-
-    def test_ineligible_plant_pays_full_ooq_tariff(self):
-        costs, _, tier1_id = self._setup(exemption=0.5)
-        assert costs[("plant_grey", tier1_id, "steel")] == pytest.approx(50.0)
-
-    def test_full_exemption_zeroes_ooq_tariff_for_eligible(self):
-        costs, _, tier1_id = self._setup(exemption=0.0)
-        assert costs[("plant_green", tier1_id, "steel")] == pytest.approx(0.0)
-        assert costs[("plant_grey", tier1_id, "steel")] == pytest.approx(50.0)
-
-    def test_no_exemption_means_full_tariff_for_all(self):
-        costs, _, tier1_id = self._setup(exemption=None)
+    def test_any_creates_arcs_for_both_at_full_tariff(self):
+        costs, _, tier1_id = self._setup(steel_type=TRQ_STEEL_TYPE_ANY)
+        # No green-steel discount: both plants pay the full OOQ tariff (50% * 100 = 50).
         assert costs[("plant_green", tier1_id, "steel")] == pytest.approx(50.0)
         assert costs[("plant_grey", tier1_id, "steel")] == pytest.approx(50.0)
 
-    def test_duty_free_tier_unaffected_by_exemption(self):
-        costs, tier0_id, _ = self._setup(exemption=0.5)
-        # Tier-0 is duty-free regardless of eligibility
+    def test_conventional_excludes_green_plant(self):
+        costs, _, tier1_id = self._setup(steel_type=TRQ_STEEL_TYPE_CONVENTIONAL)
+        # Green plant is fully exempt → no gateway arc created for it.
+        assert ("plant_green", tier1_id, "steel") not in costs
+        assert costs[("plant_grey", tier1_id, "steel")] == pytest.approx(50.0)
+
+    def test_green_excludes_conventional_plant(self):
+        costs, _, tier1_id = self._setup(steel_type=TRQ_STEEL_TYPE_GREEN)
+        assert ("plant_grey", tier1_id, "steel") not in costs
+        assert costs[("plant_green", tier1_id, "steel")] == pytest.approx(50.0)
+
+    def test_duty_free_tier_still_zero(self):
+        costs, tier0_id, _ = self._setup(steel_type=TRQ_STEEL_TYPE_ANY)
+        # In-quota rate defaults to 0 ⇒ tier-0 arc cost is 0 for subject plants.
         assert costs[("plant_green", tier0_id, "steel")] == pytest.approx(0.0)
         assert costs[("plant_grey", tier0_id, "steel")] == pytest.approx(0.0)
 

@@ -407,7 +407,8 @@ class TradeLPModel:
 
         # TRQ gateway support — populated by enforce_trqs_via_gateways() before build_lp_model()
         self.trq_gateway_nodes: list = []  # list[TRQGatewayNode]
-        self.trq_covered_routes: set[tuple[str, str, str]] = set()
+        # (from_iso3, to_iso3, commodity) → set of steel-type scopes covering the route
+        self.trq_covered_routes: dict[tuple[str, str, str], set[str]] = {}
         self.gateway_arc_costs: dict[tuple[str, str, str], float] = {}
 
     def add_transportation_costs(self, transportation_costs: list[TransportationCost]) -> None:
@@ -1688,6 +1689,8 @@ class TradeLPModel:
         if not self.trq_gateway_nodes:
             return
 
+        from steelo.domain.trade_modelling.trq_gateway import trq_steel_type_applies_to_plant
+
         logger_local = logging.getLogger(f"{__name__}._inject_trq_gateway_arcs")
 
         # Build fast lookups from existing process centers
@@ -1718,12 +1721,18 @@ class TradeLPModel:
             f"[TRQ] TRQ to_iso3s: {sorted(all_trq_to_iso3s)}; demand PCs available for: {sorted(demand_dc_iso3s)}"
         )
 
-        # Remove direct plant → DC arcs for TRQ-covered routes
+        # Remove direct plant → DC arcs for TRQ-covered routes. Coverage is steel-type aware:
+        # an arc is only removed if at least one covering scope applies to that specific plant
+        # (e.g. a conventional-steel TRQ does not capture a green-steel-eligible plant, which
+        # stays fully exempt and keeps its direct arc).
         filtered: list[tuple[ProcessCenter, ProcessCenter, Commodity]] = []
         removed = 0
         for from_pc, to_pc, commodity in self.legal_allocations:
             key = (from_pc.location.iso3, to_pc.location.iso3, commodity.name)
-            if key in self.trq_covered_routes:
+            covering_types = self.trq_covered_routes.get(key)
+            if covering_types and any(
+                trq_steel_type_applies_to_plant(st, from_pc.green_steel_eligible) for st in covering_types
+            ):
                 removed += 1
                 continue
             filtered.append((from_pc, to_pc, commodity))
@@ -1750,6 +1759,11 @@ class TradeLPModel:
             # Plant → gateway
             for from_iso3 in gw.from_iso3s:
                 for plant_pc in prod_pcs_by_iso3.get(from_iso3, []):
+                    # Steel-type scope: skip plants the TRQ does not apply to (they stay exempt,
+                    # served by their direct plant→DC arc). Checked before the commodity-mismatch
+                    # diagnostic so non-subject plants are not flagged as mismatches.
+                    if not trq_steel_type_applies_to_plant(gw.steel_type, plant_pc.green_steel_eligible):
+                        continue
                     if commodity not in plant_pc.process.products:
                         product_names = ",".join(sorted(p.name for p in plant_pc.process.products)) or "<none>"
                         commodity_mismatches[(commodity.name, product_names)] = (
