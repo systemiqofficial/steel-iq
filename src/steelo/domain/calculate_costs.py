@@ -979,41 +979,15 @@ def calculate_net_cash_flow(total_debt_repayment: list[float], gross_cash_flow: 
     return [gross - debt for gross, debt in zip(gross_cash_flow, total_debt_repayment)]
 
 
-def calculate_lost_cash_flow(
-    total_debt_repayment: list[float] | list[int], gross_cash_flow: list[float] | list[int]
-) -> list[float]:
-    """
-    Calculate the lost cash flow by adding debt repayment to gross cash flow for each period.
-
-    This function is used in Cost of Stranded Asset (COSA) calculations where both the foregone
-    operating cash flows and the remaining debt obligations represent total losses from stranding.
-
-    Args:
-        total_debt_repayment (list[float] | list[int]): List of debt repayment amounts per period.
-        gross_cash_flow (list[float] | list[int]): List of gross cash flows per period.
-
-    Returns:
-        list[float]: Lost cash flow values for each period.
-
-    Note: Debt is added because remaining debt obligations represent additional losses when an asset is stranded.
-    """
-    # Validate input lists have matching lengths
-    if len(total_debt_repayment) != len(gross_cash_flow):
-        raise ValueError("The lengths of total_debt_repayment and gross_cash_flow must be the same.")
-
-    # Add debt repayment to gross cash flow for each period
-    return [gross + debt for gross, debt in zip(gross_cash_flow, total_debt_repayment)]
-
-
 def calculate_cost_of_stranded_asset(lost_cash_flow: list[float], cost_of_equity: float) -> float:
     """
     Calculate the net present value (NPV) of losses due to stranding an asset (COSA).
 
-    Discounts future lost cash flows (including both foregone operating profits and remaining
-    debt obligations) to present value using the cost of equity as the discount rate.
+    Discounts the future foregone operating cash flows to present value using the cost of equity
+    as the discount rate.
 
     Args:
-        lost_cash_flow (list[float]): Future lost cash flows per period.
+        lost_cash_flow (list[float]): Future foregone operating cash flows per period.
         cost_of_equity (float): The discount rate (cost of equity).
 
     Returns:
@@ -1188,7 +1162,6 @@ def calculate_npv_full(
 
 
 def stranding_asset_cost(
-    debt_repayment_per_year: list[float],
     unit_total_opex_list: list[float],
     remaining_time: int,
     market_price_series: list[float],
@@ -1198,18 +1171,17 @@ def stranding_asset_cost(
     """
     Calculate the Cost of Stranded Asset (COSA) when switching technologies.
 
-    COSA represents the NPV of losses from abandoning the current technology before its planned
-    end of life. This includes both remaining debt obligations (current + legacy debt) and the
-    opportunity cost of foregone profitable operations.
+    COSA is the foregone operating margin: the NPV of the gross operating cash flow the current
+    asset would have earned over its remaining life. The remaining debt is deliberately excluded —
+    it is owed whether the agent stays or switches (it persists post-switch via the legacy-debt
+    schedule), so it cancels from the switch-vs-stay comparison and must not be charged here.
 
     Steps:
-    1. Extract remaining debt payments, OPEX, and prices for the remaining asset lifetime
+    1. Extract OPEX and prices for the remaining asset lifetime
     2. Calculate gross cash flow (revenue - OPEX) for remaining periods
-    3. Calculate lost cash flow (gross cash flow + debt obligations)
-    4. Discount lost cash flows to present value using cost of equity
+    3. Discount the gross cash flow to present value using cost of equity
 
     Args:
-        debt_repayment_per_year (list[float]): Total yearly debt repayments (current + legacy debt combined).
         unit_total_opex_list (list[float]): Yearly unit total OPEX expenditures ($/unit).
         remaining_time (int): Remaining asset lifetime in years.
         market_price_series (list[float]): Market price per unit product per year ($/unit).
@@ -1217,36 +1189,29 @@ def stranding_asset_cost(
         cost_of_equity (float): Annual cost of equity as discount rate (e.g., 0.08 for 8%).
 
     Returns:
-        float: The net present value of losses due to the stranded asset (COSA).
-
-    Note: See FurnaceGroup.debt_repayment_per_year for full details on debt accumulation logic.
+        float: The NPV of the foregone operating margin (COSA). Negative for a loss-making
+        incumbent, which correctly rewards exit.
     """
     # Use function-specific logger that respects the centralized configuration
     func_logger = logging.getLogger(f"{__name__}.stranding_asset_cost")
 
-    # Extract remaining time periods for all inputs (last N years of debt, first N years of OPEX/prices)
-    remaining_debt = debt_repayment_per_year[-remaining_time:]
+    # Extract remaining time periods (first N years of OPEX/prices)
     remaining_opex = unit_total_opex_list[:remaining_time]
     remaining_price_series = market_price_series[:remaining_time]
 
-    # Calculate gross cash flow from operations for remaining periods
+    # Foregone operating margin: gross cash flow from operations for the remaining periods
     gross_cash_flow = calculate_gross_cash_flow(remaining_opex, remaining_price_series, expected_production)
-
-    # Calculate lost cash flow (both foregone profits and debt obligations)
-    lost_cash_flow = calculate_lost_cash_flow(remaining_debt, gross_cash_flow)
 
     # Log all intermediate calculations together for easier debugging
     func_logger.debug(
         f"[STRANDING ASSET COST] Remaining time: {remaining_time}, Expected production: {expected_production:,.0f} kt"
     )
     func_logger.debug(f"[STRANDING ASSET COST] Price per unit per year ($/t): {market_price_series}")
-    func_logger.debug(f"[STRANDING ASSET COST] Remaining debt: {remaining_debt}")
     func_logger.debug(f"[STRANDING ASSET COST] Remaining unit total OPEX: {remaining_opex}")
-    func_logger.debug(f"[STRANDING ASSET COST] Gross cash flow: {gross_cash_flow}")
-    func_logger.debug(f"[STRANDING ASSET COST] Lost cash flow: {lost_cash_flow}")
+    func_logger.debug(f"[STRANDING ASSET COST] Gross cash flow (foregone margin): {gross_cash_flow}")
 
-    # Discount lost cash flows to present value
-    return calculate_cost_of_stranded_asset(lost_cash_flow, cost_of_equity)
+    # Discount the foregone operating margin to present value
+    return calculate_cost_of_stranded_asset(gross_cash_flow, cost_of_equity)
 
 
 def calculate_business_opportunity_npvs(

@@ -8,7 +8,6 @@ from steelo.domain.calculate_costs import (
     calculate_cost_of_stranded_asset,
     calculate_npv_costs,
     calculate_gross_cash_flow,
-    calculate_lost_cash_flow,
     calculate_npv_full,
     calculate_net_cash_flow,
     stranding_asset_cost,
@@ -200,21 +199,14 @@ def setup_cosa_data():
 
 def test_calculate_cost_of_stranded_asset_with_list_OPEX(setup_cosa_data):
     _, OPEX_list, price, expected_production, lifetime_remaining, cost_of_equity = setup_cosa_data
-    # Expected values for test
-    total_debt_repayment = calculate_debt_repayment(
-        total_investment=1400, equity_share=0.2, lifetime=4, cost_of_debt=0.05
-    )
+    # COSA discounts the foregone operating margin (gross cash flow) only; debt is excluded.
     opex_list = OPEX_list[-lifetime_remaining:]
     gross_cash_flows = calculate_gross_cash_flow(opex_list, [price] * len(opex_list), expected_production)
-    lost_cash_flows = calculate_lost_cash_flow(total_debt_repayment, gross_cash_flows)
-    discount_list = [(1 + cost_of_equity) ** i for i in range(1, len(OPEX_list) + 1)]
-    expected_npv = sum([n / d for n, d in zip(lost_cash_flows, discount_list)])
+    discount_list = [(1 + cost_of_equity) ** i for i in range(1, len(gross_cash_flows) + 1)]
+    expected_npv = sum([n / d for n, d in zip(gross_cash_flows, discount_list)])
 
-    # Run the function
-    result = calculate_cost_of_stranded_asset(lost_cash_flows, cost_of_equity)
+    result = calculate_cost_of_stranded_asset(gross_cash_flows, cost_of_equity)
 
-    # Assertion
-    # assert result == pytest.approx(175289.2, abs=0.5)
     assert pytest.approx(result, 0.01) == expected_npv
 
 
@@ -424,64 +416,64 @@ def test_calculate_npv_full_secondary_adjustment_skips_construction_years():
 
 
 def test_stranding_asset_cost():
-    debt_repayment = [
-        43000.0,
-        41000.0,
-        39000.0,
-        37000.0,
-        35000.0,
-        33000.0,
-        31000.0,
-        29000.0,
-        27000.0,
-        25000.0,
-        23000.0,
-        21000.0,
-        19000.0,
-        17000.0,
-        15000.0,
-        13000.0,
-        11000.0,
-        9000.0,
-        7000.0,
-        5000.0,
-    ]
-
-    Opex = [200] * len(debt_repayment)
-    remaining_time = 20
+    # COSA is the foregone operating margin only (discounted gross cash flow); debt is excluded.
+    Opex = [200] * 20
     price = 600
     capacity = 100
-
     cost_of_equity = 0.05
-    # equity_share = 0.05
+    expected_production = capacity * 0.8
 
-    gcf = calculate_gross_cash_flow(Opex, [price] * len(Opex), expected_production=capacity * 0.8)
-    lost_cf = calculate_lost_cash_flow(debt_repayment, gcf)
-    expected_stranding_cost = calculate_cost_of_stranded_asset(lost_cf, cost_of_equity)
+    gcf_20 = calculate_gross_cash_flow(Opex, [price] * len(Opex), expected_production=expected_production)
+    expected_20 = calculate_cost_of_stranded_asset(gcf_20, cost_of_equity)
 
-    result = stranding_asset_cost(
-        debt_repayment,
+    result_20 = stranding_asset_cost(
         Opex,
-        remaining_time,
-        [price] * remaining_time,
-        expected_production=capacity * 0.8,
+        20,
+        [price] * 20,
+        expected_production=expected_production,
         cost_of_equity=cost_of_equity,
     )
 
-    expected_stranding_cost == result
-    int(result) == 737688
+    assert result_20 == pytest.approx(expected_20)
+    assert result_20 == pytest.approx(398790.7, abs=1.0)
 
-    remaining_time = 10
-    result = stranding_asset_cost(
-        debt_repayment,
+    gcf_10 = calculate_gross_cash_flow(Opex[:10], [price] * 10, expected_production=expected_production)
+    expected_10 = calculate_cost_of_stranded_asset(gcf_10, cost_of_equity)
+
+    result_10 = stranding_asset_cost(
         Opex,
-        remaining_time,
-        [price] * remaining_time,
-        expected_production=capacity * 0.8,
+        10,
+        [price] * 10,
+        expected_production=expected_production,
         cost_of_equity=cost_of_equity,
     )
 
-    int(result) == 361391
+    assert result_10 == pytest.approx(expected_10)
+    assert result_10 == pytest.approx(247095.5, abs=1.0)
+
+
+def test_stranding_asset_cost_loss_making_incumbent_is_negative():
+    """A loss-making incumbent has a negative COSA, so switching away is rewarded, not penalised.
+
+    Regression guard for the foregone-margin fix: COSA previously carried (and was floored at) the
+    remaining debt, giving a large positive penalty that blocked value-improving switches away from
+    loss-making, indebted plants. With COSA = foregone operating margin only, a negative operating
+    margin (price below OPEX) makes COSA negative.
+    """
+    opex = [300] * 10  # OPEX above price -> negative operating margin
+    price = 200
+    production = 80
+    cost_of_equity = 0.05
+
+    cosa = stranding_asset_cost(
+        opex,
+        10,
+        [price] * 10,
+        expected_production=production,
+        cost_of_equity=cost_of_equity,
+    )
+
+    assert cosa < 0
 
 
 @pytest.mark.skip(reason="derive_best_technology_switch function was removed")
