@@ -2989,12 +2989,12 @@ def read_trqs(
           "steel" / "steel (any)" → applies to all steel; "conventional steel" → applies only to
           non-green steel (green steel fully exempt); "green steel" → applies only to green steel.
           Non-steel commodities are read as-is with steel_type = "any".
-        - "Tariff-free quota"
+        - "Tariff quota"             (also accepts the older name "Tariff-free quota")
         - "Shared quota id"          (may be blank)
-        - "Out-of-quota conventional tariff rate" (numeric or "50%" string)
-        - "Out-of-quota green tariff rate"        (numeric or "50%" string)
-        - "In-quota conventional tariff rate"     (optional; numeric or "50%" string; blank/missing = 0%)
-        - "In-quota green tariff rate"            (optional; numeric or "50%" string; blank/missing = 0%)
+        - "Out-of-quota tariff rate conventional steel" (numeric or "50%" string)
+        - "Out-of-quota tariff rate green steel"        (numeric or "50%" string)
+        - "In-quota tariff rate conventional steel"     (optional; numeric or "50%" string; blank/missing = 0%)
+        - "In-quota tariff rate green steel"            (optional; numeric or "50%" string; blank/missing = 0%)
         - "Start year"
         - "End year"
 
@@ -3043,6 +3043,19 @@ def read_trqs(
             rate = rate * 100
         return rate
 
+    def pick_rate(row, candidates: list[str], default: float | None) -> float | None:
+        """Return the parsed rate from the first candidate column present in the row.
+
+        Column names are tried in priority order; the first one that exists in the row is
+        parsed and returned (NaN/blank → 0.0 via parse_tariff_rate). If none of the candidate
+        columns is present, `default` is returned — used to fall back the green rate to the
+        conventional rate when a sheet has no green column at all.
+        """
+        for col in candidates:
+            if col in row:
+                return parse_tariff_rate(row[col])
+        return default
+
     def parse_commodity_and_steel_type(raw_commodity: str) -> tuple[str, str]:
         """Split a TRQ commodity cell into (normalised LP commodity, steel-type scope).
 
@@ -3065,7 +3078,10 @@ def read_trqs(
     # --- Pass 1: parse every row into an intermediate record ---
     raw: list[dict] = []
     for _, row in df.iterrows():
-        quota_val = row.get("Tariff-free quota")
+        # Quota volume column ("Tariff quota" on the current sheet; "Tariff-free quota" on older ones).
+        quota_val = row.get("Tariff quota")
+        if pd.isna(quota_val):
+            quota_val = row.get("Tariff-free quota")
         if pd.isna(quota_val):
             continue
 
@@ -3074,25 +3090,34 @@ def read_trqs(
         start_year = Year(int(start_raw)) if not pd.isna(start_raw) else Year(2000)
         end_year = Year(int(end_raw)) if not pd.isna(end_raw) else Year(2100)
 
-        # Conventional rates: prefer the explicit "... conventional ..." column, else fall back
-        # to the legacy single "Out-of-quota tariff rate" / "In-quota tariff rate" columns.
-        ooq_conventional = parse_tariff_rate(
-            row.get("Out-of-quota conventional tariff rate", row.get("Out-of-quota tariff rate", 0))
+        # Each rate has a conventional and a green column. Candidate names are tried in priority
+        # order: the current sheet layout ("... tariff rate conventional/green steel") first, then
+        # older variants, then the legacy single "... tariff rate" column (read as conventional).
+        ooq_conventional = pick_rate(
+            row,
+            [
+                "Out-of-quota tariff rate conventional steel",
+                "Out-of-quota conventional tariff rate",
+                "Out-of-quota tariff rate",
+            ],
+            default=0.0,
         )
-        in_quota_conventional = parse_tariff_rate(
-            row.get("In-quota conventional tariff rate", row.get("In-quota tariff rate", 0))
+        in_quota_conventional = pick_rate(
+            row,
+            ["In-quota tariff rate conventional steel", "In-quota conventional tariff rate", "In-quota tariff rate"],
+            default=0.0,
         )
-        # Green rates: when the column is missing entirely, default to the conventional rate so a
+        # Green rates: when no green column is present at all, default to the conventional rate so a
         # legacy single-rate sheet behaves as before (same rate for all steel).
-        ooq_green = (
-            parse_tariff_rate(row["Out-of-quota green tariff rate"])
-            if "Out-of-quota green tariff rate" in row
-            else ooq_conventional
+        ooq_green = pick_rate(
+            row,
+            ["Out-of-quota tariff rate green steel", "Out-of-quota green tariff rate"],
+            default=ooq_conventional,
         )
-        in_quota_green = (
-            parse_tariff_rate(row["In-quota green tariff rate"])
-            if "In-quota green tariff rate" in row
-            else in_quota_conventional
+        in_quota_green = pick_rate(
+            row,
+            ["In-quota tariff rate green steel", "In-quota green tariff rate"],
+            default=in_quota_conventional,
         )
 
         shared_quota_id_raw = row.get("Shared quota id")
