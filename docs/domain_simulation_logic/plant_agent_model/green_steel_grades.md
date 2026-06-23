@@ -2,7 +2,9 @@
 
 ## Overview
 
-Green steel grades classify steel production based on emissions intensity and scrap share. The grading system uses linear threshold functions to determine qualification levels, with Level 1 being the most stringent certification.
+Green steel grades classify steel production based on emissions intensity and scrap share. The grading system uses linear threshold functions to determine qualification levels, with **Level 4 being the most stringent** certification (lowest allowed emissions) and Level 1 the most lenient.
+
+The emissions intensity used for grading is **cradle-to-gate**: a furnace group's own steelmaking-step emissions **plus** the embedded emissions of the iron it consumes (traced through the allocations — see *Cradle-to-gate emissions intensity* below). It is taken from a **single accounting convention** and scope, not summed across conventions.
 
 ## Grade Definitions
 
@@ -24,19 +26,19 @@ y <= b - m*x
 ```
 
 Where:
-- **y** = emissions intensity (tCO2eq/t steel)
+- **y** = cradle-to-gate emissions intensity (tCO2eq/t steel) = own steelmaking intensity + embedded upstream iron emissions
 - **x** = scrap share as percentage of overall iron input (0-100)
 - **b** = y-intercept parameter (threshold at 0% scrap)
 - **m** = slope parameter (reduction per percentage point of scrap)
 
 ### Example Calculations
 
-**Level 1 (Most Stringent):**
+**Level 1 (Least Stringent — highest allowed emissions):**
 - At 0% scrap: emissions must be ≤ 2.8 tCO2eq/t
 - At 50% scrap: emissions must be ≤ 2.8 - 2.3×0.5 = 1.65 tCO2eq/t
 - At 100% scrap: emissions must be ≤ 2.8 - 2.3×1.0 = 0.5 tCO2eq/t
 
-**Level 4 (Least Stringent):**
+**Level 4 (Most Stringent — lowest allowed emissions):**
 - At 0% scrap: emissions must be ≤ 0.4 tCO2eq/t
 - At 50% scrap: emissions must be ≤ 0.4 - 0.35×0.5 = 0.225 tCO2eq/t
 - At 100% scrap: emissions must be ≤ 0.4 - 0.35×1.0 = 0.05 tCO2eq/t
@@ -66,24 +68,61 @@ Each `FurnaceGroup` can calculate its green steel qualification:
 
 ```python
 class FurnaceGroup:
+    # Embedded emissions of the iron this FG consumes, per tonne of its own steel output.
+    # Recomputed from the allocations each step by the TM-PAM connector; 0.0 for non-steel FGs.
+    upstream_iron_emissions: float
+
     def calculate_emissions_intensity(self) -> float:
-        """Calculate total emissions per ton of steel output"""
-        # Returns tCO2eq/t including all scopes
+        """Own steelmaking-step intensity (tCO2eq/t) under a single convention/scope"""
+        # Reads only GREEN_GRADE_EMISSIONS_BOUNDARY / GREEN_GRADE_EMISSIONS_SCOPES from
+        # self.emissions (NOT the sum across conventions, which would multiply-count).
 
     def calculate_scrap_share(self) -> float:
         """Calculate percentage of scrap in iron inputs"""
         # Returns 0-100 based on bill of materials
 
     def get_green_steel_grade(self, environment: Environment) -> Optional[int]:
-        """Determine best qualifying green steel grade"""
-        # Returns 1-4 or None if no qualification
+        """Determine best qualifying green steel grade from the cradle-to-gate intensity"""
+        # Uses calculate_emissions_intensity() + upstream_iron_emissions.
+        # Returns 1-4 or None if no qualification.
 ```
+
+### Cradle-to-gate emissions intensity
+
+A steel furnace group's own emissions cover only the steelmaking step; the carbon-intensive
+ironmaking (BF/DRI) emissions sit on the separate iron furnace group. The grade therefore uses:
+
+```
+cradle_to_gate_intensity = calculate_emissions_intensity()   # own steelmaking step
+                         + upstream_iron_emissions            # embedded iron, per t steel
+```
+
+`upstream_iron_emissions` is set by `TM_PAM_connector.update_upstream_iron_emissions()` each time
+allocations change: `Σ(iron_volume_i × iron_FG_intensity_i) / steel_output`, summed over the
+`iron → steel` allocation edges. Because it divides by steel output, the actual iron-per-tonne-steel
+ratio comes straight from the allocations (no fixed ratio is assumed), and inter-plant merchant iron
+is handled the same as intra-plant iron.
+
+### Single accounting convention
+
+`self.emissions` holds the same physical emissions expressed under several alternative conventions
+(`rs-inspired`, `worldsteel_no_opt_credits`, `worldsteel_opt_credits`). `calculate_emissions_intensity`
+reads **exactly one** — `GREEN_GRADE_EMISSIONS_BOUNDARY` (`"rs-inspired"`) and
+`GREEN_GRADE_EMISSIONS_SCOPES` (`("direct_ghg",)`, i.e. scope 1) in `constants.py`. Summing across
+conventions would multiply-count the same emissions and inflate the intensity, breaking the thresholds
+(which were calibrated against a single convention).
+
+### Eligibility for tariff treatment
+
+A grade of 1–4 is not the same as "green for tariffs". A plant counts as green-steel-eligible only if
+its grade meets `GREEN_STEEL_ELIGIBILITY_MINIMUM_LEVEL` (in `constants.py`, currently **4** — the
+strictest). This is the bar used for TRQ steel-type scoping and green tariff treatment.
 
 ### Key Rules
 
 1. **Production Required**: Only furnace groups with positive production (`allocated_volumes > 0`) can qualify
-2. **Best Grade Wins**: If multiple grades are met, the lowest (best) number is returned
-3. **All Scopes Included**: Emissions intensity includes Scope 1, 2, and 3 emissions
+2. **Best Grade Wins**: If multiple grades are met, the **highest (strictest) number is returned** (`max`); Level 4 is strictest
+3. **Cradle-to-gate, single convention**: Emissions intensity = own steelmaking + embedded upstream iron, read from one accounting convention and scope (not all scopes)
 
 ## Data Input
 
@@ -101,7 +140,7 @@ The sheet must contain these column headers:
 
 ```python
 # For each furnace group with production:
-emissions_intensity = calculate_emissions_intensity()  # tCO2eq/t
+emissions_intensity = calculate_emissions_intensity() + upstream_iron_emissions  # cradle-to-gate tCO2eq/t
 scrap_share = calculate_scrap_share()  # 0-100%
 
 applicable_grades = []
@@ -110,8 +149,8 @@ for level, grade in green_steel_grades.items():
     if emissions_intensity <= threshold:
         applicable_grades.append(level)
 
-# Return best (lowest) grade or None
-return min(applicable_grades) if applicable_grades else None
+# Return best (strictest = highest) grade or None
+return max(applicable_grades) if applicable_grades else None
 ```
 
 ## Logging and Monitoring
