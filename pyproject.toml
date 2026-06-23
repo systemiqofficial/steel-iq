@@ -20,7 +20,7 @@ dependencies = [
     "scipy",
     "pydantic",
     "mocker",
-    "matplotlib",
+    "matplotlib<3.11",
     "sentry-sdk",
     "osmnx",
     "scikit-learn",
