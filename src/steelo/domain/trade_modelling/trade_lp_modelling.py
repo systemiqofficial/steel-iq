@@ -1818,8 +1818,9 @@ class TradeLPModel:
         Called inside build_lp_model() after add_allocation_costs_as_parameters_to_lp().
         Standard cost computation doesn't know about gateway semantics, so we overwrite.
 
-        For plant→tier-0 (duty-free) arcs, a small ordering nudge (1e-3 × production_cost)
-        is added to lp_model.allocation_costs so the LP prefers cheaper plants for the
+        For plant→tier-0 (duty-free) arcs, a small ordering nudge
+        (1e-3 × (production_cost + BOM energy cost)) is added to lp_model.allocation_costs so
+        the LP prefers the cheapest-to-produce plants (lowest carbon + feedstock energy) for the
         duty-free quota when capacity allows.  gateway_arc_costs is left untouched so that
         collapse_gateway_arcs() and PAM always see the real tariff and transport costs.
         """
@@ -1827,6 +1828,11 @@ class TradeLPModel:
             return
         tier0_ids = {gw.node_id for gw in self.trq_gateway_nodes if gw.tier_index == 0}
         pc_by_name = {pc.name: pc for pc in self.process_centers}
+        # Per-plant BOM energy cost: bom_energy_costs is keyed by (plant_name, commodity); sum a
+        # plant's entries to a single scalar comparable to production_cost (carbon).
+        bom_cost_by_plant: dict[str, float] = {}
+        for (pc_name, _comm), energy_cost in self.lp_model.bom_energy_costs.items():
+            bom_cost_by_plant[pc_name] = bom_cost_by_plant.get(pc_name, 0.0) + energy_cost
         overridden = 0
         for key, cost in self.gateway_arc_costs.items():
             if key in self.lp_model.allocation_costs:
@@ -1835,7 +1841,8 @@ class TradeLPModel:
                 if to_name in tier0_ids:
                     plant_pc = pc_by_name.get(from_name)
                     if plant_pc is not None:
-                        nudge = 1e-3 * plant_pc.production_cost
+                        production_economics = plant_pc.production_cost + bom_cost_by_plant.get(from_name, 0.0)
+                        nudge = 1e-3 * production_economics
                 self.lp_model.allocation_costs[key] = cost + nudge
                 overridden += 1
         logging.getLogger(f"{__name__}._override_gateway_arc_costs").info(
