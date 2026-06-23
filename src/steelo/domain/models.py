@@ -45,6 +45,8 @@ from steelo.domain.constants import (
     MioUSD_TO_USD,
     MINIMUM_UTILIZATION_RATE_FOR_COST_CURVE,
     MINIMUM_PRODUCTION_VOLUME_FOR_COST_CURVE,
+    GREEN_GRADE_EMISSIONS_BOUNDARY,
+    GREEN_GRADE_EMISSIONS_SCOPES,
 )
 
 # Module-level logger for green steel and other logging
@@ -1159,6 +1161,14 @@ class FurnaceGroup:
         self.technology_emission_factors: list[TechnologyEmissionFactors] = []
         self.emissions = emissions
         self.transport_emissions = 0.0
+        # Embedded emissions of the iron this furnace group consumes, per tonne of its own steel
+        # output (tCO2e/t steel): Σ(allocated iron volume × supplying iron FG intensity) / steel
+        # output, based on the current allocations. Same denominator as
+        # calculate_emissions_intensity(), so the two add to a cradle-to-gate steel intensity with
+        # no assumed iron:steel ratio. 0.0 for non-steel furnace groups (and steel FGs with no iron
+        # inputs, e.g. scrap-only EAF). Recomputed whenever allocations change — see
+        # TM_PAM_connector.update_upstream_iron_emissions().
+        self.upstream_iron_emissions: float = 0.0
 
         # Initialize _carbon_cost from carbon_costs_for_emissions if provided
         if carbon_costs_for_emissions is not None and carbon_costs_for_emissions > 0:
@@ -1403,7 +1413,14 @@ class FurnaceGroup:
         """
         Calculate the emissions intensity of the furnace group in tCO2eq/t of output.
 
-        Returns the total emissions divided by production. If no production, returns 0.
+        Uses a single accounting convention (GREEN_GRADE_EMISSIONS_BOUNDARY) and the configured
+        scope(s) (GREEN_GRADE_EMISSIONS_SCOPES), matching the basis the green-steel grade thresholds
+        were calibrated against. self.emissions holds the same physical emissions expressed under
+        several alternative conventions; summing across them would multiply-count and inflate the
+        intensity, so only the chosen convention is read here.
+
+        Returns the convention's emissions divided by production. Returns 0 if there is no
+        production or no emissions for the chosen convention.
 
         Returns:
             float: Emissions intensity in tCO2eq/t
@@ -1411,17 +1428,15 @@ class FurnaceGroup:
         if not self.allocated_volumes or self.allocated_volumes <= 0:
             return 0.0
 
-        # Sum all emissions from different scopes
+        # Emissions dict structure: {accounting_convention: {scope: value}}.
+        # Read only the chosen convention and scope(s) (e.g. "rs-inspired" / "direct_ghg") rather
+        # than summing every convention, which would multiply-count the same physical emissions.
+        boundary_emissions = (self.emissions or {}).get(GREEN_GRADE_EMISSIONS_BOUNDARY, {})
         total_emissions = 0.0
-
-        # Emissions dict structure: {boundary: {scope: value}}
-        # Example: {'responsible_steel': {'scope1': 100, 'scope2': 50, 'scope3': 200}}
-        if self.emissions:
-            for boundary_emissions in self.emissions.values():
-                if isinstance(boundary_emissions, dict):
-                    for scope_value in boundary_emissions.values():
-                        if isinstance(scope_value, (int, float)):
-                            total_emissions += scope_value
+        for scope in GREEN_GRADE_EMISSIONS_SCOPES:
+            scope_value = boundary_emissions.get(scope, 0.0)
+            if isinstance(scope_value, (int, float)):
+                total_emissions += scope_value
 
         # Calculate intensity: tCO2eq per tonne of product
         emissions_intensity = total_emissions / self.allocated_volumes
@@ -1474,6 +1489,13 @@ class FurnaceGroup:
         grade thresholds defined in the Environment. Returns the best (lowest number) grade
         that the furnace group qualifies for.
 
+        The emissions intensity used here is cradle-to-gate: this furnace group's own
+        (steelmaking-step) intensity plus the embedded emissions of the iron it consumes
+        (``upstream_iron_emissions``, already expressed per tonne of this FG's steel output from the
+        incoming iron allocations — no iron:steel ratio is assumed). Without this, a primary BF-BOF
+        steel furnace group would look near zero-carbon because the carbon-intensive ironmaking
+        emissions sit on the separate iron furnace group rather than on the steelmaking step.
+
         Args:
             environment: Environment object containing green steel grade definitions
 
@@ -1489,8 +1511,11 @@ class FurnaceGroup:
         if not environment.green_steel_grades:
             return None
 
-        # Calculate emissions intensity and scrap share
-        emissions_intensity = self.calculate_emissions_intensity()
+        # Cradle-to-gate emissions intensity (tCO2e/t steel) = own steelmaking intensity +
+        # embedded upstream iron emissions. Both terms are per tonne of this FG's steel output, so
+        # they add directly; upstream_iron_emissions already reflects the actual iron:steel ratio
+        # from the incoming allocations.
+        emissions_intensity = self.calculate_emissions_intensity() + self.upstream_iron_emissions
         scrap_share = self.calculate_scrap_share()
 
         # Check which grades this furnace group qualifies for

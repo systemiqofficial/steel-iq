@@ -235,9 +235,11 @@ class TestFurnaceGroupGreenSteel:
 
         technology.dynamic_business_case = feedstocks
 
-        # Default emissions if not provided
+        # Default emissions if not provided. Keyed by accounting convention; the grade reads
+        # only GREEN_GRADE_EMISSIONS_BOUNDARY ("rs-inspired") / GREEN_GRADE_EMISSIONS_SCOPES
+        # ("direct_ghg"), so the effective intensity here is 100/1000 = 0.1 tCO2eq/t.
         if emissions is None:
-            emissions = {"responsible_steel": {"scope1": 100, "scope2": 50, "scope3": 150}}
+            emissions = {"rs-inspired": {"direct_ghg": 100, "indirect_ghg": 50}}
 
         furnace_group = FurnaceGroup(
             furnace_group_id="test_fg_001",
@@ -261,21 +263,25 @@ class TestFurnaceGroupGreenSteel:
         return furnace_group
 
     def test_calculate_emissions_intensity_with_production(self):
-        """Test emissions intensity calculation with production."""
+        """Intensity reads only the chosen convention/scope, not the sum across conventions."""
         fg = self.create_test_furnace_group(
             allocated_volumes=1000,
             emissions={
-                "responsible_steel": {
-                    "scope1": 500,  # 500 tCO2eq
-                    "scope2": 300,  # 300 tCO2eq
-                    "scope3": 200,  # 200 tCO2eq
-                }
+                # Only rs-inspired/direct_ghg should be counted.
+                "rs-inspired": {
+                    "direct_ghg": 500,  # 500 tCO2eq  -> counted
+                    "indirect_ghg": 300,  # ignored (scope not in GREEN_GRADE_EMISSIONS_SCOPES)
+                    "direct_with_biomass_ghg": 480,  # ignored
+                },
+                # Alternative conventions describe the SAME physical emissions -> must be ignored.
+                "worldsteel_no_opt_credits": {"direct_ghg": 2000, "indirect_ghg": 900},
+                "worldsteel_opt_credits": {"direct_ghg": -300},
             },
         )
 
-        # Total emissions = 1000 tCO2eq, production = 1000 t
-        # Intensity = 1000/1000 = 1.0 tCO2eq/t
-        assert fg.calculate_emissions_intensity() == 1.0
+        # Counted = rs-inspired direct_ghg = 500 tCO2eq, production = 1000 t
+        # Intensity = 500/1000 = 0.5 tCO2eq/t
+        assert fg.calculate_emissions_intensity() == 0.5
 
     def test_calculate_emissions_intensity_no_production(self):
         """Test emissions intensity returns 0 when no production."""
@@ -313,7 +319,7 @@ class TestFurnaceGroupGreenSteel:
         # 80% scrap, 0.05 tCO2eq/t emissions
         fg = self.create_test_furnace_group(
             allocated_volumes=1000,
-            emissions={"responsible_steel": {"scope1": 50}},  # 50/1000 = 0.05 tCO2eq/t
+            emissions={"rs-inspired": {"direct_ghg": 50}},  # 50/1000 = 0.05 tCO2eq/t
             scrap_ratio=0.8,  # 80% scrap
         )
 
@@ -335,7 +341,7 @@ class TestFurnaceGroupGreenSteel:
 
         fg = self.create_test_furnace_group(
             allocated_volumes=0,  # No production
-            emissions={"responsible_steel": {"scope1": 0}},
+            emissions={"rs-inspired": {"direct_ghg": 0}},
         )
 
         # Should return None for no production
@@ -363,7 +369,7 @@ class TestFurnaceGroupGreenSteel:
         # Create furnace group with very high emissions
         fg = self.create_test_furnace_group(
             allocated_volumes=1000,
-            emissions={"responsible_steel": {"scope1": 5000}},  # 5.0 tCO2eq/t
+            emissions={"rs-inspired": {"direct_ghg": 5000}},  # 5.0 tCO2eq/t
             scrap_ratio=0.0,  # No scrap
         )
 
@@ -385,7 +391,7 @@ class TestFurnaceGroupGreenSteel:
         # Create furnace group that qualifies for all grades
         fg = self.create_test_furnace_group(
             allocated_volumes=1000,
-            emissions={"responsible_steel": {"scope1": 200}},  # 0.2 tCO2eq/t
+            emissions={"rs-inspired": {"direct_ghg": 200}},  # 0.2 tCO2eq/t
             scrap_ratio=0.5,  # 50% scrap
         )
 

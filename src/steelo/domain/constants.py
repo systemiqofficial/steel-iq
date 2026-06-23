@@ -18,7 +18,14 @@ LP_TOLERANCE = 1e-4  # Linear programming solver tolerance, values below are tre
 MINIMUM_UTILIZATION_RATE_FOR_COST_CURVE = 0.3
 MINIMUM_PRODUCTION_VOLUME_FOR_COST_CURVE = 50e3  # tpa; minimum production volume for a plant to have a cost curve
 
-GREEN_STEEL_ELIGIBILITY_MINIMUM_LEVEL = 1  # Minimum level of "green steel" evaluation for a plant to be considered eligible for green steel exemption in tariffs.
+GREEN_STEEL_ELIGIBILITY_MINIMUM_LEVEL = 4  # Minimum level of "green steel" evaluation for a plant to be considered eligible for green steel exemption in tariffs.
+
+# Emissions accounting basis used when grading green steel (FurnaceGroup.calculate_emissions_intensity).
+# self.emissions is keyed {accounting_convention: {scope: tCO2e}}. The grade thresholds were
+# calibrated against a SINGLE convention, so the intensity must use exactly one — summing several
+# alternative standards (as the historical code did) inflates the value and breaks the thresholds.
+GREEN_GRADE_EMISSIONS_BOUNDARY = "rs-inspired"  # one of: rs-inspired, worldsteel_no_opt_credits, worldsteel_opt_credits
+GREEN_GRADE_EMISSIONS_SCOPES = ("direct_ghg",)  # scope 1 only; other options: indirect_ghg, direct_with_biomass_ghg
 
 # ===== Unit Conversion Factors =====
 GJ_TO_KWH = 1e3 / 3.6  # 1 GJ = 1e3/3e6 kWh and 1/3.6 MWh

@@ -8,7 +8,7 @@ from steelo.adapters.repositories.in_memory_repository import (
 )
 from steelo.domain.models import PrimaryFeedstock, FurnaceGroup, TransportKPI
 from steelo.domain.trade_modelling.trade_lp_modelling import Allocations, ProcessType
-from steelo.domain.constants import LP_TOLERANCE
+from steelo.domain.constants import LP_TOLERANCE, IRON_PRODUCTS, Commodities
 from steelo.domain import diagnostics as diag
 from steelo.utilities.utils import normalize_name
 
@@ -1587,3 +1587,58 @@ class TM_PAM_connector:
                         f"[EMISSIONS] FG {fg.furnace_group_id}: Empty materials in BOM, setting emissions to empty dict"
                     )
                 fg.emissions = {}
+
+        # Now that every furnace group's own emissions are current, roll the upstream iron
+        # furnace groups' emissions into each steel furnace group based on the allocations.
+        self.update_upstream_iron_emissions(furnace_groups)
+
+    def update_upstream_iron_emissions(self, furnace_groups: list[FurnaceGroup]):
+        """Set ``fg.upstream_iron_emissions`` for every furnace group from the current allocations.
+
+        For a steel furnace group this is the embedded emissions of the iron it consumes,
+        expressed **per tonne of this furnace group's steel output** (tCO2e/t steel):
+
+            upstream_iron_emissions = Σ_i (iron_volume_i × iron_intensity_i) / steel_output
+
+        where the sum is over the ``iron → steel`` edges of the flow graph ``self.G`` (hot metal /
+        pig iron / DRI / HBI), ``iron_volume_i`` is the allocated volume from upstream iron furnace
+        group ``i`` and ``iron_intensity_i`` is that group's own emission intensity. Dividing by the
+        steel output (rather than by total iron volume) means the actual iron-per-tonne-of-steel
+        ratio is taken straight from the allocations — no fixed ratio is assumed, and a scrap-heavy
+        EAF that pulls little DRI gets a correspondingly small value. It uses the same denominator
+        as ``calculate_emissions_intensity`` (the steel FG's own intensity), so the two add directly
+        to a true cradle-to-gate intensity.
+
+        Iron from the same plant or bought from another plant is treated identically (the graph is
+        edge-based). Iron supplied from a non-furnace-group source (e.g. a merchant supply node not
+        in ``furnace_groups``) is excluded, as its emission intensity is unknown here. Non-steel
+        furnace groups (and steel furnace groups with no iron inputs, e.g. a scrap-only EAF) are 0.0.
+
+        Must be called after every furnace group's own emissions have been set (so the iron
+        furnace groups' intensities are current), and is recomputed each time allocations change.
+
+        Args:
+            furnace_groups: All furnace groups in the simulation (iron and steel).
+        """
+        fg_by_id = {fg.furnace_group_id: fg for fg in furnace_groups}
+        for fg in furnace_groups:
+            # Only steel furnace groups carry embedded upstream iron emissions.
+            if getattr(fg.technology, "product", None) != Commodities.STEEL.value:
+                fg.upstream_iron_emissions = 0.0
+                continue
+
+            embedded_iron_emissions = 0.0  # total tCO2e of the iron consumed by this steel FG
+            if self.G is not None and fg.furnace_group_id in self.G:
+                for source_id, _, commodity, data in self.G.in_edges(fg.furnace_group_id, keys=True, data=True):
+                    if commodity not in IRON_PRODUCTS:
+                        continue  # skip scrap, energy, and other non-iron inputs
+                    iron_fg = fg_by_id.get(source_id)
+                    if iron_fg is None:
+                        continue  # iron from a non-FG source (e.g. merchant supply); intensity unknown
+                    volume = data.get("volume", 0.0) or 0.0
+                    if volume <= 0:
+                        continue
+                    embedded_iron_emissions += volume * iron_fg.calculate_emissions_intensity()
+
+            steel_output = fg.allocated_volumes or 0.0
+            fg.upstream_iron_emissions = embedded_iron_emissions / steel_output if steel_output > 0 else 0.0
