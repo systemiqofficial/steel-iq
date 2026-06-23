@@ -136,6 +136,21 @@ class ModelRunDetailView(DetailView):
             emissions_by_boundary.setdefault(boundary, []).append(plot)
         context["emissions_by_boundary"] = emissions_by_boundary
 
+        # Trade Module reports: per-year TRQ and trade CSVs written to the run's TM/ folder.
+        # Surfaced directly on the results page so they don't have to be hunted for in the
+        # generic output-file browser. trq_report_<year>.csv is only written when TRQs are active.
+        def _list_reports(tm_dir: Path, pattern: str) -> list[dict]:
+            if not tm_dir.is_dir():
+                return []
+            return [
+                {"name": report.name, "relative_path": f"TM/{report.name}"} for report in sorted(tm_dir.glob(pattern))
+            ]
+
+        output_path = self.object.get_output_path()
+        tm_dir = output_path / "TM" if output_path else None
+        context["trq_reports"] = _list_reports(tm_dir, "trq_report_*.csv") if tm_dir else []
+        context["trade_reports"] = _list_reports(tm_dir, "trade_report_*.csv") if tm_dir else []
+
         return context
 
 
