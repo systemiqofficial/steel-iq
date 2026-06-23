@@ -425,7 +425,7 @@ def aggregate_allocations_by_country(
         top_n: Number of top country-to-country trade routes to include per commodity
 
     Returns a nested dict: {commodity: {country_iso3: {
-        'total_production': float,
+        'total_capacity': float,
         'total_demand': float,
         'total_imports': float,
         'total_exports': float,
@@ -495,7 +495,7 @@ def aggregate_allocations_by_country(
 
         country_data[commodity_name] = defaultdict(
             lambda: {
-                "total_production": 0,
+                "total_capacity": 0,
                 "total_demand": 0,
                 "total_imports": 0,
                 "total_exports": 0,
@@ -524,7 +524,7 @@ def aggregate_allocations_by_country(
                         source_capacity = float(fg.capacity)
 
             if source_iso3:
-                country_data[commodity_name][source_iso3]["total_production"] += source_capacity
+                country_data[commodity_name][source_iso3]["total_capacity"] += source_capacity
 
             # Process destinations (only if part of top N country-to-country routes)
             for dest, volume in destinations.items():
@@ -628,7 +628,7 @@ def create_multi_commodity_network_plot(
         commodity_data = country_data[commodity]
         for country_iso3, data in commodity_data.items():
             if (
-                data["total_production"] > 0
+                data["total_capacity"] > 0
                 or data["total_demand"] > 0
                 or data["total_imports"] > 0
                 or data["total_exports"] > 0
@@ -780,7 +780,7 @@ def create_multi_commodity_network_plot(
                 country_name = iso3_to_country_name(country)
                 hover_text = f"<b>{country_name} ({country})</b><br>"
                 hover_text += f"Commodity: {commodity}<br>"
-                hover_text += f"Production: {data['total_production']:,.0f}<br>"
+                hover_text += f"Capacity: {data['total_capacity']:,.0f}<br>"
                 hover_text += f"Demand: {data['total_demand']:,.0f}<br>"
                 hover_text += f"Imports: {data['total_imports']:,.0f}<br>"
                 hover_text += f"Exports: {data['total_exports']:,.0f}"
