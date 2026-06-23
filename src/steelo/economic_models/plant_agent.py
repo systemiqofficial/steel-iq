@@ -23,6 +23,8 @@ from steelo.domain.events import SteelAllocationsCalculated
 from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
     set_up_steel_trade_lp,
     solve_steel_trade_lp_and_return_commodity_allocations,
+    write_trade_report_csv,
+    write_trq_report_csv,
 )
 from steelo.service_layer.message_bus import MessageBus
 from steelo.utilities.file_output import export_commodity_allocations_to_csv
@@ -523,6 +525,22 @@ class AllocationModel:
             commodity_allocations_dict=commodity_allocations,
             year=bus.env.year,
             filename=str(output_dir / "TM" / f"steel_trade_allocations_{bus.env.year}.csv"),
+        )
+        # TRQ reporting: one row per (gateway node, from country, to country, commodity).
+        # No file is written when no TRQs are active. Reads the solved LP variables, so it
+        # must run before `del trade_lp` below.
+        write_trq_report_csv(
+            lp_model=trade_lp,
+            filepath=str(output_dir / "TM" / f"trq_report_{bus.env.year}.csv"),
+            year=bus.env.year,
+        )
+        # Trade reporting: one row per (commodity, from country, to country) with volume,
+        # average cost, trade tariff, TRQ tax and green-steel share. Also reads the solved
+        # LP variables, so it must run before `del trade_lp` below.
+        write_trade_report_csv(
+            lp_model=trade_lp,
+            filepath=str(output_dir / "TM" / f"trade_report_{bus.env.year}.csv"),
+            year=bus.env.year,
         )
         all_dcs = bus.uow.repository.demand_centers.list()
         demand_met = False  # Default to False if no steel allocations

@@ -6711,15 +6711,21 @@ class TradeTariff:
 class TRQTier:
     """One tariff tier within a TariffRateQuota.
 
+    Each tier carries two ad-valorem rates: one for conventional (non-green) steel and one
+    for green steel.  Which rate a given trade arc pays is decided by the originating plant's
+    green-steel eligibility (see compute_gateway_arc_costs).
+
     Attributes:
         capacity: Maximum volume (tonnes) allowed at this tariff rate.
             None means unlimited (always the final tier).
-        tariff_rate: Ad-valorem rate for this tier, 0–100 scale
+        conventional_tariff_rate: Ad-valorem rate for conventional steel, 0–100 scale
             (e.g. 50 for 50 %).
+        green_tariff_rate: Ad-valorem rate for green steel, 0–100 scale.
     """
 
     capacity: float | None
-    tariff_rate: float
+    conventional_tariff_rate: float
+    green_tariff_rate: float
 
 
 # Steel-type scope of a TRQ, derived from its commodity column. Determines which plants
@@ -6735,10 +6741,17 @@ TRQ_STEEL_TYPE_GREEN = "green"
 class TariffRateQuota:
     """A tariff rate quota (TRQ) granting a tariff-free import allowance up to a volume threshold.
 
-    Imports within the quota (tariff_free_quota tonnes) enter duty-free.  Imports above
-    that threshold are subject to out_of_quota_tariff_rate.  Where several exporters draw
-    from a common pool, shared_quota_id links the relevant TRQ objects so the model can
+    Imports within the quota (tariff_free_quota tonnes) enter at the in-quota rate (0 by
+    default).  Imports above that threshold are subject to the out-of-quota rate.  Where
+    several exporters draw from a common pool, shared_quota_id links the relevant TRQ objects
+    so the model can
     enforce a single aggregate cap.
+
+    Each tariff rate is split into a conventional and a green value.  The commodity column
+    still scopes which steel draws on the quota volume (see steel_type); once a plant is
+    inside the quota gateway, the rate it pays is selected by its green-steel eligibility.
+    When the commodity scopes the TRQ to a single steel type, the other type's rates are
+    never read (the excluded plants bypass the gateway entirely).
 
     Args:
         name: Descriptive label for the TRQ (e.g. "EU 2026 safeguards").
@@ -6747,9 +6760,12 @@ class TariffRateQuota:
         commodity: LP commodity covered (e.g. "steel"). The input commodity column also encodes a
             steel-type scope (see steel_type); this field holds the normalised LP commodity only.
         tariff_free_quota: In-quota volume allowance in tonnes.
-        out_of_quota_tariff_rate: Ad-valorem rate applied above the quota (0–100 scale).
-        in_quota_tariff_rate: Ad-valorem rate applied to volumes within the quota (0–100 scale).
-            Defaults to 0.0 (the historical assumption that in-quota volumes enter duty-free).
+        out_of_quota_conventional_tariff_rate: Ad-valorem rate applied to conventional steel
+            above the quota (0–100 scale).
+        out_of_quota_green_tariff_rate: Ad-valorem rate applied to green steel above the quota.
+        in_quota_conventional_tariff_rate: Ad-valorem rate for conventional steel within the
+            quota. Defaults to 0.0 (the historical assumption that in-quota volumes enter duty-free).
+        in_quota_green_tariff_rate: Ad-valorem rate for green steel within the quota. Defaults to 0.0.
         start_year: First year the TRQ is in force (inclusive).
         end_year: Last year the TRQ is in force (inclusive).
         shared_quota_id: Optional identifier linking TRQs that draw from one shared pool.
@@ -6767,11 +6783,13 @@ class TariffRateQuota:
         to_iso3s: list[str],
         commodity: str,
         tariff_free_quota: float,
-        out_of_quota_tariff_rate: float,
+        out_of_quota_conventional_tariff_rate: float,
+        out_of_quota_green_tariff_rate: float,
         start_year: "Year",
         end_year: "Year",
         shared_quota_id: str | None = None,
-        in_quota_tariff_rate: float = 0.0,
+        in_quota_conventional_tariff_rate: float = 0.0,
+        in_quota_green_tariff_rate: float = 0.0,
         steel_type: str = TRQ_STEEL_TYPE_ANY,
     ) -> None:
         self.name = name
@@ -6779,8 +6797,10 @@ class TariffRateQuota:
         self.to_iso3s = to_iso3s
         self.commodity = commodity
         self.tariff_free_quota = tariff_free_quota
-        self.out_of_quota_tariff_rate = out_of_quota_tariff_rate
-        self.in_quota_tariff_rate = in_quota_tariff_rate
+        self.out_of_quota_conventional_tariff_rate = out_of_quota_conventional_tariff_rate
+        self.out_of_quota_green_tariff_rate = out_of_quota_green_tariff_rate
+        self.in_quota_conventional_tariff_rate = in_quota_conventional_tariff_rate
+        self.in_quota_green_tariff_rate = in_quota_green_tariff_rate
         self.start_year = start_year
         self.end_year = end_year
         self.shared_quota_id = shared_quota_id
@@ -6790,14 +6810,21 @@ class TariffRateQuota:
     def tiers(self) -> list["TRQTier"]:
         """Return the two-tier structure derived from the stored fields.
 
-        Tier 0: in_quota_tariff_rate (0.0 = duty-free) up to tariff_free_quota tonnes.
-        Tier 1: out_of_quota_tariff_rate above that, no volume cap.
-
-        For future multi-tier support use TariffRateQuota.from_tiers().
+        Tier 0: in-quota rates (0.0 = duty-free) up to tariff_free_quota tonnes.
+        Tier 1: out-of-quota rates above that, no volume cap.
+        Each tier carries both a conventional and a green rate.
         """
         return [
-            TRQTier(capacity=self.tariff_free_quota, tariff_rate=self.in_quota_tariff_rate),
-            TRQTier(capacity=None, tariff_rate=self.out_of_quota_tariff_rate),
+            TRQTier(
+                capacity=self.tariff_free_quota,
+                conventional_tariff_rate=self.in_quota_conventional_tariff_rate,
+                green_tariff_rate=self.in_quota_green_tariff_rate,
+            ),
+            TRQTier(
+                capacity=None,
+                conventional_tariff_rate=self.out_of_quota_conventional_tariff_rate,
+                green_tariff_rate=self.out_of_quota_green_tariff_rate,
+            ),
         ]
 
     def __repr__(self) -> str:

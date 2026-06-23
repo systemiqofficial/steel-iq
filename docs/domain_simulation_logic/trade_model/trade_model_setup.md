@@ -111,16 +111,16 @@ plant → gateway_tier_0  (capacity = tariff-free quota,  arc cost = in-quota ra
 plant → gateway_tier_1  (capacity = unlimited,           arc cost = OOQ rate × commodity price)
 gateway_tier_k → demand center  (arc cost = avg transport from exporting countries)
 ```
-Because the LP minimises cost, it fills the cheaper (in-quota) tier first with no explicit ordering constraints needed.
+The in-quota / OOQ rate applied to each plant→gateway arc is the **conventional** or **green** rate depending on the originating plant's green-steel eligibility (see *Conventional vs green rate split* below). Because the LP minimises cost, it fills the cheaper (in-quota) tier first with no explicit ordering constraints needed.
 
-**In-quota tariff rate:** The in-quota tier is duty-free by default, but a TRQ may charge a tariff on within-quota volumes via the optional `In-quota tariff rate` column on the `TRQs` sheet (0–100 ad-valorem, accepts `"50%"` strings; blank → 0%). It is stored as `TariffRateQuota.in_quota_tariff_rate` and applied to the tier-0 gateway arc exactly like the OOQ rate is applied to tier-1: `in-quota rate × commodity price`.
+**Conventional vs green rate split:** Every tier carries two ad-valorem rates, supplied on the `TRQs` sheet as four columns: `In-quota conventional tariff rate`, `Out-of-quota conventional tariff rate`, `In-quota green tariff rate`, `Out-of-quota green tariff rate` (each 0–100, accepts `"50%"` strings; in-quota blank → 0%). They are stored on `TariffRateQuota` as `in_quota_conventional_tariff_rate` / `out_of_quota_conventional_tariff_rate` / `in_quota_green_tariff_rate` / `out_of_quota_green_tariff_rate` and surface on each `TRQTier` as `conventional_tariff_rate` / `green_tariff_rate`. When a plant flows through a gateway, `compute_gateway_arc_costs()` charges it the green rate if `green_steel_eligible`, else the conventional rate. *Backward compatibility:* a legacy single `Out-of-quota tariff rate` / `In-quota tariff rate` column is read as the conventional value, and a missing green column defaults to the conventional rate (so old single-rate sheets behave as before).
 
-**Steel-type scope (TRQs):** The `Commodity` column on the `TRQs` sheet encodes *which steel* the TRQ applies to, parsed into `TariffRateQuota.steel_type`:
-- `steel` / `steel (any)` → **any**: all steel is subject to the TRQ.
-- `conventional steel` → **conventional**: only non-green plants are subject; green-steel-eligible plants are fully exempt.
-- `green steel` → **green**: only green-steel-eligible plants are subject; conventional plants are fully exempt.
+**Steel-type scope (TRQs):** The `Commodity` column on the `TRQs` sheet still encodes *which steel draws on the quota volume*, parsed into `TariffRateQuota.steel_type`:
+- `steel` / `steel (any)` → **any**: both conventional and green steel share the single quota volume; each pays its own rate (conventional plants the conventional rate, green plants the green rate).
+- `conventional steel` → **conventional**: only non-green plants use the quota (green-steel-eligible plants are fully exempt); only the conventional rate columns are relevant — the green columns are ignored.
+- `green steel` → **green**: only green-steel-eligible plants use the quota (conventional plants fully exempt); only the green rate columns are relevant.
 
-Eligibility uses the same `green_steel_eligible` flag set on each plant ProcessCenter as for normal tariffs (`trq_steel_type_applies_to_plant()` is the single source of truth). "Fully exempt" means the plant gets **no** gateway arc and keeps its direct plant→DC arc, so it never counts against the quota and pays no OOQ tariff (it is still subject to any ordinary `TradeTariff`, a separate mechanism). This replaces the former per-plant `green_steel_exemption` cost discount on TRQs; the separate `TradeTariff.green_steel_exemption` is unaffected.
+Eligibility uses the same `green_steel_eligible` flag set on each plant ProcessCenter as for normal tariffs (`trq_steel_type_applies_to_plant()` is the single source of truth for *which plants enter the gateway*; the per-arc rate is then chosen by the same flag). "Fully exempt" means the plant gets **no** gateway arc and keeps its direct plant→DC arc, so it never counts against the quota and pays no OOQ tariff (it is still subject to any ordinary `TradeTariff`, a separate mechanism). The separate `TradeTariff.green_steel_exemption` discount is unaffected by this split.
 
 **Shared quotas:** Multiple exporting countries that share one quota pool are merged into a single TRQ object (same `shared_quota_id`) with a combined `from_iso3s` list. They all feed through the same gateway node, so the capacity constraint automatically covers the combined volume. The merged TRQ takes its `steel_type` (and other metadata) from the first row of the group.
 
@@ -135,6 +135,15 @@ Eligibility uses the same `green_steel_eligible` flag set on each plant ProcessC
 4. Removes all gateway arcs from `allocations`.
 
 **Granularity caveat:** because the injected `tariff_taxes` are keyed by ISO3 route (not by plant), the per-plant tariff is flattened to a volume-weighted average across all (subject) plants of the same origin country shipping the same out-of-quota route. The LP objective and the per-arc `allocation_costs` remain correct per plant; only the ISO3-keyed value PAM consumes is blended. This matches the existing granularity of normal (non-TRQ) tariffs, which are inherently ISO3-keyed.
+
+**TRQ reporting (`trq_report_<year>.csv`):** After the LP solves (and before `trade_lp` is freed), `write_trq_report_csv()` emits one CSV per simulation year to `output_dir/TM/trq_report_<year>.csv`. It is a no-op when no TRQs are active (no file written). Built by `build_trq_report_rows()`, which re-reads the solved gateway flows and attributes each plant's gateway inflow to destinations by the gateway's outflow shares (same attribution as `collapse_gateway_arcs`). There is **one row per `(gateway_node_id, from_iso3, to_iso3, commodity)`** — gateway node already encodes the tariff tier, so in-quota (tier 0) and out-of-quota (tier 1) appear as separate rows. Columns:
+
+| Column | Meaning |
+|--------|---------|
+| `allocated_volume_t` | Sum of attributed flow (tonnes). Zero-volume groups are dropped. |
+| `avg_allocation_cost_usd_per_t` | Volume-weighted (contributing plant's production cost [carbon] + energy opex + transport on gateway→DC). Energy opex is reconstructed from the plant's actual solved feedstock flows: `Σ bom_energy_costs[(plant, input)] × inflow / plant output`. The TRQ tariff is reported separately. |
+| `pct_plants_green_steel_eligible` | Share of the *distinct* contributing plants with `green_steel_eligible=True`, 0–100. For conventional/green-scoped TRQs this is 0/100 by construction; it is informative mainly for `any`-scoped TRQs. |
+| `applied_tariff_tax_usd_per_t` | Volume-weighted TRQ tariff component only (the value injected into `allocations.tariff_taxes`). 0 for the duty-free tier. |
 
 ---
 

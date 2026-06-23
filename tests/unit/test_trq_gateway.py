@@ -37,7 +37,13 @@ from steelo.domain.trade_modelling.trade_lp_modelling import (
     TradeLPModel,
     Location,
 )
-from steelo.domain.trade_modelling.set_up_steel_trade_lp import solve_lp_only
+from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
+    solve_lp_only,
+    build_trq_report_rows,
+    write_trq_report_csv,
+    build_trade_report_rows,
+    write_trade_report_csv,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -51,16 +57,28 @@ def _make_trq(
     to_iso3s=None,
     tariff_free_quota=1000.0,
     out_of_quota_tariff_rate=50.0,
+    out_of_quota_green_tariff_rate=None,
+    in_quota_tariff_rate=0.0,
+    in_quota_green_tariff_rate=None,
     shared_quota_id=None,
     steel_type=TRQ_STEEL_TYPE_ANY,
 ) -> TariffRateQuota:
+    # out_of_quota_tariff_rate / in_quota_tariff_rate set the conventional rates; the green
+    # rates default to them unless explicitly overridden (so existing call sites keep one rate).
+    if out_of_quota_green_tariff_rate is None:
+        out_of_quota_green_tariff_rate = out_of_quota_tariff_rate
+    if in_quota_green_tariff_rate is None:
+        in_quota_green_tariff_rate = in_quota_tariff_rate
     return TariffRateQuota(
         name=name,
         from_iso3s=from_iso3s or ["TUR"],
         to_iso3s=to_iso3s or ["DEU"],
         commodity="steel",
         tariff_free_quota=tariff_free_quota,
-        out_of_quota_tariff_rate=out_of_quota_tariff_rate,
+        out_of_quota_conventional_tariff_rate=out_of_quota_tariff_rate,
+        out_of_quota_green_tariff_rate=out_of_quota_green_tariff_rate,
+        in_quota_conventional_tariff_rate=in_quota_tariff_rate,
+        in_quota_green_tariff_rate=in_quota_green_tariff_rate,
         start_year=Year(2026),
         end_year=Year(2034),
         shared_quota_id=shared_quota_id,
@@ -99,18 +117,21 @@ class TestTRQTier:
         trq = _make_trq(tariff_free_quota=500.0)
         t0 = trq.tiers[0]
         assert t0.capacity == 500.0
-        assert t0.tariff_rate == 0.0
+        assert t0.conventional_tariff_rate == 0.0
+        assert t0.green_tariff_rate == 0.0
 
     def test_tier_1_has_ooq_rate_and_no_cap(self):
-        trq = _make_trq(out_of_quota_tariff_rate=50.0)
+        trq = _make_trq(out_of_quota_tariff_rate=50.0, out_of_quota_green_tariff_rate=25.0)
         t1 = trq.tiers[1]
         assert t1.capacity is None
-        assert t1.tariff_rate == 50.0
+        assert t1.conventional_tariff_rate == 50.0
+        assert t1.green_tariff_rate == 25.0
 
     def test_trq_tier_dataclass(self):
-        tier = TRQTier(capacity=100.0, tariff_rate=10.0)
+        tier = TRQTier(capacity=100.0, conventional_tariff_rate=10.0, green_tariff_rate=5.0)
         assert tier.capacity == 100.0
-        assert tier.tariff_rate == 10.0
+        assert tier.conventional_tariff_rate == 10.0
+        assert tier.green_tariff_rate == 5.0
 
 
 # ---------------------------------------------------------------------------
@@ -127,13 +148,15 @@ class TestBuildTRQGatewayNodes:
     def test_tier_0_is_duty_free(self):
         nodes = build_trq_gateway_nodes([_make_trq()])
         tier0 = next(n for n in nodes if n.tier_index == 0)
-        assert tier0.tariff_rate == 0.0
+        assert tier0.conventional_tariff_rate == 0.0
+        assert tier0.green_tariff_rate == 0.0
         assert tier0.tier_capacity == 1000.0
 
     def test_tier_1_is_ooq(self):
-        nodes = build_trq_gateway_nodes([_make_trq(out_of_quota_tariff_rate=50.0)])
+        nodes = build_trq_gateway_nodes([_make_trq(out_of_quota_tariff_rate=50.0, out_of_quota_green_tariff_rate=25.0)])
         tier1 = next(n for n in nodes if n.tier_index == 1)
-        assert tier1.tariff_rate == 50.0
+        assert tier1.conventional_tariff_rate == 50.0
+        assert tier1.green_tariff_rate == 25.0
         assert tier1.tier_capacity is None
 
     def test_unlimited_tier_effective_capacity(self):
@@ -195,12 +218,14 @@ class TestSteelTypeMatcher:
 
 
 class TestSteelTypeArcCosts:
-    """compute_gateway_arc_costs() should create gateway arcs only for plants the TRQ's
-    steel_type applies to, and charge the full tariff (no green-steel discount)."""
+    """compute_gateway_arc_costs() creates gateway arcs only for plants the TRQ's steel_type
+    applies to, and charges each plant the conventional or green rate based on its
+    green-steel eligibility."""
 
     def _setup(self, steel_type):
-        """Two TUR plants — one green-steel-eligible, one not — feeding one DEU DC
-        through a 2-tier TRQ. OOQ rate 50%, avg price 100 ⇒ base OOQ tariff 50 $/t."""
+        """Two TUR plants — one green-steel-eligible, one not — feeding one DEU DC through a
+        2-tier TRQ. OOQ conventional 50%, OOQ green 25%, avg price 100 ⇒ conventional OOQ
+        tariff 50 $/t, green OOQ tariff 25 $/t."""
         prod_proc = _make_steel_process()
         dem_proc = _make_demand_process()
         loc_tur = _make_location("TUR")
@@ -215,7 +240,15 @@ class TestSteelTypeArcCosts:
         dc = ProcessCenter(name="dc_deu", process=dem_proc, capacity=10.0, location=loc_deu)
 
         nodes = build_trq_gateway_nodes(
-            [_make_trq(from_iso3s=["TUR"], to_iso3s=["DEU"], out_of_quota_tariff_rate=50.0, steel_type=steel_type)]
+            [
+                _make_trq(
+                    from_iso3s=["TUR"],
+                    to_iso3s=["DEU"],
+                    out_of_quota_tariff_rate=50.0,
+                    out_of_quota_green_tariff_rate=25.0,
+                    steel_type=steel_type,
+                )
+            ]
         )
         costs = compute_gateway_arc_costs(
             gateway_nodes=nodes,
@@ -227,22 +260,24 @@ class TestSteelTypeArcCosts:
         tier0 = next(n for n in nodes if n.tier_index == 0)
         return costs, tier0.node_id, tier1.node_id
 
-    def test_any_creates_arcs_for_both_at_full_tariff(self):
+    def test_any_creates_arcs_for_both_at_their_own_rate(self):
         costs, _, tier1_id = self._setup(steel_type=TRQ_STEEL_TYPE_ANY)
-        # No green-steel discount: both plants pay the full OOQ tariff (50% * 100 = 50).
-        assert costs[("plant_green", tier1_id, "steel")] == pytest.approx(50.0)
+        # Both plants share the quota but pay their own rate: green 25% * 100 = 25,
+        # conventional 50% * 100 = 50.
+        assert costs[("plant_green", tier1_id, "steel")] == pytest.approx(25.0)
         assert costs[("plant_grey", tier1_id, "steel")] == pytest.approx(50.0)
 
     def test_conventional_excludes_green_plant(self):
         costs, _, tier1_id = self._setup(steel_type=TRQ_STEEL_TYPE_CONVENTIONAL)
-        # Green plant is fully exempt → no gateway arc created for it.
+        # Green plant is fully exempt → no gateway arc created for it; conventional rate applies.
         assert ("plant_green", tier1_id, "steel") not in costs
         assert costs[("plant_grey", tier1_id, "steel")] == pytest.approx(50.0)
 
     def test_green_excludes_conventional_plant(self):
         costs, _, tier1_id = self._setup(steel_type=TRQ_STEEL_TYPE_GREEN)
+        # Conventional plant is fully exempt; the green plant pays the green rate (25% * 100 = 25).
         assert ("plant_grey", tier1_id, "steel") not in costs
-        assert costs[("plant_green", tier1_id, "steel")] == pytest.approx(50.0)
+        assert costs[("plant_green", tier1_id, "steel")] == pytest.approx(25.0)
 
     def test_duty_free_tier_still_zero(self):
         costs, tier0_id, _ = self._setup(steel_type=TRQ_STEEL_TYPE_ANY)
@@ -262,7 +297,8 @@ class TestGatewayTransportCost:
             node_id="test_gw",
             trq_name="test",
             tier_index=0,
-            tariff_rate=0.0,
+            conventional_tariff_rate=0.0,
+            green_tariff_rate=0.0,
             tier_capacity=1000.0,
             from_iso3s=from_iso3s,
             to_iso3s=["DEU"],
@@ -371,7 +407,8 @@ def _build_gateway_lp_model() -> TradeLPModel:
             node_id="gw_tier0",
             trq_name="EU safeguards",
             tier_index=0,
-            tariff_rate=0.0,
+            conventional_tariff_rate=0.0,
+            green_tariff_rate=0.0,
             tier_capacity=5.0,
             from_iso3s=["TUR", "KOR"],
             to_iso3s=["DEU", "FRA"],
@@ -381,7 +418,8 @@ def _build_gateway_lp_model() -> TradeLPModel:
             node_id="gw_tier1",
             trq_name="EU safeguards",
             tier_index=1,
-            tariff_rate=10.0,
+            conventional_tariff_rate=10.0,
+            green_tariff_rate=10.0,
             tier_capacity=None,
             from_iso3s=["TUR", "KOR"],
             to_iso3s=["DEU", "FRA"],
@@ -519,3 +557,336 @@ class TestSolveLpOnlyCollapsesGateways:
             assert from_iso3 in {"TUR", "KOR"}
             assert to_iso3 in {"DEU", "FRA"}
             assert comm == "steel"
+
+
+# ---------------------------------------------------------------------------
+# TRQ reporting: build_trq_report_rows / write_trq_report_csv
+# One row per (gateway node, from country, to country, commodity).
+# ---------------------------------------------------------------------------
+
+
+class TestBuildTRQReportRows:
+    """Aggregated per-(gateway, from, to, commodity) reporting on solved gateway flows."""
+
+    def _solve(self, green_plants: set[str] | None = None) -> TradeLPModel:
+        model = _build_gateway_lp_model()
+        if green_plants:
+            for pc in model.process_centers:
+                if pc.name in green_plants:
+                    pc.green_steel_eligible = True
+        try:
+            model.solve_lp_model()
+        except Exception as exc:  # solver binary not installed in this env
+            pytest.skip(f"Solver not available: {exc}")
+        if model.allocations is None:
+            model.extract_solution()
+        return model
+
+    def test_no_rows_without_gateways(self):
+        model = _build_gateway_lp_model()
+        model.trq_gateway_nodes = []
+        assert build_trq_report_rows(model) == []
+
+    def test_rows_have_expected_grain_and_no_gateway_iso3(self):
+        rows = build_trq_report_rows(self._solve())
+        if not rows:
+            pytest.skip("LP produced no positive gateway flow")
+        keys = [(r["gateway_node_id"], r["from_iso3"], r["to_iso3"], r["commodity"]) for r in rows]
+        assert len(keys) == len(set(keys)), "Report rows must be unique per (gateway, from, to, commodity)"
+        for r in rows:
+            assert r["from_iso3"] in {"TUR", "KOR"}
+            assert r["to_iso3"] in {"DEU", "FRA"}
+            assert r["commodity"] == "steel"
+            assert r["gateway_node_id"] in {"gw_tier0", "gw_tier1"}
+
+    def test_zero_volume_rows_excluded(self):
+        rows = build_trq_report_rows(self._solve())
+        for r in rows:
+            assert r["allocated_volume_t"] > 0
+
+    def test_volume_conservation_matches_demand(self):
+        rows = build_trq_report_rows(self._solve())
+        if not rows:
+            pytest.skip("LP produced no positive gateway flow")
+        # Total attributed volume across all rows equals total demand (15 t).
+        assert sum(r["allocated_volume_t"] for r in rows) == pytest.approx(15.0, abs=0.1)
+
+    def test_tariff_only_on_ooq_tier(self):
+        rows = build_trq_report_rows(self._solve())
+        if not rows:
+            pytest.skip("LP produced no positive gateway flow")
+        for r in rows:
+            if r["tier_index"] == 0:
+                assert r["applied_tariff_tax_usd_per_t"] == pytest.approx(0.0)
+            else:
+                assert r["applied_tariff_tax_usd_per_t"] == pytest.approx(10.0)
+            # Allocation cost is production + transport. The fixture plants have
+            # production_cost=0 and the gateway→DC transport cost is 5 $/t, so it is
+            # always 5 $/t regardless of tier (the tariff is reported separately).
+            assert r["avg_allocation_cost_usd_per_t"] == pytest.approx(5.0)
+
+    def test_allocation_cost_includes_production_cost(self):
+        model = _build_gateway_lp_model()
+        # Give both origin plants a 7 $/t production cost (kept equal so the LP stays
+        # cost-indifferent between origins and the topology is unchanged).
+        for pc in model.process_centers:
+            if pc.name in {"plant_x", "plant_y"}:
+                pc.production_cost = 7.0
+        try:
+            model.solve_lp_model()
+        except Exception as exc:
+            pytest.skip(f"Solver not available: {exc}")
+        rows = build_trq_report_rows(model)
+        if not rows:
+            pytest.skip("LP produced no positive gateway flow")
+        # production (7) + transport (5) = 12 $/t; tariff is reported separately.
+        for r in rows:
+            assert r["avg_allocation_cost_usd_per_t"] == pytest.approx(12.0)
+
+    def test_energy_opex_included_from_feedstock_flows(self):
+        """Deterministic check (no solver): energy opex is reconstructed from inbound flows.
+
+        Topology: supplier S --iron--> plant P --steel--> gateway GW --steel--> DC D.
+        With bom_energy_costs[(P, iron)] = 4 $/t-input and 2 t of iron feeding 10 t of
+        steel output, the plant's energy opex is (4 × 2) / 10 = 0.8 $/t. Combined with the
+        plant's production (carbon) cost 2 and gateway→DC transport 3, the allocation cost
+        is 2 + 0.8 + 3 = 5.8 $/t. The tariff (5 $/t) is reported separately.
+        """
+        from types import SimpleNamespace
+
+        prod_proc = Process(name="BF-BOF", type=ProcessType.PRODUCTION, bill_of_materials=[])
+        sup_proc = Process(name="supply", type=ProcessType.SUPPLY, bill_of_materials=[])
+        dem_proc = Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[])
+        gw_proc = Process(name="__gateway__", type=ProcessType.GATEWAY, bill_of_materials=[])
+
+        plant = ProcessCenter(
+            name="P",
+            process=prod_proc,
+            capacity=100.0,
+            location=_make_location("AAA"),
+            production_cost=2.0,
+            green_steel_eligible=True,
+        )
+        supplier = ProcessCenter(name="S", process=sup_proc, capacity=100.0, location=_make_location("AAA"))
+        dc = ProcessCenter(name="D", process=dem_proc, capacity=100.0, location=_make_location("BBB"))
+        gw_pc = ProcessCenter(
+            name="GW", process=gw_proc, capacity=_UNLIMITED_CAPACITY, location=_make_location(_GATEWAY_ISO3)
+        )
+
+        gw_node = TRQGatewayNode(
+            node_id="GW",
+            trq_name="TRQ",
+            tier_index=1,
+            conventional_tariff_rate=10.0,
+            green_tariff_rate=10.0,
+            tier_capacity=None,
+            from_iso3s=["AAA"],
+            to_iso3s=["BBB"],
+            commodity="steel",
+        )
+
+        def var(v):
+            return SimpleNamespace(value=v)
+
+        inner = SimpleNamespace(
+            allocation_variables={
+                ("S", "P", "iron"): var(2.0),  # feedstock into plant
+                ("P", "GW", "steel"): var(10.0),  # plant → gateway
+                ("GW", "D", "steel"): var(10.0),  # gateway → DC
+            },
+            allocation_costs={
+                ("P", "GW", "steel"): 5.0,  # tariff on plant→gateway arc
+                ("GW", "D", "steel"): 3.0,  # transport on gateway→DC arc
+            },
+            bom_energy_costs={("P", "iron"): 4.0},  # energy opex per tonne of iron input
+        )
+        lp_model = SimpleNamespace(
+            trq_gateway_nodes=[gw_node],
+            process_centers=[plant, supplier, dc, gw_pc],
+            lp_model=inner,
+        )
+
+        rows = build_trq_report_rows(lp_model)
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["allocated_volume_t"] == pytest.approx(10.0)
+        assert r["avg_allocation_cost_usd_per_t"] == pytest.approx(5.8)  # 2 carbon + 0.8 energy + 3 transport
+        assert r["applied_tariff_tax_usd_per_t"] == pytest.approx(5.0)
+        assert r["pct_plants_green_steel_eligible"] == pytest.approx(100.0)
+
+    def test_green_pct_zero_by_default(self):
+        rows = build_trq_report_rows(self._solve())
+        if not rows:
+            pytest.skip("LP produced no positive gateway flow")
+        assert all(r["pct_plants_green_steel_eligible"] == 0.0 for r in rows)
+
+    def test_green_pct_reflects_eligible_plants(self):
+        # plant_x (TUR) is green-eligible; plant_y (KOR) is not. The LP is cost-indifferent
+        # between the two origins, so it may route all flow through either — assert per-row
+        # consistency rather than requiring both origins to appear.
+        rows = build_trq_report_rows(self._solve(green_plants={"plant_x"}))
+        if not rows:
+            pytest.skip("LP produced no positive gateway flow")
+        for r in rows:
+            expected = 100.0 if r["from_iso3"] == "TUR" else 0.0
+            assert r["pct_plants_green_steel_eligible"] == expected
+
+    def test_write_csv(self, tmp_path):
+        model = self._solve()
+        out = tmp_path / "TM" / "trq_report_2030.csv"
+        n = write_trq_report_csv(model, str(out), year=2030)
+        if n == 0:
+            pytest.skip("LP produced no positive gateway flow")
+        assert out.exists()
+        contents = out.read_text().splitlines()
+        assert contents[0].startswith("year,gateway_node_id,trq_name,tier_index,from_iso3,to_iso3,commodity")
+        assert len(contents) == n + 1  # header + data rows
+        assert all(line.startswith("2030,") for line in contents[1:])
+
+    def test_write_csv_noop_without_gateways(self, tmp_path):
+        model = _build_gateway_lp_model()
+        model.trq_gateway_nodes = []
+        out = tmp_path / "trq_report.csv"
+        assert write_trq_report_csv(model, str(out)) == 0
+        assert not out.exists()
+
+
+# ---------------------------------------------------------------------------
+# Broad trade reporting: build_trade_report_rows / write_trade_report_csv
+# One row per (commodity, from_iso3, to_iso3) across ALL flows, with cost,
+# trade tariff, TRQ tax, volume and green-steel share.
+# ---------------------------------------------------------------------------
+
+
+class _FakeLPModel:
+    """Minimal stand-in for a solved TradeLPModel used by build_trade_report_rows."""
+
+    def __init__(self, process_centers, gw_nodes, alloc_vars, tariff_tax, bom_energy, gw_costs, transport):
+        from types import SimpleNamespace
+
+        self.process_centers = process_centers
+        self.trq_gateway_nodes = gw_nodes
+        self.gateway_arc_costs = gw_costs
+        self._transport = transport
+        self.lp_model = SimpleNamespace(
+            allocation_variables=alloc_vars,
+            tariff_tax=tariff_tax,
+            bom_energy_costs=bom_energy,
+        )
+
+    def get_transportation_cost(self, from_iso3, to_iso3, commodity):
+        return self._transport.get((from_iso3, to_iso3, commodity.lower()), 0.0)
+
+
+def _build_trade_report_fake():
+    """Topology:
+    S(AAA) --iron 2--> P(AAA, green)               (feedstock arc)
+    P(AAA, green) --steel 10--> D1(CCC)            (direct steel, trade tariff 4)
+    Q(BBB) --steel 8--> GW --steel 8--> D2(DDD)    (TRQ-covered, TRQ tax 7)
+    """
+    from types import SimpleNamespace
+
+    def var(v):
+        return SimpleNamespace(value=v)
+
+    prod = Process(name="BF-BOF", type=ProcessType.PRODUCTION, bill_of_materials=[])
+    sup = Process(name="supply", type=ProcessType.SUPPLY, bill_of_materials=[])
+    dem = Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[])
+    gwp = Process(name="__gateway__", type=ProcessType.GATEWAY, bill_of_materials=[])
+
+    S = ProcessCenter(name="S", process=sup, capacity=1e9, location=_make_location("AAA"))
+    P = ProcessCenter(
+        name="P",
+        process=prod,
+        capacity=1e9,
+        location=_make_location("AAA"),
+        production_cost=2.0,
+        green_steel_eligible=True,
+    )
+    Q = ProcessCenter(
+        name="Q",
+        process=prod,
+        capacity=1e9,
+        location=_make_location("BBB"),
+        production_cost=1.0,
+        green_steel_eligible=False,
+    )
+    D1 = ProcessCenter(name="D1", process=dem, capacity=1e9, location=_make_location("CCC"))
+    D2 = ProcessCenter(name="D2", process=dem, capacity=1e9, location=_make_location("DDD"))
+    GW = ProcessCenter(name="GW", process=gwp, capacity=_UNLIMITED_CAPACITY, location=_make_location(_GATEWAY_ISO3))
+
+    gw_node = TRQGatewayNode(
+        node_id="GW",
+        trq_name="TRQ",
+        tier_index=1,
+        conventional_tariff_rate=10.0,
+        green_tariff_rate=10.0,
+        tier_capacity=None,
+        from_iso3s=["BBB"],
+        to_iso3s=["DDD"],
+        commodity="steel",
+    )
+    alloc_vars = {
+        ("S", "P", "iron"): var(2.0),
+        ("P", "D1", "steel"): var(10.0),
+        ("Q", "GW", "steel"): var(8.0),
+        ("GW", "D2", "steel"): var(8.0),
+    }
+    tariff_tax = {("P", "D1", "steel"): 4.0}
+    bom_energy = {("P", "iron"): 5.0}
+    gw_costs = {("Q", "GW", "steel"): 7.0, ("GW", "D2", "steel"): 3.0}
+    transport = {("AAA", "AAA", "iron"): 1.0, ("AAA", "CCC", "steel"): 6.0}
+    return _FakeLPModel([S, P, Q, D1, D2, GW], [gw_node], alloc_vars, tariff_tax, bom_energy, gw_costs, transport)
+
+
+class TestBuildTradeReportRows:
+    def _rows(self):
+        return {
+            (r["commodity"], r["from_iso3"], r["to_iso3"]): r
+            for r in build_trade_report_rows(_build_trade_report_fake())
+        }
+
+    def test_three_groups(self):
+        rows = self._rows()
+        assert set(rows) == {("iron", "AAA", "AAA"), ("steel", "AAA", "CCC"), ("steel", "BBB", "DDD")}
+
+    def test_feedstock_arc(self):
+        r = self._rows()[("iron", "AAA", "AAA")]
+        assert r["volume_t"] == pytest.approx(2.0)
+        assert r["avg_cost_usd_per_t"] == pytest.approx(1.0)  # supplier prod 0 + energy 0 + transport 1
+        assert r["trade_tariff_usd_per_t"] == pytest.approx(0.0)
+        assert r["trq_tax_usd_per_t"] == pytest.approx(0.0)
+        assert r["pct_plants_green_steel_eligible"] == pytest.approx(0.0)
+
+    def test_direct_steel_with_trade_tariff_and_energy(self):
+        r = self._rows()[("steel", "AAA", "CCC")]
+        assert r["volume_t"] == pytest.approx(10.0)
+        # prod 2 + energy (5*2/10=1) + transport 6 = 9
+        assert r["avg_cost_usd_per_t"] == pytest.approx(9.0)
+        assert r["trade_tariff_usd_per_t"] == pytest.approx(4.0)
+        assert r["trq_tax_usd_per_t"] == pytest.approx(0.0)
+        assert r["pct_plants_green_steel_eligible"] == pytest.approx(100.0)
+
+    def test_covered_route_via_gateway_with_trq_tax(self):
+        r = self._rows()[("steel", "BBB", "DDD")]
+        assert r["volume_t"] == pytest.approx(8.0)
+        # prod 1 + energy 0 + gateway transport 3 = 4
+        assert r["avg_cost_usd_per_t"] == pytest.approx(4.0)
+        assert r["trade_tariff_usd_per_t"] == pytest.approx(0.0)
+        assert r["trq_tax_usd_per_t"] == pytest.approx(7.0)
+        assert r["pct_plants_green_steel_eligible"] == pytest.approx(0.0)
+
+    def test_no_zero_volume_rows(self):
+        for r in build_trade_report_rows(_build_trade_report_fake()):
+            assert r["volume_t"] > 0
+
+    def test_write_csv(self, tmp_path):
+        out = tmp_path / "TM" / "trade_report_2030.csv"
+        n = write_trade_report_csv(_build_trade_report_fake(), str(out), year=2030)
+        assert n == 3
+        lines = out.read_text().splitlines()
+        assert lines[0].startswith(
+            "year,commodity,from_iso3,from_country,to_iso3,to_country,volume_t,avg_cost_usd_per_t,trade_tariff_usd_per_t,trq_tax_usd_per_t,pct_plants_green_steel_eligible"
+        )
+        assert all(line.startswith("2030,") for line in lines[1:])
+        assert len(lines) == n + 1

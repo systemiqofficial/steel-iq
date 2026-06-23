@@ -1983,3 +1983,428 @@ def read_trq_gateway_results(
 
     logger_local.info(f"Extracted {len(records)} TRQ gateway attribution records")
     return records
+
+
+def _plant_energy_opex_per_t_output(lp_model: tlp.TradeLPModel) -> dict[str, float]:
+    """Per-production-center energy opex in USD per tonne of output, from the solved LP.
+
+    The LP carries energy opex as ``bom_energy_costs[(process_center, input_commodity)]``,
+    expressed per tonne of *input* (see add_bom_energy_costs_as_parameter_to_lp and the
+    energy_vopex_by_input conversion in create_process_from_furnace_group). The objective
+    multiplies it by the inbound feedstock flow, so a plant's total energy cost is
+
+        Σ_inbound bom_energy_costs[(plant, input_commodity)] × flow(input → plant)
+
+    Dividing by the plant's total output recovers the per-tonne-of-output energy opex and
+    correctly accounts for the actual (solved) feedstock mix of multi-feedstock plants.
+
+    Args:
+        lp_model: A solved TradeLPModel (reads lp_model.lp_model.allocation_variables).
+
+    Returns:
+        Dict process_center_name → energy opex USD/t output (omits plants with zero output).
+    """
+    allocation_vars = lp_model.lp_model.allocation_variables
+    bom_energy = getattr(lp_model.lp_model, "bom_energy_costs", {}) or {}
+    prod_names = {pc.name for pc in lp_model.process_centers if pc.process.type == tlp.ProcessType.PRODUCTION}
+
+    energy_in: dict[str, float] = defaultdict(float)  # plant → Σ energy_cost × inbound feedstock flow
+    output_out: dict[str, float] = defaultdict(float)  # plant → total outbound (output) flow
+    for (f, t, c), var in allocation_vars.items():
+        try:
+            vol = float(var.value or 0.0)
+        except (TypeError, AttributeError):
+            vol = 0.0
+        if vol <= 0.0:
+            continue
+        if t in prod_names:
+            ec = bom_energy.get((t, c), 0.0)
+            if ec:
+                energy_in[t] += ec * vol
+        if f in prod_names:
+            output_out[f] += vol
+
+    return {name: energy_in.get(name, 0.0) / out for name, out in output_out.items() if out > 0.0}
+
+
+def build_trq_report_rows(lp_model: tlp.TradeLPModel) -> list[dict]:
+    """Aggregate solved TRQ gateway flows into one row per (gateway, from, to, commodity).
+
+    Reads the solved plant→gateway and gateway→demand-center flows and attributes each
+    plant's gateway inflow to destination countries proportionally to the gateway's
+    outflow shares (the same attribution used by collapse_gateway_arcs). Results are then
+    grouped by (gateway_node_id, from_iso3, to_iso3, commodity).
+
+    For every group it reports:
+        - allocated_volume_t: sum of attributed flow (tonnes).
+        - avg_allocation_cost_usd_per_t: volume-weighted average of the contributing plant's
+          production cost (carbon) + energy opex + the transport cost on the gateway→DC arc,
+          USD/t. Energy opex is reconstructed from the plant's actual solved feedstock flows
+          (see _plant_energy_opex_per_t_output).
+          (The TRQ tariff is reported separately in applied_tariff_tax_usd_per_t.)
+        - pct_plants_green_steel_eligible: share of the *distinct* contributing plants that
+          qualify for the green-steel exemption (green_steel_eligible=True), 0–100.
+        - applied_tariff_tax_usd_per_t: volume-weighted average of the TRQ tariff component
+          only, USD/t (this is the value injected into allocations.tariff_taxes for PAM).
+
+    Groups whose allocated volume is 0 (or below LP tolerance) are omitted.
+
+    Args:
+        lp_model: A solved TradeLPModel with gateway nodes injected.
+
+    Returns:
+        List of report rows (empty if no TRQ gateways or no flow).
+    """
+    logger_local = logging.getLogger(f"{__name__}.build_trq_report_rows")
+    if not lp_model.trq_gateway_nodes:
+        return []
+
+    gateway_ids = {gw.node_id for gw in lp_model.trq_gateway_nodes}
+    gateway_by_id = {gw.node_id: gw for gw in lp_model.trq_gateway_nodes}
+    allocation_vars = lp_model.lp_model.allocation_variables
+    allocation_costs = getattr(lp_model.lp_model, "allocation_costs", {})
+
+    # Per-process-center lookups (iso3, green-steel eligibility, production cost).
+    pc_iso3: dict[str, str] = {pc.name: (pc.location.iso3 or "") for pc in lp_model.process_centers}
+    pc_green: dict[str, bool] = {pc.name: bool(pc.green_steel_eligible) for pc in lp_model.process_centers}
+    pc_prod_cost: dict[str, float] = {pc.name: float(pc.production_cost or 0.0) for pc in lp_model.process_centers}
+    plant_energy_opex = _plant_energy_opex_per_t_output(lp_model)  # name → energy USD/t output
+
+    # Index solved flows by gateway, retaining the plant name so we can read its green flag.
+    inbound: dict[str, list[tuple[str, float, float]]] = {}  # gw_id → [(plant_name, vol, tariff_cost_per_t)]
+    outbound: dict[str, list[tuple[str, float, float]]] = {}  # gw_id → [(dc_name, vol, transport_cost_per_t)]
+    for (f, t, c), var in allocation_vars.items():
+        try:
+            vol = float(var.value or 0.0)
+        except (TypeError, AttributeError):
+            vol = 0.0
+        if vol <= 0.0:
+            continue
+        if t in gateway_ids:
+            inbound.setdefault(t, []).append((f, vol, allocation_costs.get((f, t, c), 0.0)))
+        if f in gateway_ids:
+            outbound.setdefault(f, []).append((t, vol, allocation_costs.get((f, t, c), 0.0)))
+
+    # Accumulate per (gateway, from_iso3, to_iso3, commodity) group.
+    volume: dict[tuple[str, str, str, str], float] = defaultdict(float)
+    cost_num: dict[tuple[str, str, str, str], float] = defaultdict(float)  # Σ combined_cost × vol
+    tariff_num: dict[tuple[str, str, str, str], float] = defaultdict(float)  # Σ tariff_cost × vol
+    plants_green: dict[tuple[str, str, str, str], dict[str, bool]] = defaultdict(dict)
+
+    for gw_id in gateway_ids:
+        gw = gateway_by_id[gw_id]
+        in_flows = inbound.get(gw_id, [])
+        out_flows = outbound.get(gw_id, [])
+        if not in_flows or not out_flows:
+            continue
+        total_out = sum(vol for _, vol, _ in out_flows)
+        if total_out <= 0.0:
+            continue
+
+        for plant_name, in_vol, tariff_cost_per_t in in_flows:
+            from_iso3 = pc_iso3.get(plant_name, "")
+            for dc_name, out_vol, transport_cost_per_t in out_flows:
+                to_iso3 = pc_iso3.get(dc_name, "")
+                attributed_vol = in_vol * (out_vol / total_out)
+                if attributed_vol <= LP_TOLERANCE:
+                    continue
+                key = (gw_id, from_iso3, to_iso3, gw.commodity)
+                # Allocation cost = plant production cost (carbon) + plant energy opex
+                # + gateway→DC transport cost. The TRQ tariff is tracked separately
+                # (applied_tariff_tax_usd_per_t).
+                alloc_cost_per_t = (
+                    pc_prod_cost.get(plant_name, 0.0) + plant_energy_opex.get(plant_name, 0.0) + transport_cost_per_t
+                )
+                volume[key] += attributed_vol
+                cost_num[key] += alloc_cost_per_t * attributed_vol
+                tariff_num[key] += tariff_cost_per_t * attributed_vol
+                # Record green eligibility once per distinct contributing plant.
+                plants_green[key][plant_name] = pc_green.get(plant_name, False)
+
+    rows: list[dict] = []
+    for key, total_vol in volume.items():
+        if total_vol <= LP_TOLERANCE:
+            continue
+        gw_id, from_iso3, to_iso3, commodity = key
+        green_flags = plants_green[key]
+        n_plants = len(green_flags)
+        pct_green = 100.0 * sum(1 for g in green_flags.values() if g) / n_plants if n_plants else 0.0
+        rows.append(
+            {
+                "gateway_node_id": gw_id,
+                "trq_name": gateway_by_id[gw_id].trq_name,
+                "tier_index": gateway_by_id[gw_id].tier_index,
+                "from_iso3": from_iso3,
+                "to_iso3": to_iso3,
+                "commodity": commodity,
+                "allocated_volume_t": total_vol,
+                "avg_allocation_cost_usd_per_t": cost_num[key] / total_vol,
+                "pct_plants_green_steel_eligible": pct_green,
+                "applied_tariff_tax_usd_per_t": tariff_num[key] / total_vol,
+            }
+        )
+
+    rows.sort(key=lambda r: (r["gateway_node_id"], r["from_iso3"], r["to_iso3"], r["commodity"]))
+    logger_local.info(f"Built {len(rows)} TRQ report rows (zero-volume groups excluded)")
+    return rows
+
+
+def write_trq_report_csv(lp_model: tlp.TradeLPModel, filepath: str, year: int | None = None) -> int:
+    """Write the per-(gateway, from, to, commodity) TRQ report to a CSV file.
+
+    Builds the rows via build_trq_report_rows() and writes them to ``filepath``. Rows with
+    zero allocated volume are excluded (handled in build_trq_report_rows). If there are no
+    TRQ gateways or no positive flow, no file is written.
+
+    Args:
+        lp_model: A solved TradeLPModel with gateway nodes injected.
+        filepath: Destination CSV path.
+        year: Optional simulation year written as a leading column for multi-year merges.
+
+    Returns:
+        Number of data rows written (0 if nothing to report).
+    """
+    import csv
+    from pathlib import Path
+
+    logger_local = logging.getLogger(f"{__name__}.write_trq_report_csv")
+    rows = build_trq_report_rows(lp_model)
+    if not rows:
+        logger_local.info("No TRQ report rows to write (no active TRQs or no positive gateway flow)")
+        return 0
+
+    fieldnames = [
+        "gateway_node_id",
+        "trq_name",
+        "tier_index",
+        "from_iso3",
+        "to_iso3",
+        "commodity",
+        "allocated_volume_t",
+        "avg_allocation_cost_usd_per_t",
+        "pct_plants_green_steel_eligible",
+        "applied_tariff_tax_usd_per_t",
+    ]
+    if year is not None:
+        fieldnames = ["year", *fieldnames]
+
+    out_path = Path(filepath)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({"year": year, **row} if year is not None else row)
+
+    logger_local.info(f"Wrote {len(rows)} TRQ report rows to {out_path}")
+    return len(rows)
+
+
+def build_trade_report_rows(lp_model: tlp.TradeLPModel) -> list[dict]:
+    """Aggregate all solved trade flows into one row per (commodity, from_iso3, to_iso3).
+
+    Reads every solved allocation arc from the LP and groups it by commodity and origin/
+    destination country. TRQ-covered flows (plant→gateway→DC) are attributed back to direct
+    origin→destination routes using the gateway's outflow shares, exactly as
+    collapse_gateway_arcs / build_trq_report_rows do, so covered imports appear as ordinary
+    from_iso3→to_iso3 rows.
+
+    For every group it reports:
+        - volume_t: sum of flow (tonnes). Zero-volume groups are dropped.
+        - avg_cost_usd_per_t: volume-weighted (origin production cost + energy opex + transport),
+          USD/t. Excludes tariffs, which are reported separately. Energy opex is reconstructed
+          from the plant's actual solved feedstock flows (see _plant_energy_opex_per_t_output);
+          transport comes from the LP's route lookup (gateway→DC transport for covered routes).
+        - trade_tariff_usd_per_t: volume-weighted ordinary TradeTariff applied on the route
+          (LP tariff_tax parameter). 0 on TRQ-covered routes (TRQs replace flat tariffs there).
+        - trq_tax_usd_per_t: volume-weighted TRQ tariff applied via the gateway (0 on routes
+          not covered by a TRQ).
+        - pct_plants_green_steel_eligible: share of the *distinct* contributing origin plants
+          that qualify for the green-steel exemption (green_steel_eligible=True), 0–100.
+
+    Note: when furnace-group clustering is enabled the LP works on meta-furnace-groups, so the
+    per-ISO3 volumes reflect the pre-disaggregation LP solution. Without clustering (and for
+    the ISO3 totals generally) it matches the final allocations.
+
+    Args:
+        lp_model: A solved TradeLPModel.
+
+    Returns:
+        List of report rows (one per non-zero (commodity, from_iso3, to_iso3) group).
+    """
+    logger_local = logging.getLogger(f"{__name__}.build_trade_report_rows")
+
+    allocation_vars = lp_model.lp_model.allocation_variables
+    tariff_tax = getattr(lp_model.lp_model, "tariff_tax", {}) or {}
+    gateway_costs = getattr(lp_model, "gateway_arc_costs", {}) or {}
+    gateway_ids = {gw.node_id for gw in (lp_model.trq_gateway_nodes or [])}
+
+    pc_by_name = {pc.name: pc for pc in lp_model.process_centers}
+    iso3_country = {
+        (pc.location.iso3 or ""): (pc.location.country or "")
+        for pc in lp_model.process_centers
+        if pc.location is not None
+    }
+    plant_energy = _plant_energy_opex_per_t_output(lp_model)  # name → energy USD/t output
+
+    # Accumulators keyed by (commodity, from_iso3, to_iso3)
+    volume: dict[tuple[str, str, str], float] = defaultdict(float)
+    cost_num: dict[tuple[str, str, str], float] = defaultdict(float)  # Σ (prod+energy+transport) × vol
+    trade_tariff_num: dict[tuple[str, str, str], float] = defaultdict(float)  # Σ trade_tariff × vol
+    trq_num: dict[tuple[str, str, str], float] = defaultdict(float)  # Σ trq_tariff × vol
+    green_plants: dict[tuple[str, str, str], dict[str, bool]] = defaultdict(dict)
+
+    # Gateway arcs are attributed after the direct pass; index them here.
+    gw_inbound: dict[str, list[tuple[str, str, float]]] = {}  # gw → [(plant, comm, vol)]
+    gw_outbound: dict[str, list[tuple[str, str, float]]] = {}  # gw → [(dc, comm, vol)]
+
+    def _value(var) -> float:
+        try:
+            return float(var.value or 0.0)
+        except (TypeError, AttributeError):
+            return 0.0
+
+    for (f, t, c), var in allocation_vars.items():
+        vol_v = _value(var)
+        if vol_v <= 0.0:
+            continue
+        if t in gateway_ids:
+            gw_inbound.setdefault(t, []).append((f, c, vol_v))
+            continue
+        if f in gateway_ids:
+            gw_outbound.setdefault(f, []).append((t, c, vol_v))
+            continue
+
+        # Direct (non-gateway) arc
+        from_pc = pc_by_name.get(f)
+        to_pc = pc_by_name.get(t)
+        if from_pc is None or to_pc is None:
+            continue
+        from_iso3 = (from_pc.location.iso3 or "") if from_pc.location else ""
+        to_iso3 = (to_pc.location.iso3 or "") if to_pc.location else ""
+        transport = lp_model.get_transportation_cost(from_iso3, to_iso3, c)
+        prod = float(from_pc.production_cost or 0.0)
+        energy = plant_energy.get(f, 0.0)
+        trade_tariff = tariff_tax.get((f, t, c), 0.0)
+
+        key = (c, from_iso3, to_iso3)
+        volume[key] += vol_v
+        cost_num[key] += (prod + energy + transport) * vol_v
+        trade_tariff_num[key] += trade_tariff * vol_v
+        green_plants[key][f] = bool(from_pc.green_steel_eligible)
+
+    # Attribute gateway flows back to direct origin→destination routes
+    for gw_id, in_flows in gw_inbound.items():
+        out_flows = gw_outbound.get(gw_id, [])
+        if not out_flows:
+            continue
+        total_out_by_comm: dict[str, float] = defaultdict(float)
+        for _dc, oc, ov in out_flows:
+            total_out_by_comm[oc] += ov
+
+        for plant_name, c, plant_vol in in_flows:
+            from_pc = pc_by_name.get(plant_name)
+            if from_pc is None:
+                continue
+            total_out = total_out_by_comm.get(c, 0.0)
+            if total_out <= 0.0:
+                continue
+            from_iso3 = (from_pc.location.iso3 or "") if from_pc.location else ""
+            trq_tariff = gateway_costs.get((plant_name, gw_id, c), 0.0)  # plant→gateway tariff
+            prod = float(from_pc.production_cost or 0.0)
+            energy = plant_energy.get(plant_name, 0.0)
+
+            for dc_name, oc, dc_vol in out_flows:
+                if oc != c:
+                    continue
+                to_pc = pc_by_name.get(dc_name)
+                if to_pc is None:
+                    continue
+                attributed = plant_vol * (dc_vol / total_out)
+                if attributed <= LP_TOLERANCE:
+                    continue
+                to_iso3 = (to_pc.location.iso3 or "") if to_pc.location else ""
+                transport = gateway_costs.get((gw_id, dc_name, c), 0.0)  # gateway→DC transport
+
+                key = (c, from_iso3, to_iso3)
+                volume[key] += attributed
+                cost_num[key] += (prod + energy + transport) * attributed
+                trq_num[key] += trq_tariff * attributed
+                green_plants[key][plant_name] = bool(from_pc.green_steel_eligible)
+
+    rows: list[dict] = []
+    for key, total_vol in volume.items():
+        if total_vol <= LP_TOLERANCE:
+            continue
+        commodity, from_iso3, to_iso3 = key
+        gp = green_plants[key]
+        n_plants = len(gp)
+        pct_green = 100.0 * sum(1 for g in gp.values() if g) / n_plants if n_plants else 0.0
+        rows.append(
+            {
+                "commodity": commodity,
+                "from_iso3": from_iso3,
+                "from_country": iso3_country.get(from_iso3, ""),
+                "to_iso3": to_iso3,
+                "to_country": iso3_country.get(to_iso3, ""),
+                "volume_t": total_vol,
+                "avg_cost_usd_per_t": cost_num[key] / total_vol,
+                "trade_tariff_usd_per_t": trade_tariff_num[key] / total_vol,
+                "trq_tax_usd_per_t": trq_num[key] / total_vol,
+                "pct_plants_green_steel_eligible": pct_green,
+            }
+        )
+
+    rows.sort(key=lambda r: (r["commodity"], r["from_iso3"], r["to_iso3"]))
+    logger_local.info(f"Built {len(rows)} trade report rows (zero-volume groups excluded)")
+    return rows
+
+
+def write_trade_report_csv(lp_model: tlp.TradeLPModel, filepath: str, year: int | None = None) -> int:
+    """Write the per-(commodity, from, to) trade report to a CSV file.
+
+    Builds the rows via build_trade_report_rows() and writes them to ``filepath``. Rows with
+    zero volume are excluded. If there are no positive allocations, no file is written.
+
+    Args:
+        lp_model: A solved TradeLPModel.
+        filepath: Destination CSV path.
+        year: Optional simulation year written as a leading column for multi-year merges.
+
+    Returns:
+        Number of data rows written (0 if nothing to report).
+    """
+    import csv
+    from pathlib import Path
+
+    logger_local = logging.getLogger(f"{__name__}.write_trade_report_csv")
+    rows = build_trade_report_rows(lp_model)
+    if not rows:
+        logger_local.info("No trade report rows to write (no positive allocations)")
+        return 0
+
+    fieldnames = [
+        "commodity",
+        "from_iso3",
+        "from_country",
+        "to_iso3",
+        "to_country",
+        "volume_t",
+        "avg_cost_usd_per_t",
+        "trade_tariff_usd_per_t",
+        "trq_tax_usd_per_t",
+        "pct_plants_green_steel_eligible",
+    ]
+    if year is not None:
+        fieldnames = ["year", *fieldnames]
+
+    out_path = Path(filepath)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({"year": year, **row} if year is not None else row)
+
+    logger_local.info(f"Wrote {len(rows)} trade report rows to {out_path}")
+    return len(rows)

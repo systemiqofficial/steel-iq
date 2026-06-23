@@ -2991,10 +2991,20 @@ def read_trqs(
           Non-steel commodities are read as-is with steel_type = "any".
         - "Tariff-free quota"
         - "Shared quota id"          (may be blank)
-        - "Out-of-quota tariff rate" (numeric or "50%" string)
-        - "In-quota tariff rate"     (optional; numeric or "50%" string; blank/missing = 0%)
+        - "Out-of-quota conventional tariff rate" (numeric or "50%" string)
+        - "Out-of-quota green tariff rate"        (numeric or "50%" string)
+        - "In-quota conventional tariff rate"     (optional; numeric or "50%" string; blank/missing = 0%)
+        - "In-quota green tariff rate"            (optional; numeric or "50%" string; blank/missing = 0%)
         - "Start year"
         - "End year"
+
+      Each tariff rate is split into a conventional and a green value; a trade arc pays the
+      rate matching its originating plant's green-steel eligibility.  When the commodity scopes
+      the TRQ to a single steel type, the other type's rate columns are ignored.
+
+      For backward compatibility a legacy single "Out-of-quota tariff rate" / "In-quota tariff
+      rate" column is read as the conventional value, and a missing green column defaults to the
+      corresponding conventional rate.
 
     Args:
         excel_path: Path to the master Excel file.
@@ -3064,8 +3074,26 @@ def read_trqs(
         start_year = Year(int(start_raw)) if not pd.isna(start_raw) else Year(2000)
         end_year = Year(int(end_raw)) if not pd.isna(end_raw) else Year(2100)
 
-        rate = parse_tariff_rate(row.get("Out-of-quota tariff rate", 0))
-        in_quota_rate = parse_tariff_rate(row.get("In-quota tariff rate", 0))
+        # Conventional rates: prefer the explicit "... conventional ..." column, else fall back
+        # to the legacy single "Out-of-quota tariff rate" / "In-quota tariff rate" columns.
+        ooq_conventional = parse_tariff_rate(
+            row.get("Out-of-quota conventional tariff rate", row.get("Out-of-quota tariff rate", 0))
+        )
+        in_quota_conventional = parse_tariff_rate(
+            row.get("In-quota conventional tariff rate", row.get("In-quota tariff rate", 0))
+        )
+        # Green rates: when the column is missing entirely, default to the conventional rate so a
+        # legacy single-rate sheet behaves as before (same rate for all steel).
+        ooq_green = (
+            parse_tariff_rate(row["Out-of-quota green tariff rate"])
+            if "Out-of-quota green tariff rate" in row
+            else ooq_conventional
+        )
+        in_quota_green = (
+            parse_tariff_rate(row["In-quota green tariff rate"])
+            if "In-quota green tariff rate" in row
+            else in_quota_conventional
+        )
 
         shared_quota_id_raw = row.get("Shared quota id")
         shared_quota_id = None if pd.isna(shared_quota_id_raw) else str(shared_quota_id_raw).strip()
@@ -3086,8 +3114,10 @@ def read_trqs(
                 to_iso3s=to_iso3s,
                 commodity=commodity,
                 tariff_free_quota=float(quota_val),
-                out_of_quota_tariff_rate=rate,
-                in_quota_tariff_rate=in_quota_rate,
+                out_of_quota_conventional_tariff_rate=ooq_conventional,
+                out_of_quota_green_tariff_rate=ooq_green,
+                in_quota_conventional_tariff_rate=in_quota_conventional,
+                in_quota_green_tariff_rate=in_quota_green,
                 start_year=start_year,
                 end_year=end_year,
                 shared_quota_id=shared_quota_id,
@@ -3139,8 +3169,10 @@ def read_trqs(
                 to_iso3s=merged_to,
                 commodity=first["commodity"],
                 tariff_free_quota=first["tariff_free_quota"],
-                out_of_quota_tariff_rate=first["out_of_quota_tariff_rate"],
-                in_quota_tariff_rate=first["in_quota_tariff_rate"],
+                out_of_quota_conventional_tariff_rate=first["out_of_quota_conventional_tariff_rate"],
+                out_of_quota_green_tariff_rate=first["out_of_quota_green_tariff_rate"],
+                in_quota_conventional_tariff_rate=first["in_quota_conventional_tariff_rate"],
+                in_quota_green_tariff_rate=first["in_quota_green_tariff_rate"],
                 start_year=first["start_year"],
                 end_year=first["end_year"],
                 shared_quota_id=quota_id,

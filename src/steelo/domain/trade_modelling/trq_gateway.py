@@ -47,7 +47,9 @@ class TRQGatewayNode:
         node_id: Unique string identifier used as the LP process-center name.
         trq_name: Name of the parent TariffRateQuota.
         tier_index: 0-based tier index (0 = duty-free, 1 = first OOQ tier, …).
-        tariff_rate: Ad-valorem tariff for this tier, 0–100 scale.
+        conventional_tariff_rate: Ad-valorem tariff for conventional steel, 0–100 scale.
+        green_tariff_rate: Ad-valorem tariff for green steel, 0–100 scale. The rate a plant
+            actually pays is selected by its green-steel eligibility (see compute_gateway_arc_costs).
         tier_capacity: Volume cap in tonnes (None treated as _UNLIMITED_CAPACITY).
         from_iso3s: Eligible exporting ISO3 codes.
         to_iso3s: Eligible importing ISO3 codes.
@@ -61,7 +63,8 @@ class TRQGatewayNode:
     node_id: str
     trq_name: str
     tier_index: int
-    tariff_rate: float
+    conventional_tariff_rate: float
+    green_tariff_rate: float
     tier_capacity: float | None
     from_iso3s: list[str]
     to_iso3s: list[str]
@@ -114,7 +117,8 @@ def build_trq_gateway_nodes(active_trqs: list[TariffRateQuota]) -> list[TRQGatew
                     node_id=node_id,
                     trq_name=trq.name,
                     tier_index=tier_index,
-                    tariff_rate=tier.tariff_rate,
+                    conventional_tariff_rate=tier.conventional_tariff_rate,
+                    green_tariff_rate=tier.green_tariff_rate,
                     tier_capacity=tier.capacity,
                     from_iso3s=list(trq.from_iso3s),
                     to_iso3s=list(trq.to_iso3s),
@@ -249,15 +253,15 @@ def compute_gateway_arc_costs(
 
         # --- Plant → gateway arcs: tariff cost ---
         for from_iso3 in gw.from_iso3s:
-            tariff_cost = 0.0
-            if gw.tariff_rate > 0:
-                price = average_commodity_price_per_region.get((commodity, from_iso3), 0.0)
-                tariff_cost = (gw.tariff_rate / 100.0) * price
-                if price == 0.0:
-                    logger.warning(
-                        f"No average price for ({commodity}, {from_iso3}); "
-                        f"tariff cost for gateway {gw.node_id} set to 0."
-                    )
+            # Each plant pays the conventional or green rate depending on its green-steel
+            # eligibility. Precompute both costs per origin; pick per plant below.
+            price = average_commodity_price_per_region.get((commodity, from_iso3), 0.0)
+            if (gw.conventional_tariff_rate > 0 or gw.green_tariff_rate > 0) and price == 0.0:
+                logger.warning(
+                    f"No average price for ({commodity}, {from_iso3}); tariff cost for gateway {gw.node_id} set to 0."
+                )
+            conventional_cost = (gw.conventional_tariff_rate / 100.0) * price
+            green_cost = (gw.green_tariff_rate / 100.0) * price
             for plant_pc in production_pcs_by_iso3.get(from_iso3, []):
                 # Steel-type scope: a plant only flows through this gateway if the TRQ's steel_type
                 # applies to it (green plant ↔ green TRQ, conventional plant ↔ conventional TRQ,
@@ -265,6 +269,10 @@ def compute_gateway_arc_costs(
                 # so they keep their direct plant→DC arc and are never counted against the quota.
                 if not trq_steel_type_applies_to_plant(gw.steel_type, plant_pc.green_steel_eligible):
                     continue
+                # Green-eligible plants pay the green rate; conventional plants the conventional
+                # rate. Under a single-type TRQ only the matching plants reach here, so only that
+                # type's rate is ever used.
+                tariff_cost = green_cost if plant_pc.green_steel_eligible else conventional_cost
                 costs[(plant_pc.name, gw.node_id, commodity)] = tariff_cost
 
         # --- Gateway → demand-center arcs: transport cost ---
