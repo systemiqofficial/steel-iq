@@ -52,9 +52,15 @@
                                class="btn btn-primary btn-sm">
                                 <i class="fas fa-download"></i> Download
                             </a>
+                            {% if popup %}
+                            <button type="button" onclick="window.close()" class="btn btn-secondary btn-sm">
+                                <i class="fas fa-times"></i> Close
+                            </button>
+                            {% else %}
                             <a href="{% url 'modelrun-output-files' modelrun.pk %}" class="btn btn-secondary btn-sm">
                                 <i class="fas fa-arrow-left"></i> Back to Files
                             </a>
+                            {% endif %}
                         </div>
                     </div>
                 </div>
@@ -63,10 +69,14 @@
                     <div class="file-info">
                         <div class="row">
                             <div class="col-md-4">
-                                <strong>Model Run:</strong> 
+                                <strong>Model Run:</strong>
+                                {% if popup %}
+                                    {{ modelrun.name|default:"Model Run" }} #{{ modelrun.id }}
+                                {% else %}
                                 <a href="{% url 'modelrun-detail' modelrun.pk %}">
                                     {{ modelrun.name|default:"Model Run" }} #{{ modelrun.id }}
                                 </a>
+                                {% endif %}
                             </div>
                             <div class="col-md-4 text-center">
                                 <strong>Total Rows:</strong> {{ total_rows|floatformat:0 }}
@@ -82,6 +92,13 @@
 
                     <!-- CSV Content -->
                     {% if csv_rows %}
+                    {% if popup %}
+                    <div class="report-filters d-flex flex-wrap gap-4 align-items-start mb-2">
+                        <div class="filter-controls d-flex flex-wrap gap-2 align-items-end"></div>
+                        <div class="filter-pills flex-grow-1 d-flex flex-column gap-1"></div>
+                    </div>
+                    <p class="text-muted small mb-2">Showing <span id="filter-shown">0</span> of {{ total_rows|add:"-1"|floatformat:0 }} rows.</p>
+                    {% endif %}
                     <div class="csv-viewer">
                         <table class="table table-sm table-striped table-hover">
                             {% if csv_rows %}
@@ -130,4 +147,145 @@
         </div>
     </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+{% if popup %}
+<script>
+(function () {
+    const TARGETS = [
+        {name: "commodity", label: "Commodity"},
+        {name: "from_iso3", label: "From"},
+        {name: "to_iso3", label: "To"},
+    ];
+    const table = document.querySelector(".csv-viewer table");
+    const controls = document.querySelector(".filter-controls");
+    const pillsBox = document.querySelector(".filter-pills");
+    const shown = document.getElementById("filter-shown");
+    if (!table || !controls || !pillsBox) return;
+
+    const headerCells = Array.from(table.querySelectorAll("thead th"));
+    const rows = Array.from(table.querySelectorAll("tbody tr"));
+    const filters = [];
+
+    TARGETS.forEach(function (target) {
+        const index = headerCells.findIndex(function (th) {
+            return th.textContent.trim() === target.name;
+        });
+        if (index === -1) return;
+        const values = Array.from(new Set(rows.map(function (r) {
+            return (r.children[index] ? r.children[index].textContent : "").trim();
+        }))).filter(function (v) { return v !== ""; }).sort();
+        if (!values.length) return;
+
+        const wrap = document.createElement("div");
+        wrap.style.minWidth = "9rem";
+        const label = document.createElement("label");
+        label.className = "form-label mb-1 small fw-bold d-block";
+        label.textContent = target.label;
+        const select = document.createElement("select");
+        select.className = "form-select form-select-sm";
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "Add…";
+        select.appendChild(placeholder);
+        values.forEach(function (v) {
+            const opt = document.createElement("option");
+            opt.value = v;
+            opt.textContent = v;
+            select.appendChild(opt);
+        });
+        wrap.appendChild(label);
+        wrap.appendChild(select);
+        controls.appendChild(wrap);
+
+        const filter = {index: index, label: target.label, select: select, selected: new Set()};
+        select.addEventListener("change", function () {
+            if (select.value) {
+                filter.selected.add(select.value);
+                select.value = "";
+                syncOptions(filter);
+                render();
+            }
+        });
+        filters.push(filter);
+    });
+
+    if (filters.length) {
+        const clearWrap = document.createElement("div");
+        clearWrap.className = "align-self-end";
+        const clearBtn = document.createElement("button");
+        clearBtn.type = "button";
+        clearBtn.className = "btn btn-outline-secondary btn-sm";
+        clearBtn.textContent = "Clear all";
+        clearBtn.addEventListener("click", function () {
+            filters.forEach(function (f) { f.selected.clear(); syncOptions(f); });
+            render();
+        });
+        clearWrap.appendChild(clearBtn);
+        controls.appendChild(clearWrap);
+    }
+
+    function syncOptions(f) {
+        Array.from(f.select.options).forEach(function (o) {
+            if (o.value !== "") o.disabled = f.selected.has(o.value);
+        });
+    }
+
+    function renderPills() {
+        pillsBox.innerHTML = "";
+        filters.forEach(function (f) {
+            if (!f.selected.size) return;
+            const line = document.createElement("div");
+            line.className = "d-flex flex-wrap gap-1 align-items-center";
+            const lab = document.createElement("span");
+            lab.className = "small fw-bold me-1";
+            lab.textContent = f.label + ":";
+            line.appendChild(lab);
+            Array.from(f.selected).sort().forEach(function (v) {
+                const pill = document.createElement("span");
+                pill.className = "badge bg-primary d-inline-flex align-items-center";
+                const txt = document.createElement("span");
+                txt.textContent = v;
+                const x = document.createElement("button");
+                x.type = "button";
+                x.className = "btn-close btn-close-white ms-1";
+                x.style.fontSize = "0.55rem";
+                x.setAttribute("aria-label", "Remove");
+                x.addEventListener("click", function () {
+                    f.selected.delete(v);
+                    syncOptions(f);
+                    render();
+                });
+                pill.appendChild(txt);
+                pill.appendChild(x);
+                line.appendChild(pill);
+            });
+            pillsBox.appendChild(line);
+        });
+    }
+
+    function apply() {
+        let count = 0;
+        rows.forEach(function (r) {
+            const visible = filters.every(function (f) {
+                if (!f.selected.size) return true;
+                const cell = r.children[f.index] ? r.children[f.index].textContent.trim() : "";
+                return f.selected.has(cell);
+            });
+            r.style.display = visible ? "" : "none";
+            if (visible) count++;
+        });
+        if (shown) shown.textContent = count;
+    }
+
+    function render() {
+        renderPills();
+        apply();
+    }
+
+    render();
+})();
+</script>
+{% endif %}
 {% endblock %}

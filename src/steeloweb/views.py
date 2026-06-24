@@ -2185,15 +2185,18 @@ def view_modelrun_output_file(request, pk, filepath):
                 # Get file size
                 file_size = requested_file.stat().st_size
 
+                popup = request.GET.get("popup") == "1"
                 context = {
                     "modelrun": modelrun,
                     "filename": requested_file.name,
                     "filepath": filepath,
-                    "csv_rows": rows[:100],  # Show first 100 rows
+                    # Full data in the popup report view (supports client-side filtering); 100-row preview otherwise.
+                    "csv_rows": rows if popup else rows[:100],
                     "total_rows": len(rows),
-                    "is_large": len(rows) > 100,
+                    "is_large": len(rows) > 100 and not popup,
                     "file_size": file_size,
                     "file_size_mb": round(file_size / (1024 * 1024), 2),
+                    "popup": popup,
                 }
 
                 return render(request, "steeloweb/modelrun_output_file_view_csv.html", context)
