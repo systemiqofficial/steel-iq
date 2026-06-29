@@ -51,8 +51,12 @@ trade_lp_variables.csv
 
 # master input
 *master_input_*.xlsx
+master_input
 
 # Claude AI
 .claude/
 claude.md
 specs
+docs/architecture/trq_gateway_lp_plan.md
+docs/trq_cheapest_steel_allocation.md
+steel-iq-production-readiness-fixes.patch
