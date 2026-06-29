@@ -60,6 +60,7 @@ class LocationInDb(BaseModel):
     region: str
     lat: float
     lon: float
+    geo_unit: str | None = None
 
 
 class PrimaryFeedstockInDb(BaseModel):

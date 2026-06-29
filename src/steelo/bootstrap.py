@@ -453,6 +453,7 @@ def bootstrap_simulation(
             regional_energy_prices_xlsx=config.data_dir / "regional_energy_prices.xlsx",
             countries_shapefile_dir=path_resolver.countries_shapefile_dir,
             disputed_areas_shapefile_dir=config.data_dir / "ne_10m_admin_0_disputed_areas",
+            admin1_shapefile_dir=path_resolver.admin1_shapefile_dir,
             baseload_power_sim_dir=path_resolver.baseload_power_sim_dir
             if path_resolver.baseload_power_sim_dir.exists()
             else config.data_dir / "baseload_power_sim",

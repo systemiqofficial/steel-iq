@@ -7,9 +7,10 @@ These functions were moved from cli.py to follow clean architecture principles.
 import json
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 from collections import defaultdict
 
+import pycountry
 from rich.console import Console
 
 from ..domain.models import Plant, PlantGroup, InputCosts
@@ -64,6 +65,11 @@ from ..adapters.repositories.json_repository import (
     WillingnessToPayJsonRepository,
 )
 from ..domain.calculate_costs import calculate_lcoh_from_electricity_country_level
+from .geo_hierarchy_overrides import (
+    ADMIN1_COLUMNS,
+    GEO_UNIT_DISPLAY_OVERRIDES,
+    OWNED_AS_SEPARATE_COUNTRY,
+)
 
 console = Console()
 
@@ -350,6 +356,126 @@ def recreate_subsidy_data(
     console.print(f"[green]Writing subsidy data to[/green]: {json_path}")
 
     return repo
+
+
+# geo_hierarchy: a country's first-order divisions keyed by ISO 3166-2 code (Location.geo_unit), generated from Natural
+# Earth admin-1 + pycountry. Hand-verified overrides live in geo_hierarchy_overrides.py.
+
+
+def _pycountry_top_level_codes(iso2: str) -> set[str]:
+    """Return the first-order (top-level) ISO 3166-2 codes pycountry lists for a country.
+
+    Args:
+        iso2: ISO 3166-1 alpha-2 country code (e.g. "CN").
+
+    Returns:
+        Codes whose subdivision has no parent — i.e. the country's first-order divisions.
+    """
+    return {
+        sub.code
+        for sub in pycountry.subdivisions
+        if sub.country_code == iso2 and getattr(sub, "parent_code", None) in (None, "")
+    }
+
+
+def build_geo_hierarchy(
+    records: Iterable[dict[str, Any]],
+    *,
+    declared_iso2: Iterable[str] = ("CN",),
+) -> list[dict[str, Any]]:
+    """Build geo_hierarchy rows from Natural Earth admin-1 attribute records.
+
+    For each declared country, keeps NE features whose `iso_3166_2` is a pycountry first-order
+    (top-level) code, excluding any the model owns as a separate country
+    (``OWNED_AS_SEPARATE_COUNTRY``). The top-level gate doubles as a family detector: a country
+    whose NE features are one level too deep (Italy's provincie, France's departements) yields
+    zero admitted units, which is raised as a loud error rather than emitted at the wrong level
+    — those countries need the NE-`region`-column rollup path (not implemented; deferred).
+
+    Args:
+        records: NE admin-1 features as dicts carrying at least ``ADMIN1_COLUMNS``.
+        declared_iso2: ISO 3166-1 alpha-2 codes of the countries to populate. Features of any
+            other country are ignored, so they resolve at country level via the fallback.
+
+    Returns:
+        One row per first-order unit, sorted by ``geo_key``, each with: ``iso3``, ``geo_unit``
+        (ISO 3166-2 code), ``geo_key`` (``iso3:code``), ``display_name``, ``unit_type``,
+        ``ne_region`` (NE macro-grouping, faithful pass-through — consumed only by the later
+        GEO percentile rollup), ``ne_name``.
+
+    Raises:
+        NotImplementedError: If a declared country has features but none are first-order codes
+            (NE feature is finer than first-order) — it needs the region-column path.
+
+    Notes:
+        Validating against pycountry top-level codes also drops NE disputed placeholders such
+        as ``CN-X01~`` (Paracel Islands) without a hand-maintained list.
+    """
+    declared = set(declared_iso2)
+    records = list(records)
+    rows: list[dict[str, Any]] = []
+
+    for iso2 in declared:
+        top_level = _pycountry_top_level_codes(iso2)
+        excluded = OWNED_AS_SEPARATE_COUNTRY.get(iso2, set())
+        country_records = [r for r in records if r.get("iso_a2") == iso2]
+        admitted = 0
+
+        for record in country_records:
+            code = (record.get("iso_3166_2") or "").strip()
+            if not code or code in excluded or code not in top_level:
+                continue
+            admitted += 1
+            iso3 = record["adm0_a3"]
+            ne_name = (record.get("name") or "").strip()
+            rows.append(
+                {
+                    "iso3": iso3,
+                    "geo_unit": code,
+                    "geo_key": f"{iso3}:{code}",
+                    "display_name": GEO_UNIT_DISPLAY_OVERRIDES.get(code, ne_name),
+                    "unit_type": (record.get("type_en") or "").strip(),
+                    "ne_region": (record.get("region") or "").strip(),
+                    "ne_name": ne_name,
+                }
+            )
+
+        if country_records and admitted == 0:
+            raise NotImplementedError(
+                f"{iso2}: no NE admin-1 feature is a first-order ISO 3166-2 unit — the feature "
+                f"level is finer than first-order (e.g. provinces, not regions). This country "
+                f"needs the NE `region`-column rollup path, which is not implemented."
+            )
+
+    rows.sort(key=lambda row: row["geo_key"])
+    return rows
+
+
+def recreate_geo_hierarchy_data(
+    geo_hierarchy_json_path: Path,
+    admin1_shapefile_path: Path,
+    declared_iso2: Iterable[str] = ("CN",),
+) -> Path:
+    """Recreate geo_hierarchy.json from the Natural Earth admin-1 shapefile.
+
+    Args:
+        geo_hierarchy_json_path: Output path for the generated table.
+        admin1_shapefile_path: Path to ``ne_10m_admin_1_states_provinces.shp``.
+        declared_iso2: Countries to populate (China only for now).
+
+    Returns:
+        The path the table was written to.
+    """
+    import geopandas as gpd
+
+    console.print(f"[blue]Reading Natural Earth admin-1 from[/blue]: {admin1_shapefile_path}")
+    gdf = gpd.read_file(admin1_shapefile_path)
+    present = [column for column in ADMIN1_COLUMNS if column in gdf.columns]
+    rows = build_geo_hierarchy(gdf[present].to_dict("records"), declared_iso2=declared_iso2)
+
+    geo_hierarchy_json_path.write_text(json.dumps(rows, indent=2, ensure_ascii=False))
+    console.print(f"[green]Wrote {len(rows)} geo_hierarchy rows to[/green]: {geo_hierarchy_json_path}")
+    return geo_hierarchy_json_path
 
 
 def recreate_willingness_to_pay_data(

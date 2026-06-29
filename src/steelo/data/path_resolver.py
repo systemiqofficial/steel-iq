@@ -287,6 +287,10 @@ class DataPathResolver:
         return self.get_data_path("ne_110m_admin_0_countries")
 
     @property
+    def admin1_shapefile_dir(self) -> Path:
+        return self.get_data_path("ne_10m_admin_1_states_provinces")
+
+    @property
     def landtype_percentage_nc_path(self) -> Path:
         return self.get_data_path("landtype_percentage.nc")
 

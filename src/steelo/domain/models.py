@@ -303,6 +303,10 @@ class PointInTime:
         return self.remaining_number_of_years == 0
 
 
+# Value type carried through Location.resolve so the lookup's value type is preserved (e.g. float in → float out)
+_GeoValueT = TypeVar("_GeoValueT")
+
+
 @dataclass
 class Location:
     lat: float
@@ -311,9 +315,69 @@ class Location:
     region: str
     iso3: str
     distance_to_other_iso3: dict[str, float] | None = None
+    geo_unit: str | None = None  # sub-national division, ISO 3166-2 code e.g. "CN-HE"; None ⇒ country-level
 
     def __hash__(self):
         return hash((self.lat, self.lon))
+
+    @property
+    def geo_key(self) -> str:
+        """Finest-available geographic key: ``iso3:geo_unit`` (e.g. ``"CHN:CN-HE"``) when a
+        sub-national unit is set, else the bare country ``iso3``.
+
+        Returns:
+            ``iso3:geo_unit`` if ``geo_unit`` is set, otherwise ``iso3``. The country
+            ``iso3`` is always recoverable via ``geo_key.split(":", 1)[0]``.
+        """
+        return f"{self.iso3}:{self.geo_unit}" if self.geo_unit else self.iso3
+
+    def resolve(
+        self,
+        lookup: dict[str, _GeoValueT],
+        *,
+        what: str,
+        valid_geo_keys: set[str] | None = None,
+    ) -> _GeoValueT | None:
+        """Resolve a value from a geo-keyed lookup, finest-available first.
+
+        Tries the sub-national key (``self.geo_key``, e.g. ``"CHN:CN-HE"``) and falls back
+        up to the country ``iso3``. A fall-back from a supplied sub-national unit to its
+        country is logged at INFO (intentional, never silent); a sub-national unit that
+        isn't recognised at all is an error, not a silent national fallback. Country-level
+        locations (``geo_unit is None``) resolve straight to ``iso3`` with no logging, so
+        non-sub-national behaviour is unchanged.
+
+        Args:
+            lookup: Mapping keyed by ``geo_key`` strings — sub-national (``iso3:code``)
+                and/or bare country (``iso3``) keys.
+            what: Short label for the quantity, used in log and error messages.
+            valid_geo_keys: Optional set of recognised sub-national ``geo_key``s (from the
+                populated ``geo_hierarchy``). When given and this location's ``geo_key`` is
+                absent from it, a ``KeyError`` is raised.
+
+        Returns:
+            The sub-national value if present, else the country value, else ``None``.
+
+        Raises:
+            KeyError: If ``geo_unit`` is set but its ``geo_key`` is not in
+                ``valid_geo_keys`` (typo / wrong level / unsupported unit).
+        """
+        if self.geo_unit is not None:
+            if valid_geo_keys is not None and self.geo_key not in valid_geo_keys:
+                raise KeyError(
+                    f"{what}: location declares sub-national unit {self.geo_key!r}, which is "
+                    f"not a recognised unit in geo_hierarchy — check the ISO 3166-2 code and level."
+                )
+            if self.geo_key in lookup:
+                return lookup[self.geo_key]
+            logger = logging.getLogger(f"{__name__}.Location.resolve")
+            logger.info(
+                "%s: no sub-national value for %s; falling back to country %s.",
+                what,
+                self.geo_key,
+                self.iso3,
+            )
+        return lookup.get(self.iso3)
 
 
 @dataclass
@@ -340,6 +404,9 @@ class GeoDataPaths:
         Path  # Directory for static geospatial layers (feasibility_mask.nc, rail_cost.nc, global_grid_with_iso3.nc)
     )
     landtype_percentage_path: Path
+
+    # Natural Earth admin-1 (first-order divisions), used by the geo_hierarchy calibration.
+    admin1_shapefile_dir: Optional[Path] = None
 
 
 @dataclass
