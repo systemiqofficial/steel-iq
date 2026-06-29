@@ -2387,9 +2387,8 @@ class FurnaceGroup:
         )
         logger.debug(f"[OPTIMAL TECH] Price series ($/t): {market_price_series.get(self.technology.product)}")
 
-        # Calculate economic COSA based on remaining cash flows
-        original_cosa = stranding_asset_cost(
-            debt_repayment_per_year=self.debt_repayment_per_year,
+        # COSA = foregone operating margin only; remaining debt is excluded (carried by the legacy-debt schedule).
+        cosa = stranding_asset_cost(
             unit_total_opex_list=unit_opex_carbon_costs,
             remaining_time=self.lifetime.remaining_number_of_years,
             market_price_series=market_price_series[self.technology.product],
@@ -2397,17 +2396,7 @@ class FurnaceGroup:
             cost_of_equity=cost_of_equity,
         )
 
-        # COSA must be at least the remaining debt (can't walk away from debt obligations)
-        remaining_debt = sum(self.debt_repayment_per_year[: self.lifetime.remaining_number_of_years])
-        cosa = max(remaining_debt, original_cosa)
-
-        logger.debug(
-            f"[OPTIMAL TECH] COSA calculation - Original: ${original_cosa:,.0f}, "
-            f"Remaining debt: ${remaining_debt:,.0f}, Final COSA: ${cosa:,.0f}"
-        )
-        logger.debug(
-            f"[OPTIMAL TECH] COSA decision - Using {'remaining debt' if cosa == remaining_debt else 'calculated COSA'} as final value"
-        )
+        logger.debug(f"[OPTIMAL TECH] COSA (foregone operating margin): ${cosa:,.0f}")
 
         # ========== STAGE 5: Check for Allowed Technology Transitions ==========
         npv_dict = {}

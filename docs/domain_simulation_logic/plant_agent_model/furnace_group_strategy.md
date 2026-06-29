@@ -136,9 +136,8 @@ Start
 
 ### Stage 4: Calculate Cost of Stranded Assets (COSA)
 - **Purpose**: Determine the cost of abandoning current technology
-- **Key calculation**: NPV of remaining debt + operating costs
-- **Decision**: COSA = max(calculated_COSA, remaining_debt)
-- **Rationale**: Must at minimum pay off remaining debt
+- **Key calculation**: NPV of the foregone operating margin (discounted gross cash flow over the remaining life)
+- **Rationale**: Remaining debt is excluded — it persists via the `legacy_debt_schedule` (realised P&L / closure), so it cancels from the switch-vs-stay comparison
 
 ### Stage 5: Check for Allowed Technology Transitions
 - **Decision point**: Are transitions defined for current technology?
@@ -274,7 +273,7 @@ Start
 ### Issue 4: Negative NPV After COSA
 - **Symptom**: All technologies show negative NPV
 - **Explanation**: COSA exceeds benefits of switching
-- **Debug**: Check COSA calculation and remaining debt
+- **Debug**: Check COSA calculation (foregone operating margin)
 
 # Part 2: Strategic Decision-Making
 
@@ -619,7 +618,7 @@ if expansion_and_switch_capacity + furnace_capacity > expansion_limit:
 
 # Glossary
 
-- **COSA**: Cost of Stranded Assets - economic loss from abandoning existing technology (includes remaining debt and foregone profits)
+- **COSA**: Cost of Stranded Assets - economic loss from abandoning existing technology (the foregone operating margin)
 - **NPV**: Net Present Value - present value of future cash flows minus initial investment
 - **BOM**: Bill of Materials - resource requirements for production (materials and energy)
 - **Brownfield**: Retrofit/upgrade of existing facility (reduced CAPEX)

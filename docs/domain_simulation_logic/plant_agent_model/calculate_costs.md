@@ -151,7 +151,6 @@ Calculates cash flows over time for profitability analysis and stranded asset co
 **Functions:**
 - `calculate_gross_cash_flow()` - Cash flow as (Revenue - OPEX) per period
 - `calculate_net_cash_flow()` - Subtracts debt from gross cash flow (for NPV)
-- `calculate_lost_cash_flow()` - Adds debt to gross cash flow (for COSA)
 
 **Note:** If unit OPEX == 0 for a period, the model assumes no production and sets cash flow to 0 (revenue is not realized).
 
@@ -166,19 +165,17 @@ Provides tools to calculate net present value (NPV) for technology investments, 
 **Note:** `construction_time` years are prepended to OPEX and debt schedules. `price_series` must include the same lead periods so its length matches the lagged OPEX/debt.
 
 ### Stranded Asset Analysis
-Calculates the Cost of Stranded Asset (COSA) when switching technologies before end-of-life, accounting for remaining debt obligations and foregone operating profits.
+Calculates the Cost of Stranded Asset (COSA) when switching technologies before end-of-life: the foregone operating margin of the current technology.
 
-When switching technologies before end-of-life, COSA represents the NPV of:
-1. **Remaining debt obligations** - Must still be repaid even if asset is abandoned
-2. **Foregone operating profits** - Lost future revenue from current technology
+When switching technologies before end-of-life, COSA represents the NPV of the **foregone operating profits** — the gross cash flow (revenue − OPEX) the current asset would have earned over its remaining life. The remaining debt is *excluded*: it persists post-switch via the `legacy_debt_schedule` (and is paid whether the plant stays or switches), so it cancels from the switch-vs-stay comparison.
 
-Formula: `COSA = NPV(Gross_Cash_Flow + Remaining_Debt)`
+Formula: `COSA = NPV(Gross_Cash_Flow)`
 
-COSA is subtracted from the NPV of the new technology to determine if a switch is economically viable.
+COSA is subtracted from the NPV of the new technology to determine if a switch is economically viable. For a loss-making incumbent (gross cash flow < 0) COSA is negative, which correctly rewards exit.
 
 **Functions:**
 - `calculate_cost_of_stranded_asset()` - NPV of losses from stranding an asset
-- `stranding_asset_cost()` - Full COSA calculation combining debt obligations and foregone profits
+- `stranding_asset_cost()` - COSA calculation: discounted foregone operating margin
 
 ### CAPEX Calculations
 Handles capital expenditure calculations including subsidies and learning-by-doing cost reductions. Returns 1.0 (no reduction) when capacity_zero is 0 to avoid division by zero.
