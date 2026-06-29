@@ -180,12 +180,14 @@ def read_regional_input_prices_from_master_excel(
         int(year): country_data for year, country_data in grouped.items()
     }
 
-    # 6) Build a List[InputCosts], sorted by year then iso3
+    # 5) Build a List[InputCosts], sorted by year then geo_key. The "ISO-3 code" column holds
+    # either a country (CHN) or a sub-national geo_key (CHN:CN-HE); split into iso3 + geo_unit.
     result: list[InputCosts] = []
     for year in sorted(input_cost_dict):
-        for iso3 in sorted(input_cost_dict[year]):
-            costs = input_cost_dict[year][iso3]
-            result.append(InputCosts(year=Year(year), iso3=iso3, costs=costs))
+        for geo_key in sorted(input_cost_dict[year]):
+            costs = input_cost_dict[year][geo_key]
+            iso3, _, code = geo_key.partition(":")
+            result.append(InputCosts(year=Year(year), iso3=iso3, costs=costs, geo_unit=code or None))
 
     return result
 

@@ -429,7 +429,8 @@ def add_grid_power_price(
     Note:
         For grid cells without a matching ISO3 code, the maximum grid price is used as a fallback.
     """
-    grid_price = pd.Series({iso3: input_costs[iso3][year]["electricity"] for iso3 in input_costs})
+    # Pixels carry only iso3; sub-national rows reach pixels via GEO, not this country grid price
+    grid_price = pd.Series({iso3: input_costs[iso3][year]["electricity"] for iso3 in input_costs if ":" not in iso3})
     ds["grid_price"] = xr.apply_ufunc(
         lambda iso3: grid_price.loc[iso3]
         if (isinstance(iso3, str) and iso3 in grid_price.index and not pd.isna(iso3))

@@ -1720,8 +1720,8 @@ def calculate_lcoh_from_electricity_country_level(
     )
 
     lcoh_by_country = {}
-    for iso3, electricity_price in electricity_by_country.items():
-        # Get CAPEX+OPEX component for this country and year
+    for geo_key, electricity_price in electricity_by_country.items():
+        iso3 = geo_key.split(":", 1)[0]  # capex/opex is country-keyed; sub-national rows inherit it
         if iso3 not in hydrogen_capex_opex:
             raise ValueError(f"Hydrogen CAPEX/OPEX not found for country {iso3}")
         if year not in hydrogen_capex_opex[iso3]:
@@ -1729,7 +1729,7 @@ def calculate_lcoh_from_electricity_country_level(
         capex_opex = hydrogen_capex_opex[iso3][year]
 
         # Calculate LCOH: (kWh/kg) × (USD/kWh) + (USD/kg) = USD/kg
-        lcoh_by_country[iso3] = energy_consumption_kwh * electricity_price + capex_opex
+        lcoh_by_country[geo_key] = energy_consumption_kwh * electricity_price + capex_opex
 
     # Log a sample of LCOH values for verification
     sample_countries = list(lcoh_by_country.keys())[:3]
@@ -1822,7 +1822,7 @@ def apply_hydrogen_price_cap_country_level(
         the cluster plus long distance transport costs per kg of hydrogen.
 
     Args:
-        lcoh_by_country: Dictionary mapping ISO3 codes to LCOH values
+        lcoh_by_country: Mapping from geo_key (iso3 or iso3:code) to LCOH values
         regional_ceilings: Dictionary mapping regions to ceiling values
         country_to_region: Dictionary mapping ISO3 codes to region names
         intraregional_trade_allowed: Whether intraregional trade is allowed
@@ -1830,14 +1830,15 @@ def apply_hydrogen_price_cap_country_level(
         long_dist_pipeline_transport_cost: Transport cost for long-distance pipeline (USD/kg)
 
     Returns:
-        Dictionary mapping ISO3 codes to capped hydrogen prices
+        Mapping from geo_key (iso3 or iso3:code) to capped hydrogen prices
 
     Raises:
         ValueError: If required data is missing
     """
     capped_hydrogen_prices = {}
 
-    for iso3, lcoh in lcoh_by_country.items():
+    for geo_key, lcoh in lcoh_by_country.items():
+        iso3 = geo_key.split(":", 1)[0]  # sub-national rows inherit their country's region/ceiling
         region = country_to_region.get(iso3)
         if region is None:
             raise ValueError(f"No region mapping found for country {iso3}")
@@ -1849,7 +1850,7 @@ def apply_hydrogen_price_cap_country_level(
 
         # Option a: No intraregional trade allowed -> apply the cap: minimum of LCOH and ceiling
         if not intraregional_trade_allowed:
-            capped_hydrogen_prices[iso3] = min(lcoh, ceiling_value)
+            capped_hydrogen_prices[geo_key] = min(lcoh, ceiling_value)
 
         # Option b: Intraregional trade allowed -> consider trade options and choose the minimum among
         # the country's LCOH, its regional ceiling, and its intraregional trade options
@@ -1866,7 +1867,7 @@ def apply_hydrogen_price_cap_country_level(
                 ## Take minimum of regional ceiling and trade option
                 ceiling_value = min(ceiling_value, best_trade_value)
             ## Apply the cap: minimum of LCOH and ceiling
-            capped_hydrogen_prices[iso3] = min(lcoh, ceiling_value)
+            capped_hydrogen_prices[geo_key] = min(lcoh, ceiling_value)
 
     return capped_hydrogen_prices
 

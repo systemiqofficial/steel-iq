@@ -307,6 +307,13 @@ class PointInTime:
 _GeoValueT = TypeVar("_GeoValueT")
 
 
+def compose_geo_key(iso3: str, geo_unit: str | None) -> str:
+    """Compose the finest-available geographic key: ``iso3:geo_unit`` (e.g. ``"CHN:CN-HE"``)
+    when a sub-national unit is set, else the bare country ``iso3``. Single source of truth for
+    the key form — the country ``iso3`` is always recoverable via ``key.split(":", 1)[0]``."""
+    return f"{iso3}:{geo_unit}" if geo_unit else iso3
+
+
 @dataclass
 class Location:
     lat: float
@@ -329,7 +336,7 @@ class Location:
             ``iso3:geo_unit`` if ``geo_unit`` is set, otherwise ``iso3``. The country
             ``iso3`` is always recoverable via ``geo_key.split(":", 1)[0]``.
         """
-        return f"{self.iso3}:{self.geo_unit}" if self.geo_unit else self.iso3
+        return compose_geo_key(self.iso3, self.geo_unit)
 
     def resolve(
         self,
@@ -420,17 +427,24 @@ class PlotPaths:
 
 
 class InputCosts:
-    def __init__(self, year, iso3, costs: dict[str, float]) -> None:
+    def __init__(self, year, iso3, costs: dict[str, float], geo_unit: str | None = None) -> None:
         self.year = year
         self.iso3 = iso3
+        self.geo_unit = geo_unit  # ISO 3166-2 code, e.g. "CN-HE"; None ⇒ country-level
         self.costs = costs
-        self.name = f"{self.iso3}_{self.year}"
+        self.name = f"{self.geo_key}_{self.year}"
+
+    @property
+    def geo_key(self) -> str:
+        """Finest-available geographic key (mirrors ``Location.geo_key``)."""
+        return compose_geo_key(self.iso3, self.geo_unit)
 
     def __repr__(self) -> str:
         return f"Country={self.iso3}, Year={self.year})"
 
     def __eq__(self, other):
-        # Technologies are equal if they have the same name
+        # Equal if they share the same name (geo_key_year) — so a country row and a province
+        # row for the same iso3+year are distinct.
         return self.name == other.name
 
 
@@ -4632,10 +4646,9 @@ class Plant:
             Raises ValueError if the plant's ISO3 code is not found in the capped_hydrogen_cost_dict.
         """
         logger = logging.getLogger(f"{__name__}.Plant.update_furnace_hydrogen_costs")
-        if self.location.iso3 not in capped_hydrogen_cost_dict:
-            raise ValueError(f"No hydrogen price calculated for {self.location.iso3} (plant {self.plant_id})")
-
-        capped_lcoh_usd_per_kg = capped_hydrogen_cost_dict[self.location.iso3]
+        capped_lcoh_usd_per_kg = self.location.resolve(capped_hydrogen_cost_dict, what="hydrogen price")
+        if capped_lcoh_usd_per_kg is None:
+            raise ValueError(f"No hydrogen price calculated for {self.location.geo_key} (plant {self.plant_id})")
         hydrogen_price_usd_per_t = capped_lcoh_usd_per_kg * T_TO_KG
 
         logger.debug(
@@ -7098,8 +7111,8 @@ class Environment:
         self.carbon_costs: dict[str, dict[Year, float]] = {}
         # Initialize technology emission factors as empty list
         self.technology_emission_factors: list[TechnologyEmissionFactors] = []
-        # Initialize input costs as empty dict
-        self.input_costs: dict[str | None, dict[Year, dict[str, float]]] = {}
+        # Initialize input costs as empty dict, keyed by geo_key (iso3 or iso3:code)
+        self.input_costs: dict[str, dict[Year, dict[str, float]]] = {}
         # Initialize cost curves as empty dicts
         self.cost_curve: dict[str, list[dict[str, float]]] = {"steel": [], "iron": []}
         self.future_cost_curve: dict[str, list[dict[str, float]]] = {"steel": [], "iron": []}
@@ -7538,10 +7551,9 @@ class Environment:
             input_costs (list[InputCosts]): A list of InputCosts objects to be added to the environment.
         """
         for ic in input_costs_list:
-            if ic.iso3 not in self.input_costs:
-                self.input_costs[ic.iso3] = {}
-            # Assuming InputCosts has a method or property to get the cost
-            self.input_costs[ic.iso3][ic.year] = ic.costs
+            if ic.geo_key not in self.input_costs:
+                self.input_costs[ic.geo_key] = {}
+            self.input_costs[ic.geo_key][ic.year] = ic.costs
 
     def set_capex_and_debt_in_furnace_groups(self, world_plants_list: list[Plant]) -> None:
         """
@@ -7804,14 +7816,16 @@ class Environment:
         logger = logging.getLogger(f"{__name__}.Environment.set_input_cost_in_furnace_groups")
         logged_countries: set[str] = set()
         for plant in world_plants:
-            if plant.location.iso3 not in self.input_costs:
+            # Resolve finest-available: the plant's sub-national geo_key if authored, else its country iso3
+            year_costs = plant.location.resolve(self.input_costs, what="input costs")
+            if year_costs is None:
                 logger.warning(
-                    f"ISO3 code {plant.location.iso3} not found in input_costs for plant {plant.plant_id}, skipping energy cost update"
+                    f"No input_costs found for {plant.location.geo_key} for plant {plant.plant_id}, skipping energy cost update"
                 )
                 continue
 
-            # Get input costs from Excel for this country and year
-            input_costs = self.input_costs[plant.location.iso3][self.year].copy()
+            # Get input costs from Excel for this geo_key and year
+            input_costs = year_costs[self.year].copy()
 
             # Log once per country to avoid flooding
             if plant.location.iso3 not in logged_countries:
@@ -7894,23 +7908,24 @@ class Environment:
             raise ValueError("GeoConfig is required for hydrogen price calculation")
         geo_config = self.config.geo_config
 
-        # Step 1: Extract electricity prices and calculate LCOH for each country
-        electricity_by_country = {}
-        for iso3, year_costs in self.input_costs.items():
-            if iso3 is None:  # Skip None keys
+        # Step 1: LCOH per geo_key (country rows + any authored sub-national rows)
+        electricity_by_geo_key = {}
+        for geo_key, year_costs in self.input_costs.items():
+            if geo_key is None:
                 continue
             if self.year in year_costs:
                 if "electricity" not in year_costs[self.year]:
-                    raise ValueError(f"Electricity price not found for country {iso3} in year {self.year}")
-                electricity_by_country[iso3] = year_costs[self.year]["electricity"]
-        lcoh_by_country = calculate_lcoh_from_electricity_country_level(
-            electricity_by_country=electricity_by_country,
+                    raise ValueError(f"Electricity price not found for {geo_key} in year {self.year}")
+                electricity_by_geo_key[geo_key] = year_costs[self.year]["electricity"]
+        lcoh_by_geo_key = calculate_lcoh_from_electricity_country_level(
+            electricity_by_country=electricity_by_geo_key,
             hydrogen_efficiency=self.hydrogen_efficiency,
             hydrogen_capex_opex=self.hydrogen_capex_opex,
             year=self.year,
         )
 
-        # Step 2: Calculate regional hydrogen ceilings
+        # Step 2: ceilings from country-level LCOH only; a province inherits its country's ceiling
+        lcoh_by_country = {k: v for k, v in lcoh_by_geo_key.items() if ":" not in k}
         regional_ceilings, country_to_region = calculate_regional_hydrogen_ceiling_country_level(
             lcoh_by_country=lcoh_by_country,
             country_mappings=self.country_mappings,
@@ -7923,7 +7938,7 @@ class Environment:
             k: v for k, v in geo_config.intraregional_trade_matrix.items() if v is not None
         }
         capped_hydrogen_prices = apply_hydrogen_price_cap_country_level(
-            lcoh_by_country=lcoh_by_country,
+            lcoh_by_country=lcoh_by_geo_key,
             regional_ceilings=regional_ceilings,
             country_to_region=country_to_region,
             intraregional_trade_allowed=geo_config.intraregional_trade_allowed,

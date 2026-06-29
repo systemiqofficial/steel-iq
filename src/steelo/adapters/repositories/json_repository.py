@@ -37,6 +37,7 @@ from ...domain import (
     Subsidy,
 )
 from ...domain.models import (
+    compose_geo_key,
     ProductionThreshold,
     PrimaryFeedstock,
     LegalProcessConnector,
@@ -1664,26 +1665,31 @@ class InputCostsInDb(BaseModel):
     iso3: str
     year: Year
     costs: dict[str, float] = Field(..., description="Mapping from commodity → cost")
+    geo_unit: str | None = None  # ISO 3166-2 code; None ⇒ country-level (legacy JSON loads as None)
+
+    @property
+    def geo_key(self) -> str:
+        return compose_geo_key(self.iso3, self.geo_unit)
 
     @property
     def to_domain(self) -> InputCosts:
         """
         Convert this DB model into the domain‐level `InputCosts` object.
         """
-        return InputCosts(year=self.year, iso3=self.iso3, costs=self.costs.copy())
+        return InputCosts(year=self.year, iso3=self.iso3, costs=self.costs.copy(), geo_unit=self.geo_unit)
 
     @classmethod
     def from_domain(cls, ic: InputCosts) -> "InputCostsInDb":
         """
         Create an InputCostsInDb (Pydantic model) from a domain‐level `InputCosts` instance.
         """
-        return cls(iso3=ic.iso3, year=ic.year, costs=ic.costs.copy())
+        return cls(iso3=ic.iso3, year=ic.year, costs=ic.costs.copy(), geo_unit=ic.geo_unit)
 
     def __lt__(self, other: "InputCostsInDb") -> bool:
         """
-        Enable sorting by `name` (iso3_year) for stable JSON dumps.
+        Enable sorting by `name` (geo_key_year) for stable JSON dumps.
         """
-        return f"{self.iso3}_{self.year}" < f"{other.iso3}_{other.year}"
+        return f"{self.geo_key}_{self.year}" < f"{other.geo_key}_{other.year}"
 
 
 class InputCostsListInDb(BaseModel):
@@ -1718,7 +1724,7 @@ class InputCostsJsonRepository:
                 return {}
             raw = self.path.read_text(encoding="utf-8")
             parsed = InputCostsListInDb.model_validate_json(raw)
-            return {f"{entry.iso3}_{entry.year}": entry for entry in parsed.root}
+            return {f"{entry.geo_key}_{entry.year}": entry for entry in parsed.root}
         except FileNotFoundError:
             return {}
 
@@ -1762,7 +1768,7 @@ class InputCostsJsonRepository:
         """
         entry_in_db = InputCostsInDb.from_domain(ic)
         locked = self._fetch_all()
-        key = f"{entry_in_db.iso3}_{entry_in_db.year}"
+        key = f"{entry_in_db.geo_key}_{entry_in_db.year}"
         locked[key] = entry_in_db
         self._write_models(list(locked.values()))
         self._all = None  # clear cache
@@ -1774,7 +1780,7 @@ class InputCostsJsonRepository:
         locked = self._fetch_all()
         for ic in ic_list:
             entry_in_db = InputCostsInDb.from_domain(ic)
-            key = f"{entry_in_db.iso3}_{entry_in_db.year}"
+            key = f"{entry_in_db.geo_key}_{entry_in_db.year}"
             locked[key] = entry_in_db
         self._write_models(list(locked.values()))
         self._all = None

@@ -13,7 +13,7 @@ from collections import defaultdict
 import pycountry
 from rich.console import Console
 
-from ..domain.models import Plant, PlantGroup, InputCosts
+from ..domain.models import Plant, PlantGroup, InputCosts, compose_geo_key
 from ..domain.constants import PLANT_LIFETIME, T_TO_KG, Year
 from ..adapters.dataprocessing.excel_reader import (
     read_biomass_availability,
@@ -432,7 +432,7 @@ def build_geo_hierarchy(
                 {
                     "iso3": iso3,
                     "geo_unit": code,
-                    "geo_key": f"{iso3}:{code}",
+                    "geo_key": compose_geo_key(iso3, code),
                     "display_name": GEO_UNIT_DISPLAY_OVERRIDES.get(code, ne_name),
                     "unit_type": (record.get("type_en") or "").strip(),
                     "ne_region": (record.get("region") or "").strip(),
@@ -578,17 +578,18 @@ def recreate_input_costs_data(
         electricity_by_year: dict[Year, dict[str, float]] = defaultdict(dict)
         for ic in ic_list:
             year = Year(int(ic.year))
-            ic_index[(ic.iso3, year)] = ic
+            ic_index[(ic.geo_key, year)] = ic
             electricity_price = ic.costs.get("electricity")
             if electricity_price is not None:
-                electricity_by_year[year][ic.iso3] = electricity_price
+                electricity_by_year[year][ic.geo_key] = electricity_price
 
         for year, electricity_by_country in electricity_by_year.items():
             # Filter to countries where we have CAPEX/OPEX values for the current year
+            # H2 capex is country-keyed, so sub-national geo_keys fall out here (handled at runtime)
             applicable_electricity = {
-                iso3: price
-                for iso3, price in electricity_by_country.items()
-                if iso3 in hydrogen_capex_by_country and year in hydrogen_capex_by_country[iso3]
+                geo_key: price
+                for geo_key, price in electricity_by_country.items()
+                if geo_key in hydrogen_capex_by_country and year in hydrogen_capex_by_country[geo_key]
             }
             if not applicable_electricity:
                 continue
@@ -606,8 +607,8 @@ def recreate_input_costs_data(
                 )
                 continue
 
-            for iso3, usd_per_kg in lcoh_by_country.items():
-                existing_ic: InputCosts | None = ic_index.get((iso3, year))
+            for geo_key, usd_per_kg in lcoh_by_country.items():
+                existing_ic: InputCosts | None = ic_index.get((geo_key, year))
                 if existing_ic is None:
                     continue
                 # Convert USD/kg to USD/t to match other BOM-aligned commodities.
