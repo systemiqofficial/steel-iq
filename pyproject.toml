@@ -110,6 +110,7 @@ download-binaries = "steelo.entrypoints.download_binaries:main"
 download-latest = "steelo.entrypoints.download_latest_binaries:main"
 list-binaries = "steelo.entrypoints.list_binaries:main"
 validate-master-input = "steelo.entrypoints.validate_master_input:main"
+generate-geo-options = "steelo.entrypoints.generate_geo_options:main"
 count-lines-of-code = "steelo.entrypoints.cli:count_lines_of_code"
 run_baseload_power_simulation = "steelo.entrypoints.geo:run_baseload_power_simulation"
 

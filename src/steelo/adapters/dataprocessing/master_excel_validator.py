@@ -5,6 +5,7 @@ Shared validation logic for master input Excel files, used by both
 steelo-data-prepare CLI and Django forms to ensure consistency.
 """
 
+import json
 import pandas as pd
 from pathlib import Path
 from typing import Callable, Any
@@ -12,6 +13,66 @@ from dataclasses import dataclass
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _prepared_fixtures_dir() -> Path:
+    """The standard prepared fixtures directory (``<STEELO_HOME>/data/fixtures``)."""
+    from steelo.config import get_steelo_home
+
+    return get_steelo_home() / "data" / "fixtures"
+
+
+def _default_valid_iso_codes() -> set[str]:
+    """Real country ISO-3 codes from ``pycountry`` plus ``XKX`` (Kosovo).
+
+    ``pycountry`` is an authority independent of the master Excel, so it catches ISO-code typos even
+    when they are self-consistent across the workbook's own sheets. Kosovo has no officially-assigned
+    alpha-3 code (disputed status); the model uses the conventional ``XKX`` stand-in, which ``pycountry``
+    lacks, so it is added explicitly.
+    """
+    import pycountry
+
+    return {country.alpha_3 for country in pycountry.countries} | {"XKX"}
+
+
+def _load_modelled_countries(country_mappings_path: Path | None) -> set[str]:
+    """Modelled country ISO-3 codes from a prepared ``country_mappings.json`` (empty if unavailable).
+
+    This is the model's own country list, used as a cross-check that flags a real ISO-3 code that the
+    model does not actually carry. The validator runs at the authoring gate, which can execute with no
+    prepared data present; when ``country_mappings.json`` is absent this cross-check is skipped.
+
+    Args:
+        country_mappings_path: Override path; defaults to the standard prepared location.
+
+    Returns:
+        The set of modelled ISO-3 codes, or an empty set when no mapping file is found.
+    """
+    if country_mappings_path is None:
+        country_mappings_path = _prepared_fixtures_dir() / "country_mappings.json"
+    if not country_mappings_path.exists():
+        return set()
+    rows = json.loads(country_mappings_path.read_text())
+    return {row["ISO 3-letter code"] for row in rows if row.get("ISO 3-letter code")}
+
+
+def _load_valid_geo_keys(geo_hierarchy_path: Path | None) -> set[str]:
+    """Recognised sub-national geo-keys from a prepared ``geo_hierarchy.json`` (empty if unavailable).
+
+    When ``geo_hierarchy.json`` is absent the sub-national geo-key check is skipped (the iso3 part of a
+    geo-key is still validated against the recognised countries).
+
+    Args:
+        geo_hierarchy_path: Override path; defaults to the standard prepared location.
+
+    Returns:
+        The set of recognised ``iso3:code`` geo-keys, or an empty set when no hierarchy is found.
+    """
+    if geo_hierarchy_path is None:
+        geo_hierarchy_path = _prepared_fixtures_dir() / "geo_hierarchy.json"
+    if not geo_hierarchy_path.exists():
+        return set()
+    return {row["geo_key"] for row in json.loads(geo_hierarchy_path.read_text())}
 
 
 @dataclass
@@ -189,8 +250,32 @@ class MasterExcelValidator:
         "allowed": ["yes", "no", "true", "false", "1", "0"],
     }
 
-    def __init__(self):
+    def __init__(
+        self,
+        valid_countries: set[str] | None = None,
+        modelled_countries: set[str] | None = None,
+        valid_geo_keys: set[str] | None = None,
+        country_mappings_path: Path | None = None,
+        geo_hierarchy_path: Path | None = None,
+    ):
+        """Validate master input Excel files.
+
+        Args:
+            valid_countries: Real country ISO-3 codes (the independent ISO authority). Defaults to
+                ``pycountry`` plus ``XKX``.
+            modelled_countries: ISO-3 codes the model actually carries. If omitted, loaded from a
+                prepared ``country_mappings.json``; empty (this cross-check skipped) when none is found.
+            valid_geo_keys: Recognised sub-national ``iso3:code`` geo-keys. If omitted, loaded from a
+                prepared ``geo_hierarchy.json``; empty (sub-national check skipped) when none is found.
+            country_mappings_path: Override path for ``modelled_countries``.
+            geo_hierarchy_path: Override path for ``valid_geo_keys``.
+        """
         self.report = ValidationReport()
+        self.valid_countries = valid_countries if valid_countries is not None else _default_valid_iso_codes()
+        self.modelled_countries = (
+            modelled_countries if modelled_countries is not None else _load_modelled_countries(country_mappings_path)
+        )
+        self.valid_geo_keys = valid_geo_keys if valid_geo_keys is not None else _load_valid_geo_keys(geo_hierarchy_path)
 
     def validate_file(self, excel_path: Path) -> ValidationReport:
         """Validate entire Excel file"""
@@ -418,6 +503,77 @@ class MasterExcelValidator:
                     severity="INFO",
                 )
             )
+
+    def _check_geo_key_column(self, df: pd.DataFrame, sheet_name: str, column: str):
+        """Flag values that are not a recognised country code or sub-national geo-key.
+
+        Each value is either a bare ISO-3 code (country-level) or an ``iso3:code`` geo-key. The iso3
+        part is checked twice: against ``pycountry`` (is it a real ISO-3 code?) and, when available,
+        against the model's ``country_mappings.json`` (is it actually modelled?). A geo-key's full key
+        is then checked against the geo_hierarchy when available. Checks that depend on unavailable
+        prepared reference data are skipped rather than flagged, so the validator stays clean when run
+        without prepared data; the ``pycountry`` check always runs.
+        """
+        if column not in df.columns:
+            return  # a missing column is reported separately by _validate_required_columns
+
+        for position, raw in enumerate(df[column]):
+            if pd.isna(raw):
+                continue
+            value = str(raw).strip()
+            if not value:
+                continue
+
+            iso3, separator, _code = value.partition(":")
+            row_number = position + 2  # 1-based, plus the header row
+            is_geo_key = separator == ":"
+            label = f"Geo-key '{value}'" if is_geo_key else f"Code '{value}'"
+
+            if iso3 not in self.valid_countries:
+                self.report.add(
+                    ValidationError(
+                        sheet_name=sheet_name,
+                        error_type="INVALID_GEO_KEY",
+                        message=f"{label}: '{iso3}' is not a valid ISO-3 country code.",
+                        row_number=row_number,
+                        column_name=column,
+                    )
+                )
+            elif self.modelled_countries and iso3 not in self.modelled_countries:
+                self.report.add(
+                    ValidationError(
+                        sheet_name=sheet_name,
+                        error_type="INVALID_GEO_KEY",
+                        message=f"{label}: country '{iso3}' is not in the model's country mapping.",
+                        row_number=row_number,
+                        column_name=column,
+                    )
+                )
+            elif is_geo_key and self.valid_geo_keys and value not in self.valid_geo_keys:
+                self.report.add(
+                    ValidationError(
+                        sheet_name=sheet_name,
+                        error_type="INVALID_GEO_KEY",
+                        message=(
+                            f"Geo-key '{value}' is not a recognised sub-national unit in geo_hierarchy "
+                            f"— check the ISO 3166-2 code and level."
+                        ),
+                        row_number=row_number,
+                        column_name=column,
+                    )
+                )
+
+    def _validate_input_costs(self, df: pd.DataFrame):
+        """Validate geo-keys on the Input costs sheet."""
+        self._check_geo_key_column(df, "Input costs", "ISO-3 code")
+
+    def _validate_demand_and_scrap_availability(self, df: pd.DataFrame):
+        """Validate geo-keys on the Demand and scrap availability sheet."""
+        self._check_geo_key_column(df, "Demand and scrap availability", "ISO-3 code")
+
+    def _validate_trade_bloc_definitions(self, df: pd.DataFrame):
+        """Validate country codes on the Trade bloc definitions sheet."""
+        self._check_geo_key_column(df, "Trade bloc definitions", "ISO 3-letter code")
 
     def _validate_cross_references(self, xl_file: pd.ExcelFile):
         """Validate references between sheets"""

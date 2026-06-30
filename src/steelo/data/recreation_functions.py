@@ -4,6 +4,7 @@ This module contains functions for recreating JSON repositories from various dat
 These functions were moved from cli.py to follow clean architecture principles.
 """
 
+import csv
 import json
 import logging
 import shutil
@@ -477,6 +478,67 @@ def recreate_geo_hierarchy_data(
     geo_hierarchy_json_path.write_text(json.dumps(rows, indent=2, ensure_ascii=False))
     console.print(f"[green]Wrote {len(rows)} geo_hierarchy rows to[/green]: {geo_hierarchy_json_path}")
     return geo_hierarchy_json_path
+
+
+GEO_OPTIONS_COLUMNS = [
+    "Region",
+    "Country (iso3)",
+    "Country (name)",
+    "Subnational (geo_unit)",
+    "Subnational (display_name)",
+    "unit_type",
+    "geo_key",
+]
+
+
+def write_geo_options_csv(geo_hierarchy_json_path: Path, out_csv_path: Path) -> Path:
+    """Generate the ``geo_options.csv`` reference from a ``geo_hierarchy.json``.
+
+    One row per populated sub-national unit, sorted by ``geo_key`` — the human-facing list of authorable
+    geo-keys to paste into the master Excel. The country name is joined from the sibling
+    ``country_mappings.json`` (the model's own iso3→name source; the hierarchy rows carry no country
+    name), and is left blank if that file is absent. ``Region`` is the Natural Earth ``ne_region``
+    pass-through and is blank for units NE leaves unregioned.
+
+    Args:
+        geo_hierarchy_json_path: Path to a generated ``geo_hierarchy.json``.
+        out_csv_path: Destination CSV path.
+
+    Returns:
+        The path the CSV was written to.
+    """
+    rows = json.loads(geo_hierarchy_json_path.read_text())
+
+    iso3_to_name: dict[str, str] = {}
+    country_mappings_path = geo_hierarchy_json_path.parent / "country_mappings.json"
+    if country_mappings_path.exists():
+        for mapping in json.loads(country_mappings_path.read_text()):
+            iso3_code = mapping.get("ISO 3-letter code")
+            if iso3_code:
+                iso3_to_name[iso3_code] = mapping.get("Country", "")
+
+    out_rows = []
+    for row in sorted(rows, key=lambda r: r["geo_key"]):
+        iso3 = row["iso3"]
+        out_rows.append(
+            {
+                "Region": row.get("ne_region", ""),
+                "Country (iso3)": iso3,
+                "Country (name)": iso3_to_name.get(iso3, ""),
+                "Subnational (geo_unit)": row["geo_unit"],
+                "Subnational (display_name)": row["display_name"],
+                "unit_type": row.get("unit_type", ""),
+                "geo_key": row["geo_key"],
+            }
+        )
+
+    with out_csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=GEO_OPTIONS_COLUMNS)
+        writer.writeheader()
+        writer.writerows(out_rows)
+
+    console.print(f"[green]Wrote {len(out_rows)} geo_options rows to[/green]: {out_csv_path}")
+    return out_csv_path
 
 
 def enrich_plant_geo_units(
