@@ -5,6 +5,7 @@ These functions were moved from cli.py to follow clean architecture principles.
 """
 
 import json
+import logging
 import shutil
 from pathlib import Path
 from typing import Any, Iterable
@@ -476,6 +477,90 @@ def recreate_geo_hierarchy_data(
     geo_hierarchy_json_path.write_text(json.dumps(rows, indent=2, ensure_ascii=False))
     console.print(f"[green]Wrote {len(rows)} geo_hierarchy rows to[/green]: {geo_hierarchy_json_path}")
     return geo_hierarchy_json_path
+
+
+def enrich_plant_geo_units(
+    *,
+    plants_json_path: Path,
+    admin1_shapefile_path: Path,
+    geo_hierarchy_json_path: Path,
+) -> int:
+    """Derive and write each plant's sub-national ``geo_unit`` from Natural Earth admin-1.
+
+    Runs after the plant repo and geo_hierarchy exist. For every plant, point-in-polygon against the
+    NE admin-1 layer yields a country (``adm0_a3``) and a first-order unit code; this function owns the
+    policy that decides whether that code is trustworthy enough to store as ``geo_unit``:
+
+    - ``adm0_a3`` must equal the plant's stored geocoder ``iso3`` (the two derivations must agree on the
+      country) — a mismatch (border slack, or a unit the model owns as a separate country like Hong Kong)
+      sets ``geo_unit = None`` so the sub-national unit can never contradict the country;
+    - the derived code must be a unit in ``geo_hierarchy`` (a declared, populated country) — anything
+      else, including a country with no authored units, stays ``None`` and resolves at country level.
+
+    Idempotent: re-deriving a plant's province always yields the same code, so this can run on every
+    preparation without rebuild-gating. A missing admin-1 shapefile or geo_hierarchy (older geo-data
+    package) is tolerated — the step logs and leaves every ``geo_unit`` as ``None``.
+
+    Args:
+        plants_json_path: Path to the plants JSON repository written in the JSON-repository step.
+        admin1_shapefile_path: Path to ``ne_10m_admin_1_states_provinces.shp``.
+        geo_hierarchy_json_path: Path to the generated ``geo_hierarchy.json`` (declared units).
+
+    Returns:
+        The number of plants that received a non-``None`` ``geo_unit``.
+
+    Notes:
+        Writes ``geo_unit`` only; ``plant.location.iso3`` is left untouched, so the composed ``geo_key``
+        always uses the plant's canonical (country_mapping) iso3 and the derived ``adm0_a3`` is used only
+        for the cross-check, never stored.
+    """
+    import geopandas as gpd
+
+    from ..adapters.geospatial.geospatial_layers import derive_iso3_and_geo_unit
+
+    if not admin1_shapefile_path.exists() or not geo_hierarchy_json_path.exists():
+        logger = logging.getLogger(f"{__name__}.enrich_plant_geo_units")
+        logger.info(
+            "Skipping plant geo_unit enrichment: missing %s.",
+            "admin-1 shapefile" if not admin1_shapefile_path.exists() else "geo_hierarchy.json",
+        )
+        return 0
+
+    valid_codes = {row["geo_unit"] for row in json.loads(geo_hierarchy_json_path.read_text())}
+    admin1_gdf = gpd.read_file(admin1_shapefile_path)
+
+    plant_repo = PlantJsonRepository(plants_json_path, PLANT_LIFETIME)
+    # Patch at the DB level so only geo_unit changes (no domain round-trip).
+    plants_in_db = plant_repo._fetch_all()
+
+    logger = logging.getLogger(f"{__name__}.enrich_plant_geo_units")
+    tagged = 0
+    country_mismatches: list[tuple[str, str, str]] = []
+    for plant_id, plant_in_db in plants_in_db.items():
+        location = plant_in_db.location
+        adm0_a3, code = derive_iso3_and_geo_unit(location.lat, location.lon, admin1_gdf, restrict_iso3=location.iso3)
+        if adm0_a3 is not None and adm0_a3 != location.iso3:
+            country_mismatches.append((plant_id, adm0_a3, location.iso3 or ""))
+            location.geo_unit = None
+        elif code is not None and code in valid_codes:
+            location.geo_unit = code
+            tagged += 1
+        else:
+            location.geo_unit = None
+
+    plant_repo._write_models(list(plants_in_db.values()))
+    for plant_id, derived_adm0_a3, stored_iso3 in country_mismatches:
+        logger.info(
+            "geo_unit cross-check: plant %s derived country %s != stored iso3 %s; geo_unit left None.",
+            plant_id,
+            derived_adm0_a3,
+            stored_iso3,
+        )
+    console.print(
+        f"[green]Enriched geo_unit for {tagged}/{len(plants_in_db)} plants[/green] "
+        f"({len(country_mismatches)} country-mismatch flagged to None)"
+    )
+    return tagged
 
 
 def recreate_willingness_to_pay_data(

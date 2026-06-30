@@ -51,7 +51,7 @@ class CacheMetadata:
 class DataPreparationCache:
     """Manages cached data preparations based on content hashing."""
 
-    CACHE_VERSION = "1.1"  # Bump to invalidate all caches (fixed coordinate parsing)
+    CACHE_VERSION = "1.2"  # Bump to invalidate all caches (added plant geo_unit enrichment step)
 
     def __init__(self, cache_root: Optional[Path] = None):
         """Initialize cache manager.

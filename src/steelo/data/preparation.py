@@ -390,6 +390,12 @@ class DataPreparationService:
         self._extract_geo_data(data_dir, result, verbose, geo_version)
         result.add_step(PreparationStep("Geo data extraction", time.time() - step_start))
 
+        # Step 9: Derive each plant's sub-national geo_unit (province) from the extracted geo data.
+        # Runs unconditionally after geo extraction — idempotent, so no rebuild-gating needed.
+        step_start = time.time()
+        self._enrich_plant_geo_units(data_dir, fixtures_dir, verbose)
+        result.add_step(PreparationStep("Plant geo_unit enrichment", time.time() - step_start))
+
         # Finalize result
         result.total_duration = time.time() - start_time
         result.finalize()
@@ -906,3 +912,21 @@ class DataPreparationService:
                 logging.info(f"❌ {error_msg}")
             # Re-raise the exception to stop the preparation process
             raise RuntimeError(error_msg) from e
+
+    def _enrich_plant_geo_units(self, data_dir: Path, fixtures_dir: Path, verbose: bool) -> None:
+        """Derive each plant's sub-national ``geo_unit`` from the extracted Natural Earth admin-1 layer.
+
+        Runs after geo extraction (Step 8) so both the plant repo and ``geo_hierarchy.json`` exist.
+        Delegates to ``enrich_plant_geo_units``, which tolerates a missing admin-1 layer / hierarchy
+        (older geo-data package) by leaving every ``geo_unit`` as ``None``.
+        """
+        from .recreation_functions import enrich_plant_geo_units
+
+        admin1_shp = data_dir / "ne_10m_admin_1_states_provinces" / "ne_10m_admin_1_states_provinces.shp"
+        tagged = enrich_plant_geo_units(
+            plants_json_path=fixtures_dir / "plants.json",
+            admin1_shapefile_path=admin1_shp,
+            geo_hierarchy_json_path=fixtures_dir / "geo_hierarchy.json",
+        )
+        if verbose:
+            logging.info(f"✓ Enriched geo_unit for {tagged} plants")
