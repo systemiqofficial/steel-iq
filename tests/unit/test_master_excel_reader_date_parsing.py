@@ -91,6 +91,7 @@ def test_furnace_group_renovation_dates():
                 "Plant ID": ["P001", "P002", "P003"],
                 "Coordinates": ["52.52, 13.40", "48.85, 2.35", "35.68, 139.76"],
                 "Country": ["Germany", "France", "Japan"],
+                "ISO3": ["DEU", "FRA", "JPN"],
                 "Main production equipment": ["BF", "EAF", "BOF"],
                 "Nominal BF capacity (ttpa)": [1000, 0, 0],
                 "Nominal EAF steel capacity (ttpa)": [0, 500, 0],

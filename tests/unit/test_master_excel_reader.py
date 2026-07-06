@@ -21,42 +21,6 @@ class TestMasterExcelReaderHelpers:
             df.to_excel(tf.name)
             yield MasterExcelReader(Path(tf.name))
 
-    def test_get_iso3_from_country_common_names(self, reader):
-        """Test ISO3 conversion for common country names."""
-        # Test special mappings
-        assert reader._get_iso3_from_country("USA") == "USA"
-        assert reader._get_iso3_from_country("Germany") == "DEU"
-        assert reader._get_iso3_from_country("Japan") == "JPN"
-        assert reader._get_iso3_from_country("Türkiye") == "TUR"
-        assert reader._get_iso3_from_country("Russia") == "RUS"
-        assert reader._get_iso3_from_country("South Korea") == "KOR"
-        assert reader._get_iso3_from_country("UK") == "GBR"
-        assert reader._get_iso3_from_country("Ivory Coast") == "CIV"
-        assert reader._get_iso3_from_country("Democratic Republic of the Congo") == "COD"
-
-    def test_get_iso3_from_country_standard_names(self, reader):
-        """Test ISO3 conversion for standard country names."""
-        # Test pycountry lookup
-        assert reader._get_iso3_from_country("France") == "FRA"
-        assert reader._get_iso3_from_country("Canada") == "CAN"
-        assert reader._get_iso3_from_country("Brazil") == "BRA"
-        assert reader._get_iso3_from_country("Australia") == "AUS"
-        assert reader._get_iso3_from_country("India") == "IND"
-        assert reader._get_iso3_from_country("China") == "CHN"
-
-    def test_get_iso3_from_country_fuzzy_matching(self, reader):
-        """Test ISO3 conversion with fuzzy matching."""
-        # Test variations that should still match
-        assert reader._get_iso3_from_country("united states") == "USA"  # lowercase
-        assert reader._get_iso3_from_country("GERMANY") == "DEU"  # uppercase
-        assert reader._get_iso3_from_country("  Japan  ") == "JPN"  # with spaces
-
-    def test_get_iso3_from_country_invalid(self, reader):
-        """Test ISO3 conversion for invalid country names."""
-        assert reader._get_iso3_from_country("InvalidCountryName") == "XXX"
-        assert reader._get_iso3_from_country("") == "XXX"
-        assert reader._get_iso3_from_country("123") == "XXX"
-
     def test_parse_date_various_formats(self, reader):
         """Test date parsing from various formats."""
         # String year only
@@ -140,6 +104,7 @@ class TestMasterExcelReaderValidation:
                     "Plant ID": ["P001", "P002"],
                     # Missing Latitude and Longitude
                     "Country": ["Germany", "France"],
+                    "ISO3": ["DEU", "FRA"],
                 }
             )
             with pd.ExcelWriter(tf.name) as writer:
@@ -161,6 +126,7 @@ class TestMasterExcelReaderValidation:
                     "Plant ID": ["P001", "P002", "P003"],
                     "Coordinates": ["52.52, 13.40", "48.85, 2.35", "35.68, 139.76"],
                     "Country": ["Germany", "France", "Japan"],
+                    "ISO3": ["DEU", "FRA", "JPN"],
                     "Main production equipment": ["BF; BOF", "EAF", "BF; EAF"],
                     "Nominal BF capacity (ttpa)": [1000, 0, 500],
                     "Nominal BOF steel capacity (ttpa)": [1200, 0, 0],
@@ -226,6 +192,69 @@ class TestMasterExcelReaderValidation:
                 eaf_group = next(fg for fg in p3.furnace_groups if fg.technology.name == "EAF")
                 assert eaf_group.last_renovation_date == date(2020, 6, 15)
 
+    def test_read_plants_reads_authored_iso3_and_geo_unit(self):
+        """read_plants sources ISO3 and geo_unit from the authored sheet columns.
+
+        A populated geo_unit lands on Location.geo_unit (composing the geo_key), a blank one
+        yields None (intentional country-level), and a blank ISO3 skips the row.
+        """
+        with tempfile.NamedTemporaryFile(suffix=".xlsx") as tf:
+            df = pd.DataFrame(
+                {
+                    "Plant ID": ["P001", "P002", "P003"],
+                    "Coordinates": ["31.60, 118.50", "52.52, 13.40", "48.85, 2.35"],
+                    "Country": ["China", "Germany", "France"],
+                    "ISO3": ["CHN", "DEU", None],
+                    "geo_unit": ["CN-AH", None, None],
+                    "Main production equipment": ["BF", "EAF", "EAF"],
+                    "Nominal BF capacity (ttpa)": [1000, 0, 0],
+                    "Nominal EAF steel capacity (ttpa)": [0, 800, 600],
+                    "Start date": ["2010", "2015", "2020"],
+                },
+            )
+            with pd.ExcelWriter(tf.name) as writer:
+                df.to_excel(writer, sheet_name="Iron and steel plants", index=False)
+                self._create_minimal_bom_sheet(writer)
+
+            reader = MasterExcelReader(Path(tf.name))
+            with reader:
+                plants, _, _ = reader.read_plants()
+
+                # Blank ISO3 (P003) is skipped
+                assert {p.plant_id for p in plants} == {"P001", "P002"}
+
+                p1 = next(p for p in plants if p.plant_id == "P001")
+                assert p1.location.iso3 == "CHN"
+                assert p1.location.geo_unit == "CN-AH"
+                assert p1.location.geo_key == "CHN:CN-AH"
+
+                p2 = next(p for p in plants if p.plant_id == "P002")
+                assert p2.location.iso3 == "DEU"
+                assert p2.location.geo_unit is None
+                assert p2.location.geo_key == "DEU"
+
+    def test_read_plants_missing_iso3_column_raises(self):
+        """A plant sheet without the authored ISO3 column is rejected outright (master >= v2.2)."""
+        with tempfile.NamedTemporaryFile(suffix=".xlsx") as tf:
+            df = pd.DataFrame(
+                {
+                    "Plant ID": ["P001"],
+                    "Coordinates": ["52.52, 13.40"],
+                    "Country": ["Germany"],
+                    "Main production equipment": ["EAF"],
+                    "Nominal EAF steel capacity (ttpa)": [800],
+                    "Start date": ["2015"],
+                },
+            )
+            with pd.ExcelWriter(tf.name) as writer:
+                df.to_excel(writer, sheet_name="Iron and steel plants", index=False)
+                self._create_minimal_bom_sheet(writer)
+
+            reader = MasterExcelReader(Path(tf.name))
+            with reader:
+                with pytest.raises(ValueError, match="ISO3"):
+                    reader.read_plants()
+
     def test_read_plants_skip_invalid_rows(self):
         """Test that invalid rows are skipped gracefully."""
         with tempfile.NamedTemporaryFile(suffix=".xlsx") as tf:
@@ -235,6 +264,7 @@ class TestMasterExcelReaderValidation:
                     "Plant ID": ["P001", None, "P003", "P004"],
                     "Coordinates": ["52.52, 13.40", "48.85, 2.35", None, "invalid, 10.0"],
                     "Country": ["Germany", "France", "Japan", "Italy"],
+                    "ISO3": ["DEU", "FRA", "JPN", "ITA"],
                     "Main production equipment": ["BF", "EAF", "BF", "EAF"],
                     "Nominal BF capacity (ttpa)": [1000, 0, 500, 0],
                     "Nominal EAF steel capacity (ttpa)": [0, 800, 0, 600],
@@ -261,6 +291,7 @@ class TestMasterExcelReaderValidation:
                     "Plant ID": ["P001", "P002", "P003", "P004", "P005"],
                     "Coordinates": ["52.52, 13.40", "48.85, 2.35", "35.68, 139.76", "40.71, -74.01", "51.51, -0.13"],
                     "Country": ["Germany", "France", "Japan", "USA", "UK"],
+                    "ISO3": ["DEU", "FRA", "JPN", "USA", "GBR"],
                     "Main production equipment": [
                         "BF; BOF; EAF",  # Multiple technologies
                         "DRI; EAF",  # DRI + EAF
@@ -319,6 +350,7 @@ class TestMasterExcelReaderValidation:
                     "Plant ID": ["P001", "P002", "P003"],
                     "Coordinates": ["52.52, 13.40", "48.85, 2.35", "35.68, 139.76"],
                     "Country": ["Germany", "France", "Japan"],
+                    "ISO3": ["DEU", "FRA", "JPN"],
                     "Main production equipment": [
                         "OHF; EAF",  # Both OHF and EAF
                         "OHF",  # Only OHF (should become EAF)

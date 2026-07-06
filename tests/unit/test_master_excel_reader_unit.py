@@ -8,35 +8,6 @@ from steelo.adapters.dataprocessing.master_excel_reader import MasterExcelReader
 class TestMasterExcelReaderUnits:
     """Unit tests for MasterExcelReader helper methods."""
 
-    def test_get_iso3_from_country_standard_names(self):
-        """Test ISO3 conversion for standard country names."""
-        reader = MasterExcelReader(Path("dummy.xlsx"))
-
-        assert reader._get_iso3_from_country("United States") == "USA"
-        assert reader._get_iso3_from_country("Germany") == "DEU"
-        assert reader._get_iso3_from_country("Japan") == "JPN"
-        assert reader._get_iso3_from_country("France") == "FRA"
-        assert reader._get_iso3_from_country("China") == "CHN"
-
-    def test_get_iso3_from_country_special_cases(self):
-        """Test ISO3 conversion for special case mappings."""
-        reader = MasterExcelReader(Path("dummy.xlsx"))
-
-        assert reader._get_iso3_from_country("USA") == "USA"
-        assert reader._get_iso3_from_country("UK") == "GBR"
-        assert reader._get_iso3_from_country("South Korea") == "KOR"
-        assert reader._get_iso3_from_country("Türkiye") == "TUR"
-        assert reader._get_iso3_from_country("Democratic Republic of the Congo") == "COD"
-
-    def test_get_iso3_from_country_edge_cases(self):
-        """Test ISO3 conversion for edge cases."""
-        reader = MasterExcelReader(Path("dummy.xlsx"))
-
-        assert reader._get_iso3_from_country("") == "XXX"
-        assert reader._get_iso3_from_country(None) == "XXX"
-        assert reader._get_iso3_from_country("   ") == "XXX"
-        assert reader._get_iso3_from_country("NonExistentCountry") == "XXX"
-
     def test_parse_date_various_formats(self):
         """Test date parsing from various formats."""
         reader = MasterExcelReader(Path("dummy.xlsx"))
