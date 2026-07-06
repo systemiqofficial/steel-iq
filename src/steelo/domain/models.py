@@ -5004,6 +5004,7 @@ class PlantGroup:
         dynamic_feedstocks: list[PrimaryFeedstock],
         plant_lifetime: int,
         disposal_cost_outputs: frozenset[str] | None = None,
+        derive_geo_unit: Callable[[float, float, str], str | None] | None = None,
     ) -> Plant:
         """
         Generate a new plant (and furnace group) in the plant group for a given location and technology.
@@ -5020,6 +5021,9 @@ class PlantGroup:
             steel_plant_capacity: Capacity of the steel plant in tonnes
             dynamic_feedstocks: List of primary feedstock options for the technology
             plant_lifetime: Lifetime of the plant in years
+            derive_geo_unit: Optional ``(lat, lon, iso3) -> geo_unit | None`` derivation (injected
+                from the geospatial adapter) tagging the spawn location's sub-national unit so
+                province-level costs and subsidies resolve for the new plant.
 
         Returns:
             New Plant object with a single furnace group.
@@ -5036,6 +5040,7 @@ class PlantGroup:
             country=site_id[2],
             region="unknown",
             iso3=site_id[2],
+            geo_unit=derive_geo_unit(site_id[0], site_id[1], site_id[2]) if derive_geo_unit else None,
         )
         new_plant = Plant(
             plant_id=get_new_plant_id(existent_plant_ids),
@@ -5819,6 +5824,7 @@ class PlantGroup:
         get_co2_headroom: Callable[[str, int, float], float] | None = None,
         get_co2_need_by_name: Callable[[str, float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
+        derive_geo_unit: Callable[[float, float, str], str | None] | None = None,
     ) -> commands.Command:
         """
         Identifies new business opportunities for plants at given locations with specific technologies.
@@ -5867,6 +5873,8 @@ class PlantGroup:
             debt_subsidies: Dictionary mapping iso3 -> tech -> list of debt subsidies
             opex_subsidies: Dictionary mapping iso3 -> tech -> list of opex subsidies
             energy_subsidies: Dictionary mapping carrier -> iso3 -> tech -> list of energy subsidies
+            derive_geo_unit: Optional ``(lat, lon, iso3) -> geo_unit | None`` derivation (injected
+                from the geospatial adapter) tagging each spawned plant's sub-national unit
 
         Returns:
             Command to add new Plant and FurnaceGroup objects for the identified business opportunities
@@ -6040,6 +6048,7 @@ class PlantGroup:
                         dynamic_feedstocks=dynamic_feedstocks.get(tech.lower(), []),
                         plant_lifetime=plant_lifetime,
                         disposal_cost_outputs=disposal_cost_outputs,
+                        derive_geo_unit=derive_geo_unit,
                     )
                 all_plant_ids.append(new_plant.plant_id)
                 new_plants.append(new_plant)

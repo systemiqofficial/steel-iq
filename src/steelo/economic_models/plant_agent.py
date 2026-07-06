@@ -6,6 +6,7 @@ import random
 import time
 from typing import cast
 
+from steelo.adapters.geospatial.geo_unit_lookup import derive_geo_unit_for_site
 from steelo.adapters.geospatial.top_location_finder import get_candidate_locations_for_opening_new_plants
 from steelo.adapters.geospatial.geospatial_statistics import (
     export_lcoe_lcoh_statistics_by_country,
@@ -291,6 +292,7 @@ class GeospatialModel:
                 get_co2_headroom=bus.env.get_co2_headroom,
                 get_co2_need_by_name=bus.env.get_co2_need_by_name,
                 co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
+                derive_geo_unit=derive_geo_unit_for_site,
             )
         )
         step_time = time.time() - step_start
