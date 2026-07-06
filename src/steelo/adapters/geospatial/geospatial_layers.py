@@ -187,6 +187,51 @@ def derive_iso3_and_geo_unit(
     return restrict_iso3, code
 
 
+def resolve_geo_unit(
+    adm0_a3: str | None,
+    code: str | None,
+    iso3: str,
+    valid_codes: set[str],
+    *,
+    log_ctx: str = "",
+) -> str | None:
+    """Gate a derived admin-1 unit into a storable ``geo_unit``: the policy layer over
+    ``derive_iso3_and_geo_unit``.
+
+    Two gates decide whether the derived code is trustworthy enough to store:
+
+    - **country cross-check** — the derived ``adm0_a3`` must equal the canonical ``iso3`` (the two
+      derivations must agree on the country). A mismatch (border slack, or a unit the model owns as
+      a separate country like Hong Kong) returns ``None``, logged at INFO, so a sub-national unit
+      can never contradict the country;
+    - **hierarchy membership** — the derived code must be a unit in ``geo_hierarchy`` (a declared,
+      populated country). Anything else, including a country with no authored units, returns
+      ``None`` and resolves at country level.
+
+    Args:
+        adm0_a3: Country derived by point-in-polygon (``None`` on a no-hit).
+        code: ISO 3166-2 unit code derived by point-in-polygon (``None`` on a no-hit).
+        iso3: The canonical country code the unit must belong to (e.g. the plant's stored iso3).
+        valid_codes: Declared ``geo_unit`` codes from ``geo_hierarchy``.
+        log_ctx: Short label (e.g. a plant id or site coordinate) used in the mismatch log line.
+
+    Returns:
+        The gated unit code, or ``None`` when either gate rejects it.
+    """
+    if adm0_a3 is not None and adm0_a3 != iso3:
+        logger = logging.getLogger(f"{__name__}.resolve_geo_unit")
+        logger.info(
+            "geo_unit cross-check: %s derived country %s != canonical iso3 %s; geo_unit left None.",
+            log_ctx or "point",
+            adm0_a3,
+            iso3,
+        )
+        return None
+    if code is not None and code in valid_codes:
+        return code
+    return None
+
+
 def add_feasibility_mask(ds: xr.Dataset, geo_config: "GeoConfig", geo_paths: "GeoDataPaths") -> xr.Dataset:
     """
     Create a binary feasibility mask based on terrain and latitude constraints.
