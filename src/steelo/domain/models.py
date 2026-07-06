@@ -21,6 +21,7 @@ from steelo.domain.calculate_costs import (
     calculate_variable_opex,
     filter_subsidies_for_year,
     collect_active_subsidies_over_period,
+    collect_subsidies_for_geo,
     ENERGY_FEEDSTOCK_KEYS,
 )
 from steelo.utilities.utils import normalize_name
@@ -5289,14 +5290,14 @@ class PlantGroup:
                     collect_active_subsidies_over_period,
                 )
 
-                # CAPEX subsidies
-                all_capex_subsidies = capex_subsidies.get(plant.location.iso3, {}).get(tech, [])
+                # CAPEX subsidies (country-wide rows plus the plant's province rows, if any)
+                all_capex_subsidies = collect_subsidies_for_geo(capex_subsidies, plant.location.geo_key).get(tech, [])
                 selected_capex_subsidies = filter_subsidies_for_year(all_capex_subsidies, current_year)
                 original_capex = capex
                 capex = cc.calculate_capex_with_subsidies(original_capex, selected_capex_subsidies)
 
                 # Debt subsidies
-                all_debt_subsidies = debt_subsidies.get(plant.location.iso3, {}).get(tech, [])
+                all_debt_subsidies = collect_subsidies_for_geo(debt_subsidies, plant.location.geo_key).get(tech, [])
                 selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, current_year)
                 cost_of_debt = cc.calculate_debt_with_subsidies(
                     cost_of_debt=cost_of_debt_original,
@@ -5318,7 +5319,7 @@ class PlantGroup:
 
                 # OPEX subsidies (collect active subsidies across plant lifetime)
                 selected_opex_subsidies = collect_active_subsidies_over_period(
-                    opex_subsidies.get(plant.location.iso3, {}).get(tech, []),
+                    collect_subsidies_for_geo(opex_subsidies, plant.location.geo_key).get(tech, []),
                     start_year=Year(current_year + construction_time),
                     end_year=Year(current_year + construction_time + plant_lifetime),
                 )
@@ -5400,7 +5401,9 @@ class PlantGroup:
                 best_tech = max(NPV, key=lambda k: NPV[k])
 
                 # Calculate subsidized CAPEX for best technology
-                all_best_capex_subsidies = capex_subsidies.get(plant.location.iso3, {}).get(best_tech, [])
+                all_best_capex_subsidies = collect_subsidies_for_geo(capex_subsidies, plant.location.geo_key).get(
+                    best_tech, []
+                )
                 best_capex_subsidies = filter_subsidies_for_year(all_best_capex_subsidies, current_year)
                 best_capex = cc.calculate_capex_with_subsidies(greenfield_capex[best_tech], best_capex_subsidies)
 
@@ -5696,8 +5699,8 @@ class PlantGroup:
         from steelo.domain import calculate_costs as cc
 
         # Get all subsidies for this location and technology, then filter to active ones
-        all_debt_subsidies = debt_subsidies.get(plant.location.iso3, {}).get(tech, [])
-        all_capex_subsidies = capex_subsidies.get(plant.location.iso3, {}).get(tech, [])
+        all_debt_subsidies = collect_subsidies_for_geo(debt_subsidies, plant.location.geo_key).get(tech, [])
+        all_capex_subsidies = collect_subsidies_for_geo(capex_subsidies, plant.location.geo_key).get(tech, [])
         selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, current_year)
         selected_capex_subsidies = filter_subsidies_for_year(all_capex_subsidies, current_year)
 
@@ -5963,6 +5966,7 @@ class PlantGroup:
             carbon_costs=carbon_costs,
             most_common_reductant=self.most_common_reductant,
             environment_most_common_reductant=environment_most_common_reductant,
+            derive_geo_unit=derive_geo_unit,
         )
         cost_counts, cost_total = _count_entries(cost_data)
         candidate_stats["costed_pairs_total"] = cost_total
@@ -6142,8 +6146,12 @@ class PlantGroup:
                         continue
 
                     # Get subsidies for this location and technology - filter to only active ones
-                    all_debt_subsidies = debt_subsidies.get(iso3, {}).get(fg.technology.name, [])
-                    all_capex_subsidies = capex_subsidies.get(iso3, {}).get(fg.technology.name, [])
+                    all_debt_subsidies = collect_subsidies_for_geo(debt_subsidies, plant.location.geo_key).get(
+                        fg.technology.name, []
+                    )
+                    all_capex_subsidies = collect_subsidies_for_geo(capex_subsidies, plant.location.geo_key).get(
+                        fg.technology.name, []
+                    )
 
                     if fg.status == "announced":
                         year = Year(current_year + 1)  # announcement_time = 1
@@ -6469,7 +6477,9 @@ class PlantGroup:
                         construction_time=construction_time,
                         consideration_time=consideration_time,
                         probability_of_announcement=probability_of_announcement,
-                        all_opex_subsidies=opex_subsidies.get(iso3, {}).get(fg.technology.name, []),
+                        all_opex_subsidies=collect_subsidies_for_geo(opex_subsidies, plant.location.geo_key).get(
+                            fg.technology.name, []
+                        ),
                         technology_emission_factors=technology_emission_factors,
                         chosen_emissions_boundary_for_carbon_costs=chosen_emissions_boundary_for_carbon_costs,
                         dynamic_business_cases=dynamic_business_cases,
@@ -6659,11 +6669,13 @@ class Subsidy:
     """Financial subsidy reducing costs for specific technologies and regions.
 
     Represents a policy instrument that reduces costs for steel production technologies
-    within a country during a specified time period.
+    within a country — or a sub-national unit of it — during a specified time period.
 
     Attributes:
         scenario_name: Name of the subsidy scenario/policy.
         iso3: ISO3 country code where the subsidy applies.
+        geo_unit: Optional sub-national division (ISO 3166-2 code, e.g. "CN-HE"); None means
+            the subsidy applies country-wide.
         start_year: First year the subsidy is active (inclusive).
         end_year: Last year the subsidy is active (inclusive).
         technology_name: Technology the subsidy applies to, or "all" for all technologies.
@@ -6675,7 +6687,8 @@ class Subsidy:
             - energy carriers: USD per carrier unit (absolute) or decimal fraction (relative)
             - opex/capex: USD/t steel (absolute) or decimal fraction (relative)
             - cost of debt: percentage points (absolute only)
-        subsidy_name: Auto-generated unique identifier string.
+        subsidy_name: Auto-generated unique identifier string (geo-keyed, so a country row
+            and a province row for the same iso3/tech/item stay distinct).
     """
 
     def __init__(
@@ -6688,9 +6701,11 @@ class Subsidy:
         cost_item: str,
         subsidy_type: str,
         subsidy_amount: float,
+        geo_unit: str | None = None,
     ) -> None:
         self.scenario_name = scenario_name
         self.iso3 = iso3
+        self.geo_unit = geo_unit
         self.start_year = start_year
         self.end_year = end_year
         self.technology_name = technology_name
@@ -6698,8 +6713,13 @@ class Subsidy:
         self.subsidy_type = subsidy_type
         self.subsidy_amount = subsidy_amount
         self.subsidy_name = (
-            f"{self.iso3}_{self.scenario_name}_{self.technology_name}_{self.cost_item}_{self.subsidy_type}"
+            f"{self.geo_key}_{self.scenario_name}_{self.technology_name}_{self.cost_item}_{self.subsidy_type}"
         )
+
+    @property
+    def geo_key(self) -> str:
+        """Finest-available geographic key (mirrors ``Location.geo_key``)."""
+        return compose_geo_key(self.iso3, self.geo_unit)
 
     def __repr__(self) -> str:
         return f"Subsidy: <{self.subsidy_name}>"
@@ -6709,6 +6729,7 @@ class Subsidy:
             (
                 self.scenario_name,
                 self.iso3,
+                self.geo_unit,
                 self.start_year,
                 self.end_year,
                 self.technology_name,
@@ -6724,6 +6745,7 @@ class Subsidy:
         return (
             self.scenario_name == other.scenario_name
             and self.iso3 == other.iso3
+            and self.geo_unit == other.geo_unit
             and self.start_year == other.start_year
             and self.end_year == other.end_year
             and self.technology_name == other.technology_name
@@ -7327,11 +7349,11 @@ class Environment:
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
         for subsidy in subsidies:
             if subsidy.cost_item.lower() == "opex":
-                if subsidy.iso3 not in opex_subsidies:
-                    opex_subsidies[subsidy.iso3] = {}
-                if subsidy.technology_name not in opex_subsidies[subsidy.iso3]:
-                    opex_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                opex_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+                if subsidy.geo_key not in opex_subsidies:
+                    opex_subsidies[subsidy.geo_key] = {}
+                if subsidy.technology_name not in opex_subsidies[subsidy.geo_key]:
+                    opex_subsidies[subsidy.geo_key][subsidy.technology_name] = []
+                opex_subsidies[subsidy.geo_key][subsidy.technology_name].append(subsidy)
         self.opex_subsidies = opex_subsidies
 
     def initiate_capex_subsidies(self, subsidies: list[Subsidy]) -> None:
@@ -7344,11 +7366,11 @@ class Environment:
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
         for subsidy in subsidies:
             if subsidy.cost_item.lower() == "capex":
-                if subsidy.iso3 not in capex_subsidies:
-                    capex_subsidies[subsidy.iso3] = {}
-                if subsidy.technology_name not in capex_subsidies[subsidy.iso3]:
-                    capex_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                capex_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+                if subsidy.geo_key not in capex_subsidies:
+                    capex_subsidies[subsidy.geo_key] = {}
+                if subsidy.technology_name not in capex_subsidies[subsidy.geo_key]:
+                    capex_subsidies[subsidy.geo_key][subsidy.technology_name] = []
+                capex_subsidies[subsidy.geo_key][subsidy.technology_name].append(subsidy)
         self.capex_subsidies = capex_subsidies
 
     def initiate_debt_subsidies(self, subsidies: list[Subsidy]) -> None:
@@ -7361,20 +7383,20 @@ class Environment:
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {}
         for subsidy in subsidies:
             if subsidy.cost_item.lower() == "cost of debt":
-                if subsidy.iso3 not in debt_subsidies:
-                    debt_subsidies[subsidy.iso3] = {}
-                if subsidy.technology_name not in debt_subsidies[subsidy.iso3]:
-                    debt_subsidies[subsidy.iso3][subsidy.technology_name] = []
-                debt_subsidies[subsidy.iso3][subsidy.technology_name].append(subsidy)
+                if subsidy.geo_key not in debt_subsidies:
+                    debt_subsidies[subsidy.geo_key] = {}
+                if subsidy.technology_name not in debt_subsidies[subsidy.geo_key]:
+                    debt_subsidies[subsidy.geo_key][subsidy.technology_name] = []
+                debt_subsidies[subsidy.geo_key][subsidy.technology_name].append(subsidy)
         self.debt_subsidies = debt_subsidies
 
     def initiate_energy_subsidies(self, subsidies: list[Subsidy]) -> None:
         """
         Initialise energy carrier subsidies for the environment.
 
-        Groups subsidies by carrier name (cost_item), then by iso3, then by technology.
-        Financial subsidies (opex, capex, cost of debt) are excluded — they are handled
-        by their own initiate methods.
+        Groups subsidies by carrier name (cost_item), then by geo_key (country or
+        ``iso3:province``), then by technology. Financial subsidies (opex, capex, cost of
+        debt) are excluded — they are handled by their own initiate methods.
 
         Args:
             subsidies: List of Subsidy objects to filter and group.
@@ -7387,11 +7409,11 @@ class Environment:
                 continue
             if carrier not in energy_subsidies:
                 energy_subsidies[carrier] = {}
-            if subsidy.iso3 not in energy_subsidies[carrier]:
-                energy_subsidies[carrier][subsidy.iso3] = {}
-            if subsidy.technology_name not in energy_subsidies[carrier][subsidy.iso3]:
-                energy_subsidies[carrier][subsidy.iso3][subsidy.technology_name] = []
-            energy_subsidies[carrier][subsidy.iso3][subsidy.technology_name].append(subsidy)
+            if subsidy.geo_key not in energy_subsidies[carrier]:
+                energy_subsidies[carrier][subsidy.geo_key] = {}
+            if subsidy.technology_name not in energy_subsidies[carrier][subsidy.geo_key]:
+                energy_subsidies[carrier][subsidy.geo_key][subsidy.technology_name] = []
+            energy_subsidies[carrier][subsidy.geo_key][subsidy.technology_name].append(subsidy)
         self.energy_subsidies = energy_subsidies
 
     def initiate_dynamic_feedstocks(self, feedstocks: list[PrimaryFeedstock]) -> None:

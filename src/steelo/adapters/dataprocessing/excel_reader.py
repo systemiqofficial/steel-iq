@@ -2080,6 +2080,7 @@ def read_subsidies(
     - Technology wildcard matching (e.g., 'CCS*' matches all CCS technologies)
     - Cost item normalization (OPEX, CAPEX, COST OF DEBT)
     - Percentage values as whole numbers (10 = 10%), converted to decimal internally
+    - Location as a trade bloc, a bare iso3, or a sub-national geo_key ("CHN:CN-HE")
 
     Args:
         excel_path: Path to the Excel file
@@ -2183,23 +2184,27 @@ def read_subsidies(
         else:
             subsidy_amount = float(subsidy_amount)
 
-        # Expand trade bloc to ISO3 list
+        # The Location column holds a trade bloc (expanded to its member countries), a bare
+        # iso3, or a sub-national geo_key like "CHN:CN-HE" (split into iso3 + geo_unit).
         region = row["Location"]
+        locations: list[tuple[str, str | None]]
         if region in trade_bloc_columns:
-            iso3_list = country_df[country_df[region]]["ISO 3-letter code"].tolist()
+            locations = [(iso3, None) for iso3 in country_df[country_df[region]]["ISO 3-letter code"].tolist()]
         else:
-            iso3_list = [region]
+            iso3, _, code = str(region).partition(":")
+            locations = [(iso3, code or None)]
 
         # Expand technology pattern
         technology_list = _expand_technology_pattern(row["Technology"], all_technologies)
 
-        # Create subsidies for each ISO3 and technology combination
-        for iso3 in iso3_list:
+        # Create subsidies for each location and technology combination
+        for iso3, geo_unit in locations:
             for technology in technology_list:
                 subsidies.append(
                     Subsidy(
                         scenario_name=row["Scenario name"],
                         iso3=iso3,
+                        geo_unit=geo_unit,
                         start_year=Year(int(row["Start year"])),
                         end_year=Year(int(row["End year"])),
                         technology_name=technology,

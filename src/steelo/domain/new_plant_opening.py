@@ -4,7 +4,7 @@ import random
 import numpy as np
 from typing import Any, Callable, TypedDict
 
-from steelo.domain.models import Subsidy
+from steelo.domain.models import Subsidy, compose_geo_key
 from steelo.domain.constants import Year, T_TO_KG
 
 
@@ -134,6 +134,7 @@ def prepare_cost_data_for_business_opportunity(
     carbon_costs: dict[str, dict[Year, float]],
     most_common_reductant: dict[str, str],
     environment_most_common_reductant: dict[str, str],
+    derive_geo_unit: Callable[[float, float, str], str | None] | None = None,
 ) -> dict[str, dict[tuple[float, float, str], dict[str, dict[str, Any]]]]:
     """
     For each business opportunity (top location-technology pair), prepare all required inputs to calculate the NPV
@@ -161,6 +162,10 @@ def prepare_cost_data_for_business_opportunity(
         carbon_costs: Dictionary with carbon cost series per country (iso3 -> year -> carbon cost)
         most_common_reductant: Dictionary mapping technology to most common reductant from plant group (tech -> reductant)
         environment_most_common_reductant: Fallback dict mapping technology to most common reductant from environment (tech -> reductant)
+        derive_geo_unit: Optional ``(lat, lon, iso3) -> geo_unit | None`` derivation (injected from
+            the geospatial adapter, admin-1 layer cached across the whole sites iteration) so
+            candidate sites collect province-scoped subsidies; the same derivation runs at spawn,
+            so evaluation and spawn always agree
 
     Returns:
         cost_data: Dictionary with all prepared cost data per product, site (lat, lon, iso3), and technology (product -> site_id ->
@@ -189,6 +194,10 @@ def prepare_cost_data_for_business_opportunity(
         for site in sites:
             site_id = (site["Latitude"], site["Longitude"], site["iso3"])
             region = iso3_to_region_map.get(site["iso3"], "default")
+            # Candidate geography: province-scoped subsidies apply only at sites inside that
+            # province. The same derivation runs again at spawn, so the two always agree.
+            geo_unit = derive_geo_unit(site["Latitude"], site["Longitude"], site["iso3"]) if derive_geo_unit else None
+            site_geo_key = compose_geo_key(site["iso3"], geo_unit)
             if site_id not in cost_data[prod]:
                 cost_data[prod][site_id] = {}
 
@@ -254,7 +263,7 @@ def prepare_cost_data_for_business_opportunity(
                 assert energy_costs_site is not None  # Help mypy understand the control flow
                 active_energy_subs: dict[str, list] = {}
                 for carrier, carrier_subs in energy_subsidies.items():
-                    all_subs = carrier_subs.get(site["iso3"], {}).get(tech, [])
+                    all_subs = cc.collect_subsidies_for_geo(carrier_subs, site_geo_key).get(tech, [])
                     active = cc.filter_subsidies_for_year(all_subs, target_year)
                     if active:
                         active_energy_subs[carrier] = active
@@ -313,14 +322,14 @@ def prepare_cost_data_for_business_opportunity(
                 if not capex:
                     missing_critical_fields.append("capex")
                 else:
-                    all_capex_subsidies = capex_subsidies.get(site["iso3"], {}).get(tech, [])
+                    all_capex_subsidies = cc.collect_subsidies_for_geo(capex_subsidies, site_geo_key).get(tech, [])
                     selected_capex_subsidies = cc.filter_subsidies_for_year(all_capex_subsidies, target_year)
                     capex_with_subsidies = cc.calculate_capex_with_subsidies(capex, selected_capex_subsidies)
                     cost_data[prod][site_id][tech]["capex"] = capex_with_subsidies
                     cost_data[prod][site_id][tech]["capex_no_subsidy"] = capex
 
                 # Always add cost of debt with subsidies (since it's technology-agnostic but can have tech-specific subsidies)
-                all_debt_subsidies = debt_subsidies.get(site["iso3"], {}).get(tech, [])
+                all_debt_subsidies = cc.collect_subsidies_for_geo(debt_subsidies, site_geo_key).get(tech, [])
                 selected_debt_subsidies = cc.filter_subsidies_for_year(all_debt_subsidies, target_year)
                 cost_of_debt_with_subsidies = cc.calculate_debt_with_subsidies(
                     # cost_of_debt is guaranteed to not be None here due to incomplete_site check
@@ -332,9 +341,9 @@ def prepare_cost_data_for_business_opportunity(
                 cost_data[prod][site_id][tech]["cost_of_debt_no_subsidy"] = cost_of_debt
 
                 # pass opex subsidies to be considered in npv calculation
-                cost_data[prod][site_id][tech]["all_opex_subsidies"] = opex_subsidies.get(site["iso3"], {}).get(
-                    tech, []
-                )  # type: ignore[assignment]
+                cost_data[prod][site_id][tech]["all_opex_subsidies"] = cc.collect_subsidies_for_geo(
+                    opex_subsidies, site_geo_key
+                ).get(tech, [])  # type: ignore[assignment]
                 cost_data[prod][site_id][tech]["carbon_cost_series"] = carbon_costs.get(site["iso3"])  # type: ignore[assignment]
 
                 # Raise error if any critical fields are missing

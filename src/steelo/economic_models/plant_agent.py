@@ -19,6 +19,7 @@ from steelo.domain.commands import (
     ChangeFurnaceGroupStatusToSwitchingTechnology,
     ChangeFurnaceGroupTechnology,
 )
+from steelo.domain.calculate_costs import collect_subsidies_for_geo
 from steelo.domain.constants import T_TO_KT, Volumes
 from steelo.domain.events import SteelAllocationsCalculated
 from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
@@ -767,11 +768,11 @@ class PlantAgentsModel:
                     f"(year {bus.env.year}) === \n"
                 )
 
-                # Retrieve location-specific subsidies for this plant
-                # Empty dicts are returned if no subsidies exist - this is expected behavior
-                tech_capex_subsidies = bus.env.capex_subsidies.get(plant.location.iso3, {})
-                tech_opex_subsidies = bus.env.opex_subsidies.get(plant.location.iso3, {})
-                tech_debt_subsidies = bus.env.debt_subsidies.get(plant.location.iso3, {})
+                # Retrieve location-specific subsidies for this plant: country-wide rows plus
+                # any rows scoped to the plant's province. Empty dicts if no subsidies exist.
+                tech_capex_subsidies = collect_subsidies_for_geo(bus.env.capex_subsidies, plant.location.geo_key)
+                tech_opex_subsidies = collect_subsidies_for_geo(bus.env.opex_subsidies, plant.location.geo_key)
+                tech_debt_subsidies = collect_subsidies_for_geo(bus.env.debt_subsidies, plant.location.geo_key)
 
                 logger.debug(f"[PAM] Plant group: {plant.parent_gem_id}")
                 logger.debug(f"[PAM] Plant group balance: ${pg.balance:,.2f}")

@@ -305,6 +305,11 @@ class MasterExcelValidator:
                     df = df.loc[:, df.columns.notna()]
                     self._validate_sheet(sheet_name, df)
 
+            # Subsidies is optional but validated when present (its Location column mixes
+            # trade blocs with countries and sub-national geo-keys)
+            if "Subsidies" in xl_file.sheet_names:
+                self._validate_subsidies_location(pd.read_excel(xl_file, sheet_name="Subsidies"), xl_file)
+
             # Cross-sheet validation
             if not self.report.has_errors():
                 self._validate_cross_references(xl_file)
@@ -660,6 +665,34 @@ class MasterExcelValidator:
                         column_name=column,
                     )
                 )
+
+    def _validate_subsidies_location(self, df: pd.DataFrame, xl_file: pd.ExcelFile):
+        """Validate the Subsidies sheet's Location column (trade bloc, country, or geo-key).
+
+        The column legitimately mixes trade-bloc names (e.g. EFTA/EUCU, NAFTA) with bare
+        countries and sub-national geo-keys, so it cannot go straight through the plain geo-key
+        check. Bloc names are detected from the Country mapping sheet's boolean membership
+        columns (the same detection ``read_subsidies`` uses) and masked out; the remaining
+        values get the standard country / geo-key checks. Without a Country mapping sheet the
+        bloc names cannot be told apart from typos, so the check is skipped entirely.
+        """
+        # The authored header may carry a description after a newline (read_subsidies normalises
+        # the same way).
+        location_col = next(
+            (col for col in df.columns if isinstance(col, str) and "location" in col.split("\n")[0].strip().lower()),
+            None,
+        )
+        if location_col is None or "Country mapping" not in xl_file.sheet_names:
+            return
+        country_df = pd.read_excel(xl_file, sheet_name="Country mapping")
+        trade_bloc_columns = {
+            col
+            for col in country_df.columns
+            if country_df[col].dtype == bool or set(country_df[col].dropna().unique()).issubset({True, False})
+        }
+        masked = df[[location_col]].copy()
+        masked.loc[masked[location_col].isin(trade_bloc_columns), location_col] = None
+        self._check_geo_key_column(masked, "Subsidies", location_col)
 
     def _validate_input_costs(self, df: pd.DataFrame):
         """Validate geo-keys on the Input costs sheet."""

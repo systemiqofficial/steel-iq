@@ -2229,6 +2229,7 @@ class FOPEXRepository:
 class SubsidyInDb(BaseModel):
     scenario_name: str
     iso3: str
+    geo_unit: str | None = None
     start_year: Year
     end_year: Year
     technology_name: str
@@ -2245,6 +2246,7 @@ class SubsidyInDb(BaseModel):
         return Subsidy(
             scenario_name=self.scenario_name,
             iso3=self.iso3,
+            geo_unit=self.geo_unit,
             start_year=self.start_year,
             end_year=self.end_year,
             technology_name=self.technology_name,
@@ -2258,6 +2260,7 @@ class SubsidyInDb(BaseModel):
         return cls(
             scenario_name=domain.scenario_name,
             iso3=domain.iso3,
+            geo_unit=domain.geo_unit,
             start_year=domain.start_year,
             end_year=domain.end_year,
             technology_name=domain.technology_name,

@@ -86,6 +86,42 @@ def filter_subsidies_for_year(subsidies: list["Subsidy"], year: "Year") -> list[
     return active
 
 
+def collect_subsidies_for_geo(
+    subsidies_by_geo_key: dict[str, dict[str, list["Subsidy"]]],
+    geo_key: str,
+) -> dict[str, list["Subsidy"]]:
+    """Collect the subsidies (tech -> list) that apply at a location's geography.
+
+    Subsidies are additive instruments scoped to their authored geography, not
+    finest-available values: a country-wide row (keyed by bare ``iso3``) applies to every
+    plant in the country including province-tagged ones, while a province row (keyed by
+    ``iso3:geo_unit``) applies only to plants in that province — plants elsewhere in the
+    country do not receive it, and it never replaces a country-wide row.
+
+    Args:
+        subsidies_by_geo_key: Subsidy lookup keyed by geo_key (bare ``iso3`` and/or
+            ``iso3:code``), then technology name.
+        geo_key: The location's finest-available key (``Location.geo_key``) — a bare
+            ``iso3`` for country-level locations, else ``iso3:geo_unit``.
+
+    Returns:
+        Technology -> subsidies mapping combining the country-wide rows with the rows
+        scoped to the location's unit. The country dict is returned as-is (not copied)
+        when no province rows exist, so country-level behaviour is unchanged.
+    """
+    iso3, _, geo_unit = geo_key.partition(":")
+    country = subsidies_by_geo_key.get(iso3, {})
+    if not geo_unit:
+        return country
+    province = subsidies_by_geo_key.get(geo_key, {})
+    if not province:
+        return country
+    merged = {tech: list(subs) for tech, subs in country.items()}
+    for tech, subs in province.items():
+        merged.setdefault(tech, []).extend(subs)
+    return merged
+
+
 def collect_active_subsidies_over_period(
     subsidies: list["Subsidy"], start_year: "Year", end_year: "Year"
 ) -> list["Subsidy"]:

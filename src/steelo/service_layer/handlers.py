@@ -10,7 +10,7 @@ import json
 # Global variables moved to Environment/Config
 from steelo.domain.constants import Commodities, T_TO_KT  # Keep enum as constant
 from steelo.domain.trade_modelling.TM_PAM_connector import TM_PAM_connector
-from steelo.domain.calculate_costs import filter_subsidies_for_year
+from steelo.domain.calculate_costs import collect_subsidies_for_geo, filter_subsidies_for_year
 from steelo.domain import diagnostics as diag
 import logging
 
@@ -517,7 +517,9 @@ def finalise_iteration(
                         )
 
                 # Step 3e: Update OPEX subsidies based on active subsidies for the current year
-                all_opex_subsidies = env.opex_subsidies.get(plant.location.iso3, {}).get(fg.technology.name, [])
+                all_opex_subsidies = collect_subsidies_for_geo(env.opex_subsidies, plant.location.geo_key).get(
+                    fg.technology.name, []
+                )
                 active_opex_subsidies = filter_subsidies_for_year(all_opex_subsidies, env.year)
                 fg.applied_subsidies["opex"] = active_opex_subsidies
 

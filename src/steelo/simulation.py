@@ -35,7 +35,11 @@ from steelo.utilities.plotting import (
 from .adapters.geospatial.geospatial_statistics import aggregate_lcoe_lcoh_statistics
 from .logging_config import LoggingConfig
 from steelo.domain.constants import T_TO_KT, MT_TO_T
-from steelo.domain.calculate_costs import filter_subsidies_for_year, get_subsidised_energy_costs
+from steelo.domain.calculate_costs import (
+    collect_subsidies_for_geo,
+    filter_subsidies_for_year,
+    get_subsidised_energy_costs,
+)
 from .furnace_breakdown_logging_minimal import FurnaceBreakdownLogger
 
 if TYPE_CHECKING:
@@ -1171,7 +1175,9 @@ class SimulationRunner:
             if i == start_year:
                 for plant in bus.uow.plants.list():
                     for fg in plant.furnace_groups:
-                        all_opex_subs = bus.env.opex_subsidies.get(plant.location.iso3, {}).get(fg.technology.name, [])
+                        all_opex_subs = collect_subsidies_for_geo(bus.env.opex_subsidies, plant.location.geo_key).get(
+                            fg.technology.name, []
+                        )
                         active_opex_subs = filter_subsidies_for_year(all_opex_subs, bus.env.year)
                         fg.applied_subsidies["opex"] = active_opex_subs
 
@@ -1183,7 +1189,9 @@ class SimulationRunner:
                 for fg in plant.furnace_groups:
                     active_energy_subs: dict[str, list] = {}
                     for carrier, carrier_subs in bus.env.energy_subsidies.items():
-                        all_subs = carrier_subs.get(plant.location.iso3, {}).get(fg.technology.name, [])
+                        all_subs = collect_subsidies_for_geo(carrier_subs, plant.location.geo_key).get(
+                            fg.technology.name, []
+                        )
                         active = filter_subsidies_for_year(all_subs, bus.env.year)
                         if active:
                             active_energy_subs[carrier] = active
