@@ -108,6 +108,44 @@ def test_lcoh_keyed_by_geo_key_uses_country_capex():
     assert lcoh["CHN:CN-HE"] == pytest.approx(50 * 0.03 + 1.0)  # province electricity + country capex
 
 
+def test_lcoh_prefers_province_capex_row_when_authored():
+    """A sub-national H2 capex/opex row overrides its country's value for that province only."""
+    electricity = {"CHN": 0.05, "CHN:CN-HE": 0.03, "CHN:CN-AH": 0.03}  # USD/kWh
+    efficiency = {Year(2025): 0.05}  # MWh/kg -> 50 kWh/kg
+    capex = {"CHN": {Year(2025): 1.0}, "CHN:CN-HE": {Year(2025): 0.5}}  # USD/kg
+
+    lcoh = calculate_lcoh_from_electricity_country_level(
+        electricity_by_country=electricity,
+        hydrogen_efficiency=efficiency,
+        hydrogen_capex_opex=capex,
+        year=Year(2025),
+    )
+
+    assert lcoh["CHN:CN-HE"] == pytest.approx(50 * 0.03 + 0.5)  # province override
+    assert lcoh["CHN:CN-AH"] == pytest.approx(50 * 0.03 + 1.0)  # country fallback
+    assert lcoh["CHN"] == pytest.approx(50 * 0.05 + 1.0)
+
+
+def test_lcoh_raises_when_capex_missing_for_country_and_province():
+    """The missing-data guards survive the finest-available lookup."""
+    efficiency = {Year(2025): 0.05}
+
+    with pytest.raises(ValueError, match="not found for country DEU"):
+        calculate_lcoh_from_electricity_country_level(
+            electricity_by_country={"DEU:DE-BY": 0.05},
+            hydrogen_efficiency=efficiency,
+            hydrogen_capex_opex={"CHN": {Year(2025): 1.0}},
+            year=Year(2025),
+        )
+    with pytest.raises(ValueError, match="in year"):
+        calculate_lcoh_from_electricity_country_level(
+            electricity_by_country={"CHN": 0.05},
+            hydrogen_efficiency=efficiency,
+            hydrogen_capex_opex={"CHN": {Year(2030): 1.0}},
+            year=Year(2025),
+        )
+
+
 def test_province_inherits_country_ceiling_without_trade():
     """A province key resolves its region via iso3 and is capped by its country's ceiling."""
     capped = apply_hydrogen_price_cap_country_level(

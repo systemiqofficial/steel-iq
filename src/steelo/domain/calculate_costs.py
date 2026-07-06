@@ -1729,7 +1729,8 @@ def calculate_lcoh_from_electricity_country_level(
             Already converted from USD/MWh by excel_reader.
         hydrogen_efficiency: Dictionary mapping years to electrolyser energy consumption (MWh/kg H2).
             From "Hydrogen efficiency" sheet in master Excel.
-        hydrogen_capex_opex: Dictionary mapping ISO3 codes to year->CAPEX+OPEX values (USD/kg).
+        hydrogen_capex_opex: Dictionary mapping geo-keys (bare ISO3, optionally sub-national
+            ``iso3:code`` overrides) to year->CAPEX+OPEX values (USD/kg).
             From "Hydrogen CAPEX_OPEX component" sheet in master Excel.
         year: Current simulation year.
 
@@ -1757,12 +1758,15 @@ def calculate_lcoh_from_electricity_country_level(
 
     lcoh_by_country = {}
     for geo_key, electricity_price in electricity_by_country.items():
-        iso3 = geo_key.split(":", 1)[0]  # capex/opex is country-keyed; sub-national rows inherit it
-        if iso3 not in hydrogen_capex_opex:
+        iso3 = geo_key.split(":", 1)[0]
+        # Finest-available capex/opex: a sub-national row overrides its country's value,
+        # else the country value applies (today the data is country-keyed only).
+        capex_opex_by_year = hydrogen_capex_opex.get(geo_key, hydrogen_capex_opex.get(iso3))
+        if capex_opex_by_year is None:
             raise ValueError(f"Hydrogen CAPEX/OPEX not found for country {iso3}")
-        if year not in hydrogen_capex_opex[iso3]:
+        if year not in capex_opex_by_year:
             raise ValueError(f"Hydrogen CAPEX/OPEX not found for country {iso3} in year {year}")
-        capex_opex = hydrogen_capex_opex[iso3][year]
+        capex_opex = capex_opex_by_year[year]
 
         # Calculate LCOH: (kWh/kg) × (USD/kWh) + (USD/kg) = USD/kg
         lcoh_by_country[geo_key] = energy_consumption_kwh * electricity_price + capex_opex
