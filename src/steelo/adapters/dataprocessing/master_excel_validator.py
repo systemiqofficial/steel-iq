@@ -504,6 +504,85 @@ class MasterExcelValidator:
                 )
             )
 
+        self._check_plant_geography_columns(df)
+
+    def _check_plant_geography_columns(self, df: pd.DataFrame):
+        """Validate the plants sheet's authored two-column geography (``ISO3`` + ``geo_unit``).
+
+        Distinct from the combined-column ``_check_geo_key_column``: the plants sheet authors the
+        country and the sub-national unit in separate columns. The ``ISO3`` value is checked against
+        the independent ISO authority and, when available, the model's country mapping. A non-blank
+        ``geo_unit`` must compose with its row's ``ISO3`` (``compose_geo_key``) to a key declared in
+        the geo_hierarchy; a blank ``geo_unit`` is intentional country-level and is never flagged.
+        Rows without a Plant ID (trailing empties) are skipped, and the whole check no-ops on older
+        masters without an ``ISO3`` column (the reader enforces its presence at prep time).
+        """
+        from steelo.domain.models import compose_geo_key
+
+        sheet_name = "Iron and steel plants"
+        if "ISO3" not in df.columns:
+            return
+
+        def cell(column: str, position: int) -> str:
+            raw = df[column].iloc[position] if column in df.columns else None
+            return "" if raw is None or pd.isna(raw) else str(raw).strip()
+
+        for position in range(len(df)):
+            if not cell("Plant ID", position):
+                continue
+            iso3 = cell("ISO3", position)
+            geo_unit = cell("geo_unit", position)
+            row_number = position + 2  # 1-based, plus the header row
+
+            if not iso3:
+                self.report.add(
+                    ValidationError(
+                        sheet_name=sheet_name,
+                        error_type="INVALID_GEO_KEY",
+                        message="Plant row has no ISO3 country code.",
+                        row_number=row_number,
+                        column_name="ISO3",
+                    )
+                )
+                continue
+            if iso3 not in self.valid_countries:
+                self.report.add(
+                    ValidationError(
+                        sheet_name=sheet_name,
+                        error_type="INVALID_GEO_KEY",
+                        message=f"'{iso3}' is not a valid ISO-3 country code.",
+                        row_number=row_number,
+                        column_name="ISO3",
+                    )
+                )
+                continue
+            if self.modelled_countries and iso3 not in self.modelled_countries:
+                self.report.add(
+                    ValidationError(
+                        sheet_name=sheet_name,
+                        error_type="INVALID_GEO_KEY",
+                        message=f"Country '{iso3}' is not in the model's country mapping.",
+                        row_number=row_number,
+                        column_name="ISO3",
+                    )
+                )
+                continue
+            if geo_unit and self.valid_geo_keys:
+                geo_key = compose_geo_key(iso3, geo_unit)
+                if geo_key not in self.valid_geo_keys:
+                    self.report.add(
+                        ValidationError(
+                            sheet_name=sheet_name,
+                            error_type="INVALID_GEO_KEY",
+                            message=(
+                                f"geo_unit '{geo_unit}' does not compose to a recognised sub-national "
+                                f"unit ('{geo_key}' not in geo_hierarchy) — check the ISO 3166-2 code and level."
+                            ),
+                            row_number=row_number,
+                            column_name="geo_unit",
+                        )
+                    )
+
     def _check_geo_key_column(self, df: pd.DataFrame, sheet_name: str, column: str):
         """Flag values that are not a recognised country code or sub-national geo-key.
 
