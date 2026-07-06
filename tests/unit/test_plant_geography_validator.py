@@ -1,10 +1,11 @@
-"""Tests for the plants-sheet two-column geography validator.
+"""Tests for the plants-sheet geography validator.
 
 Exercises `MasterExcelValidator._check_plant_geography_columns` against synthetic DataFrames with
-injected reference sets. The plants sheet authors the country (``ISO3``) and sub-national unit
-(``geo_unit``) in separate columns, unlike the combined-column geo-key sheets: a non-blank geo_unit
-must compose with its row's ISO3 to a key declared in geo_hierarchy, while a blank geo_unit is
-intentional country-level and is never flagged.
+injected reference sets. The plants sheet's ISO3 column carries a bare country or a combined
+geo-key (``CHN:CN-HE``); a bare country may instead carry its province in a separate ``geo_unit``
+column. The effective unit must compose to a key declared in geo_hierarchy; conflicting forms are
+a WARNING (the combined value wins, matching the reader); a blank geo_unit is intentional
+country-level and is never flagged.
 """
 
 import pandas as pd
@@ -37,17 +38,44 @@ def plants_df(**columns):
     return pd.DataFrame({"Plant ID": [f"P{i:03d}" for i in range(length)], **columns})
 
 
-def test_valid_pairs_and_blank_geo_unit_pass():
-    """Modelled ISO3 rows pass; a blank geo_unit is intentional country-level, not flagged."""
+def test_valid_forms_and_blank_geo_unit_pass():
+    """Bare countries, combined geo-keys, and column-authored provinces all pass; blank
+    geo_unit is intentional country-level, not flagged."""
     validator = make_validator()
     df = plants_df(
-        ISO3=["CHN", "DEU", "CHN"],
-        geo_unit=["CN-HE", None, ""],
+        ISO3=["CHN", "DEU", "CHN", "CHN:CN-SH"],
+        geo_unit=["CN-HE", None, "", None],
     )
 
     validator._check_plant_geography_columns(df)
 
     assert geo_key_errors(validator) == []
+
+
+def test_flags_combined_key_with_undeclared_unit():
+    """A combined ISO3 value whose unit is not declared in geo_hierarchy is flagged."""
+    validator = make_validator()
+    df = plants_df(ISO3=["CHN:CN-XX"], geo_unit=[None])
+
+    validator._check_plant_geography_columns(df)
+
+    errors = geo_key_errors(validator)
+    assert len(errors) == 1
+    assert "CHN:CN-XX" in errors[0].message
+
+
+def test_conflicting_forms_warn_and_combined_wins():
+    """A combined ISO3 value plus a different geo_unit column value warns; the combined
+    (valid) unit is the one validated."""
+    validator = make_validator()
+    df = plants_df(ISO3=["CHN:CN-HE"], geo_unit=["CN-SH"])
+
+    validator._check_plant_geography_columns(df)
+
+    issues = geo_key_errors(validator)
+    assert len(issues) == 1
+    assert issues[0].severity == "WARNING"
+    assert "combined ISO3 value wins" in issues[0].message
 
 
 def test_flags_non_iso_country_code():

@@ -507,15 +507,18 @@ class MasterExcelValidator:
         self._check_plant_geography_columns(df)
 
     def _check_plant_geography_columns(self, df: pd.DataFrame):
-        """Validate the plants sheet's authored two-column geography (``ISO3`` + ``geo_unit``).
+        """Validate the plants sheet's authored geography (``ISO3`` + optional ``geo_unit``).
 
-        Distinct from the combined-column ``_check_geo_key_column``: the plants sheet authors the
-        country and the sub-national unit in separate columns. The ``ISO3`` value is checked against
-        the independent ISO authority and, when available, the model's country mapping. A non-blank
-        ``geo_unit`` must compose with its row's ``ISO3`` (``compose_geo_key``) to a key declared in
-        the geo_hierarchy; a blank ``geo_unit`` is intentional country-level and is never flagged.
-        Rows without a Plant ID (trailing empties) are skipped, and the whole check no-ops on older
-        masters without an ``ISO3`` column (the reader enforces its presence at prep time).
+        The ``ISO3`` column carries a bare country (``CHN``) or a combined geo-key
+        (``CHN:CN-HE``); a bare country may instead carry its province in a separate
+        ``geo_unit`` column. The country part is checked against the independent ISO authority
+        and, when available, the model's country mapping; the effective sub-national unit must
+        compose (``compose_geo_key``) to a key declared in the geo_hierarchy. Conflicting forms
+        (combined ISO3 plus a different ``geo_unit`` column value) are a WARNING — the combined
+        value wins, matching the reader. A blank ``geo_unit`` is intentional country-level and
+        is never flagged. Rows without a Plant ID (trailing empties) are skipped, and the whole
+        check no-ops on older masters without an ``ISO3`` column (the reader enforces its
+        presence at prep time).
         """
         from steelo.domain.models import compose_geo_key
 
@@ -530,11 +533,11 @@ class MasterExcelValidator:
         for position in range(len(df)):
             if not cell("Plant ID", position):
                 continue
-            iso3 = cell("ISO3", position)
-            geo_unit = cell("geo_unit", position)
+            iso3_value = cell("ISO3", position)
+            geo_unit_col = cell("geo_unit", position)
             row_number = position + 2  # 1-based, plus the header row
 
-            if not iso3:
+            if not iso3_value:
                 self.report.add(
                     ValidationError(
                         sheet_name=sheet_name,
@@ -545,6 +548,7 @@ class MasterExcelValidator:
                     )
                 )
                 continue
+            iso3, _, combined_unit = iso3_value.partition(":")
             if iso3 not in self.valid_countries:
                 self.report.add(
                     ValidationError(
@@ -567,6 +571,21 @@ class MasterExcelValidator:
                     )
                 )
                 continue
+            if combined_unit and geo_unit_col and geo_unit_col != combined_unit:
+                self.report.add(
+                    ValidationError(
+                        sheet_name=sheet_name,
+                        error_type="INVALID_GEO_KEY",
+                        message=(
+                            f"Conflicting sub-national units: ISO3 column says '{combined_unit}' but "
+                            f"geo_unit column says '{geo_unit_col}' — the combined ISO3 value wins."
+                        ),
+                        row_number=row_number,
+                        column_name="geo_unit",
+                        severity="WARNING",
+                    )
+                )
+            geo_unit = combined_unit or geo_unit_col
             if geo_unit and self.valid_geo_keys:
                 geo_key = compose_geo_key(iso3, geo_unit)
                 if geo_key not in self.valid_geo_keys:

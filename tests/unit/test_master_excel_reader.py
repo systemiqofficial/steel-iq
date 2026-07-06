@@ -193,23 +193,31 @@ class TestMasterExcelReaderValidation:
                 assert eaf_group.last_renovation_date == date(2020, 6, 15)
 
     def test_read_plants_reads_authored_iso3_and_geo_unit(self):
-        """read_plants sources ISO3 and geo_unit from the authored sheet columns.
+        """read_plants sources the authored geography from the sheet, accepting both forms.
 
-        A populated geo_unit lands on Location.geo_unit (composing the geo_key), a blank one
-        yields None (intentional country-level), and a blank ISO3 skips the row.
+        The ISO3 column carries a bare country or a combined geo_key ("CHN:CN-AH"); a bare
+        country may instead carry its province in the separate geo_unit column. On conflict
+        the combined ISO3 value wins, a blank geo_unit yields None (intentional
+        country-level), and a blank ISO3 skips the row.
         """
         with tempfile.NamedTemporaryFile(suffix=".xlsx") as tf:
             df = pd.DataFrame(
                 {
-                    "Plant ID": ["P001", "P002", "P003"],
-                    "Coordinates": ["31.60, 118.50", "52.52, 13.40", "48.85, 2.35"],
-                    "Country": ["China", "Germany", "France"],
-                    "ISO3": ["CHN", "DEU", None],
-                    "geo_unit": ["CN-AH", None, None],
-                    "Main production equipment": ["BF", "EAF", "EAF"],
-                    "Nominal BF capacity (ttpa)": [1000, 0, 0],
-                    "Nominal EAF steel capacity (ttpa)": [0, 800, 600],
-                    "Start date": ["2010", "2015", "2020"],
+                    "Plant ID": ["P001", "P002", "P003", "P004", "P005"],
+                    "Coordinates": [
+                        "31.60, 118.50",
+                        "39.00, 114.50",
+                        "26.00, 119.00",
+                        "52.52, 13.40",
+                        "48.85, 2.35",
+                    ],
+                    "Country": ["China", "China", "China", "Germany", "France"],
+                    "ISO3": ["CHN", "CHN:CN-HE", "CHN:CN-FJ", "DEU", None],
+                    "geo_unit": ["CN-AH", None, "CN-LN", None, None],
+                    "Main production equipment": ["BF", "BF", "BF", "EAF", "EAF"],
+                    "Nominal BF capacity (ttpa)": [1000, 1000, 1000, 0, 0],
+                    "Nominal EAF steel capacity (ttpa)": [0, 0, 0, 800, 600],
+                    "Start date": ["2010", "2012", "2014", "2015", "2020"],
                 },
             )
             with pd.ExcelWriter(tf.name) as writer:
@@ -220,18 +228,24 @@ class TestMasterExcelReaderValidation:
             with reader:
                 plants, _, _ = reader.read_plants()
 
-                # Blank ISO3 (P003) is skipped
-                assert {p.plant_id for p in plants} == {"P001", "P002"}
+                # Blank ISO3 (P005) is skipped
+                assert {p.plant_id for p in plants} == {"P001", "P002", "P003", "P004"}
+                by_id = {p.plant_id: p for p in plants}
 
-                p1 = next(p for p in plants if p.plant_id == "P001")
-                assert p1.location.iso3 == "CHN"
-                assert p1.location.geo_unit == "CN-AH"
-                assert p1.location.geo_key == "CHN:CN-AH"
+                # Bare country + separate geo_unit column
+                assert by_id["P001"].location.iso3 == "CHN"
+                assert by_id["P001"].location.geo_key == "CHN:CN-AH"
 
-                p2 = next(p for p in plants if p.plant_id == "P002")
-                assert p2.location.iso3 == "DEU"
-                assert p2.location.geo_unit is None
-                assert p2.location.geo_key == "DEU"
+                # Combined geo_key in the ISO3 column
+                assert by_id["P002"].location.iso3 == "CHN"
+                assert by_id["P002"].location.geo_key == "CHN:CN-HE"
+
+                # Conflict: the combined ISO3 value wins over the geo_unit column
+                assert by_id["P003"].location.geo_key == "CHN:CN-FJ"
+
+                # Bare country, no geo_unit: country-level
+                assert by_id["P004"].location.geo_unit is None
+                assert by_id["P004"].location.geo_key == "DEU"
 
     def test_read_plants_missing_iso3_column_raises(self):
         """A plant sheet without the authored ISO3 column is rejected outright (master >= v2.2)."""

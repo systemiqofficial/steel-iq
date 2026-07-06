@@ -395,7 +395,9 @@ class MasterExcelReader:
         Process:
             1. Read plant data from Excel sheet
             2. For each row with valid Plant ID and coordinates:
-               a. Parse location (lat/lon) and read the authored ISO3 and geo_unit columns
+               a. Parse location (lat/lon) and read the authored geography — ISO3 column
+                  (bare country or combined "ISO3:geo_unit") with a separate geo_unit
+                  column as fallback for bare-country rows
                b. Split 'Main production equipment' into individual technologies
                c. For each technology (BF, BOF, EAF, DRI, ESF, MOE):
                   - Create Technology object with dynamic business cases
@@ -541,8 +543,9 @@ class MasterExcelReader:
             if current_date is None:
                 current_date = date.today()
 
-            # Authored geography contract: the sheet carries the country as an ISO3 column
-            # (and optionally a geo_unit column) — no reverse geocoding.
+            # Authored geography contract: the sheet carries an ISO3 column (bare country or
+            # combined "ISO3:geo_unit", optionally a separate geo_unit column) — no reverse
+            # geocoding.
             if "ISO3" not in plant_df.columns:
                 raise ValueError(
                     "Column 'ISO3' not found in 'Iron and steel plants' sheet — "
@@ -582,14 +585,18 @@ class MasterExcelReader:
                     # Skip plant if coordinates are not valid
                     continue
 
-                # Authored country and sub-national unit; blank geo_unit ⇒ country-level
+                # Authored geography: the ISO3 column holds a bare country ("CHN") or a combined
+                # geo_key ("CHN:CN-AH"); a bare country may instead carry its province in a
+                # separate geo_unit column. On conflict the combined ISO3 value wins.
                 iso3_raw = row.get("ISO3")
-                iso3 = str(iso3_raw).strip() if not pd.isna(iso3_raw) else ""
-                if not iso3:
+                iso3_value = str(iso3_raw).strip() if not pd.isna(iso3_raw) else ""
+                if not iso3_value:
                     logger.warning(f"Skipping plant {plant_id}: blank ISO3 ({sheet_name} row {excel_row})")
                     continue
-                geo_unit_raw = row.get("geo_unit")
-                geo_unit = str(geo_unit_raw).strip() if not pd.isna(geo_unit_raw) else ""
+                iso3, _, geo_unit = iso3_value.partition(":")
+                if not geo_unit:
+                    geo_unit_raw = row.get("geo_unit")
+                    geo_unit = str(geo_unit_raw).strip() if not pd.isna(geo_unit_raw) else ""
                 location = Location(
                     lat=lat,
                     lon=lon,
