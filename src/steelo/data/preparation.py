@@ -876,6 +876,42 @@ class DataPreparationService:
             if verbose:
                 logging.info(f"✓ Extracted {len(geo_files)} geo data files")
 
+            # Generate the geo_hierarchy calibration table from the extracted NE admin-1.
+            # Guarded: an older geo-data package without admin-1 skips rather than failing prep.
+            admin1_shp = data_dir / "ne_10m_admin_1_states_provinces" / "ne_10m_admin_1_states_provinces.shp"
+            if admin1_shp.exists():
+                from .recreation_functions import recreate_geo_hierarchy_data, write_geo_options_csv
+
+                # Generated lookup table → fixtures/, alongside country_mappings.json etc.
+                geo_hierarchy_path = recreate_geo_hierarchy_data(
+                    data_dir / "fixtures" / "geo_hierarchy.json", admin1_shp
+                )
+                result.add_file(
+                    PreparedFile(
+                        filename="geo_hierarchy.json",
+                        source=FileSource.GEO_DATA,
+                        source_detail="derived from Natural Earth admin-1",
+                        duration=0.0,
+                        path=geo_hierarchy_path,
+                        size_bytes=geo_hierarchy_path.stat().st_size if geo_hierarchy_path.exists() else None,
+                    )
+                )
+
+                # Human-facing reference of authorable geo-keys (paste into the master Excel) → data root.
+                geo_options_path = write_geo_options_csv(geo_hierarchy_path, data_dir / "geo_options.csv")
+                result.add_file(
+                    PreparedFile(
+                        filename="geo_options.csv",
+                        source=FileSource.GEO_DATA,
+                        source_detail="derived from geo_hierarchy",
+                        duration=0.0,
+                        path=geo_options_path,
+                        size_bytes=geo_options_path.stat().st_size if geo_options_path.exists() else None,
+                    )
+                )
+            elif verbose:
+                logging.info("⚠ admin-1 shapefile absent; skipping geo_hierarchy.json (older geo-data package?)")
+
         except Exception as e:
             error_msg = f"Failed to extract geo data: {e}"
             logger.error(error_msg)

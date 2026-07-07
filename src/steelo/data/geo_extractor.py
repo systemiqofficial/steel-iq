@@ -113,6 +113,12 @@ class GeoDataExtractor:
                 target_dir / "ne_10m_admin_0_disputed_areas" / f"ne_10m_admin_0_disputed_areas.{ext}"
             )
 
+        # ne_10m_admin_1_states_provinces (first-order divisions, for the geo_hierarchy calibration)
+        for ext in ["shp", "shx", "dbf", "prj", "cpg"]:
+            file_mappings[f"ne_10m_admin_1_states_provinces/ne_10m_admin_1_states_provinces.{ext}"] = (
+                target_dir / "ne_10m_admin_1_states_provinces" / f"ne_10m_admin_1_states_provinces.{ext}"
+            )
+
         # Also extract baseload power simulation files
         # Note: p5 files are in GLOBAL subdirectory to match BOA output structure
         for year in [2025, 2030, 2035, 2040, 2045, 2050]:

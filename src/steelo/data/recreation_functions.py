@@ -4,15 +4,17 @@ This module contains functions for recreating JSON repositories from various dat
 These functions were moved from cli.py to follow clean architecture principles.
 """
 
+import csv
 import json
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 from collections import defaultdict
 
+import pycountry
 from rich.console import Console
 
-from ..domain.models import Plant, PlantGroup, InputCosts
+from ..domain.models import Plant, PlantGroup, InputCosts, compose_geo_key
 from ..domain.constants import PLANT_LIFETIME, T_TO_KG, Year
 from ..adapters.dataprocessing.excel_reader import (
     read_biomass_availability,
@@ -64,6 +66,11 @@ from ..adapters.repositories.json_repository import (
     WillingnessToPayJsonRepository,
 )
 from ..domain.calculate_costs import calculate_lcoh_from_electricity_country_level
+from .geo_hierarchy_overrides import (
+    ADMIN1_COLUMNS,
+    GEO_UNIT_DISPLAY_OVERRIDES,
+    OWNED_AS_SEPARATE_COUNTRY,
+)
 
 console = Console()
 
@@ -352,6 +359,187 @@ def recreate_subsidy_data(
     return repo
 
 
+# geo_hierarchy: a country's first-order divisions keyed by ISO 3166-2 code (Location.geo_unit), generated from Natural
+# Earth admin-1 + pycountry. Hand-verified overrides live in geo_hierarchy_overrides.py.
+
+
+def _pycountry_top_level_codes(iso2: str) -> set[str]:
+    """Return the first-order (top-level) ISO 3166-2 codes pycountry lists for a country.
+
+    Args:
+        iso2: ISO 3166-1 alpha-2 country code (e.g. "CN").
+
+    Returns:
+        Codes whose subdivision has no parent — i.e. the country's first-order divisions.
+    """
+    return {
+        sub.code
+        for sub in pycountry.subdivisions
+        if sub.country_code == iso2 and getattr(sub, "parent_code", None) in (None, "")
+    }
+
+
+def build_geo_hierarchy(
+    records: Iterable[dict[str, Any]],
+    *,
+    declared_iso2: Iterable[str] = ("CN",),
+) -> list[dict[str, Any]]:
+    """Build geo_hierarchy rows from Natural Earth admin-1 attribute records.
+
+    For each declared country, keeps NE features whose `iso_3166_2` is a pycountry first-order
+    (top-level) code, excluding any the model owns as a separate country
+    (``OWNED_AS_SEPARATE_COUNTRY``). The top-level gate doubles as a family detector: a country
+    whose NE features are one level too deep (Italy's provincie, France's departements) yields
+    zero admitted units, which is raised as a loud error rather than emitted at the wrong level
+    — those countries need the NE-`region`-column rollup path (not implemented; deferred).
+
+    Args:
+        records: NE admin-1 features as dicts carrying at least ``ADMIN1_COLUMNS``.
+        declared_iso2: ISO 3166-1 alpha-2 codes of the countries to populate. Features of any
+            other country are ignored, so they resolve at country level via the fallback.
+
+    Returns:
+        One row per first-order unit, sorted by ``geo_key``, each with: ``iso3``, ``geo_unit``
+        (ISO 3166-2 code), ``geo_key`` (``iso3:code``), ``display_name``, ``unit_type``,
+        ``ne_region`` (NE macro-grouping, faithful pass-through — consumed only by the later
+        GEO percentile rollup), ``ne_name``.
+
+    Raises:
+        NotImplementedError: If a declared country has features but none are first-order codes
+            (NE feature is finer than first-order) — it needs the region-column path.
+
+    Notes:
+        Validating against pycountry top-level codes also drops NE disputed placeholders such
+        as ``CN-X01~`` (Paracel Islands) without a hand-maintained list.
+    """
+    declared = set(declared_iso2)
+    records = list(records)
+    rows: list[dict[str, Any]] = []
+
+    for iso2 in declared:
+        top_level = _pycountry_top_level_codes(iso2)
+        excluded = OWNED_AS_SEPARATE_COUNTRY.get(iso2, set())
+        country_records = [r for r in records if r.get("iso_a2") == iso2]
+        admitted = 0
+
+        for record in country_records:
+            code = (record.get("iso_3166_2") or "").strip()
+            if not code or code in excluded or code not in top_level:
+                continue
+            admitted += 1
+            iso3 = record["adm0_a3"]
+            ne_name = (record.get("name") or "").strip()
+            rows.append(
+                {
+                    "iso3": iso3,
+                    "geo_unit": code,
+                    "geo_key": compose_geo_key(iso3, code),
+                    "display_name": GEO_UNIT_DISPLAY_OVERRIDES.get(code, ne_name),
+                    "unit_type": (record.get("type_en") or "").strip(),
+                    "ne_region": (record.get("region") or "").strip(),
+                    "ne_name": ne_name,
+                }
+            )
+
+        if country_records and admitted == 0:
+            raise NotImplementedError(
+                f"{iso2}: no NE admin-1 feature is a first-order ISO 3166-2 unit — the feature "
+                f"level is finer than first-order (e.g. provinces, not regions). This country "
+                f"needs the NE `region`-column rollup path, which is not implemented."
+            )
+
+    rows.sort(key=lambda row: row["geo_key"])
+    return rows
+
+
+def recreate_geo_hierarchy_data(
+    geo_hierarchy_json_path: Path,
+    admin1_shapefile_path: Path,
+    declared_iso2: Iterable[str] = ("CN",),
+) -> Path:
+    """Recreate geo_hierarchy.json from the Natural Earth admin-1 shapefile.
+
+    Args:
+        geo_hierarchy_json_path: Output path for the generated table.
+        admin1_shapefile_path: Path to ``ne_10m_admin_1_states_provinces.shp``.
+        declared_iso2: Countries to populate (China only for now).
+
+    Returns:
+        The path the table was written to.
+    """
+    import geopandas as gpd
+
+    console.print(f"[blue]Reading Natural Earth admin-1 from[/blue]: {admin1_shapefile_path}")
+    gdf = gpd.read_file(admin1_shapefile_path)
+    present = [column for column in ADMIN1_COLUMNS if column in gdf.columns]
+    rows = build_geo_hierarchy(gdf[present].to_dict("records"), declared_iso2=declared_iso2)
+
+    geo_hierarchy_json_path.write_text(json.dumps(rows, indent=2, ensure_ascii=False))
+    console.print(f"[green]Wrote {len(rows)} geo_hierarchy rows to[/green]: {geo_hierarchy_json_path}")
+    return geo_hierarchy_json_path
+
+
+GEO_OPTIONS_COLUMNS = [
+    "Region",
+    "Country (iso3)",
+    "Country (name)",
+    "Subnational (geo_unit)",
+    "Subnational (display_name)",
+    "unit_type",
+    "geo_key",
+]
+
+
+def write_geo_options_csv(geo_hierarchy_json_path: Path, out_csv_path: Path) -> Path:
+    """Generate the ``geo_options.csv`` reference from a ``geo_hierarchy.json``.
+
+    One row per populated sub-national unit, sorted by ``geo_key`` — the human-facing list of authorable
+    geo-keys to paste into the master Excel. The country name is joined from the sibling
+    ``country_mappings.json`` (the model's own iso3→name source; the hierarchy rows carry no country
+    name), and is left blank if that file is absent. ``Region`` is the Natural Earth ``ne_region``
+    pass-through and is blank for units NE leaves unregioned.
+
+    Args:
+        geo_hierarchy_json_path: Path to a generated ``geo_hierarchy.json``.
+        out_csv_path: Destination CSV path.
+
+    Returns:
+        The path the CSV was written to.
+    """
+    rows = json.loads(geo_hierarchy_json_path.read_text())
+
+    iso3_to_name: dict[str, str] = {}
+    country_mappings_path = geo_hierarchy_json_path.parent / "country_mappings.json"
+    if country_mappings_path.exists():
+        for mapping in json.loads(country_mappings_path.read_text()):
+            iso3_code = mapping.get("ISO 3-letter code")
+            if iso3_code:
+                iso3_to_name[iso3_code] = mapping.get("Country", "")
+
+    out_rows = []
+    for row in sorted(rows, key=lambda r: r["geo_key"]):
+        iso3 = row["iso3"]
+        out_rows.append(
+            {
+                "Region": row.get("ne_region", ""),
+                "Country (iso3)": iso3,
+                "Country (name)": iso3_to_name.get(iso3, ""),
+                "Subnational (geo_unit)": row["geo_unit"],
+                "Subnational (display_name)": row["display_name"],
+                "unit_type": row.get("unit_type", ""),
+                "geo_key": row["geo_key"],
+            }
+        )
+
+    with out_csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=GEO_OPTIONS_COLUMNS)
+        writer.writeheader()
+        writer.writerows(out_rows)
+
+    console.print(f"[green]Wrote {len(out_rows)} geo_options rows to[/green]: {out_csv_path}")
+    return out_csv_path
+
+
 def recreate_willingness_to_pay_data(
     json_path: Path,
     excel_path: Path,
@@ -452,17 +640,18 @@ def recreate_input_costs_data(
         electricity_by_year: dict[Year, dict[str, float]] = defaultdict(dict)
         for ic in ic_list:
             year = Year(int(ic.year))
-            ic_index[(ic.iso3, year)] = ic
+            ic_index[(ic.geo_key, year)] = ic
             electricity_price = ic.costs.get("electricity")
             if electricity_price is not None:
-                electricity_by_year[year][ic.iso3] = electricity_price
+                electricity_by_year[year][ic.geo_key] = electricity_price
 
         for year, electricity_by_country in electricity_by_year.items():
             # Filter to countries where we have CAPEX/OPEX values for the current year
+            # H2 capex is country-keyed, so sub-national geo_keys fall out here (handled at runtime)
             applicable_electricity = {
-                iso3: price
-                for iso3, price in electricity_by_country.items()
-                if iso3 in hydrogen_capex_by_country and year in hydrogen_capex_by_country[iso3]
+                geo_key: price
+                for geo_key, price in electricity_by_country.items()
+                if geo_key in hydrogen_capex_by_country and year in hydrogen_capex_by_country[geo_key]
             }
             if not applicable_electricity:
                 continue
@@ -480,8 +669,8 @@ def recreate_input_costs_data(
                 )
                 continue
 
-            for iso3, usd_per_kg in lcoh_by_country.items():
-                existing_ic: InputCosts | None = ic_index.get((iso3, year))
+            for geo_key, usd_per_kg in lcoh_by_country.items():
+                existing_ic: InputCosts | None = ic_index.get((geo_key, year))
                 if existing_ic is None:
                     continue
                 # Convert USD/kg to USD/t to match other BOM-aligned commodities.

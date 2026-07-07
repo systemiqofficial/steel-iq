@@ -6,6 +6,15 @@ from steelo.simulation_types import get_default_technology_settings
 
 from steelo.simulation import SimulationConfig
 from steelo.domain.models import GeoDataPaths
+from steelo.data.path_resolver import DataPathResolver
+
+
+def test_geo_hierarchy_json_path_resolves(tmp_path):
+    """DataPathResolver exposes geo_hierarchy.json under the fixtures directory."""
+    (tmp_path / "fixtures").mkdir()
+    resolver = DataPathResolver(data_directory=tmp_path)
+
+    assert resolver.geo_hierarchy_json_path == tmp_path / "fixtures" / "geo_hierarchy.json"
 
 
 def test_geo_data_paths_creation():

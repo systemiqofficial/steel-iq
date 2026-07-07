@@ -40,6 +40,7 @@ from steelo.utilities.plotting import (
 from typing import Optional, Any, cast, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    import geopandas as gpd
     from steelo.domain.models import GeoDataPaths
     from steelo.simulation import GeoConfig
 from steelo.domain.constants import (
@@ -123,6 +124,112 @@ def add_iso3_codes(resolution: float, geo_paths: "GeoDataPaths") -> xr.Dataset:
         except (ImportError, ValueError):
             ds["iso3"].to_netcdf(iso3_grid_path, mode="w", engine="scipy")
     return ds
+
+
+def derive_iso3_and_geo_unit(
+    lat: float,
+    lon: float,
+    admin1_gdf: "gpd.GeoDataFrame",
+    *,
+    restrict_iso3: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Derive a point's country and first-order sub-national unit from Natural Earth admin-1.
+
+    Point-in-polygon against the supplied admin-1 features. A single hit yields both the country
+    (``adm0_a3``) and the ISO 3166-2 unit code (``iso_3166_2``) straight from the matched geometry,
+    so the two are internally consistent by construction. This is pure geometry — it never consults
+    the reverse geocoder, and it applies no ``geo_hierarchy`` gating or country cross-check (those are
+    the caller's policy; see the enrichment pass). Pass the *full* admin-1 set, not a country-filtered
+    subset, so the returned ``adm0_a3`` is truthful and a caller can detect country disagreements.
+
+    For a point that falls inside no polygon (coastal/offshore slack), an optional nearest-polygon
+    fallback scoped to ``restrict_iso3`` returns the closest unit *of that country* — distance is
+    measured to the polygon edge in a projected CRS (EPSG:3857), not to the centroid, so a coastal
+    point is not pulled toward a large neighbouring province whose centroid happens to be nearer.
+
+    Args:
+        lat: Latitude in WGS84 degrees.
+        lon: Longitude in WGS84 degrees.
+        admin1_gdf: Natural Earth admin-1 features carrying ``adm0_a3``, ``iso_3166_2`` and
+            ``geometry`` columns (e.g. ``ne_10m_admin_1_states_provinces``), in a geographic CRS.
+        restrict_iso3: If given and the point hits no polygon, fall back to the nearest admin-1 unit
+            whose ``adm0_a3`` equals this code. If ``None``, a no-hit returns ``(None, None)``.
+
+    Returns:
+        ``(adm0_a3, iso_3166_2)`` for the matched (or nearest-fallback) unit. A falsy unit code is
+        normalised to ``None``. A no-hit with no usable fallback returns ``(None, None)``.
+
+    Notes:
+        Uses the GeoDataFrame spatial index for the containment query, so it is cheap to call once
+        per plant. The fallback only fires on a genuine no-hit, so the common path is a single
+        index-backed lookup.
+    """
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    point = Point(float(lon), float(lat))
+    candidate_positions = admin1_gdf.sindex.query(point)  # bbox prefilter; contains() below is exact
+    for pos in candidate_positions:
+        feature = admin1_gdf.iloc[int(pos)]
+        if feature.geometry.contains(point):
+            code = (feature["iso_3166_2"] or "").strip() or None
+            return str(feature["adm0_a3"]), code
+
+    if restrict_iso3 is None:
+        return None, None
+    in_country = admin1_gdf[admin1_gdf["adm0_a3"] == restrict_iso3]
+    if in_country.empty:
+        return None, None
+    point_projected = gpd.GeoSeries([point], crs=admin1_gdf.crs).to_crs("EPSG:3857").iloc[0]
+    distances = in_country.geometry.to_crs("EPSG:3857").distance(point_projected)
+    nearest = in_country.iloc[int(distances.values.argmin())]
+    code = (nearest["iso_3166_2"] or "").strip() or None
+    return restrict_iso3, code
+
+
+def resolve_geo_unit(
+    adm0_a3: str | None,
+    code: str | None,
+    iso3: str,
+    valid_codes: set[str],
+    *,
+    log_ctx: str = "",
+) -> str | None:
+    """Gate a derived admin-1 unit into a storable ``geo_unit``: the policy layer over
+    ``derive_iso3_and_geo_unit``.
+
+    Two gates decide whether the derived code is trustworthy enough to store:
+
+    - **country cross-check** — the derived ``adm0_a3`` must equal the canonical ``iso3`` (the two
+      derivations must agree on the country). A mismatch (border slack, or a unit the model owns as
+      a separate country like Hong Kong) returns ``None``, logged at INFO, so a sub-national unit
+      can never contradict the country;
+    - **hierarchy membership** — the derived code must be a unit in ``geo_hierarchy`` (a declared,
+      populated country). Anything else, including a country with no authored units, returns
+      ``None`` and resolves at country level.
+
+    Args:
+        adm0_a3: Country derived by point-in-polygon (``None`` on a no-hit).
+        code: ISO 3166-2 unit code derived by point-in-polygon (``None`` on a no-hit).
+        iso3: The canonical country code the unit must belong to (e.g. the plant's stored iso3).
+        valid_codes: Declared ``geo_unit`` codes from ``geo_hierarchy``.
+        log_ctx: Short label (e.g. a plant id or site coordinate) used in the mismatch log line.
+
+    Returns:
+        The gated unit code, or ``None`` when either gate rejects it.
+    """
+    if adm0_a3 is not None and adm0_a3 != iso3:
+        logger = logging.getLogger(f"{__name__}.resolve_geo_unit")
+        logger.info(
+            "geo_unit cross-check: %s derived country %s != canonical iso3 %s; geo_unit left None.",
+            log_ctx or "point",
+            adm0_a3,
+            iso3,
+        )
+        return None
+    if code is not None and code in valid_codes:
+        return code
+    return None
 
 
 def add_feasibility_mask(ds: xr.Dataset, geo_config: "GeoConfig", geo_paths: "GeoDataPaths") -> xr.Dataset:
@@ -429,7 +536,8 @@ def add_grid_power_price(
     Note:
         For grid cells without a matching ISO3 code, the maximum grid price is used as a fallback.
     """
-    grid_price = pd.Series({iso3: input_costs[iso3][year]["electricity"] for iso3 in input_costs})
+    # Pixels carry only iso3; sub-national rows reach pixels via GEO, not this country grid price
+    grid_price = pd.Series({iso3: input_costs[iso3][year]["electricity"] for iso3 in input_costs if ":" not in iso3})
     ds["grid_price"] = xr.apply_ufunc(
         lambda iso3: grid_price.loc[iso3]
         if (isinstance(iso3, str) and iso3 in grid_price.index and not pd.isna(iso3))

@@ -86,6 +86,48 @@ def filter_subsidies_for_year(subsidies: list["Subsidy"], year: "Year") -> list[
     return active
 
 
+def collect_subsidies_for_geo(
+    subsidies_by_geo_key: dict[str, dict[str, list["Subsidy"]]],
+    geo_key: str,
+) -> dict[str, list["Subsidy"]]:
+    """Collect the subsidies (tech -> list) that apply at a location's geography.
+
+    Subsidies are additive instruments scoped to their authored geography, not
+    finest-available values: a country-wide row (keyed by bare ``iso3``) applies to every
+    plant in the country including province-tagged ones, while a province row (keyed by
+    ``iso3:geo_unit``) applies only to plants in that province — plants elsewhere in the
+    country do not receive it, and it never replaces a country-wide row.
+
+    Args:
+        subsidies_by_geo_key: Subsidy lookup keyed by geo_key (bare ``iso3`` and/or
+            ``iso3:code``), then technology name.
+        geo_key: The location's finest-available key (``Location.geo_key``) — a bare
+            ``iso3`` for country-level locations, else ``iso3:geo_unit``.
+
+    Returns:
+        Technology -> subsidies mapping combining the country-wide rows with the rows
+        scoped to the location's unit. The country dict is returned as-is (not copied)
+        when no province rows exist, so country-level behaviour is unchanged.
+    """
+    logger = logging.getLogger(f"{__name__}.collect_subsidies_for_geo")
+    iso3, _, geo_unit = geo_key.partition(":")
+    country = subsidies_by_geo_key.get(iso3, {})
+    if not geo_unit:
+        return country
+    province = subsidies_by_geo_key.get(geo_key, {})
+    if not province:
+        return country
+    logger.info(
+        "subsidies: applying sub-national rows for %s on top of country %s.",
+        geo_key,
+        iso3,
+    )
+    merged = {tech: list(subs) for tech, subs in country.items()}
+    for tech, subs in province.items():
+        merged.setdefault(tech, []).extend(subs)
+    return merged
+
+
 def collect_active_subsidies_over_period(
     subsidies: list["Subsidy"], start_year: "Year", end_year: "Year"
 ) -> list["Subsidy"]:
@@ -1693,7 +1735,8 @@ def calculate_lcoh_from_electricity_country_level(
             Already converted from USD/MWh by excel_reader.
         hydrogen_efficiency: Dictionary mapping years to electrolyser energy consumption (MWh/kg H2).
             From "Hydrogen efficiency" sheet in master Excel.
-        hydrogen_capex_opex: Dictionary mapping ISO3 codes to year->CAPEX+OPEX values (USD/kg).
+        hydrogen_capex_opex: Dictionary mapping geo-keys (bare ISO3, optionally sub-national
+            ``iso3:code`` overrides) to year->CAPEX+OPEX values (USD/kg).
             From "Hydrogen CAPEX_OPEX component" sheet in master Excel.
         year: Current simulation year.
 
@@ -1720,16 +1763,21 @@ def calculate_lcoh_from_electricity_country_level(
     )
 
     lcoh_by_country = {}
-    for iso3, electricity_price in electricity_by_country.items():
-        # Get CAPEX+OPEX component for this country and year
-        if iso3 not in hydrogen_capex_opex:
+    for geo_key, electricity_price in electricity_by_country.items():
+        iso3 = geo_key.split(":", 1)[0]
+        # Finest-available capex/opex: a sub-national row overrides its country's value,
+        # else the country value applies (today the data is country-keyed only).
+        capex_opex_by_year = hydrogen_capex_opex.get(geo_key, hydrogen_capex_opex.get(iso3))
+        if geo_key != iso3 and geo_key in hydrogen_capex_opex:
+            logger.info("hydrogen CAPEX/OPEX: resolved to sub-national row %s (not country %s).", geo_key, iso3)
+        if capex_opex_by_year is None:
             raise ValueError(f"Hydrogen CAPEX/OPEX not found for country {iso3}")
-        if year not in hydrogen_capex_opex[iso3]:
+        if year not in capex_opex_by_year:
             raise ValueError(f"Hydrogen CAPEX/OPEX not found for country {iso3} in year {year}")
-        capex_opex = hydrogen_capex_opex[iso3][year]
+        capex_opex = capex_opex_by_year[year]
 
         # Calculate LCOH: (kWh/kg) × (USD/kWh) + (USD/kg) = USD/kg
-        lcoh_by_country[iso3] = energy_consumption_kwh * electricity_price + capex_opex
+        lcoh_by_country[geo_key] = energy_consumption_kwh * electricity_price + capex_opex
 
     # Log a sample of LCOH values for verification
     sample_countries = list(lcoh_by_country.keys())[:3]
@@ -1822,7 +1870,7 @@ def apply_hydrogen_price_cap_country_level(
         the cluster plus long distance transport costs per kg of hydrogen.
 
     Args:
-        lcoh_by_country: Dictionary mapping ISO3 codes to LCOH values
+        lcoh_by_country: Mapping from geo_key (iso3 or iso3:code) to LCOH values
         regional_ceilings: Dictionary mapping regions to ceiling values
         country_to_region: Dictionary mapping ISO3 codes to region names
         intraregional_trade_allowed: Whether intraregional trade is allowed
@@ -1830,14 +1878,15 @@ def apply_hydrogen_price_cap_country_level(
         long_dist_pipeline_transport_cost: Transport cost for long-distance pipeline (USD/kg)
 
     Returns:
-        Dictionary mapping ISO3 codes to capped hydrogen prices
+        Mapping from geo_key (iso3 or iso3:code) to capped hydrogen prices
 
     Raises:
         ValueError: If required data is missing
     """
     capped_hydrogen_prices = {}
 
-    for iso3, lcoh in lcoh_by_country.items():
+    for geo_key, lcoh in lcoh_by_country.items():
+        iso3 = geo_key.split(":", 1)[0]  # sub-national rows inherit their country's region/ceiling
         region = country_to_region.get(iso3)
         if region is None:
             raise ValueError(f"No region mapping found for country {iso3}")
@@ -1849,7 +1898,7 @@ def apply_hydrogen_price_cap_country_level(
 
         # Option a: No intraregional trade allowed -> apply the cap: minimum of LCOH and ceiling
         if not intraregional_trade_allowed:
-            capped_hydrogen_prices[iso3] = min(lcoh, ceiling_value)
+            capped_hydrogen_prices[geo_key] = min(lcoh, ceiling_value)
 
         # Option b: Intraregional trade allowed -> consider trade options and choose the minimum among
         # the country's LCOH, its regional ceiling, and its intraregional trade options
@@ -1866,7 +1915,7 @@ def apply_hydrogen_price_cap_country_level(
                 ## Take minimum of regional ceiling and trade option
                 ceiling_value = min(ceiling_value, best_trade_value)
             ## Apply the cap: minimum of LCOH and ceiling
-            capped_hydrogen_prices[iso3] = min(lcoh, ceiling_value)
+            capped_hydrogen_prices[geo_key] = min(lcoh, ceiling_value)
 
     return capped_hydrogen_prices
 

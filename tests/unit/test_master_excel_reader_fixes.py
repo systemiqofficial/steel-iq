@@ -21,6 +21,9 @@ class TestMasterExcelReaderFixes:
             "Plant name": ["Border Plant 1", "Border Plant 2", "Iron Plant"],
             "Plant ID": ["P001", "P002", "P003"],
             "Country": ["France", "Russia", "Germany"],
+            # Authored codes deliberately disagree with the Country names for the two border
+            # plants — GEM's ISO3 column is the source of truth, not the country name.
+            "ISO3": ["DEU", "FIN", "DEU"],
             "Coordinates": ["48.5951, 7.8216", "61.1495, 28.7988", "51.0, 9.0"],
             "Main production equipment": ["BF;BOF", "EAF", "BF;DRI;BOF;EAF"],
             "Capacity operating status": ["operating", "operating", "operating"],
@@ -94,43 +97,28 @@ class TestMasterExcelReaderFixes:
             "Prep Sinter": [{"name": "prep_sinter_feedstock", "metallic_charge": "iron_ore"}],
         }
 
-    def test_iso3_derivation_uses_coordinates_not_country_name(self, excel_file_with_data, dynamic_feedstocks_mock):
-        """Test that ISO3 codes are derived from coordinates, not country names."""
+    def test_iso3_read_from_authored_column_not_country_name(self, excel_file_with_data, dynamic_feedstocks_mock):
+        """The authored ISO3 column is the source of truth, not the Country name.
+
+        The fixture's two border plants carry authored codes (DEU, FIN) that disagree with their
+        Country names (France, Russia) — read_plants must take the authored code verbatim.
+        """
         reader = MasterExcelReader(excel_file_with_data)
 
-        # Mock derive_iso3 to return coordinate-based ISO3 codes
-        with patch("steelo.adapters.dataprocessing.master_excel_reader.derive_iso3") as mock_derive_iso3:
-            # Set up mock returns based on coordinates
-            mock_derive_iso3.side_effect = lambda lat, lon: {
-                (48.5951, 7.8216): "DEU",  # Near France-Germany border, should be DEU not FRA
-                (61.1495, 28.7988): "FIN",  # Near Russia-Finland border, should be FIN not RUS
-                (51.0, 9.0): "DEU",  # Germany, should remain DEU
-            }.get((lat, lon), "XXX")
+        plants, _, _ = reader.read_plants(dynamic_feedstocks_mock, current_date=date(2025, 1, 1))
 
-            plants, _, _ = reader.read_plants(
-                dynamic_feedstocks_mock, current_date=date(2025, 1, 1)
-            )  # Unpack tuple (3 values)
-
-            # Verify derive_iso3 was called with correct coordinates
-            assert mock_derive_iso3.call_count == 3
-            mock_derive_iso3.assert_any_call(48.5951, 7.8216)
-            mock_derive_iso3.assert_any_call(61.1495, 28.7988)
-            mock_derive_iso3.assert_any_call(51.0, 9.0)
-
-            # Verify plants have coordinate-based ISO3 codes
-            plant_dict = {p.plant_id: p for p in plants}
-            assert plant_dict["P001"].location.iso3 == "DEU"  # Not FRA
-            assert plant_dict["P002"].location.iso3 == "FIN"  # Not RUS
-            assert plant_dict["P003"].location.iso3 == "DEU"
+        plant_dict = {p.plant_id: p for p in plants}
+        assert plant_dict["P001"].location.iso3 == "DEU"  # Not FRA
+        assert plant_dict["P002"].location.iso3 == "FIN"  # Not RUS
+        assert plant_dict["P003"].location.iso3 == "DEU"
 
     def test_prep_sinter_furnace_groups_added_for_iron_plants(self, excel_file_with_data, dynamic_feedstocks_mock):
         """Test that Prep Sinter furnace groups are NO LONGER automatically added to plants."""
         reader = MasterExcelReader(excel_file_with_data)
 
-        with patch("steelo.adapters.dataprocessing.master_excel_reader.derive_iso3", return_value="DEU"):
-            plants, _, _ = reader.read_plants(
-                dynamic_feedstocks_mock, current_date=date(2025, 1, 1)
-            )  # Unpack tuple (3 values)
+        plants, _, _ = reader.read_plants(
+            dynamic_feedstocks_mock, current_date=date(2025, 1, 1)
+        )  # Unpack tuple (3 values)
 
         plant_dict = {p.plant_id: p for p in plants}
 

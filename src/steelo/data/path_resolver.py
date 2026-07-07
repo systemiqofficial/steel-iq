@@ -109,6 +109,10 @@ class DataPathResolver:
     def cost_of_capital_json_path(self) -> Path:
         return self.get_fixtures_path("cost_of_capital.json")
 
+    @property
+    def geo_hierarchy_json_path(self) -> Path:
+        return self.get_fixtures_path("geo_hierarchy.json")
+
     # Raw data file paths
     @property
     def steel_plants_csv_path(self) -> Path:
@@ -285,6 +289,10 @@ class DataPathResolver:
     @property
     def countries_shapefile_dir(self) -> Path:
         return self.get_data_path("ne_110m_admin_0_countries")
+
+    @property
+    def admin1_shapefile_dir(self) -> Path:
+        return self.get_data_path("ne_10m_admin_1_states_provinces")
 
     @property
     def landtype_percentage_nc_path(self) -> Path:

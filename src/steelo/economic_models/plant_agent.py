@@ -6,6 +6,7 @@ import random
 import time
 from typing import cast
 
+from steelo.adapters.geospatial.geo_unit_lookup import derive_geo_unit_for_site
 from steelo.adapters.geospatial.top_location_finder import get_candidate_locations_for_opening_new_plants
 from steelo.adapters.geospatial.geospatial_statistics import (
     export_lcoe_lcoh_statistics_by_country,
@@ -18,6 +19,7 @@ from steelo.domain.commands import (
     ChangeFurnaceGroupStatusToSwitchingTechnology,
     ChangeFurnaceGroupTechnology,
 )
+from steelo.domain.calculate_costs import collect_subsidies_for_geo
 from steelo.domain.constants import T_TO_KT, Volumes
 from steelo.domain.events import SteelAllocationsCalculated
 from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
@@ -291,6 +293,7 @@ class GeospatialModel:
                 get_co2_headroom=bus.env.get_co2_headroom,
                 get_co2_need_by_name=bus.env.get_co2_need_by_name,
                 co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
+                derive_geo_unit=derive_geo_unit_for_site,
             )
         )
         step_time = time.time() - step_start
@@ -765,11 +768,11 @@ class PlantAgentsModel:
                     f"(year {bus.env.year}) === \n"
                 )
 
-                # Retrieve location-specific subsidies for this plant
-                # Empty dicts are returned if no subsidies exist - this is expected behavior
-                tech_capex_subsidies = bus.env.capex_subsidies.get(plant.location.iso3, {})
-                tech_opex_subsidies = bus.env.opex_subsidies.get(plant.location.iso3, {})
-                tech_debt_subsidies = bus.env.debt_subsidies.get(plant.location.iso3, {})
+                # Retrieve location-specific subsidies for this plant: country-wide rows plus
+                # any rows scoped to the plant's province. Empty dicts if no subsidies exist.
+                tech_capex_subsidies = collect_subsidies_for_geo(bus.env.capex_subsidies, plant.location.geo_key)
+                tech_opex_subsidies = collect_subsidies_for_geo(bus.env.opex_subsidies, plant.location.geo_key)
+                tech_debt_subsidies = collect_subsidies_for_geo(bus.env.debt_subsidies, plant.location.geo_key)
 
                 logger.debug(f"[PAM] Plant group: {plant.parent_gem_id}")
                 logger.debug(f"[PAM] Plant group balance: ${pg.balance:,.2f}")

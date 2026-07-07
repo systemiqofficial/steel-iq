@@ -12,7 +12,6 @@ from typing import Any, Optional, cast
 import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime
-import pycountry
 # import pickle
 
 from steelo.adapters.dataprocessing.master_excel_validator import (
@@ -20,7 +19,6 @@ from steelo.adapters.dataprocessing.master_excel_validator import (
     ValidationError,
     ValidationReport,
 )
-from steelo.adapters.dataprocessing.preprocessing.iso3_finder import derive_iso3, Coordinate
 from steelo.domain.constants import KT_TO_T, PLANT_LIFETIME
 
 logger = logging.getLogger(__name__)
@@ -377,7 +375,6 @@ class MasterExcelReader:
         dynamic_feedstocks_dict: Optional[dict] = None,
         current_date: Optional[date] = None,
         gravity_distances_pkl_path: Optional[Path] = None,
-        geocoder_coordinates: Optional[list[Coordinate]] = None,
         simulation_start_year: int = 2025,
         regional_fopex: dict[str, float] = {},
         aggregated_constraints: Optional[list] = None,
@@ -398,7 +395,9 @@ class MasterExcelReader:
         Process:
             1. Read plant data from Excel sheet
             2. For each row with valid Plant ID and coordinates:
-               a. Parse location (lat/lon) and derive ISO3 country code
+               a. Parse location (lat/lon) and read the authored geography — ISO3 column
+                  (bare country or combined "ISO3:geo_unit") with a separate geo_unit
+                  column as fallback for bare-country rows
                b. Split 'Main production equipment' into individual technologies
                c. For each technology (BF, BOF, EAF, DRI, ESF, MOE):
                   - Create Technology object with dynamic business cases
@@ -420,9 +419,6 @@ class MasterExcelReader:
                          happens at runtime via active_statuses config).
             gravity_distances_pkl_path: Path to pickle file with pre-computed gravity model
                                        distances. Currently not used (kept for future enhancement).
-            geocoder_coordinates: List of Coordinate objects for initializing reverse geocoder.
-                                If provided, enables coordinate-based ISO3 derivation. If None,
-                                falls back to country name mapping.
             simulation_start_year: Year representing the start of simulation. Used for:
                                   - Calculating plant age (simulation_start_year - start_year)
                                   - Setting lifetime.current in FurnaceGroup
@@ -547,15 +543,14 @@ class MasterExcelReader:
             if current_date is None:
                 current_date = date.today()
 
-            # Initialize reverse geocoder if coordinates provided
-            if geocoder_coordinates:
-                logger.info("Initializing reverse geocoder with provided coordinates")
-                # Make a dummy call to initialize the geocoder
-                try:
-                    derive_iso3(0, 0, coordinates=geocoder_coordinates)
-                except Exception:
-                    # The dummy call might fail but the geocoder should be initialized
-                    pass
+            # Authored geography contract: the sheet carries an ISO3 column (bare country or
+            # combined "ISO3:geo_unit", optionally a separate geo_unit column) — no reverse
+            # geocoding.
+            if "ISO3" not in plant_df.columns:
+                raise ValueError(
+                    "Column 'ISO3' not found in 'Iron and steel plants' sheet — "
+                    "an authored ISO3 column is required (master input >= v2.2)."
+                )
 
             # Read historical production data
             try:
@@ -590,25 +585,25 @@ class MasterExcelReader:
                     # Skip plant if coordinates are not valid
                     continue
 
-                # Try coordinate-based ISO3 derivation, fall back to country name if not initialized
-                try:
-                    iso3 = derive_iso3(lat, lon)
-                except ValueError as e:
-                    if "coordinates must be provided" in str(e):
-                        # Reverse geocoder not initialized, fall back to country name mapping
-                        logger.debug(
-                            f"Reverse geocoder not initialized, using country name mapping for "
-                            f"plant {row.get('Plant ID')}"
-                        )
-                        iso3 = self._get_iso3_from_country(str(row.get("Country", "")))
-                    else:
-                        raise
+                # Authored geography: the ISO3 column holds a bare country ("CHN") or a combined
+                # geo_key ("CHN:CN-AH"); a bare country may instead carry its province in a
+                # separate geo_unit column. On conflict the combined ISO3 value wins.
+                iso3_raw = row.get("ISO3")
+                iso3_value = str(iso3_raw).strip() if not pd.isna(iso3_raw) else ""
+                if not iso3_value:
+                    logger.warning(f"Skipping plant {plant_id}: blank ISO3 ({sheet_name} row {excel_row})")
+                    continue
+                iso3, _, geo_unit = iso3_value.partition(":")
+                if not geo_unit:
+                    geo_unit_raw = row.get("geo_unit")
+                    geo_unit = str(geo_unit_raw).strip() if not pd.isna(geo_unit_raw) else ""
                 location = Location(
                     lat=lat,
                     lon=lon,
                     country=iso3,
                     region="unknown",  # Will be set based on mappings
                     iso3=iso3,
+                    geo_unit=geo_unit or None,
                 )
 
                 # Create furnace groups from equipment string
@@ -792,38 +787,6 @@ class MasterExcelReader:
         except Exception as e:
             logger.error(f"Failed to extract plant data: {e}")
             raise
-
-    def _get_iso3_from_country(self, country_name: str) -> str:
-        """Convert country name to ISO3 code."""
-        # Handle empty or invalid input
-        if not country_name or not country_name.strip():
-            return "XXX"
-
-        # Handle special cases
-        country_mappings = {
-            "USA": "USA",
-            "Germany": "DEU",
-            "Japan": "JPN",
-            "Türkiye": "TUR",
-            "Russia": "RUS",
-            "South Korea": "KOR",
-            "UK": "GBR",
-            "Ivory Coast": "CIV",
-            "Democratic Republic of the Congo": "COD",
-        }
-
-        if country_name in country_mappings:
-            return country_mappings[country_name]
-
-        try:
-            results = pycountry.countries.search_fuzzy(country_name)
-            if results and len(results) > 0:
-                country = results[0]
-                return getattr(country, "alpha_3", "XXX")
-            return "XXX"
-        except (LookupError, AttributeError):
-            logger.warning(f"Could not find ISO3 for country: {country_name}")
-            return "XXX"
 
     def _parse_capacity(self, value: Any) -> float:
         """

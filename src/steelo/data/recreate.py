@@ -620,36 +620,7 @@ class DataRecreator:
             elif spec.recreate_function == "recreate_plants_data":
                 # Special handling for plants - read directly from master Excel
                 from ..adapters.dataprocessing.master_excel_reader import MasterExcelReader
-                from ..adapters.dataprocessing.preprocessing.iso3_finder import Coordinate
                 from ..adapters.dataprocessing.excel_reader import read_dynamic_business_cases
-                import csv
-
-                # Load geocoder coordinates if available
-                geocoder_coordinates = None
-                geolocator_path = output_dir / "geolocator_raster.csv"
-                if geolocator_path.exists():
-                    geocoder_coordinates = []
-                    with open(geolocator_path, "r") as f:
-                        reader = csv.DictReader(f)
-                        for row in reader:
-                            try:
-                                lat = float(row["lat"])
-                                lon = float(row["lon"])
-                                cc = row.get("cc", "")
-                                if cc and len(cc) == 2:
-                                    # Convert 2-letter country code to ISO3
-                                    import pycountry
-
-                                    try:
-                                        country = pycountry.countries.get(alpha_2=cc)
-                                        if country:
-                                            iso3 = country.alpha_3
-                                            geocoder_coordinates.append(Coordinate(lat=lat, lon=lon, iso3=iso3))
-                                    except Exception:
-                                        continue
-                            except (ValueError, KeyError):
-                                continue
-                    console.print(f"  [dim]Loaded {len(geocoder_coordinates)} geocoder coordinates[/dim]")
 
                 # Read dynamic business cases from Bill of Materials sheet
                 console.print("  [dim]Reading dynamic business cases from Bill of Materials sheet[/dim]")
@@ -661,7 +632,6 @@ class DataRecreator:
                 with MasterExcelReader(master_excel_path) as reader:
                     plants, canonical_metadata, aggregated_metallic_constraints = reader.read_plants(
                         dynamic_feedstocks_dict=dynamic_feedstocks_dict,
-                        geocoder_coordinates=geocoder_coordinates,
                         simulation_start_year=2025,  # TODO: Make this configurable
                     )
 
