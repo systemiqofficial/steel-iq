@@ -157,6 +157,18 @@ def test_country_and_province_rows_are_additive():
     assert lookup["CHN:CN-HE"]["EAF"] == [province_sub]
 
 
+def test_province_subsidy_application_is_logged(caplog):
+    """Applying sub-national subsidy rows is logged at INFO (province differentiation is active)."""
+    import logging
+
+    lookup = {"CHN": {"EAF": [make_subsidy()]}, "CHN:CN-HE": {"EAF": [make_subsidy(geo_unit="CN-HE")]}}
+
+    with caplog.at_level(logging.INFO):
+        collect_subsidies_for_geo(lookup, "CHN:CN-HE")
+
+    assert "sub-national rows for CHN:CN-HE" in caplog.text
+
+
 # ---------------------------------------------------------------- JSON mirror
 
 

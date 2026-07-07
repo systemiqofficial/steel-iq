@@ -370,6 +370,7 @@ class Location:
             KeyError: If ``geo_unit`` is set but its ``geo_key`` is not in
                 ``valid_geo_keys`` (typo / wrong level / unsupported unit).
         """
+        logger = logging.getLogger(f"{__name__}.Location.resolve")
         if self.geo_unit is not None:
             if valid_geo_keys is not None and self.geo_key not in valid_geo_keys:
                 raise KeyError(
@@ -377,8 +378,13 @@ class Location:
                     f"not a recognised unit in geo_hierarchy — check the ISO 3166-2 code and level."
                 )
             if self.geo_key in lookup:
+                logger.info(
+                    "%s: resolved to sub-national unit %s (not country %s).",
+                    what,
+                    self.geo_key,
+                    self.iso3,
+                )
                 return lookup[self.geo_key]
-            logger = logging.getLogger(f"{__name__}.Location.resolve")
             logger.info(
                 "%s: no sub-national value for %s; falling back to country %s.",
                 what,

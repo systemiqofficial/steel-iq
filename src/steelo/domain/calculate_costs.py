@@ -109,6 +109,7 @@ def collect_subsidies_for_geo(
         scoped to the location's unit. The country dict is returned as-is (not copied)
         when no province rows exist, so country-level behaviour is unchanged.
     """
+    logger = logging.getLogger(f"{__name__}.collect_subsidies_for_geo")
     iso3, _, geo_unit = geo_key.partition(":")
     country = subsidies_by_geo_key.get(iso3, {})
     if not geo_unit:
@@ -116,6 +117,11 @@ def collect_subsidies_for_geo(
     province = subsidies_by_geo_key.get(geo_key, {})
     if not province:
         return country
+    logger.info(
+        "subsidies: applying sub-national rows for %s on top of country %s.",
+        geo_key,
+        iso3,
+    )
     merged = {tech: list(subs) for tech, subs in country.items()}
     for tech, subs in province.items():
         merged.setdefault(tech, []).extend(subs)
@@ -1762,6 +1768,8 @@ def calculate_lcoh_from_electricity_country_level(
         # Finest-available capex/opex: a sub-national row overrides its country's value,
         # else the country value applies (today the data is country-keyed only).
         capex_opex_by_year = hydrogen_capex_opex.get(geo_key, hydrogen_capex_opex.get(iso3))
+        if geo_key != iso3 and geo_key in hydrogen_capex_opex:
+            logger.info("hydrogen CAPEX/OPEX: resolved to sub-national row %s (not country %s).", geo_key, iso3)
         if capex_opex_by_year is None:
             raise ValueError(f"Hydrogen CAPEX/OPEX not found for country {iso3}")
         if year not in capex_opex_by_year:
