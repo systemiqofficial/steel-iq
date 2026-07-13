@@ -5,6 +5,7 @@ from typing import Tuple, Any
 
 # LP_EPSILON is now passed as a parameter to TradeLPModel
 import logging
+import os
 import time
 import functools
 from steelo.adapters.geospatial.geospatial_toolbox import haversine_distance
@@ -390,12 +391,18 @@ class TradeLPModel:
         self._pc_by_name: dict[str, ProcessCenter] | None = None
 
         # Solver options for performance tuning (OPT-4)
-        # Default to IPM - equivalent runtime to Simplex but uses ~5GB less memory
+        # Default to HiPO - HiGHS 1.15's interior-point solver (requires highspy[extras]).
+        # Like IPM it does not support warm starts; keeps IPM's low memory footprint.
+        # Override for A/B benchmarking via env var, e.g. STEELO_LP_SOLVER=simplex.
         self.solver_options: dict[str, Any] = {
-            "solver": "ipm",
+            "solver": os.environ.get("STEELO_LP_SOLVER", "hipo"),
             "presolve": "on",
             "scaling": "on",
             "run_crossover": "on",
+            # Emit HiGHS logs so we can confirm which algorithm actually ran
+            # (look for "Running HiPO" / "Using dual simplex solver" / "IPX version").
+            "output_flag": "true",
+            "log_to_console": "true",
         }
 
         # Warm-start support (OPT-2) - previous year's solution for faster convergence
@@ -1725,9 +1732,9 @@ class TradeLPModel:
         solver.config.load_solution = False  # Don't try to load infeasible solution
 
         # Warm-start from previous year's solution if available (OPT-2)
-        # NOTE: HiGHS Appsi only supports warm starts for simplex solver, not IPM
+        # NOTE: HiGHS Appsi only supports warm starts for simplex solver, not IPM/HiPO
         warm_start_enabled = False
-        solver_type = self.solver_options.get("solver", "ipm")
+        solver_type = self.solver_options.get("solver", "hipo")
         n_vars = self.lp_model.nvariables()
 
         if hasattr(self, "previous_solution") and self.previous_solution is not None:
@@ -1744,10 +1751,15 @@ class TradeLPModel:
                         f"operation=warm_start variables_initialized={warm_start_count} "
                         f"coverage={(warm_start_count / n_vars) * 100:.1f}%"
                     )
-            elif solver_type == "ipm":
-                logger.info("operation=warm_start status=skipped reason='IPM solver does not support warm starts'")
+            elif solver_type in ("ipm", "hipo"):
+                logger.info(
+                    f"operation=warm_start status=skipped reason='{solver_type} solver does not support warm starts'"
+                )
 
-        result = solver.solve(self.lp_model, load_solutions=False, warmstart=warm_start_enabled)
+        # tee=True forwards HiGHS's own logs (algorithm banner, iterations, timing)
+        # so you can verify HiPO is actually running. Toggle via env STEELO_HIGHS_LOG.
+        highs_log = os.environ.get("STEELO_HIGHS_LOG", "").lower() in {"1", "true", "yes"}
+        result = solver.solve(self.lp_model, load_solutions=False, warmstart=warm_start_enabled, tee=highs_log)
         elapsed = time.time() - start_time
         logger.info(f"operation=trade_optimization duration_s={elapsed:.3f}")
         self.solution_status = result.solver.status

@@ -34,7 +34,7 @@ dependencies = [
     "geopy",
     "ipython",
     "reverse-geocoder",
-    "highspy>=1.9.0",
+    "highspy[extras]>=1.15.1",
     "numba>=0.61.2",
     # Django Frontend
     "django",
