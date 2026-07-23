@@ -627,6 +627,7 @@ def add_suppliers_as_process_centers(repository, lp_model: tlp.TradeLPModel, yea
 def enforce_trqs_via_gateways(
     message_bus: MessageBus,
     lp_model: tlp.TradeLPModel,
+    enable_trqs: bool = True,
 ) -> None:
     """Inject TRQ gateway nodes into the LP model before it is built.
 
@@ -637,8 +638,18 @@ def enforce_trqs_via_gateways(
 
     Must be called after all plant/demand/supplier process centers have been added
     and after transportation costs have been registered, but BEFORE build_lp_model().
+
+    Args:
+        message_bus: Message bus with env containing active_trqs
+        lp_model: Trade LP model to inject gateways into
+        enable_trqs: Feature flag to enable/disable TRQ processing (diagnostic)
     """
     logger_local = logging.getLogger(f"{__name__}.enforce_trqs_via_gateways")
+
+    if not enable_trqs:
+        logger_local.info("[DIAGNOSTIC] TRQs disabled via config — skipping gateway injection")
+        return
+
     active_trqs = getattr(message_bus.env, "active_trqs", [])
     if not active_trqs:
         logger_local.info("No active TRQs — skipping gateway injection")
@@ -1188,7 +1199,7 @@ def set_up_steel_trade_lp(
         lp_model.add_transportation_costs(transportation_costs)
 
     # Inject TRQ gateway nodes before tariff enforcement so covered routes can be skipped
-    enforce_trqs_via_gateways(message_bus, lp_model)
+    enforce_trqs_via_gateways(message_bus, lp_model, enable_trqs=config.enable_trqs)
 
     if active_trade_tariffs is not None:
         enforce_trade_tariffs_on_allocations(message_bus, active_trade_tariffs, lp_model=lp_model)

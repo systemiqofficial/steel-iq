@@ -283,6 +283,7 @@ class SimulationConfig:
     minimum_active_utilisation_rate: float = 0.01
     minimum_margin: float = 0.5
     hot_metal_radius: float = 5.0  # km - radius for allocation model
+    enable_trqs: bool = True  # Feature flag to enable/disable TRQ gateways (diagnostic)
     # Products
     primary_products: list[str] = field(
         default_factory=lambda: [

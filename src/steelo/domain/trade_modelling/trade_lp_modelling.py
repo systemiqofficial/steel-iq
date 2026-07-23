@@ -1821,12 +1821,21 @@ class TradeLPModel:
         For plant→tier-0 (duty-free) arcs, a small ordering nudge
         (1e-3 × (production_cost + BOM energy cost)) is added to lp_model.allocation_costs so
         the LP prefers the cheapest-to-produce plants (lowest carbon + feedstock energy) for the
-        duty-free quota when capacity allows.  gateway_arc_costs is left untouched so that
-        collapse_gateway_arcs() and PAM always see the real tariff and transport costs.
+        duty-free quota when capacity allows.
+
+        For gateway→demand-center arcs, the destination's willingness-to-pay credit is added
+        (matching add_allocation_costs_as_parameters_to_lp's `- willingness_to_pay_value` term
+        on direct arcs) so gateway routes are cost-comparable to direct routes to the same
+        destination — otherwise gateway arcs are structurally penalized by the full WTP value
+        relative to any surviving direct route, regardless of tariff/transport savings.
+
+        gateway_arc_costs itself is left untouched so that collapse_gateway_arcs() and PAM
+        always see the real tariff and transport costs.
         """
         if not self.gateway_arc_costs:
             return
         tier0_ids = {gw.node_id for gw in self.trq_gateway_nodes if gw.tier_index == 0}
+        gateway_ids = {gw.node_id for gw in self.trq_gateway_nodes}
         pc_by_name = {pc.name: pc for pc in self.process_centers}
         # Per-plant BOM energy cost: bom_energy_costs is keyed by (plant_name, commodity); sum a
         # plant's entries to a single scalar comparable to production_cost (carbon).
@@ -1836,14 +1845,23 @@ class TradeLPModel:
         overridden = 0
         for key, cost in self.gateway_arc_costs.items():
             if key in self.lp_model.allocation_costs:
-                from_name, to_name, _ = key
-                nudge = 0.0
+                from_name, to_name, commodity = key
+                adjustment = 0.0
                 if to_name in tier0_ids:
                     plant_pc = pc_by_name.get(from_name)
                     if plant_pc is not None:
                         production_economics = plant_pc.production_cost + bom_cost_by_plant.get(from_name, 0.0)
-                        nudge = 1e-3 * production_economics
-                self.lp_model.allocation_costs[key] = cost + nudge
+                        # Negative nudge: incentivize cheaper plants by making tier_0 routes slightly cheaper
+                        # This reverses the original nudge direction and makes gateways more attractive
+                        adjustment = -1e-3 * production_economics
+                elif from_name in gateway_ids:
+                    # Gateway → demand-center leg: apply the same WTP credit a direct arc to this
+                    # destination would get.
+                    to_pc = pc_by_name.get(to_name)
+                    if to_pc is not None and to_pc.location is not None:
+                        wtp_key = (to_pc.location.iso3, commodity)
+                        adjustment = -self.lp_model.willingness_to_pay.get(wtp_key, 0)
+                self.lp_model.allocation_costs[key] = cost + adjustment
                 overridden += 1
         logging.getLogger(f"{__name__}._override_gateway_arc_costs").info(
             f"Overrode costs for {overridden} gateway arcs"
@@ -2036,6 +2054,10 @@ class TradeLPModel:
         elif result.solver.termination_condition == pyo.TerminationCondition.optimal:
             # Load the solution if optimal
             self.lp_model.solutions.load_from(result)
+
+            # Report objective function value (total cost)
+            obj_value = pyo.value(self.lp_model.objective)
+            logger.info(f"LP Solution: Objective function (total cost) = ${obj_value:,.2f}")
 
             # Calculate and report unfulfilled demand percentage
             total_demand = 0

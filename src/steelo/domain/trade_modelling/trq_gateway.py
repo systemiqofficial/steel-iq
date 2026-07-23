@@ -222,6 +222,12 @@ def compute_gateway_arc_costs(
     Plant → gateway arcs: tariff cost only (tariff_rate / 100 × avg commodity price at origin).
     Gateway → demand-center arcs: demand-weighted average transport cost.
 
+    These are the "real" (physical) tariff and transport costs, deliberately excluding
+    LP-internal preference terms like willingness-to-pay: collapse_gateway_arcs() reuses
+    this same dict for trade reports, so it must stay a true cost breakdown. The
+    willingness-to-pay credit is applied separately, only to the LP objective, in
+    TradeLPModel._override_gateway_arc_costs.
+
     Args:
         gateway_nodes: Gateway nodes from build_trq_gateway_nodes().
         process_centers: All process centers already in the LP model (plants + DCs).
