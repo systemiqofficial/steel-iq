@@ -2073,7 +2073,8 @@ def build_trq_report_rows(lp_model: tlp.TradeLPModel) -> list[dict]:
     gateway_ids = {gw.node_id for gw in lp_model.trq_gateway_nodes}
     gateway_by_id = {gw.node_id: gw for gw in lp_model.trq_gateway_nodes}
     allocation_vars = lp_model.lp_model.allocation_variables
-    allocation_costs = getattr(lp_model.lp_model, "allocation_costs", {})
+    # Use gateway_arc_costs for real tariff/transport (excludes LP nudge adjustments)
+    gateway_costs = getattr(lp_model, "gateway_arc_costs", {}) or {}
 
     # Per-process-center lookups (iso3, green-steel eligibility, production cost).
     pc_iso3: dict[str, str] = {pc.name: (pc.location.iso3 or "") for pc in lp_model.process_centers}
@@ -2092,9 +2093,11 @@ def build_trq_report_rows(lp_model: tlp.TradeLPModel) -> list[dict]:
         if vol <= 0.0:
             continue
         if t in gateway_ids:
-            inbound.setdefault(t, []).append((f, vol, allocation_costs.get((f, t, c), 0.0)))
+            # Use real gateway cost (tariff only), not allocation_costs (which includes LP nudge)
+            inbound.setdefault(t, []).append((f, vol, gateway_costs.get((f, t, c), 0.0)))
         if f in gateway_ids:
-            outbound.setdefault(f, []).append((t, vol, allocation_costs.get((f, t, c), 0.0)))
+            # Use real gateway cost (transport only), not allocation_costs (which includes LP nudge)
+            outbound.setdefault(f, []).append((t, vol, gateway_costs.get((f, t, c), 0.0)))
 
     # Accumulate per (gateway, from_iso3, to_iso3, commodity) group.
     volume: dict[tuple[str, str, str, str], float] = defaultdict(float)

@@ -79,6 +79,7 @@ def extract_and_process_stored_dataCollection(
                 "technology",
                 "product",
                 "chosen_reductant",
+                "green_steel_eligible",
                 "capacity",
                 "production",
                 "unit_vopex",
@@ -332,6 +333,7 @@ def extract_and_process_stored_dataCollection(
         "furnace_group_profit_and_loss",
         "technology",
         "product",
+        "green_steel_eligible",
     ]
     core = [c for c in CORE_COLS if c in non_breakdown_cols]
     rest = [c for c in non_breakdown_cols if c not in CORE_COLS]

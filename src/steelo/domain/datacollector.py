@@ -9,6 +9,7 @@ from pathlib import Path
 import os
 from .constants import Year
 import logging
+from steelo.domain.trade_modelling.set_up_steel_trade_lp import is_furnace_group_eligible_for_green_steel_exemption
 
 
 class DataCollector:
@@ -668,6 +669,17 @@ class DataCollector:
                     energy = cast(dict[str, dict[str, Any]], bill_of_materials.get("energy", {}))
 
                 has_materials = materials is not None
+
+                # Determine green steel eligibility for this furnace group
+                green_steel_eligible = False
+                try:
+                    green_steel_eligible = is_furnace_group_eligible_for_green_steel_exemption(
+                        furnace_group=fg,
+                        environment=self.env,
+                    )
+                except Exception:
+                    green_steel_eligible = False
+
                 record: dict[str, Any] = {
                     "furnace_group_id": fg.furnace_group_id,
                     "technology": fg.technology.name,
@@ -675,6 +687,7 @@ class DataCollector:
                     "production": fg.production,
                     "capacity": fg.capacity,
                     "product": fg.technology.product,
+                    "green_steel_eligible": green_steel_eligible,
                     "unit_fopex": fg.unit_fopex,
                     "unit_debt_repayment": fg.unit_current_debt_repayment,
                     "unit_production_cost": fg.unit_production_cost,
@@ -778,6 +791,7 @@ class DataCollector:
                         "production": fg.production,
                         "capacity": fg.capacity,
                         "product": fg.technology.product,
+                        "green_steel_eligible": green_steel_eligible,
                         "bill_of_materials": None,
                         "materials": None,
                         "energy": None,

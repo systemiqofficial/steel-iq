@@ -4,13 +4,21 @@ import logging
 
 
 def export_commodity_allocations_to_csv(
-    commodity_allocations_dict: dict[str, CommodityAllocations], year: int, filename: str
+    commodity_allocations_dict: dict[str, CommodityAllocations],
+    year: int,
+    filename: str,
+    green_steel_eligible_map: dict[str, bool] | None = None,
 ) -> None:
     """
     Exports all allocation information from a CommodityAllocations instance to a CSV file.
     The CSV includes the commodity, source/destination types, IDs, locations, demand at destination,
-    and supply at source. Adjust the details within `extract_source_info` and `extract_destination_info`
-    to match your exact data structures.
+    and supply at source. Optionally includes green steel eligibility for furnace group sources.
+
+    Args:
+        commodity_allocations_dict: Dict of commodity → CommodityAllocations
+        year: Simulation year
+        filename: Output CSV file path
+        green_steel_eligible_map: Optional dict mapping furnace group IDs to green_steel_eligible boolean
     """
 
     # Define your CSV columns
@@ -21,6 +29,7 @@ def export_commodity_allocations_to_csv(
         "source_location",
         "capacity_at_source",
         "source_tech",
+        "source_green_steel_eligible",
         "destination_type",
         "destination_id",
         "destination_location",
@@ -48,6 +57,12 @@ def export_commodity_allocations_to_csv(
                     extract_source_info(source, year)
                 )
 
+                # Get green steel eligible status for furnace group sources only
+                # (Suppliers don't have green steel eligibility)
+                source_green_steel_eligible = None
+                if source_type == "Plant-FurnaceGroup" and green_steel_eligible_map:
+                    source_green_steel_eligible = green_steel_eligible_map.get(source_id, None)
+
                 # For each destination and volume, extract details and write a row
                 for destination, volume in destination_dict.items():
                     dest_type, dest_id, dest_location, demand_at_destination = extract_destination_info(
@@ -64,6 +79,7 @@ def export_commodity_allocations_to_csv(
                         "source_location": str(source_location),
                         "capacity_at_source": capacity_at_source,
                         "source_tech": source_tech,
+                        "source_green_steel_eligible": source_green_steel_eligible,
                         "destination_type": dest_type,
                         "destination_id": dest_id,
                         "destination_location": str(dest_location),

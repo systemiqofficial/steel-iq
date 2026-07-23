@@ -521,10 +521,32 @@ class AllocationModel:
                 country_mappings=bus.env.country_mappings,
                 top_n=20,
             )
+        # Build green steel eligibility map from furnace groups in the repository
+        # (not from trade_lp process centers, which may use meta-furnace-group IDs when clustering)
+        from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
+            is_furnace_group_eligible_for_green_steel_exemption,
+        )
+
+        green_steel_eligible_map = {}
+        try:
+            for plant in bus.uow.repository.plants.list():
+                for fg in plant.furnace_groups:
+                    try:
+                        is_eligible = is_furnace_group_eligible_for_green_steel_exemption(
+                            furnace_group=fg,
+                            environment=bus.env,
+                        )
+                        green_steel_eligible_map[fg.furnace_group_id] = is_eligible
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning(f"Failed to build green steel eligibility map: {e}")
+
         export_commodity_allocations_to_csv(
             commodity_allocations_dict=commodity_allocations,
             year=bus.env.year,
             filename=str(output_dir / "TM" / f"steel_trade_allocations_{bus.env.year}.csv"),
+            green_steel_eligible_map=green_steel_eligible_map,
         )
         # TRQ reporting: one row per (gateway node, from country, to country, commodity).
         # No file is written when no TRQs are active. Reads the solved LP variables, so it
