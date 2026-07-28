@@ -320,6 +320,13 @@ def preprocess_storage_costs(
     storage_costs_df.set_index("Metric", inplace=True)
     if "Unit" in storage_costs_df.columns:
         storage_costs_df.drop(columns=["Unit"], inplace=True)
+    # TODO: "Total installed unit cost" is stated in USD/kWh in this sheet, but unlike the
+    # solar/wind CAPEX loader above (which converts USD/kW -> USD/MW), this value is never
+    # converted to USD/MWh before being used as battery_cost_per_installed_unit elsewhere
+    # (e.g. correct_battery_capex_for_modular_installation / calculate_installation_cost,
+    # which multiply it against a MWh quantity) -- a likely 1000x unit-scale bug. Found
+    # while building the sampling-vs-optimization benchmark in scripts/boa_benchmark/,
+    # which applies the missing x1000 conversion in its own cost preprocessing.
     storage_cost_dict = {
         "battery_cost_per_installed_unit": storage_costs_df.loc["Total installed unit cost"].loc[years].to_numpy(),
         "average_implied_storage": storage_costs_df.loc["Average implied storage"].loc[years].to_numpy(),
