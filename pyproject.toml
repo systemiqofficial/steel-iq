@@ -48,6 +48,8 @@ dependencies = [
     "httpx",
     "tqdm",
     "dask[array,distributed]>=2025.5.0",
+    "pypsa>=1.2.4",
+    "gurobipy>=13.0.2",
 ]
 [build-system]
 requires = ["hatchling"]
