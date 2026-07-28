@@ -23,6 +23,12 @@ __pycache__/
 # scratch data
 /data*
 
+# BOA benchmark preprocessed data + cache (generated, large)
+scripts/boa_benchmark/preprocessed_data/
+
+# BOA benchmark sweep outputs (generated)
+scripts/boa_benchmark/results/
+
 # coverage
 .coverage
 

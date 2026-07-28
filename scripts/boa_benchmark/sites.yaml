@@ -1,0 +1,86 @@
+# 7 grid cells spanning distinct wind/solar regimes and cost regions, curated from
+# select_sites.py candidates (see scripts/boa_benchmark/select_sites.py docstring).
+# cost_region must match a "region" value in scripts/boa_benchmark/preprocessed_data/flat_costs.csv.
+#
+# regime: computed once from the year-2025 Copernicus profile at each cell (nearest grid
+# point), not hand-guessed. solar/wind_cf_mean = annual mean capacity factor (the
+# "magnitude" dimension). solar/wind_cf_seasonality = std dev of the 12 monthly-mean CFs
+# (not the raw hourly std, which would mostly capture solar's diurnal cycle rather than
+# genuine seasonal variation) -- the "seasonality" dimension.
+
+- name: patagonia_chile
+  lat: -53.25
+  lon: -74.5
+  cost_region: "South America"
+  regime:
+    solar_cf_mean: 0.0999
+    wind_cf_mean: 0.9350
+    solar_cf_seasonality: 0.0512
+    wind_cf_seasonality: 0.0404
+    # extreme wind, negligible solar; noticeably seasonal solar despite low magnitude.
+
+- name: atacama_desert
+  lat: -24.75
+  lon: -69.75
+  cost_region: "South America"
+  regime:
+    solar_cf_mean: 0.2407
+    wind_cf_mean: 0.2725
+    solar_cf_seasonality: 0.0263
+    wind_cf_seasonality: 0.0906
+    # extreme solar, weak wind; wind is both weak and seasonal here.
+
+- name: n_adriatic
+  lat: 45.0
+  lon: 14.25
+  cost_region: "EU + Schengen"
+  regime:
+    solar_cf_mean: 0.1473
+    wind_cf_mean: 0.4512
+    solar_cf_seasonality: 0.0550
+    wind_cf_seasonality: 0.0967
+    # genuinely balanced magnitude, but the most seasonal site on both axes.
+
+- name: sahara_libya_egypt
+  lat: 18.0
+  lon: 27.25
+  cost_region: "North Africa"
+  regime:
+    solar_cf_mean: 0.2165
+    wind_cf_mean: 0.7828
+    solar_cf_seasonality: 0.0114
+    wind_cf_seasonality: 0.1141
+    # strong on both magnitudes, unlike Atacama's solar-only extreme; least seasonal solar.
+
+- name: ecuador_colombia_coast
+  lat: 1.25
+  lon: -78.25
+  cost_region: "South America"
+  regime:
+    solar_cf_mean: 0.1047
+    wind_cf_mean: 0.0125
+    solar_cf_seasonality: 0.0100
+    wind_cf_seasonality: 0.0054
+    # weak on both magnitudes ("hard case"), and the flattest/least seasonal site by far.
+
+- name: inner_mongolia
+  lat: 41.75
+  lon: 107.75
+  cost_region: "China"
+  regime:
+    solar_cf_mean: 0.1926
+    wind_cf_mean: 0.7922
+    solar_cf_seasonality: 0.0246
+    wind_cf_seasonality: 0.0806
+    # strong on both magnitudes, plus low cost_of_capital in China.
+
+- name: wa_gascoyne_coast
+  lat: -27.75
+  lon: 113.75
+  cost_region: "Oceania"
+  regime:
+    solar_cf_mean: 0.2013
+    wind_cf_mean: 0.8161
+    solar_cf_seasonality: 0.0420
+    wind_cf_seasonality: 0.0715
+    # strong on both magnitudes, moderate seasonality on both.
