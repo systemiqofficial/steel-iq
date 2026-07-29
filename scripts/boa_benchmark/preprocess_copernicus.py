@@ -157,7 +157,7 @@ def preprocess_year(data_dir: Path, year: int, output_dir: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-dir", type=Path, default=Path("data_copernicus"))
-    parser.add_argument("--year", type=int, required=True, choices=[2015, 2020, 2025])
+    parser.add_argument("--year", type=int, required=True, choices=[2010, 2015, 2020, 2025])
     parser.add_argument("--output-dir", type=Path, default=Path("scripts/boa_benchmark/preprocessed_data"))
     args = parser.parse_args()
 

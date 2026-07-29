@@ -60,6 +60,12 @@ refinement); `--validate` additionally checks the machinery against a genuinely 
 optimum by running the search under the *energy* metric with the PyPSA LP's own linear
 objective, where `pypsa_model` provides a certified LP answer to compare against. Chain:
 LP certifies the search, search handles hours.
+
+**Multiple weather years.** `find_robust_gbs_design` generalizes `find_gbs_design` to a
+list of profiles (e.g. several weather years at one site), returning the design that meets
+`coverage_p` in every one of them at once -- see its docstring for why the same
+monotonicity argument extends cleanly (the per-profile `b_min` grids' elementwise max is
+still pointwise-optimal). Used by `run_weather_year_sensitivity.py`.
 """
 
 import argparse
@@ -307,70 +313,30 @@ def _select_seeds(values: np.ndarray, k: int, min_separation: int) -> list[tuple
     return seeds
 
 
-def find_gbs_design(
-    profile: dict[str, np.ndarray],
-    baseload_demand: float,
-    costs: BenchmarkCosts,
-    coverage_p: float,
-    soc_mode: str = "empty_start",
-    metric: str = "hours",
-    standing_loss: float = 0.0,
-    objective: str = "lcoe",
-    s_max: float = 8.0,
-    w_max: float = 8.0,
-    coarse_grid: int = 41,
-    refine_grid: int = 21,
-    n_refinements: int = 5,
-    n_seeds: int = 5,
-) -> GBSDesign:
-    """Minimize cost over designs meeting `coverage_p`, using BOA's exact dispatch/metric.
+def _grid_bisection_search(
+    battery_grid_fn,
+    cost_of,
+    s_max: float,
+    w_max: float,
+    coarse_grid: int,
+    refine_grid: int,
+    n_refinements: int,
+    n_seeds: int,
+    infeasible_msg: str,
+) -> tuple[float, float, float, float, float, int]:
+    """Coarse-to-fine (solar, wind) search shared by `find_gbs_design` and
+    `find_robust_gbs_design` -- `battery_grid_fn(s_vals, w_vals) -> battery array` is the
+    only thing that differs between them (one profile's `b_min` grid vs. the elementwise
+    max of several). See `find_gbs_design`'s docstring for why `n_refinements`, not
+    `coarse_grid`, is the budget knob to sweep.
 
-    Coarse grid over (solar, wind) -> `n_seeds` distinct basins -> `n_refinements` rounds of
-    local re-gridding around each. At every grid point the battery is `b_min(s, w)`, which
-    is optimal there because cost strictly increases in battery capacity.
-
-    `n_refinements` is the parameter to sweep for a convergence/budget curve, not
-    `coarse_grid`: total work is `coarse_grid**2 + n_refinements * n_seeds * refine_grid**2`,
-    and refinement dominates once `n_refinements >= 1` at the defaults below (coarse_grid
-    contributes only ~4% of total evaluations at coarse_grid=41 vs. coarse_grid=11) --
-    varying `coarse_grid` alone barely moves total work or the answer. `n_refinements=0` is
-    a valid, cheap budget level: it returns the coarse grid's own best point directly, no
-    local refinement at all.
-
-    `coarse_grid` should also stay fixed across a budget sweep rather than growing with
-    `n_refinements`: each refinement stage's local box is `1.5x` the *previous* stage's own
-    spacing, so the box shrinks geometrically (~0.15x/stage) regardless of how coarse the
-    very first grid was -- `coarse_grid`'s only job is landing the first seed inside the
-    right basin, not precision, and precision comes entirely from that geometric shrinkage.
-    A finer `coarse_grid` at higher `n_refinements` would add evaluations with no accuracy
-    payoff. The one place `coarse_grid` matters on its own is `n_refinements=0`, where
-    there's no refinement to fall back on -- that argues for keeping it at a reasonable
-    fixed value, not for scaling it.
+    Returns `(best_objective, s_star, w_star, b_star, refinement_delta, n_evaluations)`.
     """
-    if metric not in _METRIC_CODE:
-        raise ValueError(f"metric must be one of {sorted(_METRIC_CODE)}, got {metric!r}")
-    if soc_mode not in ("cyclic", "empty_start"):
-        raise ValueError(f"soc_mode must be 'cyclic' or 'empty_start', got {soc_mode!r}")
-
-    metric_code = _METRIC_CODE[metric]
-    cyclic = soc_mode == "cyclic"
-    target = 1 - coverage_p / 100
-    solar_profile = np.ascontiguousarray(profile["solar"], dtype=np.float64)
-    wind_profile = np.ascontiguousarray(profile["wind"], dtype=np.float64)
-
-    if objective == "lcoe":
-        cost_of = _lcoe_objective(baseload_demand, costs, profile)
-    elif objective == "pypsa_linear":
-        cost_of = _pypsa_linear_objective(baseload_demand, costs)
-    else:
-        raise ValueError(f"objective must be 'lcoe' or 'pypsa_linear', got {objective!r}")
-
-    start = time.time()
     n_evaluations = 0
 
     def evaluate(s_vals: np.ndarray, w_vals: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         nonlocal n_evaluations
-        batteries = _b_min_grid(solar_profile, wind_profile, s_vals, w_vals, target, cyclic, standing_loss, metric_code)
+        batteries = battery_grid_fn(s_vals, w_vals)
         n_evaluations += batteries.size
         objectives = np.full(batteries.shape, np.inf)
         for i in range(len(s_vals)):
@@ -388,10 +354,7 @@ def find_gbs_design(
 
     seeds = _select_seeds(objectives, n_seeds, min_separation=max(2, coarse_grid // 10))
     if not seeds:
-        raise RuntimeError(
-            f"No feasible design in [0,{s_max}] x [0,{w_max}] at coverage_p={coverage_p} "
-            f"(metric={metric}, soc_mode={soc_mode}) -- widen the search box."
-        )
+        raise RuntimeError(f"No feasible design in [0,{s_max}] x [0,{w_max}] {infeasible_msg} -- widen the search box.")
 
     # Each basin carries its own local box and is refined independently, so a second,
     # distant minimum can't be lost by the incumbent's box walking away from it. The
@@ -441,6 +404,86 @@ def find_gbs_design(
         previous_best = best[0]
 
     best_objective, s_star, w_star, b_star = best
+    return best_objective, s_star, w_star, b_star, refinement_delta, n_evaluations
+
+
+def find_gbs_design(
+    profile: dict[str, np.ndarray],
+    baseload_demand: float,
+    costs: BenchmarkCosts,
+    coverage_p: float,
+    soc_mode: str = "empty_start",
+    metric: str = "hours",
+    standing_loss: float = 0.0,
+    objective: str = "lcoe",
+    s_max: float = 8.0,
+    w_max: float = 8.0,
+    coarse_grid: int = 41,
+    refine_grid: int = 21,
+    n_refinements: int = 5,
+    n_seeds: int = 5,
+) -> GBSDesign:
+    """Minimize cost over designs meeting `coverage_p`, using BOA's exact dispatch/metric.
+
+    Coarse grid over (solar, wind) -> `n_seeds` distinct basins -> `n_refinements` rounds of
+    local re-gridding around each. At every grid point the battery is `b_min(s, w)`, which
+    is optimal there because cost strictly increases in battery capacity.
+
+    `n_refinements` is the parameter to sweep for a convergence/budget curve, not
+    `coarse_grid`: total work is `coarse_grid**2 + n_refinements * n_seeds * refine_grid**2`,
+    and refinement dominates once `n_refinements >= 1` at the defaults below (coarse_grid
+    contributes only ~4% of total evaluations at coarse_grid=41 vs. coarse_grid=11) --
+    varying `coarse_grid` alone barely moves total work or the answer. `n_refinements=0` is
+    a valid, cheap budget level: it returns the coarse grid's own best point directly, no
+    local refinement at all.
+
+    `coarse_grid` should also stay fixed across a budget sweep rather than growing with
+    `n_refinements`: each refinement stage's local box is `1.5x` the *previous* stage's own
+    spacing, so the box shrinks geometrically (~0.15x/stage) regardless of how coarse the
+    very first grid was -- `coarse_grid`'s only job is landing the first seed inside the
+    right basin, not precision, and precision comes entirely from that geometric shrinkage.
+    A finer `coarse_grid` at higher `n_refinements` would add evaluations with no accuracy
+    payoff. The one place `coarse_grid` matters on its own is `n_refinements=0`, where
+    there's no refinement to fall back on -- that argues for keeping it at a reasonable
+    fixed value, not for scaling it.
+
+    See `find_robust_gbs_design` for the analogous search across several weather years at
+    once, rather than one.
+    """
+    if metric not in _METRIC_CODE:
+        raise ValueError(f"metric must be one of {sorted(_METRIC_CODE)}, got {metric!r}")
+    if soc_mode not in ("cyclic", "empty_start"):
+        raise ValueError(f"soc_mode must be 'cyclic' or 'empty_start', got {soc_mode!r}")
+
+    metric_code = _METRIC_CODE[metric]
+    cyclic = soc_mode == "cyclic"
+    target = 1 - coverage_p / 100
+    solar_profile = np.ascontiguousarray(profile["solar"], dtype=np.float64)
+    wind_profile = np.ascontiguousarray(profile["wind"], dtype=np.float64)
+
+    if objective == "lcoe":
+        cost_of = _lcoe_objective(baseload_demand, costs, profile)
+    elif objective == "pypsa_linear":
+        cost_of = _pypsa_linear_objective(baseload_demand, costs)
+    else:
+        raise ValueError(f"objective must be 'lcoe' or 'pypsa_linear', got {objective!r}")
+
+    def battery_grid_fn(s_vals: np.ndarray, w_vals: np.ndarray) -> np.ndarray:
+        return _b_min_grid(solar_profile, wind_profile, s_vals, w_vals, target, cyclic, standing_loss, metric_code)
+
+    start = time.time()
+    best_objective, s_star, w_star, b_star, refinement_delta, n_evaluations = _grid_bisection_search(
+        battery_grid_fn,
+        cost_of,
+        s_max,
+        w_max,
+        coarse_grid,
+        refine_grid,
+        n_refinements,
+        n_seeds,
+        infeasible_msg=f"at coverage_p={coverage_p} (metric={metric}, soc_mode={soc_mode})",
+    )
+
     design = {"solar": s_star, "wind": w_star, "battery": b_star}
     net_energy = calculate_net_energy_production(s_star, solar_profile, w_star, wind_profile)
     coverage = _coverage_jit(net_energy, b_star, cyclic, standing_loss, metric_code)
@@ -453,6 +496,121 @@ def find_gbs_design(
         )
 
     lcoe = score_lcoe(design, baseload_demand, costs, profile)
+    return GBSDesign(
+        design=design,
+        lcoe=lcoe,
+        objective=best_objective,
+        coverage=coverage,
+        metric=metric,
+        soc_mode=soc_mode,
+        refinement_delta=refinement_delta,
+        on_boundary=on_boundary,
+        n_evaluations=n_evaluations,
+        search_seconds=time.time() - start,
+    )
+
+
+def find_robust_gbs_design(
+    profiles: list[dict[str, np.ndarray]],
+    baseload_demand: float,
+    costs: BenchmarkCosts,
+    coverage_p: float,
+    soc_mode: str = "empty_start",
+    metric: str = "hours",
+    standing_loss: float = 0.0,
+    objective: str = "lcoe",
+    s_max: float = 8.0,
+    w_max: float = 8.0,
+    coarse_grid: int = 41,
+    refine_grid: int = 21,
+    n_refinements: int = 5,
+    n_seeds: int = 5,
+) -> GBSDesign:
+    """Like `find_gbs_design`, but the returned design meets `coverage_p` in *every* one of
+    `profiles` simultaneously (e.g. several weather years at the same site), not just one --
+    the design you'd actually have to commit to before knowing which year's weather occurs,
+    as opposed to `find_gbs_design` run separately per year (which answers "what would have
+    been optimal in hindsight for that year alone").
+
+    Valid by the same monotonicity argument `find_gbs_design` relies on: at fixed
+    (solar, wind), the smallest battery meeting profile `i` alone is `b_min_i(s, w)`; the
+    smallest battery meeting *all* profiles is therefore `max_i b_min_i(s, w)`, since cost is
+    strictly increasing in battery and every `b_min_i` is itself already the minimum feasible
+    value for its own profile. So the elementwise max across per-profile `b_min` grids is
+    still the pointwise-optimal battery at every (solar, wind) grid point, and the same
+    coarse-to-fine search (`_grid_bisection_search`) applies unchanged. `coverage` on the
+    returned `GBSDesign` is the *worst* (minimum) of the per-profile realized coverages --
+    i.e. the binding year.
+
+    `lcoe` does not actually depend on `profile` at all: `score_lcoe` always evaluates
+    `calculate_lcoe_of_re_installation` with `use_curtailment=True`, under which
+    `sold_elect_ih_all` is a constant and `total_costs_all` depends only on installed
+    capacity -- so which of `profiles` is passed in for the final `lcoe`/`objective="lcoe"`
+    calculation is arbitrary. `profiles[0]` is used for concreteness.
+    """
+    if metric not in _METRIC_CODE:
+        raise ValueError(f"metric must be one of {sorted(_METRIC_CODE)}, got {metric!r}")
+    if soc_mode not in ("cyclic", "empty_start"):
+        raise ValueError(f"soc_mode must be 'cyclic' or 'empty_start', got {soc_mode!r}")
+    if not profiles:
+        raise ValueError("profiles must be non-empty")
+
+    metric_code = _METRIC_CODE[metric]
+    cyclic = soc_mode == "cyclic"
+    target = 1 - coverage_p / 100
+    solar_profiles = [np.ascontiguousarray(p["solar"], dtype=np.float64) for p in profiles]
+    wind_profiles = [np.ascontiguousarray(p["wind"], dtype=np.float64) for p in profiles]
+
+    if objective == "lcoe":
+        cost_of = _lcoe_objective(baseload_demand, costs, profiles[0])
+    elif objective == "pypsa_linear":
+        cost_of = _pypsa_linear_objective(baseload_demand, costs)
+    else:
+        raise ValueError(f"objective must be 'lcoe' or 'pypsa_linear', got {objective!r}")
+
+    def battery_grid_fn(s_vals: np.ndarray, w_vals: np.ndarray) -> np.ndarray:
+        batteries = None
+        for solar_profile, wind_profile in zip(solar_profiles, wind_profiles):
+            b = _b_min_grid(solar_profile, wind_profile, s_vals, w_vals, target, cyclic, standing_loss, metric_code)
+            batteries = b if batteries is None else np.maximum(batteries, b)
+        return batteries
+
+    start = time.time()
+    best_objective, s_star, w_star, b_star, refinement_delta, n_evaluations = _grid_bisection_search(
+        battery_grid_fn,
+        cost_of,
+        s_max,
+        w_max,
+        coarse_grid,
+        refine_grid,
+        n_refinements,
+        n_seeds,
+        infeasible_msg=f"at coverage_p={coverage_p} (metric={metric}, soc_mode={soc_mode}) across {len(profiles)} weather years",
+    )
+    # Each grid point cost len(profiles) b_min bisections, not one -- _grid_bisection_search
+    # only counts grid points evaluated, so scale up to the true evaluation count.
+    n_evaluations *= len(profiles)
+
+    design = {"solar": s_star, "wind": w_star, "battery": b_star}
+    coverage = min(
+        _coverage_jit(
+            calculate_net_energy_production(s_star, solar_profile, w_star, wind_profile),
+            b_star,
+            cyclic,
+            standing_loss,
+            metric_code,
+        )
+        for solar_profile, wind_profile in zip(solar_profiles, wind_profiles)
+    )
+
+    on_boundary = bool(np.isclose(s_star, s_max, rtol=1e-3) or np.isclose(w_star, w_max, rtol=1e-3))
+    if on_boundary:
+        logger.warning(
+            f"Robust GBS optimum sits on the search-box boundary (solar={s_star:.3f}/{s_max}, "
+            f"wind={w_star:.3f}/{w_max}) -- widen --s-max/--w-max, the true optimum may lie outside."
+        )
+
+    lcoe = score_lcoe(design, baseload_demand, costs, profiles[0])
     return GBSDesign(
         design=design,
         lcoe=lcoe,

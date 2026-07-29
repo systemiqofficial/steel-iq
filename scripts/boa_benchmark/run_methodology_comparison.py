@@ -19,7 +19,11 @@ Produces one long-format CSV, one row per run:
              (n_refinements) -- the actual cost/accuracy knob here, since coarse-grid
              resolution alone barely moves total work once n_refinements >= 1 (see
              `find_gbs_design`'s docstring). `budget` = n_refinements, `seed` =
-             NaN (deterministic).
+             NaN (deterministic). If no design in the `[0, s_max] x [0, w_max]` search
+             box meets the coverage threshold, `lcoe`/`battery`/`n_evaluations` are NaN
+             (one such row per site/coverage/metric/soc_mode -- remaining refinement
+             levels are skipped, since the infeasibility is a property of the search
+             box, not of n_refinements, and would just repeat).
     "lp"  -- `pypsa_model.solve_optimal_design`'s certified LP. Only emitted for
              `metric="energy"` (the only metric it's a certified ground truth for --
              see `pypsa_model.py`'s docstring) and `soc_mode="cyclic"` (PyPSA's
@@ -229,17 +233,45 @@ def run_sweep(
                                 )
 
                     for n_refinements in refinement_levels:
-                        result = find_gbs_design(
-                            profile,
-                            baseload_demand,
-                            costs,
-                            coverage_p,
-                            soc_mode=soc_mode,
-                            metric=metric,
-                            standing_loss=standing_loss,
-                            coarse_grid=gbs_coarse_grid,
-                            n_refinements=n_refinements,
-                        )
+                        t0 = time.time()
+                        try:
+                            result = find_gbs_design(
+                                profile,
+                                baseload_demand,
+                                costs,
+                                coverage_p,
+                                soc_mode=soc_mode,
+                                metric=metric,
+                                standing_loss=standing_loss,
+                                coarse_grid=gbs_coarse_grid,
+                                n_refinements=n_refinements,
+                            )
+                        except RuntimeError as exc:
+                            # Infeasibility is a property of the search box (s_max/w_max) and
+                            # coarse grid, not of n_refinements -- it recurs identically for
+                            # every remaining refinement level, so log one row and stop instead
+                            # of re-discovering the same failure n_refinements more times.
+                            logger.warning(
+                                f"  coverage={coverage} metric={metric} soc_mode={soc_mode} "
+                                f"gbs infeasible at n_refinements={n_refinements}: {exc}"
+                            )
+                            rows.append(
+                                _row(
+                                    site,
+                                    coverage,
+                                    metric,
+                                    standing_loss,
+                                    soc_mode,
+                                    "gbs",
+                                    n_refinements,
+                                    np.nan,
+                                    np.nan,
+                                    None,
+                                    np.nan,
+                                    time.time() - t0,
+                                )
+                            )
+                            break
                         rows.append(
                             _row(
                                 site,

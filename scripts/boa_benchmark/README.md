@@ -136,6 +136,70 @@ actually looks like, and also what PyPSA's `Store(e_cyclic=True)` enforces. Both
 this choice alone moves the answer, using the `gbs` method's most-resolved rows so the
 effect isn't confounded with sampling or search-resolution noise.
 
+### Weather-year sensitivity: how much does the choice of weather year matter?
+
+BOA's own inputs (and every finding above) come from a single weather year's Copernicus
+profile. `run_weather_year_sensitivity.py` checks how much that choice alone moves the
+answer, at all 10 sites, using GBS (`hours` metric, `n_refinements=3`) against four weather
+years (2010, 2015, 2020, 2025).
+
+For each site, two designs are compared:
+- **Per-year optimal** — `find_gbs_design` run separately against each year's profile:
+  "what would have been the cheapest design, in hindsight, for that year alone."
+- **Robust** — `find_robust_gbs_design` run against all four years at once: "what do you
+  actually have to build if you must commit to a design before knowing which year's weather
+  will occur." Valid by the same monotonicity argument GBS already relies on: at fixed
+  `(solar, wind)`, the smallest battery meeting every year is the *max* of each year's own
+  `b_min`, so the elementwise max of the per-year battery grids is still pointwise-optimal
+  and the same coarse-to-fine search applies unchanged (see `find_robust_gbs_design`'s
+  docstring in `gbs.py`).
+
+**Rejected alternative: don't average a fixed design's LCOE across years.** An earlier idea
+was to evaluate one design against each year and average the resulting LCOE. This doesn't
+work: `score_lcoe` always calls `calculate_lcoe_of_re_installation` with
+`use_curtailment=True`, under which `sold_elect_ih_all` is a hardcoded constant and
+`total_costs_all` depends only on installed capacity — LCOE for a *fixed* design does not
+depend on the weather profile at all. Averaging it across years would just return the same
+number four times. What actually varies across years for a fixed design is *coverage*
+(does it still clear the threshold), which is what the robust design directly optimizes
+against instead.
+
+**Finding: the robustness premium
+(`(robust_lcoe - mean(per_year_lcoe)) / mean(per_year_lcoe)`) ranges from +2.5% to +21.5%
+across sites** (coverage_threshold=0.95, `n_refinements=3`):
+
+| site | mean per-year LCOE | LCOE spread across years | robust LCOE | robustness premium |
+|---|---:|---:|---:|---:|
+| patagonia_chile | 33.6 | 35.5% | 40.8 | +21.5% |
+| n_adriatic | 99.6 | 18.0% | 110.9 | +11.3% |
+| wyoming_usa | 61.4 | 16.2% | 67.3 | +9.6% |
+| wa_gascoyne_coast | 55.1 | 21.0% | 60.0 | +9.0% |
+| inner_mongolia | 32.9 | 10.1% | 34.7 | +5.4% |
+| sahara_libya_egypt | 62.2 | 9.1% | 65.2 | +4.8% |
+| namibia_kunene | 99.3 | 6.1% | 102.2 | +2.9% |
+| atacama_desert | 74.1 | 4.9% | 76.1 | +2.6% |
+| iran_desert | 79.3 | 7.0% | 81.3 | +2.5% |
+
+At 8 of the 9 feasible sites, the robust design equals (to grid resolution) the single worst
+year's own optimal design — the premium there is purely "you have to build for your worst
+historical year, and that year alone is meaningfully worse than average." **`inner_mongolia`
+is the exception**: its robust LCOE (34.66) is *higher* than even its own worst individual
+year's optimum (34.54, 2020) — no single year's design satisfies all four years at once, so
+the robust design has to compromise on `(solar, wind)` in a way that's suboptimal for every
+individual year. This is only possible because different years can bind on genuinely
+different points of the design space, not just different severities of the same point.
+
+`ecuador_colombia_coast` is infeasible for all four years in the default `[0,8]x[0,8]`
+search box under `hours`/p95/`empty_start` (consistent with the box-too-small finding
+already noted for `energy`/cyclic at the same site) — excluded from the table above, shown
+as an "x" on the map rather than silently dropped.
+
+**Caveat.** Four snapshot years (2010, 2015, 2020, 2025), not a full climatology — a
+genuinely anomalous year outside this sample (e.g. a multi-decade-rare low-wind year) would
+not show up here. This is enough to establish that weather-year choice is *not* a negligible
+effect at several sites, not a substitute for a longer reanalysis record if this becomes a
+production design input.
+
 ## Running the benchmark
 
 `run_methodology_comparison.py` sweeps sites x coverage thresholds x coverage metrics x SOC
@@ -182,6 +246,21 @@ uv run python scripts/boa_benchmark/plot_benchmark.py --csv scripts/boa_benchmar
 is genuinely **~6x** slower than empty-start (measured: 4.4s vs. 26.6s for the same search).
 Sweeping both modes costs little on the `boa` side and a real but bounded amount on the
 `gbs` side; `gbs` is the cheaper method overall regardless.
+
+## Weather-year sensitivity sweep
+
+```bash
+uv run python scripts/boa_benchmark/run_weather_year_sensitivity.py \
+    --years 2010,2015,2020,2025 --coverage-threshold 0.95 --n-refinements 3
+uv run python scripts/boa_benchmark/plot_weather_year_sensitivity.py \
+    --csv scripts/boa_benchmark/results/weather_year_sensitivity.csv
+```
+
+Requires `preprocess_copernicus.py --year {year}` to have already been run for each year.
+Produces `weather_year_sensitivity.csv` (`method` in `{"gbs", "gbs_robust"}`, one row per
+site x year plus one robust row per site) and two plots: `weather_year_map.png` (world map
+colored by robustness premium) and `weather_year_spread.png` (per-site small multiples:
+each year's own optimum as a point, the robust design as a dashed line).
 
 ## Future work
 

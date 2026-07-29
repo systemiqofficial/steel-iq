@@ -1,4 +1,4 @@
-# 7 grid cells spanning distinct wind/solar regimes and cost regions, curated from
+# 10 grid cells spanning distinct wind/solar regimes and cost regions, curated from
 # select_sites.py candidates (see scripts/boa_benchmark/select_sites.py docstring).
 # cost_region must match a "region" value in scripts/boa_benchmark/preprocessed_data/flat_costs.csv.
 #
@@ -84,3 +84,36 @@
     solar_cf_seasonality: 0.0420
     wind_cf_seasonality: 0.0715
     # strong on both magnitudes, moderate seasonality on both.
+
+- name: wyoming_usa
+  lat: 41.75
+  lon: -109.25
+  cost_region: "North America"
+  regime:
+    solar_cf_mean: 0.2058
+    wind_cf_mean: 0.4817
+    solar_cf_seasonality: 0.0386
+    wind_cf_seasonality: 0.1151
+    # balanced-to-wind-leaning, notably seasonal wind; first North America site.
+
+- name: iran_desert
+  lat: 32.75
+  lon: 60.0
+  cost_region: "Middle East"
+  regime:
+    solar_cf_mean: 0.2096
+    wind_cf_mean: 0.5558
+    solar_cf_seasonality: 0.0289
+    wind_cf_seasonality: 0.2668
+    # strong wind for a desert site, by far the most wind-seasonal site here; first Middle East site.
+
+- name: namibia_kunene
+  lat: -21.5
+  lon: 14.75
+  cost_region: "Southern Africa"
+  regime:
+    solar_cf_mean: 0.2154
+    wind_cf_mean: 0.4196
+    solar_cf_seasonality: 0.0214
+    wind_cf_seasonality: 0.1056
+    # balanced magnitude, mild seasonality; first Southern Africa site.
