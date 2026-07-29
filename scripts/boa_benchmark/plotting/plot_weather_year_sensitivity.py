@@ -6,25 +6,32 @@ script's docstring).
 Two figure types:
 
 1. World map (`weather_year_map_{coverage_threshold}.png`) -- two markers per site, side by
-   side. The left, solid circle is colored by "robustness premium":
-   `(robust_lcoe - mean(per_year_lcoe)) / mean(per_year_lcoe) * 100`, i.e. how much more
-   the design that must meet every weather year at once costs versus the average of each
-   year's own hindsight-optimal design -- the number that answers "is picking one weather
-   year and building for it actually risky here." See README.md's weather-year sensitivity
-   section for why this replaced simply averaging a fixed design's LCOE across years (it
-   doesn't vary with weather at all, so that number would be a no-op). The right marker is
+   side. The left, solid circle is colored by mean per-year LCOE (absolute, one colorbar
+   shared across sites) -- lets you compare sites by baseline cost. The right marker is
    split into 4 quadrants (clockwise from upper-right: earliest to latest weather year),
-   each colored by that year's own optimal LCOE on a second, independent colorbar --
-   complements the single relative premium number with absolute magnitude and shows, at a
-   glance, whether a site's spread comes from one anomalous year or a steady trend. Requires
-   exactly 4 weather years (the quadrant layout is fixed, not swept).
+   each colored by that year's own optimal LCOE expressed as a **premium over that site's
+   own cheapest weather year** (`(year_lcoe - site_min_lcoe) / site_min_lcoe * 100`), on a
+   second colorbar shared across sites. Because it's normalized per site, color intensity
+   directly means "how much worse is this year than my best year" and is comparable across
+   sites regardless of their absolute cost level -- a global colorbar on absolute LCOE would
+   wash out small-in-absolute-but-large-in-relative spreads at cheap sites. The worst
+   quadrant's premium is annotated below each site's diamond marker as "Δ+X.X%" -- a proxy
+   for weather-year robustness risk: it's not the same number as the robust design's premium
+   over the mean
+   (see `core/gbs.py`'s `find_robust_gbs_design`), but a large spread between a site's best
+   and worst weather year is the same underlying risk that metric was built to surface.
+   Requires exactly 4 weather years (the quadrant layout is fixed, not swept).
 
-2. Per-site year spread (`weather_year_spread_{coverage_threshold}.png`) -- one panel per site: a point per
-   weather year's own optimal LCOE, plus a dashed horizontal line at the robust design's
-   LCOE. The robust line landing *above every single year's own point* (not just the worst
-   one) is expected, not a bug: different years can bind on different (solar, wind) mixes,
-   so the design meeting all of them at once can cost more than even the worst year's own
-   hindsight optimum -- see `core/gbs.py`'s `find_robust_gbs_design` docstring.
+2. Per-site year spread (`weather_year_spread_{coverage_threshold}.png`) -- single axes,
+   one x-position per site (sorted by median LCOE, ascending), LCOE on y. Foreground is a
+   black min-max range bar (T-caps at each end) plus a black median dash per site -- the
+   summary stat that answers "how much does weather-year choice move this site's cost." The
+   4 individual weather-year points are still drawn, each a distinct marker shape in a muted
+   color, jittered so they don't stack, as supporting detail rather than the headline.
+   Sharing one y-axis across all sites (unlike the old per-site small-multiples layout)
+   makes spread *magnitude* directly comparable -- a site whose years span 1 USD/MWh and one
+   spanning 15 USD/MWh no longer look alike just because each got its own independent
+   y-scale.
 
 Sites with no feasible design in the search box for a given year, or jointly across years,
 are excluded from that computation (logged, not silently dropped) rather than crashing --
@@ -47,9 +54,31 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.lines import Line2D
+from matplotlib.patches import Wedge
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+# Human-readable labels for plot display -- the CSV's `site` slugs (snake_case, abbreviated
+# region names) are fine as data keys but read poorly as chart labels. Falls back to a
+# title-cased, underscore-stripped version of the slug for any site not listed here, so an
+# unmapped future site degrades gracefully instead of raising.
+_SITE_DISPLAY_NAMES = {
+    "patagonia_chile": "Patagonia, Chile",
+    "n_adriatic": "Northern Adriatic",
+    "wyoming_usa": "Wyoming, USA",
+    "wa_gascoyne_coast": "WA Gascoyne Coast",
+    "ecuador_colombia_coast": "Ecuador–Colombia Coast",
+    "inner_mongolia": "Inner Mongolia, China",
+    "sahara_libya_egypt": "Sahara (Libya/Egypt)",
+    "namibia_kunene": "Namibia (Kunene)",
+    "atacama_desert": "Atacama Desert, Chile",
+    "iran_desert": "Iranian Desert",
+}
+
+
+def _display_name(site: str) -> str:
+    return _SITE_DISPLAY_NAMES.get(site, site.replace("_", " ").title())
 
 
 def _site_summary(df: pd.DataFrame) -> pd.DataFrame:
@@ -91,7 +120,16 @@ def _site_summary(df: pd.DataFrame) -> pd.DataFrame:
 # upper-right: NE (earliest) -> SE -> SW -> NW (latest).
 _QUADRANT_ANGLES = [(0, 90), (270, 360), (180, 270), (90, 180)]
 _INFEASIBLE_COLOR = (0.75, 0.75, 0.75, 1.0)
-_LON_OFFSET = 8.5  # degrees between the two per-site markers
+# The two per-site markers fan upward from the true site coordinate (a "V", apex at the
+# site dot) rather than sitting level with it on a horizontal line -- keeps the mean/premium
+# pair visually anchored to its site while lifting the markers clear of dense horizontal
+# clusters of neighboring sites (e.g. the Middle East/Mediterranean group).
+_LON_OFFSET = 6.0  # degrees, horizontal separation between the two per-site markers
+_LAT_OFFSET = 6.5  # degrees, vertical lift of both markers above the site dot
+# Distinct-but-subtle greyscale per quadrant in the legend inset (independent of the
+# quadrant's premium-colorbar fill on the map itself), so the 4 quadrants read apart at a
+# glance even before matching their position to a year.
+_LEGEND_QUADRANT_SHADES = ["#a8a8a8", "#8c8c8c", "#707070", "#545454"]
 
 
 def _wedge_marker_path(theta1: float, theta2: float, n: int = 20) -> mpath.Path:
@@ -103,9 +141,10 @@ def _wedge_marker_path(theta1: float, theta2: float, n: int = 20) -> mpath.Path:
 
 
 def plot_weather_year_map(df: pd.DataFrame, out_path: Path, coverage_threshold: float) -> None:
-    """Two markers per site, side by side: a solid circle colored by robustness premium (%),
-    and a 4-quadrant wedge marker colored by each weather year's own LCOE -- see module
-    docstring for the reasoning behind each."""
+    """Two markers per site, side by side: a solid circle colored by mean per-year LCOE
+    (absolute), and a 4-quadrant wedge marker colored by each weather year's LCOE premium
+    over that site's own cheapest year -- see module docstring for the reasoning behind
+    each."""
     summary = _site_summary(df)
     if summary.empty:
         raise ValueError("No site has both a feasible per-year and robust design -- nothing to map.")
@@ -118,13 +157,20 @@ def plot_weather_year_map(df: pd.DataFrame, out_path: Path, coverage_threshold: 
         )
     pivot = per_year.pivot(index="site", columns="year", values="lcoe").reindex(summary["site"])
 
-    finite_lcoe = pivot.values[np.isfinite(pivot.values)]
-    lcoe_norm = mcolors.Normalize(vmin=finite_lcoe.min(), vmax=finite_lcoe.max())
-    lcoe_cmap = plt.get_cmap("viridis")
-    premium_norm = mcolors.Normalize(vmin=0, vmax=max(0.0, summary["robust_premium_pct"].max()))
+    # Each year's premium over that *site's own* cheapest year, so color intensity means
+    # "how much worse is this year than my best year" regardless of the site's absolute
+    # cost level -- see module docstring for why a global-absolute colorbar washes this out.
+    site_min = pivot.min(axis=1)
+    premium_pivot = pivot.sub(site_min, axis=0).div(site_min, axis=0) * 100
+    worst_year_premium = premium_pivot.max(axis=1)
+
+    mean_norm = mcolors.Normalize(vmin=summary["mean_lcoe"].min(), vmax=summary["mean_lcoe"].max())
+    mean_cmap = plt.get_cmap("viridis")
+    finite_premium = premium_pivot.to_numpy()[np.isfinite(premium_pivot.to_numpy())]
+    premium_norm = mcolors.Normalize(vmin=0, vmax=finite_premium.max() if finite_premium.size else 1.0)
     premium_cmap = plt.get_cmap("magma_r")
 
-    fig = plt.figure(figsize=(14, 6))
+    fig = plt.figure(figsize=(17, 7.5))
     ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
     ax.add_feature(cfeature.LAND, facecolor="#f0f0f0")
     ax.add_feature(cfeature.OCEAN, facecolor="#ffffff")
@@ -132,13 +178,13 @@ def plot_weather_year_map(df: pd.DataFrame, out_path: Path, coverage_threshold: 
     ax.add_feature(cfeature.BORDERS, linewidth=0.2)
     ax.set_global()
 
-    # Connecting line + true-site dot, drawn under the two offset circles, so it's visually
-    # unambiguous that the premium/LCOE markers are a pair belonging to one site rather than
-    # two unrelated nearby points.
+    # Both markers fan upward from the site dot (a "V", apex at the site) -- visually
+    # unambiguous that the pair belongs to one site, and lifts them clear of the label/line
+    # clutter of horizontally-packed neighbors instead of sitting level with the site.
     for _, row in summary.iterrows():
         ax.plot(
-            [row["lon"] - _LON_OFFSET, row["lon"] + _LON_OFFSET],
-            [row["lat"], row["lat"]],
+            [row["lon"] - _LON_OFFSET, row["lon"], row["lon"] + _LON_OFFSET],
+            [row["lat"] + _LAT_OFFSET, row["lat"], row["lat"] + _LAT_OFFSET],
             color="#666666",
             linewidth=0.8,
             transform=ccrs.PlateCarree(),
@@ -147,19 +193,20 @@ def plot_weather_year_map(df: pd.DataFrame, out_path: Path, coverage_threshold: 
     ax.scatter(
         summary["lon"],
         summary["lat"],
-        c="#333333",
-        s=12,
+        c="#000000",
+        marker="D",
+        s=26,
         transform=ccrs.PlateCarree(),
         zorder=3,
     )
 
-    premium_sc = ax.scatter(
+    mean_sc = ax.scatter(
         summary["lon"] - _LON_OFFSET,
-        summary["lat"],
-        c=summary["robust_premium_pct"],
-        cmap=premium_cmap,
-        norm=premium_norm,
-        s=140,
+        summary["lat"] + _LAT_OFFSET,
+        c=summary["mean_lcoe"],
+        cmap=mean_cmap,
+        norm=mean_norm,
+        s=210,
         edgecolor="black",
         linewidth=0.6,
         transform=ccrs.PlateCarree(),
@@ -168,13 +215,13 @@ def plot_weather_year_map(df: pd.DataFrame, out_path: Path, coverage_threshold: 
 
     for (theta1, theta2), year in zip(_QUADRANT_ANGLES, years):
         marker = _wedge_marker_path(theta1, theta2)
-        values = pivot[year].to_numpy()
-        facecolors = [lcoe_cmap(lcoe_norm(v)) if np.isfinite(v) else _INFEASIBLE_COLOR for v in values]
+        values = premium_pivot[year].to_numpy()
+        facecolors = [premium_cmap(premium_norm(v)) if np.isfinite(v) else _INFEASIBLE_COLOR for v in values]
         ax.scatter(
             summary["lon"] + _LON_OFFSET,
-            summary["lat"],
+            summary["lat"] + _LAT_OFFSET,
             marker=marker,
-            s=420,
+            s=480,
             facecolor=facecolors,
             edgecolor="black",
             linewidth=0.4,
@@ -184,13 +231,14 @@ def plot_weather_year_map(df: pd.DataFrame, out_path: Path, coverage_threshold: 
 
     for _, row in summary.iterrows():
         ax.annotate(
-            f"{row['site']} (+{row['robust_premium_pct']:.1f}%)",
+            f"{_display_name(row['site'])}\nΔ+{worst_year_premium[row['site']]:.1f}%",
             (row["lon"], row["lat"]),
             xycoords=ccrs.PlateCarree()._as_mpl_transform(ax),
             textcoords="offset points",
-            xytext=(0, 9),
+            xytext=(0, -5),
             ha="center",
-            fontsize=7,
+            va="top",
+            fontsize=9,
             zorder=4,
         )
 
@@ -209,85 +257,176 @@ def plot_weather_year_map(df: pd.DataFrame, out_path: Path, coverage_threshold: 
             label="infeasible in search box",
         )
 
-    year_handles = [
-        Line2D(
-            [0],
-            [0],
-            marker=_wedge_marker_path(theta1, theta2),
-            color="none",
-            markerfacecolor="#888888",
-            markeredgecolor="black",
-            markersize=14,
-            label=str(int(year)),
+    # A literal miniature of the right-hand marker (a quadrant circle with year labels) reads
+    # far more clearly than a matplotlib legend built from the same wedge Path scaled down --
+    # at legend-icon size the wedges become illegible slivers.
+    legend_inset = ax.inset_axes([0.85, 0.02, 0.145, 0.32], transform=ax.transAxes)
+    legend_inset.set_xlim(-1.9, 1.9)
+    legend_inset.set_ylim(-2.2, 2.0)
+    legend_inset.set_aspect("equal")
+    legend_inset.set_xticks([])
+    legend_inset.set_yticks([])
+    legend_inset.patch.set_visible(False)
+    for spine in legend_inset.spines.values():
+        spine.set_visible(False)
+    _circle_y = -0.3  # nudge the whole mini-diagram down within its inset panel
+    for (theta1, theta2), year, shade in zip(_QUADRANT_ANGLES, years, _LEGEND_QUADRANT_SHADES):
+        legend_inset.add_patch(
+            Wedge((0, _circle_y), 1, theta1, theta2, facecolor=shade, edgecolor="black", linewidth=0.6)
         )
-        for (theta1, theta2), year in zip(_QUADRANT_ANGLES, years)
-    ]
-    legend_handles = year_handles + (
-        [Line2D([0], [0], marker="x", color="#bbbbbb", linestyle="none", label="infeasible in search box")]
-        if excluded
-        else []
-    )
-    ax.legend(
-        handles=legend_handles, title="weather year (right marker, clockwise from NE)", loc="lower right", fontsize=7
-    )
+        mid_angle = np.radians((theta1 + theta2) / 2)
+        legend_inset.text(
+            1.4 * np.cos(mid_angle),
+            1.4 * np.sin(mid_angle) + _circle_y,
+            str(int(year)),
+            ha="center",
+            va="center",
+            fontsize=10,
+            color="black",
+            zorder=2,
+        )
+    legend_inset.text(0, _circle_y - 1.55, "weather year", ha="center", va="top", fontsize=8)
 
-    fig.colorbar(
-        premium_sc,
+    if excluded:
+        ax.legend(
+            handles=[Line2D([0], [0], marker="x", color="#bbbbbb", linestyle="none", label="infeasible in search box")],
+            loc="lower left",
+            fontsize=9,
+        )
+
+    mean_cbar = fig.colorbar(
+        mean_sc,
         ax=ax,
         location="left",
-        label="Robustness premium vs. per-year mean (%)",
+        label="Mean per-year LCOE (USD/MWh)",
         shrink=0.6,
         pad=0.02,
     )
-    fig.colorbar(
-        plt.cm.ScalarMappable(cmap=lcoe_cmap, norm=lcoe_norm),
+    mean_cbar.set_label("Mean per-year LCOE (USD/MWh)", fontsize=12)
+    mean_cbar.ax.tick_params(labelsize=10)
+
+    premium_cbar = fig.colorbar(
+        plt.cm.ScalarMappable(cmap=premium_cmap, norm=premium_norm),
         ax=ax,
         location="right",
-        label="Per-year LCOE (USD/MWh)",
+        label="Per-year LCOE premium vs. site's cheapest year (%)\n(robustness-risk proxy)",
         shrink=0.6,
         pad=0.02,
     )
+    premium_cbar.set_label("Per-year LCOE premium vs. site's cheapest year (%)\n(robustness-risk proxy)", fontsize=12)
+    premium_cbar.ax.tick_params(labelsize=10)
+
     ax.set_title(
-        f"Weather-year robustness premium (left) and per-year LCOE (right) by site "
-        f"(coverage_threshold={coverage_threshold})"
+        f"Mean LCOE (left) and per-year premium vs. cheapest year (right, robustness-risk proxy) by site "
+        f"(coverage_threshold={coverage_threshold})",
+        fontsize=15,
+        pad=12,
     )
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     logger.info(f"Wrote {out_path}")
 
 
+_YEAR_MARKERS = ["o", "s", "^", "D", "v", "P", "X"]
+_YEAR_MUTED_COLORS = ["#8ecae6", "#ffb703", "#8fbf7f", "#e58a8a", "#b497d6", "#c2a15c", "#7fc4ae"]
+
+
 def plot_weather_year_spread(df: pd.DataFrame, out_path: Path, coverage_threshold: float) -> None:
-    """Small-multiples grid, one panel per site: per-year optimal LCOE points plus a dashed
-    line at the robust design's LCOE."""
+    """Single axes: one x-position per site (sorted by median LCOE, ascending), LCOE on y.
+    The foreground signal is a min-max range bar plus a median marker per site -- the
+    summary stat that answers "how much does weather-year choice move this site's cost."
+    The 4 individual weather-year points are still shown, but small, jittered, and muted
+    (low alpha, no fill), as supporting detail rather than the headline -- see them if you
+    look, but they don't compete with the median/spread read. One shared y-axis (unlike the
+    old per-site small-multiples layout) makes spread magnitude directly comparable across
+    sites."""
     summary = _site_summary(df)
     if summary.empty:
         raise ValueError("No site has both a feasible per-year and robust design -- nothing to plot.")
 
     per_year = df[(df["method"] == "gbs") & (df["site"].isin(summary["site"]))]
-    sites = sorted(summary["site"])
+    median_lcoe = per_year.groupby("site")["lcoe"].median()
+    summary = summary.assign(median_lcoe=summary["site"].map(median_lcoe)).sort_values("median_lcoe")
+    summary = summary.reset_index(drop=True)
+
+    sites = summary["site"].tolist()
+    site_x = {site: i for i, site in enumerate(sites)}
     years = sorted(per_year["year"].dropna().unique())
+    n_years = len(years)
+    jitter = np.linspace(-0.14, 0.14, n_years) if n_years > 1 else [0.0]
 
-    ncols = min(4, len(sites))
-    nrows = -(-len(sites) // ncols)  # ceil
-    fig, axes = plt.subplots(nrows, ncols, figsize=(3.4 * ncols, 3.0 * nrows), squeeze=False)
+    fig, ax = plt.subplots(figsize=(max(9.0, 1.0 * len(sites) + 2), 6.5))
 
-    for i, site in enumerate(sites):
-        ax = axes[i // ncols][i % ncols]
-        site_years = per_year[per_year["site"] == site].dropna(subset=["lcoe"]).sort_values("year")
-        ax.scatter(site_years["year"], site_years["lcoe"], color="#1b9e77", zorder=3, label="per-year optimum")
-        robust_lcoe = summary.loc[summary["site"] == site, "robust_lcoe"].iloc[0]
-        ax.axhline(robust_lcoe, color="#d95f02", linestyle="--", linewidth=1.5, label="robust (all years)")
-        ax.set_xticks(years)
-        ax.set_xticklabels([str(int(y)) for y in years], rotation=45, fontsize=7)
-        ax.set_title(site, fontsize=9)
+    for j, year in enumerate(years):
+        year_rows = per_year[per_year["year"] == year].dropna(subset=["lcoe"])
+        xs = [site_x[s] + jitter[j] for s in year_rows["site"]]
+        ax.scatter(
+            xs,
+            year_rows["lcoe"],
+            marker=_YEAR_MARKERS[j % len(_YEAR_MARKERS)],
+            color=_YEAR_MUTED_COLORS[j % len(_YEAR_MUTED_COLORS)],
+            alpha=0.95,
+            edgecolor="#555555",
+            linewidth=0.5,
+            s=50,
+            zorder=2,
+            label=str(int(year)),
+        )
 
-    for j in range(len(sites), nrows * ncols):
-        axes[j // ncols][j % ncols].axis("off")
+    cap_half = 0.06
+    median_half = 0.10
+    for site in sites:
+        xi = site_x[site]
+        row = summary.loc[summary["site"] == site].iloc[0]
+        ax.vlines(xi, row["min_lcoe"], row["max_lcoe"], color="black", linewidth=1.6, zorder=3)
+        ax.hlines(
+            [row["min_lcoe"], row["max_lcoe"]], xi - cap_half, xi + cap_half, color="black", linewidth=1.6, zorder=3
+        )
+        ax.hlines(row["median_lcoe"], xi - median_half, xi + median_half, color="black", linewidth=2.0, zorder=4)
 
-    handles, labels = axes[0][0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=2, fontsize=9, bbox_to_anchor=(0.5, 1.02))
-    fig.supylabel("LCOE (USD/MWh)")
-    fig.suptitle(f"Per-site LCOE by weather year vs. robust design (coverage_threshold={coverage_threshold})", y=1.06)
+    range_handle = Line2D(
+        [0],
+        [0],
+        marker="|",
+        color="black",
+        markersize=14,
+        markeredgewidth=1.6,
+        linestyle="none",
+        label="min–max range across years",
+    )
+    median_handle = Line2D(
+        [0],
+        [0],
+        marker="_",
+        color="black",
+        markersize=16,
+        markeredgewidth=2.0,
+        linestyle="none",
+        label="median (across years)",
+    )
+    blank_handle = Line2D([], [], color="none", label="")
+
+    ax.set_xticks(range(len(sites)))
+    ax.set_xticklabels([_display_name(s) for s in sites], rotation=45, ha="right", fontsize=11)
+    ax.tick_params(axis="y", labelsize=11)
+    ax.set_xlabel("Site (sorted by median per-year LCOE)", fontsize=13)
+    ax.set_ylabel("LCOE (USD/MWh)", fontsize=13)
+    ax.grid(axis="y", alpha=0.3, zorder=0)
+    year_handles, year_labels = ax.get_legend_handles_labels()
+    # Column-major fill (matplotlib's default for ncol>1): padding the range/median column
+    # to the same row count as the year column keeps them as two visually distinct groups
+    # -- stats on the left, weather years on the right -- rather than interleaved.
+    n_pad = len(year_handles) - 2
+    ax.legend(
+        handles=[range_handle, median_handle] + [blank_handle] * n_pad + year_handles,
+        labels=[range_handle.get_label(), median_handle.get_label()] + [""] * n_pad + year_labels,
+        loc="upper left",
+        fontsize=10,
+        ncol=2,
+    )
+    ax.set_title(
+        f"Per-site LCOE spread across weather years (coverage_threshold={coverage_threshold})", fontsize=15, pad=12
+    )
     fig.tight_layout()
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
