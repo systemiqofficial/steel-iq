@@ -28,6 +28,7 @@ scripts/boa_benchmark/preprocessed_data/
 
 # BOA benchmark sweep outputs (generated)
 scripts/boa_benchmark/results/
+scripts/boa_benchmark/plots/
 
 # coverage
 .coverage

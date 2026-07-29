@@ -1,27 +1,32 @@
 """PyPSA capacity-expansion "ground truth" optimizer for the same solar+wind+battery
 design problem BOA's `capacity_sampling` approximates by sampling.
 
+Solves a single-constraint LP: `sum(unserved.p) <= (p/100) * baseload_demand *
+len(snapshots)` -- caps *total* unserved energy across the year (BOA/`design_metrics`'s
+`energy_coverage` metric), with no regard for how many hours it's spread across. This
+metric is a certified ground truth: minimizing unserved energy under BOA's own greedy
+battery dispatch is provably optimal there (a straightforward exchange argument -- shifting
+charge earlier never hurts and can only reduce shortfall), so BOA's dispatch rule and this
+LP's free dispatch necessarily agree, and HiGHS/Gurobi solve it to a real, certified 0% gap.
+
+This module used to also offer an `hours`-coverage MILP (one binary `hour_covered[t]` per
+snapshot, matching BOA's stricter `calculate_coverage`/`hours_coverage` metric exactly).
+That MILP's LP relaxation is *identical* to the energy-LP above -- for any fixed `unserved`
+vector, the relaxation's optimal `covered[t] = 1 - unserved[t]/D`, and substituting into the
+cardinality constraint `sum(covered) >= (1-p)*N` collapses it to exactly
+`sum(unserved) <= p*N*D`. So its root bound was structurally stuck at the energy-LP's
+answer, and it never certified better than a ~12.5% gap even at a 300s time cap on a real
+8760-hour profile. Worse, its free (optimal-foresight) dispatch doesn't match BOA's greedy
+one for the hours metric (unlike for energy, greedy is *not* optimal there -- foresight will
+sacrifice one deep-deficit hour to fully serve two shallow ones), so it was returning
+designs BOA's own simulator would score below the requested threshold: an unattainable,
+optimistic ground truth. It was removed rather than kept as a slower, uncertified
+alternative -- see `gbs.py` for what replaced it (a `(solar, wind)` grid search
+with battery collapsed to a monotone bisection, run under BOA's own exact dispatch) and
+`README.md` for the full writeup.
+
 Modeling choices (documented here, not hidden):
 
-- **Coverage constraint**: two selectable formulations (`coverage_metric`), since they are
-  genuinely different problems, not two views of the same one:
-    - `"hours"` (**default**): a MILP with one binary `hour_covered[t]` indicator per
-      snapshot, linked via `unserved[t] <= baseload_demand * (1 - hour_covered[t])` and
-      `sum(hour_covered) >= (1 - coverage_p/100) * len(snapshots)`. This matches BOA's own
-      `calculate_coverage` *exactly*: an hour only counts as covered if literally zero
-      demand went unserved that hour (any nonzero shortfall, however small, marks the
-      whole hour uncovered). This is the metric BOA's production filter
-      (`filter_designs_according_to_coverage_and_calculate_costs`) actually enforces, so
-      it's the one that makes PyPSA's result a genuine apples-to-apples ground truth for
-      BOA's real behavior -- at the cost of a slower MILP solve.
-    - `"energy"`: the original single-constraint LP,
-      `sum(unserved.p) <= (p/100) * baseload_demand * len(snapshots)` -- caps *total*
-      unserved energy across the year, with no regard for how many hours it's spread
-      across. Fast (pure LP), but **not** equivalent to `"hours"`: a design can satisfy a
-      95% energy-coverage cap while leaving >10% of hours with some (small) shortfall,
-      which is a materially weaker requirement than BOA's own binary per-hour criterion.
-      Keep this around for a fast sanity check / relaxed-bound comparison, not as the
-      benchmark's headline "ground truth".
 - **Battery**: modeled as a PyPSA `Store` (not `StorageUnit`) so `capital_cost` is a
   straight $/MWh energy-capacity rate with no separate power/discharge-rate limit,
   matching BOA's explicit "battery discharge rate is not considered" assumption. This
@@ -53,6 +58,7 @@ Modeling choices (documented here, not hidden):
   a secondary sanity check, not the number reported in the benchmark.
 """
 
+import logging
 import time
 from dataclasses import dataclass
 from typing import Literal
@@ -63,8 +69,9 @@ import pypsa
 from baseload_optimisation_atlas.boa_logic import correct_battery_capex_for_modular_installation
 from cost_inputs import BenchmarkCosts
 
+logger = logging.getLogger(__name__)
+
 Solver = Literal["highs", "gurobi"]
-CoverageMetric = Literal["hours", "energy"]
 
 
 @dataclass
@@ -74,7 +81,6 @@ class PypsaResult:
     status: str
     termination_condition: str
     solve_seconds: float
-    coverage_metric: CoverageMetric
 
 
 def _capital_recovery_factor(cost_of_capital: float, lifetime_years: int) -> float:
@@ -92,7 +98,6 @@ def solve_optimal_design(
     coverage_p: float,
     solver: Solver = "highs",
     standing_loss: float = 0.0,
-    coverage_metric: CoverageMetric = "hours",
 ) -> PypsaResult:
     from baseload_optimisation_atlas.boa_config import LIFETIMES
 
@@ -137,7 +142,11 @@ def solve_optimal_design(
         capital_cost=annualized_wind,
         marginal_cost=0,
     )
-    net.add("Generator", "unserved", bus="bus", p_nom=1e9, marginal_cost=0)
+    # p_nom capped at baseload_demand: unserved is load shedding, never more than the load
+    # itself -- an unbounded generator would let the LP charge the battery "for free" from
+    # unserved supply, which is unphysical and (at zero marginal cost) not excluded by the
+    # objective either.
+    net.add("Generator", "unserved", bus="bus", p_nom=baseload_demand, marginal_cost=0)
     net.add(
         "Store",
         "battery",
@@ -148,23 +157,12 @@ def solve_optimal_design(
         standing_loss=standing_loss,
     )
 
-    if coverage_metric == "energy":
-        unserved_cap = (coverage_p / 100) * baseload_demand * n_hours
+    unserved_cap = (coverage_p / 100) * baseload_demand * n_hours
 
-        def extra_functionality(n: pypsa.Network, sns) -> None:
-            m = n.model
-            unserved = m["Generator-p"].sel(name="unserved")
-            m.add_constraints(unserved.sum() <= unserved_cap, name="unserved_energy_cap")
-    else:
-        min_covered_hours = (1 - coverage_p / 100) * n_hours
-
-        def extra_functionality(n: pypsa.Network, sns) -> None:
-            m = n.model
-            unserved = m["Generator-p"].sel(name="unserved")
-            # Binary per hour: matches calculate_coverage's "any shortfall == uncovered" rule.
-            covered = m.add_variables(binary=True, coords={"snapshot": sns}, name="hour_covered")
-            m.add_constraints(unserved <= baseload_demand * (1 - covered), name="coverage_link")
-            m.add_constraints(covered.sum() >= min_covered_hours, name="min_covered_hours")
+    def extra_functionality(n: pypsa.Network, sns) -> None:
+        m = n.model
+        unserved = m["Generator-p"].sel(name="unserved")
+        m.add_constraints(unserved.sum() <= unserved_cap, name="unserved_energy_cap")
 
     start = time.time()
     status, termination_condition = net.optimize(
@@ -186,5 +184,4 @@ def solve_optimal_design(
         status=status,
         termination_condition=termination_condition,
         solve_seconds=solve_seconds,
-        coverage_metric=coverage_metric,
     )
