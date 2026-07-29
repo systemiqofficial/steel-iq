@@ -258,8 +258,9 @@ uv run python -m scripts.boa_benchmark.plotting.plot_weather_year_sensitivity \
 
 Requires `preprocessing/preprocess_copernicus.py --year {year}` to have already been run for each year.
 Produces `weather_year_sensitivity.csv` (`method` in `{"gbs", "gbs_robust"}`, one row per
-site x year plus one robust row per site) and two plots: `weather_year_map.png` (world map
-colored by robustness premium) and `weather_year_spread.png` (per-site small multiples:
+site x year plus one robust row per site) and two plots per coverage threshold:
+`weather_year_map_{coverage_threshold}.png` (world map colored by robustness premium) and
+`weather_year_spread_{coverage_threshold}.png` (per-site small multiples:
 each year's own optimum as a point, the robust design as a dashed line).
 
 ## Future work

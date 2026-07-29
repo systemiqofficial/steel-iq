@@ -99,6 +99,8 @@ def run_sensitivity(
     standing_loss: float,
     gbs_coarse_grid: int,
     n_refinements: int,
+    s_max: float = 8.0,
+    w_max: float = 8.0,
 ) -> pd.DataFrame:
     rows = []
     coverage_p = (1 - coverage_threshold) * 100
@@ -121,6 +123,8 @@ def run_sensitivity(
                     standing_loss=standing_loss,
                     coarse_grid=gbs_coarse_grid,
                     n_refinements=n_refinements,
+                    s_max=s_max,
+                    w_max=w_max,
                 )
             except RuntimeError as exc:
                 logger.warning(f"  year={year} infeasible: {exc}")
@@ -175,6 +179,8 @@ def run_sensitivity(
                 standing_loss=standing_loss,
                 coarse_grid=gbs_coarse_grid,
                 n_refinements=n_refinements,
+                s_max=s_max,
+                w_max=w_max,
             )
         except RuntimeError as exc:
             logger.warning(f"  robust (years={years}) infeasible: {exc}")
@@ -248,6 +254,15 @@ def main() -> None:
     parser.add_argument("--standing-loss", type=float, default=0.0)
     parser.add_argument("--gbs-coarse-grid", type=int, default=21)
     parser.add_argument(
+        "--s-max",
+        type=float,
+        default=8.0,
+        help="Solar overscale search-box upper bound -- widen for sites where GBS reports "
+        "'No feasible design' (e.g. low-resource sites need more than 8x baseload overscale "
+        "to reach high coverage thresholds at all, regardless of battery size).",
+    )
+    parser.add_argument("--w-max", type=float, default=8.0, help="Wind overscale search-box upper bound.")
+    parser.add_argument(
         "--n-refinements",
         type=int,
         default=3,
@@ -281,6 +296,8 @@ def main() -> None:
         standing_loss=args.standing_loss,
         gbs_coarse_grid=args.gbs_coarse_grid,
         n_refinements=args.n_refinements,
+        s_max=args.s_max,
+        w_max=args.w_max,
     )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(args.out, index=False)
