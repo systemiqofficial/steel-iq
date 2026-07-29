@@ -1,4 +1,4 @@
-"""Plot results produced by `run_methodology_comparison.py`'s long-format CSV (columns:
+"""Plot results produced by `runners/run_methodology_comparison.py`'s long-format CSV (columns:
 site, lat, lon, cost_region, coverage_threshold, metric, standing_loss, soc_mode, method,
 budget, n_evaluations, seed, lcoe, battery, seconds -- `method` in {"boa", "gbs",
 "lp"}, see that script's docstring).
@@ -11,7 +11,7 @@ Three figure types:
    the LP's design rescored through the true objective, not the LP's own certified-optimal
    linear objective value -- see (2)); `site_lcoe_by_year.png` is a small-multiples grid,
    one bar chart per site, of that same LCOE across weather years.
-   `run_methodology_comparison.py` sweeps a single `--year` per run and its output CSV has
+   `runners/run_methodology_comparison.py` sweeps a single `--year` per run and its output CSV has
    no `year` column -- run it once per weather year and concatenate the CSVs yourself,
    adding a `year` column, to unlock the by-year panel.
 
@@ -29,9 +29,9 @@ Three figure types:
    labeled "certified for linear proxy" -- the LP is certified optimal for its own linear
    battery-capex objective, not for the true concave `score_lcoe` plotted here, so
    `gbs` (which optimizes the true objective directly) can legitimately come in below
-   it -- see `README.md`'s "Running the full comparison" section. For `metric == "hours"` no
+   it -- see `README.md`'s "Running the benchmark" section. For `metric == "hours"` no
    such line is drawn at all, since no ground truth of any kind exists there (see
-   `gbs.py`'s module docstring).
+   `core/gbs.py`'s module docstring).
 
 3. SOC-mode sensitivity -- one bar chart per (coverage_threshold, metric), two bars per
    site (`boa`, `gbs`): `(lcoe_empty_start - lcoe_cyclic) / lcoe_cyclic` at each
@@ -45,8 +45,8 @@ Three figure types:
    save," which `boa`'s own bar does not.
 
 Usage:
-    uv run python scripts/boa_benchmark/plot_benchmark.py --csv methodology_comparison.csv
-    uv run python scripts/boa_benchmark/plot_benchmark.py --csv results.csv --skip-map \\
+    uv run python -m scripts.boa_benchmark.plotting.plot_benchmark --csv methodology_comparison.csv
+    uv run python -m scripts.boa_benchmark.plotting.plot_benchmark --csv results.csv --skip-map \\
         --sites inner_mongolia --metrics energy
 """
 

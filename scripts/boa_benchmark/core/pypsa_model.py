@@ -67,7 +67,7 @@ import numpy as np
 import pandas as pd
 import pypsa
 from baseload_optimisation_atlas.boa_logic import correct_battery_capex_for_modular_installation
-from cost_inputs import BenchmarkCosts
+from .cost_inputs import BenchmarkCosts
 
 logger = logging.getLogger(__name__)
 

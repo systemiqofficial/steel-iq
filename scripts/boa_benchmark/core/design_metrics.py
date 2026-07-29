@@ -22,8 +22,8 @@ from baseload_optimisation_atlas.boa_logic import (
     calculate_net_energy_production,
     correct_battery_capex_for_modular_installation,
 )
-from cost_inputs import BenchmarkCosts
-from cyclic_soc import state_of_charge_cyclic, state_of_charge_empty_start
+from .cost_inputs import BenchmarkCosts
+from .cyclic_soc import state_of_charge_cyclic, state_of_charge_empty_start
 
 SocMode = Literal["cyclic", "empty_start"]
 

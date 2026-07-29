@@ -1,4 +1,4 @@
-"""Plot `run_weather_year_sensitivity.py`'s output CSV (columns: site, lat, lon, cost_region,
+"""Plot `runners/run_weather_year_sensitivity.py`'s output CSV (columns: site, lat, lon, cost_region,
 coverage_threshold, metric, standing_loss, soc_mode, method, year, lcoe, solar, wind,
 battery, coverage, n_evaluations, seconds -- `method` in {"gbs", "gbs_robust"}, see that
 script's docstring).
@@ -18,14 +18,14 @@ Two figure types:
    LCOE. The robust line landing *above every single year's own point* (not just the worst
    one) is expected, not a bug: different years can bind on different (solar, wind) mixes,
    so the design meeting all of them at once can cost more than even the worst year's own
-   hindsight optimum -- see `gbs.find_robust_gbs_design`'s docstring.
+   hindsight optimum -- see `core/gbs.py`'s `find_robust_gbs_design` docstring.
 
 Sites with no feasible design in the search box for a given year, or jointly across years,
 are excluded from that computation (logged, not silently dropped) rather than crashing --
-see `run_weather_year_sensitivity.py`'s NaN-row convention.
+see `runners/run_weather_year_sensitivity.py`'s NaN-row convention.
 
 Usage:
-    uv run python scripts/boa_benchmark/plot_weather_year_sensitivity.py \\
+    uv run python -m scripts.boa_benchmark.plotting.plot_weather_year_sensitivity \\
         --csv scripts/boa_benchmark/results/weather_year_sensitivity.csv
 """
 

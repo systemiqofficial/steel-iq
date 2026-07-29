@@ -1,10 +1,10 @@
-"""Compare BOA sampling, Grid-Bisection Search (GBS -- `gbs.py`), and (where
+"""Compare BOA sampling, Grid-Bisection Search (GBS -- `core/gbs.py`), and (where
 certified) the PyPSA LP -- across sites, coverage thresholds, coverage metrics, and battery
 SOC dispatch modes.
 
 Replaces the retired `run_benchmark.py`, which only ever compared BOA sampling against
 PyPSA (including, historically, an MILP for the `hours` metric that never certified a tight
-gap -- see `gbs.py`'s module docstring and `README.md`).
+gap -- see `core/gbs.py`'s module docstring and `README.md`).
 
 Produces one long-format CSV, one row per run:
     site, lat, lon, cost_region, coverage_threshold, metric, standing_loss, soc_mode,
@@ -26,19 +26,19 @@ Produces one long-format CSV, one row per run:
              box, not of n_refinements, and would just repeat).
     "lp"  -- `pypsa_model.solve_optimal_design`'s certified LP. Only emitted for
              `metric="energy"` (the only metric it's a certified ground truth for --
-             see `pypsa_model.py`'s docstring) and `soc_mode="cyclic"` (PyPSA's
+             see `core/pypsa_model.py`'s docstring) and `soc_mode="cyclic"` (PyPSA's
              `Store(e_cyclic=True)` models a periodic SOC; there's no empty-start LP
              variant). `budget`/`seed`/`n_evaluations` are NaN -- one solve, not swept.
              `energy` is mainly this validation role -- see `--energy-coverage-thresholds`
              to sweep it at fewer thresholds than `hours`.
 
 Prerequisites (run once, see each script's own docstring):
-    uv run python scripts/boa_benchmark/preprocess_copernicus.py --year 2025
-    uv run python scripts/boa_benchmark/preprocess_costs.py
-    uv run python scripts/boa_benchmark/select_sites.py --year 2025   # then hand-write sites.yaml
+    uv run python -m scripts.boa_benchmark.preprocessing.preprocess_copernicus --year 2025
+    uv run python -m scripts.boa_benchmark.preprocessing.preprocess_costs
+    uv run python -m scripts.boa_benchmark.preprocessing.select_sites --year 2025   # then hand-write sites.yaml
 
 Usage:
-    uv run python scripts/boa_benchmark/run_methodology_comparison.py \\
+    uv run python -m scripts.boa_benchmark.runners.run_methodology_comparison \\
         --site-names inner_mongolia --coverage-thresholds 0.95 --metrics energy,hours
 """
 
@@ -52,11 +52,11 @@ import pandas as pd
 import yaml
 from baseload_optimisation_atlas.boa_logic import capacity_sampling
 
-from cost_inputs import BenchmarkCosts, load_benchmark_costs
-from design_metrics import score_lcoe, simulate_design
-from point_profile import load_point_profile
-from gbs import find_gbs_design
-from pypsa_model import solve_optimal_design
+from ..core.cost_inputs import BenchmarkCosts, load_benchmark_costs
+from ..core.design_metrics import score_lcoe, simulate_design
+from ..core.gbs import find_gbs_design
+from ..core.point_profile import load_point_profile
+from ..core.pypsa_model import solve_optimal_design
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -142,7 +142,7 @@ def run_sweep(
 ) -> pd.DataFrame:
     """`energy_coverage_thresholds`, if given, overrides `coverage_thresholds` for the
     `energy` metric only -- useful since `energy` is mainly a validation device (its `lp`
-    row is the only certified ground truth in this benchmark; see `gbs.py`'s
+    row is the only certified ground truth in this benchmark; see `core/gbs.py`'s
     `--validate`), so it's often only worth sweeping at one threshold while `hours` (the
     metric BOA's production filter actually enforces) gets the full sweep.
 

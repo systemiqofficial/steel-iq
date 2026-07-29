@@ -1,5 +1,5 @@
 # 10 grid cells spanning distinct wind/solar regimes and cost regions, curated from
-# select_sites.py candidates (see scripts/boa_benchmark/select_sites.py docstring).
+# select_sites.py candidates (see scripts/boa_benchmark/preprocessing/select_sites.py docstring).
 # cost_region must match a "region" value in scripts/boa_benchmark/preprocessed_data/flat_costs.csv.
 #
 # regime: computed once from the year-2025 Copernicus profile at each cell (nearest grid

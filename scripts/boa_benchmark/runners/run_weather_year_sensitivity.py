@@ -3,7 +3,7 @@ year it's sized against, and what does it cost to hedge against that instead of 
 year and hoping?
 
 For each site, runs `gbs.find_gbs_design` (hours metric, GBS as the accuracy/cost-tractable
-stand-in for a certified optimum -- see `gbs.py`'s module docstring) separately against each
+stand-in for a certified optimum -- see `core/gbs.py`'s module docstring) separately against each
 of `--years`' weather profiles, plus one `gbs.find_robust_gbs_design` run that must meet the
 coverage threshold in *every* one of those years at once. The per-year runs answer "what
 would have been optimal in hindsight for that year alone"; the robust run answers "what do
@@ -28,7 +28,7 @@ lcoe/solar/wind/battery/coverage/n_evaluations are NaN and a warning is logged -
 convention as `run_methodology_comparison.py`.
 
 Usage:
-    uv run python scripts/boa_benchmark/run_weather_year_sensitivity.py \\
+    uv run python -m scripts.boa_benchmark.runners.run_weather_year_sensitivity \\
         --years 2010,2015,2020,2025 --coverage-threshold 0.95 --n-refinements 3
 """
 
@@ -41,9 +41,9 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from cost_inputs import load_benchmark_costs
-from gbs import find_gbs_design, find_robust_gbs_design
-from point_profile import load_point_profile
+from ..core.cost_inputs import load_benchmark_costs
+from ..core.gbs import find_gbs_design, find_robust_gbs_design
+from ..core.point_profile import load_point_profile
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)

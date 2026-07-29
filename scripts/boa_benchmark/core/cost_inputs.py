@@ -1,8 +1,8 @@
 """Runtime cost container for the benchmark: builds the flat, horizon-length arrays that
 `boa_logic`/`boa_cost_calculations` expect, from the small `flat_costs.csv` table
-produced once by `preprocess_costs.py`.
+produced once by `preprocessing/preprocess_costs.py`.
 
-`cost_of_capital` is read per-region from `flat_costs.csv` (see `preprocess_costs.py`'s
+`cost_of_capital` is read per-region from `flat_costs.csv` (see `preprocessing/preprocess_costs.py`'s
 `load_cost_of_capital`), not passed in -- so a region's WACC advantage/disadvantage (e.g.
 China's comparatively low renewables WACC) actually shows up in the benchmark instead of
 being masked by one global assumption. `investment_horizon` is reused from `boa_config`.

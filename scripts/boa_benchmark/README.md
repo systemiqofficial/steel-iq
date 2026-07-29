@@ -15,19 +15,19 @@ heuristic, not to how well `(solar, wind)` gets sampled — see
 
 A "design" is a triple of overscale factors `(solar, wind, battery)` relative to a fixed
 baseload demand. BOA scores a design by simulating its hourly battery dispatch
-(`cyclic_soc.py`), checking whether it meets a coverage target, then computing LCOE
+(`core/cyclic_soc.py`), checking whether it meets a coverage target, then computing LCOE
 (`baseload_optimisation_atlas.boa_cost_calculations.calculate_lcoe_of_re_installation`, via
-`design_metrics.score_lcoe`).
+`core/design_metrics.py`'s `score_lcoe`).
 
 Coverage is measured two genuinely different ways (not a strict/relaxed pair of each other
-— see the note in `gbs.py`'s module docstring):
+— see the note in `core/gbs.py`'s module docstring):
 
 - `energy`: caps *total* unserved energy across the year — one continuous constraint.
 - `hours`: BOA's actual production metric (`boa_logic.calculate_coverage`) — an hour counts
   as covered only if literally zero demand went unserved that hour; caps how many hours may
   be uncovered.
 
-## Method: Grid-Bisection Search (GBS, `gbs.py`)
+## Method: Grid-Bisection Search (GBS, `core/gbs.py`)
 
 To know how far BOA's sampled design is from optimal, we need a trustworthy optimum to
 compare against. GBS is that ground truth. Two structural facts about this specific problem
@@ -49,7 +49,7 @@ no linearization, no foresight dispatch, no rescoring mismatch between what was 
 and what's reported.
 
 **Validation.** GBS isn't a certified solver either, so it's checked against the one metric
-where a certified answer exists: `energy`, via a PyPSA LP (`pypsa_model.py`). Running GBS
+where a certified answer exists: `energy`, via a PyPSA LP (`core/pypsa_model.py`). Running GBS
 with that LP's own linear objective reproduced the certified LP optimum to **5e-8
 relative** (`--validate`). That calibrates the search machinery on the metric where truth
 exists, which is the basis for trusting it on `hours`, where no certified optimum is
@@ -58,14 +58,14 @@ bit-for-bit against the unmodified `design_metrics.simulate_design`, and checks
 monotonicity (the property the bisection depends on) against 200 random designs.
 
 ```bash
-uv run python scripts/boa_benchmark/gbs.py --site-name inner_mongolia --self-test
-uv run python scripts/boa_benchmark/gbs.py --site-name inner_mongolia --coverage 0.95 --validate
-uv run python scripts/boa_benchmark/gbs.py --site-name inner_mongolia --coverage 0.95 --metric hours
+uv run python -m scripts.boa_benchmark.core.gbs --site-name inner_mongolia --self-test
+uv run python -m scripts.boa_benchmark.core.gbs --site-name inner_mongolia --coverage 0.95 --validate
+uv run python -m scripts.boa_benchmark.core.gbs --site-name inner_mongolia --coverage 0.95 --metric hours
 ```
 
 **A subtlety worth knowing before reading the CSV: "certified" is scoped to the LP's own
 objective, not to true LCOE.** The LP's `energy`-metric certification above is for its own
-*linear* battery-capex objective (a reference-size proxy — see `pypsa_model.py`'s
+*linear* battery-capex objective (a reference-size proxy — see `core/pypsa_model.py`'s
 docstring), not the true, concave `score_lcoe` that gets reported everywhere else. GBS
 optimizes the true objective directly, so it can legitimately find a *lower* true LCOE than
 the LP's design rescored through `score_lcoe` — that's the LP's known linearization gap
@@ -76,7 +76,7 @@ comes to ~26.1 LCOE; GBS finds ~25.5 (about 2.3% lower), which is why the sweep 
 ### Why not a MILP?
 
 The original ground truth for `hours` coverage was a MILP variant of the same PyPSA model
-(one binary `hour_covered[t]` per snapshot) — since removed from `pypsa_model.py`. It didn't
+(one binary `hour_covered[t]` per snapshot) — since removed from `core/pypsa_model.py`. It didn't
 work, for two structural reasons: (1) its LP relaxation collapses exactly to the `energy`
 LP's constraint, so its bound was stuck there from node zero — on a real 8760-hour profile
 it never certified better than a ~12.5% gap even at a 300s time cap; (2) it dispatches with
@@ -139,7 +139,7 @@ effect isn't confounded with sampling or search-resolution noise.
 ### Weather-year sensitivity: how much does the choice of weather year matter?
 
 BOA's own inputs (and every finding above) come from a single weather year's Copernicus
-profile. `run_weather_year_sensitivity.py` checks how much that choice alone moves the
+profile. `runners/run_weather_year_sensitivity.py` checks how much that choice alone moves the
 answer, at all 10 sites, using GBS (`hours` metric, `n_refinements=3`) against four weather
 years (2010, 2015, 2020, 2025).
 
@@ -152,7 +152,7 @@ For each site, two designs are compared:
   `(solar, wind)`, the smallest battery meeting every year is the *max* of each year's own
   `b_min`, so the elementwise max of the per-year battery grids is still pointwise-optimal
   and the same coarse-to-fine search applies unchanged (see `find_robust_gbs_design`'s
-  docstring in `gbs.py`).
+  docstring in `core/gbs.py`).
 
 **Rejected alternative: don't average a fixed design's LCOE across years.** An earlier idea
 was to evaluate one design against each year and average the resulting LCOE. This doesn't
@@ -202,7 +202,7 @@ production design input.
 
 ## Running the benchmark
 
-`run_methodology_comparison.py` sweeps sites x coverage thresholds x coverage metrics x SOC
+`runners/run_methodology_comparison.py` sweeps sites x coverage thresholds x coverage metrics x SOC
 modes, producing one long-format CSV with three `method` values per combination: `boa`
 (sampling), `gbs` (the grid search), and `lp` (the PyPSA LP — `energy` metric only,
 `soc_mode="cyclic"` only, since that's the only combination its dispatch-equivalence
@@ -210,7 +210,7 @@ certification applies to; its `lcoe` column is its design rescored through the t
 objective, and per the note above `gbs` can legitimately beat it).
 
 ```bash
-uv run python scripts/boa_benchmark/run_methodology_comparison.py \
+uv run python -m scripts.boa_benchmark.runners.run_methodology_comparison \
     --site-names inner_mongolia --coverage-thresholds 0.95 --metrics energy,hours
 ```
 
@@ -219,9 +219,9 @@ The `gbs` method's budget knob is `--refinement-levels` (n_refinements), **not**
 refine_grid**2`, and refinement dominates once `n_refinements >= 1` (441 to 11,466
 evaluations over levels 0-5 at the defaults, LCOE visibly converging over that range) —
 sweeping `coarse_grid` alone barely moves total work or the answer. See
-`find_gbs_design`'s docstring in `gbs.py` for the full breakdown.
+`find_gbs_design`'s docstring in `core/gbs.py` for the full breakdown.
 
-Then `plot_benchmark.py` reads that CSV and produces:
+Then `plotting/plot_benchmark.py` reads that CSV and produces:
 - `site_map.png` / `site_lcoe_by_year.png`: global overview of the LP-optimal design's LCOE
   across sites (reads `method == "lp"` rows).
 - `convergence/{site}_{metric}.png`: `boa` vs `gbs` LCOE and runtime vs. `n_evaluations`
@@ -236,7 +236,7 @@ Then `plot_benchmark.py` reads that CSV and produces:
   bar per site.
 
 ```bash
-uv run python scripts/boa_benchmark/plot_benchmark.py --csv scripts/boa_benchmark/results/methodology_comparison.csv
+uv run python -m scripts.boa_benchmark.plotting.plot_benchmark --csv scripts/boa_benchmark/results/methodology_comparison.csv
 ```
 
 **Note on SOC-mode cost.** Cyclic dispatch needs an extra bisection
@@ -250,13 +250,13 @@ Sweeping both modes costs little on the `boa` side and a real but bounded amount
 ## Weather-year sensitivity sweep
 
 ```bash
-uv run python scripts/boa_benchmark/run_weather_year_sensitivity.py \
+uv run python -m scripts.boa_benchmark.runners.run_weather_year_sensitivity \
     --years 2010,2015,2020,2025 --coverage-threshold 0.95 --n-refinements 3
-uv run python scripts/boa_benchmark/plot_weather_year_sensitivity.py \
+uv run python -m scripts.boa_benchmark.plotting.plot_weather_year_sensitivity \
     --csv scripts/boa_benchmark/results/weather_year_sensitivity.csv
 ```
 
-Requires `preprocess_copernicus.py --year {year}` to have already been run for each year.
+Requires `preprocessing/preprocess_copernicus.py --year {year}` to have already been run for each year.
 Produces `weather_year_sensitivity.csv` (`method` in `{"gbs", "gbs_robust"}`, one row per
 site x year plus one robust row per site) and two plots: `weather_year_map.png` (world map
 colored by robustness premium) and `weather_year_spread.png` (per-site small multiples:
@@ -264,7 +264,7 @@ each year's own optimum as a point, the robust design as a dashed line).
 
 ## Future work
 
-`run_methodology_comparison.py`'s CLI has grown to ~18 flags as sweep scoping got more
+`runners/run_methodology_comparison.py`'s CLI has grown to ~18 flags as sweep scoping got more
 granular (`--energy-coverage-thresholds`, `--boa-soc-modes`, etc.). Worth revisiting once
 the flag set stabilizes: an optional `--config path.yaml` that loads these as defaults
 (nesting the paired overrides naturally, e.g. `soc_modes: {gbs: [...], boa: [...]}`),

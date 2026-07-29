@@ -1,6 +1,6 @@
 """Fast, repeated-use extraction of one grid cell's hourly CF profile from the
 consolidated `solar_{year}.nc`/`wind_{year}.nc` files built once by
-`preprocess_copernicus.py`. No unzip work happens here -- just a lazy `.sel(...)` on the
+`preprocessing/preprocess_copernicus.py`. No unzip work happens here -- just a lazy `.sel(...)` on the
 already-consolidated files, with the tiny (8760,) result cached to disk so repeat
 benchmark runs don't even reopen those files.
 """

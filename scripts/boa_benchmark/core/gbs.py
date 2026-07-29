@@ -65,7 +65,7 @@ LP certifies the search, search handles hours.
 list of profiles (e.g. several weather years at one site), returning the design that meets
 `coverage_p` in every one of them at once -- see its docstring for why the same
 monotonicity argument extends cleanly (the per-profile `b_min` grids' elementwise max is
-still pointwise-optimal). Used by `run_weather_year_sensitivity.py`.
+still pointwise-optimal). Used by `runners/run_weather_year_sensitivity.py`.
 """
 
 import argparse
@@ -79,9 +79,9 @@ import numpy as np
 import yaml
 from baseload_optimisation_atlas.boa_logic import calculate_net_energy_production
 
-from cost_inputs import BenchmarkCosts, load_benchmark_costs
-from design_metrics import score_lcoe
-from point_profile import load_point_profile
+from .cost_inputs import BenchmarkCosts, load_benchmark_costs
+from .design_metrics import score_lcoe
+from .point_profile import load_point_profile
 
 logger = logging.getLogger(__name__)
 
@@ -266,7 +266,7 @@ def _pypsa_linear_objective(baseload_demand: float, costs: BenchmarkCosts):
     """
     from baseload_optimisation_atlas.boa_config import LIFETIMES
     from baseload_optimisation_atlas.boa_logic import correct_battery_capex_for_modular_installation
-    from pypsa_model import _capital_recovery_factor
+    from .pypsa_model import _capital_recovery_factor
 
     capex_solar = costs.capex["solar"][0]
     capex_wind = costs.capex["wind"][0]
@@ -634,7 +634,7 @@ def self_test(profile: dict[str, np.ndarray], standing_loss: float = 0.0, n_desi
     """Assert `_coverage_jit` reproduces the unmodified `design_metrics.simulate_design`,
     and that coverage is monotone in each design variable (the property `b_min`'s bisection
     and the up-closed feasible set both rest on)."""
-    from design_metrics import simulate_design
+    from .design_metrics import simulate_design
 
     rng = np.random.default_rng(seed)
     solar_profile = np.ascontiguousarray(profile["solar"], dtype=np.float64)
@@ -695,7 +695,7 @@ def validate_against_energy_lp(
     reproduce it to within grid resolution; if it does, the same machinery applied to the
     hours metric (where no tractable certified optimum exists) is trustworthy.
     """
-    from pypsa_model import solve_optimal_design
+    from .pypsa_model import solve_optimal_design
 
     lp = solve_optimal_design(
         profile,
