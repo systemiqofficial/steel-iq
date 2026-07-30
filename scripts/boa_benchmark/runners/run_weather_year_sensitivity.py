@@ -27,9 +27,22 @@ for a given site/year (or jointly across years, for the robust row), that row's
 lcoe/solar/wind/battery/coverage/n_evaluations are NaN and a warning is logged -- same
 convention as `run_methodology_comparison.py`.
 
+`--include-lp` (metric="energy" only) additionally solves `pypsa_model.solve_optimal_design`
+-- the certified LP -- per weather year, emitting extra `method="lp"` rows (`soc_mode`
+always "cyclic" for these, matching PyPSA's `Store(e_cyclic=True)`, regardless of the
+`--soc-mode` used for the "gbs" rows) so "gbs" can be checked directly against a genuine
+ground truth per year, not just in aggregate (as `core/gbs.py --validate` already does for a
+single design). There is no "lp_robust" row: a joint multi-year LP (one shared design,
+separate per-year dispatch/cyclic-SOC/unserved-cap constraints) isn't implemented here --
+"gbs_robust" is the only robust-design row, at whatever accuracy GBS itself has (already
+shown to track the single-year LP to ~0.0000% relative gap for the energy metric, via
+`core/gbs.py --validate`).
+
 Usage:
     uv run python -m scripts.boa_benchmark.runners.run_weather_year_sensitivity \\
         --years 2010,2015,2020,2025 --coverage-threshold 0.95 --n-refinements 3
+    uv run python -m scripts.boa_benchmark.runners.run_weather_year_sensitivity \\
+        --metric energy --coverage-threshold 0.95 --include-lp
 """
 
 import argparse
@@ -42,8 +55,10 @@ import pandas as pd
 import yaml
 
 from ..core.cost_inputs import load_benchmark_costs
+from ..core.design_metrics import score_lcoe, simulate_design
 from ..core.gbs import find_gbs_design, find_robust_gbs_design
 from ..core.point_profile import load_point_profile
+from ..core.pypsa_model import solve_optimal_design
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -101,7 +116,14 @@ def run_sensitivity(
     n_refinements: int,
     s_max: float = 8.0,
     w_max: float = 8.0,
+    include_lp: bool = False,
+    solver: str = "highs",
 ) -> pd.DataFrame:
+    if include_lp and metric != "energy":
+        raise ValueError(
+            "--include-lp requires --metric energy -- pypsa_model's LP is only a certified "
+            "ground truth for the energy metric (see core/pypsa_model.py's docstring)."
+        )
     rows = []
     coverage_p = (1 - coverage_threshold) * 100
 
@@ -166,6 +188,35 @@ def run_sensitivity(
                     result.search_seconds,
                 )
             )
+
+            if include_lp:
+                t0 = time.time()
+                lp = solve_optimal_design(
+                    profiles[year], baseload_demand, costs, coverage_p, solver=solver, standing_loss=standing_loss
+                )
+                lp_lcoe = score_lcoe(lp.design, baseload_demand, costs, profiles[year])
+                lp_coverage = simulate_design(
+                    lp.design, profiles[year], baseload_demand, soc_mode="cyclic", standing_loss=standing_loss
+                ).energy_coverage
+                logger.info(f"  year={year} LP (certified) lcoe={lp_lcoe:.2f} design={lp.design}")
+                rows.append(
+                    _row(
+                        site,
+                        coverage_threshold,
+                        metric,
+                        standing_loss,
+                        "cyclic",
+                        "lp",
+                        year,
+                        lp_lcoe,
+                        lp.design["solar"],
+                        lp.design["wind"],
+                        lp.design["battery"],
+                        lp_coverage,
+                        np.nan,
+                        time.time() - t0,
+                    )
+                )
 
         t0 = time.time()
         try:
@@ -263,6 +314,15 @@ def main() -> None:
     )
     parser.add_argument("--w-max", type=float, default=8.0, help="Wind overscale search-box upper bound.")
     parser.add_argument(
+        "--include-lp",
+        action="store_true",
+        help="Also solve the certified PyPSA LP per weather year (requires --metric energy) and emit "
+        "extra 'lp' rows for direct per-year comparison against 'gbs' -- see module docstring.",
+    )
+    parser.add_argument(
+        "--solver", type=str, choices=["highs", "gurobi"], default="highs", help="Solver for --include-lp."
+    )
+    parser.add_argument(
         "--n-refinements",
         type=int,
         default=3,
@@ -298,6 +358,8 @@ def main() -> None:
         n_refinements=args.n_refinements,
         s_max=args.s_max,
         w_max=args.w_max,
+        include_lp=args.include_lp,
+        solver=args.solver,
     )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(args.out, index=False)
