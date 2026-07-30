@@ -1,0 +1,23 @@
+# Example --config file for run_methodology_comparison.py, reproducing that script's own
+# built-in defaults. Keys match the CLI flags (hyphens -> underscores); list-valued flags
+# take a YAML list instead of a comma-separated string. soc_modes nests the paired gbs/boa
+# override that would otherwise need two separate flags.
+#
+#   uv run python -m scripts.boa_benchmark.runners.run_methodology_comparison \
+#       --config scripts/boa_benchmark/example_config.yaml --site-names inner_mongolia
+#
+# CLI flags still override individual keys for one-off tweaks (e.g. --n-seeds 3 above).
+
+coverage_thresholds: [0.99, 0.95, 0.9, 0.85]
+metrics: [energy, hours]
+soc_modes:
+  gbs: [cyclic, empty_start]
+  boa: [cyclic, empty_start]
+sample_sizes: [100, 300, 1000, 3000, 10000, 30000]
+n_seeds: 10
+gbs_coarse_grid: 21
+refinement_levels: [0, 1, 2, 3, 4, 5]
+solver: highs
+s_max: 8.0
+w_max: 8.0
+standing_loss: 0.0

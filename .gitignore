@@ -28,7 +28,12 @@ scripts/boa_benchmark/preprocessed_data/
 
 # BOA benchmark sweep outputs (generated)
 scripts/boa_benchmark/results/
-scripts/boa_benchmark/plots/
+scripts/boa_benchmark/plots/*
+# ...except the headline images committed for OVERVIEW.md
+!scripts/boa_benchmark/plots/weather_year_map_0.95.png
+!scripts/boa_benchmark/plots/convergence/
+scripts/boa_benchmark/plots/convergence/*
+!scripts/boa_benchmark/plots/convergence/inner_mongolia_hours.png
 
 # coverage
 .coverage

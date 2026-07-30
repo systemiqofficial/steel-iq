@@ -23,7 +23,12 @@ Produces one long-format CSV, one row per run:
              box meets the coverage threshold, `lcoe`/`battery`/`n_evaluations` are NaN
              (one such row per site/coverage/metric/soc_mode -- remaining refinement
              levels are skipped, since the infeasibility is a property of the search
-             box, not of n_refinements, and would just repeat).
+             box, not of n_refinements, and would just repeat). `--s-max`/`--w-max`
+             widen the box above the 8x baseload-overscale default -- needed for
+             low-resource sites (e.g. `ecuador_colombia_coast`, near-zero wind) where
+             the default box is either infeasible outright or where GBS's optimum
+             sits on the box boundary (a warning, not a crash -- the true optimum may
+             lie outside what was searched).
     "lp"  -- `pypsa_model.solve_optimal_design`'s certified LP. Only emitted for
              `metric="energy"` (the only metric it's a certified ground truth for --
              see `core/pypsa_model.py`'s docstring) and `soc_mode="cyclic"` (PyPSA's
@@ -40,6 +45,16 @@ Prerequisites (run once, see each script's own docstring):
 Usage:
     uv run python -m scripts.boa_benchmark.runners.run_methodology_comparison \\
         --site-names inner_mongolia --coverage-thresholds 0.95 --metrics energy,hours
+
+`--config path.yaml` loads defaults for any flag below from a YAML file, e.g.:
+    coverage_thresholds: [0.99, 0.95, 0.9, 0.85]
+    metrics: [energy, hours]
+    soc_modes:
+      gbs: [cyclic, empty_start]
+      boa: [empty_start]
+    n_seeds: 10
+See `example_config.yaml` for a complete example. Individual CLI flags still override
+specific config keys for one-off tweaks (`--config base.yaml --n-seeds 3`).
 """
 
 import argparse
@@ -139,6 +154,8 @@ def run_sweep(
     standing_loss: float,
     energy_coverage_thresholds: list[float] | None = None,
     boa_soc_modes: list[str] | None = None,
+    s_max: float = 8.0,
+    w_max: float = 8.0,
 ) -> pd.DataFrame:
     """`energy_coverage_thresholds`, if given, overrides `coverage_thresholds` for the
     `energy` metric only -- useful since `energy` is mainly a validation device (its `lp`
@@ -245,6 +262,8 @@ def run_sweep(
                                 standing_loss=standing_loss,
                                 coarse_grid=gbs_coarse_grid,
                                 n_refinements=n_refinements,
+                                s_max=s_max,
+                                w_max=w_max,
                             )
                         except RuntimeError as exc:
                             # Infeasibility is a property of the search box (s_max/w_max) and
@@ -292,8 +311,42 @@ def run_sweep(
     return pd.DataFrame(rows)
 
 
+def _load_config_defaults(config_path: Path) -> dict:
+    """Translate a `--config` YAML file into argparse dest-name -> default-value overrides.
+
+    Scalar keys map straight to the flag of the same name (`n_seeds: 10` -> `--n-seeds`).
+    List-valued keys are joined into the same comma-separated string the CLI flag itself
+    expects (`coverage_thresholds: [0.99, 0.95]` -> `"0.99,0.95"`), so the comma-split
+    parsing in `main()` doesn't need to care whether a value came from YAML or the command
+    line. `soc_modes` nests the paired gbs/boa override naturally:
+        soc_modes: {gbs: [cyclic, empty_start], boa: [empty_start]}
+    -> `soc_modes="cyclic,empty_start"`, `boa_soc_modes="empty_start"`.
+    """
+    with open(config_path) as f:
+        config = yaml.safe_load(f) or {}
+
+    defaults = {}
+    soc_modes = config.pop("soc_modes", None)
+    if soc_modes is not None:
+        if "gbs" in soc_modes:
+            defaults["soc_modes"] = ",".join(soc_modes["gbs"])
+        if "boa" in soc_modes:
+            defaults["boa_soc_modes"] = ",".join(soc_modes["boa"])
+
+    for key, value in config.items():
+        defaults[key] = ",".join(str(v) for v in value) if isinstance(value, list) else value
+    return defaults
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="YAML file of default values for any flag below -- see this module's docstring "
+        "and example_config.yaml. Individual CLI flags still override specific config keys.",
+    )
     parser.add_argument("--sites-file", type=Path, default=Path("scripts/boa_benchmark/sites.yaml"))
     parser.add_argument(
         "--site-names",
@@ -359,12 +412,29 @@ def main() -> None:
     )
     parser.add_argument("--solver", type=str, choices=["highs", "gurobi"], default="highs")
     parser.add_argument(
+        "--s-max",
+        type=float,
+        default=8.0,
+        help="Solar overscale search-box upper bound for 'gbs' -- widen for sites where it reports "
+        "'No feasible design' or sits on the search-box boundary (e.g. ecuador_colombia_coast, "
+        "near-zero wind resource, needs well beyond 8x baseload overscale).",
+    )
+    parser.add_argument("--w-max", type=float, default=8.0, help="Wind overscale search-box upper bound for 'gbs'.")
+    parser.add_argument(
         "--standing-loss",
         type=float,
         default=0.0,
         help="Fraction of stored battery energy lost per hour (0 = no loss, the default).",
     )
     parser.add_argument("--out", type=Path, default=Path("scripts/boa_benchmark/results/methodology_comparison.csv"))
+
+    args, _ = parser.parse_known_args()
+    if args.config is not None:
+        config_defaults = _load_config_defaults(args.config)
+        unknown = set(config_defaults) - vars(args).keys()
+        if unknown:
+            raise ValueError(f"Unknown --config key(s) {sorted(unknown)} in {args.config}")
+        parser.set_defaults(**config_defaults)
     args = parser.parse_args()
 
     with open(args.sites_file) as f:
@@ -399,6 +469,8 @@ def main() -> None:
             else None
         ),
         boa_soc_modes=(args.boa_soc_modes.split(",") if args.boa_soc_modes is not None else None),
+        s_max=args.s_max,
+        w_max=args.w_max,
     )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(args.out, index=False)
