@@ -41,6 +41,22 @@ reduces to a 2-D coarse-to-fine **grid search** over `(solar, wind)` — hence
 no linearization, no foresight dispatch, no rescoring mismatch between what was optimized
 and what's reported.
 
+**Prior art.** This isn't a new idea, and the name is a literal description of the
+algorithm rather than a claim of novelty. The `b_min(solar, wind)` curve is an isoquant of
+the reliability constraint, and minimizing cost along it is the same iso-reliability
+sizing-curve method from the standalone hybrid-PV/wind sizing literature — see the
+foundational "graphical construction technique" of Borowy, B.S. and Salameh, Z.M. (1996),
+["Methodology for Optimally Sizing the Combination of a Battery Bank and PV Array in a
+Wind/PV Hybrid System"](https://doi.org/10.1109/60.507648), *IEEE Transactions on Energy
+Conversion* 11(2), which traces a curve of constant loss-of-power-supply-probability (LPSP)
+across PV/battery combinations and picks its cost-minimizing point — structurally the same
+two-step search, evaluated there via manual plotting rather than exact numerical bisection.
+The per-point bisection step specifically matches later published binary-search sizing
+approaches, e.g. the "Binary Search Algorithm based Optimal Sizing of Photovoltaic and
+Energy Storage Systems" line of work (IEEE, 2021). What GBS adds relative to that
+literature is evaluating every point with BOA's own exact dispatch (not a probabilistic or
+closed-form LPSP approximation) and validating the search against a certified LP, below.
+
 **Validation.** GBS isn't a certified solver either, so it's checked against the one metric
 where a certified answer exists: `energy`, via a PyPSA LP (`core/pypsa_model.py`). Running GBS
 with that LP's own linear objective reproduced the certified LP optimum to **5e-8
