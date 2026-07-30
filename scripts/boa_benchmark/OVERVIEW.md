@@ -95,11 +95,12 @@ every threshold, and the gap barely narrows as `boa`'s sample budget grows from 
 
 ![BOA vs GBS LCOE and runtime convergence at Inner Mongolia, hours metric](plots/convergence/inner_mongolia_hours.png)
 
-**This is one site, one threshold** — a documented example, not yet a swept result.
-["Running the benchmark"](README.md#running-the-benchmark) in the README produces the fuller
-`boa`-vs-`gbs` sweep needed before treating this as a general finding, but the mechanism
-(heuristic evaluated at a single percentile pair vs. an exact per-design bisection) is
-structural and should hold broadly.
+The convergence plots for all 7 sites in `plots/convergence/` show the same flat-dotted-line 
+pattern (more `boa` samples don't close the gap). 
+["Running the benchmark"](README.md#running-the-benchmark) in the README explains how to
+extend the sweep to the remaining 3 sites and rerun the decomposition elsewhere, but the
+mechanism (heuristic evaluated at a single percentile pair vs. an exact per-design bisection)
+is structural and, given the gap itself already holds broadly, should hold broadly too.
 
 **Coverage note.** `methodology_comparison.csv` — and therefore the convergence plots and
 `site_map.png` — currently covers 7 of the 10 sites in `sites.yaml`: `wyoming_usa`,
@@ -136,6 +137,23 @@ empty-start skips. For `boa` this is negligible (~1-2% runtime difference, domin
 to hide behind, cyclic is genuinely **~6x** slower (measured: 4.4s vs. 26.6s for the same
 search) — a real but bounded cost, and `gbs` stays the cheaper method overall regardless.
 
+That runtime cost buys very little change in the answer itself. Using `gbs`'s most-resolved
+rows (`n_evaluations=11466`, `hours` metric) at each of the 7 swept sites, cyclic LCOE is
+within a fraction of a percent of empty-start at every threshold except the tightest:
+
+| site | Δlcoe @ p85 | Δlcoe @ p90 | Δlcoe @ p95 | Δlcoe @ p99 |
+|---|---:|---:|---:|---:|
+| inner_mongolia | 0.0% | 0.0% | 0.0% | 0.0% |
+| sahara_libya_egypt | 0.0% | 0.0% | 0.0% | 0.0% |
+| wa_gascoyne_coast | -0.05% | -0.11% | -0.14% | -0.53% |
+| atacama_desert | -0.10% | -0.16% | -0.26% | -0.64% |
+| ecuador_colombia_coast | -0.19% | -0.18% | -0.26% | -0.89% |
+| patagonia_chile | 0.0% | 0.0% | -0.16% | -1.33% |
+| n_adriatic | 0.0% | 0.0% | -0.24% | -3.46% |
+
+(`Δlcoe = (cyclic - empty_start) / empty_start`; negative means cyclic finds a slightly
+*cheaper* design. Computed from `methodology_comparison.csv`.) 
+
 ### Weather-year sensitivity: how much does the choice of weather year matter?
 
 BOA's own inputs (and every finding above) come from a single weather year's Copernicus
@@ -166,7 +184,7 @@ own premium over that site's cheapest year (right marker, per-site normalized) �
 but distinct risk proxy from the "robustness premium" table below: the map checks each year
 against the site's *cheapest* year, while the table checks the robust design against the
 *mean* of the per-year costs, so the two numbers won't match even at the same site and
-threshold (e.g. patagonia_chile's map annotation reads notably higher than its table row).
+threshold.
 
 ![World map of mean LCOE per site and per-year weather premium](plots/weather_year_map_0.95.png)
 
