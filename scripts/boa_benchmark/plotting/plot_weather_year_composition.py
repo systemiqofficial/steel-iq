@@ -206,6 +206,9 @@ def _plot_lcoe_spread(ax: plt.Axes, df: pd.DataFrame, summary: pd.DataFrame, sit
     # hline than the caps, inverting that hierarchy and reading as a second competing line
     # rather than a detail sitting on the bar. A small marker (not a line) avoids the
     # crossing-lines clutter entirely; the white edge halos it off the black spine it sits on.
+    # Uses mean (not median) to match rows 2-3, which both aggregate by mean across the 4
+    # per-year "gbs" designs -- a lone median here would be a silent inconsistency in what
+    # "central" means across the figure.
     cap_half = 0.08
     for site in sites:
         xi = site_x[site]
@@ -216,7 +219,7 @@ def _plot_lcoe_spread(ax: plt.Axes, df: pd.DataFrame, summary: pd.DataFrame, sit
         )
         ax.plot(
             xi,
-            row["median_lcoe"],
+            row["mean_lcoe"],
             marker="D",
             markersize=5.0,
             color="black",
@@ -236,7 +239,7 @@ def _plot_lcoe_spread(ax: plt.Axes, df: pd.DataFrame, summary: pd.DataFrame, sit
         linestyle="none",
         label="min–max range across years",
     )
-    median_handle = Line2D(
+    mean_handle = Line2D(
         [0],
         [0],
         marker="D",
@@ -245,7 +248,7 @@ def _plot_lcoe_spread(ax: plt.Axes, df: pd.DataFrame, summary: pd.DataFrame, sit
         markeredgecolor="white",
         markeredgewidth=0.8,
         linestyle="none",
-        label="median (across years)",
+        label="mean (across years)",
     )
     ax.set_ylim(bottom=0)
     ax.tick_params(axis="y", labelsize=11)
@@ -260,8 +263,8 @@ def _plot_lcoe_spread(ax: plt.Axes, df: pd.DataFrame, summary: pd.DataFrame, sit
     # fake a second column, unlike the original in-plot version this was copied from) -- that
     # padding trick only made sense for a horizontal 2-column in-plot layout.
     ax.legend(
-        handles=[range_handle, median_handle] + year_handles,
-        labels=[range_handle.get_label(), median_handle.get_label()] + year_labels,
+        handles=[range_handle, mean_handle] + year_handles,
+        labels=[range_handle.get_label(), mean_handle.get_label()] + year_labels,
         loc="upper left",
         bbox_to_anchor=(1.01, 1.0),
         fontsize=9,
@@ -304,20 +307,35 @@ def _plot_overscale(ax: plt.Axes, composition: pd.DataFrame, sites: list[str]) -
     ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=9, ncol=1)
 
 
-def _plot_energy_composition(ax: plt.Axes, composition: pd.DataFrame, sites: list[str]) -> None:
+def _plot_energy_composition(
+    ax: plt.Axes, composition: pd.DataFrame, sites: list[str], coverage_threshold: float
+) -> None:
     """Row 3 -- stacked bars of each site's mean annual energy composition (as % of demand)
     across its 4 per-year "gbs" designs' `decompose_energy_flows` output, in two tiers:
 
-    - Below the 100% line: what served demand. Unmet demand (dark grey) sits at the *base* of
-      the stack, then solar-direct / battery-via-solar cluster together, then
-      battery-via-wind / wind-direct cluster together -- each hue-family reads as one
-      contiguous block split into "direct" and "via battery".
+    - Below the 100% line: what served demand. Solar-direct / battery-via-solar cluster
+      together, then battery-via-wind / wind-direct cluster together -- each hue-family reads
+      as one contiguous block split into "direct" and "via battery" -- with unmet demand (dark
+      grey) stacked *last*, directly under the 100% line, rather than at the base: this makes
+      its bottom edge (the top of the served stack) directly comparable to the dotted
+      hours-based coverage-target line below, without having to mentally net out an
+      intervening served-energy block first.
     - Above the 100% line: curtailed generation (solar / wind), which never served demand at
       all -- a categorically different quantity, not more of the same stack. It's set apart by
       position (above a dashed 100% reference line) and a muted, black-cross-hatched
       treatment (lower alpha, black hatch lines rather than white) instead of a bold outline --
       curtailment reads as receded/wasted, not alarmed-red. Same base hues as the direct-serve
-      segments (same origin) so origin stays readable at a glance, just muted."""
+      segments (same origin) so origin stays readable at a glance, just muted.
+
+    A dotted reference line at `coverage_threshold * 100` marks GBS's *hours*-based coverage
+    target (e.g. 0.95 -> at least 95% of hours fully covered) -- distinct from the dashed 100%
+    line. Since that's an *hours* metric (binary per-hour pass/fail) while the stack below it
+    is built from the continuous *energy* metric, the served stack's top (== 100% minus
+    energy_share_unmet) is not expected to sit exactly on this line -- only an hours-uncovered
+    hour needs a partial shortfall to count, so energy_share_unmet is bounded above by
+    (1 - coverage_threshold) * 100, and the served stack typically clears the coverage-target
+    line with room to spare. That gap is exactly what the grey segment's position relative to
+    the dotted line visualizes."""
     xs = np.arange(len(sites))
     width = 0.6
     demand_pct = (
@@ -335,11 +353,11 @@ def _plot_energy_composition(ax: plt.Axes, composition: pd.DataFrame, sites: lis
     curtailment_pct = composition[["curtailment_solar", "curtailment_wind"]] * 100.0
 
     demand_segments = [
-        ("energy_share_unmet", "Unmet demand", _COLOR_UNMET, None),
         ("energy_share_solar_direct", "Solar (direct)", _COLOR_SOLAR, None),
         ("energy_share_battery_solar", "Solar (via battery)", _COLOR_SOLAR_TINT, _HATCH_BATTERY),
         ("energy_share_battery_wind", "Wind (via battery)", _COLOR_WIND_TINT, _HATCH_BATTERY),
         ("energy_share_wind_direct", "Wind (direct)", _COLOR_WIND, None),
+        ("energy_share_unmet", "Unmet demand", _COLOR_UNMET, None),
     ]
     bottom = np.zeros(len(sites))
     for col, label, color, hatch in demand_segments:
@@ -381,7 +399,17 @@ def _plot_energy_composition(ax: plt.Axes, composition: pd.DataFrame, sites: lis
         curtailment_bottom += values
 
     curtailment_total = curtailment_pct.sum(axis=1).to_numpy()
-    ax.axhline(100, color="black", linewidth=1.0, linestyle="--", alpha=0.6, zorder=3)
+    ax.axhline(100, color="black", linewidth=1.0, linestyle="--", alpha=0.6, zorder=3, label="100% demand")
+    hours_coverage_target = coverage_threshold * 100.0
+    ax.axhline(
+        hours_coverage_target,
+        color="black",
+        linewidth=1.0,
+        linestyle=":",
+        alpha=0.6,
+        zorder=3,
+        label=f"Hours-based coverage target ({hours_coverage_target:.0f}%)",
+    )
 
     top = float((bottom + curtailment_total).max()) if len(sites) else 100.0
     ax.set_ylim(0, max(108.0, top * 1.08))
@@ -390,7 +418,7 @@ def _plot_energy_composition(ax: plt.Axes, composition: pd.DataFrame, sites: lis
     ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=8, ncol=1)
     ax.set_xticks(xs)
     ax.set_xticklabels([_display_name(s) for s in sites], rotation=45, ha="right", fontsize=11)
-    ax.set_xlabel("Site (sorted by median per-year LCOE)", fontsize=13)
+    ax.set_xlabel("Site (sorted by mean per-year LCOE)", fontsize=13)
 
 
 def plot_weather_year_composition(df: pd.DataFrame, out_path: Path, coverage_threshold: float) -> None:
@@ -398,10 +426,7 @@ def plot_weather_year_composition(df: pd.DataFrame, out_path: Path, coverage_thr
     if summary.empty:
         raise ValueError("No site has both a feasible per-year and robust design -- nothing to plot.")
 
-    per_year = df[(df["method"] == "gbs") & (df["site"].isin(summary["site"]))]
-    median_lcoe = per_year.groupby("site")["lcoe"].median()
-    summary = summary.assign(sort_key=summary["site"].map(median_lcoe)).sort_values("sort_key")
-    summary = summary.reset_index(drop=True)
+    summary = summary.sort_values("mean_lcoe").reset_index(drop=True)
     sites = summary["site"].tolist()
 
     composition = _composition_summary(df, sites)
@@ -416,7 +441,7 @@ def plot_weather_year_composition(df: pd.DataFrame, out_path: Path, coverage_thr
 
     _plot_lcoe_spread(ax_lcoe, df, summary, sites)
     _plot_overscale(ax_overscale, composition, sites)
-    _plot_energy_composition(ax_energy, composition, sites)
+    _plot_energy_composition(ax_energy, composition, sites, coverage_threshold)
 
     ax_lcoe.tick_params(axis="x", labelbottom=False)
     ax_overscale.tick_params(axis="x", labelbottom=False)
