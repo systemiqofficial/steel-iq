@@ -774,6 +774,10 @@ class PlantAgentsModel:
                 tech_capex_subsidies = collect_subsidies_for_geo(bus.env.capex_subsidies, plant.location.geo_key)
                 tech_opex_subsidies = collect_subsidies_for_geo(bus.env.opex_subsidies, plant.location.geo_key)
                 tech_debt_subsidies = collect_subsidies_for_geo(bus.env.debt_subsidies, plant.location.geo_key)
+                tech_energy_subsidies = {
+                    carrier: collect_subsidies_for_geo(carrier_subsidies, plant.location.geo_key)
+                    for carrier, carrier_subsidies in bus.env.energy_subsidies.items()
+                }
 
                 logger.debug(f"[PAM] Plant group: {plant.parent_gem_id}")
                 logger.debug(f"[PAM] Plant group balance: ${pg.balance:,.2f}")
@@ -854,6 +858,7 @@ class PlantAgentsModel:
                             tech_capex_subsidies=tech_capex_subsidies,
                             tech_opex_subsidies=tech_opex_subsidies,
                             tech_debt_subsidies=tech_debt_subsidies,
+                            tech_energy_subsidies=tech_energy_subsidies,
                             current_year=bus.env.year,
                             allowed_techs=bus.env.allowed_techs,
                             chosen_emissions_boundary_for_carbon_costs=bus.env.config.chosen_emissions_boundary_for_carbon_costs,
@@ -943,6 +948,7 @@ class PlantAgentsModel:
                     capex_subsidies=bus.env.capex_subsidies,
                     opex_subsidies=bus.env.opex_subsidies,
                     debt_subsidies=bus.env.debt_subsidies,
+                    energy_subsidies=bus.env.energy_subsidies,
                     capacity_limit_steel=capacity_limit_pam_steel,
                     capacity_limit_iron=capacity_limit_pam_iron,
                     installed_capacity_in_year=bus.env.installed_capacity_in_year,
