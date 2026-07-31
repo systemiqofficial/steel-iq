@@ -1877,6 +1877,42 @@ def apply_hydrogen_price_cap_country_level(
 # ----------------------------------------------------------------------------------------------------------
 
 
+def calculate_secondary_output_adjustment_per_tonne(
+    dbc: "PrimaryFeedstock",
+    output_costs: dict[str, float],
+    disposal_cost_outputs: frozenset[str] | None = None,
+) -> float:
+    """
+    Per-tonne-of-product cost adjustment from one business case's secondary outputs.
+
+    Physical by-product outputs are priced as revenue (``-abs(price)``) unless named in
+    ``disposal_cost_outputs``, where the raw price sign is kept (positive = disposal
+    cost). Carbon outputs always keep their raw sign (positive = storage cost,
+    negative = credit). Outputs without a price in ``output_costs`` are skipped.
+
+    Args:
+        dbc: PrimaryFeedstock whose ``outputs`` and ``carbon_outputs`` are priced.
+        output_costs: Carrier prices used for output pricing (USD/unit).
+        disposal_cost_outputs: Carrier names where positive price = disposal cost.
+
+    Returns:
+        Adjustment in USD per tonne of product (negative = revenue, positive = cost).
+    """
+    adjustment = 0.0
+    for output, quantity in (dbc.outputs or {}).items():
+        if output not in output_costs:
+            continue
+        if disposal_cost_outputs and output in disposal_cost_outputs:
+            effective_price = output_costs[output]  # positive = disposal cost
+        else:
+            effective_price = -abs(output_costs[output])  # revenue
+        adjustment += effective_price * quantity
+    for output, quantity in (dbc.carbon_outputs or {}).items():
+        if output in output_costs:
+            adjustment += output_costs[output] * quantity
+    return adjustment
+
+
 def calculate_cost_adjustments_from_secondary_outputs(
     bill_of_materials,
     dynamic_business_cases,
@@ -1937,42 +1973,18 @@ def calculate_cost_adjustments_from_secondary_outputs(
 
         total_product_volume += product_volume
 
-        # Physical outputs: revenue via -abs(price), unless disposal cost output
-        physical_outputs = dbc.outputs or {}
-        material_adjustment = 0.0
-        for output in physical_outputs:
-            if output in adjustments_outputs:
-                if disposal_cost_outputs and output in disposal_cost_outputs:
-                    effective_price = adjustments_outputs[output]  # positive = disposal cost
-                else:
-                    effective_price = -abs(adjustments_outputs[output])  # revenue
-                carrier_adj = product_volume * effective_price * physical_outputs[output]
-                material_adjustment += carrier_adj
-                logger.debug(
-                    "[SECONDARY OUTPUTS] physical '%s' (%s)%s: vol=%.1f x price=$%.6f x qty=%.4f = $%.4f",
-                    output,
-                    material,
-                    " [disposal]" if disposal_cost_outputs and output in disposal_cost_outputs else "",
-                    product_volume,
-                    effective_price,
-                    physical_outputs[output],
-                    carrier_adj,
-                )
-        # Carbon outputs: keep output_costs sign (positive = cost, negative = credit)
-        carbon_outputs = dbc.carbon_outputs or {}
-        for output in carbon_outputs:
-            if output in adjustments_outputs:
-                carrier_adj = product_volume * adjustments_outputs[output] * carbon_outputs[output]
-                material_adjustment += carrier_adj
-                logger.debug(
-                    "[SECONDARY OUTPUTS] carbon '%s' (%s): vol=%.1f x price=$%.6f x qty=%.4f = $%.4f",
-                    output,
-                    material,
-                    product_volume,
-                    adjustments_outputs[output],
-                    carbon_outputs[output],
-                    carrier_adj,
-                )
+        material_adjustment = product_volume * calculate_secondary_output_adjustment_per_tonne(
+            dbc,
+            adjustments_outputs,
+            disposal_cost_outputs,
+        )
+        if material_adjustment != 0.0:
+            logger.debug(
+                "[SECONDARY OUTPUTS] '%s': vol=%.1f x per-tonne adjustment = $%.4f",
+                material,
+                product_volume,
+                material_adjustment,
+            )
         total_adjustments += material_adjustment
 
     result = total_adjustments / total_product_volume if total_product_volume > 0 else 0.0
