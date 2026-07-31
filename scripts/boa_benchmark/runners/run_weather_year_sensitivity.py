@@ -19,13 +19,25 @@ years it was checked against.
 
 Produces one long-format CSV, one row per (site, year) plus one "robust" row per site:
     site, lat, lon, cost_region, coverage_threshold, metric, standing_loss, soc_mode,
-    method, year, lcoe, solar, wind, battery, coverage, n_evaluations, seconds
+    method, year, lcoe, solar, wind, battery, coverage, n_evaluations, seconds,
+    energy_share_solar_direct, energy_share_wind_direct, energy_share_battery_solar,
+    energy_share_battery_wind, energy_share_unmet, curtailment_solar, curtailment_wind
 
 `method` is "gbs" (year = the weather year) or "gbs_robust" (year = NaN, coverage = the
 worst/binding year's realized coverage). If no design in the search box meets the threshold
 for a given site/year (or jointly across years, for the robust row), that row's
-lcoe/solar/wind/battery/coverage/n_evaluations are NaN and a warning is logged -- same
-convention as `run_methodology_comparison.py`.
+lcoe/solar/wind/battery/coverage/n_evaluations/energy_share_*/curtailment_* are NaN and a
+warning is logged -- same convention as `run_methodology_comparison.py`.
+
+The `energy_share_*`/`curtailment_*` columns (see `design_metrics.decompose_energy_flows`)
+attribute a "gbs" row's realized annual dispatch back to solar vs. wind origin -- direct
+generation-to-demand, battery-mediated (discharge attributed by the battery's accumulated
+composition, not just that hour's generation mix), and curtailed, respectively. The first
+five (`*_direct`, `*_battery`, `energy_share_unmet`) are fractions of annual demand and sum
+to ~1.0; `curtailment_*` is a separate multiple of annual demand (same units as the
+solar/wind overscale columns), since curtailed generation never reaches demand at all. Only
+populated for "gbs" rows -- not "gbs_robust" (whose single design has no one weather year to
+decompose against) or "lp" rows.
 
 `--include-lp` (metric="energy" only) additionally solves `pypsa_model.solve_optimal_design`
 -- the certified LP -- per weather year, emitting extra `method="lp"` rows (`soc_mode`
@@ -55,7 +67,7 @@ import pandas as pd
 import yaml
 
 from ..core.cost_inputs import load_benchmark_costs
-from ..core.design_metrics import score_lcoe, simulate_design
+from ..core.design_metrics import EnergyFlowShares, decompose_energy_flows, score_lcoe, simulate_design
 from ..core.gbs import find_gbs_design, find_robust_gbs_design
 from ..core.point_profile import load_point_profile
 from ..core.pypsa_model import solve_optimal_design
@@ -79,6 +91,7 @@ def _row(
     coverage: float,
     n_evaluations: float,
     seconds: float,
+    energy_flows: EnergyFlowShares | None = None,
 ) -> dict:
     return {
         "site": site["name"],
@@ -98,6 +111,13 @@ def _row(
         "coverage": coverage,
         "n_evaluations": n_evaluations,
         "seconds": seconds,
+        "energy_share_solar_direct": energy_flows.solar_direct if energy_flows is not None else np.nan,
+        "energy_share_wind_direct": energy_flows.wind_direct if energy_flows is not None else np.nan,
+        "energy_share_battery_solar": energy_flows.battery_solar if energy_flows is not None else np.nan,
+        "energy_share_battery_wind": energy_flows.battery_wind if energy_flows is not None else np.nan,
+        "energy_share_unmet": energy_flows.unmet if energy_flows is not None else np.nan,
+        "curtailment_solar": energy_flows.curtailment_solar if energy_flows is not None else np.nan,
+        "curtailment_wind": energy_flows.curtailment_wind if energy_flows is not None else np.nan,
     }
 
 
@@ -170,6 +190,9 @@ def run_sensitivity(
                 )
                 continue
             logger.info(f"  year={year} lcoe={result.lcoe:.2f} design={result.design}")
+            energy_flows = decompose_energy_flows(
+                result.design, profiles[year], soc_mode=soc_mode, standing_loss=standing_loss
+            )
             rows.append(
                 _row(
                     site,
@@ -186,6 +209,7 @@ def run_sensitivity(
                     result.coverage,
                     result.n_evaluations,
                     result.search_seconds,
+                    energy_flows=energy_flows,
                 )
             )
 
