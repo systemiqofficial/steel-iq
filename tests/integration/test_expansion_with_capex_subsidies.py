@@ -155,6 +155,7 @@ def test_evaluate_expansion_without_subsidies(
         equity_share=0.4,  # Add equity_share parameter (40% equity, 60% debt)
         current_year=bus.env.year,
         allowed_techs=allowed_techs,  # Add required allowed_techs parameter
+        active_statuses=["operating"],
         capex_subsidies={},  # Empty dict instead of None
         opex_subsidies={},  # Empty dict for consistency
         debt_subsidies={},  # Empty dict for consistency
@@ -237,6 +238,7 @@ def test_evaluate_expansion_with_absolute_capex_subsidy(
         equity_share=0.4,  # Add equity_share parameter (40% equity, 60% debt)
         current_year=bus.env.year,
         allowed_techs=allowed_techs,  # Add required allowed_techs parameter
+        active_statuses=["operating"],
         capex_subsidies=capex_subsidies,
     )
 
@@ -321,6 +323,7 @@ def test_evaluate_expansion_with_relative_capex_subsidy(
         equity_share=0.4,  # Add equity_share parameter (40% equity, 60% debt)
         current_year=bus.env.year,
         allowed_techs=allowed_techs,  # Add required allowed_techs parameter
+        active_statuses=["operating"],
         capex_subsidies=capex_subsidies,
     )
 
@@ -424,6 +427,7 @@ def test_evaluate_expansion_with_combined_subsidies(
         equity_share=0.4,  # Add equity_share parameter (40% equity, 60% debt)
         current_year=bus.env.year,
         allowed_techs=allowed_techs,  # Add required allowed_techs parameter
+        active_statuses=["operating"],
         capex_subsidies=capex_subsidies,
     )
 
@@ -505,6 +509,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
         equity_share=0.4,
         current_year=bus.env.year,
         allowed_techs=allowed_techs_restricted,  # Only EAF and BOF allowed
+        active_statuses=["operating"],
         capex_subsidies={},
         opex_subsidies={},
         debt_subsidies={},
@@ -541,6 +546,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
         equity_share=0.4,
         current_year=bus.env.year,
         allowed_techs=allowed_techs_all,  # All technologies allowed
+        active_statuses=["operating"],
         capex_subsidies={},
         opex_subsidies={},
         debt_subsidies={},

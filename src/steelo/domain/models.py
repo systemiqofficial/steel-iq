@@ -3458,26 +3458,6 @@ class Plant:
                 return True
         return False
 
-    @property
-    def most_common_reductant(self) -> dict[str, str]:
-        """
-        Get the most common reductant for each technology across all furnace groups in the plant.
-
-        Returns:
-            dict[str, str]: Dictionary mapping technology name to most common reductant.
-                           If no reductant is set for a technology, it will be omitted from the result.
-
-        Example:
-            {
-                "BOF": "coke",
-                "EAF": "electricity",
-                "DRI": "natural_gas"
-            }
-        """
-        from steelo.utilities.utils import get_most_common_reductant_by_technology
-
-        return get_most_common_reductant_by_technology(self.furnace_groups)
-
     def calculate_average_steel_cost_and_capacity(self, active_statuses: list[str]):
         """
         Calculates average steel cost and capacity for the plant for active steel furnaces
@@ -4987,13 +4967,15 @@ class PlantGroup:
                 )
                 fg.balance = 0.0
 
-    @property
-    def most_common_reductant(self) -> dict[str, str]:
+    def most_common_reductant(self, active_statuses: list[str]) -> dict[str, str]:
         """
         Get the most common reductant for each technology across all plants in the plant group.
 
-        Aggregates reductant data from all furnace groups across all plants in this plant group
-        to determine the most frequently used reductant for each technology type.
+        Aggregates reductant data from active-status furnace groups across all plants in this
+        plant group to determine the most frequently used reductant for each technology type.
+
+        Args:
+            active_statuses: Status strings whose furnace groups count in the vote.
 
         Returns:
             dict[str, str]: Dictionary mapping technology name to most common reductant.
@@ -5011,7 +4993,7 @@ class PlantGroup:
         # Collect all furnace groups from all plants
         all_furnace_groups = [fg for plant in self.plants for fg in plant.furnace_groups]
 
-        return get_most_common_reductant_by_technology(all_furnace_groups)
+        return get_most_common_reductant_by_technology(all_furnace_groups, active_statuses)
 
     def generate_new_plant(
         self,
@@ -5148,6 +5130,7 @@ class PlantGroup:
         construction_time: int,
         current_year: Year,
         allowed_techs: dict[Year, list[str]],
+        active_statuses: list[str],
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
@@ -5192,6 +5175,8 @@ class PlantGroup:
             construction_time (int): Time to construct new furnace (years)
             current_year (Year): Current simulation year
             allowed_techs (dict[Year, list[str]]): Technologies allowed by year
+            active_statuses (list[str]): Status strings whose furnace groups vote in the
+                group's most-common-reductant aggregation
             capex_subsidies (dict[str, dict[str, list[Subsidy]]]): CAPEX subsidies by ISO3, technology, and subsidy
             opex_subsidies (dict[str, dict[str, list[Subsidy]]]): OPEX subsidies by ISO3, technology, and subsidy
             debt_subsidies (dict[str, dict[str, list[Subsidy]]]): Debt subsidies by ISO3, technology, and subsidy
@@ -5223,6 +5208,9 @@ class PlantGroup:
 
         # Dictionary to store best NPV and technology choice for each plant
         NPV_p = {}
+
+        # Group-level modal reductant per technology (active-status FGs only)
+        group_most_common_reductant = self.most_common_reductant(active_statuses)
 
         # Evaluate expansion options for each plant in the group
         for plant in self.plants:
@@ -5286,7 +5274,7 @@ class PlantGroup:
 
                 # P3 CO2 storage gate: skip CCS techs whose annual need exceeds country headroom.
                 if get_co2_need_by_name is not None and get_co2_headroom is not None:
-                    reductant = self.most_common_reductant.get(tech, environment_most_common_reductant.get(tech, ""))
+                    reductant = group_most_common_reductant.get(tech, environment_most_common_reductant.get(tech, ""))
                     need = get_co2_need_by_name(tech, float(capacity), reductant or "")
                     if need > 0.0:
                         headroom = get_co2_headroom(plant.location.iso3, int(current_year) + construction_time, 0.0)
@@ -5301,7 +5289,7 @@ class PlantGroup:
                     plant.energy_costs,
                     tech,
                     capacity,
-                    self.most_common_reductant.get(tech, environment_most_common_reductant.get(tech)),
+                    group_most_common_reductant.get(tech, environment_most_common_reductant.get(tech)),
                 )
                 bill_of_materials_opt, util_rate, reductant = bom_result
                 if bill_of_materials_opt is None:
@@ -5478,6 +5466,7 @@ class PlantGroup:
         installed_capacity_in_year: Callable[[str], Volumes],
         new_plant_capacity_in_year: Callable[[str], Volumes],
         new_capacity_share_from_new_plants: float,
+        active_statuses: list[str],
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
@@ -5571,6 +5560,7 @@ class PlantGroup:
             fopex_for_iso3=fopex_for_iso3,
             current_year=current_year,
             allowed_techs=allowed_techs,
+            active_statuses=active_statuses,
             capex_subsidies=capex_subsidies,
             opex_subsidies=opex_subsidies,
             debt_subsidies=debt_subsidies,
@@ -5849,6 +5839,7 @@ class PlantGroup:
         technology_emission_factors: list[TechnologyEmissionFactors],
         chosen_emissions_boundary_for_carbon_costs: str,
         carbon_costs: dict[str, dict[Year, float]],
+        active_statuses: list[str],
         top_n_loctechs_as_business_op: int = 5,
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
@@ -5903,6 +5894,8 @@ class PlantGroup:
             technology_emission_factors: List of technology-specific emission factors
             chosen_emissions_boundary_for_carbon_costs: Emission boundary for carbon costs
             carbon_costs: Dictionary mapping iso3 -> year -> carbon cost
+            active_statuses: Status strings whose furnace groups vote in the group's
+                most-common-reductant aggregation
             top_n_loctechs_as_business_op: Number of top opportunities to select (default: 5)
             capex_subsidies: Dictionary mapping iso3 -> tech -> list of capex subsidies
             debt_subsidies: Dictionary mapping iso3 -> tech -> list of debt subsidies
@@ -5996,7 +5989,7 @@ class PlantGroup:
             opex_subsidies=opex_subsidies,
             energy_subsidies=energy_subsidies,
             carbon_costs=carbon_costs,
-            most_common_reductant=self.most_common_reductant,
+            most_common_reductant=self.most_common_reductant(active_statuses),
             environment_most_common_reductant=environment_most_common_reductant,
             derive_geo_unit=derive_geo_unit,
         )
@@ -8050,6 +8043,7 @@ class Environment:
 
         Side Effects:
             - Updates fg.chosen_reductant for each furnace group via generate_energy_vopex_by_reductant()
+              (closed and discarded furnace groups keep their previous chosen_reductant)
             - Updates self.most_common_reductant_by_tech with aggregated reductant data
         """
 
@@ -8060,7 +8054,10 @@ class Environment:
                 )
                 # print(fg.technology.dynamic_business_case[-1].emissions)
                 fg.technology.set_product(self.technology_to_product)
-                fg.generate_energy_vopex_by_reductant()
+                # Closed/discarded FGs keep their frozen reductant choice; the dynamic
+                # business case and breakdown keys are still attached for other readers.
+                if fg.status.lower() not in ("closed", "discarded"):
+                    fg.generate_energy_vopex_by_reductant()
                 fg.cost_breakdown_keys = self.cost_breakdown_keys
                 fg.carbon_breakdown_keys = self.carbon_breakdown_keys
 
@@ -8561,8 +8558,9 @@ class Environment:
         """
         Get the most common reductant for each technology across all plants in the simulation.
 
-        Aggregates reductant data from all furnace groups across all plants in the simulation
-        to determine the most frequently used reductant for each technology type.
+        Aggregates reductant data from active-status furnace groups across all plants in the
+        simulation to determine the most frequently used reductant for each technology type.
+        Closed and discarded furnace groups do not vote.
 
         Args:
             world_plants (list[Plant]): All plants in the simulation to aggregate reductant data from.
@@ -8583,7 +8581,7 @@ class Environment:
         # Collect all furnace groups from all plants
         all_furnace_groups = [fg for plant in world_plants for fg in plant.furnace_groups]
 
-        return get_most_common_reductant_by_technology(all_furnace_groups)
+        return get_most_common_reductant_by_technology(all_furnace_groups, self.config.active_statuses)
 
     def update_steel_capex_reduction_ratio(self) -> None:
         """
