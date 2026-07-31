@@ -2870,14 +2870,67 @@ class FurnaceGroup:
 
         return self.balance
 
-    def generate_energy_vopex_by_reductant(self) -> dict[str, float]:
+    def generate_energy_vopex_by_reductant(
+        self,
+        carbon_price: float = 0.0,
+        technology_emission_factors: list[TechnologyEmissionFactors] | None = None,
+        chosen_emissions_boundary: str = "",
+    ) -> dict[str, float]:
         """
-        calculate the cost of energy considering the furnace technolgy and different production paths
+        Calculate energy VOPEX per (metallic charge, reductant) and pick the furnace
+        group's reductant.
+
+        With the default arguments the per-charge choice minimises energy VOPEX only
+        (legacy behaviour, used by the commit-time callers). When
+        ``technology_emission_factors`` is provided, the choice instead minimises the
+        total score: energy VOPEX + ``carbon_price`` x direct GHG factor (for
+        ``chosen_emissions_boundary``) + the business case's secondary-output
+        adjustment (by-product revenue / disposal and carbon storage costs).
+
+        Args:
+            carbon_price: Country carbon price for the current year (USD/tCO2e).
+            technology_emission_factors: Emission factors used to build the per-
+                (reductant, metallic charge) direct GHG lookup. None keeps the
+                energy-only choice.
+            chosen_emissions_boundary: Emissions boundary whose direct GHG factor
+                enters the score (e.g. "plant_boundary").
+
+        Returns:
+            dict[str, float]: Energy VOPEX per metallic charge for the chosen
+            reductant (pure energy VOPEX regardless of scoring mode).
+
+        Side Effects:
+            Sets self.chosen_reductant and the reporting dicts
+            (energy_vopex_by_input, energy_vopex_breakdown_by_input,
+            energy_vopex_by_carrier) — reporting stays pure energy VOPEX; only the
+            min-choice uses the total score.
+
+        Notes:
+            Logs a data-drift warning if a metallic charge's material requirements
+            (required quantity per tonne or non-energy secondary feedstocks) differ
+            across reductants — the score carries no material term because current
+            masters author materials identically across reductants.
         """
+        from .calculate_costs import calculate_secondary_output_adjustment_per_tonne
+
+        logger = logging.getLogger(f"{__name__}.generate_energy_vopex_by_reductant")
         energy_vopex_by_input: dict[str, dict[str, float]] = {}
         energy_breakdown_by_input: dict[str, dict[str, dict[str, float]]] = {}
+        extra_score_by_input: dict[str, dict[str, float]] = {}
+        material_profile_by_input: dict[str, dict[str, tuple]] = {}
         if self.technology.dynamic_business_case is None:
             return {}
+
+        # Direct GHG factors per (technology, reductant, metallic charge) — same matching
+        # rules as calculate_emissions, restricted to the chosen boundary.
+        ef_by_key: dict[tuple[str, str, str], float] = {}
+        if technology_emission_factors is not None:
+            for factor in technology_emission_factors:
+                if factor.boundary != chosen_emissions_boundary:
+                    continue
+                ef_by_key[(factor.technology.lower(), normalize_name(factor.reductant), factor.metallic_charge)] = (
+                    factor.direct_ghg_factor
+                )
 
         for dbc in self.technology.dynamic_business_case:
             metallic_input = dbc.metallic_charge
@@ -2891,13 +2944,22 @@ class FurnaceGroup:
                     continue
                 combined_requirements[normalized_energy] = combined_requirements.get(normalized_energy, 0.0) + volume
 
+            non_energy_secondary: dict[str, float] = {}
             for secondary_type, volume in raw_secondary.items():
                 normalized_secondary = normalize_name(secondary_type)
                 if normalized_secondary not in ENERGY_FEEDSTOCK_KEYS:
+                    non_energy_secondary[normalized_secondary] = volume
                     continue
                 combined_requirements[normalized_secondary] = (
                     combined_requirements.get(normalized_secondary, 0.0) + volume
                 )
+
+            # Data-drift guard (not a scoring term): record each reductant's material profile
+            # so cross-reductant differences the score cannot see are surfaced.
+            material_profile_by_input.setdefault(metallic_input, {})[dbc.reductant] = (
+                dbc.required_quantity_per_ton_of_product,
+                tuple(sorted(non_energy_secondary.items())),
+            )
 
             if not combined_requirements:
                 continue
@@ -2915,7 +2977,43 @@ class FurnaceGroup:
                 energy_vopex_by_input[metallic_input][dbc.reductant] += cost_value
                 energy_breakdown_by_input[metallic_input][dbc.reductant][normalized_energy] += cost_value
 
-        mins = [min(costs, key=lambda k: costs[k]) for costs in energy_vopex_by_input.values() if costs]
+            if technology_emission_factors is not None:
+                direct_ghg_factor = ef_by_key.get(
+                    (dbc.technology.lower(), normalize_name(dbc.reductant), dbc.metallic_charge), 0.0
+                )
+                secondary_adjustment = calculate_secondary_output_adjustment_per_tonne(
+                    dbc,
+                    self.output_energy_costs,
+                    self.disposal_cost_outputs,
+                )
+                extra = carbon_price * direct_ghg_factor + secondary_adjustment
+                extra_score_by_input.setdefault(metallic_input, {})[dbc.reductant] = (
+                    extra_score_by_input.get(metallic_input, {}).get(dbc.reductant, 0.0) + extra
+                )
+
+        for metallic_input, profiles in material_profile_by_input.items():
+            if len(set(profiles.values())) > 1:
+                logger.warning(
+                    "[REDUCTANT SCORE] FG %s: material requirements for charge '%s' differ across "
+                    "reductants (%s) — the reductant score carries no material term, so this "
+                    "difference is ignored. Check the master's Bill of Materials authoring.",
+                    self.furnace_group_id,
+                    metallic_input,
+                    ", ".join(sorted(profiles)),
+                )
+
+        if technology_emission_factors is not None:
+            score_by_input = {
+                metallic_input: {
+                    reductant: energy_cost + extra_score_by_input.get(metallic_input, {}).get(reductant, 0.0)
+                    for reductant, energy_cost in reductant_costs.items()
+                }
+                for metallic_input, reductant_costs in energy_vopex_by_input.items()
+            }
+        else:
+            score_by_input = energy_vopex_by_input
+
+        mins = [min(costs, key=lambda k: costs[k]) for costs in score_by_input.values() if costs]
         counts = Counter(mins)
         if not counts:
             # logger.warning(f"No reductants found for furnace group {self.furnace_group_id}")
@@ -8161,6 +8259,7 @@ class Environment:
         """
 
         for p in world_plants:
+            carbon_price = self.carbon_costs.get(p.location.iso3, {}).get(self.year, 0.0)
             for fg in p.furnace_groups:
                 fg.technology.dynamic_business_case = self.dynamic_feedstocks.get(
                     fg.technology.name, self.dynamic_feedstocks.get(fg.technology.name.lower(), [])
@@ -8170,7 +8269,11 @@ class Environment:
                 # Closed/discarded FGs keep their frozen reductant choice; the dynamic
                 # business case and breakdown keys are still attached for other readers.
                 if fg.status.lower() not in ("closed", "discarded"):
-                    fg.generate_energy_vopex_by_reductant()
+                    fg.generate_energy_vopex_by_reductant(
+                        carbon_price=carbon_price,
+                        technology_emission_factors=self.technology_emission_factors,
+                        chosen_emissions_boundary=self.config.chosen_emissions_boundary_for_carbon_costs,
+                    )
                 fg.cost_breakdown_keys = self.cost_breakdown_keys
                 fg.carbon_breakdown_keys = self.carbon_breakdown_keys
 

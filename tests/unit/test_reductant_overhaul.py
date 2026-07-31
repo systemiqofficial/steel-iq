@@ -76,8 +76,15 @@ def _make_env_for_feedstocks(dynamic_feedstocks: dict) -> Environment:
     env.technology_to_product = {"DRI": "iron"}
     env.cost_breakdown_keys = []
     env.carbon_breakdown_keys = []
-    env.config = type("Config", (), {"active_statuses": ["operating"]})()
+    env.config = type(
+        "Config",
+        (),
+        {"active_statuses": ["operating"], "chosen_emissions_boundary_for_carbon_costs": "plant_boundary"},
+    )()
     env.most_common_reductant_by_tech = {}
+    env.carbon_costs = {}
+    env.technology_emission_factors = []
+    env.year = Year(2025)
     return env
 
 
@@ -275,3 +282,190 @@ def test_expansion_candidate_priced_without_incumbent_subsidy():
     # EAF candidate has no energy subsidy: pure unsubsidised prices.
     assert captured["EAF"]["coke"] == 300.0
     assert captured["EAF"]["hydrogen"] == 5000.0
+
+
+# ── B5: secondary-output adjustment helper equivalence ───────────────────────
+
+
+def _secondary_output_fixture():
+    """Two-material fixture exercising revenue, disposal-cost, and carbon outputs."""
+    dbc_ore = PrimaryFeedstock(metallic_charge="iron_ore", reductant="coal", technology="DRI")
+    dbc_ore.required_quantity_per_ton_of_product = 1.5
+    dbc_ore.outputs = {"bf_gas": 0.8, "steelmaking_slag": 0.2}
+    dbc_ore.carbon_outputs = {"co2_stored": 0.5}
+
+    dbc_scrap = PrimaryFeedstock(metallic_charge="scrap", reductant="coal", technology="DRI")
+    dbc_scrap.required_quantity_per_ton_of_product = 1.0
+    dbc_scrap.outputs = {"bof_gas": 0.3}
+
+    bill_of_materials = {
+        "materials": {
+            "iron_ore": {"demand": 3.0, "unit_cost": 100.0},
+            "scrap": {"demand": 1.0, "unit_cost": 200.0},
+        },
+        "energy": {},
+    }
+    output_costs = {"bf_gas": 0.02, "bof_gas": 0.04, "steelmaking_slag": 5.0, "co2_stored": 30.0}
+    disposal_cost_outputs = frozenset({"steelmaking_slag"})
+    return [dbc_ore, dbc_scrap], bill_of_materials, output_costs, disposal_cost_outputs
+
+
+def test_secondary_output_adjustment_unchanged_by_refactor():
+    """Result of calculate_cost_adjustments_from_secondary_outputs on a mixed fixture.
+
+    Hand-computed against the pre-refactor implementation:
+    - iron_ore: product_volume = 3.0/1.5 = 2.0;
+      per tonne: -|0.02|*0.8 + 5.0*0.2 (disposal) + 30.0*0.5 (carbon) = 15.984
+    - scrap: product_volume = 1.0; per tonne: -|0.04|*0.3 = -0.012
+    - total = (2.0*15.984 - 0.012) / 3.0 = 10.652
+    """
+    import pytest
+    from steelo.domain import calculate_costs
+
+    dbcs, bom, output_costs, disposal = _secondary_output_fixture()
+    result = calculate_costs.calculate_cost_adjustments_from_secondary_outputs(
+        bill_of_materials=bom,
+        dynamic_business_cases=dbcs,
+        output_costs=output_costs,
+        disposal_cost_outputs=disposal,
+    )
+    assert result == pytest.approx(10.652, rel=1e-12)
+
+
+def test_secondary_output_adjustment_per_tonne_matches_per_material_maths():
+    """The helper reproduces the pre-refactor per-material pricing rule."""
+    import pytest
+    from steelo.domain import calculate_costs
+
+    dbcs, _bom, output_costs, disposal = _secondary_output_fixture()
+    dbc_ore, dbc_scrap = dbcs
+    assert calculate_costs.calculate_secondary_output_adjustment_per_tonne(
+        dbc_ore, output_costs, disposal
+    ) == pytest.approx(15.984, rel=1e-12)
+    assert calculate_costs.calculate_secondary_output_adjustment_per_tonne(
+        dbc_scrap, output_costs, disposal
+    ) == pytest.approx(-0.012, rel=1e-12)
+
+
+# ── B5: total-cost-aware annual re-pick ──────────────────────────────────────
+
+
+def _make_scoring_fg(energy_costs: dict[str, float]) -> FurnaceGroup:
+    """DRI furnace group with coal and natural_gas business cases attached."""
+    fg = _make_fg("fg1", "DRI", "")
+    fg.technology.dynamic_business_case = _dri_feedstocks()
+    fg.set_energy_costs(**energy_costs)
+    return fg
+
+
+def _dri_emission_factors():
+    from steelo.domain.models import TechnologyEmissionFactors
+
+    def _ef(reductant: str, direct: float, boundary: str = "plant_boundary") -> TechnologyEmissionFactors:
+        return TechnologyEmissionFactors(
+            business_case=f"DRI_iron_ore_{reductant}",
+            technology="DRI",
+            boundary=boundary,
+            metallic_charge="iron_ore",
+            reductant=reductant,
+            direct_ghg_factor=direct,
+            direct_with_biomass_ghg_factor=direct,
+            indirect_ghg_factor=0.0,
+        )
+
+    # Coal-DRI is far dirtier than gas-DRI; add another boundary to check filtering.
+    return [
+        _ef("coal", 2.0),
+        _ef("natural_gas", 0.5),
+        _ef("coal", 99.0, boundary="supply_chain"),
+        _ef("natural_gas", 0.0, boundary="supply_chain"),
+    ]
+
+
+def test_reductant_score_carbon_price_flips_pick():
+    """Energy-only pick is coal; with an EF gap and a sufficient carbon price the
+    total-cost pick flips to natural_gas. Reporting dicts stay pure energy VOPEX."""
+    # Coal energy VOPEX 10, gas 20: energy-only picks coal.
+    fg = _make_scoring_fg({"coal": 1.0, "natural_gas": 2.0})
+    assert fg.generate_energy_vopex_by_reductant() == {"iron_ore": 10.0}
+    assert fg.chosen_reductant == "coal"
+
+    # Carbon: coal 2.0 tCO2/t x $10 = $20; gas 0.5 x $10 = $5. Totals: 30 vs 25 -> gas.
+    result = fg.generate_energy_vopex_by_reductant(
+        carbon_price=10.0,
+        technology_emission_factors=_dri_emission_factors(),
+        chosen_emissions_boundary="plant_boundary",
+    )
+    assert fg.chosen_reductant == "natural_gas"
+    # Reporting stays pure energy VOPEX for the chosen reductant.
+    assert result == {"iron_ore": 20.0}
+    assert fg.energy_vopex_by_input == {"iron_ore": 20.0}
+    assert fg.energy_vopex_by_carrier == {"natural_gas": 20.0}
+
+    # An insufficient carbon price keeps coal (also proves the supply_chain EFs are ignored).
+    fg.generate_energy_vopex_by_reductant(
+        carbon_price=5.0,
+        technology_emission_factors=_dri_emission_factors(),
+        chosen_emissions_boundary="plant_boundary",
+    )
+    assert fg.chosen_reductant == "coal"
+
+
+def test_reductant_score_by_product_credit_flips_pick():
+    """A by-product credit on the gas business case flips the pick without carbon."""
+    fg = _make_scoring_fg({"coal": 1.0, "natural_gas": 1.2, "bf_gas": 15.0})
+    gas_dbc = next(d for d in fg.technology.dynamic_business_case if d.reductant == "natural_gas")
+    gas_dbc.outputs = {"bf_gas": 0.2}  # revenue: -15 x 0.2 = -3/t
+
+    # Energy-only: coal 10 vs gas 12 -> coal.
+    fg.generate_energy_vopex_by_reductant()
+    assert fg.chosen_reductant == "coal"
+
+    # Zero EFs, zero carbon price: only the by-product credit enters (12 - 3 = 9 < 10).
+    fg.generate_energy_vopex_by_reductant(
+        carbon_price=0.0,
+        technology_emission_factors=[],
+        chosen_emissions_boundary="plant_boundary",
+    )
+    assert fg.chosen_reductant == "natural_gas"
+
+
+def test_reductant_score_defaults_reproduce_legacy_choice():
+    """Calling with defaults gives the energy-only pick and identical reporting."""
+    fg_legacy = _make_scoring_fg({"coal": 1.0, "natural_gas": 2.0})
+    fg_default = _make_scoring_fg({"coal": 1.0, "natural_gas": 2.0})
+
+    legacy = fg_legacy.generate_energy_vopex_by_reductant()
+    default = fg_default.generate_energy_vopex_by_reductant(
+        carbon_price=0.0, technology_emission_factors=None, chosen_emissions_boundary=""
+    )
+    assert legacy == default
+    assert fg_legacy.chosen_reductant == fg_default.chosen_reductant == "coal"
+    assert fg_legacy.energy_vopex_breakdown_by_input == fg_default.energy_vopex_breakdown_by_input
+
+
+def test_reductant_score_material_drift_warning():
+    """A cross-reductant material difference triggers the data-drift warning."""
+    import logging
+
+    fg = _make_scoring_fg({"coal": 1.0, "natural_gas": 2.0})
+    gas_dbc = next(d for d in fg.technology.dynamic_business_case if d.reductant == "natural_gas")
+    gas_dbc.required_quantity_per_ton_of_product = 1.6  # differs from coal's 1.5
+
+    # Attach a handler directly to the function logger — caplog relies on propagation,
+    # which the project logging config (installed by other tests) can disable.
+    records: list[logging.LogRecord] = []
+
+    class _Collector(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    logger = logging.getLogger("steelo.domain.models.generate_energy_vopex_by_reductant")
+    collector = _Collector(level=logging.WARNING)
+    logger.addHandler(collector)
+    try:
+        fg.generate_energy_vopex_by_reductant()
+    finally:
+        logger.removeHandler(collector)
+
+    assert any("differ across" in record.getMessage() for record in records)
