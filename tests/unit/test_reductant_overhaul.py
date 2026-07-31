@@ -83,7 +83,7 @@ def _make_env_for_feedstocks(dynamic_feedstocks: dict) -> Environment:
     )()
     env.most_common_reductant_by_tech = {}
     env.carbon_costs = {}
-    env.technology_emission_factors = []
+    env.technology_emission_factors = _dri_emission_factors()
     env.year = Year(2025)
     return env
 
@@ -421,13 +421,26 @@ def test_reductant_score_by_product_credit_flips_pick():
     fg.generate_energy_vopex_by_reductant()
     assert fg.chosen_reductant == "coal"
 
-    # Zero EFs, zero carbon price: only the by-product credit enters (12 - 3 = 9 < 10).
+    # Zero carbon price: only the by-product credit enters (12 - 3 = 9 < 10).
     fg.generate_energy_vopex_by_reductant(
         carbon_price=0.0,
-        technology_emission_factors=[],
+        technology_emission_factors=_dri_emission_factors(),
         chosen_emissions_boundary="plant_boundary",
     )
     assert fg.chosen_reductant == "natural_gas"
+
+
+def test_reductant_score_missing_ef_fails_loudly():
+    """Scoring mode with incomplete EFs raises instead of silently scoring carbon as 0."""
+    import pytest
+
+    fg = _make_scoring_fg({"coal": 1.0, "natural_gas": 2.0})
+    with pytest.raises(KeyError):
+        fg.generate_energy_vopex_by_reductant(
+            carbon_price=10.0,
+            technology_emission_factors=[],
+            chosen_emissions_boundary="plant_boundary",
+        )
 
 
 def test_reductant_score_defaults_reproduce_legacy_choice():

@@ -1284,9 +1284,7 @@ class FurnaceGroup:
         Note:
             Hydrogen costs are typically set separately via Plant.update_furnace_hydrogen_costs()
             to use capped country-level prices calculated from LCOH.
-            The incoming prices are unsubsidised, so the pre-subsidy snapshot
-            (energy_costs_no_subsidy) is refreshed too — otherwise a stale snapshot from a
-            year whose subsidies have lapsed would survive the yearly price refresh.
+            The incoming prices are unsubsidised, so energy_costs_no_subsidy is refreshed too.
         """
         logger = logging.getLogger(f"{__name__}.set_energy_costs")
         # Store costs with normalized keys to ensure downstream lookups succeed.
@@ -1304,9 +1302,8 @@ class FurnaceGroup:
 
         self.energy_costs = energy_costs
         self.output_energy_costs = energy_costs.copy()
-        # Full copy rather than {}: update_furnace_hydrogen_costs writes a lone "hydrogen"
-        # key into this dict, and the `no_subsidy or energy_costs` fallbacks must never see
-        # a partial snapshot. Subsidy application overwrites it via set_subsidised_energy_costs.
+        # Full copy (not {}): update_furnace_hydrogen_costs writes a lone "hydrogen" key into
+        # this dict, so it must never hold a partial snapshot
         self.energy_costs_no_subsidy = energy_costs.copy()
         logger.debug(
             "[ENERGY COSTS] FG %s: set %d carriers, sample: %s",
@@ -2603,12 +2600,11 @@ class FurnaceGroup:
 
             else:  # Switch to a new technology (greenfield)
                 # ========== BRANCH B: Greenfield Installation (New Technology) ==========
-                # Price the candidate from unsubsidised carrier prices, then apply energy
-                # subsidies scoped to the candidate technology for its operating start year
-                # (mirrors prepare_cost_data_for_business_opportunity for new plants).
+                # Price the candidate from unsubsidised prices plus its own energy subsidies —
+                # the incumbent's subsidies must not leak into candidate costings
                 from .calculate_costs import get_subsidised_energy_costs
 
-                base_energy_costs = self.energy_costs_no_subsidy or self.energy_costs
+                base_energy_costs = self.energy_costs_no_subsidy
                 operating_start_year = Year(current_year + construction_time)
                 active_energy_subs: dict[str, list[Subsidy]] = {}
                 for carrier, subsidies_by_tech in tech_energy_subsidies.items():
@@ -2891,7 +2887,9 @@ class FurnaceGroup:
             carbon_price: Country carbon price for the current year (USD/tCO2e).
             technology_emission_factors: Emission factors used to build the per-
                 (reductant, metallic charge) direct GHG lookup. None keeps the
-                energy-only choice.
+                energy-only choice. When provided, every business case of this
+                furnace group's technology must have a factor for the chosen
+                boundary (missing rows raise KeyError rather than scoring as 0).
             chosen_emissions_boundary: Emissions boundary whose direct GHG factor
                 enters the score (e.g. "plant_boundary").
 
@@ -2921,8 +2919,7 @@ class FurnaceGroup:
         if self.technology.dynamic_business_case is None:
             return {}
 
-        # Direct GHG factors per (technology, reductant, metallic charge) — same matching
-        # rules as calculate_emissions, restricted to the chosen boundary.
+        # Direct GHG factors for the chosen boundary, same matching rules as calculate_emissions
         ef_by_key: dict[tuple[str, str, str], float] = {}
         if technology_emission_factors is not None:
             for factor in technology_emission_factors:
@@ -2954,8 +2951,7 @@ class FurnaceGroup:
                     combined_requirements.get(normalized_secondary, 0.0) + volume
                 )
 
-            # Data-drift guard (not a scoring term): record each reductant's material profile
-            # so cross-reductant differences the score cannot see are surfaced.
+            # Material profile per reductant, only for the data-drift warning below
             material_profile_by_input.setdefault(metallic_input, {})[dbc.reductant] = (
                 dbc.required_quantity_per_ton_of_product,
                 tuple(sorted(non_energy_secondary.items())),
@@ -2978,9 +2974,11 @@ class FurnaceGroup:
                 energy_breakdown_by_input[metallic_input][dbc.reductant][normalized_energy] += cost_value
 
             if technology_emission_factors is not None:
-                direct_ghg_factor = ef_by_key.get(
-                    (dbc.technology.lower(), normalize_name(dbc.reductant), dbc.metallic_charge), 0.0
-                )
+                # Hard lookup: a missing EF row would silently bias the pick towards dirty
+                # reductants if defaulted to 0, so fail loudly instead
+                direct_ghg_factor = ef_by_key[
+                    (dbc.technology.lower(), normalize_name(dbc.reductant), dbc.metallic_charge)
+                ]
                 secondary_adjustment = calculate_secondary_output_adjustment_per_tonne(
                     dbc,
                     self.output_energy_costs,
@@ -3003,9 +3001,10 @@ class FurnaceGroup:
                 )
 
         if technology_emission_factors is not None:
+            # extra_score_by_input is populated in lockstep with energy_vopex_by_input above
             score_by_input = {
                 metallic_input: {
-                    reductant: energy_cost + extra_score_by_input.get(metallic_input, {}).get(reductant, 0.0)
+                    reductant: energy_cost + extra_score_by_input[metallic_input][reductant]
                     for reductant, energy_cost in reductant_costs.items()
                 }
                 for metallic_input, reductant_costs in energy_vopex_by_input.items()
@@ -5417,14 +5416,13 @@ class PlantGroup:
             if cost_of_equity_for_iso3 is None:
                 raise ValueError(f"No cost of equity data for country: {plant.location.iso3}")
 
-            # Candidate techs are priced from unsubsidised carrier prices; energy subsidies
-            # scoped to a candidate are applied per tech below. Group plants sit in different
-            # geographies, so the geo collection happens per plant.
+            # Candidates are priced from unsubsidised prices plus their own energy subsidies,
+            # geo-collected per plant (group plants sit in different geographies)
             plant_energy_subsidies = {
                 carrier: collect_subsidies_for_geo(carrier_subsidies, plant.location.geo_key)
                 for carrier, carrier_subsidies in energy_subsidies.items()
             }
-            base_energy_costs = plant.furnace_groups[-1].energy_costs_no_subsidy or plant.energy_costs
+            base_energy_costs = plant.furnace_groups[-1].energy_costs_no_subsidy
             operating_start_year = Year(current_year + construction_time)
 
             # Evaluate each allowed technology for this plant
