@@ -194,25 +194,65 @@ def _coverage_jit(
 
 
 @numba.njit(cache=True)
-def _b_min_jit(net_energy: np.ndarray, target: float, cyclic: bool, standing_loss: float, metric: int) -> float:
+def _b_min_jit(
+    net_energy: np.ndarray, target: float, cyclic: bool, standing_loss: float, metric: int, hint: float = -1.0
+) -> float:
     """Smallest battery overscale factor reaching `target` coverage, or `inf` if none does.
 
     Valid because coverage is non-decreasing in battery capacity (module docstring), so the
     predicate is monotone and bisection converges to the jump point of what is, for the
     hours metric, a step function. Returns the feasible (upper) side of the final bracket.
+
+    `hint` (a `b_min` estimate from a nearby (solar, wind) point, or `<= 0` for "none") seeds
+    the initial bracket instead of the from-scratch exponential doubling off `hi=0.25`.
+    `b_min` varies smoothly with (solar, wind), so a neighbor's value is usually within a
+    factor of ~2 of this point's true minimum, collapsing what would be up to ~11 doublings
+    (each a full coverage evaluation) down to a handful of probes. This changes only how many
+    evaluations it costs to find the bracket, not the bracket's validity: both branches below
+    still establish a genuine `lo` (infeasible, or 0 -- already confirmed infeasible by the
+    check above) / `hi` (feasible, or the `B_MAX` early-out) pair before bisecting, so the
+    result is identical to the from-scratch search up to the same `B_TOL` the plain bisection
+    below already carries.
     """
     if _coverage_jit(net_energy, 0.0, cyclic, standing_loss, metric) >= target:
         return 0.0
 
-    hi = 0.25
-    while hi <= B_MAX:
-        if _coverage_jit(net_energy, hi, cyclic, standing_loss, metric) >= target:
-            break
-        hi *= 2.0
-    if hi > B_MAX:
-        return np.inf
+    if hint > 0.0:
+        if _coverage_jit(net_energy, hint, cyclic, standing_loss, metric) >= target:
+            # Feasible at the hint already -- look for a tighter lower bound by halving
+            # down from it, instead of starting the exponential doubling from scratch.
+            hi = hint
+            lo = 0.0
+            probe = hint
+            for _ in range(64):
+                probe *= 0.5
+                if probe <= B_TOL:
+                    break
+                if _coverage_jit(net_energy, probe, cyclic, standing_loss, metric) >= target:
+                    hi = probe
+                else:
+                    lo = probe
+                    break
+        else:
+            lo = hint
+            hi = hint * 2.0
+            while hi <= B_MAX:
+                if _coverage_jit(net_energy, hi, cyclic, standing_loss, metric) >= target:
+                    break
+                lo = hi
+                hi *= 2.0
+            if hi > B_MAX:
+                return np.inf
+    else:
+        hi = 0.25
+        while hi <= B_MAX:
+            if _coverage_jit(net_energy, hi, cyclic, standing_loss, metric) >= target:
+                break
+            hi *= 2.0
+        if hi > B_MAX:
+            return np.inf
+        lo = 0.0 if hi == 0.25 else 0.5 * hi
 
-    lo = 0.0 if hi == 0.25 else 0.5 * hi
     while hi - lo > B_TOL:
         mid = 0.5 * (lo + hi)
         if _coverage_jit(net_energy, mid, cyclic, standing_loss, metric) >= target:
@@ -232,13 +272,26 @@ def _b_min_grid(
     cyclic: bool,
     standing_loss: float,
     metric: int,
+    hint: float = -1.0,
 ) -> np.ndarray:
-    """`b_min` over a (solar, wind) grid, one thread per solar row."""
+    """`b_min` over a (solar, wind) grid, one thread per solar row.
+
+    `hint` seeds every row's first (`j=0`) bracket (e.g. the incumbent battery from the basin
+    this grid is refining around -- see `_grid_bisection_search`); each subsequent point in
+    the row then warm-starts from its own left neighbor's just-computed `b_min`, which is
+    always available since a row is worked sequentially within its own thread (no cross-row
+    reads, so this stays safe under `prange`). A row falls back to a stale hint only when its
+    own last point came back infeasible (`inf`), in which case the previous finite value is
+    kept rather than seeding the next probe with `inf`.
+    """
     out = np.empty((len(s_vals), len(w_vals)))
     for i in numba.prange(len(s_vals)):
+        row_hint = hint
         for j in range(len(w_vals)):
             net_energy = s_vals[i] * solar_profile + w_vals[j] * wind_profile - 1.0
-            out[i, j] = _b_min_jit(net_energy, target, cyclic, standing_loss, metric)
+            out[i, j] = _b_min_jit(net_energy, target, cyclic, standing_loss, metric, row_hint)
+            if np.isfinite(out[i, j]):
+                row_hint = out[i, j]
     return out
 
 
@@ -325,18 +378,26 @@ def _grid_bisection_search(
     infeasible_msg: str,
 ) -> tuple[float, float, float, float, float, int]:
     """Coarse-to-fine (solar, wind) search shared by `find_gbs_design` and
-    `find_robust_gbs_design` -- `battery_grid_fn(s_vals, w_vals) -> battery array` is the
-    only thing that differs between them (one profile's `b_min` grid vs. the elementwise
+    `find_robust_gbs_design` -- `battery_grid_fn(s_vals, w_vals, hint) -> battery array` is
+    the only thing that differs between them (one profile's `b_min` grid vs. the elementwise
     max of several). See `find_gbs_design`'s docstring for why `n_refinements`, not
     `coarse_grid`, is the budget knob to sweep.
+
+    Each basin also carries a `b_hint` -- the incumbent battery value at its own center --
+    threaded into `battery_grid_fn` as every refinement stage's starting bracket (see
+    `_b_min_grid`/`_b_min_jit`): the local box shrinks ~0.15x/stage, so the previous stage's
+    battery at (or near) the new box's center is a strong warm start for the whole box, not
+    just a single point. This only changes evaluation cost, not which point wins each stage
+    (`cost_of`/`_select_seeds`/`argmin` are unchanged), so the returned design is identical up
+    to `_b_min_jit`'s existing `B_TOL` bisection tolerance.
 
     Returns `(best_objective, s_star, w_star, b_star, refinement_delta, n_evaluations)`.
     """
     n_evaluations = 0
 
-    def evaluate(s_vals: np.ndarray, w_vals: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def evaluate(s_vals: np.ndarray, w_vals: np.ndarray, hint: float = -1.0) -> tuple[np.ndarray, np.ndarray]:
         nonlocal n_evaluations
-        batteries = battery_grid_fn(s_vals, w_vals)
+        batteries = battery_grid_fn(s_vals, w_vals, hint)
         n_evaluations += batteries.size
         objectives = np.full(batteries.shape, np.inf)
         for i in range(len(s_vals)):
@@ -362,7 +423,13 @@ def _grid_bisection_search(
     # incumbent moved on the final stage -- the honest convergence statistic that stands in
     # for a MIP gap here.
     basins = [
-        (float(s_vals[i]), float(w_vals[j]), float(s_vals[1] - s_vals[0]), float(w_vals[1] - w_vals[0]))
+        (
+            float(s_vals[i]),
+            float(w_vals[j]),
+            float(s_vals[1] - s_vals[0]),
+            float(w_vals[1] - w_vals[0]),
+            float(batteries[i, j]),
+        )
         for i, j in seeds
     ]
     # Seed `best` from the coarse grid's own best point (not None) so `n_refinements=0`
@@ -381,16 +448,22 @@ def _grid_bisection_search(
     for _stage in range(n_refinements):
         stage_best = None
         next_basins = []
-        for s_center, w_center, s_step, w_step in basins:
+        for s_center, w_center, s_step, w_step, b_hint in basins:
             local_s = np.linspace(max(0.0, s_center - 1.5 * s_step), s_center + 1.5 * s_step, refine_grid)
             local_w = np.linspace(max(0.0, w_center - 1.5 * w_step), w_center + 1.5 * w_step, refine_grid)
-            local_b, local_obj = evaluate(local_s, local_w)
+            local_b, local_obj = evaluate(local_s, local_w, hint=b_hint)
             if not np.isfinite(local_obj).any():
                 continue
             bi, bj = np.unravel_index(np.argmin(local_obj), local_obj.shape)
             candidate = (float(local_obj[bi, bj]), float(local_s[bi]), float(local_w[bj]), float(local_b[bi, bj]))
             next_basins.append(
-                (candidate[1], candidate[2], float(local_s[1] - local_s[0]), float(local_w[1] - local_w[0]))
+                (
+                    candidate[1],
+                    candidate[2],
+                    float(local_s[1] - local_s[0]),
+                    float(local_w[1] - local_w[0]),
+                    candidate[3],
+                )
             )
             if stage_best is None or candidate[0] < stage_best[0]:
                 stage_best = candidate
@@ -468,8 +541,10 @@ def find_gbs_design(
     else:
         raise ValueError(f"objective must be 'lcoe' or 'pypsa_linear', got {objective!r}")
 
-    def battery_grid_fn(s_vals: np.ndarray, w_vals: np.ndarray) -> np.ndarray:
-        return _b_min_grid(solar_profile, wind_profile, s_vals, w_vals, target, cyclic, standing_loss, metric_code)
+    def battery_grid_fn(s_vals: np.ndarray, w_vals: np.ndarray, hint: float = -1.0) -> np.ndarray:
+        return _b_min_grid(
+            solar_profile, wind_profile, s_vals, w_vals, target, cyclic, standing_loss, metric_code, hint
+        )
 
     start = time.time()
     best_objective, s_star, w_star, b_star, refinement_delta, n_evaluations = _grid_bisection_search(
@@ -568,10 +643,12 @@ def find_robust_gbs_design(
     else:
         raise ValueError(f"objective must be 'lcoe' or 'pypsa_linear', got {objective!r}")
 
-    def battery_grid_fn(s_vals: np.ndarray, w_vals: np.ndarray) -> np.ndarray:
+    def battery_grid_fn(s_vals: np.ndarray, w_vals: np.ndarray, hint: float = -1.0) -> np.ndarray:
         batteries = None
         for solar_profile, wind_profile in zip(solar_profiles, wind_profiles):
-            b = _b_min_grid(solar_profile, wind_profile, s_vals, w_vals, target, cyclic, standing_loss, metric_code)
+            b = _b_min_grid(
+                solar_profile, wind_profile, s_vals, w_vals, target, cyclic, standing_loss, metric_code, hint
+            )
             batteries = b if batteries is None else np.maximum(batteries, b)
         return batteries
 
