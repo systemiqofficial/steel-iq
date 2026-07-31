@@ -142,6 +142,7 @@ def _call_evaluate(
         construction_time=4,
         current_year=Year(2030),
         allowed_techs={Year(2030): allowed_techs_list},
+        active_statuses=["operating"],
         environment_most_common_reductant=environment_most_common_reductant or {},
         get_co2_headroom=get_co2_headroom,
         get_co2_need_by_name=get_co2_need_by_name,
