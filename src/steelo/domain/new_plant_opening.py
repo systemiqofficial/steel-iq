@@ -355,6 +355,14 @@ def prepare_cost_data_for_business_opportunity(
                     cost_data[prod][site_id][tech]["bom"] = bill_of_materials
                     cost_data[prod][site_id][tech]["reductant"] = committed_reductant  # type: ignore[assignment]
                     cost_data[prod][site_id][tech]["score_series"] = score_series.scores  # type: ignore[assignment]
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "[REDUCTANT NPV] site %s: tech=%s committed=%r picks=%s",
+                            site_id,
+                            tech,
+                            committed_reductant,
+                            cc.summarise_reductant_picks(score_series.picks, Year(target_year + construction_time)),
+                        )
 
                 # Add fixed OPEX per technology if available
                 fopex_all_techs = fopex_all_locs_techs.get(site["iso3"])
