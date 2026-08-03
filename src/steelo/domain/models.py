@@ -26,6 +26,7 @@ from steelo.domain.calculate_costs import (
     collect_subsidies_for_geo,
     score_reductants_for_business_cases,
     ENERGY_FEEDSTOCK_KEYS,
+    ReductantScoreSeries,
 )
 from steelo.utilities.utils import normalize_name
 from steelo.domain.calculate_emissions import (
@@ -8324,6 +8325,181 @@ class Environment:
         if year > last_year:
             return self.capped_hydrogen_costs_by_year[last_year]
         return self.capped_hydrogen_costs_by_year[year]
+
+    def carbon_price_for_year(self, iso3: str, year: Year) -> float:
+        """
+        Country carbon price for a year, clamped to the last covered year.
+
+        Args:
+            iso3: Country code.
+            year: Any simulation or forecast year.
+
+        Returns:
+            The exogenous carbon price; 0.0 for countries without a carbon-price
+            series (no policy). Years beyond the series reuse its last value; years
+            missing inside the covered range raise KeyError rather than pricing
+            carbon as zero.
+        """
+        series = self.carbon_costs.get(iso3)
+        if not series:
+            return 0.0
+        last_year = max(series)
+        return series[min(year, last_year)]
+
+    def candidate_energy_costs_for_year(
+        self,
+        location: "Location",
+        technology_name: str,
+        year: Year,
+        overrides: dict[str, float] | None = None,
+        override_reference_year: Year | None = None,
+    ) -> tuple[dict[str, float], dict[str, float]]:
+        """
+        Candidate energy prices (input and output side) at a location for any year.
+
+        Mirrors the year-start price refresh generalised to a future year: the
+        exogenous input-cost trajectory at ``year`` (clamped to its last data year,
+        sign handling as in set_energy_costs), hydrogen from the precomputed
+        capped-LCOH series, and energy-carrier subsidies scoped to the candidate
+        technology filtered for ``year`` (the A2 treatment, per year).
+
+        Args:
+            location: Plant/site location (geo_key resolution, finest available).
+            technology_name: Candidate technology whose energy subsidies apply.
+            year: The year to price.
+            overrides: Site-specific current prices per carrier (e.g. a GEO site's
+                own power price). Each override replaces the country level but keeps
+                the country trajectory: price_t = override x country_t / country_ref.
+            override_reference_year: Year the override prices belong to; required
+                when overrides are given.
+
+        Returns:
+            (input_costs, output_costs) per normalised carrier for that year.
+
+        Notes:
+            Years missing inside the input-cost trajectory raise (no silent gaps).
+        """
+        year_costs = location.resolve(self.input_costs, what="input costs")
+        if year_costs is None:
+            raise ValueError(f"No input costs found for {location.geo_key}")
+        clamped_year = min(year, max(year_costs))
+        base: dict[str, float] = {}
+        for raw_key, price in year_costs[clamped_year].items():
+            normalized_key = normalize_name(raw_key)
+            base[normalized_key] = price if normalized_key.startswith("co2") else abs(price)
+        capped_lcoh = location.resolve(self.capped_hydrogen_costs_for_year(year), what="hydrogen price")
+        if capped_lcoh is None:
+            raise ValueError(f"No hydrogen price for {location.geo_key}")
+        base["hydrogen"] = capped_lcoh * T_TO_KG
+
+        if overrides:
+            if override_reference_year is None:
+                raise ValueError("override_reference_year is required when overrides are given")
+            reference, _ = self.candidate_energy_costs_for_year(location, technology_name, override_reference_year)
+            for carrier, site_price in overrides.items():
+                normalized_carrier = normalize_name(carrier)
+                reference_price = reference[normalized_carrier]
+                if reference_price == 0.0:
+                    raise ValueError(
+                        f"Cannot trajectory-scale '{normalized_carrier}' for {location.geo_key}: "
+                        f"reference price in {override_reference_year} is zero"
+                    )
+                base[normalized_carrier] = site_price * base[normalized_carrier] / reference_price
+
+        active_subsidies: dict[str, list[Subsidy]] = {}
+        for carrier, subsidies_by_geo in self.energy_subsidies.items():
+            subsidies = collect_subsidies_for_geo(subsidies_by_geo, location.geo_key).get(technology_name, [])
+            active = filter_subsidies_for_year(subsidies, year)
+            if active:
+                active_subsidies[carrier] = active
+        if not active_subsidies:
+            return base, base.copy()
+        input_costs, output_costs, _ = get_subsidised_energy_costs(base, active_subsidies)
+        return input_costs, output_costs
+
+    def reductant_score_series(
+        self,
+        location: "Location",
+        technology_name: str,
+        output_shares: dict[str, float],
+        start_year: Year,
+        end_year: Year,
+        overrides: dict[str, float] | None = None,
+        override_reference_year: Year | None = None,
+    ) -> "ReductantScoreSeries":
+        """
+        Year-wise reductant-optimised score series for a candidate technology.
+
+        For each year in [start_year, end_year) the per-(charge, reductant) score
+        (energy VOPEX + carbon x direct GHG + secondary-output adjustment) is
+        evaluated at that year's exogenous prices; the reductant is picked with the
+        same rule the annual re-pick uses (per-charge argmin, mode across charges),
+        and the year's value is the output-share-weighted score of that pick. The
+        NPV built on this series therefore forecasts exactly what the committed
+        asset will do under the annual re-pick.
+
+        Args:
+            location: Plant/site location.
+            technology_name: Candidate technology.
+            output_shares: Metallic charge -> share of product (from the candidate
+                BOM build; reductant-invariant).
+            start_year: First operating year (inclusive).
+            end_year: Last operating year (exclusive).
+            overrides / override_reference_year: Site-price overrides, see
+                candidate_energy_costs_for_year.
+
+        Returns:
+            ReductantScoreSeries with one score and one pick per operating year.
+
+        Notes:
+            Missing EF rows raise (hard lookup); bootstrap validation guarantees
+            coverage for real data.
+        """
+        dynamic_business_case = self.dynamic_feedstocks.get(technology_name) or self.dynamic_feedstocks.get(
+            technology_name.lower()
+        )
+        if not dynamic_business_case:
+            raise ValueError(f"No dynamic business case for technology '{technology_name}'")
+        if self.config is None:
+            raise ValueError("SimulationConfig is required for reductant score series")
+        ef_by_key = build_direct_ghg_lookup(
+            self.technology_emission_factors,
+            self.config.chosen_emissions_boundary_for_carbon_costs,
+        )
+        scores: list[float] = []
+        picks: list[str] = []
+        for year in range(int(start_year), int(end_year)):
+            input_costs, output_costs = self.candidate_energy_costs_for_year(
+                location,
+                technology_name,
+                Year(year),
+                overrides=overrides,
+                override_reference_year=override_reference_year,
+            )
+            carbon_price = self.carbon_price_for_year(location.iso3, Year(year))
+            year_scores = score_reductants_for_business_cases(
+                dynamic_business_case,
+                input_costs,
+                output_costs,
+                carbon_price,
+                ef_by_key,
+                self.config.disposal_cost_outputs,
+            )
+            mins = [min(costs, key=lambda k: costs[k]) for costs in year_scores.score_by_input.values() if costs]
+            counts = Counter(mins)
+            if not counts:
+                scores.append(0.0)
+                picks.append("")
+                continue
+            pick, _ = counts.most_common(1)[0]
+            value = sum(
+                share * year_scores.score_by_input[charge][pick]
+                for charge, share in output_shares.items()
+                if pick in year_scores.score_by_input.get(charge, {})
+            )
+            scores.append(value)
+            picks.append(str(pick))
+        return ReductantScoreSeries(scores=scores, picks=picks)
 
     def get_eu_countries(self) -> list[str]:
         logger = logging.getLogger(f"{__name__}.Environment.get_eu_countries")

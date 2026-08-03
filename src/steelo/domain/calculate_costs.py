@@ -1922,6 +1922,18 @@ class ReductantScores(NamedTuple):
     material_profile_by_input: dict[str, dict[str, tuple]]
 
 
+class ReductantScoreSeries(NamedTuple):
+    """Year-wise reductant-optimised score series for one candidate technology.
+
+    One entry per operating year: the output-share-weighted score of the year's
+    picked reductant, and the pick itself. picks[0] is the operating-start-year
+    reductant an investment would commit.
+    """
+
+    scores: list[float]
+    picks: list[str]
+
+
 def build_direct_ghg_lookup(
     technology_emission_factors: list["TechnologyEmissionFactors"],
     chosen_emissions_boundary: str,
