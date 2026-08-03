@@ -6,6 +6,7 @@ This module handles downloading, caching, and validation of data files.
 import hashlib
 import json
 import logging
+import os
 import shutil
 import zipfile
 from pathlib import Path
@@ -33,11 +34,20 @@ class DataManager:
         """Initialize data manager.
 
         Args:
-            cache_dir: Directory for caching downloaded data
+            cache_dir: Directory for caching downloaded data. Defaults to
+                $STEELO_DATA_CACHE if set (lets packaged apps share one download
+                cache across version-specific homes), else $STEELO_HOME/data_cache
+                (~/.steelo/data_cache when unset), so isolated simulation homes
+                get isolated download caches.
             manifest_path: Path to data manifest file
             offline_mode: If True, only use cached data
         """
-        self.cache_dir = cache_dir or Path.home() / ".steelo" / "data_cache"
+        if cache_dir is None:
+            from ..config import get_steelo_home
+
+            env_override = os.getenv("STEELO_DATA_CACHE")
+            cache_dir = Path(env_override) if env_override else get_steelo_home() / "data_cache"
+        self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         default_manifest = Path(__file__).parent / "manifest.json"
