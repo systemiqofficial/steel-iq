@@ -17,9 +17,11 @@ from steelo.domain.calculate_costs import (
     calculate_debt_with_subsidies,
     calculate_energy_costs_and_most_common_reductant,
     calculate_opex_list_with_subsidies,
+    calculate_secondary_output_adjustment_per_tonne,
     calculate_unit_total_opex,
     calculate_variable_opex,
     filter_subsidies_for_year,
+    get_subsidised_energy_costs,
     collect_active_subsidies_over_period,
     collect_subsidies_for_geo,
     ENERGY_FEEDSTOCK_KEYS,
@@ -2602,8 +2604,6 @@ class FurnaceGroup:
                 # ========== BRANCH B: Greenfield Installation (New Technology) ==========
                 # Price the candidate from unsubsidised prices plus its own energy subsidies —
                 # the incumbent's subsidies must not leak into candidate costings
-                from .calculate_costs import get_subsidised_energy_costs
-
                 base_energy_costs = self.energy_costs_no_subsidy
                 operating_start_year = Year(current_year + construction_time)
                 active_energy_subs: dict[str, list[Subsidy]] = {}
@@ -2909,8 +2909,6 @@ class FurnaceGroup:
             across reductants — the score carries no material term because current
             masters author materials identically across reductants.
         """
-        from .calculate_costs import calculate_secondary_output_adjustment_per_tonne
-
         logger = logging.getLogger(f"{__name__}.generate_energy_vopex_by_reductant")
         energy_vopex_by_input: dict[str, dict[str, float]] = {}
         energy_breakdown_by_input: dict[str, dict[str, dict[str, float]]] = {}
@@ -5399,7 +5397,6 @@ class PlantGroup:
         # Dictionary to store best NPV and technology choice for each plant
         NPV_p = {}
 
-        # Group-level modal reductant per technology (active-status FGs only)
         group_most_common_reductant = self.most_common_reductant(active_statuses)
 
         # Evaluate expansion options for each plant in the group
@@ -5485,7 +5482,6 @@ class PlantGroup:
                 if get_bom_from_avg_boms is None:
                     continue
 
-                # Apply energy subsidies scoped to this candidate tech for its operating start year
                 active_energy_subs: dict[str, list[Subsidy]] = {}
                 for carrier, subsidies_by_tech in plant_energy_subsidies.items():
                     active = cc.filter_subsidies_for_year(subsidies_by_tech.get(tech, []), operating_start_year)
