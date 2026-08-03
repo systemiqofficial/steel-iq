@@ -376,6 +376,7 @@ def bootstrap_simulation(
         )
         env.initiate_hydrogen_efficiency(repository_json.hydrogen_efficiency.list())
         env.initiate_hydrogen_capex_opex(repository_json.hydrogen_capex_opex.list())
+        env.initiate_capped_hydrogen_costs_by_year()
         env.initiate_technology_emission_factors(repository_json.technology_emission_factors.list())
 
         # Load secondary feedstock constraints from biomass availability data

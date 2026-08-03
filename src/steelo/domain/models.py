@@ -7403,6 +7403,8 @@ class Environment:
         self.technology_emission_factors: list[TechnologyEmissionFactors] = []
         # Initialize input costs as empty dict, keyed by geo_key (iso3 or iso3:code)
         self.input_costs: dict[str, dict[Year, dict[str, float]]] = {}
+        # Precomputed capped-LCOH series (year -> geo_key -> USD/kg), filled at bootstrap
+        self.capped_hydrogen_costs_by_year: dict[Year, dict[str, float]] = {}
         # Initialize cost curves as empty dicts
         self.cost_curve: dict[str, list[dict[str, float]]] = {"steel": [], "iron": []}
         self.future_cost_curve: dict[str, list[dict[str, float]]] = {"steel": [], "iron": []}
@@ -8158,16 +8160,20 @@ class Environment:
                         input_costs["hydrogen"] = fg.energy_costs["hydrogen"]
                     fg.set_energy_costs(**input_costs)
 
-    def calculate_capped_hydrogen_costs_per_country(self) -> dict[str, float]:
+    def calculate_capped_hydrogen_costs_per_country(self, year: Year | None = None) -> dict[str, float]:
         """
         Calculate country-level hydrogen prices with regional ceilings and trade adjustments.
 
         Steps:
-            1. Extract electricity prices for all countries in the current simulation year and calculate Levelized Cost of Hydrogen
+            1. Extract electricity prices for all countries in the given year and calculate Levelized Cost of Hydrogen
             (LCOH) for each country using electricity prices, CAPEX, and OPEX.
             2. Determine regional hydrogen price ceilings based on percentile thresholds
             3. Apply price caps considering regional ceilings, interregional trade options, and pipeline transport costs. Pipeline
             transport costs are added when importing hydrogen from trading partners.
+
+        Args:
+            year: Year to price; defaults to the current simulation year. Every input is
+                exogenous, so any covered year can be computed at any time.
 
         Returns:
             capped_hydrogen_prices (dict[str, float]): Dictionary mapping ISO3 country codes to capped hydrogen prices in USD/kg.
@@ -8197,21 +8203,22 @@ class Environment:
         if not hasattr(self.config, "geo_config"):
             raise ValueError("GeoConfig is required for hydrogen price calculation")
         geo_config = self.config.geo_config
+        target_year = self.year if year is None else year
 
         # Step 1: LCOH per geo_key (country rows + any authored sub-national rows)
         electricity_by_geo_key = {}
         for geo_key, year_costs in self.input_costs.items():
             if geo_key is None:
                 continue
-            if self.year in year_costs:
-                if "electricity" not in year_costs[self.year]:
-                    raise ValueError(f"Electricity price not found for {geo_key} in year {self.year}")
-                electricity_by_geo_key[geo_key] = year_costs[self.year]["electricity"]
+            if target_year in year_costs:
+                if "electricity" not in year_costs[target_year]:
+                    raise ValueError(f"Electricity price not found for {geo_key} in year {target_year}")
+                electricity_by_geo_key[geo_key] = year_costs[target_year]["electricity"]
         lcoh_by_geo_key = calculate_lcoh_from_electricity_country_level(
             electricity_by_country=electricity_by_geo_key,
             hydrogen_efficiency=self.hydrogen_efficiency,
             hydrogen_capex_opex=self.hydrogen_capex_opex,
-            year=self.year,
+            year=target_year,
         )
 
         # Step 2: ceilings from country-level LCOH only; a province inherits its country's ceiling
@@ -8238,6 +8245,53 @@ class Environment:
 
         logger.info(f"Calculated capped hydrogen prices for {len(capped_hydrogen_prices)} countries")
         return capped_hydrogen_prices
+
+    def initiate_capped_hydrogen_costs_by_year(self) -> None:
+        """
+        Precompute the capped-LCOH series for the full data horizon.
+
+        Every input to the capped hydrogen price is exogenous (Excel trajectories,
+        static geo config), so the whole series is knowable at bootstrap. Covers
+        config.start_year through the last year present in input_costs.
+
+        Returns:
+            None. Fills self.capped_hydrogen_costs_by_year.
+
+        Notes:
+            Requires input_costs, hydrogen_efficiency, hydrogen_capex_opex and
+            country_mappings to be initiated first; raises if input costs are empty.
+        """
+        if self.config is None:
+            raise ValueError("SimulationConfig is required to precompute hydrogen prices")
+        data_years = {y for year_costs in self.input_costs.values() for y in year_costs}
+        if not data_years:
+            raise ValueError("Input costs must be initiated before precomputing hydrogen prices")
+        self.capped_hydrogen_costs_by_year = {
+            Year(y): self.calculate_capped_hydrogen_costs_per_country(year=Year(y))
+            for y in range(int(self.config.start_year), int(max(data_years)) + 1)
+        }
+
+    def capped_hydrogen_costs_for_year(self, year: Year) -> dict[str, float]:
+        """
+        Look up the precomputed capped LCOH dict (geo_key -> USD/kg) for a year.
+
+        Args:
+            year: Any simulation or forecast year.
+
+        Returns:
+            The precomputed dict for that year; beyond the data horizon the last
+            covered year's prices apply (trajectories end in 2050, NPVs look past it).
+
+        Notes:
+            Raises if the series was not precomputed; years inside the covered range
+            but absent from it raise KeyError rather than silently degrading.
+        """
+        if not self.capped_hydrogen_costs_by_year:
+            raise ValueError("Capped hydrogen costs not precomputed; call initiate_capped_hydrogen_costs_by_year first")
+        last_year = max(self.capped_hydrogen_costs_by_year)
+        if year > last_year:
+            return self.capped_hydrogen_costs_by_year[last_year]
+        return self.capped_hydrogen_costs_by_year[year]
 
     def get_eu_countries(self) -> list[str]:
         logger = logging.getLogger(f"{__name__}.Environment.get_eu_countries")
