@@ -7496,10 +7496,110 @@ class Environment:
     ) -> None:
         """
         Initialize the technology emission factors for the environment.
+
         Args:
             technology_emission_factors (list[TechnologyEmissionFactors]): A list of TechnologyEmissionFactors objects to be added to the environment.
+
+        Notes:
+            When dynamic feedstocks are already loaded, coverage is validated: every
+            (technology, reductant, metallic charge) business-case key needs an EF row in
+            the configured boundary and in every boundary present in the table. The
+            reductant score does a hard EF lookup, so a gap would crash mid-run — or
+            silently price carbon as zero in the legacy lenient paths — fail at load
+            time instead.
         """
         self.technology_emission_factors = technology_emission_factors
+
+        required_keys = {
+            (dbc.technology.lower(), normalize_name(dbc.reductant), dbc.metallic_charge)
+            for feedstocks in self.dynamic_feedstocks.values()
+            for dbc in feedstocks
+        }
+        if not required_keys:
+            return
+        if not technology_emission_factors:
+            raise ValueError(
+                "No technology emission factors loaded but dynamic business cases exist — "
+                "carbon-aware reductant scoring would fail on every lookup. Check the "
+                "'Technology emission factors' sheet / technology_emission_factors.json."
+            )
+        boundaries = {factor.boundary for factor in technology_emission_factors}
+        chosen_boundary = self.config.chosen_emissions_boundary_for_carbon_costs
+        if chosen_boundary not in boundaries:
+            raise ValueError(
+                f"Configured emissions boundary '{chosen_boundary}' has no rows in the "
+                f"technology emission factors (available: {sorted(boundaries)})."
+            )
+        for boundary in sorted(boundaries):
+            ef_keys = {
+                (factor.technology.lower(), normalize_name(factor.reductant), factor.metallic_charge)
+                for factor in technology_emission_factors
+                if factor.boundary == boundary
+            }
+            missing = required_keys - ef_keys
+            if missing:
+                sample = ", ".join(str(key) for key in sorted(missing)[:5])
+                raise ValueError(
+                    f"Technology emission factors incomplete for boundary '{boundary}': "
+                    f"{len(missing)} business-case key(s) missing (e.g. {sample})."
+                )
+
+    def validate_reductant_material_invariance(self) -> None:
+        """
+        Warn when a technology's material side differs across reductants.
+
+        The reductant score (annual re-pick and investment NPVs) carries no material
+        term: materials and utilisation are assumed reductant-invariant, which holds
+        in all current masters. Two kinds of authoring drift would silently break
+        that factorisation: a metallic charge present for only a subset of a
+        technology's reductants, and required quantities / non-energy secondary
+        feedstocks that differ per reductant.
+
+        Returns:
+            None. Logs one warning per affected (technology, metallic charge).
+        """
+        logger = logging.getLogger(f"{__name__}.Environment.validate_reductant_material_invariance")
+        checked: set[str] = set()
+        for tech_name, feedstocks in self.dynamic_feedstocks.items():
+            canonical = tech_name.lower()
+            if canonical in checked:
+                continue
+            checked.add(canonical)
+            profiles: dict[str, dict[str, tuple]] = {}
+            reductants: set[str] = set()
+            for dbc in feedstocks:
+                non_energy_secondary = tuple(
+                    sorted(
+                        (normalize_name(name), volume)
+                        for name, volume in (dbc.secondary_feedstock or {}).items()
+                        if normalize_name(name) not in ENERGY_FEEDSTOCK_KEYS
+                    )
+                )
+                profiles.setdefault(dbc.metallic_charge, {})[dbc.reductant] = (
+                    dbc.required_quantity_per_ton_of_product,
+                    non_energy_secondary,
+                )
+                reductants.add(dbc.reductant)
+            for metallic_charge, by_reductant in profiles.items():
+                if set(by_reductant) != reductants:
+                    logger.warning(
+                        "[REDUCTANT DATA] %s: metallic charge '%s' is authored only for reductant(s) %s "
+                        "(missing: %s) — the reductant score assumes identical charge coverage across "
+                        "reductants. Check the master's Bill of Materials authoring.",
+                        tech_name,
+                        metallic_charge,
+                        ", ".join(sorted(by_reductant)),
+                        ", ".join(sorted(reductants - set(by_reductant))),
+                    )
+                if len(set(by_reductant.values())) > 1:
+                    logger.warning(
+                        "[REDUCTANT DATA] %s: material requirements for charge '%s' differ across "
+                        "reductants (%s) — the reductant score carries no material term, so this "
+                        "difference is ignored. Check the master's Bill of Materials authoring.",
+                        tech_name,
+                        metallic_charge,
+                        ", ".join(sorted(by_reductant)),
+                    )
 
     def initiate_fopex(self, fopex_list: list[FOPEX]) -> None:
         """
