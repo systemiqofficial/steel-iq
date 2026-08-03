@@ -20,6 +20,12 @@ from steelo.domain.calculate_costs import collect_subsidies_for_geo
 from steelo.domain.constants import Year
 from steelo.domain.models import Environment, Subsidy
 from steelo.domain.new_plant_opening import NewPlantLocation, prepare_cost_data_for_business_opportunity
+from steelo.domain.calculate_costs import ReductantScoreSeries
+
+
+def _stub_series(location, tech, output_shares, start, end, **kwargs):
+    n = int(end) - int(start)
+    return ReductantScoreSeries(scores=[0.0] * n, picks=["scrap"] * n)
 
 
 def make_subsidy(iso3="CHN", geo_unit=None, cost_item="capex", amount=0.2, tech="EAF"):
@@ -278,6 +284,9 @@ def test_candidate_site_collects_country_and_province_capex_subsidies():
         fopex_all_locs_techs={"CHN": {"eaf": 50.0}},
         steel_plant_capacity=100.0,
         get_bom_from_avg_boms=_mock_get_bom,
+        plant_lifetime=20,
+        construction_time=2,
+        reductant_score_series=_stub_series,
         iso3_to_region_map={"CHN": "Asia"},
         global_risk_free_rate=0.03,
         capex_subsidies=capex_subsidies,

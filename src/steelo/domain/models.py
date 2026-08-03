@@ -6005,6 +6005,7 @@ class PlantGroup:
             [dict[str, float], str, float, str | None],
             tuple[dict[str, dict[str, dict[str, float]]] | None, float, str, dict[str, float]],
         ],
+        reductant_score_series: Callable[..., ReductantScoreSeries],
         global_risk_free_rate: float,
         tech_to_product: dict[str, str],
         allowed_techs: dict[Year, list[str]],
@@ -6153,7 +6154,10 @@ class PlantGroup:
             cost_of_equity_all_locs=cost_of_equity_all_locs,
             fopex_all_locs_techs=fopex_all_locs_techs,
             steel_plant_capacity=steel_plant_capacity,
+            plant_lifetime=plant_lifetime,
+            construction_time=construction_time,
             get_bom_from_avg_boms=get_bom_from_avg_boms,
+            reductant_score_series=reductant_score_series,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=global_risk_free_rate,
             capex_subsidies=capex_subsidies,
@@ -6180,10 +6184,6 @@ class PlantGroup:
             plant_lifetime=plant_lifetime,
             construction_time=construction_time,
             equity_share=equity_share,
-            technology_emission_factors=technology_emission_factors,
-            chosen_emissions_boundary_for_carbon_costs=chosen_emissions_boundary_for_carbon_costs,
-            dynamic_business_cases=dynamic_feedstocks,
-            disposal_cost_outputs=disposal_cost_outputs,
         )
         # G1 CO2 storage gate: drop CCS techs per (iso3, tech) when annual need exceeds
         # country headroom at the opportunity's operating-start lookup year.

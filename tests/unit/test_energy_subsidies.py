@@ -3,6 +3,12 @@
 import pytest
 from steelo.domain import calculate_costs
 from steelo.domain.models import Subsidy, Year
+from steelo.domain.calculate_costs import ReductantScoreSeries
+
+
+def _stub_series(location, tech, output_shares, start, end, **kwargs):
+    n = int(end) - int(start)
+    return ReductantScoreSeries(scores=[0.0] * n, picks=["scrap"] * n)
 
 
 def test_calculate_energy_price_with_subsidies_no_subsidies():
@@ -800,6 +806,9 @@ def test_prepare_cost_data_normalises_negative_prices_before_subsidy():
         fopex_all_locs_techs=fopex_all_locs_techs,
         steel_plant_capacity=100.0,
         get_bom_from_avg_boms=_get_bom,
+        plant_lifetime=20,
+        construction_time=2,
+        reductant_score_series=_stub_series,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.03,
         capex_subsidies={},

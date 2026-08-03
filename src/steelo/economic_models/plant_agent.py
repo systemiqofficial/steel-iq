@@ -277,6 +277,7 @@ class GeospatialModel:
                 equity_share=bus.env.config.equity_share,
                 dynamic_feedstocks=bus.env.dynamic_feedstocks,
                 get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+                reductant_score_series=bus.env.reductant_score_series,
                 global_risk_free_rate=bus.env.config.global_risk_free_rate,
                 tech_to_product=bus.env.technology_to_product,
                 allowed_techs=bus.env.allowed_techs,

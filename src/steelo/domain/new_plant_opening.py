@@ -4,7 +4,7 @@ import random
 import numpy as np
 from typing import Any, Callable, TypedDict
 
-from steelo.domain.models import Subsidy, compose_geo_key
+from steelo.domain.models import Location, Subsidy, compose_geo_key
 from steelo.domain.constants import Year, T_TO_KG
 
 
@@ -122,10 +122,13 @@ def prepare_cost_data_for_business_opportunity(
     cost_of_equity_all_locs: dict[str, dict[str, float]],
     fopex_all_locs_techs: dict[str, dict[str, float]],
     steel_plant_capacity: float,
+    plant_lifetime: int,
+    construction_time: int,
     get_bom_from_avg_boms: Callable[
         [dict[str, float], str, float, str | None],
         tuple[dict[str, dict[str, dict[str, float]]] | None, float, str, dict[str, float]],
     ],
+    reductant_score_series: Callable[..., Any],
     iso3_to_region_map: dict[str, str],
     global_risk_free_rate: float,
     capex_subsidies: dict[str, dict[str, list[Subsidy]]],
@@ -300,19 +303,58 @@ def prepare_cost_data_for_business_opportunity(
                     int(steel_plant_capacity),
                     most_common_reductant.get(tech, environment_most_common_reductant.get(tech)),
                 )
-                bill_of_materials, util_rate, reductant, _output_shares = bom_result
+                bill_of_materials, util_rate, reductant, output_shares = bom_result
                 if bill_of_materials is None:
                     missing_critical_fields.append("bom")
-                else:
-                    cost_data[prod][site_id][tech]["bom"] = bill_of_materials
                 if util_rate is None:
                     missing_critical_fields.append("utilization_rate")
                 else:
                     cost_data[prod][site_id][tech]["utilization_rate"] = util_rate
                 if reductant is None:
                     missing_critical_fields.append("reductant")
-                else:
-                    cost_data[prod][site_id][tech]["reductant"] = reductant  # type: ignore[assignment]
+
+                if bill_of_materials is not None and reductant is not None:
+                    # Year-wise reductant-optimised score at the site; the site's own pixel
+                    # power/hydrogen prices are trajectory-scaled from the country series.
+                    # TODO: temporary — extract the exact geo point's own year series from
+                    # the rasters instead of ratio-scaling the current-year pixel prices.
+                    site_location = Location(
+                        lat=site["Latitude"],
+                        lon=site["Longitude"],
+                        country=site["iso3"],
+                        region="",
+                        iso3=site["iso3"],
+                        geo_unit=geo_unit,
+                    )
+                    site_overrides = {
+                        "electricity": site["power_price"],
+                        "hydrogen": site["capped_lcoh"] * T_TO_KG,
+                    }
+                    score_series = reductant_score_series(
+                        site_location,
+                        tech,
+                        output_shares,
+                        Year(target_year + construction_time),
+                        Year(target_year + construction_time + plant_lifetime),
+                        overrides=site_overrides,
+                        override_reference_year=current_year,
+                    )
+                    committed_reductant = score_series.picks[0] if score_series.picks else ""
+                    if committed_reductant != reductant:
+                        # Commit the BOM the start-year pick implies (materials are
+                        # reductant-invariant; only the energy rows follow the pick)
+                        rebuilt_bom, rebuilt_util_rate, reductant, _shares = get_bom_from_avg_boms(
+                            energy_costs_tech,
+                            tech,
+                            int(steel_plant_capacity),
+                            committed_reductant,
+                        )
+                        if rebuilt_bom is not None:
+                            bill_of_materials = rebuilt_bom
+                            cost_data[prod][site_id][tech]["utilization_rate"] = rebuilt_util_rate
+                    cost_data[prod][site_id][tech]["bom"] = bill_of_materials
+                    cost_data[prod][site_id][tech]["reductant"] = committed_reductant  # type: ignore[assignment]
+                    cost_data[prod][site_id][tech]["score_series"] = score_series.scores  # type: ignore[assignment]
 
                 # Add fixed OPEX per technology if available
                 fopex_all_techs = fopex_all_locs_techs.get(site["iso3"])
@@ -399,7 +441,7 @@ def validate_and_clean_cost_data(
         "utilization_rate",
     ]
     string_fields = ["reductant"]
-    list_fields = ["all_opex_subsidies"]
+    list_fields = ["all_opex_subsidies", "score_series"]
     required_fields = (
         float_fields
         + string_fields
