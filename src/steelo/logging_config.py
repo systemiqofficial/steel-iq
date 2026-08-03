@@ -203,13 +203,17 @@ class LoggingConfig:
 
         root = logging.getLogger()
         root.addFilter(context_filter)
+        # Root level must always follow the CLI level: loggers without an explicit
+        # level inherit it, and records below it die before any filter runs. When a
+        # handler already exists (e.g. created during data prep) the branch below is
+        # skipped, so the level is set here unconditionally.
+        root.setLevel(cli_max_level or logging.DEBUG)
 
         # Ensure root logger has at least one handler
         if not root.handlers:
             stream_handler = logging.StreamHandler()
             stream_handler.setLevel(cli_max_level or logging.DEBUG)
             root.addHandler(stream_handler)
-            root.setLevel(cli_max_level or logging.DEBUG)
 
         # Add filter and formatter to all handlers
         for h in root.handlers:
