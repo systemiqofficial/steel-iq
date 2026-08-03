@@ -784,8 +784,9 @@ def test_prepare_cost_data_normalises_negative_prices_before_subsidy():
                 {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
                 0.85,
                 "coal",
+                {"scrap": 1.0},
             )
-        return None, 0.0, None
+        return None, 0.0, None, {}
 
     cost_data = prepare_cost_data_for_business_opportunity(
         product_to_tech=product_to_tech,

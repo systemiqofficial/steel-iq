@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 
 from steelo.domain import Year
+from steelo.domain.calculate_costs import ReductantScoreSeries
 from steelo.domain.models import (
     FurnaceGroup,
     Location,
@@ -136,7 +137,8 @@ def _call_evaluate(
         capex_renovation_share={},
         cost_of_debt_by_tech={tech: 0.05 for tech in region_capex},
         cost_of_equity_by_tech={tech: 0.1 for tech in region_capex},
-        get_bom_from_avg_boms=lambda *a, **k: (None, 0.0, ""),
+        get_bom_from_avg_boms=lambda *a, **k: (None, 0.0, "", {}),
+        reductant_score_series=lambda *a, **k: ReductantScoreSeries(scores=[], picks=[]),
         probabilistic_agents=False,
         dynamic_business_cases={},
         chosen_emissions_boundary_for_carbon_costs="Scope 1",

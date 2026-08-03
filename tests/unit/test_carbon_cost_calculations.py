@@ -638,7 +638,7 @@ def test_get_bom_from_avg_boms_excludes_metallic_energy_entries():
     env.energy_costs = {"electricity": 50.0}
     env.primary_products = ["steel"]
 
-    bom, utilization, reductant = env.get_bom_from_avg_boms(
+    bom, utilization, reductant, _ = env.get_bom_from_avg_boms(
         energy_costs={"electricity": 50.0},
         tech="EAF",
         capacity=1000.0,

@@ -204,8 +204,9 @@ def _mock_get_bom(_energy_costs, tech, _capacity, _most_common_reductant=None):
             {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
             0.7,
             "scrap",
+            {"scrap": 1.0},
         )
-    return None, 0.0, None
+    return None, 0.0, None, {}
 
 
 def test_candidate_site_collects_country_and_province_capex_subsidies():

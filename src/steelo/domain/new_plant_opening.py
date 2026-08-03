@@ -123,7 +123,8 @@ def prepare_cost_data_for_business_opportunity(
     fopex_all_locs_techs: dict[str, dict[str, float]],
     steel_plant_capacity: float,
     get_bom_from_avg_boms: Callable[
-        [dict[str, float], str, float, str | None], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]
+        [dict[str, float], str, float, str | None],
+        tuple[dict[str, dict[str, dict[str, float]]] | None, float, str, dict[str, float]],
     ],
     iso3_to_region_map: dict[str, str],
     global_risk_free_rate: float,
@@ -299,7 +300,7 @@ def prepare_cost_data_for_business_opportunity(
                     int(steel_plant_capacity),
                     most_common_reductant.get(tech, environment_most_common_reductant.get(tech)),
                 )
-                bill_of_materials, util_rate, reductant = bom_result
+                bill_of_materials, util_rate, reductant, _output_shares = bom_result
                 if bill_of_materials is None:
                     missing_critical_fields.append("bom")
                 else:

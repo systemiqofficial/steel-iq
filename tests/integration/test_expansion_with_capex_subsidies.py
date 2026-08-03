@@ -123,6 +123,7 @@ def test_evaluate_expansion_without_subsidies(
             },
             0.8,
             "scrap",
+            {"scrap": 1.0},
         )
 
     # Mock with side_effect to handle all tech types
@@ -193,6 +194,7 @@ def test_evaluate_expansion_with_absolute_capex_subsidy(
             },
             0.8,
             "scrap",
+            {"scrap": 1.0},
         )
 
     mocker.patch.object(bus.env, "get_bom_from_avg_boms", side_effect=mock_get_bom)
@@ -278,6 +280,7 @@ def test_evaluate_expansion_with_relative_capex_subsidy(
             },
             0.8,
             "scrap",
+            {"scrap": 1.0},
         )
 
     mocker.patch.object(bus.env, "get_bom_from_avg_boms", side_effect=mock_get_bom)
@@ -362,6 +365,7 @@ def test_evaluate_expansion_with_combined_subsidies(
                 },
                 0.9,  # Higher utilization
                 "hot metal",
+                {"hot metal": 1.0},
             )
         else:
             return (
@@ -371,6 +375,7 @@ def test_evaluate_expansion_with_combined_subsidies(
                 },
                 0.8,
                 "scrap",
+                {"scrap": 1.0},
             )
 
     mocker.patch.object(bus.env, "get_bom_from_avg_boms", side_effect=mock_get_bom)
@@ -467,6 +472,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
                 },
                 0.98,  # Very high utilization
                 "iron_ore",
+                {"iron_ore": 1.0},
             )
         else:
             # Make EAF and BOF less attractive - high costs
@@ -477,6 +483,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
                 },
                 0.5,  # Lower utilization
                 "scrap",
+                {"scrap": 1.0},
             )
 
     mocker.patch.object(bus.env, "get_bom_from_avg_boms", side_effect=mock_get_bom)

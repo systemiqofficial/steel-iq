@@ -238,8 +238,9 @@ class TestPrepareDataForBusinessOpportunity:
                     {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
                     0.7,  # utilization_rate
                     "scrap",  # reductant
+                    {"scrap": 1.0},  # output shares
                 )
-            return None, 0.0, None
+            return None, 0.0, None, {}
 
         return _get_bom
 
@@ -746,8 +747,9 @@ class TestPrepareDataForBusinessOpportunity:
                     {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
                     0.7,
                     "scrap" if tech == "EAF" else "iron_ore",
+                    {"scrap": 1.0},
                 )
-            return None, 0.0, None
+            return None, 0.0, None, {}
 
         best_locations_subset = {
             "steel": [
@@ -1161,6 +1163,7 @@ class TestIdentifyNewBusinessOpportunities4indi:
                 },
                 0.7,
                 "scrap",
+                {"scrap": 1.0},
             )
 
         return _get_bom

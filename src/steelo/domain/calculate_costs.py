@@ -1505,7 +1505,7 @@ def calculate_opex_with_subsidies(opex: float, opex_subsidies: list["Subsidy"]) 
 
 
 def calculate_opex_list_with_subsidies(
-    opex: float,
+    opex: float | list[float],
     opex_subsidies: list["Subsidy"],
     start_year: "Year",
     end_year: "Year",
@@ -1517,7 +1517,9 @@ def calculate_opex_list_with_subsidies(
     and applies them to the base OPEX value.
 
     Args:
-        opex (float): The base operating expenditure per unit of production.
+        opex (float | list[float]): The base operating expenditure per unit of production —
+            a scalar held flat, or one value per year in [start_year, end_year) (e.g. a
+            year-varying reductant score folded into the base).
         opex_subsidies (list[Subsidy]): List of OPEX subsidy objects with start/end years.
         start_year (Year): The first year of operation.
         end_year (Year): The last year of operation (exclusive).
@@ -1525,9 +1527,17 @@ def calculate_opex_list_with_subsidies(
     Returns:
         list[float]: OPEX values for each year of operation after applying active subsidies.
     """
+    years = range(start_year, end_year)
+    if isinstance(opex, list):
+        if len(opex) != len(years):
+            raise ValueError(f"Per-year opex has {len(opex)} entries but the horizon spans {len(years)} years")
+        base_by_year = opex
+    else:
+        base_by_year = [opex] * len(years)
+
     opex_list = []
     # Calculate subsidized OPEX for each year of operation
-    for year in range(start_year, end_year):
+    for base, year in zip(base_by_year, years):
         # Filter subsidies that are active in this specific year
         subsidies_in_year = []
         for subsidy in opex_subsidies:
@@ -1535,7 +1545,7 @@ def calculate_opex_list_with_subsidies(
                 subsidies_in_year.append(subsidy)
 
         # Apply subsidies active in this year
-        opex_list.append(calculate_opex_with_subsidies(opex, subsidies_in_year))
+        opex_list.append(calculate_opex_with_subsidies(base, subsidies_in_year))
 
     return opex_list
 
@@ -1920,6 +1930,33 @@ class ReductantScores(NamedTuple):
     energy_breakdown_by_input: dict[str, dict[str, dict[str, float]]]
     score_by_input: dict[str, dict[str, float]]
     material_profile_by_input: dict[str, dict[str, tuple]]
+
+
+def summarise_reductant_picks(picks: list[str], start_year: "Year") -> str:
+    """
+    Compress a per-year pick list into year-range segments for log lines.
+
+    Args:
+        picks: One reductant per operating year.
+        start_year: Year of the first entry.
+
+    Returns:
+        e.g. "natural_gas:2028-2033, hydrogen:2034-2047" (empty picks -> "-").
+    """
+    if not picks:
+        return "-"
+    segments = []
+    segment_start = int(start_year)
+    for i in range(1, len(picks) + 1):
+        if i == len(picks) or picks[i] != picks[i - 1]:
+            segment_end = int(start_year) + i - 1
+            label = picks[i - 1] or "''"
+            segments.append(
+                f"{label}:{segment_start}" if segment_start == segment_end else f"{label}:{segment_start}-{segment_end}"
+            )
+            if i < len(picks):
+                segment_start = int(start_year) + i
+    return ", ".join(segments)
 
 
 class ReductantScoreSeries(NamedTuple):

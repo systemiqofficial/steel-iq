@@ -15,8 +15,14 @@ from steelo.domain.models import (
     Technology,
     Year,
 )
+from steelo.domain.calculate_costs import ReductantScoreSeries
 from steelo.domain.constants import Volumes
 from steelo.utilities import utils
+
+
+def _stub_score_series(tech, output_shares, start, end):
+    n = int(end) - int(start)
+    return ReductantScoreSeries(scores=[0.0] * n, picks=["hydrogen"] * n)
 
 
 def _make_fg(fg_id: str, tech_name: str, reductant: str, status: str = "operating") -> FurnaceGroup:
@@ -200,6 +206,7 @@ def test_switch_candidate_priced_without_incumbent_subsidy():
             },
             0.9,
             "hydrogen",
+            {"iron_ore": 1.0},
         )
 
     fg.optimal_technology_name(
@@ -207,6 +214,7 @@ def test_switch_candidate_priced_without_incumbent_subsidy():
         cost_of_debt_by_tech={"BF": 0.05, "DRI": 0.05},
         cost_of_equity_by_tech={"BF": 0.1, "DRI": 0.1},
         get_bom_from_avg_boms=mock_get_bom,
+        score_series_for_tech=_stub_score_series,
         capex_dict={"DRI": 500.0},
         capex_renovation_share={},
         technology_fopex_dict={"dri": 50.0},
@@ -251,6 +259,7 @@ def test_expansion_candidate_priced_without_incumbent_subsidy():
             },
             0.9,
             "hydrogen",
+            {"iron_ore": 1.0},
         )
 
     pg.evaluate_expansion_options(
