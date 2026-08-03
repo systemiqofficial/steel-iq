@@ -6,7 +6,9 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from ..config import get_steelo_home
 from ..data.cache_manager import DataPreparationCache
+from ..data.manager import default_cache_dir
 
 
 def steelo_cache() -> str:
@@ -26,7 +28,9 @@ def steelo_cache() -> str:
     clear_parser.add_argument("--keep-recent", type=int, help="Keep N most recent cached preparations")
     clear_parser.add_argument("--cache-dir", type=str, help="Cache directory (default: $STEELO_HOME/preparation_cache)")
     clear_parser.add_argument(
-        "--data-cache-dir", type=str, help="Data cache directory (default: $HOME/.steelo/data_cache)"
+        "--data-cache-dir",
+        type=str,
+        help="Data cache directory (default: $STEELO_DATA_CACHE or $STEELO_HOME/data_cache)",
     )
 
     # List command
@@ -43,8 +47,7 @@ def steelo_cache() -> str:
     if args.cache_dir:
         cache_root = Path(args.cache_dir)
     else:
-        steelo_home = Path.home() / ".steelo"
-        cache_root = steelo_home / "preparation_cache"
+        cache_root = get_steelo_home() / "preparation_cache"
 
     cache_manager = DataPreparationCache(cache_root)
 
@@ -61,7 +64,7 @@ def steelo_cache() -> str:
 
     elif args.command == "clear":
         # Get data cache directory
-        data_cache_dir = Path(args.data_cache_dir) if args.data_cache_dir else Path.home() / ".steelo" / "data_cache"
+        data_cache_dir = Path(args.data_cache_dir) if args.data_cache_dir else default_cache_dir()
 
         # Get data directory (follow symlinks to find actual location)
         data_dir = Path("data")

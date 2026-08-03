@@ -519,6 +519,10 @@ function getPythonEnv(djangoBundlePath, pythonPathEnv) {
     const appDataPath = process.env.APPDATA || path.join(process.env.USERPROFILE, 'AppData', 'Roaming');
     env.STEELO_HOME = path.join(appDataPath, 'SteelModel', `v${appVersion}`);
     console.log('Setting version-specific STEELO_HOME for Windows:', env.STEELO_HOME);
+    // Keep the package download cache version-independent so a new app version
+    // reuses already-downloaded data packages (~170 MB) instead of refetching them.
+    env.STEELO_DATA_CACHE = path.join(process.env.USERPROFILE, '.steelo', 'data_cache');
+    console.log('Setting shared STEELO_DATA_CACHE for Windows:', env.STEELO_DATA_CACHE);
   }
   
   // Add DYLD_LIBRARY_PATH for macOS to find HDF5/NetCDF dylibs
