@@ -43,6 +43,7 @@ def _make_command(bom: dict) -> ChangeFurnaceGroupTechnology:
         capacity=1000.0,
         remaining_lifetime=20,
         bom=bom,
+        chosen_reductant="",
         cost_of_debt=0.05,
         cost_of_debt_no_subsidy=0.05,
         capex_subsidies=[],
@@ -86,3 +87,25 @@ def test_change_handler_accepts_non_empty_bom():
 
     plant.change_furnace_group_technology.assert_called_once()
     assert uow.committed is True
+
+
+def test_change_handler_passes_evaluated_reductant_through():
+    """The reductant evaluated by the switch NPV reaches the plant call unchanged (C7)."""
+    plant = MagicMock()
+    plant.plant_id = "plant-1"
+    uow = _FakeUnitOfWork(plant)
+    env = MagicMock()
+    env.config.plant_lifetime = 20
+    env.dynamic_feedstocks = {}
+
+    cmd = _make_command(
+        bom={
+            "materials": {"io_low": {"demand": 1.0, "total_cost": 1.0, "unit_cost": 1.0, "product_volume": 1.0}},
+            "energy": {},
+        }
+    )
+    cmd.chosen_reductant = "hydrogen"
+
+    change_furnace_group_technology(cmd, uow=uow, env=env)
+
+    assert plant.change_furnace_group_technology.call_args.kwargs["chosen_reductant"] == "hydrogen"

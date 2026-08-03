@@ -156,6 +156,7 @@ def change_furnace_group_technology(cmd: commands.ChangeFurnaceGroupTechnology, 
                 env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
             ),
             bom=cmd.bom,
+            chosen_reductant=cmd.chosen_reductant,
             lag=0,
             capex=cmd.capex,
             capex_no_subsidy=cmd.capex_no_subsidy,
@@ -213,7 +214,7 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
             plant.energy_costs or {},
             cmd.technology_name,
             cmd.capacity,
-            env.most_common_reductant_by_tech.get(cmd.technology_name, None),
+            cmd.chosen_reductant,
         )
         new_furnace = plant.generate_new_furnace(
             technology_name=cmd.technology_name,
@@ -233,7 +234,7 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
                 env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
             ),
             bill_of_materials=avg_bom_result[0],
-            chosen_reductant=avg_bom_result[2],
+            chosen_reductant=cmd.chosen_reductant,
             disposal_cost_outputs=env.config.disposal_cost_outputs,
         )
         # Set the subsidies on the new furnace group

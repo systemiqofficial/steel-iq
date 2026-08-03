@@ -3721,6 +3721,7 @@ class Plant:
         debt_subsidies: list[Subsidy] = [],
         dynamic_business_case: list[PrimaryFeedstock] | None = None,
         bom: dict | None = None,
+        chosen_reductant: str | None = None,
     ) -> None:
         """
         Change the technology of a specified furnace group with debt preservation.
@@ -3828,8 +3829,11 @@ class Plant:
         furnace_group.applied_subsidies["capex"] = capex_subsidies
         furnace_group.applied_subsidies["debt"] = debt_subsidies
 
-        # Update operational parameters
+        # Update operational parameters. The bare call rebuilds the reporting dicts with an
+        # energy-only pick; the evaluated reductant from the NPV wins when provided (C7)
         furnace_group.generate_energy_vopex_by_reductant()
+        if chosen_reductant is not None:
+            furnace_group.chosen_reductant = chosen_reductant
         fopex = self.technology_unit_fopex.get(furnace_group.technology.name.lower())
         if fopex is None:
             raise ValueError(f"Fixed OPEX for technology {furnace_group.technology.name} not found")
@@ -4461,6 +4465,7 @@ class Plant:
                 capex_no_subsidy=original_capex_per_tonne,
                 capacity=furnace_group.capacity,
                 bom=bom,
+                chosen_reductant=reductant_dict[best_tech],
                 remaining_lifetime=furnace_group.lifetime.remaining_number_of_years,
                 cost_of_debt=cost_of_debt_with_subsidies,
                 cost_of_debt_no_subsidy=cost_of_debt,
@@ -4609,7 +4614,10 @@ class Plant:
                 technology_name,
                 len(furnace_group.energy_costs),
             )
+        # The bare call rebuilds the reporting dicts with an energy-only pick; the
+        # evaluated reductant passed by the caller wins (C7)
         furnace_group.generate_energy_vopex_by_reductant()
+        furnace_group.chosen_reductant = chosen_reductant
 
         # Set fixed OPEX from technology lookup table
         fopex_value = self.technology_unit_fopex.get(technology_name.lower())
@@ -5972,6 +5980,7 @@ class PlantGroup:
             technology_name=tech,
             capacity=capacity,
             product=product,
+            chosen_reductant=chosen_reductant,
             equity_needed=equity_needed,
             npv=npv,  # type: ignore # npv is not None due to check above
             capex=capex,

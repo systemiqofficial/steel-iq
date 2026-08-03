@@ -492,3 +492,33 @@ def test_reductant_score_material_drift_warning():
         logger.removeHandler(collector)
 
     assert any("differ across" in record.getMessage() for record in records)
+
+
+def test_generate_new_furnace_honours_evaluated_reductant():
+    """The factory keeps the evaluated reductant instead of the energy-only re-pick (C7)."""
+    fg = _make_fg("fg1", "DRI", "coal")
+    plant = _make_dri_plant(fg)
+
+    new_fg = plant.generate_new_furnace(
+        technology_name="DRI",
+        product="iron",
+        current_year=2025,
+        capex=500.0,
+        capex_no_subsidy=500.0,
+        cost_of_debt=0.05,
+        cost_of_debt_no_subsidy=0.05,
+        capacity=1000.0,
+        lag=2,
+        status="construction",
+        util_rate=0.0,
+        plant_lifetime=20,
+        chosen_reductant="natural_gas",
+        dynamic_business_case=_dri_feedstocks(),
+        energy_costs={"coal": 1.0, "natural_gas": 100.0},
+        output_energy_costs={"coal": 1.0, "natural_gas": 100.0},
+        energy_costs_no_subsidy={"coal": 1.0, "natural_gas": 100.0},
+    )
+
+    # Coal is far cheaper, so the energy-only re-pick would choose coal; the
+    # evaluated reductant must win regardless
+    assert new_fg.chosen_reductant == "natural_gas"
