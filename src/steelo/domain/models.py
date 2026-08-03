@@ -13,17 +13,18 @@ from typing import TYPE_CHECKING, TypeVar, ClassVar, FrozenSet, Dict, Tuple, Uni
 from collections import defaultdict, Counter
 from steelo.domain import events, commands
 from steelo.domain.calculate_costs import (
+    build_direct_ghg_lookup,
     calculate_capex_with_subsidies,
     calculate_debt_with_subsidies,
     calculate_energy_costs_and_most_common_reductant,
     calculate_opex_list_with_subsidies,
-    calculate_secondary_output_adjustment_per_tonne,
     calculate_unit_total_opex,
     calculate_variable_opex,
     filter_subsidies_for_year,
     get_subsidised_energy_costs,
     collect_active_subsidies_over_period,
     collect_subsidies_for_geo,
+    score_reductants_for_business_cases,
     ENERGY_FEEDSTOCK_KEYS,
 )
 from steelo.utilities.utils import normalize_name
@@ -2910,84 +2911,27 @@ class FurnaceGroup:
             masters author materials identically across reductants.
         """
         logger = logging.getLogger(f"{__name__}.generate_energy_vopex_by_reductant")
-        energy_vopex_by_input: dict[str, dict[str, float]] = {}
-        energy_breakdown_by_input: dict[str, dict[str, dict[str, float]]] = {}
-        extra_score_by_input: dict[str, dict[str, float]] = {}
-        material_profile_by_input: dict[str, dict[str, tuple]] = {}
         if self.technology.dynamic_business_case is None:
             return {}
 
-        # Direct GHG factors for the chosen boundary, same matching rules as calculate_emissions
-        ef_by_key: dict[tuple[str, str, str], float] = {}
-        if technology_emission_factors is not None:
-            for factor in technology_emission_factors:
-                if factor.boundary != chosen_emissions_boundary:
-                    continue
-                ef_by_key[(factor.technology.lower(), normalize_name(factor.reductant), factor.metallic_charge)] = (
-                    factor.direct_ghg_factor
-                )
+        ef_by_key = (
+            build_direct_ghg_lookup(technology_emission_factors, chosen_emissions_boundary)
+            if technology_emission_factors is not None
+            else None
+        )
+        scores = score_reductants_for_business_cases(
+            self.technology.dynamic_business_case,
+            self.energy_costs,
+            self.output_energy_costs,
+            carbon_price,
+            ef_by_key,
+            self.disposal_cost_outputs,
+        )
+        energy_vopex_by_input = scores.energy_vopex_by_input
+        energy_breakdown_by_input = scores.energy_breakdown_by_input
+        score_by_input = scores.score_by_input
 
-        for dbc in self.technology.dynamic_business_case:
-            metallic_input = dbc.metallic_charge
-            raw_energy_req = dbc.energy_requirements or {}
-            raw_secondary = dbc.secondary_feedstock or {}
-
-            combined_requirements: dict[str, float] = {}
-            for energy_type, volume in raw_energy_req.items():
-                normalized_energy = normalize_name(energy_type)
-                if normalized_energy not in ENERGY_FEEDSTOCK_KEYS:
-                    continue
-                combined_requirements[normalized_energy] = combined_requirements.get(normalized_energy, 0.0) + volume
-
-            non_energy_secondary: dict[str, float] = {}
-            for secondary_type, volume in raw_secondary.items():
-                normalized_secondary = normalize_name(secondary_type)
-                if normalized_secondary not in ENERGY_FEEDSTOCK_KEYS:
-                    non_energy_secondary[normalized_secondary] = volume
-                    continue
-                combined_requirements[normalized_secondary] = (
-                    combined_requirements.get(normalized_secondary, 0.0) + volume
-                )
-
-            # Material profile per reductant, only for the data-drift warning below
-            material_profile_by_input.setdefault(metallic_input, {})[dbc.reductant] = (
-                dbc.required_quantity_per_ton_of_product,
-                tuple(sorted(non_energy_secondary.items())),
-            )
-
-            if not combined_requirements:
-                continue
-
-            if metallic_input not in energy_vopex_by_input:
-                energy_vopex_by_input[metallic_input] = {}
-            if dbc.reductant not in energy_vopex_by_input[metallic_input]:
-                energy_vopex_by_input[metallic_input][dbc.reductant] = 0.0
-            energy_breakdown_by_input.setdefault(metallic_input, {}).setdefault(dbc.reductant, defaultdict(float))
-
-            for energy_type, volume in combined_requirements.items():
-                normalized_energy = normalize_name(energy_type)
-                price = self.energy_costs.get(normalized_energy, self.energy_costs.get(energy_type, 0.0))
-                cost_value = volume * price
-                energy_vopex_by_input[metallic_input][dbc.reductant] += cost_value
-                energy_breakdown_by_input[metallic_input][dbc.reductant][normalized_energy] += cost_value
-
-            if technology_emission_factors is not None:
-                # Hard lookup: a missing EF row would silently bias the pick towards dirty
-                # reductants if defaulted to 0, so fail loudly instead
-                direct_ghg_factor = ef_by_key[
-                    (dbc.technology.lower(), normalize_name(dbc.reductant), dbc.metallic_charge)
-                ]
-                secondary_adjustment = calculate_secondary_output_adjustment_per_tonne(
-                    dbc,
-                    self.output_energy_costs,
-                    self.disposal_cost_outputs,
-                )
-                extra = carbon_price * direct_ghg_factor + secondary_adjustment
-                extra_score_by_input.setdefault(metallic_input, {})[dbc.reductant] = (
-                    extra_score_by_input.get(metallic_input, {}).get(dbc.reductant, 0.0) + extra
-                )
-
-        for metallic_input, profiles in material_profile_by_input.items():
+        for metallic_input, profiles in scores.material_profile_by_input.items():
             if len(set(profiles.values())) > 1:
                 logger.warning(
                     "[REDUCTANT SCORE] FG %s: material requirements for charge '%s' differ across "
@@ -2997,18 +2941,6 @@ class FurnaceGroup:
                     metallic_input,
                     ", ".join(sorted(profiles)),
                 )
-
-        if technology_emission_factors is not None:
-            # extra_score_by_input is populated in lockstep with energy_vopex_by_input above
-            score_by_input = {
-                metallic_input: {
-                    reductant: energy_cost + extra_score_by_input[metallic_input][reductant]
-                    for reductant, energy_cost in reductant_costs.items()
-                }
-                for metallic_input, reductant_costs in energy_vopex_by_input.items()
-            }
-        else:
-            score_by_input = energy_vopex_by_input
 
         mins = [min(costs, key=lambda k: costs[k]) for costs in score_by_input.values() if costs]
         counts = Counter(mins)
