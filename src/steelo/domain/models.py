@@ -5263,6 +5263,7 @@ class PlantGroup:
         current_year: Year,
         allowed_techs: dict[Year, list[str]],
         active_statuses: list[str],
+        reductant_score_series: Callable[..., ReductantScoreSeries],
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
@@ -5271,7 +5272,7 @@ class PlantGroup:
         get_co2_headroom: Callable[[str, int, float], float] | None = None,
         get_co2_need_by_name: Callable[[str, float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
-    ) -> dict[str, tuple[float | None, str, float]]:
+    ) -> dict[str, tuple[float | None, str, float, str]]:
         """
         Calculate NPV and optimal technology choice for all plants in the group considering allowed technologies and
         subsidies.
@@ -5323,11 +5324,6 @@ class PlantGroup:
                 subsidized_capex) for the optimal expansion option. Returns empty dict if no viable options exist.
         """
         from steelo.domain import calculate_costs as cc
-        from steelo.domain.calculate_emissions import (
-            calculate_emissions_cost_series,
-            calculate_emissions,
-            materiall_bill_business_case_match,
-        )
 
         # Function-level logger
         logger = logging.getLogger(f"{__name__}.evaluate_expansion_options")
@@ -5383,6 +5379,16 @@ class PlantGroup:
             }
             base_energy_costs = plant.furnace_groups[-1].energy_costs_no_subsidy
             operating_start_year = Year(current_year + construction_time)
+            operating_end_year = Year(current_year + construction_time + plant_lifetime)
+            # GEO ("indi") sites keep their own power/hydrogen prices, trajectory-scaled
+            site_overrides: dict[str, float] | None = None
+            if plant.parent_gem_id.lower().startswith("indi"):
+                site_overrides = {
+                    carrier: base_energy_costs[carrier]
+                    for carrier in ("electricity", "hydrogen")
+                    if carrier in base_energy_costs
+                }
+            reductant_by_tech: dict[str, str] = {}
 
             # Evaluate each allowed technology for this plant
             for tech in allowed_techs_in_year:
@@ -5437,7 +5443,7 @@ class PlantGroup:
                     if active:
                         active_energy_subs[carrier] = active
                 if active_energy_subs:
-                    candidate_energy_costs, candidate_output_costs, _ = cc.get_subsidised_energy_costs(
+                    candidate_energy_costs, _, _ = cc.get_subsidised_energy_costs(
                         base_energy_costs,
                         active_energy_subs,
                     )
@@ -5448,7 +5454,6 @@ class PlantGroup:
                     )
                 else:
                     candidate_energy_costs = base_energy_costs
-                    candidate_output_costs = base_energy_costs
 
                 bom_result = get_bom_from_avg_boms(
                     candidate_energy_costs,
@@ -5461,13 +5466,35 @@ class PlantGroup:
                     continue
                 bill_of_materials: dict[str, dict[str, dict[str, float]]] = bill_of_materials_opt
 
-                # Match bill of materials with business cases for emissions calculation
-                matched_business_cases = materiall_bill_business_case_match(
-                    dynamic_feedstocks=dynamic_feedstocks.get(tech, dynamic_feedstocks.get(tech.lower(), [])),
-                    material_bill=bill_of_materials["materials"],
-                    tech=tech,
-                    reductant=reductant,
+                # Year-wise reductant-optimised score over the operating window; the NPV's
+                # energy, carbon and by-product terms all live inside this series
+                score_series = reductant_score_series(
+                    plant.location,
+                    tech,
+                    output_shares,
+                    operating_start_year,
+                    operating_end_year,
+                    overrides=site_overrides,
+                    override_reference_year=current_year if site_overrides else None,
                 )
+                committed_reductant = score_series.picks[0] if score_series.picks else ""
+                if committed_reductant != reductant:
+                    # Commit the BOM the start-year pick implies (materials are reductant-
+                    # invariant; only the energy rows follow the pick)
+                    rebuilt_bom, util_rate, reductant, output_shares = get_bom_from_avg_boms(
+                        candidate_energy_costs, tech, capacity, committed_reductant
+                    )
+                    if rebuilt_bom is not None:
+                        bill_of_materials = rebuilt_bom
+                reductant_by_tech[tech] = committed_reductant
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "[REDUCTANT NPV] plant %s: tech=%s committed=%r picks=%s",
+                        plant.plant_id,
+                        tech,
+                        committed_reductant,
+                        cc.summarise_reductant_picks(score_series.picks, operating_start_year),
+                    )
 
                 # Apply subsidies (filter to only active ones in current year)
                 from steelo.domain.calculate_costs import (
@@ -5496,9 +5523,11 @@ class PlantGroup:
                     raise ValueError(f"No fixed OPEX data for technology: {tech} in country: {plant.location.iso3}")
                 unit_fopex = float(tech_unit_fopex_value)
 
-                unit_total_opex = calculate_unit_total_opex(
+                # Materials-only variable OPEX plus fixed OPEX; energy, carbon and
+                # by-products enter through the per-year score
+                unit_base_opex = calculate_unit_total_opex(
                     unit_fopex=unit_fopex,
-                    unit_vopex=cc.calculate_variable_opex(bill_of_materials["materials"], bill_of_materials["energy"]),
+                    unit_vopex=cc.calculate_variable_opex(bill_of_materials["materials"], {}),
                     utilization_rate=util_rate,
                 )
 
@@ -5510,25 +5539,10 @@ class PlantGroup:
                 )
 
                 unit_total_opex_list = cc.calculate_opex_list_with_subsidies(
-                    opex=unit_total_opex,
+                    opex=[unit_base_opex + score for score in score_series.scores],
                     opex_subsidies=selected_opex_subsidies,
                     start_year=Year(current_year + construction_time),
                     end_year=Year(current_year + construction_time + plant_lifetime),
-                )
-
-                # Calculate emissions and carbon costs
-                bom_emissions = calculate_emissions(
-                    business_cases=matched_business_cases,
-                    material_bill=bill_of_materials["materials"],
-                    technology_emission_factors=technology_emission_factors,
-                )
-
-                carbon_cost_list = calculate_emissions_cost_series(
-                    emissions=bom_emissions,
-                    carbon_price_dict=plant.carbon_cost_series,
-                    chosen_emission_boundary=chosen_emissions_boundary_for_carbon_costs,
-                    start_year=current_year + construction_time,
-                    end_year=current_year + construction_time + plant_lifetime,
                 )
 
                 # Calculate NPV using full financial model
@@ -5543,17 +5557,7 @@ class PlantGroup:
                     else util_rate
                 )
 
-                # Calculate secondary output cost adjustment (by-product revenue/cost)
-                secondary_output_adj = cc.calculate_cost_adjustments_from_secondary_outputs(
-                    bill_of_materials=bill_of_materials,
-                    dynamic_business_cases=list(matched_business_cases.values()),
-                    output_costs=candidate_output_costs,
-                    disposal_cost_outputs=plant.furnace_groups[-1].disposal_cost_outputs,
-                )
-                # logger.debug(
-                #     f"[PAM EVAL] {plant.plant_id}/{tech} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
-                # )
-
+                # Carbon and by-product terms are already inside the per-year opex list
                 NPV[tech] = cc.calculate_npv_full(
                     capex=capex,
                     capacity=capacity,
@@ -5565,8 +5569,6 @@ class PlantGroup:
                     construction_time=construction_time,
                     expected_utilisation_rate=expected_utilisation_rate,
                     price_series=price_series[product],
-                    carbon_costs=carbon_cost_list,
-                    secondary_output_adjustment=secondary_output_adj,
                 )
 
             if dropped_ccs_techs and co2_storage_diagnostics is not None:
@@ -5592,7 +5594,7 @@ class PlantGroup:
                 best_capex_subsidies = filter_subsidies_for_year(all_best_capex_subsidies, current_year)
                 best_capex = cc.calculate_capex_with_subsidies(greenfield_capex[best_tech], best_capex_subsidies)
 
-                NPV_p[plant.plant_id] = NPV.get(best_tech), best_tech, best_capex
+                NPV_p[plant.plant_id] = NPV.get(best_tech), best_tech, best_capex, reductant_by_tech[best_tech]
 
         logger.info(
             "[PG EXPANSION OPTIONS] plant_group_id=%s num_pairs_evaluated=%d "
@@ -5626,6 +5628,7 @@ class PlantGroup:
         cost_of_debt_dict: dict[str, dict[str, float]],
         cost_of_equity_dict: dict[str, dict[str, float]],
         get_bom_from_avg_boms: Callable,
+        reductant_score_series: Callable[..., ReductantScoreSeries],
         capacity_limit_steel: Volumes,
         capacity_limit_iron: Volumes,
         installed_capacity_in_year: Callable[[str], Volumes],
@@ -5727,6 +5730,7 @@ class PlantGroup:
             current_year=current_year,
             allowed_techs=allowed_techs,
             active_statuses=active_statuses,
+            reductant_score_series=reductant_score_series,
             capex_subsidies=capex_subsidies,
             opex_subsidies=opex_subsidies,
             debt_subsidies=debt_subsidies,
@@ -5751,13 +5755,13 @@ class PlantGroup:
 
         # Log all expansion options found
         logger.debug(f"[PG EXPANSION] Found {len(expansion_options)} options:")
-        for pid, (npv, tech, capex) in expansion_options.items():
+        for pid, (npv, tech, capex, _reductant) in expansion_options.items():
             npv_str = "None" if npv is None else f"${npv:,.0f}"
             logger.debug(f"[PG EXPANSION]   {pid}: {tech} NPV={npv_str} CAPEX=${capex:.2f}/t")
 
         # ========== STAGE 4: SELECT HIGHEST NPV OPTION ==========
         highest_plant_and_tech = max(expansion_options.items(), key=lambda item: item[1][0] or float("-inf"))
-        plant_id, (npv, tech, capex) = highest_plant_and_tech
+        plant_id, (npv, tech, capex, chosen_reductant) = highest_plant_and_tech
 
         npv_str = "None" if npv is None else f"{npv:,.0f}"
         logger.debug(f"[PG EXPANSION] Best: {plant_id} {tech} NPV=${npv_str} CAPEX=${capex:,.2f}/t")

@@ -946,6 +946,7 @@ class PlantAgentsModel:
                     cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
                     cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
                     get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+                    reductant_score_series=bus.env.reductant_score_series,
                     capex_subsidies=bus.env.capex_subsidies,
                     opex_subsidies=bus.env.opex_subsidies,
                     debt_subsidies=bus.env.debt_subsidies,

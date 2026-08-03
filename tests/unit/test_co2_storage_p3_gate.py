@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 
+from steelo.domain.calculate_costs import ReductantScoreSeries
 from steelo.domain import Year
 from steelo.domain.models import (
     FurnaceGroup,
@@ -130,6 +131,7 @@ def _call_evaluate(
         cost_of_debt_dict=cost_of_debt_dict,
         cost_of_equity_dict=cost_of_equity_dict,
         get_bom_from_avg_boms=None,
+        reductant_score_series=lambda *a, **k: ReductantScoreSeries(scores=[], picks=[]),
         dynamic_feedstocks={},
         fopex_for_iso3=fopex_for_iso3,
         iso3_to_region_map=iso3_to_region_map,

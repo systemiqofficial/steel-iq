@@ -2,10 +2,16 @@ import pytest
 
 
 from steelo.simulation_types import get_default_technology_settings
+from steelo.domain.calculate_costs import ReductantScoreSeries
 
 from steelo.devdata import get_furnace_group, get_plant
 from steelo.domain import PointInTime, Year, TimeFrame, Volumes, Subsidy
 from steelo.domain.models import PlantGroup, CountryMapping, CountryMappingService
+
+
+def _stub_score_series(location, tech, output_shares, start, end, **kwargs):
+    n = int(end) - int(start)
+    return ReductantScoreSeries(scores=[0.0] * n, picks=[""] * n)
 
 
 @pytest.fixture
@@ -144,6 +150,7 @@ def test_evaluate_expansion_without_subsidies(
         cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
         cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+        reductant_score_series=_stub_score_series,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
@@ -168,7 +175,7 @@ def test_evaluate_expansion_without_subsidies(
     assert plant_id in options
 
     # Get the NPV, best tech, and capex
-    npv, best_tech, capex = options[plant_id]
+    npv, best_tech, capex, _reductant = options[plant_id]
     assert npv is not None
     assert best_tech in ["EAF", "BOF", "DRI", "BF"]
     assert capex == bus.env.name_to_capex["greenfield"]["Americas"][best_tech]
@@ -228,6 +235,7 @@ def test_evaluate_expansion_with_absolute_capex_subsidy(
         cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
         cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+        reductant_score_series=_stub_score_series,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
@@ -249,7 +257,7 @@ def test_evaluate_expansion_with_absolute_capex_subsidy(
     # Debug: Check what options contains
     assert options, f"No expansion options returned. Plant id: {plant_id}"
     assert plant_id in options, f"Plant {plant_id} not in options. Available keys: {list(options.keys())}"
-    npv, best_tech, capex_with_subsidy = options[plant_id]
+    npv, best_tech, capex_with_subsidy, _reductant = options[plant_id]
 
     # If EAF is chosen, verify subsidy was applied
     if best_tech == "EAF":
@@ -314,6 +322,7 @@ def test_evaluate_expansion_with_relative_capex_subsidy(
         cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
         cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+        reductant_score_series=_stub_score_series,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
@@ -332,7 +341,7 @@ def test_evaluate_expansion_with_relative_capex_subsidy(
 
     # Get the results
     plant_id = plant_with_location.plant_id
-    npv, best_tech, capex_with_subsidy = options[plant_id]
+    npv, best_tech, capex_with_subsidy, _reductant = options[plant_id]
 
     # If DRI is chosen, verify subsidy was applied
     if best_tech == "DRI":
@@ -420,6 +429,7 @@ def test_evaluate_expansion_with_combined_subsidies(
         cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
         cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+        reductant_score_series=_stub_score_series,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
@@ -438,7 +448,7 @@ def test_evaluate_expansion_with_combined_subsidies(
 
     # Get the results
     plant_id = plant_with_location.plant_id
-    npv, best_tech, capex_with_subsidy = options[plant_id]
+    npv, best_tech, capex_with_subsidy, _reductant = options[plant_id]
 
     # Verify BOF was chosen given the favorable BOM
     if best_tech == "BOF":
@@ -504,6 +514,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
         cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
         cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+        reductant_score_series=_stub_score_series,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
@@ -524,7 +535,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
 
     # Get the results
     plant_id = plant_with_location.plant_id
-    npv, best_tech, capex = options[plant_id]
+    npv, best_tech, capex, _reductant = options[plant_id]
 
     # Verify that only allowed technologies were considered
     assert best_tech in ["EAF", "BOF"], f"Technology {best_tech} was chosen but is not in allowed_techs"
@@ -541,6 +552,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
         cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
         cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+        reductant_score_series=_stub_score_series,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
         iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
@@ -559,7 +571,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
         debt_subsidies={},
     )
 
-    npv_all, best_tech_all, capex_all = options_all[plant_id]
+    npv_all, best_tech_all, capex_all, _reductant_all = options_all[plant_id]
 
     # When all techs are allowed, the more economical DRI or BF should be chosen
     assert best_tech_all in ["DRI", "BF"], (

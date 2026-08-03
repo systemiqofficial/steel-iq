@@ -269,6 +269,7 @@ def test_expansion_candidate_priced_without_incumbent_subsidy():
         cost_of_debt_dict={"NZL": {"DRI": 0.05, "EAF": 0.05}},
         cost_of_equity_dict={"NZL": {"DRI": 0.1, "EAF": 0.1}},
         get_bom_from_avg_boms=mock_get_bom,
+        reductant_score_series=lambda *a, **k: ReductantScoreSeries(scores=[0.0] * 20, picks=["hydrogen"] * 20),
         dynamic_feedstocks={},
         fopex_for_iso3={"NZL": {"dri": 50.0, "eaf": 40.0}},
         iso3_to_region_map={"NZL": "Region"},
