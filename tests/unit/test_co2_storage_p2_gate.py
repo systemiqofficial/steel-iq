@@ -123,6 +123,7 @@ def _call_evaluate(
     most_common_reductant_by_tech: dict[str, str] | None = None,
     current_year: Year = Year(2030),
     plant_group: PlantGroup | None = None,
+    reductant_score_series=None,
 ):
     region_capex = {tech: 500.0 for tech in allowed_techs_list + [plant.furnace_groups[0].technology.name]}
     if plant_group is None:
@@ -138,7 +139,7 @@ def _call_evaluate(
         cost_of_debt_by_tech={tech: 0.05 for tech in region_capex},
         cost_of_equity_by_tech={tech: 0.1 for tech in region_capex},
         get_bom_from_avg_boms=lambda *a, **k: (None, 0.0, "", {}),
-        reductant_score_series=lambda *a, **k: ReductantScoreSeries(scores=[], picks=[]),
+        reductant_score_series=reductant_score_series or (lambda *a, **k: ReductantScoreSeries(scores=[], picks=[])),
         probabilistic_agents=False,
         dynamic_business_cases={},
         chosen_emissions_boundary_for_carbon_costs="Scope 1",
@@ -240,9 +241,9 @@ def test_p2_no_log_when_nothing_dropped(caplog):
     assert not any("[CO2 GATE]" in r.getMessage() for r in caplog.records)
 
 
-def test_p2_uses_env_wide_reductant():
-    """P2 must pass most_common_reductant_by_tech into get_co2_need_by_name so gate
-    and downstream cost pipeline agree on the reductant used for the candidate tech."""
+def test_p2_uses_decided_reductant_from_score_series():
+    """P2 sizes the CCS need with the operating-start-year pick from the score series,
+    not the fleet-modal reductant (C8)."""
     plant = _make_plant("USA")
     get_co2_headroom, get_co2_need_by_name, co2_storage_diagnostics, captured = _build_stubs(
         headroom=10_000.0,
@@ -257,10 +258,12 @@ def test_p2_uses_env_wide_reductant():
         get_co2_need_by_name=get_co2_need_by_name,
         co2_storage_diagnostics=co2_storage_diagnostics,
         most_common_reductant_by_tech={"BFCCS": "Coke+PCI+H2"},
+        reductant_score_series=lambda *a, **k: ReductantScoreSeries(scores=[0.0], picks=["Coke+Bio-PCI"]),
     )
 
-    # Gate called need with the env-wide reductant for the candidate tech.
-    assert ("BFCCS", plant.furnace_groups[0].capacity, "Coke+PCI+H2") in captured["need_calls"]
+    # Gate called need with the decided reductant, not the fleet-modal one.
+    assert ("BFCCS", plant.furnace_groups[0].capacity, "Coke+Bio-PCI") in captured["need_calls"]
+    assert ("BFCCS", plant.furnace_groups[0].capacity, "Coke+PCI+H2") not in captured["need_calls"]
 
 
 def test_p2_gate_disabled_when_callables_not_wired(caplog):

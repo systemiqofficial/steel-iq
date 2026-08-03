@@ -4015,46 +4015,6 @@ class Plant:
         if not allowed_techs_in_year:
             raise ValueError(f"[FG STRATEGY] No allowed techs in {current_year}")
 
-        # P2 CO2 storage gate: drop CCS techs whose annual need exceeds country headroom.
-        lookup_year = int(current_year) + construction_time
-        headroom = (
-            get_co2_headroom(self.location.iso3, lookup_year, 0.0) if get_co2_headroom is not None else float("inf")
-        )
-        dropped_ccs_techs: set[str] = set()
-        filtered_allowed_furnace_transitions: dict[str, list[str]] = {}
-        for from_tech, candidates in allowed_furnace_transitions.items():
-            kept: list[str] = []
-            for tech in candidates:
-                if tech not in allowed_techs_in_year:
-                    continue
-                if get_co2_need_by_name is not None:
-                    reductant = most_common_reductant_by_tech.get(tech, "")
-                    need = get_co2_need_by_name(tech, float(furnace_group.capacity), reductant)
-                    if need > 0.0 and need > headroom:
-                        dropped_ccs_techs.add(tech)
-                        continue
-                kept.append(tech)
-            filtered_allowed_furnace_transitions[from_tech] = kept
-
-        if dropped_ccs_techs and co2_storage_diagnostics is not None:
-            _firm, _reserved, limit = co2_storage_diagnostics(self.location.iso3, lookup_year)
-            logger.info(
-                f"[CO2 GATE] gate=P2 iso3={self.location.iso3} year={int(current_year)} "
-                f"lookup_year={lookup_year} fg_id={furnace_group_id} plant_id={self.plant_id} "
-                f"headroom={headroom:.0f} limit={limit:.0f} "
-                f"dropped_ccs_techs={','.join(sorted(dropped_ccs_techs))} "
-                f"dropped_count={len(dropped_ccs_techs)}"
-            )
-
-        logger.debug(
-            f"[FG STRATEGY] Allowed transitions from {furnace_group.technology.name}: "
-            f"{filtered_allowed_furnace_transitions.get(furnace_group.technology.name)}"
-        )
-
-        # ===== STAGE 4: Calculate NPV for all technology options =====
-        logger.debug("[FG STRATEGY] === Calculating NPV for all technology options ===")
-        logger.debug(f"[FG STRATEGY] Fixed opex for technologies: {self.technology_unit_fopex}")
-
         # Bind the score-series provider to this plant's location; GEO ("indi") sites keep
         # their own power/hydrogen prices, trajectory-scaled from the current year
         site_overrides: dict[str, float] | None = None
@@ -4076,6 +4036,53 @@ class Plant:
                 overrides=site_overrides,
                 override_reference_year=current_year if site_overrides else None,
             )
+
+        # P2 CO2 storage gate: drop CCS techs whose annual need exceeds country headroom,
+        # sized with the reductant that would actually be built (operating-start-year pick)
+        lookup_year = int(current_year) + construction_time
+        headroom = (
+            get_co2_headroom(self.location.iso3, lookup_year, 0.0) if get_co2_headroom is not None else float("inf")
+        )
+        dropped_ccs_techs: set[str] = set()
+        gate_pick_by_tech: dict[str, str] = {}
+        filtered_allowed_furnace_transitions: dict[str, list[str]] = {}
+        for from_tech, candidates in allowed_furnace_transitions.items():
+            kept: list[str] = []
+            for tech in candidates:
+                if tech not in allowed_techs_in_year:
+                    continue
+                if get_co2_need_by_name is not None:
+                    # Cheap pre-check: the empty-reductant lookup falls back to the
+                    # all-reductant maximum, so 0 means no CCS potential at all
+                    if get_co2_need_by_name(tech, float(furnace_group.capacity), "") > 0.0:
+                        if tech not in gate_pick_by_tech:
+                            gate_series = score_series_for_tech(tech, {}, Year(lookup_year), Year(lookup_year + 1))
+                            gate_pick_by_tech[tech] = gate_series.picks[0] if gate_series.picks else ""
+                        need = get_co2_need_by_name(tech, float(furnace_group.capacity), gate_pick_by_tech[tech])
+                        if need > 0.0 and need > headroom:
+                            dropped_ccs_techs.add(tech)
+                            continue
+                kept.append(tech)
+            filtered_allowed_furnace_transitions[from_tech] = kept
+
+        if dropped_ccs_techs and co2_storage_diagnostics is not None:
+            _firm, _reserved, limit = co2_storage_diagnostics(self.location.iso3, lookup_year)
+            logger.info(
+                f"[CO2 GATE] gate=P2 iso3={self.location.iso3} year={int(current_year)} "
+                f"lookup_year={lookup_year} fg_id={furnace_group_id} plant_id={self.plant_id} "
+                f"headroom={headroom:.0f} limit={limit:.0f} "
+                f"dropped_ccs_techs={','.join(sorted(dropped_ccs_techs))} "
+                f"dropped_count={len(dropped_ccs_techs)}"
+            )
+
+        logger.debug(
+            f"[FG STRATEGY] Allowed transitions from {furnace_group.technology.name}: "
+            f"{filtered_allowed_furnace_transitions.get(furnace_group.technology.name)}"
+        )
+
+        # ===== STAGE 4: Calculate NPV for all technology options =====
+        logger.debug("[FG STRATEGY] === Calculating NPV for all technology options ===")
+        logger.debug(f"[FG STRATEGY] Fixed opex for technologies: {self.technology_unit_fopex}")
 
         tech_npv_dict, npv_capex_dict, cosa, bom_dict, reductant_dict = furnace_group.optimal_technology_name(
             market_price_series=market_price_series,
@@ -5431,10 +5438,24 @@ class PlantGroup:
                 if tech == "BOF" and not plant.has_hot_metal_access:
                     continue
 
-                # P3 CO2 storage gate: skip CCS techs whose annual need exceeds country headroom.
+                # P3 CO2 storage gate: skip CCS techs whose annual need exceeds country
+                # headroom, sized with the reductant that would actually be built
                 if get_co2_need_by_name is not None and get_co2_headroom is not None:
-                    reductant = group_most_common_reductant.get(tech, environment_most_common_reductant.get(tech, ""))
-                    need = get_co2_need_by_name(tech, float(capacity), reductant or "")
+                    # Cheap pre-check: the empty-reductant lookup falls back to the
+                    # all-reductant maximum, so 0 means no CCS potential at all
+                    need = 0.0
+                    if get_co2_need_by_name(tech, float(capacity), "") > 0.0:
+                        gate_series = reductant_score_series(
+                            plant.location,
+                            tech,
+                            {},
+                            operating_start_year,
+                            Year(operating_start_year + 1),
+                            overrides=site_overrides,
+                            override_reference_year=current_year if site_overrides else None,
+                        )
+                        gate_pick = gate_series.picks[0] if gate_series.picks else ""
+                        need = get_co2_need_by_name(tech, float(capacity), gate_pick)
                     if need > 0.0:
                         headroom = get_co2_headroom(plant.location.iso3, int(current_year) + construction_time, 0.0)
                         if headroom < need:
@@ -6204,7 +6225,8 @@ class PlantGroup:
                     iso3 = site_id[2]
                     kept_techs: dict[str, float] = {}
                     for tech, npv in sites[site_id].items():
-                        reductant = environment_most_common_reductant.get(tech, "")
+                        # cost_data carries the evaluated operating-start-year pick (C8)
+                        reductant = str(cost_data[product][site_id][tech]["reductant"])
                         need = get_co2_need_by_name(tech, float(steel_plant_capacity), reductant)
                         if need > 0.0:
                             headroom = get_co2_headroom(iso3, lookup_year, 0.0)
