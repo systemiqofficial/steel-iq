@@ -3023,7 +3023,20 @@ class FurnaceGroup:
             return {}
         most_common_reductant, _ = counts.most_common(1)[0]
 
+        previous_reductant = self.chosen_reductant
         self.chosen_reductant = str(most_common_reductant)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "[REDUCTANT PICK] FG %s (%s): chosen=%r (was %r), scores=%s",
+                self.furnace_group_id,
+                self.technology.name,
+                self.chosen_reductant,
+                previous_reductant,
+                {
+                    charge: {reductant: round(score, 2) for reductant, score in costs.items()}
+                    for charge, costs in score_by_input.items()
+                },
+            )
         # Reporting only the energy_vopex by metallic charge, using vopex for the chosen reductatnt
         trimmed: dict[str, float] = {}
         trimmed_breakdown: dict[str, dict[str, float]] = {}
@@ -8277,6 +8290,12 @@ class Environment:
 
         # Update environment-level most common reductant tracking after all furnace groups are updated
         self.most_common_reductant_by_tech = self.most_common_reductant(world_plants)
+        logger = logging.getLogger(f"{__name__}.Environment.set_primary_feedstocks_in_furnace_groups")
+        logger.debug(
+            "[REDUCTANT FLEET] year=%s most_common_reductant_by_tech=%s",
+            self.year,
+            self.most_common_reductant_by_tech,
+        )
 
     def _generate_cost_dict(
         self,
