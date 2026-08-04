@@ -290,12 +290,15 @@ class TM_PAM_connector:
             # Normalize commodity name
             commodity = comm.name.lower()
 
-            # Build a process-identifier string, including reductant if chosen
+            # Build a process-identifier string, including reductant if chosen. Reads
+            # .technology (the shared technology name) rather than .name, since .name is
+            # unique per reductant variant (e.g. "BF_coke") and would double-encode the
+            # reductant into this string otherwise.
             if to_pc.name in self.chosen_reductant:
                 reductant = str(self.chosen_reductant[to_pc.name]).lower()
-                process = f"{to_pc.process.name.lower()}_{commodity}_{reductant}"
+                process = f"{to_pc.process.technology.lower()}_{commodity}_{reductant}"
             else:
-                process = f"{to_pc.process.name.lower()}_{commodity}"
+                process = f"{to_pc.process.technology.lower()}_{commodity}"
 
             # Look up energy cost details for this process/feed
             energy_cost_detail = {}
