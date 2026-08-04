@@ -19,12 +19,23 @@ from steelo.utilities.utils import normalize_name
 
 
 def _required_quantity_by_charge(fg) -> dict[str, float]:
-    """Map each metallic charge of the FG's chosen-reductant feedstock rows to its req_qty."""
-    return {
-        str(feedstock.metallic_charge).lower(): feedstock.required_quantity_per_ton_of_product
-        for feedstock in fg.effective_primary_feedstocks
-        if isinstance(feedstock.metallic_charge, str)
-    }
+    """Map each metallic charge of the FG's chosen-reductant feedstock rows to its req_qty.
+
+    Raises if two rows for the same charge disagree — the snapshot conversion would
+    otherwise silently use whichever row happened to come last."""
+    req_by_charge: dict[str, float] = {}
+    for feedstock in fg.effective_primary_feedstocks:
+        if not isinstance(feedstock.metallic_charge, str):
+            continue
+        charge = feedstock.metallic_charge.lower()
+        req_qty = feedstock.required_quantity_per_ton_of_product
+        if charge in req_by_charge and req_by_charge[charge] != req_qty:
+            raise ValueError(
+                f"Furnace group {fg.furnace_group_id} has conflicting required_quantity_per_ton_of_product "
+                f"values for metallic charge '{charge}': {req_by_charge[charge]} vs {req_qty}"
+            )
+        req_by_charge[charge] = req_qty
+    return req_by_charge
 
 
 def _energy_intensity_by_charge(fg) -> dict[str, dict[str, float]]:
@@ -42,6 +53,31 @@ def _energy_intensity_by_charge(fg) -> dict[str, dict[str, float]]:
                     carriers[normalized] = carriers.get(normalized, 0.0) + amount
         intensities[feedstock.metallic_charge.lower()] = carriers
     return intensities
+
+
+def _ensure_material_shares(materials: dict[str, dict[str, float]]) -> None:
+    """Stamp each material entry with demand_share_pct = demand / product volume (input
+    tonnes per tonne of product), the weight the cost-breakdown product-share maths needs."""
+    if not materials:
+        return
+    product_volume = None
+    for values in materials.values():
+        pv = values.get("product_volume")
+        if isinstance(pv, (int, float)) and pv > 0:
+            product_volume = float(pv)
+            break
+    if product_volume is None or product_volume <= 0:
+        total_output = sum(float(v.get("product_volume") or 0.0) for v in materials.values())
+        if total_output > 0:
+            product_volume = total_output
+        else:
+            demand_sum = sum(float(v.get("demand") or 0.0) for v in materials.values())
+            product_volume = demand_sum if demand_sum > 0 else None
+    if not product_volume or product_volume <= 0:
+        return
+    for values in materials.values():
+        demand = float(values.get("demand") or 0.0)
+        values["demand_share_pct"] = demand / product_volume
 
 
 class TM_PAM_connector:
@@ -109,6 +145,11 @@ class TM_PAM_connector:
                     normalized_breakdown = {
                         normalize_name(carrier): float(cost) / req_qty for carrier, cost in breakdown.items()
                     }
+                    if float(total_cost) and not normalized_breakdown:
+                        raise ValueError(
+                            f"Furnace group {fg.furnace_group_id} has energy cost for metallic charge "
+                            f"'{commodity}' but no per-carrier breakdown to book it by"
+                        )
                     per_feed_energy[normalized_commodity] = {
                         "total": float(total_cost) / req_qty,
                         "carriers": normalized_breakdown,
@@ -959,23 +1000,10 @@ class TM_PAM_connector:
                 in_edges = list(self.G.in_edges(fg.furnace_group_id, data=True))
                 logger.debug(f"[BOM] FG {fg.furnace_group_id}: Found {len(in_edges)} incoming edges")
                 for _source, _target, attr_dict in in_edges:
-                    processing_energy_cost = attr_dict.get("processing_energy_cost", 0.0)
+                    # The __init__ snapshot guarantees a per-carrier breakdown wherever energy cost exists.
                     energy_breakdown = attr_dict.get("processing_energy_breakdown") or {}
-
-                    if energy_breakdown:
-                        for carrier, carrier_unit_cost in energy_breakdown.items():
-                            _["energy"].append(
-                                {carrier: {"demand": attr_dict["volume"], "unit_cost": carrier_unit_cost}}
-                            )
-                    elif processing_energy_cost:
-                        _["energy"].append(
-                            {
-                                attr_dict["commodity"]: {
-                                    "demand": attr_dict["volume"],
-                                    "unit_cost": processing_energy_cost,
-                                }
-                            }
-                        )
+                    for carrier, carrier_unit_cost in energy_breakdown.items():
+                        _["energy"].append({carrier: {"demand": attr_dict["volume"], "unit_cost": carrier_unit_cost}})
             else:
                 logger.debug(f"[BOM] FG {fg.furnace_group_id}: Graph is None, no edges to process")
 
@@ -1081,14 +1109,14 @@ class TM_PAM_connector:
                 }
                 req_by_charge = _required_quantity_by_charge(fg)
                 expected_energy = sum(
-                    material["demand"] / req_by_charge[charge] * vopex_by_charge[charge]
+                    material["demand"] / req * vopex_by_charge[charge]
                     for charge, material in collect["materials"].items()
-                    if charge in vopex_by_charge
+                    if charge in vopex_by_charge and (req := req_by_charge.get(charge))
                 )
                 booked_energy = sum(entry["total_cost"] for entry in collect["energy"].values())
-                if not math.isclose(booked_energy, expected_energy, rel_tol=1e-9, abs_tol=1e-6):
+                if not math.isclose(booked_energy, expected_energy, rel_tol=0.0, abs_tol=0.01):
                     logger.error(
-                        "Energy booking mismatch for furnace group %s: booked %.6f USD vs %.6f USD "
+                        "Energy booking mismatch for furnace group %s: booked %.2f USD vs %.2f USD "
                         "expected from per-product energy vopex x product tonnes",
                         fg.furnace_group_id,
                         booked_energy,
@@ -1107,6 +1135,7 @@ class TM_PAM_connector:
 
             util_rate = getattr(fg, "utilization_rate", None)
             if util_rate is not None and util_rate <= 0:
+                _ensure_material_shares(collect["materials"])
                 fg.bill_of_materials = collect
             else:
                 # make sure BOM exists when we have allocations, otherwise use existing BOM
@@ -1133,28 +1162,6 @@ class TM_PAM_connector:
                     # Fall through to initialize or keep the merged_bom structure
 
                 merged_bom: dict[str, dict[str, dict[str, float]]] = existing_bom or {"materials": {}, "energy": {}}
-
-                def _ensure_material_shares(materials: dict[str, dict[str, float]]) -> None:
-                    if not materials:
-                        return
-                    product_volume = None
-                    for values in materials.values():
-                        pv = values.get("product_volume")
-                        if isinstance(pv, (int, float)) and pv > 0:
-                            product_volume = float(pv)
-                            break
-                    if product_volume is None or product_volume <= 0:
-                        total_output = sum(float(v.get("product_volume") or 0.0) for v in materials.values())
-                        if total_output > 0:
-                            product_volume = total_output
-                        else:
-                            demand_sum = sum(float(v.get("demand") or 0.0) for v in materials.values())
-                            product_volume = demand_sum if demand_sum > 0 else None
-                    if not product_volume or product_volume <= 0:
-                        return
-                    for commodity, values in materials.items():
-                        demand = float(values.get("demand") or 0.0)
-                        values["demand_share_pct"] = demand / product_volume
 
                 if collect["materials"]:
                     merged_bom["materials"] = collect["materials"]

@@ -191,6 +191,42 @@ def test_energy_booking_validator_detects_unit_regression():
     )
 
 
+def test_snapshot_raises_on_missing_carrier_breakdown():
+    """A charge with an energy total but no per-carrier breakdown cannot be booked by carrier."""
+    furnace_group = _make_bf_furnace_group()
+    furnace_group.energy_vopex_breakdown_by_input = {"io_low": {"coking_coal": 96.0}}  # io_mid missing
+
+    plant = SimpleNamespace(plant_id="plant", furnace_groups=[furnace_group])
+    with pytest.raises(ValueError, match="io_mid.*no per-carrier breakdown"):
+        TM_PAM_connector(
+            dynamic_feedstocks_classes={},
+            plants=_StubRepo([plant]),
+            transport_kpis=None,
+        )
+
+
+def test_snapshot_raises_on_conflicting_required_quantities():
+    """Two feedstock rows for the same charge with different req_qty must fail loudly, not
+    silently convert with whichever row came last."""
+    furnace_group = _make_bf_furnace_group()
+    furnace_group.effective_primary_feedstocks.append(
+        SimpleNamespace(
+            metallic_charge="io_low",
+            required_quantity_per_ton_of_product=1.4,
+            energy_requirements={"coking_coal": 0.48},
+            secondary_feedstock={},
+        ),
+    )
+
+    plant = SimpleNamespace(plant_id="plant", furnace_groups=[furnace_group])
+    with pytest.raises(ValueError, match="conflicting required_quantity_per_ton_of_product.*io_low"):
+        TM_PAM_connector(
+            dynamic_feedstocks_classes={},
+            plants=_StubRepo([plant]),
+            transport_kpis=None,
+        )
+
+
 def test_multi_commodity_source_energy_not_double_booked():
     """Two commodities from ONE source node must each book their energy exactly once."""
     furnace_group = _make_bf_furnace_group()
