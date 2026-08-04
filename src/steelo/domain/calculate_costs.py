@@ -229,20 +229,24 @@ def calculate_cost_breakdown_by_feedstock(
     """
     Calculate detailed cost breakdown by feedstock type for a furnace group.
 
-    Uses actual BOM energy and distributes it proportionally across feedstocks based on their
-    energy intensity (from dynamic business cases) and usage share (demand_share_pct).
+    The material cost column comes from the booked BOM (the ledger); the energy carrier
+    columns and by-product credits are built bottom-up from the authored business case
+    (``energy_vopex_breakdown_by_input`` and ``dbc.outputs`` x prices), each weighted by the
+    pathway's product share. Because those legs are ledger-independent, the columns summing
+    to unit_vopex + unit_secondary_output_costs is a genuine cross-check: divergence signals
+    a booking bug or a stale (preserved) BOM rather than being true by construction.
 
-    Secondary output revenues (by-products with prices in ``output_costs``) are included as
-    negative values. Carriers in ``disposal_cost_outputs`` keep their raw price sign
-    (positive = disposal cost).
+    Carriers in ``disposal_cost_outputs`` keep their raw price sign (positive = disposal cost).
 
     Args:
-        bill_of_materials: Nested dictionary containing materials and energy data.
+        bill_of_materials: Nested dictionary containing materials data (energy is not read).
         chosen_reductant: Selected reductant type (e.g., 'coke', 'natural_gas') to filter
             business cases.
         dynamic_business_cases: List of primary feedstock options with energy requirements.
         energy_costs: Unused, kept for backward compatibility.
-        energy_vopex_breakdown_by_input: Unused, kept for backward compatibility.
+        energy_vopex_breakdown_by_input: Per-charge, per-carrier energy costs in USD per
+            tonne of product (FurnaceGroup.energy_vopex_breakdown_by_input) — the bottom-up
+            source for the energy columns.
         cost_breakdown_keys: Canonical list of normalised carrier/feedstock keys
             that should appear in every feedstock's breakdown. Missing keys are zero-padded.
             Derived from primary_feedstocks.json. When None, no zero-padding is applied.
@@ -259,44 +263,6 @@ def calculate_cost_breakdown_by_feedstock(
 
     if not bill_of_materials or not bill_of_materials.get("materials"):
         return breakdown
-
-    # Get BOM energy (same source as calculate_variable_opex)
-    bom_energy = bill_of_materials.get("energy", {})
-
-    # Calculate energy intensity per carrier for each feedstock from dynamic business case
-    # Structure: {feedstock: {carrier: amount}}
-    feedstock_carrier_intensities: dict[str, dict[str, float]] = {}
-
-    for dbc in dynamic_business_cases:
-        if dbc.reductant != chosen_reductant:
-            continue
-
-        dbc_lower = dbc.metallic_charge.lower()
-        if dbc_lower not in bill_of_materials["materials"]:
-            continue
-
-        carrier_amounts: dict[str, float] = {}
-
-        # Get energy requirements by carrier
-        for energy_key, amount in (dbc.energy_requirements or {}).items():
-            normalized_key = normalize_name(energy_key)
-            if normalized_key in ENERGY_FEEDSTOCK_KEYS:
-                carrier_amounts[normalized_key] = carrier_amounts.get(normalized_key, 0.0) + (
-                    _coerce_to_float(amount) or 0.0
-                )
-
-        # Add secondary feedstock by carrier (already in t/t after excel_reader conversion)
-        for secondary_key, amount in (dbc.secondary_feedstock or {}).items():
-            normalized_secondary = normalize_name(secondary_key)
-            if normalized_secondary in ENERGY_FEEDSTOCK_KEYS:
-                carrier_amounts[normalized_secondary] = carrier_amounts.get(normalized_secondary, 0.0) + amount
-
-        feedstock_carrier_intensities[dbc_lower] = carrier_amounts
-
-    logger.debug(
-        "feedstock_carrier_intensities: %s",
-        {k: sorted(v.keys()) for k, v in feedstock_carrier_intensities.items()},
-    )
 
     # Build cost breakdown for each feedstock
     for dbc in dynamic_business_cases:
@@ -316,48 +282,30 @@ def calculate_cost_breakdown_by_feedstock(
 
         demand_share = _coerce_to_float(material_entry.get("demand_share_pct", 1.0)) or 1.0
 
-        # Distribute BOM energy proportionally if available
-        if bom_energy and metallic_charge_lower in feedstock_carrier_intensities:
-            feedstock_carriers = feedstock_carrier_intensities[metallic_charge_lower]
+        # Energy vopex and by-product amounts are per tonne of product -> weight by the
+        # pathway's product share, not its input-tonne share.
+        req_qty = dbc.required_quantity_per_ton_of_product
+        if not req_qty:
+            raise ValueError(
+                f"Feedstock {dbc.metallic_charge} ({dbc.reductant}) has no "
+                "required_quantity_per_ton_of_product to derive its product share with"
+            )
+        product_share = demand_share / req_qty
 
-            # Distribute BOM energy carrier-by-carrier
-            for carrier, carrier_data in bom_energy.items():
-                if not isinstance(carrier_data, dict):
+        if energy_vopex_breakdown_by_input:
+            charge_breakdown = (
+                energy_vopex_breakdown_by_input.get(dbc.metallic_charge)
+                or energy_vopex_breakdown_by_input.get(metallic_charge_lower)
+                or {}
+            )
+            for carrier, cost_per_tonne_product in charge_breakdown.items():
+                cost_value = _coerce_to_float(cost_per_tonne_product) or 0.0
+                if cost_value == 0:
                     continue
-
-                carrier_unit_cost = _coerce_to_float(carrier_data.get("unit_cost")) or 0.0
-                if carrier_unit_cost == 0:
-                    continue
-
                 normalized_carrier = normalize_name(carrier)
-
-                # Check if this feedstock uses this carrier
-                feedstock_carrier_intensity = feedstock_carriers.get(normalized_carrier, 0.0)
-                if feedstock_carrier_intensity == 0:
-                    # This feedstock doesn't use this carrier, skip it
-                    continue
-
-                # Calculate weighted intensity for THIS CARRIER across all feedstocks that use it
-                total_weighted_intensity_for_carrier = 0.0
-                for fs_lower, fs_carriers in feedstock_carrier_intensities.items():
-                    if fs_lower not in bill_of_materials["materials"]:
-                        continue
-
-                    fs_carrier_intensity = fs_carriers.get(normalized_carrier, 0.0)
-                    if fs_carrier_intensity > 0:
-                        fs_demand_share = (
-                            _coerce_to_float(bill_of_materials["materials"][fs_lower].get("demand_share_pct", 1.0))
-                            or 1.0
-                        )
-                        total_weighted_intensity_for_carrier += fs_carrier_intensity * fs_demand_share
-
-                if total_weighted_intensity_for_carrier > 0:
-                    # This feedstock's share of THIS carrier's cost
-                    carrier_weight = (demand_share * feedstock_carrier_intensity) / total_weighted_intensity_for_carrier
-
-                    # Weighted energy cost for this feedstock and carrier
-                    weighted_cost = carrier_unit_cost * carrier_weight
-                    feed_breakdown[normalized_carrier] = feed_breakdown.get(normalized_carrier, 0.0) + weighted_cost
+                feed_breakdown[normalized_carrier] = (
+                    feed_breakdown.get(normalized_carrier, 0.0) + cost_value * product_share
+                )
 
         # Add output revenue/cost for by-products
         # Physical outputs (dbc.outputs): revenue via -abs(price), unless disposal cost
@@ -366,14 +314,6 @@ def calculate_cost_breakdown_by_feedstock(
             all_outputs = {**(dbc.outputs or {}), **(dbc.carbon_outputs or {})}
             primary_output_keys = set(dbc.get_primary_outputs().keys())
             physical_output_keys = set(normalize_name(k) for k in (dbc.outputs or {}).keys())
-            # By-product amounts are per tonne of product -> weight by product share, not input share.
-            req_qty = dbc.required_quantity_per_ton_of_product
-            if all_outputs and not req_qty:
-                raise ValueError(
-                    f"Feedstock {dbc.name} has outputs but no required_quantity_per_ton_of_product "
-                    "to derive its product share with"
-                )
-            product_share = demand_share / req_qty if req_qty else 0.0
             if all_outputs:
                 logger.debug(
                     "outputs for %s: all=%s primary(excluded)=%s",

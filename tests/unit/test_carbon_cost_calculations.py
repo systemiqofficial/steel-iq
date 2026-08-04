@@ -495,21 +495,19 @@ class TestCarbonCostCompleteFlow:
         assert carbon_cost_in_breakdown != 1.0  # Would be wrong (double division)
 
 
-def test_cost_breakdown_converts_coking_coal_secondary_feedstock_to_tonnes():
-    """Ensure secondary-feedstock coking coal in t/t (converted at read time) is costed correctly."""
+def test_cost_breakdown_energy_columns_come_from_vopex_breakdown():
+    """Energy columns are the pathway's per-product vopex breakdown x its product share.
+
+    The kg->t secondary-feedstock conversion this test previously exercised happens
+    upstream (generate_energy_vopex_by_reductant); this function consumes the result.
+    """
     bill_of_materials = {
         "materials": {
             "dri_high": {
-                "demand": 1000.0,
+                "demand": 1100.0,
+                "demand_share_pct": 1.1,
                 "total_cost": 1_000_000.0,
                 "unit_cost": 1000.0,
-                "product_volume": 1000.0,
-            }
-        },
-        "energy": {
-            "coking_coal": {
-                "demand": 30.863112425484626 * 0.001 * 1000.0,  # kg/t * 0.001 (kg->t) * 1000t total
-                "unit_cost": 210.0,
                 "product_volume": 1000.0,
             }
         },
@@ -518,97 +516,56 @@ def test_cost_breakdown_converts_coking_coal_secondary_feedstock_to_tonnes():
     dynamic_business_case = Mock()
     dynamic_business_case.metallic_charge = "dri_high"
     dynamic_business_case.reductant = ""
-    dynamic_business_case.energy_requirements = {}
-    dynamic_business_case.secondary_feedstock = {"coking_coal": 0.030863112425484626}  # t/t (converted at read time)
     dynamic_business_case.required_quantity_per_ton_of_product = 1.1
 
     breakdown = calculate_cost_breakdown_by_feedstock(
         bill_of_materials=bill_of_materials,
         chosen_reductant="",
         dynamic_business_cases=[dynamic_business_case],
-        energy_costs={"coking_coal": 210.0},  # USD/t after Excel normalization
+        energy_costs={},
+        energy_vopex_breakdown_by_input={"dri_high": {"coking_coal": 6.48}},
     )
 
-    coking_coal_cost = breakdown["dri_high"]["coking_coal"]
-    # The function returns the weighted unit cost without multiplying by required_quantity_per_ton_of_product
-    # Expected: unit_cost (210.0) when there's only one feedstock using this carrier
-    assert coking_coal_cost == pytest.approx(210.0, rel=1e-3)
+    # product share = demand_share_pct / req_qty = 1.1 / 1.1 = 1.0
+    assert breakdown["dri_high"]["coking_coal"] == pytest.approx(6.48)
 
 
-def test_cost_breakdown_handles_space_and_hyphenated_energy_price_keys():
-    """Energy prices stored with spaces/hyphens must still map to normalized feedstock keys."""
+def test_cost_breakdown_normalizes_vopex_breakdown_carrier_keys():
+    """Carrier keys with spaces/case in the vopex breakdown map to normalized column names."""
     bill_of_materials = {
         "materials": {
             "sinter": {
-                "demand": 1000.0,
+                "demand": 550.0,
+                "demand_share_pct": 0.55,
                 "total_cost": 100_000.0,
                 "unit_cost": 100.0,
                 "product_volume": 1000.0,
             }
-        },
-        "energy": {
-            "bio_pci": {
-                "demand": 2.0 * 1000.0,
-                "unit_cost": 10.0,
-                "product_volume": 1000.0,
-            },
-            "natural_gas": {
-                "demand": 3.0 * 1000.0,
-                "unit_cost": 5.0,
-                "product_volume": 1000.0,
-            },
-            "burnt_dolomite": {
-                "demand": 1.0 * 1000.0,
-                "unit_cost": 2.0,
-                "product_volume": 1000.0,
-            },
-            "burnt_lime": {
-                "demand": 0.5 * 1000.0,
-                "unit_cost": 1.0,
-                "product_volume": 1000.0,
-            },
-            "olivine": {
-                "demand": 0.25 * 1000.0,
-                "unit_cost": 3.0,
-                "product_volume": 1000.0,
-            },
         },
     }
 
     dynamic_business_case = Mock()
     dynamic_business_case.metallic_charge = "sinter"
     dynamic_business_case.reductant = "coke"
-    dynamic_business_case.energy_requirements = {"bio_pci": 2.0, "natural_gas": 3.0}
-    dynamic_business_case.secondary_feedstock = {
-        "Burnt Dolomite": 1.0,
-        "Burnt lime": 0.5,
-        "Olivine": 0.25,
-    }
     dynamic_business_case.required_quantity_per_ton_of_product = 1.1
-
-    energy_prices = {
-        "bio_pci": 10.0,
-        "natural_gas": 5.0,
-        "burnt dolomite": 2.0,
-        "burnt lime": 1.0,
-        "olivine": 3.0,
-    }
 
     breakdown = calculate_cost_breakdown_by_feedstock(
         bill_of_materials=bill_of_materials,
         chosen_reductant="coke",
         dynamic_business_cases=[dynamic_business_case],
-        energy_costs=energy_prices,
+        energy_costs={},
+        energy_vopex_breakdown_by_input={
+            "sinter": {"bio_pci": 20.0, "Burnt Dolomite": 2.0, "Burnt lime": 1.0},
+        },
     )
 
     feed_breakdown = breakdown["sinter"]
 
-    # The function returns weighted unit costs without multiplying by required_quantity_per_ton_of_product
-    assert feed_breakdown["bio_pci"] == pytest.approx(10.0)  # unit_cost when only one feedstock
-    assert feed_breakdown["natural_gas"] == pytest.approx(5.0)  # unit_cost
-    assert feed_breakdown["burnt_dolomite"] == pytest.approx(2.0)  # unit_cost
-    assert feed_breakdown["burnt_lime"] == pytest.approx(1.0)  # unit_cost
-    assert feed_breakdown["olivine"] == pytest.approx(3.0)  # unit_cost
+    # product share = 0.55 / 1.1 = 0.5
+    assert feed_breakdown["bio_pci"] == pytest.approx(10.0)
+    assert feed_breakdown["burnt_dolomite"] == pytest.approx(1.0)
+    assert feed_breakdown["burnt_lime"] == pytest.approx(0.5)
+    assert "Burnt Dolomite" not in feed_breakdown
 
 
 def test_cost_breakdown_ignores_metallic_secondary_feedstocks_for_energy():

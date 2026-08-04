@@ -654,9 +654,6 @@ def test_cost_breakdown_nets_dual_carrier():
                 "product_volume": 1000.0,
             },
         },
-        "energy": {
-            "bf_gas": {"unit_cost": 10.0, "demand": 100.0},
-        },
     }
     # bf_gas has POSITIVE price (cost to buy); output should still be revenue via -abs()
     input_costs = {"bf_gas": 5.0}
@@ -666,10 +663,11 @@ def test_cost_breakdown_nets_dual_carrier():
         chosen_reductant="coke",
         dynamic_business_cases=[dbc],
         energy_costs={},
+        energy_vopex_breakdown_by_input={"io_low": {"bf_gas": 10.0}},
         output_costs=input_costs,
     )
 
-    # Energy input: bf_gas unit_cost = 10.0 (full allocation, single feedstock)
+    # Energy input: per-product vopex 10.0 x product share 1.0
     # Output revenue: 0.2 * -abs(5.0) * 1.0 = -1.0 (physical output → always revenue)
     # Net: 10.0 + (-1.0) = 9.0
     assert result["io_low"]["bf_gas"] == pytest.approx(9.0)
