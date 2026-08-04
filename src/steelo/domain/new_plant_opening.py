@@ -118,8 +118,8 @@ def prepare_cost_data_for_business_opportunity(
     target_year: Year,
     energy_costs: dict[str, dict[Year, dict[str, float]]],
     capex_dict_all_locs_techs: dict[str, dict[str, float]],
-    cost_of_debt_all_locs: dict[str, float],
-    cost_of_equity_all_locs: dict[str, float],
+    cost_of_debt_all_locs: dict[str, dict[str, float]],
+    cost_of_equity_all_locs: dict[str, dict[str, float]],
     fopex_all_locs_techs: dict[str, dict[str, float]],
     steel_plant_capacity: float,
     get_bom_from_avg_boms: Callable[
@@ -148,8 +148,8 @@ def prepare_cost_data_for_business_opportunity(
         target_year: The year when the plant would start operation (current year + consideration time + 1 year announcement lag)
         energy_costs: Nested dictionary with energy costs per country and year (iso3 -> year -> energy carrier -> cost)
         capex_dict_all_locs_techs: Nested dictionary with CAPEX values per region and technology (region -> tech -> capex)
-        cost_of_debt_all_locs: Dictionary with cost of debt per country (iso3 -> cost of debt)
-        cost_of_equity_all_locs: Dictionary with cost of equity per country (iso3 -> cost of equity)
+        cost_of_debt_all_locs: Dictionary with cost of debt per country and technology (iso3 -> tech -> cost of debt)
+        cost_of_equity_all_locs: Dictionary with cost of equity per country and technology (iso3 -> tech -> cost of equity)
         fopex_all_locs_techs: Nested dictionary with fixed OPEX values per country and technology (iso3 -> tech -> fopex)
         steel_plant_capacity: Capacity of the steel plant in tons per year
         get_bom_from_avg_boms: Function to retrieve the bill of materials and utilization rate for a given technology and energy costs
@@ -228,14 +228,14 @@ def prepare_cost_data_for_business_opportunity(
                     if not carrier.startswith("co2"):
                         energy_costs_site[carrier] = abs(energy_costs_site[carrier])
 
-            # Get cost of equity and debt for country
-            cost_of_equity = cost_of_equity_all_locs.get(site["iso3"], None)
-            if not cost_of_equity:
+            # Get per-technology cost of equity and debt for the country
+            cost_of_equity_for_iso3 = cost_of_equity_all_locs.get(site["iso3"], None)
+            if not cost_of_equity_for_iso3:
                 site_missing_fields.append("cost_of_equity")
                 incomplete_site = True
 
-            cost_of_debt = cost_of_debt_all_locs.get(site["iso3"], None)
-            if not cost_of_debt:
+            cost_of_debt_for_iso3 = cost_of_debt_all_locs.get(site["iso3"], None)
+            if not cost_of_debt_for_iso3:
                 site_missing_fields.append("cost_of_debt")
                 incomplete_site = True
 
@@ -245,15 +245,22 @@ def prepare_cost_data_for_business_opportunity(
                     f"[NEW PLANTS] Missing critical site-level data for site {site_id} ({site['iso3']}): {', '.join(site_missing_fields)}. "
                     f"All cost data must be available for business opportunity evaluation."
                 )
+            assert cost_of_debt_for_iso3 is not None and cost_of_equity_for_iso3 is not None  # Help mypy
 
             for tech in product_to_tech[prod]:
                 if tech not in cost_data[prod][site_id]:
                     cost_data[prod][site_id][tech] = {}
 
+                # Financing rates are technology-specific
+                cost_of_debt = cost_of_debt_for_iso3.get(tech)
+                cost_of_equity = cost_of_equity_for_iso3.get(tech)
+                if cost_of_debt is None or cost_of_equity is None:
+                    raise ValueError(f"[NEW PLANTS] Missing cost of capital for {site['iso3']}/{tech}")
+
                 # Track missing fields for logging
                 missing_critical_fields = []
 
-                # Always add railway cost, energy costs, and cost of equity; equal for all technologies
+                # Always add railway cost and energy costs; equal for all technologies
                 if site["rail_cost"] is None:
                     missing_critical_fields.append("railway_cost")
                 else:
@@ -328,12 +335,11 @@ def prepare_cost_data_for_business_opportunity(
                     cost_data[prod][site_id][tech]["capex"] = capex_with_subsidies
                     cost_data[prod][site_id][tech]["capex_no_subsidy"] = capex
 
-                # Always add cost of debt with subsidies (since it's technology-agnostic but can have tech-specific subsidies)
+                # Always add cost of debt with subsidies
                 all_debt_subsidies = cc.collect_subsidies_for_geo(debt_subsidies, site_geo_key).get(tech, [])
                 selected_debt_subsidies = cc.filter_subsidies_for_year(all_debt_subsidies, target_year)
                 cost_of_debt_with_subsidies = cc.calculate_debt_with_subsidies(
-                    # cost_of_debt is guaranteed to not be None here due to incomplete_site check
-                    cost_of_debt=cost_of_debt,  # type: ignore[arg-type]
+                    cost_of_debt=cost_of_debt,
                     debt_subsidies=selected_debt_subsidies,
                     risk_free_rate=global_risk_free_rate,
                 )

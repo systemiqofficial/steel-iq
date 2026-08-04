@@ -255,8 +255,50 @@ class TestPrepareDataForBusinessOpportunity:
         }
         energy_costs = {"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}}  # USD/kWh, USD/t
         capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
-        cost_of_debt_all_locs = {"USA": 0.05}
-        cost_of_equity_all_locs = {"USA": 0.08}
+        cost_of_debt_all_locs = {
+            "USA": {
+                tech: 0.05
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }
+        cost_of_equity_all_locs = {
+            "USA": {
+                tech: 0.08
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}  # lowercase tech name
         iso3_to_region_map = {"USA": "Americas"}
         carbon_costs = {"USA": {Year(2030): 50.0}}
@@ -312,8 +354,50 @@ class TestPrepareDataForBusinessOpportunity:
         }
         energy_costs = {"USA": {Year(2025): {"electricity": 50.0}}}
         capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
-        cost_of_debt_all_locs = {"DEU": 0.05}  # Missing USA
-        cost_of_equity_all_locs = {"USA": 0.08}
+        cost_of_debt_all_locs = {
+            "DEU": {
+                tech: 0.05
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }  # Missing USA
+        cost_of_equity_all_locs = {
+            "USA": {
+                tech: 0.08
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}
         iso3_to_region_map = {"USA": "Americas"}
         carbon_costs = {"USA": {Year(2030): 50.0}}
@@ -355,8 +439,50 @@ class TestPrepareDataForBusinessOpportunity:
         }
         energy_costs = {"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}}  # USD/kWh, USD/t
         capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
-        cost_of_debt_all_locs = {"USA": 0.05}
-        cost_of_equity_all_locs = {"USA": 0.08}
+        cost_of_debt_all_locs = {
+            "USA": {
+                tech: 0.05
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }
+        cost_of_equity_all_locs = {
+            "USA": {
+                tech: 0.08
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}
         iso3_to_region_map = {"USA": "Americas"}
         carbon_costs = {"USA": {Year(2030): 50.0}}
@@ -420,8 +546,50 @@ class TestPrepareDataForBusinessOpportunity:
             "USA": {Year(2025): {"electricity": 0.05, "hydrogen": 5000.0, "natural_gas": 0.03}}
         }  # USD/kWh, USD/t, USD/kWh
         capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
-        cost_of_debt_all_locs = {"USA": 0.05}
-        cost_of_equity_all_locs = {"USA": 0.08}
+        cost_of_debt_all_locs = {
+            "USA": {
+                tech: 0.05
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }
+        cost_of_equity_all_locs = {
+            "USA": {
+                tech: 0.08
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}
         iso3_to_region_map = {"USA": "Americas"}
         carbon_costs = {"USA": {Year(2030): 50.0}}
@@ -495,8 +663,50 @@ class TestPrepareDataForBusinessOpportunity:
         }
         energy_costs = {"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}}  # USD/kWh, USD/t
         capex_dict_all_locs_techs = {"Americas": {"EAF": 1000.0}}
-        cost_of_debt_all_locs = {"USA": 0.05}
-        cost_of_equity_all_locs = {"USA": 0.08}
+        cost_of_debt_all_locs = {
+            "USA": {
+                tech: 0.05
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }
+        cost_of_equity_all_locs = {
+            "USA": {
+                tech: 0.08
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        }
         fopex_all_locs_techs = {}  # Missing fopex data
         iso3_to_region_map = {"USA": "Americas"}
         carbon_costs = {"USA": {Year(2030): 50.0}}
@@ -564,8 +774,130 @@ class TestPrepareDataForBusinessOpportunity:
             "Europe": {"EAF": 1100.0},
             "Asia": {"DRI": 2000.0},
         }
-        cost_of_debt_all_locs = {"USA": 0.05, "DEU": 0.04, "CHN": 0.06}
-        cost_of_equity_all_locs = {"USA": 0.08, "DEU": 0.07, "CHN": 0.09}
+        cost_of_debt_all_locs = {
+            "USA": {
+                tech: 0.05
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            },
+            "DEU": {
+                tech: 0.04
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            },
+            "CHN": {
+                tech: 0.06
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            },
+        }
+        cost_of_equity_all_locs = {
+            "USA": {
+                tech: 0.08
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            },
+            "DEU": {
+                tech: 0.07
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            },
+            "CHN": {
+                tech: 0.09
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            },
+        }
         fopex_all_locs_techs = {
             "USA": {"eaf": 50.0},
             "DEU": {"eaf": 55.0},
