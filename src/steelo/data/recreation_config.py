@@ -171,9 +171,9 @@ FILE_RECREATION_SPECS = {
         filename="cost_of_capital.json",
         recreate_function="recreate_cost_of_capital_data",
         source_type="master-excel",
-        master_excel_sheet="Regional cost of capital",
+        master_excel_sheet="Cost of capital",
         dependencies=[],
-        description="Regional cost of capital from master Excel",
+        description="Per-country, per-technology cost of capital from master Excel",
     ),
     "input_costs.json": FileRecreationSpec(
         filename="input_costs.json",

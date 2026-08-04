@@ -30,6 +30,7 @@ from steelo.domain import (
     WillingnessToPay,
 )
 from ...domain.models import TransportKPI, TechnologyEmissionFactors, FallbackMaterialCost
+from ...domain.models import TechFinancingRates, RENEWABLES_KEY, HYDROGEN_KEY
 import logging
 
 from ...domain.models import LegalProcessConnector
@@ -1593,45 +1594,65 @@ def read_capex_and_learning_rate_data(
     return capex_list
 
 
-def read_cost_of_capital(coc_excel_path: str, sheet_name: str = "Cost of capital") -> list[CostOfCapital]:
+def read_cost_of_capital(
+    coc_excel_path: str,
+    sheet_name: str = "Cost of capital",
+    techno_economic_sheet: str = "Techno-economic details",
+) -> list[CostOfCapital]:
     """
-    Read cost of capital data from an Excel file and return a list of CostOfCapital objects.
+    Read per-country, per-technology cost of capital data from the master Excel.
+
+    The sheet is long-format with columns: Country, ISO-3 Code, Tech, Cost of debt,
+    Cost of equity, Cost of capital (all rates as fractions). Tech names are stored
+    verbatim; besides the model technologies the sheet carries the special
+    RENEWABLES_KEY and HYDROGEN_KEY categories.
 
     Args:
-        coc_excel_path (str): Path to the Excel file containing cost of capital data.
-        sheet_name (str): Name of the sheet in the Excel file to read from.
+        coc_excel_path (str): Path to the master Excel file.
+        sheet_name (str): Name of the cost of capital sheet.
+        techno_economic_sheet (str): Sheet whose Technology column defines the
+            model technologies each country must cover.
 
     Returns:
-        list[CostOfCapital]: A list of CostOfCapital objects containing the cost of capital data.
+        list[CostOfCapital]: One entry per country with its per-tech rates.
+
+    Raises:
+        ValueError: On duplicate (ISO3, Tech) rows with conflicting values, or on a
+            country missing a model technology (or Renewables/Hydrogen).
+
+    Notes:
+        Some ISO3 codes appear under several territory names (e.g. ATF, BES, ESP);
+        those duplicates are collapsed after checking their values agree.
+        The Cost of capital (WACC) column is stored informationally; the model
+        finances from the debt and equity columns with config.equity_share gearing.
     """
-
     data = pd.read_excel(coc_excel_path, sheet_name=sheet_name)
-
-    # Handle the case where "More risky assets" column might be unnamed (just whitespace)
-    # In the actual Excel file, this column has a single space as its header
-    if "More risky assets" not in data.columns:
-        # Check for columns that are just whitespace
-        for col in data.columns:
-            if col.strip() == "" and data.columns.get_loc(col) == 3:  # 4th column (index 3)
-                data = data.rename(columns={col: "More risky assets"})
-                break
-        else:
-            # If still not found, try to use the 4th column by position
-            if len(data.columns) >= 4:
-                data = data.rename(columns={data.columns[3]: "More risky assets"})
+    model_techs = set(pd.read_excel(coc_excel_path, sheet_name=techno_economic_sheet)["Technology"].dropna().unique())
+    required_techs = model_techs | {RENEWABLES_KEY, HYDROGEN_KEY}
 
     cost_of_capital_list = []
-    for _, row in data.iterrows():
+    for iso3, group in data.groupby("ISO-3 Code", sort=True):
+        techs: dict[str, TechFinancingRates] = {}
+        for _, row in group.iterrows():
+            rates = TechFinancingRates(
+                cost_of_debt=float(row["Cost of debt"]),
+                cost_of_equity=float(row["Cost of equity"]),
+                cost_of_capital=float(row["Cost of capital"]),
+            )
+            tech = row["Tech"]
+            if tech in techs and techs[tech] != rates:
+                raise ValueError(f"Conflicting duplicate cost of capital rows for {iso3}/{tech} in '{sheet_name}'")
+            techs[tech] = rates
+
+        missing = required_techs - techs.keys()
+        if missing:
+            raise ValueError(f"Cost of capital sheet is missing technologies for {iso3}: {sorted(missing)}")
+
         cost_of_capital_list.append(
             CostOfCapital(
-                country=row["Country"],
-                iso3=row["ISO-3 Code"],
-                debt_res=row["Debt - Renewables"],
-                equity_res=row["Equity - Renewables"],
-                wacc_res=row["WACC - Renewables"],
-                debt_other=row["Debt - Other assets"],
-                equity_other=row["Equity - Other assets"],
-                wacc_other=row["WACC - Other assets"],
+                country=group["Country"].iloc[0],
+                iso3=str(iso3),
+                techs=techs,
             )
         )
 
