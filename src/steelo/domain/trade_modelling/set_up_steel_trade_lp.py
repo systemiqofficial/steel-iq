@@ -75,6 +75,56 @@ def _ensure_secondary_feedstock_supplier(
     return supplier
 
 
+def _process_variant_name(technology_name: str, chosen_reductant: str) -> str:
+    """Unique Process name per (technology, reductant).
+
+    Falls back to the plain technology name when no reductant distinguishes this FG,
+    matching today's behavior for technologies without reductant variance.
+    """
+    return f"{technology_name}_{chosen_reductant}" if chosen_reductant else technology_name
+
+
+def get_relevant_feedstocks_for_meta_fg(meta_fg) -> list:
+    """Feedstocks of a meta-furnace-group's dynamic business case that match its chosen reductant.
+
+    No filtering is applied when chosen_reductant is unset or "unknown".
+    """
+    if meta_fg.dynamic_business_case is None:
+        return []
+    if meta_fg.chosen_reductant and meta_fg.chosen_reductant != "unknown":
+        return [fs for fs in meta_fg.dynamic_business_case if fs.reductant == meta_fg.chosen_reductant]
+    return meta_fg.dynamic_business_case
+
+
+def build_energy_costs_per_input(furnace_group: FurnaceGroup) -> dict[str, float]:
+    """Per-facility energy cost per ton of *input*, keyed by metallic charge commodity name.
+
+    Used to override the shared technology-wide Process BOM's energy_cost (which is baked in
+    from whichever furnace group first built that Process) with this specific furnace group's
+    own energy costs.
+    """
+    fg_energy = furnace_group.energy_vopex_by_input
+    return {
+        pf.metallic_charge: fg_energy[pf.metallic_charge] / pf.required_quantity_per_ton_of_product
+        for pf in furnace_group.effective_primary_feedstocks
+        if isinstance(pf.metallic_charge, str)
+        and pf.metallic_charge in fg_energy
+        and pf.required_quantity_per_ton_of_product
+    }
+
+
+def build_energy_costs_per_input_for_meta_fg(meta_fg) -> dict[str, float]:
+    """Capacity-weighted-average analogue of build_energy_costs_per_input for a clustered MetaFurnaceGroup."""
+    energy_costs = meta_fg.weighted_avg_energy_costs
+    return {
+        pf.metallic_charge: energy_costs[pf.metallic_charge] / pf.required_quantity_per_ton_of_product
+        for pf in get_relevant_feedstocks_for_meta_fg(meta_fg)
+        if isinstance(pf.metallic_charge, str)
+        and pf.metallic_charge in energy_costs
+        and pf.required_quantity_per_ton_of_product
+    }
+
+
 def create_process_from_furnace_group(
     furnace_group: FurnaceGroup, lp_model: tlp.TradeLPModel, config: "SimulationConfig"
 ) -> tlp.Process:
@@ -103,7 +153,8 @@ def create_process_from_furnace_group(
     boms = []
     if furnace_group.technology.dynamic_business_case is None:
         return tlp.Process(
-            name=furnace_group.technology.name,
+            name=_process_variant_name(furnace_group.technology.name, furnace_group.chosen_reductant),
+            technology=furnace_group.technology.name,
             type=tlp.ProcessType.PRODUCTION,
             bill_of_materials=[],
         )
@@ -185,7 +236,8 @@ def create_process_from_furnace_group(
             lp_model.add_bom_elements([bom])
         boms.append(bom)
     process = tlp.Process(
-        name=furnace_group.technology.name,
+        name=_process_variant_name(furnace_group.technology.name, furnace_group.chosen_reductant),
+        technology=furnace_group.technology.name,
         type=tlp.ProcessType.PRODUCTION,
         bill_of_materials=boms,
     )
@@ -222,18 +274,13 @@ def create_process_from_meta_furnace_group(
 
     if meta_fg.dynamic_business_case is None:
         return tlp.Process(
-            name=meta_fg.technology_name,
+            name=_process_variant_name(meta_fg.technology_name, meta_fg.chosen_reductant),
+            technology=meta_fg.technology_name,
             type=tlp.ProcessType.PRODUCTION,
             bill_of_materials=[],
         )
 
-    # Filter feedstocks by chosen_reductant (similar to effective_primary_feedstocks property)
-    # Don't filter if chosen_reductant is "unknown" or empty
-    relevant_feedstocks = (
-        [fs for fs in meta_fg.dynamic_business_case if fs.reductant == meta_fg.chosen_reductant]
-        if (meta_fg.chosen_reductant and meta_fg.chosen_reductant != "unknown")
-        else meta_fg.dynamic_business_case
-    )
+    relevant_feedstocks = get_relevant_feedstocks_for_meta_fg(meta_fg)
 
     for primary_feedstock in relevant_feedstocks:
         try:
@@ -311,7 +358,8 @@ def create_process_from_meta_furnace_group(
         boms.append(bom)
 
     process = tlp.Process(
-        name=meta_fg.technology_name,
+        name=_process_variant_name(meta_fg.technology_name, meta_fg.chosen_reductant),
+        technology=meta_fg.technology_name,
         type=tlp.ProcessType.PRODUCTION,
         bill_of_materials=boms,
     )
@@ -354,8 +402,8 @@ def add_furnace_groups_as_process_centers(
         logger.info(f"Using {len(furnace_groups_override)} meta-furnace groups (clustered mode)")
 
         for meta_fg in furnace_groups_override:
-            # Get or create process for this technology
-            process = lp_model.get_process(meta_fg.technology_name)
+            # Get or create process for this (technology, reductant) variant
+            process = lp_model.get_process(_process_variant_name(meta_fg.technology_name, meta_fg.chosen_reductant))
             if process is None:
                 logger.info(
                     f"Creating new process for technology: {meta_fg.technology_name}, dynamic_business_case: {meta_fg.dynamic_business_case}"
@@ -373,6 +421,7 @@ def add_furnace_groups_as_process_centers(
                 location=meta_fg.location,  # This is the capacity-weighted centroid
                 production_cost=meta_fg.weighted_avg_carbon_cost,
                 soft_minimum_capacity=config.soft_minimum_capacity_percentage,
+                energy_costs_per_input=build_energy_costs_per_input_for_meta_fg(meta_fg),
             )
             logger.info(
                 f"Created ProcessCenter {process_center.name} with capacity {process_center.capacity} and {len(process.bill_of_materials)} BOMs"
@@ -385,7 +434,9 @@ def add_furnace_groups_as_process_centers(
                 if furnace_group.status.lower() not in config.active_statuses:
                     continue
 
-                process = lp_model.get_process(furnace_group.technology.name)
+                process = lp_model.get_process(
+                    _process_variant_name(furnace_group.technology.name, furnace_group.chosen_reductant)
+                )
                 if process is None:
                     process = create_process_from_furnace_group(
                         furnace_group=furnace_group, lp_model=lp_model, config=config
@@ -399,6 +450,7 @@ def add_furnace_groups_as_process_centers(
                     location=plant.location,
                     production_cost=furnace_group.carbon_cost_per_unit,
                     soft_minimum_capacity=config.soft_minimum_capacity_percentage,
+                    energy_costs_per_input=build_energy_costs_per_input(furnace_group),
                 )
                 process_centers.append(process_center)
 
@@ -809,6 +861,31 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
     return trade_lp
 
 
+def build_reference_producer_carbon_costs(
+    process_centers: list["tlp.ProcessCenter"],
+) -> dict[tuple[str, str], float]:
+    """Build capacity-weighted average carbon cost of domestic producers, per (iso3, commodity).
+
+    Demand centres carry no production_cost of their own (it defaults to 0.0), so carbon
+    border adjustments on flows into a demand centre need a stand-in for "the carbon cost a
+    domestic producer of this commodity would have incurred". This aggregates that reference
+    cost from PRODUCTION process centres, weighted by capacity, per country and commodity.
+    """
+    weighted_cost_sum: dict[tuple[str, str], float] = defaultdict(float)
+    capacity_sum: dict[tuple[str, str], float] = defaultdict(float)
+
+    for pc in process_centers:
+        if pc.process.type != tlp.ProcessType.PRODUCTION:
+            continue
+        iso3 = pc.location.iso3
+        for commodity in pc.process.products:
+            key = (iso3, commodity.name)
+            weighted_cost_sum[key] += pc.production_cost * pc.capacity
+            capacity_sum[key] += pc.capacity
+
+    return {key: weighted_cost_sum[key] / capacity_sum[key] for key in capacity_sum if capacity_sum[key] > 0}
+
+
 def adapt_allocation_costs_for_carbon_border_mechanisms(
     trade_lp: tlp.TradeLPModel, carbon_border_mechanisms: list, country_mappings: dict[str, CountryMapping], year: int
 ):
@@ -833,11 +910,18 @@ def adapt_allocation_costs_for_carbon_border_mechanisms(
         - Only first mechanism applied to each flow (tracked via adjusted_flows set)
         - Only applies to legal allocations (defined process connectors)
         - Skips flows involving None process centers or locations
+        - Demand-centre destinations have no production_cost of their own, so their carbon
+          cost is stood in for by the capacity-weighted average of domestic PRODUCTION
+          process centres for that commodity (see build_reference_producer_carbon_costs).
+          Destination countries with no domestic producers of the commodity are skipped —
+          there is nothing to protect or rebate against.
     """
-    # Track which trade flows have already been adjusted to prevent double-counting
-    adjusted_flows = set()
+    # Track which arcs have already been adjusted to prevent double-counting across mechanisms
+    adjusted_arcs = set()
     adjustments_made = 0
     skipped_duplicates = 0
+
+    reference_carbon_cost = build_reference_producer_carbon_costs(trade_lp.process_centers)
 
     for mechanism in carbon_border_mechanisms:
         if not mechanism.is_active(year):
@@ -850,32 +934,39 @@ def adapt_allocation_costs_for_carbon_border_mechanisms(
             from_iso3 = from_pc.location.iso3
             to_iso3 = to_pc.location.iso3
 
-            # Create a unique identifier for this trade flow
-            trade_flow_key = (from_iso3, to_iso3, comm.name)
+            # Create a unique identifier for this arc
+            arc_key = (from_pc.name, to_pc.name, comm.name)
 
-            # Skip if we've already adjusted this trade flow
-            if trade_flow_key in adjusted_flows:
+            # Skip if we've already adjusted this arc under an earlier mechanism
+            if arc_key in adjusted_arcs:
                 skipped_duplicates += 1
                 continue
 
             from_carbon_cost = from_pc.production_cost
-            to_carbon_cost = to_pc.production_cost
+            if to_pc.process.type == tlp.ProcessType.DEMAND:
+                to_carbon_cost = reference_carbon_cost.get((to_iso3, comm.name))
+                if to_carbon_cost is None:
+                    # No domestic producers of this commodity in the destination country —
+                    # nothing to protect (import case) or rebate against (export case).
+                    continue
+            else:
+                to_carbon_cost = to_pc.production_cost
             differential = to_carbon_cost - from_carbon_cost
 
             # Case 1: Exporting from applying region to non-applying region (export rebates)
             if from_iso3 in applying_countries and to_iso3 not in applying_countries:
                 # Apply the minimum of the carbon costs due to export rebates
                 if from_carbon_cost > to_carbon_cost:
-                    trade_lp.lp_model.allocation_costs[(from_pc.name, to_pc.name, comm.name)] += differential
-                    adjusted_flows.add(trade_flow_key)
+                    trade_lp.lp_model.allocation_costs[arc_key] += differential
+                    adjusted_arcs.add(arc_key)
                     adjustments_made += 1
 
             # Case 2: Importing into applying region from non-applying region (border adjustment)
             elif from_iso3 not in applying_countries and to_iso3 in applying_countries:
                 # Apply the maximum of the carbon costs (border adjustment)
                 if from_carbon_cost < to_carbon_cost:
-                    trade_lp.lp_model.allocation_costs[(from_pc.name, to_pc.name, comm.name)] += differential
-                    adjusted_flows.add(trade_flow_key)
+                    trade_lp.lp_model.allocation_costs[arc_key] += differential
+                    adjusted_arcs.add(arc_key)
                     adjustments_made += 1
 
 
@@ -1045,23 +1136,30 @@ def set_up_steel_trade_lp(
     if secondary_feedstock_constraints is not None:
         lp_model.secondary_feedstock_constraints = new_sf_constraints
 
-    # Create a mapping of process names to processes for easy lookup
-    process_map = {p.name: p for p in lp_model.processes}
+    # Group processes by their shared technology name — a technology may resolve to several
+    # reductant-variant Process instances (see _process_variant_name), and a connector must
+    # wire every combination so connectivity stays technology-level while BOM content stays
+    # variant-level.
+    processes_by_technology: dict[str, list[tlp.Process]] = defaultdict(list)
+    for p in lp_model.processes:
+        processes_by_technology[p.technology].append(p)
 
     all_process_connectors = []
 
     # Create process connectors based on repository data
     for connector in legal_process_connectors:
-        from_process = process_map.get(connector.from_technology_name)
-        to_process = process_map.get(connector.to_technology_name)
+        from_processes = processes_by_technology.get(connector.from_technology_name, [])
+        to_processes = processes_by_technology.get(connector.to_technology_name, [])
 
-        if from_process and to_process:
-            process_connector = tlp.ProcessConnector(from_process=from_process, to_process=to_process)
-            all_process_connectors.append(process_connector)
+        if from_processes and to_processes:
+            for from_process in from_processes:
+                for to_process in to_processes:
+                    process_connector = tlp.ProcessConnector(from_process=from_process, to_process=to_process)
+                    all_process_connectors.append(process_connector)
         else:
-            if not from_process:
+            if not from_processes:
                 logger.debug(f"Debug: Process '{connector.from_technology_name}' not found in LP model")
-            if not to_process:
+            if not to_processes:
                 logger.debug(f"Debug: Process '{connector.to_technology_name}' not found in LP model")
 
     # add dummy processes AND PROCESSCENTERS! for the secondary feedstock constraints:

@@ -139,17 +139,29 @@ class Process:
 
     A Process defines how materials are transformed (PRODUCTION), supplied (SUPPLY),
     or consumed (DEMAND). Multiple ProcessCenters (facilities) can share the same Process
-    definition.
+    definition — but facilities on different reductants need distinct BOMs. `name` is
+    therefore unique per (technology, reductant) variant (e.g. "BF_coke" vs "BF_hydrogen"),
+    while `technology` is the shared plain technology name ("BF") that connector wiring and
+    aggregate-commodity constraints key off of. Most Process instances (demand, supply) have
+    no reductant variance, so `technology` simply defaults to `name`.
 
     Attributes:
-        name: Technology name (e.g., "BF-BOF", "EAF", "iron_ore_supply", "demand")
+        name: Unique process name (e.g., "BF_coke", "EAF", "iron_ore_supply", "demand")
+        technology: Shared technology name across reductant variants (e.g., "BF")
         type: ProcessType (PRODUCTION, SUPPLY, or DEMAND)
         bill_of_materials: List of BOMElement objects defining valid input-output combinations
         products: Property returning list of all commodities this process can produce
     """
 
-    def __init__(self, name: str, type: ProcessType, bill_of_materials: list[BOMElement]):
+    def __init__(
+        self,
+        name: str,
+        type: ProcessType,
+        bill_of_materials: list[BOMElement],
+        technology: str | None = None,
+    ):
         self.name = name
+        self.technology = technology if technology is not None else name
         self.type = type
         self.bill_of_materials = bill_of_materials
         self._products_cache: list[Commodity] | None = None
@@ -201,6 +213,7 @@ class ProcessCenter:
         location: Location,
         production_cost: float = 0.0,
         soft_minimum_capacity: float | None = None,
+        energy_costs_per_input: dict[str, float] | None = None,
     ):
         self.name = name
         self.process = process
@@ -209,6 +222,10 @@ class ProcessCenter:
         self.production_cost = production_cost
         self.soft_minimum_capacity = soft_minimum_capacity
         self.optimal_production: float | None = None
+        # Facility-specific energy cost per ton of input, keyed by commodity name. Overrides
+        # the shared Process's BOM-element energy_cost (which is baked in from whichever
+        # furnace group first built that Process) when present. See add_bom_energy_costs_as_parameter_to_lp.
+        self.energy_costs_per_input = energy_costs_per_input
 
     def distance_to_other_processcenter(self, other_processcenter) -> float:
         if (
@@ -949,11 +966,16 @@ class TradeLPModel:
         for process_center in self.process_centers:
             process = process_center.process
             if process is not None and process.type == ProcessType.PRODUCTION:
+                own_costs = process_center.energy_costs_per_input or {}
                 for bom_element in process_center.process.bill_of_materials:
-                    if bom_element.energy_cost is not None:
-                        self.lp_model.bom_energy_costs[process_center.name, bom_element.commodity.name] = (
-                            bom_element.energy_cost
-                        )
+                    commodity_name = bom_element.commodity.name
+                    if commodity_name in own_costs:
+                        # Facility-specific energy cost — the shared Process's BOM was built
+                        # from whichever furnace group created it first, so its energy_cost
+                        # doesn't reflect this particular facility.
+                        self.lp_model.bom_energy_costs[process_center.name, commodity_name] = own_costs[commodity_name]
+                    elif bom_element.energy_cost is not None:
+                        self.lp_model.bom_energy_costs[process_center.name, commodity_name] = bom_element.energy_cost
 
     @time_function
     def add_allocation_costs_as_parameters_to_lp(self):
@@ -1444,7 +1466,7 @@ class TradeLPModel:
         self.tech_to_process_centers = {}
         for pc in self.process_centers:
             if pc.process.type == ProcessType.PRODUCTION:
-                tech = pc.process.name
+                tech = pc.process.technology
                 if tech not in self.tech_to_process_centers:
                     self.tech_to_process_centers[tech] = []
                 self.tech_to_process_centers[tech].append(pc.name)
@@ -1503,7 +1525,7 @@ class TradeLPModel:
                 continue
 
             pc_name = pc.name
-            pc_technology = pc.process.name  # Get the technology name (e.g., "BOF", "EAF")
+            pc_technology = pc.process.technology  # Get the technology name (e.g., "BOF", "EAF")
 
             # arcs_into_pc is the list of (f, t, c) that come into pc_name
             arcs_into_pc = inbound_arcs[pc_name]
@@ -1521,9 +1543,12 @@ class TradeLPModel:
                 bom_commodity_set = set()
 
                 # Loop only over arcs leading into pc_name
+                mask_lower = commodity_mask.lower()
                 for f, t, c in arcs_into_pc:
-                    # Check if commodity matches the pattern (e.g., "hot_metal" in c for mask "hot_metal")
-                    if commodity_mask in c:
+                    # Case-insensitive prefix match (masks come from Excel and may be
+                    # uppercase, e.g. "DRI"; commodity names are always lowercase) —
+                    # same semantics as AggregatedMetallicChargeConstraint.matches_feedstock
+                    if c.lower().startswith(mask_lower):
                         bom_commodity_set.add((f, t, c))
 
                 # Store the sets for this process center and commodity mask
