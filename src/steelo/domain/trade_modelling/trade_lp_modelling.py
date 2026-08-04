@@ -139,17 +139,29 @@ class Process:
 
     A Process defines how materials are transformed (PRODUCTION), supplied (SUPPLY),
     or consumed (DEMAND). Multiple ProcessCenters (facilities) can share the same Process
-    definition.
+    definition — but facilities on different reductants need distinct BOMs. `name` is
+    therefore unique per (technology, reductant) variant (e.g. "BF_coke" vs "BF_hydrogen"),
+    while `technology` is the shared plain technology name ("BF") that connector wiring and
+    aggregate-commodity constraints key off of. Most Process instances (demand, supply) have
+    no reductant variance, so `technology` simply defaults to `name`.
 
     Attributes:
-        name: Technology name (e.g., "BF-BOF", "EAF", "iron_ore_supply", "demand")
+        name: Unique process name (e.g., "BF_coke", "EAF", "iron_ore_supply", "demand")
+        technology: Shared technology name across reductant variants (e.g., "BF")
         type: ProcessType (PRODUCTION, SUPPLY, or DEMAND)
         bill_of_materials: List of BOMElement objects defining valid input-output combinations
         products: Property returning list of all commodities this process can produce
     """
 
-    def __init__(self, name: str, type: ProcessType, bill_of_materials: list[BOMElement]):
+    def __init__(
+        self,
+        name: str,
+        type: ProcessType,
+        bill_of_materials: list[BOMElement],
+        technology: str | None = None,
+    ):
         self.name = name
+        self.technology = technology if technology is not None else name
         self.type = type
         self.bill_of_materials = bill_of_materials
         self._products_cache: list[Commodity] | None = None
@@ -1454,7 +1466,7 @@ class TradeLPModel:
         self.tech_to_process_centers = {}
         for pc in self.process_centers:
             if pc.process.type == ProcessType.PRODUCTION:
-                tech = pc.process.name
+                tech = pc.process.technology
                 if tech not in self.tech_to_process_centers:
                     self.tech_to_process_centers[tech] = []
                 self.tech_to_process_centers[tech].append(pc.name)
@@ -1513,7 +1525,7 @@ class TradeLPModel:
                 continue
 
             pc_name = pc.name
-            pc_technology = pc.process.name  # Get the technology name (e.g., "BOF", "EAF")
+            pc_technology = pc.process.technology  # Get the technology name (e.g., "BOF", "EAF")
 
             # arcs_into_pc is the list of (f, t, c) that come into pc_name
             arcs_into_pc = inbound_arcs[pc_name]

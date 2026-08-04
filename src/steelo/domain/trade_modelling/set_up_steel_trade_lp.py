@@ -75,6 +75,15 @@ def _ensure_secondary_feedstock_supplier(
     return supplier
 
 
+def _process_variant_name(technology_name: str, chosen_reductant: str) -> str:
+    """Unique Process name per (technology, reductant).
+
+    Falls back to the plain technology name when no reductant distinguishes this FG,
+    matching today's behavior for technologies without reductant variance.
+    """
+    return f"{technology_name}_{chosen_reductant}" if chosen_reductant else technology_name
+
+
 def get_relevant_feedstocks_for_meta_fg(meta_fg) -> list:
     """Feedstocks of a meta-furnace-group's dynamic business case that match its chosen reductant.
 
@@ -144,7 +153,8 @@ def create_process_from_furnace_group(
     boms = []
     if furnace_group.technology.dynamic_business_case is None:
         return tlp.Process(
-            name=furnace_group.technology.name,
+            name=_process_variant_name(furnace_group.technology.name, furnace_group.chosen_reductant),
+            technology=furnace_group.technology.name,
             type=tlp.ProcessType.PRODUCTION,
             bill_of_materials=[],
         )
@@ -226,7 +236,8 @@ def create_process_from_furnace_group(
             lp_model.add_bom_elements([bom])
         boms.append(bom)
     process = tlp.Process(
-        name=furnace_group.technology.name,
+        name=_process_variant_name(furnace_group.technology.name, furnace_group.chosen_reductant),
+        technology=furnace_group.technology.name,
         type=tlp.ProcessType.PRODUCTION,
         bill_of_materials=boms,
     )
@@ -263,7 +274,8 @@ def create_process_from_meta_furnace_group(
 
     if meta_fg.dynamic_business_case is None:
         return tlp.Process(
-            name=meta_fg.technology_name,
+            name=_process_variant_name(meta_fg.technology_name, meta_fg.chosen_reductant),
+            technology=meta_fg.technology_name,
             type=tlp.ProcessType.PRODUCTION,
             bill_of_materials=[],
         )
@@ -346,7 +358,8 @@ def create_process_from_meta_furnace_group(
         boms.append(bom)
 
     process = tlp.Process(
-        name=meta_fg.technology_name,
+        name=_process_variant_name(meta_fg.technology_name, meta_fg.chosen_reductant),
+        technology=meta_fg.technology_name,
         type=tlp.ProcessType.PRODUCTION,
         bill_of_materials=boms,
     )
@@ -389,8 +402,8 @@ def add_furnace_groups_as_process_centers(
         logger.info(f"Using {len(furnace_groups_override)} meta-furnace groups (clustered mode)")
 
         for meta_fg in furnace_groups_override:
-            # Get or create process for this technology
-            process = lp_model.get_process(meta_fg.technology_name)
+            # Get or create process for this (technology, reductant) variant
+            process = lp_model.get_process(_process_variant_name(meta_fg.technology_name, meta_fg.chosen_reductant))
             if process is None:
                 logger.info(
                     f"Creating new process for technology: {meta_fg.technology_name}, dynamic_business_case: {meta_fg.dynamic_business_case}"
@@ -421,7 +434,9 @@ def add_furnace_groups_as_process_centers(
                 if furnace_group.status.lower() not in config.active_statuses:
                     continue
 
-                process = lp_model.get_process(furnace_group.technology.name)
+                process = lp_model.get_process(
+                    _process_variant_name(furnace_group.technology.name, furnace_group.chosen_reductant)
+                )
                 if process is None:
                     process = create_process_from_furnace_group(
                         furnace_group=furnace_group, lp_model=lp_model, config=config
@@ -1121,23 +1136,30 @@ def set_up_steel_trade_lp(
     if secondary_feedstock_constraints is not None:
         lp_model.secondary_feedstock_constraints = new_sf_constraints
 
-    # Create a mapping of process names to processes for easy lookup
-    process_map = {p.name: p for p in lp_model.processes}
+    # Group processes by their shared technology name — a technology may resolve to several
+    # reductant-variant Process instances (see _process_variant_name), and a connector must
+    # wire every combination so connectivity stays technology-level while BOM content stays
+    # variant-level.
+    processes_by_technology: dict[str, list[tlp.Process]] = defaultdict(list)
+    for p in lp_model.processes:
+        processes_by_technology[p.technology].append(p)
 
     all_process_connectors = []
 
     # Create process connectors based on repository data
     for connector in legal_process_connectors:
-        from_process = process_map.get(connector.from_technology_name)
-        to_process = process_map.get(connector.to_technology_name)
+        from_processes = processes_by_technology.get(connector.from_technology_name, [])
+        to_processes = processes_by_technology.get(connector.to_technology_name, [])
 
-        if from_process and to_process:
-            process_connector = tlp.ProcessConnector(from_process=from_process, to_process=to_process)
-            all_process_connectors.append(process_connector)
+        if from_processes and to_processes:
+            for from_process in from_processes:
+                for to_process in to_processes:
+                    process_connector = tlp.ProcessConnector(from_process=from_process, to_process=to_process)
+                    all_process_connectors.append(process_connector)
         else:
-            if not from_process:
+            if not from_processes:
                 logger.debug(f"Debug: Process '{connector.from_technology_name}' not found in LP model")
-            if not to_process:
+            if not to_processes:
                 logger.debug(f"Debug: Process '{connector.to_technology_name}' not found in LP model")
 
     # add dummy processes AND PROCESSCENTERS! for the secondary feedstock constraints:

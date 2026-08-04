@@ -39,11 +39,12 @@ class DummyBOMElement:
 
 
 class DummyProcess:
-    def __init__(self, name, type, bill_of_materials, products=None):
+    def __init__(self, name, type, bill_of_materials, products=None, technology=None):
         self.name = name
         self.type = type
         self.bill_of_materials = bill_of_materials
         self.products = products or []
+        self.technology = technology if technology is not None else name
 
 
 class DummyProcessCenter:
@@ -277,20 +278,23 @@ class DummyPlant:
 
 
 class DummyFurnaceGroup:
-    def __init__(self, furnace_group_id, technology, status, capacity, unit_fopex=1):
+    def __init__(self, furnace_group_id, technology, status, capacity, unit_fopex=1, chosen_reductant=""):
         self.furnace_group_id = furnace_group_id
         self.technology = technology
         self.status = status
         self.capacity = capacity
         self.unit_fopex = unit_fopex
         self.energy_vopex_by_input = {}
+        self.chosen_reductant = chosen_reductant
 
     @property
     def effective_primary_feedstocks(self):
         """Returns the effective primary feedstocks as a list, similar to the real FurnaceGroup class."""
         if self.technology.dynamic_business_case is None:
             return []
-        return self.technology.dynamic_business_case
+        if not self.chosen_reductant:
+            return self.technology.dynamic_business_case
+        return [fs for fs in self.technology.dynamic_business_case if fs.reductant == self.chosen_reductant]
 
     @property
     def carbon_cost_per_unit(self):
@@ -317,6 +321,7 @@ class DummyFeedstock:
         outputs,
         carbon_outputs=None,
         energy_requirements=None,
+        reductant="",
     ):
         self.name = name
         self.metallic_charge = metallic_charge
@@ -327,6 +332,7 @@ class DummyFeedstock:
         self.outputs = outputs
         self.carbon_outputs = carbon_outputs or {}
         self.energy_requirements = energy_requirements or {}
+        self.reductant = reductant
 
     def get_primary_outputs(self, primary_products: list[str] | None = None):
         return self.outputs
@@ -618,6 +624,74 @@ def test_add_furnace_groups_as_process_centers_energy_costs_are_facility_specifi
     assert pc2.energy_costs_per_input["scrap"] == pytest.approx(40.0)
 
 
+def test_add_furnace_groups_as_process_centers_reductant_variants_get_distinct_bom():
+    """Two furnace groups of the same technology but different chosen_reductant must NOT
+    share a Process/BOM — each reductant's feedstock (input ratio, energy cost) is different,
+    and baking one reductant's BOM in fleet-wide would misprice/mislegalize every facility on
+    the other reductant."""
+    coke_feed = DummyFeedstock(
+        name="bf_iron_ore_coke",
+        metallic_charge="iron_ore",
+        required_quantity=1.6,
+        maximum_share=1.0,
+        minimum_share=0.0,
+        secondary_feedstock={},
+        outputs={"steel": 1.0},
+        reductant="coke",
+    )
+    hydrogen_feed = DummyFeedstock(
+        name="bf_iron_ore_hydrogen",
+        metallic_charge="iron_ore",
+        required_quantity=1.4,
+        maximum_share=1.0,
+        minimum_share=0.0,
+        secondary_feedstock={},
+        outputs={"steel": 1.0},
+        reductant="hydrogen",
+    )
+    tech = DummyTechnology(name="BF", dynamic_business_case=[coke_feed, hydrogen_feed])
+
+    fg_coke = DummyFurnaceGroup(
+        furnace_group_id="fg_coke", technology=tech, status="operating", capacity=50, chosen_reductant="coke"
+    )
+    fg_coke.energy_vopex_by_input = {"iron_ore": 16.0}
+    fg_hydrogen = DummyFurnaceGroup(
+        furnace_group_id="fg_hydrogen", technology=tech, status="operating", capacity=80, chosen_reductant="hydrogen"
+    )
+    fg_hydrogen.energy_vopex_by_input = {"iron_ore": 56.0}
+
+    plant1 = DummyPlant(plant_id="plant1", furnace_groups=[fg_coke])
+    plant2 = DummyPlant(plant_id="plant2", furnace_groups=[fg_hydrogen])
+    repo = DummyRepository()
+    repo.plants.items = [plant1, plant2]
+    repo.plants.data = {"plant1": plant1, "plant2": plant2}
+
+    lp_model = DummyTradeLPModel()
+    config = create_mock_config()
+
+    add_furnace_groups_as_process_centers(repo, lp_model, config)
+
+    pc_coke = next(pc for pc in lp_model.process_centers if pc.name == "fg_coke")
+    pc_hydrogen = next(pc for pc in lp_model.process_centers if pc.name == "fg_hydrogen")
+
+    # Distinct Process objects (different reductants), but grouped under the same technology.
+    assert pc_coke.process is not pc_hydrogen.process
+    assert pc_coke.process.technology == "BF"
+    assert pc_hydrogen.process.technology == "BF"
+    assert pc_coke.process.name != pc_hydrogen.process.name
+
+    # Each Process's own BOM reflects only that reductant's feedstock/input ratio.
+    coke_boms = pc_coke.process.bill_of_materials
+    hydrogen_boms = pc_hydrogen.process.bill_of_materials
+    assert len(coke_boms) == 1
+    assert len(hydrogen_boms) == 1
+    assert coke_boms[0].parameters["input_ratio"] == pytest.approx(1.6)
+    assert hydrogen_boms[0].parameters["input_ratio"] == pytest.approx(1.4)
+    # Energy cost is per ton of input: energy_vopex_by_input / required_quantity_per_ton_of_product.
+    assert coke_boms[0].energy_cost == pytest.approx(16.0 / 1.6)
+    assert hydrogen_boms[0].energy_cost == pytest.approx(56.0 / 1.4)
+
+
 def test_add_demand_centers_as_process_centers():
     # Create a dummy demand center.
     year = 2025
@@ -726,6 +800,78 @@ def test_set_up_steel_trade_lp(monkeypatch):
         assert key in process_names
     # Check that some process centers were added from the furnace groups, demand centers, and suppliers.
     assert len(lp_model.process_centers) >= 3
+
+
+def test_set_up_steel_trade_lp_connector_wiring_covers_all_reductant_variants(monkeypatch):
+    """A LegalProcessConnector names a technology (e.g. "BF" -> "BOF"), which may resolve to
+    several reductant-variant Process objects. Connector wiring must expand to every
+    combination, so a coke-BF facility and a hydrogen-BF facility both connect to BOF —
+    connectivity stays technology-level even though BOM content is now variant-level."""
+    from steelo.domain.models import LegalProcessConnector
+
+    year = 2025
+
+    coke_feed = DummyFeedstock(
+        name="bf_iron_ore_coke",
+        metallic_charge="iron_ore",
+        required_quantity=1.6,
+        maximum_share=1.0,
+        minimum_share=0.0,
+        secondary_feedstock={},
+        outputs={"hot_metal": 1.0},
+        reductant="coke",
+    )
+    hydrogen_feed = DummyFeedstock(
+        name="bf_iron_ore_hydrogen",
+        metallic_charge="iron_ore",
+        required_quantity=1.4,
+        maximum_share=1.0,
+        minimum_share=0.0,
+        secondary_feedstock={},
+        outputs={"hot_metal": 1.0},
+        reductant="hydrogen",
+    )
+    tech = DummyTechnology(name="BF", dynamic_business_case=[coke_feed, hydrogen_feed], product="hot_metal")
+
+    fg_coke = DummyFurnaceGroup(
+        furnace_group_id="fg_coke", technology=tech, status="operating", capacity=50, chosen_reductant="coke"
+    )
+    fg_hydrogen = DummyFurnaceGroup(
+        furnace_group_id="fg_hydrogen", technology=tech, status="operating", capacity=80, chosen_reductant="hydrogen"
+    )
+    plant1 = DummyPlant(plant_id="plant1", furnace_groups=[fg_coke])
+    plant2 = DummyPlant(plant_id="plant2", furnace_groups=[fg_hydrogen])
+    repo = DummyRepository()
+    repo.plants.items = [plant1, plant2]
+    repo.plants.data = {"plant1": plant1, "plant2": plant2}
+
+    # Pre-register a downstream "BOF" process (as the existing test above does), since it's
+    # not built from a furnace group in this test.
+    orig_init = ORIGINAL_DUMMY_TRADE_LP_MODEL_INIT
+
+    def init_with_bof_process(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42, **kwargs):
+        orig_init(self, lp_epsilon, year, solver_options)
+        self._processes["BOF"] = DummyProcess("BOF", DummyProcessType.PRODUCTION, [])
+
+    monkeypatch.setattr(DummyTradeLPModel, "__init__", init_with_bof_process)
+
+    mock_config = create_mock_config()
+    message_bus = DummyMessageBus(repo)
+    lp_model = set_up_steel_trade_lp(
+        message_bus=message_bus,
+        year=year,
+        config=mock_config,
+        legal_process_connectors=[LegalProcessConnector(from_technology_name="BF", to_technology_name="BOF")],
+    )
+
+    bf_processes = {p.name: p for p in lp_model.processes if p.technology == "BF"}
+    assert set(bf_processes.keys()) == {"BF_coke", "BF_hydrogen"}
+    bof_process = next(p for p in lp_model.processes if p.name == "BOF")
+
+    wired_pairs = {(conn.from_process.name, conn.to_process.name) for conn in lp_model.connectors}
+    assert ("BF_coke", "BOF") in wired_pairs
+    assert ("BF_hydrogen", "BOF") in wired_pairs
+    assert all(conn.to_process is bof_process for conn in lp_model.connectors if conn.from_process.technology == "BF")
 
 
 def test_solve_steel_trade_lp_and_return_commodity_allocations(monkeypatch):
@@ -1872,8 +2018,9 @@ def test_add_furnace_groups_as_process_centers_with_meta_furnace_groups():
     assert pc.location == centroid_location
     assert pc.production_cost == 90.0  # Weighted average carbon cost
 
-    # Verify the process was created/retrieved
-    assert "BF" in lp_model._processes
+    # Verify the process was created/retrieved, keyed by the (technology, reductant) variant name
+    assert "BF_coke" in lp_model._processes
+    assert pc.process.technology == "BF"
 
 
 def test_set_up_steel_trade_lp_with_meta_furnace_groups(monkeypatch):
