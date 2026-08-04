@@ -90,3 +90,37 @@ def test_config_factory_from_data_directory(prepared_data_dir):
 
     # Check that geo paths were set if they exist in the data directory
     assert config.feasibility_mask_path == prepared_data_dir / "outputs" / "GEO" / "feasibility_mask.nc"
+
+
+def test_deterministic_agents_force_announcement_and_construction_probabilities_to_one():
+    """
+    Tests that probabilistic_agents=False makes the new-plant announcement and
+    construction draws deterministic (probability 1), regardless of defaults.
+    """
+    config = SimulationConfig(
+        start_year=Year(2025),
+        end_year=Year(2050),
+        master_excel_path=Path("test.xlsx"),
+        output_dir=Path("/tmp/output"),
+        probabilistic_agents=False,
+    )
+
+    assert config.probability_of_construction == 1.0
+    assert config.probability_of_announcement == 1.0
+
+
+def test_probabilistic_agents_keep_default_announcement_and_construction_probabilities():
+    """
+    Tests that probabilistic_agents=True (the default) preserves the stochastic
+    announcement and construction probabilities.
+    """
+    config = SimulationConfig(
+        start_year=Year(2025),
+        end_year=Year(2050),
+        master_excel_path=Path("test.xlsx"),
+        output_dir=Path("/tmp/output"),
+    )
+
+    assert config.probabilistic_agents is True
+    assert config.probability_of_construction == 0.9
+    assert config.probability_of_announcement == 0.7
