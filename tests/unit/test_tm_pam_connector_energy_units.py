@@ -189,3 +189,51 @@ def test_energy_booking_validator_detects_unit_regression():
     assert any(
         "Energy booking mismatch" in record.getMessage() and "plant_bf1" in record.getMessage() for record in records
     )
+
+
+def test_multi_commodity_source_energy_not_double_booked():
+    """Two commodities from ONE source node must each book their energy exactly once."""
+    furnace_group = _make_bf_furnace_group()
+    plant = SimpleNamespace(plant_id="plant", furnace_groups=[furnace_group])
+    connector = TM_PAM_connector(
+        dynamic_feedstocks_classes={},
+        plants=_StubRepo([plant]),
+        transport_kpis=None,
+    )
+
+    dual_supplier = tlp.ProcessCenter(
+        name="sup_dual",
+        process=tlp.Process(name="dual_supply", type=tlp.ProcessType.SUPPLY, bill_of_materials=[]),
+        capacity=1000.0,
+        location=_location("AUS"),
+        production_cost=50.0,
+    )
+    bf_pc = tlp.ProcessCenter(
+        name="plant_bf1",
+        process=tlp.Process(name="BF", type=tlp.ProcessType.PRODUCTION, bill_of_materials=[]),
+        capacity=500.0,
+        location=_location("DEU"),
+        production_cost=0.0,
+    )
+    sink_pc = tlp.ProcessCenter(
+        name="deu_demand",
+        process=tlp.Process(name="demand", type=tlp.ProcessType.DEMAND, bill_of_materials=[]),
+        capacity=1000.0,
+        location=_location("DEU"),
+    )
+
+    # Both charges arrive from the SAME source node -> two parallel edges sup_dual -> plant_bf1.
+    allocations = tlp.Allocations(
+        allocations={
+            (dual_supplier, bf_pc, tlp.Commodity(name="io_low")): 160.0,
+            (dual_supplier, bf_pc, tlp.Commodity(name="io_mid")): 150.0,
+            (bf_pc, sink_pc, tlp.Commodity(name="hot_metal")): 200.0,
+        },
+    )
+
+    connector.create_graph(allocations)
+    connector.propage_cost_forward_by_layers_and_normalize()
+    connector.update_bill_of_materials([furnace_group])
+
+    energy = furnace_group.bill_of_materials["energy"]["coking_coal"]
+    assert energy["total_cost"] == pytest.approx(18_600.0)  # 96 x 100 + 90 x 100, once each

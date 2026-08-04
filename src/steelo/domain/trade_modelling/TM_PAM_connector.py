@@ -952,25 +952,30 @@ class TM_PAM_connector:
             _ = {"materials": [], "energy": []}
             product_volume = 0.0
             if self.G is not None:
-                in_edges = list(self.G.in_edges(fg.furnace_group_id))
+                # Iterate edge-wise: keyless in_edges repeats the (u, v) pair once per parallel
+                # edge and get_edge_data(u, v) returns ALL parallel edges, double-booking every
+                # commodity arriving from a multi-commodity source (e.g. a DRI plant shipping
+                # dri_mid and hbi_mid to the same BOF).
+                in_edges = list(self.G.in_edges(fg.furnace_group_id, data=True))
                 logger.debug(f"[BOM] FG {fg.furnace_group_id}: Found {len(in_edges)} incoming edges")
-                for edges in in_edges:
-                    edge_data = self.G.get_edge_data(*edges)
-                    for commodity, attr_dict in edge_data.items():
-                        # costs = self.G.nodes[edges[0]]["unit_cost"]
-                        # unit_costs = costs[commodity] if isinstance(costs, dict) and commodity in costs else costs
-                        processing_energy_cost = attr_dict.get("processing_energy_cost", 0.0)
-                        energy_breakdown = attr_dict.get("processing_energy_breakdown") or {}
+                for _source, _target, attr_dict in in_edges:
+                    processing_energy_cost = attr_dict.get("processing_energy_cost", 0.0)
+                    energy_breakdown = attr_dict.get("processing_energy_breakdown") or {}
 
-                        if energy_breakdown:
-                            for carrier, carrier_unit_cost in energy_breakdown.items():
-                                _["energy"].append(
-                                    {carrier: {"demand": attr_dict["volume"], "unit_cost": carrier_unit_cost}}
-                                )
-                        elif processing_energy_cost:
+                    if energy_breakdown:
+                        for carrier, carrier_unit_cost in energy_breakdown.items():
                             _["energy"].append(
-                                {commodity: {"demand": attr_dict["volume"], "unit_cost": processing_energy_cost}}
+                                {carrier: {"demand": attr_dict["volume"], "unit_cost": carrier_unit_cost}}
                             )
+                    elif processing_energy_cost:
+                        _["energy"].append(
+                            {
+                                attr_dict["commodity"]: {
+                                    "demand": attr_dict["volume"],
+                                    "unit_cost": processing_energy_cost,
+                                }
+                            }
+                        )
             else:
                 logger.debug(f"[BOM] FG {fg.furnace_group_id}: Graph is None, no edges to process")
 
