@@ -30,6 +30,58 @@ class _StubFurnaceGroup:
         self.energy_vopex_by_carrier = {"electricity": 70.0, "hydrogen": 50.0}
         self.chosen_reductant = "hydrogen"
         self.bill_of_materials = {}
+        self.effective_primary_feedstocks = [
+            SimpleNamespace(metallic_charge="hbi_low", required_quantity_per_ton_of_product=1.2),
+        ]
+
+
+def test_snapshot_converts_energy_costs_to_per_input_tonne():
+    """The connector snapshot divides per-product energy costs by each charge's req_qty."""
+    furnace_group = _StubFurnaceGroup()
+    plant = _StubPlant("plant", [furnace_group])
+    repo = _StubRepo([plant])
+
+    connector = TM_PAM_connector(dynamic_feedstocks_classes={}, plants=repo, transport_kpis=None)
+
+    entry = connector.processing_energy_cost["plant_fg1"]["hbi_low"]
+    assert entry["total"] == pytest.approx(120.0 / 1.2)
+    assert entry["carriers"]["electricity"] == pytest.approx(70.0 / 1.2)
+    assert entry["carriers"]["hydrogen"] == pytest.approx(50.0 / 1.2)
+
+
+def test_snapshot_divides_each_charge_by_its_own_req_qty():
+    """Multi-charge furnace groups convert per charge, not with a blended factor."""
+    furnace_group = _StubFurnaceGroup()
+    furnace_group.energy_vopex_by_input = {"io_low": 96.0, "io_mid": 90.0}
+    furnace_group.energy_vopex_breakdown_by_input = {
+        "io_low": {"coking_coal": 96.0},
+        "io_mid": {"coking_coal": 90.0},
+    }
+    furnace_group.effective_primary_feedstocks = [
+        SimpleNamespace(metallic_charge="io_low", required_quantity_per_ton_of_product=1.6),
+        SimpleNamespace(metallic_charge="io_mid", required_quantity_per_ton_of_product=1.5),
+    ]
+    plant = _StubPlant("plant", [furnace_group])
+    repo = _StubRepo([plant])
+
+    connector = TM_PAM_connector(dynamic_feedstocks_classes={}, plants=repo, transport_kpis=None)
+
+    per_feed = connector.processing_energy_cost["plant_fg1"]
+    assert per_feed["io_low"]["total"] == pytest.approx(60.0)
+    assert per_feed["io_mid"]["total"] == pytest.approx(60.0)
+    assert per_feed["io_low"]["carriers"]["coking_coal"] == pytest.approx(60.0)
+    assert per_feed["io_mid"]["carriers"]["coking_coal"] == pytest.approx(60.0)
+
+
+def test_snapshot_raises_when_charge_has_no_feedstock_row():
+    """A charge carrying energy cost without a req_qty row must fail loudly."""
+    furnace_group = _StubFurnaceGroup()
+    furnace_group.effective_primary_feedstocks = []
+    plant = _StubPlant("plant", [furnace_group])
+    repo = _StubRepo([plant])
+
+    with pytest.raises(ValueError, match="hbi_low"):
+        TM_PAM_connector(dynamic_feedstocks_classes={}, plants=repo, transport_kpis=None)
 
 
 def test_update_bill_of_materials_uses_energy_carriers():
