@@ -39,10 +39,11 @@ class DummyBOMElement:
 
 
 class DummyProcess:
-    def __init__(self, name, type, bill_of_materials):
+    def __init__(self, name, type, bill_of_materials, products=None):
         self.name = name
         self.type = type
         self.bill_of_materials = bill_of_materials
+        self.products = products or []
 
 
 class DummyProcessCenter:
@@ -1140,6 +1141,192 @@ def test_adapt_allocation_costs_cbam_no_double_counting():
 
     # Should only adjust once (first mechanism processes it)
     assert lp_model.lp_model.allocation_costs[("us_pc", "eu_pc", "steel")] == 10.0 + 50.0
+
+
+def test_adapt_allocation_costs_cbam_adjusts_all_arcs_on_same_route():
+    """Two exporter PCs in the same country trading with the same importer PC must both be
+    adjusted — the dedup guard must key on the arc, not the country pair."""
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
+        adapt_allocation_costs_for_carbon_border_mechanisms,
+    )
+
+    lp_model = DummyTradeLPModel()
+
+    eu_location = DummyLocation("DEU")
+    non_eu_location = DummyLocation("USA")
+
+    # Two distinct US process centers exporting to the same EU process center
+    from_pc_1 = DummyProcessCenter(
+        "us_pc_1", DummyProcess("p1", DummyProcessType.PRODUCTION, []), 100, non_eu_location, production_cost=50.0
+    )
+    from_pc_2 = DummyProcessCenter(
+        "us_pc_2", DummyProcess("p2", DummyProcessType.PRODUCTION, []), 100, non_eu_location, production_cost=60.0
+    )
+    to_pc = DummyProcessCenter(
+        "eu_pc", DummyProcess("p3", DummyProcessType.PRODUCTION, []), 100, eu_location, production_cost=100.0
+    )
+
+    commodity = DummyCommodity("steel")
+    lp_model.legal_allocations = [
+        (from_pc_1, to_pc, commodity),
+        (from_pc_2, to_pc, commodity),
+    ]
+    lp_model.lp_model.allocation_costs = {
+        ("us_pc_1", "eu_pc", "steel"): 10.0,
+        ("us_pc_2", "eu_pc", "steel"): 20.0,
+    }
+
+    cbam = DummyCarbonBorderMechanism(mechanism_name="CBAM", applying_region_column="EU", start_year=2025)
+    country_mappings = {
+        "DEU": DummyCountryMapping("DEU", EU=True),
+        "USA": DummyCountryMapping("USA", EU=False),
+    }
+
+    adapt_allocation_costs_for_carbon_border_mechanisms(
+        trade_lp=lp_model, carbon_border_mechanisms=[cbam], country_mappings=country_mappings, year=2026
+    )
+
+    # Both arcs share the same country pair (USA -> DEU) but must each be adjusted independently
+    assert lp_model.lp_model.allocation_costs[("us_pc_1", "eu_pc", "steel")] == 10.0 + 50.0
+    assert lp_model.lp_model.allocation_costs[("us_pc_2", "eu_pc", "steel")] == 20.0 + 40.0
+
+
+def test_build_reference_producer_carbon_costs_capacity_weighted():
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import build_reference_producer_carbon_costs
+    import steelo.domain.trade_modelling.trade_lp_modelling as tlp
+
+    steel = DummyCommodity("steel")
+    eu_location = DummyLocation("DEU")
+
+    producer_1 = DummyProcessCenter(
+        "eu_prod_1",
+        DummyProcess("p1", tlp.ProcessType.PRODUCTION, [], products=[steel]),
+        capacity=100,
+        location=eu_location,
+        production_cost=100.0,
+    )
+    producer_2 = DummyProcessCenter(
+        "eu_prod_2",
+        DummyProcess("p2", tlp.ProcessType.PRODUCTION, [], products=[steel]),
+        capacity=300,
+        location=eu_location,
+        production_cost=60.0,
+    )
+    # Non-production PC producing the same commodity/location must not contribute
+    demand_center = DummyProcessCenter(
+        "eu_demand",
+        DummyProcess("d1", tlp.ProcessType.DEMAND, [], products=[steel]),
+        capacity=1000,
+        location=eu_location,
+        production_cost=0.0,
+    )
+
+    reference_costs = build_reference_producer_carbon_costs([producer_1, producer_2, demand_center])
+
+    # Weighted average: (100*100 + 300*60) / 400 = 70.0
+    assert reference_costs[("DEU", "steel")] == pytest.approx(70.0)
+
+
+def test_adapt_allocation_costs_cbam_import_to_eu_demand_center():
+    """Finished-steel imports into an EU demand centre are the primary real-world CBAM
+    channel — they must be adjusted against the domestic reference producer carbon cost,
+    since demand centres carry no production_cost of their own."""
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
+        adapt_allocation_costs_for_carbon_border_mechanisms,
+    )
+    import steelo.domain.trade_modelling.trade_lp_modelling as tlp
+
+    lp_model = DummyTradeLPModel()
+
+    eu_location = DummyLocation("DEU")
+    non_eu_location = DummyLocation("USA")
+    steel = DummyCommodity("steel")
+
+    eu_producer = DummyProcessCenter(
+        "eu_producer",
+        DummyProcess("p1", tlp.ProcessType.PRODUCTION, [], products=[steel]),
+        capacity=100,
+        location=eu_location,
+        production_cost=100.0,
+    )
+    eu_demand = DummyProcessCenter(
+        "eu_demand",
+        DummyProcess("d1", tlp.ProcessType.DEMAND, [], products=[steel]),
+        capacity=200,
+        location=eu_location,
+        production_cost=0.0,
+    )
+    us_exporter = DummyProcessCenter(
+        "us_exporter",
+        DummyProcess("p2", tlp.ProcessType.PRODUCTION, [], products=[steel]),
+        capacity=100,
+        location=non_eu_location,
+        production_cost=50.0,
+    )
+
+    lp_model.process_centers = [eu_producer, eu_demand, us_exporter]
+    lp_model.legal_allocations = [(us_exporter, eu_demand, steel)]
+    lp_model.lp_model.allocation_costs = {("us_exporter", "eu_demand", "steel"): 10.0}
+
+    cbam = DummyCarbonBorderMechanism(mechanism_name="CBAM", applying_region_column="EU", start_year=2025)
+    country_mappings = {
+        "DEU": DummyCountryMapping("DEU", EU=True),
+        "USA": DummyCountryMapping("USA", EU=False),
+    }
+
+    adapt_allocation_costs_for_carbon_border_mechanisms(
+        trade_lp=lp_model, carbon_border_mechanisms=[cbam], country_mappings=country_mappings, year=2026
+    )
+
+    # Import into EU demand (reference cost 100) from US exporter (cost 50): differential = +50
+    assert lp_model.lp_model.allocation_costs[("us_exporter", "eu_demand", "steel")] == 10.0 + 50.0
+
+
+def test_adapt_allocation_costs_cbam_skips_demand_center_without_domestic_producers():
+    """A destination country with no domestic producers of the commodity has nothing to
+    protect, so the flow into its demand centre must be left unadjusted."""
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
+        adapt_allocation_costs_for_carbon_border_mechanisms,
+    )
+    import steelo.domain.trade_modelling.trade_lp_modelling as tlp
+
+    lp_model = DummyTradeLPModel()
+
+    eu_location = DummyLocation("DEU")
+    non_eu_location = DummyLocation("USA")
+    steel = DummyCommodity("steel")
+
+    # No EU producer of steel exists — only a demand center
+    eu_demand = DummyProcessCenter(
+        "eu_demand",
+        DummyProcess("d1", tlp.ProcessType.DEMAND, [], products=[steel]),
+        capacity=200,
+        location=eu_location,
+        production_cost=0.0,
+    )
+    us_exporter = DummyProcessCenter(
+        "us_exporter",
+        DummyProcess("p2", tlp.ProcessType.PRODUCTION, [], products=[steel]),
+        capacity=100,
+        location=non_eu_location,
+        production_cost=50.0,
+    )
+
+    lp_model.process_centers = [eu_demand, us_exporter]
+    lp_model.legal_allocations = [(us_exporter, eu_demand, steel)]
+    lp_model.lp_model.allocation_costs = {("us_exporter", "eu_demand", "steel"): 10.0}
+
+    cbam = DummyCarbonBorderMechanism(mechanism_name="CBAM", applying_region_column="EU", start_year=2025)
+    country_mappings = {
+        "DEU": DummyCountryMapping("DEU", EU=True),
+        "USA": DummyCountryMapping("USA", EU=False),
+    }
+
+    adapt_allocation_costs_for_carbon_border_mechanisms(
+        trade_lp=lp_model, carbon_border_mechanisms=[cbam], country_mappings=country_mappings, year=2026
+    )
+
+    assert lp_model.lp_model.allocation_costs[("us_exporter", "eu_demand", "steel")] == 10.0
 
 
 # --- Tests for identify_bottlenecks ---

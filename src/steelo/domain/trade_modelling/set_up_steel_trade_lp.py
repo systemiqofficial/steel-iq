@@ -809,6 +809,31 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
     return trade_lp
 
 
+def build_reference_producer_carbon_costs(
+    process_centers: list["tlp.ProcessCenter"],
+) -> dict[tuple[str, str], float]:
+    """Build capacity-weighted average carbon cost of domestic producers, per (iso3, commodity).
+
+    Demand centres carry no production_cost of their own (it defaults to 0.0), so carbon
+    border adjustments on flows into a demand centre need a stand-in for "the carbon cost a
+    domestic producer of this commodity would have incurred". This aggregates that reference
+    cost from PRODUCTION process centres, weighted by capacity, per country and commodity.
+    """
+    weighted_cost_sum: dict[tuple[str, str], float] = defaultdict(float)
+    capacity_sum: dict[tuple[str, str], float] = defaultdict(float)
+
+    for pc in process_centers:
+        if pc.process.type != tlp.ProcessType.PRODUCTION:
+            continue
+        iso3 = pc.location.iso3
+        for commodity in pc.process.products:
+            key = (iso3, commodity.name)
+            weighted_cost_sum[key] += pc.production_cost * pc.capacity
+            capacity_sum[key] += pc.capacity
+
+    return {key: weighted_cost_sum[key] / capacity_sum[key] for key in capacity_sum if capacity_sum[key] > 0}
+
+
 def adapt_allocation_costs_for_carbon_border_mechanisms(
     trade_lp: tlp.TradeLPModel, carbon_border_mechanisms: list, country_mappings: dict[str, CountryMapping], year: int
 ):
@@ -833,11 +858,18 @@ def adapt_allocation_costs_for_carbon_border_mechanisms(
         - Only first mechanism applied to each flow (tracked via adjusted_flows set)
         - Only applies to legal allocations (defined process connectors)
         - Skips flows involving None process centers or locations
+        - Demand-centre destinations have no production_cost of their own, so their carbon
+          cost is stood in for by the capacity-weighted average of domestic PRODUCTION
+          process centres for that commodity (see build_reference_producer_carbon_costs).
+          Destination countries with no domestic producers of the commodity are skipped —
+          there is nothing to protect or rebate against.
     """
-    # Track which trade flows have already been adjusted to prevent double-counting
-    adjusted_flows = set()
+    # Track which arcs have already been adjusted to prevent double-counting across mechanisms
+    adjusted_arcs = set()
     adjustments_made = 0
     skipped_duplicates = 0
+
+    reference_carbon_cost = build_reference_producer_carbon_costs(trade_lp.process_centers)
 
     for mechanism in carbon_border_mechanisms:
         if not mechanism.is_active(year):
@@ -850,32 +882,39 @@ def adapt_allocation_costs_for_carbon_border_mechanisms(
             from_iso3 = from_pc.location.iso3
             to_iso3 = to_pc.location.iso3
 
-            # Create a unique identifier for this trade flow
-            trade_flow_key = (from_iso3, to_iso3, comm.name)
+            # Create a unique identifier for this arc
+            arc_key = (from_pc.name, to_pc.name, comm.name)
 
-            # Skip if we've already adjusted this trade flow
-            if trade_flow_key in adjusted_flows:
+            # Skip if we've already adjusted this arc under an earlier mechanism
+            if arc_key in adjusted_arcs:
                 skipped_duplicates += 1
                 continue
 
             from_carbon_cost = from_pc.production_cost
-            to_carbon_cost = to_pc.production_cost
+            if to_pc.process.type == tlp.ProcessType.DEMAND:
+                to_carbon_cost = reference_carbon_cost.get((to_iso3, comm.name))
+                if to_carbon_cost is None:
+                    # No domestic producers of this commodity in the destination country —
+                    # nothing to protect (import case) or rebate against (export case).
+                    continue
+            else:
+                to_carbon_cost = to_pc.production_cost
             differential = to_carbon_cost - from_carbon_cost
 
             # Case 1: Exporting from applying region to non-applying region (export rebates)
             if from_iso3 in applying_countries and to_iso3 not in applying_countries:
                 # Apply the minimum of the carbon costs due to export rebates
                 if from_carbon_cost > to_carbon_cost:
-                    trade_lp.lp_model.allocation_costs[(from_pc.name, to_pc.name, comm.name)] += differential
-                    adjusted_flows.add(trade_flow_key)
+                    trade_lp.lp_model.allocation_costs[arc_key] += differential
+                    adjusted_arcs.add(arc_key)
                     adjustments_made += 1
 
             # Case 2: Importing into applying region from non-applying region (border adjustment)
             elif from_iso3 not in applying_countries and to_iso3 in applying_countries:
                 # Apply the maximum of the carbon costs (border adjustment)
                 if from_carbon_cost < to_carbon_cost:
-                    trade_lp.lp_model.allocation_costs[(from_pc.name, to_pc.name, comm.name)] += differential
-                    adjusted_flows.add(trade_flow_key)
+                    trade_lp.lp_model.allocation_costs[arc_key] += differential
+                    adjusted_arcs.add(arc_key)
                     adjustments_made += 1
 
 
