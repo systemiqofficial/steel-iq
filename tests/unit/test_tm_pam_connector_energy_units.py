@@ -115,3 +115,51 @@ def test_booked_energy_equals_per_product_cost_times_product_tonnes():
     # Downstream: the BF's outgoing hot-metal unit cost embeds converted energy:
     # (materials 14,000 + energy 18,600) / 200 t = 163 USD/t.
     assert connector.G.nodes["plant_bf1"]["unit_cost"]["hot_metal"] == pytest.approx(163.0)
+
+
+def test_energy_booking_validator_detects_unit_regression():
+    """Reintroducing an undivided (per-product) edge cost must fail the two-leg check."""
+    furnace_group = _make_bf_furnace_group()
+    plant = SimpleNamespace(plant_id="plant", furnace_groups=[furnace_group])
+    connector = TM_PAM_connector(
+        dynamic_feedstocks_classes={},
+        plants=_StubRepo([plant]),
+        transport_kpis=None,
+    )
+
+    sup_low = tlp.ProcessCenter(
+        name="sup_low",
+        process=tlp.Process(name="io_low_supply", type=tlp.ProcessType.SUPPLY, bill_of_materials=[]),
+        capacity=1000.0,
+        location=_location("AUS"),
+        production_cost=50.0,
+    )
+    bf_pc = tlp.ProcessCenter(
+        name="plant_bf1",
+        process=tlp.Process(name="BF", type=tlp.ProcessType.PRODUCTION, bill_of_materials=[]),
+        capacity=500.0,
+        location=_location("DEU"),
+        production_cost=0.0,
+    )
+    sink_pc = tlp.ProcessCenter(
+        name="deu_demand",
+        process=tlp.Process(name="demand", type=tlp.ProcessType.DEMAND, bill_of_materials=[]),
+        capacity=1000.0,
+        location=_location("DEU"),
+    )
+
+    allocations = tlp.Allocations(
+        allocations={
+            (sup_low, bf_pc, tlp.Commodity(name="io_low")): 160.0,
+            (bf_pc, sink_pc, tlp.Commodity(name="hot_metal")): 100.0,
+        },
+    )
+
+    connector.create_graph(allocations)
+    for _, _, key, data in connector.G.edges(keys=True, data=True):
+        if key == "io_low":
+            data["processing_energy_breakdown"] = {"coking_coal": 96.0}  # per-product, undivided
+    connector.propage_cost_forward_by_layers_and_normalize()
+
+    with pytest.raises(ValueError, match="plant_bf1"):
+        connector.update_bill_of_materials([furnace_group])

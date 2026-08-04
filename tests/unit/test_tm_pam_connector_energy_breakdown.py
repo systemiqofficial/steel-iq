@@ -91,6 +91,8 @@ def test_update_bill_of_materials_uses_energy_carriers():
 
     connector = TM_PAM_connector(dynamic_feedstocks_classes={}, plants=repo, transport_kpis=None)
 
+    furnace_group.production = 10.0
+
     connector.G = nx.MultiDiGraph()
     connector.G.add_node(
         "supplier_node",
@@ -102,18 +104,21 @@ def test_update_bill_of_materials_uses_energy_carriers():
     connector.G.add_node(
         furnace_group.furnace_group_id,
         process="eaf_hbi_low",
-        allocations={"hbi_low": {"Volume": 10.0, "Cost": 1000.0}},
+        allocations={"hbi_low": {"Volume": 12.0, "Cost": 1000.0}},
         export={},
         unit_cost={},
         product_cost={},
     )
+    # 12 t of input at req_qty 1.2 -> 10 t of product; edge costs come from the
+    # connector's own converted (per-input-tonne) snapshot, as create_graph stamps them.
+    snapshot = connector.processing_energy_cost[furnace_group.furnace_group_id]["hbi_low"]
     connector.G.add_edge(
         "supplier_node",
         furnace_group.furnace_group_id,
         key="hbi_low",
-        volume=10.0,
-        processing_energy_cost=120.0,
-        processing_energy_breakdown={"electricity": 70.0, "hydrogen": 50.0},
+        volume=12.0,
+        processing_energy_cost=snapshot["total"],
+        processing_energy_breakdown=snapshot["carriers"],
         commodity="hbi_low",
     )
 
@@ -122,8 +127,8 @@ def test_update_bill_of_materials_uses_energy_carriers():
     energy_block = furnace_group.bill_of_materials["energy"]
 
     assert set(energy_block.keys()) == {"electricity", "hydrogen"}
-    assert energy_block["electricity"]["unit_cost"] == 70.0
-    assert energy_block["hydrogen"]["unit_cost"] == 50.0
+    assert energy_block["electricity"]["unit_cost"] == pytest.approx(70.0)
+    assert energy_block["hydrogen"]["unit_cost"] == pytest.approx(50.0)
     assert energy_block["electricity"]["total_cost"] == pytest.approx(700.0)
     assert energy_block["hydrogen"]["total_cost"] == pytest.approx(500.0)
 

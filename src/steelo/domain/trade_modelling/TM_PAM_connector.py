@@ -1,5 +1,6 @@
 import copy
 import logging
+import math
 from typing import Any
 import networkx as nx
 from collections import deque
@@ -14,6 +15,15 @@ from steelo.utilities.utils import normalize_name
 
 
 # logging.getLogger().setLevel(logging.WARNING)  # Commented out to avoid setting root logger
+
+
+def _required_quantity_by_charge(fg) -> dict[str, float]:
+    """Map each metallic charge of the FG's chosen-reductant feedstock rows to its req_qty."""
+    return {
+        str(feedstock.metallic_charge).lower(): feedstock.required_quantity_per_ton_of_product
+        for feedstock in fg.effective_primary_feedstocks
+        if isinstance(feedstock.metallic_charge, str)
+    }
 
 
 class TM_PAM_connector:
@@ -63,15 +73,7 @@ class TM_PAM_connector:
                 per_feed_energy: dict[str, dict[str, dict[str, float] | float]] = {}
                 feed_totals = getattr(fg, "energy_vopex_by_input", {}) or {}
                 feed_breakdowns = getattr(fg, "energy_vopex_breakdown_by_input", {}) or {}
-                req_by_charge = (
-                    {
-                        str(feedstock.metallic_charge).lower(): feedstock.required_quantity_per_ton_of_product
-                        for feedstock in fg.effective_primary_feedstocks
-                        if isinstance(feedstock.metallic_charge, str)
-                    }
-                    if feed_totals
-                    else {}
-                )
+                req_by_charge = _required_quantity_by_charge(fg) if feed_totals else {}
                 for commodity, total_cost in feed_totals.items():
                     if not isinstance(commodity, str):
                         continue
@@ -1044,6 +1046,29 @@ class TM_PAM_connector:
                         )
 
             logger.debug(f"[BOM] FG {fg.furnace_group_id}: Final BOM materials = {list(collect['materials'].keys())}")
+
+            # Two-leg check on freshly booked energy: the ledger total (built from edge costs
+            # x volumes) must equal the FG's own per-product energy vopex x product tonnes.
+            # Divergence means a unit or booking regression somewhere in the edge pipeline.
+            if collect["energy"] and collect["materials"]:
+                vopex_by_charge = {
+                    str(charge).lower(): float(value)
+                    for charge, value in (getattr(fg, "energy_vopex_by_input", {}) or {}).items()
+                    if isinstance(charge, str)
+                }
+                req_by_charge = _required_quantity_by_charge(fg)
+                expected_energy = sum(
+                    material["demand"] / req_by_charge[charge] * vopex_by_charge[charge]
+                    for charge, material in collect["materials"].items()
+                    if charge in vopex_by_charge
+                )
+                booked_energy = sum(entry["total_cost"] for entry in collect["energy"].values())
+                if not math.isclose(booked_energy, expected_energy, rel_tol=1e-9, abs_tol=1e-6):
+                    raise ValueError(
+                        f"Energy booking mismatch for furnace group {fg.furnace_group_id}: "
+                        f"booked {booked_energy:.6f} USD vs {expected_energy:.6f} USD expected "
+                        "from per-product energy vopex x product tonnes"
+                    )
 
             util_rate = getattr(fg, "utilization_rate", None)
             if util_rate is not None and util_rate <= 0:
