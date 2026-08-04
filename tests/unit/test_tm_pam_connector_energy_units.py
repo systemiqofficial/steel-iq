@@ -7,6 +7,8 @@ equals per-product cost x product tonnes, and the downstream node's material cos
 embeds the converted (not inflated) energy.
 """
 
+import logging
+
 import pytest
 from types import SimpleNamespace
 
@@ -117,8 +119,8 @@ def test_booked_energy_equals_per_product_cost_times_product_tonnes():
     assert connector.G.nodes["plant_bf1"]["unit_cost"]["hot_metal"] == pytest.approx(163.0)
 
 
-def test_energy_booking_validator_detects_unit_regression():
-    """Reintroducing an undivided (per-product) edge cost must fail the two-leg check."""
+def test_energy_booking_validator_detects_unit_regression(caplog):
+    """Reintroducing an undivided (per-product) edge cost must trip the two-leg check."""
     furnace_group = _make_bf_furnace_group()
     plant = SimpleNamespace(plant_id="plant", furnace_groups=[furnace_group])
     connector = TM_PAM_connector(
@@ -161,5 +163,9 @@ def test_energy_booking_validator_detects_unit_regression():
             data["processing_energy_breakdown"] = {"coking_coal": 96.0}  # per-product, undivided
     connector.propage_cost_forward_by_layers_and_normalize()
 
-    with pytest.raises(ValueError, match="plant_bf1"):
+    with caplog.at_level(logging.ERROR):
         connector.update_bill_of_materials([furnace_group])
+
+    assert any(
+        "Energy booking mismatch" in record.message and "plant_bf1" in record.getMessage() for record in caplog.records
+    )

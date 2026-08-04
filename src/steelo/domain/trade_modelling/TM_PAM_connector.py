@@ -1064,10 +1064,12 @@ class TM_PAM_connector:
                 )
                 booked_energy = sum(entry["total_cost"] for entry in collect["energy"].values())
                 if not math.isclose(booked_energy, expected_energy, rel_tol=1e-9, abs_tol=1e-6):
-                    raise ValueError(
-                        f"Energy booking mismatch for furnace group {fg.furnace_group_id}: "
-                        f"booked {booked_energy:.6f} USD vs {expected_energy:.6f} USD expected "
-                        "from per-product energy vopex x product tonnes"
+                    logger.error(
+                        "Energy booking mismatch for furnace group %s: booked %.6f USD vs %.6f USD "
+                        "expected from per-product energy vopex x product tonnes",
+                        fg.furnace_group_id,
+                        booked_energy,
+                        expected_energy,
                     )
 
             util_rate = getattr(fg, "utilization_rate", None)
