@@ -106,7 +106,6 @@ class TM_PAM_connector:
 
         Attributes Created:
             flat_feedstocks_dict: Flattened dict for O(1) feedstock lookup by name.
-            feedstock_energy_requirements: Energy requirements per feedstock type.
             processing_energy_cost: Energy costs (total + carrier breakdown) by furnace group and
                 commodity, in USD per tonne of metallic INPUT (converted from the FG's per-tonne-of-
                 product energy_vopex dicts using each charge's required_quantity_per_ton_of_product).
@@ -156,17 +155,9 @@ class TM_PAM_connector:
                 self.processing_energy_cost[fg.furnace_group_id] = per_feed_energy
                 self.chosen_reductant[fg.furnace_group_id] = fg.chosen_reductant
         self.flat_feedstocks_dict = {}
-        self.feedstock_energy_requirements = {}
         for _key, items in self.dynamic_feedstocks.items():
             for entry in items:
-                name_lower = entry.name.lower()
-                self.flat_feedstocks_dict[name_lower] = entry
-                self.feedstock_energy_requirements[name_lower] = entry.energy_requirements
-
-        self.plants = [p.plant_id for p in plants.list()]
-        # self.furnaces = [fg for p in plants.list() for fg in p.furnace_groups]
-
-        self.plants_repo = plants
+                self.flat_feedstocks_dict[entry.name.lower()] = entry
 
         # Store transport costs in a dictionary for quick lookup
         self.transport_costs: dict[tuple[str, str, str], float] = {}
@@ -234,54 +225,6 @@ class TM_PAM_connector:
         ]:
             total += self.tariff_taxes.get(key, 0.0)
         return total
-
-    def process_energy_cost(
-        self,
-        furnace: str,
-        process: str,
-    ):
-        """Calculate processing energy cost for a furnace using a specific feedstock process.
-
-        Computes the total energy cost by multiplying each energy carrier requirement
-        (electricity, natural gas, hydrogen, etc.) by plant-specific or global energy prices.
-
-        Args:
-            furnace: Furnace group ID string (format: "plantid_furnacegroupid").
-            process: Process/feedstock name (e.g., "iron_ore", "scrap_steel") used to
-                lookup energy requirements from `self.flat_feedstocks_dict`.
-
-        Returns:
-            Total processing energy cost per ton of material processed (USD/ton).
-            Returns 0.0 if furnace plant not found or process not in feedstock dict.
-
-        Notes:
-            - Uses plant-specific energy costs if available (from plant.energy_costs).
-            - Falls back to global energy prices if plant-specific costs unavailable.
-            - Energy requirements are defined per feedstock type in PrimaryFeedstock objects.
-        """
-        global_cost_dict = dict(
-            natural_gas=1.05506 * 6, electricity=0.150, coke=0.05, pci=0, hydrogen=6.61, bio_pci=0.05, coal=98.6
-        )
-
-        process_energy_cost = 0.0
-        plant_id = furnace.split("_")[0]
-        if plant_id not in self.plants:
-            return 0
-        if process not in self.flat_feedstocks_dict:
-            return 0
-
-        p = self.plants_repo.get(plant_id)
-        plant_energy_cost = p.energy_costs
-        # p.get_energy_costs() # THis function doesn't exist but let's get it.
-        for key, value in self.feedstock_energy_requirements[process].items():
-            # if the plant has the attribute
-            if hasattr(plant_energy_cost, normalize_name(key)):
-                process_energy_cost += getattr(plant_energy_cost, normalize_name(key)) * value
-            else:
-                # logging.debug(f"Key {key} not found in global cost dict or plant")
-
-                process_energy_cost += float(global_cost_dict[normalize_name(key)]) * value
-        return process_energy_cost
 
     def calculate_allocations_for_graph(
         self,
@@ -654,69 +597,6 @@ class TM_PAM_connector:
 
         logger.info(f"Processed {edge_count} edges")
 
-    def validate_edge_attributes(
-        self,
-        source_attr="product_cost",
-        transport_attr="transport_cost",
-        process_attr="processing_energy_cost",
-        allocation_attr="allocations",
-        volume_attr="volume",
-        product_attr="output",
-        effeciency_attr="process_efficiency",
-        unit_cost_attr="unit_cost",
-    ):
-        """Validate presence of required attributes on graph edges before cost propagation.
-
-        Counts how many edges have each expected attribute (present, missing, or None)
-        to ensure the graph is properly constructed before running cost calculations.
-
-        Args:
-            source_attr: Node attribute for upstream product cost.
-            transport_attr: Edge attribute for transportation cost.
-            process_attr: Edge attribute for processing energy cost.
-            allocation_attr: Node attribute for allocations dict.
-            volume_attr: Edge attribute for shipment volume.
-            product_attr: Edge attribute for output commodity name.
-            effeciency_attr: Edge attribute for process efficiency.
-            unit_cost_attr: Node attribute for unit cost.
-
-        Returns:
-            None. Currently logs attribute presence counts internally (debug level).
-
-        Notes:
-            This is primarily for debugging/validation during development.
-            No exceptions raised - missing attributes may cause issues in propagation.
-        """
-        necessary_attributes = [
-            source_attr,
-            transport_attr,
-            process_attr,
-            allocation_attr,
-            volume_attr,
-            product_attr,
-            effeciency_attr,
-            unit_cost_attr,
-        ]
-        attribute_counts = {attr: {"present": 0, "missing": 0, "none": 0} for attr in necessary_attributes}
-
-        for _, _, comm, edge_data in self.G.edges(keys=True, data=True):
-            for attr in necessary_attributes:
-                if attr in edge_data:
-                    if edge_data[attr] is None:
-                        attribute_counts[attr]["none"] += 1
-                    else:
-                        attribute_counts[attr]["present"] += 1
-                else:
-                    attribute_counts[attr]["missing"] += 1
-
-        for attr, counts in attribute_counts.items():
-            # logging.debug(
-            #     f"Attribute '{attr}': {counts['present']} edges have it, "
-            #     f"{counts['missing']} edges don't have it, "
-            #     f"{counts['none']} edges have it as None."
-            # )
-            pass
-
     def set_up_network_and_propagate_costs(
         self,
         solved_trade_allocations: Allocations,
@@ -742,7 +622,7 @@ class TM_PAM_connector:
 
         Notes:
             Calls in sequence: create_graph() → calculate_allocations_for_graph() →
-            validate_edge_attributes() → propage_cost_forward_by_layers_and_normalize().
+            propage_cost_forward_by_layers_and_normalize().
         """
         logger = logging.getLogger(f"{__name__}.set_up_network_and_propagate_costs")
         logger.debug(f"[NETWORK] Setting up network with {len(solved_trade_allocations.allocations)} total allocations")
@@ -773,10 +653,7 @@ class TM_PAM_connector:
                 )
 
         # 1.1) Calculate the allocations for the graph
-        self.validate_edge_attributes()
         self.calculate_allocations_for_graph()
-        # 1.5) Validate the edge attributes before propagation
-        self.validate_edge_attributes()
         # 2) Propagate the costs forward
         self.propage_cost_forward_by_layers_and_normalize()
 
@@ -815,50 +692,6 @@ class TM_PAM_connector:
             else:
                 fg.set_allocated_volumes(0.0)
                 logger.debug(f"[ALLOCATION] FG {fg.furnace_group_id}: allocated_volumes = 0.0 (no outgoing edges)")
-
-    def extract_transportation_costs(
-        self,
-        furnace_groups: list[FurnaceGroup],
-        transport_costs_attr="transport_cost",
-        commodity_attr="commodity",
-        allocations_attr="allocations",
-    ) -> dict[str, list[dict[str, float]]]:
-        """Extract detailed transportation cost data for each furnace group's incoming shipments.
-
-        Collects all inbound edges to each furnace group and extracts their transport costs,
-        allocations, and commodity information for detailed cost accounting.
-
-        Args:
-            furnace_groups: List of FurnaceGroup objects to extract data for.
-            transport_costs_attr: Edge attribute name for transport cost (default: "transport_cost").
-            commodity_attr: Edge attribute name for commodity identifier (default: "commodity").
-            allocations_attr: Edge attribute name for allocation volume (default: "allocations").
-
-        Returns:
-            Dictionary mapping furnace_group_id to list of dicts, where each dict contains:
-                - "source": Source node name
-                - allocations_attr: Allocation volume value
-                - commodity_attr: Commodity name
-                - transport_costs_attr: Transport cost value
-
-        Notes:
-            Returns empty list for furnaces not found in graph.
-        """
-        _test_this: dict[str, list[dict[str, float]]] = {}
-        for fg in furnace_groups:
-            if self.G is not None and fg.furnace_group_id in self.G.nodes:
-                _test_this[fg.furnace_group_id] = []
-                ingoing_edges = list(self.G.in_edges(fg.furnace_group_id, data=True))
-                for source, recipient, edge_data in ingoing_edges:
-                    _test_this[recipient].append(
-                        {
-                            "source": source,
-                            allocations_attr: edge_data[allocations_attr],
-                            commodity_attr: edge_data[commodity_attr],
-                            transport_costs_attr: edge_data[transport_costs_attr],
-                        }
-                    )
-        return _test_this
 
     def update_furnace_group_utilisation(self, furnace_groups: list[FurnaceGroup], volume_attribute="volume"):
         """Calculate and set utilization rates for furnace groups based on allocated volumes.

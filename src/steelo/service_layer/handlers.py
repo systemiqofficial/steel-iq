@@ -342,7 +342,6 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
                     f"[BOM-CHECK] Year {env.year}: corrected utilization for {corrected} supply-constrained FG(s)"
                 )
         tmpc.update_furnace_group_emissions(fgs)
-        env.allocation_and_transportation_costs = tmpc.extract_transportation_costs(fgs)
 
         # Store trade allocations for data collection
         env.trade_allocations = trade_allocations
