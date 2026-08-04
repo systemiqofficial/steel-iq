@@ -712,8 +712,52 @@ def test_prepare_cost_data_normalises_negative_prices_before_subsidy():
         },
     }
     capex_dict_all_locs_techs = {"Americas": {"BF-BOF": 1000.0}}
-    cost_of_debt_all_locs = {"USA": 0.05}
-    cost_of_equity_all_locs = {"USA": 0.08}
+    cost_of_debt_all_locs = {
+        "USA": {
+            tech: 0.05
+            for tech in (
+                "EAF",
+                "BF",
+                "BOF",
+                "DRI",
+                "SR",
+                "MOE",
+                "E-WIN",
+                "BF+CCS",
+                "BF+CCU",
+                "DRI+CCS",
+                "DRI+CCU",
+                "DRI+EAF",
+                "DRI+ESF",
+                "ESF",
+                "ZZZ",
+                "BF-BOF",
+            )
+        }
+    }
+    cost_of_equity_all_locs = {
+        "USA": {
+            tech: 0.08
+            for tech in (
+                "EAF",
+                "BF",
+                "BOF",
+                "DRI",
+                "SR",
+                "MOE",
+                "E-WIN",
+                "BF+CCS",
+                "BF+CCU",
+                "DRI+CCS",
+                "DRI+CCU",
+                "DRI+EAF",
+                "DRI+ESF",
+                "ESF",
+                "ZZZ",
+                "BF-BOF",
+            )
+        }
+    }
     fopex_all_locs_techs = {"USA": {"bf-bof": 50.0}}
     iso3_to_region_map = {"USA": "Americas"}
     carbon_costs = {"USA": {Year(2030): 50.0}}

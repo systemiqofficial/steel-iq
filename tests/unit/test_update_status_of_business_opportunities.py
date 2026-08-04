@@ -116,9 +116,66 @@ def capex_dict_all_locs():
 def cost_debt_all_locs():
     """Cost of debt by ISO3 country code."""
     return {
-        "USA": 0.05,
-        "DEU": 0.04,
-        "CHN": 0.06,
+        "USA": {
+            tech: 0.05
+            for tech in (
+                "EAF",
+                "BF",
+                "BOF",
+                "DRI",
+                "SR",
+                "MOE",
+                "E-WIN",
+                "BF+CCS",
+                "BF+CCU",
+                "DRI+CCS",
+                "DRI+CCU",
+                "DRI+EAF",
+                "DRI+ESF",
+                "ESF",
+                "ZZZ",
+            )
+        },
+        "DEU": {
+            tech: 0.04
+            for tech in (
+                "EAF",
+                "BF",
+                "BOF",
+                "DRI",
+                "SR",
+                "MOE",
+                "E-WIN",
+                "BF+CCS",
+                "BF+CCU",
+                "DRI+CCS",
+                "DRI+CCU",
+                "DRI+EAF",
+                "DRI+ESF",
+                "ESF",
+                "ZZZ",
+            )
+        },
+        "CHN": {
+            tech: 0.06
+            for tech in (
+                "EAF",
+                "BF",
+                "BOF",
+                "DRI",
+                "SR",
+                "MOE",
+                "E-WIN",
+                "BF+CCS",
+                "BF+CCU",
+                "DRI+CCS",
+                "DRI+CCU",
+                "DRI+EAF",
+                "DRI+ESF",
+                "ESF",
+                "ZZZ",
+            )
+        },
     }
 
 
@@ -1020,7 +1077,28 @@ class TestUpdateStatusOfBusinessOpportunities:
                 dynamic_business_cases=dynamic_business_cases,
                 technology_emission_factors=technology_emission_factors,
                 market_price=market_price,
-                cost_of_equity_all_locs={"USA": 0.08},
+                cost_of_equity_all_locs={
+                    "USA": {
+                        tech: 0.08
+                        for tech in (
+                            "EAF",
+                            "BF",
+                            "BOF",
+                            "DRI",
+                            "SR",
+                            "MOE",
+                            "E-WIN",
+                            "BF+CCS",
+                            "BF+CCU",
+                            "DRI+CCS",
+                            "DRI+CCU",
+                            "DRI+EAF",
+                            "DRI+ESF",
+                            "ESF",
+                            "ZZZ",
+                        )
+                    }
+                },
                 plant_lifetime=20,
                 construction_time=2,
                 consideration_time=3,
@@ -1083,7 +1161,28 @@ class TestUpdateStatusOfBusinessOpportunities:
                     dynamic_business_cases=dynamic_business_cases,
                     technology_emission_factors=technology_emission_factors,
                     market_price=market_price,
-                    cost_of_equity_all_locs={"USA": 0.08},
+                    cost_of_equity_all_locs={
+                        "USA": {
+                            tech: 0.08
+                            for tech in (
+                                "EAF",
+                                "BF",
+                                "BOF",
+                                "DRI",
+                                "SR",
+                                "MOE",
+                                "E-WIN",
+                                "BF+CCS",
+                                "BF+CCU",
+                                "DRI+CCS",
+                                "DRI+CCU",
+                                "DRI+EAF",
+                                "DRI+ESF",
+                                "ESF",
+                                "ZZZ",
+                            )
+                        }
+                    },
                     plant_lifetime=20,
                     construction_time=2,
                     consideration_time=3,
@@ -1160,7 +1259,28 @@ class TestUpdateStatusOfBusinessOpportunities:
                     dynamic_business_cases=dynamic_business_cases,
                     technology_emission_factors=technology_emission_factors,
                     market_price=market_price,
-                    cost_of_equity_all_locs={"USA": 0.08},
+                    cost_of_equity_all_locs={
+                        "USA": {
+                            tech: 0.08
+                            for tech in (
+                                "EAF",
+                                "BF",
+                                "BOF",
+                                "DRI",
+                                "SR",
+                                "MOE",
+                                "E-WIN",
+                                "BF+CCS",
+                                "BF+CCU",
+                                "DRI+CCS",
+                                "DRI+CCU",
+                                "DRI+EAF",
+                                "DRI+ESF",
+                                "ESF",
+                                "ZZZ",
+                            )
+                        }
+                    },
                     plant_lifetime=20,
                     construction_time=2,
                     consideration_time=3,
@@ -1213,7 +1333,28 @@ class TestUpdateStatusOfBusinessOpportunities:
             dynamic_business_cases=dynamic_business_cases,
             technology_emission_factors=technology_emission_factors,
             market_price=market_price,
-            cost_of_equity_all_locs={"USA": 0.08},
+            cost_of_equity_all_locs={
+                "USA": {
+                    tech: 0.08
+                    for tech in (
+                        "EAF",
+                        "BF",
+                        "BOF",
+                        "DRI",
+                        "SR",
+                        "MOE",
+                        "E-WIN",
+                        "BF+CCS",
+                        "BF+CCU",
+                        "DRI+CCS",
+                        "DRI+CCU",
+                        "DRI+EAF",
+                        "DRI+ESF",
+                        "ESF",
+                        "ZZZ",
+                    )
+                }
+            },
             plant_lifetime=20,
             construction_time=2,
             consideration_time=3,
@@ -1264,7 +1405,28 @@ class TestUpdateStatusOfBusinessOpportunities:
                 dynamic_business_cases=dynamic_business_cases,
                 technology_emission_factors=technology_emission_factors,
                 market_price=market_price,
-                cost_of_equity_all_locs={"USA": 0.08},
+                cost_of_equity_all_locs={
+                    "USA": {
+                        tech: 0.08
+                        for tech in (
+                            "EAF",
+                            "BF",
+                            "BOF",
+                            "DRI",
+                            "SR",
+                            "MOE",
+                            "E-WIN",
+                            "BF+CCS",
+                            "BF+CCU",
+                            "DRI+CCS",
+                            "DRI+CCU",
+                            "DRI+EAF",
+                            "DRI+ESF",
+                            "ESF",
+                            "ZZZ",
+                        )
+                    }
+                },
                 plant_lifetime=20,
                 construction_time=2,
                 consideration_time=3,
@@ -1319,7 +1481,28 @@ class TestUpdateStatusOfBusinessOpportunities:
             dynamic_business_cases=dynamic_business_cases,
             technology_emission_factors=technology_emission_factors,
             market_price=market_price,
-            cost_of_equity_all_locs={"DEU": 0.08},  # Missing USA
+            cost_of_equity_all_locs={
+                "DEU": {
+                    tech: 0.08
+                    for tech in (
+                        "EAF",
+                        "BF",
+                        "BOF",
+                        "DRI",
+                        "SR",
+                        "MOE",
+                        "E-WIN",
+                        "BF+CCS",
+                        "BF+CCU",
+                        "DRI+CCS",
+                        "DRI+CCU",
+                        "DRI+EAF",
+                        "DRI+ESF",
+                        "ESF",
+                        "ZZZ",
+                    )
+                }
+            },  # Missing USA
             plant_lifetime=20,
             construction_time=2,
             consideration_time=3,
@@ -1376,7 +1559,28 @@ class TestUpdateStatusOfBusinessOpportunities:
                 dynamic_business_cases=dynamic_business_cases,
                 technology_emission_factors=technology_emission_factors,
                 market_price=market_price,
-                cost_of_equity_all_locs={"USA": 0.08},
+                cost_of_equity_all_locs={
+                    "USA": {
+                        tech: 0.08
+                        for tech in (
+                            "EAF",
+                            "BF",
+                            "BOF",
+                            "DRI",
+                            "SR",
+                            "MOE",
+                            "E-WIN",
+                            "BF+CCS",
+                            "BF+CCU",
+                            "DRI+CCS",
+                            "DRI+CCU",
+                            "DRI+EAF",
+                            "DRI+ESF",
+                            "ESF",
+                            "ZZZ",
+                        )
+                    }
+                },
                 plant_lifetime=20,
                 construction_time=2,
                 consideration_time=3,
@@ -1446,7 +1650,28 @@ class TestUpdateStatusOfBusinessOpportunities:
                     dynamic_business_cases=dynamic_business_cases,
                     technology_emission_factors=technology_emission_factors,
                     market_price=market_price,
-                    cost_of_equity_all_locs={"USA": 0.08},
+                    cost_of_equity_all_locs={
+                        "USA": {
+                            tech: 0.08
+                            for tech in (
+                                "EAF",
+                                "BF",
+                                "BOF",
+                                "DRI",
+                                "SR",
+                                "MOE",
+                                "E-WIN",
+                                "BF+CCS",
+                                "BF+CCU",
+                                "DRI+CCS",
+                                "DRI+CCU",
+                                "DRI+EAF",
+                                "DRI+ESF",
+                                "ESF",
+                                "ZZZ",
+                            )
+                        }
+                    },
                     plant_lifetime=20,
                     construction_time=2,
                     consideration_time=3,

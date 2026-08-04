@@ -5830,8 +5830,8 @@ class PlantGroup:
         iso3_to_region_map: dict[str, str],
         market_price: dict[str, list[float]],  # product -> list of future prices
         capex_dict_all_locs_techs: dict[str, dict[str, float]],  # region -> tech -> capex
-        cost_of_debt_all_locs: dict[str, float],  # iso3 -> cost of debt
-        cost_of_equity_all_locs: dict[str, float],  # iso3 -> cost of equity
+        cost_of_debt_all_locs: dict[str, dict[str, float]],  # iso3 -> tech -> cost of debt
+        cost_of_equity_all_locs: dict[str, dict[str, float]],  # iso3 -> tech -> cost of equity
         steel_plant_capacity: float,
         all_plant_ids: list[str],
         fopex_all_locs_techs: dict[str, dict[str, float]],  # iso3 -> tech -> fopex
@@ -5886,8 +5886,8 @@ class PlantGroup:
             iso3_to_region_map: Dictionary mapping ISO3 country codes to regions
             market_price: Dictionary mapping product to list of future prices
             capex_dict_all_locs_techs: Dictionary mapping region -> tech -> capex
-            cost_of_debt_all_locs: Dictionary mapping iso3 -> cost of debt
-            cost_of_equity_all_locs: Dictionary mapping iso3 -> cost of equity
+            cost_of_debt_all_locs: Dictionary mapping iso3 -> tech -> cost of debt
+            cost_of_equity_all_locs: Dictionary mapping iso3 -> tech -> cost of equity
             steel_plant_capacity: Capacity of the steel plant in tonnes
             all_plant_ids: List of all existing plant IDs
             fopex_all_locs_techs: Dictionary mapping iso3 -> tech -> fopex
@@ -6096,7 +6096,7 @@ class PlantGroup:
         consideration_time: int,
         custom_energy_costs: dict,
         capex_dict_all_locs: dict[str, dict[str, float]],
-        cost_debt_all_locs: dict[str, float],
+        cost_debt_all_locs: dict[str, dict[str, float]],
         iso3_to_region_map: dict[str, str],
         global_risk_free_rate: float,
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
@@ -6124,7 +6124,7 @@ class PlantGroup:
             consideration_time: Number of years to consider before announcement
             custom_energy_costs: Dictionary containing power_price and capped_lcoh data arrays
             capex_dict_all_locs: Dictionary mapping region -> tech -> capex
-            cost_debt_all_locs: Dictionary mapping iso3 -> cost of debt
+            cost_debt_all_locs: Dictionary mapping iso3 -> tech -> cost of debt
             iso3_to_region_map: Dictionary mapping ISO3 country codes to regions
             global_risk_free_rate: Global risk-free interest rate
             capex_subsidies: Dictionary mapping iso3 -> tech -> list of capex subsidies
@@ -6152,9 +6152,9 @@ class PlantGroup:
             iso3 = plant.location.iso3
             region = iso3_to_region_map.get(iso3)
 
-            # Get cost of debt (without subsidies)
-            cost_of_debt = cost_debt_all_locs.get(iso3, None)
-            if not cost_of_debt:
+            # Get per-technology cost of debt (without subsidies)
+            cost_of_debt_for_iso3 = cost_debt_all_locs.get(iso3, None)
+            if not cost_of_debt_for_iso3:
                 logger.error(
                     f"[NEW PLANTS] Cost of debt not found for {iso3}. "
                     f"Cannot update costs for plant at ({plant.location.lat}, {plant.location.lon})."
@@ -6163,8 +6163,14 @@ class PlantGroup:
 
             for fg in plant.furnace_groups:
                 if fg.status in ["considered", "announced"]:
-                    # TODO: Check if PAM is doing the same update for announced plants (also present in GEM); if it is, we can skip
-                    # announced plants here to avoid double doing
+                    cost_of_debt = cost_of_debt_for_iso3.get(fg.technology.name, None)
+                    if not cost_of_debt:
+                        logger.error(
+                            f"[NEW PLANTS] Cost of debt not found for {iso3}/{fg.technology.name}. "
+                            f"Cannot update costs at ({plant.location.lat}, {plant.location.lon})."
+                        )
+                        continue
+
                     # Get CAPEX (without subsidies)
                     capex = capex_dict_all_locs.get(region, {}).get(fg.technology.name, None) if region else None
                     if not capex:
@@ -6379,7 +6385,7 @@ class PlantGroup:
         current_year: Year,
         consideration_time: int,
         market_price: dict[str, list[float]],
-        cost_of_equity_all_locs: dict[str, float],
+        cost_of_equity_all_locs: dict[str, dict[str, float]],
         probability_of_announcement: float,
         probability_of_construction: float,
         plant_lifetime: int,
@@ -6407,7 +6413,7 @@ class PlantGroup:
             current_year: Current simulation year
             consideration_time: Number of years to consider before announcement
             market_price: Dictionary mapping product to list of future market prices
-            cost_of_equity_all_locs: Dictionary mapping iso3 -> cost of equity
+            cost_of_equity_all_locs: Dictionary mapping iso3 -> tech -> cost of equity
             probability_of_announcement: Probability that a viable opportunity will be announced
             probability_of_construction: Probability that an announced plant starts construction
             plant_lifetime: Lifetime of the plant in years
@@ -6453,8 +6459,8 @@ class PlantGroup:
             iso3 = plant.location.iso3
 
             # Extract cost of equity (not dynamic, but not stored in the furnace group and needed for the NPV calculation)
-            cost_of_equity = cost_of_equity_all_locs.get(iso3, None)
-            if not cost_of_equity:
+            cost_of_equity_for_iso3 = cost_of_equity_all_locs.get(iso3, None)
+            if not cost_of_equity_for_iso3:
                 logger.error(
                     f"[NEW PLANTS] Cost of equity not found for {iso3}. "
                     f"Cannot update status for business opportunity at ({plant.location.lat}, {plant.location.lon}) in {plant.location.iso3}."
@@ -6464,6 +6470,11 @@ class PlantGroup:
 
             for fg in plant.furnace_groups:
                 status_stats["furnace_groups_seen"] += 1
+                cost_of_equity = cost_of_equity_for_iso3.get(fg.technology.name, None)
+                if not cost_of_equity:
+                    logger.error(f"[NEW PLANTS] Cost of equity not found for {iso3}/{fg.technology.name}.")
+                    status_stats["missing_cost_of_equity"] += 1
+                    continue
                 # Planned and announced business opportunities are converted into actual projects with a certain probability
                 if fg.status == "announced":
                     status_stats["announced_opportunities"] += 1
