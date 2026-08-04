@@ -5162,8 +5162,8 @@ class PlantGroup:
         price_series: dict[str, list[float]],
         capacity: Volumes,
         region_capex: dict[str, dict[str, float]],
-        cost_of_debt_dict: dict[str, float] | None,
-        cost_of_equity_dict: dict[str, float] | None,
+        cost_of_debt_dict: dict[str, dict[str, float]] | None,
+        cost_of_equity_dict: dict[str, dict[str, float]] | None,
         get_bom_from_avg_boms: (
             Callable[
                 [dict[str, float], str, float, str | None],
@@ -5210,8 +5210,8 @@ class PlantGroup:
             price_series (dict[str, list[float]]): Product price forecasts by product type
             capacity (Volumes): Capacity of new furnace group to evaluate (in tonnes)
             region_capex (dict[str, dict[str, float]]): CAPEX by region and technology (USD/tonne)
-            cost_of_debt_dict (dict[str, float] | None): Cost of debt by ISO3 country code
-            cost_of_equity_dict (dict[str, float] | None): Cost of equity by ISO3 country code
+            cost_of_debt_dict (dict[str, dict[str, float]] | None): Cost of debt by ISO3 country code and technology
+            cost_of_equity_dict (dict[str, dict[str, float]] | None): Cost of equity by ISO3 country code and technology
             get_bom_from_avg_boms (Callable | None): Function to retrieve bill of materials for a technology given
                 energy costs
             dynamic_feedstocks (dict[str, list[PrimaryFeedstock]]): Primary feedstocks by technology for emissions
@@ -5276,18 +5276,26 @@ class PlantGroup:
 
             if cost_of_debt_dict is None:
                 raise ValueError("Cost of debt dictionary is not provided")
-            cost_of_debt_original = cost_of_debt_dict.get(plant.location.iso3)
-            if cost_of_debt_original is None:
+            cost_of_debt_for_iso3 = cost_of_debt_dict.get(plant.location.iso3)
+            if cost_of_debt_for_iso3 is None:
                 raise ValueError(f"No cost of debt data for country: {plant.location.iso3}")
 
             if cost_of_equity_dict is None:
                 raise ValueError("Cost of equity dictionary is not provided")
-            cost_of_equity = cost_of_equity_dict.get(plant.location.iso3)
-            if cost_of_equity is None:
+            cost_of_equity_for_iso3 = cost_of_equity_dict.get(plant.location.iso3)
+            if cost_of_equity_for_iso3 is None:
                 raise ValueError(f"No cost of equity data for country: {plant.location.iso3}")
 
             # Evaluate each allowed technology for this plant
             for tech in allowed_techs_in_year:
+                # Technology-specific financing rates
+                cost_of_debt_original = cost_of_debt_for_iso3.get(tech)
+                if cost_of_debt_original is None:
+                    raise ValueError(f"No cost of debt data for {plant.location.iso3}/{tech}")
+                cost_of_equity = cost_of_equity_for_iso3.get(tech)
+                if cost_of_equity is None:
+                    raise ValueError(f"No cost of equity data for {plant.location.iso3}/{tech}")
+
                 # Get technology-specific CAPEX
                 capex = greenfield_capex.get(tech)
                 if capex is None:
@@ -5497,8 +5505,8 @@ class PlantGroup:
         construction_time: int,
         current_year: Year,
         allowed_techs: dict[Year, list[str]],
-        cost_of_debt_dict: dict[str, float],
-        cost_of_equity_dict: dict[str, float],
+        cost_of_debt_dict: dict[str, dict[str, float]],
+        cost_of_equity_dict: dict[str, dict[str, float]],
         get_bom_from_avg_boms: Callable,
         capacity_limit_steel: Volumes,
         capacity_limit_iron: Volumes,
@@ -5549,8 +5557,8 @@ class PlantGroup:
             construction_time (int): Time to construct new furnace (years)
             current_year (Year): Current simulation year
             allowed_techs (dict[Year, list[str]]): Technologies allowed by year
-            cost_of_debt_dict (dict[str, float]): Cost of debt by ISO3 country code
-            cost_of_equity_dict (dict[str, float]): Cost of equity by ISO3 country code
+            cost_of_debt_dict (dict[str, dict[str, float]]): Cost of debt by ISO3 country code and technology
+            cost_of_equity_dict (dict[str, dict[str, float]]): Cost of equity by ISO3 country code and technology
             get_bom_from_avg_boms (Callable): Function to retrieve bill of materials for a technology
             capacity_limit_steel (Volumes): Maximum allowed steel capacity from expansions/switches (PAM share)
             capacity_limit_iron (Volumes): Maximum allowed iron capacity from expansions/switches (PAM share)
@@ -5745,10 +5753,10 @@ class PlantGroup:
             logger.warning(f"[PG EXPANSION] ERROR - No region mapping for ISO3: {plant.location.iso3}")
             return None
 
-        # Get base cost of debt
-        cost_of_debt_original = cost_of_debt_dict.get(plant.location.iso3)
+        # Get base cost of debt for the winning technology
+        cost_of_debt_original = cost_of_debt_dict.get(plant.location.iso3, {}).get(tech)
         if cost_of_debt_original is None:
-            raise ValueError(f"No cost of debt data for country: {plant.location.iso3} when expanding plant")
+            raise ValueError(f"No cost of debt data for {plant.location.iso3}/{tech} when expanding plant")
 
         # logger.debug("[PG EXPANSION] === Stage 9: Plant validation ===")
         # logger.debug(f"[PG EXPANSION]   - Plant: {plant_id}, Location: {plant.location.iso3}, Region: {region}")
