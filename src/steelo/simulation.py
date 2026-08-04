@@ -384,12 +384,9 @@ class SimulationConfig:
         3  # Minimum number of years a considered business opportunity needs to be NPV-positive before being announced
     )
     construction_time: int = 4  # Years it takes to construct a plant after it has been announced
-    probability_of_construction: float = (
-        0.9 if probabilistic_agents else 1
-    )  # Probability of a plant being constructed after being announced
-    probability_of_announcement: float = (
-        0.7 if probabilistic_agents else 1
-    )  # Probability of a plant being announced after being considered - given a history of positive NPVs of at least `consideration_time` years
+    # Both probabilities are forced to 1 in __post_init__ when probabilistic_agents is False
+    probability_of_construction: float = 0.9  # Probability of a plant being constructed after being announced
+    probability_of_announcement: float = 0.7  # Probability of a plant being announced after being considered - given a history of positive NPVs of at least `consideration_time` years
     top_n_loctechs_as_business_op: int = 15  # Number of top location-technology combinations to consider as business
     # opportunities per product per year (e.g., 5 for steel and 5 for iron = 10 total)
     co2_storage_reserved_discount_factor: float = (
@@ -539,6 +536,11 @@ class SimulationConfig:
 
         # Single source of truth: propagate top-level seed into nested GeoConfig.
         self.geo_config.random_seed = self.random_seed
+
+        # Deterministic agents: the announcement/construction draws must always pass
+        if not self.probabilistic_agents:
+            self.probability_of_construction = 1.0
+            self.probability_of_announcement = 1.0
 
         # Handle deprecated parameter - preserve semantics by translating to technology_settings
         if global_bf_ban is not None:
