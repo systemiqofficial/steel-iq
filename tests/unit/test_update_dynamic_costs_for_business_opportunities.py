@@ -45,9 +45,66 @@ def capex_dict_all_locs():
 def cost_debt_all_locs():
     """Cost of debt by ISO3 country code."""
     return {
-        "USA": 0.05,
-        "DEU": 0.04,
-        "CHN": 0.06,
+        "USA": {
+            tech: 0.05
+            for tech in (
+                "EAF",
+                "BF",
+                "BOF",
+                "DRI",
+                "SR",
+                "MOE",
+                "E-WIN",
+                "BF+CCS",
+                "BF+CCU",
+                "DRI+CCS",
+                "DRI+CCU",
+                "DRI+EAF",
+                "DRI+ESF",
+                "ESF",
+                "ZZZ",
+            )
+        },
+        "DEU": {
+            tech: 0.04
+            for tech in (
+                "EAF",
+                "BF",
+                "BOF",
+                "DRI",
+                "SR",
+                "MOE",
+                "E-WIN",
+                "BF+CCS",
+                "BF+CCU",
+                "DRI+CCS",
+                "DRI+CCU",
+                "DRI+EAF",
+                "DRI+ESF",
+                "ESF",
+                "ZZZ",
+            )
+        },
+        "CHN": {
+            tech: 0.06
+            for tech in (
+                "EAF",
+                "BF",
+                "BOF",
+                "DRI",
+                "SR",
+                "MOE",
+                "E-WIN",
+                "BF+CCS",
+                "BF+CCU",
+                "DRI+CCS",
+                "DRI+CCU",
+                "DRI+EAF",
+                "DRI+ESF",
+                "ESF",
+                "ZZZ",
+            )
+        },
     }
 
 
@@ -394,7 +451,48 @@ def test_skip_plant_with_missing_cost_of_debt(mock_custom_energy_costs, capex_di
     plant_group = PlantGroup(plant_group_id="test_group", plants=[plant])
 
     # Cost of debt missing for ZZZ
-    cost_debt_all_locs = {"USA": 0.05, "DEU": 0.04}
+    cost_debt_all_locs = {
+        "USA": {
+            tech: 0.05
+            for tech in (
+                "EAF",
+                "BF",
+                "BOF",
+                "DRI",
+                "SR",
+                "MOE",
+                "E-WIN",
+                "BF+CCS",
+                "BF+CCU",
+                "DRI+CCS",
+                "DRI+CCU",
+                "DRI+EAF",
+                "DRI+ESF",
+                "ESF",
+                "ZZZ",
+            )
+        },
+        "DEU": {
+            tech: 0.04
+            for tech in (
+                "EAF",
+                "BF",
+                "BOF",
+                "DRI",
+                "SR",
+                "MOE",
+                "E-WIN",
+                "BF+CCS",
+                "BF+CCU",
+                "DRI+CCS",
+                "DRI+CCU",
+                "DRI+EAF",
+                "DRI+ESF",
+                "ESF",
+                "ZZZ",
+            )
+        },
+    }
 
     # Execute
     commands = plant_group.update_dynamic_costs_for_business_opportunities(
