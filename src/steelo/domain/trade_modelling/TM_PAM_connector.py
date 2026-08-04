@@ -3,7 +3,6 @@ import logging
 import math
 from typing import Any
 import networkx as nx
-from collections import deque
 from steelo.adapters.repositories.in_memory_repository import (
     PlantInMemoryRepository,
 )
@@ -309,20 +308,14 @@ class TM_PAM_connector:
         Example:
             If 100 tons steel shipped with 0.95 efficiency → allocation = 100/0.95 = 105.3 tons input.
         """
-        G = self.G.copy()
-        for edge in G.edges(keys=True, data=True):
-            from_node, to_node, commodity, data = edge
+        for _from_node, _to_node, _commodity, data in self.G.edges(keys=True, data=True):
             if volume_attr in data:
                 volume = data[volume_attr]
                 effectiveness = data.get(effectiveness_attr, 1)
                 if effectiveness is None:
                     effectiveness = 1
                 # Calculate the allocation based on the volume and effectiveness
-                allocation_value = volume / effectiveness if effectiveness > 0 else 0
-                if commodity_attr in data:
-                    commodity = data[commodity_attr]
-                G[from_node][to_node][commodity][allocation_attr] = allocation_value
-        self.G = G.copy()
+                data[allocation_attr] = volume / effectiveness if effectiveness > 0 else 0
 
     def create_graph(self, solved_trade_allocations):
         """
@@ -515,33 +508,25 @@ class TM_PAM_connector:
 
         Side Effects
         ------------
-        - Reads from and then replaces `self.G` with a new MultiDiGraph containing:
-            1. Per-commodity cumulative costs in `node[source_attr]` (a dict).
-            2. Per-commodity unit costs in `node[unit_cost_attr]`.
-        - Prints the number of edges processed (for debugging).
-        - Prints each node's computed unit cost (for debugging).
+        Mutates `self.G` in place:
+            1. Per-commodity input costs accumulated in `node[allocation_attr]`.
+            2. Per-commodity export volumes in `node[export_attr]`.
+            3. Per-commodity unit costs in `node[unit_cost_attr]`.
 
         Notes
         -----
-        - Assumes `self.G` is a DAG (no cycles), so BFS/topological layers make sense.
+        - Requires `self.G` to be a DAG; `nx.topological_sort` raises on cycles.
         - Skips any sink node (no outgoing edges) in propagation phase.
         - Leaves zero-volume edges effectively ignored in normalization.
         """
         logger = logging.getLogger(f"{__name__}.propage_cost_forward_by_layers_and_normalize")
-        # Make a copy so we don't mutate the original in the middle of traversal
-        G = self.G.copy()
-
-        # Identify “roots” = nodes with zero in-degree
-        roots = [n for n in G.nodes if G.in_degree(n) == 0]
-
-        # BFS queue seeded with roots; track visited to avoid repeats
-        q = deque(roots)
-        seen = set(roots)
+        G = self.G
         edge_count = 0
 
-        # 1) Propagate costs forward layer by layer
-        while q:
-            u = q.popleft()
+        # Topological order guarantees a node is processed only after ALL of its suppliers
+        # have pushed costs into it — BFS discovery order does not, and made downstream
+        # costs depend on the allocation dict's insertion order on multi-tier chains.
+        for u in nx.topological_sort(G):
             node_cost = G.nodes[u].get(source_attr, {})  # may be dict by commodity
             unit_cost = {}
 
@@ -550,7 +535,7 @@ class TM_PAM_connector:
                 if export_attr not in G.nodes[u]:
                     G.nodes[u][export_attr] = {}
                 # Accumulate export volumes by commodity
-                for src, v, comm, edata in self.G.out_edges(u, keys=True, data=True):
+                for src, v, comm, edata in G.out_edges(u, keys=True, data=True):
                     G.nodes[u][export_attr][comm] = G.nodes[u][export_attr].get(comm, 0) + edata.get(volume_attr, 0)
             # If G[u] is also a to-node
             # For each outgoing edge (u → v) carrying commodity `comm`
@@ -654,11 +639,6 @@ class TM_PAM_connector:
                             ],
                         )
 
-                # Initialize the target node's cost dict if needed
-                if source_attr not in G.nodes[v] or not isinstance(G.nodes[v][source_attr], dict):
-                    G.nodes[v][source_attr] = {}
-                    G.nodes[v][allocation_attr] = {}
-
                 # Accumulate cost and volume
                 # Store both total cost and material cost (excluding current step's energy)
                 # MaterialCost includes upstream material + ALL upstream costs
@@ -669,31 +649,8 @@ class TM_PAM_connector:
                 prev["MaterialCost"] += material_tariff_transportation_cost  # Excludes current step's energy only
                 prev["Volume"] += volume
                 G.nodes[v][allocation_attr][comm] = prev
-                G.nodes[v][source_attr][comm] = prev["Cost"]
-
-                # For multi-output processes (e.g., BF producing both hot_metal and pig_iron),
-                # allocate the total input cost proportionally across all output commodities
-                # based on their respective volumes, ensuring equal per-unit costs
-                output_edges = list(G.out_edges(v, keys=True, data=True))
-                if output_edges:
-                    # Calculate total output volume across all commodities
-                    total_output_volume = sum(edge_data.get(volume_attr, 0.0) for _, _, _, edge_data in output_edges)
-
-                    if total_output_volume > 0:
-                        # Allocate cost proportionally to each output commodity
-                        for _, _, out_comm, edge_data in output_edges:
-                            out_volume = edge_data.get(volume_attr, 0.0)
-                            # Cost for this output = (total input cost) × (this output volume / total output volume)
-                            allocated_cost = prev["Cost"] * (out_volume / total_output_volume)
-                            G.nodes[v][source_attr][out_comm] = allocated_cost
-
-                # Enqueue v if not yet visited
-                if v not in seen:
-                    seen.add(v)
-                    q.append(v)
 
             G.nodes[u][unit_cost_attr].update(unit_cost)
-            # print(f"Node {u} unit costs: {unit_cost}")
 
         logger.info(f"Processed {edge_count} edges")
 

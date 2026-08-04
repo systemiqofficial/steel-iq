@@ -273,3 +273,47 @@ def test_multi_commodity_source_energy_not_double_booked():
 
     energy = furnace_group.bill_of_materials["energy"]["coking_coal"]
     assert energy["total_cost"] == pytest.approx(18_600.0)  # 96 x 100 + 90 x 100, once each
+
+
+def test_cost_propagation_is_allocation_order_independent():
+    """A node's outgoing cost must include ALL upstream legs regardless of allocation order.
+
+    Diamond topology: scrap root -> BOF, ore root -> BF -> BOF, BOF -> demand. BFS
+    discovery order processed the BOF before the BF whenever the scrap edge came first
+    in the allocations dict, dropping the entire hot-metal leg from the BOF's unit cost
+    (150 instead of 310 USD/t). Topological ordering must give 310 either way.
+    """
+
+    def _pc(name, process_type, cost=None):
+        return tlp.ProcessCenter(
+            name=name,
+            process=tlp.Process(name=name, type=process_type, bill_of_materials=[]),
+            capacity=1000.0,
+            location=_location("DEU"),
+            production_cost=cost,
+        )
+
+    scrap_sup = _pc("scrap_sup", tlp.ProcessType.SUPPLY, 300.0)
+    ore_sup = _pc("ore_sup", tlp.ProcessType.SUPPLY, 100.0)
+    bf_pc = _pc("bf1", tlp.ProcessType.PRODUCTION, 0.0)
+    bof_pc = _pc("bof1", tlp.ProcessType.PRODUCTION, 0.0)
+    demand_pc = _pc("dem", tlp.ProcessType.DEMAND)
+
+    edges = [
+        ((scrap_sup, bof_pc, tlp.Commodity(name="scrap")), 500.0),
+        ((ore_sup, bf_pc, tlp.Commodity(name="io_low")), 1600.0),
+        ((bf_pc, bof_pc, tlp.Commodity(name="hot_metal")), 500.0),
+        ((bof_pc, demand_pc, tlp.Commodity(name="steel")), 1000.0),
+    ]
+
+    for order in (edges, [edges[1], edges[0], *edges[2:]]):
+        connector = TM_PAM_connector(
+            dynamic_feedstocks_classes={},
+            plants=_StubRepo([]),
+            transport_kpis=None,
+        )
+        connector.create_graph(tlp.Allocations(allocations=dict(order)))
+        connector.propage_cost_forward_by_layers_and_normalize()
+
+        # (scrap 500 t x 300 + ore 1600 t x 100) / 1000 t steel = 310 USD/t
+        assert connector.G.nodes["bof1"]["unit_cost"]["steel"] == pytest.approx(310.0)
