@@ -345,9 +345,9 @@ def test_cost_propagation_handles_output_alias():
     connector.propage_cost_forward_by_layers_and_normalize()
 
     furnace_node = connector.G.nodes[furnace_pc.name]
-    assert "pig_iron" in furnace_node["product_cost"], "Expected pig iron cost stored on furnace node"
-    assert furnace_node["product_cost"]["pig_iron"] == pytest.approx(8_000.0)
     assert furnace_node["allocations"]["pig_iron"]["Cost"] == pytest.approx(8_000.0)
+    # The alias must survive into the outgoing steel price: 8,000 / 100 t + own 20 USD/t.
+    assert furnace_node["unit_cost"]["steel"] == pytest.approx(100.0)
 
 
 def test_scrap_supplier_with_country_based_id():

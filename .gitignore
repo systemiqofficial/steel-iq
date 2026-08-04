@@ -60,3 +60,4 @@ specs
 docs/architecture/trq_gateway_lp_plan.md
 docs/trq_cheapest_steel_allocation.md
 steel-iq-production-readiness-fixes.patch
+TRADE_MODULE_ISSUES.md
