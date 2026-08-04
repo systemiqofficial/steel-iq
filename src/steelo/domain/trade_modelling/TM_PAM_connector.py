@@ -7,6 +7,7 @@ from collections import deque
 from steelo.adapters.repositories.in_memory_repository import (
     PlantInMemoryRepository,
 )
+from steelo.domain.calculate_costs import ENERGY_FEEDSTOCK_KEYS
 from steelo.domain.models import PrimaryFeedstock, FurnaceGroup, TransportKPI
 from steelo.domain.trade_modelling.trade_lp_modelling import Allocations, ProcessType
 from steelo.domain.constants import LP_TOLERANCE
@@ -24,6 +25,23 @@ def _required_quantity_by_charge(fg) -> dict[str, float]:
         for feedstock in fg.effective_primary_feedstocks
         if isinstance(feedstock.metallic_charge, str)
     }
+
+
+def _energy_intensity_by_charge(fg) -> dict[str, dict[str, float]]:
+    """Per-charge carrier quantities per tonne of product (energy requirements plus
+    energy-like secondary feedstocks), keyed by normalised carrier name."""
+    intensities: dict[str, dict[str, float]] = {}
+    for feedstock in fg.effective_primary_feedstocks:
+        if not isinstance(feedstock.metallic_charge, str):
+            continue
+        carriers: dict[str, float] = {}
+        for source in (feedstock.energy_requirements or {}, feedstock.secondary_feedstock or {}):
+            for carrier, amount in source.items():
+                normalized = normalize_name(carrier)
+                if normalized in ENERGY_FEEDSTOCK_KEYS:
+                    carriers[normalized] = carriers.get(normalized, 0.0) + amount
+        intensities[feedstock.metallic_charge.lower()] = carriers
+    return intensities
 
 
 class TM_PAM_connector:
@@ -895,7 +913,7 @@ class TM_PAM_connector:
                     },
                     "energy": {
                         commodity_name: {
-                            "demand": float,       # Metallic-input tonnes the cost was booked on
+                            "demand": float,       # Carrier quantity (t or kWh, post-conversion units)
                             "total_cost": float,   # Total energy cost (USD)
                             "unit_cost": float     # Energy cost per tonne of product (USD/t)
                         }
@@ -1070,6 +1088,16 @@ class TM_PAM_connector:
                         fg.furnace_group_id,
                         booked_energy,
                         expected_energy,
+                    )
+
+                # Restate energy demand as carrier quantities (t / kWh, matching the price
+                # units) instead of the edge's metallic input tonnage.
+                intensity_by_charge = _energy_intensity_by_charge(fg)
+                for carrier, entry in collect["energy"].items():
+                    entry["demand"] = sum(
+                        material["demand"] / req * intensity_by_charge.get(charge, {}).get(carrier, 0.0)
+                        for charge, material in collect["materials"].items()
+                        if (req := req_by_charge.get(charge))
                     )
 
             util_rate = getattr(fg, "utilization_rate", None)

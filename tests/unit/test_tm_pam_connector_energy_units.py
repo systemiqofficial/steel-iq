@@ -40,8 +40,18 @@ def _make_bf_furnace_group():
             "io_mid": {"coking_coal": 90.0},
         },
         effective_primary_feedstocks=[
-            SimpleNamespace(metallic_charge="io_low", required_quantity_per_ton_of_product=1.6),
-            SimpleNamespace(metallic_charge="io_mid", required_quantity_per_ton_of_product=1.5),
+            SimpleNamespace(
+                metallic_charge="io_low",
+                required_quantity_per_ton_of_product=1.6,
+                energy_requirements={"coking_coal": 0.48},
+                secondary_feedstock={},
+            ),
+            SimpleNamespace(
+                metallic_charge="io_mid",
+                required_quantity_per_ton_of_product=1.5,
+                energy_requirements={"coking_coal": 0.45},
+                secondary_feedstock={},
+            ),
         ],
         bill_of_materials={},
         production=200.0,
@@ -106,7 +116,8 @@ def test_booked_energy_equals_per_product_cost_times_product_tonnes():
 
     energy = bom["energy"]["coking_coal"]
     assert energy["total_cost"] == pytest.approx(18_600.0)
-    assert energy["demand"] == pytest.approx(310.0)
+    # Carrier quantity: 100 t product x 0.48 t/t + 100 t x 0.45 t/t
+    assert energy["demand"] == pytest.approx(93.0)
     assert energy["unit_cost"] == pytest.approx(93.0)
 
     materials = bom["materials"]
@@ -119,7 +130,7 @@ def test_booked_energy_equals_per_product_cost_times_product_tonnes():
     assert connector.G.nodes["plant_bf1"]["unit_cost"]["hot_metal"] == pytest.approx(163.0)
 
 
-def test_energy_booking_validator_detects_unit_regression(caplog):
+def test_energy_booking_validator_detects_unit_regression():
     """Reintroducing an undivided (per-product) edge cost must trip the two-leg check."""
     furnace_group = _make_bf_furnace_group()
     plant = SimpleNamespace(plant_id="plant", furnace_groups=[furnace_group])
@@ -163,9 +174,18 @@ def test_energy_booking_validator_detects_unit_regression(caplog):
             data["processing_energy_breakdown"] = {"coking_coal": 96.0}  # per-product, undivided
     connector.propage_cost_forward_by_layers_and_normalize()
 
-    with caplog.at_level(logging.ERROR):
+    # Capture on the function's own logger — immune to other tests' logging reconfiguration.
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    target = logging.getLogger("steelo.domain.trade_modelling.TM_PAM_connector.update_bill_of_materials")
+    target.addHandler(handler)
+    target.disabled = False
+    try:
         connector.update_bill_of_materials([furnace_group])
+    finally:
+        target.removeHandler(handler)
 
     assert any(
-        "Energy booking mismatch" in record.message and "plant_bf1" in record.getMessage() for record in caplog.records
+        "Energy booking mismatch" in record.getMessage() and "plant_bf1" in record.getMessage() for record in records
     )

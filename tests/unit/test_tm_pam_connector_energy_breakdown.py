@@ -31,7 +31,12 @@ class _StubFurnaceGroup:
         self.chosen_reductant = "hydrogen"
         self.bill_of_materials = {}
         self.effective_primary_feedstocks = [
-            SimpleNamespace(metallic_charge="hbi_low", required_quantity_per_ton_of_product=1.2),
+            SimpleNamespace(
+                metallic_charge="hbi_low",
+                required_quantity_per_ton_of_product=1.2,
+                energy_requirements={"electricity": 500.0, "hydrogen": 20.0},
+                secondary_feedstock={},
+            ),
         ]
 
 
