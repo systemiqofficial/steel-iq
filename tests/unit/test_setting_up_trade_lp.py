@@ -39,20 +39,32 @@ class DummyBOMElement:
 
 
 class DummyProcess:
-    def __init__(self, name, type, bill_of_materials):
+    def __init__(self, name, type, bill_of_materials, products=None, technology=None):
         self.name = name
         self.type = type
         self.bill_of_materials = bill_of_materials
+        self.products = products or []
+        self.technology = technology if technology is not None else name
 
 
 class DummyProcessCenter:
-    def __init__(self, name, process, capacity, location, production_cost=0.1, soft_minimum_capacity=0.0):
+    def __init__(
+        self,
+        name,
+        process,
+        capacity,
+        location,
+        production_cost=0.1,
+        soft_minimum_capacity=0.0,
+        energy_costs_per_input=None,
+    ):
         self.production_cost = production_cost
         self.name = name
         self.process = process
         self.capacity = capacity
         self.location = location
         self.soft_minimum_capacity = soft_minimum_capacity
+        self.energy_costs_per_input = energy_costs_per_input
 
 
 class DummyProcessConnector:
@@ -266,20 +278,23 @@ class DummyPlant:
 
 
 class DummyFurnaceGroup:
-    def __init__(self, furnace_group_id, technology, status, capacity, unit_fopex=1):
+    def __init__(self, furnace_group_id, technology, status, capacity, unit_fopex=1, chosen_reductant=""):
         self.furnace_group_id = furnace_group_id
         self.technology = technology
         self.status = status
         self.capacity = capacity
         self.unit_fopex = unit_fopex
         self.energy_vopex_by_input = {}
+        self.chosen_reductant = chosen_reductant
 
     @property
     def effective_primary_feedstocks(self):
         """Returns the effective primary feedstocks as a list, similar to the real FurnaceGroup class."""
         if self.technology.dynamic_business_case is None:
             return []
-        return self.technology.dynamic_business_case
+        if not self.chosen_reductant:
+            return self.technology.dynamic_business_case
+        return [fs for fs in self.technology.dynamic_business_case if fs.reductant == self.chosen_reductant]
 
     @property
     def carbon_cost_per_unit(self):
@@ -306,6 +321,7 @@ class DummyFeedstock:
         outputs,
         carbon_outputs=None,
         energy_requirements=None,
+        reductant="",
     ):
         self.name = name
         self.metallic_charge = metallic_charge
@@ -316,6 +332,7 @@ class DummyFeedstock:
         self.outputs = outputs
         self.carbon_outputs = carbon_outputs or {}
         self.energy_requirements = energy_requirements or {}
+        self.reductant = reductant
 
     def get_primary_outputs(self, primary_products: list[str] | None = None):
         return self.outputs
@@ -566,6 +583,115 @@ def test_add_furnace_groups_as_process_centers():
     assert "EAF" in lp_model._processes
 
 
+def test_add_furnace_groups_as_process_centers_energy_costs_are_facility_specific():
+    """Two furnace groups sharing a technology reuse the same Process/BOM (built from
+    whichever FG came first), but must each carry their own energy cost override so the
+    LP objective isn't priced on the first FG's energy costs fleet-wide."""
+    feedstock = DummyFeedstock(
+        name="scrap_feed",
+        metallic_charge="scrap",
+        required_quantity=1.0,
+        maximum_share=1.0,
+        minimum_share=0.0,
+        secondary_feedstock={},
+        outputs={"steel": 1.0},
+    )
+    tech = DummyTechnology(name="EAF", dynamic_business_case=[feedstock])
+
+    fg1 = DummyFurnaceGroup(furnace_group_id="fg1", technology=tech, status="operating", capacity=50)
+    fg1.energy_vopex_by_input = {"scrap": 10.0}
+    fg2 = DummyFurnaceGroup(furnace_group_id="fg2", technology=tech, status="operating", capacity=80)
+    fg2.energy_vopex_by_input = {"scrap": 40.0}
+
+    plant1 = DummyPlant(plant_id="plant1", furnace_groups=[fg1])
+    plant2 = DummyPlant(plant_id="plant2", furnace_groups=[fg2])
+    repo = DummyRepository()
+    repo.plants.items = [plant1, plant2]
+    repo.plants.data = {"plant1": plant1, "plant2": plant2}
+
+    lp_model = DummyTradeLPModel()
+    config = create_mock_config()
+
+    add_furnace_groups_as_process_centers(repo, lp_model, config)
+
+    pc1 = next(pc for pc in lp_model.process_centers if pc.name == "fg1")
+    pc2 = next(pc for pc in lp_model.process_centers if pc.name == "fg2")
+
+    # Both furnace groups reuse the same (first-built) shared Process/BOM...
+    assert pc1.process is pc2.process
+    # ...but each ProcessCenter carries its own facility-specific energy cost override.
+    assert pc1.energy_costs_per_input["scrap"] == pytest.approx(10.0)
+    assert pc2.energy_costs_per_input["scrap"] == pytest.approx(40.0)
+
+
+def test_add_furnace_groups_as_process_centers_reductant_variants_get_distinct_bom():
+    """Two furnace groups of the same technology but different chosen_reductant must NOT
+    share a Process/BOM — each reductant's feedstock (input ratio, energy cost) is different,
+    and baking one reductant's BOM in fleet-wide would misprice/mislegalize every facility on
+    the other reductant."""
+    coke_feed = DummyFeedstock(
+        name="bf_iron_ore_coke",
+        metallic_charge="iron_ore",
+        required_quantity=1.6,
+        maximum_share=1.0,
+        minimum_share=0.0,
+        secondary_feedstock={},
+        outputs={"steel": 1.0},
+        reductant="coke",
+    )
+    hydrogen_feed = DummyFeedstock(
+        name="bf_iron_ore_hydrogen",
+        metallic_charge="iron_ore",
+        required_quantity=1.4,
+        maximum_share=1.0,
+        minimum_share=0.0,
+        secondary_feedstock={},
+        outputs={"steel": 1.0},
+        reductant="hydrogen",
+    )
+    tech = DummyTechnology(name="BF", dynamic_business_case=[coke_feed, hydrogen_feed])
+
+    fg_coke = DummyFurnaceGroup(
+        furnace_group_id="fg_coke", technology=tech, status="operating", capacity=50, chosen_reductant="coke"
+    )
+    fg_coke.energy_vopex_by_input = {"iron_ore": 16.0}
+    fg_hydrogen = DummyFurnaceGroup(
+        furnace_group_id="fg_hydrogen", technology=tech, status="operating", capacity=80, chosen_reductant="hydrogen"
+    )
+    fg_hydrogen.energy_vopex_by_input = {"iron_ore": 56.0}
+
+    plant1 = DummyPlant(plant_id="plant1", furnace_groups=[fg_coke])
+    plant2 = DummyPlant(plant_id="plant2", furnace_groups=[fg_hydrogen])
+    repo = DummyRepository()
+    repo.plants.items = [plant1, plant2]
+    repo.plants.data = {"plant1": plant1, "plant2": plant2}
+
+    lp_model = DummyTradeLPModel()
+    config = create_mock_config()
+
+    add_furnace_groups_as_process_centers(repo, lp_model, config)
+
+    pc_coke = next(pc for pc in lp_model.process_centers if pc.name == "fg_coke")
+    pc_hydrogen = next(pc for pc in lp_model.process_centers if pc.name == "fg_hydrogen")
+
+    # Distinct Process objects (different reductants), but grouped under the same technology.
+    assert pc_coke.process is not pc_hydrogen.process
+    assert pc_coke.process.technology == "BF"
+    assert pc_hydrogen.process.technology == "BF"
+    assert pc_coke.process.name != pc_hydrogen.process.name
+
+    # Each Process's own BOM reflects only that reductant's feedstock/input ratio.
+    coke_boms = pc_coke.process.bill_of_materials
+    hydrogen_boms = pc_hydrogen.process.bill_of_materials
+    assert len(coke_boms) == 1
+    assert len(hydrogen_boms) == 1
+    assert coke_boms[0].parameters["input_ratio"] == pytest.approx(1.6)
+    assert hydrogen_boms[0].parameters["input_ratio"] == pytest.approx(1.4)
+    # Energy cost is per ton of input: energy_vopex_by_input / required_quantity_per_ton_of_product.
+    assert coke_boms[0].energy_cost == pytest.approx(16.0 / 1.6)
+    assert hydrogen_boms[0].energy_cost == pytest.approx(56.0 / 1.4)
+
+
 def test_add_demand_centers_as_process_centers():
     # Create a dummy demand center.
     year = 2025
@@ -674,6 +800,78 @@ def test_set_up_steel_trade_lp(monkeypatch):
         assert key in process_names
     # Check that some process centers were added from the furnace groups, demand centers, and suppliers.
     assert len(lp_model.process_centers) >= 3
+
+
+def test_set_up_steel_trade_lp_connector_wiring_covers_all_reductant_variants(monkeypatch):
+    """A LegalProcessConnector names a technology (e.g. "BF" -> "BOF"), which may resolve to
+    several reductant-variant Process objects. Connector wiring must expand to every
+    combination, so a coke-BF facility and a hydrogen-BF facility both connect to BOF —
+    connectivity stays technology-level even though BOM content is now variant-level."""
+    from steelo.domain.models import LegalProcessConnector
+
+    year = 2025
+
+    coke_feed = DummyFeedstock(
+        name="bf_iron_ore_coke",
+        metallic_charge="iron_ore",
+        required_quantity=1.6,
+        maximum_share=1.0,
+        minimum_share=0.0,
+        secondary_feedstock={},
+        outputs={"hot_metal": 1.0},
+        reductant="coke",
+    )
+    hydrogen_feed = DummyFeedstock(
+        name="bf_iron_ore_hydrogen",
+        metallic_charge="iron_ore",
+        required_quantity=1.4,
+        maximum_share=1.0,
+        minimum_share=0.0,
+        secondary_feedstock={},
+        outputs={"hot_metal": 1.0},
+        reductant="hydrogen",
+    )
+    tech = DummyTechnology(name="BF", dynamic_business_case=[coke_feed, hydrogen_feed], product="hot_metal")
+
+    fg_coke = DummyFurnaceGroup(
+        furnace_group_id="fg_coke", technology=tech, status="operating", capacity=50, chosen_reductant="coke"
+    )
+    fg_hydrogen = DummyFurnaceGroup(
+        furnace_group_id="fg_hydrogen", technology=tech, status="operating", capacity=80, chosen_reductant="hydrogen"
+    )
+    plant1 = DummyPlant(plant_id="plant1", furnace_groups=[fg_coke])
+    plant2 = DummyPlant(plant_id="plant2", furnace_groups=[fg_hydrogen])
+    repo = DummyRepository()
+    repo.plants.items = [plant1, plant2]
+    repo.plants.data = {"plant1": plant1, "plant2": plant2}
+
+    # Pre-register a downstream "BOF" process (as the existing test above does), since it's
+    # not built from a furnace group in this test.
+    orig_init = ORIGINAL_DUMMY_TRADE_LP_MODEL_INIT
+
+    def init_with_bof_process(self, lp_epsilon=1e-3, year=None, solver_options=None, random_seed=42, **kwargs):
+        orig_init(self, lp_epsilon, year, solver_options)
+        self._processes["BOF"] = DummyProcess("BOF", DummyProcessType.PRODUCTION, [])
+
+    monkeypatch.setattr(DummyTradeLPModel, "__init__", init_with_bof_process)
+
+    mock_config = create_mock_config()
+    message_bus = DummyMessageBus(repo)
+    lp_model = set_up_steel_trade_lp(
+        message_bus=message_bus,
+        year=year,
+        config=mock_config,
+        legal_process_connectors=[LegalProcessConnector(from_technology_name="BF", to_technology_name="BOF")],
+    )
+
+    bf_processes = {p.name: p for p in lp_model.processes if p.technology == "BF"}
+    assert set(bf_processes.keys()) == {"BF_coke", "BF_hydrogen"}
+    bof_process = next(p for p in lp_model.processes if p.name == "BOF")
+
+    wired_pairs = {(conn.from_process.name, conn.to_process.name) for conn in lp_model.connectors}
+    assert ("BF_coke", "BOF") in wired_pairs
+    assert ("BF_hydrogen", "BOF") in wired_pairs
+    assert all(conn.to_process is bof_process for conn in lp_model.connectors if conn.from_process.technology == "BF")
 
 
 def test_solve_steel_trade_lp_and_return_commodity_allocations(monkeypatch):
@@ -1140,6 +1338,192 @@ def test_adapt_allocation_costs_cbam_no_double_counting():
 
     # Should only adjust once (first mechanism processes it)
     assert lp_model.lp_model.allocation_costs[("us_pc", "eu_pc", "steel")] == 10.0 + 50.0
+
+
+def test_adapt_allocation_costs_cbam_adjusts_all_arcs_on_same_route():
+    """Two exporter PCs in the same country trading with the same importer PC must both be
+    adjusted — the dedup guard must key on the arc, not the country pair."""
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
+        adapt_allocation_costs_for_carbon_border_mechanisms,
+    )
+
+    lp_model = DummyTradeLPModel()
+
+    eu_location = DummyLocation("DEU")
+    non_eu_location = DummyLocation("USA")
+
+    # Two distinct US process centers exporting to the same EU process center
+    from_pc_1 = DummyProcessCenter(
+        "us_pc_1", DummyProcess("p1", DummyProcessType.PRODUCTION, []), 100, non_eu_location, production_cost=50.0
+    )
+    from_pc_2 = DummyProcessCenter(
+        "us_pc_2", DummyProcess("p2", DummyProcessType.PRODUCTION, []), 100, non_eu_location, production_cost=60.0
+    )
+    to_pc = DummyProcessCenter(
+        "eu_pc", DummyProcess("p3", DummyProcessType.PRODUCTION, []), 100, eu_location, production_cost=100.0
+    )
+
+    commodity = DummyCommodity("steel")
+    lp_model.legal_allocations = [
+        (from_pc_1, to_pc, commodity),
+        (from_pc_2, to_pc, commodity),
+    ]
+    lp_model.lp_model.allocation_costs = {
+        ("us_pc_1", "eu_pc", "steel"): 10.0,
+        ("us_pc_2", "eu_pc", "steel"): 20.0,
+    }
+
+    cbam = DummyCarbonBorderMechanism(mechanism_name="CBAM", applying_region_column="EU", start_year=2025)
+    country_mappings = {
+        "DEU": DummyCountryMapping("DEU", EU=True),
+        "USA": DummyCountryMapping("USA", EU=False),
+    }
+
+    adapt_allocation_costs_for_carbon_border_mechanisms(
+        trade_lp=lp_model, carbon_border_mechanisms=[cbam], country_mappings=country_mappings, year=2026
+    )
+
+    # Both arcs share the same country pair (USA -> DEU) but must each be adjusted independently
+    assert lp_model.lp_model.allocation_costs[("us_pc_1", "eu_pc", "steel")] == 10.0 + 50.0
+    assert lp_model.lp_model.allocation_costs[("us_pc_2", "eu_pc", "steel")] == 20.0 + 40.0
+
+
+def test_build_reference_producer_carbon_costs_capacity_weighted():
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import build_reference_producer_carbon_costs
+    import steelo.domain.trade_modelling.trade_lp_modelling as tlp
+
+    steel = DummyCommodity("steel")
+    eu_location = DummyLocation("DEU")
+
+    producer_1 = DummyProcessCenter(
+        "eu_prod_1",
+        DummyProcess("p1", tlp.ProcessType.PRODUCTION, [], products=[steel]),
+        capacity=100,
+        location=eu_location,
+        production_cost=100.0,
+    )
+    producer_2 = DummyProcessCenter(
+        "eu_prod_2",
+        DummyProcess("p2", tlp.ProcessType.PRODUCTION, [], products=[steel]),
+        capacity=300,
+        location=eu_location,
+        production_cost=60.0,
+    )
+    # Non-production PC producing the same commodity/location must not contribute
+    demand_center = DummyProcessCenter(
+        "eu_demand",
+        DummyProcess("d1", tlp.ProcessType.DEMAND, [], products=[steel]),
+        capacity=1000,
+        location=eu_location,
+        production_cost=0.0,
+    )
+
+    reference_costs = build_reference_producer_carbon_costs([producer_1, producer_2, demand_center])
+
+    # Weighted average: (100*100 + 300*60) / 400 = 70.0
+    assert reference_costs[("DEU", "steel")] == pytest.approx(70.0)
+
+
+def test_adapt_allocation_costs_cbam_import_to_eu_demand_center():
+    """Finished-steel imports into an EU demand centre are the primary real-world CBAM
+    channel — they must be adjusted against the domestic reference producer carbon cost,
+    since demand centres carry no production_cost of their own."""
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
+        adapt_allocation_costs_for_carbon_border_mechanisms,
+    )
+    import steelo.domain.trade_modelling.trade_lp_modelling as tlp
+
+    lp_model = DummyTradeLPModel()
+
+    eu_location = DummyLocation("DEU")
+    non_eu_location = DummyLocation("USA")
+    steel = DummyCommodity("steel")
+
+    eu_producer = DummyProcessCenter(
+        "eu_producer",
+        DummyProcess("p1", tlp.ProcessType.PRODUCTION, [], products=[steel]),
+        capacity=100,
+        location=eu_location,
+        production_cost=100.0,
+    )
+    eu_demand = DummyProcessCenter(
+        "eu_demand",
+        DummyProcess("d1", tlp.ProcessType.DEMAND, [], products=[steel]),
+        capacity=200,
+        location=eu_location,
+        production_cost=0.0,
+    )
+    us_exporter = DummyProcessCenter(
+        "us_exporter",
+        DummyProcess("p2", tlp.ProcessType.PRODUCTION, [], products=[steel]),
+        capacity=100,
+        location=non_eu_location,
+        production_cost=50.0,
+    )
+
+    lp_model.process_centers = [eu_producer, eu_demand, us_exporter]
+    lp_model.legal_allocations = [(us_exporter, eu_demand, steel)]
+    lp_model.lp_model.allocation_costs = {("us_exporter", "eu_demand", "steel"): 10.0}
+
+    cbam = DummyCarbonBorderMechanism(mechanism_name="CBAM", applying_region_column="EU", start_year=2025)
+    country_mappings = {
+        "DEU": DummyCountryMapping("DEU", EU=True),
+        "USA": DummyCountryMapping("USA", EU=False),
+    }
+
+    adapt_allocation_costs_for_carbon_border_mechanisms(
+        trade_lp=lp_model, carbon_border_mechanisms=[cbam], country_mappings=country_mappings, year=2026
+    )
+
+    # Import into EU demand (reference cost 100) from US exporter (cost 50): differential = +50
+    assert lp_model.lp_model.allocation_costs[("us_exporter", "eu_demand", "steel")] == 10.0 + 50.0
+
+
+def test_adapt_allocation_costs_cbam_skips_demand_center_without_domestic_producers():
+    """A destination country with no domestic producers of the commodity has nothing to
+    protect, so the flow into its demand centre must be left unadjusted."""
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
+        adapt_allocation_costs_for_carbon_border_mechanisms,
+    )
+    import steelo.domain.trade_modelling.trade_lp_modelling as tlp
+
+    lp_model = DummyTradeLPModel()
+
+    eu_location = DummyLocation("DEU")
+    non_eu_location = DummyLocation("USA")
+    steel = DummyCommodity("steel")
+
+    # No EU producer of steel exists — only a demand center
+    eu_demand = DummyProcessCenter(
+        "eu_demand",
+        DummyProcess("d1", tlp.ProcessType.DEMAND, [], products=[steel]),
+        capacity=200,
+        location=eu_location,
+        production_cost=0.0,
+    )
+    us_exporter = DummyProcessCenter(
+        "us_exporter",
+        DummyProcess("p2", tlp.ProcessType.PRODUCTION, [], products=[steel]),
+        capacity=100,
+        location=non_eu_location,
+        production_cost=50.0,
+    )
+
+    lp_model.process_centers = [eu_demand, us_exporter]
+    lp_model.legal_allocations = [(us_exporter, eu_demand, steel)]
+    lp_model.lp_model.allocation_costs = {("us_exporter", "eu_demand", "steel"): 10.0}
+
+    cbam = DummyCarbonBorderMechanism(mechanism_name="CBAM", applying_region_column="EU", start_year=2025)
+    country_mappings = {
+        "DEU": DummyCountryMapping("DEU", EU=True),
+        "USA": DummyCountryMapping("USA", EU=False),
+    }
+
+    adapt_allocation_costs_for_carbon_border_mechanisms(
+        trade_lp=lp_model, carbon_border_mechanisms=[cbam], country_mappings=country_mappings, year=2026
+    )
+
+    assert lp_model.lp_model.allocation_costs[("us_exporter", "eu_demand", "steel")] == 10.0
 
 
 # --- Tests for identify_bottlenecks ---
@@ -1634,8 +2018,9 @@ def test_add_furnace_groups_as_process_centers_with_meta_furnace_groups():
     assert pc.location == centroid_location
     assert pc.production_cost == 90.0  # Weighted average carbon cost
 
-    # Verify the process was created/retrieved
-    assert "BF" in lp_model._processes
+    # Verify the process was created/retrieved, keyed by the (technology, reductant) variant name
+    assert "BF_coke" in lp_model._processes
+    assert pc.process.technology == "BF"
 
 
 def test_set_up_steel_trade_lp_with_meta_furnace_groups(monkeypatch):
