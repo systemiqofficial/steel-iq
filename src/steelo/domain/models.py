@@ -2174,7 +2174,6 @@ class FurnaceGroup:
         return calculate_cost_breakdown_by_feedstock(
             bill_of_materials=self.bill_of_materials,
             dynamic_business_cases=self.technology.dynamic_business_case or [],
-            energy_costs=self.energy_costs,
             chosen_reductant=self.chosen_reductant,
             energy_vopex_breakdown_by_input=self.energy_vopex_breakdown_by_input,
             cost_breakdown_keys=self.cost_breakdown_keys,

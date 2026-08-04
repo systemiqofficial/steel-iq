@@ -628,7 +628,6 @@ def test_cost_breakdown_includes_output_revenue():
         bill_of_materials=bom,
         chosen_reductant="coke",
         dynamic_business_cases=[dbc],
-        energy_costs={},
         output_costs=input_costs,
     )
 
@@ -662,7 +661,6 @@ def test_cost_breakdown_nets_dual_carrier():
         bill_of_materials=bom,
         chosen_reductant="coke",
         dynamic_business_cases=[dbc],
-        energy_costs={},
         energy_vopex_breakdown_by_input={"io_low": {"bf_gas": 10.0}},
         output_costs=input_costs,
     )
@@ -699,7 +697,6 @@ def test_cost_breakdown_excludes_primary_products():
         bill_of_materials=bom,
         chosen_reductant="",
         dynamic_business_cases=[dbc],
-        energy_costs={},
         output_costs=input_costs,
     )
 
@@ -734,7 +731,6 @@ def test_cost_breakdown_skips_outputs_without_price():
         bill_of_materials=bom,
         chosen_reductant="coke",
         dynamic_business_cases=[dbc],
-        energy_costs={},
         output_costs=input_costs,
         cost_breakdown_keys=cost_breakdown_keys,
     )
@@ -776,7 +772,6 @@ def test_cost_breakdown_co2_stored_revenue():
         bill_of_materials=bom,
         chosen_reductant="coke",
         dynamic_business_cases=[dbc],
-        energy_costs={},
         output_costs=input_costs,
     )
 
@@ -995,7 +990,6 @@ def test_breakdown_disposal_cost_output():
     result = calculate_cost_breakdown_by_feedstock(
         bill_of_materials=bom,
         dynamic_business_cases=[dbc],
-        energy_costs={},
         chosen_reductant="coke",
         output_costs=output_costs,
         disposal_cost_outputs=frozenset({"steelmaking_slag"}),
@@ -1028,7 +1022,6 @@ def test_breakdown_disposal_cost_none_preserves_legacy():
     result = calculate_cost_breakdown_by_feedstock(
         bill_of_materials=bom,
         dynamic_business_cases=[dbc],
-        energy_costs={},
         chosen_reductant="coke",
         output_costs=output_costs,
     )
@@ -1075,7 +1068,6 @@ def test_cost_breakdown_credits_weighted_by_product_share():
         bill_of_materials=bom,
         chosen_reductant="coke",
         dynamic_business_cases=dbcs,
-        energy_costs={},
         output_costs={"ironmaking_slag": -10.0},
     )
 
@@ -1123,7 +1115,6 @@ def test_secondary_output_scalar_matches_breakdown_credits():
         bill_of_materials=bom,
         chosen_reductant="coke",
         dynamic_business_cases=dbcs,
-        energy_costs={},
         output_costs=output_costs,
     )
     scalar = calculate_cost_adjustments_from_secondary_outputs(

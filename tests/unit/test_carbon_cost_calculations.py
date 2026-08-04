@@ -522,7 +522,6 @@ def test_cost_breakdown_energy_columns_come_from_vopex_breakdown():
         bill_of_materials=bill_of_materials,
         chosen_reductant="",
         dynamic_business_cases=[dynamic_business_case],
-        energy_costs={},
         energy_vopex_breakdown_by_input={"dri_high": {"coking_coal": 6.48}},
     )
 
@@ -553,7 +552,6 @@ def test_cost_breakdown_normalizes_vopex_breakdown_carrier_keys():
         bill_of_materials=bill_of_materials,
         chosen_reductant="coke",
         dynamic_business_cases=[dynamic_business_case],
-        energy_costs={},
         energy_vopex_breakdown_by_input={
             "sinter": {"bio_pci": 20.0, "Burnt Dolomite": 2.0, "Burnt lime": 1.0},
         },
@@ -592,7 +590,6 @@ def test_cost_breakdown_ignores_metallic_secondary_feedstocks_for_energy():
         bill_of_materials=bill_of_materials,
         chosen_reductant="hydrogen",
         dynamic_business_cases=[dynamic_business_case],
-        energy_costs={"dri_mid": 9999.0},  # Would explode if interpreted as energy
     )
 
     feed_breakdown = breakdown["dri_mid"]

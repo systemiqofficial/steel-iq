@@ -220,7 +220,6 @@ def calculate_cost_breakdown_by_feedstock(
     bill_of_materials: dict[str, dict[str, dict[str, float]]],
     chosen_reductant: str,
     dynamic_business_cases: list["PrimaryFeedstock"],
-    energy_costs: dict[str, float],
     energy_vopex_breakdown_by_input: dict[str, dict[str, float]] | None = None,
     cost_breakdown_keys: list[str] | None = None,
     output_costs: dict[str, float] | None = None,
@@ -243,7 +242,6 @@ def calculate_cost_breakdown_by_feedstock(
         chosen_reductant: Selected reductant type (e.g., 'coke', 'natural_gas') to filter
             business cases.
         dynamic_business_cases: List of primary feedstock options with energy requirements.
-        energy_costs: Unused, kept for backward compatibility.
         energy_vopex_breakdown_by_input: Per-charge, per-carrier energy costs in USD per
             tonne of product (FurnaceGroup.energy_vopex_breakdown_by_input) — the bottom-up
             source for the energy columns.
