@@ -817,3 +817,59 @@ class TestCarbonCostRefactoredIntegration:
         }
 
         assert cost_breakdown["carbon_cost_per_unit"] == pytest.approx(1.27912885)
+
+
+def test_get_bom_from_avg_boms_renormalises_after_bio_pci_skip():
+    """A traded bio_pci entry in avg_boms must not deflate the ore demands.
+
+    The TM write-back books every allocated commodity into materials, so charcoal
+    fleets carry bio_pci there and generate_average_boms aggregates it; the
+    reconstruction skips it (not a metallic charge) and must renormalise the
+    surviving ore shares. The biomass cost belongs on the energy side, once.
+    """
+
+    def build_env(avg_bom):
+        env = Environment.__new__(Environment)
+        env.config = Mock()
+        env.config.primary_products = ["hot_metal"]
+        pfs = []
+        for mc, req in [("io_low", 1.6), ("io_mid", 1.5)]:
+            pf = PrimaryFeedstock(metallic_charge=mc, reductant="bio_pci", technology="BF_CHARCOAL")
+            pf.required_quantity_per_ton_of_product = req
+            pf.secondary_feedstock = {}
+            pf.energy_requirements = {"bio_pci": 0.475, "electricity": 100.0}
+            pf.outputs = {"hot_metal": Volumes(1.0)}
+            pfs.append(pf)
+        env.dynamic_feedstocks = {"BF_CHARCOAL": pfs, "bf_charcoal": pfs}
+        env.avg_boms = {"BF_CHARCOAL": avg_bom}
+        env.avg_utilization = {"BF_CHARCOAL": {"utilization_rate": 0.7}}
+        env.energy_costs = {"bio_pci": 660.0, "electricity": 0.09}
+        env.primary_products = ["hot_metal"]
+        return env
+
+    leaky = {
+        "io_low": {"input_share_pct": 0.4, "unit_cost": 100.0},
+        "io_mid": {"input_share_pct": 0.4, "unit_cost": 90.0},
+        "bio_pci": {"input_share_pct": 0.2, "unit_cost": 660.0},
+    }
+    clean = {
+        "io_low": {"input_share_pct": 0.5, "unit_cost": 100.0},
+        "io_mid": {"input_share_pct": 0.5, "unit_cost": 90.0},
+    }
+
+    energy_costs = {"bio_pci": 660.0, "electricity": 0.09}
+    bom_leaky, _, _ = build_env(leaky).get_bom_from_avg_boms(
+        energy_costs=energy_costs, tech="BF_CHARCOAL", capacity=1000.0, most_common_reductant="bio_pci"
+    )
+    bom_clean, _, _ = build_env(clean).get_bom_from_avg_boms(
+        energy_costs=energy_costs, tech="BF_CHARCOAL", capacity=1000.0, most_common_reductant="bio_pci"
+    )
+
+    assert "bio_pci" not in bom_leaky["materials"]
+    for mc in ("io_low", "io_mid"):
+        assert bom_leaky["materials"][mc]["demand"] == pytest.approx(bom_clean["materials"][mc]["demand"])
+    # 0.5 share x 1000 t capacity x 1.6 t/t
+    assert bom_leaky["materials"]["io_low"]["demand"] == pytest.approx(800.0)
+    # Biomass cost appears exactly once, via the energy reconstruction
+    assert bom_leaky["energy"]["bio_pci"]["demand"] == pytest.approx(bom_clean["energy"]["bio_pci"]["demand"])
+    assert bom_leaky["energy"]["bio_pci"]["unit_cost"] == pytest.approx(660.0)

@@ -9170,9 +9170,12 @@ class Environment:
                     f"expected dict, got {type(share_data).__name__}"
                 )
 
-            # (a) Check input_effectiveness
+            # (a) Check input_effectiveness. Energy-like commodities (e.g. traded bio_pci
+            # booked into materials by the TM write-back) are expected here — their cost
+            # comes through the energy reconstruction instead.
             if normalized_feedstock not in input_effectiveness:
-                logger.warning(
+                skip_log = logger.debug if normalized_feedstock in ENERGY_FEEDSTOCK_KEYS else logger.warning
+                skip_log(
                     "[AVG_BOM_DIAG] pf_match: tech=%s mc=%s skipped, not in input_effectiveness (available: %s)",
                     tech,
                     feedstock,
@@ -9260,6 +9263,13 @@ class Environment:
                 tech,
             )
         else:
+            # Renormalise surviving input shares — skipped entries (e.g. bio_pci) must not
+            # deflate the metallic-charge demands they were counted against.
+            total_input_share = sum(data["input_share_pct"] for data in surviving.values())
+            if total_input_share > 0:
+                for data in surviving.values():
+                    data["input_share_pct"] /= total_input_share
+
             # Compute output shares from input shares and effectiveness
             raw_output: dict[str, float] = {}
             for norm_mc, data in surviving.items():
