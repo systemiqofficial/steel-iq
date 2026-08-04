@@ -111,8 +111,8 @@ def mock_environment(bus, country_mappings_for_test, tmp_path):
         "DRI": ["DRI", "EAF", "BOF", "BF"],
         "BF": ["BF", "EAF", "BOF", "DRI"],
     }
-    bus.env.industrial_cost_of_equity = {"USA": 0.08}
-    bus.env.industrial_cost_of_debt = {"USA": 0.04}
+    bus.env.cost_of_equity_by_tech = {"USA": {tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")}}
+    bus.env.cost_of_debt_by_tech = {"USA": {tech: 0.04 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")}}
     bus.env.global_risk_free_rate = 0.02
     bus.env.year = Year(2025)
     bus.env.fopex_by_country = {"USA": {"eaf": 50.0, "bof": 60.0, "dri": 70.0, "bf": 65.0}}
@@ -233,8 +233,8 @@ def test_technology_switching_respects_allowed_techs(mock_environment, plant_wit
         market_price_series=market_price_series,
         region_capex=bus.env.name_to_capex["greenfield"]["Americas"],
         capex_renovation_share={"EAF": 0.7, "BOF": 0.7, "DRI": 0.7, "BF": 0.7},
-        cost_of_debt=0.04,
-        cost_of_equity=0.08,
+        cost_of_debt_by_tech={tech: 0.04 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
+        cost_of_equity_by_tech={tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
         get_bom_from_avg_boms=mock_get_bom,
         probabilistic_agents=False,
         dynamic_business_cases=bus.env.dynamic_feedstocks,
@@ -295,8 +295,8 @@ def test_technology_switching_respects_allowed_techs(mock_environment, plant_wit
         market_price_series=market_price_series,
         region_capex=bus.env.name_to_capex["greenfield"]["Americas"],
         capex_renovation_share={"EAF": 0.7, "BOF": 0.7, "DRI": 0.7, "BF": 0.7},
-        cost_of_debt=0.04,
-        cost_of_equity=0.08,
+        cost_of_debt_by_tech={tech: 0.04 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
+        cost_of_equity_by_tech={tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
         get_bom_from_avg_boms=mock_get_bom,
         probabilistic_agents=False,
         dynamic_business_cases=bus.env.dynamic_feedstocks,
@@ -393,8 +393,8 @@ def test_renovation_respects_allowed_techs(mock_environment, plant_with_bof, pla
         market_price_series=market_price_series,
         region_capex=bus.env.name_to_capex["greenfield"]["Americas"],
         capex_renovation_share={"EAF": 0.7, "BOF": 0.7, "DRI": 0.7, "BF": 0.7},
-        cost_of_debt=0.04,
-        cost_of_equity=0.08,
+        cost_of_debt_by_tech={tech: 0.04 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
+        cost_of_equity_by_tech={tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
         get_bom_from_avg_boms=MagicMock(),
         probabilistic_agents=False,
         dynamic_business_cases=bus.env.dynamic_feedstocks,
@@ -429,8 +429,8 @@ def test_renovation_respects_allowed_techs(mock_environment, plant_with_bof, pla
         market_price_series=market_price_series,
         region_capex=bus.env.name_to_capex["greenfield"]["Americas"],
         capex_renovation_share={"EAF": 0.7, "BOF": 0.7, "DRI": 0.7, "BF": 0.7},
-        cost_of_debt=0.04,
-        cost_of_equity=0.08,
+        cost_of_debt_by_tech={tech: 0.04 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
+        cost_of_equity_by_tech={tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
         get_bom_from_avg_boms=MagicMock(),
         probabilistic_agents=False,
         dynamic_business_cases=bus.env.dynamic_feedstocks,
@@ -480,8 +480,8 @@ def test_no_action_when_no_techs_allowed(mock_environment, plant_with_eaf, plant
             market_price_series=market_price_series,
             region_capex=bus.env.name_to_capex["greenfield"]["Americas"],
             capex_renovation_share={"EAF": 0.7, "BOF": 0.7, "DRI": 0.7, "BF": 0.7},
-            cost_of_debt=0.04,
-            cost_of_equity=0.08,
+            cost_of_debt_by_tech={tech: 0.04 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
+            cost_of_equity_by_tech={tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
             get_bom_from_avg_boms=MagicMock(),
             probabilistic_agents=False,
             dynamic_business_cases=bus.env.dynamic_feedstocks,

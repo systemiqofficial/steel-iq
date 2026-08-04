@@ -826,18 +826,14 @@ class PlantAgentsModel:
                     else:
                         raise KeyError("Region capex not found in bus.env.name_to_capex.")
 
-                    # Get cost of debt for the plant location (before subsidies)
-                    cost_of_debt = bus.env.industrial_cost_of_debt.get(plant.location.iso3)
-                    if cost_of_debt is None:
+                    # Get per-technology financing rates for the plant location (before subsidies)
+                    cost_of_debt_by_tech = bus.env.cost_of_debt_by_tech.get(plant.location.iso3)
+                    if cost_of_debt_by_tech is None:
                         raise ValueError(f"Cost of debt not found for ISO3 code {plant.location.iso3}.")
 
-                    # Get cost of equity for the plant location
-                    cost_of_equity = bus.env.industrial_cost_of_equity.get(plant.location.iso3)
-                    if cost_of_equity is None:
+                    cost_of_equity_by_tech = bus.env.cost_of_equity_by_tech.get(plant.location.iso3)
+                    if cost_of_equity_by_tech is None:
                         raise ValueError(f"Cost of equity not found for ISO3 code {plant.location.iso3}")
-
-                    logger.debug(f"[PAM] Cost of debt for {plant.location.iso3}: {cost_of_debt:.2%}")
-                    logger.debug(f"[PAM] Cost of equity for {plant.location.iso3}: {cost_of_equity:.2%}")
 
                     # Evaluate potential technology switch or renovation for this furnace group
                     # This considers: switching technology, renovating existing technology, or closing the furnace
@@ -847,8 +843,8 @@ class PlantAgentsModel:
                             plant_group=pg,
                             market_price_series=future_price_series,
                             region_capex=region_capex,
-                            cost_of_debt=cost_of_debt,
-                            cost_of_equity=cost_of_equity,
+                            cost_of_debt_by_tech=cost_of_debt_by_tech,
+                            cost_of_equity_by_tech=cost_of_equity_by_tech,
                             capex_renovation_share=capex_renovation_share,
                             get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
                             allowed_furnace_transitions=bus.env.allowed_furnace_transitions,

@@ -347,7 +347,7 @@ def bootstrap_simulation(
         env.initiate_opex_subsidies(subsidies=repository_json.subsidies.list())
         env.initiate_debt_subsidies(subsidies=repository_json.subsidies.list())
         env.initiate_energy_subsidies(subsidies=repository_json.subsidies.list())
-        env.initiate_industrial_asset_cost_of_capital(repository_json.cost_of_capital.list())
+        env.initiate_cost_of_capital(repository_json.cost_of_capital.list())
         env.initiate_grid_emissivity(emissivities=repository_json.region_emissivity.list())
         env.initiate_gas_coke_emissivity(emissivities=repository_json.region_emissivity.list())
         env.set_trade_tariffs(trade_tariffs=repository_json.trade_tariffs.list())
@@ -392,7 +392,7 @@ def bootstrap_simulation(
             env.initiate_country_mappings(country_mappings=repository.country_mappings)
         # Initialize cost of capital if provided
         if hasattr(repository, "cost_of_capital") and repository.cost_of_capital:
-            env.initiate_industrial_asset_cost_of_capital(repository.cost_of_capital)
+            env.initiate_cost_of_capital(repository.cost_of_capital)
         # Initialize empty secondary feedstock constraints for test repositories
         env.initiate_secondary_feedstock_constraints([])
         env.initiate_aggregated_metallic_charge_constraints([])
@@ -474,13 +474,14 @@ def bootstrap_simulation(
     # set cost of debt in furnace groups
     for plant in repository.plants.list():
         for furnace_group in plant.furnace_groups:
-            cost_of_debt = env.industrial_cost_of_debt.get(plant.location.iso3)
+            tech_name = furnace_group.technology.name
+            cost_of_debt = env.cost_of_debt_by_tech.get(plant.location.iso3, {}).get(tech_name)
             if cost_of_debt is None:
                 # For test repositories only (InMemoryRepository), use a default cost of debt if not initialized
                 if isinstance(repository, InMemoryRepository):
                     cost_of_debt = 0.05  # Default 5% cost of debt for tests
                 else:
-                    raise ValueError(f"Cost of debt not found for ISO3: {plant.location.iso3}")
+                    raise ValueError(f"Cost of debt not found for ISO3/tech: {plant.location.iso3}/{tech_name}")
             furnace_group.set_cost_of_debt(cost_of_debt=cost_of_debt, cost_of_debt_no_subsidy=cost_of_debt)
 
     # Set CAPEX in furnace groups (existing logic from current bootstrap)
