@@ -1521,9 +1521,12 @@ class TradeLPModel:
                 bom_commodity_set = set()
 
                 # Loop only over arcs leading into pc_name
+                mask_lower = commodity_mask.lower()
                 for f, t, c in arcs_into_pc:
-                    # Check if commodity matches the pattern (e.g., "hot_metal" in c for mask "hot_metal")
-                    if commodity_mask in c:
+                    # Case-insensitive prefix match (masks come from Excel and may be
+                    # uppercase, e.g. "DRI"; commodity names are always lowercase) —
+                    # same semantics as AggregatedMetallicChargeConstraint.matches_feedstock
+                    if c.lower().startswith(mask_lower):
                         bom_commodity_set.add((f, t, c))
 
                 # Store the sets for this process center and commodity mask
