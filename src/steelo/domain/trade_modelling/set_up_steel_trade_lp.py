@@ -75,6 +75,47 @@ def _ensure_secondary_feedstock_supplier(
     return supplier
 
 
+def get_relevant_feedstocks_for_meta_fg(meta_fg) -> list:
+    """Feedstocks of a meta-furnace-group's dynamic business case that match its chosen reductant.
+
+    No filtering is applied when chosen_reductant is unset or "unknown".
+    """
+    if meta_fg.dynamic_business_case is None:
+        return []
+    if meta_fg.chosen_reductant and meta_fg.chosen_reductant != "unknown":
+        return [fs for fs in meta_fg.dynamic_business_case if fs.reductant == meta_fg.chosen_reductant]
+    return meta_fg.dynamic_business_case
+
+
+def build_energy_costs_per_input(furnace_group: FurnaceGroup) -> dict[str, float]:
+    """Per-facility energy cost per ton of *input*, keyed by metallic charge commodity name.
+
+    Used to override the shared technology-wide Process BOM's energy_cost (which is baked in
+    from whichever furnace group first built that Process) with this specific furnace group's
+    own energy costs.
+    """
+    fg_energy = furnace_group.energy_vopex_by_input
+    return {
+        pf.metallic_charge: fg_energy[pf.metallic_charge] / pf.required_quantity_per_ton_of_product
+        for pf in furnace_group.effective_primary_feedstocks
+        if isinstance(pf.metallic_charge, str)
+        and pf.metallic_charge in fg_energy
+        and pf.required_quantity_per_ton_of_product
+    }
+
+
+def build_energy_costs_per_input_for_meta_fg(meta_fg) -> dict[str, float]:
+    """Capacity-weighted-average analogue of build_energy_costs_per_input for a clustered MetaFurnaceGroup."""
+    energy_costs = meta_fg.weighted_avg_energy_costs
+    return {
+        pf.metallic_charge: energy_costs[pf.metallic_charge] / pf.required_quantity_per_ton_of_product
+        for pf in get_relevant_feedstocks_for_meta_fg(meta_fg)
+        if isinstance(pf.metallic_charge, str)
+        and pf.metallic_charge in energy_costs
+        and pf.required_quantity_per_ton_of_product
+    }
+
+
 def create_process_from_furnace_group(
     furnace_group: FurnaceGroup, lp_model: tlp.TradeLPModel, config: "SimulationConfig"
 ) -> tlp.Process:
@@ -227,13 +268,7 @@ def create_process_from_meta_furnace_group(
             bill_of_materials=[],
         )
 
-    # Filter feedstocks by chosen_reductant (similar to effective_primary_feedstocks property)
-    # Don't filter if chosen_reductant is "unknown" or empty
-    relevant_feedstocks = (
-        [fs for fs in meta_fg.dynamic_business_case if fs.reductant == meta_fg.chosen_reductant]
-        if (meta_fg.chosen_reductant and meta_fg.chosen_reductant != "unknown")
-        else meta_fg.dynamic_business_case
-    )
+    relevant_feedstocks = get_relevant_feedstocks_for_meta_fg(meta_fg)
 
     for primary_feedstock in relevant_feedstocks:
         try:
@@ -373,6 +408,7 @@ def add_furnace_groups_as_process_centers(
                 location=meta_fg.location,  # This is the capacity-weighted centroid
                 production_cost=meta_fg.weighted_avg_carbon_cost,
                 soft_minimum_capacity=config.soft_minimum_capacity_percentage,
+                energy_costs_per_input=build_energy_costs_per_input_for_meta_fg(meta_fg),
             )
             logger.info(
                 f"Created ProcessCenter {process_center.name} with capacity {process_center.capacity} and {len(process.bill_of_materials)} BOMs"
@@ -399,6 +435,7 @@ def add_furnace_groups_as_process_centers(
                     location=plant.location,
                     production_cost=furnace_group.carbon_cost_per_unit,
                     soft_minimum_capacity=config.soft_minimum_capacity_percentage,
+                    energy_costs_per_input=build_energy_costs_per_input(furnace_group),
                 )
                 process_centers.append(process_center)
 

@@ -201,6 +201,7 @@ class ProcessCenter:
         location: Location,
         production_cost: float = 0.0,
         soft_minimum_capacity: float | None = None,
+        energy_costs_per_input: dict[str, float] | None = None,
     ):
         self.name = name
         self.process = process
@@ -209,6 +210,10 @@ class ProcessCenter:
         self.production_cost = production_cost
         self.soft_minimum_capacity = soft_minimum_capacity
         self.optimal_production: float | None = None
+        # Facility-specific energy cost per ton of input, keyed by commodity name. Overrides
+        # the shared Process's BOM-element energy_cost (which is baked in from whichever
+        # furnace group first built that Process) when present. See add_bom_energy_costs_as_parameter_to_lp.
+        self.energy_costs_per_input = energy_costs_per_input
 
     def distance_to_other_processcenter(self, other_processcenter) -> float:
         if (
@@ -949,11 +954,16 @@ class TradeLPModel:
         for process_center in self.process_centers:
             process = process_center.process
             if process is not None and process.type == ProcessType.PRODUCTION:
+                own_costs = process_center.energy_costs_per_input or {}
                 for bom_element in process_center.process.bill_of_materials:
-                    if bom_element.energy_cost is not None:
-                        self.lp_model.bom_energy_costs[process_center.name, bom_element.commodity.name] = (
-                            bom_element.energy_cost
-                        )
+                    commodity_name = bom_element.commodity.name
+                    if commodity_name in own_costs:
+                        # Facility-specific energy cost — the shared Process's BOM was built
+                        # from whichever furnace group created it first, so its energy_cost
+                        # doesn't reflect this particular facility.
+                        self.lp_model.bom_energy_costs[process_center.name, commodity_name] = own_costs[commodity_name]
+                    elif bom_element.energy_cost is not None:
+                        self.lp_model.bom_energy_costs[process_center.name, commodity_name] = bom_element.energy_cost
 
     @time_function
     def add_allocation_costs_as_parameters_to_lp(self):

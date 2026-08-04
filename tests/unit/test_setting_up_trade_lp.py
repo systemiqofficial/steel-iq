@@ -47,13 +47,23 @@ class DummyProcess:
 
 
 class DummyProcessCenter:
-    def __init__(self, name, process, capacity, location, production_cost=0.1, soft_minimum_capacity=0.0):
+    def __init__(
+        self,
+        name,
+        process,
+        capacity,
+        location,
+        production_cost=0.1,
+        soft_minimum_capacity=0.0,
+        energy_costs_per_input=None,
+    ):
         self.production_cost = production_cost
         self.name = name
         self.process = process
         self.capacity = capacity
         self.location = location
         self.soft_minimum_capacity = soft_minimum_capacity
+        self.energy_costs_per_input = energy_costs_per_input
 
 
 class DummyProcessConnector:
@@ -565,6 +575,47 @@ def test_add_furnace_groups_as_process_centers():
     assert pc.capacity == expected_capacity
     # Also check that the process is now in the lp_model processes
     assert "EAF" in lp_model._processes
+
+
+def test_add_furnace_groups_as_process_centers_energy_costs_are_facility_specific():
+    """Two furnace groups sharing a technology reuse the same Process/BOM (built from
+    whichever FG came first), but must each carry their own energy cost override so the
+    LP objective isn't priced on the first FG's energy costs fleet-wide."""
+    feedstock = DummyFeedstock(
+        name="scrap_feed",
+        metallic_charge="scrap",
+        required_quantity=1.0,
+        maximum_share=1.0,
+        minimum_share=0.0,
+        secondary_feedstock={},
+        outputs={"steel": 1.0},
+    )
+    tech = DummyTechnology(name="EAF", dynamic_business_case=[feedstock])
+
+    fg1 = DummyFurnaceGroup(furnace_group_id="fg1", technology=tech, status="operating", capacity=50)
+    fg1.energy_vopex_by_input = {"scrap": 10.0}
+    fg2 = DummyFurnaceGroup(furnace_group_id="fg2", technology=tech, status="operating", capacity=80)
+    fg2.energy_vopex_by_input = {"scrap": 40.0}
+
+    plant1 = DummyPlant(plant_id="plant1", furnace_groups=[fg1])
+    plant2 = DummyPlant(plant_id="plant2", furnace_groups=[fg2])
+    repo = DummyRepository()
+    repo.plants.items = [plant1, plant2]
+    repo.plants.data = {"plant1": plant1, "plant2": plant2}
+
+    lp_model = DummyTradeLPModel()
+    config = create_mock_config()
+
+    add_furnace_groups_as_process_centers(repo, lp_model, config)
+
+    pc1 = next(pc for pc in lp_model.process_centers if pc.name == "fg1")
+    pc2 = next(pc for pc in lp_model.process_centers if pc.name == "fg2")
+
+    # Both furnace groups reuse the same (first-built) shared Process/BOM...
+    assert pc1.process is pc2.process
+    # ...but each ProcessCenter carries its own facility-specific energy cost override.
+    assert pc1.energy_costs_per_input["scrap"] == pytest.approx(10.0)
+    assert pc2.energy_costs_per_input["scrap"] == pytest.approx(40.0)
 
 
 def test_add_demand_centers_as_process_centers():
