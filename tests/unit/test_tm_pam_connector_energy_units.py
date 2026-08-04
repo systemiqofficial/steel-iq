@@ -317,3 +317,109 @@ def test_cost_propagation_is_allocation_order_independent():
 
         # (scrap 500 t x 300 + ore 1600 t x 100) / 1000 t steel = 310 USD/t
         assert connector.G.nodes["bof1"]["unit_cost"]["steel"] == pytest.approx(310.0)
+
+
+def test_utilization_correction_refreshes_shares_and_energy():
+    """After a min-share correction the BOM must stay internally consistent.
+
+    hot_metal fixed at 400 t against a 70 % minimum -> production 1000 -> 571.43 t,
+    scrap 600 -> 171.43 t. demand_share_pct must land exactly on 0.7 / 0.3 and the
+    energy entries must equal demand/req x intensity (quantities) and x vopex (costs)
+    for the corrected mix, not a stale or uniformly scaled copy.
+    """
+    furnace_group = SimpleNamespace(
+        furnace_group_id="plant_bof1",
+        technology=SimpleNamespace(name="BOF", product="steel"),
+        capacity=1000.0,
+        allocated_volumes=1000.0,
+        utilization_rate=1.0,
+        chosen_reductant="none",
+        energy_vopex_breakdown_by_input={
+            "hot_metal": {"electricity": 10.0},
+            "scrap": {"electricity": 20.0},
+        },
+        effective_primary_feedstocks=[
+            SimpleNamespace(
+                metallic_charge="hot_metal",
+                required_quantity_per_ton_of_product=1.0,
+                energy_requirements={"electricity": 0.5},
+                secondary_feedstock={},
+            ),
+            SimpleNamespace(
+                metallic_charge="scrap",
+                required_quantity_per_ton_of_product=1.0,
+                energy_requirements={"electricity": 0.8},
+                secondary_feedstock={},
+            ),
+        ],
+        bill_of_materials={
+            "materials": {
+                "hot_metal": {
+                    "demand": 400.0,
+                    "total_cost": 40_000.0,
+                    "total_material_cost": 40_000.0,
+                    "unit_cost": 40.0,
+                    "unit_material_cost": 40.0,
+                    "product_volume": 1000.0,
+                    "demand_share_pct": 0.4,
+                },
+                "scrap": {
+                    "demand": 600.0,
+                    "total_cost": 30_000.0,
+                    "total_material_cost": 30_000.0,
+                    "unit_cost": 30.0,
+                    "unit_material_cost": 30.0,
+                    "product_volume": 1000.0,
+                    "demand_share_pct": 0.6,
+                },
+            },
+            "energy": {
+                "electricity": {
+                    "demand": 680.0,
+                    "total_cost": 16_000.0,
+                    "unit_cost": 16.0,
+                    "product_volume": 1000.0,
+                }
+            },
+        },
+    )
+    furnace_group.set_allocated_volumes = lambda v: setattr(furnace_group, "allocated_volumes", v)
+
+    connector = TM_PAM_connector(
+        dynamic_feedstocks_classes={},
+        plants=_StubRepo([]),
+        transport_kpis=None,
+    )
+    corrected = connector.correct_utilization_for_supply_constraints(
+        furnace_groups=[furnace_group],
+        bom_issues=[
+            {
+                "fg_id": "plant_bof1",
+                "check": "min_share",
+                "commodity": "hot_metal",
+                "actual_share": 0.4,
+                "required_share": 0.7,
+            }
+        ],
+    )
+    assert corrected == 1
+
+    new_production = 400.0 / 0.7
+    assert furnace_group.allocated_volumes == pytest.approx(new_production)
+
+    materials = furnace_group.bill_of_materials["materials"]
+    assert materials["hot_metal"]["demand"] == pytest.approx(400.0)
+    assert materials["scrap"]["demand"] == pytest.approx(new_production - 400.0)
+    assert materials["hot_metal"]["demand_share_pct"] == pytest.approx(0.7)
+    assert materials["scrap"]["demand_share_pct"] == pytest.approx(0.3)
+    assert materials["scrap"]["total_material_cost"] == pytest.approx(30_000.0 * (new_production - 400.0) / 600.0)
+    assert materials["scrap"]["unit_material_cost"] == pytest.approx(
+        materials["scrap"]["total_material_cost"] / new_production
+    )
+
+    energy = furnace_group.bill_of_materials["energy"]["electricity"]
+    scrap_product_tonnes = new_production - 400.0
+    assert energy["demand"] == pytest.approx(400.0 * 0.5 + scrap_product_tonnes * 0.8)
+    assert energy["total_cost"] == pytest.approx(400.0 * 10.0 + scrap_product_tonnes * 20.0)
+    assert energy["unit_cost"] == pytest.approx(energy["total_cost"] / new_production)
+    assert energy["product_volume"] == pytest.approx(new_production)

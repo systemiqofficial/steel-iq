@@ -1428,6 +1428,9 @@ class TM_PAM_connector:
         4. Keeping the constrained commodity's BOM demand unchanged; scaling all other
            metallic BOM entries down so ``T_new`` is satisfied.
         5. Scaling non-metallic BOM entries with production.
+        6. Refreshing ``demand_share_pct`` and rebuilding the BOM energy entries from the
+           corrected material demands (``demand / req x intensity`` and ``x vopex``), since
+           the metallic mix changes non-uniformly.
 
         For each FG the most-binding violation (smallest ``actual_share / required_share``)
         is used.
@@ -1575,25 +1578,54 @@ class TM_PAM_connector:
                 comm_lower = comm.lower()
                 if comm_lower in constrained_equiv:
                     # Constrained commodity: demand fixed, but unit_cost rises (less output)
-                    pass
+                    scale = 1.0
                 elif comm_lower in METALLIC_COMMODITIES:
                     # Other metallics: reduce to maintain valid share
-                    old_demand = float(info.get("demand", 0.0))
-                    info["demand"] = old_demand * scale_other
-                    if "total_cost" in info:
-                        info["total_cost"] = float(info["total_cost"]) * scale_other
+                    scale = scale_other
                 else:
                     # Non-metallic inputs (iron ore, flux, gases): scale with production
-                    old_demand = float(info.get("demand", 0.0))
-                    info["demand"] = old_demand * scale_production
-                    if "total_cost" in info:
-                        info["total_cost"] = float(info["total_cost"]) * scale_production
+                    scale = scale_production
 
-                # Recompute unit_cost against new production
-                if new_production > 0 and "total_cost" in info:
-                    info["unit_cost"] = float(info["total_cost"]) / new_production
+                info["demand"] = float(info.get("demand", 0.0)) * scale
+                for total_key, unit_key in (
+                    ("total_cost", "unit_cost"),
+                    ("total_material_cost", "unit_material_cost"),
+                ):
+                    if total_key in info:
+                        info[total_key] = float(info[total_key]) * scale
+                        if new_production > 0:
+                            info[unit_key] = info[total_key] / new_production
 
                 info["product_volume"] = new_production
+
+            # The metallic mix changed non-uniformly, so the share weights and the
+            # per-pathway energy legs must be recomputed from the corrected demands —
+            # a single scale factor would misstate both.
+            _ensure_material_shares(materials)
+
+            energy = bom.get("energy", {})
+            if energy:
+                req_by_charge = _required_quantity_by_charge(fg)
+                intensity_by_charge = _energy_intensity_by_charge(fg)
+                vopex_by_charge = {
+                    str(charge).lower(): {normalize_name(c): float(v) for c, v in (carriers or {}).items()}
+                    for charge, carriers in (getattr(fg, "energy_vopex_breakdown_by_input", {}) or {}).items()
+                    if isinstance(charge, str)
+                }
+                for carrier, entry in energy.items():
+                    carrier_demand = 0.0
+                    carrier_cost = 0.0
+                    for charge, info in materials.items():
+                        req = req_by_charge.get(charge.lower())
+                        if not req:
+                            continue
+                        product_tonnes = float(info.get("demand", 0.0)) / req
+                        carrier_demand += product_tonnes * intensity_by_charge.get(charge.lower(), {}).get(carrier, 0.0)
+                        carrier_cost += product_tonnes * vopex_by_charge.get(charge.lower(), {}).get(carrier, 0.0)
+                    entry["demand"] = carrier_demand
+                    entry["total_cost"] = carrier_cost
+                    entry["unit_cost"] = carrier_cost / new_production if new_production > 0 else 0.0
+                    entry["product_volume"] = new_production
 
             corrected += 1
 
