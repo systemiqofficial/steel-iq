@@ -6823,31 +6823,38 @@ class Capex:
     learning_rate: float
 
 
+# Non-technology financing categories in the "Cost of capital" sheet
+RENEWABLES_KEY = "Renewables"
+HYDROGEN_KEY = "Hydrogen"
+
+
+@dataclass(frozen=True)
+class TechFinancingRates:
+    """Financing rates for one (country, technology) pair, as fractions (0.05 = 5%)."""
+
+    cost_of_debt: float
+    cost_of_equity: float
+    cost_of_capital: float
+
+
 class CostOfCapital:
     """
-    Class to handle the cost of capital for different regions.
-    It allows for dynamic updates based on regional cost of capital values.
+    Per-country financing rates, differentiated by technology.
+
+    `techs` maps a technology name (verbatim from the master Excel, matching
+    Technology.name) to its rates; the special keys RENEWABLES_KEY and
+    HYDROGEN_KEY carry the non-steelmaking categories.
     """
 
     def __init__(
         self,
         country: str,
         iso3: str,
-        debt_res: float,
-        equity_res: float,
-        wacc_res: float,
-        debt_other: float,
-        equity_other: float,
-        wacc_other: float,
+        techs: dict[str, TechFinancingRates],
     ) -> None:
         self.country = country
         self.iso3 = iso3
-        self.debt_res = debt_res
-        self.equity_res = equity_res
-        self.wacc_res = wacc_res
-        self.debt_other = debt_other
-        self.equity_other = equity_other
-        self.wacc_other = wacc_other
+        self.techs = techs
 
     def __repr__(self) -> str:
         return f"Cost of Capital: <{self.iso3}>"
@@ -7102,17 +7109,11 @@ class Environment:
 
         # Initialize costs - will be populated during simulation setup
         self.name_to_capex: dict[str, dict[str, dict[str, float]]] = {}  # capex_dict
-        self.res_cost_of_debt: dict[str, float] = {}
-        self.res_cost_of_equity: dict[str, float] = {}
-        self.res_wacc: dict[str, float] = {}
-        self.industrial_cost_of_debt: dict[str, float] = {}
-        self.industrial_cost_of_equity: dict[str, float] = {}
-        self.industrial_wacc: dict[str, float] = {}
+        # iso3 -> technology name -> rate (fraction); includes RENEWABLES_KEY/HYDROGEN_KEY entries
+        self.cost_of_debt_by_tech: dict[str, dict[str, float]] = {}
+        self.cost_of_equity_by_tech: dict[str, dict[str, float]] = {}
         self.railway_costs: list[RailwayCost] = []
         self.dynamic_feedstock_cost: dict[str, float] = {}
-        # self.cost_of_capital = self.initiate_industrial_asset_cost_of_capital(
-        #     cost_of_x_csv=cost_of_x_csv, default_coc=default_coc
-        # )
 
         # Initialize CarbonCostService for centralized carbon cost calculations
         self.carbon_cost_service = CarbonCostService(self.config.chosen_emissions_boundary_for_carbon_costs)
@@ -7627,9 +7628,9 @@ class Environment:
 
             for furnace_group in plant.furnace_groups:
                 # Set the cost of debt in the furnace groups
-                cost_of_debt = self.industrial_cost_of_debt.get(plant_iso3)
+                cost_of_debt = self.cost_of_debt_by_tech.get(plant_iso3, {}).get(furnace_group.technology.name)
                 if cost_of_debt is None:
-                    raise ValueError(f"Industrial cost of debt cannot be set for ISO3 code {plant_iso3}")
+                    raise ValueError(f"Cost of debt cannot be set for {plant_iso3}/{furnace_group.technology.name}")
 
                 cost_of_debt_no_subsidy = cost_of_debt  # Store original cost of debt before subsidy
                 cost_of_debt = calculate_debt_with_subsidies(
@@ -7785,28 +7786,28 @@ class Environment:
         total_switched = sum(switched_volumes, Volumes(0))
         return Volumes(total_added + total_switched)
 
-    def initiate_industrial_asset_cost_of_capital(self, cost_of_capital_list: list[CostOfCapital]) -> None:
+    def initiate_cost_of_capital(self, cost_of_capital_list: list[CostOfCapital]) -> None:
         """
-        Initialize the cost of capital for the environment.
+        Initialise the per-country, per-technology financing-rate dicts.
 
         Args:
-            cost_of_capital_list (list[CostOfCapital]): A list of CostOfCapital objects to be added to the environment.
+            cost_of_capital_list (list[CostOfCapital]): One entry per country with per-tech rates.
         Returns:
             None
         Side Effects:
-            Updates the `cost_of_capital` dictionary to map ISO3 codes to their respective cost
+            Populates `cost_of_debt_by_tech` and `cost_of_equity_by_tech` (iso3 -> tech -> rate).
         """
-
-        self.industrial_cost_of_debt = {c.iso3: c.debt_other for c in cost_of_capital_list}  # FIXME tomorrow @Marcus
-        self.industrial_cost_of_equity = {c.iso3: c.equity_other for c in cost_of_capital_list}
-        self.industrial_wacc = {
-            c.iso3: c.wacc_other for c in cost_of_capital_list
-        }  # Weighted Average Cost of Capital for industrial assets
-        self.res_cost_of_debt = {c.iso3: c.debt_res for c in cost_of_capital_list}
-        self.res_cost_of_equity = {
-            c.iso3: c.equity_res for c in cost_of_capital_list
-        }  # Cost of equity for residential assets
-        self.res_wacc = {c.iso3: c.wacc_res for c in cost_of_capital_list}  # Weighted Average Cost
+        self.cost_of_debt_by_tech = {
+            c.iso3: {tech: rates.cost_of_debt for tech, rates in c.techs.items()} for c in cost_of_capital_list
+        }
+        self.cost_of_equity_by_tech = {
+            c.iso3: {tech: rates.cost_of_equity for tech, rates in c.techs.items()} for c in cost_of_capital_list
+        }
+        tech_counts = {len(techs) for techs in self.cost_of_debt_by_tech.values()}
+        logging.getLogger(f"{__name__}.initiate_cost_of_capital").info(
+            f"Initialised cost of capital for {len(self.cost_of_debt_by_tech)} countries "
+            f"with {sorted(tech_counts)} techs each"
+        )
 
     def set_input_cost_in_furnace_groups(self, world_plants: list[Plant]) -> None:
         """

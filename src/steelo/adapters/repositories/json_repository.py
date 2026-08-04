@@ -33,6 +33,7 @@ from ...domain import (
     RegionEmissivity,
     Capex,
     CostOfCapital,
+    TechFinancingRates,
     RailwayCost,
     Subsidy,
 )
@@ -1901,15 +1902,16 @@ class CapexJsonRepository:
         return "[\n" + ",\n".join(json_lines) + "\n]"
 
 
+class TechFinancingRatesInDb(BaseModel):
+    cost_of_debt: float
+    cost_of_equity: float
+    cost_of_capital: float
+
+
 class CostOfCapitalInDb(BaseModel):
     country: str
     iso3: str
-    debt_res: float
-    equity_res: float
-    wacc_res: float
-    debt_other: float
-    equity_other: float
-    wacc_other: float
+    techs: dict[str, TechFinancingRatesInDb]
 
     def __lt__(self, other: "CostOfCapitalInDb") -> bool:
         return self.iso3 < other.iso3
@@ -1919,12 +1921,14 @@ class CostOfCapitalInDb(BaseModel):
         return CostOfCapital(
             country=self.country,
             iso3=self.iso3,
-            debt_res=self.debt_res,
-            equity_res=self.equity_res,
-            wacc_res=self.wacc_res,
-            debt_other=self.debt_other,
-            equity_other=self.equity_other,
-            wacc_other=self.wacc_other,
+            techs={
+                tech: TechFinancingRates(
+                    cost_of_debt=rates.cost_of_debt,
+                    cost_of_equity=rates.cost_of_equity,
+                    cost_of_capital=rates.cost_of_capital,
+                )
+                for tech, rates in self.techs.items()
+            },
         )
 
     @classmethod
@@ -1932,12 +1936,14 @@ class CostOfCapitalInDb(BaseModel):
         return cls(
             country=domain.country,
             iso3=domain.iso3,
-            debt_res=domain.debt_res,
-            equity_res=domain.equity_res,
-            wacc_res=domain.wacc_res,
-            debt_other=domain.debt_other,
-            equity_other=domain.equity_other,
-            wacc_other=domain.wacc_other,
+            techs={
+                tech: TechFinancingRatesInDb(
+                    cost_of_debt=rates.cost_of_debt,
+                    cost_of_equity=rates.cost_of_equity,
+                    cost_of_capital=rates.cost_of_capital,
+                )
+                for tech, rates in domain.techs.items()
+            },
         )
 
 
