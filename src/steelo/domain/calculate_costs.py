@@ -366,6 +366,14 @@ def calculate_cost_breakdown_by_feedstock(
             all_outputs = {**(dbc.outputs or {}), **(dbc.carbon_outputs or {})}
             primary_output_keys = set(dbc.get_primary_outputs().keys())
             physical_output_keys = set(normalize_name(k) for k in (dbc.outputs or {}).keys())
+            # By-product amounts are per tonne of product -> weight by product share, not input share.
+            req_qty = dbc.required_quantity_per_ton_of_product
+            if all_outputs and not req_qty:
+                raise ValueError(
+                    f"Feedstock {dbc.name} has outputs but no required_quantity_per_ton_of_product "
+                    "to derive its product share with"
+                )
+            product_share = demand_share / req_qty if req_qty else 0.0
             if all_outputs:
                 logger.debug(
                     "outputs for %s: all=%s primary(excluded)=%s",
@@ -391,14 +399,14 @@ def calculate_cost_breakdown_by_feedstock(
                         effective_price = -abs(raw_price)  # revenue
                 else:
                     effective_price = raw_price  # carbon outputs keep sign
-                revenue = amount * effective_price * demand_share
+                revenue = amount * effective_price * product_share
                 logger.debug(
-                    "[COST BREAKDOWN] output '%s'%s: amount=%.4f x price=$%.4f x share=%.4f = $%.4f",
+                    "[COST BREAKDOWN] output '%s'%s: amount=%.4f x price=$%.4f x product_share=%.4f = $%.4f",
                     normalized_output,
                     " [disposal]" if disposal_cost_outputs and normalized_output in disposal_cost_outputs else "",
                     amount,
                     effective_price,
-                    demand_share,
+                    product_share,
                     revenue,
                 )
                 feed_breakdown[normalized_output] = feed_breakdown.get(normalized_output, 0.0) + revenue
@@ -1918,7 +1926,8 @@ def calculate_cost_adjustments_from_secondary_outputs(
     """
     Calculate per-unit cost adjustments from secondary outputs (by-products).
 
-    The adjustment is expressed in USD per tonne of product. Revenues from by-products will
+    The adjustment is expressed in USD per tonne of product, weighting each feedstock pathway
+    by its product share (demand / required_quantity). Revenues from by-products will
     return negative values (reducing production cost) while additional costs will return positive
     values.
 
@@ -1956,11 +1965,10 @@ def calculate_cost_adjustments_from_secondary_outputs(
         if material_volume <= 0:
             continue
 
-        product_volume = material_data.get("product_volume")
-        if (product_volume is None or product_volume <= 0) and getattr(dbc, "required_quantity_per_ton_of_product", 0):
-            required_qty = dbc.required_quantity_per_ton_of_product
-            if required_qty:
-                product_volume = material_volume / required_qty
+        # This pathway's own product contribution — the BOM's product_volume is the furnace
+        # group's TOTAL production, which would weight every pathway equally.
+        required_qty = getattr(dbc, "required_quantity_per_ton_of_product", None)
+        product_volume = material_volume / required_qty if required_qty else material_data.get("product_volume")
         if product_volume is None or product_volume <= 0:
             continue
 
