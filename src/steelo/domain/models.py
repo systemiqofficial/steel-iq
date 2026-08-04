@@ -2287,8 +2287,8 @@ class FurnaceGroup:
     def optimal_technology_name(
         self,
         market_price_series: dict[str, list[float]],
-        cost_of_debt: float,
-        cost_of_equity: float,
+        cost_of_debt_by_tech: dict[str, float],
+        cost_of_equity_by_tech: dict[str, float],
         get_bom_from_avg_boms: Callable[
             [dict[str, float], str, float, str | None], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]
         ],
@@ -2327,8 +2327,10 @@ class FurnaceGroup:
 
         Args:
             market_price_series (dict[str, list[float]]): Future market prices for steel and iron in $/tonne.
-            cost_of_debt (float): Interest rate for debt financing (decimal, e.g., 0.05 for 5%).
-            cost_of_equity (float): Expected return rate for equity financing (decimal).
+            cost_of_debt_by_tech (dict[str, float]): Interest rate for debt financing per technology (decimal),
+                for this plant's country; each candidate is financed at its own rate.
+            cost_of_equity_by_tech (dict[str, float]): Expected return rate for equity financing per technology
+                (decimal), for this plant's country.
             get_bom_from_avg_boms (Callable): Function that retrieves average BOM for a technology.
             capex_dict (dict[str, float]): Capital expenditure per tonne of capacity for each technology ($/tonne).
             capex_renovation_share (dict[str, float]): Share of full capex required for renovating existing technology
@@ -2475,12 +2477,16 @@ class FurnaceGroup:
         logger.debug(f"[OPTIMAL TECH] Price series ($/t): {market_price_series.get(self.technology.product)}")
 
         # COSA = foregone operating margin only; remaining debt is excluded (carried by the legacy-debt schedule).
+        # Discounted at the incumbent technology's cost of equity.
+        incumbent_cost_of_equity = cost_of_equity_by_tech.get(self.technology.name)
+        if incumbent_cost_of_equity is None:
+            raise ValueError(f"No cost of equity data for technology {self.technology.name}")
         cosa = stranding_asset_cost(
             unit_total_opex_list=unit_opex_carbon_costs,
             remaining_time=self.lifetime.remaining_number_of_years,
             market_price_series=market_price_series[self.technology.product],
             expected_production=self.production,
-            cost_of_equity=cost_of_equity,
+            cost_of_equity=incumbent_cost_of_equity,
         )
 
         logger.debug(f"[OPTIMAL TECH] COSA (foregone operating margin): ${cosa:,.0f}")
@@ -2688,9 +2694,14 @@ class FurnaceGroup:
                     end_year=Year(current_year + construction_time + plant_lifetime),
                 )
 
-                # Apply debt subsidies to cost of debt
+                # Apply debt subsidies to this technology's own cost of debt
                 npv_capex_dict[tech] = capex
-                original_cost_of_debt = cost_of_debt
+                original_cost_of_debt = cost_of_debt_by_tech.get(tech)
+                if original_cost_of_debt is None:
+                    raise ValueError(f"No cost of debt data for technology {tech}")
+                cost_of_equity = cost_of_equity_by_tech.get(tech)
+                if cost_of_equity is None:
+                    raise ValueError(f"No cost of equity data for technology {tech}")
                 cost_of_debt = calculate_debt_with_subsidies(
                     cost_of_debt=original_cost_of_debt,
                     debt_subsidies=debt_subsidies,
@@ -3803,8 +3814,8 @@ class Plant:
         market_price_series: dict,
         region_capex: dict[str, float],
         capex_renovation_share: dict[str, float],
-        cost_of_debt: float,
-        cost_of_equity: float,
+        cost_of_debt_by_tech: dict[str, float],
+        cost_of_equity_by_tech: dict[str, float],
         get_bom_from_avg_boms: Callable[
             [dict[str, float], str, float, str | None], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]
         ],
@@ -3861,8 +3872,8 @@ class Plant:
             market_price_series: Time series of market prices for relevant commodities
             region_capex: Capital costs by technology for the region ($/tonne capacity), without subsidies
             capex_renovation_share: Fraction of greenfield CAPEX needed for renovation by technology (0-1)
-            cost_of_debt: Interest rate for debt financing (before subsidies)
-            cost_of_equity: Required return on equity (risk premium above risk-free rate)
+            cost_of_debt_by_tech: Interest rate for debt financing by technology (before subsidies), for this plant's country
+            cost_of_equity_by_tech: Required return on equity by technology, for this plant's country
             get_bom_from_avg_boms: Function to retrieve bill of materials for technologies
             probabilistic_agents: Whether to use probabilistic (weighted random) decision making
             dynamic_business_cases: Technology-specific feedstock options mapping technology names to primary feedstocks
@@ -3996,8 +4007,8 @@ class Plant:
         logger.debug(f"[FG STRATEGY] Fixed opex for technologies: {self.technology_unit_fopex}")
         tech_npv_dict, npv_capex_dict, cosa, bom_dict = furnace_group.optimal_technology_name(
             market_price_series=market_price_series,
-            cost_of_debt=cost_of_debt,
-            cost_of_equity=cost_of_equity,
+            cost_of_debt_by_tech=cost_of_debt_by_tech,
+            cost_of_equity_by_tech=cost_of_equity_by_tech,
             get_bom_from_avg_boms=get_bom_from_avg_boms,
             allowed_furnace_transitions=filtered_allowed_furnace_transitions,
             capex_dict=region_capex,
@@ -4167,6 +4178,10 @@ class Plant:
         all_debt_subs = tech_debt_subsidies.get(best_tech, [])
         capex_subs = filter_subsidies_for_year(all_capex_subs, current_year)
         debt_subs = filter_subsidies_for_year(all_debt_subs, current_year)
+
+        cost_of_debt = cost_of_debt_by_tech.get(best_tech)
+        if cost_of_debt is None:
+            raise ValueError(f"No cost of debt data for technology {best_tech} at plant {self.plant_id}")
 
         cost_of_debt_with_subsidies = calculate_debt_with_subsidies(
             cost_of_debt=cost_of_debt,

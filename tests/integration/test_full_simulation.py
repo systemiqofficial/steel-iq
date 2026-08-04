@@ -44,7 +44,14 @@ def setup_test_fixtures(monkeypatch):
         # Create cost_of_capital.json with DEU data
         cost_of_capital_data = {
             "root": [
-                {"iso3": "DEU", "cost_of_debt": 0.04, "cost_of_equity": 0.08, "start_year": 2025, "end_year": 2030}
+                {
+                    "country": "Germany",
+                    "iso3": "DEU",
+                    "techs": {
+                        tech: {"cost_of_debt": 0.04, "cost_of_equity": 0.08, "cost_of_capital": 0.048}
+                        for tech in ("EAF", "BF", "BOF", "DRI")
+                    },
+                }
             ]
         }
         import json
@@ -170,18 +177,14 @@ def runner_with_synthetic_data(synthetic_config):
     repository.country_mappings = country_mappings
 
     # Add cost of capital data (needed by bootstrap_simulation)
-    from steelo.domain.models import CostOfCapital
+    from steelo.domain.models import CostOfCapital, TechFinancingRates
 
+    rates = TechFinancingRates(cost_of_debt=0.04, cost_of_equity=0.08, cost_of_capital=0.048)
     cost_of_capital_data = [
         CostOfCapital(
             country="Germany",
             iso3="DEU",
-            debt_res=0.04,
-            equity_res=0.08,
-            wacc_res=0.06,
-            debt_other=0.04,
-            equity_other=0.08,
-            wacc_other=0.06,
+            techs={tech: rates for tech in ("EAF", "BF", "BOF", "DRI")},
         )
     ]
     repository.cost_of_capital = cost_of_capital_data
@@ -198,19 +201,15 @@ def runner_with_synthetic_data(synthetic_config):
     runner.bus.env.country_mappings = CountryMappingService(country_mappings)
 
     # Initialize cost of capital data (needed for setting cost of debt in furnace groups)
+    env_rates = TechFinancingRates(cost_of_debt=0.05, cost_of_equity=0.10, cost_of_capital=0.06)
     cost_of_capital_list = [
         CostOfCapital(
             country="Germany",
             iso3="DEU",
-            debt_res=0.04,
-            equity_res=0.08,
-            wacc_res=0.06,
-            debt_other=0.05,  # This is used as industrial_cost_of_debt
-            equity_other=0.10,
-            wacc_other=0.075,
+            techs={tech: env_rates for tech in ("EAF", "BF", "BOF", "DRI")},
         )
     ]
-    runner.bus.env.initiate_industrial_asset_cost_of_capital(cost_of_capital_list)
+    runner.bus.env.initiate_cost_of_capital(cost_of_capital_list)
 
     # Initialize capex data in the environment (needed by update_capex)
     capex_list = [
