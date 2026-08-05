@@ -4050,7 +4050,8 @@ class Plant:
         )
 
         # ===== STAGE 7: Technology selection =====
-        # Use weighted random selection if current tech is not optimal
+        # If current tech is not optimal, pick an alternative: weighted random when
+        # probabilistic_agents, otherwise the max-NPV option
         if not is_current_best:
             logger.debug("[FG STRATEGY] Current technology is not optimal, selecting alternative")
 
@@ -4064,16 +4065,19 @@ class Plant:
                 logger.warning(f"[FG STRATEGY] No valid NPV values found for plant {self.plant_id}")
                 return None
 
-            # Weighted random selection based on NPV (negative NPVs get zero weight)
             weights = [max(v, 0) for v in valid_techs.values()]
-            formatted_dict = {k: f"{v:,.0f}" for k, v in zip(valid_techs.keys(), weights)}
-            logger.debug(f"[FG STRATEGY] Selection weights: {formatted_dict}")
-
             if sum(weights) < 0.0001:
                 return None
 
-            best_tech = random.choices(population=list(valid_techs.keys()), weights=weights, k=1)[0]
-            logger.debug(f"[FG STRATEGY] Selected technology: {best_tech} (weighted random)")
+            if probabilistic_agents:
+                # Weighted random selection based on NPV (negative NPVs get zero weight)
+                formatted_dict = {k: f"{v:,.0f}" for k, v in zip(valid_techs.keys(), weights)}
+                logger.debug(f"[FG STRATEGY] Selection weights: {formatted_dict}")
+                best_tech = random.choices(population=list(valid_techs.keys()), weights=weights, k=1)[0]
+                logger.debug(f"[FG STRATEGY] Selected technology: {best_tech} (weighted random)")
+            else:
+                best_tech = max(valid_techs, key=lambda k: valid_techs[k])
+                logger.debug(f"[FG STRATEGY] Selected technology: {best_tech} (deterministic, max NPV)")
         else:
             logger.debug("[FG STRATEGY] Current technology is already optimal")
             best_tech = current_tech
