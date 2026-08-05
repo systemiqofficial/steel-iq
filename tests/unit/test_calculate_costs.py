@@ -105,6 +105,36 @@ def test_cost_adjustments_ignore_secondary_feedstocks_and_use_product_volume():
     assert pytest.approx(adjustment, 1e-9) == -10.0
 
 
+def test_cost_adjustments_raise_without_required_quantity():
+    """A matched pathway without required_quantity_per_ton_of_product cannot derive its
+    product contribution and must fail loudly instead of falling back to total production."""
+
+    class DummyDBC:
+        def __init__(self):
+            self.metallic_charge = "io_low"
+            self.outputs = {"slag": 1.0}
+            self.carbon_outputs: dict[str, float] = {}
+            self.reductant = "coke"
+            self.required_quantity_per_ton_of_product = 0.0
+
+    bill_of_materials = {
+        "materials": {
+            "io_low": {
+                "demand": 1611.0,
+                "total_cost": 0.0,
+                "product_volume": 1000.0,
+            }
+        },
+    }
+
+    with pytest.raises(ValueError, match="io_low.*required_quantity_per_ton_of_product"):
+        calculate_cost_adjustments_from_secondary_outputs(
+            bill_of_materials=bill_of_materials,
+            dynamic_business_cases=[DummyDBC()],
+            output_costs={"slag": -10.0},
+        )
+
+
 def test_empty_materials_demand_cost():
     # Test with empty materials_demand_cost - should return only energy unit cost
     # Note: Function now expects product_volume and total_cost for energy costs

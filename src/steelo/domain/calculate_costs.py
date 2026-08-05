@@ -278,7 +278,9 @@ def calculate_cost_breakdown_by_feedstock(
         material_unit_cost = _coerce_to_float(material_entry.get("unit_material_cost")) or 0.0
         feed_breakdown["material cost (incl. transport and tariffs)"] = material_unit_cost
 
-        demand_share = _coerce_to_float(material_entry.get("demand_share_pct", 1.0)) or 1.0
+        demand_share = _coerce_to_float(material_entry.get("demand_share_pct"))
+        if demand_share is None:
+            demand_share = 1.0
 
         # Energy vopex and by-product amounts are per tonne of product -> weight by the
         # pathway's product share, not its input-tonne share.
@@ -405,7 +407,9 @@ def calculate_carbon_breakdown_by_feedstock(
             continue
 
         material_entry = bill_of_materials["materials"][metallic_charge_lower]
-        demand_share = _coerce_to_float(material_entry.get("demand_share_pct", 1.0)) or 1.0
+        demand_share = _coerce_to_float(material_entry.get("demand_share_pct"))
+        if demand_share is None:
+            demand_share = 1.0
 
         feed_carbon: dict[str, float] = {}
 
@@ -1906,9 +1910,12 @@ def calculate_cost_adjustments_from_secondary_outputs(
         # This pathway's own product contribution — the BOM's product_volume is the furnace
         # group's TOTAL production, which would weight every pathway equally.
         required_qty = getattr(dbc, "required_quantity_per_ton_of_product", None)
-        product_volume = material_volume / required_qty if required_qty else material_data.get("product_volume")
-        if product_volume is None or product_volume <= 0:
-            continue
+        if not required_qty:
+            raise ValueError(
+                f"Feedstock {dbc.metallic_charge} ({dbc.reductant}) has no "
+                "required_quantity_per_ton_of_product to derive its product volume with"
+            )
+        product_volume = material_volume / required_qty
 
         total_product_volume += product_volume
 
