@@ -2415,7 +2415,7 @@ class FurnaceGroup:
         applied_opex_subsidies = collect_active_subsidies_over_period(
             tech_opex_subsidies.get(self.technology.name, []),
             start_year=Year(current_year),
-            end_year=Year(current_year + self.lifetime.end),
+            end_year=self.lifetime.end,
         )
 
         # Calculate unit OPEX with subsidies (without carbon costs yet)

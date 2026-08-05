@@ -787,7 +787,8 @@ def calculate_debt_repayment(
 
     Returns:
         list[float]: List of yearly repayment amounts (principal + interest) for the remaining lifetime.
-            Returns list of zeros if there is no debt (equity_share = 1.0).
+            Returns list of zeros if there is no debt (equity_share = 1.0), and an empty list once the
+            loan is fully repaid (lifetime_remaining <= 0).
 
     Note:
         - The repayment method uses constant principal payments with declining interest (not constant annuity payments).
@@ -798,6 +799,9 @@ def calculate_debt_repayment(
     if lifetime_remaining is None:
         lifetime_remaining = lifetime
 
+    if lifetime_remaining <= 0:
+        return []
+
     # Calculate total debt (investment minus equity portion)
     debt = total_investment * (1 - equity_share)
 
@@ -805,8 +809,8 @@ def calculate_debt_repayment(
     if debt == 0:
         total_repayment_list = [0.0] * lifetime
     else:
-        # Create schedule with constant principal repayments
-        capital_repayment_list = [debt / lifetime] * lifetime_remaining
+        # Amortise over the full lifetime so the tail slice reflects the debt already repaid
+        capital_repayment_list = [debt / lifetime] * lifetime
         total_repayment_list = []
 
         # Calculate total repayment (principal + interest) for each year
