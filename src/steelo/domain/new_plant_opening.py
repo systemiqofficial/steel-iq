@@ -349,9 +349,12 @@ def prepare_cost_data_for_business_opportunity(
                             int(steel_plant_capacity),
                             committed_reductant,
                         )
-                        if rebuilt_bom is not None:
-                            bill_of_materials = rebuilt_bom
-                            cost_data[prod][site_id][tech]["utilization_rate"] = rebuilt_util_rate
+                        if rebuilt_bom is None:
+                            raise ValueError(
+                                f"BOM rebuild for {tech} with reductant '{committed_reductant}' returned no BOM"
+                            )
+                        bill_of_materials = rebuilt_bom
+                        cost_data[prod][site_id][tech]["utilization_rate"] = rebuilt_util_rate
                     cost_data[prod][site_id][tech]["bom"] = bill_of_materials
                     cost_data[prod][site_id][tech]["reductant"] = committed_reductant  # type: ignore[assignment]
                     cost_data[prod][site_id][tech]["score_series"] = score_series.scores  # type: ignore[assignment]

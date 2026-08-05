@@ -3,6 +3,8 @@ energy subsidies, B5 total-cost annual re-pick)."""
 
 from datetime import date
 
+import pytest
+
 from steelo.domain.models import (
     Environment,
     FurnaceGroup,
@@ -292,6 +294,97 @@ def test_expansion_candidate_priced_without_incumbent_subsidy():
     # EAF candidate has no energy subsidy: pure unsubsidised prices.
     assert captured["EAF"]["coke"] == 300.0
     assert captured["EAF"]["hydrogen"] == 5000.0
+
+
+# ── B3 commit paths: a failed BOM rebuild must raise, not silently keep ──────
+
+
+def _none_on_committed_rebuild(committed: str):
+    """Mock get_bom_from_avg_boms: valid coal BOM initially, None on the rebuild
+    call that carries the committed reductant."""
+
+    def mock_get_bom(energy_costs, tech, _capacity, reductant=None):
+        if reductant == committed:
+            return (None, 0.9, committed, {"iron_ore": 1.0})
+        return (
+            {
+                "materials": {"iron_ore": {"unit_cost": 100.0, "demand": 1.0}},
+                "energy": {"coke": {"unit_cost": 300.0, "demand": 0.4}},
+            },
+            0.9,
+            "coal",
+            {"iron_ore": 1.0},
+        )
+
+    return mock_get_bom
+
+
+def test_switch_rebuild_returning_no_bom_raises():
+    """optimal_technology_name fails loudly when the committed-reductant BOM
+    rebuild returns no BOM (previously a silent keep with clobbered
+    util_rate/reductant/output_shares)."""
+    fg = _make_fg("fg1", "BF", "coke")
+    fg.technology = Technology(name="BF", product="iron")
+    fg.bill_of_materials = {
+        "materials": {"iron_ore": {"unit_cost": 100.0, "demand": 1.0}},
+        "energy": {"coke": {"unit_cost": 300.0, "demand": 0.4}},
+    }
+    fg.set_energy_costs(coke=300.0, hydrogen=5000.0)
+
+    with pytest.raises(ValueError, match="BOM rebuild"):
+        fg.optimal_technology_name(
+            market_price_series={"steel": [500.0] * 30, "iron": [400.0] * 30},
+            cost_of_debt_by_tech={"BF": 0.05, "DRI": 0.05},
+            cost_of_equity_by_tech={"BF": 0.1, "DRI": 0.1},
+            get_bom_from_avg_boms=_none_on_committed_rebuild("hydrogen"),
+            score_series_for_tech=_stub_score_series,
+            capex_dict={"DRI": 500.0},
+            capex_renovation_share={},
+            technology_fopex_dict={"dri": 50.0},
+            dynamic_business_cases={},
+            chosen_emissions_boundary_for_carbon_costs="Scope 1",
+            technology_emission_factors=[],
+            tech_to_product={"DRI": "iron"},
+            plant_lifetime=20,
+            construction_time=2,
+            current_year=Year(2025),
+            risk_free_rate=0.02,
+            allowed_furnace_transitions={"BF": ["DRI"]},
+        )
+
+
+def test_expansion_rebuild_returning_no_bom_raises():
+    """evaluate_expansion_options fails loudly when the committed-reductant BOM
+    rebuild returns no BOM."""
+    fg = _make_fg("fg1", "BF", "coke")
+    fg.set_energy_costs(coke=300.0, hydrogen=5000.0, electricity=0.05)
+    plant = _make_dri_plant(fg)
+    pg = PlantGroup(plant_group_id="pg1", plants=[plant])
+    pg.balance = 1e12
+
+    with pytest.raises(ValueError, match="BOM rebuild"):
+        pg.evaluate_expansion_options(
+            price_series={"steel": [500.0] * 30, "iron": [400.0] * 30},
+            capacity=Volumes(1000.0),
+            region_capex={"Region": {"DRI": 500.0, "EAF": 400.0}},
+            cost_of_debt_dict={"NZL": {"DRI": 0.05, "EAF": 0.05}},
+            cost_of_equity_dict={"NZL": {"DRI": 0.1, "EAF": 0.1}},
+            get_bom_from_avg_boms=_none_on_committed_rebuild("hydrogen"),
+            reductant_score_series=lambda *a, **k: ReductantScoreSeries(scores=[0.0] * 20, picks=["hydrogen"] * 20),
+            dynamic_feedstocks={},
+            fopex_for_iso3={"NZL": {"dri": 50.0, "eaf": 40.0}},
+            iso3_to_region_map={"NZL": "Region"},
+            chosen_emissions_boundary_for_carbon_costs="Scope 1",
+            technology_emission_factors=[],
+            global_risk_free_rate=0.02,
+            equity_share=0.3,
+            tech_to_product={"DRI": "iron", "EAF": "steel"},
+            plant_lifetime=20,
+            construction_time=2,
+            current_year=Year(2025),
+            allowed_techs={Year(2025): ["DRI", "EAF"]},
+            active_statuses=["operating"],
+        )
 
 
 # ── B5: secondary-output adjustment helper equivalence ───────────────────────

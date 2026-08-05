@@ -217,3 +217,40 @@ def test_site_overrides_follow_the_country_trajectory(tmp_path: Path) -> None:
     country_2027 = env.input_costs["AAA"][Year(2027)]["electricity"]
 
     assert input_2027["electricity"] == pytest.approx(site_electricity * country_2027 / country_2025)
+
+
+def test_override_reference_ignores_reference_year_subsidies(tmp_path: Path) -> None:
+    """A subsidy active in the reference year must not leak into the override scaling ratio.
+
+    The trajectory ratio country_t / country_ref is defined on unsubsidised prices;
+    a candidate electricity subsidy live in the reference year previously deflated
+    the denominator and inflated every scaled year.
+    """
+    env = _make_env(tmp_path, carbon_by_year={y: 0.0 for y in range(2025, 2031)})
+    env.initiate_energy_subsidies(
+        [
+            Subsidy(
+                scenario_name="test",
+                iso3="AAA",
+                start_year=Year(2025),
+                end_year=Year(2025),
+                technology_name="DRI",
+                cost_item="electricity",
+                subsidy_type="relative",
+                subsidy_amount=0.5,
+            )
+        ]
+    )
+    site_electricity = 0.05
+    input_2027, _ = env.candidate_energy_costs_for_year(
+        LOCATION,
+        "DRI",
+        Year(2027),
+        overrides={"electricity": site_electricity},
+        override_reference_year=Year(2025),
+    )
+    country_2025 = env.input_costs["AAA"][Year(2025)]["electricity"]
+    country_2027 = env.input_costs["AAA"][Year(2027)]["electricity"]
+
+    # Subsidy expired by 2027: the scaled price is exactly the unsubsidised ratio.
+    assert input_2027["electricity"] == pytest.approx(site_electricity * country_2027 / country_2025)

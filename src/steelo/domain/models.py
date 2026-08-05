@@ -2676,8 +2676,11 @@ class FurnaceGroup:
                     rebuilt_bom, util_rate, reductant, output_shares = get_bom_from_avg_boms(
                         candidate_energy_costs, tech, self.capacity, committed_reductant
                     )
-                    if rebuilt_bom is not None:
-                        bill_of_materials = rebuilt_bom
+                    if rebuilt_bom is None:
+                        raise ValueError(
+                            f"BOM rebuild for {tech} with reductant '{committed_reductant}' returned no BOM"
+                        )
+                    bill_of_materials = rebuilt_bom
                 bom_dict[tech] = bill_of_materials
                 reductant_dict[tech] = committed_reductant
 
@@ -5513,8 +5516,11 @@ class PlantGroup:
                     rebuilt_bom, util_rate, reductant, output_shares = get_bom_from_avg_boms(
                         candidate_energy_costs, tech, capacity, committed_reductant
                     )
-                    if rebuilt_bom is not None:
-                        bill_of_materials = rebuilt_bom
+                    if rebuilt_bom is None:
+                        raise ValueError(
+                            f"BOM rebuild for {tech} with reductant '{committed_reductant}' returned no BOM"
+                        )
+                    bill_of_materials = rebuilt_bom
                 reductant_by_tech[tech] = committed_reductant
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
@@ -8394,6 +8400,32 @@ class Environment:
         last_year = max(series)
         return series[min(year, last_year)]
 
+    def _unsubsidised_energy_costs_for_year(self, location: "Location", year: Year) -> dict[str, float]:
+        """
+        Exogenous per-carrier prices at a location for a year, before any subsidy.
+
+        Args:
+            location: Plant/site location (geo_key resolution, finest available).
+            year: The year to price; clamped to the input-cost data horizon.
+
+        Returns:
+            Normalised carrier -> price (sign handling as in set_energy_costs),
+            hydrogen from the precomputed capped-LCOH series.
+        """
+        year_costs = location.resolve(self.input_costs, what="input costs")
+        if year_costs is None:
+            raise ValueError(f"No input costs found for {location.geo_key}")
+        clamped_year = min(year, max(year_costs))
+        base: dict[str, float] = {}
+        for raw_key, price in year_costs[clamped_year].items():
+            normalized_key = normalize_name(raw_key)
+            base[normalized_key] = price if normalized_key.startswith("co2") else abs(price)
+        capped_lcoh = location.resolve(self.capped_hydrogen_costs_for_year(year), what="hydrogen price")
+        if capped_lcoh is None:
+            raise ValueError(f"No hydrogen price for {location.geo_key}")
+        base["hydrogen"] = capped_lcoh * T_TO_KG
+        return base
+
     def candidate_energy_costs_for_year(
         self,
         location: "Location",
@@ -8417,7 +8449,8 @@ class Environment:
             year: The year to price.
             overrides: Site-specific current prices per carrier (e.g. a GEO site's
                 own power price). Each override replaces the country level but keeps
-                the country trajectory: price_t = override x country_t / country_ref.
+                the country trajectory: price_t = override x country_t / country_ref,
+                both sides unsubsidised; year-t subsidies apply after scaling.
             override_reference_year: Year the override prices belong to; required
                 when overrides are given.
 
@@ -8427,23 +8460,12 @@ class Environment:
         Notes:
             Years missing inside the input-cost trajectory raise (no silent gaps).
         """
-        year_costs = location.resolve(self.input_costs, what="input costs")
-        if year_costs is None:
-            raise ValueError(f"No input costs found for {location.geo_key}")
-        clamped_year = min(year, max(year_costs))
-        base: dict[str, float] = {}
-        for raw_key, price in year_costs[clamped_year].items():
-            normalized_key = normalize_name(raw_key)
-            base[normalized_key] = price if normalized_key.startswith("co2") else abs(price)
-        capped_lcoh = location.resolve(self.capped_hydrogen_costs_for_year(year), what="hydrogen price")
-        if capped_lcoh is None:
-            raise ValueError(f"No hydrogen price for {location.geo_key}")
-        base["hydrogen"] = capped_lcoh * T_TO_KG
+        base = self._unsubsidised_energy_costs_for_year(location, year)
 
         if overrides:
             if override_reference_year is None:
                 raise ValueError("override_reference_year is required when overrides are given")
-            reference, _ = self.candidate_energy_costs_for_year(location, technology_name, override_reference_year)
+            reference = self._unsubsidised_energy_costs_for_year(location, override_reference_year)
             for carrier, site_price in overrides.items():
                 normalized_carrier = normalize_name(carrier)
                 reference_price = reference[normalized_carrier]
