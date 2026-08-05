@@ -398,6 +398,9 @@ threshold in Stage 2 runs unconditionally.
   - EAF: NPV = $8.5M → weight = 8.5M → 63% selection probability
   - DRI-EAF: NPV = -$1M → weight = 0 → 0% selection probability
 
+**Deterministic Selection** (when `probabilistic_agents=False`):
+- Pick the highest-NPV technology from the same filtered candidates (no random draw)
+
 #### If Current Tech IS Optimal:
 - **Selection**: Keep current technology
 
