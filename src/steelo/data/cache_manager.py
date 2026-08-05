@@ -51,7 +51,7 @@ class CacheMetadata:
 class DataPreparationCache:
     """Manages cached data preparations based on content hashing."""
 
-    CACHE_VERSION = "1.4"  # Bump to invalidate all caches (per-technology cost_of_capital.json format)
+    CACHE_VERSION = "1.5"  # Bump to invalidate all caches (sub-national input-cost rows fall back to country values)
 
     def __init__(self, cache_root: Optional[Path] = None):
         """Initialize cache manager.
