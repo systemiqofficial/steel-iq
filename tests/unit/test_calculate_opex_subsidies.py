@@ -1,8 +1,11 @@
 """Tests for calculate_opex_with_subsidies and calculate_opex_list_with_subsidies functions."""
 
+from unittest.mock import patch
+
 import pytest
+from steelo import devdata
 from steelo.domain import calculate_costs
-from steelo.domain.models import Subsidy, Year
+from steelo.domain.models import PointInTime, Subsidy, TimeFrame, Year
 
 
 def test_calculate_opex_with_subsidies_no_subsidies():
@@ -345,3 +348,66 @@ def test_calculate_opex_list_with_subsidies_full_period():
     assert len(result) == 5
     for i, (actual, exp) in enumerate(zip(result, expected)):
         assert actual == pytest.approx(exp), f"Year {i}: expected {exp}, got {actual}"
+
+
+def test_furnace_group_opex_subsidy_window_ends_at_lifetime_end():
+    """Test that the current technology's OPEX subsidies are collected over the furnace group's lifetime.
+
+    The collection window must end at the furnace group's absolute end year. Adding that year to the
+    current year yields a window thousands of years long, in which expired subsidies stay active.
+    """
+    # Arrange
+    furnace_group = devdata.get_furnace_group(
+        fg_id="fg_opex_window",
+        tech_name="EAF",
+        lifetime=PointInTime(
+            current=Year(2025),
+            time_frame=TimeFrame(start=Year(2015), end=Year(2035)),
+            plant_lifetime=20,
+        ),
+    )
+    expired_subsidy = Subsidy(
+        scenario_name="expired_after_lifetime",
+        iso3="USA",
+        technology_name="EAF",
+        cost_item="opex",
+        subsidy_type="absolute",
+        subsidy_amount=40.0,
+        start_year=Year(2040),
+        end_year=Year(2050),
+    )
+    collected_windows = []
+    collected_subsidies = []
+    real_collect = calculate_costs.collect_active_subsidies_over_period
+
+    def spy(subsidies, start_year, end_year):
+        collected_windows.append((start_year, end_year))
+        collected = real_collect(subsidies, start_year=start_year, end_year=end_year)
+        collected_subsidies.append(collected)
+        return collected
+
+    # Act - no allowed transitions, so the method returns straight after collecting OPEX subsidies
+    with patch("steelo.domain.models.collect_active_subsidies_over_period", side_effect=spy):
+        furnace_group.optimal_technology_name(
+            market_price_series={"steel": [600.0] * 30, "iron": [400.0] * 30},
+            cost_of_debt_by_tech={"EAF": 0.04},
+            cost_of_equity_by_tech={"EAF": 0.08},
+            get_bom_from_avg_boms=lambda *args: (None, 0.0, ""),
+            capex_dict={"EAF": 400.0},
+            capex_renovation_share={"EAF": 0.7},
+            technology_fopex_dict={"eaf": 50.0},
+            dynamic_business_cases={"EAF": []},
+            chosen_emissions_boundary_for_carbon_costs="scope_1",
+            technology_emission_factors=[],
+            tech_to_product={"EAF": "steel"},
+            plant_lifetime=20,
+            construction_time=2,
+            current_year=Year(2025),
+            risk_free_rate=0.02,
+            allowed_furnace_transitions={},
+            tech_opex_subsidies={"EAF": [expired_subsidy]},
+        )
+
+    # Assert
+    assert collected_windows == [(Year(2025), Year(2035))]
+    assert collected_subsidies == [[]], "A subsidy starting after the end year must not be collected."
