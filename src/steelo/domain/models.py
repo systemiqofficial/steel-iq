@@ -2287,8 +2287,8 @@ class FurnaceGroup:
     def optimal_technology_name(
         self,
         market_price_series: dict[str, list[float]],
-        cost_of_debt: float,
-        cost_of_equity: float,
+        cost_of_debt_by_tech: dict[str, float],
+        cost_of_equity_by_tech: dict[str, float],
         get_bom_from_avg_boms: Callable[
             [dict[str, float], str, float, str | None], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]
         ],
@@ -2327,8 +2327,10 @@ class FurnaceGroup:
 
         Args:
             market_price_series (dict[str, list[float]]): Future market prices for steel and iron in $/tonne.
-            cost_of_debt (float): Interest rate for debt financing (decimal, e.g., 0.05 for 5%).
-            cost_of_equity (float): Expected return rate for equity financing (decimal).
+            cost_of_debt_by_tech (dict[str, float]): Interest rate for debt financing per technology (decimal),
+                for this plant's country; each candidate is financed at its own rate.
+            cost_of_equity_by_tech (dict[str, float]): Expected return rate for equity financing per technology
+                (decimal), for this plant's country.
             get_bom_from_avg_boms (Callable): Function that retrieves average BOM for a technology.
             capex_dict (dict[str, float]): Capital expenditure per tonne of capacity for each technology ($/tonne).
             capex_renovation_share (dict[str, float]): Share of full capex required for renovating existing technology
@@ -2475,12 +2477,16 @@ class FurnaceGroup:
         logger.debug(f"[OPTIMAL TECH] Price series ($/t): {market_price_series.get(self.technology.product)}")
 
         # COSA = foregone operating margin only; remaining debt is excluded (carried by the legacy-debt schedule).
+        # Discounted at the incumbent technology's cost of equity.
+        incumbent_cost_of_equity = cost_of_equity_by_tech.get(self.technology.name)
+        if incumbent_cost_of_equity is None:
+            raise ValueError(f"No cost of equity data for technology {self.technology.name}")
         cosa = stranding_asset_cost(
             unit_total_opex_list=unit_opex_carbon_costs,
             remaining_time=self.lifetime.remaining_number_of_years,
             market_price_series=market_price_series[self.technology.product],
             expected_production=self.production,
-            cost_of_equity=cost_of_equity,
+            cost_of_equity=incumbent_cost_of_equity,
         )
 
         logger.debug(f"[OPTIMAL TECH] COSA (foregone operating margin): ${cosa:,.0f}")
@@ -2688,9 +2694,14 @@ class FurnaceGroup:
                     end_year=Year(current_year + construction_time + plant_lifetime),
                 )
 
-                # Apply debt subsidies to cost of debt
+                # Apply debt subsidies to this technology's own cost of debt
                 npv_capex_dict[tech] = capex
-                original_cost_of_debt = cost_of_debt
+                original_cost_of_debt = cost_of_debt_by_tech.get(tech)
+                if original_cost_of_debt is None:
+                    raise ValueError(f"No cost of debt data for technology {tech}")
+                cost_of_equity = cost_of_equity_by_tech.get(tech)
+                if cost_of_equity is None:
+                    raise ValueError(f"No cost of equity data for technology {tech}")
                 cost_of_debt = calculate_debt_with_subsidies(
                     cost_of_debt=original_cost_of_debt,
                     debt_subsidies=debt_subsidies,
@@ -3803,8 +3814,8 @@ class Plant:
         market_price_series: dict,
         region_capex: dict[str, float],
         capex_renovation_share: dict[str, float],
-        cost_of_debt: float,
-        cost_of_equity: float,
+        cost_of_debt_by_tech: dict[str, float],
+        cost_of_equity_by_tech: dict[str, float],
         get_bom_from_avg_boms: Callable[
             [dict[str, float], str, float, str | None], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]
         ],
@@ -3861,8 +3872,8 @@ class Plant:
             market_price_series: Time series of market prices for relevant commodities
             region_capex: Capital costs by technology for the region ($/tonne capacity), without subsidies
             capex_renovation_share: Fraction of greenfield CAPEX needed for renovation by technology (0-1)
-            cost_of_debt: Interest rate for debt financing (before subsidies)
-            cost_of_equity: Required return on equity (risk premium above risk-free rate)
+            cost_of_debt_by_tech: Interest rate for debt financing by technology (before subsidies), for this plant's country
+            cost_of_equity_by_tech: Required return on equity by technology, for this plant's country
             get_bom_from_avg_boms: Function to retrieve bill of materials for technologies
             probabilistic_agents: Whether to use probabilistic (weighted random) decision making
             dynamic_business_cases: Technology-specific feedstock options mapping technology names to primary feedstocks
@@ -3996,8 +4007,8 @@ class Plant:
         logger.debug(f"[FG STRATEGY] Fixed opex for technologies: {self.technology_unit_fopex}")
         tech_npv_dict, npv_capex_dict, cosa, bom_dict = furnace_group.optimal_technology_name(
             market_price_series=market_price_series,
-            cost_of_debt=cost_of_debt,
-            cost_of_equity=cost_of_equity,
+            cost_of_debt_by_tech=cost_of_debt_by_tech,
+            cost_of_equity_by_tech=cost_of_equity_by_tech,
             get_bom_from_avg_boms=get_bom_from_avg_boms,
             allowed_furnace_transitions=filtered_allowed_furnace_transitions,
             capex_dict=region_capex,
@@ -4167,6 +4178,10 @@ class Plant:
         all_debt_subs = tech_debt_subsidies.get(best_tech, [])
         capex_subs = filter_subsidies_for_year(all_capex_subs, current_year)
         debt_subs = filter_subsidies_for_year(all_debt_subs, current_year)
+
+        cost_of_debt = cost_of_debt_by_tech.get(best_tech)
+        if cost_of_debt is None:
+            raise ValueError(f"No cost of debt data for technology {best_tech} at plant {self.plant_id}")
 
         cost_of_debt_with_subsidies = calculate_debt_with_subsidies(
             cost_of_debt=cost_of_debt,
@@ -5147,8 +5162,8 @@ class PlantGroup:
         price_series: dict[str, list[float]],
         capacity: Volumes,
         region_capex: dict[str, dict[str, float]],
-        cost_of_debt_dict: dict[str, float] | None,
-        cost_of_equity_dict: dict[str, float] | None,
+        cost_of_debt_dict: dict[str, dict[str, float]] | None,
+        cost_of_equity_dict: dict[str, dict[str, float]] | None,
         get_bom_from_avg_boms: (
             Callable[
                 [dict[str, float], str, float, str | None],
@@ -5195,8 +5210,8 @@ class PlantGroup:
             price_series (dict[str, list[float]]): Product price forecasts by product type
             capacity (Volumes): Capacity of new furnace group to evaluate (in tonnes)
             region_capex (dict[str, dict[str, float]]): CAPEX by region and technology (USD/tonne)
-            cost_of_debt_dict (dict[str, float] | None): Cost of debt by ISO3 country code
-            cost_of_equity_dict (dict[str, float] | None): Cost of equity by ISO3 country code
+            cost_of_debt_dict (dict[str, dict[str, float]] | None): Cost of debt by ISO3 country code and technology
+            cost_of_equity_dict (dict[str, dict[str, float]] | None): Cost of equity by ISO3 country code and technology
             get_bom_from_avg_boms (Callable | None): Function to retrieve bill of materials for a technology given
                 energy costs
             dynamic_feedstocks (dict[str, list[PrimaryFeedstock]]): Primary feedstocks by technology for emissions
@@ -5261,18 +5276,26 @@ class PlantGroup:
 
             if cost_of_debt_dict is None:
                 raise ValueError("Cost of debt dictionary is not provided")
-            cost_of_debt_original = cost_of_debt_dict.get(plant.location.iso3)
-            if cost_of_debt_original is None:
+            cost_of_debt_for_iso3 = cost_of_debt_dict.get(plant.location.iso3)
+            if cost_of_debt_for_iso3 is None:
                 raise ValueError(f"No cost of debt data for country: {plant.location.iso3}")
 
             if cost_of_equity_dict is None:
                 raise ValueError("Cost of equity dictionary is not provided")
-            cost_of_equity = cost_of_equity_dict.get(plant.location.iso3)
-            if cost_of_equity is None:
+            cost_of_equity_for_iso3 = cost_of_equity_dict.get(plant.location.iso3)
+            if cost_of_equity_for_iso3 is None:
                 raise ValueError(f"No cost of equity data for country: {plant.location.iso3}")
 
             # Evaluate each allowed technology for this plant
             for tech in allowed_techs_in_year:
+                # Technology-specific financing rates
+                cost_of_debt_original = cost_of_debt_for_iso3.get(tech)
+                if cost_of_debt_original is None:
+                    raise ValueError(f"No cost of debt data for {plant.location.iso3}/{tech}")
+                cost_of_equity = cost_of_equity_for_iso3.get(tech)
+                if cost_of_equity is None:
+                    raise ValueError(f"No cost of equity data for {plant.location.iso3}/{tech}")
+
                 # Get technology-specific CAPEX
                 capex = greenfield_capex.get(tech)
                 if capex is None:
@@ -5482,8 +5505,8 @@ class PlantGroup:
         construction_time: int,
         current_year: Year,
         allowed_techs: dict[Year, list[str]],
-        cost_of_debt_dict: dict[str, float],
-        cost_of_equity_dict: dict[str, float],
+        cost_of_debt_dict: dict[str, dict[str, float]],
+        cost_of_equity_dict: dict[str, dict[str, float]],
         get_bom_from_avg_boms: Callable,
         capacity_limit_steel: Volumes,
         capacity_limit_iron: Volumes,
@@ -5534,8 +5557,8 @@ class PlantGroup:
             construction_time (int): Time to construct new furnace (years)
             current_year (Year): Current simulation year
             allowed_techs (dict[Year, list[str]]): Technologies allowed by year
-            cost_of_debt_dict (dict[str, float]): Cost of debt by ISO3 country code
-            cost_of_equity_dict (dict[str, float]): Cost of equity by ISO3 country code
+            cost_of_debt_dict (dict[str, dict[str, float]]): Cost of debt by ISO3 country code and technology
+            cost_of_equity_dict (dict[str, dict[str, float]]): Cost of equity by ISO3 country code and technology
             get_bom_from_avg_boms (Callable): Function to retrieve bill of materials for a technology
             capacity_limit_steel (Volumes): Maximum allowed steel capacity from expansions/switches (PAM share)
             capacity_limit_iron (Volumes): Maximum allowed iron capacity from expansions/switches (PAM share)
@@ -5730,10 +5753,10 @@ class PlantGroup:
             logger.warning(f"[PG EXPANSION] ERROR - No region mapping for ISO3: {plant.location.iso3}")
             return None
 
-        # Get base cost of debt
-        cost_of_debt_original = cost_of_debt_dict.get(plant.location.iso3)
+        # Get base cost of debt for the winning technology
+        cost_of_debt_original = cost_of_debt_dict.get(plant.location.iso3, {}).get(tech)
         if cost_of_debt_original is None:
-            raise ValueError(f"No cost of debt data for country: {plant.location.iso3} when expanding plant")
+            raise ValueError(f"No cost of debt data for {plant.location.iso3}/{tech} when expanding plant")
 
         # logger.debug("[PG EXPANSION] === Stage 9: Plant validation ===")
         # logger.debug(f"[PG EXPANSION]   - Plant: {plant_id}, Location: {plant.location.iso3}, Region: {region}")
@@ -5845,8 +5868,8 @@ class PlantGroup:
         iso3_to_region_map: dict[str, str],
         market_price: dict[str, list[float]],  # product -> list of future prices
         capex_dict_all_locs_techs: dict[str, dict[str, float]],  # region -> tech -> capex
-        cost_of_debt_all_locs: dict[str, float],  # iso3 -> cost of debt
-        cost_of_equity_all_locs: dict[str, float],  # iso3 -> cost of equity
+        cost_of_debt_all_locs: dict[str, dict[str, float]],  # iso3 -> tech -> cost of debt
+        cost_of_equity_all_locs: dict[str, dict[str, float]],  # iso3 -> tech -> cost of equity
         steel_plant_capacity: float,
         all_plant_ids: list[str],
         fopex_all_locs_techs: dict[str, dict[str, float]],  # iso3 -> tech -> fopex
@@ -5901,8 +5924,8 @@ class PlantGroup:
             iso3_to_region_map: Dictionary mapping ISO3 country codes to regions
             market_price: Dictionary mapping product to list of future prices
             capex_dict_all_locs_techs: Dictionary mapping region -> tech -> capex
-            cost_of_debt_all_locs: Dictionary mapping iso3 -> cost of debt
-            cost_of_equity_all_locs: Dictionary mapping iso3 -> cost of equity
+            cost_of_debt_all_locs: Dictionary mapping iso3 -> tech -> cost of debt
+            cost_of_equity_all_locs: Dictionary mapping iso3 -> tech -> cost of equity
             steel_plant_capacity: Capacity of the steel plant in tonnes
             all_plant_ids: List of all existing plant IDs
             fopex_all_locs_techs: Dictionary mapping iso3 -> tech -> fopex
@@ -6111,7 +6134,7 @@ class PlantGroup:
         consideration_time: int,
         custom_energy_costs: dict,
         capex_dict_all_locs: dict[str, dict[str, float]],
-        cost_debt_all_locs: dict[str, float],
+        cost_debt_all_locs: dict[str, dict[str, float]],
         iso3_to_region_map: dict[str, str],
         global_risk_free_rate: float,
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
@@ -6139,7 +6162,7 @@ class PlantGroup:
             consideration_time: Number of years to consider before announcement
             custom_energy_costs: Dictionary containing power_price and capped_lcoh data arrays
             capex_dict_all_locs: Dictionary mapping region -> tech -> capex
-            cost_debt_all_locs: Dictionary mapping iso3 -> cost of debt
+            cost_debt_all_locs: Dictionary mapping iso3 -> tech -> cost of debt
             iso3_to_region_map: Dictionary mapping ISO3 country codes to regions
             global_risk_free_rate: Global risk-free interest rate
             capex_subsidies: Dictionary mapping iso3 -> tech -> list of capex subsidies
@@ -6167,9 +6190,9 @@ class PlantGroup:
             iso3 = plant.location.iso3
             region = iso3_to_region_map.get(iso3)
 
-            # Get cost of debt (without subsidies)
-            cost_of_debt = cost_debt_all_locs.get(iso3, None)
-            if not cost_of_debt:
+            # Get per-technology cost of debt (without subsidies)
+            cost_of_debt_for_iso3 = cost_debt_all_locs.get(iso3, None)
+            if not cost_of_debt_for_iso3:
                 logger.error(
                     f"[NEW PLANTS] Cost of debt not found for {iso3}. "
                     f"Cannot update costs for plant at ({plant.location.lat}, {plant.location.lon})."
@@ -6178,8 +6201,14 @@ class PlantGroup:
 
             for fg in plant.furnace_groups:
                 if fg.status in ["considered", "announced"]:
-                    # TODO: Check if PAM is doing the same update for announced plants (also present in GEM); if it is, we can skip
-                    # announced plants here to avoid double doing
+                    cost_of_debt = cost_of_debt_for_iso3.get(fg.technology.name, None)
+                    if not cost_of_debt:
+                        logger.error(
+                            f"[NEW PLANTS] Cost of debt not found for {iso3}/{fg.technology.name}. "
+                            f"Cannot update costs at ({plant.location.lat}, {plant.location.lon})."
+                        )
+                        continue
+
                     # Get CAPEX (without subsidies)
                     capex = capex_dict_all_locs.get(region, {}).get(fg.technology.name, None) if region else None
                     if not capex:
@@ -6394,7 +6423,7 @@ class PlantGroup:
         current_year: Year,
         consideration_time: int,
         market_price: dict[str, list[float]],
-        cost_of_equity_all_locs: dict[str, float],
+        cost_of_equity_all_locs: dict[str, dict[str, float]],
         probability_of_announcement: float,
         probability_of_construction: float,
         plant_lifetime: int,
@@ -6422,7 +6451,7 @@ class PlantGroup:
             current_year: Current simulation year
             consideration_time: Number of years to consider before announcement
             market_price: Dictionary mapping product to list of future market prices
-            cost_of_equity_all_locs: Dictionary mapping iso3 -> cost of equity
+            cost_of_equity_all_locs: Dictionary mapping iso3 -> tech -> cost of equity
             probability_of_announcement: Probability that a viable opportunity will be announced
             probability_of_construction: Probability that an announced plant starts construction
             plant_lifetime: Lifetime of the plant in years
@@ -6468,8 +6497,8 @@ class PlantGroup:
             iso3 = plant.location.iso3
 
             # Extract cost of equity (not dynamic, but not stored in the furnace group and needed for the NPV calculation)
-            cost_of_equity = cost_of_equity_all_locs.get(iso3, None)
-            if not cost_of_equity:
+            cost_of_equity_for_iso3 = cost_of_equity_all_locs.get(iso3, None)
+            if not cost_of_equity_for_iso3:
                 logger.error(
                     f"[NEW PLANTS] Cost of equity not found for {iso3}. "
                     f"Cannot update status for business opportunity at ({plant.location.lat}, {plant.location.lon}) in {plant.location.iso3}."
@@ -6479,6 +6508,11 @@ class PlantGroup:
 
             for fg in plant.furnace_groups:
                 status_stats["furnace_groups_seen"] += 1
+                cost_of_equity = cost_of_equity_for_iso3.get(fg.technology.name, None)
+                if not cost_of_equity:
+                    logger.error(f"[NEW PLANTS] Cost of equity not found for {iso3}/{fg.technology.name}.")
+                    status_stats["missing_cost_of_equity"] += 1
+                    continue
                 # Planned and announced business opportunities are converted into actual projects with a certain probability
                 if fg.status == "announced":
                     status_stats["announced_opportunities"] += 1
@@ -6862,31 +6896,38 @@ class Capex:
     learning_rate: float
 
 
+# Non-technology financing categories in the "Cost of capital" sheet
+RENEWABLES_KEY = "Renewables"
+HYDROGEN_KEY = "Hydrogen"
+
+
+@dataclass(frozen=True)
+class TechFinancingRates:
+    """Financing rates for one (country, technology) pair, as fractions (0.05 = 5%)."""
+
+    cost_of_debt: float
+    cost_of_equity: float
+    cost_of_capital: float
+
+
 class CostOfCapital:
     """
-    Class to handle the cost of capital for different regions.
-    It allows for dynamic updates based on regional cost of capital values.
+    Per-country financing rates, differentiated by technology.
+
+    `techs` maps a technology name (verbatim from the master Excel, matching
+    Technology.name) to its rates; the special keys RENEWABLES_KEY and
+    HYDROGEN_KEY carry the non-steelmaking categories.
     """
 
     def __init__(
         self,
         country: str,
         iso3: str,
-        debt_res: float,
-        equity_res: float,
-        wacc_res: float,
-        debt_other: float,
-        equity_other: float,
-        wacc_other: float,
+        techs: dict[str, TechFinancingRates],
     ) -> None:
         self.country = country
         self.iso3 = iso3
-        self.debt_res = debt_res
-        self.equity_res = equity_res
-        self.wacc_res = wacc_res
-        self.debt_other = debt_other
-        self.equity_other = equity_other
-        self.wacc_other = wacc_other
+        self.techs = techs
 
     def __repr__(self) -> str:
         return f"Cost of Capital: <{self.iso3}>"
@@ -7141,17 +7182,11 @@ class Environment:
 
         # Initialize costs - will be populated during simulation setup
         self.name_to_capex: dict[str, dict[str, dict[str, float]]] = {}  # capex_dict
-        self.res_cost_of_debt: dict[str, float] = {}
-        self.res_cost_of_equity: dict[str, float] = {}
-        self.res_wacc: dict[str, float] = {}
-        self.industrial_cost_of_debt: dict[str, float] = {}
-        self.industrial_cost_of_equity: dict[str, float] = {}
-        self.industrial_wacc: dict[str, float] = {}
+        # iso3 -> technology name -> rate (fraction); includes RENEWABLES_KEY/HYDROGEN_KEY entries
+        self.cost_of_debt_by_tech: dict[str, dict[str, float]] = {}
+        self.cost_of_equity_by_tech: dict[str, dict[str, float]] = {}
         self.railway_costs: list[RailwayCost] = []
         self.dynamic_feedstock_cost: dict[str, float] = {}
-        # self.cost_of_capital = self.initiate_industrial_asset_cost_of_capital(
-        #     cost_of_x_csv=cost_of_x_csv, default_coc=default_coc
-        # )
 
         # Initialize CarbonCostService for centralized carbon cost calculations
         self.carbon_cost_service = CarbonCostService(self.config.chosen_emissions_boundary_for_carbon_costs)
@@ -7666,9 +7701,9 @@ class Environment:
 
             for furnace_group in plant.furnace_groups:
                 # Set the cost of debt in the furnace groups
-                cost_of_debt = self.industrial_cost_of_debt.get(plant_iso3)
+                cost_of_debt = self.cost_of_debt_by_tech.get(plant_iso3, {}).get(furnace_group.technology.name)
                 if cost_of_debt is None:
-                    raise ValueError(f"Industrial cost of debt cannot be set for ISO3 code {plant_iso3}")
+                    raise ValueError(f"Cost of debt cannot be set for {plant_iso3}/{furnace_group.technology.name}")
 
                 cost_of_debt_no_subsidy = cost_of_debt  # Store original cost of debt before subsidy
                 cost_of_debt = calculate_debt_with_subsidies(
@@ -7824,28 +7859,28 @@ class Environment:
         total_switched = sum(switched_volumes, Volumes(0))
         return Volumes(total_added + total_switched)
 
-    def initiate_industrial_asset_cost_of_capital(self, cost_of_capital_list: list[CostOfCapital]) -> None:
+    def initiate_cost_of_capital(self, cost_of_capital_list: list[CostOfCapital]) -> None:
         """
-        Initialize the cost of capital for the environment.
+        Initialise the per-country, per-technology financing-rate dicts.
 
         Args:
-            cost_of_capital_list (list[CostOfCapital]): A list of CostOfCapital objects to be added to the environment.
+            cost_of_capital_list (list[CostOfCapital]): One entry per country with per-tech rates.
         Returns:
             None
         Side Effects:
-            Updates the `cost_of_capital` dictionary to map ISO3 codes to their respective cost
+            Populates `cost_of_debt_by_tech` and `cost_of_equity_by_tech` (iso3 -> tech -> rate).
         """
-
-        self.industrial_cost_of_debt = {c.iso3: c.debt_other for c in cost_of_capital_list}  # FIXME tomorrow @Marcus
-        self.industrial_cost_of_equity = {c.iso3: c.equity_other for c in cost_of_capital_list}
-        self.industrial_wacc = {
-            c.iso3: c.wacc_other for c in cost_of_capital_list
-        }  # Weighted Average Cost of Capital for industrial assets
-        self.res_cost_of_debt = {c.iso3: c.debt_res for c in cost_of_capital_list}
-        self.res_cost_of_equity = {
-            c.iso3: c.equity_res for c in cost_of_capital_list
-        }  # Cost of equity for residential assets
-        self.res_wacc = {c.iso3: c.wacc_res for c in cost_of_capital_list}  # Weighted Average Cost
+        self.cost_of_debt_by_tech = {
+            c.iso3: {tech: rates.cost_of_debt for tech, rates in c.techs.items()} for c in cost_of_capital_list
+        }
+        self.cost_of_equity_by_tech = {
+            c.iso3: {tech: rates.cost_of_equity for tech, rates in c.techs.items()} for c in cost_of_capital_list
+        }
+        tech_counts = {len(techs) for techs in self.cost_of_debt_by_tech.values()}
+        logging.getLogger(f"{__name__}.initiate_cost_of_capital").info(
+            f"Initialised cost of capital for {len(self.cost_of_debt_by_tech)} countries "
+            f"with {sorted(tech_counts)} techs each"
+        )
 
     def set_input_cost_in_furnace_groups(self, world_plants: list[Plant]) -> None:
         """

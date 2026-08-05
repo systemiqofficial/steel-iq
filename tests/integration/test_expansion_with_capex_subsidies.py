@@ -82,8 +82,8 @@ def setup_environment(bus, country_mappings_for_test, tmp_path):
     # Initialize other required data
     bus.env.dynamic_feedstocks = {"EAF": [], "BOF": [], "DRI": [], "BF": []}
     bus.env.allowed_furnace_transitions = {"EAF": ["EAF", "BF", "BOF", "DRI"]}
-    bus.env.industrial_cost_of_equity = {"USA": 0.08}
-    bus.env.industrial_cost_of_debt = {"USA": 0.04}
+    bus.env.cost_of_equity_by_tech = {"USA": {tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")}}
+    bus.env.cost_of_debt_by_tech = {"USA": {tech: 0.04 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")}}
     bus.env.global_risk_free_rate = 0.02
     bus.env.year = Year(2025)
     bus.env.fopex_by_country = {"USA": {"eaf": 50.0, "bof": 60.0, "dri": 70.0, "bf": 65.0}}
@@ -140,8 +140,8 @@ def test_evaluate_expansion_without_subsidies(
         price_series=price,
         capacity=Volumes(1000),
         region_capex=bus.env.name_to_capex["greenfield"],
-        cost_of_debt_dict=bus.env.industrial_cost_of_debt,
-        cost_of_equity_dict=bus.env.industrial_cost_of_equity,
+        cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
+        cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
@@ -222,8 +222,8 @@ def test_evaluate_expansion_with_absolute_capex_subsidy(
         price_series=price,
         capacity=Volumes(1000),
         region_capex=bus.env.name_to_capex["greenfield"],
-        cost_of_debt_dict=bus.env.industrial_cost_of_debt,
-        cost_of_equity_dict=bus.env.industrial_cost_of_equity,
+        cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
+        cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
@@ -306,8 +306,8 @@ def test_evaluate_expansion_with_relative_capex_subsidy(
         price_series=price,
         capacity=Volumes(1000),
         region_capex=bus.env.name_to_capex["greenfield"],
-        cost_of_debt_dict=bus.env.industrial_cost_of_debt,
-        cost_of_equity_dict=bus.env.industrial_cost_of_equity,
+        cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
+        cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
@@ -409,8 +409,8 @@ def test_evaluate_expansion_with_combined_subsidies(
         price_series=price,
         capacity=Volumes(1000),
         region_capex=bus.env.name_to_capex["greenfield"],
-        cost_of_debt_dict=bus.env.industrial_cost_of_debt,
-        cost_of_equity_dict=bus.env.industrial_cost_of_equity,
+        cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
+        cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
@@ -490,8 +490,8 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
         price_series=price,
         capacity=Volumes(1000),
         region_capex=bus.env.name_to_capex["greenfield"],
-        cost_of_debt_dict=bus.env.industrial_cost_of_debt,
-        cost_of_equity_dict=bus.env.industrial_cost_of_equity,
+        cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
+        cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,
@@ -526,8 +526,8 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
         price_series=price,
         capacity=Volumes(1000),
         region_capex=bus.env.name_to_capex["greenfield"],
-        cost_of_debt_dict=bus.env.industrial_cost_of_debt,
-        cost_of_equity_dict=bus.env.industrial_cost_of_equity,
+        cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
+        cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
         get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
         dynamic_feedstocks=bus.env.dynamic_feedstocks,
         fopex_for_iso3=bus.env.fopex_by_country,

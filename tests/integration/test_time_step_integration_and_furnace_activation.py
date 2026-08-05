@@ -136,8 +136,12 @@ def test_announced_plants_go_active(bus, mocker, mutliple_plants, country_mappin
     bus.env.capex_renovation_share = {"EAF": 0.8, "BOF": 0.75, "DRI": 0.78, "BF": 0.77}
 
     # Mock cost of debt and equity that PlantAgentsModel needs
-    mocker.patch.object(bus.env, "industrial_cost_of_debt", {"DEU": 0.05})
-    mocker.patch.object(bus.env, "industrial_cost_of_equity", {"DEU": 0.10})
+    mocker.patch.object(
+        bus.env, "cost_of_debt_by_tech", {"DEU": {tech: 0.05 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")}}
+    )
+    mocker.patch.object(
+        bus.env, "cost_of_equity_by_tech", {"DEU": {tech: 0.10 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")}}
+    )
 
     # Initialize technology_to_product mapping if not present
     if not hasattr(bus.env, "technology_to_product"):

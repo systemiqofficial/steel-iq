@@ -120,8 +120,8 @@ def _call_evaluate(
     iso3_to_region_map = {p.location.iso3: "Region" for p in pg.plants}
     price_series = {"hot_metal": [500.0] * 30, "steel": [500.0] * 30}
     tech_to_product = {t: "hot_metal" for t in allowed_techs_list}
-    cost_of_debt_dict = {p.location.iso3: 0.05 for p in pg.plants}
-    cost_of_equity_dict = {p.location.iso3: 0.1 for p in pg.plants}
+    cost_of_debt_dict = {p.location.iso3: {t: 0.05 for t in allowed_techs_list} for p in pg.plants}
+    cost_of_equity_dict = {p.location.iso3: {t: 0.1 for t in allowed_techs_list} for p in pg.plants}
 
     return pg.evaluate_expansion_options(
         price_series=price_series,
