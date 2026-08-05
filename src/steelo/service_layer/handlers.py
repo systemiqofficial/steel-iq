@@ -323,6 +323,8 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
         tmpc.diagnostics_active_bof_count = active_bof_count
         tmpc.set_up_network_and_propagate_costs(solved_trade_allocations=trade_allocations)
         tmpc.update_furnace_group_utilisation(fgs)
+        for fg in fgs:
+            fg.record_utilization(int(env.year))
         bom_issue_count_materials, bom_issue_count_energy = tmpc.update_bill_of_materials(fgs)
         logger.info(
             f"BOM Update Summary (year {env.year}):\n"

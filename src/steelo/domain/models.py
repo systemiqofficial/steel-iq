@@ -1117,6 +1117,7 @@ class FurnaceGroup:
         emissions: dict[str, dict[str, float]] | None = {},
         emissions_factor: dict[str, dict[str, float]] | None = None,
         historical_npv_business_opportunities: Optional[dict[int, float]] = None,
+        historical_utilization: Optional[dict[int, float]] = None,
         bill_of_materials: dict[str, dict[str, dict[str, float]]] | None = None,
         energy_cost_dict: dict = {},
         chosen_reductant: str = "",
@@ -1167,6 +1168,7 @@ class FurnaceGroup:
         self.balance = balance  # furnaces are initiated with a balance of 0
         self.historic_balance = historic_balance
         self.historical_npv_business_opportunities = historical_npv_business_opportunities
+        self.historical_utilization = historical_utilization
         self.railway_cost = railway_cost
         self.legacy_debt_schedule = legacy_debt_schedule or []  # Track debt from previous tech when switching
         self.has_hot_metal_access = False
@@ -1321,6 +1323,24 @@ class FurnaceGroup:
         self.cost_of_debt = cost_of_debt
         # Set baseline interest rate without subsidies
         self.cost_of_debt_no_subsidy = cost_of_debt_no_subsidy
+
+    def record_utilization(self, year: int) -> None:
+        """
+        Record the current utilisation rate under the given simulation year.
+
+        The scalar utilization_rate is overwritten every year by the trade-module
+        allocation; this keeps the per-year history that survives the overwrite.
+
+        Args:
+            year: Simulation year the current utilization_rate belongs to.
+
+        Notes:
+            Re-recording the same year overwrites its entry, so replaying a year
+            is idempotent.
+        """
+        if self.historical_utilization is None:
+            self.historical_utilization = {}
+        self.historical_utilization[year] = self.utilization_rate
 
     def report_bill_of_materials(self):
         return {
