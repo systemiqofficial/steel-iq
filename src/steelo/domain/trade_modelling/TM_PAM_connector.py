@@ -1,11 +1,13 @@
 import copy
 import logging
+import math
 from typing import Any
 import networkx as nx
 from collections import deque
 from steelo.adapters.repositories.in_memory_repository import (
     PlantInMemoryRepository,
 )
+from steelo.domain.calculate_costs import ENERGY_FEEDSTOCK_KEYS
 from steelo.domain.models import PrimaryFeedstock, FurnaceGroup, TransportKPI
 from steelo.domain.trade_modelling.trade_lp_modelling import Allocations, ProcessType
 from steelo.domain.constants import LP_TOLERANCE
@@ -14,6 +16,32 @@ from steelo.utilities.utils import normalize_name
 
 
 # logging.getLogger().setLevel(logging.WARNING)  # Commented out to avoid setting root logger
+
+
+def _required_quantity_by_charge(fg) -> dict[str, float]:
+    """Map each metallic charge of the FG's chosen-reductant feedstock rows to its req_qty."""
+    return {
+        str(feedstock.metallic_charge).lower(): feedstock.required_quantity_per_ton_of_product
+        for feedstock in fg.effective_primary_feedstocks
+        if isinstance(feedstock.metallic_charge, str)
+    }
+
+
+def _energy_intensity_by_charge(fg) -> dict[str, dict[str, float]]:
+    """Per-charge carrier quantities per tonne of product (energy requirements plus
+    energy-like secondary feedstocks), keyed by normalised carrier name."""
+    intensities: dict[str, dict[str, float]] = {}
+    for feedstock in fg.effective_primary_feedstocks:
+        if not isinstance(feedstock.metallic_charge, str):
+            continue
+        carriers: dict[str, float] = {}
+        for source in (feedstock.energy_requirements or {}, feedstock.secondary_feedstock or {}):
+            for carrier, amount in source.items():
+                normalized = normalize_name(carrier)
+                if normalized in ENERGY_FEEDSTOCK_KEYS:
+                    carriers[normalized] = carriers.get(normalized, 0.0) + amount
+        intensities[feedstock.metallic_charge.lower()] = carriers
+    return intensities
 
 
 class TM_PAM_connector:
@@ -44,7 +72,9 @@ class TM_PAM_connector:
         Attributes Created:
             flat_feedstocks_dict: Flattened dict for O(1) feedstock lookup by name.
             feedstock_energy_requirements: Energy requirements per feedstock type.
-            processing_energy_cost: Energy costs (total + carrier breakdown) by furnace group and commodity.
+            processing_energy_cost: Energy costs (total + carrier breakdown) by furnace group and
+                commodity, in USD per tonne of metallic INPUT (converted from the FG's per-tonne-of-
+                product energy_vopex dicts using each charge's required_quantity_per_ton_of_product).
             chosen_reductant: Reductant choice for each furnace group.
             transport_costs: Dict mapping (from_iso, to_iso, commodity) to cost.
             iron_furnaces: List of furnace group IDs producing iron.
@@ -61,12 +91,26 @@ class TM_PAM_connector:
                 per_feed_energy: dict[str, dict[str, dict[str, float] | float]] = {}
                 feed_totals = getattr(fg, "energy_vopex_by_input", {}) or {}
                 feed_breakdowns = getattr(fg, "energy_vopex_breakdown_by_input", {}) or {}
+                req_by_charge = _required_quantity_by_charge(fg) if feed_totals else {}
                 for commodity, total_cost in feed_totals.items():
-                    normalized_commodity = str(commodity).lower()
-                    breakdown = feed_breakdowns.get(commodity) or feed_breakdowns.get(str(commodity).lower()) or {}
-                    normalized_breakdown = {normalize_name(carrier): float(cost) for carrier, cost in breakdown.items()}
+                    if not isinstance(commodity, str):
+                        continue
+                    normalized_commodity = commodity.lower()
+                    # energy_vopex_* values are USD per tonne of product; edge volumes flow in
+                    # metallic-input tonnes, so convert here — once — to USD per tonne of input.
+                    req_qty = req_by_charge.get(normalized_commodity)
+                    if not req_qty:
+                        raise ValueError(
+                            f"Furnace group {fg.furnace_group_id} carries energy cost for metallic charge "
+                            f"'{commodity}' but has no effective primary feedstock row with a "
+                            "required_quantity_per_ton_of_product to convert it with"
+                        )
+                    breakdown = feed_breakdowns.get(commodity) or feed_breakdowns.get(normalized_commodity) or {}
+                    normalized_breakdown = {
+                        normalize_name(carrier): float(cost) / req_qty for carrier, cost in breakdown.items()
+                    }
                     per_feed_energy[normalized_commodity] = {
-                        "total": float(total_cost),
+                        "total": float(total_cost) / req_qty,
                         "carriers": normalized_breakdown,
                     }
                 self.processing_energy_cost[fg.furnace_group_id] = per_feed_energy
@@ -269,7 +313,8 @@ class TM_PAM_connector:
         Notes
         -----
         - Uses `self.chosen_reductant` to name reductant-specific processes.
-        - Uses `self.processing_energy_cost` to fetch energy costs per process.
+        - Uses `self.processing_energy_cost` to fetch energy costs per process (USD per
+          tonne of metallic input, matching the input-tonne edge volumes).
         - Uses `self.flat_feedstocks_dict` to lookup primary outputs and efficiencies.
         """
         logger = logging.getLogger(f"{__name__}.create_graph")
@@ -868,9 +913,9 @@ class TM_PAM_connector:
                     },
                     "energy": {
                         commodity_name: {
-                            "demand": float,       # Total energy demand
+                            "demand": float,       # Carrier quantity (t or kWh, post-conversion units)
                             "total_cost": float,   # Total energy cost (USD)
-                            "unit_cost": float     # Energy cost per unit (USD/unit)
+                            "unit_cost": float     # Energy cost per tonne of product (USD/t)
                         }
                     }
                 }
@@ -1019,6 +1064,41 @@ class TM_PAM_connector:
                         )
 
             logger.debug(f"[BOM] FG {fg.furnace_group_id}: Final BOM materials = {list(collect['materials'].keys())}")
+
+            # Two-leg check on freshly booked energy: the ledger total (built from edge costs
+            # x volumes) must equal the FG's own per-product energy vopex x product tonnes.
+            # Divergence means a unit or booking regression somewhere in the edge pipeline.
+            if collect["energy"] and collect["materials"]:
+                vopex_by_charge = {
+                    str(charge).lower(): float(value)
+                    for charge, value in (getattr(fg, "energy_vopex_by_input", {}) or {}).items()
+                    if isinstance(charge, str)
+                }
+                req_by_charge = _required_quantity_by_charge(fg)
+                expected_energy = sum(
+                    material["demand"] / req_by_charge[charge] * vopex_by_charge[charge]
+                    for charge, material in collect["materials"].items()
+                    if charge in vopex_by_charge
+                )
+                booked_energy = sum(entry["total_cost"] for entry in collect["energy"].values())
+                if not math.isclose(booked_energy, expected_energy, rel_tol=1e-9, abs_tol=1e-6):
+                    logger.error(
+                        "Energy booking mismatch for furnace group %s: booked %.6f USD vs %.6f USD "
+                        "expected from per-product energy vopex x product tonnes",
+                        fg.furnace_group_id,
+                        booked_energy,
+                        expected_energy,
+                    )
+
+                # Restate energy demand as carrier quantities (t / kWh, matching the price
+                # units) instead of the edge's metallic input tonnage.
+                intensity_by_charge = _energy_intensity_by_charge(fg)
+                for carrier, entry in collect["energy"].items():
+                    entry["demand"] = sum(
+                        material["demand"] / req * intensity_by_charge.get(charge, {}).get(carrier, 0.0)
+                        for charge, material in collect["materials"].items()
+                        if (req := req_by_charge.get(charge))
+                    )
 
             util_rate = getattr(fg, "utilization_rate", None)
             if util_rate is not None and util_rate <= 0:
