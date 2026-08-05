@@ -1,5 +1,6 @@
 import pytest
 
+from steelo.domain import calculate_costs
 from steelo.domain.calculate_costs import (
     calculate_cost_breakdown_by_feedstock,
     calculate_debt_repayment,
@@ -209,11 +210,106 @@ def test_calculate_debt_repayment_lifetime_remaining():
     lifetime_remaining = 5
     cost_of_debt = 0.05
 
+    # Tail of the full 10-year schedule: principal of 80/year on debt of 800, plus interest on the
+    # average balance of each of the last five years.
+    expected_repayments = [98.0, 94.0, 90.0, 86.0, 82.0]
+
     result = calculate_debt_repayment(total_investment, equity_share, lifetime, cost_of_debt, lifetime_remaining)
 
     # Assertions
     assert len(result) == lifetime_remaining, "Result should have 'lifetime_remaining' number of repayments."
     assert all(isinstance(x, (int, float)) for x in result), "All repayments should be numbers."
+    assert result == pytest.approx(expected_repayments), f"Expected {expected_repayments}, but got {result}"
+
+
+def test_calculate_debt_repayment_returns_tail_of_full_schedule():
+    """Test that a part-way-through loan is charged interest on the debt still outstanding.
+
+    The returned schedule must be the last `lifetime_remaining` years of the full schedule, not a
+    fresh amortisation restarted from the initial debt balance.
+    """
+    # Arrange
+    total_investment = 1000
+    equity_share = 0.2
+    lifetime = 10
+    lifetime_remaining = 5
+    cost_of_debt = 0.05
+
+    # Act
+    full_schedule = calculate_costs.calculate_debt_repayment(
+        total_investment,
+        equity_share,
+        lifetime,
+        cost_of_debt,
+    )
+    result = calculate_costs.calculate_debt_repayment(
+        total_investment,
+        equity_share,
+        lifetime,
+        cost_of_debt,
+        lifetime_remaining,
+    )
+
+    # Assert
+    assert result == pytest.approx(full_schedule[-lifetime_remaining:])
+    assert result[0] < full_schedule[0], "Later years carry less outstanding debt, so less interest."
+
+
+def test_calculate_debt_repayment_agrees_with_current_year_repayment():
+    """Test that the first year of the remaining schedule matches calculate_current_debt_repayment.
+
+    Both functions amortise the same loan, so for a plant six years into a ten-year loan they must
+    agree on that year's payment.
+    """
+    # Arrange
+    total_investment = 1000
+    equity_share = 0.2
+    lifetime = 10
+    cost_of_debt = 0.05
+    years_elapsed = 6
+    lifetime_remaining = lifetime - years_elapsed + 1
+
+    # Act
+    schedule = calculate_costs.calculate_debt_repayment(
+        total_investment,
+        equity_share,
+        lifetime,
+        cost_of_debt,
+        lifetime_remaining,
+    )
+    current_year_repayment = calculate_costs.calculate_current_debt_repayment(
+        total_investment=total_investment,
+        lifetime_expired=False,
+        lifetime_years=lifetime,
+        years_elapsed=years_elapsed,
+        cost_of_debt=cost_of_debt,
+        equity_share=equity_share,
+    )
+
+    # Assert
+    assert schedule[0] == pytest.approx(current_year_repayment)
+
+
+@pytest.mark.parametrize("lifetime_remaining", [0, -3])
+@pytest.mark.parametrize("equity_share", [0.2, 1.0])
+def test_calculate_debt_repayment_no_remaining_lifetime(equity_share, lifetime_remaining):
+    """Test that a fully repaid loan yields no further repayments, with or without debt."""
+    # Arrange
+    total_investment = 1000
+    lifetime = 10
+    cost_of_debt = 0.05
+
+    # Act
+    result = calculate_costs.calculate_debt_repayment(
+        total_investment,
+        equity_share,
+        lifetime,
+        cost_of_debt,
+        lifetime_remaining,
+    )
+
+    # Assert
+    assert result == []
 
 
 @pytest.fixture

@@ -2015,7 +2015,8 @@ def _normalize_cost_item(cost_item: str | None, row_index: int) -> str | None:
         return "opex"
     elif normalized in ("capex",):
         return "capex"
-    elif normalized in ("cost of debt", "debt"):
+    # Underscore/hyphen spellings would otherwise fall through and be read as an energy carrier
+    elif normalized in ("cost of debt", "cost_of_debt", "cost-of-debt", "debt"):
         return "cost of debt"
     # Known aliases
     elif normalized == "h2":
@@ -2199,7 +2200,7 @@ def read_subsidies(
         # - Other absolute subsidies: keep as-is (e.g., USD/t output)
         if subsidy_type == "relative":
             subsidy_amount = float(subsidy_amount) / 100
-        elif cost_item == "cost_of_debt":
+        elif cost_item == "cost of debt":
             # Absolute cost of debt subsidy is given as percentage point reduction
             subsidy_amount = float(subsidy_amount) / 100
         else:
