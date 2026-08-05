@@ -114,6 +114,15 @@ def read_regional_input_prices_from_master_excel(
         input_costs_sheet (str): Name of the sheet containing input costs.
     Returns:
         list[InputCosts]: A list of InputCosts objects containing the regional input prices.
+
+    Notes:
+        Sub-national rows (ISO-3 code like "CHN:CN-HE") may author only a subset of
+        commodities; the gaps are filled from the parent country's row so a province
+        never silently prices an unauthored commodity at zero.
+
+    Raises:
+        ValueError: If any commodity remains unpriced after the country fallback —
+            a silent 0.0 would zero that carrier's cost downstream.
     """
 
     # 1) Load raw data
@@ -124,9 +133,11 @@ def read_regional_input_prices_from_master_excel(
 
     # 2) Build input_cost_dict = { year: { ISO3: { commodity: cost_in_raw_units, … } } }
     input_costs_df.columns.name = "Year"
+    # min_count=1 keeps unauthored (geo, commodity) pairs as NaN through the pivot so the
+    # sub-national fallback below can tell "not authored" apart from an authored 0.0
     input_cost_stacked = (
         input_costs_df.groupby(["ISO-3 code", "Commodity"])
-        .sum(numeric_only=True)
+        .sum(numeric_only=True, min_count=1)
         .unstack(level=1)
         .stack(level="Year")
         .reset_index()
@@ -169,7 +180,7 @@ def read_regional_input_prices_from_master_excel(
 
     grouped: dict[str, dict[str, dict[str, float]]] = (
         input_cost_stacked.groupby(["year", "iso-3 code"])
-        .sum(numeric_only=True)
+        .sum(numeric_only=True, min_count=1)
         .apply(lambda row: row.to_dict(), axis=1)
         .unstack(level="year")
         .to_dict()
@@ -180,6 +191,25 @@ def read_regional_input_prices_from_master_excel(
     input_cost_dict: dict[int, dict[str, dict[str, float]]] = {
         int(year): country_data for year, country_data in grouped.items()
     }
+
+    # 4b) Sub-national rows author only some commodities (e.g. province electricity);
+    # fill the gaps from the parent country so unauthored commodities are never
+    # priced at zero. A gap that survives the fallback (missing at country level
+    # too) would silently price that commodity at 0.0 downstream, so fail loudly.
+    for year_key, by_geo in input_cost_dict.items():
+        for geo_key, costs in by_geo.items():
+            iso3, _, code = geo_key.partition(":")
+            if code:
+                parent = by_geo.get(iso3) or {}
+                for commodity, value in costs.items():
+                    if pd.isna(value):
+                        costs[commodity] = parent.get(commodity, float("nan"))
+            unpriced = sorted(commodity for commodity, value in costs.items() if pd.isna(value))
+            if unpriced:
+                raise ValueError(
+                    f"Input costs: {geo_key} has no authored value in {year_key} "
+                    f"(and no country fallback) for: {unpriced}"
+                )
 
     # 5) Build a List[InputCosts], sorted by year then geo_key. The "ISO-3 code" column holds
     # either a country (CHN) or a sub-national geo_key (CHN:CN-HE); split into iso3 + geo_unit.
@@ -2015,7 +2045,8 @@ def _normalize_cost_item(cost_item: str | None, row_index: int) -> str | None:
         return "opex"
     elif normalized in ("capex",):
         return "capex"
-    elif normalized in ("cost of debt", "debt"):
+    # Underscore/hyphen spellings would otherwise fall through and be read as an energy carrier
+    elif normalized in ("cost of debt", "cost_of_debt", "cost-of-debt", "debt"):
         return "cost of debt"
     # Known aliases
     elif normalized == "h2":
@@ -2199,7 +2230,7 @@ def read_subsidies(
         # - Other absolute subsidies: keep as-is (e.g., USD/t output)
         if subsidy_type == "relative":
             subsidy_amount = float(subsidy_amount) / 100
-        elif cost_item == "cost_of_debt":
+        elif cost_item == "cost of debt":
             # Absolute cost of debt subsidy is given as percentage point reduction
             subsidy_amount = float(subsidy_amount) / 100
         else:

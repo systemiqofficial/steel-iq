@@ -256,6 +256,23 @@ def test_normalize_cost_item_debt_shorthand():
     assert result == "cost of debt"
 
 
+@pytest.mark.parametrize(
+    "cost_item",
+    [
+        "cost_of_debt",
+        "cost-of-debt",
+        "Cost_Of_Debt",
+    ],
+)
+def test_normalize_cost_item_underscore_and_hyphen_spellings(cost_item):
+    """Test that underscore/hyphen spellings normalise to 'cost of debt' rather than an energy carrier."""
+    # Act
+    result = _normalize_cost_item(cost_item, row_index=0)
+
+    # Assert
+    assert result == "cost of debt"
+
+
 def test_normalize_cost_item_hydrogen():
     """Test that hydrogen is normalized."""
     # Arrange
@@ -693,6 +710,48 @@ def test_read_subsidies_relative_percentage_conversion():
     # Assert - 10% -> 0.1
     assert len(result) == 1
     assert result[0].subsidy_amount == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize(
+    "cost_item",
+    [
+        "Cost of debt",
+        "COST OF DEBT",
+        "debt",
+        "cost_of_debt",
+    ],
+)
+def test_read_subsidies_absolute_cost_of_debt_converted_to_decimal(cost_item):
+    """Test that absolute cost of debt subsidies are converted from percentage points to a decimal.
+
+    The Subsidies sheet documents this column as "cost of debt: absolute % reduction
+    (e.g. 5 -> reduction of 5% points)", while cost_of_debt is held as a decimal downstream.
+    """
+    # Arrange
+    subsidies_df = _make_subsidies_df(
+        [
+            {
+                "Scenario name": "Absolute Debt",
+                "Location": "DEU",
+                "Technology": "DRI",
+                "Cost item": cost_item,
+                "Subsidy type": "absolute",
+                "Subsidy amount": 5,
+                "Start year": 2025,
+                "End year": 2050,
+            }
+        ]
+    )
+
+    # Act
+    with patch("steelo.adapters.dataprocessing.excel_reader.pd.read_excel") as mock_read:
+        mock_read.side_effect = [subsidies_df, _make_country_df(), _make_techno_df()]
+        result = read_subsidies(Path("dummy.xlsx"))
+
+    # Assert - 5 percentage points -> 0.05
+    assert len(result) == 1
+    assert result[0].cost_item == "cost of debt"
+    assert result[0].subsidy_amount == pytest.approx(0.05)
 
 
 def test_read_subsidies_absolute_opex_no_conversion():
