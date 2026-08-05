@@ -5,6 +5,7 @@ from functools import partial
 
 from steelo.devdata import get_furnace_group, get_plant
 from steelo.domain import PointInTime, Year, TimeFrame, Volumes
+from steelo.domain.calculate_costs import ReductantScoreSeries
 from steelo.domain.models import CountryMapping, CountryMappingService, PlantGroup
 from steelo.domain.commands import ChangeFurnaceGroupTechnology
 from steelo.simulation_types import get_default_technology_settings
@@ -96,7 +97,8 @@ def mock_optimal_technology_name(self, *args, **kwargs):
         for tech in allowed
     }
     npv_capex_dict = {tech: 400.0 for tech in tech_npv_dict}
-    return tech_npv_dict, npv_capex_dict, 10_000, bom_dict
+    reductant_dict = {tech: "" for tech in tech_npv_dict}
+    return tech_npv_dict, npv_capex_dict, 10_000, bom_dict, reductant_dict
 
 
 def evaluate_strategy(bus, plant, plant_group, probabilistic_agents):
@@ -110,7 +112,8 @@ def evaluate_strategy(bus, plant, plant_group, probabilistic_agents):
         capex_renovation_share={"EAF": 0.7, "BOF": 0.7, "DRI": 0.7, "BF": 0.7},
         cost_of_debt_by_tech={"EAF": 0.04, "BOF": 0.04, "DRI": 0.04, "BF": 0.04},
         cost_of_equity_by_tech={"EAF": 0.08, "BOF": 0.08, "DRI": 0.08, "BF": 0.08},
-        get_bom_from_avg_boms=lambda *a: (None, 0.0, ""),
+        get_bom_from_avg_boms=lambda *a: (None, 0.0, "", {}),
+        reductant_score_series=lambda *a, **k: ReductantScoreSeries(scores=[], picks=[]),
         probabilistic_agents=probabilistic_agents,
         dynamic_business_cases=bus.env.dynamic_feedstocks,
         chosen_emissions_boundary_for_carbon_costs="scope_1",
