@@ -204,8 +204,8 @@ def test_switch_candidate_priced_without_incumbent_subsidy():
 
     fg.optimal_technology_name(
         market_price_series={"steel": [500.0] * 30, "iron": [400.0] * 30},
-        cost_of_debt=0.05,
-        cost_of_equity=0.1,
+        cost_of_debt_by_tech={"BF": 0.05, "DRI": 0.05},
+        cost_of_equity_by_tech={"BF": 0.1, "DRI": 0.1},
         get_bom_from_avg_boms=mock_get_bom,
         capex_dict={"DRI": 500.0},
         capex_renovation_share={},
@@ -257,8 +257,8 @@ def test_expansion_candidate_priced_without_incumbent_subsidy():
         price_series={"steel": [500.0] * 30, "iron": [400.0] * 30},
         capacity=Volumes(1000.0),
         region_capex={"Region": {"DRI": 500.0, "EAF": 400.0}},
-        cost_of_debt_dict={"NZL": 0.05},
-        cost_of_equity_dict={"NZL": 0.1},
+        cost_of_debt_dict={"NZL": {"DRI": 0.05, "EAF": 0.05}},
+        cost_of_equity_dict={"NZL": {"DRI": 0.1, "EAF": 0.1}},
         get_bom_from_avg_boms=mock_get_bom,
         dynamic_feedstocks={},
         fopex_for_iso3={"NZL": {"dri": 50.0, "eaf": 40.0}},
