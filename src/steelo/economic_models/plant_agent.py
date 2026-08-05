@@ -200,7 +200,7 @@ class GeospatialModel:
                     consideration_time=bus.env.config.consideration_time,
                     custom_energy_costs=custom_energy_costs,  # type: ignore[arg-type]  # needed to avoid importing xarray into the domain
                     capex_dict_all_locs=bus.env.name_to_capex["greenfield"],
-                    cost_debt_all_locs=bus.env.industrial_cost_of_debt,
+                    cost_debt_all_locs=bus.env.cost_of_debt_by_tech,
                     iso3_to_region_map=bus.env.country_mappings.iso3_to_region(),
                     global_risk_free_rate=bus.env.config.global_risk_free_rate,
                     capex_subsidies=bus.env.capex_subsidies,
@@ -225,7 +225,7 @@ class GeospatialModel:
                     current_year=bus.env.year,
                     consideration_time=bus.env.config.consideration_time,
                     market_price=future_price_series,
-                    cost_of_equity_all_locs=bus.env.industrial_cost_of_equity,
+                    cost_of_equity_all_locs=bus.env.cost_of_equity_by_tech,
                     probability_of_announcement=bus.env.config.probability_of_announcement,
                     probability_of_construction=bus.env.config.probability_of_construction,
                     plant_lifetime=bus.env.config.plant_lifetime,
@@ -269,8 +269,8 @@ class GeospatialModel:
                 iso3_to_region_map=bus.env.country_mappings.iso3_to_region(),
                 market_price=future_price_series,
                 capex_dict_all_locs_techs=bus.env.name_to_capex["greenfield"],
-                cost_of_debt_all_locs=bus.env.industrial_cost_of_debt,
-                cost_of_equity_all_locs=bus.env.industrial_cost_of_equity,
+                cost_of_debt_all_locs=bus.env.cost_of_debt_by_tech,
+                cost_of_equity_all_locs=bus.env.cost_of_equity_by_tech,
                 steel_plant_capacity=bus.env.config.expanded_capacity,
                 all_plant_ids=[p.plant_id for p in bus.uow.plants.list()],
                 fopex_all_locs_techs=bus.env.fopex_by_country,
@@ -826,18 +826,14 @@ class PlantAgentsModel:
                     else:
                         raise KeyError("Region capex not found in bus.env.name_to_capex.")
 
-                    # Get cost of debt for the plant location (before subsidies)
-                    cost_of_debt = bus.env.industrial_cost_of_debt.get(plant.location.iso3)
-                    if cost_of_debt is None:
+                    # Get per-technology financing rates for the plant location (before subsidies)
+                    cost_of_debt_by_tech = bus.env.cost_of_debt_by_tech.get(plant.location.iso3)
+                    if cost_of_debt_by_tech is None:
                         raise ValueError(f"Cost of debt not found for ISO3 code {plant.location.iso3}.")
 
-                    # Get cost of equity for the plant location
-                    cost_of_equity = bus.env.industrial_cost_of_equity.get(plant.location.iso3)
-                    if cost_of_equity is None:
+                    cost_of_equity_by_tech = bus.env.cost_of_equity_by_tech.get(plant.location.iso3)
+                    if cost_of_equity_by_tech is None:
                         raise ValueError(f"Cost of equity not found for ISO3 code {plant.location.iso3}")
-
-                    logger.debug(f"[PAM] Cost of debt for {plant.location.iso3}: {cost_of_debt:.2%}")
-                    logger.debug(f"[PAM] Cost of equity for {plant.location.iso3}: {cost_of_equity:.2%}")
 
                     # Evaluate potential technology switch or renovation for this furnace group
                     # This considers: switching technology, renovating existing technology, or closing the furnace
@@ -847,8 +843,8 @@ class PlantAgentsModel:
                             plant_group=pg,
                             market_price_series=future_price_series,
                             region_capex=region_capex,
-                            cost_of_debt=cost_of_debt,
-                            cost_of_equity=cost_of_equity,
+                            cost_of_debt_by_tech=cost_of_debt_by_tech,
+                            cost_of_equity_by_tech=cost_of_equity_by_tech,
                             capex_renovation_share=capex_renovation_share,
                             get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
                             allowed_furnace_transitions=bus.env.allowed_furnace_transitions,
@@ -940,8 +936,8 @@ class PlantAgentsModel:
                     construction_time=bus.env.config.construction_time,
                     current_year=bus.env.year,
                     allowed_techs=bus.env.allowed_techs,
-                    cost_of_debt_dict=bus.env.industrial_cost_of_debt,
-                    cost_of_equity_dict=bus.env.industrial_cost_of_equity,
+                    cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
+                    cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
                     get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
                     capex_subsidies=bus.env.capex_subsidies,
                     opex_subsidies=bus.env.opex_subsidies,

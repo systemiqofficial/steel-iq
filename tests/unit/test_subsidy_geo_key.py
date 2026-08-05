@@ -230,8 +230,50 @@ def test_candidate_site_collects_country_and_province_capex_subsidies():
         target_year=Year(2030),
         energy_costs={"CHN": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}},
         capex_dict_all_locs_techs={"Asia": {"EAF": 1000.0}},
-        cost_of_debt_all_locs={"CHN": 0.05},
-        cost_of_equity_all_locs={"CHN": 0.08},
+        cost_of_debt_all_locs={
+            "CHN": {
+                tech: 0.05
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        },
+        cost_of_equity_all_locs={
+            "CHN": {
+                tech: 0.08
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        },
         fopex_all_locs_techs={"CHN": {"eaf": 50.0}},
         steel_plant_capacity=100.0,
         get_bom_from_avg_boms=_mock_get_bom,

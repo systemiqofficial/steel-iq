@@ -256,7 +256,28 @@ def test_update_dynamic_costs_power_price_not_scaled():
         consideration_time=1,
         custom_energy_costs=custom_energy_costs,
         capex_dict_all_locs={"NAM": {"EAF": 100.0}},
-        cost_debt_all_locs={"USA": 0.05},
+        cost_debt_all_locs={
+            "USA": {
+                tech: 0.05
+                for tech in (
+                    "EAF",
+                    "BF",
+                    "BOF",
+                    "DRI",
+                    "SR",
+                    "MOE",
+                    "E-WIN",
+                    "BF+CCS",
+                    "BF+CCU",
+                    "DRI+CCS",
+                    "DRI+CCU",
+                    "DRI+EAF",
+                    "DRI+ESF",
+                    "ESF",
+                    "ZZZ",
+                )
+            }
+        },
         iso3_to_region_map={"USA": "NAM"},
         global_risk_free_rate=0.03,
     )

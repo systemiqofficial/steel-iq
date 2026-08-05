@@ -83,7 +83,28 @@ def test_update_dynamic_costs_uses_geospatial_power_price_without_scaling():
     }
 
     capex_dict_all_locs = {"test_region": {"DRI": 100.0}}
-    cost_debt_all_locs = {"TST": 0.05}
+    cost_debt_all_locs = {
+        "TST": {
+            tech: 0.05
+            for tech in (
+                "EAF",
+                "BF",
+                "BOF",
+                "DRI",
+                "SR",
+                "MOE",
+                "E-WIN",
+                "BF+CCS",
+                "BF+CCU",
+                "DRI+CCS",
+                "DRI+CCU",
+                "DRI+EAF",
+                "DRI+ESF",
+                "ESF",
+                "ZZZ",
+            )
+        }
+    }
     iso3_to_region_map = {"TST": "test_region"}
 
     commands_generated = plant_group.update_dynamic_costs_for_business_opportunities(
