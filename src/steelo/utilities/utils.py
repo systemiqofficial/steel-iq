@@ -101,15 +101,19 @@ def merge_two_dictionaries(target: dict, source: dict) -> dict:
     return target
 
 
-def get_most_common_reductant_by_technology(furnace_groups: list["FurnaceGroup"]) -> dict[str, str]:
+def get_most_common_reductant_by_technology(
+    furnace_groups: list["FurnaceGroup"], active_statuses: list[str]
+) -> dict[str, str]:
     """
     Get the most common reductant for each technology from a collection of furnace groups.
 
-    Aggregates reductant data from all furnace groups to determine the most frequently
-    used reductant for each technology type.
+    Aggregates reductant data from active-status furnace groups to determine the most
+    frequently used reductant for each technology type. Furnace groups whose status is
+    not in ``active_statuses`` (e.g. closed or discarded ones) do not vote.
 
     Args:
         furnace_groups: List of FurnaceGroup objects to aggregate from.
+        active_statuses: Status strings (lowercase) whose furnace groups count in the vote.
 
     Returns:
         dict[str, str]: Dictionary mapping technology name to most common reductant.
@@ -124,8 +128,11 @@ def get_most_common_reductant_by_technology(furnace_groups: list["FurnaceGroup"]
     """
     # Group reductants by technology
     tech_reductants: dict[str, list[str]] = defaultdict(list)
+    active_statuses_lower = {status.lower() for status in active_statuses}
 
     for fg in furnace_groups:
+        if fg.status.lower() not in active_statuses_lower:
+            continue
         tech_name = fg.technology.name
         reductant = fg.chosen_reductant
 
