@@ -226,40 +226,6 @@ class TM_PAM_connector:
             total += self.tariff_taxes.get(key, 0.0)
         return total
 
-    def calculate_allocations_for_graph(
-        self,
-        allocation_attr="allocations",
-        volume_attr="volume",
-        effectiveness_attr="process_efficiency",
-        commodity_attr="commodity",
-    ):
-        """Compute input allocations from output volumes using process efficiencies.
-
-        For each edge in the graph, calculates the required input quantity by dividing
-        the shipped volume by the process efficiency (yield). This converts output volumes
-        to input requirements for cost accounting.
-
-        Args:
-            allocation_attr: Edge attribute name to store computed allocation values.
-            volume_attr: Edge attribute name containing shipped/output volumes.
-            effectiveness_attr: Edge attribute name for process efficiency/yield (output/input ratio).
-            commodity_attr: Edge attribute name for commodity identifier.
-
-        Side Effects:
-            Updates `self.G` edges with `allocation_attr` values = volume / efficiency.
-
-        Example:
-            If 100 tons steel shipped with 0.95 efficiency → allocation = 100/0.95 = 105.3 tons input.
-        """
-        for _from_node, _to_node, _commodity, data in self.G.edges(keys=True, data=True):
-            if volume_attr in data:
-                volume = data[volume_attr]
-                effectiveness = data.get(effectiveness_attr, 1)
-                if effectiveness is None:
-                    effectiveness = 1
-                # Calculate the allocation based on the volume and effectiveness
-                data[allocation_attr] = volume / effectiveness if effectiveness > 0 else 0
-
     def create_graph(self, solved_trade_allocations):
         """
         Build a directed multigraph of all process centers, with parallel edges, by key
@@ -384,14 +350,13 @@ class TM_PAM_connector:
             if to_pc.process.type == ProcessType.SUPPLY:
                 self.G.add_node(
                     to_name,
-                    process=process,
                     allocations={},
                     export={},
                     unit_cost={},
                     product_cost=to_pc.production_cost,
                 )
             else:
-                self.G.add_node(to_name, process=process, allocations={}, export={}, unit_cost={}, product_cost={})
+                self.G.add_node(to_name, allocations={}, export={}, unit_cost={}, product_cost={})
 
             # Finally, add the directed edge with all computed attributes
             self.G.add_edge(from_name, to_name, key=commodity, **edge_attrs)  # allow parallel edges keyed by commodity
@@ -473,6 +438,14 @@ class TM_PAM_connector:
             node_cost = G.nodes[u].get(source_attr, {})  # may be dict by commodity
             unit_cost = {}
 
+            # A production node with outgoing flows but no booked inputs prices its
+            # exports at own_unit_cost alone — a balanced LP should never produce one.
+            if G.in_degree(u) == 0 and G.out_degree(u) > 0 and "own_unit_cost" in G.nodes[u]:
+                logger.warning(
+                    "Production node %s ships with no booked inputs; outgoing flows carry only its own unit cost",
+                    u,
+                )
+
             if allocation_attr in G.nodes[u]:
                 # Initialize export dict if it doesn't exist
                 if export_attr not in G.nodes[u]:
@@ -508,16 +481,19 @@ class TM_PAM_connector:
                     # Multi-output process: use total export volume
                     export_volume_at_u = sum(export.values())
                 else:
-                    # Single-output process or supplier: use commodity-specific volume
+                    # Single-output process or supplier: use commodity-specific volume.
+                    # Suppliers never build an export dict and their production_cost is
+                    # already per-unit, so the 1.0 default is the per-unit pass-through,
+                    # not a fallback.
                     export_volume_at_u = export.get(comm, 1.0)
 
                 per_unit_base = base_cost / export_volume_at_u
                 # Embed producing furnaces' own carbon onto outgoing flows. Suppliers
-                # (root nodes) are skipped — their cost already enters via base_cost.
-                if G.in_degree(u) > 0:
-                    own = G.nodes[u].get("own_unit_cost")
-                    if own:
-                        per_unit_base += float(own)
+                # never carry own_unit_cost, so no gate on in-degree is needed — and a
+                # production node without booked inputs must still price its own carbon.
+                own = G.nodes[u].get("own_unit_cost")
+                if own:
+                    per_unit_base += float(own)
                 unit_cost.update({comm: per_unit_base})
                 if G.out_degree(v) == 0:
                     # print(f"Skipping sink node {v} with no outgoing edges")
@@ -621,8 +597,7 @@ class TM_PAM_connector:
             - Computes and stores unit costs at each node.
 
         Notes:
-            Calls in sequence: create_graph() → calculate_allocations_for_graph() →
-            propage_cost_forward_by_layers_and_normalize().
+            Calls in sequence: create_graph() → propage_cost_forward_by_layers_and_normalize().
         """
         logger = logging.getLogger(f"{__name__}.set_up_network_and_propagate_costs")
         logger.debug(f"[NETWORK] Setting up network with {len(solved_trade_allocations.allocations)} total allocations")
@@ -652,8 +627,6 @@ class TM_PAM_connector:
                     "Cost propagation requires a directed acyclic graph (DAG)."
                 )
 
-        # 1.1) Calculate the allocations for the graph
-        self.calculate_allocations_for_graph()
         # 2) Propagate the costs forward
         self.propage_cost_forward_by_layers_and_normalize()
 
@@ -1425,9 +1398,6 @@ class TM_PAM_connector:
                 for _, dest, edge_data in list(self.G.out_edges(fg_id, data=True)):
                     old_vol = edge_data.get("volume", 0.0)
                     edge_data["volume"] = old_vol * scale_production
-                    old_alloc = edge_data.get("allocations", 0.0)
-                    if old_alloc:
-                        edge_data["allocations"] = old_alloc * scale_production
 
             # Update BOM demands and costs
             for comm, info in materials.items():
