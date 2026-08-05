@@ -3590,7 +3590,16 @@ class Plant:
             existing_removed = self.removed_capacity_by_product.get(product_name, 0.0)
             self.removed_capacity_by_product[product_name] = existing_removed + float(furnace_group.capacity)
         furnace_group.status = "closed"
-        self.events.append(events.FurnaceGroupClosed(furnace_group_id=furnace_group_id))
+        self.events.append(
+            events.FurnaceGroupClosed(
+                furnace_group_id=furnace_group_id,
+                capacity=furnace_group.capacity,
+                iso3=self.location.iso3,
+                geo_unit=self.location.geo_unit,
+                owner_id=self.ultimate_plant_group,
+                product=furnace_group.technology.product,
+            )
+        )
 
     def renovate_furnace_group(
         self,
@@ -3666,7 +3675,19 @@ class Plant:
         furnace_group.applied_subsidies["debt"] = debt_subsidies
 
         # Log the renovation event for audit trail and event sourcing
-        self.events.append(events.FurnaceGroupRenovated(furnace_group_id=furnace_group_id))
+        # A renovation keeps the technology, so old and new names coincide
+        self.events.append(
+            events.FurnaceGroupRenovated(
+                furnace_group_id=furnace_group_id,
+                capacity=furnace_group.capacity,
+                iso3=self.location.iso3,
+                geo_unit=self.location.geo_unit,
+                old_technology_name=furnace_group.technology.name,
+                new_technology_name=furnace_group.technology.name,
+                owner_id=self.ultimate_plant_group,
+                product=furnace_group.technology.product,
+            )
+        )
 
     def change_furnace_group_status_to_switching_technology(
         self,
@@ -3773,6 +3794,8 @@ class Plant:
             - See debt_repayment_per_year property for full details on debt accumulation logic.
         """
         furnace_group = self.get_furnace_group(furnace_group_id)
+        old_technology_name = furnace_group.technology.name
+        old_capacity = furnace_group.capacity
 
         # Capture the current technology's remaining debt tail before switching.
         years_remaining = legacy_years if legacy_years is not None else furnace_group.lifetime.remaining_number_of_years
@@ -3848,6 +3871,12 @@ class Plant:
                 furnace_group_id=furnace_group_id,
                 technology_name=technology_name,
                 capacity=furnace_group.capacity,
+                iso3=self.location.iso3,
+                geo_unit=self.location.geo_unit,
+                old_technology_name=old_technology_name,
+                old_capacity=old_capacity,
+                owner_id=self.ultimate_plant_group,
+                product=furnace_group.technology.product,
             )
         )
 

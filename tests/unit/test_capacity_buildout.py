@@ -155,6 +155,12 @@ def test_deferred_switch_does_not_pollute_added_capacity():
         furnace_group_id="fg-1",
         technology_name="SR",
         capacity=11100.0,
+        iso3="DEU",
+        geo_unit=None,
+        old_technology_name="BF",
+        old_capacity=11100.0,
+        owner_id="pg-1",
+        product="iron",
     )
 
     # The event handler list for FurnaceGroupTechChanged should NOT contain

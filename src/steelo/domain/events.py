@@ -15,6 +15,11 @@ class FurnaceGroupClosed(Event):
     """Furnace group closed."""
 
     furnace_group_id: str
+    capacity: float
+    iso3: str
+    geo_unit: str | None
+    owner_id: str
+    product: str
 
 
 @dataclass
@@ -24,6 +29,12 @@ class FurnaceGroupTechChanged(Event):
     furnace_group_id: str
     technology_name: str
     capacity: float
+    iso3: str
+    geo_unit: str | None
+    old_technology_name: str
+    old_capacity: float
+    owner_id: str
+    product: str
     is_new_plant: bool = False  # True if this is a new plant, False if it's a switch
 
 
@@ -32,6 +43,13 @@ class FurnaceGroupRenovated(Event):
     """Furnace group renovated."""
 
     furnace_group_id: str
+    capacity: float
+    iso3: str
+    geo_unit: str | None
+    old_technology_name: str
+    new_technology_name: str
+    owner_id: str
+    product: str
 
 
 @dataclass
