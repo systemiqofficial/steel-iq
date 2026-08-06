@@ -1194,6 +1194,7 @@ class FurnaceGroup:
         cost_breakdown_keys: list[str] | None = None,
         carbon_breakdown_keys: list[str] | None = None,
         disposal_cost_outputs: frozenset[str] | None = None,
+        output_shares: dict[str, float] | None = None,
     ) -> None:
         self.furnace_group_id = furnace_group_id
         self.capacity = capacity
@@ -1211,6 +1212,9 @@ class FurnaceGroup:
         self.carbon_breakdown_keys = carbon_breakdown_keys
         self.allocated_volumes = allocated_volumes
         self.disposal_cost_outputs = disposal_cost_outputs
+        # Metallic charge -> share of product for the candidate BOM; set only for
+        # PAM-created business opportunities (feeds the re-check's score series)
+        self.output_shares = output_shares
 
         # Future technology switch (accounts for construction time while operating with old technology)
         self.future_switch_cmd: Optional[commands.ChangeFurnaceGroupTechnology] = None
@@ -5254,6 +5258,8 @@ class PlantGroup:
             output_energy_costs=cost_data[product][site_id][technology_name].get("output_costs"),  # type: ignore[arg-type]
             energy_costs_no_subsidy=cost_data[product][site_id][technology_name].get("no_subsidy_prices"),  # type: ignore[arg-type]
             disposal_cost_outputs=disposal_cost_outputs,
+            equity_share=equity_share,
+            output_shares=cost_data[product][site_id][technology_name]["output_shares"],
         )
         new_furnace.created_by_PAM = True
         # cost_data has been validated by validate_and_clean_cost_data to ensure these are floats/dicts

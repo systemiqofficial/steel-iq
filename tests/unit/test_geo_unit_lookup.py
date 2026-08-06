@@ -133,6 +133,7 @@ def _minimal_cost_data(site_id, tech):
                     "reductant": "scrap",
                     "railway_cost": 0.0,
                     "energy_costs": {"electricity": 0.05},
+                    "output_shares": {"scrap": 1.0},
                 },
             },
         },

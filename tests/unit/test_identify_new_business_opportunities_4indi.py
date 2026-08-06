@@ -1218,6 +1218,7 @@ class TestGenerateNewPlant:
                         "railway_cost": 10.0,
                         "bom": {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
                         "energy_costs": {"electricity": 0.05, "hydrogen": 3500.0},  # USD/kWh, USD/t
+                        "output_shares": {"scrap": 1.0},
                     }
                 }
             }
@@ -1307,12 +1308,13 @@ class TestGenerateNewPlant:
         assert furnace.cost_of_debt == 0.05
         assert furnace.cost_of_debt_no_subsidy == 0.06
         assert furnace.railway_cost == 10.0
+        assert furnace.output_shares == {"scrap": 1.0}
         # chosen_reductant may be overridden by generate_energy_vopex_by_reductant()
         # Just verify it was set to some value
         assert furnace.chosen_reductant is not None
 
-    def test_uses_default_equity_share(self, plant_group, cost_data):
-        """Test that furnace group uses default equity_share when not passed via kwargs."""
+    def test_forwards_equity_share(self, plant_group, cost_data):
+        """Test that the config equity share reaches the furnace group (re-check parity)."""
         site_id = (40.0, -100.0, "USA")
 
         new_plant = plant_group.generate_new_plant(
@@ -1323,15 +1325,16 @@ class TestGenerateNewPlant:
             current_year=2025,
             existent_plant_ids=[],
             cost_data=cost_data,
-            equity_share=0.3,  # Used to calculate equity_needed, not passed to furnace
+            equity_share=0.3,
             steel_plant_capacity=1000.0,
             dynamic_feedstocks=[],
             plant_lifetime=30,
         )
 
         furnace = new_plant.furnace_groups[0]
-        # FurnaceGroup uses default equity_share of 0.2 (not the 0.3 passed to generate_new_plant)
-        assert furnace.equity_share == 0.2
+        # Creation values the NPV with the config equity share; the yearly re-check reads
+        # fg.equity_share, so the same value must be stored on the furnace group
+        assert furnace.equity_share == 0.3
 
     def test_does_not_add_plant_to_plant_group(self, plant_group, cost_data):
         """
@@ -1405,3 +1408,67 @@ class TestGenerateNewPlant:
         furnace = new_plant.furnace_groups[0]
         assert current_year in furnace.historical_npv_business_opportunities
         assert furnace.historical_npv_business_opportunities[current_year] == npv
+
+
+def _complete_cost_data_entry():
+    """A cost_data tech entry carrying exactly the validator's required fields."""
+    return {
+        "cost_of_equity": 0.08,
+        "cost_of_debt": 0.05,
+        "cost_of_debt_no_subsidy": 0.06,
+        "capex": 1000.0,
+        "capex_no_subsidy": 1200.0,
+        "fopex": 50.0,
+        "utilization_rate": 0.7,
+        "reductant": "scrap",
+        "all_opex_subsidies": [],
+        "score_series": [10.0, 10.0],
+        "railway_cost": 10.0,
+        "energy_costs": {"electricity": 0.05},
+        "output_costs": {"electricity": 0.05},
+        "no_subsidy_prices": {"electricity": 0.05},
+        "bom": {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
+        "carbon_cost_series": None,
+        "output_shares": {"scrap": 1.0},
+    }
+
+
+def test_validate_and_clean_cost_data_requires_output_shares():
+    """An entry missing output_shares is incomplete and gets dropped.
+
+    Notes:
+        The exact-set field check treats output_shares like every other required
+        field, so the only tech at the only site being incomplete empties the
+        cost data and triggers the no-valid-data ValueError.
+    """
+    from steelo.domain.new_plant_opening import validate_and_clean_cost_data
+
+    entry = _complete_cost_data_entry()
+    del entry["output_shares"]
+    cost_data = {"steel": {(40.0, -100.0, "USA"): {"EAF": entry}}}
+
+    with pytest.raises(ValueError, match="No valid cost data"):
+        validate_and_clean_cost_data(cost_data)
+
+
+def test_validate_and_clean_cost_data_rejects_non_dict_output_shares():
+    """A non-dict output_shares value raises a loud type error."""
+    from steelo.domain.new_plant_opening import validate_and_clean_cost_data
+
+    entry = _complete_cost_data_entry()
+    entry["output_shares"] = [1.0]
+    cost_data = {"steel": {(40.0, -100.0, "USA"): {"EAF": entry}}}
+
+    with pytest.raises(ValueError, match="output_shares must be dict"):
+        validate_and_clean_cost_data(cost_data)
+
+
+def test_validate_and_clean_cost_data_accepts_complete_entry():
+    """A complete entry (including output_shares) passes validation unchanged."""
+    from steelo.domain.new_plant_opening import validate_and_clean_cost_data
+
+    cost_data = {"steel": {(40.0, -100.0, "USA"): {"EAF": _complete_cost_data_entry()}}}
+
+    cleaned = validate_and_clean_cost_data(cost_data)
+
+    assert cleaned["steel"][(40.0, -100.0, "USA")]["EAF"]["output_shares"] == {"scrap": 1.0}

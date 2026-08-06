@@ -343,7 +343,7 @@ def prepare_cost_data_for_business_opportunity(
                     if committed_reductant != reductant:
                         # Commit the BOM the start-year pick implies (materials are
                         # reductant-invariant; only the energy rows follow the pick)
-                        rebuilt_bom, rebuilt_util_rate, reductant, _shares = get_bom_from_avg_boms(
+                        rebuilt_bom, rebuilt_util_rate, reductant, output_shares = get_bom_from_avg_boms(
                             energy_costs_tech,
                             tech,
                             int(steel_plant_capacity),
@@ -358,6 +358,7 @@ def prepare_cost_data_for_business_opportunity(
                     cost_data[prod][site_id][tech]["bom"] = bill_of_materials
                     cost_data[prod][site_id][tech]["reductant"] = committed_reductant  # type: ignore[assignment]
                     cost_data[prod][site_id][tech]["score_series"] = score_series.scores  # type: ignore[assignment]
+                    cost_data[prod][site_id][tech]["output_shares"] = output_shares  # type: ignore[assignment]
                     if logger.isEnabledFor(logging.DEBUG):
                         logger.debug(
                             "[REDUCTANT NPV] site %s: tech=%s committed=%r picks=%s",
@@ -457,7 +458,15 @@ def validate_and_clean_cost_data(
         float_fields
         + string_fields
         + list_fields
-        + ["railway_cost", "energy_costs", "output_costs", "no_subsidy_prices", "bom", "carbon_cost_series"]
+        + [
+            "railway_cost",
+            "energy_costs",
+            "output_costs",
+            "no_subsidy_prices",
+            "bom",
+            "carbon_cost_series",
+            "output_shares",
+        ]
     )
 
     # Run through all products, sites, and technologies
@@ -534,6 +543,18 @@ def validate_and_clean_cost_data(
                             if not isinstance(tech_data["carbon_cost_series"], dict):
                                 raise ValueError(
                                     f"carbon_cost_series must be dict or None, got {type(tech_data['carbon_cost_series']).__name__}"
+                                )
+
+                        # output_shares: dict of floats (metallic charge -> share of product)
+                        if not isinstance(tech_data["output_shares"], dict):
+                            raise ValueError(
+                                f"output_shares must be dict, got {type(tech_data['output_shares']).__name__}: {tech_data['output_shares']}"
+                            )
+                        for charge_key, share_val in tech_data["output_shares"].items():
+                            if not isinstance(share_val, (float, int)):
+                                raise ValueError(
+                                    f"output_shares['{charge_key}'] must be float or int, "
+                                    f"got {type(share_val).__name__}: {share_val}"
                                 )
 
                         # bom: dict of floats
