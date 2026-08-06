@@ -3771,6 +3771,12 @@ class Plant:
         11. Apply probabilistic adoption decision (if enabled)
         12. Return appropriate command (ChangeFurnaceGroupTechnology, RenovateFurnaceGroup, CloseFurnaceGroup, or None)
 
+        An expired lifetime always resolves to an action: any no-action exit (all NPVs
+        non-positive, blocked/unaffordable/rejected switch) falls back to renovating the
+        incumbent when it is value-creating and affordable, otherwise the group closes.
+        ``lifetime.expired`` is true only in the renovation-boundary year, so returning
+        None would roll the group into a fresh cycle without paying renovation capex.
+
         Args:
             furnace_group_id: Unique identifier for the furnace group
             plant_group: PlantGroup that owns this plant. Its ``balance`` is the treasury
@@ -3943,11 +3949,88 @@ class Plant:
         logger.debug(f"[FG STRATEGY] CAPEX by tech ($/t): {npv_capex_dict}")
         logger.debug(f"[FG STRATEGY] COSA: {cosa_msg}")
 
+        def renovate_or_close_expired() -> commands.Command:
+            """Resolve an expired lifetime when no switch happens: renovate or close.
+
+            The incumbent is renovated when its NPV is positive and the group can fund
+            the equity portion; otherwise the furnace group closes. The incumbent being
+            absent from ``tech_npv_dict`` means renovation is no longer an allowed
+            transition (phased out or CO2-gated), so the group closes too.
+            """
+            incumbent = furnace_group.technology.name
+            incumbent_npv = tech_npv_dict.get(incumbent)
+            if incumbent_npv is None or not math.isfinite(incumbent_npv) or incumbent_npv <= 0:
+                logger.info(
+                    f"[FG STRATEGY] DECISION - CLOSE FG plant_id={self.plant_id} "
+                    f"plant_group_id={plant_group.plant_group_id} "
+                    f"(lifetime expired, incumbent {incumbent} NPV not positive: {incumbent_npv})"
+                )
+                return commands.CloseFurnaceGroup(
+                    plant_id=self.plant_id, furnace_group_id=furnace_group.furnace_group_id
+                )
+
+            renovation_capex_per_tonne = npv_capex_dict.get(incumbent)
+            if renovation_capex_per_tonne is None:
+                raise ValueError(f"CAPEX (renovation) for technology {incumbent} not found in NPV CAPEX dict")
+            renovation_share = capex_renovation_share.get(incumbent)
+            if renovation_share is None:
+                raise ValueError(f"CAPEX renovation share for technology {incumbent} not found")
+            full_capex_per_tonne = renovation_capex_per_tonne / renovation_share
+            incumbent_capex_no_subsidy = region_capex.get(incumbent)
+            if incumbent_capex_no_subsidy is None:
+                raise ValueError(f"CAPEX without subsidies for technology {incumbent} not found in region CAPEX dict")
+
+            incumbent_capex_subs = filter_subsidies_for_year(tech_capex_subsidies.get(incumbent, []), current_year)
+            incumbent_debt_subs = filter_subsidies_for_year(tech_debt_subsidies.get(incumbent, []), current_year)
+            incumbent_cost_of_debt = calculate_debt_with_subsidies(
+                cost_of_debt=cost_of_debt,
+                debt_subsidies=incumbent_debt_subs,
+                risk_free_rate=risk_free_rate,
+            )
+
+            renovate_cost = renovation_capex_per_tonne * furnace_group.capacity * furnace_group.equity_share
+            logger.info(
+                f"[FG STRATEGY] plant_id={self.plant_id} plant_group_id={plant_group.plant_group_id} "
+                f"renovate_cost=${renovate_cost:,.2f} balance=${plant_group.balance:,.2f} "
+                f"headroom=${plant_group.balance - renovate_cost:,.2f}"
+            )
+            if renovate_cost > plant_group.balance:
+                logger.info(
+                    f"[FG STRATEGY] DECISION - CLOSE FG plant_id={self.plant_id} "
+                    f"plant_group_id={plant_group.plant_group_id} gate_pass=False "
+                    f"(cannot afford renovation: ${renovate_cost:,.2f} > "
+                    f"group balance ${plant_group.balance:,.2f})"
+                )
+                return commands.CloseFurnaceGroup(
+                    plant_id=self.plant_id, furnace_group_id=furnace_group.furnace_group_id
+                )
+
+            # Debit the group treasury via the single-site capex mutation
+            plant_group.deduct_equity(renovate_cost, reason="renovation")
+            logger.info(
+                f"[FG STRATEGY] DECISION - RENOVATE {incumbent} plant_id={self.plant_id} "
+                f"plant_group_id={plant_group.plant_group_id} gate_pass=True "
+                f"(cost: ${renovate_cost:,.2f}, new group balance: ${plant_group.balance:,.2f})"
+            )
+            return commands.RenovateFurnaceGroup(
+                plant_id=self.plant_id,
+                furnace_group_id=furnace_group.furnace_group_id,
+                capex=full_capex_per_tonne,
+                capex_no_subsidy=incumbent_capex_no_subsidy,
+                cost_of_debt=incumbent_cost_of_debt,
+                cost_of_debt_no_subsidy=cost_of_debt,
+                capex_subsidies=incumbent_capex_subs,
+                debt_subsidies=incumbent_debt_subs,
+            )
+
         # ===== STAGE 5: Check if any technology option is profitable =====
         best_npv = max(tech_npv_dict.values(), default=0)
         logger.debug(f"[FG STRATEGY] Best NPV across all options: ${best_npv:,.2f}")
 
         if best_npv <= 0:
+            if furnace_group.lifetime.expired:
+                logger.debug("[FG STRATEGY] All NPVs negative or zero at end of lifetime")
+                return renovate_or_close_expired()
             logger.debug("[FG STRATEGY] DECISION - No action (all NPVs negative or zero)")
             return None
 
@@ -3974,6 +4057,8 @@ class Plant:
 
             if not valid_techs:
                 logger.warning(f"[FG STRATEGY] No valid NPV values found for plant {self.plant_id}")
+                if furnace_group.lifetime.expired:
+                    return renovate_or_close_expired()
                 return None
 
             # Weighted random selection based on NPV (negative NPVs get zero weight)
@@ -3982,6 +4067,8 @@ class Plant:
             logger.debug(f"[FG STRATEGY] Selection weights: {formatted_dict}")
 
             if sum(weights) < 0.0001:
+                if furnace_group.lifetime.expired:
+                    return renovate_or_close_expired()
                 return None
 
             best_tech = random.choices(population=list(valid_techs.keys()), weights=weights, k=1)[0]
@@ -4048,63 +4135,7 @@ class Plant:
 
             if furnace_group.lifetime.expired:
                 logger.debug("[FG STRATEGY] Furnace group lifetime expired, evaluating renovation")
-
-                # Get subsidized renovation CAPEX per tonne
-                capex_per_tonne_opt = npv_capex_dict.get(best_tech)
-                if capex_per_tonne_opt is None:
-                    raise ValueError(f"CAPEX (renovation) for technology {best_tech} not found in NPV CAPEX dict")
-                capex_per_tonne: float = capex_per_tonne_opt
-
-                # Convert back to full greenfield CAPEX (needed for command)
-                renovation_share = capex_renovation_share.get(best_tech)
-                if renovation_share is None:
-                    raise ValueError(f"CAPEX renovation share for technology {best_tech} not found")
-                full_capex_per_tonne = capex_per_tonne / renovation_share
-
-                # Calculate actual renovation cost (equity portion only)
-                renovate_cost = capex_per_tonne * furnace_group.capacity * furnace_group.equity_share
-
-                logger.debug("[FG STRATEGY] Renovation cost calculation:")
-                logger.debug(f"[FG STRATEGY]   - Subsidized CAPEX: ${capex_per_tonne:,.2f}/t")
-                logger.debug(f"[FG STRATEGY]   - Capacity: {furnace_group.capacity * T_TO_KT:,.0f} kt")
-                logger.debug(f"[FG STRATEGY]   - Equity share: {furnace_group.equity_share:.1%}")
-                logger.debug(f"[FG STRATEGY]   - Total cost: ${renovate_cost:,.2f}")
-                logger.info(
-                    f"[FG STRATEGY] plant_id={self.plant_id} plant_group_id={plant_group.plant_group_id} "
-                    f"renovate_cost=${renovate_cost:,.2f} balance=${plant_group.balance:,.2f} "
-                    f"headroom=${plant_group.balance - renovate_cost:,.2f}"
-                )
-
-                # Check affordability against group treasury
-                if renovate_cost > plant_group.balance:
-                    logger.info(
-                        f"[FG STRATEGY] DECISION - CLOSE FG plant_id={self.plant_id} "
-                        f"plant_group_id={plant_group.plant_group_id} gate_pass=False "
-                        f"(cannot afford renovation: ${renovate_cost:,.2f} > "
-                        f"group balance ${plant_group.balance:,.2f})"
-                    )
-                    return commands.CloseFurnaceGroup(
-                        plant_id=self.plant_id, furnace_group_id=furnace_group.furnace_group_id
-                    )
-
-                # Debit the group treasury via the single-site capex mutation
-                plant_group.deduct_equity(renovate_cost, reason="renovation")
-                logger.info(
-                    f"[FG STRATEGY] DECISION - RENOVATE {best_tech} plant_id={self.plant_id} "
-                    f"plant_group_id={plant_group.plant_group_id} gate_pass=True "
-                    f"(cost: ${renovate_cost:,.2f}, new group balance: ${plant_group.balance:,.2f})"
-                )
-
-                return commands.RenovateFurnaceGroup(
-                    plant_id=self.plant_id,
-                    furnace_group_id=furnace_group.furnace_group_id,
-                    capex=full_capex_per_tonne,
-                    capex_no_subsidy=original_capex_per_tonne,
-                    cost_of_debt=cost_of_debt_with_subsidies,
-                    cost_of_debt_no_subsidy=cost_of_debt,
-                    capex_subsidies=capex_subs,
-                    debt_subsidies=debt_subs,
-                )
+                return renovate_or_close_expired()
             else:
                 logger.debug(
                     f"[FG STRATEGY] DECISION - No action "
@@ -4119,7 +4150,7 @@ class Plant:
         capex_per_tonne_opt = npv_capex_dict.get(best_tech)
         if capex_per_tonne_opt is None:
             raise ValueError(f"CAPEX (greenfield) for technology {best_tech} not found in NPV CAPEX dict")
-        capex_per_tonne: float = capex_per_tonne_opt  # type: ignore [no-redef]
+        capex_per_tonne: float = capex_per_tonne_opt
 
         # Calculate switching cost (equity portion only)
         switch_cost = capex_per_tonne * furnace_group.capacity * furnace_group.equity_share
@@ -4138,10 +4169,13 @@ class Plant:
         # Check affordability against group treasury
         if switch_cost > plant_group.balance:
             logger.debug(
-                f"[FG STRATEGY] DECISION - No action plant_id={self.plant_id} "
+                f"[FG STRATEGY] Cannot afford switch plant_id={self.plant_id} "
                 f"plant_group_id={plant_group.plant_group_id} gate_pass=False "
-                f"(cannot afford switch: ${switch_cost:,.2f} > group balance ${plant_group.balance:,.2f})"
+                f"(${switch_cost:,.2f} > group balance ${plant_group.balance:,.2f})"
             )
+            if furnace_group.lifetime.expired:
+                return renovate_or_close_expired()
+            logger.debug("[FG STRATEGY] DECISION - No action (switch unaffordable)")
             return None
 
         # ===== STAGE 10: Probabilistic adoption decision =====
@@ -4203,6 +4237,8 @@ class Plant:
                         f"{expansion_and_switch_capacity * T_TO_KT:,.0f} kt + {furnace_group.capacity * T_TO_KT:,.0f} kt > "
                         f"{expansion_limit * T_TO_KT:,.0f} kt"
                     )
+                    if furnace_group.lifetime.expired:
+                        return renovate_or_close_expired()
                     return None
 
             # ===== STAGE 12: Execute technology switch =====
@@ -4269,6 +4305,9 @@ class Plant:
                 if fg_is_ccs_or_ccu
                 else f"probabilistic rejection ({random_draw:.2%} >= {accept_prob:.2%})"
             )
+            if furnace_group.lifetime.expired:
+                logger.debug(f"[FG STRATEGY] Switch not taken ({rejection_reason}), lifetime expired")
+                return renovate_or_close_expired()
             logger.debug(f"[FG STRATEGY] DECISION - No action ({rejection_reason})")
             return None
 
