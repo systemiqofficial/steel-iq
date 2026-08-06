@@ -85,66 +85,6 @@ def is_technology_allowed(config: TechSettingsMap, raw_code: str, year: int) -> 
     return True
 
 
-def _recalculate_feedstock_energy_unit_cost(
-    fg: "FurnaceGroup", feedstock_key: str, energy_costs: dict[str, float]
-) -> float | None:
-    """
-    Recompute the per-unit energy cost for a feedstock using updated energy prices.
-
-    Args:
-        fg: FurnaceGroup whose dynamic business cases provide energy requirements.
-        feedstock_key: Normalized feedstock key (lowercase, underscores).
-        energy_costs: Mapping of energy carrier -> price (USD per unit).
-
-    Returns:
-        float | None: Updated cost per tonne of product, or None if it cannot be derived.
-    """
-    dynamic_cases = getattr(fg.technology, "dynamic_business_case", None) or []
-    if not dynamic_cases:
-        return None
-
-    chosen_reductant = normalize_name(getattr(fg, "chosen_reductant", "") or "")
-
-    for dbc in dynamic_cases:
-        metallic_charge = normalize_name(getattr(dbc, "metallic_charge", ""))
-        if metallic_charge != feedstock_key:
-            continue
-
-        reductant = normalize_name(getattr(dbc, "reductant", "") or "")
-        if chosen_reductant and reductant and reductant != chosen_reductant:
-            continue
-
-        required_qty = getattr(dbc, "required_quantity_per_ton_of_product", None)
-        if not required_qty:
-            return None
-
-        combined_requirements: dict[str, float] = {}
-
-        for energy_name, amount in (getattr(dbc, "energy_requirements", None) or {}).items():
-            combined_requirements[normalize_name(energy_name)] = amount
-
-        for secondary_name, amount in (getattr(dbc, "secondary_feedstock", None) or {}).items():
-            combined_requirements[normalize_name(secondary_name)] = amount
-
-        total_cost = 0.0
-        matched = False
-        for energy_name, amount in combined_requirements.items():
-            price = energy_costs.get(energy_name)
-            if price is None:
-                # Try alternative normalization (dash<->underscore)
-                alternate_key = energy_name.replace("_", "-")
-                price = energy_costs.get(alternate_key)
-            if price is None:
-                continue
-            total_cost += amount * price / required_qty
-            matched = True
-
-        if matched:
-            return total_cost
-
-    return None
-
-
 BoundedStringT = TypeVar("BoundedStringT", bound="BoundedString")
 
 
@@ -1207,12 +1147,8 @@ class FurnaceGroup:
         self.carbon_breakdown_keys = carbon_breakdown_keys
         self.allocated_volumes = allocated_volumes
         self.disposal_cost_outputs = disposal_cost_outputs
-        # Normalised metallic charge -> share of a product tonne attributable to that
-        # charge (input shares corrected by per-charge metallic efficiency, summing to 1;
-        # reductant-invariant). Weights the per-charge reductant scores when the score
-        # series is aggregated to a per-tonne-of-product value. Computed by
-        # get_bom_from_avg_boms; stored only on PAM-created business opportunities so the
-        # yearly re-check can rebuild the creation-time score series.
+        # Metallic charge -> share of product for the candidate BOM; set only for
+        # PAM-created business opportunities (feeds the re-check's score series)
         self.output_shares = output_shares
 
         # Future technology switch (accounts for construction time while operating with old technology)
@@ -6457,85 +6393,6 @@ class PlantGroup:
                         new_output_energy_costs = dict(base_costs)
                         new_energy_costs_no_subsidy = dict(base_costs)
 
-                    # Calculate updated BOM with new energy prices
-                    new_bom: dict[str, dict[str, dict[str, Any]]] | None = None
-                    if fg.bill_of_materials and "energy" in fg.bill_of_materials:
-                        import copy
-
-                        new_bom = copy.deepcopy(fg.bill_of_materials)
-                        updated_energy_costs: dict[str, float] = {}
-                        if getattr(fg, "energy_costs", None):
-                            updated_energy_costs.update(
-                                {normalize_name(k): v for k, v in fg.energy_costs.items()},
-                            )
-                        # Apply subsidised input prices to BOM costs
-                        for cost_key, cost_val in new_energy_costs.items():
-                            if cost_val is not None:
-                                updated_energy_costs[cost_key] = cost_val
-
-                        for feed_key, energy_value in new_bom.get("energy", {}).items():
-                            normalized_feed_key = normalize_name(feed_key)
-                            if normalized_feed_key == "electricity":
-                                unit_cost = updated_energy_costs.get(
-                                    "electricity",
-                                    energy_value.get("unit_cost"),
-                                )
-                            elif normalized_feed_key == "hydrogen":
-                                unit_cost = updated_energy_costs.get(
-                                    "hydrogen",
-                                    energy_value.get("unit_cost"),
-                                )
-                            else:
-                                unit_cost = _recalculate_feedstock_energy_unit_cost(
-                                    fg=fg,
-                                    feedstock_key=normalized_feed_key,
-                                    energy_costs=updated_energy_costs,
-                                )
-                                if unit_cost is None:
-                                    logger.warning(
-                                        "[NEW PLANTS] Could not recompute energy cost for %s/%s; "
-                                        "retaining previous value %s.",
-                                        fg.furnace_group_id,
-                                        feed_key,
-                                        energy_value.get("unit_cost"),
-                                    )
-                                    unit_cost = energy_value.get("unit_cost")
-                                else:
-                                    logger.debug(
-                                        "[NEW PLANTS] Recomputed feedstock energy cost for %s/%s: %.4f",
-                                        fg.furnace_group_id,
-                                        feed_key,
-                                        unit_cost,
-                                    )
-
-                            if unit_cost is not None:
-                                energy_value["unit_cost"] = unit_cost
-                                energy_value["total_cost"] = unit_cost * energy_value.get("demand", 0.0)
-
-                            material_value = new_bom.get("materials", {}).get(feed_key)
-                            logger.debug(
-                                "[NEW PLANTS] BOM energy update for %s/%s: energy unit_cost=%s total=%s "
-                                "material unit_cost=%s total=%s",
-                                fg.furnace_group_id,
-                                feed_key,
-                                energy_value.get("unit_cost"),
-                                energy_value.get("total_cost"),
-                                material_value.get("unit_cost") if material_value else None,
-                                material_value.get("total_cost") if material_value else None,
-                            )
-                            if (
-                                material_value
-                                and energy_value.get("unit_cost") == material_value.get("unit_cost")
-                                and energy_value.get("total_cost") == material_value.get("total_cost")
-                            ):
-                                logger.warning(
-                                    "[NEW PLANTS] Energy entry for %s/%s still equals material cost after update "
-                                    "(unit_cost=%s).",
-                                    fg.furnace_group_id,
-                                    feed_key,
-                                    energy_value.get("unit_cost"),
-                                )
-
                     # Check if costs have actually changed
                     old_costs_cmp = {
                         "cost_of_debt": fg.cost_of_debt,
@@ -6566,7 +6423,6 @@ class PlantGroup:
                             new_energy_costs=new_energy_costs,
                             new_output_energy_costs=new_output_energy_costs,
                             new_energy_costs_no_subsidy=new_energy_costs_no_subsidy,
-                            new_bill_of_materials=new_bom,
                         )
                     )
         return update_commands

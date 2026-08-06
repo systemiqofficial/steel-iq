@@ -741,7 +741,6 @@ def update_dynamic_costs(cmd: commands.UpdateDynamicCosts, uow: UnitOfWork, env:
         - Cost of debt (with subsidies, if applicable)
         - CAPEX (with subsidies, if applicable)
         - Energy costs for all carriers (subsidised input, output, and unsubsidised)
-        - Bill of materials with updated energy prices
     """
     logger = logging.getLogger(f"{__name__}.update_dynamic_costs")
     with uow:
@@ -755,8 +754,6 @@ def update_dynamic_costs(cmd: commands.UpdateDynamicCosts, uow: UnitOfWork, env:
                 fg.energy_costs = cmd.new_energy_costs
                 fg.output_energy_costs = cmd.new_output_energy_costs
                 fg.energy_costs_no_subsidy = cmd.new_energy_costs_no_subsidy
-                if cmd.new_bill_of_materials is not None:
-                    fg.bill_of_materials = cmd.new_bill_of_materials
                 logger.debug(
                     "[HANDLER] UpdateDynamicCosts %s/%s: energy_costs=%s output=%s no_sub=%s",
                     cmd.plant_id,

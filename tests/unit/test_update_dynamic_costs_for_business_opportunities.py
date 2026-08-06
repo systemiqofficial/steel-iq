@@ -186,9 +186,6 @@ def test_update_costs_for_considered_plant_no_subsidies(
     assert cmd.new_output_energy_costs["hydrogen"] == 3.5
     assert cmd.new_energy_costs_no_subsidy["electricity"] == pytest.approx(50.0)
     assert cmd.new_energy_costs_no_subsidy["hydrogen"] == 3.5
-    assert cmd.new_bill_of_materials is not None
-    assert cmd.new_bill_of_materials["energy"]["electricity"]["unit_cost"] == pytest.approx(50.0)
-    assert cmd.new_bill_of_materials["energy"]["hydrogen"]["unit_cost"] == 3.5
 
 
 def test_update_costs_for_announced_plant_no_subsidies(
@@ -829,10 +826,10 @@ def test_furnace_group_without_bill_of_materials(
         global_risk_free_rate=0.02,
     )
 
-    # Verify - should still create command but with None BOM
+    # Verify - the cost refresh does not depend on a BOM being present
     assert len(commands) == 1
     cmd = commands[0]
-    assert cmd.new_bill_of_materials is None
+    assert cmd.new_energy_costs["electricity"] == pytest.approx(50.0)
 
 
 def test_update_costs_with_energy_subsidies(
@@ -942,5 +939,3 @@ def test_update_costs_with_energy_subsidies(
     assert "natural_gas" in cmd.new_energy_costs
     assert "natural_gas" in cmd.new_output_energy_costs
     # BOM hydrogen should use subsidised input price
-    assert cmd.new_bill_of_materials is not None
-    assert cmd.new_bill_of_materials["energy"]["hydrogen"]["unit_cost"] == pytest.approx(2.5)
