@@ -1098,7 +1098,7 @@ class TestSelectTopOpportunitiesByNpv:
 
         top_opportunities = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1)
 
-        # Should still select based on relative values (shifts distribution to make non-negative weights)
+        # Rank weights are scale-free, so an all-negative pool still draws normally
         total_pairs = sum(len(techs) for site_techs in top_opportunities["steel"].values() for techs in [site_techs])
         assert total_pairs == 1
 
@@ -1472,3 +1472,63 @@ def test_validate_and_clean_cost_data_accepts_complete_entry():
     cleaned = validate_and_clean_cost_data(cost_data)
 
     assert cleaned["steel"][(40.0, -100.0, "USA")]["EAF"]["output_shares"] == {"scrap": 1.0}
+
+
+def _npv_dict_from_values(values):
+    """One steel site per NPV value, each carrying a single EAF entry."""
+    return {
+        "steel": {(40.0 + i, -100.0 - i, "USA"): {"EAF": npv} for i, npv in enumerate(values)},
+    }
+
+
+def test_selection_rank_weights_decrease_with_npv_rank():
+    """The draw probabilities fall linearly with NPV rank over the trimmed pool.
+
+    Notes:
+        With six candidates and top_n=1 the pool is trimmed to the best 3, so
+        np.random.choice must be called over 3 indices with weights 3:2:1.
+    """
+    import numpy as np
+
+    npv_dict = _npv_dict_from_values([-600.0, -100.0, -400.0, -200.0, -500.0, -300.0])
+
+    with patch("numpy.random.choice") as mock_choice:
+        mock_choice.return_value = [0]
+        select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1)
+
+    (pool_size,), kwargs = mock_choice.call_args
+    assert pool_size == 3
+    assert list(kwargs["p"]) == pytest.approx(list(np.array([3.0, 2.0, 1.0]) / 6.0))
+
+
+def test_selection_never_draws_beyond_the_trimmed_pool():
+    """Candidates outside the top 3N by NPV can never be selected.
+
+    Notes:
+        Guards the fix for the shift-by-min lottery, which drew hopeless
+        deep-negative sites almost uniformly whenever the whole pool was negative.
+    """
+    import numpy as np
+
+    values = [-float(v) for v in range(1, 11)]  # -1 (best) .. -10 (worst)
+    npv_dict = _npv_dict_from_values(values)
+
+    np.random.seed(42)
+    for _ in range(25):
+        selected = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1)
+        (npv,) = [npv for techs in selected["steel"].values() for npv in techs.values()]
+        assert npv >= -3.0
+
+
+def test_selection_is_deterministic_under_a_seed():
+    """Re-seeding numpy's RNG reproduces the same draw."""
+    import numpy as np
+
+    npv_dict = _npv_dict_from_values([-600.0, -100.0, -400.0, -200.0, -500.0, -300.0])
+
+    np.random.seed(123)
+    first = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=2)
+    np.random.seed(123)
+    second = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=2)
+
+    assert first == second

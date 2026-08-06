@@ -635,13 +635,16 @@ def select_top_opportunities_by_npv(
 
     Notes:
         - Invalid NPV values (NaN, -inf) are removed before processing
-        - Random selection weighted by NPV ensures mix of high and medium NPV options rather than only highest
-        - If NPVs contain negative values, distribution is shifted to create non-negative weights
+        - Candidates are ranked by NPV and only the best 3N enter a weighted draw with
+          linearly decreasing rank weights - a mix of high and medium NPV options rather
+          than only the highest, while implausible sites can never be selected
+        - Rank weights are scale-free: the draw behaves identically for all-negative,
+          mixed and all-positive pools
     """
     logger = logging.getLogger(f"{__name__}.select_top_opportunities_by_npv")
     logger.info(
-        f"[NEW PLANTS] Selecting top {top_n_loctechs_as_business_op} location-technology combinations with high NPVs as "
-        "business opportunities (per product and year)."
+        f"[NEW PLANTS] Drawing {top_n_loctechs_as_business_op} location-technology combinations per product from the "
+        f"top {3 * top_n_loctechs_as_business_op} by NPV (rank-weighted, without replacement)."
     )
     top_business_opportunities: dict[str, dict[tuple[float, float, str], dict[str, float]]] = {}
 
@@ -673,25 +676,25 @@ def select_top_opportunities_by_npv(
                 f"NPV dict for {product}: {npv_dict.get(product, {})}"
             )
 
-        # Create non-negative weights by shifting the NPV distribution if needed
+        # Trim to the plausible head of the pool, then draw with rank weights (best gets
+        # weight `trim`, worst weight 1). The former shift-by-min weighting degenerated
+        # to a near-uniform draw whenever the whole pool was negative.
         npvs_array = np.array(valid_npvs)
-        min_npv = np.min(npvs_array)
-        if min_npv < 0:
-            weights = npvs_array - min_npv
-        else:
-            weights = npvs_array
-        if weights.sum() == 0:
-            continue
-        probabilities = weights / weights.sum()
+        ranked_indices = np.argsort(npvs_array)[::-1]
+        trim = min(len(ranked_indices), 3 * top_n_loctechs_as_business_op)
+        pool_indices = ranked_indices[:trim]
 
-        # Randomly select top N indices (weighted by NPV - the higher the more likely to be selected)
-        if len(valid_pairs) >= top_n_loctechs_as_business_op:
-            selected_indices = np.random.choice(
-                len(valid_pairs), size=top_n_loctechs_as_business_op, replace=False, p=probabilities
-            )
-            selected_pairs = [valid_pairs[i] for i in selected_indices]
+        if trim > top_n_loctechs_as_business_op:
+            rank_weights = np.arange(trim, 0, -1, dtype=float)
+            probabilities = rank_weights / rank_weights.sum()
+            drawn = np.random.choice(trim, size=top_n_loctechs_as_business_op, replace=False, p=probabilities)
+            selected_pairs = [valid_pairs[pool_indices[i]] for i in drawn]
         else:
-            selected_pairs = valid_pairs
+            selected_pairs = [valid_pairs[i] for i in pool_indices]
+        logger.info(
+            f"[NEW PLANTS] {product}: drew {len(selected_pairs)} of {len(valid_pairs)} valid candidates "
+            f"(rank-weighted over the top {trim})."
+        )
 
         # Format selected (site, tech) pairs into business opportunities dict
         top_business_opportunities[product] = {}
