@@ -107,7 +107,7 @@ def test_future_plant():
     """Test that a plant that hasn't started yet works correctly."""
     future_plant = PointInTime(
         current=Year(2025),
-        time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+        time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
         plant_lifetime=20,
     )
 

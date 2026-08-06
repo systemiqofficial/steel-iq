@@ -656,7 +656,7 @@ def _extract_technology_settings(request, prep: DataPreparation, form) -> dict:
 
     # Get simulation timeframe from validated form data
     start_year = form.cleaned_data.get("start_year", 2025)
-    end_year = form.cleaned_data.get("end_year", 2050)
+    end_year = form.cleaned_data.get("end_year", 2060)
 
     # Get tech-to-product mapping and technology data
     try:

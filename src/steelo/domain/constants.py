@@ -128,7 +128,7 @@ DEFAULT_TECHNOLOGY_TO_YEAR: Optional[int] = None
 DEFAULT_TECHNOLOGY_ALLOWED = True
 
 # Technology-specific overrides (optional)
-# Format: {"TECHNOLOGY_CODE": {"from_year": 2030, "to_year": 2050, "allowed": True}}
+# Format: {"TECHNOLOGY_CODE": {"from_year": 2030, "to_year": 2060, "allowed": True}}
 # NOTE: Use NORMALIZED codes (no +, _, or special chars)
 TECHNOLOGY_SPECIFIC_DEFAULTS: dict[str, dict[str, Any]] = {
     # Core technologies - available from simulation start

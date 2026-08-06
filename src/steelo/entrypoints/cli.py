@@ -36,7 +36,7 @@ def run_full_simulation() -> str:
 
     # Add the options for the simulation
     parser.add_argument("--start-year", type=int, default=2025, help="The year to start the simulation (default: 2025)")
-    parser.add_argument("--end-year", type=int, default=2050, help="The year to end the simulation (default: 2050)")
+    parser.add_argument("--end-year", type=int, default=2060, help="The year to end the simulation (default: 2060)")
     parser.add_argument(
         "--plants-json",
         type=str,

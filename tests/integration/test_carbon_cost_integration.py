@@ -55,7 +55,7 @@ class TestCarbonCostIntegration:
 
         config = SimulationConfig(
             start_year=Year(2025),
-            end_year=Year(2050),
+            end_year=Year(2060),
             master_excel_path=Path(tempfile.gettempdir()) / "master.xlsx",
             output_dir=Path(tempfile.gettempdir()),
             technology_settings=get_default_technology_settings(),
@@ -325,7 +325,7 @@ class TestCarbonCostRegressionPrevention:
 
         config = SimulationConfig(
             start_year=Year(2025),
-            end_year=Year(2050),
+            end_year=Year(2060),
             master_excel_path=temp_dir / "master.xlsx",
             output_dir=temp_dir,
             technology_settings=get_default_technology_settings(),

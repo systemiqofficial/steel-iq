@@ -52,8 +52,11 @@ from steelo.domain.constants import (
 
 # TODO: Remove overwriting and replace by simulation config
 EXCEL_READER_START_YEAR = 2020
-EXCEL_READER_END_YEAR = 2050
+EXCEL_READER_END_YEAR = 2060
 CHOSEN_DEMAND_SCENARIO = "BAU"
+
+EXCEL_BIOMASS_CO2_START_YEAR = 2024
+EXCEL_BIOMASS_CO2_END_YEAR = EXCEL_READER_END_YEAR
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -2356,8 +2359,11 @@ def read_biomass_availability(excel_path: Path, sheet_name: str = "Biomass avail
     df = pd.read_excel(excel_path, sheet_name=sheet_name)
 
     availabilities = []
-    # Year columns are integers from 2024 to 2050
-    year_columns = [col for col in df.columns if isinstance(col, int) and 2024 <= col <= 2050]
+    year_columns = [
+        col
+        for col in df.columns
+        if isinstance(col, int) and EXCEL_BIOMASS_CO2_START_YEAR <= col <= EXCEL_BIOMASS_CO2_END_YEAR
+    ]
 
     for _, row in df.iterrows():
         # Skip rows with all NaN values in year columns
@@ -2416,8 +2422,11 @@ def read_co2_storage_availability(excel_path: Path, sheet_name: str = "CO2 stora
         return []
 
     availabilities = []
-    # Year columns are integers from 2024 to 2050
-    year_columns = [col for col in df.columns if isinstance(col, int) and 2024 <= col <= 2050]
+    year_columns = [
+        col
+        for col in df.columns
+        if isinstance(col, int) and EXCEL_BIOMASS_CO2_START_YEAR <= col <= EXCEL_BIOMASS_CO2_END_YEAR
+    ]
 
     for _, row in df.iterrows():
         # Skip rows with all NaN values in year columns

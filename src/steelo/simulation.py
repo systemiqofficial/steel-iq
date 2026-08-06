@@ -428,7 +428,7 @@ class SimulationConfig:
     steel_plant_gem_data_year: int = 2025
     production_gem_data_years: list[int] = field(default_factory=lambda: list(range(2019, 2023)))
     excel_reader_start_year: int = 2020
-    excel_reader_end_year: int = 2050
+    excel_reader_end_year: int = 2060
     demand_sheet_name: str = "Steel_Demand_Chris Bataille"
 
     # === Cost Model Settings ===

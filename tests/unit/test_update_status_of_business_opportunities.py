@@ -202,7 +202,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -258,7 +258,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -311,7 +311,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -365,7 +365,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -416,7 +416,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -466,7 +466,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -517,7 +517,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -569,7 +569,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -622,7 +622,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -688,7 +688,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -733,7 +733,7 @@ class TestTrackBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -785,7 +785,7 @@ class TestConvertBusinessOpportunityIntoActualProject:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -816,7 +816,7 @@ class TestConvertBusinessOpportunityIntoActualProject:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -849,7 +849,7 @@ class TestConvertBusinessOpportunityIntoActualProject:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -882,7 +882,7 @@ class TestConvertBusinessOpportunityIntoActualProject:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -913,7 +913,7 @@ class TestConvertBusinessOpportunityIntoActualProject:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -946,7 +946,7 @@ class TestConvertBusinessOpportunityIntoActualProject:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -975,7 +975,7 @@ class TestConvertBusinessOpportunityIntoActualProject:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -1011,7 +1011,7 @@ class TestConvertBusinessOpportunityIntoActualProject:
             capacity=50,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -1058,7 +1058,7 @@ class TestUpdateStatusOfBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -1134,7 +1134,7 @@ class TestUpdateStatusOfBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -1218,7 +1218,7 @@ class TestUpdateStatusOfBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -1232,7 +1232,7 @@ class TestUpdateStatusOfBusinessOpportunities:
             capacity=200,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -1316,7 +1316,7 @@ class TestUpdateStatusOfBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -1387,7 +1387,7 @@ class TestUpdateStatusOfBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -1456,7 +1456,7 @@ class TestUpdateStatusOfBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
@@ -1611,7 +1611,7 @@ class TestUpdateStatusOfBusinessOpportunities:
             capacity=100,
             lifetime=PointInTime(
                 current=Year(2025),
-                time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+                time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
                 plant_lifetime=20,
             ),
             utilization_rate=0.7,
