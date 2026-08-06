@@ -4194,8 +4194,11 @@ class Plant:
 
             incumbent_capex_subs = filter_subsidies_for_year(tech_capex_subsidies.get(incumbent, []), current_year)
             incumbent_debt_subs = filter_subsidies_for_year(tech_debt_subsidies.get(incumbent, []), current_year)
-            incumbent_cost_of_debt = calculate_debt_with_subsidies(
-                cost_of_debt=cost_of_debt,
+            incumbent_cost_of_debt = cost_of_debt_by_tech.get(incumbent)
+            if incumbent_cost_of_debt is None:
+                raise ValueError(f"No cost of debt data for technology {incumbent} at plant {self.plant_id}")
+            incumbent_cost_of_debt_with_subs = calculate_debt_with_subsidies(
+                cost_of_debt=incumbent_cost_of_debt,
                 debt_subsidies=incumbent_debt_subs,
                 risk_free_rate=risk_free_rate,
             )
@@ -4229,8 +4232,8 @@ class Plant:
                 furnace_group_id=furnace_group.furnace_group_id,
                 capex=full_capex_per_tonne,
                 capex_no_subsidy=incumbent_capex_no_subsidy,
-                cost_of_debt=incumbent_cost_of_debt,
-                cost_of_debt_no_subsidy=cost_of_debt,
+                cost_of_debt=incumbent_cost_of_debt_with_subs,
+                cost_of_debt_no_subsidy=incumbent_cost_of_debt,
                 capex_subsidies=incumbent_capex_subs,
                 debt_subsidies=incumbent_debt_subs,
             )
