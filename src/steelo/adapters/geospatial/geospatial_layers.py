@@ -381,7 +381,8 @@ def add_baseload_power_price(
 
     The baseload power price is the LCOE (Levelized Cost of Energy) of the optimal renewable energy solution
     for the given coverage percentage. LCOE values are pre-calculated for select years and linearly interpolated
-    for in-between years to reduce computational cost.
+    for in-between years to reduce computational cost. Target years outside the pre-calculated span reuse the
+    nearest snapshot unchanged — so a simulation running past the last BOA year holds that year's LCOE flat.
 
     Args:
         ds: Dataset to add baseload power price to
@@ -425,10 +426,19 @@ def add_baseload_power_price(
     if not available_years:
         raise FileNotFoundError(f"No LCOE files found in {lcoe_dir}")
 
-    if target_year in available_years:
+    # Outside the span BOA has snapshots for, hold the nearest endpoint flat. Interpolating past
+    # the last snapshot would silently yield an all-NaN LCOE grid rather than failing.
+    effective_year = min(max(target_year, min(available_years)), max(available_years))
+    if effective_year != target_year:
+        logger.warning(
+            f"[GEO LAYERS] No baseload LCOE snapshot at or beyond year {target_year}; "
+            f"reusing the {effective_year} values."
+        )
+
+    if effective_year in available_years:
         # Choose the data for the target year if available
-        logger.info(f"[GEO LAYERS] Explicitly calculated LCOE is available for year {target_year}.")
-        baseload_lcoe_path = file_map[target_year]
+        logger.info(f"[GEO LAYERS] Explicitly calculated LCOE is available for year {effective_year}.")
+        baseload_lcoe_path = file_map[effective_year]
         baseload_data = xr.open_dataset(baseload_lcoe_path)
         baseload_lcoe_year = baseload_data["lcoe"]
         # Also extract overbuild factors if available
@@ -440,12 +450,13 @@ def add_baseload_power_price(
             wind_factor_year = baseload_data["wind_factor"]
             battery_factor_year = baseload_data["battery_factor"]
     else:
-        # If not, interpolate among the two closest years to the target year (below and above)
+        # If not, interpolate among the two closest years to the target year (below and above).
+        # Clamping above guarantees both neighbours exist.
         years_sorted = sorted(available_years)
-        low_year = max([y for y in years_sorted if y <= target_year], default=years_sorted[0])
-        high_year = min([y for y in years_sorted if y >= target_year], default=years_sorted[-1])
+        low_year = max(y for y in years_sorted if y <= effective_year)
+        high_year = min(y for y in years_sorted if y >= effective_year)
         logger.info(
-            f"[GEO LAYERS] Interpolating baseload LCOE for year {target_year} from years {low_year} and {high_year}."
+            f"[GEO LAYERS] Interpolating baseload LCOE for year {effective_year} from years {low_year} and {high_year}."
         )
         baseload_lcoe = []
         solar_factors = []
@@ -463,14 +474,14 @@ def add_baseload_power_price(
                 wind_factors.append(baseload_data["wind_factor"].expand_dims(year=[ref_year]))
                 battery_factors.append(baseload_data["battery_factor"].expand_dims(year=[ref_year]))
         baseload_lcoe_concat = xr.concat(baseload_lcoe, dim="year")
-        baseload_lcoe_year = baseload_lcoe_concat.interp(year=target_year, method="linear").drop_vars("year")
+        baseload_lcoe_year = baseload_lcoe_concat.interp(year=effective_year, method="linear").drop_vars("year")
         if has_overbuild_factors:
             solar_factor_concat = xr.concat(solar_factors, dim="year")
-            solar_factor_year = solar_factor_concat.interp(year=target_year, method="linear").drop_vars("year")
+            solar_factor_year = solar_factor_concat.interp(year=effective_year, method="linear").drop_vars("year")
             wind_factor_concat = xr.concat(wind_factors, dim="year")
-            wind_factor_year = wind_factor_concat.interp(year=target_year, method="linear").drop_vars("year")
+            wind_factor_year = wind_factor_concat.interp(year=effective_year, method="linear").drop_vars("year")
             battery_factor_concat = xr.concat(battery_factors, dim="year")
-            battery_factor_year = battery_factor_concat.interp(year=target_year, method="linear").drop_vars("year")
+            battery_factor_year = battery_factor_concat.interp(year=effective_year, method="linear").drop_vars("year")
     baseload_lcoe_year = baseload_lcoe_year * PERMWh_TO_PERkWh  # USD/MWh to USD/kWh (BOA in USD/MWh, PAM in USD/kWh)
 
     # Merge LCOE and overbuild factors if available
@@ -914,7 +925,7 @@ def add_transportation_costs(
     Side Effects:
         - Plots distance and transportation cost maps to geo_paths.geo_plots_dir for the
           start year, end year, and every 10th year after the start year in between
-          (e.g., for 2025-2050: 2025, 2035, 2045, 2050).
+          (e.g., for 2025-2060: 2025, 2035, 2045, 2055, 2060).
     """
     logger = logging.getLogger(f"{__name__}.add_transportation_costs")
     logger.info("[GEO LAYERS] Adding transportation costs to demand and feedstock for both iron and steel production.")

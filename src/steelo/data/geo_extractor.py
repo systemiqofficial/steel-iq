@@ -121,7 +121,9 @@ class GeoDataExtractor:
 
         # Also extract baseload power simulation files
         # Note: p5 files are in GLOBAL subdirectory to match BOA output structure
-        for year in [2025, 2030, 2035, 2040, 2045, 2050]:
+        # Years absent from the package are skipped with a warning; the LCOE lookup then holds
+        # the last available snapshot flat (see add_baseload_power_price).
+        for year in [2025, 2030, 2035, 2040, 2045, 2050, 2055, 2060]:
             # p5 files are now in p5/GLOBAL/ in the archive (fixed in v1.2.0)
             file_mappings[f"outputs/GEO/baseload_power_simulation/p5/GLOBAL/optimal_sol_GLOBAL_{year}_p5.nc"] = (
                 target_dir
