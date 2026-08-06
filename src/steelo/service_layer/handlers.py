@@ -376,6 +376,42 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
     uow.commit()
 
 
+def execute_scheduled_technology_switch(cmd: commands.Command, uow: UnitOfWork, env: Environment) -> None:
+    """Replay a furnace group's deferred technology switch in its effective year.
+
+    Applies the stored ChangeFurnaceGroupTechnology command exactly as the direct
+    handler would - in particular the evaluated reductant (C7) must land with the
+    new technology instead of surfacing with the old one and waiting for the
+    year-start re-pick to correct it.
+
+    Args:
+        cmd: The furnace group's stored future_switch_cmd.
+        uow: Unit of work providing plant access.
+        env: Environment carrying plant_lifetime and dynamic feedstocks.
+    """
+    if not isinstance(cmd, commands.ChangeFurnaceGroupTechnology):
+        return
+    plant = uow.plants.get(cmd.plant_id)
+    plant.change_furnace_group_technology(
+        furnace_group_id=cmd.furnace_group_id,
+        technology_name=cmd.technology_name,
+        plant_lifetime=env.config.plant_lifetime,
+        dynamic_business_case=env.dynamic_feedstocks.get(
+            cmd.technology_name,
+            env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
+        ),
+        bom=cmd.bom,
+        chosen_reductant=cmd.chosen_reductant,
+        lag=0,
+        capex=cmd.capex,
+        capex_no_subsidy=cmd.capex_no_subsidy,
+        cost_of_debt=cmd.cost_of_debt,
+        cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
+        capex_subsidies=cmd.capex_subsidies,
+        debt_subsidies=cmd.debt_subsidies,
+    )
+
+
 def finalise_iteration(
     event: events.IterationOver, env: Environment, uow: UnitOfWork, checkpoint_system: "SimulationCheckpoint"
 ):
@@ -467,27 +503,7 @@ def finalise_iteration(
 
                 # Step 3b: Execute scheduled technology switches if the future_switch_year matches current year
                 if fg.future_switch_year == env.year and fg.future_switch_cmd is not None:
-                    cmd = fg.future_switch_cmd
-                    # Execute the technology change command directly during finalisation of the year
-                    if isinstance(cmd, commands.ChangeFurnaceGroupTechnology):
-                        plant = uow.plants.get(cmd.plant_id)
-                        plant.change_furnace_group_technology(
-                            furnace_group_id=cmd.furnace_group_id,
-                            technology_name=cmd.technology_name,
-                            plant_lifetime=env.config.plant_lifetime,
-                            dynamic_business_case=env.dynamic_feedstocks.get(
-                                cmd.technology_name,
-                                env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
-                            ),
-                            bom=cmd.bom,
-                            lag=0,
-                            capex=cmd.capex,
-                            capex_no_subsidy=cmd.capex_no_subsidy,
-                            cost_of_debt=cmd.cost_of_debt,
-                            cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
-                            capex_subsidies=cmd.capex_subsidies,
-                            debt_subsidies=cmd.debt_subsidies,
-                        )
+                    execute_scheduled_technology_switch(fg.future_switch_cmd, uow=uow, env=env)
 
                 # Step 3c: Handle end-of-life transitions
                 # Close operating furnaces or switch to construction mode for technology switches

@@ -109,3 +109,36 @@ def test_change_handler_passes_evaluated_reductant_through():
     change_furnace_group_technology(cmd, uow=uow, env=env)
 
     assert plant.change_furnace_group_technology.call_args.kwargs["chosen_reductant"] == "hydrogen"
+
+
+def test_deferred_switch_lands_with_the_committed_reductant():
+    """A switch replayed in its deferred effective year carries the evaluated reductant (C7).
+
+    Notes:
+        Regression for the deferred-execution leak: the year-end replay of
+        future_switch_cmd omitted chosen_reductant, so BF->DRI switches surfaced
+        with the old technology's reductant until the year-start re-pick.
+    """
+    from steelo.service_layer.handlers import execute_scheduled_technology_switch
+
+    plant = MagicMock()
+    plant.plant_id = "plant-1"
+    uow = _FakeUnitOfWork(plant)
+    env = MagicMock()
+    env.config.plant_lifetime = 20
+    env.dynamic_feedstocks = {}
+
+    cmd = _make_command(
+        bom={
+            "materials": {"io_low": {"demand": 1.0, "total_cost": 1.0, "unit_cost": 1.0, "product_volume": 1.0}},
+            "energy": {},
+        }
+    )
+    cmd.chosen_reductant = "natural_gas"
+
+    execute_scheduled_technology_switch(cmd, uow=uow, env=env)
+
+    kwargs = plant.change_furnace_group_technology.call_args.kwargs
+    assert kwargs["chosen_reductant"] == "natural_gas"
+    assert kwargs["technology_name"] == cmd.technology_name
+    assert kwargs["bom"] is cmd.bom
