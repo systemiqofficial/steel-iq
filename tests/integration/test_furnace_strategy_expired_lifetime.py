@@ -61,6 +61,7 @@ def mock_npvs(mocker, furnace_group, tech_npv_dict):
             {tech: REGION_CAPEX[tech] for tech in tech_npv_dict},
             10_000.0,
             {tech: bom for tech in tech_npv_dict},
+            {tech: "scrap" for tech in tech_npv_dict},
         ),
     )
 
@@ -77,6 +78,7 @@ def evaluate(plant, plant_group, *, probabilistic_agents: bool = False):
         cost_of_debt_by_tech={"EAF": 0.04, "DRI": 0.04},
         cost_of_equity_by_tech={"EAF": 0.08, "DRI": 0.08},
         get_bom_from_avg_boms=MagicMock(),
+        reductant_score_series=MagicMock(),
         probabilistic_agents=probabilistic_agents,
         dynamic_business_cases={"EAF": [], "DRI": []},
         chosen_emissions_boundary_for_carbon_costs="scope_1",
