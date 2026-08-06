@@ -3911,9 +3911,10 @@ class Plant:
         4. Calculate NPV for all technology options (adjusted for COSA when switching)
         5. Check if any technology option is profitable (NPV > 0)
         6. Identify optimal technology (maximum NPV)
-        7. Select technology (weighted random if probabilistic_agents=True, otherwise optimal)
-        8. If current tech is optimal and lifetime expired: evaluate renovation (gated on plant_group.balance)
-        9. If different tech is optimal: evaluate technology switch (gated on plant_group.balance)
+        7. Select technology: NPV-weighted random draw over all valid options, incumbent
+           included (probabilistic_agents=True), otherwise the max-NPV option
+        8. If the incumbent is selected and lifetime expired: evaluate renovation (gated on plant_group.balance)
+        9. If a different tech is selected: evaluate technology switch (gated on plant_group.balance)
         10. Check capacity limits for expansions/switches
         11. Apply probabilistic adoption decision (if enabled)
         12. Return appropriate command (ChangeFurnaceGroupTechnology, RenovateFurnaceGroup, CloseFurnaceGroup, or None)
@@ -4223,49 +4224,44 @@ class Plant:
         # ===== STAGE 6: Identify optimal technology =====
         current_tech = furnace_group.technology.name
         optimal_tech = max(tech_npv_dict, key=lambda k: tech_npv_dict[k])
-        is_current_best = current_tech == optimal_tech
 
-        logger.debug(
-            f"[FG STRATEGY] Current tech: {current_tech}, Optimal tech: {optimal_tech}, "
-            f"Current is best: {is_current_best}"
-        )
+        logger.debug(f"[FG STRATEGY] Current tech: {current_tech}, Optimal tech: {optimal_tech}")
 
         # ===== STAGE 7: Technology selection =====
-        # If current tech is not optimal, pick an alternative: weighted random when
-        # probabilistic_agents, otherwise the max-NPV option
-        if not is_current_best:
-            logger.debug("[FG STRATEGY] Current technology is not optimal, selecting alternative")
+        # The draw always runs: the incumbent competes on its own NPV alongside the
+        # challengers — weighted random when probabilistic_agents, otherwise max NPV
 
-            # Filter out invalid NPV values (infinite, NaN)
-            valid_techs = {
-                k: v for k, v in tech_npv_dict.items() if v is not None and not math.isinf(v) and not math.isnan(v)
-            }
-            logger.debug(f"[FG STRATEGY] Valid technology options: {list(valid_techs.keys())}")
+        # Filter out invalid NPV values (infinite, NaN)
+        valid_techs = {
+            k: v for k, v in tech_npv_dict.items() if v is not None and not math.isinf(v) and not math.isnan(v)
+        }
+        logger.debug(f"[FG STRATEGY] Valid technology options: {list(valid_techs.keys())}")
 
-            if not valid_techs:
-                logger.warning(f"[FG STRATEGY] No valid NPV values found for plant {self.plant_id}")
-                if furnace_group.lifetime.expired:
-                    return renovate_or_close_expired()
-                return None
+        if not valid_techs:
+            logger.warning(f"[FG STRATEGY] No valid NPV values found for plant {self.plant_id}")
+            if furnace_group.lifetime.expired:
+                return renovate_or_close_expired()
+            return None
 
-            weights = [max(v, 0) for v in valid_techs.values()]
-            if sum(weights) < 0.0001:
-                if furnace_group.lifetime.expired:
-                    return renovate_or_close_expired()
-                return None
+        weights = [max(v, 0) for v in valid_techs.values()]
+        total_weight = sum(weights)
+        if total_weight < 0.0001:
+            if furnace_group.lifetime.expired:
+                return renovate_or_close_expired()
+            return None
 
-            if probabilistic_agents:
-                # Weighted random selection based on NPV (negative NPVs get zero weight)
-                formatted_dict = {k: f"{v:,.0f}" for k, v in zip(valid_techs.keys(), weights)}
-                logger.debug(f"[FG STRATEGY] Selection weights: {formatted_dict}")
-                best_tech = random.choices(population=list(valid_techs.keys()), weights=weights, k=1)[0]
-                logger.debug(f"[FG STRATEGY] Selected technology: {best_tech} (weighted random)")
-            else:
-                best_tech = max(valid_techs, key=lambda k: valid_techs[k])
-                logger.debug(f"[FG STRATEGY] Selected technology: {best_tech} (deterministic, max NPV)")
+        if probabilistic_agents:
+            # Weighted random selection based on NPV (negative NPVs get zero weight)
+            best_tech = random.choices(population=list(valid_techs.keys()), weights=weights, k=1)[0]
+            shares = ", ".join(f"{k}={w / total_weight:.3f}" for k, w in zip(valid_techs.keys(), weights))
+            logger.info(
+                f"[FG STRATEGY] DRAW plant_id={self.plant_id} "
+                f"furnace_group_id={furnace_group.furnace_group_id} incumbent={current_tech} "
+                f"selected={best_tech} p({shares})"
+            )
         else:
-            logger.debug("[FG STRATEGY] Current technology is already optimal")
-            best_tech = current_tech
+            best_tech = max(valid_techs, key=lambda k: valid_techs[k])
+            logger.debug(f"[FG STRATEGY] Selected technology: {best_tech} (deterministic, max NPV)")
 
         # Final profitability check for selected technology
         if tech_npv_dict[best_tech] <= 0:
