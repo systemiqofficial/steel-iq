@@ -4191,6 +4191,8 @@ class Plant:
                 f"[FG STRATEGY] DECISION - No action "
                 f"(selected tech {best_tech} has NPV ${tech_npv_dict[best_tech]:,.2f} <= 0)"
             )
+            if furnace_group.lifetime.expired:
+                return renovate_or_close_expired()
             return None
 
         # ===== Filter and apply subsidies for selected technology =====
@@ -4354,15 +4356,7 @@ class Plant:
                     return None
 
             # ===== STAGE 12: Execute technology switch =====
-            # Debit group treasury and return command
-            plant_group.deduct_equity(switch_cost, reason="switch")
-            logger.info(
-                f"[FG STRATEGY] DECISION - SWITCH TECHNOLOGY {current_tech} → {best_tech} "
-                f"plant_id={self.plant_id} plant_group_id={plant_group.plant_group_id} gate_pass=True "
-                f"(NPV: ${tech_npv_dict.get(best_tech, 0):,.2f}, cost: ${switch_cost:,.2f}, "
-                f"new group balance: ${plant_group.balance:,.2f})"
-            )
-
+            # Validate the command inputs before debiting: an abort must leave the wallet intact
             npv_value = tech_npv_dict.get(best_tech)
             if npv_value is None:
                 raise ValueError(f"NPV for technology {best_tech} not found in NPV dict")
@@ -4391,6 +4385,14 @@ class Plant:
                     list(bom.keys()),
                 )
                 raise ValueError(f"Empty BOM for technology {best_tech} at switch time")
+
+            plant_group.deduct_equity(switch_cost, reason="switch")
+            logger.info(
+                f"[FG STRATEGY] DECISION - SWITCH TECHNOLOGY {current_tech} → {best_tech} "
+                f"plant_id={self.plant_id} plant_group_id={plant_group.plant_group_id} gate_pass=True "
+                f"(NPV: ${tech_npv_dict.get(best_tech, 0):,.2f}, cost: ${switch_cost:,.2f}, "
+                f"new group balance: ${plant_group.balance:,.2f})"
+            )
 
             return commands.ChangeFurnaceGroupTechnology(
                 plant_id=self.plant_id,
@@ -5939,6 +5941,7 @@ class PlantGroup:
             capacity=capacity,
             product=product,
             chosen_reductant=chosen_reductant,
+            equity_share=equity_share,
             equity_needed=equity_needed,
             npv=npv,  # type: ignore # npv is not None due to check above
             capex=capex,

@@ -8,6 +8,8 @@ Plant.evaluate_furnace_group_strategy for expired furnace groups.
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from steelo.devdata import get_furnace_group, get_plant
 from steelo.domain import PointInTime, TimeFrame, Volumes, Year
 from steelo.domain.commands import CloseFurnaceGroup, RenovateFurnaceGroup
@@ -185,6 +187,48 @@ def test_renovation_debt_basis_matches_evaluated_capex(mocker):
     furnace_group = plant.furnace_groups[0]
     assert furnace_group.total_investment == command.capex * furnace_group.capacity
     assert plant_group.balance == 1_000_000.0 - command.capex * furnace_group.capacity * furnace_group.equity_share
+
+
+def test_expired_fg_renovates_when_draw_selects_non_positive_npv_tech(mocker):
+    """The post-draw NPV <= 0 guard resolves an expired lifetime instead of returning None.
+
+    The guard is unreachable through real draws (non-positive NPVs get zero weight),
+    but if it ever fires the expired furnace group must still renovate or close.
+    """
+    plant, plant_group = make_plant_and_group(expired=True, balance=1_000_000.0)
+    mock_npvs(mocker, plant.furnace_groups[0], {"EAF": 1_000.0, "DRI": -5.0})
+    mocker.patch("steelo.domain.models.random.choices", return_value=["DRI"])
+
+    command = evaluate(plant, plant_group, probabilistic_agents=True)
+
+    assert isinstance(command, RenovateFurnaceGroup)
+    assert plant_group.balance == 1_000_000.0 - RENOVATE_COST
+
+
+def test_switch_with_missing_bom_raises_before_debiting(mocker):
+    """A validation failure in the switch command aborts before the treasury is debited."""
+    plant, plant_group = make_plant_and_group(expired=False, balance=1_000_000.0)
+    furnace_group = plant.furnace_groups[0]
+    bom = {
+        "materials": {"scrap": {"unit_cost": 200.0, "demand": 1.0}},
+        "energy": {"electricity": {"unit_cost": 80.0, "demand": 0.5}},
+    }
+    mocker.patch.object(
+        furnace_group,
+        "optimal_technology_name",
+        return_value=(
+            {"EAF": 500.0, "DRI": 1_000_000.0},
+            {"EAF": REGION_CAPEX["EAF"], "DRI": REGION_CAPEX["DRI"]},
+            10_000.0,
+            {"EAF": bom},  # no BOM for the winning DRI switch
+            {"EAF": "scrap", "DRI": "scrap"},
+        ),
+    )
+
+    with pytest.raises(ValueError, match="BOM for technology DRI not found"):
+        evaluate(plant, plant_group)
+
+    assert plant_group.balance == 1_000_000.0
 
 
 def test_expired_fg_renovates_after_probabilistic_rejection(mocker):
