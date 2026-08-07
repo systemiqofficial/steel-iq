@@ -19,7 +19,6 @@ dependencies = [
     "pycountry",
     "scipy",
     "pydantic",
-    "mocker",
     "matplotlib",
     "sentry-sdk",
     "osmnx",
