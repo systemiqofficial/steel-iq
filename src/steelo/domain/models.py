@@ -2586,6 +2586,16 @@ class FurnaceGroup:
                 util_rate = self.utilization_rate
                 reductant = self.chosen_reductant
 
+                # A furnace group the market allocated no production cannot price a
+                # renovation on its realised utilisation; leave the incumbent out of
+                # the candidate set (at an expired boundary this closes the group)
+                if util_rate <= 0:
+                    logger.warning(
+                        f"[OPTIMAL TECH] SKIPPING {tech} - zero utilisation for furnace group "
+                        f"{self.furnace_group_id}, renovation cannot be priced"
+                    )
+                    continue
+
                 # Validate BOM structure before proceeding
                 if not bill_of_materials or "materials" not in bill_of_materials or "energy" not in bill_of_materials:
                     logger.warning(f"[OPTIMAL TECH] SKIPPING {tech} - Invalid or missing BOM structure")

@@ -150,6 +150,40 @@ def test_switch_candidate_counts_full_fixed_cost(monkeypatch):
     assert call["unit_total_opex_list"][0] == pytest.approx(expected_vopex + 50.0 / 0.9)
 
 
+def test_zero_utilisation_incumbent_is_skipped_not_fatal(monkeypatch):
+    """A furnace group with no allocated production cannot price its renovation.
+
+    The incumbent is left out of the candidate set instead of raising from
+    scale_fopex_to_production; challengers are still priced at their BOM utilisation.
+    """
+    _capture_npv_full(monkeypatch)
+    fg = _make_fg(utilization_rate=0.0)
+
+    tech_npv_dict, _, _, bom_dict, _ = fg.optimal_technology_name(
+        market_price_series={"steel": [500.0] * 30, "iron": [400.0] * 30},
+        cost_of_debt_by_tech={"BF": 0.05, "DRI": 0.05},
+        cost_of_equity_by_tech={"BF": 0.1, "DRI": 0.1},
+        get_bom_from_avg_boms=_mock_get_bom(util_rate=0.9),
+        score_series_for_tech=_stub_score_series,
+        capex_dict={"BF": 600.0, "DRI": 500.0},
+        capex_renovation_share={"BF": 0.7},
+        technology_fopex_dict={"bf": 10.0, "dri": 50.0},
+        dynamic_business_cases={},
+        chosen_emissions_boundary_for_carbon_costs="Scope 1",
+        technology_emission_factors=[],
+        tech_to_product={"BF": "iron", "DRI": "iron"},
+        plant_lifetime=20,
+        construction_time=2,
+        current_year=Year(2025),
+        risk_free_rate=0.02,
+        allowed_furnace_transitions={"BF": ["BF", "DRI"]},
+    )
+
+    assert "BF" not in tech_npv_dict
+    assert "BF" not in bom_dict
+    assert "DRI" in tech_npv_dict
+
+
 # ── expansion path ────────────────────────────────────────────────────────────
 
 
