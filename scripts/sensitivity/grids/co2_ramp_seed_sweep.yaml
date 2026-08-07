@@ -1,0 +1,16 @@
+# Noise-floor sweep: how much does non-eliminable PAM randomness (evaluation order
+# when a shared capacity/CO2 limit binds, geospatial siting lottery, announcement/
+# construction probability draws -- see uncertainty_study_considerations.md §2 rows
+# 6-11) move the final technology mix, once probabilistic_agents=False removes the
+# tech-selection and accept/reject randomness?
+#
+# Run against the CO2-ramp scenario data dir (produced by apply_scenario_overrides.py
+# + scenarios/co2_ramp.yaml), not the default data dir -- the default carbon price is
+# flat/near-zero for most major producers and wouldn't force enough switching for
+# seed-driven divergence to be observable. See uncertainty_study_considerations.md §13.
+
+base_params:
+  probabilistic_agents: false
+
+sweep_params:
+  random_seed: [1, 2, 3, 4, 5]

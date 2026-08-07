@@ -1,0 +1,19 @@
+# Example sensitivity grid for run_sweep.py.
+#
+# base_params: SimulationConfig field overrides applied to every combination.
+# sweep_params: Cartesian product of these forms the grid on top of base_params
+#   (3 x 2 = 6 runs below). Use `scenarios:` instead of sweep_params for a
+#   hand-picked list of full override dicts rather than a full grid -- see
+#   run_sweep.py's module docstring.
+#
+# Field names must match scripts.steelo.simulation.SimulationConfig; run_one.py
+# validates them against dataclasses.fields(SimulationConfig) before running.
+
+# chosen_demand_scenario must match a sheet/column actually present in your demand
+# Excel input (default "BAU") -- swap in real scenario names before using this.
+base_params:
+  random_seed: 42
+
+sweep_params:
+  steel_price_buffer: [100.0, 200.0, 300.0]
+  capacity_limit: [0.9, 0.95]

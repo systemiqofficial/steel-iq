@@ -1,0 +1,26 @@
+# Uniform, global, linearly-ramping CO2 price scenario for apply_scenario_overrides.py.
+#
+# The real carbon_costs.json fixture (master Excel-derived) is flat/near-zero for most
+# major steel producers (China, USA, India: 0.0 every year) -- there's no existing
+# "rising trajectory" to reuse, so this authors one deliberately: high enough and broad
+# enough to force visible technology switching for the PAM seed-sensitivity experiment
+# (see docs/domain_simulation_logic/plant_agent_model/uncertainty_study_considerations.md
+# §13), not a realistic policy prediction.
+#
+# Applied uniformly to every country (replacing, not adding to, existing values) --
+# a regional-only price would confound trade-competitiveness shifts with the
+# technology-switching signal this scenario targets, and would leave a few countries
+# with an existing non-zero baseline while everyone else starts at 0.
+#
+# $180/tCO2 by 2040 sits in the range cited by net-zero-aligned carbon price scenarios
+# (IEA NZE, NGFS) for advanced economies by mid-century, and above most literature
+# estimates of where H2-DRI-EAF becomes cost-competitive with BF-BOF (~$50-150/tCO2
+# depending on hydrogen cost).
+
+carbon_cost_trajectory:
+  type: linear_ramp
+  start_price: 0.0
+  ramp_start_year: 2025
+  end_price: 180.0
+  ramp_end_year: 2040
+  hold_after: true # flat at end_price from ramp_end_year through the fixture's horizon
