@@ -1,5 +1,5 @@
 import logging
-from typing import TYPE_CHECKING, NamedTuple, TypedDict, Any
+from typing import TYPE_CHECKING, NamedTuple, Sequence, TypedDict, Any
 import math
 
 from steelo.utilities.utils import normalize_name
@@ -939,7 +939,7 @@ def calculate_unit_production_cost(
 
 
 def calculate_gross_cash_flow(
-    total_opex: list[float], price_series: list[float], expected_production: float
+    total_opex: Sequence[float | None], price_series: list[float], expected_production: float
 ) -> list[float]:
     """
     Calculate the gross cash flow over multiple time steps.
@@ -947,21 +947,20 @@ def calculate_gross_cash_flow(
     Computes cash flow as (revenue - operating costs) for each period.
 
     Args:
-        total_opex (list[float]): List of unit total operating expenditures per time step ($/unit).
+        total_opex (Sequence[float | None]): Unit total operating expenditures per time step ($/unit).
+            None marks a non-producing period (e.g. construction) with zero cash flow; a 0.0 entry
+            is a genuine zero-cost operating year and earns full revenue.
         price_series (list[float]): The market price per unit product per time step ($/unit).
         expected_production (float): The production volume per period (units/period).
 
     Returns:
         list[float]: A list of gross cash flows for each period ($/period).
-
-    Note:
-        - When OPEX is 0 (e.g., no production), cash flow is set to 0 rather than calculating revenue.
     """
     gross_cash_flow: list[float] = []
     # Calculate cash flow for each period
     for i, unit_total_opex_per_year in enumerate(total_opex):
-        # If no operating costs, no production is occurring
-        if unit_total_opex_per_year == 0:
+        # None marks a non-producing period (construction mask)
+        if unit_total_opex_per_year is None:
             cash_flow = 0.0
         else:
             # Cash flow = (price - cost) * production volume
@@ -1123,10 +1122,9 @@ def calculate_npv_full(
         total_investment=total_investment, equity_share=equity_share, lifetime=lifetime, cost_of_debt=cost_of_debt
     )
 
-    # Apply construction time lag to debt repayments and OPEX
-    zeros = [0.0] * construction_time
-    debt_repayment_lagged = zeros + debt_repayment
-    unit_opex_lagged = zeros + unit_total_opex_list
+    # Apply construction time lag to debt repayments and OPEX (None masks the non-producing construction years)
+    debt_repayment_lagged = [0.0] * construction_time + debt_repayment
+    unit_opex_lagged: list[float | None] = [None] * construction_time + list(unit_total_opex_list)
 
     if expected_production == 0:
         func_logger.warning("[NPV FULL] Expected production is zero.")
@@ -1161,6 +1159,7 @@ def stranding_asset_cost(
     market_price_series: list[float],
     expected_production: float,
     cost_of_equity: float,
+    construction_time: int = 0,
 ) -> float:
     """
     Calculate the Cost of Stranded Asset (COSA) when switching technologies.
@@ -1169,11 +1168,14 @@ def stranding_asset_cost(
     asset would have earned over its remaining life. The remaining debt is deliberately excluded —
     it is owed whether the agent stays or switches (it persists post-switch via the legacy-debt
     schedule), so it cancels from the switch-vs-stay comparison and must not be charged here.
+    A deferred switch keeps the incumbent operating through the construction window, so those
+    years' margin is not foregone either — only years [construction_time, remaining_time) are
+    charged, at their original discount positions.
 
     Steps:
-    1. Extract OPEX and prices for the remaining asset lifetime
-    2. Calculate gross cash flow (revenue - OPEX) for remaining periods
-    3. Discount the gross cash flow to present value using cost of equity
+    1. Extract OPEX and prices for the genuinely foregone years [construction_time, remaining_time)
+    2. Calculate gross cash flow (revenue - OPEX) for those periods
+    3. Discount to present value using cost of equity, keeping discount exponents aligned
 
     Args:
         unit_total_opex_list (list[float]): Yearly unit total OPEX expenditures ($/unit).
@@ -1181,31 +1183,38 @@ def stranding_asset_cost(
         market_price_series (list[float]): Market price per unit product per year ($/unit).
         expected_production (float): Production volume per period (units/period).
         cost_of_equity (float): Annual cost of equity as discount rate (e.g., 0.08 for 8%).
+        construction_time (int): Years the incumbent keeps operating after a switch decision
+            before the new technology takes over. Defaults to 0 (charge the full remainder).
 
     Returns:
-        float: The NPV of the foregone operating margin (COSA). Negative for a loss-making
-        incumbent, which correctly rewards exit.
+        float: The NPV of the foregone operating margin (COSA). Zero when the construction
+        window covers the whole remainder; negative for a loss-making incumbent, which
+        correctly rewards exit.
     """
     # Use function-specific logger that respects the centralized configuration
     func_logger = logging.getLogger(f"{__name__}.stranding_asset_cost")
 
-    # Extract remaining time periods (first N years of OPEX/prices)
-    remaining_opex = unit_total_opex_list[:remaining_time]
-    remaining_price_series = market_price_series[:remaining_time]
+    # Only years after the construction window are foregone
+    remaining_opex = unit_total_opex_list[construction_time:remaining_time]
+    remaining_price_series = market_price_series[construction_time:remaining_time]
 
     # Foregone operating margin: gross cash flow from operations for the remaining periods
     gross_cash_flow = calculate_gross_cash_flow(remaining_opex, remaining_price_series, expected_production)
 
+    # Zero-pad the construction years so discount exponents stay anchored to today
+    lost_cash_flow = [0.0] * construction_time + gross_cash_flow
+
     # Log all intermediate calculations together for easier debugging
     func_logger.debug(
-        f"[STRANDING ASSET COST] Remaining time: {remaining_time}, Expected production: {expected_production:,.0f} kt"
+        f"[STRANDING ASSET COST] Remaining time: {remaining_time}, Construction time: {construction_time}, "
+        f"Expected production: {expected_production:,.0f} kt"
     )
     func_logger.debug(f"[STRANDING ASSET COST] Price per unit per year ($/t): {market_price_series}")
     func_logger.debug(f"[STRANDING ASSET COST] Remaining unit total OPEX: {remaining_opex}")
     func_logger.debug(f"[STRANDING ASSET COST] Gross cash flow (foregone margin): {gross_cash_flow}")
 
     # Discount the foregone operating margin to present value
-    return calculate_cost_of_stranded_asset(gross_cash_flow, cost_of_equity)
+    return calculate_cost_of_stranded_asset(lost_cash_flow, cost_of_equity)
 
 
 def calculate_business_opportunity_npvs(

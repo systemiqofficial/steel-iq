@@ -460,6 +460,83 @@ def test_evaluate_expansion_with_combined_subsidies(
         assert abs(capex_with_subsidy - expected_capex) < 0.01
 
 
+def test_prefilter_affordability_uses_subsidised_capex(
+    setup_environment, plant_with_location, mocker, country_mappings_for_test
+):
+    """A technology affordable only thanks to its capex subsidy survives the pre-filter.
+
+    Regression for the unsubsidised pre-filter: with balance between the subsidised
+    and unsubsidised equity requirement, the option was dropped before NPV ranking —
+    exactly the policy-supported techs the subsidy is meant to enable.
+    """
+    bus = setup_environment
+    bus.uow.plants.add(plant_with_location)
+
+    pg = PlantGroup(plant_group_id="pg_test", plants=[plant_with_location])
+    # Unsubsidised equity: 400 × 1000 × 0.4 = 160,000; with the 50% subsidy: 80,000
+    pg.balance = 100_000.0
+    bus.uow.plant_groups.add(pg)
+
+    def mock_get_bom(energy_costs, tech, capacity, most_common_reductant=None):
+        return (
+            {
+                "materials": {"scrap": {"unit_cost": 100.0, "demand": 1.0}},
+                "energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}},
+            },
+            0.8,
+            "scrap",
+            {"scrap": 1.0},
+        )
+
+    mocker.patch.object(bus.env, "get_bom_from_avg_boms", side_effect=mock_get_bom)
+
+    eaf_subsidy = Subsidy(
+        scenario_name="test_scenario",
+        technology_name="EAF",
+        iso3="USA",
+        cost_item="capex",
+        subsidy_type="relative",
+        subsidy_amount=0.5,
+        start_year=Year(2020),
+        end_year=Year(2030),
+    )
+
+    price = {"steel": [600.0] * 22, "iron": [400.0] * 22}
+    allowed_techs = {Year(year): ["EAF"] for year in range(2020, 2031)}
+
+    options = pg.evaluate_expansion_options(
+        price_series=price,
+        capacity=Volumes(1000),
+        region_capex=bus.env.name_to_capex["greenfield"],
+        cost_of_debt_dict=bus.env.cost_of_debt_by_tech,
+        cost_of_equity_dict=bus.env.cost_of_equity_by_tech,
+        get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
+        reductant_score_series=_stub_score_series,
+        dynamic_feedstocks=bus.env.dynamic_feedstocks,
+        fopex_for_iso3=bus.env.fopex_by_country,
+        iso3_to_region_map=country_mappings_for_test.iso3_to_region(),
+        chosen_emissions_boundary_for_carbon_costs=bus.env.config.chosen_emissions_boundary_for_carbon_costs,
+        tech_to_product=bus.env.technology_to_product,
+        plant_lifetime=bus.env.config.plant_lifetime,
+        construction_time=2,
+        technology_emission_factors=bus.env.technology_emission_factors,
+        global_risk_free_rate=bus.env.global_risk_free_rate,
+        equity_share=0.4,
+        current_year=bus.env.year,
+        allowed_techs=allowed_techs,
+        active_statuses=["operating"],
+        capex_subsidies={"USA": {"EAF": [eaf_subsidy]}},
+        opex_subsidies={},
+        debt_subsidies={},
+    )
+
+    plant_id = plant_with_location.plant_id
+    assert plant_id in options, "Subsidised EAF should survive the affordability pre-filter"
+    npv, best_tech, capex_with_subsidy, _reductant = options[plant_id]
+    assert best_tech == "EAF"
+    assert capex_with_subsidy == 200.0
+
+
 def test_evaluate_expansion_with_restricted_allowed_techs(
     setup_environment, plant_with_location, mocker, country_mappings_for_test
 ):

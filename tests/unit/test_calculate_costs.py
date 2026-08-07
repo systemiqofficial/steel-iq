@@ -441,12 +441,12 @@ def test_npv_flow_wrapper(mocker, technology, material_bill):  # FIXME: This tes
     total_investment = capex * capacity
     debt_repayment = calculate_debt_repayment(total_investment, equity_share=0.2, lifetime=20, cost_of_debt=0.05)
 
-    # Add construction time lag to match calculate_npv_full behavior
+    # Add construction time lag to match calculate_npv_full behavior:
+    # None masks the non-producing construction years, debt lags with zeros
     construction_time = 2
-    zeros = [0.0] * construction_time
-    debt_repayment_lagged = zeros + debt_repayment
+    debt_repayment_lagged = [0.0] * construction_time + debt_repayment
     Opex_list = [unit_fopex + unit_vopex] * len(debt_repayment)
-    Opex_list_lagged = zeros + Opex_list
+    Opex_list_lagged = [None] * construction_time + Opex_list
 
     gross_cash_flow = calculate_gross_cash_flow(
         total_opex=Opex_list_lagged, price_series=[price] * len(Opex_list_lagged), expected_production=float(80)
@@ -541,6 +541,73 @@ def test_stranding_asset_cost_loss_making_incumbent_is_negative():
     )
 
     assert cosa < 0
+
+
+def test_stranding_asset_cost_zero_when_construction_window_covers_remainder():
+    """A deferred switch keeps the incumbent running through construction, so a
+    remainder no longer than the construction window forgoes no margin at all.
+
+    Args/Returns/Notes:
+        Regression for the boundary anti-switch bias: COSA previously charged the
+        full remainder even though the incumbent keeps earning it.
+    """
+    cosa = stranding_asset_cost(
+        [200] * 20,
+        4,
+        [600] * 20,
+        expected_production=80.0,
+        cost_of_equity=0.05,
+        construction_time=4,
+    )
+
+    assert cosa == 0.0
+
+
+def test_stranding_asset_cost_charges_only_post_construction_years():
+    """With remaining=6 and construction=4, only years 5 and 6 are foregone, at
+    their original discount positions (t=5 and t=6)."""
+    margin = (600 - 200) * 80.0
+    expected = margin / 1.05**5 + margin / 1.05**6
+
+    cosa = stranding_asset_cost(
+        [200] * 20,
+        6,
+        [600] * 20,
+        expected_production=80.0,
+        cost_of_equity=0.05,
+        construction_time=4,
+    )
+
+    assert cosa == pytest.approx(expected)
+
+
+def test_gross_cash_flow_zero_opex_year_earns_full_revenue():
+    """A genuinely zero-cost operating year (e.g. 100% OPEX subsidy) earns full
+    revenue; only a None entry masks a non-producing construction year."""
+    gross = calculate_gross_cash_flow([0.0, None, 100.0], [600.0, 600.0, 600.0], expected_production=80.0)
+
+    assert gross[0] == 600.0 * 80.0
+    assert gross[1] == 0.0
+    assert gross[2] == (600.0 - 100.0) * 80.0
+
+
+def test_npv_full_counts_revenue_of_fully_subsidised_opex_years():
+    """calculate_npv_full no longer conflates 0.0 opex with the construction mask:
+    an all-zero opex list (fully subsidised) yields a strongly positive NPV."""
+    npv = calculate_npv_full(
+        capex=400.0,
+        capacity=100.0,
+        unit_total_opex_list=[0.0] * 20,
+        expected_utilisation_rate=0.8,
+        price_series=[600.0] * 24,
+        lifetime=20,
+        construction_time=4,
+        cost_of_debt=0.05,
+        cost_of_equity=0.08,
+        equity_share=0.2,
+    )
+
+    assert npv > 0
 
 
 @pytest.mark.skip(reason="derive_best_technology_switch function was removed")
