@@ -4078,7 +4078,8 @@ class Plant:
 
         if furnace_group.historic_balance < -closure_threshold:
             logger.info(
-                f"[FG STRATEGY] DECISION - CLOSE FG (historic losses ${furnace_group.historic_balance:,.2f} "
+                f"[FG STRATEGY] DECISION - CLOSE FG:{furnace_group.furnace_group_id} plant:{self.plant_id} "
+                f"tech:{furnace_group.technology.name} (historic losses ${furnace_group.historic_balance:,.2f} "
                 f"exceed threshold ${-closure_threshold:,.2f})"
             )
             return commands.CloseFurnaceGroup(plant_id=self.plant_id, furnace_group_id=furnace_group.furnace_group_id)
