@@ -10,7 +10,7 @@ def test_duplicate_feedstocks_do_not_double_count_capacity():
         [
             {
                 "furnace_group_id": "FG1",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "feedstock": "scrap",
                 "unit_production_cost": 150.0,
@@ -19,7 +19,7 @@ def test_duplicate_feedstocks_do_not_double_count_capacity():
             },
             {
                 "furnace_group_id": "FG1",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "feedstock": "hot_metal",
                 "unit_production_cost": 150.0,
@@ -28,7 +28,7 @@ def test_duplicate_feedstocks_do_not_double_count_capacity():
             },
             {
                 "furnace_group_id": "FG1",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "feedstock": "hbi_low",
                 "unit_production_cost": 150.0,
@@ -37,7 +37,7 @@ def test_duplicate_feedstocks_do_not_double_count_capacity():
             },
             {
                 "furnace_group_id": "FG2",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "feedstock": "scrap",
                 "unit_production_cost": 320.0,
@@ -50,7 +50,7 @@ def test_duplicate_feedstocks_do_not_double_count_capacity():
     cost_df = _prepare_cost_curve_dataframe(
         data_frame=raw,
         product_type="steel",
-        year=2050,
+        year=2060,
         aggregation="region",
         capacity_limit=1.0,
     )
@@ -75,7 +75,7 @@ def test_feedstock_slices_with_partial_capacity_are_preserved():
         [
             {
                 "furnace_group_id": "FG1",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "feedstock": "scrap",
                 "unit_production_cost": 150.0,
@@ -84,7 +84,7 @@ def test_feedstock_slices_with_partial_capacity_are_preserved():
             },
             {
                 "furnace_group_id": "FG1",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "feedstock": "hot_metal",
                 "unit_production_cost": 160.0,
@@ -97,7 +97,7 @@ def test_feedstock_slices_with_partial_capacity_are_preserved():
     cost_df = _prepare_cost_curve_dataframe(
         data_frame=raw,
         product_type="steel",
-        year=2050,
+        year=2060,
         aggregation="region",
         capacity_limit=1.0,
     )
@@ -119,7 +119,7 @@ def three_furnace_outlier_curve():
         [
             {
                 "furnace_group_id": "FG1",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "unit_production_cost": 200.0,
                 "capacity": 120.0,
@@ -127,7 +127,7 @@ def three_furnace_outlier_curve():
             },
             {
                 "furnace_group_id": "FG2",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "unit_production_cost": 410.0,
                 "capacity": 120.0,
@@ -135,7 +135,7 @@ def three_furnace_outlier_curve():
             },
             {
                 "furnace_group_id": "FG3",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "unit_production_cost": 18420.0,
                 "capacity": 1.0,  # Tiny outlier slice
@@ -146,7 +146,7 @@ def three_furnace_outlier_curve():
     return _prepare_cost_curve_dataframe(
         data_frame=raw,
         product_type="steel",
-        year=2050,
+        year=2060,
         aggregation="region",
         capacity_limit=1.0,
     )
@@ -189,7 +189,7 @@ def test_market_clearing_uses_last_price_when_supply_insufficient():
         [
             {
                 "furnace_group_id": "FG1",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "unit_production_cost": 100.0,
                 "capacity": 40.0,
@@ -197,7 +197,7 @@ def test_market_clearing_uses_last_price_when_supply_insufficient():
             },
             {
                 "furnace_group_id": "FG2",
-                "year": 2050,
+                "year": 2060,
                 "product": "steel",
                 "unit_production_cost": 220.0,
                 "capacity": 30.0,
@@ -209,7 +209,7 @@ def test_market_clearing_uses_last_price_when_supply_insufficient():
     cost_df = _prepare_cost_curve_dataframe(
         data_frame=raw,
         product_type="steel",
-        year=2050,
+        year=2060,
         aggregation="region",
         capacity_limit=1.0,
     )

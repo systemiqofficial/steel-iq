@@ -46,7 +46,7 @@ def _make_env(tmp_path: Path, constraints: list[SecondaryFeedstockConstraint] | 
     }
     config = SimulationConfig(
         start_year=Year(2025),
-        end_year=Year(2050),
+        end_year=Year(2060),
         master_excel_path=Path("test.xlsx"),
         output_dir=tmp_path,
         technology_settings=tech_settings,

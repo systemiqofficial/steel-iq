@@ -49,7 +49,7 @@ def bus(mock_cost_of_x_file, mock_tech_switches_file):
     # Create a basic config for tests
     config = SimulationConfig(
         start_year=Year(2025),
-        end_year=Year(2050),
+        end_year=Year(2060),
         master_excel_path=Path(tempfile.gettempdir()) / "master.xlsx",
         output_dir=Path(tempfile.gettempdir()),
         technology_settings=get_default_technology_settings(),

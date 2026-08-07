@@ -711,7 +711,7 @@ def test_considered_plant_with_historical_npv(
         capacity=100,
         lifetime=PointInTime(
             current=Year(2025),
-            time_frame=TimeFrame(start=Year(2029), end=Year(2049)),
+            time_frame=TimeFrame(start=Year(2029), end=Year(2059)),
             plant_lifetime=20,
         ),
         utilization_rate=0.7,

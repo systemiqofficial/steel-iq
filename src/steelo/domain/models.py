@@ -175,7 +175,7 @@ class TimeFrame:
     Holds the start and end year for the model calculations.
     """
 
-    def __init__(self, *, start: Year = Year(2025), end: Year = Year(2050)) -> None:
+    def __init__(self, *, start: Year = Year(2025), end: Year = Year(2060)) -> None:
         self.start = start
         self.end = end
 
@@ -4078,7 +4078,8 @@ class Plant:
 
         if furnace_group.historic_balance < -closure_threshold:
             logger.info(
-                f"[FG STRATEGY] DECISION - CLOSE FG (historic losses ${furnace_group.historic_balance:,.2f} "
+                f"[FG STRATEGY] DECISION - CLOSE FG:{furnace_group.furnace_group_id} plant:{self.plant_id} "
+                f"tech:{furnace_group.technology.name} (historic losses ${furnace_group.historic_balance:,.2f} "
                 f"exceed threshold ${-closure_threshold:,.2f})"
             )
             return commands.CloseFurnaceGroup(plant_id=self.plant_id, furnace_group_id=furnace_group.furnace_group_id)
@@ -7379,7 +7380,7 @@ class Environment:
         self.co2_storage_firm: dict[str, float] = {}  # iso3 -> tCO2/yr (operating + construction CCS)
         self.co2_storage_reserved: dict[str, float] = {}  # iso3 -> tCO2/yr (announced CCS, discounted)
         self.capacity_snapshot_by_product: dict[str, float] = {}
-        self._diag_bof_baseline_2049: dict[str, dict[str, float]] | None = None
+        self._diag_bof_baseline_2059: dict[str, dict[str, float]] | None = None
         self._diag_bof_sample_count: int = 0
 
         # Initialize demand, BOMs, and utilization - will be populated during simulation setup
@@ -9228,18 +9229,18 @@ class Environment:
             bof_stats = stats.get("BOF")
             if bof_stats:
                 diag.write_json(["avg_boms", f"{year_int}.json"], {"BOF": bof_stats})
-                if year_int == 2049:
-                    self._diag_bof_baseline_2049 = copy.deepcopy(bof_stats)
-                elif year_int == 2050 and self._diag_bof_baseline_2049:
-                    base_cost = self._diag_bof_baseline_2049.get("hot_metal", {}).get("unit_cost")
+                if year_int == 2059:
+                    self._diag_bof_baseline_2059 = copy.deepcopy(bof_stats)
+                elif year_int == 2060 and self._diag_bof_baseline_2059:
+                    base_cost = self._diag_bof_baseline_2059.get("hot_metal", {}).get("unit_cost")
                     new_cost = bof_stats.get("hot_metal", {}).get("unit_cost")
                     if base_cost and new_cost:
                         delta = new_cost - base_cost
                         pct = (delta / base_cost * 100) if base_cost else None
                         logger.warning(
                             "[DIAGNOSTICS][AVG_BOM] BOF hot_metal unit_cost jump year %s -> %s: %.2f USD/t (%+.1f%%)",
-                            2049,
-                            2050,
+                            2059,
+                            2060,
                             delta,
                             pct if pct is not None else 0.0,
                         )

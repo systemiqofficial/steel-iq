@@ -37,7 +37,7 @@ def test_simulation_config_has_default_parameters():
     # This instantiation will fail until the fields are added.
     config = SimulationConfig(
         start_year=Year(2025),
-        end_year=Year(2050),
+        end_year=Year(2060),
         master_excel_path=Path("test.xlsx"),
         output_dir=Path("/tmp/output"),
         technology_settings=get_default_technology_settings(),
@@ -57,7 +57,7 @@ def test_simulation_config_can_override_defaults():
     """
     config = SimulationConfig(
         start_year=Year(2025),
-        end_year=Year(2050),
+        end_year=Year(2060),
         master_excel_path=Path("test.xlsx"),
         output_dir=Path("/tmp/output"),
         technology_settings=get_default_technology_settings(),
@@ -99,7 +99,7 @@ def test_deterministic_agents_force_announcement_and_construction_probabilities_
     """
     config = SimulationConfig(
         start_year=Year(2025),
-        end_year=Year(2050),
+        end_year=Year(2060),
         master_excel_path=Path("test.xlsx"),
         output_dir=Path("/tmp/output"),
         probabilistic_agents=False,
@@ -116,7 +116,7 @@ def test_probabilistic_agents_keep_default_announcement_and_construction_probabi
     """
     config = SimulationConfig(
         start_year=Year(2025),
-        end_year=Year(2050),
+        end_year=Year(2060),
         master_excel_path=Path("test.xlsx"),
         output_dir=Path("/tmp/output"),
     )

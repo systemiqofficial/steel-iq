@@ -493,6 +493,12 @@ def finalise_iteration(
                 if fg.lifetime.current > fg.lifetime.time_frame.end and fg.status.lower() in env.config.active_statuses:
                     if fg.status.lower() != "operating switching technology":
                         # Standard end-of-life: close the furnace group
+                        logger.info(
+                            f"[FG LIFETIME] DECISION - CLOSE FG:{fg.furnace_group_id} plant:{plant.plant_id} "
+                            f"tech:{fg.technology.name} capacity:{fg.capacity * T_TO_KT:,.0f} kt "
+                            f"(end of life {fg.lifetime.time_frame.end} reached in {env.year}, "
+                            f"was '{fg.status}')"
+                        )
                         fg.status = "closed"
                     else:
                         # Technology switch scenario: transition to construction phase of new technology

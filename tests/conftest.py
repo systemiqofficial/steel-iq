@@ -220,7 +220,7 @@ def technology_data():
 def lifetime_data():
     return {
         "current": Year(2026),
-        "time_frame": {"start": Year(2025), "end": Year(2050)},
+        "time_frame": {"start": Year(2025), "end": Year(2060)},
     }
 
 
@@ -548,7 +548,7 @@ def ready_data_preparation(db, tmp_path):
                 "iso3": "POL",
                 "country_name": "Poland",
                 "scenario": "Business As Usual",
-                "grid_emissivity": {"2025": {"Electricity": 0.5}, "2050": {"Electricity": 0.3}},
+                "grid_emissivity": {"2025": {"Electricity": 0.5}, "2060": {"Electricity": 0.3}},
                 "coke_emissivity": {},
                 "gas_emissivity": {},
             }

@@ -17,7 +17,7 @@ def test_construction_time_in_simulation_config(tmp_path):
     # Test with custom construction time
     config = SimulationConfig(
         start_year=2025,
-        end_year=2050,
+        end_year=2060,
         master_excel_path=master_excel,
         output_dir=output_dir,
         technology_settings=get_default_technology_settings(),
@@ -29,7 +29,7 @@ def test_construction_time_in_simulation_config(tmp_path):
     # Test default value
     config_default = SimulationConfig(
         start_year=2025,
-        end_year=2050,
+        end_year=2060,
         master_excel_path=master_excel,
         output_dir=output_dir,
         technology_settings=get_default_technology_settings(),
@@ -53,7 +53,7 @@ def test_construction_time_with_different_values(tmp_path):
         # Create config with specific construction time
         config = SimulationConfig(
             start_year=2025,
-            end_year=2050,
+            end_year=2060,
             master_excel_path=master_excel,
             output_dir=output_dir,
             technology_settings=get_default_technology_settings(),

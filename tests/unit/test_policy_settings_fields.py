@@ -68,7 +68,7 @@ class TestPolicySettingsFields(TestCase):
 
         form_data = {
             "start_year": 2025,
-            "end_year": 2050,
+            "end_year": 2060,
             "plant_lifetime": 20,  # Required field
             "data_preparation": data_prep.id,  # Required field
             "use_iron_ore_premiums": False,

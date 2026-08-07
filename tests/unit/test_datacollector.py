@@ -152,7 +152,7 @@ def test_collect_cost_breakdown(multi_furnace_groups, mocker, mock_cost_of_x_fil
     # Create Environment with new API
     config = SimulationConfig(
         start_year=Year(2025),
-        end_year=Year(2050),
+        end_year=Year(2060),
         master_excel_path=Path(tempfile.gettempdir()) / "master.xlsx",
         output_dir=Path(tempfile.gettempdir()),
         technology_settings=get_default_technology_settings(),
@@ -213,7 +213,7 @@ def test_collect_capacity(furnace_group_factory, mock_cost_of_x_file, mock_tech_
     # Create Environment with new API
     config = SimulationConfig(
         start_year=Year(2025),
-        end_year=Year(2050),
+        end_year=Year(2060),
         master_excel_path=Path(tempfile.gettempdir()) / "master.xlsx",
         output_dir=Path(tempfile.gettempdir()),
         technology_settings=get_default_technology_settings(),
@@ -252,7 +252,7 @@ def test_collect_capacity(furnace_group_factory, mock_cost_of_x_file, mock_tech_
     #     # Create Environment with new API
     config = SimulationConfig(
         start_year=Year(2025),
-        end_year=Year(2050),
+        end_year=Year(2060),
         master_excel_path=Path(tempfile.gettempdir()) / "master.xlsx",
         output_dir=Path(tempfile.gettempdir()),
         technology_settings=get_default_technology_settings(),
@@ -273,7 +273,7 @@ def test_collect_capacity(furnace_group_factory, mock_cost_of_x_file, mock_tech_
     #     # Create Environment with new API
     config = SimulationConfig(
         start_year=Year(2025),
-        end_year=Year(2050),
+        end_year=Year(2060),
         master_excel_path=Path(tempfile.gettempdir()) / "master.xlsx",
         output_dir=Path(tempfile.gettempdir()),
         technology_settings=get_default_technology_settings(),

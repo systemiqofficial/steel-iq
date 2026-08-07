@@ -103,7 +103,7 @@ def test_track_business_opportunity_announce_after_positive_npvs(
         capacity=100,
         lifetime=PointInTime(
             current=Year(2025),
-            time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+            time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
             plant_lifetime=20,
         ),
         utilization_rate=0.7,
@@ -160,7 +160,7 @@ def test_track_business_opportunity_not_announce_due_to_probability(
         capacity=100,
         lifetime=PointInTime(
             current=Year(2025),
-            time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+            time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
             plant_lifetime=20,
         ),
         utilization_rate=0.7,
@@ -214,7 +214,7 @@ def test_track_business_opportunity_discard_after_negative_npvs(
         capacity=100,
         lifetime=PointInTime(
             current=Year(2025),
-            time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+            time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
             plant_lifetime=20,
         ),
         utilization_rate=0.7,
@@ -272,7 +272,7 @@ def test_track_business_opportunity_mixed_npvs_no_decision(
         capacity=100,
         lifetime=PointInTime(
             current=Year(2025),
-            time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+            time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
             plant_lifetime=20,
         ),
         utilization_rate=0.7,
@@ -324,7 +324,7 @@ def test_track_business_opportunity_insufficient_data(
         capacity=100,
         lifetime=PointInTime(
             current=Year(2025),
-            time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+            time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
             plant_lifetime=20,
         ),
         utilization_rate=0.7,
@@ -375,7 +375,7 @@ def test_track_business_opportunity_missing_capex(
         capacity=100,
         lifetime=PointInTime(
             current=Year(2025),
-            time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+            time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
             plant_lifetime=20,
         ),
         utilization_rate=0.7,
@@ -427,7 +427,7 @@ def test_track_business_opportunity_missing_bom(
         capacity=100,
         lifetime=PointInTime(
             current=Year(2025),
-            time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+            time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
             plant_lifetime=20,
         ),
         utilization_rate=0.7,
@@ -480,7 +480,7 @@ def test_track_business_opportunity_nan_npv(
         capacity=100,
         lifetime=PointInTime(
             current=Year(2025),
-            time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+            time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
             plant_lifetime=20,
         ),
         utilization_rate=0.7,
@@ -534,7 +534,7 @@ def test_track_business_opportunity_with_opex_subsidies(
         capacity=100,
         lifetime=PointInTime(
             current=Year(2025),
-            time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+            time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
             plant_lifetime=20,
         ),
         utilization_rate=0.7,
@@ -601,7 +601,7 @@ def test_track_business_opportunity_error_on_missing_previous_year(
         capacity=100,
         lifetime=PointInTime(
             current=Year(2025),
-            time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+            time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
             plant_lifetime=20,
         ),
         utilization_rate=0.7,
@@ -647,7 +647,7 @@ def test_track_business_opportunity_initializes_historical_npvs(
         capacity=100,
         lifetime=PointInTime(
             current=Year(2025),
-            time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+            time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
             plant_lifetime=20,
         ),
         utilization_rate=0.7,

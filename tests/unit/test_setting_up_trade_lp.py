@@ -456,7 +456,7 @@ def create_mock_config():
         lp_epsilon: float = 1e-3
         random_seed: int = 42
         start_year: Year = Year(2025)
-        end_year: Year = Year(2050)
+        end_year: Year = Year(2060)
 
     return MockConfig()
 

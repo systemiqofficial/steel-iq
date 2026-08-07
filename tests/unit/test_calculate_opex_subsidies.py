@@ -374,7 +374,7 @@ def test_furnace_group_opex_subsidy_window_ends_at_lifetime_end():
         subsidy_type="absolute",
         subsidy_amount=40.0,
         start_year=Year(2040),
-        end_year=Year(2050),
+        end_year=Year(2060),
     )
     collected_windows = []
     collected_subsidies = []
