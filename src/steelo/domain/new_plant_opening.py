@@ -343,7 +343,7 @@ def prepare_cost_data_for_business_opportunity(
                     if committed_reductant != reductant:
                         # Commit the BOM the start-year pick implies (materials are
                         # reductant-invariant; only the energy rows follow the pick)
-                        rebuilt_bom, rebuilt_util_rate, reductant, _shares = get_bom_from_avg_boms(
+                        rebuilt_bom, rebuilt_util_rate, reductant, output_shares = get_bom_from_avg_boms(
                             energy_costs_tech,
                             tech,
                             int(steel_plant_capacity),
@@ -358,6 +358,7 @@ def prepare_cost_data_for_business_opportunity(
                     cost_data[prod][site_id][tech]["bom"] = bill_of_materials
                     cost_data[prod][site_id][tech]["reductant"] = committed_reductant  # type: ignore[assignment]
                     cost_data[prod][site_id][tech]["score_series"] = score_series.scores  # type: ignore[assignment]
+                    cost_data[prod][site_id][tech]["output_shares"] = output_shares  # type: ignore[assignment]
                     if logger.isEnabledFor(logging.DEBUG):
                         logger.debug(
                             "[REDUCTANT NPV] site %s: tech=%s committed=%r picks=%s",
@@ -457,7 +458,15 @@ def validate_and_clean_cost_data(
         float_fields
         + string_fields
         + list_fields
-        + ["railway_cost", "energy_costs", "output_costs", "no_subsidy_prices", "bom", "carbon_cost_series"]
+        + [
+            "railway_cost",
+            "energy_costs",
+            "output_costs",
+            "no_subsidy_prices",
+            "bom",
+            "carbon_cost_series",
+            "output_shares",
+        ]
     )
 
     # Run through all products, sites, and technologies
@@ -534,6 +543,18 @@ def validate_and_clean_cost_data(
                             if not isinstance(tech_data["carbon_cost_series"], dict):
                                 raise ValueError(
                                     f"carbon_cost_series must be dict or None, got {type(tech_data['carbon_cost_series']).__name__}"
+                                )
+
+                        # output_shares: dict of floats (metallic charge -> share of product)
+                        if not isinstance(tech_data["output_shares"], dict):
+                            raise ValueError(
+                                f"output_shares must be dict, got {type(tech_data['output_shares']).__name__}: {tech_data['output_shares']}"
+                            )
+                        for charge_key, share_val in tech_data["output_shares"].items():
+                            if not isinstance(share_val, (float, int)):
+                                raise ValueError(
+                                    f"output_shares['{charge_key}'] must be float or int, "
+                                    f"got {type(share_val).__name__}: {share_val}"
                                 )
 
                         # bom: dict of floats
@@ -614,13 +635,16 @@ def select_top_opportunities_by_npv(
 
     Notes:
         - Invalid NPV values (NaN, -inf) are removed before processing
-        - Random selection weighted by NPV ensures mix of high and medium NPV options rather than only highest
-        - If NPVs contain negative values, distribution is shifted to create non-negative weights
+        - Candidates are ranked by NPV and only the best 3N enter a weighted draw with
+          linearly decreasing rank weights - a mix of high and medium NPV options rather
+          than only the highest, while implausible sites can never be selected
+        - Rank weights are scale-free: the draw behaves identically for all-negative,
+          mixed and all-positive pools
     """
     logger = logging.getLogger(f"{__name__}.select_top_opportunities_by_npv")
     logger.info(
-        f"[NEW PLANTS] Selecting top {top_n_loctechs_as_business_op} location-technology combinations with high NPVs as "
-        "business opportunities (per product and year)."
+        f"[NEW PLANTS] Drawing {top_n_loctechs_as_business_op} location-technology combinations per product from the "
+        f"top {3 * top_n_loctechs_as_business_op} by NPV (rank-weighted, without replacement)."
     )
     top_business_opportunities: dict[str, dict[tuple[float, float, str], dict[str, float]]] = {}
 
@@ -652,25 +676,25 @@ def select_top_opportunities_by_npv(
                 f"NPV dict for {product}: {npv_dict.get(product, {})}"
             )
 
-        # Create non-negative weights by shifting the NPV distribution if needed
+        # Trim to the plausible head of the pool, then draw with rank weights (best gets
+        # weight `trim`, worst weight 1). The former shift-by-min weighting degenerated
+        # to a near-uniform draw whenever the whole pool was negative.
         npvs_array = np.array(valid_npvs)
-        min_npv = np.min(npvs_array)
-        if min_npv < 0:
-            weights = npvs_array - min_npv
-        else:
-            weights = npvs_array
-        if weights.sum() == 0:
-            continue
-        probabilities = weights / weights.sum()
+        ranked_indices = np.argsort(npvs_array)[::-1]
+        trim = min(len(ranked_indices), 3 * top_n_loctechs_as_business_op)
+        pool_indices = ranked_indices[:trim]
 
-        # Randomly select top N indices (weighted by NPV - the higher the more likely to be selected)
-        if len(valid_pairs) >= top_n_loctechs_as_business_op:
-            selected_indices = np.random.choice(
-                len(valid_pairs), size=top_n_loctechs_as_business_op, replace=False, p=probabilities
-            )
-            selected_pairs = [valid_pairs[i] for i in selected_indices]
+        if trim > top_n_loctechs_as_business_op:
+            rank_weights = np.arange(trim, 0, -1, dtype=float)
+            probabilities = rank_weights / rank_weights.sum()
+            drawn = np.random.choice(trim, size=top_n_loctechs_as_business_op, replace=False, p=probabilities)
+            selected_pairs = [valid_pairs[pool_indices[i]] for i in drawn]
         else:
-            selected_pairs = valid_pairs
+            selected_pairs = [valid_pairs[i] for i in pool_indices]
+        logger.info(
+            f"[NEW PLANTS] {product}: drew {len(selected_pairs)} of {len(valid_pairs)} valid candidates "
+            f"(rank-weighted over the top {trim})."
+        )
 
         # Format selected (site, tech) pairs into business opportunities dict
         top_business_opportunities[product] = {}
