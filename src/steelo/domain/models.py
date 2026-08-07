@@ -15,6 +15,7 @@ from steelo.domain import events, commands
 from steelo.domain.calculate_costs import (
     build_direct_ghg_lookup,
     calculate_capex_with_subsidies,
+    calculate_debt_repayment,
     calculate_debt_with_subsidies,
     calculate_energy_costs_and_most_common_reductant,
     calculate_opex_list_with_subsidies,
@@ -3649,6 +3650,7 @@ class Plant:
         dynamic_business_case: list[PrimaryFeedstock] | None = None,
         bom: dict | None = None,
         chosen_reductant: str | None = None,
+        legacy_years: int | None = None,
     ) -> None:
         """
         Change the technology of a specified furnace group with debt preservation.
@@ -3682,6 +3684,10 @@ class Plant:
                 Defaults to None.
             bom (dict | None): Bill of materials for the new technology. If None, keeps existing BOM.
                 Defaults to None.
+            legacy_years (int | None): Years of the old technology's debt still outstanding, anchored
+                to the decision-time lifetime. A deferred switch executes after the furnace group's
+                lifetime has been replaced for the new cycle, so the caller must supply this; None
+                falls back to the current lifetime's remaining years (same-tick execution).
 
         Side Effects:
             - Updates furnace group's technology, lifetime, status, utilization rate, and debt schedules.
@@ -3703,13 +3709,17 @@ class Plant:
         """
         furnace_group = self.get_furnace_group(furnace_group_id)
 
-        # Capture remaining debt from the current technology before switching
+        # Capture the current technology's remaining debt tail before switching.
+        years_remaining = legacy_years if legacy_years is not None else furnace_group.lifetime.remaining_number_of_years
         old_remaining_debt = []
-        if furnace_group.lifetime.remaining_number_of_years > 0:
-            old_debt_schedule = furnace_group.debt_repayment_per_year
-            years_remaining = furnace_group.lifetime.remaining_number_of_years
-            if years_remaining > 0 and len(old_debt_schedule) >= years_remaining:
-                old_remaining_debt = old_debt_schedule[-years_remaining:]
+        if years_remaining > 0:
+            old_remaining_debt = calculate_debt_repayment(
+                total_investment=furnace_group.total_investment,
+                equity_share=furnace_group.equity_share,
+                lifetime=furnace_group.lifetime.plant_lifetime,
+                cost_of_debt=furnace_group.cost_of_debt,
+                lifetime_remaining=years_remaining,
+            )
 
         # Combine existing legacy debt with newly captured debt for cascading debt handling
         if furnace_group.legacy_debt_schedule:
@@ -4072,7 +4082,6 @@ class Plant:
             renovation_share = capex_renovation_share.get(incumbent)
             if renovation_share is None:
                 raise ValueError(f"CAPEX renovation share for technology {incumbent} not found")
-            full_capex_per_tonne = renovation_capex_per_tonne / renovation_share
             incumbent_capex_no_subsidy = region_capex.get(incumbent)
             if incumbent_capex_no_subsidy is None:
                 raise ValueError(f"CAPEX without subsidies for technology {incumbent} not found in region CAPEX dict")
@@ -4115,8 +4124,8 @@ class Plant:
             return commands.RenovateFurnaceGroup(
                 plant_id=self.plant_id,
                 furnace_group_id=furnace_group.furnace_group_id,
-                capex=full_capex_per_tonne,
-                capex_no_subsidy=incumbent_capex_no_subsidy,
+                capex=renovation_capex_per_tonne,
+                capex_no_subsidy=incumbent_capex_no_subsidy * renovation_share,
                 cost_of_debt=incumbent_cost_of_debt_with_subs,
                 cost_of_debt_no_subsidy=incumbent_cost_of_debt,
                 capex_subsidies=incumbent_capex_subs,

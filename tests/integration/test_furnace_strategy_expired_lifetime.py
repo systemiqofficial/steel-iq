@@ -131,7 +131,7 @@ def test_expired_fg_renovates_when_switch_unaffordable(mocker):
     command = evaluate(plant, plant_group)
 
     assert isinstance(command, RenovateFurnaceGroup)
-    assert command.capex_no_subsidy == REGION_CAPEX["EAF"]
+    assert command.capex_no_subsidy == REGION_CAPEX["EAF"] * RENOVATION_SHARE["EAF"]
     assert plant_group.balance == 10_000.0 - RENOVATE_COST
 
 
@@ -155,9 +155,36 @@ def test_expired_fg_with_optimal_incumbent_renovates(mocker):
     command = evaluate(plant, plant_group)
 
     assert isinstance(command, RenovateFurnaceGroup)
-    assert command.capex == REGION_CAPEX["EAF"] / RENOVATION_SHARE["EAF"]
-    assert command.capex_no_subsidy == REGION_CAPEX["EAF"]
+    assert command.capex == REGION_CAPEX["EAF"]
+    assert command.capex_no_subsidy == REGION_CAPEX["EAF"] * RENOVATION_SHARE["EAF"]
     assert plant_group.balance == 1_000_000.0 - RENOVATE_COST
+
+
+def test_renovation_debt_basis_matches_evaluated_capex(mocker):
+    """Executing the renovation stores the evaluated renovation-basis capex as the debt basis.
+
+    Pins debt basis == NPV basis == equity basis: the capex carried on the command
+    (and stored by renovate_furnace_group) is the same share-adjusted value the NPV
+    was evaluated on and the treasury was debited against, not full greenfield.
+    """
+    plant, plant_group = make_plant_and_group(expired=True, balance=1_000_000.0)
+    mock_npvs(mocker, plant.furnace_groups[0], {"EAF": 1_000_000.0, "DRI": 500.0})
+
+    command = evaluate(plant, plant_group)
+    assert isinstance(command, RenovateFurnaceGroup)
+
+    plant.renovate_furnace_group(
+        furnace_group_id=command.furnace_group_id,
+        plant_lifetime=20,
+        capex=command.capex,
+        capex_no_subsidy=command.capex_no_subsidy,
+        cost_of_debt=command.cost_of_debt,
+        cost_of_debt_no_subsidy=command.cost_of_debt_no_subsidy,
+    )
+
+    furnace_group = plant.furnace_groups[0]
+    assert furnace_group.total_investment == command.capex * furnace_group.capacity
+    assert plant_group.balance == 1_000_000.0 - command.capex * furnace_group.capacity * furnace_group.equity_share
 
 
 def test_expired_fg_renovates_after_probabilistic_rejection(mocker):

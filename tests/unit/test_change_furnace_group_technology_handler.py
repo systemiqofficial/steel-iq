@@ -135,6 +135,7 @@ def test_deferred_switch_lands_with_the_committed_reductant():
         }
     )
     cmd.chosen_reductant = "natural_gas"
+    env.config.construction_time = 4
 
     execute_scheduled_technology_switch(cmd, uow=uow, env=env)
 
@@ -142,3 +143,30 @@ def test_deferred_switch_lands_with_the_committed_reductant():
     assert kwargs["chosen_reductant"] == "natural_gas"
     assert kwargs["technology_name"] == cmd.technology_name
     assert kwargs["bom"] is cmd.bom
+    # Legacy debt anchored to decision-time lifetime net of the construction window
+    assert kwargs["legacy_years"] == cmd.remaining_lifetime - 4
+
+
+def test_deferred_switch_at_boundary_carries_zero_legacy_years():
+    """A switch decided with less lifetime left than construction time books no legacy debt."""
+    from steelo.service_layer.handlers import execute_scheduled_technology_switch
+
+    plant = MagicMock()
+    plant.plant_id = "plant-1"
+    uow = _FakeUnitOfWork(plant)
+    env = MagicMock()
+    env.config.plant_lifetime = 20
+    env.config.construction_time = 4
+    env.dynamic_feedstocks = {}
+
+    cmd = _make_command(
+        bom={
+            "materials": {"io_low": {"demand": 1.0, "total_cost": 1.0, "unit_cost": 1.0, "product_volume": 1.0}},
+            "energy": {},
+        }
+    )
+    cmd.remaining_lifetime = 0
+
+    execute_scheduled_technology_switch(cmd, uow=uow, env=env)
+
+    assert plant.change_furnace_group_technology.call_args.kwargs["legacy_years"] == 0

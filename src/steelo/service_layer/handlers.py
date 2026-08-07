@@ -164,6 +164,7 @@ def change_furnace_group_technology(cmd: commands.ChangeFurnaceGroupTechnology, 
             cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
             capex_subsidies=cmd.capex_subsidies,
             debt_subsidies=cmd.debt_subsidies,
+            legacy_years=cmd.remaining_lifetime,
         )
         uow.commit()
 
@@ -409,6 +410,8 @@ def execute_scheduled_technology_switch(cmd: commands.Command, uow: UnitOfWork, 
         cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
         capex_subsidies=cmd.capex_subsidies,
         debt_subsidies=cmd.debt_subsidies,
+        # Anchor the old technology's debt tail to the decision-time lifetime
+        legacy_years=max(0, cmd.remaining_lifetime - env.config.construction_time),
     )
 
 
