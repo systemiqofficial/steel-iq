@@ -20,6 +20,7 @@ from steelo.domain.calculate_costs import (
     calculate_opex_list_with_subsidies,
     calculate_unit_total_opex,
     calculate_variable_opex,
+    scale_fopex_to_production,
     filter_subsidies_for_year,
     get_subsidised_energy_costs,
     collect_active_subsidies_over_period,
@@ -2585,6 +2586,16 @@ class FurnaceGroup:
                 util_rate = self.utilization_rate
                 reductant = self.chosen_reductant
 
+                # A furnace group the market allocated no production cannot price a
+                # renovation on its realised utilisation; leave the incumbent out of
+                # the candidate set (at an expired boundary this closes the group)
+                if util_rate <= 0:
+                    logger.warning(
+                        f"[OPTIMAL TECH] SKIPPING {tech} - zero utilisation for furnace group "
+                        f"{self.furnace_group_id}, renovation cannot be priced"
+                    )
+                    continue
+
                 # Validate BOM structure before proceeding
                 if not bill_of_materials or "materials" not in bill_of_materials or "energy" not in bill_of_materials:
                     logger.warning(f"[OPTIMAL TECH] SKIPPING {tech} - Invalid or missing BOM structure")
@@ -2700,7 +2711,7 @@ class FurnaceGroup:
                     raise ValueError(f"Unit FOPEX for technology {tech} not found")
 
                 unit_base_opex = calculate_unit_total_opex(
-                    unit_fopex=unit_fopex,
+                    unit_fopex=scale_fopex_to_production(unit_fopex, util_rate),
                     unit_vopex=calculate_variable_opex(bill_of_materials["materials"], {}),
                     utilization_rate=util_rate,
                 )
@@ -5552,11 +5563,23 @@ class PlantGroup:
                     risk_free_rate=global_risk_free_rate,
                 )
 
+                product = tech_to_product[tech]
+                if not product or product not in price_series:
+                    continue
+
+                # Use maximum of technology utilization and plant's historical average
+                expected_utilisation_rate: float = (
+                    max(util_rate, excpected_utilisation[product]["utilisation_rate"])
+                    if product in excpected_utilisation
+                    else util_rate
+                )
+
                 # Calculate OPEX (fixed + variable + subsidies)
                 tech_unit_fopex_value = technology_unit_fopex.get(tech.lower())
                 if tech_unit_fopex_value is None:
                     raise ValueError(f"No fixed OPEX data for technology: {tech} in country: {plant.location.iso3}")
-                unit_fopex = float(tech_unit_fopex_value)
+                # Per-capacity fixed OPEX spread over the production the NPV multiplies by
+                unit_fopex = cc.scale_fopex_to_production(float(tech_unit_fopex_value), expected_utilisation_rate)
 
                 # Materials-only variable OPEX plus fixed OPEX; energy, carbon and
                 # by-products enter through the per-year score
@@ -5578,18 +5601,6 @@ class PlantGroup:
                     opex_subsidies=selected_opex_subsidies,
                     start_year=Year(current_year + construction_time),
                     end_year=Year(current_year + construction_time + plant_lifetime),
-                )
-
-                # Calculate NPV using full financial model
-                product = tech_to_product[tech]
-                if not product or product not in price_series:
-                    continue
-
-                # Use maximum of technology utilization and plant's historical average
-                expected_utilisation_rate: float = (
-                    max(util_rate, excpected_utilisation[product]["utilisation_rate"])
-                    if product in excpected_utilisation
-                    else util_rate
                 )
 
                 # Carbon and by-product terms are already inside the per-year opex list

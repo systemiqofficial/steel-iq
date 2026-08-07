@@ -759,6 +759,32 @@ def calculate_unit_total_opex(unit_vopex: float, unit_fopex: float, utilization_
         return 0.0
 
 
+def scale_fopex_to_production(tech_unit_fopex: float, expected_utilisation_rate: float) -> float:
+    """
+    Convert fixed OPEX per tonne of capacity to fixed OPEX per tonne of production.
+
+    Technology fixed OPEX inputs are quoted per tonne of capacity per year. NPV cash flows
+    multiply unit costs by expected production (utilisation x capacity), so the per-capacity
+    figure must be spread over the production share to count the full fixed cost.
+
+    Args:
+        tech_unit_fopex (float): Fixed OPEX per tonne of capacity per year ($/t capacity).
+        expected_utilisation_rate (float): Expected utilisation rate (0.0 to 1.0, exclusive of 0).
+
+    Returns:
+        float: Fixed OPEX per tonne of production ($/t).
+
+    Raises:
+        ValueError: If expected_utilisation_rate is not positive — an investment candidate
+            with no expected production cannot be priced.
+    """
+    if expected_utilisation_rate <= 0:
+        raise ValueError(
+            f"Expected utilisation rate must be positive to scale fixed OPEX, got {expected_utilisation_rate}"
+        )
+    return tech_unit_fopex / expected_utilisation_rate
+
+
 def calculate_debt_repayment(
     total_investment: float,
     equity_share: float,
@@ -1245,6 +1271,8 @@ def calculate_business_opportunity_npvs(
         - The plant capacity does not affect the NPV calculation.
         - cost_data has been validated by validate_and_clean_cost_data to ensure all required fields are
           present with correct types (floats for costs, dict for bom).
+        - The per-capacity fixed OPEX is converted to per-production terms (divided by the expected
+          utilisation rate) so the full fixed cost is counted in the cash flows.
     """
     from steelo.domain.calculate_costs import calculate_npv_full, collect_active_subsidies_over_period
 
@@ -1269,8 +1297,10 @@ def calculate_business_opportunity_npvs(
                 # Materials-only variable OPEX plus fixed OPEX; energy, carbon and
                 # by-products enter through the per-year reductant score
                 unit_vopex = calculate_variable_opex(bom["materials"], {})
-                unit_fopex = bo_costs["fopex"]
-                assert isinstance(unit_fopex, (int, float)), f"Expected fopex to be numeric, got {type(unit_fopex)}"
+                raw_fopex = bo_costs["fopex"]
+                assert isinstance(raw_fopex, (int, float)), f"Expected fopex to be numeric, got {type(raw_fopex)}"
+                # Per-capacity fixed OPEX spread over the production the NPV multiplies by
+                unit_fopex = scale_fopex_to_production(raw_fopex, bo_costs["utilization_rate"])  # type: ignore[arg-type]
                 score_series = bo_costs["score_series"]
                 assert isinstance(score_series, list), f"Expected score_series to be list, got {type(score_series)}"
                 unit_total_opex_list = calculate_opex_list_with_subsidies(
