@@ -342,6 +342,7 @@ def bootstrap_simulation(
         env.carbon_costs = {iso3: _normalise_cost_series(series) for iso3, series in env.carbon_costs.items()}
         env.initiate_input_costs(input_costs_list=repository_json.input_costs.list())
         env.initiate_dynamic_feedstocks(feedstocks=repository_json.primary_feedstocks.list())
+        env.validate_reductant_material_invariance()
         env.initiate_techno_economic_details(capex_list=repository_json.capex.list())
         env.initiate_capex_subsidies(subsidies=repository_json.subsidies.list())
         env.initiate_opex_subsidies(subsidies=repository_json.subsidies.list())
@@ -376,6 +377,7 @@ def bootstrap_simulation(
         )
         env.initiate_hydrogen_efficiency(repository_json.hydrogen_efficiency.list())
         env.initiate_hydrogen_capex_opex(repository_json.hydrogen_capex_opex.list())
+        env.initiate_capped_hydrogen_costs_by_year()
         env.initiate_technology_emission_factors(repository_json.technology_emission_factors.list())
 
         # Load secondary feedstock constraints from biomass availability data

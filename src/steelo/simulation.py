@@ -1168,9 +1168,9 @@ class SimulationRunner:
             bus.env.pass_fopex_for_iso3_to_plants(bus.uow.plants.list())
             # bus.env.set_capex_and_debt_in_furnace_groups(bus.uow.plants.list())  # no need for this because we are not using learning rate - capex and debt (with subsidy) set when fgs are renovated, changed or created
             bus.env.update_furnace_capex_renovation_share(bus.uow.plants.list())
-            capped_hydrogen_cost_dict = (
-                bus.env.calculate_capped_hydrogen_costs_per_country()
-            )  # Calculate for all countries once per year (iso3 -> cost)
+            capped_hydrogen_cost_dict = bus.env.capped_hydrogen_costs_for_year(
+                bus.env.year
+            )  # Precomputed at bootstrap (iso3 -> cost); the series is fully exogenous
             logging.info(f"\n Steel demand in year {bus.env.year}: \t {bus.env.current_demand * T_TO_KT:,.0f} kt \n")
 
             # Initialise OPEX subsidies for Year 1 (subsequent years handled by finalise_iteration)

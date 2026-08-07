@@ -13,17 +13,18 @@ from typing import TYPE_CHECKING, TypeVar, ClassVar, FrozenSet, Dict, Tuple, Uni
 from collections import defaultdict, Counter
 from steelo.domain import events, commands
 from steelo.domain.calculate_costs import (
+    build_direct_ghg_lookup,
     calculate_capex_with_subsidies,
     calculate_debt_with_subsidies,
     calculate_energy_costs_and_most_common_reductant,
     calculate_opex_list_with_subsidies,
-    calculate_secondary_output_adjustment_per_tonne,
     calculate_unit_total_opex,
     calculate_variable_opex,
     filter_subsidies_for_year,
     get_subsidised_energy_costs,
     collect_active_subsidies_over_period,
     collect_subsidies_for_geo,
+    score_reductants_for_business_cases,
     ENERGY_FEEDSTOCK_KEYS,
 )
 from steelo.utilities.utils import normalize_name
@@ -2910,84 +2911,27 @@ class FurnaceGroup:
             masters author materials identically across reductants.
         """
         logger = logging.getLogger(f"{__name__}.generate_energy_vopex_by_reductant")
-        energy_vopex_by_input: dict[str, dict[str, float]] = {}
-        energy_breakdown_by_input: dict[str, dict[str, dict[str, float]]] = {}
-        extra_score_by_input: dict[str, dict[str, float]] = {}
-        material_profile_by_input: dict[str, dict[str, tuple]] = {}
         if self.technology.dynamic_business_case is None:
             return {}
 
-        # Direct GHG factors for the chosen boundary, same matching rules as calculate_emissions
-        ef_by_key: dict[tuple[str, str, str], float] = {}
-        if technology_emission_factors is not None:
-            for factor in technology_emission_factors:
-                if factor.boundary != chosen_emissions_boundary:
-                    continue
-                ef_by_key[(factor.technology.lower(), normalize_name(factor.reductant), factor.metallic_charge)] = (
-                    factor.direct_ghg_factor
-                )
+        ef_by_key = (
+            build_direct_ghg_lookup(technology_emission_factors, chosen_emissions_boundary)
+            if technology_emission_factors is not None
+            else None
+        )
+        scores = score_reductants_for_business_cases(
+            self.technology.dynamic_business_case,
+            self.energy_costs,
+            self.output_energy_costs,
+            carbon_price,
+            ef_by_key,
+            self.disposal_cost_outputs,
+        )
+        energy_vopex_by_input = scores.energy_vopex_by_input
+        energy_breakdown_by_input = scores.energy_breakdown_by_input
+        score_by_input = scores.score_by_input
 
-        for dbc in self.technology.dynamic_business_case:
-            metallic_input = dbc.metallic_charge
-            raw_energy_req = dbc.energy_requirements or {}
-            raw_secondary = dbc.secondary_feedstock or {}
-
-            combined_requirements: dict[str, float] = {}
-            for energy_type, volume in raw_energy_req.items():
-                normalized_energy = normalize_name(energy_type)
-                if normalized_energy not in ENERGY_FEEDSTOCK_KEYS:
-                    continue
-                combined_requirements[normalized_energy] = combined_requirements.get(normalized_energy, 0.0) + volume
-
-            non_energy_secondary: dict[str, float] = {}
-            for secondary_type, volume in raw_secondary.items():
-                normalized_secondary = normalize_name(secondary_type)
-                if normalized_secondary not in ENERGY_FEEDSTOCK_KEYS:
-                    non_energy_secondary[normalized_secondary] = volume
-                    continue
-                combined_requirements[normalized_secondary] = (
-                    combined_requirements.get(normalized_secondary, 0.0) + volume
-                )
-
-            # Material profile per reductant, only for the data-drift warning below
-            material_profile_by_input.setdefault(metallic_input, {})[dbc.reductant] = (
-                dbc.required_quantity_per_ton_of_product,
-                tuple(sorted(non_energy_secondary.items())),
-            )
-
-            if not combined_requirements:
-                continue
-
-            if metallic_input not in energy_vopex_by_input:
-                energy_vopex_by_input[metallic_input] = {}
-            if dbc.reductant not in energy_vopex_by_input[metallic_input]:
-                energy_vopex_by_input[metallic_input][dbc.reductant] = 0.0
-            energy_breakdown_by_input.setdefault(metallic_input, {}).setdefault(dbc.reductant, defaultdict(float))
-
-            for energy_type, volume in combined_requirements.items():
-                normalized_energy = normalize_name(energy_type)
-                price = self.energy_costs.get(normalized_energy, self.energy_costs.get(energy_type, 0.0))
-                cost_value = volume * price
-                energy_vopex_by_input[metallic_input][dbc.reductant] += cost_value
-                energy_breakdown_by_input[metallic_input][dbc.reductant][normalized_energy] += cost_value
-
-            if technology_emission_factors is not None:
-                # Hard lookup: a missing EF row would silently bias the pick towards dirty
-                # reductants if defaulted to 0, so fail loudly instead
-                direct_ghg_factor = ef_by_key[
-                    (dbc.technology.lower(), normalize_name(dbc.reductant), dbc.metallic_charge)
-                ]
-                secondary_adjustment = calculate_secondary_output_adjustment_per_tonne(
-                    dbc,
-                    self.output_energy_costs,
-                    self.disposal_cost_outputs,
-                )
-                extra = carbon_price * direct_ghg_factor + secondary_adjustment
-                extra_score_by_input.setdefault(metallic_input, {})[dbc.reductant] = (
-                    extra_score_by_input.get(metallic_input, {}).get(dbc.reductant, 0.0) + extra
-                )
-
-        for metallic_input, profiles in material_profile_by_input.items():
+        for metallic_input, profiles in scores.material_profile_by_input.items():
             if len(set(profiles.values())) > 1:
                 logger.warning(
                     "[REDUCTANT SCORE] FG %s: material requirements for charge '%s' differ across "
@@ -2997,18 +2941,6 @@ class FurnaceGroup:
                     metallic_input,
                     ", ".join(sorted(profiles)),
                 )
-
-        if technology_emission_factors is not None:
-            # extra_score_by_input is populated in lockstep with energy_vopex_by_input above
-            score_by_input = {
-                metallic_input: {
-                    reductant: energy_cost + extra_score_by_input[metallic_input][reductant]
-                    for reductant, energy_cost in reductant_costs.items()
-                }
-                for metallic_input, reductant_costs in energy_vopex_by_input.items()
-            }
-        else:
-            score_by_input = energy_vopex_by_input
 
         mins = [min(costs, key=lambda k: costs[k]) for costs in score_by_input.values() if costs]
         counts = Counter(mins)
@@ -7403,6 +7335,8 @@ class Environment:
         self.technology_emission_factors: list[TechnologyEmissionFactors] = []
         # Initialize input costs as empty dict, keyed by geo_key (iso3 or iso3:code)
         self.input_costs: dict[str, dict[Year, dict[str, float]]] = {}
+        # Precomputed capped-LCOH series (year -> geo_key -> USD/kg), filled at bootstrap
+        self.capped_hydrogen_costs_by_year: dict[Year, dict[str, float]] = {}
         # Initialize cost curves as empty dicts
         self.cost_curve: dict[str, list[dict[str, float]]] = {"steel": [], "iron": []}
         self.future_cost_curve: dict[str, list[dict[str, float]]] = {"steel": [], "iron": []}
@@ -7494,10 +7428,110 @@ class Environment:
     ) -> None:
         """
         Initialize the technology emission factors for the environment.
+
         Args:
             technology_emission_factors (list[TechnologyEmissionFactors]): A list of TechnologyEmissionFactors objects to be added to the environment.
+
+        Notes:
+            When dynamic feedstocks are already loaded, coverage is validated: every
+            (technology, reductant, metallic charge) business-case key needs an EF row in
+            the configured boundary and in every boundary present in the table. The
+            reductant score does a hard EF lookup, so a gap would crash mid-run — or
+            silently price carbon as zero in the legacy lenient paths — fail at load
+            time instead.
         """
         self.technology_emission_factors = technology_emission_factors
+
+        required_keys = {
+            (dbc.technology.lower(), normalize_name(dbc.reductant), dbc.metallic_charge)
+            for feedstocks in self.dynamic_feedstocks.values()
+            for dbc in feedstocks
+        }
+        if not required_keys:
+            return
+        if not technology_emission_factors:
+            raise ValueError(
+                "No technology emission factors loaded but dynamic business cases exist — "
+                "carbon-aware reductant scoring would fail on every lookup. Check the "
+                "'Technology emission factors' sheet / technology_emission_factors.json."
+            )
+        boundaries = {factor.boundary for factor in technology_emission_factors}
+        chosen_boundary = self.config.chosen_emissions_boundary_for_carbon_costs
+        if chosen_boundary not in boundaries:
+            raise ValueError(
+                f"Configured emissions boundary '{chosen_boundary}' has no rows in the "
+                f"technology emission factors (available: {sorted(boundaries)})."
+            )
+        for boundary in sorted(boundaries):
+            ef_keys = {
+                (factor.technology.lower(), normalize_name(factor.reductant), factor.metallic_charge)
+                for factor in technology_emission_factors
+                if factor.boundary == boundary
+            }
+            missing = required_keys - ef_keys
+            if missing:
+                sample = ", ".join(str(key) for key in sorted(missing)[:5])
+                raise ValueError(
+                    f"Technology emission factors incomplete for boundary '{boundary}': "
+                    f"{len(missing)} business-case key(s) missing (e.g. {sample})."
+                )
+
+    def validate_reductant_material_invariance(self) -> None:
+        """
+        Warn when a technology's material side differs across reductants.
+
+        The reductant score (annual re-pick and investment NPVs) carries no material
+        term: materials and utilisation are assumed reductant-invariant, which holds
+        in all current masters. Two kinds of authoring drift would silently break
+        that factorisation: a metallic charge present for only a subset of a
+        technology's reductants, and required quantities / non-energy secondary
+        feedstocks that differ per reductant.
+
+        Returns:
+            None. Logs one warning per affected (technology, metallic charge).
+        """
+        logger = logging.getLogger(f"{__name__}.Environment.validate_reductant_material_invariance")
+        checked: set[str] = set()
+        for tech_name, feedstocks in self.dynamic_feedstocks.items():
+            canonical = tech_name.lower()
+            if canonical in checked:
+                continue
+            checked.add(canonical)
+            profiles: dict[str, dict[str, tuple]] = {}
+            reductants: set[str] = set()
+            for dbc in feedstocks:
+                non_energy_secondary = tuple(
+                    sorted(
+                        (normalize_name(name), volume)
+                        for name, volume in (dbc.secondary_feedstock or {}).items()
+                        if normalize_name(name) not in ENERGY_FEEDSTOCK_KEYS
+                    )
+                )
+                profiles.setdefault(dbc.metallic_charge, {})[dbc.reductant] = (
+                    dbc.required_quantity_per_ton_of_product,
+                    non_energy_secondary,
+                )
+                reductants.add(dbc.reductant)
+            for metallic_charge, by_reductant in profiles.items():
+                if set(by_reductant) != reductants:
+                    logger.warning(
+                        "[REDUCTANT DATA] %s: metallic charge '%s' is authored only for reductant(s) %s "
+                        "(missing: %s) — the reductant score assumes identical charge coverage across "
+                        "reductants. Check the master's Bill of Materials authoring.",
+                        tech_name,
+                        metallic_charge,
+                        ", ".join(sorted(by_reductant)),
+                        ", ".join(sorted(reductants - set(by_reductant))),
+                    )
+                if len(set(by_reductant.values())) > 1:
+                    logger.warning(
+                        "[REDUCTANT DATA] %s: material requirements for charge '%s' differ across "
+                        "reductants (%s) — the reductant score carries no material term, so this "
+                        "difference is ignored. Check the master's Bill of Materials authoring.",
+                        tech_name,
+                        metallic_charge,
+                        ", ".join(sorted(by_reductant)),
+                    )
 
     def initiate_fopex(self, fopex_list: list[FOPEX]) -> None:
         """
@@ -8158,16 +8192,20 @@ class Environment:
                         input_costs["hydrogen"] = fg.energy_costs["hydrogen"]
                     fg.set_energy_costs(**input_costs)
 
-    def calculate_capped_hydrogen_costs_per_country(self) -> dict[str, float]:
+    def calculate_capped_hydrogen_costs_per_country(self, year: Year | None = None) -> dict[str, float]:
         """
         Calculate country-level hydrogen prices with regional ceilings and trade adjustments.
 
         Steps:
-            1. Extract electricity prices for all countries in the current simulation year and calculate Levelized Cost of Hydrogen
+            1. Extract electricity prices for all countries in the given year and calculate Levelized Cost of Hydrogen
             (LCOH) for each country using electricity prices, CAPEX, and OPEX.
             2. Determine regional hydrogen price ceilings based on percentile thresholds
             3. Apply price caps considering regional ceilings, interregional trade options, and pipeline transport costs. Pipeline
             transport costs are added when importing hydrogen from trading partners.
+
+        Args:
+            year: Year to price; defaults to the current simulation year. Every input is
+                exogenous, so any covered year can be computed at any time.
 
         Returns:
             capped_hydrogen_prices (dict[str, float]): Dictionary mapping ISO3 country codes to capped hydrogen prices in USD/kg.
@@ -8197,21 +8235,22 @@ class Environment:
         if not hasattr(self.config, "geo_config"):
             raise ValueError("GeoConfig is required for hydrogen price calculation")
         geo_config = self.config.geo_config
+        target_year = self.year if year is None else year
 
         # Step 1: LCOH per geo_key (country rows + any authored sub-national rows)
         electricity_by_geo_key = {}
         for geo_key, year_costs in self.input_costs.items():
             if geo_key is None:
                 continue
-            if self.year in year_costs:
-                if "electricity" not in year_costs[self.year]:
-                    raise ValueError(f"Electricity price not found for {geo_key} in year {self.year}")
-                electricity_by_geo_key[geo_key] = year_costs[self.year]["electricity"]
+            if target_year in year_costs:
+                if "electricity" not in year_costs[target_year]:
+                    raise ValueError(f"Electricity price not found for {geo_key} in year {target_year}")
+                electricity_by_geo_key[geo_key] = year_costs[target_year]["electricity"]
         lcoh_by_geo_key = calculate_lcoh_from_electricity_country_level(
             electricity_by_country=electricity_by_geo_key,
             hydrogen_efficiency=self.hydrogen_efficiency,
             hydrogen_capex_opex=self.hydrogen_capex_opex,
-            year=self.year,
+            year=target_year,
         )
 
         # Step 2: ceilings from country-level LCOH only; a province inherits its country's ceiling
@@ -8238,6 +8277,53 @@ class Environment:
 
         logger.info(f"Calculated capped hydrogen prices for {len(capped_hydrogen_prices)} countries")
         return capped_hydrogen_prices
+
+    def initiate_capped_hydrogen_costs_by_year(self) -> None:
+        """
+        Precompute the capped-LCOH series for the full data horizon.
+
+        Every input to the capped hydrogen price is exogenous (Excel trajectories,
+        static geo config), so the whole series is knowable at bootstrap. Covers
+        config.start_year through the last year present in input_costs.
+
+        Returns:
+            None. Fills self.capped_hydrogen_costs_by_year.
+
+        Notes:
+            Requires input_costs, hydrogen_efficiency, hydrogen_capex_opex and
+            country_mappings to be initiated first; raises if input costs are empty.
+        """
+        if self.config is None:
+            raise ValueError("SimulationConfig is required to precompute hydrogen prices")
+        data_years = {y for year_costs in self.input_costs.values() for y in year_costs}
+        if not data_years:
+            raise ValueError("Input costs must be initiated before precomputing hydrogen prices")
+        self.capped_hydrogen_costs_by_year = {
+            Year(y): self.calculate_capped_hydrogen_costs_per_country(year=Year(y))
+            for y in range(int(self.config.start_year), int(max(data_years)) + 1)
+        }
+
+    def capped_hydrogen_costs_for_year(self, year: Year) -> dict[str, float]:
+        """
+        Look up the precomputed capped LCOH dict (geo_key -> USD/kg) for a year.
+
+        Args:
+            year: Any simulation or forecast year.
+
+        Returns:
+            The precomputed dict for that year; beyond the data horizon the last
+            covered year's prices apply (trajectories end in 2050, NPVs look past it).
+
+        Notes:
+            Raises if the series was not precomputed; years inside the covered range
+            but absent from it raise KeyError rather than silently degrading.
+        """
+        if not self.capped_hydrogen_costs_by_year:
+            raise ValueError("Capped hydrogen costs not precomputed; call initiate_capped_hydrogen_costs_by_year first")
+        last_year = max(self.capped_hydrogen_costs_by_year)
+        if year > last_year:
+            return self.capped_hydrogen_costs_by_year[last_year]
+        return self.capped_hydrogen_costs_by_year[year]
 
     def get_eu_countries(self) -> list[str]:
         logger = logging.getLogger(f"{__name__}.Environment.get_eu_countries")

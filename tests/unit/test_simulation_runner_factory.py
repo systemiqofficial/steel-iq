@@ -34,14 +34,26 @@ def test_factory_configures_environment_from_config(tmp_path):
     (fixtures_dir / "subsidies.json").write_text('{"root": []}')
     (fixtures_dir / "carbon_costs.json").write_text('{"root": []}')
     (fixtures_dir / "primary_feedstocks.json").write_text('{"root": []}')
-    (fixtures_dir / "input_costs.json").write_text('{"root": []}')
+    (fixtures_dir / "input_costs.json").write_text(
+        '{"root": ['
+        '{"iso3": "DEU", "year": 2025, "costs": {"electricity": 0.05}},'
+        '{"iso3": "DEU", "year": 2026, "costs": {"electricity": 0.05}}'
+        "]}"
+    )
     (fixtures_dir / "region_emissivity.json").write_text('{"root": []}')
     (fixtures_dir / "capex.json").write_text('{"root": []}')
     (fixtures_dir / "cost_of_capital.json").write_text('{"root": []}')
     (fixtures_dir / "legal_process_connectors.json").write_text("[]")
-    (fixtures_dir / "country_mappings.json").write_text("[]")
-    (fixtures_dir / "hydrogen_efficiency.json").write_text("[]")
-    (fixtures_dir / "hydrogen_capex_opex.json").write_text("[]")
+    (fixtures_dir / "country_mappings.json").write_text(
+        '[{"country": "Germany", "iso2": "DE", "iso3": "DEU", "irena_name": "Germany",'
+        ' "region_for_outputs": "Europe", "ssp_region": "EUR", "tiam-ucl_region": "Rest of World"}]'
+    )
+    (fixtures_dir / "hydrogen_efficiency.json").write_text(
+        '[{"year": 2025, "efficiency": 0.05}, {"year": 2026, "efficiency": 0.05}]'
+    )
+    (fixtures_dir / "hydrogen_capex_opex.json").write_text(
+        '[{"country_code": "DEU", "values": {"2025": 1.0, "2026": 1.0}}]'
+    )
     (fixtures_dir / "transport_emissions.json").write_text("[]")
     (fixtures_dir / "biomass_availability.json").write_text("[]")
     (data_dir / "railway_costs.json").write_text('{"root": []}')
