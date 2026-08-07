@@ -53,7 +53,7 @@ def test_two_pass_mc_skip_with_warning():
         avg_utilization={"EAF": {"utilization_rate": 0.8}},
     )
 
-    bom, utilization, reductant = env.get_bom_from_avg_boms(
+    bom, utilization, reductant, _ = env.get_bom_from_avg_boms(
         energy_costs={"electricity": 50.0},
         tech="EAF",
         capacity=100.0,
@@ -88,7 +88,7 @@ def test_energy_reconstruction_single_mc():
         avg_utilization={},
     )
 
-    bom, _, _ = env.get_bom_from_avg_boms(
+    bom, _, _, _ = env.get_bom_from_avg_boms(
         energy_costs={"electricity": 60.0, "natural_gas": 8.0, "burnt_lime": 100.0, "coking_coal": 200.0},
         tech="BF",
         capacity=1000.0,
@@ -129,7 +129,7 @@ def test_energy_reconstruction_multi_mc_output_shares():
         avg_utilization={},
     )
 
-    bom, _, _ = env.get_bom_from_avg_boms(
+    bom, _, _, _ = env.get_bom_from_avg_boms(
         energy_costs={"electricity": 50.0},
         tech="EAF",
         capacity=100.0,
@@ -176,7 +176,7 @@ def test_cheapest_reductant_fallback():
         avg_utilization={},
     )
 
-    bom, _, reductant = env.get_bom_from_avg_boms(
+    bom, _, reductant, _ = env.get_bom_from_avg_boms(
         energy_costs={"electricity": 50.0, "natural_gas": 10.0, "hydrogen": 500.0},
         tech="DRI",
         capacity=1000.0,
@@ -214,7 +214,7 @@ def test_zero_cost_carrier_warning():
         avg_utilization={},
     )
 
-    bom, _, _ = env.get_bom_from_avg_boms(
+    bom, _, _, _ = env.get_bom_from_avg_boms(
         energy_costs={"electricity": 50.0},  # no hydrogen price
         tech="DRI+CCU",
         capacity=1000.0,
@@ -237,7 +237,7 @@ def test_deployed_tech_reorder_noop():
         avg_utilization={"EAF": {"utilization_rate": 0.9}},
     )
 
-    bom, utilization, reductant = env.get_bom_from_avg_boms(
+    bom, utilization, reductant, _ = env.get_bom_from_avg_boms(
         energy_costs={"electricity": 50.0},
         tech="EAF",
         capacity=100.0,
@@ -271,7 +271,7 @@ def test_demand_share_pct_in_materials_output():
         avg_utilization={},
     )
 
-    bom, _, _ = env.get_bom_from_avg_boms(
+    bom, _, _, _ = env.get_bom_from_avg_boms(
         energy_costs={"electricity": 50.0},
         tech="EAF",
         capacity=100.0,

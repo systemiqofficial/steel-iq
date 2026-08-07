@@ -638,7 +638,7 @@ def test_get_bom_from_avg_boms_excludes_metallic_energy_entries():
     env.energy_costs = {"electricity": 50.0}
     env.primary_products = ["steel"]
 
-    bom, utilization, reductant = env.get_bom_from_avg_boms(
+    bom, utilization, reductant, _ = env.get_bom_from_avg_boms(
         energy_costs={"electricity": 50.0},
         tech="EAF",
         capacity=1000.0,
@@ -858,10 +858,10 @@ def test_get_bom_from_avg_boms_renormalises_after_bio_pci_skip():
     }
 
     energy_costs = {"bio_pci": 660.0, "electricity": 0.09}
-    bom_leaky, _, _ = build_env(leaky).get_bom_from_avg_boms(
+    bom_leaky, _, _, _ = build_env(leaky).get_bom_from_avg_boms(
         energy_costs=energy_costs, tech="BF_CHARCOAL", capacity=1000.0, most_common_reductant="bio_pci"
     )
-    bom_clean, _, _ = build_env(clean).get_bom_from_avg_boms(
+    bom_clean, _, _, _ = build_env(clean).get_bom_from_avg_boms(
         energy_costs=energy_costs, tech="BF_CHARCOAL", capacity=1000.0, most_common_reductant="bio_pci"
     )
 

@@ -91,7 +91,7 @@ def test_hardcoded_avg_bom_includes_input_share_pct(tmp_path: Path) -> None:
     assert env.avg_boms["BF_CHARCOAL"]["io_high"]["input_share_pct"] == pytest.approx(1.0)
     assert env.avg_boms["BF_CHARCOAL"]["io_high"]["unit_cost"] == pytest.approx(123.0)
 
-    bom, _, _ = env.get_bom_from_avg_boms(
+    bom, _, _, _ = env.get_bom_from_avg_boms(
         energy_costs={"electricity": 10.0},
         tech="BF_CHARCOAL",
         capacity=100.0,
@@ -113,7 +113,7 @@ def test_get_bom_from_avg_boms_defaults_missing_input_share_pct_for_single_entry
 
     env.avg_boms = {"BF_CHARCOAL": {"io_high": {"unit_cost": 123.0}}}
 
-    bom, _, _ = env.get_bom_from_avg_boms(
+    bom, _, _, _ = env.get_bom_from_avg_boms(
         energy_costs={"electricity": 10.0},
         tech="BF_CHARCOAL",
         capacity=100.0,

@@ -4,12 +4,6 @@ import math
 
 from steelo.utilities.utils import normalize_name
 
-from steelo.domain.calculate_emissions import (
-    calculate_emissions,
-    calculate_emissions_cost_series,
-    materiall_bill_business_case_match,
-)
-
 # Constants moved to domain.constants for clean architecture
 if TYPE_CHECKING:
     from steelo.domain.models import PrimaryFeedstock, Subsidy, CountryMappingService, TechnologyEmissionFactors
@@ -1218,10 +1212,6 @@ def calculate_business_opportunity_npvs(
     plant_lifetime: int,
     construction_time: int,
     equity_share: float,
-    technology_emission_factors: list["TechnologyEmissionFactors"],
-    chosen_emissions_boundary_for_carbon_costs: str,
-    dynamic_business_cases: dict[str, list["PrimaryFeedstock"]],
-    disposal_cost_outputs: frozenset[str] | None = None,
 ) -> dict[str, dict[tuple[float, float, str], dict[str, float]]]:
     """
     Calculates the NPV for a series of business opportunities. If the calculation fails, it returns a very
@@ -1242,10 +1232,6 @@ def calculate_business_opportunity_npvs(
         plant_lifetime: Lifetime of the plant in years
         construction_time: Time required for plant construction in years
         equity_share: Share of investment financed by equity
-        technology_emission_factors: List of technology-specific emission factors
-        chosen_emissions_boundary_for_carbon_costs: Emission boundary for carbon cost calculation
-        dynamic_business_cases: Dictionary mapping technology to list of primary feedstocks
-        disposal_cost_outputs: Carrier names where positive price = disposal cost.
 
     Returns:
         Dictionary mapping product -> site_id -> technology -> NPV.
@@ -1280,55 +1266,18 @@ def calculate_business_opportunity_npvs(
                 )
                 bom = bo_costs["bom"]
                 assert isinstance(bom, dict), f"Expected bom to be dict, got {type(bom)}"
-                unit_vopex = calculate_variable_opex(bom["materials"], bom["energy"])
+                # Materials-only variable OPEX plus fixed OPEX; energy, carbon and
+                # by-products enter through the per-year reductant score
+                unit_vopex = calculate_variable_opex(bom["materials"], {})
                 unit_fopex = bo_costs["fopex"]
                 assert isinstance(unit_fopex, (int, float)), f"Expected fopex to be numeric, got {type(unit_fopex)}"
-                unit_total_opex = unit_vopex + unit_fopex
+                score_series = bo_costs["score_series"]
+                assert isinstance(score_series, list), f"Expected score_series to be list, got {type(score_series)}"
                 unit_total_opex_list = calculate_opex_list_with_subsidies(
-                    opex=unit_total_opex,
+                    opex=[unit_vopex + unit_fopex + score for score in score_series],
                     opex_subsidies=selected_opex_subsidies,
                     start_year=start_year,
                     end_year=end_year,
-                )
-
-                # Calculate carbon costs for earliest possible operation years
-                tech_business_cases = dynamic_business_cases.get(tech, dynamic_business_cases.get(tech.lower(), []))
-                reductant_value = bo_costs["reductant"]
-                assert reductant_value is None or isinstance(reductant_value, str), (
-                    f"Expected reductant to be str or None, got {type(reductant_value)}"
-                )
-                matched_business_cases = materiall_bill_business_case_match(
-                    dynamic_feedstocks=tech_business_cases,
-                    material_bill=bom["materials"],
-                    tech=tech,
-                    reductant=reductant_value,
-                )
-                bom_emissions = calculate_emissions(
-                    business_cases=matched_business_cases,
-                    material_bill=bom["materials"],
-                    technology_emission_factors=technology_emission_factors,
-                )
-                carbon_cost_series = bo_costs["carbon_cost_series"]
-                assert isinstance(carbon_cost_series, dict), (
-                    f"Expected carbon_cost_series to be dict, got {type(carbon_cost_series)}"
-                )
-                carbon_cost_list = calculate_emissions_cost_series(
-                    emissions=bom_emissions,
-                    carbon_price_dict=carbon_cost_series,
-                    chosen_emission_boundary=chosen_emissions_boundary_for_carbon_costs,
-                    start_year=start_year,
-                    end_year=end_year,
-                )
-
-                # Calculate secondary output cost adjustment (by-product revenue/cost)
-                secondary_output_adj = calculate_cost_adjustments_from_secondary_outputs(
-                    bill_of_materials=bom,
-                    dynamic_business_cases=list(matched_business_cases.values()),
-                    output_costs=bo_costs["output_costs"],
-                    disposal_cost_outputs=disposal_cost_outputs,
-                )
-                logger.debug(
-                    f"[NEW PLANT NPV] {prod}/{tech} secondary output adjustment: ${secondary_output_adj:,.4f}/t"
                 )
 
                 # Calculate NPV
@@ -1344,8 +1293,6 @@ def calculate_business_opportunity_npvs(
                     cost_of_equity=bo_costs["cost_of_equity"],  # type: ignore[arg-type]
                     equity_share=equity_share,
                     infrastructure_costs=bo_costs["railway_cost"],  # type: ignore[arg-type]
-                    carbon_costs=carbon_cost_list,
-                    secondary_output_adjustment=secondary_output_adj,
                 )
 
                 # Set to very negative NPV if calculation returned NaN
@@ -1505,7 +1452,7 @@ def calculate_opex_with_subsidies(opex: float, opex_subsidies: list["Subsidy"]) 
 
 
 def calculate_opex_list_with_subsidies(
-    opex: float,
+    opex: float | list[float],
     opex_subsidies: list["Subsidy"],
     start_year: "Year",
     end_year: "Year",
@@ -1517,7 +1464,9 @@ def calculate_opex_list_with_subsidies(
     and applies them to the base OPEX value.
 
     Args:
-        opex (float): The base operating expenditure per unit of production.
+        opex (float | list[float]): The base operating expenditure per unit of production —
+            a scalar held flat, or one value per year in [start_year, end_year) (e.g. a
+            year-varying reductant score folded into the base).
         opex_subsidies (list[Subsidy]): List of OPEX subsidy objects with start/end years.
         start_year (Year): The first year of operation.
         end_year (Year): The last year of operation (exclusive).
@@ -1525,9 +1474,17 @@ def calculate_opex_list_with_subsidies(
     Returns:
         list[float]: OPEX values for each year of operation after applying active subsidies.
     """
+    years = range(start_year, end_year)
+    if isinstance(opex, list):
+        if len(opex) != len(years):
+            raise ValueError(f"Per-year opex has {len(opex)} entries but the horizon spans {len(years)} years")
+        base_by_year = opex
+    else:
+        base_by_year = [opex] * len(years)
+
     opex_list = []
     # Calculate subsidized OPEX for each year of operation
-    for year in range(start_year, end_year):
+    for base, year in zip(base_by_year, years):
         # Filter subsidies that are active in this specific year
         subsidies_in_year = []
         for subsidy in opex_subsidies:
@@ -1535,7 +1492,7 @@ def calculate_opex_list_with_subsidies(
                 subsidies_in_year.append(subsidy)
 
         # Apply subsidies active in this year
-        opex_list.append(calculate_opex_with_subsidies(opex, subsidies_in_year))
+        opex_list.append(calculate_opex_with_subsidies(base, subsidies_in_year))
 
     return opex_list
 
@@ -1920,6 +1877,33 @@ class ReductantScores(NamedTuple):
     energy_breakdown_by_input: dict[str, dict[str, dict[str, float]]]
     score_by_input: dict[str, dict[str, float]]
     material_profile_by_input: dict[str, dict[str, tuple]]
+
+
+def summarise_reductant_picks(picks: list[str], start_year: "Year") -> str:
+    """
+    Compress a per-year pick list into year-range segments for log lines.
+
+    Args:
+        picks: One reductant per operating year.
+        start_year: Year of the first entry.
+
+    Returns:
+        e.g. "natural_gas:2028-2033, hydrogen:2034-2047" (empty picks -> "-").
+    """
+    if not picks:
+        return "-"
+    segments = []
+    segment_start = int(start_year)
+    for i in range(1, len(picks) + 1):
+        if i == len(picks) or picks[i] != picks[i - 1]:
+            segment_end = int(start_year) + i - 1
+            label = picks[i - 1] or "''"
+            segments.append(
+                f"{label}:{segment_start}" if segment_start == segment_end else f"{label}:{segment_start}-{segment_end}"
+            )
+            if i < len(picks):
+                segment_start = int(start_year) + i
+    return ", ".join(segments)
 
 
 class ReductantScoreSeries(NamedTuple):

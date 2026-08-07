@@ -11,6 +11,12 @@ from steelo.domain.new_plant_opening import (
 )
 from steelo.domain.models import Subsidy, PlantGroup
 from steelo.devdata import Year
+from steelo.domain.calculate_costs import ReductantScoreSeries
+
+
+def _stub_series(location, tech, output_shares, start, end, **kwargs):
+    n = int(end) - int(start)
+    return ReductantScoreSeries(scores=[0.0] * n, picks=["scrap"] * n)
 
 
 class TestSelectLocationSubset:
@@ -238,8 +244,9 @@ class TestPrepareDataForBusinessOpportunity:
                     {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
                     0.7,  # utilization_rate
                     "scrap",  # reductant
+                    {"scrap": 1.0},  # output shares
                 )
-            return None, 0.0, None
+            return None, 0.0, None, {}
 
         return _get_bom
 
@@ -315,6 +322,9 @@ class TestPrepareDataForBusinessOpportunity:
             fopex_all_locs_techs=fopex_all_locs_techs,
             steel_plant_capacity=100.0,
             get_bom_from_avg_boms=mock_get_bom,
+            plant_lifetime=20,
+            construction_time=2,
+            reductant_score_series=_stub_series,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=0.03,
             capex_subsidies={},
@@ -416,6 +426,9 @@ class TestPrepareDataForBusinessOpportunity:
                 fopex_all_locs_techs=fopex_all_locs_techs,
                 steel_plant_capacity=100.0,
                 get_bom_from_avg_boms=mock_get_bom,
+                plant_lifetime=20,
+                construction_time=2,
+                reductant_score_series=_stub_series,
                 iso3_to_region_map=iso3_to_region_map,
                 global_risk_free_rate=0.03,
                 capex_subsidies={},
@@ -510,6 +523,9 @@ class TestPrepareDataForBusinessOpportunity:
             fopex_all_locs_techs=fopex_all_locs_techs,
             steel_plant_capacity=100.0,
             get_bom_from_avg_boms=mock_get_bom,
+            plant_lifetime=20,
+            construction_time=2,
+            reductant_score_series=_stub_series,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=0.03,
             capex_subsidies={"USA": {"EAF": [capex_subsidy]}},
@@ -627,6 +643,9 @@ class TestPrepareDataForBusinessOpportunity:
             fopex_all_locs_techs=fopex_all_locs_techs,
             steel_plant_capacity=100.0,
             get_bom_from_avg_boms=mock_get_bom,
+            plant_lifetime=20,
+            construction_time=2,
+            reductant_score_series=_stub_series,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=0.03,
             capex_subsidies={},
@@ -725,6 +744,9 @@ class TestPrepareDataForBusinessOpportunity:
                 fopex_all_locs_techs=fopex_all_locs_techs,
                 steel_plant_capacity=100.0,
                 get_bom_from_avg_boms=mock_get_bom,
+                plant_lifetime=20,
+                construction_time=2,
+                reductant_score_series=_stub_series,
                 iso3_to_region_map=iso3_to_region_map,
                 global_risk_free_rate=0.03,
                 capex_subsidies={},
@@ -746,8 +768,9 @@ class TestPrepareDataForBusinessOpportunity:
                     {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
                     0.7,
                     "scrap" if tech == "EAF" else "iron_ore",
+                    {"scrap": 1.0},
                 )
-            return None, 0.0, None
+            return None, 0.0, None, {}
 
         best_locations_subset = {
             "steel": [
@@ -922,6 +945,9 @@ class TestPrepareDataForBusinessOpportunity:
             fopex_all_locs_techs=fopex_all_locs_techs,
             steel_plant_capacity=100.0,
             get_bom_from_avg_boms=_get_bom_multi,
+            plant_lifetime=20,
+            construction_time=2,
+            reductant_score_series=_stub_series,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=0.03,
             capex_subsidies={},
@@ -1161,6 +1187,7 @@ class TestIdentifyNewBusinessOpportunities4indi:
                 },
                 0.7,
                 "scrap",
+                {"scrap": 1.0},
             )
 
         return _get_bom

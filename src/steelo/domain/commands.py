@@ -48,6 +48,7 @@ class ChangeFurnaceGroupTechnology(Command):
     capacity: float
     remaining_lifetime: int
     bom: dict
+    chosen_reductant: str
     cost_of_debt: float
     cost_of_debt_no_subsidy: float
     capex_subsidies: list["Subsidy"]
@@ -73,6 +74,7 @@ class AddFurnaceGroup(Command):
     technology_name: str
     capacity: float
     product: str
+    chosen_reductant: str
     equity_needed: float
     npv: float
     capex: float

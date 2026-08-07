@@ -440,6 +440,7 @@ def test_simulation_service_with_plant_agent_events(
                     "energy": {},
                 },
             },  # BOM dictionaries
+            {"EAF": "", "BOF": ""},  # committed reductants
         )
 
         # Mock ALL EAF furnaces to ensure complete test isolation
@@ -454,7 +455,7 @@ def test_simulation_service_with_plant_agent_events(
                 else:
                     # Extra EAF furnaces: mock to return empty/invalid result
                     # (belt & suspenders with pre-retirement status)
-                    dummy_return = ({}, {}, None, {})
+                    dummy_return = ({}, {}, None, {}, {})
                     mocker.patch.object(fg, "optimal_technology_name", return_value=dummy_return)
         assert target_found, (
             f"Target furnace {furnace_group.furnace_group_id} not found in plant! "
@@ -474,6 +475,7 @@ def test_simulation_service_with_plant_agent_events(
                     "energy": {},
                 }
             },  # BOM dictionaries
+            {"EAF": ""},  # committed reductants
         )
 
         mocker.patch.object(furnace_group, "optimal_technology_name", return_value=mock_return_value_renovation)
@@ -492,6 +494,7 @@ def test_simulation_service_with_plant_agent_events(
                     "energy": {},
                 }
             },  # BOM dictionaries
+            {"EAF": ""},  # committed reductants
         )
 
         mocker.patch.object(furnace_group, "optimal_technology_name", return_value=mock_return_value_stay)
@@ -761,6 +764,7 @@ def test_simulation_service_with_multiple_plant_furnaces(bus, logged_events, mul
             {fg.technology.name: 400},  # Capex
             0.0,  # No COSA
             {fg.technology.name: {}},  # BOM
+            {fg.technology.name: ""},  # committed reductants
         )
         mocker.patch.object(fg, "optimal_technology_name", return_value=mock_return)
 

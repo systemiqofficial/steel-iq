@@ -9,6 +9,12 @@ from steelo.domain import PointInTime, Year, TimeFrame, Volumes
 from steelo.domain.models import CountryMapping, CountryMappingService, PlantGroup
 from steelo.domain.commands import ChangeFurnaceGroupTechnology, RenovateFurnaceGroup
 from steelo.simulation_types import get_default_technology_settings
+from steelo.domain.calculate_costs import ReductantScoreSeries
+
+
+def _stub_score_series(location, tech, output_shares, start, end, **kwargs):
+    n = int(end) - int(start)
+    return ReductantScoreSeries(scores=[0.0] * n, picks=[""] * n)
 
 
 @pytest.fixture
@@ -186,7 +192,7 @@ def test_technology_switching_respects_allowed_techs(mock_environment, plant_wit
 
         # If no transitions allowed, return empty dicts
         if not allowed_techs_from_current:
-            return {}, {}, 0, {}
+            return {}, {}, 0, {}, {}
 
         # Create NPV dict based on allowed transitions
         tech_npv_dict = {}
@@ -220,7 +226,7 @@ def test_technology_switching_respects_allowed_techs(mock_environment, plant_wit
         npv_capex_dict = {tech: 400.0 for tech in tech_npv_dict}
         cosa = 10000 if current_tech != max(tech_npv_dict, key=tech_npv_dict.get) else 0
 
-        return tech_npv_dict, npv_capex_dict, cosa, bom_dict
+        return tech_npv_dict, npv_capex_dict, cosa, bom_dict, {tech: "" for tech in tech_npv_dict}
 
     mocker.patch.object(
         furnace_group, "optimal_technology_name", new=partial(mock_optimal_technology_name, furnace_group)
@@ -236,6 +242,7 @@ def test_technology_switching_respects_allowed_techs(mock_environment, plant_wit
         cost_of_debt_by_tech={tech: 0.04 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
         cost_of_equity_by_tech={tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
         get_bom_from_avg_boms=mock_get_bom,
+        reductant_score_series=_stub_score_series,
         probabilistic_agents=False,
         dynamic_business_cases=bus.env.dynamic_feedstocks,
         chosen_emissions_boundary_for_carbon_costs="scope_1",
@@ -298,6 +305,7 @@ def test_technology_switching_respects_allowed_techs(mock_environment, plant_wit
         cost_of_debt_by_tech={tech: 0.04 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
         cost_of_equity_by_tech={tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
         get_bom_from_avg_boms=mock_get_bom,
+        reductant_score_series=_stub_score_series,
         probabilistic_agents=False,
         dynamic_business_cases=bus.env.dynamic_feedstocks,
         chosen_emissions_boundary_for_carbon_costs="scope_1",
@@ -347,7 +355,7 @@ def test_renovation_respects_allowed_techs(mock_environment, plant_with_bof, pla
 
         # If no transitions allowed, return empty dicts
         if not allowed_techs_from_current:
-            return {}, {}, 0, {}
+            return {}, {}, 0, {}, {}
 
         tech_npv_dict = {}
         bom_dict = {}
@@ -375,7 +383,7 @@ def test_renovation_respects_allowed_techs(mock_environment, plant_with_bof, pla
         npv_capex_dict = {tech: 500.0 for tech in tech_npv_dict}
         cosa = 10000 if current_tech != max(tech_npv_dict, key=tech_npv_dict.get) else 0  # Add some COSA for switching
 
-        return tech_npv_dict, npv_capex_dict, cosa, bom_dict
+        return tech_npv_dict, npv_capex_dict, cosa, bom_dict, {tech: "" for tech in tech_npv_dict}
 
     mocker.patch.object(
         furnace_group, "optimal_technology_name", new=partial(mock_optimal_technology_name, furnace_group)
@@ -396,6 +404,7 @@ def test_renovation_respects_allowed_techs(mock_environment, plant_with_bof, pla
         cost_of_debt_by_tech={tech: 0.04 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
         cost_of_equity_by_tech={tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
         get_bom_from_avg_boms=MagicMock(),
+        reductant_score_series=_stub_score_series,
         probabilistic_agents=False,
         dynamic_business_cases=bus.env.dynamic_feedstocks,
         chosen_emissions_boundary_for_carbon_costs="scope_1",
@@ -432,6 +441,7 @@ def test_renovation_respects_allowed_techs(mock_environment, plant_with_bof, pla
         cost_of_debt_by_tech={tech: 0.04 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
         cost_of_equity_by_tech={tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
         get_bom_from_avg_boms=MagicMock(),
+        reductant_score_series=_stub_score_series,
         probabilistic_agents=False,
         dynamic_business_cases=bus.env.dynamic_feedstocks,
         chosen_emissions_boundary_for_carbon_costs="scope_1",
@@ -483,6 +493,7 @@ def test_no_action_when_no_techs_allowed(mock_environment, plant_with_eaf, plant
             cost_of_debt_by_tech={tech: 0.04 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
             cost_of_equity_by_tech={tech: 0.08 for tech in ("EAF", "BF", "BOF", "DRI", "SR", "MOE")},
             get_bom_from_avg_boms=MagicMock(),
+            reductant_score_series=_stub_score_series,
             probabilistic_agents=False,
             dynamic_business_cases=bus.env.dynamic_feedstocks,
             chosen_emissions_boundary_for_carbon_costs="scope_1",
