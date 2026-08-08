@@ -868,8 +868,9 @@ def test_get_bom_from_avg_boms_renormalises_after_bio_pci_skip():
     assert "bio_pci" not in bom_leaky["materials"]
     for mc in ("io_low", "io_mid"):
         assert bom_leaky["materials"][mc]["demand"] == pytest.approx(bom_clean["materials"][mc]["demand"])
-    # 0.5 share x 1000 t capacity x 1.6 t/t
-    assert bom_leaky["materials"]["io_low"]["demand"] == pytest.approx(800.0)
+    # output share (0.5/1.6)/((0.5/1.6)+(0.5/1.5)) x 1000 t capacity x 1.6 t/t
+    o_low = (0.5 / 1.6) / (0.5 / 1.6 + 0.5 / 1.5)
+    assert bom_leaky["materials"]["io_low"]["demand"] == pytest.approx(o_low * 1000.0 * 1.6)
     # Biomass cost appears exactly once, via the energy reconstruction
     assert bom_leaky["energy"]["bio_pci"]["demand"] == pytest.approx(bom_clean["energy"]["bio_pci"]["demand"])
     assert bom_leaky["energy"]["bio_pci"]["unit_cost"] == pytest.approx(660.0)

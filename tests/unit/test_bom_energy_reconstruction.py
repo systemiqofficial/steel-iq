@@ -144,11 +144,11 @@ def test_energy_reconstruction_multi_mc_output_shares():
     # Total demand = 352.65 * 100 = 35,265
     assert bom["energy"]["electricity"]["demand"] == pytest.approx(35_265.0, rel=1e-3)
 
-    # Materials use input shares (not output shares)
-    # scrap demand = 0.8 * 100 * 1.09 = 87.2
-    assert bom["materials"]["scrap"]["demand"] == pytest.approx(87.2)
-    # pig_iron demand = 0.2 * 100 * 1.1351 = 22.702
-    assert bom["materials"]["pig_iron"]["demand"] == pytest.approx(22.702)
+    # Materials use output shares, same basis as energy (eff applied exactly once)
+    o_scrap = (0.8 / 1.09) / (0.8 / 1.09 + 0.2 / 1.1351)
+    o_pig = (0.2 / 1.1351) / (0.8 / 1.09 + 0.2 / 1.1351)
+    assert bom["materials"]["scrap"]["demand"] == pytest.approx(o_scrap * 100 * 1.09)
+    assert bom["materials"]["pig_iron"]["demand"] == pytest.approx(o_pig * 100 * 1.1351)
 
 
 def test_cheapest_reductant_fallback():
@@ -251,9 +251,10 @@ def test_deployed_tech_reorder_noop():
 
 
 def test_demand_share_pct_in_materials_output():
-    """Output BOM materials include demand_share_pct in TM convention (input_share * eff).
+    """Output BOM materials include demand_share_pct in TM convention (demand / product_volume).
 
-    Two MCs with different effectivenesses — demand_share_pct should NOT sum to 1.0.
+    Two MCs with different effectivenesses — demand_share_pct = output_share * eff and
+    should NOT sum to 1.0 (it sums to the output-share-weighted average efficiency).
     """
     env = _make_env(
         dynamic_feedstocks={
@@ -278,18 +279,69 @@ def test_demand_share_pct_in_materials_output():
         most_common_reductant="coke",
     )
 
-    # demand_share_pct = input_share * eff (TM convention)
-    assert bom["materials"]["scrap"]["demand_share_pct"] == pytest.approx(0.8 * 1.09)
-    assert bom["materials"]["pig_iron"]["demand_share_pct"] == pytest.approx(0.2 * 1.14)
+    o_scrap = (0.8 / 1.09) / (0.8 / 1.09 + 0.2 / 1.14)
+    o_pig = (0.2 / 1.14) / (0.8 / 1.09 + 0.2 / 1.14)
+
+    # demand_share_pct = output_share * eff = demand / product_volume (TM convention)
+    assert bom["materials"]["scrap"]["demand_share_pct"] == pytest.approx(o_scrap * 1.09)
+    assert bom["materials"]["pig_iron"]["demand_share_pct"] == pytest.approx(o_pig * 1.14)
 
     # Verify it does NOT sum to 1.0 (unlike input_share_pct)
     total = sum(m["demand_share_pct"] for m in bom["materials"].values())
     assert total != pytest.approx(1.0)
 
     # unit_cost = total_cost / product_volume (per-output, TM convention)
-    # scrap: 300 * 0.8 * 100 * 1.09 / 100 = 300 * 0.8 * 1.09 = 261.6
-    assert bom["materials"]["scrap"]["unit_cost"] == pytest.approx(300.0 * 0.8 * 1.09)
-    # pig_iron: 400 * 0.2 * 100 * 1.14 / 100 = 400 * 0.2 * 1.14 = 91.2
-    assert bom["materials"]["pig_iron"]["unit_cost"] == pytest.approx(400.0 * 0.2 * 1.14)
-    # total_cost unchanged (authoritative value)
-    assert bom["materials"]["scrap"]["total_cost"] == pytest.approx(300.0 * 0.8 * 100.0 * 1.09)
+    assert bom["materials"]["scrap"]["unit_cost"] == pytest.approx(300.0 * o_scrap * 1.09)
+    assert bom["materials"]["pig_iron"]["unit_cost"] == pytest.approx(400.0 * o_pig * 1.14)
+    # total_cost consistent with demand (authoritative value)
+    assert bom["materials"]["scrap"]["total_cost"] == pytest.approx(300.0 * o_scrap * 100.0 * 1.09)
+
+
+def test_material_demand_applies_efficiency_exactly_once():
+    """Fleet input shares already embed eff; demand must be output_share * capacity * eff.
+
+    Regression test for the efficiency double-application at models.py get_bom_from_avg_boms:
+    a fleet running charge A (eff 2.0) and charge B (eff 1.0) at equal output split has input
+    shares 2/3 vs 1/3. Rebuilding a candidate BOM must recover the equal output split — total
+    input tonnage C * (s_A*e_A + s_B*e_B) = 1.5 * capacity, not the inflated
+    C * Σ share_i * e_i² / Σ s_j*e_j ≈ 1.667 * capacity of the buggy input-share basis.
+    """
+    env = _make_env(
+        dynamic_feedstocks={
+            "BF": [
+                DummyFeed("io_low", "coke", 2.0, energy_requirements={"electricity": 100.0}),
+                DummyFeed("io_high", "coke", 1.0, energy_requirements={"electricity": 100.0}),
+            ],
+        },
+        avg_boms={
+            # Equal output split -> input tonnes 2:1 -> input shares 2/3 and 1/3
+            "BF": {
+                "io_low": {"input_share_pct": 2.0 / 3.0, "unit_cost": 100.0},
+                "io_high": {"input_share_pct": 1.0 / 3.0, "unit_cost": 150.0},
+            },
+        },
+        avg_utilization={},
+    )
+
+    bom, _, _, output_shares = env.get_bom_from_avg_boms(
+        energy_costs={"electricity": 50.0},
+        tech="BF",
+        capacity=100.0,
+        most_common_reductant="coke",
+    )
+
+    # Derived output shares recover the equal split
+    assert output_shares["io_low"] == pytest.approx(0.5)
+    assert output_shares["io_high"] == pytest.approx(0.5)
+
+    # demand = output_share * capacity * eff, applied exactly once
+    assert bom["materials"]["io_low"]["demand"] == pytest.approx(0.5 * 100.0 * 2.0)
+    assert bom["materials"]["io_high"]["demand"] == pytest.approx(0.5 * 100.0 * 1.0)
+
+    # Total input tonnage matches the physical mix (150 t input per 100 t output)
+    total_input = sum(m["demand"] for m in bom["materials"].values())
+    assert total_input == pytest.approx(150.0)
+
+    # Materials VOPEX per tonne of output = Σ o_i * e_i * unit_cost_i
+    total_cost = sum(m["total_material_cost"] for m in bom["materials"].values())
+    assert total_cost / 100.0 == pytest.approx(0.5 * 2.0 * 100.0 + 0.5 * 1.0 * 150.0)

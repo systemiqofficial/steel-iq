@@ -9573,7 +9573,7 @@ class Environment:
             1. Calculate total energy costs for each (material, reductant) combination
             2. Identify the most cost-effective reductant
             3. Map materials to process efficiencies for the chosen reductant
-            4. Scale material demands by: avg_share × capacity × process_efficiency
+            4. Scale material demands by: output_share × capacity × process_efficiency
             5. Calculate energy demands and costs using the chosen reductant's energy profile
 
         Args:
@@ -9858,13 +9858,13 @@ class Environment:
             for norm_mc, data in surviving.items():
                 feedstock = data["feedstock_key"]
                 eff = data["eff"]
-                input_share_pct_val = data["input_share_pct"]
                 unit_cost_val = data["unit_cost"]
                 matched_pf = data["pf"]
                 o_share = output_shares[norm_mc]
 
-                # Materials
-                material_demand = input_share_pct_val * capacity * eff
+                # Materials — input_share_pct is a share of fleet *input* tonnes, which
+                # already embed eff; scale by output share so eff is applied exactly once
+                material_demand = o_share * capacity * eff
                 material_cost = unit_cost_val * material_demand
 
                 bom_dict["materials"][feedstock] = {
@@ -9874,19 +9874,19 @@ class Environment:
                     "unit_cost": material_cost / capacity,
                     "unit_material_cost": material_cost / capacity,
                     "product_volume": capacity,
-                    "demand_share_pct": input_share_pct_val * eff,
+                    "demand_share_pct": o_share * eff,
                 }
                 logger.debug(
-                    "[AVG_BOM_DIAG] material: tech=%s mc=%s input_share=%.4f eff=%.4f "
+                    "[AVG_BOM_DIAG] material: tech=%s mc=%s o_share=%.4f eff=%.4f "
                     "demand=%.2f unit_cost_input=%.2f unit_cost_output=%.2f demand_share=%.4f",
                     tech,
                     feedstock,
-                    input_share_pct_val,
+                    o_share,
                     eff,
                     material_demand,
                     unit_cost_val,
                     material_cost / capacity,
-                    input_share_pct_val * eff,
+                    o_share * eff,
                 )
 
                 # Energy — accumulate from PrimaryFeedstock
