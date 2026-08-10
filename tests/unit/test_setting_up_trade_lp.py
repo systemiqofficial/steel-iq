@@ -185,7 +185,9 @@ class DummyTradeLPModel:
     def add_process_connectors(self, connectors):
         self.connectors.extend(connectors)
 
-    def build_lp_model(self, willingness_to_pay_list=None):
+    def build_lp_model(
+        self, willingness_to_pay_list=None, carbon_border_mechanisms=None, country_mappings=None, year=None
+    ):
         pass
 
     def solve_lp_model(self):
