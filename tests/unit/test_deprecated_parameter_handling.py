@@ -15,7 +15,7 @@ def test_deprecated_global_bf_ban_parameter_shows_warning(tmp_path):
 
         SimulationConfig(
             start_year=Year(2025),
-            end_year=Year(2050),
+            end_year=Year(2060),
             master_excel_path=Path("test.xlsx"),
             output_dir=tmp_path,
             technology_settings=get_default_technology_settings(),
@@ -37,7 +37,7 @@ def test_simulation_config_works_without_deprecated_parameter(tmp_path):
 
         SimulationConfig(
             start_year=Year(2025),
-            end_year=Year(2050),
+            end_year=Year(2060),
             master_excel_path=Path("test.xlsx"),
             output_dir=tmp_path,
             technology_settings=get_default_technology_settings(),
@@ -62,7 +62,7 @@ def test_bf_exclusion_via_allowed_techs(tmp_path):
 
     config = SimulationConfig(
         start_year=Year(2025),
-        end_year=Year(2050),
+        end_year=Year(2060),
         master_excel_path=Path("test.xlsx"),
         output_dir=tmp_path,
         technology_settings=tech_settings,
@@ -77,7 +77,7 @@ def test_backward_compatibility_with_legacy_config_dict(tmp_path):
     # Simulate a legacy config dict that might be stored in database
     legacy_config = {
         "start_year": 2025,
-        "end_year": 2050,
+        "end_year": 2060,
         "master_excel_path": "test.xlsx",
         "output_dir": str(tmp_path),
         "technology_settings": get_default_technology_settings(),
@@ -95,7 +95,7 @@ def test_backward_compatibility_with_legacy_config_dict(tmp_path):
 
         # Configuration should be created successfully
         assert config.start_year == Year(2025)
-        assert config.end_year == Year(2050)
+        assert config.end_year == Year(2060)
 
 
 def test_multiple_deprecated_parameters_future_proofing(tmp_path):
@@ -106,7 +106,7 @@ def test_multiple_deprecated_parameters_future_proofing(tmp_path):
 
         SimulationConfig(
             start_year=Year(2025),
-            end_year=Year(2050),
+            end_year=Year(2060),
             master_excel_path=Path("test.xlsx"),
             output_dir=tmp_path,
             technology_settings=get_default_technology_settings(),

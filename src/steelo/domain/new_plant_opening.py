@@ -4,7 +4,7 @@ import random
 import numpy as np
 from typing import Any, Callable, TypedDict
 
-from steelo.domain.models import Subsidy, compose_geo_key
+from steelo.domain.models import Location, Subsidy, compose_geo_key
 from steelo.domain.constants import Year, T_TO_KG
 
 
@@ -122,9 +122,13 @@ def prepare_cost_data_for_business_opportunity(
     cost_of_equity_all_locs: dict[str, dict[str, float]],
     fopex_all_locs_techs: dict[str, dict[str, float]],
     steel_plant_capacity: float,
+    plant_lifetime: int,
+    construction_time: int,
     get_bom_from_avg_boms: Callable[
-        [dict[str, float], str, float, str | None], tuple[dict[str, dict[str, dict[str, float]]] | None, float, str]
+        [dict[str, float], str, float, str | None],
+        tuple[dict[str, dict[str, dict[str, float]]] | None, float, str, dict[str, float]],
     ],
+    reductant_score_series: Callable[..., Any],
     iso3_to_region_map: dict[str, str],
     global_risk_free_rate: float,
     capex_subsidies: dict[str, dict[str, list[Subsidy]]],
@@ -299,19 +303,70 @@ def prepare_cost_data_for_business_opportunity(
                     int(steel_plant_capacity),
                     most_common_reductant.get(tech, environment_most_common_reductant.get(tech)),
                 )
-                bill_of_materials, util_rate, reductant = bom_result
+                bill_of_materials, util_rate, reductant, output_shares = bom_result
                 if bill_of_materials is None:
                     missing_critical_fields.append("bom")
-                else:
-                    cost_data[prod][site_id][tech]["bom"] = bill_of_materials
                 if util_rate is None:
                     missing_critical_fields.append("utilization_rate")
                 else:
                     cost_data[prod][site_id][tech]["utilization_rate"] = util_rate
                 if reductant is None:
                     missing_critical_fields.append("reductant")
-                else:
-                    cost_data[prod][site_id][tech]["reductant"] = reductant  # type: ignore[assignment]
+
+                if bill_of_materials is not None and reductant is not None:
+                    # Year-wise reductant-optimised score at the site; the site's own pixel
+                    # power/hydrogen prices are trajectory-scaled from the country series.
+                    # TODO: temporary — extract the exact geo point's own year series from
+                    # the rasters instead of ratio-scaling the current-year pixel prices.
+                    site_location = Location(
+                        lat=site["Latitude"],
+                        lon=site["Longitude"],
+                        country=site["iso3"],
+                        region="",
+                        iso3=site["iso3"],
+                        geo_unit=geo_unit,
+                    )
+                    site_overrides = {
+                        "electricity": site["power_price"],
+                        "hydrogen": site["capped_lcoh"] * T_TO_KG,
+                    }
+                    score_series = reductant_score_series(
+                        site_location,
+                        tech,
+                        output_shares,
+                        Year(target_year + construction_time),
+                        Year(target_year + construction_time + plant_lifetime),
+                        overrides=site_overrides,
+                        override_reference_year=current_year,
+                    )
+                    committed_reductant = score_series.picks[0] if score_series.picks else ""
+                    if committed_reductant != reductant:
+                        # Commit the BOM the start-year pick implies (materials are
+                        # reductant-invariant; only the energy rows follow the pick)
+                        rebuilt_bom, rebuilt_util_rate, reductant, output_shares = get_bom_from_avg_boms(
+                            energy_costs_tech,
+                            tech,
+                            int(steel_plant_capacity),
+                            committed_reductant,
+                        )
+                        if rebuilt_bom is None:
+                            raise ValueError(
+                                f"BOM rebuild for {tech} with reductant '{committed_reductant}' returned no BOM"
+                            )
+                        bill_of_materials = rebuilt_bom
+                        cost_data[prod][site_id][tech]["utilization_rate"] = rebuilt_util_rate
+                    cost_data[prod][site_id][tech]["bom"] = bill_of_materials
+                    cost_data[prod][site_id][tech]["reductant"] = committed_reductant  # type: ignore[assignment]
+                    cost_data[prod][site_id][tech]["score_series"] = score_series.scores  # type: ignore[assignment]
+                    cost_data[prod][site_id][tech]["output_shares"] = output_shares  # type: ignore[assignment]
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "[REDUCTANT NPV] site %s: tech=%s committed=%r picks=%s",
+                            site_id,
+                            tech,
+                            committed_reductant,
+                            cc.summarise_reductant_picks(score_series.picks, Year(target_year + construction_time)),
+                        )
 
                 # Add fixed OPEX per technology if available
                 fopex_all_techs = fopex_all_locs_techs.get(site["iso3"])
@@ -398,12 +453,20 @@ def validate_and_clean_cost_data(
         "utilization_rate",
     ]
     string_fields = ["reductant"]
-    list_fields = ["all_opex_subsidies"]
+    list_fields = ["all_opex_subsidies", "score_series"]
     required_fields = (
         float_fields
         + string_fields
         + list_fields
-        + ["railway_cost", "energy_costs", "output_costs", "no_subsidy_prices", "bom", "carbon_cost_series"]
+        + [
+            "railway_cost",
+            "energy_costs",
+            "output_costs",
+            "no_subsidy_prices",
+            "bom",
+            "carbon_cost_series",
+            "output_shares",
+        ]
     )
 
     # Run through all products, sites, and technologies
@@ -480,6 +543,18 @@ def validate_and_clean_cost_data(
                             if not isinstance(tech_data["carbon_cost_series"], dict):
                                 raise ValueError(
                                     f"carbon_cost_series must be dict or None, got {type(tech_data['carbon_cost_series']).__name__}"
+                                )
+
+                        # output_shares: dict of floats (metallic charge -> share of product)
+                        if not isinstance(tech_data["output_shares"], dict):
+                            raise ValueError(
+                                f"output_shares must be dict, got {type(tech_data['output_shares']).__name__}: {tech_data['output_shares']}"
+                            )
+                        for charge_key, share_val in tech_data["output_shares"].items():
+                            if not isinstance(share_val, (float, int)):
+                                raise ValueError(
+                                    f"output_shares['{charge_key}'] must be float or int, "
+                                    f"got {type(share_val).__name__}: {share_val}"
                                 )
 
                         # bom: dict of floats
@@ -560,13 +635,16 @@ def select_top_opportunities_by_npv(
 
     Notes:
         - Invalid NPV values (NaN, -inf) are removed before processing
-        - Random selection weighted by NPV ensures mix of high and medium NPV options rather than only highest
-        - If NPVs contain negative values, distribution is shifted to create non-negative weights
+        - Candidates are ranked by NPV and only the best 3N enter a weighted draw with
+          linearly decreasing rank weights - a mix of high and medium NPV options rather
+          than only the highest, while implausible sites can never be selected
+        - Rank weights are scale-free: the draw behaves identically for all-negative,
+          mixed and all-positive pools
     """
     logger = logging.getLogger(f"{__name__}.select_top_opportunities_by_npv")
     logger.info(
-        f"[NEW PLANTS] Selecting top {top_n_loctechs_as_business_op} location-technology combinations with high NPVs as "
-        "business opportunities (per product and year)."
+        f"[NEW PLANTS] Drawing {top_n_loctechs_as_business_op} location-technology combinations per product from the "
+        f"top {3 * top_n_loctechs_as_business_op} by NPV (rank-weighted, without replacement)."
     )
     top_business_opportunities: dict[str, dict[tuple[float, float, str], dict[str, float]]] = {}
 
@@ -598,25 +676,25 @@ def select_top_opportunities_by_npv(
                 f"NPV dict for {product}: {npv_dict.get(product, {})}"
             )
 
-        # Create non-negative weights by shifting the NPV distribution if needed
+        # Trim to the plausible head of the pool, then draw with rank weights (best gets
+        # weight `trim`, worst weight 1). The former shift-by-min weighting degenerated
+        # to a near-uniform draw whenever the whole pool was negative.
         npvs_array = np.array(valid_npvs)
-        min_npv = np.min(npvs_array)
-        if min_npv < 0:
-            weights = npvs_array - min_npv
-        else:
-            weights = npvs_array
-        if weights.sum() == 0:
-            continue
-        probabilities = weights / weights.sum()
+        ranked_indices = np.argsort(npvs_array)[::-1]
+        trim = min(len(ranked_indices), 3 * top_n_loctechs_as_business_op)
+        pool_indices = ranked_indices[:trim]
 
-        # Randomly select top N indices (weighted by NPV - the higher the more likely to be selected)
-        if len(valid_pairs) >= top_n_loctechs_as_business_op:
-            selected_indices = np.random.choice(
-                len(valid_pairs), size=top_n_loctechs_as_business_op, replace=False, p=probabilities
-            )
-            selected_pairs = [valid_pairs[i] for i in selected_indices]
+        if trim > top_n_loctechs_as_business_op:
+            rank_weights = np.arange(trim, 0, -1, dtype=float)
+            probabilities = rank_weights / rank_weights.sum()
+            drawn = np.random.choice(trim, size=top_n_loctechs_as_business_op, replace=False, p=probabilities)
+            selected_pairs = [valid_pairs[pool_indices[i]] for i in drawn]
         else:
-            selected_pairs = valid_pairs
+            selected_pairs = [valid_pairs[i] for i in pool_indices]
+        logger.info(
+            f"[NEW PLANTS] {product}: drew {len(selected_pairs)} of {len(valid_pairs)} valid candidates "
+            f"(rank-weighted over the top {trim})."
+        )
 
         # Format selected (site, tech) pairs into business opportunities dict
         top_business_opportunities[product] = {}

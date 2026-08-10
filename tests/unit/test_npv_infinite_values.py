@@ -78,7 +78,6 @@ def test_npv_full_with_extreme_values():
         lifetime=20,
         construction_time=2,
         equity_share=0.2,
-        carbon_costs=None,
     )
 
     # Should return -1e9 due to invalid cost_of_debt

@@ -51,7 +51,7 @@ class CacheMetadata:
 class DataPreparationCache:
     """Manages cached data preparations based on content hashing."""
 
-    CACHE_VERSION = "1.5"  # Bump to invalidate all caches (sub-national input-cost rows fall back to country values)
+    CACHE_VERSION = "1.6"  # Bump to invalidate all caches (year columns read through to 2060)
 
     def __init__(self, cache_root: Optional[Path] = None):
         """Initialize cache manager.

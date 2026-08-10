@@ -35,7 +35,7 @@ def parse_arguments() -> argparse.Namespace:
         for steel plants to meet baseload demand while minimizing LCOE.
         
         Example usage:
-            # Run global simulation for 2025-2050 with default parameters
+            # Run global simulation for 2025-2060 with default parameters
             python boa_run_simulation.py
             
             # Run for specific region with custom demand
@@ -52,7 +52,7 @@ def parse_arguments() -> argparse.Namespace:
     temporal_group.add_argument(
         "--start-year", type=int, default=2025, help="Starting year for simulation (default: 2025)"
     )
-    temporal_group.add_argument("--end-year", type=int, default=2050, help="Ending year for simulation (default: 2050)")
+    temporal_group.add_argument("--end-year", type=int, default=2060, help="Ending year for simulation (default: 2060)")
     temporal_group.add_argument(
         "--frequency", type=int, default=5, help="Frequency in years between simulations (default: 5)"
     )

@@ -156,6 +156,7 @@ def change_furnace_group_technology(cmd: commands.ChangeFurnaceGroupTechnology, 
                 env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
             ),
             bom=cmd.bom,
+            chosen_reductant=cmd.chosen_reductant,
             lag=0,
             capex=cmd.capex,
             capex_no_subsidy=cmd.capex_no_subsidy,
@@ -163,6 +164,7 @@ def change_furnace_group_technology(cmd: commands.ChangeFurnaceGroupTechnology, 
             cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
             capex_subsidies=cmd.capex_subsidies,
             debt_subsidies=cmd.debt_subsidies,
+            legacy_years=cmd.remaining_lifetime,
         )
         uow.commit()
 
@@ -180,7 +182,7 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
 
     Args:
         cmd (commands.AddFurnaceGroup): Command containing furnace_group_id, plant_id,
-            technology_name, capacity, product, equity_needed (capex × capacity × equity_share),
+            technology_name, capacity, product, equity_share, equity_needed (capex × capacity × equity_share),
             npv, financial parameters (capex, capex_no_subsidy, cost_of_debt,
             cost_of_debt_no_subsidy), and subsidy lists (capex_subsidies, debt_subsidies).
         uow (UnitOfWork): Unit of work for managing the transaction and accessing repositories.
@@ -213,7 +215,7 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
             plant.energy_costs or {},
             cmd.technology_name,
             cmd.capacity,
-            env.most_common_reductant_by_tech.get(cmd.technology_name, None),
+            cmd.chosen_reductant,
         )
         new_furnace = plant.generate_new_furnace(
             technology_name=cmd.technology_name,
@@ -223,6 +225,7 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
             capex_no_subsidy=cmd.capex_no_subsidy,
             cost_of_debt=cmd.cost_of_debt,
             cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
+            equity_share=cmd.equity_share,
             current_year=env.year,
             lag=env.config.construction_time,
             status="construction",
@@ -233,7 +236,7 @@ def add_furnace_group_to_plant(cmd: commands.AddFurnaceGroup, uow: UnitOfWork, e
                 env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
             ),
             bill_of_materials=avg_bom_result[0],
-            chosen_reductant=avg_bom_result[2],
+            chosen_reductant=cmd.chosen_reductant,
             disposal_cost_outputs=env.config.disposal_cost_outputs,
         )
         # Set the subsidies on the new furnace group
@@ -375,6 +378,44 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
     uow.commit()
 
 
+def execute_scheduled_technology_switch(cmd: commands.Command, uow: UnitOfWork, env: Environment) -> None:
+    """Replay a furnace group's deferred technology switch in its effective year.
+
+    Applies the stored ChangeFurnaceGroupTechnology command exactly as the direct
+    handler would - in particular the evaluated reductant (C7) must land with the
+    new technology instead of surfacing with the old one and waiting for the
+    year-start re-pick to correct it.
+
+    Args:
+        cmd: The furnace group's stored future_switch_cmd.
+        uow: Unit of work providing plant access.
+        env: Environment carrying plant_lifetime and dynamic feedstocks.
+    """
+    if not isinstance(cmd, commands.ChangeFurnaceGroupTechnology):
+        return
+    plant = uow.plants.get(cmd.plant_id)
+    plant.change_furnace_group_technology(
+        furnace_group_id=cmd.furnace_group_id,
+        technology_name=cmd.technology_name,
+        plant_lifetime=env.config.plant_lifetime,
+        dynamic_business_case=env.dynamic_feedstocks.get(
+            cmd.technology_name,
+            env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
+        ),
+        bom=cmd.bom,
+        chosen_reductant=cmd.chosen_reductant,
+        lag=0,
+        capex=cmd.capex,
+        capex_no_subsidy=cmd.capex_no_subsidy,
+        cost_of_debt=cmd.cost_of_debt,
+        cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
+        capex_subsidies=cmd.capex_subsidies,
+        debt_subsidies=cmd.debt_subsidies,
+        # Anchor the old technology's debt tail to the decision-time lifetime
+        legacy_years=max(0, cmd.remaining_lifetime - env.config.construction_time),
+    )
+
+
 def finalise_iteration(
     event: events.IterationOver, env: Environment, uow: UnitOfWork, checkpoint_system: "SimulationCheckpoint"
 ):
@@ -466,33 +507,19 @@ def finalise_iteration(
 
                 # Step 3b: Execute scheduled technology switches if the future_switch_year matches current year
                 if fg.future_switch_year == env.year and fg.future_switch_cmd is not None:
-                    cmd = fg.future_switch_cmd
-                    # Execute the technology change command directly during finalisation of the year
-                    if isinstance(cmd, commands.ChangeFurnaceGroupTechnology):
-                        plant = uow.plants.get(cmd.plant_id)
-                        plant.change_furnace_group_technology(
-                            furnace_group_id=cmd.furnace_group_id,
-                            technology_name=cmd.technology_name,
-                            plant_lifetime=env.config.plant_lifetime,
-                            dynamic_business_case=env.dynamic_feedstocks.get(
-                                cmd.technology_name,
-                                env.dynamic_feedstocks.get(cmd.technology_name.lower(), []),
-                            ),
-                            bom=cmd.bom,
-                            lag=0,
-                            capex=cmd.capex,
-                            capex_no_subsidy=cmd.capex_no_subsidy,
-                            cost_of_debt=cmd.cost_of_debt,
-                            cost_of_debt_no_subsidy=cmd.cost_of_debt_no_subsidy,
-                            capex_subsidies=cmd.capex_subsidies,
-                            debt_subsidies=cmd.debt_subsidies,
-                        )
+                    execute_scheduled_technology_switch(fg.future_switch_cmd, uow=uow, env=env)
 
                 # Step 3c: Handle end-of-life transitions
                 # Close operating furnaces or switch to construction mode for technology switches
                 if fg.lifetime.current > fg.lifetime.time_frame.end and fg.status.lower() in env.config.active_statuses:
                     if fg.status.lower() != "operating switching technology":
                         # Standard end-of-life: close the furnace group
+                        logger.info(
+                            f"[FG LIFETIME] DECISION - CLOSE FG:{fg.furnace_group_id} plant:{plant.plant_id} "
+                            f"tech:{fg.technology.name} capacity:{fg.capacity * T_TO_KT:,.0f} kt "
+                            f"(end of life {fg.lifetime.time_frame.end} reached in {env.year}, "
+                            f"was '{fg.status}')"
+                        )
                         fg.status = "closed"
                     else:
                         # Technology switch scenario: transition to construction phase of new technology
@@ -718,7 +745,6 @@ def update_dynamic_costs(cmd: commands.UpdateDynamicCosts, uow: UnitOfWork, env:
         - Cost of debt (with subsidies, if applicable)
         - CAPEX (with subsidies, if applicable)
         - Energy costs for all carriers (subsidised input, output, and unsubsidised)
-        - Bill of materials with updated energy prices
     """
     logger = logging.getLogger(f"{__name__}.update_dynamic_costs")
     with uow:
@@ -732,8 +758,6 @@ def update_dynamic_costs(cmd: commands.UpdateDynamicCosts, uow: UnitOfWork, env:
                 fg.energy_costs = cmd.new_energy_costs
                 fg.output_energy_costs = cmd.new_output_energy_costs
                 fg.energy_costs_no_subsidy = cmd.new_energy_costs_no_subsidy
-                if cmd.new_bill_of_materials is not None:
-                    fg.bill_of_materials = cmd.new_bill_of_materials
                 logger.debug(
                     "[HANDLER] UpdateDynamicCosts %s/%s: energy_costs=%s output=%s no_sub=%s",
                     cmd.plant_id,

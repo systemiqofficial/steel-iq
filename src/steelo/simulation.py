@@ -428,7 +428,7 @@ class SimulationConfig:
     steel_plant_gem_data_year: int = 2025
     production_gem_data_years: list[int] = field(default_factory=lambda: list(range(2019, 2023)))
     excel_reader_start_year: int = 2020
-    excel_reader_end_year: int = 2050
+    excel_reader_end_year: int = 2060
     demand_sheet_name: str = "Steel_Demand_Chris Bataille"
 
     # === Cost Model Settings ===
@@ -1168,9 +1168,9 @@ class SimulationRunner:
             bus.env.pass_fopex_for_iso3_to_plants(bus.uow.plants.list())
             # bus.env.set_capex_and_debt_in_furnace_groups(bus.uow.plants.list())  # no need for this because we are not using learning rate - capex and debt (with subsidy) set when fgs are renovated, changed or created
             bus.env.update_furnace_capex_renovation_share(bus.uow.plants.list())
-            capped_hydrogen_cost_dict = (
-                bus.env.calculate_capped_hydrogen_costs_per_country()
-            )  # Calculate for all countries once per year (iso3 -> cost)
+            capped_hydrogen_cost_dict = bus.env.capped_hydrogen_costs_for_year(
+                bus.env.year
+            )  # Precomputed at bootstrap (iso3 -> cost); the series is fully exogenous
             logging.info(f"\n Steel demand in year {bus.env.year}: \t {bus.env.current_demand * T_TO_KT:,.0f} kt \n")
 
             # Initialise OPEX subsidies for Year 1 (subsequent years handled by finalise_iteration)

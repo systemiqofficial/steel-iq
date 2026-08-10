@@ -14,7 +14,7 @@ def test_global_bf_ban_true_disables_bf_in_technology_settings(tmp_path):
 
         config = SimulationConfig(
             start_year=Year(2025),
-            end_year=Year(2050),
+            end_year=Year(2060),
             master_excel_path=Path("test.xlsx"),
             output_dir=tmp_path,
             global_bf_ban=True,  # This should translate to technology_settings
@@ -44,7 +44,7 @@ def test_global_bf_ban_false_does_not_affect_technology_settings(tmp_path):
 
         config = SimulationConfig(
             start_year=Year(2025),
-            end_year=Year(2050),
+            end_year=Year(2060),
             master_excel_path=Path("test.xlsx"),
             output_dir=tmp_path,
             global_bf_ban=False,  # This should not affect technology_settings
@@ -78,7 +78,7 @@ def test_global_bf_ban_with_existing_technology_settings(tmp_path):
 
         config = SimulationConfig(
             start_year=Year(2025),
-            end_year=Year(2050),
+            end_year=Year(2060),
             master_excel_path=Path("test.xlsx"),
             output_dir=tmp_path,
             technology_settings=tech_settings,
@@ -102,7 +102,7 @@ def test_global_bf_ban_preserves_simulation_outcomes():
     # Simulate a stored configuration from before the deprecation
     legacy_config = {
         "start_year": Year(2025),
-        "end_year": Year(2050),
+        "end_year": Year(2060),
         "master_excel_path": Path("test.xlsx"),
         "output_dir": Path("/tmp/test"),
         "global_bf_ban": True,  # Legacy parameter that must still work
@@ -127,7 +127,7 @@ def test_global_bf_ban_none_no_warnings_no_changes(tmp_path):
 
         config = SimulationConfig(
             start_year=Year(2025),
-            end_year=Year(2050),
+            end_year=Year(2060),
             master_excel_path=Path("test.xlsx"),
             output_dir=tmp_path,
             # global_bf_ban not provided

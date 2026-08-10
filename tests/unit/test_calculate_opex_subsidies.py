@@ -374,7 +374,7 @@ def test_furnace_group_opex_subsidy_window_ends_at_lifetime_end():
         subsidy_type="absolute",
         subsidy_amount=40.0,
         start_year=Year(2040),
-        end_year=Year(2050),
+        end_year=Year(2060),
     )
     collected_windows = []
     collected_subsidies = []
@@ -392,7 +392,8 @@ def test_furnace_group_opex_subsidy_window_ends_at_lifetime_end():
             market_price_series={"steel": [600.0] * 30, "iron": [400.0] * 30},
             cost_of_debt_by_tech={"EAF": 0.04},
             cost_of_equity_by_tech={"EAF": 0.08},
-            get_bom_from_avg_boms=lambda *args: (None, 0.0, ""),
+            get_bom_from_avg_boms=lambda *args: (None, 0.0, "", {}),
+            score_series_for_tech=lambda *args: calculate_costs.ReductantScoreSeries(scores=[], picks=[]),
             capex_dict={"EAF": 400.0},
             capex_renovation_share={"EAF": 0.7},
             technology_fopex_dict={"eaf": 50.0},

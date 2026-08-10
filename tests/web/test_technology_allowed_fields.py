@@ -15,7 +15,7 @@ def test_bf_allowed_field_controls_blast_furnace(mock_technology_extraction, cli
             "name": "Test BF Disabled Simulation",
             "start_year": 2025,
             "plant_lifetime": 20,
-            "end_year": 2050,
+            "end_year": 2060,
             "data_preparation": ready_data_preparation.id,
             "scrap_generation_scenario": "business_as_usual",
             # Technology settings in new dynamic format
@@ -199,7 +199,7 @@ def test_technology_allowed_defaults_when_not_specified(mock_technology_extracti
             "name": "Test Default Technology Settings",
             "start_year": 2025,
             "plant_lifetime": 20,
-            "end_year": 2050,
+            "end_year": 2060,
             "data_preparation": data_prep.id,
             "scrap_generation_scenario": "business_as_usual",
             # Only include from_year fields (no allowed checkboxes)
@@ -262,7 +262,7 @@ def test_disable_all_iron_technologies_scenario(mock_technology_extraction, clie
             "name": "Hydrogen-Only Steel Scenario",
             "start_year": 2025,
             "plant_lifetime": 20,
-            "end_year": 2050,
+            "end_year": 2060,
             "data_preparation": data_prep.id,
             "scrap_generation_scenario": "business_as_usual",
             # Technology settings using dynamic field names
@@ -333,7 +333,7 @@ def test_technology_year_ranges_with_allowed_fields(mock_technology_extraction, 
             "name": "Test Technology Year Ranges",
             "start_year": 2025,
             "plant_lifetime": 20,
-            "end_year": 2050,
+            "end_year": 2060,
             "data_preparation": data_prep.id,
             "scrap_generation_scenario": "business_as_usual",
             # Technology settings using dynamic field names

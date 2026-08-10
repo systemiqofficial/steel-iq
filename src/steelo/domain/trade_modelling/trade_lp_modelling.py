@@ -1670,7 +1670,9 @@ class TradeLPModel:
         for pc in self.process_centers:
             self.lp_model.process_center_type[pc.name] = pc.process.type.value
 
-    def build_lp_model(self, willingness_to_pay_list=None):
+    def build_lp_model(
+        self, willingness_to_pay_list=None, carbon_border_mechanisms=None, country_mappings=None, year=None
+    ):
         """Build the complete Pyomo LP model with all variables, parameters, and constraints.
 
         This orchestrates the construction of the optimization problem by calling all the
@@ -1679,13 +1681,17 @@ class TradeLPModel:
 
         Args:
             willingness_to_pay_list: List of WillingnessToPay objects (optional, defaults to empty list)
+            carbon_border_mechanisms: List of CarbonBorderMechanism objects (optional, defaults to None)
+            country_mappings: Dictionary mapping ISO3 codes to CountryMapping objects (optional, defaults to None)
+            year: Current simulation year for mechanism activation check (optional, defaults to None)
 
         Steps:
             1. Determine legal allocations (valid flows based on process connectors)
             2. Add decision variables (allocation quantities, slack variables)
             3. Add parameters (capacities, costs, ratios, etc.)
             4. Add constraints (capacity, demand, BOM, ratios, tariffs, etc.)
-            5. Add objective function (minimize total cost)
+            5. Apply carbon border mechanisms to costs (if provided) — BEFORE objective
+            6. Add objective function (minimize total cost)
 
         After calling this method, the model is ready to solve with solve_lp_model().
         """
@@ -1726,6 +1732,18 @@ class TradeLPModel:
         self.add_soft_minimum_capacity_constraints_to_lp()
         self.add_secondary_feedstock_constraints_to_lp()
         self.add_dependent_commodities_consistency_constraints_to_lp()
+        # Apply carbon border mechanisms BEFORE building objective (so adjustments are included in optimization)
+        if carbon_border_mechanisms and country_mappings and year is not None:
+            from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
+                adapt_allocation_costs_for_carbon_border_mechanisms,
+            )
+
+            adapt_allocation_costs_for_carbon_border_mechanisms(
+                trade_lp=self,
+                carbon_border_mechanisms=carbon_border_mechanisms,
+                country_mappings=country_mappings,
+                year=year,
+            )
         # Add objective function:
         self.add_objective_function_to_lp()
 

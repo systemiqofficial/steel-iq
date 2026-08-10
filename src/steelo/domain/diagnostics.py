@@ -94,7 +94,7 @@ def allow_heavy_exports(year: int, active_bof_count: int | None = None) -> bool:
         return False
     if diagnostics_detail() == "full":
         return True
-    if year >= 2048 and (active_bof_count is None or active_bof_count < 10 or year >= 2050):
+    if year >= 2058 and (active_bof_count is None or active_bof_count < 10 or year >= 2060):
         return True
     return False
 

@@ -35,7 +35,7 @@ def test_modelrun_name_field_saved(mock_technology_extraction, client):
             "name": "My Test Simulation",
             "start_year": 2025,
             "plant_lifetime": 20,
-            "end_year": 2050,
+            "end_year": 2060,
             "data_preparation": data_prep.id,
             "scrap_generation_scenario": "business_as_usual",
             # Other required fields with defaults
@@ -106,7 +106,7 @@ def test_modelrun_without_name(mock_technology_extraction, client):
             # No name field
             "start_year": 2025,
             "plant_lifetime": 20,
-            "end_year": 2050,
+            "end_year": 2060,
             "data_preparation": data_prep.id,
             "scrap_generation_scenario": "business_as_usual",
             # Other required fields with defaults

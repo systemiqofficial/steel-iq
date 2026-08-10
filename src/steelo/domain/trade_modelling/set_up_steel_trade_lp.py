@@ -1255,36 +1255,37 @@ def set_up_steel_trade_lp(
     # Get willingness to pay from environment
     willingness_to_pay_list = getattr(message_bus.env, "willingness_to_pay", [])
 
-    lp_model.build_lp_model(willingness_to_pay_list=willingness_to_pay_list)
-    lp_model = fix_to_zero_allocations_where_distance_doesnt_match_commodity(
-        trade_lp=lp_model, config=config, env=message_bus.env if hasattr(message_bus, "env") else None
-    )
-
-    # Apply carbon border mechanisms if available
+    # Prepare carbon border mechanism parameters
+    carbon_border_mechanisms = None
+    country_mappings_dict = None
     if (
         hasattr(message_bus.env, "carbon_border_mechanisms")
         and message_bus.env.carbon_border_mechanisms
         and message_bus.env.country_mappings is not None
     ):
         active_mechanisms = [m for m in message_bus.env.carbon_border_mechanisms if m.is_active(year)]
-
         if active_mechanisms:
+            carbon_border_mechanisms = message_bus.env.carbon_border_mechanisms
             country_mappings_dict = {
                 mapping.iso3: mapping for mapping in message_bus.env.country_mappings._mappings.values()
             }
-            adapt_allocation_costs_for_carbon_border_mechanisms(
-                trade_lp=lp_model,
-                carbon_border_mechanisms=message_bus.env.carbon_border_mechanisms,
-                country_mappings=country_mappings_dict,
-                year=year,
-            )
             logger.info(
-                f"Applied carbon border adjustments for {len(active_mechanisms)} active mechanisms in year {year}"
+                f"Will apply carbon border adjustments for {len(active_mechanisms)} active mechanisms in year {year}"
             )
         else:
             logger.info(f"No active carbon border mechanisms for year {year}, skipping adjustments")
     else:
         logger.info("No carbon border mechanisms defined in environment, skipping adjustments")
+
+    lp_model.build_lp_model(
+        willingness_to_pay_list=willingness_to_pay_list,
+        carbon_border_mechanisms=carbon_border_mechanisms,
+        country_mappings=country_mappings_dict,
+        year=year,
+    )
+    lp_model = fix_to_zero_allocations_where_distance_doesnt_match_commodity(
+        trade_lp=lp_model, config=config, env=message_bus.env if hasattr(message_bus, "env") else None
+    )
 
     # Log distance cache statistics if available
     if hasattr(getattr(message_bus, "env", None), "log_distance_cache_stats"):

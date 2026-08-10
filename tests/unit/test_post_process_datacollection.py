@@ -157,6 +157,7 @@ def test_commands_column_included_in_output():
                     capacity=1000,
                     remaining_lifetime=20,
                     bom={},
+                    chosen_reductant="",
                     cost_of_debt=0.05,
                     cost_of_debt_no_subsidy=0.05,  # Same as cost_of_debt if no subsidy
                     capex_subsidies=[],

@@ -14,7 +14,7 @@ def test_load_allowed_transitions_keeps_future_techs(tmp_path):
 
     config = SimulationConfig(
         start_year=Year(2025),
-        end_year=Year(2050),
+        end_year=Year(2060),
         master_excel_path=Path("test.xlsx"),
         output_dir=tmp_path,
         technology_settings=tech_settings,

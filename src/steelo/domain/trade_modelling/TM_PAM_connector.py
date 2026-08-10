@@ -1372,11 +1372,13 @@ class TM_PAM_connector:
                     if not pattern:
                         continue
 
-                    # Sum demand for all materials whose name (or equivalent) starts with pattern
+                    # Sum demand for all materials whose name starts with pattern.
+                    # Do NOT include hot/cold equivalents: constraints are defined separately for each
+                    # (e.g. BOF has both "DRI" ≤ 15% and "HBI" ≤ 15%, not combined).
                     matching_demand = sum(
                         float(info.get("demand", 0.0))
                         for comm, info in materials.items()
-                        if any(n.startswith(pattern) for n in _equiv_names(comm.lower()))
+                        if comm.lower().startswith(pattern)
                     )
                     actual_share = matching_demand / total_metallic_in if total_metallic_in > 0 else 0.0
 
@@ -1397,6 +1399,27 @@ class TM_PAM_connector:
                         }
                         issues.append(issue)
                         logger.warning("[BOM-CHECK] aggregated_min_share: %s", issue["message"])
+
+                    # Check maximum share constraint (e.g. BOF DRI ≤ 15%, HBI ≤ 15%)
+                    max_share = getattr(c, "maximum_share", None)
+                    if max_share and max_share > 0:
+                        if actual_share > max_share + min_share_tolerance:
+                            issue = {
+                                "fg_id": fg.furnace_group_id,
+                                "technology": fg.technology.name,
+                                "check": "aggregated_max_share",
+                                "pattern": pattern,
+                                "actual_share": actual_share,
+                                "required_share": max_share,
+                                "message": (
+                                    f"FG {fg.furnace_group_id} ({fg.technology.name}): "
+                                    f"aggregated constraint '{pattern}*' share={actual_share:.1%} "
+                                    f"> maximum={max_share:.1%} "
+                                    f"(matching={matching_demand:.0f}t / metallic_total={total_metallic_in:.0f}t)"
+                                ),
+                            }
+                            issues.append(issue)
+                            logger.warning("[BOM-CHECK] aggregated_max_share: %s", issue["message"])
 
         if issues:
             logger.warning(

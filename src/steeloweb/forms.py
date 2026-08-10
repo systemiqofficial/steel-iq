@@ -174,15 +174,15 @@ class ModelRunCreateForm(forms.ModelForm):
     start_year = forms.IntegerField(
         initial=2025,
         min_value=2020,
-        max_value=2050,
+        max_value=2060,
         help_text="Start year for the simulation",
         widget=forms.NumberInput(attrs={"class": "form-control field-connected"}),
     )
 
     end_year = forms.IntegerField(
-        initial=2050,
+        initial=2060,
         min_value=2020,
-        max_value=2050,
+        max_value=2060,
         help_text="End year for the simulation",
         widget=forms.NumberInput(attrs={"class": "form-control field-connected"}),
     )

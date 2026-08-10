@@ -11,6 +11,12 @@ from steelo.domain.new_plant_opening import (
 )
 from steelo.domain.models import Subsidy, PlantGroup
 from steelo.devdata import Year
+from steelo.domain.calculate_costs import ReductantScoreSeries
+
+
+def _stub_series(location, tech, output_shares, start, end, **kwargs):
+    n = int(end) - int(start)
+    return ReductantScoreSeries(scores=[0.0] * n, picks=["scrap"] * n)
 
 
 class TestSelectLocationSubset:
@@ -238,8 +244,9 @@ class TestPrepareDataForBusinessOpportunity:
                     {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
                     0.7,  # utilization_rate
                     "scrap",  # reductant
+                    {"scrap": 1.0},  # output shares
                 )
-            return None, 0.0, None
+            return None, 0.0, None, {}
 
         return _get_bom
 
@@ -315,6 +322,9 @@ class TestPrepareDataForBusinessOpportunity:
             fopex_all_locs_techs=fopex_all_locs_techs,
             steel_plant_capacity=100.0,
             get_bom_from_avg_boms=mock_get_bom,
+            plant_lifetime=20,
+            construction_time=2,
+            reductant_score_series=_stub_series,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=0.03,
             capex_subsidies={},
@@ -416,6 +426,9 @@ class TestPrepareDataForBusinessOpportunity:
                 fopex_all_locs_techs=fopex_all_locs_techs,
                 steel_plant_capacity=100.0,
                 get_bom_from_avg_boms=mock_get_bom,
+                plant_lifetime=20,
+                construction_time=2,
+                reductant_score_series=_stub_series,
                 iso3_to_region_map=iso3_to_region_map,
                 global_risk_free_rate=0.03,
                 capex_subsidies={},
@@ -510,6 +523,9 @@ class TestPrepareDataForBusinessOpportunity:
             fopex_all_locs_techs=fopex_all_locs_techs,
             steel_plant_capacity=100.0,
             get_bom_from_avg_boms=mock_get_bom,
+            plant_lifetime=20,
+            construction_time=2,
+            reductant_score_series=_stub_series,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=0.03,
             capex_subsidies={"USA": {"EAF": [capex_subsidy]}},
@@ -627,6 +643,9 @@ class TestPrepareDataForBusinessOpportunity:
             fopex_all_locs_techs=fopex_all_locs_techs,
             steel_plant_capacity=100.0,
             get_bom_from_avg_boms=mock_get_bom,
+            plant_lifetime=20,
+            construction_time=2,
+            reductant_score_series=_stub_series,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=0.03,
             capex_subsidies={},
@@ -725,6 +744,9 @@ class TestPrepareDataForBusinessOpportunity:
                 fopex_all_locs_techs=fopex_all_locs_techs,
                 steel_plant_capacity=100.0,
                 get_bom_from_avg_boms=mock_get_bom,
+                plant_lifetime=20,
+                construction_time=2,
+                reductant_score_series=_stub_series,
                 iso3_to_region_map=iso3_to_region_map,
                 global_risk_free_rate=0.03,
                 capex_subsidies={},
@@ -746,8 +768,9 @@ class TestPrepareDataForBusinessOpportunity:
                     {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
                     0.7,
                     "scrap" if tech == "EAF" else "iron_ore",
+                    {"scrap": 1.0},
                 )
-            return None, 0.0, None
+            return None, 0.0, None, {}
 
         best_locations_subset = {
             "steel": [
@@ -922,6 +945,9 @@ class TestPrepareDataForBusinessOpportunity:
             fopex_all_locs_techs=fopex_all_locs_techs,
             steel_plant_capacity=100.0,
             get_bom_from_avg_boms=_get_bom_multi,
+            plant_lifetime=20,
+            construction_time=2,
+            reductant_score_series=_stub_series,
             iso3_to_region_map=iso3_to_region_map,
             global_risk_free_rate=0.03,
             capex_subsidies={},
@@ -1072,7 +1098,7 @@ class TestSelectTopOpportunitiesByNpv:
 
         top_opportunities = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1)
 
-        # Should still select based on relative values (shifts distribution to make non-negative weights)
+        # Rank weights are scale-free, so an all-negative pool still draws normally
         total_pairs = sum(len(techs) for site_techs in top_opportunities["steel"].values() for techs in [site_techs])
         assert total_pairs == 1
 
@@ -1161,6 +1187,7 @@ class TestIdentifyNewBusinessOpportunities4indi:
                 },
                 0.7,
                 "scrap",
+                {"scrap": 1.0},
             )
 
         return _get_bom
@@ -1191,6 +1218,7 @@ class TestGenerateNewPlant:
                         "railway_cost": 10.0,
                         "bom": {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
                         "energy_costs": {"electricity": 0.05, "hydrogen": 3500.0},  # USD/kWh, USD/t
+                        "output_shares": {"scrap": 1.0},
                     }
                 }
             }
@@ -1280,12 +1308,13 @@ class TestGenerateNewPlant:
         assert furnace.cost_of_debt == 0.05
         assert furnace.cost_of_debt_no_subsidy == 0.06
         assert furnace.railway_cost == 10.0
+        assert furnace.output_shares == {"scrap": 1.0}
         # chosen_reductant may be overridden by generate_energy_vopex_by_reductant()
         # Just verify it was set to some value
         assert furnace.chosen_reductant is not None
 
-    def test_uses_default_equity_share(self, plant_group, cost_data):
-        """Test that furnace group uses default equity_share when not passed via kwargs."""
+    def test_forwards_equity_share(self, plant_group, cost_data):
+        """Test that the config equity share reaches the furnace group (re-check parity)."""
         site_id = (40.0, -100.0, "USA")
 
         new_plant = plant_group.generate_new_plant(
@@ -1296,15 +1325,16 @@ class TestGenerateNewPlant:
             current_year=2025,
             existent_plant_ids=[],
             cost_data=cost_data,
-            equity_share=0.3,  # Used to calculate equity_needed, not passed to furnace
+            equity_share=0.3,
             steel_plant_capacity=1000.0,
             dynamic_feedstocks=[],
             plant_lifetime=30,
         )
 
         furnace = new_plant.furnace_groups[0]
-        # FurnaceGroup uses default equity_share of 0.2 (not the 0.3 passed to generate_new_plant)
-        assert furnace.equity_share == 0.2
+        # Creation values the NPV with the config equity share; the yearly re-check reads
+        # fg.equity_share, so the same value must be stored on the furnace group
+        assert furnace.equity_share == 0.3
 
     def test_does_not_add_plant_to_plant_group(self, plant_group, cost_data):
         """
@@ -1378,3 +1408,127 @@ class TestGenerateNewPlant:
         furnace = new_plant.furnace_groups[0]
         assert current_year in furnace.historical_npv_business_opportunities
         assert furnace.historical_npv_business_opportunities[current_year] == npv
+
+
+def _complete_cost_data_entry():
+    """A cost_data tech entry carrying exactly the validator's required fields."""
+    return {
+        "cost_of_equity": 0.08,
+        "cost_of_debt": 0.05,
+        "cost_of_debt_no_subsidy": 0.06,
+        "capex": 1000.0,
+        "capex_no_subsidy": 1200.0,
+        "fopex": 50.0,
+        "utilization_rate": 0.7,
+        "reductant": "scrap",
+        "all_opex_subsidies": [],
+        "score_series": [10.0, 10.0],
+        "railway_cost": 10.0,
+        "energy_costs": {"electricity": 0.05},
+        "output_costs": {"electricity": 0.05},
+        "no_subsidy_prices": {"electricity": 0.05},
+        "bom": {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
+        "carbon_cost_series": None,
+        "output_shares": {"scrap": 1.0},
+    }
+
+
+def test_validate_and_clean_cost_data_requires_output_shares():
+    """An entry missing output_shares is incomplete and gets dropped.
+
+    Notes:
+        The exact-set field check treats output_shares like every other required
+        field, so the only tech at the only site being incomplete empties the
+        cost data and triggers the no-valid-data ValueError.
+    """
+    from steelo.domain.new_plant_opening import validate_and_clean_cost_data
+
+    entry = _complete_cost_data_entry()
+    del entry["output_shares"]
+    cost_data = {"steel": {(40.0, -100.0, "USA"): {"EAF": entry}}}
+
+    with pytest.raises(ValueError, match="No valid cost data"):
+        validate_and_clean_cost_data(cost_data)
+
+
+def test_validate_and_clean_cost_data_rejects_non_dict_output_shares():
+    """A non-dict output_shares value raises a loud type error."""
+    from steelo.domain.new_plant_opening import validate_and_clean_cost_data
+
+    entry = _complete_cost_data_entry()
+    entry["output_shares"] = [1.0]
+    cost_data = {"steel": {(40.0, -100.0, "USA"): {"EAF": entry}}}
+
+    with pytest.raises(ValueError, match="output_shares must be dict"):
+        validate_and_clean_cost_data(cost_data)
+
+
+def test_validate_and_clean_cost_data_accepts_complete_entry():
+    """A complete entry (including output_shares) passes validation unchanged."""
+    from steelo.domain.new_plant_opening import validate_and_clean_cost_data
+
+    cost_data = {"steel": {(40.0, -100.0, "USA"): {"EAF": _complete_cost_data_entry()}}}
+
+    cleaned = validate_and_clean_cost_data(cost_data)
+
+    assert cleaned["steel"][(40.0, -100.0, "USA")]["EAF"]["output_shares"] == {"scrap": 1.0}
+
+
+def _npv_dict_from_values(values):
+    """One steel site per NPV value, each carrying a single EAF entry."""
+    return {
+        "steel": {(40.0 + i, -100.0 - i, "USA"): {"EAF": npv} for i, npv in enumerate(values)},
+    }
+
+
+def test_selection_rank_weights_decrease_with_npv_rank():
+    """The draw probabilities fall linearly with NPV rank over the trimmed pool.
+
+    Notes:
+        With six candidates and top_n=1 the pool is trimmed to the best 3, so
+        np.random.choice must be called over 3 indices with weights 3:2:1.
+    """
+    import numpy as np
+
+    npv_dict = _npv_dict_from_values([-600.0, -100.0, -400.0, -200.0, -500.0, -300.0])
+
+    with patch("numpy.random.choice") as mock_choice:
+        mock_choice.return_value = [0]
+        select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1)
+
+    (pool_size,), kwargs = mock_choice.call_args
+    assert pool_size == 3
+    assert list(kwargs["p"]) == pytest.approx(list(np.array([3.0, 2.0, 1.0]) / 6.0))
+
+
+def test_selection_never_draws_beyond_the_trimmed_pool():
+    """Candidates outside the top 3N by NPV can never be selected.
+
+    Notes:
+        Guards the fix for the shift-by-min lottery, which drew hopeless
+        deep-negative sites almost uniformly whenever the whole pool was negative.
+    """
+    import numpy as np
+
+    values = [-float(v) for v in range(1, 11)]  # -1 (best) .. -10 (worst)
+    npv_dict = _npv_dict_from_values(values)
+
+    np.random.seed(42)
+    for _ in range(25):
+        selected = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1)
+        (npv,) = [npv for techs in selected["steel"].values() for npv in techs.values()]
+        assert npv >= -3.0
+
+
+def test_selection_is_deterministic_under_a_seed():
+    """Re-seeding numpy's RNG reproduces the same draw."""
+    import numpy as np
+
+    npv_dict = _npv_dict_from_values([-600.0, -100.0, -400.0, -200.0, -500.0, -300.0])
+
+    np.random.seed(123)
+    first = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=2)
+    np.random.seed(123)
+    second = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=2)
+
+    assert first == second

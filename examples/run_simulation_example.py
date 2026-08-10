@@ -157,7 +157,7 @@ def run_from_data_preparation():
         output_dir=media_root / "model_runs" / "run_123",
         # Simulation parameters
         start_year=Year(2025),
-        end_year=Year(2050),
+        end_year=Year(2060),
         # Note: Use technology_settings to control technology availability
     )
 

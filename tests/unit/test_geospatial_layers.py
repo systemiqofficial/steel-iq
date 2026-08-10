@@ -724,3 +724,69 @@ class TestGeospatialLayers:
             # Check values are positive and in reasonable range
             assert power.min().item() > 0
             assert power.max().item() < 1.0  # Should be less than $1/kWh
+
+
+@pytest.fixture
+def baseload_lcoe_dir(tmp_path, sample_dataset):
+    """Write real p15 LCOE snapshots for 2045 and 2050 so year selection is exercised for real."""
+    lcoe_dir = tmp_path / "p15" / "GLOBAL"
+    lcoe_dir.mkdir(parents=True)
+    shape = (len(sample_dataset.lat), len(sample_dataset.lon))
+    for year, value in [(2045, 80.0), (2050, 60.0)]:
+        ds = xr.Dataset(
+            {"lcoe": (("lat", "lon"), np.full(shape, value))},
+            coords={"lat": sample_dataset.lat, "lon": sample_dataset.lon},
+        )
+        ds.to_netcdf(lcoe_dir / f"optimal_sol_GLOBAL_{year}_p15.nc")
+    return tmp_path
+
+
+def _lcoe_for_year(sample_dataset, geo_paths, target_year):
+    """Run add_baseload_power_price for one year and return the resulting LCOE grid (USD/kWh)."""
+    sample_dataset["feasibility_mask"] = (
+        ("lat", "lon"),
+        np.ones((len(sample_dataset.lat), len(sample_dataset.lon))),
+    )
+    with (
+        patch("steelo.adapters.geospatial.geospatial_layers.plot_screenshot"),
+        patch("steelo.adapters.geospatial.geospatial_layers.plot_value_histogram"),
+    ):
+        result = add_baseload_power_price(
+            sample_dataset,
+            baseload_coverage=0.85,
+            target_year=target_year,
+            geo_paths=geo_paths,
+        )
+    return result["lcoe"]
+
+
+@pytest.mark.parametrize("target_year", [2051, 2055, 2060])
+def test_baseload_lcoe_holds_last_snapshot_beyond_available_years(
+    sample_dataset, mock_geo_paths, baseload_lcoe_dir, target_year
+):
+    """Years past the last BOA snapshot reuse it unchanged instead of extrapolating to NaN."""
+    mock_geo_paths.baseload_power_sim_dir = baseload_lcoe_dir
+
+    prices = _lcoe_for_year(sample_dataset, mock_geo_paths, target_year)
+
+    assert not np.any(np.isnan(prices.values))
+    np.testing.assert_allclose(prices.values, 0.06)  # 2050 snapshot: 60 USD/MWh -> 0.06 USD/kWh
+
+
+def test_baseload_lcoe_holds_first_snapshot_before_available_years(sample_dataset, mock_geo_paths, baseload_lcoe_dir):
+    """Years before the first BOA snapshot reuse it rather than extrapolating backwards."""
+    mock_geo_paths.baseload_power_sim_dir = baseload_lcoe_dir
+
+    prices = _lcoe_for_year(sample_dataset, mock_geo_paths, 2025)
+
+    assert not np.any(np.isnan(prices.values))
+    np.testing.assert_allclose(prices.values, 0.08)  # 2045 snapshot: 80 USD/MWh -> 0.08 USD/kWh
+
+
+def test_baseload_lcoe_interpolates_between_available_years(sample_dataset, mock_geo_paths, baseload_lcoe_dir):
+    """In-range years still interpolate linearly between the two neighbouring snapshots."""
+    mock_geo_paths.baseload_power_sim_dir = baseload_lcoe_dir
+
+    prices = _lcoe_for_year(sample_dataset, mock_geo_paths, 2047)
+
+    np.testing.assert_allclose(prices.values, 0.072)  # 80 -> 60 USD/MWh, 2/5 of the way

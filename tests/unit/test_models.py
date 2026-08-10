@@ -42,7 +42,7 @@ def create_test_environment(tech_switches_csv=None):
 
     config = SimulationConfig(
         start_year=Year(2025),
-        end_year=Year(2050),
+        end_year=Year(2060),
         master_excel_path=Path(tempfile.gettempdir()) / "master.xlsx",
         output_dir=Path(tempfile.gettempdir()),
         technology_settings=default_tech_settings,
@@ -924,7 +924,7 @@ def _make_price_env(
 
     config = SimulationConfig(
         start_year=Year(2025),
-        end_year=Year(2050),
+        end_year=Year(2060),
         master_excel_path=Path(tempfile.gettempdir()) / "master.xlsx",
         output_dir=Path(tempfile.gettempdir()),
         technology_settings={

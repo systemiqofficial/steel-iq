@@ -58,14 +58,14 @@ def test_dri_h2_fields_in_form(client, test_user, sample_master_excel, ready_dat
         "master_input_excel": sample_master_excel.id,
         "data_preparation": ready_data_preparation.id,
         "start_year": 2025,
-        "end_year": 2050,
+        "end_year": 2060,
         # Technology settings in new format
         "tech_DRIH2_allowed": "on",  # Checkbox is "on" when checked
         "tech_DRIH2_from_year": 2030,
-        "tech_DRIH2_to_year": 2050,
+        "tech_DRIH2_to_year": 2060,
         "tech_DRIH2EAF_allowed": "on",
         "tech_DRIH2EAF_from_year": 2030,
-        "tech_DRIH2EAF_to_year": 2050,
+        "tech_DRIH2EAF_to_year": 2060,
         # Other required fields with defaults
         "plant_lifetime": 20,
         "global_risk_free_rate": 0.0209,
@@ -148,12 +148,12 @@ def test_dri_h2_fields_in_form(client, test_user, sample_master_excel, ready_dat
     assert "DRIH2" in tech_settings
     assert tech_settings["DRIH2"]["allowed"] is True
     assert tech_settings["DRIH2"]["from_year"] == 2030
-    assert tech_settings["DRIH2"]["to_year"] == 2050
+    assert tech_settings["DRIH2"]["to_year"] == 2060
 
     assert "DRIH2EAF" in tech_settings
     assert tech_settings["DRIH2EAF"]["allowed"] is True
     assert tech_settings["DRIH2EAF"]["from_year"] == 2030
-    assert tech_settings["DRIH2EAF"]["to_year"] == 2050
+    assert tech_settings["DRIH2EAF"]["to_year"] == 2060
 
 
 @pytest.mark.django_db
@@ -167,7 +167,7 @@ def test_dri_h2_fields_disabled(client, test_user, sample_master_excel, ready_da
         "master_input_excel": sample_master_excel.id,
         "data_preparation": ready_data_preparation.id,
         "start_year": 2025,
-        "end_year": 2050,
+        "end_year": 2060,
         # DRI H2 disabled - no checkbox means disabled
         # "tech_DRIH2_allowed": not included means unchecked/False
         "tech_DRIH2_from_year": 2025,  # Still need a value even when disabled
@@ -242,7 +242,7 @@ def test_dri_h2_partial_year_range(client, test_user, sample_master_excel, ready
         "master_input_excel": sample_master_excel.id,
         "data_preparation": ready_data_preparation.id,
         "start_year": 2025,
-        "end_year": 2050,
+        "end_year": 2060,
         # DRI H2 with only from_year
         "tech_DRIH2_allowed": "on",
         "tech_DRIH2_from_year": 2035,

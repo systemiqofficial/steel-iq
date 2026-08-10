@@ -441,12 +441,12 @@ def test_npv_flow_wrapper(mocker, technology, material_bill):  # FIXME: This tes
     total_investment = capex * capacity
     debt_repayment = calculate_debt_repayment(total_investment, equity_share=0.2, lifetime=20, cost_of_debt=0.05)
 
-    # Add construction time lag to match calculate_npv_full behavior
+    # Add construction time lag to match calculate_npv_full behavior:
+    # None masks the non-producing construction years, debt lags with zeros
     construction_time = 2
-    zeros = [0.0] * construction_time
-    debt_repayment_lagged = zeros + debt_repayment
+    debt_repayment_lagged = [0.0] * construction_time + debt_repayment
     Opex_list = [unit_fopex + unit_vopex] * len(debt_repayment)
-    Opex_list_lagged = zeros + Opex_list
+    Opex_list_lagged = [None] * construction_time + Opex_list
 
     gross_cash_flow = calculate_gross_cash_flow(
         total_opex=Opex_list_lagged, price_series=[price] * len(Opex_list_lagged), expected_production=float(80)
@@ -480,65 +480,6 @@ def test_npv_flow_wrapper(mocker, technology, material_bill):  # FIXME: This tes
 
     # Allow for small numerical differences due to calculation order
     assert pytest.approx(result, rel=0.1) == expected_npv  # 10% tolerance due to calculation differences
-
-
-def test_calculate_npv_full_secondary_adjustment_skips_construction_years():
-    """Regression test for the construction-year leakage bug in calculate_npv_full.
-
-    secondary_output_adjustment must only be applied to operational years. If applied to
-    the zero-prefix entries of the lagged OPEX list, it bypasses the zero-OPEX guard in
-    calculate_gross_cash_flow and produces phantom revenue from a plant that does not
-    yet exist.
-
-    Approach: run calculate_npv_full twice with identical inputs except for
-    secondary_output_adjustment (0.0 vs -50.0) and assert the NPV delta equals the
-    discounted contribution over operational years only. Under the bug, the delta would
-    additionally include two construction-year terms and the assertion would fail.
-    """
-    capex = 1000.0
-    capacity = 100.0
-    unit_total_opex = 200.0
-    expected_utilisation_rate = 0.8
-    price = 600.0
-    lifetime = 20
-    construction_time = 2
-    cost_of_debt = 0.05
-    cost_of_equity = 0.05
-    equity_share = 0.2
-    secondary_adjustment = -50.0  # negative => by-product revenue
-
-    unit_total_opex_list = [unit_total_opex] * lifetime
-    price_series = [price] * (lifetime + construction_time)
-
-    common_kwargs = dict(
-        capex=capex,
-        capacity=capacity,
-        unit_total_opex_list=unit_total_opex_list,
-        expected_utilisation_rate=expected_utilisation_rate,
-        price_series=price_series,
-        lifetime=lifetime,
-        construction_time=construction_time,
-        cost_of_debt=cost_of_debt,
-        cost_of_equity=cost_of_equity,
-        equity_share=equity_share,
-    )
-
-    npv_baseline = calculate_npv_full(**common_kwargs, secondary_output_adjustment=0.0)
-    npv_with_adjustment = calculate_npv_full(**common_kwargs, secondary_output_adjustment=secondary_adjustment)
-
-    # Per-year gross-cash-flow change for operational years:
-    # (price - (opex + secondary)) * production - (price - opex) * production = -secondary * production
-    # Cash-flow index i is discounted at period t = i + 1 in calculate_npv_costs, so operational
-    # years (i = construction_time .. construction_time + lifetime - 1) map to t = construction_time + 1
-    # .. construction_time + lifetime.
-    expected_production = expected_utilisation_rate * capacity
-    per_year_delta = -secondary_adjustment * expected_production
-    expected_delta = sum(
-        per_year_delta / ((1 + cost_of_equity) ** t)
-        for t in range(construction_time + 1, construction_time + lifetime + 1)
-    )
-
-    assert npv_with_adjustment - npv_baseline == pytest.approx(expected_delta)
 
 
 def test_stranding_asset_cost():
@@ -600,6 +541,73 @@ def test_stranding_asset_cost_loss_making_incumbent_is_negative():
     )
 
     assert cosa < 0
+
+
+def test_stranding_asset_cost_zero_when_construction_window_covers_remainder():
+    """A deferred switch keeps the incumbent running through construction, so a
+    remainder no longer than the construction window forgoes no margin at all.
+
+    Args/Returns/Notes:
+        Regression for the boundary anti-switch bias: COSA previously charged the
+        full remainder even though the incumbent keeps earning it.
+    """
+    cosa = stranding_asset_cost(
+        [200] * 20,
+        4,
+        [600] * 20,
+        expected_production=80.0,
+        cost_of_equity=0.05,
+        construction_time=4,
+    )
+
+    assert cosa == 0.0
+
+
+def test_stranding_asset_cost_charges_only_post_construction_years():
+    """With remaining=6 and construction=4, only years 5 and 6 are foregone, at
+    their original discount positions (t=5 and t=6)."""
+    margin = (600 - 200) * 80.0
+    expected = margin / 1.05**5 + margin / 1.05**6
+
+    cosa = stranding_asset_cost(
+        [200] * 20,
+        6,
+        [600] * 20,
+        expected_production=80.0,
+        cost_of_equity=0.05,
+        construction_time=4,
+    )
+
+    assert cosa == pytest.approx(expected)
+
+
+def test_gross_cash_flow_zero_opex_year_earns_full_revenue():
+    """A genuinely zero-cost operating year (e.g. 100% OPEX subsidy) earns full
+    revenue; only a None entry masks a non-producing construction year."""
+    gross = calculate_gross_cash_flow([0.0, None, 100.0], [600.0, 600.0, 600.0], expected_production=80.0)
+
+    assert gross[0] == 600.0 * 80.0
+    assert gross[1] == 0.0
+    assert gross[2] == (600.0 - 100.0) * 80.0
+
+
+def test_npv_full_counts_revenue_of_fully_subsidised_opex_years():
+    """calculate_npv_full no longer conflates 0.0 opex with the construction mask:
+    an all-zero opex list (fully subsidised) yields a strongly positive NPV."""
+    npv = calculate_npv_full(
+        capex=400.0,
+        capacity=100.0,
+        unit_total_opex_list=[0.0] * 20,
+        expected_utilisation_rate=0.8,
+        price_series=[600.0] * 24,
+        lifetime=20,
+        construction_time=4,
+        cost_of_debt=0.05,
+        cost_of_equity=0.08,
+        equity_share=0.2,
+    )
+
+    assert npv > 0
 
 
 @pytest.mark.skip(reason="derive_best_technology_switch function was removed")
