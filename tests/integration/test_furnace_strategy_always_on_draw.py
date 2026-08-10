@@ -138,7 +138,7 @@ def test_incumbent_winning_draw_at_boundary_renovates(mocker):
     command = evaluate(plant, plant_group)
 
     assert isinstance(command, RenovateFurnaceGroup)
-    assert command.capex_no_subsidy == REGION_CAPEX["EAF"]
+    assert command.capex_no_subsidy == REGION_CAPEX["EAF"] * RENOVATION_SHARE["EAF"]
     assert plant_group.balance == 1_000_000.0 - RENOVATE_COST
 
 

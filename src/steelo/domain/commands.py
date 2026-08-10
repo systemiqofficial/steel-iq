@@ -75,6 +75,7 @@ class AddFurnaceGroup(Command):
     capacity: float
     product: str
     chosen_reductant: str
+    equity_share: float
     equity_needed: float
     npv: float
     capex: float
