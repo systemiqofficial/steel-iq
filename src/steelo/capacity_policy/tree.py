@@ -51,6 +51,8 @@ class TreeEvaluator:
     Attributes:
         key_regions: geo_key → cluster name for the key provinces; also the
             mapping :meth:`CapacityPool.seed_from` needs at bootstrap.
+        config: The policy's scenario levers, as constructed with; read by the
+            decision-path adapter for switches the tree itself does not consult.
     """
 
     def __init__(
@@ -68,7 +70,7 @@ class TreeEvaluator:
         Raises:
             ValueError: If a key-province row carries no cluster name.
         """
-        self._config = config
+        self.config = config
         self.key_regions: dict[str, str] = {}
         for row in regions:
             if row.type == "key":
@@ -173,7 +175,7 @@ class TreeEvaluator:
                 self._classification(old_technology, old_reductant),
                 self._classification(new_technology, new_reductant),
                 self._overrides,
-                self._config.replacement_ratio,
+                self.config.replacement_ratio,
             )
             if resolved is None:
                 raise ValueError(
@@ -236,7 +238,7 @@ class TreeEvaluator:
                 "the policy cannot evaluate an increase without it"
             )
         build_mt = (
-            capacity_mt / self._config.emission_intense_penalty_divisor if row.is_emission_intense else capacity_mt
+            capacity_mt / self.config.emission_intense_penalty_divisor if row.is_emission_intense else capacity_mt
         )
         return WithdrawSpec(
             withdraw_mt=capacity_mt,
@@ -274,8 +276,8 @@ class TreeEvaluator:
         if not recorded:
             return False
         latest = max(recorded)
-        window = range(latest - self._config.utilization_window_years + 1, latest + 1)
+        window = range(latest - self.config.utilization_window_years + 1, latest + 1)
         return all(
-            y in historical_utilization and historical_utilization[y] <= self._config.min_utilization_for_renovation
+            y in historical_utilization and historical_utilization[y] <= self.config.min_utilization_for_renovation
             for y in window
         )

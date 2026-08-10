@@ -179,6 +179,7 @@ def test_second_switch_combines_existing_legacy_debt_once():
         technology_name="DRI",
         plant_lifetime=PLANT_LIFETIME,
         lag=0,
+        capacity=furnace_group.capacity,
         capex=NEW_CAPEX,
         capex_no_subsidy=NEW_CAPEX,
         cost_of_debt=0.05,

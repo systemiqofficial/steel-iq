@@ -65,6 +65,7 @@ def test_simulation_service_with_multiple_plant_furnaces(bus, multi_furnace_grou
             events.FurnaceGroupRenovated(
                 furnace_group_id="fg_group_3",
                 capacity=100,
+                old_capacity=100,
                 iso3="DEU",
                 geo_unit=None,
                 old_technology_name="EAF",

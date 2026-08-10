@@ -108,11 +108,14 @@ def tech_changed_event(old_capacity: float, capacity: float) -> events.FurnaceGr
     )
 
 
-def renovated_event() -> events.FurnaceGroupRenovated:
+def renovated_event(
+    old_capacity: float = 2.0, capacity: float = 2.0, iso3: str = "CHN"
+) -> events.FurnaceGroupRenovated:
     return events.FurnaceGroupRenovated(
         furnace_group_id="fg-1",
-        capacity=2.0,
-        iso3="CHN",
+        capacity=capacity,
+        old_capacity=old_capacity,
+        iso3=iso3,
         geo_unit="CN-HE",
         old_technology_name="BF",
         new_technology_name="BF",
@@ -194,14 +197,98 @@ class TestTechChangedDeposit:
         assert bound.total() == 0.0
 
 
-class TestRenovatedHandler:
-    def test_deposits_nothing_by_design(self, bound: CapacityPool):
-        """Whether renovation shrinks is D7a's open question; until then, observe only."""
-        cp_handlers.deposit_on_furnace_group_renovated(renovated_event(), uow=make_uow(), env=FakeEnv())  # type: ignore[arg-type]
+class TestRenovatedDeposit:
+    def test_positive_shrink_deposits_the_delta(self, bound: CapacityPool):
+        """A reline shrunk by the pre-NPV hook banks exactly old_capacity − capacity."""
+        cp_handlers.deposit_on_furnace_group_renovated(
+            renovated_event(old_capacity=3.0, capacity=2.0),
+            uow=make_uow(),  # type: ignore[arg-type]
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
+        (credit,) = bound.snapshot()
+        assert credit.amount_mt == pytest.approx(1.0)
+        assert credit.region_tag == "Jing-Jin-Ji"
+        assert credit.vintage_year == 2031
+
+    @pytest.mark.parametrize("old_capacity, capacity", [(2.0, 2.0), (2.0, 3.0)])
+    def test_non_positive_delta_deposits_nothing(self, bound: CapacityPool, old_capacity, capacity):
+        """An unshrunk renovation — the norm under the default reline flag — banks nothing."""
+        cp_handlers.deposit_on_furnace_group_renovated(
+            renovated_event(old_capacity=old_capacity, capacity=capacity),
+            uow=make_uow(),  # type: ignore[arg-type]
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
         assert bound.total() == 0.0
 
-    def test_still_logs_the_reductant(self, bound: CapacityPool, caplog):
+    def test_shrunk_deposit_logs_the_reductant(self, bound: CapacityPool, caplog):
         with caplog.at_level(logging.INFO, logger="steelo.capacity_policy.handlers"):
-            cp_handlers.deposit_on_furnace_group_renovated(renovated_event(), uow=make_uow(), env=FakeEnv())  # type: ignore[arg-type]
-        assert "deposit=none" in caplog.text
+            cp_handlers.deposit_on_furnace_group_renovated(
+                renovated_event(old_capacity=3.0, capacity=2.0),
+                uow=make_uow(),  # type: ignore[arg-type]
+                env=FakeEnv(),  # type: ignore[arg-type]
+            )
+        assert "event=renovated" in caplog.text
         assert "chosen_reductant=Coke+PCI" in caplog.text
+
+
+class TestReplaceCapacityHook:
+    def test_unbound_accessor_returns_none(self):
+        """Unbound — every real run until D8 — the decision path receives None."""
+        assert cp_handlers.replace_capacity_hook() is None
+
+    def test_bound_accessor_returns_a_callable(self, bound: CapacityPool):
+        assert callable(cp_handlers.replace_capacity_hook())
+
+    def test_non_chinese_plant_passes_through_untouched(self, bound: CapacityPool):
+        """Foreign plants keep their capacity without reaching the evaluator: unknown
+        technology names would raise if the classification lookup ran."""
+        hook = cp_handlers.replace_capacity_hook()
+        assert hook is not None
+        permitted = hook(
+            iso3="DEU",
+            geo_unit=None,
+            old_technology="not-a-technology",
+            old_reductant=None,
+            new_technology="also-not-one",
+            new_reductant=None,
+            capacity=3.0,
+            historical_utilization=None,
+            year=2025,
+        )
+        assert permitted == 3.0
+
+    def test_same_technology_passes_through_under_the_default_reline_flag(self, bound: CapacityPool):
+        """A reline is neutral by default: no shrink and no utilisation gate."""
+        hook = cp_handlers.replace_capacity_hook()
+        assert hook is not None
+        permitted = hook(
+            iso3="CHN",
+            geo_unit="CN-GD",
+            old_technology="BF",
+            old_reductant="Coke+PCI",
+            new_technology="BF",
+            new_reductant="Coke+PCI",
+            capacity=3.0,
+            historical_utilization={2024: 0.1, 2025: 0.1},
+            year=2025,
+        )
+        assert permitted == 3.0
+
+    def test_same_technology_shrinks_when_reline_counts_as_replace(self, pool: CapacityPool):
+        """With the flag on, a BF→BF reline of an intense group derives 1.5:1 from the flags."""
+        evaluator = TreeEvaluator(REGIONS, TECHNOLOGIES, CapacityPolicyConfig(reline_counts_as_replace=True))
+        cp_handlers.bind_capacity_policy(evaluator, pool)
+        hook = cp_handlers.replace_capacity_hook()
+        assert hook is not None
+        permitted = hook(
+            iso3="CHN",
+            geo_unit="CN-GD",
+            old_technology="BF",
+            old_reductant="Coke+PCI",
+            new_technology="BF",
+            new_reductant="Coke+PCI",
+            capacity=3.0,
+            historical_utilization=None,
+            year=2025,
+        )
+        assert permitted == pytest.approx(2.0)

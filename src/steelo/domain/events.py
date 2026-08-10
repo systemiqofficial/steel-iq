@@ -48,6 +48,7 @@ class FurnaceGroupRenovated(Event):
     geo_unit: str | None
     old_technology_name: str
     new_technology_name: str
+    old_capacity: float
     owner_id: str
     product: str
 

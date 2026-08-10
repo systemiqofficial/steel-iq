@@ -24,6 +24,7 @@ class RenovateFurnaceGroup(Command):
 
     plant_id: str
     furnace_group_id: str
+    capacity: float
     capex: float
     capex_no_subsidy: float
     cost_of_debt: float

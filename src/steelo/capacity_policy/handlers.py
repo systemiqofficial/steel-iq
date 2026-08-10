@@ -1,10 +1,13 @@
-"""Deposit handlers wiring furnace-group lifecycle events into the capacity pool.
+"""Deposit handlers and decision-path hook for the capacity pool.
 
-Registered on ``EVENT_HANDLERS`` unconditionally but inert until
-:func:`bind_capacity_policy` installs an evaluator and pool (bootstrapping,
-D8): until then — and whenever ``config.capacity_policy.enabled`` is False,
-since nothing binds a disabled policy — every handler returns immediately and
-behaviour is byte-identical. Once bound, only Chinese events act.
+The event handlers are registered on ``EVENT_HANDLERS`` unconditionally but
+inert until :func:`bind_capacity_policy` installs an evaluator and pool
+(bootstrapping, D8): until then — and whenever
+``config.capacity_policy.enabled`` is False, since nothing binds a disabled
+policy — every handler returns immediately and behaviour is byte-identical.
+Once bound, only Chinese events act. The same binding drives
+:func:`replace_capacity_hook`, the pre-NPV ② REPLACE gate the plant agent
+threads into ``Plant.evaluate_furnace_group_strategy`` every evaluation.
 
 Each deposit logs the furnace group's ``chosen_reductant`` so, paired with the
 evaluation-side log in :mod:`.tree`, reductant drift between approval and
@@ -13,6 +16,7 @@ operation is measurable from any run.
 
 import logging
 from dataclasses import dataclass
+from typing import Callable
 
 from steelo.domain import events
 from steelo.domain.models import Environment, FurnaceGroup, compose_geo_key
@@ -43,6 +47,59 @@ def unbind_capacity_policy() -> None:
     """Deactivate the deposit handlers; they become no-ops again."""
     global _policy
     _policy = None
+
+
+def replace_capacity_hook() -> Callable[..., float | None] | None:
+    """Return the live ② REPLACE pre-NPV callable, or None while unbound.
+
+    The plant agent threads this value into
+    ``Plant.evaluate_furnace_group_strategy`` on every evaluation, so binding
+    at bootstrap (D8) activates the gate without reopening the domain module
+    or the plant agent. Unbound — the default, and always the case while
+    ``config.capacity_policy.enabled`` is False — the decision path receives
+    None and behaves byte-identically.
+    """
+    policy = _policy
+    if policy is None:
+        return None
+
+    def permitted_replace_capacity(
+        *,
+        iso3: str,
+        geo_unit: str | None,
+        old_technology: str,
+        old_reductant: str | None,
+        new_technology: str,
+        new_reductant: str | None,
+        capacity: float,
+        historical_utilization: dict[int, float] | None,
+        year: int,
+    ) -> float | None:
+        """Resolve one candidate transition's permitted capacity — branch ② REPLACE.
+
+        Adapts the decision path's plain values onto the evaluator; all policy
+        applicability lives here rather than in the domain module. A
+        non-Chinese plant passes through at its own capacity without reaching
+        the evaluator, as does a same-technology candidate — the renovation
+        option — unless ``reline_counts_as_replace`` makes a reline a REPLACE.
+        None means the utilisation gate blocks the replacement decision.
+        """
+        if iso3 != "CHN":
+            return capacity
+        if new_technology == old_technology and not policy.evaluator.config.reline_counts_as_replace:
+            return capacity
+        return policy.evaluator.permitted_capacity(
+            old_technology=old_technology,
+            old_reductant=old_reductant or None,
+            new_technology=new_technology,
+            new_reductant=new_reductant or None,
+            capacity_mt=capacity,
+            geo_key=compose_geo_key(iso3, geo_unit),
+            historical_utilization=historical_utilization,
+            year=year,
+        )
+
+    return permitted_replace_capacity
 
 
 def _get_furnace_group(uow: UnitOfWork, furnace_group_id: str) -> FurnaceGroup:
@@ -133,29 +190,41 @@ def deposit_on_furnace_group_tech_changed(
 
 
 def deposit_on_furnace_group_renovated(event: events.FurnaceGroupRenovated, uow: UnitOfWork, env: Environment) -> None:
-    """Observe a renovation; deliberately deposits nothing.
+    """Branch ② REPLACE via renovation: bank capacity a reline shrank away.
 
-    Whether the renovation path shrinks too — a same-technology renovation of
-    an emission-intense group reads as a penalised REPLACE — is an open
-    question pinned to D7a. Until it is decided the event carries no
-    ``old_capacity``, so there is nothing to deposit; this handler exists so
-    the wiring and the reductant instrumentation are already in place.
+    A renovation shrinks only when the pre-NPV hook treats a reline as a
+    replacement (``reline_counts_as_replace``); under the default flag the
+    event always carries ``old_capacity == capacity`` and this handler stays
+    silent, exactly like an unshrunk tech change.
     """
     policy = _policy
     if policy is None:
         return
     if event.iso3 != "CHN":
         return
+    freed = event.old_capacity - event.capacity
+    if freed <= 0:
+        return
     with uow:
         geo_key = compose_geo_key(event.iso3, event.geo_unit)
+        credit = policy.evaluator.on_close(
+            geo_key=geo_key,
+            capacity_mt=freed,
+            owner_id=event.owner_id,
+            product=event.product,
+            year=int(env.year),
+        )
+        policy.pool.deposit(credit)
         logger.info(
-            "[CAPACITY POOL] event=renovated deposit=none fg=%s geo_key=%s tag=%s "
-            "product=%s owner=%s technology=%s chosen_reductant=%s",
+            "[CAPACITY POOL] event=renovated deposit_mt=%.3f fg=%s geo_key=%s tag=%s "
+            "product=%s owner=%s vintage=%d technology=%s chosen_reductant=%s",
+            credit.amount_mt,
             event.furnace_group_id,
             geo_key,
-            policy.evaluator.key_regions.get(geo_key),
-            event.product,
-            event.owner_id,
+            credit.region_tag,
+            credit.product,
+            credit.owner_id,
+            credit.vintage_year,
             event.new_technology_name,
             _get_furnace_group(uow, event.furnace_group_id).chosen_reductant,
         )

@@ -72,6 +72,7 @@ def test_furnace_group_renovated_event_carries_plant_context():
     plant.renovate_furnace_group(
         furnace_group_id="fg1",
         plant_lifetime=20,
+        capacity=1000,
         capex=300.0,
         capex_no_subsidy=300.0,
         cost_of_debt=0.05,
@@ -81,6 +82,7 @@ def test_furnace_group_renovated_event_carries_plant_context():
     event = plant.events[-1]
     assert isinstance(event, events.FurnaceGroupRenovated)
     assert event.capacity == 1000
+    assert event.old_capacity == 1000
     assert event.iso3 == "CHN"
     assert event.geo_unit == "CN-HE"
     assert event.old_technology_name == "BF"
@@ -97,6 +99,7 @@ def test_furnace_group_tech_changed_event_records_old_technology():
         technology_name="EAF",
         plant_lifetime=20,
         lag=0,
+        capacity=1000,
         capex=400.0,
         capex_no_subsidy=400.0,
         cost_of_debt=0.05,
