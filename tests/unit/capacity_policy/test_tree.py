@@ -1,0 +1,274 @@
+"""Tests for the decision-tree evaluator: tagging, ratios, utilisation gate, penalties."""
+
+import pytest
+
+from steelo.capacity_policy import CapacityPolicyConfig, TreeEvaluator
+from steelo.capacity_policy.inputs import RegionRow, TechnologyRow
+
+
+def region(geo_key: str, region_name: str | None = None, type: str | None = None) -> RegionRow:
+    """Build a province row; key rows carry their cluster as region_name."""
+    return RegionRow(geo_key=geo_key, region_name=region_name, type=type, from_year=None)
+
+
+def classification(
+    technology: str,
+    reductant: str | None = None,
+    is_emission_intense: bool | None = False,
+    is_deep_abatement: bool | None = False,
+    product: str = "iron",
+) -> TechnologyRow:
+    """Build a classification row (switching_to blank)."""
+    return TechnologyRow(
+        technology=technology,
+        product=product,
+        reductant=reductant,
+        is_emission_intense=is_emission_intense,
+        is_deep_abatement=is_deep_abatement,
+        switching_to=None,
+        swap_ratio=None,
+    )
+
+
+def override(technology: str, switching_to: str, swap_ratio: float, reductant: str | None = None) -> TechnologyRow:
+    """Build an override row (flags blank, ratio set)."""
+    return TechnologyRow(
+        technology=technology,
+        product=None,
+        reductant=reductant,
+        is_emission_intense=None,
+        is_deep_abatement=None,
+        switching_to=switching_to,
+        swap_ratio=swap_ratio,
+    )
+
+
+REGIONS = [
+    region("CHN:CN-HE", "Jing-Jin-Ji", "key"),
+    region("CHN:CN-TJ", "Jing-Jin-Ji", "key"),
+    region("CHN:CN-SH", "Yangtze River Delta", "key"),
+    region("CHN:CN-QH", "Qinghai", "exempt"),
+    region("CHN:CN-GD", "Guangdong"),
+]
+
+TECHNOLOGIES = [
+    classification("BF", is_emission_intense=True, is_deep_abatement=False),
+    classification("BOF", is_emission_intense=True, is_deep_abatement=False, product="steel"),
+    classification("EAF", is_emission_intense=False, is_deep_abatement=True, product="steel"),
+    classification("BF+CCS", is_emission_intense=False, is_deep_abatement=True),
+    # DRI is reductant-split: a flagless blank-reductant delegation row plus per-reductant rows.
+    classification("DRI", reductant=None, is_emission_intense=None, is_deep_abatement=None),
+    classification("DRI", reductant="Coal", is_emission_intense=True, is_deep_abatement=False),
+    classification("DRI", reductant="Hydrogen", is_emission_intense=False, is_deep_abatement=True),
+    classification("BF_CHARCOAL", is_emission_intense=None, is_deep_abatement=None),
+]
+
+
+def make_evaluator(
+    technologies: list[TechnologyRow] | None = None,
+    config: CapacityPolicyConfig | None = None,
+) -> TreeEvaluator:
+    return TreeEvaluator(
+        REGIONS, TECHNOLOGIES if technologies is None else technologies, config or CapacityPolicyConfig()
+    )
+
+
+def permitted(
+    evaluator: TreeEvaluator,
+    old_technology: str = "BF",
+    old_reductant: str | None = None,
+    new_technology: str = "BF+CCS",
+    new_reductant: str | None = None,
+    capacity_mt: float = 3.0,
+    geo_key: str = "CHN:CN-GD",
+    historical_utilization: dict[int, float] | None = None,
+    year: int = 2030,
+) -> float | None:
+    """Call permitted_capacity with defaults suited to single-branch tests."""
+    return evaluator.permitted_capacity(
+        old_technology=old_technology,
+        old_reductant=old_reductant,
+        new_technology=new_technology,
+        new_reductant=new_reductant,
+        capacity_mt=capacity_mt,
+        geo_key=geo_key,
+        historical_utilization=historical_utilization,
+        year=year,
+    )
+
+
+class TestOnClose:
+    def test_key_province_credit_carries_cluster_tag(self):
+        """A closure in a key province deposits a credit tagged with the cluster name."""
+        credit = make_evaluator().on_close(
+            geo_key="CHN:CN-HE", capacity_mt=2.0, owner_id="E1", product="iron", year=2030
+        )
+        assert credit.region_tag == "Jing-Jin-Ji"
+        assert credit.amount_mt == 2.0
+        assert credit.owner_id == "E1"
+        assert credit.product == "iron"
+        assert credit.vintage_year == 2030
+
+    def test_cluster_members_share_the_tag(self):
+        """Member provinces of one cluster produce identically tagged credits."""
+        evaluator = make_evaluator()
+        hebei = evaluator.on_close(geo_key="CHN:CN-HE", capacity_mt=1.0, owner_id=None, product="iron", year=2030)
+        tianjin = evaluator.on_close(geo_key="CHN:CN-TJ", capacity_mt=1.0, owner_id=None, product="iron", year=2030)
+        assert hebei.region_tag == tianjin.region_tag == "Jing-Jin-Ji"
+
+    @pytest.mark.parametrize("geo_key", ["CHN:CN-GD", "CHN:CN-QH", "CHN"])
+    def test_non_key_locations_deposit_untagged(self, geo_key):
+        """Non-key and exempt provinces, and a bare country key, deposit untagged credits."""
+        credit = make_evaluator().on_close(geo_key=geo_key, capacity_mt=1.0, owner_id=None, product="steel", year=2030)
+        assert credit.region_tag is None
+
+    def test_key_row_without_cluster_name_rejected(self):
+        """A key province with no cluster name cannot tag anything and fails at construction."""
+        with pytest.raises(ValueError, match="no cluster name"):
+            TreeEvaluator([region("CHN:CN-HE", None, "key")], TECHNOLOGIES, CapacityPolicyConfig())
+
+
+class TestPermittedCapacityRatio:
+    def test_intense_to_non_deep_is_penalised(self):
+        """Replacing an emission-intense route with a non-deep one shrinks by the default ratio."""
+        assert permitted(make_evaluator(), new_technology="BOF") == pytest.approx(2.0)
+
+    def test_non_intense_old_route_is_one_to_one(self):
+        """Replacing a route that is not emission-intense is 1:1."""
+        assert permitted(make_evaluator(), old_technology="EAF", new_technology="BOF") == pytest.approx(3.0)
+
+    def test_deep_abatement_target_is_one_to_one(self):
+        """A deep-abatement target is 1:1 even from an emission-intense route."""
+        assert permitted(make_evaluator(), new_technology="BF+CCS") == pytest.approx(3.0)
+
+    def test_exempt_province_is_one_to_one_regardless(self):
+        """In an exempt province even intense-to-non-deep replacement is 1:1."""
+        assert permitted(make_evaluator(), new_technology="BOF", geo_key="CHN:CN-QH") == pytest.approx(3.0)
+
+    def test_wildcard_override_wins_over_derivation(self):
+        """A * -> EAF override pins the ratio the flags would not derive."""
+        rows = TECHNOLOGIES + [override("*", "EAF", 1.0)]
+        evaluator = make_evaluator(technologies=rows)
+        assert permitted(evaluator, new_technology="EAF") == pytest.approx(3.0)
+
+    def test_reductant_specific_classification_resolves(self):
+        """The reductant decides the classification of a reductant-split technology."""
+        evaluator = make_evaluator()
+        assert permitted(evaluator, new_technology="DRI", new_reductant="Hydrogen") == pytest.approx(3.0)
+        assert permitted(evaluator, new_technology="DRI", new_reductant="Coal") == pytest.approx(2.0)
+
+    def test_configured_ratio_is_used(self):
+        """The penalised ratio comes from the config, not a constant."""
+        evaluator = make_evaluator(config=CapacityPolicyConfig(replacement_ratio=2.0))
+        assert permitted(evaluator, new_technology="BOF") == pytest.approx(1.5)
+
+    def test_unauthored_flags_raise(self):
+        """An unauthored classification refuses rather than defaulting to 1:1."""
+        with pytest.raises(ValueError, match="Swap ratio undecided"):
+            permitted(make_evaluator(), old_technology="BF_CHARCOAL", new_technology="BOF")
+
+    def test_unknown_technology_raises(self):
+        """A route with no classification row at all refuses."""
+        with pytest.raises(ValueError, match="No classification row"):
+            permitted(make_evaluator(), old_technology="MOE")
+
+    def test_split_technology_without_authored_reductant_raises(self):
+        """A reductant-split technology has no blanket row to fall back to."""
+        with pytest.raises(ValueError, match="No classification row"):
+            permitted(make_evaluator(), new_technology="DRI", new_reductant="Natural gas")
+
+
+class TestUtilizationGate:
+    def test_full_window_at_threshold_blocks(self):
+        """Utilisation exactly at the floor for the whole window blocks."""
+        history = {2028: 0.25, 2029: 0.25}
+        assert permitted(make_evaluator(), historical_utilization=history) is None
+
+    def test_low_utilization_window_blocks(self):
+        """The spec's [0.20, 0.22] case blocks the replacement."""
+        history = {2028: 0.20, 2029: 0.22}
+        assert permitted(make_evaluator(), historical_utilization=history) is None
+
+    def test_window_minus_one_low_year_does_not_block(self):
+        """One low recorded year cannot establish a two-year condition."""
+        history = {2029: 0.10}
+        assert permitted(make_evaluator(), historical_utilization=history) is not None
+
+    def test_one_year_above_threshold_does_not_block(self):
+        """A single year above the floor inside the window breaks the streak."""
+        history = {2028: 0.20, 2029: 0.26}
+        assert permitted(make_evaluator(), historical_utilization=history) is not None
+
+    def test_gap_in_recorded_years_does_not_block(self):
+        """Non-consecutive low years cannot establish the condition."""
+        history = {2027: 0.20, 2029: 0.20}
+        assert permitted(make_evaluator(), historical_utilization=history, year=2030) is not None
+        # Fully recorded control: the same rates on consecutive years do block.
+        assert permitted(make_evaluator(), historical_utilization={2028: 0.20, 2029: 0.20}, year=2030) is None
+
+    @pytest.mark.parametrize("history", [None, {}])
+    def test_missing_history_does_not_block(self, history):
+        """No recorded history means the gate cannot bind."""
+        assert permitted(make_evaluator(), historical_utilization=history) is not None
+
+    def test_window_anchors_at_latest_recorded_year(self):
+        """The window ends at the latest recorded year at or before the decision year."""
+        history = {2027: 0.20, 2028: 0.20}
+        assert permitted(make_evaluator(), historical_utilization=history, year=2030) is None
+
+    def test_future_years_are_ignored(self):
+        """Recorded years after the decision year do not participate."""
+        history = {2028: 0.20, 2029: 0.20, 2031: 0.90}
+        assert permitted(make_evaluator(), historical_utilization=history, year=2029) is None
+
+    def test_wider_window_needs_more_low_years(self):
+        """A three-year window is not established by two low years."""
+        evaluator = make_evaluator(config=CapacityPolicyConfig(utilization_window_years=3))
+        assert permitted(evaluator, historical_utilization={2028: 0.20, 2029: 0.20}) is not None
+        assert permitted(evaluator, historical_utilization={2027: 0.20, 2028: 0.20, 2029: 0.20}) is None
+
+
+class TestOnIncrease:
+    def test_key_province_restricts_to_cluster(self):
+        """A build in a key province may only spend that cluster's credits."""
+        spec = make_evaluator().on_increase(
+            geo_key="CHN:CN-SH", product="steel", capacity_mt=2.0, technology="EAF", reductant=None
+        )
+        assert spec.region_tag == "Yangtze River Delta"
+        assert spec.product == "steel"
+
+    def test_non_key_province_draws_from_any_credit(self):
+        """Elsewhere the applicable pool is unrestricted by tag."""
+        spec = make_evaluator().on_increase(
+            geo_key="CHN:CN-GD", product="steel", capacity_mt=2.0, technology="EAF", reductant=None
+        )
+        assert spec.region_tag is None
+
+    def test_clean_build_withdraws_and_builds_the_planned_amount(self):
+        spec = make_evaluator().on_increase(
+            geo_key="CHN:CN-GD", product="steel", capacity_mt=2.0, technology="EAF", reductant=None
+        )
+        assert spec.withdraw_mt == 2.0
+        assert spec.build_mt == 2.0
+
+    def test_emission_intense_build_withdraws_full_but_builds_divided(self):
+        """The penalty removes the originally planned freed capacity: withdraw 3, build 2."""
+        spec = make_evaluator().on_increase(
+            geo_key="CHN:CN-GD", product="iron", capacity_mt=3.0, technology="BF", reductant=None
+        )
+        assert spec.withdraw_mt == 3.0
+        assert spec.build_mt == pytest.approx(2.0)
+
+    def test_penalty_divisor_comes_from_config(self):
+        evaluator = make_evaluator(config=CapacityPolicyConfig(emission_intense_penalty_divisor=3.0))
+        spec = evaluator.on_increase(
+            geo_key="CHN:CN-GD", product="iron", capacity_mt=3.0, technology="BF", reductant=None
+        )
+        assert spec.build_mt == pytest.approx(1.0)
+
+    def test_unauthored_intense_flag_raises(self):
+        """An increase cannot be evaluated against an unauthored emission-intense flag."""
+        with pytest.raises(ValueError, match="is_emission_intense unauthored"):
+            make_evaluator().on_increase(
+                geo_key="CHN:CN-GD", product="iron", capacity_mt=1.0, technology="BF_CHARCOAL", reductant=None
+            )
