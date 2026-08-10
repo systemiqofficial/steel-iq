@@ -2452,6 +2452,7 @@ class FurnaceGroup:
             market_price_series=market_price_series[self.technology.product],
             expected_production=self.production,
             cost_of_equity=incumbent_cost_of_equity,
+            construction_time=construction_time,
         )
 
         logger.debug(f"[OPTIMAL TECH] COSA (foregone operating margin): ${cosa:,.0f}")
@@ -2491,13 +2492,16 @@ class FurnaceGroup:
                 logger.info("[OPTIMAL TECH] SKIPPING BOF - Plant has no smelter furnace (required for BOF)")
                 continue
 
+            # current tech renovates in place and keeps producing, so its NPV carries no construction lag
+            tech_construction_time = 0 if tech == self.technology.name else construction_time
+
             # Collect all active subsidies for this technology
             capex_subsidies = filter_subsidies_for_year(tech_capex_subsidies.get(tech, []), current_year)
             debt_subsidies = filter_subsidies_for_year(tech_debt_subsidies.get(tech, []), current_year)
             opex_subsidies = collect_active_subsidies_over_period(
                 tech_opex_subsidies.get(tech, []),
-                start_year=Year(current_year + construction_time),
-                end_year=Year(current_year + construction_time + plant_lifetime),
+                start_year=Year(current_year + tech_construction_time),
+                end_year=Year(current_year + tech_construction_time + plant_lifetime),
             )
 
             # Apply subsidies to capex
@@ -2617,8 +2621,8 @@ class FurnaceGroup:
 
                 # Year-wise reductant-optimised score over the operating window; the NPV's
                 # energy, carbon and by-product terms all live inside this series
-                operating_start = Year(current_year + construction_time)
-                operating_end = Year(current_year + construction_time + plant_lifetime)
+                operating_start = Year(current_year + tech_construction_time)
+                operating_end = Year(current_year + tech_construction_time + plant_lifetime)
                 score_series = score_series_for_tech(tech, output_shares, operating_start, operating_end)
                 committed_reductant = score_series.picks[0] if score_series.picks else ""
                 if tech != self.technology.name and committed_reductant != reductant:
@@ -2687,7 +2691,7 @@ class FurnaceGroup:
                     expected_utilisation_rate=util_rate,
                     price_series=product_price_series,
                     lifetime=plant_lifetime,
-                    construction_time=construction_time,
+                    construction_time=tech_construction_time,
                     cost_of_debt=cost_of_debt,
                     cost_of_equity=cost_of_equity,
                     equity_share=self.equity_share,
@@ -5358,6 +5362,11 @@ class PlantGroup:
                         f"No greenfield capex data for {tech} in region {iso3_to_region_map[plant.location.iso3]}"
                     )
 
+                # Apply CAPEX subsidies before the affordability pre-filter
+                all_capex_subsidies = collect_subsidies_for_geo(capex_subsidies, plant.location.geo_key).get(tech, [])
+                selected_capex_subsidies = cc.filter_subsidies_for_year(all_capex_subsidies, current_year)
+                capex = cc.calculate_capex_with_subsidies(capex, selected_capex_subsidies)
+
                 # Skip if the group treasury cannot cover equity for this (plant, tech)
                 num_pairs_evaluated += 1
                 equity_needed_for_tech = capex * capacity * equity_share
@@ -5470,13 +5479,7 @@ class PlantGroup:
                     collect_active_subsidies_over_period,
                 )
 
-                # CAPEX subsidies (country-wide rows plus the plant's province rows, if any)
-                all_capex_subsidies = collect_subsidies_for_geo(capex_subsidies, plant.location.geo_key).get(tech, [])
-                selected_capex_subsidies = filter_subsidies_for_year(all_capex_subsidies, current_year)
-                original_capex = capex
-                capex = cc.calculate_capex_with_subsidies(original_capex, selected_capex_subsidies)
-
-                # Debt subsidies
+                # Debt subsidies (CAPEX subsidies were already applied above the affordability pre-filter)
                 all_debt_subsidies = collect_subsidies_for_geo(debt_subsidies, plant.location.geo_key).get(tech, [])
                 selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, current_year)
                 cost_of_debt = cc.calculate_debt_with_subsidies(
