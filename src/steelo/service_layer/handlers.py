@@ -748,6 +748,7 @@ def update_status_of_furnace_group(cmd: commands.UpdateFurnaceGroupStatus, uow: 
                     need = env.get_co2_need(fg.technology, fg.capacity, fg.chosen_reductant)
                     if need > 0.0:
                         env.co2_storage_reserved[iso3] = env.co2_storage_reserved.get(iso3, 0.0) - d * need
+                    capacity_policy_handlers.note_greenfield_discard(fg, iso3)
         uow.commit()
 
 
@@ -811,7 +812,11 @@ EVENT_HANDLERS: dict[type[events.Event], list[Callable]] = {
     events.FurnaceGroupClosed: [update_cost_curve, capacity_policy_handlers.deposit_on_furnace_group_closed],
     events.FurnaceGroupTechChanged: [update_cost_curve, capacity_policy_handlers.deposit_on_furnace_group_tech_changed],
     events.FurnaceGroupRenovated: [update_cost_curve, capacity_policy_handlers.deposit_on_furnace_group_renovated],
-    events.FurnaceGroupAdded: [update_future_cost_curve, update_capacity_buildout],
+    events.FurnaceGroupAdded: [
+        update_future_cost_curve,
+        update_capacity_buildout,
+        capacity_policy_handlers.attribute_greenfield_on_furnace_group_added,
+    ],
     events.SinteringCapacityAdded: [update_future_cost_curve],
     events.SteelAllocationsCalculated: [update_furnace_utilization_rates, update_cost_curve, update_future_cost_curve],
     events.IterationOver: [finalise_iteration, update_cost_curve],

@@ -13,7 +13,11 @@ from steelo.adapters.geospatial.geospatial_statistics import (
     export_overbuild_factor_statistics_by_country,
 )
 from steelo.adapters.repositories.in_memory_repository import InMemoryRepository
-from steelo.capacity_policy.handlers import expansion_capacity_hook, replace_capacity_hook
+from steelo.capacity_policy.handlers import (
+    expansion_capacity_hook,
+    greenfield_capacity_hook,
+    replace_capacity_hook,
+)
 from steelo.domain import Year
 from steelo.domain.commands import (
     AddFurnaceGroup,
@@ -254,6 +258,7 @@ class GeospatialModel:
                     get_co2_need=bus.env.get_co2_need,
                     co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
                     reserved_discount_factor=bus.env.config.co2_storage_reserved_discount_factor,
+                    permitted_greenfield_capacity=greenfield_capacity_hook(),
                 )
             )
         if status_commands:

@@ -130,7 +130,7 @@ def make_uow() -> FakeUoW:
 
 class TestInertness:
     def test_registered_on_the_event_bus(self):
-        """The three handlers sit on EVENT_HANDLERS under their events."""
+        """The four handlers sit on EVENT_HANDLERS under their events."""
         assert cp_handlers.deposit_on_furnace_group_closed in service_handlers.EVENT_HANDLERS[events.FurnaceGroupClosed]
         assert (
             cp_handlers.deposit_on_furnace_group_tech_changed
@@ -139,6 +139,10 @@ class TestInertness:
         assert (
             cp_handlers.deposit_on_furnace_group_renovated
             in service_handlers.EVENT_HANDLERS[events.FurnaceGroupRenovated]
+        )
+        assert (
+            cp_handlers.attribute_greenfield_on_furnace_group_added
+            in service_handlers.EVENT_HANDLERS[events.FurnaceGroupAdded]
         )
 
     def test_unbound_handlers_are_no_ops(self):
@@ -351,3 +355,62 @@ class TestExpansionCapacityHook:
         assert bound.total() == 1.0
         assert "gate=expansion decision=blocked" in caplog.text
         assert "reason=insufficient_applicable_pool" in caplog.text
+
+
+def greenfield_hook_call(hook, **overrides):
+    """Call the greenfield gate with a granted-shape default, overrides on top."""
+    kwargs = dict(
+        iso3="CHN",
+        geo_unit="CN-GD",
+        technology="BF",
+        reductant="Coke+PCI",
+        capacity=3.0,
+        product="iron",
+        year=2027,
+    )
+    kwargs.update(overrides)
+    return hook(**kwargs)
+
+
+class TestGreenfieldCapacityHook:
+    def test_unbound_accessor_returns_none(self):
+        """Unbound — every real run until D8 — the decision path receives None."""
+        assert cp_handlers.greenfield_capacity_hook() is None
+
+    def test_bound_accessor_returns_a_callable(self, bound: CapacityPool):
+        assert callable(cp_handlers.greenfield_capacity_hook())
+
+    def test_non_chinese_opportunity_passes_through_untouched(self, bound: CapacityPool):
+        """Foreign opportunities keep their capacity, attribute to nobody and mark no
+        withdrawal, without reaching the evaluator or the pool."""
+        hook = cp_handlers.greenfield_capacity_hook()
+        assert hook is not None
+        grant = greenfield_hook_call(hook, iso3="DEU", geo_unit=None, technology="not-a-technology")
+        assert grant == (3.0, None, False)
+        assert bound.total() == 0.0
+
+    def test_single_owner_rule_blocks_an_ample_pool(self, bound: CapacityPool, caplog):
+        """Two holders sum past the requirement but neither covers it alone."""
+        bound.deposit(Credit(amount_mt=2.0, vintage_year=2019, region_tag=None, owner_id="E_a", product="iron"))
+        bound.deposit(Credit(amount_mt=1.5, vintage_year=2020, region_tag=None, owner_id="E_b", product="iron"))
+        hook = cp_handlers.greenfield_capacity_hook()
+        assert hook is not None
+        with caplog.at_level(logging.INFO, logger="steelo.capacity_policy.handlers"):
+            grant = greenfield_hook_call(hook)
+        assert grant is None
+        assert bound.total() == pytest.approx(3.5)
+        assert "gate=greenfield decision=blocked" in caplog.text
+        assert "reason=no_single_owner_with_sufficient_credits" in caplog.text
+
+    def test_intense_grant_names_the_single_funding_owner(self, bound: CapacityPool, caplog):
+        """BF is emission-intense: the grant withdraws the planned 3.0 from one holder
+        and allows a 2.0 build attributed to that holder."""
+        bound.deposit(Credit(amount_mt=3.0, vintage_year=2019, region_tag=None, owner_id="E_a", product="iron"))
+        hook = cp_handlers.greenfield_capacity_hook()
+        assert hook is not None
+        with caplog.at_level(logging.INFO, logger="steelo.capacity_policy.handlers"):
+            grant = greenfield_hook_call(hook)
+        assert grant == (pytest.approx(2.0), "E_a", True)
+        assert bound.total() == 0.0
+        assert "gate=greenfield decision=granted" in caplog.text
+        assert "attributed_owner=E_a" in caplog.text

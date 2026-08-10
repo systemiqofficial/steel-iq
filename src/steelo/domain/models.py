@@ -1161,6 +1161,12 @@ class FurnaceGroup:
         self.future_switch_cmd: Optional[commands.ChangeFurnaceGroupTechnology] = None
         self.future_switch_year: Optional[int] = None
 
+        # China capacity-policy stash, set at announcement when a live greenfield gate
+        # withdraws for this opportunity: the withdrawn amount makes a later discard's
+        # leaked credit quantifiable, and the owner carries attribution to construction
+        self.capacity_pool_granted_withdraw_mt: float | None = None
+        self.capacity_pool_attributed_owner_id: str | None = None
+
         # Economic variables
         self.equity_share = equity_share
         self.cost_of_debt = cost_of_debt
@@ -3003,6 +3009,7 @@ class FurnaceGroup:
         get_co2_headroom: Callable[[str, int, float], float] | None = None,
         get_co2_need: Callable[["Technology", float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
+        permitted_greenfield_capacity: Callable[..., tuple[float, str | None, bool] | None] | None = None,
     ) -> commands.Command | None:
         """
         Tracks whether an identified business opportunity remains interesting over time to avoid making
@@ -3039,6 +3046,14 @@ class FurnaceGroup:
             all_opex_subsidies: List of available OPEX subsidies
             reductant_score_series: ``(location, tech, output_shares, start, end, *, overrides,
                 override_reference_year) -> ReductantScoreSeries`` (``Environment.reductant_score_series``)
+            permitted_greenfield_capacity: China capacity-policy withdrawal gate, called once
+                when the announcement draw succeeds (capacities in model tonnes end-to-end).
+                Returns ``(build_capacity, attributed_owner_id, withdrew)`` on a grant — the
+                capacity actually allowed, the single credit holder funding it (None for the
+                unowned pot or when no withdrawal ran), and whether the pool was drawn on — or
+                None when the withdrawal is blocked, in which case the opportunity stays
+                considered and retries next year exactly like the CO2 gate. None (the default)
+                leaves the decision path untouched.
 
         Returns:
             Command to update the status of the FurnaceGroup, or None if no status change.
@@ -3200,6 +3215,32 @@ class FurnaceGroup:
 
                 announcement_draw = random.random()
                 if announcement_draw < probability_of_announcement:
+                    # China capacity-policy gate (③ INCREASE): announcement is the commitment
+                    # point, so a threaded gate must withdraw matching retirement credits
+                    # (model tonnes) here or the opportunity stays considered and retries
+                    # next year, exactly as the CO2 gate above
+                    if permitted_greenfield_capacity is not None:
+                        grant = permitted_greenfield_capacity(
+                            iso3=location.iso3,
+                            geo_unit=location.geo_unit,
+                            technology=self.technology.name,
+                            reductant=self.chosen_reductant,
+                            capacity=float(self.capacity),
+                            product=self.technology.product,
+                            year=int(year),
+                        )
+                        if grant is None:
+                            if status_stats is not None:
+                                status_stats["capacity_pool_blocked"] += 1
+                            return None  # stay considered
+                        build_capacity, attributed_owner_id, withdrew = grant
+                        if withdrew:
+                            self.capacity_pool_granted_withdraw_mt = float(self.capacity)
+                            self.capacity_pool_attributed_owner_id = attributed_owner_id
+                            if build_capacity != self.capacity:
+                                # Emission-intense grant: the pool withdrew the planned
+                                # amount but the build itself is penalised
+                                self.capacity = Volumes(build_capacity)
                     if status_stats is not None:
                         status_stats["announced"] += 1
                     logger.debug(
@@ -5121,6 +5162,21 @@ class PlantGroup:
                                 fg.has_hot_metal_access = True
                                 plant.has_hot_metal_access = True
 
+    @property
+    def is_dormant(self) -> bool:
+        """
+        Whether the group has no operating furnace groups across its plants.
+
+        Deliberately a derived property, not a stored flag — a flag would have
+        to be maintained and would drift from the plant list. Deliberately not
+        ``is_bankrupt`` either: insolvency is a balance condition and
+        ``balance`` exists, while a group can hold a healthy balance with every
+        asset closed — which is exactly the case this detects (the greenfield
+        attribution fallback sends such a company's plant to ``indi_<iso3>``).
+        """
+        operating_statuses = ("operating", "operating pre-retirement", "operating switching technology")
+        return not any(fg.status.lower() in operating_statuses for plant in self.plants for fg in plant.furnace_groups)
+
     def deduct_equity(self, amount: float, reason: str) -> None:
         """
         Debit equity against the group treasury.
@@ -6696,6 +6752,7 @@ class PlantGroup:
         get_co2_need: Callable[["Technology", float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
         reserved_discount_factor: float = 0.9,
+        permitted_greenfield_capacity: Callable[..., tuple[float, str | None, bool] | None] | None = None,
     ) -> list[commands.Command]:
         """
         Recalculate the NPV and update the status of all considered and announced business opportunities.
@@ -6722,6 +6779,8 @@ class PlantGroup:
             reductant_score_series: ``Environment.reductant_score_series``, threaded to the
                 per-opportunity re-check
             opex_subsidies: Dictionary mapping iso3 -> tech -> list of opex subsidies
+            permitted_greenfield_capacity: China capacity-policy withdrawal gate, threaded to
+                the considered→announced transition; None (the default) leaves it untouched
 
         Returns:
             List of commands to update the status of furnace groups.
@@ -6811,6 +6870,7 @@ class PlantGroup:
                         get_co2_headroom=get_co2_headroom,
                         get_co2_need=get_co2_need,
                         co2_storage_diagnostics=co2_storage_diagnostics,
+                        permitted_greenfield_capacity=permitted_greenfield_capacity,
                     )
                     if update_status_cmd:
                         status_change_cmds.append(update_status_cmd)

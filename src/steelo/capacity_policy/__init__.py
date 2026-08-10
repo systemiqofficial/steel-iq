@@ -1,7 +1,9 @@
 """Chinese capacity-replacement policy plugin.
 
-Dormant until the deposit wiring and withdrawal gates land — the data layer
-(sheet readers, fixtures, config) is wired but nothing acts on it yet.
+Fully threaded — deposit handlers, the REPLACE pre-NPV hook and both INCREASE
+withdrawal gates — but dormant until bootstrapping binds an evaluator and pool
+(``bind_capacity_policy``, D8): every accessor returns None unbound and
+behaviour is byte-identical to a build without the package.
 """
 
 from .config import CapacityPolicyConfig

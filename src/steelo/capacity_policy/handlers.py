@@ -7,9 +7,13 @@ inert until :func:`bind_capacity_policy` installs an evaluator and pool
 policy — every handler returns immediately and behaviour is byte-identical.
 Once bound, only Chinese events act. The same binding drives the decision-path
 gates the plant agent threads on every evaluation: :func:`replace_capacity_hook`,
-the pre-NPV ② REPLACE gate on ``Plant.evaluate_furnace_group_strategy``, and
+the pre-NPV ② REPLACE gate on ``Plant.evaluate_furnace_group_strategy``;
 :func:`expansion_capacity_hook`, the ③ INCREASE withdrawal gate on
-``PlantGroup.evaluate_expansion``.
+``PlantGroup.evaluate_expansion``; and :func:`greenfield_capacity_hook`, the
+③ INCREASE withdrawal gate at considered→announced in
+``FurnaceGroup.track_business_opportunities``, whose single-owner grant
+:func:`attribute_greenfield_on_furnace_group_added` later turns into the plant
+joining the funding company at construction start.
 
 Each deposit logs the furnace group's ``chosen_reductant`` so, paired with the
 evaluation-side log in :mod:`.tree`, reductant drift between approval and
@@ -192,6 +196,99 @@ def expansion_capacity_hook() -> Callable[..., float | None] | None:
     return permitted_expansion_capacity
 
 
+def greenfield_capacity_hook() -> Callable[..., tuple[float, str | None, bool] | None] | None:
+    """Return the live ③ INCREASE greenfield gate callable, or None while unbound.
+
+    The plant agent threads this value through
+    ``PlantGroup.update_status_of_business_opportunities`` into
+    ``FurnaceGroup.track_business_opportunities``, so binding at bootstrap (D8)
+    activates the gate without reopening the domain module or the plant agent.
+    Unbound — the default, and always the case while
+    ``config.capacity_policy.enabled`` is False — the decision path receives
+    None and behaves byte-identically.
+    """
+    policy = _policy
+    if policy is None:
+        return None
+
+    def permitted_greenfield_capacity(
+        *,
+        iso3: str,
+        geo_unit: str | None,
+        technology: str,
+        reductant: str | None,
+        capacity: float,
+        product: str,
+        year: int,
+    ) -> tuple[float, str | None, bool] | None:
+        """Withdraw retirement credits for one announced greenfield — branch ③ INCREASE.
+
+        Called when the announcement draw succeeds, so consumption coincides
+        with the considered→announced commitment; capacities flow in model
+        tonnes end-to-end. The whole withdrawal is served from a single credit
+        holder — the spec's uniform-across-the-run greenfield rule — so a build
+        can be refused with an ample pool when no one holder covers it, which
+        the block log states distinctly. A non-Chinese opportunity passes
+        through untouched without reaching the evaluator or the pool. The
+        credit is consumed at announcement, all-or-nothing: a later discarded
+        project has still spent it (accepted leak, logged at discard).
+
+        Returns:
+            ``(build_capacity, attributed_owner_id, withdrew)`` on a grant —
+            the unowned pot attributes to None — or None when blocked, which
+            leaves the opportunity considered to retry next year.
+        """
+        if iso3 != "CHN":
+            return (capacity, None, False)
+        spec = policy.evaluator.on_increase(
+            geo_key=compose_geo_key(iso3, geo_unit),
+            product=product,
+            capacity_mt=capacity,
+            technology=technology,
+            reductant=reductant or None,
+        )
+        result = policy.pool.try_withdraw(
+            spec.withdraw_mt,
+            spec.region_tag,
+            product=spec.product,
+            owner_id=f"indi_{iso3}",
+            year=year,
+            single_owner=True,
+        )
+        if not result.granted:
+            logger.info(
+                "[CAPACITY POOL] gate=greenfield decision=blocked reason=%s geo_key=%s "
+                "technology=%s reductant=%s product=%s withdraw_mt=%.3f tag=%s year=%d",
+                result.blocked_reason,
+                compose_geo_key(iso3, geo_unit),
+                technology,
+                reductant,
+                spec.product,
+                spec.withdraw_mt,
+                spec.region_tag,
+                year,
+            )
+            return None
+        logger.info(
+            "[CAPACITY POOL] gate=greenfield decision=granted attributed_owner=%s geo_key=%s "
+            "technology=%s reductant=%s product=%s withdraw_mt=%.3f build_mt=%.3f tag=%s year=%d "
+            "credits_consumed=%s",
+            result.attributed_owner_id,
+            compose_geo_key(iso3, geo_unit),
+            technology,
+            reductant,
+            spec.product,
+            spec.withdraw_mt,
+            spec.build_mt,
+            spec.region_tag,
+            year,
+            [(c.owner_id, c.vintage_year, round(c.amount_mt, 6)) for c in result.credits_consumed],
+        )
+        return (spec.build_mt, result.attributed_owner_id, True)
+
+    return permitted_greenfield_capacity
+
+
 def _get_furnace_group(uow: UnitOfWork, furnace_group_id: str) -> FurnaceGroup:
     """Fetch a furnace group by id; the events carry no plant id, so scan.
 
@@ -318,3 +415,95 @@ def deposit_on_furnace_group_renovated(event: events.FurnaceGroupRenovated, uow:
             event.new_technology_name,
             _get_furnace_group(uow, event.furnace_group_id).chosen_reductant,
         )
+
+
+def attribute_greenfield_on_furnace_group_added(event: events.FurnaceGroupAdded, uow: UnitOfWork) -> None:
+    """Move a credit-funded greenfield plant into the funding company at construction start.
+
+    The greenfield gate stashes the withdrawal's ``attributed_owner_id`` on the
+    opportunity furnace group at announcement; the plant itself must stay in
+    ``indi_<iso3>`` until announced→construction because the opportunity
+    pipeline walks only the indi groups. This event fires at exactly that
+    transition, when the pipeline is done with the plant, so the move is safe:
+    the construction→operating flip and the P&L sweep are group-independent.
+
+    Only the group membership moves — ``parent_gem_id`` stays ``indi_<iso3>``,
+    keeping the site's own pixel energy prices (a physical fact of the site,
+    not an ownership fact) flowing through the existing GEO-plant paths. The
+    P&L sweep and expansion candidacy follow ``PlantGroup.plants``, so the
+    receiving company gains the asset through existing mechanics.
+
+    A dormant or unknown owner sends the plant nowhere — it stays in
+    ``indi_<iso3>``, exactly as a wholly-unowned draw (no stash) does. The
+    capex is a named capital injection, not a treasury debit: ``deduct_equity``
+    is untouched and the injection is logged so the treasury story is
+    auditable.
+    """
+    policy = _policy
+    if policy is None:
+        return
+    if not event.is_new_plant:
+        return
+    with uow:
+        plant = uow.plants.get(event.plant_id)
+        furnace_group = next((fg for fg in plant.furnace_groups if fg.furnace_group_id == event.furnace_group_id), None)
+        if furnace_group is None:
+            raise ValueError(f"Furnace group {event.furnace_group_id} not found on plant {event.plant_id}")
+        owner_id = furnace_group.capacity_pool_attributed_owner_id
+        if owner_id is None:
+            return
+        current_group = uow.plant_groups.get_by_plant_id(plant.plant_id)
+        try:
+            owner_group = uow.plant_groups.get(owner_id)
+        except KeyError:
+            owner_group = None
+        if owner_group is None or owner_group.is_dormant:
+            logger.info(
+                "[CAPACITY POOL] event=greenfield_attribution decision=fallback_indi plant=%s fg=%s "
+                "owner=%s reason=%s current_group=%s",
+                plant.plant_id,
+                furnace_group.furnace_group_id,
+                owner_id,
+                "owner_group_missing" if owner_group is None else "owner_dormant",
+                current_group.plant_group_id,
+            )
+            return
+        if owner_group is current_group:
+            return
+        current_group.plants.remove(plant)
+        uow.plant_groups.register_plant_in_group(plant, owner_id)
+        if furnace_group.technology.capex is None:
+            # A None capex yields -inf NPVs at tracking, which never announce
+            raise ValueError(f"Announced greenfield {furnace_group.furnace_group_id} carries no capex")
+        investment = float(furnace_group.technology.capex) * float(furnace_group.capacity)
+        logger.info(
+            "[CAPACITY POOL] event=greenfield_attributed plant=%s fg=%s company=%s from_group=%s "
+            "capacity=%.3f capex_total=%.2f equity_injection=%.2f",
+            plant.plant_id,
+            furnace_group.furnace_group_id,
+            owner_id,
+            current_group.plant_group_id,
+            float(furnace_group.capacity),
+            investment,
+            investment * furnace_group.equity_share,
+        )
+        uow.commit()
+
+
+def note_greenfield_discard(furnace_group: FurnaceGroup, iso3: str) -> None:
+    """Log the credit a discarded announced greenfield leaks — accepted, not reclaimed.
+
+    Called from the announced→discarded branch of the status handler. The
+    withdrawal stash is only ever set by a live greenfield gate, so this is
+    inert by construction on unbound runs; reservation machinery is deliberate
+    non-scope (spec §Deferred, reserve-then-firm).
+    """
+    if furnace_group.capacity_pool_granted_withdraw_mt is None:
+        return
+    logger.info(
+        "[CAPACITY POOL] event=greenfield_discarded leaked_withdraw_mt=%.3f fg=%s iso3=%s attributed_owner=%s",
+        furnace_group.capacity_pool_granted_withdraw_mt,
+        furnace_group.furnace_group_id,
+        iso3,
+        furnace_group.capacity_pool_attributed_owner_id,
+    )
