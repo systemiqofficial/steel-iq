@@ -1,0 +1,207 @@
+"""Tests for the deposit handlers: inert until bound, China-only, correct credits."""
+
+import logging
+from dataclasses import dataclass
+
+import pytest
+
+from steelo.capacity_policy import CapacityPolicyConfig, CapacityPool, TreeEvaluator
+from steelo.capacity_policy import handlers as cp_handlers
+from steelo.capacity_policy.inputs import RegionRow, TechnologyRow
+from steelo.domain import events
+from steelo.service_layer import handlers as service_handlers
+
+REGIONS = [
+    RegionRow(geo_key="CHN:CN-HE", region_name="Jing-Jin-Ji", type="key", from_year=None),
+    RegionRow(geo_key="CHN:CN-GD", region_name="Guangdong", type=None, from_year=None),
+]
+
+TECHNOLOGIES = [
+    TechnologyRow(
+        technology="BF",
+        product="iron",
+        reductant=None,
+        is_emission_intense=True,
+        is_deep_abatement=False,
+        switching_to=None,
+        swap_ratio=None,
+    ),
+]
+
+
+@dataclass
+class FakeFurnaceGroup:
+    furnace_group_id: str
+    chosen_reductant: str = "Coke+PCI"
+
+
+@dataclass
+class FakePlant:
+    furnace_groups: list[FakeFurnaceGroup]
+
+
+@dataclass
+class FakePlantsRepo:
+    plants: list[FakePlant]
+
+    def list(self):
+        return list(self.plants)
+
+
+class FakeUoW:
+    def __init__(self, furnace_groups: list[FakeFurnaceGroup]):
+        self.plants = FakePlantsRepo([FakePlant(furnace_groups=furnace_groups)])
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+@dataclass
+class FakeEnv:
+    year: float = 2031.0
+
+
+@pytest.fixture(autouse=True)
+def unbind_after_test():
+    """Module-level binding must never leak between tests."""
+    yield
+    cp_handlers.unbind_capacity_policy()
+
+
+@pytest.fixture
+def pool() -> CapacityPool:
+    return CapacityPool()
+
+
+@pytest.fixture
+def bound(pool: CapacityPool) -> CapacityPool:
+    evaluator = TreeEvaluator(REGIONS, TECHNOLOGIES, CapacityPolicyConfig())
+    cp_handlers.bind_capacity_policy(evaluator, pool)
+    return pool
+
+
+def closed_event(geo_unit: str | None = "CN-HE", iso3: str = "CHN") -> events.FurnaceGroupClosed:
+    return events.FurnaceGroupClosed(
+        furnace_group_id="fg-1",
+        capacity=2.0,
+        iso3=iso3,
+        geo_unit=geo_unit,
+        owner_id="E1",
+        product="iron",
+    )
+
+
+def tech_changed_event(old_capacity: float, capacity: float) -> events.FurnaceGroupTechChanged:
+    return events.FurnaceGroupTechChanged(
+        furnace_group_id="fg-1",
+        technology_name="BF+CCS",
+        capacity=capacity,
+        iso3="CHN",
+        geo_unit="CN-GD",
+        old_technology_name="BF",
+        old_capacity=old_capacity,
+        owner_id="E1",
+        product="iron",
+    )
+
+
+def renovated_event() -> events.FurnaceGroupRenovated:
+    return events.FurnaceGroupRenovated(
+        furnace_group_id="fg-1",
+        capacity=2.0,
+        iso3="CHN",
+        geo_unit="CN-HE",
+        old_technology_name="BF",
+        new_technology_name="BF",
+        owner_id="E1",
+        product="iron",
+    )
+
+
+def make_uow() -> FakeUoW:
+    return FakeUoW([FakeFurnaceGroup(furnace_group_id="fg-1")])
+
+
+class TestInertness:
+    def test_registered_on_the_event_bus(self):
+        """The three handlers sit on EVENT_HANDLERS under their events."""
+        assert cp_handlers.deposit_on_furnace_group_closed in service_handlers.EVENT_HANDLERS[events.FurnaceGroupClosed]
+        assert (
+            cp_handlers.deposit_on_furnace_group_tech_changed
+            in service_handlers.EVENT_HANDLERS[events.FurnaceGroupTechChanged]
+        )
+        assert (
+            cp_handlers.deposit_on_furnace_group_renovated
+            in service_handlers.EVENT_HANDLERS[events.FurnaceGroupRenovated]
+        )
+
+    def test_unbound_handlers_are_no_ops(self):
+        """Unbound, the handlers return before touching uow, env or any pool."""
+        cp_handlers.deposit_on_furnace_group_closed(closed_event(), uow=None, env=None)  # type: ignore[arg-type]
+        cp_handlers.deposit_on_furnace_group_tech_changed(tech_changed_event(3.0, 2.0), uow=None, env=None)  # type: ignore[arg-type]
+        cp_handlers.deposit_on_furnace_group_renovated(renovated_event(), uow=None, env=None)  # type: ignore[arg-type]
+
+    def test_bound_handlers_ignore_non_chinese_events(self, bound: CapacityPool):
+        cp_handlers.deposit_on_furnace_group_closed(
+            closed_event(iso3="DEU", geo_unit=None), uow=make_uow(), env=FakeEnv()
+        )  # type: ignore[arg-type]
+        assert bound.total() == 0.0
+
+
+class TestClosedDeposit:
+    def test_deposits_full_capacity_with_cluster_tag(self, bound: CapacityPool):
+        """A key-province closure banks the full capacity tagged with the cluster."""
+        cp_handlers.deposit_on_furnace_group_closed(closed_event(), uow=make_uow(), env=FakeEnv())  # type: ignore[arg-type]
+        (credit,) = bound.snapshot()
+        assert credit.amount_mt == 2.0
+        assert credit.region_tag == "Jing-Jin-Ji"
+        assert credit.owner_id == "E1"
+        assert credit.product == "iron"
+        assert credit.vintage_year == 2031
+
+    def test_non_key_closure_deposits_untagged(self, bound: CapacityPool):
+        cp_handlers.deposit_on_furnace_group_closed(closed_event(geo_unit="CN-GD"), uow=make_uow(), env=FakeEnv())  # type: ignore[arg-type]
+        (credit,) = bound.snapshot()
+        assert credit.region_tag is None
+
+    def test_deposit_log_carries_the_chosen_reductant(self, bound: CapacityPool, caplog):
+        """The drift instrumentation names the reductant the group actually runs on."""
+        with caplog.at_level(logging.INFO, logger="steelo.capacity_policy.handlers"):
+            cp_handlers.deposit_on_furnace_group_closed(closed_event(), uow=make_uow(), env=FakeEnv())  # type: ignore[arg-type]
+        assert "chosen_reductant=Coke+PCI" in caplog.text
+
+
+class TestTechChangedDeposit:
+    def test_positive_shrink_deposits_the_delta(self, bound: CapacityPool):
+        """A shrunk replacement banks exactly old_capacity − capacity."""
+        cp_handlers.deposit_on_furnace_group_tech_changed(tech_changed_event(3.0, 2.0), uow=make_uow(), env=FakeEnv())  # type: ignore[arg-type]
+        (credit,) = bound.snapshot()
+        assert credit.amount_mt == pytest.approx(1.0)
+        assert credit.region_tag is None
+        assert credit.vintage_year == 2031
+
+    @pytest.mark.parametrize("old_capacity, capacity", [(2.0, 2.0), (2.0, 3.0)])
+    def test_non_positive_delta_deposits_nothing(self, bound: CapacityPool, old_capacity, capacity):
+        """No shrink (the norm until D7a) or growth must not reach pool.deposit."""
+        cp_handlers.deposit_on_furnace_group_tech_changed(
+            tech_changed_event(old_capacity, capacity),
+            uow=make_uow(),  # type: ignore[arg-type]
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
+        assert bound.total() == 0.0
+
+
+class TestRenovatedHandler:
+    def test_deposits_nothing_by_design(self, bound: CapacityPool):
+        """Whether renovation shrinks is D7a's open question; until then, observe only."""
+        cp_handlers.deposit_on_furnace_group_renovated(renovated_event(), uow=make_uow(), env=FakeEnv())  # type: ignore[arg-type]
+        assert bound.total() == 0.0
+
+    def test_still_logs_the_reductant(self, bound: CapacityPool, caplog):
+        with caplog.at_level(logging.INFO, logger="steelo.capacity_policy.handlers"):
+            cp_handlers.deposit_on_furnace_group_renovated(renovated_event(), uow=make_uow(), env=FakeEnv())  # type: ignore[arg-type]
+        assert "deposit=none" in caplog.text
+        assert "chosen_reductant=Coke+PCI" in caplog.text

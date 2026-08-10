@@ -12,6 +12,7 @@ from steelo.domain.constants import Commodities, T_TO_KT  # Keep enum as constan
 from steelo.domain.trade_modelling.TM_PAM_connector import TM_PAM_connector
 from steelo.domain.calculate_costs import collect_subsidies_for_geo, filter_subsidies_for_year
 from steelo.domain import diagnostics as diag
+from steelo.capacity_policy import handlers as capacity_policy_handlers
 import logging
 
 if TYPE_CHECKING:
@@ -804,9 +805,9 @@ def load_checkpoint_handler(
 
 
 EVENT_HANDLERS: dict[type[events.Event], list[Callable]] = {
-    events.FurnaceGroupClosed: [update_cost_curve],
-    events.FurnaceGroupTechChanged: [update_cost_curve],
-    events.FurnaceGroupRenovated: [update_cost_curve],
+    events.FurnaceGroupClosed: [update_cost_curve, capacity_policy_handlers.deposit_on_furnace_group_closed],
+    events.FurnaceGroupTechChanged: [update_cost_curve, capacity_policy_handlers.deposit_on_furnace_group_tech_changed],
+    events.FurnaceGroupRenovated: [update_cost_curve, capacity_policy_handlers.deposit_on_furnace_group_renovated],
     events.FurnaceGroupAdded: [update_future_cost_curve, update_capacity_buildout],
     events.SinteringCapacityAdded: [update_future_cost_curve],
     events.SteelAllocationsCalculated: [update_furnace_utilization_rates, update_cost_curve, update_future_cost_curve],
