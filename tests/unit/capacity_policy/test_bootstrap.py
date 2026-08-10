@@ -311,3 +311,50 @@ def test_bootstrap_simulation_disabled_unbinds_stale_binding(tmp_path):
     assert cp_handlers.replace_capacity_hook() is None
     assert cp_handlers.expansion_capacity_hook() is None
     assert cp_handlers.greenfield_capacity_hook() is None
+
+
+def test_enabled_with_missing_fixtures_raises_naming_them(tmp_path):
+    """Criterion 17: enabled=True with no capacity pool fixtures refuses, naming each one."""
+    with pytest.raises(ValueError) as excinfo:
+        configure_capacity_policy(CapacityPolicyConfig(enabled=True), fake_repository_json(tmp_path, write=()))
+    message = str(excinfo.value)
+    assert "capacity_pool_provinces.json is missing" in message
+    assert "capacity_pool_technologies.json is missing" in message
+    assert "capacity_pool_opening_credits.json is missing" in message
+    assert cp_handlers.replace_capacity_hook() is None
+
+
+def test_enabled_with_one_missing_fixture_names_only_it(tmp_path):
+    repository = fake_repository_json(tmp_path, write=("provinces", "technologies"))
+    with pytest.raises(ValueError) as excinfo:
+        configure_capacity_policy(CapacityPolicyConfig(enabled=True), repository)
+    message = str(excinfo.value)
+    assert "capacity_pool_opening_credits.json is missing" in message
+    assert "capacity_pool_provinces.json" not in message
+
+
+def test_enabled_with_empty_fixture_raises_as_empty(tmp_path):
+    """An empty fixture is refused distinctly from a missing one — never silent dormancy."""
+    repository = fake_repository_json(tmp_path, credits=[])
+    with pytest.raises(ValueError, match="capacity_pool_opening_credits.json is empty"):
+        configure_capacity_policy(CapacityPolicyConfig(enabled=True), repository)
+
+
+def test_enabled_with_injected_repository_raises():
+    """A run without fixture repositories cannot claim policy-on."""
+    with pytest.raises(ValueError, match="no fixture repositories"):
+        configure_capacity_policy(CapacityPolicyConfig(enabled=True), None)
+    assert cp_handlers.replace_capacity_hook() is None
+
+
+def test_bootstrap_simulation_enabled_without_pool_fixtures_raises(tmp_path):
+    """Criterion 17 through the real entry point: a prepared dataset without the
+    optional pool sheets must refuse an enabled run at bootstrap."""
+    from steelo.bootstrap import bootstrap_simulation
+
+    config = minimal_simulation_config(tmp_path)
+    config.capacity_policy.enabled = True
+
+    with pytest.raises(ValueError, match="capacity_pool_provinces.json is missing"):
+        bootstrap_simulation(config)
+    assert cp_handlers.replace_capacity_hook() is None
