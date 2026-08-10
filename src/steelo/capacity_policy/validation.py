@@ -11,6 +11,8 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Literal
 
+from steelo.utilities.utils import normalize_name
+
 from .inputs import (
     WILDCARD,
     OpeningCreditRow,
@@ -124,6 +126,11 @@ def validate_technologies(
     overrides = [row for row in rows if row.is_override]
     classifications = [row for row in rows if not row.is_override]
     split = technologies_with_reductant_rows(rows)
+    # Membership is checked up to normalize_name, the canonical key form, so the
+    # check holds whether the vocabulary comes from the workbook's Bill of
+    # Materials (data prep, sheet spelling) or the prepared primary-feedstocks
+    # fixture (bootstrap, normalised spelling)
+    known_reductants = {normalize_name(reductant) for reductant in reductant_vocabulary}
 
     for row in classifications:
         label = f"technology {row.technology!r}" + (f" reductant {row.reductant!r}" if row.reductant else "")
@@ -131,7 +138,7 @@ def validate_technologies(
             error("'*' is only allowed on override rows")
         elif row.technology not in technology_roster:
             error(f"unknown {label} — names must match the model roster exactly")
-        if row.reductant is not None and row.reductant not in reductant_vocabulary:
+        if row.reductant is not None and normalize_name(row.reductant) not in known_reductants:
             error(f"unknown reductant {row.reductant!r} for technology {row.technology!r}")
         if row.product not in PRODUCTS:
             error(f"product must be one of {PRODUCTS} on classification rows, got {row.product!r} ({label})")
@@ -149,7 +156,7 @@ def validate_technologies(
         for name in (row.technology, row.switching_to):
             if name != WILDCARD and name not in technology_roster:
                 error(f"unknown technology {name!r} on {label} — names must match the model roster exactly")
-        if row.reductant is not None and row.reductant not in reductant_vocabulary:
+        if row.reductant is not None and normalize_name(row.reductant) not in known_reductants:
             error(f"unknown reductant {row.reductant!r} on {label}")
         if row.is_emission_intense is not None or row.is_deep_abatement is not None:
             error(f"{label} must not carry classification flags")

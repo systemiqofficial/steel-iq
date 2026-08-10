@@ -1049,7 +1049,7 @@ def recreate_fallback_material_costs(
     return repo
 
 
-def _chinese_capacity_pool_geo_keys() -> set[str]:
+def chinese_capacity_pool_geo_keys() -> set[str]:
     """The geo_keys of every Chinese first-order unit the model resolves.
 
     Built with the same construction as ``build_geo_hierarchy`` (pycountry
@@ -1108,7 +1108,7 @@ def recreate_capacity_pool_provinces_data(
     console.print(f"[blue]Reading capacity pool provinces from Excel[/blue]: {excel_path}")
     rows = read_capacity_pool_provinces(excel_path, sheet_name=sheet_name)
     _report_capacity_pool_issues(
-        validate_provinces(rows, chinese_geo_keys=_chinese_capacity_pool_geo_keys(), sheet=sheet_name)
+        validate_provinces(rows, chinese_geo_keys=chinese_capacity_pool_geo_keys(), sheet=sheet_name)
     )
 
     repo = CapacityPoolProvinceJsonRepository(json_path)
@@ -1209,7 +1209,7 @@ def recreate_capacity_pool_opening_credits_data(
         validate_opening_credits(
             rows,
             technology_roster=roster,
-            chinese_geo_keys=_chinese_capacity_pool_geo_keys(),
+            chinese_geo_keys=chinese_capacity_pool_geo_keys(),
             sheet=sheet_name,
         )
     )

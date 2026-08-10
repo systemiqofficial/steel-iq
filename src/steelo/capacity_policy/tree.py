@@ -12,11 +12,25 @@ consumed from :mod:`.inputs`, never reimplemented.
 import logging
 from dataclasses import dataclass
 
+from steelo.utilities.utils import normalize_name
+
 from .config import CapacityPolicyConfig
 from .inputs import RegionRow, TechnologyRow, is_delegation_row, resolve_swap_ratio, technologies_with_reductant_rows
 from .pool import Credit
 
 logger = logging.getLogger(__name__)
+
+
+def _lookup_reductant(reductant: str | None) -> str | None:
+    """Canonicalise a reductant for classification lookup.
+
+    The sheets author the workbook vocabulary (``"Natural gas"``) while the
+    runtime carries :func:`normalize_name` keys (``"natural_gas"``); both must
+    land on the same classification row.
+    """
+    if not reductant:
+        return None
+    return normalize_name(reductant) or None
 
 
 @dataclass(frozen=True)
@@ -79,12 +93,13 @@ class TreeEvaluator:
                 self.key_regions[row.geo_key] = row.region_name
         self._exempt = {row.geo_key for row in regions if row.type == "exempt"}
         self._overrides = [row for row in technologies if row.is_override]
-        split = technologies_with_reductant_rows(technologies)
+        self._reductant_split = technologies_with_reductant_rows(technologies)
         self._classifications = {
-            (row.technology, row.reductant): row
+            (row.technology, _lookup_reductant(row.reductant)): row
             for row in technologies
-            if not row.is_override and not is_delegation_row(row, split)
+            if not row.is_override and not is_delegation_row(row, self._reductant_split)
         }
+        self._conservative_rows: dict[str, TechnologyRow] = {}
 
     def on_close(self, *, geo_key: str, capacity_mt: float, owner_id: str | None, product: str, year: int) -> Credit:
         """Build the retirement credit for freed capacity — branch ① RETIRE.
@@ -252,14 +267,62 @@ class TreeEvaluator:
 
         A reductant-specific row wins over the technology's blank-reductant
         row; delegation rows classify nothing and were excluded at
-        construction.
+        construction. Reductants are matched up to :func:`normalize_name`, the
+        runtime's canonical key form.
+
+        A reductant-split technology asked about with **no** reductant — a
+        route the model has no reductant hypothesis for yet, such as a switch
+        candidate no fleet precedent exists for — resolves to the conservative
+        worst case over its authored reductant rows: emission-intense if any
+        variant is, deep-abatement only if every variant is. That never grants
+        the favourable 1:1 to an unresolved route, never blocks it either, and
+        self-corrects once the route resolves to a real reductant. A *named*
+        reductant with no row still refuses — that is a sheet gap, not a
+        runtime unknown.
 
         Raises:
-            ValueError: If no classification row covers the route.
+            ValueError: If no classification row covers the route, or the
+                conservative fallback would rest on unauthored flags.
         """
-        row = self._classifications.get((technology, reductant)) or self._classifications.get((technology, None))
-        if row is None:
-            raise ValueError(f"No classification row for technology {technology!r} (reductant {reductant!r})")
+        lookup = _lookup_reductant(reductant)
+        row = self._classifications.get((technology, lookup)) or self._classifications.get((technology, None))
+        if row is not None:
+            return row
+        if lookup is None and technology in self._reductant_split:
+            return self._conservative_classification(technology)
+        raise ValueError(f"No classification row for technology {technology!r} (reductant {reductant!r})")
+
+    def _conservative_classification(self, technology: str) -> TechnologyRow:
+        """Synthesise the worst-case classification across a technology's reductant rows."""
+        cached = self._conservative_rows.get(technology)
+        if cached is not None:
+            return cached
+        variants = [row for (name, _), row in self._classifications.items() if name == technology]
+        unauthored = [row for row in variants if row.is_emission_intense is None or row.is_deep_abatement is None]
+        if unauthored:
+            raise ValueError(
+                f"Cannot classify technology {technology!r} without a reductant: "
+                "its reductant rows carry unauthored flags"
+            )
+        row = TechnologyRow(
+            technology=technology,
+            product=variants[0].product,
+            reductant=None,
+            is_emission_intense=any(bool(row.is_emission_intense) for row in variants),
+            is_deep_abatement=all(bool(row.is_deep_abatement) for row in variants),
+            switching_to=None,
+            swap_ratio=None,
+        )
+        self._conservative_rows[technology] = row
+        logger.info(
+            "[CAPACITY POOL] evaluation=classification decision=conservative_fallback technology=%s "
+            "is_emission_intense=%s is_deep_abatement=%s (worst case over %d reductant rows; "
+            "no reductant hypothesis for this route yet)",
+            technology,
+            row.is_emission_intense,
+            row.is_deep_abatement,
+            len(variants),
+        )
         return row
 
     def _utilization_blocks(self, historical_utilization: dict[int, float] | None, year: int) -> bool:

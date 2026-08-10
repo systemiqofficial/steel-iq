@@ -10,6 +10,7 @@ from .service_layer import handlers, UnitOfWork, MessageBus, SimulationCheckpoin
 from .domain.constants import Commodities
 from .domain.models import Environment, PlantGroup, Supplier
 from .adapters.repositories import JsonRepository, InMemoryRepository, Repository
+from .capacity_policy.bootstrap import configure_capacity_policy
 from .data.path_resolver import DataPathResolver
 
 if TYPE_CHECKING:
@@ -326,6 +327,10 @@ def bootstrap_simulation(
         repository.plant_groups.add(PlantGroup(plant_group_id="indi", plants=[]))
 
         repository.trade_tariffs.add_list(repository_json.trade_tariffs.list())
+
+    # China capacity policy: unbind any state a previous run in this process left,
+    # then bind a fresh evaluator and pool when the config enables the policy
+    configure_capacity_policy(config.capacity_policy, repository_json)
 
     # Create UoW
     uow = UnitOfWork(repository=repository)

@@ -1,0 +1,161 @@
+"""Run-level activation for the China capacity policy (D8).
+
+:func:`configure_capacity_policy` is called once per ``bootstrap_simulation``
+and owns the binding lifecycle: it always unbinds first, so no evaluator or
+pool state can survive from a previous simulation in the same process
+(steeloweb, test suites), and a disabled run is guaranteed dormant even after
+an enabled one. With ``enabled=True`` it refuses to run without complete
+fixtures — never silent dormancy — re-runs the cross-row sheet validation with
+warnings promoted to errors, builds a fresh evaluator and pool from the
+fixtures and config, seeds the pool (converting the sheet's Mt into the model
+tonnes every runtime capacity flows in), and makes the single
+``bind_capacity_policy`` call that activates the deposit handlers and all
+three decision gates together.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import fields
+from typing import TYPE_CHECKING
+
+from steelo.domain.constants import MT_TO_T
+
+from .config import CapacityPolicyConfig
+from .handlers import bind_capacity_policy, unbind_capacity_policy
+from .pool import CapacityPool, SeedEntry
+from .tree import TreeEvaluator
+from .validation import ValidationIssue, validate_opening_credits, validate_provinces, validate_technologies
+
+if TYPE_CHECKING:
+    from steelo.adapters.repositories.json_repository import JsonRepository
+
+logger = logging.getLogger(__name__)
+
+FIXTURE_NAMES = (
+    "capacity_pool_provinces",
+    "capacity_pool_technologies",
+    "capacity_pool_opening_credits",
+)
+
+
+def configure_capacity_policy(config: CapacityPolicyConfig, repository_json: "JsonRepository | None") -> None:
+    """Bind the capacity policy for this run, or make sure it is unbound.
+
+    Always unbinds first: binding is module-level state and simulations can run
+    successively in one process, so a disabled bootstrap must actively clear
+    any binding a previous enabled run left behind. An enabled bootstrap then
+    builds a fresh evaluator and pool — pool state never survives into the
+    next simulation.
+
+    Args:
+        config: The run's ``capacity_policy`` scenario levers.
+        repository_json: The run's fixture repositories, or None when a
+            repository was injected directly (test runs without fixtures).
+
+    Raises:
+        ValueError: With ``enabled=True``, when any capacity pool fixture is
+            missing or empty (named in the message), or when the promoted
+            cross-row validation finds any issue — unauthored classification
+            flags only warn at data preparation, but block a policy run.
+    """
+    unbind_capacity_policy()
+    if not config.enabled:
+        return
+
+    logger.info(
+        "[CAPACITY POOL] config %s",
+        " ".join(f"{field.name}={getattr(config, field.name)!r}" for field in fields(config)),
+    )
+
+    if repository_json is None:
+        raise ValueError(
+            "capacity_policy.enabled=True but the run has no fixture repositories "
+            "(repository injected directly); the policy cannot run without the "
+            "capacity pool fixtures"
+        )
+
+    repos = [getattr(repository_json, name) for name in FIXTURE_NAMES]
+    problems = []
+    for name, repo in zip(FIXTURE_NAMES, repos):
+        if repo.path is None or not repo.path.exists():
+            problems.append(f"{name}.json is missing")
+        elif not repo.list():
+            problems.append(f"{name}.json is empty")
+    if problems:
+        raise ValueError(
+            "capacity_policy.enabled=True but " + "; ".join(problems) + ". "
+            "A run claiming policy-on with no data must refuse — prepare the "
+            "'Capacity pool - …' sheets in the master input, or disable the policy."
+        )
+
+    province_rows, technology_rows, credit_rows = (repo.list() for repo in repos)
+    _validate_promoted(
+        [
+            *validate_provinces(province_rows, chinese_geo_keys=_chinese_geo_keys()),
+            *validate_technologies(
+                technology_rows,
+                technology_roster={capex.technology_name for capex in repository_json.capex.list()},
+                reductant_vocabulary={
+                    feedstock.reductant
+                    for feedstock in repository_json.primary_feedstocks.list()
+                    if feedstock.reductant
+                },
+            ),
+            *validate_opening_credits(
+                credit_rows,
+                technology_roster={capex.technology_name for capex in repository_json.capex.list()},
+                chinese_geo_keys=_chinese_geo_keys(),
+            ),
+        ]
+    )
+
+    evaluator = TreeEvaluator(province_rows, technology_rows, config)
+    pool = CapacityPool(
+        inter_company_swap_cutoff_year=config.inter_company_swap_cutoff_year,
+        banked_credit_rule=config.banked_credit_rule,
+    )
+    entries = [
+        SeedEntry(
+            amount_mt=row.capacity_mt * MT_TO_T,
+            vintage_year=row.vintage_year,
+            geo_key=row.geo_key,
+            owner_id=row.plant_group_id,
+            product=row.product,
+        )
+        for row in credit_rows
+    ]
+    sheet_total_mt = sum(row.capacity_mt for row in credit_rows)
+    logger.info(
+        "[CAPACITY POOL] seeding opening credits sheet_mt=%.3f -> tonnes=%.1f (x %g) entries=%d",
+        sheet_total_mt,
+        sheet_total_mt * MT_TO_T,
+        MT_TO_T,
+        len(entries),
+    )
+    pool.seed_from(entries, evaluator.key_regions)
+    bind_capacity_policy(evaluator, pool)
+    logger.info("[CAPACITY POOL] policy bound: deposits and all three gates are live for this run")
+
+
+def _validate_promoted(issues: list[ValidationIssue]) -> None:
+    """Raise on any validation issue, warnings included.
+
+    Warnings are content gaps that data preparation tolerates so fixtures can
+    still be built from a workbook with ``TO AUTHOR`` cells; a run with the
+    policy enabled demands a complete authoring, so they are promoted here.
+    """
+    if not issues:
+        return
+    detail = "\n".join(f"[{issue.severity}] {issue.sheet}: {issue.message}" for issue in issues)
+    raise ValueError(
+        "capacity_policy.enabled=True but the capacity pool fixtures fail validation "
+        "(warnings promoted to errors — an unauthored flag blocks a policy run):\n" + detail
+    )
+
+
+def _chinese_geo_keys() -> set[str]:
+    """The Chinese first-order units, from the same construction data prep validates with."""
+    from steelo.data.recreation_functions import chinese_capacity_pool_geo_keys
+
+    return chinese_capacity_pool_geo_keys()

@@ -272,3 +272,67 @@ class TestOnIncrease:
             make_evaluator().on_increase(
                 geo_key="CHN:CN-GD", product="iron", capacity_mt=1.0, technology="BF_CHARCOAL", reductant=None
             )
+
+
+class TestReductantNormalization:
+    """Sheet rows author the workbook vocabulary; the runtime carries normalised keys."""
+
+    def test_runtime_form_reductant_hits_sheet_form_row(self):
+        """ "hydrogen" (runtime) must resolve the "Hydrogen" (sheet) DRI row: deep, so 1:1."""
+        assert permitted(make_evaluator(), new_technology="DRI", new_reductant="hydrogen") == pytest.approx(3.0)
+
+    def test_sheet_form_reductant_still_resolves(self):
+        assert permitted(make_evaluator(), new_technology="DRI", new_reductant="Hydrogen") == pytest.approx(3.0)
+
+    def test_on_increase_normalises_reductant(self):
+        """ "coal" (runtime) must resolve the "Coal" DRI row: emission-intense, so the build is penalised."""
+        spec = make_evaluator().on_increase(
+            geo_key="CHN:CN-GD", product="iron", capacity_mt=3.0, technology="DRI", reductant="coal"
+        )
+        assert spec.withdraw_mt == 3.0
+        assert spec.build_mt == pytest.approx(2.0)
+
+
+class TestConservativeFallback:
+    """A split technology with no reductant hypothesis classifies as its worst case."""
+
+    def test_replace_target_with_no_hypothesis_is_penalised(self):
+        """DRI spans intense-coal and deep-hydrogen rows; unresolved, it is not deep: 1.5:1."""
+        assert permitted(make_evaluator(), new_technology="DRI", new_reductant=None) == pytest.approx(2.0)
+
+    def test_increase_with_no_hypothesis_is_penalised(self):
+        """Worst case is emission-intense (any variant is), so the build is divided."""
+        spec = make_evaluator().on_increase(
+            geo_key="CHN:CN-GD", product="iron", capacity_mt=3.0, technology="DRI", reductant=None
+        )
+        assert spec.withdraw_mt == 3.0
+        assert spec.build_mt == pytest.approx(2.0)
+
+    def test_fallback_is_logged(self, caplog):
+        import logging
+
+        tree_logger = logging.getLogger("steelo.capacity_policy.tree")
+        original_propagate = tree_logger.propagate
+        tree_logger.propagate = True  # the YAML logging config may have detached steelo logs from root
+        try:
+            with caplog.at_level(logging.INFO):
+                permitted(make_evaluator(), new_technology="DRI", new_reductant=None)
+        finally:
+            tree_logger.propagate = original_propagate
+        assert "decision=conservative_fallback technology=DRI" in caplog.text
+
+    def test_fallback_refuses_unauthored_variant_flags(self):
+        """The worst case may only rest on authored rows — a sheet gap still refuses."""
+        rows = [
+            classification("BF", is_emission_intense=True, is_deep_abatement=False),
+            classification("DRI", reductant=None, is_emission_intense=None, is_deep_abatement=None),
+            classification("DRI", reductant="Coal", is_emission_intense=None, is_deep_abatement=None),
+            classification("DRI", reductant="Hydrogen", is_emission_intense=False, is_deep_abatement=True),
+        ]
+        with pytest.raises(ValueError, match="unauthored"):
+            permitted(make_evaluator(rows), new_technology="DRI", new_reductant=None)
+
+    def test_named_reductant_without_row_still_refuses(self):
+        """The fallback covers the no-hypothesis case only, never a named sheet gap."""
+        with pytest.raises(ValueError, match="No classification row"):
+            permitted(make_evaluator(), new_technology="DRI", new_reductant="Natural gas")

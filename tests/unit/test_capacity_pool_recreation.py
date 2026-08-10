@@ -20,7 +20,7 @@ from steelo.adapters.repositories.json_repository import (
     CapacityPoolTechnologyJsonRepository,
 )
 from steelo.data.recreation_functions import (
-    _chinese_capacity_pool_geo_keys,
+    chinese_capacity_pool_geo_keys,
     recreate_capacity_pool_opening_credits_data,
     recreate_capacity_pool_provinces_data,
     recreate_capacity_pool_technologies_data,
@@ -47,7 +47,7 @@ TECHNOLOGIES = pd.DataFrame(
 @pytest.fixture
 def small_china(monkeypatch):
     """Shrink the province completeness reference to two units."""
-    monkeypatch.setattr(recreation_functions, "_chinese_capacity_pool_geo_keys", lambda: {"CHN:CN-HE", "CHN:CN-SD"})
+    monkeypatch.setattr(recreation_functions, "chinese_capacity_pool_geo_keys", lambda: {"CHN:CN-HE", "CHN:CN-SD"})
 
 
 def _write_workbook(path, capacity_sheets: dict[str, pd.DataFrame]) -> None:
@@ -87,7 +87,7 @@ def test_recreate_provinces_roundtrip(tmp_path, small_china):
 def test_recreate_provinces_with_real_chinese_units(tmp_path):
     """The full 31-unit enumeration passes completeness without monkeypatching."""
     excel_path = tmp_path / "master.xlsx"
-    geo_keys = sorted(_chinese_capacity_pool_geo_keys())
+    geo_keys = sorted(chinese_capacity_pool_geo_keys())
     assert len(geo_keys) == 31
     provinces = pd.DataFrame({"geo_key": geo_keys, "region_name": ["x"] * 31, "type": [None] * 31})
     _write_workbook(excel_path, {PROVINCES_SHEET: provinces})

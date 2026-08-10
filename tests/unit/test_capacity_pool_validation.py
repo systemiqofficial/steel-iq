@@ -259,3 +259,20 @@ def test_capacity_pool_validator_flags_bogus_geo_key_on_both_sheets():
         "Capacity pool - CHN provinces",
         "Capacity pool - opening credits",
     }
+
+
+def test_technologies_reductant_vocabulary_matches_up_to_normalisation():
+    """Sheet-spelling rows must validate against a normalised vocabulary source.
+
+    Data prep passes the workbook's Bill of Materials spellings; bootstrap
+    passes the prepared primary-feedstocks fixture's normalised keys. One rule
+    must serve both, so membership is checked up to normalize_name.
+    """
+    rows = [
+        tech("BF", is_emission_intense=True, is_deep_abatement=False),
+        tech("EAF", product="steel", is_emission_intense=False, is_deep_abatement=True),
+        tech("DRI", reductant="Natural gas", is_emission_intense=False, is_deep_abatement=True),
+        tech("DRI"),  # delegation row
+    ]
+    normalised_vocabulary = {"natural_gas", "coal", "hydrogen"}
+    assert validate_technologies(rows, technology_roster=ROSTER, reductant_vocabulary=normalised_vocabulary) == []
