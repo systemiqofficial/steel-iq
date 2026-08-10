@@ -415,6 +415,9 @@ class MasterExcelValidator:
             if "Subsidies" in xl_file.sheet_names:
                 self._validate_subsidies_location(pd.read_excel(xl_file, sheet_name="Subsidies"), xl_file)
 
+            # The capacity pool sheets are optional but geo-checked when present
+            self._validate_capacity_pool_geo_keys(xl_file)
+
             # Furnace units is optional but validated when present (it carries the authored
             # geography for the unit-level reader: iso3 + geo_unit_or_province)
             if "Furnace units" in xl_file.sheet_names:
@@ -814,6 +817,18 @@ class MasterExcelValidator:
         masked = df[[location_col]].copy()
         masked.loc[masked[location_col].isin(trade_bloc_columns), location_col] = None
         self._check_geo_key_column(masked, "Subsidies", location_col)
+
+    def _validate_capacity_pool_geo_keys(self, xl_file: pd.ExcelFile):
+        """Geo-check the optional capacity pool sheets when present.
+
+        Both the provinces and opening-credits sheets carry a plain ``geo_key``
+        column with the standard country / sub-national vocabulary, so they go
+        straight through the plain geo-key check — identical treatment.
+        """
+        for sheet_name in ("Capacity pool - CHN provinces", "Capacity pool - opening credits"):
+            if sheet_name in xl_file.sheet_names:
+                df = pd.read_excel(xl_file, sheet_name=sheet_name)
+                self._check_geo_key_column(df, sheet_name, "geo_key")
 
     def _validate_input_costs(self, df: pd.DataFrame):
         """Validate geo-keys on the Input costs sheet."""

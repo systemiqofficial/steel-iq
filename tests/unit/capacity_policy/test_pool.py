@@ -356,20 +356,22 @@ def test_expansion_withdrawal_may_span_owners_before_cutoff():
     assert {c.owner_id for c in result.credits_consumed} == {"owner-a", "owner-b"}
 
 
-def test_seed_from_derives_tags_orders_by_vintage_and_counts_unowned(caplog):
-    """Seeding tags entries against the key-region set, age-orders the queue, and warns on blanks."""
+def test_seed_from_derives_cluster_tags_orders_by_vintage_and_counts_unowned(caplog):
+    """Seeding tags key-province entries with their cluster name, age-orders the queue, and warns on blanks."""
     pool = CapacityPool()
     with caplog.at_level("WARNING", logger="steelo.capacity_policy.pool"):
         pool.seed_from(
             [
                 SeedEntry(amount_mt=1.0, vintage_year=2021, geo_key="CHN:CN-SD", owner_id="owner-a", product="steel"),
                 SeedEntry(amount_mt=2.0, vintage_year=2018, geo_key="CHN:CN-HE", owner_id="owner-a", product="steel"),
+                SeedEntry(amount_mt=1.5, vintage_year=2020, geo_key="CHN:CN-TJ", owner_id="owner-b", product="steel"),
                 SeedEntry(amount_mt=0.5, vintage_year=2019, geo_key="CHN", owner_id=None, product="iron"),
             ],
-            key_regions={"CHN:CN-HE"},
+            key_regions={"CHN:CN-HE": "Jing-Jin-Ji", "CHN:CN-TJ": "Jing-Jin-Ji"},
         )
 
-    assert [c.vintage_year for c in pool.snapshot()] == [2018, 2019, 2021]
-    assert pool.total() == 3.5
-    assert pool.total_by_tag() == {"CHN:CN-HE": 2.0, None: 1.5}
-    assert "1 of 3 seeded credit(s) name no owner" in caplog.text
+    assert [c.vintage_year for c in pool.snapshot()] == [2018, 2019, 2020, 2021]
+    assert pool.total() == 5.0
+    # Member provinces share the cluster tag, so a Hebei build can spend a Tianjin credit
+    assert pool.total_by_tag() == {"Jing-Jin-Ji": 3.5, None: 1.5}
+    assert "1 of 4 seeded credit(s) name no owner" in caplog.text

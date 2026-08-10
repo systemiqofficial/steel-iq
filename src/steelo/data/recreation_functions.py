@@ -6,11 +6,13 @@ These functions were moved from cli.py to follow clean architecture principles.
 
 import csv
 import json
+import logging
 import shutil
 from pathlib import Path
 from typing import Any, Iterable
 from collections import defaultdict
 
+import pandas as pd
 import pycountry
 from rich.console import Console
 
@@ -40,6 +42,9 @@ from ..adapters.dataprocessing.excel_reader import (
     read_carbon_border_mechanisms,
     read_fallback_material_costs,
     read_willingness_to_pay,
+    read_capacity_pool_provinces,
+    read_capacity_pool_technologies,
+    read_capacity_pool_opening_credits,
 )
 from ..adapters.repositories.json_repository import (
     BiomassAvailabilityJsonRepository,
@@ -64,6 +69,9 @@ from ..adapters.repositories.json_repository import (
     CarbonBorderMechanismJsonRepository,
     FallbackMaterialCostJsonRepository,
     WillingnessToPayJsonRepository,
+    CapacityPoolProvinceJsonRepository,
+    CapacityPoolTechnologyJsonRepository,
+    CapacityPoolOpeningCreditJsonRepository,
 )
 from ..domain.calculate_costs import calculate_lcoh_from_electricity_country_level
 from .geo_hierarchy_overrides import (
@@ -73,6 +81,7 @@ from .geo_hierarchy_overrides import (
 )
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 
 def recreate_country_mappings_data(
@@ -1037,4 +1046,175 @@ def recreate_fallback_material_costs(
         f"[green]Created {fallback_material_costs_json_path.name} with "
         f"{len(fallback_costs)} fallback material cost entries[/green]"
     )
+    return repo
+
+
+def _chinese_capacity_pool_geo_keys() -> set[str]:
+    """The geo_keys of every Chinese first-order unit the model resolves.
+
+    Built with the same construction as ``build_geo_hierarchy`` (pycountry
+    first-order codes minus units owned as separate countries) because the
+    geo_hierarchy fixture is generated in a later preparation step and does
+    not exist yet when the capacity pool fixtures are recreated.
+    """
+    codes = _pycountry_top_level_codes("CN") - OWNED_AS_SEPARATE_COUNTRY.get("CN", set())
+    return {compose_geo_key("CHN", code) for code in codes}
+
+
+def _report_capacity_pool_issues(issues: list) -> None:
+    """Report validation issues: warnings are logged, errors fail recreation.
+
+    Raises:
+        ValueError: When any issue is an error, listing every error found.
+    """
+    warnings = [issue for issue in issues if issue.severity == "warning"]
+    errors = [issue for issue in issues if issue.severity == "error"]
+    if warnings:
+        console.print(f"[yellow]Capacity pool content gaps ({len(warnings)}) - fixtures still build:[/yellow]")
+    for issue in warnings:
+        console.print(f"[yellow]  {issue.sheet}: {issue.message}[/yellow]")
+        logger.warning("%s: %s", issue.sheet, issue.message)
+    if errors:
+        detail = "\n".join(f"{issue.sheet}: {issue.message}" for issue in errors)
+        raise ValueError(f"Capacity pool sheet validation failed:\n{detail}")
+
+
+def recreate_capacity_pool_provinces_data(
+    json_path: Path,
+    excel_path: Path,
+    sheet_name: str = "Capacity pool - CHN provinces",
+) -> CapacityPoolProvinceJsonRepository | None:
+    """Recreate the capacity pool provinces fixture from the master Excel file.
+
+    Args:
+        json_path: Path to the JSON fixture to write.
+        excel_path: Path to the master Excel file.
+        sheet_name: Name of the sheet (default: "Capacity pool - CHN provinces").
+
+    Returns:
+        The repository pointing at the written fixture, or None when the
+        optional sheet is absent — no fixture is written then, so a missing
+        fixture stays distinguishable from an empty one.
+
+    Raises:
+        ValueError: When the sheet is present but fails validation.
+    """
+    from ..capacity_policy.validation import validate_provinces
+
+    if sheet_name not in pd.ExcelFile(excel_path).sheet_names:
+        console.print(f"[yellow]Sheet '{sheet_name}' absent - not writing {json_path.name}[/yellow]")
+        return None
+
+    console.print(f"[blue]Reading capacity pool provinces from Excel[/blue]: {excel_path}")
+    rows = read_capacity_pool_provinces(excel_path, sheet_name=sheet_name)
+    _report_capacity_pool_issues(
+        validate_provinces(rows, chinese_geo_keys=_chinese_capacity_pool_geo_keys(), sheet=sheet_name)
+    )
+
+    repo = CapacityPoolProvinceJsonRepository(json_path)
+    repo.add_list(rows)
+    console.print(f"[green]Writing capacity pool provinces to[/green]: {json_path}")
+    return repo
+
+
+def recreate_capacity_pool_technologies_data(
+    json_path: Path,
+    excel_path: Path,
+    sheet_name: str = "Capacity pool - technologies",
+) -> CapacityPoolTechnologyJsonRepository | None:
+    """Recreate the capacity pool technologies fixture from the master Excel file.
+
+    Sheet names are validated against the same workbook's technology roster
+    (`Techno-economic details`) and reductant vocabulary (`Bill of Materials`).
+    Unauthored classification flags are content gaps: they warn here and only
+    block a run with the policy enabled. Alongside the fixture, the effective
+    transition-ratio grid implied by the flags and overrides is written as a
+    diagnostic CSV — generated, never authored.
+
+    Args:
+        json_path: Path to the JSON fixture to write.
+        excel_path: Path to the master Excel file.
+        sheet_name: Name of the sheet (default: "Capacity pool - technologies").
+
+    Returns:
+        The repository pointing at the written fixture, or None when the
+        optional sheet is absent (no fixture, no grid).
+
+    Raises:
+        ValueError: When the sheet is present but fails validation.
+    """
+    from ..capacity_policy.config import CapacityPolicyConfig
+    from ..capacity_policy.inputs import effective_ratio_grid
+    from ..capacity_policy.validation import validate_technologies
+
+    if sheet_name not in pd.ExcelFile(excel_path).sheet_names:
+        console.print(f"[yellow]Sheet '{sheet_name}' absent - not writing {json_path.name}[/yellow]")
+        return None
+
+    console.print(f"[blue]Reading capacity pool technologies from Excel[/blue]: {excel_path}")
+    rows = read_capacity_pool_technologies(excel_path, sheet_name=sheet_name)
+    techno_df = pd.read_excel(excel_path, sheet_name="Techno-economic details")
+    roster = set(techno_df["Technology"].dropna().astype(str).str.strip())
+    bom_df = pd.read_excel(excel_path, sheet_name="Bill of Materials")
+    vocabulary = set(bom_df["Reductant"].dropna().astype(str).str.strip())
+    _report_capacity_pool_issues(
+        validate_technologies(rows, technology_roster=roster, reductant_vocabulary=vocabulary, sheet=sheet_name)
+    )
+
+    repo = CapacityPoolTechnologyJsonRepository(json_path)
+    repo.add_list(rows)
+    console.print(f"[green]Writing capacity pool technologies to[/green]: {json_path}")
+
+    labels, grid = effective_ratio_grid(rows, CapacityPolicyConfig().replacement_ratio)
+    grid_path = json_path.parent / "capacity_pool_ratio_grid.csv"
+    with open(grid_path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["old route \\ new route"] + labels)
+        for label, line in zip(labels, grid):
+            writer.writerow([label] + line)
+    console.print(f"[green]Wrote effective ratio grid diagnostic to[/green]: {grid_path}")
+    return repo
+
+
+def recreate_capacity_pool_opening_credits_data(
+    json_path: Path,
+    excel_path: Path,
+    sheet_name: str = "Capacity pool - opening credits",
+) -> CapacityPoolOpeningCreditJsonRepository | None:
+    """Recreate the capacity pool opening-credits fixture from the master Excel file.
+
+    Args:
+        json_path: Path to the JSON fixture to write.
+        excel_path: Path to the master Excel file.
+        sheet_name: Name of the sheet (default: "Capacity pool - opening credits").
+
+    Returns:
+        The repository pointing at the written fixture, or None when the
+        optional sheet is absent — no fixture is written then.
+
+    Raises:
+        ValueError: When the sheet is present but fails validation.
+    """
+    from ..capacity_policy.validation import validate_opening_credits
+
+    if sheet_name not in pd.ExcelFile(excel_path).sheet_names:
+        console.print(f"[yellow]Sheet '{sheet_name}' absent - not writing {json_path.name}[/yellow]")
+        return None
+
+    console.print(f"[blue]Reading capacity pool opening credits from Excel[/blue]: {excel_path}")
+    rows = read_capacity_pool_opening_credits(excel_path, sheet_name=sheet_name)
+    techno_df = pd.read_excel(excel_path, sheet_name="Techno-economic details")
+    roster = set(techno_df["Technology"].dropna().astype(str).str.strip())
+    _report_capacity_pool_issues(
+        validate_opening_credits(
+            rows,
+            technology_roster=roster,
+            chinese_geo_keys=_chinese_capacity_pool_geo_keys(),
+            sheet=sheet_name,
+        )
+    )
+
+    repo = CapacityPoolOpeningCreditJsonRepository(json_path)
+    repo.add_list(rows)
+    console.print(f"[green]Writing capacity pool opening credits to[/green]: {json_path}")
     return repo

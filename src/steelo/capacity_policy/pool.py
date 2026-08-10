@@ -8,7 +8,7 @@ cleaner project can then claim, which is the swap regime doing its job.
 
 import logging
 from dataclasses import dataclass, replace
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +22,9 @@ class Credit:
     Attributes:
         amount_mt: Freed capacity in Mt.
         vintage_year: Year the capacity was retired; the pool consumes oldest first.
-        region_tag: Key-region geo_key (e.g. ``"CHN:CN-HE"``) when the retirement
-            happened in a key region, else None (untagged).
+        region_tag: Cluster name of the key region (e.g. ``"Jing-Jin-Ji"``) when
+            the retirement happened in one — member provinces share the tag, so
+            a Hebei build can spend a Tianjin credit — else None (untagged).
         owner_id: Depositing PlantGroup.plant_group_id, or None for seeded
             historical retirements that name no company. Unowned credits stay
             freely drawable regardless of the banked-credit rule.
@@ -215,14 +216,15 @@ class CapacityPool:
             blocked_reason=None,
         )
 
-    def seed_from(self, entries: Iterable[SeedEntry], key_regions: set[str]) -> None:
+    def seed_from(self, entries: Iterable[SeedEntry], key_regions: Mapping[str, str]) -> None:
         """Bulk-deposit historical retirements, deriving region tags at load time.
 
         Args:
             entries: Historical retirements; deposited in vintage order so the
                 queue stays age-ordered regardless of input order.
-            key_regions: geo_keys of the key regions; an entry whose geo_key is
-                in this set deposits a tagged credit, otherwise untagged.
+            key_regions: geo_key → cluster name for the key provinces; an entry
+                whose geo_key is a key province deposits a credit tagged with
+                its cluster name, otherwise untagged.
         """
         ordered = sorted(entries, key=lambda e: e.vintage_year)
         for entry in ordered:
@@ -230,7 +232,7 @@ class CapacityPool:
                 Credit(
                     amount_mt=entry.amount_mt,
                     vintage_year=entry.vintage_year,
-                    region_tag=entry.geo_key if entry.geo_key in key_regions else None,
+                    region_tag=key_regions.get(entry.geo_key),
                     owner_id=entry.owner_id,
                     product=entry.product,
                 )

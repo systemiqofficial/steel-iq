@@ -19,6 +19,7 @@ import sys
 from steelo.simulation_types import TechSettingsMap, get_default_technology_settings
 from steelo.utilities.memory_profiling import MemoryTracker
 
+from .capacity_policy.config import CapacityPolicyConfig
 from .domain import Year, PlantGroup
 from .domain.constants import CONSTRUCTION_TIME_DEFAULT, RANDOM_SEED_DEFAULT
 from .service_layer.message_bus import MessageBus
@@ -391,6 +392,10 @@ class SimulationConfig:
     # === Geospatial Module Parameters ===
     # Best locations for new plants
     geo_config: GeoConfig = field(default_factory=GeoConfig)
+
+    # === China capacity-replacement policy ===
+    # Dormant by default; data comes from the optional Capacity pool sheets
+    capacity_policy: CapacityPolicyConfig = field(default_factory=CapacityPolicyConfig)
     # New plant opening
     consideration_time: int = (
         3  # Minimum number of years a considered business opportunity needs to be NPV-positive before being announced
@@ -523,6 +528,9 @@ class SimulationConfig:
                 biomass_availability_path=fixtures_dir / "biomass_availability.json",
                 technology_emission_factors_path=fixtures_dir / "technology_emission_factors.json",
                 willingness_to_pay_path=fixtures_dir / "willingness_to_pay.json",
+                capacity_pool_provinces_path=fixtures_dir / "capacity_pool_provinces.json",
+                capacity_pool_technologies_path=fixtures_dir / "capacity_pool_technologies.json",
+                capacity_pool_opening_credits_path=fixtures_dir / "capacity_pool_opening_credits.json",
                 current_simulation_year=int(self.start_year),
             )
 

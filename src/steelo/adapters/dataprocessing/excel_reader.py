@@ -1,6 +1,6 @@
 import math
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -30,6 +30,7 @@ from steelo.domain import (
     WillingnessToPay,
 )
 from ...domain.models import TransportKPI, TechnologyEmissionFactors, FallbackMaterialCost
+from steelo.capacity_policy.inputs import OpeningCreditRow, RegionRow, TechnologyRow
 from ...domain.models import TechFinancingRates, RENEWABLES_KEY, HYDROGEN_KEY
 import logging
 
@@ -2992,3 +2993,233 @@ def read_willingness_to_pay(
 
     logger.info(f"Successfully read {len(willingness_to_pay_entries)} willingness to pay entries from '{sheet_name}'")
     return willingness_to_pay_entries
+
+
+def _read_capacity_pool_sheet(excel_path: Path, sheet_name: str, required_columns: set[str]) -> pd.DataFrame | None:
+    """Load one optional capacity pool sheet, checking its structure.
+
+    Args:
+        excel_path: Path to the master Excel file.
+        sheet_name: Sheet to load.
+        required_columns: Columns the sheet must carry when present.
+
+    Returns:
+        The sheet with fully-empty rows dropped, or None when the sheet is
+        absent — the sheets are optional, and absence means the fixture is
+        simply not produced.
+
+    Raises:
+        ValueError: If a present sheet is missing required columns.
+    """
+    try:
+        df = pd.read_excel(excel_path, sheet_name=sheet_name)
+    except ValueError:
+        logger.info(f"Sheet '{sheet_name}' not found in {excel_path} - capacity pool input not provided")
+        return None
+    missing = required_columns - set(df.columns)
+    if missing:
+        raise ValueError(f"Sheet '{sheet_name}' is missing required column(s): {sorted(missing)}")
+    return df.dropna(how="all")
+
+
+def _capacity_pool_str(value: Any) -> str | None:
+    """Return the stripped cell text, or None for a blank cell."""
+    if pd.isna(value):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _capacity_pool_flag(value: Any, sheet_name: str, row_num: int, column: str) -> bool | None:
+    """Parse a classification flag cell: TRUE/FALSE/1/0, blank means unauthored.
+
+    Raises:
+        ValueError: On any other value — a mistyped flag must not silently
+            become unauthored.
+    """
+    if pd.isna(value):
+        return None
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "1"):
+            return True
+        if lowered in ("false", "0"):
+            return False
+    elif isinstance(value, (bool, int, float)) and float(value) in (0.0, 1.0):
+        return bool(value)
+    raise ValueError(f"Sheet '{sheet_name}' row {row_num}: {column} must be TRUE/FALSE or blank, got {value!r}")
+
+
+def _capacity_pool_number(value: Any, sheet_name: str, row_num: int, column: str, *, as_int: bool = False) -> Any:
+    """Parse a required numeric cell, as float or int.
+
+    Raises:
+        ValueError: On a blank or non-numeric cell, or a fractional value
+            where an integer is required.
+    """
+    try:
+        if pd.isna(value):
+            raise ValueError
+        number = float(value)
+        if as_int:
+            if number != int(number):
+                raise ValueError
+            return int(number)
+        return number
+    except (TypeError, ValueError):
+        kind = "an integer" if as_int else "a number"
+        raise ValueError(f"Sheet '{sheet_name}' row {row_num}: {column} must be {kind}, got {value!r}")
+
+
+def read_capacity_pool_provinces(
+    excel_path: Path,
+    sheet_name: str = "Capacity pool - CHN provinces",
+) -> list[RegionRow]:
+    """Read the capacity pool provinces sheet from the master Excel file.
+
+    Args:
+        excel_path: Path to the master Excel file.
+        sheet_name: Name of the sheet (default: "Capacity pool - CHN provinces").
+
+    Returns:
+        One RegionRow per sheet row, in sheet order; empty when the optional
+        sheet is absent.
+
+    Raises:
+        ValueError: On structural problems within a present sheet (missing
+            columns, blank geo_key, non-integer from_year). Semantic checks
+            live in ``steelo.capacity_policy.validation``.
+    """
+    df = _read_capacity_pool_sheet(excel_path, sheet_name, {"geo_key", "region_name", "type"})
+    if df is None:
+        return []
+
+    rows = []
+    for idx, row in df.iterrows():
+        row_num = int(str(idx)) + 2
+        geo_key = _capacity_pool_str(row["geo_key"])
+        if geo_key is None:
+            raise ValueError(f"Sheet '{sheet_name}' row {row_num}: geo_key must not be blank")
+        from_year_raw = row.get("from_year")
+        rows.append(
+            RegionRow(
+                geo_key=geo_key,
+                region_name=_capacity_pool_str(row["region_name"]),
+                type=_capacity_pool_str(row["type"]),
+                from_year=None
+                if from_year_raw is None or pd.isna(from_year_raw)
+                else _capacity_pool_number(from_year_raw, sheet_name, row_num, "from_year", as_int=True),
+            )
+        )
+    logger.info(f"Successfully read {len(rows)} capacity pool province rows from '{sheet_name}'")
+    return rows
+
+
+def read_capacity_pool_technologies(
+    excel_path: Path,
+    sheet_name: str = "Capacity pool - technologies",
+) -> list[TechnologyRow]:
+    """Read the capacity pool technologies sheet from the master Excel file.
+
+    Args:
+        excel_path: Path to the master Excel file.
+        sheet_name: Name of the sheet (default: "Capacity pool - technologies").
+
+    Returns:
+        One TechnologyRow per sheet row (classification and override rows
+        alike), in sheet order; empty when the optional sheet is absent.
+
+    Raises:
+        ValueError: On structural problems within a present sheet (missing
+            columns, blank technology, unparseable flag or ratio). Semantic
+            checks live in ``steelo.capacity_policy.validation``.
+    """
+    df = _read_capacity_pool_sheet(
+        excel_path,
+        sheet_name,
+        {
+            "technology",
+            "product",
+            "reductant",
+            "is_emission_intense",
+            "is_deep_abatement",
+            "switching_to",
+            "swap_ratio",
+        },
+    )
+    if df is None:
+        return []
+
+    rows = []
+    for idx, row in df.iterrows():
+        row_num = int(str(idx)) + 2
+        technology = _capacity_pool_str(row["technology"])
+        if technology is None:
+            raise ValueError(f"Sheet '{sheet_name}' row {row_num}: technology must not be blank")
+        swap_ratio_raw = row["swap_ratio"]
+        rows.append(
+            TechnologyRow(
+                technology=technology,
+                product=_capacity_pool_str(row["product"]),
+                reductant=_capacity_pool_str(row["reductant"]),
+                is_emission_intense=_capacity_pool_flag(
+                    row["is_emission_intense"], sheet_name, row_num, "is_emission_intense"
+                ),
+                is_deep_abatement=_capacity_pool_flag(
+                    row["is_deep_abatement"], sheet_name, row_num, "is_deep_abatement"
+                ),
+                switching_to=_capacity_pool_str(row["switching_to"]),
+                swap_ratio=None
+                if pd.isna(swap_ratio_raw)
+                else _capacity_pool_number(swap_ratio_raw, sheet_name, row_num, "swap_ratio"),
+            )
+        )
+    logger.info(f"Successfully read {len(rows)} capacity pool technology rows from '{sheet_name}'")
+    return rows
+
+
+def read_capacity_pool_opening_credits(
+    excel_path: Path,
+    sheet_name: str = "Capacity pool - opening credits",
+) -> list[OpeningCreditRow]:
+    """Read the capacity pool opening-credits sheet from the master Excel file.
+
+    Args:
+        excel_path: Path to the master Excel file.
+        sheet_name: Name of the sheet (default: "Capacity pool - opening credits").
+
+    Returns:
+        One OpeningCreditRow per sheet row, in sheet order; empty when the
+        optional sheet is absent.
+
+    Raises:
+        ValueError: On structural problems within a present sheet (missing
+            columns, blank geo_key or product, non-numeric vintage or
+            capacity). Semantic checks live in
+            ``steelo.capacity_policy.validation``.
+    """
+    df = _read_capacity_pool_sheet(excel_path, sheet_name, {"vintage_year", "capacity_mt", "geo_key", "product"})
+    if df is None:
+        return []
+
+    rows = []
+    for idx, row in df.iterrows():
+        row_num = int(str(idx)) + 2
+        geo_key = _capacity_pool_str(row["geo_key"])
+        product = _capacity_pool_str(row["product"])
+        if geo_key is None or product is None:
+            raise ValueError(f"Sheet '{sheet_name}' row {row_num}: geo_key and product must not be blank")
+        rows.append(
+            OpeningCreditRow(
+                vintage_year=_capacity_pool_number(
+                    row["vintage_year"], sheet_name, row_num, "vintage_year", as_int=True
+                ),
+                capacity_mt=_capacity_pool_number(row["capacity_mt"], sheet_name, row_num, "capacity_mt"),
+                geo_key=geo_key,
+                product=product,
+                technology=_capacity_pool_str(row.get("technology")),
+                plant_group_id=_capacity_pool_str(row.get("plant_group_id")),
+            )
+        )
+    logger.info(f"Successfully read {len(rows)} capacity pool opening-credit rows from '{sheet_name}'")
+    return rows

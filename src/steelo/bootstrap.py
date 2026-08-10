@@ -300,6 +300,9 @@ def bootstrap_simulation(
             carbon_border_mechanisms_path=fixtures_dir / "carbon_border_mechanisms.json",
             fallback_material_costs_path=fixtures_dir / "fallback_material_costs.json",
             willingness_to_pay_path=fixtures_dir / "willingness_to_pay.json",
+            capacity_pool_provinces_path=fixtures_dir / "capacity_pool_provinces.json",
+            capacity_pool_technologies_path=fixtures_dir / "capacity_pool_technologies.json",
+            capacity_pool_opening_credits_path=fixtures_dir / "capacity_pool_opening_credits.json",
             current_simulation_year=int(config.start_year),
         )
 
