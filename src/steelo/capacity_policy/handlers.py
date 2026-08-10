@@ -5,9 +5,11 @@ inert until :func:`bind_capacity_policy` installs an evaluator and pool
 (bootstrapping, D8): until then — and whenever
 ``config.capacity_policy.enabled`` is False, since nothing binds a disabled
 policy — every handler returns immediately and behaviour is byte-identical.
-Once bound, only Chinese events act. The same binding drives
-:func:`replace_capacity_hook`, the pre-NPV ② REPLACE gate the plant agent
-threads into ``Plant.evaluate_furnace_group_strategy`` every evaluation.
+Once bound, only Chinese events act. The same binding drives the decision-path
+gates the plant agent threads on every evaluation: :func:`replace_capacity_hook`,
+the pre-NPV ② REPLACE gate on ``Plant.evaluate_furnace_group_strategy``, and
+:func:`expansion_capacity_hook`, the ③ INCREASE withdrawal gate on
+``PlantGroup.evaluate_expansion``.
 
 Each deposit logs the furnace group's ``chosen_reductant`` so, paired with the
 evaluation-side log in :mod:`.tree`, reductant drift between approval and
@@ -100,6 +102,94 @@ def replace_capacity_hook() -> Callable[..., float | None] | None:
         )
 
     return permitted_replace_capacity
+
+
+def expansion_capacity_hook() -> Callable[..., float | None] | None:
+    """Return the live ③ INCREASE expansion gate callable, or None while unbound.
+
+    The plant agent threads this value into ``PlantGroup.evaluate_expansion``
+    on every evaluation, so binding at bootstrap (D8) activates the gate
+    without reopening the domain module or the plant agent. Unbound — the
+    default, and always the case while ``config.capacity_policy.enabled`` is
+    False — the decision path receives None and behaves byte-identically.
+    """
+    policy = _policy
+    if policy is None:
+        return None
+
+    def permitted_expansion_capacity(
+        *,
+        iso3: str,
+        geo_unit: str | None,
+        technology: str,
+        reductant: str | None,
+        capacity: float,
+        product: str,
+        owner_id: str,
+        year: int,
+    ) -> float | None:
+        """Withdraw retirement credits for one approved expansion — branch ③ INCREASE.
+
+        Called at the point of commitment, after every other expansion check
+        has passed; capacities flow in model tonnes end-to-end (the pool's
+        ``amount_mt`` naming is a sheet-side convention). A non-Chinese
+        expansion passes through at its planned capacity without reaching the
+        evaluator or the pool. The owner partition lives in the pool — this
+        adapter only passes the withdrawing group and the year. The credit is
+        consumed at the decision, all-or-nothing: an expansion that later
+        fails to materialise has still spent it (accepted leak; the grant log
+        carries every consumed credit so the leak is quantifiable from a run).
+        None means the pool blocks the expansion this year.
+        """
+        if iso3 != "CHN":
+            return capacity
+        spec = policy.evaluator.on_increase(
+            geo_key=compose_geo_key(iso3, geo_unit),
+            product=product,
+            capacity_mt=capacity,
+            technology=technology,
+            reductant=reductant or None,
+        )
+        result = policy.pool.try_withdraw(
+            spec.withdraw_mt,
+            spec.region_tag,
+            product=spec.product,
+            owner_id=owner_id,
+            year=year,
+            single_owner=False,
+        )
+        if not result.granted:
+            logger.info(
+                "[CAPACITY POOL] gate=expansion decision=blocked reason=%s owner=%s geo_key=%s "
+                "technology=%s reductant=%s product=%s withdraw_mt=%.3f tag=%s year=%d",
+                result.blocked_reason,
+                owner_id,
+                compose_geo_key(iso3, geo_unit),
+                technology,
+                reductant,
+                spec.product,
+                spec.withdraw_mt,
+                spec.region_tag,
+                year,
+            )
+            return None
+        logger.info(
+            "[CAPACITY POOL] gate=expansion decision=granted owner=%s geo_key=%s technology=%s "
+            "reductant=%s product=%s withdraw_mt=%.3f build_mt=%.3f tag=%s year=%d credits_consumed=%s",
+            owner_id,
+            compose_geo_key(iso3, geo_unit),
+            technology,
+            reductant,
+            spec.product,
+            spec.withdraw_mt,
+            spec.build_mt,
+            spec.region_tag,
+            year,
+            [(c.owner_id, c.vintage_year, round(c.amount_mt, 6)) for c in result.credits_consumed],
+        )
+        return spec.build_mt
+
+    return permitted_expansion_capacity
 
 
 def _get_furnace_group(uow: UnitOfWork, furnace_group_id: str) -> FurnaceGroup:

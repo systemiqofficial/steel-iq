@@ -5767,6 +5767,7 @@ class PlantGroup:
         get_co2_headroom: Callable[[str, int, float], float] | None = None,
         get_co2_need_by_name: Callable[[str, float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
+        permitted_expansion_capacity: Callable[..., float | None] | None = None,
     ) -> commands.Command | None:
         """
         Evaluate and execute the most profitable furnace expansion across all plants in the plant group.
@@ -5785,7 +5786,9 @@ class PlantGroup:
         8. Check capacity limits (separate limits for iron vs steel, PAM share vs new plants)
         9. Validate plant exists and has location data
         10. Apply subsidies (CAPEX, debt) and calculate subsidized costs
-        11. Create and return AddFurnaceGroup command with all parameters
+        11. Withdraw from the China capacity pool when the policy gate is threaded
+            (blocked means no expansion this year; an emission-intense grant shrinks the build)
+        12. Create and return AddFurnaceGroup command with all parameters
 
         Args:
             price_series (dict[str, list[float]]): Product price forecasts by product type
@@ -5815,6 +5818,11 @@ class PlantGroup:
             capex_subsidies (dict[str, dict[str, list[Subsidy]]]): CAPEX subsidies by ISO3, technology, and subsidy
             opex_subsidies (dict[str, dict[str, list[Subsidy]]]): OPEX subsidies by ISO3, technology, and subsidy
             debt_subsidies (dict[str, dict[str, list[Subsidy]]]): Debt subsidies by ISO3, technology, and subsidy
+            permitted_expansion_capacity (Callable | None): China capacity-policy withdrawal gate,
+                called once at the point of commitment with the winning option's plain values
+                (capacities in model tonnes end-to-end). Returns the capacity the pool allows to
+                be built, or None when the withdrawal is blocked and no expansion happens this
+                year. None (the default) leaves the decision path untouched.
 
         Returns:
             commands.Command | None: AddFurnaceGroup command if expansion is approved, None otherwise.
@@ -6054,6 +6062,29 @@ class PlantGroup:
             logger.warning(f"[PG EXPANSION] ERROR - No product mapping for technology: {tech}")
             return None
         product = tech_to_product[tech]
+
+        # ========== STAGE 11.5: CHINA CAPACITY-POOL GATE ==========
+        # A threaded gate must withdraw matching retirement credits (model tonnes) at the
+        # point of commitment or the expansion is off this year; an emission-intense grant
+        # builds less than it withdrew, so equity follows the capacity actually built
+        if permitted_expansion_capacity is not None:
+            granted_capacity = permitted_expansion_capacity(
+                iso3=plant.location.iso3,
+                geo_unit=plant.location.geo_unit,
+                technology=tech,
+                reductant=chosen_reductant,
+                capacity=float(capacity),
+                product=product,
+                owner_id=self.plant_group_id,
+                year=int(current_year),
+            )
+            if granted_capacity is None:
+                logger.info("[PG EXPANSION] DECISION - No expansion (capacity pool blocked)")
+                return None
+            if granted_capacity != capacity:
+                capacity = Volumes(granted_capacity)
+                investment = capacity * capex
+                equity_needed = investment * equity_share
 
         # Log subsidy details being passed to command
         subsidy_details = []

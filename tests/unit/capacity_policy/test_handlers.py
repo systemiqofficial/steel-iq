@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from steelo.capacity_policy import CapacityPolicyConfig, CapacityPool, TreeEvaluator
+from steelo.capacity_policy import CapacityPolicyConfig, CapacityPool, Credit, TreeEvaluator
 from steelo.capacity_policy import handlers as cp_handlers
 from steelo.capacity_policy.inputs import RegionRow, TechnologyRow
 from steelo.domain import events
@@ -292,3 +292,62 @@ class TestReplaceCapacityHook:
             year=2025,
         )
         assert permitted == pytest.approx(2.0)
+
+
+def expansion_hook_call(hook, **overrides):
+    """Call the expansion gate with a granted-shape default, overrides on top."""
+    kwargs = dict(
+        iso3="CHN",
+        geo_unit="CN-GD",
+        technology="BF",
+        reductant="Coke+PCI",
+        capacity=3.0,
+        product="iron",
+        owner_id="E1",
+        year=2027,
+    )
+    kwargs.update(overrides)
+    return hook(**kwargs)
+
+
+class TestExpansionCapacityHook:
+    def test_unbound_accessor_returns_none(self):
+        """Unbound — every real run until D8 — the decision path receives None."""
+        assert cp_handlers.expansion_capacity_hook() is None
+
+    def test_bound_accessor_returns_a_callable(self, bound: CapacityPool):
+        assert callable(cp_handlers.expansion_capacity_hook())
+
+    def test_non_chinese_expansion_passes_through_untouched(self, bound: CapacityPool):
+        """Foreign expansions keep their capacity without reaching the evaluator or the
+        pool: an unknown technology would raise in the classification lookup."""
+        hook = cp_handlers.expansion_capacity_hook()
+        assert hook is not None
+        granted = expansion_hook_call(hook, iso3="DEU", geo_unit=None, technology="not-a-technology")
+        assert granted == 3.0
+        assert bound.total() == 0.0
+
+    def test_intense_grant_withdraws_planned_and_returns_penalised_build(self, bound: CapacityPool, caplog):
+        """An emission-intense build spends the full planned amount but may only build
+        the planned amount divided by the penalty divisor."""
+        bound.deposit(Credit(amount_mt=3.0, vintage_year=2020, region_tag=None, owner_id="E9", product="iron"))
+        hook = cp_handlers.expansion_capacity_hook()
+        assert hook is not None
+        with caplog.at_level(logging.INFO, logger="steelo.capacity_policy.handlers"):
+            granted = expansion_hook_call(hook)
+        assert granted == pytest.approx(2.0)
+        assert bound.total() == 0.0
+        assert "gate=expansion decision=granted" in caplog.text
+        assert "withdraw_mt=3.000" in caplog.text
+        assert "build_mt=2.000" in caplog.text
+
+    def test_blocked_short_pool_returns_none_with_reason(self, bound: CapacityPool, caplog):
+        bound.deposit(Credit(amount_mt=1.0, vintage_year=2020, region_tag=None, owner_id="E9", product="iron"))
+        hook = cp_handlers.expansion_capacity_hook()
+        assert hook is not None
+        with caplog.at_level(logging.INFO, logger="steelo.capacity_policy.handlers"):
+            granted = expansion_hook_call(hook)
+        assert granted is None
+        assert bound.total() == 1.0
+        assert "gate=expansion decision=blocked" in caplog.text
+        assert "reason=insufficient_applicable_pool" in caplog.text

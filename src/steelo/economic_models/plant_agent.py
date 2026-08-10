@@ -13,7 +13,7 @@ from steelo.adapters.geospatial.geospatial_statistics import (
     export_overbuild_factor_statistics_by_country,
 )
 from steelo.adapters.repositories.in_memory_repository import InMemoryRepository
-from steelo.capacity_policy.handlers import replace_capacity_hook
+from steelo.capacity_policy.handlers import expansion_capacity_hook, replace_capacity_hook
 from steelo.domain import Year
 from steelo.domain.commands import (
     AddFurnaceGroup,
@@ -974,6 +974,7 @@ class PlantAgentsModel:
                     get_co2_headroom=bus.env.get_co2_headroom,
                     get_co2_need_by_name=bus.env.get_co2_need_by_name,
                     co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
+                    permitted_expansion_capacity=expansion_capacity_hook(),
                 )
             ) is not None:
                 logger.info(f"[PAM] Plant group {pg.plant_group_id} expansion returned: {type(cmd).__name__}")
