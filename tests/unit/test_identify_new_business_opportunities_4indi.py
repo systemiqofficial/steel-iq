@@ -123,13 +123,12 @@ class TestSelectLocationSubset:
         assert len(subset["iron"]) == 3  # 50% of 6
 
     def test_empty_location_list(self):
-        """Test handling of empty location lists."""
+        """Empty location lists yield empty subsets without raising."""
         locations = {"steel": [], "iron": []}
 
-        # Function accesses locations[product][0] which will raise IndexError on empty list
-        # This is a bug in the implementation - it tries to log a sample location even when list is empty
-        with pytest.raises(IndexError):
-            select_location_subset(locations=locations, calculate_npv_pct=0.1)
+        subset = select_location_subset(locations=locations, calculate_npv_pct=0.1)
+
+        assert subset == {"steel": [], "iron": []}
 
     def test_single_location_with_low_percentage(self):
         """Test that at least 0 locations are selected when percentage results in < 1."""

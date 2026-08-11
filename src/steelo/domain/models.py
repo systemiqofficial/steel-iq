@@ -3136,7 +3136,7 @@ class FurnaceGroup:
                         f"[NEW PLANTS] Announcing the business opportunity for {self.technology} at ({location.lat}, {location.lon}) in {location.iso3} - NPV-positive for {consideration_time} years in a row."
                     )
                     return commands.UpdateFurnaceGroupStatus(
-                        fg_id=self.get_furnace_plant_id(), plant_id=self.furnace_group_id, new_status="announced"
+                        fg_id=self.furnace_group_id, plant_id=self.get_furnace_plant_id(), new_status="announced"
                     )
                 if status_stats is not None:
                     status_stats["announcement_probability_failed"] += 1
@@ -3149,7 +3149,7 @@ class FurnaceGroup:
                     f"[NEW PLANTS] Discarding the business opportunity for {self.technology} at ({location.lat}, {location.lon}) in {location.iso3} - NPV-negative for {consideration_time} years in a row."
                 )
                 return commands.UpdateFurnaceGroupStatus(
-                    fg_id=self.get_furnace_plant_id(), plant_id=self.furnace_group_id, new_status="discarded"
+                    fg_id=self.furnace_group_id, plant_id=self.get_furnace_plant_id(), new_status="discarded"
                 )
             else:
                 if status_stats is not None:
@@ -3218,7 +3218,7 @@ class FurnaceGroup:
             if status_stats is not None:
                 status_stats["tech_not_allowed"] += 1
             return commands.UpdateFurnaceGroupStatus(
-                fg_id=self.get_furnace_plant_id(), plant_id=self.furnace_group_id, new_status="discarded"
+                fg_id=self.furnace_group_id, plant_id=self.get_furnace_plant_id(), new_status="discarded"
             )
 
         # Get capacity from NEW PLANTS only (not expansions) and calculate limits
@@ -3267,8 +3267,8 @@ class FurnaceGroup:
                     if status_stats is not None:
                         status_stats["co2_storage_blocked"] += 1
                     return commands.UpdateFurnaceGroupStatus(
-                        fg_id=self.get_furnace_plant_id(),
-                        plant_id=self.furnace_group_id,
+                        fg_id=self.furnace_group_id,
+                        plant_id=self.get_furnace_plant_id(),
                         new_status="discarded",
                     )
 
@@ -3285,8 +3285,8 @@ class FurnaceGroup:
             if status_stats is not None:
                 status_stats["construction_started"] += 1
             return commands.UpdateFurnaceGroupStatus(
-                fg_id=self.get_furnace_plant_id(),
-                plant_id=self.furnace_group_id,
+                fg_id=self.furnace_group_id,
+                plant_id=self.get_furnace_plant_id(),
                 new_status="construction",
             )
 

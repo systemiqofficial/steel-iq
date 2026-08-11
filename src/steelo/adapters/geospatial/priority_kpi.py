@@ -98,7 +98,7 @@ def calculate_outgoing_cashflow_proxy(
     outgoing_cashflow = sum(cost_components.values())
     if not isinstance(outgoing_cashflow, xr.DataArray):
         outgoing_cashflow = xr.DataArray(outgoing_cashflow)
-    if outgoing_cashflow.all() == 0:
+    if bool((outgoing_cashflow.fillna(0) == 0).all()):
         raise ValueError("All locations have zero outgoing cashflow!")
     logger.info("Global average contribution to outgoing cashflow:")
     for component, value in cost_components.items():

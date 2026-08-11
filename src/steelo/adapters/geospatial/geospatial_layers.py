@@ -546,8 +546,17 @@ def add_grid_power_price(
     Note:
         For grid cells without a matching ISO3 code, the maximum grid price is used as a fallback.
     """
+    logger = logging.getLogger(f"{__name__}.add_grid_power_price")
     # Pixels carry only iso3; sub-national rows reach pixels via GEO, not this country grid price
     grid_price = pd.Series({iso3: input_costs[iso3][year]["electricity"] for iso3 in input_costs if ":" not in iso3})
+    fallback_mask = ~np.isin(ds["iso3"].values, grid_price.index.to_numpy()) & (ds["feasibility_mask"].values > 0)
+    fallback_count = int(fallback_mask.sum())
+    if fallback_count:
+        fallback_iso3 = sorted(set(ds["iso3"].values[fallback_mask].tolist()))
+        logger.warning(
+            f"[GEO LAYERS] {fallback_count} feasible cells have no grid price for iso3 {fallback_iso3}; "
+            f"assigning the maximum grid price as a never-site-here fallback."
+        )
     ds["grid_price"] = xr.apply_ufunc(
         lambda iso3: grid_price.loc[iso3]
         if (isinstance(iso3, str) and iso3 in grid_price.index and not pd.isna(iso3))
