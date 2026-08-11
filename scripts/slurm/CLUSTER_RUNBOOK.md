@@ -102,33 +102,52 @@ the job at 5 cores total.
 
 ## 4. Submit the sweep
 
-`scripts/slurm/run_seed_sweep.sbatch` is ready to go, minus these
-placeholders: `<PARTITION>`, `<ACCOUNT>`, `<your-email>`, and the paths under
-"Data" above if you regenerated data at a different location. Confirm with
-whoever admins `labgpu01` that its partition accepts CPU-only jobs — this
-model has no GPU dependency and the script doesn't request `--gres=gpu`.
+`scripts/slurm/run_seed_sweep.sbatch` runs the 5 seeds as a SLURM **job
+array** (`--array=0-4`, one independent task per seed, task_id -> seed =
+task_id + 1) rather than as 5 subprocesses sharing one job's resource
+allocation. That makes per-seed `--mem`/`--time` sizing tractable (one
+process's footprint, not a guessed aggregate for 5 concurrent growing
+processes) and means one seed timing out or OOMing doesn't take the other 4
+down with it.
 
 ```bash
 sbatch scripts/slurm/run_seed_sweep.sbatch
 ```
 
-**Resumable**: if the job dies (walltime, node failure), just `sbatch` it
-again. `run_sweep.py` skips any `run_id` whose `status.json` already says
-`"success"`, so a re-submit only redoes whatever didn't finish.
+Note the printed job ID (`<ARRAY_JOBID>`), then queue the analysis step to
+run once all 5 tasks are done, successfully or not — `analyze_seed_sensitivity.py`'s
+manifest reader already skips non-`"success"` rows, so e.g. 4/5 seeds still
+produces a valid, smaller analysis:
 
-The script requests `--cpus-per-task=5, --jobs=5, --threads-per-job=1` — one
-core per concurrent seed, matched exactly (each run is single-threaded since
-the annual simulation loop is strictly sequential; more cores per run doesn't
-speed one run up). Sized from locally observed numbers: ~9-10.7GB peak
-working set per run, ~9.5-10h wall time per seed on the machine this was
-developed on — actual cluster hardware may differ, adjust `--mem`/`--time` if
-the smoke test suggests otherwise.
+```bash
+sbatch --dependency=afterany:<ARRAY_JOBID> scripts/slurm/run_seed_sweep_analyze.sbatch
+```
+
+**Retrying a single failed/timed-out seed** (task IDs are 0-based, seed =
+task_id + 1) reuses the same fixed scratch output dir, so it only overwrites
+that seed's `run_000N` — the other already-succeeded runs are untouched:
+
+```bash
+sbatch --array=<TASK_ID> scripts/slurm/run_seed_sweep.sbatch
+# then re-run the analyze job, depending on the retry's job ID, to fold the fix in
+```
+
+Sizing: each array task requests `--cpus-per-task=1` — each run is
+single-threaded since the annual simulation loop is strictly sequential, more
+cores per run doesn't speed one run up. Budgeted from the smoke test (single
+process, 1 cpu, 2 years, 16G peak, 3h32m) with margin: `--mem=48G` (~3x, since
+memory likely grows with accumulated plants/locations over the full 25 years)
+and `--time=90:00:00` (~2x the naive 44h/seed linear extrapolation from the
+smoke test's per-year rate, since per-year cost likely isn't flat either).
+These are conservative estimates, not measurements — tighten them if you get
+a real `peak_rss_mb` reading from a full-length run.
 
 ## 5. Once it finishes
 
-The sbatch script's last steps already run `analyze_seed_sensitivity.py` and
-`rsync` everything back to `~/steel-iq/outputs/sensitivity/co2_ramp_seed_sweep/`
-on NFS home. Sanity-check the output:
+`run_seed_sweep_analyze.sbatch` merges each task's manifest fragment into one
+`manifest.csv`, runs `analyze_seed_sensitivity.py`, and `rsync`s everything
+back to `~/steel-iq/outputs/sensitivity/co2_ramp_seed_sweep/` on NFS home.
+Sanity-check the output:
 
 - **All 5 seeds actually diverge** (not identical to the decimal) — if they
   match exactly, either `probabilistic_agents=False` isn't behaving as
