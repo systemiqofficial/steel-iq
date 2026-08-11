@@ -300,6 +300,9 @@ def find_top_locations_per_country(
             if dfs_to_concat:
                 top_locations_wlottery = pd.concat(dfs_to_concat, ignore_index=True)
     top_values = top_wlottery.astype(bool)
+    # A cell can be both in the global top and its country's lottery; duplicate rows would
+    # consume sample slots downstream and double-weight exactly the already-best sites
+    top_locations_wlottery = top_locations_wlottery.drop_duplicates(subset=["Latitude", "Longitude"], ignore_index=True)
 
     return top_values, top_locations_wlottery
 
