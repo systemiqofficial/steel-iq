@@ -293,6 +293,7 @@ def calculate_distance_to_demand_and_feedstock(
     year: int,
     active_statuses: list[str],
     geo_paths: "GeoDataPaths",
+    end_year: int | None = None,
 ) -> tuple[xr.DataArray, xr.DataArray, xr.DataArray, xr.DataArray]:
     """
     Calculate the distance to demand centers and feedstock sources for iron and steel plants.
@@ -308,6 +309,9 @@ def calculate_distance_to_demand_and_feedstock(
         year: Year for which to calculate distances
         active_statuses: List of statuses considered as active (e.g., ["operating", "operating pre-retirement"])
         geo_paths: Paths to geospatial data files for plotting outputs
+        end_year: Simulation end year. The bubble-map file has no year suffix (each plot
+            overwrites the last), so it is plotted only when ``year == end_year``; if None,
+            every year is plotted.
 
     Returns:
         dist_to_ore_mines: DataArray of distances to iron ore mines (km)
@@ -342,13 +346,14 @@ def calculate_distance_to_demand_and_feedstock(
             continue
         iron_feedstock_locations_weight[supplier.location] = float(supplier.capacity_by_year[Year(year)])
     plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
-    plot_bubble_map(
-        data=iron_feedstock_locations_weight,
-        bubble_scaler=T_TO_MT,  # display in Mt
-        title="Iron Ore Mines and Their Capacities",
-        save_name="iron_ore_mines",
-        plot_paths=plot_paths_obj,
-    )
+    if end_year is None or year == end_year:
+        plot_bubble_map(
+            data=iron_feedstock_locations_weight,
+            bubble_scaler=T_TO_MT,  # display in Mt
+            title="Iron Ore Mines and Their Capacities",
+            save_name="iron_ore_mines",
+            plot_paths=plot_paths_obj,
+        )
     dist_to_ore_mines = distance_to_closest_location(
         iron_feedstock_locations_weight,
         target_lats=lats,
