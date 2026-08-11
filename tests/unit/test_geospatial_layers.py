@@ -790,3 +790,47 @@ def test_baseload_lcoe_interpolates_between_available_years(sample_dataset, mock
     prices = _lcoe_for_year(sample_dataset, mock_geo_paths, 2047)
 
     np.testing.assert_allclose(prices.values, 0.072)  # 80 -> 60 USD/MWh, 2/5 of the way
+
+
+def test_add_landtype_factor_fills_missing_coverage_with_neutral(sample_dataset, mock_geo_config, mock_geo_paths):
+    """Cells with no LULC coverage get the neutral minimum factor instead of NaN.
+
+    Notes:
+        Guards against zero coverage being mapped to NaN (which NaNed the whole
+        outgoing cashflow for the cell and silently removed it from the
+        candidate universe). Zeros and missing values must land on the neutral
+        minimum the docstring promises.
+    """
+    sample_dataset["feasibility_mask"] = (
+        ("lat", "lon"),
+        np.ones((len(sample_dataset.lat), len(sample_dataset.lon))),
+    )
+    mock_geo_paths.landtype_percentage_path = Mock(spec=Path)
+
+    landtype_labels = ["Cropland", "Tree Cover"]
+    landtype_data = np.zeros((len(landtype_labels), len(sample_dataset.lat), len(sample_dataset.lon)))
+    landtype_data[0, :, :] = 100.0  # 100% cropland everywhere...
+    landtype_data[:, 0, 0] = 0.0  # ...except one cell with no LULC data at all
+
+    mock_landtype = xr.DataArray(
+        landtype_data,
+        dims=["landtype", "lat", "lon"],
+        coords={
+            "landtype": landtype_labels,
+            "lat": sample_dataset.lat,
+            "lon": sample_dataset.lon,
+        },
+    )
+
+    with (
+        patch("xarray.open_dataarray") as mock_open_da,
+        patch("steelo.adapters.geospatial.geospatial_layers.plot_screenshot"),
+    ):
+        mock_open_da.return_value = mock_landtype
+
+        result = add_landtype_factor(sample_dataset, mock_geo_config, mock_geo_paths)
+
+    factors = result["landtype_factor"]
+    assert not np.any(np.isnan(factors.values))
+    assert factors.values[0, 0] == 1.0  # no-data cell lands on the neutral minimum
+    assert factors.values[1, 1] == pytest.approx(100.0 * 1.1)  # covered cells keep their factor

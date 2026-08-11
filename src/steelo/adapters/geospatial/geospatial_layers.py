@@ -1068,14 +1068,10 @@ def add_landtype_factor(ds: xr.Dataset, geo_config: "GeoConfig", geo_paths: "Geo
             factor = string_to_factor[landtype_str]
             landtype_factors += landtype_percentage.sel(landtype=landtype_str).values * factor
 
-    # Fill zeros with nans and ensure minimum value is 1
+    # Cells without LULC data (zero sum) and sub-1 factors land on the neutral minimum of 1.0
     landtype_factors = cast(
         np.ndarray[tuple[int, int], np.dtype[np.float32]],
-        np.where(landtype_factors == 0, np.nan, landtype_factors).astype(np.float32),
-    )
-    landtype_factors = cast(
-        np.ndarray[tuple[int, int], np.dtype[np.float32]],
-        np.where(landtype_factors < 1, 1, landtype_factors).astype(np.float32),
+        np.where(~(landtype_factors >= 1), 1.0, landtype_factors).astype(np.float32),
     )
 
     # Add landtype factors to the global grid
