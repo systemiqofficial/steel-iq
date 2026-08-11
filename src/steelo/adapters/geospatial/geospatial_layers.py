@@ -306,11 +306,10 @@ def add_feasibility_mask(ds: xr.Dataset, geo_config: "GeoConfig", geo_paths: "Ge
             plot_paths=plot_paths_obj,
         )
 
-        # Altitude
+        # Altitude (land at or below sea level is feasible; water is excluded by the land-sea mask)
         geopotential = terrain["z"]
         altitude = geopotential / GRAVITY_ACCELERATION  # Convert geopotential to altitude in meters
-        altitude_pos = altitude.where(altitude > 0)
-        altitude_bin = xr.where(altitude_pos < geo_config.max_altitude, 1, 0)
+        altitude_bin = xr.where(altitude < geo_config.max_altitude, 1, 0)
         plot_screenshot(
             altitude_bin,
             title="Binary Altitude",
@@ -547,17 +546,23 @@ def add_grid_power_price(
     Note:
         For grid cells without a matching ISO3 code, the maximum grid price is used as a fallback.
     """
+    logger = logging.getLogger(f"{__name__}.add_grid_power_price")
     # Pixels carry only iso3; sub-national rows reach pixels via GEO, not this country grid price
     grid_price = pd.Series({iso3: input_costs[iso3][year]["electricity"] for iso3 in input_costs if ":" not in iso3})
-    ds["grid_price"] = xr.apply_ufunc(
-        lambda iso3: grid_price.loc[iso3]
-        if (isinstance(iso3, str) and iso3 in grid_price.index and not pd.isna(iso3))
-        else grid_price.max(),
-        ds["iso3"],
-        vectorize=True,
-        dask="parallelized",
-        output_dtypes=[float],
-    )
+    iso3_vals = ds["iso3"].values
+    known_mask = np.isin(iso3_vals, grid_price.index.to_numpy())
+    fallback_mask = ~known_mask & (ds["feasibility_mask"].values > 0)
+    fallback_count = int(fallback_mask.sum())
+    if fallback_count:
+        fallback_iso3 = sorted(set(iso3_vals[fallback_mask].tolist()))
+        logger.warning(
+            f"[GEO LAYERS] {fallback_count} feasible cells have no grid price for iso3 {fallback_iso3}; "
+            f"assigning the maximum grid price as a never-site-here fallback."
+        )
+    # One reindex over the flattened grid replaces a per-cell Python lambda (~1M calls/year)
+    prices = grid_price.reindex(iso3_vals.ravel()).to_numpy(dtype=float)
+    prices[~known_mask.ravel()] = grid_price.max()
+    ds["grid_price"] = (("lat", "lon"), prices.reshape(iso3_vals.shape))
 
     plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
     plot_screenshot(
@@ -602,7 +607,7 @@ def add_power_price(
         Dataset with added 'power_price' variable containing combined power price (USD/kWh)
 
     Side Effects:
-        - Generates and saves plot of power prices (milestone years only) and histogram (every year)
+        - Generates and saves plot of power prices (milestone years only) and histogram (final year only)
 
     Note:
         The baseload LCOE is already calculated for the specified coverage percentage, so no additional
@@ -643,17 +648,18 @@ def add_power_price(
             save_name=f"power_price_100cov_{str(year)}",
             plot_paths=plot_paths_obj,
         )
-    p = int((1 - baseload_coverage) * 100)
-    plot_value_histogram(
-        ds,
-        var_name="power_price",
-        bins=100,
-        log_scale=True,
-        plot_paths=plot_paths_obj,
-        title="Power price distribution across feasible grid cells (USD/kWh)",
-        subtitle=f"Grid + baseload mix at {100 - p}% baseload + {p}% grid · year {year} · cell count on log scale",
-        xlabel="Power price (USD/kWh)",
-    )
+    if end_year is None or year == end_year:
+        p = int((1 - baseload_coverage) * 100)
+        plot_value_histogram(
+            ds,
+            var_name="power_price",
+            bins=100,
+            log_scale=True,
+            plot_paths=plot_paths_obj,
+            title="Power price distribution across feasible grid cells (USD/kWh)",
+            subtitle=f"Grid + baseload mix at {100 - p}% baseload + {p}% grid · year {year} · cell count on log scale",
+            xlabel="Power price (USD/kWh)",
+        )
 
     return ds
 
@@ -932,7 +938,7 @@ def add_transportation_costs(
 
     # Calculate distances to ore mines, iron plants, steel plants, and demand centers
     dist_to_ore_mines, dist_to_iron_plants, dist_to_steel_plants, dist_to_demand_centers = (
-        calculate_distance_to_demand_and_feedstock(repository, year, active_statuses, geo_paths)
+        calculate_distance_to_demand_and_feedstock(repository, year, active_statuses, geo_paths, end_year=end_year)
     )
     ds_ = xr.merge(
         [
@@ -1068,14 +1074,10 @@ def add_landtype_factor(ds: xr.Dataset, geo_config: "GeoConfig", geo_paths: "Geo
             factor = string_to_factor[landtype_str]
             landtype_factors += landtype_percentage.sel(landtype=landtype_str).values * factor
 
-    # Fill zeros with nans and ensure minimum value is 1
+    # Cells without LULC data (zero sum) and sub-1 factors land on the neutral minimum of 1.0
     landtype_factors = cast(
         np.ndarray[tuple[int, int], np.dtype[np.float32]],
-        np.where(landtype_factors == 0, np.nan, landtype_factors).astype(np.float32),
-    )
-    landtype_factors = cast(
-        np.ndarray[tuple[int, int], np.dtype[np.float32]],
-        np.where(landtype_factors < 1, 1, landtype_factors).astype(np.float32),
+        np.where(~(landtype_factors >= 1), 1.0, landtype_factors).astype(np.float32),
     )
 
     # Add landtype factors to the global grid

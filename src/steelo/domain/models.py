@@ -3136,7 +3136,7 @@ class FurnaceGroup:
                         f"[NEW PLANTS] Announcing the business opportunity for {self.technology} at ({location.lat}, {location.lon}) in {location.iso3} - NPV-positive for {consideration_time} years in a row."
                     )
                     return commands.UpdateFurnaceGroupStatus(
-                        fg_id=self.get_furnace_plant_id(), plant_id=self.furnace_group_id, new_status="announced"
+                        fg_id=self.furnace_group_id, plant_id=self.get_furnace_plant_id(), new_status="announced"
                     )
                 if status_stats is not None:
                     status_stats["announcement_probability_failed"] += 1
@@ -3149,7 +3149,7 @@ class FurnaceGroup:
                     f"[NEW PLANTS] Discarding the business opportunity for {self.technology} at ({location.lat}, {location.lon}) in {location.iso3} - NPV-negative for {consideration_time} years in a row."
                 )
                 return commands.UpdateFurnaceGroupStatus(
-                    fg_id=self.get_furnace_plant_id(), plant_id=self.furnace_group_id, new_status="discarded"
+                    fg_id=self.furnace_group_id, plant_id=self.get_furnace_plant_id(), new_status="discarded"
                 )
             else:
                 if status_stats is not None:
@@ -3218,7 +3218,7 @@ class FurnaceGroup:
             if status_stats is not None:
                 status_stats["tech_not_allowed"] += 1
             return commands.UpdateFurnaceGroupStatus(
-                fg_id=self.get_furnace_plant_id(), plant_id=self.furnace_group_id, new_status="discarded"
+                fg_id=self.furnace_group_id, plant_id=self.get_furnace_plant_id(), new_status="discarded"
             )
 
         # Get capacity from NEW PLANTS only (not expansions) and calculate limits
@@ -3267,8 +3267,8 @@ class FurnaceGroup:
                     if status_stats is not None:
                         status_stats["co2_storage_blocked"] += 1
                     return commands.UpdateFurnaceGroupStatus(
-                        fg_id=self.get_furnace_plant_id(),
-                        plant_id=self.furnace_group_id,
+                        fg_id=self.furnace_group_id,
+                        plant_id=self.get_furnace_plant_id(),
                         new_status="discarded",
                     )
 
@@ -3285,8 +3285,8 @@ class FurnaceGroup:
             if status_stats is not None:
                 status_stats["construction_started"] += 1
             return commands.UpdateFurnaceGroupStatus(
-                fg_id=self.get_furnace_plant_id(),
-                plant_id=self.furnace_group_id,
+                fg_id=self.furnace_group_id,
+                plant_id=self.get_furnace_plant_id(),
                 new_status="construction",
             )
 
@@ -6232,8 +6232,8 @@ class PlantGroup:
                         disposal_cost_outputs=disposal_cost_outputs,
                         derive_geo_unit=derive_geo_unit,
                     )
-                all_plant_ids.append(new_plant.plant_id)
-                new_plants.append(new_plant)
+                    all_plant_ids.append(new_plant.plant_id)
+                    new_plants.append(new_plant)
         candidate_stats["new_plants_created"] = len(new_plants)
         stats_payload = " ".join(f"{key}={value}" for key, value in candidate_stats.items())
         logger.info(f"operation=new_plant_candidate_summary {stats_payload}")
@@ -6390,7 +6390,9 @@ class PlantGroup:
                     # Apply energy carrier subsidies
                     active_energy_subs: dict[str, list] = {}
                     for carrier, carrier_subs in energy_subsidies.items():
-                        all_subs = carrier_subs.get(iso3, {}).get(fg.technology.name, [])
+                        all_subs = collect_subsidies_for_geo(carrier_subs, plant.location.geo_key).get(
+                            fg.technology.name, []
+                        )
                         active = filter_subsidies_for_year(all_subs, year)
                         if active:
                             active_energy_subs[carrier] = active

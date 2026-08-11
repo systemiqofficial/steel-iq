@@ -939,3 +939,96 @@ def test_update_costs_with_energy_subsidies(
     assert "natural_gas" in cmd.new_energy_costs
     assert "natural_gas" in cmd.new_output_energy_costs
     # BOM hydrogen should use subsidised input price
+
+
+def test_update_costs_with_province_scoped_energy_subsidies(
+    mock_custom_energy_costs,
+    capex_dict_all_locs,
+    cost_debt_all_locs,
+    iso3_to_region_map,
+):
+    """Province-scoped energy subsidies are collected via the plant's geo_key in the yearly refresh.
+
+    Notes:
+        The refresh must merge country and province subsidy rows exactly like
+        opportunity creation and PAM do (via collect_subsidies_for_geo); a
+        subsidy keyed "USA:US-TX" applies to a plant whose location carries
+        geo_unit "US-TX".
+    """
+    fg = get_furnace_group(
+        fg_id="fg_province_sub",
+        tech_name="DRI",
+        capacity=150,
+        lifetime=PointInTime(
+            current=Year(2025),
+            time_frame=TimeFrame(start=Year(2027), end=Year(2047)),
+            plant_lifetime=20,
+        ),
+        utilization_rate=0.7,
+    )
+    fg.status = "considered"
+    fg.cost_of_debt = 0.06
+    fg.technology.capex = 3000.0
+    fg.energy_costs = {"electricity": 60.0, "hydrogen": 5.0}
+    fg.energy_costs_no_subsidy = {"electricity": 60.0, "hydrogen": 5.0}
+    fg.output_energy_costs = {"electricity": 60.0, "hydrogen": 5.0}
+    fg.bill_of_materials = {
+        "energy": {
+            "electricity": {"unit_cost": 60.0, "demand": 0.4},
+            "hydrogen": {"unit_cost": 5.0, "demand": 0.8},
+        },
+        "materials": {
+            "iron_ore": {"unit_cost": 100.0, "demand": 1.5},
+        },
+    }
+
+    plant = get_plant(plant_id="plant_province_sub", furnace_groups=[fg])
+    plant.location = Location(
+        lat=31.0,
+        lon=-100.0,
+        country="USA",
+        region="Americas",
+        iso3="USA",
+        geo_unit="US-TX",
+    )
+
+    plant_group = PlantGroup(plant_group_id="test_group", plants=[plant])
+
+    h2_subsidy = Subsidy(
+        scenario_name="test",
+        iso3="USA:US-TX",
+        start_year=Year(2026),
+        end_year=Year(2035),
+        technology_name="DRI",
+        cost_item="hydrogen",
+        subsidy_type="absolute",
+        subsidy_amount=1.0,
+    )
+
+    energy_subsidies = {
+        "hydrogen": {
+            "USA:US-TX": {
+                "DRI": [h2_subsidy],
+            },
+        },
+    }
+
+    commands = plant_group.update_dynamic_costs_for_business_opportunities(
+        current_year=Year(2025),
+        consideration_time=3,
+        custom_energy_costs=mock_custom_energy_costs,
+        capex_dict_all_locs=capex_dict_all_locs,
+        cost_debt_all_locs=cost_debt_all_locs,
+        iso3_to_region_map=iso3_to_region_map,
+        global_risk_free_rate=0.02,
+        capex_subsidies={},
+        debt_subsidies={},
+        energy_subsidies=energy_subsidies,
+    )
+
+    assert len(commands) == 1
+    cmd = commands[0]
+    # Mock provides hydrogen=3.5; $1.0 absolute subsidy -> input 2.5, output 4.5
+    assert cmd.new_energy_costs["hydrogen"] == pytest.approx(2.5)
+    assert cmd.new_output_energy_costs["hydrogen"] == pytest.approx(4.5)
+    assert cmd.new_energy_costs_no_subsidy["hydrogen"] == pytest.approx(3.5)

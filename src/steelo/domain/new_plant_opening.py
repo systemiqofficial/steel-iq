@@ -45,7 +45,8 @@ def select_location_subset(
         logger.info(
             f"[NEW PLANTS] For {product}: Sampling n = {n} out of total locations = {len(locations.get(product, []))} for NPV calculation."
         )
-        logger.info(f"[NEW PLANTS] Sample {product} location: {locations[product][0]}")
+        if best_locations_subset[product]:
+            logger.info(f"[NEW PLANTS] Sample {product} location: {best_locations_subset[product][0]}")
     return best_locations_subset
 
 
@@ -214,6 +215,9 @@ def prepare_cost_data_for_business_opportunity(
             energy_costs_site = None
             if site["iso3"] not in energy_costs:
                 site_missing_fields.append("energy_costs")
+                incomplete_site = True
+            elif current_year not in energy_costs[site["iso3"]]:
+                site_missing_fields.append(f"energy_costs for year {current_year}")
                 incomplete_site = True
             else:
                 energy_costs_site = energy_costs[site["iso3"]][current_year].copy()  # Copy to avoid modifying original
@@ -415,7 +419,8 @@ def prepare_cost_data_for_business_opportunity(
                     )
 
     # Log error if more than 30% of the sampled locations have anomalous power prices
-    if anomalous_power_prices_count > len(sites) * 0.3:
+    total_sites = sum(len(product_sites) for product_sites in best_locations_subset.values())
+    if anomalous_power_prices_count > total_sites * 0.3:
         logger.error(
             """[NEW PLANTS] More than 30% of the sampled locations have power prices for the own power parc that differ from the local grid " \n
             power price by more than one OOM. Please check the units (expected in USD/kWh)."""
