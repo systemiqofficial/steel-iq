@@ -272,12 +272,14 @@ def prepare_cost_data_for_business_opportunity(
                 else:
                     cost_data[prod][site_id][tech]["railway_cost"] = site["rail_cost"]
 
-                # Apply energy carrier subsidies for this technology
+                # Apply energy carrier subsidies for this technology, filtered at the
+                # operating start year (matching PAM and the score-series window)
                 assert energy_costs_site is not None  # Help mypy understand the control flow
+                operating_start_year = Year(target_year + construction_time)
                 active_energy_subs: dict[str, list] = {}
                 for carrier, carrier_subs in energy_subsidies.items():
                     all_subs = cc.collect_subsidies_for_geo(carrier_subs, site_geo_key).get(tech, [])
-                    active = cc.filter_subsidies_for_year(all_subs, target_year)
+                    active = cc.filter_subsidies_for_year(all_subs, operating_start_year)
                     if active:
                         active_energy_subs[carrier] = active
 
@@ -287,7 +289,9 @@ def prepare_cost_data_for_business_opportunity(
                         active_energy_subs,
                     )
                     sub_summary = ", ".join(f"{len(s)} {c}" for c, s in active_energy_subs.items())
-                    logger.debug(f"[NEW PLANTS] {site['iso3']}/{tech} year={target_year} | Subs: {sub_summary}")
+                    logger.debug(
+                        f"[NEW PLANTS] {site['iso3']}/{tech} year={operating_start_year} | Subs: {sub_summary}"
+                    )
                 else:
                     energy_costs_tech = energy_costs_site
                     output_costs_tech = energy_costs_site

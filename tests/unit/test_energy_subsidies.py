@@ -910,3 +910,111 @@ def test_set_input_cost_indi_uses_no_subsidy_prices():
     assert fg.energy_costs["hydrogen"] == 3500.0
     # Other carriers should come from country-level input_costs
     assert fg.energy_costs["natural_gas"] == 0.025
+
+
+# ── prepare_cost_data_for_business_opportunity: subsidy filter year (B4) ─────
+
+
+def test_prepare_cost_data_filters_energy_subsidies_at_operating_start_year():
+    """Energy subsidies for the BOM choice are filtered at the operating start year.
+
+    With target_year=2030 and construction_time=2 the plant first operates in 2032:
+    a subsidy expiring in 2031 (during construction) must not price the BOM, while
+    one starting in 2032 must — matching PAM's operating_start_year filter and the
+    window the score series already uses.
+    """
+    from steelo.domain.new_plant_opening import (
+        prepare_cost_data_for_business_opportunity,
+        NewPlantLocation,
+    )
+
+    product_to_tech = {"steel": ["BF-BOF"]}
+    best_locations_subset = {
+        "steel": [
+            NewPlantLocation(
+                Latitude=40.0,
+                Longitude=-100.0,
+                iso3="USA",
+                power_price=0.05,
+                capped_lcoh=3.0,
+                rail_cost=10.0,
+            ),
+        ],
+    }
+    energy_costs = {
+        "USA": {
+            Year(2025): {
+                "electricity": 0.05,
+                "hydrogen": 3500.0,
+                "bf_gas": 0.02,
+            },
+        },
+    }
+
+    expired_during_construction = Subsidy(
+        scenario_name="test",
+        iso3="USA",
+        start_year=Year(2025),
+        end_year=Year(2031),
+        technology_name="BF-BOF",
+        cost_item="bf_gas",
+        subsidy_type="absolute",
+        subsidy_amount=0.005,
+    )
+    starts_at_operation = Subsidy(
+        scenario_name="test",
+        iso3="USA",
+        start_year=Year(2032),
+        end_year=Year(2040),
+        technology_name="BF-BOF",
+        cost_item="bf_gas",
+        subsidy_type="absolute",
+        subsidy_amount=0.004,
+    )
+    energy_subsidies = {
+        "bf_gas": {"USA": {"BF-BOF": [expired_during_construction, starts_at_operation]}},
+    }
+
+    def _get_bom(_energy_costs, tech, _capacity, _most_common_reductant=None):
+        """Minimal BOM mock."""
+        if tech == "BF-BOF":
+            return (
+                {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
+                0.85,
+                "coal",
+                {"scrap": 1.0},
+            )
+        return None, 0.0, None, {}
+
+    cost_data = prepare_cost_data_for_business_opportunity(
+        product_to_tech=product_to_tech,
+        best_locations_subset=best_locations_subset,
+        current_year=Year(2025),
+        target_year=Year(2030),
+        energy_costs=energy_costs,
+        capex_dict_all_locs_techs={"Americas": {"BF-BOF": 1000.0}},
+        cost_of_debt_all_locs={"USA": {"BF-BOF": 0.05}},
+        cost_of_equity_all_locs={"USA": {"BF-BOF": 0.08}},
+        fopex_all_locs_techs={"USA": {"bf-bof": 50.0}},
+        steel_plant_capacity=100.0,
+        get_bom_from_avg_boms=_get_bom,
+        plant_lifetime=20,
+        construction_time=2,
+        reductant_score_series=_stub_series,
+        iso3_to_region_map={"USA": "Americas"},
+        global_risk_free_rate=0.03,
+        capex_subsidies={},
+        debt_subsidies={},
+        opex_subsidies={},
+        energy_subsidies=energy_subsidies,
+        most_common_reductant={},
+        environment_most_common_reductant={},
+    )
+
+    tech_data = cost_data["steel"][(40.0, -100.0, "USA")]["BF-BOF"]
+
+    # Only the subsidy active at operating start (2032) applies: 0.02 - 0.004 = 0.016.
+    # The one expiring in 2031 (active at target_year 2030) must not.
+    assert tech_data["energy_costs"]["bf_gas"] == pytest.approx(0.016)
+    assert tech_data["output_costs"]["bf_gas"] == pytest.approx(0.024)
+    assert tech_data["no_subsidy_prices"]["bf_gas"] == pytest.approx(0.02)
