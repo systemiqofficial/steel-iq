@@ -161,7 +161,7 @@ def calculate_outgoing_cashflow_proxy(
 
 
 def extract_priority_locations(
-    ds: xr.Dataset, var_name: str, top_pct: int, random_seed: int, invert: bool = False
+    ds: xr.Dataset, var_name: str, top_pct: float, random_seed: int, invert: bool = False
 ) -> tuple[xr.DataArray, pd.DataFrame]:
     """
     Extract the locations of the top X% values for a given variable in the dataset.
@@ -288,7 +288,7 @@ def find_top_locations_per_country(
             top_values_iso3, top_locations_iso3 = extract_priority_locations(
                 ds_iso3,
                 f"outgoing_cashflow_{product}",
-                top_pct=int(priority_pct / 10),
+                top_pct=priority_pct / 10,
                 random_seed=random_seed,
                 invert=True,
             )
