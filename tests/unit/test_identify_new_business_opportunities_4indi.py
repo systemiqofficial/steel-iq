@@ -152,6 +152,40 @@ class TestSelectLocationSubset:
         assert len(subset["steel"]) == 0
         assert len(subset["iron"]) == 0
 
+    def test_full_percentage_selects_every_candidate(self):
+        """calculate_npv_pct=1.0 includes every candidate (just reordered, none dropped)."""
+        locations = {
+            "steel": [
+                NewPlantLocation(
+                    Latitude=40.0 + i,
+                    Longitude=-100.0 - i,
+                    iso3="USA",
+                    power_price=0.05,
+                    capped_lcoh=3.0,
+                    rail_cost=10.0,
+                )
+                for i in range(10)
+            ],
+            "iron": [
+                NewPlantLocation(
+                    Latitude=50.0 + i,
+                    Longitude=-110.0 - i,
+                    iso3="DEU",
+                    power_price=0.05,
+                    capped_lcoh=3.0,
+                    rail_cost=10.0,
+                )
+                for i in range(6)
+            ],
+        }
+
+        subset = select_location_subset(locations=locations, calculate_npv_pct=1.0)
+
+        # Every candidate is present (random.sample with n == population size drops nothing,
+        # just reorders), regardless of list order.
+        assert sorted(subset["steel"], key=lambda loc: loc["Latitude"]) == locations["steel"]
+        assert sorted(subset["iron"], key=lambda loc: loc["Latitude"]) == locations["iron"]
+
 
 class TestGetListOfAllowedTechsForTargetYear:
     """Tests for get_list_of_allowed_techs_for_target_year function."""
@@ -995,7 +1029,9 @@ class TestSelectTopOpportunitiesByNpv:
                 [0],  # Select first item for iron
             ]
 
-            top_opportunities = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1)
+            top_opportunities = select_top_opportunities_by_npv(
+                npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True
+            )
 
             # Verify top opportunities were selected
             assert "steel" in top_opportunities
@@ -1023,7 +1059,9 @@ class TestSelectTopOpportunitiesByNpv:
 
         # The function uses np.random.choice which will filter out invalid NPVs
         # Just verify it runs without error and returns valid results
-        top_opportunities = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1)
+        top_opportunities = select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True
+        )
 
         # Should have selected 1 opportunity from the 3 valid ones
         assert "steel" in top_opportunities
@@ -1050,7 +1088,9 @@ class TestSelectTopOpportunitiesByNpv:
             # Mock returns indices of selected items
             mock_choice.return_value = [0]  # Select first item
 
-            select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1)
+            select_top_opportunities_by_npv(
+                npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True
+            )
 
             # Verify np.random.choice was called with probabilities
             assert mock_choice.called
@@ -1073,6 +1113,7 @@ class TestSelectTopOpportunitiesByNpv:
         top_opportunities = select_top_opportunities_by_npv(
             npv_dict=npv_dict,
             top_n_loctechs_as_business_op=5,  # Request 5 but only 2 available
+            probabilistic_agents=True,
         )
 
         # Should return all available opportunities (2 location-tech pairs)
@@ -1085,7 +1126,9 @@ class TestSelectTopOpportunitiesByNpv:
 
         # Function raises ValueError when there are no valid NPVs
         with pytest.raises(ValueError, match="No valid NPVs found"):
-            select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=5)
+            select_top_opportunities_by_npv(
+                npv_dict=npv_dict, top_n_loctechs_as_business_op=5, probabilistic_agents=True
+            )
 
     def test_all_negative_npvs(self):
         """Test handling when all NPVs are negative but valid."""
@@ -1096,7 +1139,9 @@ class TestSelectTopOpportunitiesByNpv:
             }
         }
 
-        top_opportunities = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1)
+        top_opportunities = select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True
+        )
 
         # Rank weights are scale-free, so an all-negative pool still draws normally
         total_pairs = sum(len(techs) for site_techs in top_opportunities["steel"].values() for techs in [site_techs])
@@ -1110,7 +1155,9 @@ class TestSelectTopOpportunitiesByNpv:
             }
         }
 
-        top_opportunities = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1)
+        top_opportunities = select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True
+        )
 
         # Verify structure: product -> site_id -> tech -> NPV
         assert isinstance(top_opportunities, dict)
@@ -1494,7 +1541,7 @@ def test_selection_rank_weights_decrease_with_npv_rank():
 
     with patch("numpy.random.choice") as mock_choice:
         mock_choice.return_value = [0]
-        select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1)
+        select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True)
 
     (pool_size,), kwargs = mock_choice.call_args
     assert pool_size == 3
@@ -1515,7 +1562,9 @@ def test_selection_never_draws_beyond_the_trimmed_pool():
 
     np.random.seed(42)
     for _ in range(25):
-        selected = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1)
+        selected = select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True
+        )
         (npv,) = [npv for techs in selected["steel"].values() for npv in techs.values()]
         assert npv >= -3.0
 
@@ -1527,8 +1576,41 @@ def test_selection_is_deterministic_under_a_seed():
     npv_dict = _npv_dict_from_values([-600.0, -100.0, -400.0, -200.0, -500.0, -300.0])
 
     np.random.seed(123)
-    first = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=2)
+    first = select_top_opportunities_by_npv(
+        npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=True
+    )
     np.random.seed(123)
-    second = select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=2)
+    second = select_top_opportunities_by_npv(
+        npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=True
+    )
+
+    assert first == second
+
+
+def test_deterministic_mode_selects_top_n_by_npv():
+    """When probabilistic_agents is False, the top N by NPV are selected with no randomness."""
+    npv_dict = _npv_dict_from_values([-600.0, -100.0, -400.0, -200.0, -500.0, -300.0])
+
+    with patch("numpy.random.choice") as mock_choice:
+        selected = select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=False
+        )
+        # Deterministic mode must not touch the random draw at all
+        assert not mock_choice.called
+
+    selected_npvs = sorted(npv for techs in selected["steel"].values() for npv in techs.values())
+    assert selected_npvs == [-200.0, -100.0]
+
+
+def test_deterministic_mode_is_reproducible_without_seeding():
+    """Deterministic selection doesn't depend on RNG state at all."""
+    npv_dict = _npv_dict_from_values([-600.0, -100.0, -400.0, -200.0, -500.0, -300.0])
+
+    first = select_top_opportunities_by_npv(
+        npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=False
+    )
+    second = select_top_opportunities_by_npv(
+        npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=False
+    )
 
     assert first == second
