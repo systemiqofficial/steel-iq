@@ -5,7 +5,7 @@
 The new plant opening system transforms candidate locations into actual steel and iron plants through a multi-year business opportunity lifecycle. Companies identify promising locations, track their economic viability over time, announce viable projects, and eventually construct new facilities -all while accounting for uncertainty, capacity constraints, and changing market conditions.
 
 Business opportunities progress through the following stages:
-- **CONSIDERED**: Top location-technology pairs are identified based on NPV calculations and selected using weighted random sampling. Its NPV is recalculated annually with updated costs for several years; opportunities with consistently positive NPV advance to announcement (subject to probability filter), while consistently negative NPV leads to discard.
+- **CONSIDERED**: Top location-technology pairs are identified based on NPV calculations and selected using weighted random sampling (or, when `probabilistic_agents` is disabled, deterministically by highest NPV — see [Business Opportunity Identification](#business-opportunity-identification)). Its NPV is recalculated annually with updated costs for several years; opportunities with consistently positive NPV advance to announcement (subject to probability filter), while consistently negative NPV leads to discard.
 - **ANNOUNCED**: Project waits for construction start; dynamic costs continue to be updated annually; advancement to construction depends on technology remaining allowed, capacity limits, and probability filter.
 - **CONSTRUCTION**: Plant is being built over several years (handled by the plant agent model).
 - **OPERATING**: Plant is operational and removed from business opportunity tracking (fully handled by the plant agent model).
@@ -148,9 +148,9 @@ Filters technologies based on what will be allowed at the earliest possible cons
 Randomly samples a subset of top priority locations to reduce computational burden, since NPV calculations are resource-intensive.
 
 **Configuration:**
-- `calculate_npv_pct`: Percentage of locations to evaluate (default: 10%) out of the top X% extracted by the location priority selection (default: 5% of the world; see related documentation in [Priority Location Selection](priority_location_selection.md)). 
+- `calculate_npv_pct`: Percentage of locations to evaluate (default: 10%) out of the top X% extracted by the location priority selection (default: 5% of the world; see related documentation in [Priority Location Selection](priority_location_selection.md)).
 
-**Purpose:** Balance computational efficiency with coverage of good opportunities. Sampling 10% of 1000 candidate locations means evaluating 100 instead of all 1000.
+**Purpose:** Balance computational efficiency with coverage of good opportunities. Sampling 10% of 1000 candidate locations means evaluating 100 instead of all 1000. This step keeps its non-deterministic behavior for runtime efficiency — evaluating every candidate measured ~7x slower — since it is not thematically related to `probabilistic_agents`, which governs assessment of already-identified opportunities, not candidate selection.
 
 ### Step 3: Cost Data Preparation
 
@@ -203,16 +203,20 @@ Subsidies are often announced years before plants are built. Standard NPV using 
 
 **Function:** `select_top_opportunities_by_npv()`
 
-Selects top N location-technology combinations using **weighted random sampling** (instead of pure NPV ranking) to represent some randomness in human decision-making. Pure ranking would always select the absolute highest NPV locations. In reality, companies have geographic preferences, imperfect information, varying risk tolerance, and strategic considerations. Weighted random sampling ensures diversity while still strongly favoring high-NPV options.
+When `probabilistic_agents` is enabled (default), selects top N location-technology combinations using **rank-weighted random sampling** (instead of pure NPV ranking) to represent some randomness in human decision-making. Pure ranking would always select the absolute highest NPV locations. In reality, companies have geographic preferences, imperfect information, varying risk tolerance, and strategic considerations. Weighted random sampling ensures diversity while still strongly favoring high-NPV options. When `probabilistic_agents` is disabled, this step instead deterministically picks the top N by NPV — no random draw at all.
 
-**Process:**
+**Process (probabilistic_agents enabled):**
 - Filter out invalid NPVs (NaN or negative infinity from calculation failures)
-- Create weights from NPV values (shift negative NPVs to make all weights non-negative)
-- Normalize weights to probabilities
-- Randomly select top N opportunities with probability proportional to NPV
+- Rank valid candidates by NPV and trim to the best 3N (implausible sites can never be selected, regardless of NPV scale)
+- Assign linearly decreasing rank weights over the trimmed pool (best gets weight 3N, worst gets weight 1) and normalize to probabilities
+- Randomly draw N opportunities from the trimmed pool without replacement, with probability proportional to rank weight
 - If fewer valid pairs exist than requested, select all valid pairs
 
-**Purpose:** Creates geographic diversity in opportunities while maintaining economic rationality. Higher NPV opportunities have much higher selection probability, but mid-tier opportunities can also be selected.
+**Process (probabilistic_agents disabled):**
+- Filter out invalid NPVs (NaN or negative infinity from calculation failures)
+- Select the top N valid candidates by NPV directly
+
+**Purpose:** Creates geographic diversity in opportunities while maintaining economic rationality. Higher NPV opportunities have much higher selection probability, but mid-tier opportunities can also be selected. Disabling `probabilistic_agents` trades this realism for full determinism and reproducibility across runs/seeds.
 
 ## Business Opportunity Tracking
 **Function:** `update_status_of_business_opportunities()`
@@ -302,14 +306,15 @@ Models real-world risk factors: financing may fall through, permits may be denie
 | `plant_lifetime` | int | 20 years | Expected operational lifetime of plant |
 | `expanded_capacity` | float | 2.5 Mt/year | Standard capacity for new plants (same than for plant expansion) |
 | `top_n_loctechs_as_business_op` | int | 5 | Number of opportunities to track per product per year |
-| `calculate_npv_pct` | float | 0.1 | Percentage of priority locations to sample for NPV calculation (fixed) |
+| `calculate_npv_pct` | float | 0.1 | Percentage of priority locations to sample for NPV calculation (fixed; not gated by `probabilistic_agents` — evaluating all measured ~7x slower) |
 
 ### Probability Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `probability_of_announcement` | float | 0.7 | Chance viable opportunity is announced |
-| `probability_of_construction` | float | 0.9 | Chance announced project starts construction |
+| `probabilistic_agents` | bool | True | When True, Step 5 draws a rank-weighted mix of top opportunities; when False, Step 5 picks the top N by NPV deterministically. Does not affect Step 2's `calculate_npv_pct` sampling (kept probabilistic for runtime — see above) |
+| `probability_of_announcement` | float | 0.7 | Chance viable opportunity is announced. Forced to 1.0 when `probabilistic_agents` is False |
+| `probability_of_construction` | float | 0.9 | Chance announced project starts construction. Forced to 1.0 when `probabilistic_agents` is False |
 
 ### Capacity Limits
 

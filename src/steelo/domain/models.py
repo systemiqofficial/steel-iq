@@ -5997,6 +5997,7 @@ class PlantGroup:
         get_co2_need_by_name: Callable[[str, float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
         derive_geo_unit: Callable[[float, float, str], str | None] | None = None,
+        probabilistic_agents: bool = True,
     ) -> commands.Command:
         """
         Identifies new business opportunities for plants at given locations with specific technologies.
@@ -6049,6 +6050,11 @@ class PlantGroup:
             energy_subsidies: Dictionary mapping carrier -> iso3 -> tech -> list of energy subsidies
             derive_geo_unit: Optional ``(lat, lon, iso3) -> geo_unit | None`` derivation (injected
                 from the geospatial adapter) tagging each spawned plant's sub-national unit
+            probabilistic_agents: If True (default), step 5 draws a rank-weighted mix of top
+                opportunities. If False, step 5 deterministically picks the top N by NPV. Step 2's
+                location sampling is unaffected by this flag (measured ~7x runtime cost to evaluate
+                all candidates deterministically was judged not worth it — see
+                docs/domain_simulation_logic/geospatial_model/new_plant_opening.md).
 
         Returns:
             Command to add new Plant and FurnaceGroup objects for the identified business opportunities
@@ -6199,6 +6205,7 @@ class PlantGroup:
         top_business_opportunities = select_top_opportunities_by_npv(
             npv_dict=npv_dict,
             top_n_loctechs_as_business_op=top_n_loctechs_as_business_op,
+            probabilistic_agents=probabilistic_agents,
         )
         selected_counts, selected_total = _count_entries(top_business_opportunities)
         candidate_stats["selected_pairs_total"] = selected_total

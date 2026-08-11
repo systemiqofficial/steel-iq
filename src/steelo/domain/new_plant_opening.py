@@ -615,13 +615,18 @@ def validate_and_clean_cost_data(
 def select_top_opportunities_by_npv(
     npv_dict: dict[str, dict[Any, dict[str, float]]],
     top_n_loctechs_as_business_op: int,
+    probabilistic_agents: bool,
 ) -> dict[str, dict[tuple[float, float, str], dict[str, float]]]:
     """
-    Select top location-technology combinations with high NPVs using weighted random sampling to ensure mix of opportunities.
+    Select top location-technology combinations with high NPVs. When probabilistic_agents is True,
+    uses weighted random sampling to ensure a mix of opportunities; when False, picks the top N
+    by NPV deterministically.
 
     Args:
         npv_dict: Nested dictionary with NPV values (product -> site_id -> tech -> NPV)
         top_n_loctechs_as_business_op: Number of top location-technology combinations to select per product
+        probabilistic_agents: If True, rank-weighted random draw over the top 3N candidates (deliberate
+            realism - a mix of high and medium NPV options). If False, deterministic top-N by NPV.
 
     Returns:
         Dictionary mapping products to site IDs to technologies with their NPVs (product -> site_id (lat, lon, iso3) -> tech -> NPV)
@@ -635,17 +640,23 @@ def select_top_opportunities_by_npv(
 
     Notes:
         - Invalid NPV values (NaN, -inf) are removed before processing
-        - Candidates are ranked by NPV and only the best 3N enter a weighted draw with
-          linearly decreasing rank weights - a mix of high and medium NPV options rather
-          than only the highest, while implausible sites can never be selected
+        - When probabilistic_agents: candidates are ranked by NPV and only the best 3N enter a
+          weighted draw with linearly decreasing rank weights - a mix of high and medium NPV
+          options rather than only the highest, while implausible sites can never be selected
         - Rank weights are scale-free: the draw behaves identically for all-negative,
           mixed and all-positive pools
     """
     logger = logging.getLogger(f"{__name__}.select_top_opportunities_by_npv")
-    logger.info(
-        f"[NEW PLANTS] Drawing {top_n_loctechs_as_business_op} location-technology combinations per product from the "
-        f"top {3 * top_n_loctechs_as_business_op} by NPV (rank-weighted, without replacement)."
-    )
+    if probabilistic_agents:
+        logger.info(
+            f"[NEW PLANTS] Drawing {top_n_loctechs_as_business_op} location-technology combinations per product from the "
+            f"top {3 * top_n_loctechs_as_business_op} by NPV (rank-weighted, without replacement)."
+        )
+    else:
+        logger.info(
+            f"[NEW PLANTS] Selecting the top {top_n_loctechs_as_business_op} location-technology combinations "
+            "per product by NPV (deterministic)."
+        )
     top_business_opportunities: dict[str, dict[tuple[float, float, str], dict[str, float]]] = {}
 
     # Collect all valid (site_id, tech) pairs with their NPVs. Valid NPVs are those that are not NaN or -inf.
@@ -676,25 +687,34 @@ def select_top_opportunities_by_npv(
                 f"NPV dict for {product}: {npv_dict.get(product, {})}"
             )
 
-        # Trim to the plausible head of the pool, then draw with rank weights (best gets
-        # weight `trim`, worst weight 1). The former shift-by-min weighting degenerated
-        # to a near-uniform draw whenever the whole pool was negative.
         npvs_array = np.array(valid_npvs)
         ranked_indices = np.argsort(npvs_array)[::-1]
-        trim = min(len(ranked_indices), 3 * top_n_loctechs_as_business_op)
-        pool_indices = ranked_indices[:trim]
 
-        if trim > top_n_loctechs_as_business_op:
-            rank_weights = np.arange(trim, 0, -1, dtype=float)
-            probabilities = rank_weights / rank_weights.sum()
-            drawn = np.random.choice(trim, size=top_n_loctechs_as_business_op, replace=False, p=probabilities)
-            selected_pairs = [valid_pairs[pool_indices[i]] for i in drawn]
+        if probabilistic_agents:
+            # Trim to the plausible head of the pool, then draw with rank weights (best gets
+            # weight `trim`, worst weight 1). The former shift-by-min weighting degenerated
+            # to a near-uniform draw whenever the whole pool was negative.
+            trim = min(len(ranked_indices), 3 * top_n_loctechs_as_business_op)
+            pool_indices = ranked_indices[:trim]
+
+            if trim > top_n_loctechs_as_business_op:
+                rank_weights = np.arange(trim, 0, -1, dtype=float)
+                probabilities = rank_weights / rank_weights.sum()
+                drawn = np.random.choice(trim, size=top_n_loctechs_as_business_op, replace=False, p=probabilities)
+                selected_pairs = [valid_pairs[pool_indices[i]] for i in drawn]
+            else:
+                selected_pairs = [valid_pairs[i] for i in pool_indices]
+            logger.info(
+                f"[NEW PLANTS] {product}: drew {len(selected_pairs)} of {len(valid_pairs)} valid candidates "
+                f"(rank-weighted over the top {trim})."
+            )
         else:
-            selected_pairs = [valid_pairs[i] for i in pool_indices]
-        logger.info(
-            f"[NEW PLANTS] {product}: drew {len(selected_pairs)} of {len(valid_pairs)} valid candidates "
-            f"(rank-weighted over the top {trim})."
-        )
+            top_indices = ranked_indices[:top_n_loctechs_as_business_op]
+            selected_pairs = [valid_pairs[i] for i in top_indices]
+            logger.info(
+                f"[NEW PLANTS] {product}: selected top {len(selected_pairs)} of {len(valid_pairs)} valid candidates "
+                "by NPV (deterministic)."
+            )
 
         # Format selected (site, tech) pairs into business opportunities dict
         top_business_opportunities[product] = {}
