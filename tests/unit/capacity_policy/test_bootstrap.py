@@ -16,7 +16,7 @@ from steelo.adapters.repositories.json_repository import (
     CapacityPoolProvinceJsonRepository,
     CapacityPoolTechnologyJsonRepository,
 )
-from steelo.capacity_policy import CapacityPolicyConfig, CapacityPool, TreeEvaluator
+from steelo.capacity_policy import CapacityPolicyConfig, CapacityPolicyRecorder, CapacityPool, TreeEvaluator
 from steelo.capacity_policy import handlers as cp_handlers
 from steelo.capacity_policy.bootstrap import configure_capacity_policy
 from steelo.capacity_policy.inputs import OpeningCreditRow, RegionRow, TechnologyRow
@@ -151,7 +151,7 @@ def bind_stale_policy() -> None:
         [technology_rows()[0]],
         CapacityPolicyConfig(),
     )
-    cp_handlers.bind_capacity_policy(evaluator, CapacityPool())
+    cp_handlers.bind_capacity_policy(evaluator, CapacityPool(), CapacityPolicyRecorder())
 
 
 def test_disabled_configure_unbinds_stale_state(tmp_path):

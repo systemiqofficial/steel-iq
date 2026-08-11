@@ -14,7 +14,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from steelo.capacity_policy import CapacityPolicyConfig, CapacityPool, Credit, TreeEvaluator
+from steelo.capacity_policy import (
+    CapacityPolicyConfig,
+    CapacityPolicyRecorder,
+    CapacityPool,
+    Credit,
+    TreeEvaluator,
+)
 from steelo.capacity_policy import handlers as cp_handlers
 from steelo.capacity_policy.inputs import RegionRow, TechnologyRow
 from steelo.devdata import get_furnace_group, get_plant
@@ -74,9 +80,10 @@ def unbind_after_test():
 
 def bind_policy(pool: CapacityPool | None = None) -> CapacityPool:
     """Bind a real evaluator and pool; return the pool for asserts."""
-    evaluator = TreeEvaluator(REGIONS, TECHNOLOGIES, CapacityPolicyConfig())
+    recorder = CapacityPolicyRecorder()
+    evaluator = TreeEvaluator(REGIONS, TECHNOLOGIES, CapacityPolicyConfig(), recorder=recorder)
     pool = pool if pool is not None else CapacityPool()
-    cp_handlers.bind_capacity_policy(evaluator, pool)
+    cp_handlers.bind_capacity_policy(evaluator, pool, recorder)
     return pool
 
 
@@ -328,7 +335,7 @@ class TestNonChinesePassthrough:
         the evaluator or the pool."""
         evaluator = TreeEvaluator(REGIONS, TECHNOLOGIES, CapacityPolicyConfig())
         pool = CapacityPool()
-        cp_handlers.bind_capacity_policy(evaluator, pool)
+        cp_handlers.bind_capacity_policy(evaluator, pool, CapacityPolicyRecorder())
         on_increase_spy = mocker.spy(evaluator, "on_increase")
         try_withdraw_spy = mocker.spy(pool, "try_withdraw")
         group = make_group(iso3="IND", geo_unit=None, group_id="gem_foreign_exp")

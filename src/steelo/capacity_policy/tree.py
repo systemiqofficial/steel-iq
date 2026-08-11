@@ -17,6 +17,7 @@ from steelo.utilities.utils import normalize_name
 from .config import CapacityPolicyConfig
 from .inputs import RegionRow, TechnologyRow, is_delegation_row, resolve_swap_ratio, technologies_with_reductant_rows
 from .pool import Credit
+from .recorder import CapacityPolicyRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -74,17 +75,22 @@ class TreeEvaluator:
         regions: list[RegionRow],
         technologies: list[TechnologyRow],
         config: CapacityPolicyConfig,
+        *,
+        recorder: CapacityPolicyRecorder | None = None,
     ) -> None:
         """
         Args:
             regions: Rows of ``Capacity pool - CHN provinces``.
             technologies: Rows of ``Capacity pool - technologies``.
             config: The policy's scenario levers.
+            recorder: The run's observability recorder; None records nothing,
+                which keeps the evaluator usable as pure logic.
 
         Raises:
             ValueError: If a key-province row carries no cluster name.
         """
         self.config = config
+        self.recorder = recorder
         self.key_regions: dict[str, str] = {}
         for row in regions:
             if row.type == "key":
@@ -137,6 +143,7 @@ class TreeEvaluator:
         geo_key: str,
         historical_utilization: dict[int, float] | None,
         year: int,
+        furnace_group_id: str | None = None,
     ) -> float | None:
         """Resolve the capacity a replacement is allowed to build — branch ② REPLACE.
 
@@ -160,6 +167,8 @@ class TreeEvaluator:
             historical_utilization: Per-year recorded utilisation of the
                 group, or None when no history exists yet.
             year: Decision year.
+            furnace_group_id: The group under evaluation, for the log line and
+                the recorded row; None when the caller has no group in hand.
 
         Returns:
             The permitted new capacity in Mt, or None when the utilisation
@@ -172,8 +181,9 @@ class TreeEvaluator:
         """
         if self._utilization_blocks(historical_utilization, year):
             logger.info(
-                "[CAPACITY POOL] evaluation=replace decision=blocked_utilization geo_key=%s "
+                "[CAPACITY POOL] evaluation=replace decision=blocked_utilization fg=%s geo_key=%s "
                 "old=%s old_reductant=%s new=%s new_reductant=%s capacity_mt=%.3f year=%d",
+                furnace_group_id,
                 geo_key,
                 old_technology,
                 old_reductant,
@@ -181,6 +191,17 @@ class TreeEvaluator:
                 new_reductant,
                 capacity_mt,
                 year,
+            )
+            self._record_gate_decision(
+                year=year,
+                furnace_group_id=furnace_group_id,
+                geo_key=geo_key,
+                old_technology=old_technology,
+                old_reductant=old_reductant,
+                new_technology=new_technology,
+                new_reductant=new_reductant,
+                decision="blocked_utilization",
+                capacity_t=capacity_mt,
             )
             return None
         if geo_key in self._exempt:
@@ -201,8 +222,9 @@ class TreeEvaluator:
             ratio = resolved
         permitted = capacity_mt / ratio
         logger.info(
-            "[CAPACITY POOL] evaluation=replace decision=ratio geo_key=%s "
+            "[CAPACITY POOL] evaluation=replace decision=ratio fg=%s geo_key=%s "
             "old=%s old_reductant=%s new=%s new_reductant=%s ratio=%g capacity_mt=%.3f permitted_mt=%.3f year=%d",
+            furnace_group_id,
             geo_key,
             old_technology,
             old_reductant,
@@ -212,6 +234,19 @@ class TreeEvaluator:
             capacity_mt,
             permitted,
             year,
+        )
+        self._record_gate_decision(
+            year=year,
+            furnace_group_id=furnace_group_id,
+            geo_key=geo_key,
+            old_technology=old_technology,
+            old_reductant=old_reductant,
+            new_technology=new_technology,
+            new_reductant=new_reductant,
+            decision="ratio",
+            capacity_t=capacity_mt,
+            ratio=ratio,
+            permitted_t=permitted,
         )
         return permitted
 
@@ -261,6 +296,57 @@ class TreeEvaluator:
             region_tag=self.key_regions.get(geo_key),
             product=product,
         )
+
+    def _record_gate_decision(
+        self,
+        *,
+        year: int,
+        furnace_group_id: str | None,
+        geo_key: str,
+        old_technology: str,
+        old_reductant: str | None,
+        new_technology: str,
+        new_reductant: str | None,
+        decision: str,
+        capacity_t: float,
+        ratio: float | None = None,
+        permitted_t: float | None = None,
+    ) -> None:
+        """Record one evaluation, 1:1 with the line just logged.
+
+        The conservative fallback is carried as a flag on each side rather than
+        as its own row: the synthesis is cached once per technology, so a
+        separate row could never be joined back to the evaluations that rested
+        on it.
+        """
+        if self.recorder is None:
+            return
+        self.recorder.record_gate_decision(
+            year=year,
+            furnace_group_id=furnace_group_id,
+            geo_key=geo_key,
+            old_technology=old_technology,
+            old_reductant=old_reductant,
+            new_technology=new_technology,
+            new_reductant=new_reductant,
+            decision=decision,
+            capacity_t=capacity_t,
+            ratio=ratio,
+            permitted_t=permitted_t,
+            old_used_conservative_fallback=self._uses_conservative_fallback(old_technology, old_reductant),
+            new_used_conservative_fallback=self._uses_conservative_fallback(new_technology, new_reductant),
+        )
+
+    def _uses_conservative_fallback(self, technology: str, reductant: str | None) -> bool:
+        """Whether classifying this route lands on the worst-case synthesis.
+
+        Mirrors the resolution order in :meth:`_classification` without
+        touching it: only a reductant-split technology asked about with no
+        reductant, and with no blank-reductant row of its own, gets there.
+        """
+        if _lookup_reductant(reductant) is not None:
+            return False
+        return technology in self._reductant_split and (technology, None) not in self._classifications
 
     def _classification(self, technology: str, reductant: str | None) -> TechnologyRow:
         """Return the classification row for a route, most specific first.

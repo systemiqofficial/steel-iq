@@ -6,11 +6,12 @@ pool state can survive from a previous simulation in the same process
 (steeloweb, test suites), and a disabled run is guaranteed dormant even after
 an enabled one. With ``enabled=True`` it refuses to run without complete
 fixtures — never silent dormancy — re-runs the cross-row sheet validation with
-warnings promoted to errors, builds a fresh evaluator and pool from the
-fixtures and config, seeds the pool (converting the sheet's Mt into the model
-tonnes every runtime capacity flows in), and makes the single
-``bind_capacity_policy`` call that activates the deposit handlers and all
-three decision gates together.
+warnings promoted to errors, builds a fresh evaluator, pool and observability
+recorder from the fixtures and config, seeds the pool (converting the sheet's
+Mt into the model tonnes every runtime capacity flows in) and opens the ledger
+with those seed rows, and makes the single ``bind_capacity_policy`` call that
+activates the deposit handlers, all three decision gates and the CSV emission
+together.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from steelo.domain.constants import MT_TO_T
 from .config import CapacityPolicyConfig
 from .handlers import bind_capacity_policy, unbind_capacity_policy
 from .pool import CapacityPool, SeedEntry
+from .recorder import CapacityPolicyRecorder
 from .tree import TreeEvaluator
 from .validation import ValidationIssue, validate_opening_credits, validate_provinces, validate_technologies
 
@@ -110,7 +112,8 @@ def configure_capacity_policy(config: CapacityPolicyConfig, repository_json: "Js
         ]
     )
 
-    evaluator = TreeEvaluator(province_rows, technology_rows, config)
+    recorder = CapacityPolicyRecorder()
+    evaluator = TreeEvaluator(province_rows, technology_rows, config, recorder=recorder)
     pool = CapacityPool(
         inter_company_swap_cutoff_year=config.inter_company_swap_cutoff_year,
         banked_credit_rule=config.banked_credit_rule,
@@ -134,7 +137,18 @@ def configure_capacity_policy(config: CapacityPolicyConfig, repository_json: "Js
         len(entries),
     )
     pool.seed_from(entries, evaluator.key_regions)
-    bind_capacity_policy(evaluator, pool)
+    for entry in sorted(entries, key=lambda e: e.vintage_year):
+        recorder.record_ledger(
+            year=entry.vintage_year,
+            operation="seed",
+            amount_t=entry.amount_mt,
+            region_tag=evaluator.key_regions.get(entry.geo_key),
+            owner_id=entry.owner_id,
+            product=entry.product,
+            vintage_year=entry.vintage_year,
+            geo_key=entry.geo_key,
+        )
+    bind_capacity_policy(evaluator, pool, recorder)
     logger.info("[CAPACITY POOL] policy bound: deposits and all three gates are live for this run")
 
 

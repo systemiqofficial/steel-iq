@@ -15,10 +15,12 @@ circular import.
 
 from .config import CapacityPolicyConfig
 from .pool import CapacityPool, Credit, SeedEntry, WithdrawResult
+from .recorder import CapacityPolicyRecorder
 from .tree import TreeEvaluator, WithdrawSpec
 
 __all__ = [
     "CapacityPolicyConfig",
+    "CapacityPolicyRecorder",
     "CapacityPool",
     "Credit",
     "SeedEntry",

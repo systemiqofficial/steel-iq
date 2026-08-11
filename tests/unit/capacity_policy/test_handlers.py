@@ -1,11 +1,11 @@
-"""Tests for the deposit handlers: inert until bound, China-only, correct credits."""
+"""Tests for the deposit and motion handlers: inert until bound, China-only, correct rows."""
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pytest
 
-from steelo.capacity_policy import CapacityPolicyConfig, CapacityPool, Credit, TreeEvaluator
+from steelo.capacity_policy import CapacityPolicyConfig, CapacityPolicyRecorder, CapacityPool, Credit, TreeEvaluator
 from steelo.capacity_policy import handlers as cp_handlers
 from steelo.capacity_policy.inputs import RegionRow, TechnologyRow
 from steelo.domain import events
@@ -30,14 +30,29 @@ TECHNOLOGIES = [
 
 
 @dataclass
+class FakeTechnology:
+    name: str = "BF"
+    product: str = "iron"
+
+
+@dataclass
 class FakeFurnaceGroup:
     furnace_group_id: str
     chosen_reductant: str = "Coke+PCI"
+    technology: FakeTechnology = field(default_factory=FakeTechnology)
+
+
+@dataclass
+class FakeLocation:
+    iso3: str = "CHN"
+    geo_unit: str | None = "CN-HE"
 
 
 @dataclass
 class FakePlant:
     furnace_groups: list[FakeFurnaceGroup]
+    plant_id: str = "plant-1"
+    location: FakeLocation = field(default_factory=FakeLocation)
 
 
 @dataclass
@@ -47,10 +62,27 @@ class FakePlantsRepo:
     def list(self):
         return list(self.plants)
 
+    def get(self, plant_id: str) -> FakePlant:
+        return next(plant for plant in self.plants if plant.plant_id == plant_id)
+
+
+@dataclass
+class FakePlantGroup:
+    plant_group_id: str
+
+
+@dataclass
+class FakePlantGroupsRepo:
+    group_id: str = "E1"
+
+    def get_by_plant_id(self, plant_id: str) -> FakePlantGroup:
+        return FakePlantGroup(plant_group_id=self.group_id)
+
 
 class FakeUoW:
-    def __init__(self, furnace_groups: list[FakeFurnaceGroup]):
-        self.plants = FakePlantsRepo([FakePlant(furnace_groups=furnace_groups)])
+    def __init__(self, furnace_groups: list[FakeFurnaceGroup], *, iso3: str = "CHN"):
+        self.plants = FakePlantsRepo([FakePlant(furnace_groups=furnace_groups, location=FakeLocation(iso3=iso3))])
+        self.plant_groups = FakePlantGroupsRepo()
 
     def __enter__(self):
         return self
@@ -77,9 +109,14 @@ def pool() -> CapacityPool:
 
 
 @pytest.fixture
-def bound(pool: CapacityPool) -> CapacityPool:
-    evaluator = TreeEvaluator(REGIONS, TECHNOLOGIES, CapacityPolicyConfig())
-    cp_handlers.bind_capacity_policy(evaluator, pool)
+def recorder() -> CapacityPolicyRecorder:
+    return CapacityPolicyRecorder()
+
+
+@pytest.fixture
+def bound(pool: CapacityPool, recorder: CapacityPolicyRecorder) -> CapacityPool:
+    evaluator = TreeEvaluator(REGIONS, TECHNOLOGIES, CapacityPolicyConfig(), recorder=recorder)
+    cp_handlers.bind_capacity_policy(evaluator, pool, recorder)
     return pool
 
 
@@ -124,13 +161,23 @@ def renovated_event(
     )
 
 
-def make_uow() -> FakeUoW:
-    return FakeUoW([FakeFurnaceGroup(furnace_group_id="fg-1")])
+def added_event(is_new_plant: bool = False) -> events.FurnaceGroupAdded:
+    return events.FurnaceGroupAdded(
+        plant_id="plant-1",
+        furnace_group_id="fg-1",
+        technology_name="EAF",
+        capacity=4.0,
+        is_new_plant=is_new_plant,
+    )
+
+
+def make_uow(iso3: str = "CHN") -> FakeUoW:
+    return FakeUoW([FakeFurnaceGroup(furnace_group_id="fg-1")], iso3=iso3)
 
 
 class TestInertness:
     def test_registered_on_the_event_bus(self):
-        """The four handlers sit on EVENT_HANDLERS under their events."""
+        """Every handler sits on EVENT_HANDLERS under its event."""
         assert cp_handlers.deposit_on_furnace_group_closed in service_handlers.EVENT_HANDLERS[events.FurnaceGroupClosed]
         assert (
             cp_handlers.deposit_on_furnace_group_tech_changed
@@ -144,12 +191,49 @@ class TestInertness:
             cp_handlers.attribute_greenfield_on_furnace_group_added
             in service_handlers.EVENT_HANDLERS[events.FurnaceGroupAdded]
         )
+        assert (
+            cp_handlers.record_motion_on_furnace_group_closed
+            in service_handlers.EVENT_HANDLERS[events.FurnaceGroupClosed]
+        )
+        assert (
+            cp_handlers.record_motion_on_furnace_group_tech_changed
+            in service_handlers.EVENT_HANDLERS[events.FurnaceGroupTechChanged]
+        )
+        assert (
+            cp_handlers.record_motion_on_furnace_group_renovated
+            in service_handlers.EVENT_HANDLERS[events.FurnaceGroupRenovated]
+        )
+        assert (
+            cp_handlers.record_motion_on_furnace_group_added
+            in service_handlers.EVENT_HANDLERS[events.FurnaceGroupAdded]
+        )
+        assert cp_handlers.snapshot_pool_state in service_handlers.EVENT_HANDLERS[events.IterationOver]
+
+    def test_motion_records_after_the_greenfield_attribution(self):
+        """A credit-funded plant must already sit in its funding company when its
+        motion row reads the owner off group membership."""
+        added = service_handlers.EVENT_HANDLERS[events.FurnaceGroupAdded]
+        assert added.index(cp_handlers.record_motion_on_furnace_group_added) > added.index(
+            cp_handlers.attribute_greenfield_on_furnace_group_added
+        )
+
+    def test_snapshot_records_before_the_year_increment(self):
+        """finalise_iteration increments the year, so the snapshot must precede it."""
+        iteration_over = service_handlers.EVENT_HANDLERS[events.IterationOver]
+        assert iteration_over.index(cp_handlers.snapshot_pool_state) < iteration_over.index(
+            service_handlers.finalise_iteration
+        )
 
     def test_unbound_handlers_are_no_ops(self):
         """Unbound, the handlers return before touching uow, env or any pool."""
         cp_handlers.deposit_on_furnace_group_closed(closed_event(), uow=None, env=None)  # type: ignore[arg-type]
         cp_handlers.deposit_on_furnace_group_tech_changed(tech_changed_event(3.0, 2.0), uow=None, env=None)  # type: ignore[arg-type]
         cp_handlers.deposit_on_furnace_group_renovated(renovated_event(), uow=None, env=None)  # type: ignore[arg-type]
+        cp_handlers.record_motion_on_furnace_group_closed(closed_event(), uow=None, env=None)  # type: ignore[arg-type]
+        cp_handlers.record_motion_on_furnace_group_tech_changed(tech_changed_event(3.0, 2.0), uow=None, env=None)  # type: ignore[arg-type]
+        cp_handlers.record_motion_on_furnace_group_renovated(renovated_event(), uow=None, env=None)  # type: ignore[arg-type]
+        cp_handlers.record_motion_on_furnace_group_added(added_event(), uow=None, env=None)  # type: ignore[arg-type]
+        cp_handlers.snapshot_pool_state(events.IterationOver(time_step_increment=1, iron_price=1.0), env=None)  # type: ignore[arg-type]
 
     def test_bound_handlers_ignore_non_chinese_events(self, bound: CapacityPool):
         cp_handlers.deposit_on_furnace_group_closed(
@@ -281,7 +365,7 @@ class TestReplaceCapacityHook:
     def test_same_technology_shrinks_when_reline_counts_as_replace(self, pool: CapacityPool):
         """With the flag on, a BF→BF reline of an intense group derives 1.5:1 from the flags."""
         evaluator = TreeEvaluator(REGIONS, TECHNOLOGIES, CapacityPolicyConfig(reline_counts_as_replace=True))
-        cp_handlers.bind_capacity_policy(evaluator, pool)
+        cp_handlers.bind_capacity_policy(evaluator, pool, CapacityPolicyRecorder())
         hook = cp_handlers.replace_capacity_hook()
         assert hook is not None
         permitted = hook(
@@ -414,3 +498,195 @@ class TestGreenfieldCapacityHook:
         assert bound.total() == 0.0
         assert "gate=greenfield decision=granted" in caplog.text
         assert "attributed_owner=E_a" in caplog.text
+
+
+class TestGateLedgerRows:
+    """Each gate outcome writes exactly the ledger row its log line states."""
+
+    def test_granted_expansion_records_the_consumed_credits(
+        self, bound: CapacityPool, recorder: CapacityPolicyRecorder
+    ):
+        bound.deposit(Credit(amount_mt=2.0, vintage_year=2019, region_tag=None, owner_id="E_a", product="iron"))
+        bound.deposit(Credit(amount_mt=2.0, vintage_year=2020, region_tag=None, owner_id="E_b", product="iron"))
+        hook = cp_handlers.expansion_capacity_hook()
+        assert hook is not None
+
+        expansion_hook_call(hook)
+
+        (row,) = recorder._ledger
+        assert row["operation"] == "withdraw_expansion"
+        assert row["amount_t"] == pytest.approx(3.0)
+        assert row["owner_id"] == "E1"
+        assert row["geo_key"] == "CHN:CN-GD"
+        assert row["credits_consumed"] == '[["E_a",2019,null,2.0],["E_b",2020,null,1.0]]'
+
+    def test_blocked_expansion_records_the_refusal(self, bound: CapacityPool, recorder: CapacityPolicyRecorder):
+        hook = cp_handlers.expansion_capacity_hook()
+        assert hook is not None
+
+        expansion_hook_call(hook)
+
+        (row,) = recorder._ledger
+        assert row["operation"] == "blocked_expansion"
+        assert row["amount_t"] == pytest.approx(3.0)
+        assert row["blocked_reason"] == "insufficient_applicable_pool"
+        assert row["credits_consumed"] is None
+
+    def test_granted_greenfield_records_the_attributed_holder(
+        self, bound: CapacityPool, recorder: CapacityPolicyRecorder
+    ):
+        bound.deposit(Credit(amount_mt=3.0, vintage_year=2019, region_tag=None, owner_id="E_a", product="iron"))
+        hook = cp_handlers.greenfield_capacity_hook()
+        assert hook is not None
+
+        greenfield_hook_call(hook)
+
+        (row,) = recorder._ledger
+        assert row["operation"] == "withdraw_greenfield"
+        assert row["owner_id"] == "indi_CHN"
+        assert row["attributed_owner_id"] == "E_a"
+
+    def test_blocked_greenfield_records_the_single_owner_reason(
+        self, bound: CapacityPool, recorder: CapacityPolicyRecorder
+    ):
+        bound.deposit(Credit(amount_mt=2.0, vintage_year=2019, region_tag=None, owner_id="E_a", product="iron"))
+        bound.deposit(Credit(amount_mt=1.5, vintage_year=2020, region_tag=None, owner_id="E_b", product="iron"))
+        hook = cp_handlers.greenfield_capacity_hook()
+        assert hook is not None
+
+        greenfield_hook_call(hook)
+
+        (row,) = recorder._ledger
+        assert row["operation"] == "blocked_greenfield"
+        assert row["blocked_reason"] == "no_single_owner_with_sufficient_credits"
+
+    def test_non_chinese_gates_record_nothing(self, bound: CapacityPool, recorder: CapacityPolicyRecorder):
+        expansion = cp_handlers.expansion_capacity_hook()
+        greenfield = cp_handlers.greenfield_capacity_hook()
+        assert expansion is not None and greenfield is not None
+
+        expansion_hook_call(expansion, iso3="DEU", geo_unit=None, technology="not-a-technology")
+        greenfield_hook_call(greenfield, iso3="DEU", geo_unit=None, technology="not-a-technology")
+
+        assert recorder._ledger == []
+
+
+class TestDepositLedgerRows:
+    def test_closure_deposit_records_a_close_row(self, bound: CapacityPool, recorder: CapacityPolicyRecorder):
+        cp_handlers.deposit_on_furnace_group_closed(closed_event(), uow=make_uow(), env=FakeEnv())  # type: ignore[arg-type]
+        (row,) = recorder._ledger
+        assert row["operation"] == "deposit_close"
+        assert row["amount_t"] == pytest.approx(2.0)
+        assert row["region_tag"] == "Jing-Jin-Ji"
+        assert row["vintage_year"] == 2031
+        assert row["furnace_group_id"] == "fg-1"
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda: cp_handlers.deposit_on_furnace_group_tech_changed(
+                tech_changed_event(3.0, 2.0),
+                uow=make_uow(),  # type: ignore[arg-type]
+                env=FakeEnv(),  # type: ignore[arg-type]
+            ),
+            lambda: cp_handlers.deposit_on_furnace_group_renovated(
+                renovated_event(old_capacity=3.0, capacity=2.0),
+                uow=make_uow(),  # type: ignore[arg-type]
+                env=FakeEnv(),  # type: ignore[arg-type]
+            ),
+        ],
+    )
+    def test_both_shrink_paths_record_a_replace_row(self, bound: CapacityPool, recorder, call):
+        """A shrunk switch and a shrunk reline are the same ① RETIRE-side fact."""
+        call()
+        (row,) = recorder._ledger
+        assert row["operation"] == "deposit_replace"
+        assert row["amount_t"] == pytest.approx(1.0)
+
+    def test_unshrunk_switch_records_no_ledger_row(self, bound: CapacityPool, recorder: CapacityPolicyRecorder):
+        cp_handlers.deposit_on_furnace_group_tech_changed(tech_changed_event(2.0, 2.0), uow=make_uow(), env=FakeEnv())  # type: ignore[arg-type]
+        assert recorder._ledger == []
+
+
+class TestMotions:
+    def test_closure_records_the_closing_technology_and_capacity(
+        self, bound: CapacityPool, recorder: CapacityPolicyRecorder
+    ):
+        cp_handlers.record_motion_on_furnace_group_closed(closed_event(), uow=make_uow(), env=FakeEnv())  # type: ignore[arg-type]
+        (row,) = recorder._motions
+        assert row["kind"] == "close"
+        assert row["plant_id"] == "plant-1"
+        assert row["old_technology"] == "BF"
+        assert row["old_capacity_t"] == pytest.approx(2.0)
+        assert row["new_technology"] is None
+        assert row["geo_key"] == "CHN:CN-HE"
+        assert row["reductant"] == "Coke+PCI"
+
+    def test_switch_records_both_sides(self, bound: CapacityPool, recorder: CapacityPolicyRecorder):
+        cp_handlers.record_motion_on_furnace_group_tech_changed(
+            tech_changed_event(3.0, 2.0),
+            uow=make_uow(),  # type: ignore[arg-type]
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
+        (row,) = recorder._motions
+        assert row["kind"] == "switch"
+        assert (row["old_technology"], row["new_technology"]) == ("BF", "BF+CCS")
+        assert (row["old_capacity_t"], row["new_capacity_t"]) == (pytest.approx(3.0), pytest.approx(2.0))
+
+    def test_unshrunk_switch_is_still_a_motion(self, bound: CapacityPool, recorder: CapacityPolicyRecorder):
+        """The deposit handler returns early on a zero delta; the fleet still moved."""
+        cp_handlers.record_motion_on_furnace_group_tech_changed(
+            tech_changed_event(2.0, 2.0),
+            uow=make_uow(),  # type: ignore[arg-type]
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
+        assert len(recorder._motions) == 1
+
+    def test_renovation_records_a_renovate_row(self, bound: CapacityPool, recorder: CapacityPolicyRecorder):
+        cp_handlers.record_motion_on_furnace_group_renovated(
+            renovated_event(),
+            uow=make_uow(),  # type: ignore[arg-type]
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
+        (row,) = recorder._motions
+        assert row["kind"] == "renovate"
+
+    @pytest.mark.parametrize("is_new_plant, kind", [(False, "expansion"), (True, "greenfield")])
+    def test_added_splits_expansion_from_greenfield(self, bound: CapacityPool, recorder, is_new_plant, kind):
+        cp_handlers.record_motion_on_furnace_group_added(
+            added_event(is_new_plant=is_new_plant),
+            uow=make_uow(),  # type: ignore[arg-type]
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
+        (row,) = recorder._motions
+        assert row["kind"] == kind
+        assert row["new_technology"] == "EAF"
+        assert row["new_capacity_t"] == pytest.approx(4.0)
+        assert row["old_technology"] is None
+        assert row["owner_id"] == "E1"
+        assert row["product"] == "iron"
+
+    def test_non_chinese_events_record_no_motion(self, bound: CapacityPool, recorder: CapacityPolicyRecorder):
+        cp_handlers.record_motion_on_furnace_group_closed(
+            closed_event(iso3="DEU", geo_unit=None),
+            uow=make_uow(iso3="DEU"),  # type: ignore[arg-type]
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
+        cp_handlers.record_motion_on_furnace_group_added(
+            added_event(),
+            uow=make_uow(iso3="DEU"),  # type: ignore[arg-type]
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
+        assert recorder._motions == []
+
+
+class TestSnapshotHandler:
+    def test_bound_snapshot_labels_the_year_that_is_ending(self, bound: CapacityPool, recorder: CapacityPolicyRecorder):
+        bound.deposit(Credit(amount_mt=5.0, vintage_year=2030, region_tag=None, owner_id="E1", product="iron"))
+
+        cp_handlers.snapshot_pool_state(
+            events.IterationOver(time_step_increment=1, iron_price=1.0),
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
+
+        assert recorder._state[2031][0].amount_mt == pytest.approx(5.0)

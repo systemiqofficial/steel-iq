@@ -19,7 +19,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from steelo.capacity_policy import CapacityPolicyConfig, CapacityPool, Credit, TreeEvaluator
+from steelo.capacity_policy import (
+    CapacityPolicyConfig,
+    CapacityPolicyRecorder,
+    CapacityPool,
+    Credit,
+    TreeEvaluator,
+)
 from steelo.capacity_policy import handlers as cp_handlers
 from steelo.capacity_policy.inputs import RegionRow, TechnologyRow
 from steelo.devdata import get_furnace_group, get_plant
@@ -76,9 +82,10 @@ def positive_npv(mocker):
 
 def bind_policy(pool: CapacityPool | None = None) -> CapacityPool:
     """Bind a real evaluator and pool; return the pool for asserts."""
-    evaluator = TreeEvaluator(REGIONS, TECHNOLOGIES, CapacityPolicyConfig())
+    recorder = CapacityPolicyRecorder()
+    evaluator = TreeEvaluator(REGIONS, TECHNOLOGIES, CapacityPolicyConfig(), recorder=recorder)
     pool = pool if pool is not None else CapacityPool()
-    cp_handlers.bind_capacity_policy(evaluator, pool)
+    cp_handlers.bind_capacity_policy(evaluator, pool, recorder)
     return pool
 
 
@@ -228,7 +235,7 @@ class TestBoundGreenfieldGate:
     def test_non_chinese_opportunity_never_reaches_evaluator_or_pool(self, mocker):
         evaluator = TreeEvaluator(REGIONS, TECHNOLOGIES, CapacityPolicyConfig())
         pool = CapacityPool()
-        cp_handlers.bind_capacity_policy(evaluator, pool)
+        cp_handlers.bind_capacity_policy(evaluator, pool, CapacityPolicyRecorder())
         on_increase_spy = mocker.spy(evaluator, "on_increase")
         try_withdraw_spy = mocker.spy(pool, "try_withdraw")
         fg = make_opportunity()
@@ -385,7 +392,7 @@ class TestDiscardLeak:
         fg.capacity_pool_attributed_owner_id = "E_c"
 
         with caplog.at_level(logging.INFO, logger="steelo.capacity_policy.handlers"):
-            cp_handlers.note_greenfield_discard(fg, "CHN")
+            cp_handlers.note_greenfield_discard(fg, "CHN", "CN-HE", 2027)
 
         assert "event=greenfield_discarded" in caplog.text
         assert "leaked_withdraw_mt=2000000.000" in caplog.text
@@ -395,6 +402,24 @@ class TestDiscardLeak:
         fg = make_opportunity()
 
         with caplog.at_level(logging.INFO, logger="steelo.capacity_policy.handlers"):
-            cp_handlers.note_greenfield_discard(fg, "CHN")
+            cp_handlers.note_greenfield_discard(fg, "CHN", "CN-HE", 2027)
 
         assert "[CAPACITY POOL]" not in caplog.text
+
+    def test_bound_discard_records_the_leak_as_a_ledger_row(self):
+        """The leak becomes a run artefact, not just a log line — but it never
+        re-credits the pool, so it stays out of the reconciliation sum."""
+        bind_policy()
+        recorder = cp_handlers._policy.recorder
+        fg = make_opportunity()
+        fg.capacity_pool_granted_withdraw_mt = 2_000_000.0
+        fg.capacity_pool_attributed_owner_id = "E_c"
+
+        cp_handlers.note_greenfield_discard(fg, "CHN", "CN-HE", 2027)
+
+        (row,) = recorder._ledger
+        assert row["operation"] == "greenfield_discard"
+        assert row["amount_t"] == pytest.approx(2_000_000.0)
+        assert row["attributed_owner_id"] == "E_c"
+        assert row["geo_key"] == "CHN:CN-HE"
+        assert row["furnace_group_id"] == fg.furnace_group_id

@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from steelo.capacity_policy import CapacityPolicyConfig, CapacityPool, TreeEvaluator
+from steelo.capacity_policy import CapacityPolicyConfig, CapacityPolicyRecorder, CapacityPool, TreeEvaluator
 from steelo.capacity_policy import handlers as cp_handlers
 from steelo.capacity_policy.inputs import RegionRow, TechnologyRow
 from steelo.devdata import get_furnace_group, get_plant
@@ -112,11 +112,15 @@ def unbind_after_test():
 
 def bind_policy(*, reline_counts_as_replace: bool = False) -> tuple[TreeEvaluator, CapacityPool]:
     """Bind a real evaluator and pool; return both for spying and pool asserts."""
+    recorder = CapacityPolicyRecorder()
     evaluator = TreeEvaluator(
-        REGIONS, TECHNOLOGIES, CapacityPolicyConfig(reline_counts_as_replace=reline_counts_as_replace)
+        REGIONS,
+        TECHNOLOGIES,
+        CapacityPolicyConfig(reline_counts_as_replace=reline_counts_as_replace),
+        recorder=recorder,
     )
     pool = CapacityPool()
-    cp_handlers.bind_capacity_policy(evaluator, pool)
+    cp_handlers.bind_capacity_policy(evaluator, pool, recorder)
     return evaluator, pool
 
 

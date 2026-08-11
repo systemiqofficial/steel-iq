@@ -43,6 +43,7 @@ from steelo.domain.calculate_costs import (
     get_subsidised_energy_costs,
 )
 from .furnace_breakdown_logging_minimal import FurnaceBreakdownLogger
+from .capacity_policy.handlers import flush_capacity_policy_outputs
 
 if TYPE_CHECKING:
     from .adapters.repositories import Repository
@@ -1381,6 +1382,9 @@ class SimulationRunner:
         # Report completion once all years have been processed
         progress = Progress(start_year=start_year, end_year=end_year, current_year=end_year + 1)
         self.progress_callback(progress)
+
+        # China capacity policy (nothing recorded if policy is OFF)
+        flush_capacity_policy_outputs(self.config.output_dir)
 
         # Postprocessing
         output_path = extract_and_process_stored_dataCollection(

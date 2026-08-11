@@ -2,7 +2,7 @@
 
 import pytest
 
-from steelo.capacity_policy import CapacityPolicyConfig, TreeEvaluator
+from steelo.capacity_policy import CapacityPolicyConfig, CapacityPolicyRecorder, TreeEvaluator
 from steelo.capacity_policy.inputs import RegionRow, TechnologyRow
 
 
@@ -67,9 +67,13 @@ TECHNOLOGIES = [
 def make_evaluator(
     technologies: list[TechnologyRow] | None = None,
     config: CapacityPolicyConfig | None = None,
+    recorder: CapacityPolicyRecorder | None = None,
 ) -> TreeEvaluator:
     return TreeEvaluator(
-        REGIONS, TECHNOLOGIES if technologies is None else technologies, config or CapacityPolicyConfig()
+        REGIONS,
+        TECHNOLOGIES if technologies is None else technologies,
+        config or CapacityPolicyConfig(),
+        recorder=recorder,
     )
 
 
@@ -83,6 +87,7 @@ def permitted(
     geo_key: str = "CHN:CN-GD",
     historical_utilization: dict[int, float] | None = None,
     year: int = 2030,
+    furnace_group_id: str | None = None,
 ) -> float | None:
     """Call permitted_capacity with defaults suited to single-branch tests."""
     return evaluator.permitted_capacity(
@@ -94,6 +99,7 @@ def permitted(
         geo_key=geo_key,
         historical_utilization=historical_utilization,
         year=year,
+        furnace_group_id=furnace_group_id,
     )
 
 
@@ -336,3 +342,79 @@ class TestConservativeFallback:
         """The fallback covers the no-hypothesis case only, never a named sheet gap."""
         with pytest.raises(ValueError, match="No classification row"):
             permitted(make_evaluator(), new_technology="DRI", new_reductant="Natural gas")
+
+
+class TestRecordedGateDecisions:
+    """One row per evaluation, 1:1 with the line the evaluator logs."""
+
+    def test_a_ratio_evaluation_records_its_resolved_numbers(self):
+        recorder = CapacityPolicyRecorder()
+        evaluator = make_evaluator(recorder=recorder)
+
+        permitted(evaluator, new_technology="DRI", new_reductant="Coal", furnace_group_id="fg-1")
+
+        (row,) = recorder._gate_decisions
+        assert row["decision"] == "ratio"
+        assert row["furnace_group_id"] == "fg-1"
+        assert row["geo_key"] == "CHN:CN-GD"
+        assert row["ratio"] == pytest.approx(1.5)
+        assert row["capacity_t"] == pytest.approx(3.0)
+        assert row["permitted_t"] == pytest.approx(2.0)
+
+    def test_a_utilisation_block_records_without_a_ratio(self):
+        recorder = CapacityPolicyRecorder()
+        evaluator = make_evaluator(recorder=recorder)
+
+        permitted(evaluator, historical_utilization={2029: 0.1, 2030: 0.1}, furnace_group_id="fg-2")
+
+        (row,) = recorder._gate_decisions
+        assert row["decision"] == "blocked_utilization"
+        assert row["ratio"] is None
+        assert row["permitted_t"] is None
+
+    def test_every_evaluation_records_exactly_one_row(self):
+        recorder = CapacityPolicyRecorder()
+        evaluator = make_evaluator(recorder=recorder)
+
+        permitted(evaluator, new_technology="EAF")
+        permitted(evaluator, new_technology="BF+CCS")
+        permitted(evaluator, historical_utilization={2029: 0.1, 2030: 0.1})
+
+        assert len(recorder._gate_decisions) == 3
+
+    def test_a_refused_evaluation_records_nothing(self):
+        """A sheet gap raises before either log line, so no row is written."""
+        recorder = CapacityPolicyRecorder()
+        evaluator = make_evaluator(recorder=recorder)
+
+        with pytest.raises(ValueError):
+            permitted(evaluator, new_technology="DRI", new_reductant="Natural gas")
+
+        assert recorder._gate_decisions == []
+
+    def test_the_fallback_flag_marks_only_the_unresolved_side(self):
+        recorder = CapacityPolicyRecorder()
+        evaluator = make_evaluator(recorder=recorder)
+
+        permitted(evaluator, new_technology="DRI", new_reductant=None)
+
+        (row,) = recorder._gate_decisions
+        assert row["new_used_conservative_fallback"] is True
+        assert row["old_used_conservative_fallback"] is False
+
+    @pytest.mark.parametrize(
+        "new_technology, new_reductant",
+        [("DRI", "Coal"), ("BF+CCS", None)],
+        ids=["named-reductant-row", "technology-wide-row"],
+    )
+    def test_an_authored_row_is_not_a_fallback(self, new_technology, new_reductant):
+        recorder = CapacityPolicyRecorder()
+        evaluator = make_evaluator(recorder=recorder)
+
+        permitted(evaluator, new_technology=new_technology, new_reductant=new_reductant)
+
+        (row,) = recorder._gate_decisions
+        assert row["new_used_conservative_fallback"] is False
+
+    def test_no_recorder_still_evaluates(self):
+        assert permitted(make_evaluator()) == pytest.approx(3.0)

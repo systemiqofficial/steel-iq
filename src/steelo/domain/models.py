@@ -4205,6 +4205,7 @@ class Plant:
                     capacity=float(furnace_group.capacity),
                     historical_utilization=furnace_group.historical_utilization,
                     year=int(current_year),
+                    furnace_group_id=furnace_group_id,
                 )
                 if permitted is None:
                     continue
