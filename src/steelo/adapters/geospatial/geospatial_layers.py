@@ -306,11 +306,10 @@ def add_feasibility_mask(ds: xr.Dataset, geo_config: "GeoConfig", geo_paths: "Ge
             plot_paths=plot_paths_obj,
         )
 
-        # Altitude
+        # Altitude (land at or below sea level is feasible; water is excluded by the land-sea mask)
         geopotential = terrain["z"]
         altitude = geopotential / GRAVITY_ACCELERATION  # Convert geopotential to altitude in meters
-        altitude_pos = altitude.where(altitude > 0)
-        altitude_bin = xr.where(altitude_pos < geo_config.max_altitude, 1, 0)
+        altitude_bin = xr.where(altitude < geo_config.max_altitude, 1, 0)
         plot_screenshot(
             altitude_bin,
             title="Binary Altitude",

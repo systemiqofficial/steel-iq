@@ -834,3 +834,46 @@ def test_add_landtype_factor_fills_missing_coverage_with_neutral(sample_dataset,
     assert not np.any(np.isnan(factors.values))
     assert factors.values[0, 0] == 1.0  # no-data cell lands on the neutral minimum
     assert factors.values[1, 1] == pytest.approx(100.0 * 1.1)  # covered cells keep their factor
+
+
+def test_add_feasibility_mask_keeps_land_at_or_below_sea_level(sample_dataset, mock_geo_config, mock_geo_paths):
+    """Land cells at 0 m or below sea level are feasible; only max_altitude excludes by height.
+
+    Notes:
+        Guards against the former ``altitude.where(altitude > 0)`` clause, which
+        turned coastal and below-sea-level land (grid-mean altitude <= 0 m) into
+        NaN and thereby marked it infeasible. Water stays excluded via the
+        land-sea mask, high terrain via max_altitude.
+    """
+    from steelo.domain.constants import GRAVITY_ACCELERATION
+
+    n_lat, n_lon = len(sample_dataset.lat), len(sample_dataset.lon)
+    altitude = np.full((1, n_lat, n_lon), 100.0)
+    altitude[0, 0, 0] = 0.0  # coastal land at exactly sea level
+    altitude[0, 0, 1] = -300.0  # below-sea-level land (e.g. polder)
+    altitude[0, 0, 2] = 5000.0  # above max_altitude -> infeasible
+
+    mock_terrain = xr.Dataset(
+        {
+            "z": (("valid_time", "latitude", "longitude"), altitude * GRAVITY_ACCELERATION),
+            "slor": (("valid_time", "latitude", "longitude"), np.full((1, n_lat, n_lon), 0.001)),
+            "lsm": (("valid_time", "latitude", "longitude"), np.ones((1, n_lat, n_lon))),  # all land
+        }
+    )
+    mock_terrain.coords["valid_time"] = [0]
+    mock_terrain.coords["latitude"] = sample_dataset.lat.values
+    mock_terrain.coords["longitude"] = sample_dataset.lon.values
+
+    with (
+        patch("xarray.open_dataset") as mock_open,
+        patch("steelo.adapters.geospatial.geospatial_layers.plot_screenshot"),
+        patch.object(xr.DataArray, "to_netcdf"),
+    ):
+        mock_open.return_value = mock_terrain
+
+        result = add_feasibility_mask(sample_dataset, mock_geo_config, mock_geo_paths)
+
+    mask = result["feasibility_mask"]
+    assert mask.values[0, 0] == 1  # sea-level land is feasible
+    assert mask.values[0, 1] == 1  # below-sea-level land is feasible
+    assert mask.values[0, 2] == 0  # high terrain stays excluded
