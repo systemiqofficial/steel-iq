@@ -128,10 +128,18 @@ class GeospatialModel:
         for iso3, year_costs in bus.env.input_costs.items():
             if iso3 is not None:  # Filter out None keys
                 input_costs_converted[iso3] = {Year(year): costs for year, costs in year_costs.items()}
-        ## Make a price series for COSA and NPV calculations
+        ## Make a price series for COSA and NPV calculations, anchored at the current year.
+        ## Extended by consideration_time + 1 so the opportunity paths can re-anchor it at
+        ## their construction start (up to target_year) and still cover the operating window.
         future_price_series: dict[str, list[float]] = {}
         start_year = bus.env.year
-        end_year = bus.env.year + bus.env.config.construction_time + bus.env.config.plant_lifetime
+        end_year = (
+            bus.env.year
+            + bus.env.config.consideration_time
+            + 1
+            + bus.env.config.construction_time
+            + bus.env.config.plant_lifetime
+        )
         steel_demand = []
         iron_demand = []
         for product in ["steel", "iron"]:

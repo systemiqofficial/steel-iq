@@ -2973,7 +2973,9 @@ class FurnaceGroup:
         Args:
             year: Current simulation year
             location: Location of the plant (including latitude, longitude, and country ISO3)
-            market_price: Dictionary mapping product to list of future market prices
+            market_price: Dictionary mapping product to list of future market prices,
+                anchored at the current year; re-anchored to the opportunity's earliest
+                construction start before the NPV
             cost_of_equity: Cost of equity for NPV calculation
             plant_lifetime: Lifetime of the plant in years
             construction_time: Time required for plant construction in years
@@ -3020,10 +3022,14 @@ class FurnaceGroup:
             if status_stats is not None:
                 status_stats["npv_inputs_missing"] += 1
         else:
-            # Get earliest possible operational time period
+            # Earliest possible operating window, floored at the soonest path still open to a
+            # considered opportunity: announce now, construct from next year
             years_already_considered = len(self.historical_npv_business_opportunities)
             earliest_operation_start_year = Year(
-                year + consideration_time + construction_time + 1 - years_already_considered
+                max(
+                    year + consideration_time + construction_time + 1 - years_already_considered,
+                    year + 1 + construction_time,
+                )
             )  # 1 year of announcement time
             earliest_operation_end_year = Year(earliest_operation_start_year + plant_lifetime)
 
@@ -3057,12 +3063,13 @@ class FurnaceGroup:
             )
 
             # Calculate updated NPV (carbon and by-products live inside the score)
+            years_to_construction_start = int(earliest_operation_start_year) - construction_time - int(year)
             npv_value = calculate_npv_full(
                 capex=self.technology.capex,
                 capacity=self.capacity,
                 unit_total_opex_list=unit_total_opex_list,
                 expected_utilisation_rate=self.utilization_rate,
-                price_series=market_price[self.technology.product],
+                price_series=market_price[self.technology.product][years_to_construction_start:],
                 lifetime=plant_lifetime,
                 construction_time=construction_time,
                 cost_of_debt=self.cost_of_debt,
@@ -6024,7 +6031,8 @@ class PlantGroup:
             input_costs: Dictionary mapping iso3 -> year -> energy carrier -> cost
             locations: Dictionary of potential plant locations
             iso3_to_region_map: Dictionary mapping ISO3 country codes to regions
-            market_price: Dictionary mapping product to list of future prices
+            market_price: Dictionary mapping product to list of future prices, anchored
+                at the current year; re-anchored to target_year before the NPV
             capex_dict_all_locs_techs: Dictionary mapping region -> tech -> capex
             cost_of_debt_all_locs: Dictionary mapping iso3 -> tech -> cost of debt
             cost_of_equity_all_locs: Dictionary mapping iso3 -> tech -> cost of equity
@@ -6152,10 +6160,15 @@ class PlantGroup:
 
         # Step 4: Calculate NPVs for all allowed top location-technology combinations with enough data
         # npv_dict: product -> site_id (lat, lon, iso3) -> tech -> NPV
+        # Prices from construction start, so price year i is cost year i in calculate_npv_full
+        years_to_construction_start = int(target_year) - int(current_year)
+        market_price_from_construction_start = {
+            product: series[years_to_construction_start:] for product, series in market_price.items()
+        }
         npv_dict = calculate_business_opportunity_npvs(
             cost_data=cost_data,
             target_year=target_year,
-            market_price=market_price,
+            market_price=market_price_from_construction_start,
             steel_plant_capacity=steel_plant_capacity,
             plant_lifetime=plant_lifetime,
             construction_time=construction_time,
@@ -6477,7 +6490,9 @@ class PlantGroup:
         Args:
             current_year: Current simulation year
             consideration_time: Number of years to consider before announcement
-            market_price: Dictionary mapping product to list of future market prices
+            market_price: Dictionary mapping product to list of future market prices,
+                anchored at the current year; re-anchored to the opportunity's earliest
+                construction start before the NPV
             cost_of_equity_all_locs: Dictionary mapping iso3 -> tech -> cost of equity
             probability_of_announcement: Probability that a viable opportunity will be announced
             probability_of_construction: Probability that an announced plant starts construction
