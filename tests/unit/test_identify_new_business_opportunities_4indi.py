@@ -341,7 +341,6 @@ class TestPrepareDataForBusinessOpportunity:
         }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}  # lowercase tech name
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         cost_data = prepare_cost_data_for_business_opportunity(
             product_to_tech=product_to_tech,
@@ -364,7 +363,6 @@ class TestPrepareDataForBusinessOpportunity:
             debt_subsidies={},
             opex_subsidies={},
             energy_subsidies={},
-            carbon_costs=carbon_costs,
             most_common_reductant={},
             environment_most_common_reductant={},
         )
@@ -443,7 +441,6 @@ class TestPrepareDataForBusinessOpportunity:
         }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         # When cost_of_debt is missing, ValueError is raised immediately
         with pytest.raises(ValueError, match="Missing critical site-level data"):
@@ -468,7 +465,6 @@ class TestPrepareDataForBusinessOpportunity:
                 debt_subsidies={},
                 opex_subsidies={},
                 energy_subsidies={},
-                carbon_costs=carbon_costs,
                 most_common_reductant={},
                 environment_most_common_reductant={},
             )
@@ -531,7 +527,6 @@ class TestPrepareDataForBusinessOpportunity:
         }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         capex_subsidy = Subsidy(
             scenario_name="test",
@@ -565,7 +560,6 @@ class TestPrepareDataForBusinessOpportunity:
             debt_subsidies={},
             opex_subsidies={},
             energy_subsidies={},
-            carbon_costs=carbon_costs,
             most_common_reductant={},
             environment_most_common_reductant={},
         )
@@ -641,7 +635,6 @@ class TestPrepareDataForBusinessOpportunity:
         }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         h2_subsidy = Subsidy(
             scenario_name="test_h2",
@@ -688,7 +681,6 @@ class TestPrepareDataForBusinessOpportunity:
                 "hydrogen": {"USA": {"EAF": [h2_subsidy]}},
                 "electricity": {"USA": {"EAF": [elec_subsidy]}},
             },
-            carbon_costs=carbon_costs,
             most_common_reductant={},
             environment_most_common_reductant={},
         )
@@ -761,7 +753,6 @@ class TestPrepareDataForBusinessOpportunity:
         }
         fopex_all_locs_techs = {}  # Missing fopex data
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         # Should raise ValueError immediately due to missing fopex
         with pytest.raises(ValueError, match="Missing critical cost data"):
@@ -786,7 +777,6 @@ class TestPrepareDataForBusinessOpportunity:
                 debt_subsidies={},
                 opex_subsidies={},
                 energy_subsidies={},
-                carbon_costs=carbon_costs,
                 most_common_reductant={},
                 environment_most_common_reductant={},
             )
@@ -960,11 +950,6 @@ class TestPrepareDataForBusinessOpportunity:
             "CHN": {"dri": 70.0},
         }
         iso3_to_region_map = {"USA": "Americas", "DEU": "Europe", "CHN": "Asia"}
-        carbon_costs = {
-            "USA": {Year(2030): 50.0},
-            "DEU": {Year(2030): 60.0},
-            "CHN": {Year(2030): 30.0},
-        }
 
         cost_data = prepare_cost_data_for_business_opportunity(
             product_to_tech=product_to_tech,
@@ -987,7 +972,6 @@ class TestPrepareDataForBusinessOpportunity:
             debt_subsidies={},
             opex_subsidies={},
             energy_subsidies={},
-            carbon_costs=carbon_costs,
             most_common_reductant={},
             environment_most_common_reductant={},
         )
@@ -1217,7 +1201,6 @@ class TestIdentifyNewBusinessOpportunities4indi:
             "allowed_techs": {Year(2025): ["EAF"], Year(2028): ["EAF"]},
             "technology_emission_factors": [],
             "chosen_emissions_boundary_for_carbon_costs": "scope_1",
-            "carbon_costs": {"USA": {Year(2028): 50.0}},
             "top_n_loctechs_as_business_op": 2,
         }
 
@@ -1474,7 +1457,6 @@ def _complete_cost_data_entry():
         "output_costs": {"electricity": 0.05},
         "no_subsidy_prices": {"electricity": 0.05},
         "bom": {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
-        "carbon_cost_series": None,
         "output_shares": {"scrap": 1.0},
     }
 
@@ -1682,7 +1664,6 @@ def test_two_technologies_at_one_site_spawn_two_plants(monkeypatch):
         allowed_techs={Year(2028): ["EAF", "BOF"]},
         technology_emission_factors=[],
         chosen_emissions_boundary_for_carbon_costs="scope_1",
-        carbon_costs={"USA": {Year(2028): 50.0}},
         active_statuses=["operating"],
         top_n_loctechs_as_business_op=2,
     )

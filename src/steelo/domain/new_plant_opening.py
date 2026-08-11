@@ -136,7 +136,6 @@ def prepare_cost_data_for_business_opportunity(
     debt_subsidies: dict[str, dict[str, list[Subsidy]]],
     opex_subsidies: dict[str, dict[str, list[Subsidy]]],
     energy_subsidies: dict[str, dict[str, dict[str, list[Subsidy]]]],
-    carbon_costs: dict[str, dict[Year, float]],
     most_common_reductant: dict[str, str],
     environment_most_common_reductant: dict[str, str],
     derive_geo_unit: Callable[[float, float, str], str | None] | None = None,
@@ -164,7 +163,6 @@ def prepare_cost_data_for_business_opportunity(
         debt_subsidies: Nested dictionary with debt subsidies per country and technology (iso3 -> tech -> list of subsidies)
         opex_subsidies: Nested dictionary with OPEX subsidies per country and technology (iso3 -> tech -> list of subsidies)
         energy_subsidies: Nested dictionary with energy carrier subsidies (carrier -> iso3 -> tech -> list of subsidies)
-        carbon_costs: Dictionary with carbon cost series per country (iso3 -> year -> carbon cost)
         most_common_reductant: Dictionary mapping technology to most common reductant from plant group (tech -> reductant)
         environment_most_common_reductant: Fallback dict mapping technology to most common reductant from environment (tech -> reductant)
         derive_geo_unit: Optional ``(lat, lon, iso3) -> geo_unit | None`` derivation (injected from
@@ -409,7 +407,6 @@ def prepare_cost_data_for_business_opportunity(
                 cost_data[prod][site_id][tech]["all_opex_subsidies"] = cc.collect_subsidies_for_geo(
                     opex_subsidies, site_geo_key
                 ).get(tech, [])  # type: ignore[assignment]
-                cost_data[prod][site_id][tech]["carbon_cost_series"] = carbon_costs.get(site["iso3"])  # type: ignore[assignment]
 
                 # Raise error if any critical fields are missing
                 if missing_critical_fields:
@@ -469,7 +466,6 @@ def validate_and_clean_cost_data(
             "output_costs",
             "no_subsidy_prices",
             "bom",
-            "carbon_cost_series",
             "output_shares",
         ]
     )
@@ -541,13 +537,6 @@ def validate_and_clean_cost_data(
                             if not isinstance(tech_data[field], list):
                                 raise ValueError(
                                     f"{field} must be list, got {type(tech_data[field]).__name__}: {tech_data[field]}"
-                                )
-
-                        # carbon_cost_series: dict[Year, float] or None
-                        if tech_data["carbon_cost_series"] is not None:
-                            if not isinstance(tech_data["carbon_cost_series"], dict):
-                                raise ValueError(
-                                    f"carbon_cost_series must be dict or None, got {type(tech_data['carbon_cost_series']).__name__}"
                                 )
 
                         # output_shares: dict of floats (metallic charge -> share of product)

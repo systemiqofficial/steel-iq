@@ -281,7 +281,6 @@ class GeospatialModel:
                 top_n_loctechs_as_business_op=bus.env.config.top_n_loctechs_as_business_op,
                 technology_emission_factors=bus.env.technology_emission_factors,
                 chosen_emissions_boundary_for_carbon_costs=bus.env.config.chosen_emissions_boundary_for_carbon_costs,
-                carbon_costs=bus.env.carbon_costs,
                 capex_subsidies=bus.env.capex_subsidies,
                 debt_subsidies=bus.env.debt_subsidies,
                 opex_subsidies=bus.env.opex_subsidies,

@@ -5984,7 +5984,6 @@ class PlantGroup:
         allowed_techs: dict[Year, list[str]],
         technology_emission_factors: list[TechnologyEmissionFactors],
         chosen_emissions_boundary_for_carbon_costs: str,
-        carbon_costs: dict[str, dict[Year, float]],
         active_statuses: list[str],
         top_n_loctechs_as_business_op: int = 5,
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
@@ -6040,7 +6039,6 @@ class PlantGroup:
             allowed_techs: Dictionary mapping year to list of allowed technologies
             technology_emission_factors: List of technology-specific emission factors
             chosen_emissions_boundary_for_carbon_costs: Emission boundary for carbon costs
-            carbon_costs: Dictionary mapping iso3 -> year -> carbon cost
             active_statuses: Status strings whose furnace groups vote in the group's
                 most-common-reductant aggregation
             top_n_loctechs_as_business_op: Number of top opportunities to select (default: 5)
@@ -6143,7 +6141,6 @@ class PlantGroup:
             debt_subsidies=debt_subsidies,
             opex_subsidies=opex_subsidies,
             energy_subsidies=energy_subsidies,
-            carbon_costs=carbon_costs,
             most_common_reductant=self.most_common_reductant(active_statuses),
             environment_most_common_reductant=environment_most_common_reductant,
             derive_geo_unit=derive_geo_unit,

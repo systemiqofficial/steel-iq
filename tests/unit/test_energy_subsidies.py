@@ -766,7 +766,6 @@ def test_prepare_cost_data_normalises_negative_prices_before_subsidy():
     }
     fopex_all_locs_techs = {"USA": {"bf-bof": 50.0}}
     iso3_to_region_map = {"USA": "Americas"}
-    carbon_costs = {"USA": {Year(2030): 50.0}}
 
     # bf_gas subsidy: absolute 0.005 USD/kWh
     bf_gas_subsidy = Subsidy(
@@ -815,7 +814,6 @@ def test_prepare_cost_data_normalises_negative_prices_before_subsidy():
         debt_subsidies={},
         opex_subsidies={},
         energy_subsidies=energy_subsidies,
-        carbon_costs=carbon_costs,
         most_common_reductant={},
         environment_most_common_reductant={},
     )
