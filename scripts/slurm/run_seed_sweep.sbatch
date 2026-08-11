@@ -53,7 +53,12 @@
 #SBATCH --error=logs/seed-sweep-%A_%a.err
 
 set -euo pipefail
-module purge
+# `module` is only defined as a shell function in interactive/login shells on this
+# cluster; sbatch runs non-interactively, so it's absent here regardless of array vs
+# single-job. This workflow has no environment-module dependency (plain Python/uv
+# venv), so skip purge entirely when the command isn't available instead of assuming
+# it must succeed.
+command -v module >/dev/null 2>&1 && module purge || true
 
 export MPLBACKEND=Agg
 export STEELO_HOME="/local/$USER/steelo_home_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"

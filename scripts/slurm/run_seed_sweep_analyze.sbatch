@@ -25,7 +25,9 @@
 #SBATCH --error=logs/seed-sweep-analyze-%j.err
 
 set -euo pipefail
-module purge
+# See run_seed_sweep.sbatch: `module` isn't defined in sbatch's non-interactive shell
+# on this cluster, and this workflow has no environment-module dependency.
+command -v module >/dev/null 2>&1 && module purge || true
 export MPLBACKEND=Agg
 
 source "$HOME/steel-iq/.venv/bin/activate"
