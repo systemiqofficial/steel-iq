@@ -6390,7 +6390,9 @@ class PlantGroup:
                     # Apply energy carrier subsidies
                     active_energy_subs: dict[str, list] = {}
                     for carrier, carrier_subs in energy_subsidies.items():
-                        all_subs = carrier_subs.get(iso3, {}).get(fg.technology.name, [])
+                        all_subs = collect_subsidies_for_geo(carrier_subs, plant.location.geo_key).get(
+                            fg.technology.name, []
+                        )
                         active = filter_subsidies_for_year(all_subs, year)
                         if active:
                             active_energy_subs[carrier] = active
