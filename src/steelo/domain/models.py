@@ -6232,8 +6232,8 @@ class PlantGroup:
                         disposal_cost_outputs=disposal_cost_outputs,
                         derive_geo_unit=derive_geo_unit,
                     )
-                all_plant_ids.append(new_plant.plant_id)
-                new_plants.append(new_plant)
+                    all_plant_ids.append(new_plant.plant_id)
+                    new_plants.append(new_plant)
         candidate_stats["new_plants_created"] = len(new_plants)
         stats_payload = " ".join(f"{key}={value}" for key, value in candidate_stats.items())
         logger.info(f"operation=new_plant_candidate_summary {stats_payload}")

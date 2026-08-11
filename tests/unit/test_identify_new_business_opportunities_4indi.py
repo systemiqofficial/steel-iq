@@ -1614,3 +1614,81 @@ def test_deterministic_mode_is_reproducible_without_seeding():
     )
 
     assert first == second
+
+
+def test_two_technologies_at_one_site_spawn_two_plants(monkeypatch):
+    """Step 6 creates one plant per selected (site, tech) pair, with distinct plant ids.
+
+    Notes:
+        Guards against the appends sitting at site-loop level, which silently
+        kept only the last technology drawn at a shared site and handed both
+        technologies the same plant id.
+    """
+    site_id = (40.0, -100.0, "USA")
+    tech_entry = {
+        "capex": 1000.0,
+        "capex_no_subsidy": 1200.0,
+        "cost_of_debt": 0.05,
+        "cost_of_debt_no_subsidy": 0.06,
+        "fopex": 50.0,
+        "utilization_rate": 0.7,
+        "reductant": "scrap",
+        "railway_cost": 10.0,
+        "bom": {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
+        "energy_costs": {"electricity": 0.05, "hydrogen": 3500.0},
+        "output_shares": {"scrap": 1.0},
+    }
+    cost_data = {"steel": {site_id: {"EAF": dict(tech_entry), "BOF": dict(tech_entry)}}}
+    npv_dict = {"steel": {site_id: {"EAF": 100.0, "BOF": 90.0}}}
+
+    monkeypatch.setattr(
+        "steelo.domain.new_plant_opening.select_location_subset",
+        lambda *args, **kwargs: {"steel": [{"Latitude": 40.0, "Longitude": -100.0, "iso3": "USA"}]},
+    )
+    monkeypatch.setattr(
+        "steelo.domain.new_plant_opening.prepare_cost_data_for_business_opportunity",
+        lambda *args, **kwargs: cost_data,
+    )
+    monkeypatch.setattr(
+        "steelo.domain.calculate_costs.calculate_business_opportunity_npvs",
+        lambda *args, **kwargs: npv_dict,
+    )
+    monkeypatch.setattr(
+        "steelo.domain.new_plant_opening.select_top_opportunities_by_npv",
+        lambda *args, **kwargs: npv_dict,
+    )
+
+    plant_group = PlantGroup(plant_group_id="indi", plants=[])
+    command = plant_group.identify_new_business_opportunities_4indi(
+        current_year=Year(2025),
+        consideration_time=2,
+        construction_time=3,
+        plant_lifetime=30,
+        input_costs={"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}},
+        locations={"steel": [{"Latitude": 40.0, "Longitude": -100.0, "iso3": "USA"}]},
+        iso3_to_region_map={"USA": "Americas"},
+        market_price={"steel": [100.0] * 50},
+        capex_dict_all_locs_techs={"Americas": {"EAF": 1000.0, "BOF": 1100.0}},
+        cost_of_debt_all_locs={"USA": {"EAF": 0.05, "BOF": 0.05}},
+        cost_of_equity_all_locs={"USA": {"EAF": 0.08, "BOF": 0.08}},
+        steel_plant_capacity=1000.0,
+        all_plant_ids=[],
+        fopex_all_locs_techs={"USA": {"eaf": 50.0, "bof": 50.0}},
+        equity_share=0.3,
+        dynamic_feedstocks={},
+        get_bom_from_avg_boms=lambda *args, **kwargs: (None, 0.7, "scrap", {}),
+        reductant_score_series=_stub_series,
+        global_risk_free_rate=0.03,
+        tech_to_product={"EAF": "steel", "BOF": "steel"},
+        allowed_techs={Year(2028): ["EAF", "BOF"]},
+        technology_emission_factors=[],
+        chosen_emissions_boundary_for_carbon_costs="scope_1",
+        carbon_costs={"USA": {Year(2028): 50.0}},
+        active_statuses=["operating"],
+        top_n_loctechs_as_business_op=2,
+    )
+
+    new_plants = command.new_plants
+    assert len(new_plants) == 2
+    assert len({plant.plant_id for plant in new_plants}) == 2
+    assert {plant.furnace_groups[0].technology.name for plant in new_plants} == {"EAF", "BOF"}
