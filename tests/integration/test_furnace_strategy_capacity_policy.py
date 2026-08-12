@@ -2,7 +2,7 @@
 
 The hook parameter defaults to None, leaving the decision path byte-identical.
 A bound adapter evaluates every candidate at its permitted capacity: penalised
-transitions shrink, deep-abatement and exempt-province cells stay 1:1, a
+transitions shrink, non-intense targets and exempt-province cells stay 1:1, a
 utilisation-gated group loses its replace candidates while continue and close
 survive, and the executed command deposits the freed delta into the pool via
 the real handlers. Renovation participates only when
@@ -37,7 +37,7 @@ FLEET_REDUCTANTS = {"DRI": "Natural gas", "MOE": "Electricity"}
 
 # Synthetic policy rows: the incumbent EAF is authored emission-intense so a
 # same-technology renovation reads as a penalised REPLACE under the reline flag;
-# DRI is the penalised switch target, MOE the deep-abatement one.
+# DRI is the penalised switch target, MOE the non-intense one.
 REGIONS = [
     RegionRow(geo_key="CHN:CN-HE", region_name="Jing-Jin-Ji", type="key", from_year=None),
     RegionRow(geo_key="CHN:CN-QH", region_name=None, type="exempt", from_year=None),
@@ -49,7 +49,6 @@ TECHNOLOGIES = [
         product="steel",
         reductant=None,
         is_emission_intense=True,
-        is_deep_abatement=False,
         switching_to=None,
         swap_ratio=None,
     ),
@@ -57,8 +56,7 @@ TECHNOLOGIES = [
         technology="DRI",
         product="iron",
         reductant=None,
-        is_emission_intense=False,
-        is_deep_abatement=False,
+        is_emission_intense=True,
         switching_to=None,
         swap_ratio=None,
     ),
@@ -67,7 +65,6 @@ TECHNOLOGIES = [
         product="iron",
         reductant=None,
         is_emission_intense=False,
-        is_deep_abatement=True,
         switching_to=None,
         swap_ratio=None,
     ),
@@ -304,7 +301,7 @@ class TestBoundReplacePath:
         # over), so the freed credit banks under what the shrunk capacity actually made
         assert credit.product == "steel"
 
-    def test_deep_abatement_candidate_stays_unshrunk_with_no_deposit(self, mocker):
+    def test_non_intense_candidate_stays_unshrunk_with_no_deposit(self, mocker):
         _, pool = bind_policy()
         plant, plant_group = make_plant_and_group()
         mock_npvs(mocker, plant.furnace_groups[0], {"EAF": 500.0, "DRI": 400.0, "MOE": 1_000_000.0})

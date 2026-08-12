@@ -36,7 +36,6 @@ TECHNOLOGIES = pd.DataFrame(
         "product": ["iron", "steel", "iron", "iron", "iron"],
         "reductant": [None, None, None, "Coal", "Hydrogen"],
         "is_emission_intense": [True, False, None, True, False],
-        "is_deep_abatement": [False, True, None, False, True],
         "switching_to": [None, None, None, None, None],
         "swap_ratio": [None, None, None, None, None],
         "notes": [None, None, "depends on reductant", None, None],
@@ -108,26 +107,26 @@ def test_recreate_provinces_incomplete_enumeration_raises(tmp_path, small_china)
 
 
 def test_recreate_technologies_roundtrip_with_unauthored_warnings(tmp_path, caplog):
-    """Unauthored flags warn but the fixture and the ratio-grid diagnostic still build."""
+    """An unauthored flag warns but the fixture and the ratio-grid diagnostic still build."""
     excel_path = tmp_path / "master.xlsx"
     json_path = tmp_path / "capacity_pool_technologies.json"
     df = TECHNOLOGIES.copy()
-    df.loc[df["technology"] == "EAF", "is_deep_abatement"] = None  # one TO AUTHOR cell
+    df.loc[df["technology"] == "EAF", "is_emission_intense"] = None  # one TO AUTHOR cell
     _write_workbook(excel_path, {TECHNOLOGIES_SHEET: df})
 
     with caplog.at_level("WARNING", logger="steelo.data.recreation_functions"):
         repo = recreate_capacity_pool_technologies_data(json_path, excel_path)
 
     assert isinstance(repo, CapacityPoolTechnologyJsonRepository)
-    assert "unauthored flag(s) is_deep_abatement for technology 'EAF'" in caplog.text
+    assert "unauthored is_emission_intense for technology 'EAF'" in caplog.text
     rows = CapacityPoolTechnologyJsonRepository(json_path).list()
     assert len(rows) == 5 and rows[0].technology == "BF"
 
     grid_path = tmp_path / "capacity_pool_ratio_grid.csv"
     assert grid_path.exists()
     grid = pd.read_csv(grid_path, index_col=0, dtype=str)
-    assert grid.loc["BF", "DRI|Coal"] == "1.5"  # intense old, non-deep new
-    assert grid.loc["BF", "DRI|Hydrogen"] == "1"  # deep new
+    assert grid.loc["BF", "DRI|Coal"] == "1.5"  # both sides intense
+    assert grid.loc["BF", "DRI|Hydrogen"] == "1"  # new side not intense
     assert grid.loc["BF", "EAF"] == "unauthored"  # the TO AUTHOR cell propagates
 
 
@@ -151,7 +150,6 @@ def test_recreate_technologies_override_collision_raises(tmp_path):
             "product": [None, None],
             "reductant": [None, None],
             "is_emission_intense": [None, None],
-            "is_deep_abatement": [None, None],
             "switching_to": ["*", "EAF"],
             "swap_ratio": [1.0, 1.0],
             "notes": [None, None],

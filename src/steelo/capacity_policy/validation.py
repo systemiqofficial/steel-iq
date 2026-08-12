@@ -114,7 +114,7 @@ def validate_technologies(
         sheet: Sheet name used in the issue messages.
 
     Returns:
-        Issues found. Unauthored classification flags are warnings — except on
+        Issues found. An unauthored classification flag is a warning — except on
         delegation rows, which classify nothing — so fixtures still build from
         a workbook with ``TO AUTHOR`` cells; everything else is an error.
     """
@@ -158,7 +158,7 @@ def validate_technologies(
                 error(f"unknown technology {name!r} on {label} — names must match the model roster exactly")
         if row.reductant is not None and normalize_name(row.reductant) not in known_reductants:
             error(f"unknown reductant {row.reductant!r} on {label}")
-        if row.is_emission_intense is not None or row.is_deep_abatement is not None:
+        if row.is_emission_intense is not None:
             error(f"{label} must not carry classification flags")
         if row.swap_ratio is None or row.swap_ratio <= 0:
             error(f"{label} needs a positive swap_ratio, got {row.swap_ratio!r}")
@@ -179,17 +179,9 @@ def validate_technologies(
     for row in classifications:
         if is_delegation_row(row, split):
             continue
-        unauthored = [
-            name
-            for name, value in (
-                ("is_emission_intense", row.is_emission_intense),
-                ("is_deep_abatement", row.is_deep_abatement),
-            )
-            if value is None
-        ]
-        if unauthored:
+        if row.is_emission_intense is None:
             label = f"technology {row.technology!r}" + (f" reductant {row.reductant!r}" if row.reductant else "")
-            issues.append(ValidationIssue("warning", sheet, f"unauthored flag(s) {', '.join(unauthored)} for {label}"))
+            issues.append(ValidationIssue("warning", sheet, f"unauthored is_emission_intense for {label}"))
     for technology in sorted(technology_roster - {row.technology for row in classifications}):
         issues.append(ValidationIssue("warning", sheet, f"technology {technology!r} has no classification row"))
     return issues

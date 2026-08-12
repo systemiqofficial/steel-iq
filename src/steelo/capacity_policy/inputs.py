@@ -36,20 +36,23 @@ class TechnologyRow:
     """One row of ``Capacity pool - technologies``.
 
     Two row types share the sheet, discriminated by ``switching_to``:
-    classification rows (``switching_to`` blank) carry the emission-intense and
-    deep-abatement flags for one ``(technology, reductant)``; override rows
-    (``switching_to`` set) pin one transition's swap ratio and carry no flags.
-    A blank flag is unauthored, not False.
+    classification rows (``switching_to`` blank) carry the emission-intense
+    flag for one ``(technology, reductant)``; override rows (``switching_to``
+    set) pin one transition's swap ratio and carry no flag. A blank flag is
+    unauthored, not False.
+
+    Classification is bipartite: ``is_emission_intense`` is the negation of the
+    policy's deep-abatement threshold — a ≥60% emission reduction against
+    BF-BOF — so a route that is not emission-intense qualifies as deep
+    abatement by definition.
 
     Attributes:
         technology: Model technology name; ``"*"`` only on override rows.
         product: ``"iron"`` or ``"steel"`` on classification rows.
         reductant: Reductant the classification is specific to, or None for
             any reductant.
-        is_emission_intense: Whether replacing this route triggers the
-            penalised ratio; None when unauthored.
-        is_deep_abatement: Whether building this route qualifies for 1:1;
-            None when unauthored.
+        is_emission_intense: Whether the route falls short of the
+            deep-abatement threshold; None when unauthored.
         switching_to: Target technology of an override row (``"*"`` allowed),
             None on classification rows.
         swap_ratio: The overridden ratio; only on override rows.
@@ -59,7 +62,6 @@ class TechnologyRow:
     product: str | None
     reductant: str | None
     is_emission_intense: bool | None
-    is_deep_abatement: bool | None
     switching_to: str | None
     swap_ratio: float | None
 
@@ -106,7 +108,6 @@ def is_delegation_row(row: TechnologyRow, reductant_split_technologies: set[str]
         not row.is_override
         and row.reductant is None
         and row.is_emission_intense is None
-        and row.is_deep_abatement is None
         and row.technology in reductant_split_technologies
     )
 
@@ -121,7 +122,7 @@ def resolve_swap_ratio(
 
     Override precedence, most specific first: (1) technology + reductant +
     ``switching_to``; (2) technology + ``switching_to``; (3) one side ``"*"``;
-    (4) both sides ``"*"``; (5) no match — derive from the flags. Validation
+    (4) both sides ``"*"``; (5) no match — derive from the flag. Validation
     has already refused equal-specificity collisions, so each level holds at
     most one match.
 
@@ -149,13 +150,13 @@ def resolve_swap_ratio(
         hits = [r for r in overrides if matches(r)]
         if hits:
             return hits[0].swap_ratio
-    if old.is_emission_intense is None or new.is_deep_abatement is None:
+    if old.is_emission_intense is None or new.is_emission_intense is None:
         return None
-    return default_ratio if old.is_emission_intense and not new.is_deep_abatement else 1.0
+    return default_ratio if old.is_emission_intense and new.is_emission_intense else 1.0
 
 
 def effective_ratio_grid(rows: list[TechnologyRow], default_ratio: float) -> tuple[list[str], list[list[str]]]:
-    """Derive the effective transition-ratio grid from the flags and overrides.
+    """Derive the effective transition-ratio grid from the flag and overrides.
 
     The axes are the classification keys as authored — the bare technology, or
     ``technology|reductant`` where the classification is reductant-specific.

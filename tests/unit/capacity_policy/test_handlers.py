@@ -22,7 +22,6 @@ TECHNOLOGIES = [
         product="iron",
         reductant=None,
         is_emission_intense=True,
-        is_deep_abatement=False,
         switching_to=None,
         swap_ratio=None,
     ),

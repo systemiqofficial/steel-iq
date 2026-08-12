@@ -49,7 +49,6 @@ def _technologies_df(**overrides) -> pd.DataFrame:
         "product": ["iron", "iron", None],
         "reductant": [None, "Hydrogen", None],
         "is_emission_intense": [True, False, None],
-        "is_deep_abatement": [False, True, None],
         "switching_to": [None, None, "EAF"],
         "swap_ratio": [None, None, 1.0],
         "notes": ["sourced", None, None],
@@ -92,7 +91,7 @@ def test_read_technologies_happy_path(tmp_path):
     rows = read_capacity_pool_technologies(path)
 
     assert [row.technology for row in rows] == ["BF", "DRI", "BF"]
-    assert rows[0].is_emission_intense is True and rows[0].is_deep_abatement is False
+    assert rows[0].is_emission_intense is True
     assert not rows[0].is_override
     assert rows[2].is_override and rows[2].switching_to == "EAF" and rows[2].swap_ratio == 1.0
     assert rows[2].is_emission_intense is None
@@ -121,24 +120,22 @@ def test_absent_sheets_read_as_empty(tmp_path):
 
 
 def test_flag_parsing_accepts_excel_spellings(tmp_path):
-    """TRUE/FALSE strings and 1/0 numerics all parse to booleans."""
+    """TRUE/FALSE strings in either case and 1/0 numerics all parse to booleans."""
     path = tmp_path / "master.xlsx"
     df = _technologies_df(
-        technology=["BF", "DRI", "EAF"],
-        product=["iron", "iron", "steel"],
-        reductant=[None, None, None],
-        is_emission_intense=["TRUE", 1, 0.0],
-        is_deep_abatement=["false", 0, 1.0],
-        switching_to=[None, None, None],
-        swap_ratio=[None, None, None],
-        notes=[None, None, None],
+        technology=["BF", "DRI", "EAF", "BOF", "MOE", "BF+CCS"],
+        product=["iron", "iron", "steel", "steel", "iron", "iron"],
+        reductant=[None] * 6,
+        is_emission_intense=["TRUE", 1, 0.0, "false", 0, 1.0],
+        switching_to=[None] * 6,
+        swap_ratio=[None] * 6,
+        notes=[None] * 6,
     )
     _write_workbook(path, {TECHNOLOGIES_SHEET: df})
 
     rows = read_capacity_pool_technologies(path)
 
-    assert [row.is_emission_intense for row in rows] == [True, True, False]
-    assert [row.is_deep_abatement for row in rows] == [False, False, True]
+    assert [row.is_emission_intense for row in rows] == [True, True, False, False, False, True]
 
 
 def test_unparseable_flag_raises(tmp_path):

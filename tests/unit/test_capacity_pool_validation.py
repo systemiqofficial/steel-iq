@@ -32,7 +32,6 @@ def tech(
     product="iron",
     reductant=None,
     is_emission_intense=None,
-    is_deep_abatement=None,
     switching_to=None,
     swap_ratio=None,
 ):
@@ -41,7 +40,6 @@ def tech(
         product=product,
         reductant=reductant,
         is_emission_intense=is_emission_intense,
-        is_deep_abatement=is_deep_abatement,
         switching_to=switching_to,
         swap_ratio=swap_ratio,
     )
@@ -102,10 +100,10 @@ def test_provinces_bad_type_and_missing_cluster_name():
 def test_technologies_valid_sheet_passes():
     """Fully-flagged classification rows and a well-formed override row pass."""
     rows = [
-        tech("BF", is_emission_intense=True, is_deep_abatement=False),
-        tech("EAF", product="steel", is_emission_intense=False, is_deep_abatement=True),
-        tech("DRI", reductant="Coal", is_emission_intense=True, is_deep_abatement=False),
-        tech("DRI", reductant="Hydrogen", is_emission_intense=False, is_deep_abatement=True),
+        tech("BF", is_emission_intense=True),
+        tech("EAF", product="steel", is_emission_intense=False),
+        tech("DRI", reductant="Coal", is_emission_intense=True),
+        tech("DRI", reductant="Hydrogen", is_emission_intense=False),
         tech("DRI"),  # delegation row: flags live on the reductant rows
         tech("BF", product=None, switching_to="EAF", swap_ratio=1.0),
     ]
@@ -115,8 +113,8 @@ def test_technologies_valid_sheet_passes():
 def test_technologies_unknown_names_error():
     """Unknown technology and reductant names are errors — the sheets must not be retyped."""
     rows = [
-        tech("BLASTFURNACE", is_emission_intense=True, is_deep_abatement=False),
-        tech("DRI", reductant="Charcoal", is_emission_intense=True, is_deep_abatement=False),
+        tech("BLASTFURNACE", is_emission_intense=True),
+        tech("DRI", reductant="Charcoal", is_emission_intense=True),
         tech("BF", product=None, switching_to="EFA", swap_ratio=1.0),
     ]
     messages = errors(validate_technologies(rows, technology_roster=ROSTER, reductant_vocabulary=VOCABULARY))
@@ -127,7 +125,7 @@ def test_technologies_unknown_names_error():
 
 def test_technologies_wildcard_only_on_override_rows():
     """'*' as a classification technology is an error."""
-    rows = [tech("*", is_emission_intense=True, is_deep_abatement=False)]
+    rows = [tech("*", is_emission_intense=True)]
     messages = errors(validate_technologies(rows, technology_roster=ROSTER, reductant_vocabulary=VOCABULARY))
     assert any("'*' is only allowed on override rows" in m for m in messages)
 
@@ -158,8 +156,8 @@ def test_technologies_equal_specificity_collision():
 def test_technologies_duplicate_rows_error():
     """Duplicate classification keys and duplicate override keys are errors."""
     rows = [
-        tech("BF", is_emission_intense=True, is_deep_abatement=False),
-        tech("BF", is_emission_intense=False, is_deep_abatement=False),
+        tech("BF", is_emission_intense=True),
+        tech("BF", is_emission_intense=False),
         tech("DRI", product=None, switching_to="EAF", swap_ratio=1.0),
         tech("DRI", product=None, switching_to="EAF", swap_ratio=1.2),
     ]
@@ -169,25 +167,25 @@ def test_technologies_duplicate_rows_error():
 
 
 def test_technologies_unauthored_flags_warn_not_error():
-    """Missing flags warn (fixtures still build); delegation rows and covered techs do not."""
+    """A missing flag warns (fixtures still build); delegation rows and covered techs do not."""
     rows = [
-        tech("BF"),  # both flags unauthored
-        tech("EAF", product="steel", is_emission_intense=False),  # one flag unauthored
-        tech("DRI"),  # delegation row — reductant rows below carry the flags
-        tech("DRI", reductant="Coal", is_emission_intense=True, is_deep_abatement=False),
-        tech("DRI", reductant="Hydrogen", is_emission_intense=False, is_deep_abatement=True),
+        tech("BF"),  # unauthored
+        tech("EAF", product="steel"),  # unauthored
+        tech("DRI"),  # delegation row — reductant rows below carry the flag
+        tech("DRI", reductant="Coal", is_emission_intense=True),
+        tech("DRI", reductant="Hydrogen", is_emission_intense=False),
     ]
     issues = validate_technologies(rows, technology_roster=ROSTER, reductant_vocabulary=VOCABULARY)
     assert errors(issues) == []
     messages = warnings(issues)
     assert len(messages) == 2
-    assert any("is_emission_intense, is_deep_abatement for technology 'BF'" in m for m in messages)
-    assert any("is_deep_abatement for technology 'EAF'" in m for m in messages)
+    assert any("unauthored is_emission_intense for technology 'BF'" in m for m in messages)
+    assert any("unauthored is_emission_intense for technology 'EAF'" in m for m in messages)
 
 
 def test_technologies_missing_roster_technology_warns():
     """A roster technology with no classification row at all is a content gap."""
-    rows = [tech("BF", is_emission_intense=True, is_deep_abatement=False)]
+    rows = [tech("BF", is_emission_intense=True)]
     messages = warnings(validate_technologies(rows, technology_roster=ROSTER, reductant_vocabulary=VOCABULARY))
     assert any("technology 'DRI' has no classification row" in m for m in messages)
     assert any("technology 'EAF' has no classification row" in m for m in messages)
@@ -269,9 +267,9 @@ def test_technologies_reductant_vocabulary_matches_up_to_normalisation():
     must serve both, so membership is checked up to normalize_name.
     """
     rows = [
-        tech("BF", is_emission_intense=True, is_deep_abatement=False),
-        tech("EAF", product="steel", is_emission_intense=False, is_deep_abatement=True),
-        tech("DRI", reductant="Natural gas", is_emission_intense=False, is_deep_abatement=True),
+        tech("BF", is_emission_intense=True),
+        tech("EAF", product="steel", is_emission_intense=False),
+        tech("DRI", reductant="Natural gas", is_emission_intense=False),
         tech("DRI"),  # delegation row
     ]
     normalised_vocabulary = {"natural_gas", "coal", "hydrogen"}

@@ -15,7 +15,6 @@ def classification(
     technology: str,
     reductant: str | None = None,
     is_emission_intense: bool | None = False,
-    is_deep_abatement: bool | None = False,
     product: str = "iron",
 ) -> TechnologyRow:
     """Build a classification row (switching_to blank)."""
@@ -24,20 +23,18 @@ def classification(
         product=product,
         reductant=reductant,
         is_emission_intense=is_emission_intense,
-        is_deep_abatement=is_deep_abatement,
         switching_to=None,
         swap_ratio=None,
     )
 
 
 def override(technology: str, switching_to: str, swap_ratio: float, reductant: str | None = None) -> TechnologyRow:
-    """Build an override row (flags blank, ratio set)."""
+    """Build an override row (flag blank, ratio set)."""
     return TechnologyRow(
         technology=technology,
         product=None,
         reductant=reductant,
         is_emission_intense=None,
-        is_deep_abatement=None,
         switching_to=switching_to,
         swap_ratio=swap_ratio,
     )
@@ -52,15 +49,15 @@ REGIONS = [
 ]
 
 TECHNOLOGIES = [
-    classification("BF", is_emission_intense=True, is_deep_abatement=False),
-    classification("BOF", is_emission_intense=True, is_deep_abatement=False, product="steel"),
-    classification("EAF", is_emission_intense=False, is_deep_abatement=True, product="steel"),
-    classification("BF+CCS", is_emission_intense=False, is_deep_abatement=True),
+    classification("BF", is_emission_intense=True),
+    classification("BOF", is_emission_intense=True, product="steel"),
+    classification("EAF", is_emission_intense=False, product="steel"),
+    classification("BF+CCS", is_emission_intense=False),
     # DRI is reductant-split: a flagless blank-reductant delegation row plus per-reductant rows.
-    classification("DRI", reductant=None, is_emission_intense=None, is_deep_abatement=None),
-    classification("DRI", reductant="Coal", is_emission_intense=True, is_deep_abatement=False),
-    classification("DRI", reductant="Hydrogen", is_emission_intense=False, is_deep_abatement=True),
-    classification("BF_CHARCOAL", is_emission_intense=None, is_deep_abatement=None),
+    classification("DRI", reductant=None, is_emission_intense=None),
+    classification("DRI", reductant="Coal", is_emission_intense=True),
+    classification("DRI", reductant="Hydrogen", is_emission_intense=False),
+    classification("BF_CHARCOAL", is_emission_intense=None),
 ]
 
 
@@ -135,24 +132,37 @@ class TestOnClose:
 
 
 class TestPermittedCapacityRatio:
-    def test_intense_to_non_deep_is_penalised(self):
-        """Replacing an emission-intense route with a non-deep one shrinks by the default ratio."""
+    def test_intense_to_intense_is_penalised(self):
+        """Replacing an emission-intense route with another shrinks by the default ratio."""
         assert permitted(make_evaluator(), new_technology="BOF") == pytest.approx(2.0)
 
     def test_non_intense_old_route_is_one_to_one(self):
         """Replacing a route that is not emission-intense is 1:1."""
         assert permitted(make_evaluator(), old_technology="EAF", new_technology="BOF") == pytest.approx(3.0)
 
-    def test_deep_abatement_target_is_one_to_one(self):
-        """A deep-abatement target is 1:1 even from an emission-intense route."""
+    def test_non_intense_target_is_one_to_one(self):
+        """A target that is not emission-intense is 1:1 even from an emission-intense route."""
         assert permitted(make_evaluator(), new_technology="BF+CCS") == pytest.approx(3.0)
 
+    def test_coal_capture_route_resolves_one_to_one_as_new_side(self):
+        """Coal-plus-capture is not emission-intense, so building it off an intense route is 1:1.
+
+        Pins the intended data effect of the single flag: the four
+        coal-plus-capture keys author ``is_emission_intense`` FALSE with a blank
+        deep-abatement column, so the derivation refused them as a new side at
+        commit 12 and resolves them now.
+        """
+        rows = TECHNOLOGIES + [classification("DRI+CCS", reductant="Coal", is_emission_intense=False)]
+        assert permitted(
+            make_evaluator(technologies=rows), new_technology="DRI+CCS", new_reductant="Coal"
+        ) == pytest.approx(3.0)
+
     def test_exempt_province_is_one_to_one_regardless(self):
-        """In an exempt province even intense-to-non-deep replacement is 1:1."""
+        """In an exempt province even intense-to-intense replacement is 1:1."""
         assert permitted(make_evaluator(), new_technology="BOF", geo_key="CHN:CN-QH") == pytest.approx(3.0)
 
     def test_wildcard_override_wins_over_derivation(self):
-        """A * -> EAF override pins the ratio the flags would not derive."""
+        """A * -> EAF override pins the ratio the flag would not derive."""
         rows = TECHNOLOGIES + [override("*", "EAF", 1.0)]
         evaluator = make_evaluator(technologies=rows)
         assert permitted(evaluator, new_technology="EAF") == pytest.approx(3.0)
@@ -284,7 +294,7 @@ class TestReductantNormalization:
     """Sheet rows author the workbook vocabulary; the runtime carries normalised keys."""
 
     def test_runtime_form_reductant_hits_sheet_form_row(self):
-        """ "hydrogen" (runtime) must resolve the "Hydrogen" (sheet) DRI row: deep, so 1:1."""
+        """ "hydrogen" (runtime) must resolve the "Hydrogen" (sheet) DRI row: not intense, so 1:1."""
         assert permitted(make_evaluator(), new_technology="DRI", new_reductant="hydrogen") == pytest.approx(3.0)
 
     def test_sheet_form_reductant_still_resolves(self):
@@ -303,7 +313,7 @@ class TestConservativeFallback:
     """A split technology with no reductant hypothesis classifies as its worst case."""
 
     def test_replace_target_with_no_hypothesis_is_penalised(self):
-        """DRI spans intense-coal and deep-hydrogen rows; unresolved, it is not deep: 1.5:1."""
+        """DRI spans intense-coal and non-intense-hydrogen rows; unresolved, it is intense: 1.5:1."""
         assert permitted(make_evaluator(), new_technology="DRI", new_reductant=None) == pytest.approx(2.0)
 
     def test_increase_with_no_hypothesis_is_penalised(self):
@@ -330,10 +340,10 @@ class TestConservativeFallback:
     def test_fallback_refuses_unauthored_variant_flags(self):
         """The worst case may only rest on authored rows — a sheet gap still refuses."""
         rows = [
-            classification("BF", is_emission_intense=True, is_deep_abatement=False),
-            classification("DRI", reductant=None, is_emission_intense=None, is_deep_abatement=None),
-            classification("DRI", reductant="Coal", is_emission_intense=None, is_deep_abatement=None),
-            classification("DRI", reductant="Hydrogen", is_emission_intense=False, is_deep_abatement=True),
+            classification("BF", is_emission_intense=True),
+            classification("DRI", reductant=None, is_emission_intense=None),
+            classification("DRI", reductant="Coal", is_emission_intense=None),
+            classification("DRI", reductant="Hydrogen", is_emission_intense=False),
         ]
         with pytest.raises(ValueError, match="unauthored"):
             permitted(make_evaluator(rows), new_technology="DRI", new_reductant=None)

@@ -3142,7 +3142,6 @@ def read_capacity_pool_technologies(
             "product",
             "reductant",
             "is_emission_intense",
-            "is_deep_abatement",
             "switching_to",
             "swap_ratio",
         },
@@ -3164,9 +3163,6 @@ def read_capacity_pool_technologies(
                 reductant=_capacity_pool_str(row["reductant"]),
                 is_emission_intense=_capacity_pool_flag(
                     row["is_emission_intense"], sheet_name, row_num, "is_emission_intense"
-                ),
-                is_deep_abatement=_capacity_pool_flag(
-                    row["is_deep_abatement"], sheet_name, row_num, "is_deep_abatement"
                 ),
                 switching_to=_capacity_pool_str(row["switching_to"]),
                 swap_ratio=None

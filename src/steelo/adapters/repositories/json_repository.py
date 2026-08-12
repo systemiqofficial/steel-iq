@@ -3118,7 +3118,6 @@ class CapacityPoolTechnologyInDb(BaseModel):
     product: Optional[str]
     reductant: Optional[str]
     is_emission_intense: Optional[bool]
-    is_deep_abatement: Optional[bool]
     switching_to: Optional[str]
     swap_ratio: Optional[float]
 
@@ -3128,7 +3127,6 @@ class CapacityPoolTechnologyInDb(BaseModel):
             product=self.product,
             reductant=self.reductant,
             is_emission_intense=self.is_emission_intense,
-            is_deep_abatement=self.is_deep_abatement,
             switching_to=self.switching_to,
             swap_ratio=self.swap_ratio,
         )
@@ -3140,7 +3138,6 @@ class CapacityPoolTechnologyInDb(BaseModel):
             product=obj.product,
             reductant=obj.reductant,
             is_emission_intense=obj.is_emission_intense,
-            is_deep_abatement=obj.is_deep_abatement,
             switching_to=obj.switching_to,
             swap_ratio=obj.swap_ratio,
         )

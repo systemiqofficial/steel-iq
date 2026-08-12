@@ -175,7 +175,7 @@ class TreeEvaluator:
             gate blocks the replacement.
 
         Raises:
-            ValueError: If a route has no classification row, or its flags are
+            ValueError: If a route has no classification row, or its flag is
                 unauthored and no override decides the transition — the policy
                 refuses to guess where a silent 1:1 would exempt the pair.
         """
@@ -360,11 +360,11 @@ class TreeEvaluator:
         route the model has no reductant hypothesis for yet, such as a switch
         candidate no fleet precedent exists for — resolves to the conservative
         worst case over its authored reductant rows: emission-intense if any
-        variant is, deep-abatement only if every variant is. That never grants
-        the favourable 1:1 to an unresolved route, never blocks it either, and
-        self-corrects once the route resolves to a real reductant. A *named*
-        reductant with no row still refuses — that is a sheet gap, not a
-        runtime unknown.
+        variant is — equivalently, deep-abating only if every variant is. That
+        never grants the favourable 1:1 to an unresolved route, never blocks it
+        either, and self-corrects once the route resolves to a real reductant.
+        A *named* reductant with no row still refuses — that is a sheet gap,
+        not a runtime unknown.
 
         Raises:
             ValueError: If no classification row covers the route, or the
@@ -384,7 +384,7 @@ class TreeEvaluator:
         if cached is not None:
             return cached
         variants = [row for (name, _), row in self._classifications.items() if name == technology]
-        unauthored = [row for row in variants if row.is_emission_intense is None or row.is_deep_abatement is None]
+        unauthored = [row for row in variants if row.is_emission_intense is None]
         if unauthored:
             raise ValueError(
                 f"Cannot classify technology {technology!r} without a reductant: "
@@ -395,18 +395,16 @@ class TreeEvaluator:
             product=variants[0].product,
             reductant=None,
             is_emission_intense=any(bool(row.is_emission_intense) for row in variants),
-            is_deep_abatement=all(bool(row.is_deep_abatement) for row in variants),
             switching_to=None,
             swap_ratio=None,
         )
         self._conservative_rows[technology] = row
         logger.info(
             "[CAPACITY POOL] evaluation=classification decision=conservative_fallback technology=%s "
-            "is_emission_intense=%s is_deep_abatement=%s (worst case over %d reductant rows; "
+            "is_emission_intense=%s (worst case over %d reductant rows; "
             "no reductant hypothesis for this route yet)",
             technology,
             row.is_emission_intense,
-            row.is_deep_abatement,
             len(variants),
         )
         return row

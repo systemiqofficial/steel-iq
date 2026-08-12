@@ -67,25 +67,22 @@ def province_rows() -> list[RegionRow]:
 def technology_rows(*, unauthored_coal_flag: bool = False) -> list[TechnologyRow]:
     """A complete classification for the fake roster, authored in sheet spelling."""
 
-    def classification(technology, product, reductant, intense, deep):
+    def classification(technology, product, reductant, intense):
         return TechnologyRow(
             technology=technology,
             product=product,
             reductant=reductant,
             is_emission_intense=intense,
-            is_deep_abatement=deep,
             switching_to=None,
             swap_ratio=None,
         )
 
     return [
-        classification("BF", "iron", None, True, False),
-        classification("EAF", "steel", None, False, True),
-        classification("DRI", "iron", None, None, None),  # delegation row
-        classification(
-            "DRI", "iron", "Coal", None if unauthored_coal_flag else True, None if unauthored_coal_flag else False
-        ),
-        classification("DRI", "iron", "Natural gas", False, True),
+        classification("BF", "iron", None, True),
+        classification("EAF", "steel", None, False),
+        classification("DRI", "iron", None, None),  # delegation row
+        classification("DRI", "iron", "Coal", None if unauthored_coal_flag else True),
+        classification("DRI", "iron", "Natural gas", False),
     ]
 
 
