@@ -20,6 +20,7 @@ from steelo.capacity_policy import handlers as cp_handlers
 from steelo.capacity_policy.inputs import RegionRow, TechnologyRow
 from steelo.devdata import get_furnace_group, get_plant
 from steelo.domain import PointInTime, TimeFrame, Volumes, Year
+from steelo.domain.calculate_costs import ReductantScoreSeries
 from steelo.domain.commands import (
     ChangeFurnaceGroupTechnology,
     CloseFurnaceGroup,
@@ -33,7 +34,10 @@ ALLOWED_TECHS = {Year(year): ["EAF", "DRI", "MOE"] for year in range(2020, 2031)
 TRANSITIONS = {"EAF": ["EAF", "DRI", "MOE"]}
 DEBT_RATES = {"EAF": 0.04, "DRI": 0.04, "MOE": 0.04}
 EQUITY_RATES = {"EAF": 0.08, "DRI": 0.08, "MOE": 0.08}
+# The fleet modal and the candidates' own operating-start picks deliberately disagree on
+# DRI, so every ② classification below shows which of the two the gate actually consulted.
 FLEET_REDUCTANTS = {"DRI": "Natural gas", "MOE": "Electricity"}
+CANDIDATE_PICKS = {"EAF": "Electricity", "DRI": "Hydrogen", "MOE": "Electricity"}
 
 # Synthetic policy rows: the incumbent EAF is authored emission-intense so a
 # same-technology renovation reads as a penalised REPLACE under the reline flag;
@@ -70,10 +74,45 @@ TECHNOLOGIES = [
     ),
 ]
 
+# DRI split by reductant: the candidate's pick, not the fleet's, decides which row classifies it.
+SPLIT_TECHNOLOGIES = [
+    TECHNOLOGIES[0],
+    TechnologyRow(
+        technology="DRI", product="iron", reductant=None, is_emission_intense=None, switching_to=None, swap_ratio=None
+    ),
+    TechnologyRow(
+        technology="DRI", product="iron", reductant="Coal", is_emission_intense=True, switching_to=None, swap_ratio=None
+    ),
+    TechnologyRow(
+        technology="DRI",
+        product="iron",
+        reductant="Hydrogen",
+        is_emission_intense=False,
+        switching_to=None,
+        swap_ratio=None,
+    ),
+    TECHNOLOGIES[2],
+]
+
 BOM = {
     "materials": {"scrap": {"unit_cost": 200.0, "demand": 1.0}},
     "energy": {"electricity": {"unit_cost": 80.0, "demand": 0.5}},
 }
+
+
+def score_series_stub(picks_by_tech: dict[str, str] | None = None):
+    """A real score-series provider; the ② gate classifies the new side by ``picks[0]``.
+
+    A ``MagicMock`` would leak a truthy mock into the classification, so the
+    stub returns the one-year series the gate actually asks for.
+    """
+    picks = CANDIDATE_PICKS if picks_by_tech is None else picks_by_tech
+
+    def provider(_location, tech_name, _output_shares, _start, _end, **_kwargs):
+        pick = picks.get(tech_name, "")
+        return ReductantScoreSeries(scores=[0.0], picks=[pick] if pick else [])
+
+    return provider
 
 
 class FakePlantsRepo:
@@ -120,12 +159,14 @@ def unbind_after_test():
     cp_handlers.unbind_capacity_policy()
 
 
-def bind_policy(*, reline_counts_as_replace: bool = False) -> tuple[TreeEvaluator, CapacityPool]:
+def bind_policy(
+    *, reline_counts_as_replace: bool = False, technologies: list[TechnologyRow] | None = None
+) -> tuple[TreeEvaluator, CapacityPool]:
     """Bind a real evaluator and pool; return both for spying and pool asserts."""
     recorder = CapacityPolicyRecorder()
     evaluator = TreeEvaluator(
         REGIONS,
-        TECHNOLOGIES,
+        TECHNOLOGIES if technologies is None else technologies,
         CapacityPolicyConfig(reline_counts_as_replace=reline_counts_as_replace),
         recorder=recorder,
     )
@@ -184,7 +225,15 @@ def mock_npvs(mocker, furnace_group, tech_npv_dict):
     return mocker.patch.object(furnace_group, "optimal_technology_name", side_effect=respecting_menu)
 
 
-def evaluate(plant, plant_group, *, hook=None, probabilistic_agents: bool = False):
+def evaluate(
+    plant,
+    plant_group,
+    *,
+    hook=None,
+    probabilistic_agents: bool = False,
+    score_series=None,
+    fleet_reductants=None,
+):
     """Call evaluate_furnace_group_strategy; omit the hook parameter when hook is None."""
     furnace_group = plant.furnace_groups[0]
     extra = {} if hook is None else {"permitted_replace_capacity": hook}
@@ -197,7 +246,7 @@ def evaluate(plant, plant_group, *, hook=None, probabilistic_agents: bool = Fals
         cost_of_debt_by_tech=DEBT_RATES,
         cost_of_equity_by_tech=EQUITY_RATES,
         get_bom_from_avg_boms=MagicMock(),
-        reductant_score_series=MagicMock(),
+        reductant_score_series=score_series_stub() if score_series is None else score_series,
         probabilistic_agents=probabilistic_agents,
         dynamic_business_cases={"EAF": [], "DRI": [], "MOE": []},
         chosen_emissions_boundary_for_carbon_costs="scope_1",
@@ -213,7 +262,7 @@ def evaluate(plant, plant_group, *, hook=None, probabilistic_agents: bool = Fals
         capacity_limit_iron=Volumes(10_000),
         installed_capacity_in_year=lambda product: Volumes(1_000),
         new_plant_capacity_in_year=lambda product: Volumes(0),
-        most_common_reductant_by_tech=FLEET_REDUCTANTS,
+        most_common_reductant_by_tech=FLEET_REDUCTANTS if fleet_reductants is None else fleet_reductants,
         **extra,
     )
 
@@ -296,9 +345,10 @@ class TestBoundReplacePath:
         assert passed["EAF"] == pytest.approx(3.0)
         # Switch equity is debited at the permitted capacity
         assert plant_group.balance == pytest.approx(1_000_000.0 - REGION_CAPEX["DRI"] * 2.0 * fg.equity_share)
-        # The drift instrumentation carries both routes' reductants
+        # The drift instrumentation carries both routes' reductants; the new side is the
+        # candidate's own operating-start pick, not the fleet modal ("Natural gas")
         assert "old_reductant=Electricity" in caplog.text
-        assert "new_reductant=Natural gas" in caplog.text
+        assert "new_reductant=Hydrogen" in caplog.text
 
         event = apply_switch(plant, command)
         assert fg.capacity == pytest.approx(2.0)
@@ -341,8 +391,9 @@ class TestBoundReplacePath:
         assert command.capacity == pytest.approx(3.0)
         assert mock.call_args.kwargs["candidate_capacities"]["DRI"] == pytest.approx(3.0)
 
-    def test_utilisation_gated_group_loses_switches_but_continues(self, mocker):
-        """The gate empties the replace menu; the ungated incumbent stays and no action results."""
+    def test_utilisation_gated_group_loses_every_candidate_but_keeps_running(self, mocker):
+        """The gate empties the replace menu — the incumbent included, under the default
+        flag (Decision 34) — and a live group with nothing to decide simply continues."""
         bind_policy()
         plant, plant_group = make_plant_and_group()
         fg = plant.furnace_groups[0]
@@ -352,7 +403,7 @@ class TestBoundReplacePath:
         command = evaluate(plant, plant_group, hook=cp_handlers.replace_capacity_hook())
 
         assert command is None
-        assert mock.call_args.kwargs["allowed_furnace_transitions"]["EAF"] == ["EAF"]
+        assert mock.call_args.kwargs["allowed_furnace_transitions"]["EAF"] == []
 
     def test_utilisation_gated_expired_group_can_still_close(self, mocker):
         bind_policy()
@@ -380,6 +431,55 @@ class TestBoundReplacePath:
         event = apply_switch(plant, command)
         cp_handlers.deposit_on_furnace_group_tech_changed(event, uow=FakeUoW(plant, plant_group), env=FakeEnv())
         assert pool.total() == 0.0
+
+
+class TestCandidatePickClassification:
+    """Decision 30: the new side is classified by the candidate's own operating-start pick."""
+
+    def test_the_pick_classifies_where_the_fleet_modal_would_have_penalised(self, mocker, caplog):
+        """DRI+Hydrogen is deep-abating and replaces 1:1; DRI+Coal, the fleet modal here,
+        would have shrunk the switch to 2.0. The permitted capacity says which one ran."""
+        _, pool = bind_policy(technologies=SPLIT_TECHNOLOGIES)
+        plant, plant_group = make_plant_and_group()
+        mock = mock_npvs(mocker, plant.furnace_groups[0], {"EAF": 500.0, "DRI": 1_000_000.0, "MOE": 400.0})
+
+        with caplog.at_level(logging.INFO, logger="steelo.capacity_policy.tree"):
+            command = evaluate(
+                plant,
+                plant_group,
+                hook=cp_handlers.replace_capacity_hook(),
+                fleet_reductants={"DRI": "Coal", "MOE": "Electricity"},
+            )
+
+        assert isinstance(command, ChangeFurnaceGroupTechnology)
+        assert command.capacity == pytest.approx(3.0)
+        assert mock.call_args.kwargs["candidate_capacities"]["DRI"] == pytest.approx(3.0)
+        assert "new_reductant=Hydrogen" in caplog.text
+
+        event = apply_switch(plant, command)
+        cp_handlers.deposit_on_furnace_group_tech_changed(event, uow=FakeUoW(plant, plant_group), env=FakeEnv())
+        assert pool.total() == 0.0
+
+    def test_a_candidate_with_no_pick_lands_on_the_conservative_fallback(self, mocker, caplog):
+        """An empty pick reaches the adapter as None, so a reductant-split technology with
+        no blank row is classified worst-case — the pre-existing fallback, not a guess."""
+        bind_policy(technologies=SPLIT_TECHNOLOGIES)
+        plant, plant_group = make_plant_and_group()
+        mock = mock_npvs(mocker, plant.furnace_groups[0], {"EAF": 500.0, "DRI": 1_000_000.0, "MOE": 400.0})
+
+        with caplog.at_level(logging.INFO, logger="steelo.capacity_policy.tree"):
+            command = evaluate(
+                plant,
+                plant_group,
+                hook=cp_handlers.replace_capacity_hook(),
+                score_series=score_series_stub({"EAF": "Electricity", "MOE": "Electricity"}),
+            )
+
+        assert isinstance(command, ChangeFurnaceGroupTechnology)
+        assert command.capacity == pytest.approx(2.0)
+        assert mock.call_args.kwargs["candidate_capacities"]["DRI"] == pytest.approx(2.0)
+        assert "decision=conservative_fallback" in caplog.text
+        assert "new_reductant=None" in caplog.text
 
 
 class TestRenovationRuling:
@@ -418,6 +518,20 @@ class TestRenovationRuling:
         command = evaluate(plant, plant_group, hook=cp_handlers.replace_capacity_hook())
 
         assert isinstance(command, CloseFurnaceGroup)
+
+    def test_reline_false_gate_blocked_expired_group_falls_through_to_close(self, mocker):
+        """Decision 34: under the default flag the gate still reaches the renovation, so a
+        low-utilisation expired group loses the incumbent option and closes."""
+        bind_policy(reline_counts_as_replace=False)
+        plant, plant_group = make_plant_and_group(expired=True)
+        fg = plant.furnace_groups[0]
+        fg.historical_utilization = {2024: 0.1, 2025: 0.1}
+        mock = mock_npvs(mocker, fg, {"EAF": 1_000_000.0, "DRI": 1_000_000.0, "MOE": 2_000_000.0})
+
+        command = evaluate(plant, plant_group, hook=cp_handlers.replace_capacity_hook())
+
+        assert isinstance(command, CloseFurnaceGroup)
+        assert mock.call_args.kwargs["allowed_furnace_transitions"]["EAF"] == []
 
     def test_reline_false_renovation_untouched_and_event_unshrunk(self, mocker):
         """Default flag: renovation at full capacity, event carries old_capacity == capacity."""

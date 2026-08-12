@@ -512,8 +512,8 @@ class TestReplaceCapacityHook:
         )
         assert permitted == 3.0
 
-    def test_same_technology_passes_through_under_the_default_reline_flag(self, bound: CapacityPool):
-        """A reline is neutral by default: no shrink and no utilisation gate."""
+    def test_same_technology_is_gated_under_the_default_reline_flag(self, bound: CapacityPool):
+        """Decision 34: the utilisation gate reaches a renovation whatever the flag says."""
         hook = cp_handlers.replace_capacity_hook()
         assert hook is not None
         permitted = hook(
@@ -525,6 +525,24 @@ class TestReplaceCapacityHook:
             new_reductant="Coke+PCI",
             capacity=3.0,
             historical_utilization={2024: 0.1, 2025: 0.1},
+            year=2025,
+        )
+        assert permitted is None
+
+    @pytest.mark.parametrize("history", [None, {2024: 0.9, 2025: 0.9}, {2025: 0.1}])
+    def test_an_ungated_same_technology_renovation_keeps_its_capacity(self, bound: CapacityPool, history):
+        """The flag stays the ratio question alone: an unblocked reline never shrinks."""
+        hook = cp_handlers.replace_capacity_hook()
+        assert hook is not None
+        permitted = hook(
+            iso3="CHN",
+            geo_unit="CN-GD",
+            old_technology="BF",
+            old_reductant="Coke+PCI",
+            new_technology="BF",
+            new_reductant="Coke+PCI",
+            capacity=3.0,
+            historical_utilization=history,
             year=2025,
         )
         assert permitted == 3.0

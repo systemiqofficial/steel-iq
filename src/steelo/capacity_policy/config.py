@@ -28,7 +28,8 @@ class CapacityPolicyConfig:
             emission-intense new build's permitted capacity — a separate lever
             that happens to share the 1.5 default.
         min_utilization_for_renovation: Utilisation floor; a group at or
-            below it for the whole window is not eligible for renovation.
+            below it for the whole window is not eligible for renovation, nor
+            for replacement, whatever ``reline_counts_as_replace`` says.
         utilization_window_years: Number of consecutive recorded years at or
             below the floor that make a group ineligible for renovation.
         inter_company_swap_cutoff_year: First year a company may only spend
@@ -42,8 +43,9 @@ class CapacityPolicyConfig:
             applicability rule over the ownership cutoff, not an age rule.
         capacity_pool_max_retry_years: Years the capacity gate may block a
             considered greenfield before the opportunity is discarded.
-        reline_counts_as_replace: Whether a reline is treated as a replacement
-            rather than as neutral.
+        reline_counts_as_replace: Whether a reline also pays the replacement
+            ratio. The utilisation gate applies to a renovation either way
+            (Decision 34), so this flag is the ratio question alone.
 
     Raises:
         ValueError: On an unknown ``banked_credit_rule``, a non-positive ratio,

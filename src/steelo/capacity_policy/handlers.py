@@ -119,14 +119,32 @@ def replace_capacity_hook() -> Callable[..., float | None] | None:
         Adapts the decision path's plain values onto the evaluator; all policy
         applicability lives here rather than in the domain module. A
         non-Chinese plant passes through at its own capacity without reaching
-        the evaluator, as does a same-technology candidate — the renovation
-        option — unless ``reline_counts_as_replace`` makes a reline a REPLACE.
-        None means the utilisation gate blocks the replacement decision.
+        the evaluator. A same-technology candidate — the renovation option —
+        faces the utilisation gate but not the ratio, unless
+        ``reline_counts_as_replace`` makes a reline a full REPLACE and both
+        apply (Decision 34). None means the gate blocks the decision.
+
+        ``new_reductant`` is the candidate's operating-start pick (Decision
+        30), not the fleet's modal reductant. A reductant-split technology —
+        today the DRI family — re-optimises annually and may later run a
+        different reductant than it was classified under; fixed-reductant
+        routes cannot drift. The divergence is deliberate and bounded, since
+        the NPV that commits the pick priced the later years too, carbon cost
+        included, and it is measurable from any run by joining the
+        gate-decisions ``new_reductant`` against the motions ``reductant``.
         """
         if iso3 != "CHN":
             return capacity
         if new_technology == old_technology and not policy.evaluator.config.reline_counts_as_replace:
-            return capacity
+            return policy.evaluator.permitted_renovation(
+                technology=old_technology,
+                reductant=old_reductant or None,
+                capacity_mt=capacity,
+                geo_key=compose_geo_key(iso3, geo_unit),
+                historical_utilization=historical_utilization,
+                year=year,
+                furnace_group_id=furnace_group_id,
+            )
         return policy.evaluator.permitted_capacity(
             old_technology=old_technology,
             old_reductant=old_reductant or None,
@@ -529,7 +547,9 @@ def deposit_on_furnace_group_renovated(event: events.FurnaceGroupRenovated, uow:
     A renovation shrinks only when the pre-NPV hook treats a reline as a
     replacement (``reline_counts_as_replace``); under the default flag the
     event always carries ``old_capacity == capacity`` and this handler stays
-    silent, exactly like an unshrunk tech change.
+    silent, exactly like an unshrunk tech change. The utilisation gate is a
+    separate question the hook answers under both flags, and a group it blocks
+    raises no renovation event to begin with.
     """
     policy = _policy
     if policy is None:

@@ -2,11 +2,12 @@
 
 Pure logic over the fixture rows and :class:`CapacityPolicyConfig` — no bus, no
 environment, no domain-model imports — so the module stays deletable and
-testable against hand-built rows. The three methods transcribe the policy
-tree's branches: ① RETIRE (:meth:`TreeEvaluator.on_close`), ② REPLACE
-(:meth:`TreeEvaluator.permitted_capacity`), ③ INCREASE
-(:meth:`TreeEvaluator.on_increase`). Ratio precedence and derivation are
-consumed from :mod:`.inputs`, never reimplemented.
+testable against hand-built rows. The methods transcribe the policy tree's
+branches: ① RETIRE (:meth:`TreeEvaluator.on_close`), ② REPLACE
+(:meth:`TreeEvaluator.permitted_capacity` for a switch,
+:meth:`TreeEvaluator.permitted_renovation` for the gate-only renovation),
+③ INCREASE (:meth:`TreeEvaluator.on_increase`). Ratio precedence and
+derivation are consumed from :mod:`.inputs`, never reimplemented.
 """
 
 import logging
@@ -249,6 +250,69 @@ class TreeEvaluator:
             permitted_t=permitted,
         )
         return permitted
+
+    def permitted_renovation(
+        self,
+        *,
+        technology: str,
+        reductant: str | None,
+        capacity_mt: float,
+        geo_key: str,
+        historical_utilization: dict[int, float] | None,
+        year: int,
+        furnace_group_id: str | None = None,
+    ) -> float | None:
+        """Resolve whether a same-technology renovation is allowed at all — the gate alone.
+
+        Decision 34: the utilisation gate applies to renovations whatever
+        ``reline_counts_as_replace`` says; that flag decides only whether a
+        reline also pays the replacement ratio. A renovation outside REPLACE
+        therefore has nothing to classify and nothing to shrink — it either
+        proceeds untouched or is blocked outright.
+
+        The D5 letter is untouched: the predicate blocks only on a fully
+        recorded window at or below the floor, so insufficient history never
+        blocks and none is pre-populated.
+
+        Args:
+            technology: The incumbent technology, on both sides of the decision.
+            reductant: Its current reductant, or None when unset.
+            capacity_mt: The group's current capacity in Mt.
+            geo_key: Combined geo key of the plant.
+            historical_utilization: Per-year recorded utilisation of the group,
+                or None when no history exists yet.
+            year: Decision year.
+            furnace_group_id: The group under evaluation, for the log line and
+                the recorded row.
+
+        Returns:
+            ``capacity_mt`` unchanged when the renovation may proceed, or None
+            when the utilisation gate blocks it.
+        """
+        if not self._utilization_blocks(historical_utilization, year):
+            return capacity_mt
+        logger.info(
+            "[CAPACITY POOL] evaluation=renovation decision=blocked_utilization fg=%s geo_key=%s "
+            "technology=%s reductant=%s capacity_mt=%.3f year=%d",
+            furnace_group_id,
+            geo_key,
+            technology,
+            reductant,
+            capacity_mt,
+            year,
+        )
+        self._record_gate_decision(
+            year=year,
+            furnace_group_id=furnace_group_id,
+            geo_key=geo_key,
+            old_technology=technology,
+            old_reductant=reductant,
+            new_technology=technology,
+            new_reductant=reductant,
+            decision="blocked_utilization",
+            capacity_t=capacity_mt,
+        )
+        return None
 
     def increase_build_capacity(self, *, capacity_mt: float, technology: str, reductant: str | None) -> float:
         """Resolve the capacity an INCREASE build may actually build — branch ③ INCREASE, sizing only.

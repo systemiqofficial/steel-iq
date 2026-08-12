@@ -244,6 +244,75 @@ class TestUtilizationGate:
         assert permitted(evaluator, historical_utilization={2027: 0.20, 2028: 0.20, 2029: 0.20}) is None
 
 
+def renovation(
+    evaluator: TreeEvaluator,
+    technology: str = "BF",
+    reductant: str | None = None,
+    capacity_mt: float = 3.0,
+    geo_key: str = "CHN:CN-GD",
+    historical_utilization: dict[int, float] | None = None,
+    year: int = 2030,
+    furnace_group_id: str | None = None,
+) -> float | None:
+    """Call permitted_renovation with defaults suited to single-branch tests."""
+    return evaluator.permitted_renovation(
+        technology=technology,
+        reductant=reductant,
+        capacity_mt=capacity_mt,
+        geo_key=geo_key,
+        historical_utilization=historical_utilization,
+        year=year,
+        furnace_group_id=furnace_group_id,
+    )
+
+
+class TestPermittedRenovation:
+    """The gate-only ② path: a renovation is blocked or untouched, never shrunk (Decision 34)."""
+
+    def test_a_healthy_group_renovates_at_its_own_capacity(self):
+        assert renovation(make_evaluator(), historical_utilization={2029: 0.9, 2030: 0.9}) == pytest.approx(3.0)
+
+    @pytest.mark.parametrize("history", [None, {}, {2030: 0.1}])
+    def test_insufficient_history_never_blocks(self, history):
+        """The D5 letter, unchanged: only a fully recorded low window binds."""
+        assert renovation(make_evaluator(), historical_utilization=history) == pytest.approx(3.0)
+
+    def test_a_low_window_blocks(self):
+        assert renovation(make_evaluator(), historical_utilization={2029: 0.1, 2030: 0.1}) is None
+
+    def test_an_unclassified_technology_is_never_looked_up(self):
+        """No ratio means no classification: a route with no sheet row still renovates."""
+        assert renovation(make_evaluator(), technology="MOE") == pytest.approx(3.0)
+
+    def test_a_block_records_one_row_with_the_incumbent_on_both_sides(self):
+        recorder = CapacityPolicyRecorder()
+        evaluator = make_evaluator(recorder=recorder)
+
+        renovation(
+            evaluator,
+            reductant="Coke+PCI",
+            historical_utilization={2029: 0.1, 2030: 0.1},
+            furnace_group_id="fg-9",
+        )
+
+        (row,) = recorder._gate_decisions
+        assert row["decision"] == "blocked_utilization"
+        assert row["furnace_group_id"] == "fg-9"
+        assert row["old_technology"] == row["new_technology"] == "BF"
+        assert row["old_reductant"] == row["new_reductant"] == "Coke+PCI"
+        assert row["capacity_t"] == pytest.approx(3.0)
+        assert row["ratio"] is None
+        assert row["permitted_t"] is None
+
+    def test_an_unblocked_renovation_records_nothing(self):
+        """Nothing was decided, so nothing joins the policy-bite metric."""
+        recorder = CapacityPolicyRecorder()
+
+        renovation(make_evaluator(recorder=recorder), historical_utilization={2029: 0.9, 2030: 0.9})
+
+        assert recorder._gate_decisions == []
+
+
 class TestIncreaseBuildCapacity:
     """The non-consuming sizing half of ③, which the pre-NPV query calls."""
 

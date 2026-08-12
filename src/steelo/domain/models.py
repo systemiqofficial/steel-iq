@@ -7,6 +7,7 @@ import copy
 import math
 import logging
 import random
+import time
 import uuid
 from geopy.distance import geodesic  # type: ignore
 from typing import TYPE_CHECKING, TypeVar, ClassVar, FrozenSet, Dict, Tuple, Union, Any, Callable, Optional
@@ -4243,12 +4244,21 @@ class Plant:
         if permitted_replace_capacity is not None:
             candidate_capacities = {}
             permitted_candidates: list[str] = []
+            gate_picks_computed = 0
+            gate_picks_elapsed = 0.0
             for tech in filtered_allowed_furnace_transitions.get(furnace_group.technology.name, []):
-                candidate_reductant = (
-                    furnace_group.chosen_reductant
-                    if tech == furnace_group.technology.name
-                    else most_common_reductant_by_tech.get(tech)
-                )
+                if tech == furnace_group.technology.name:
+                    candidate_reductant: str | None = furnace_group.chosen_reductant
+                else:
+                    # The new side is classified by the candidate's own operating-start pick
+                    # (Decision 30), on the series and year anchor the P2 gate already uses
+                    if tech not in gate_pick_by_tech:
+                        started = time.perf_counter()
+                        gate_series = score_series_for_tech(tech, {}, Year(lookup_year), Year(lookup_year + 1))
+                        gate_picks_elapsed += time.perf_counter() - started
+                        gate_picks_computed += 1
+                        gate_pick_by_tech[tech] = gate_series.picks[0] if gate_series.picks else ""
+                    candidate_reductant = gate_pick_by_tech[tech]
                 permitted = permitted_replace_capacity(
                     iso3=self.location.iso3,
                     geo_unit=self.location.geo_unit,
@@ -4266,6 +4276,16 @@ class Plant:
                 candidate_capacities[tech] = permitted
                 permitted_candidates.append(tech)
             filtered_allowed_furnace_transitions[furnace_group.technology.name] = permitted_candidates
+            if gate_picks_computed:
+                # The picks are computed worldwide but read only for China (the adapter owns
+                # applicability); this is the evidence base for a CHN guard, should one be wanted
+                logger.debug(
+                    "[CAPACITY POOL] gate picks computed=%d elapsed_ms=%.1f iso3=%s fg=%s",
+                    gate_picks_computed,
+                    gate_picks_elapsed * 1e3,
+                    self.location.iso3,
+                    furnace_group_id,
+                )
 
         def permitted_capacity_for(tech_name: str) -> Volumes:
             """The capacity this candidate was evaluated at; the group's own when no policy ran."""
