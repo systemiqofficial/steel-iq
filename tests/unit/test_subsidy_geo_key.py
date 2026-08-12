@@ -293,7 +293,6 @@ def test_candidate_site_collects_country_and_province_capex_subsidies():
         debt_subsidies={},
         opex_subsidies={},
         energy_subsidies={},
-        carbon_costs={"CHN": {Year(2030): 50.0}},
         most_common_reductant={},
         environment_most_common_reductant={},
         derive_geo_unit=derive_geo_unit,
@@ -335,3 +334,66 @@ def test_subsidies_validator_flags_bogus_geo_key():
 
     assert len(errors) == 1
     assert "CHN:CN-XX" in errors[0].message
+
+
+def test_candidate_bom_priced_at_province_energy_costs():
+    """The BOM pick and stored candidate prices use the province energy row when the site
+    falls inside one, falling back to the country row elsewhere — the same resolution the
+    NPV score series applies, so the two sides of the valuation agree (audit B3)."""
+    energy_costs = {
+        "CHN": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0, "natural_gas": 0.03}},
+        "CHN:CN-HE": {Year(2025): {"electricity": 0.06, "hydrogen": 3600.0, "natural_gas": 0.01}},
+    }
+    sites = [
+        NewPlantLocation(Latitude=39.0, Longitude=114.5, iso3="CHN", power_price=0.05, capped_lcoh=3.0, rail_cost=10.0),
+        NewPlantLocation(Latitude=31.6, Longitude=118.5, iso3="CHN", power_price=0.05, capped_lcoh=3.0, rail_cost=10.0),
+    ]
+
+    def derive_geo_unit(lat, lon, iso3):
+        return "CN-HE" if lat == 39.0 else "CN-AH"
+
+    bom_price_inputs = []
+
+    def _capturing_get_bom(energy_costs_arg, tech, _capacity, _most_common_reductant=None):
+        bom_price_inputs.append(dict(energy_costs_arg))
+        return _mock_get_bom(energy_costs_arg, tech, _capacity, _most_common_reductant)
+
+    cost_data = prepare_cost_data_for_business_opportunity(
+        product_to_tech={"steel": ["EAF"]},
+        best_locations_subset={"steel": sites},
+        current_year=Year(2025),
+        target_year=Year(2030),
+        energy_costs=energy_costs,
+        capex_dict_all_locs_techs={"Asia": {"EAF": 1000.0}},
+        cost_of_debt_all_locs={"CHN": {"EAF": 0.05}},
+        cost_of_equity_all_locs={"CHN": {"EAF": 0.08}},
+        fopex_all_locs_techs={"CHN": {"eaf": 50.0}},
+        steel_plant_capacity=100.0,
+        get_bom_from_avg_boms=_capturing_get_bom,
+        plant_lifetime=20,
+        construction_time=2,
+        reductant_score_series=_stub_series,
+        iso3_to_region_map={"CHN": "Asia"},
+        global_risk_free_rate=0.03,
+        capex_subsidies={},
+        debt_subsidies={},
+        opex_subsidies={},
+        energy_subsidies={},
+        most_common_reductant={},
+        environment_most_common_reductant={},
+        derive_geo_unit=derive_geo_unit,
+    )
+
+    hebei = cost_data["steel"][(39.0, 114.5, "CHN")]["EAF"]
+    anhui = cost_data["steel"][(31.6, 118.5, "CHN")]["EAF"]
+
+    # Non-overridden carrier: province row for the CN-HE site, country row for CN-AH
+    # (no dedicated row -> logged fallback to the country)
+    assert hebei["no_subsidy_prices"]["natural_gas"] == pytest.approx(0.01)
+    assert anhui["no_subsidy_prices"]["natural_gas"] == pytest.approx(0.03)
+    # Pixel overrides still win for electricity and hydrogen at both sites
+    assert hebei["no_subsidy_prices"]["electricity"] == pytest.approx(0.05)
+    assert anhui["no_subsidy_prices"]["electricity"] == pytest.approx(0.05)
+    # The BOM pick itself was priced with the resolved carriers
+    assert bom_price_inputs[0]["natural_gas"] == pytest.approx(0.01)
+    assert bom_price_inputs[1]["natural_gas"] == pytest.approx(0.03)

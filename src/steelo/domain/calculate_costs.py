@@ -1240,7 +1240,10 @@ def calculate_business_opportunity_npvs(
     Args:
         cost_data: Nested dictionary: product -> site_id -> tech -> cost_type -> cost
         target_year: Target year for the business opportunity
-        market_price: Dictionary mapping product to list of future market prices
+        market_price: Dictionary mapping product to list of future market prices,
+            anchored at target_year (index 0 = earliest construction start), so that
+            after calculate_npv_full's construction-time padding each price year
+            matches the cost year of the operating window
         steel_plant_capacity: Capacity of the steel plant in tonnes
         plant_lifetime: Lifetime of the plant in years
         construction_time: Time required for plant construction in years
