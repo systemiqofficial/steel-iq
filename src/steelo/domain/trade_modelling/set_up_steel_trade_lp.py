@@ -1,4 +1,4 @@
-from typing import Any, TYPE_CHECKING
+from typing import Any, NamedTuple, TYPE_CHECKING
 import logging
 import math
 from steelo.adapters.repositories import InMemoryRepository, Repository
@@ -451,6 +451,8 @@ def add_furnace_groups_as_process_centers(
                     production_cost=furnace_group.carbon_cost_per_unit,
                     soft_minimum_capacity=config.soft_minimum_capacity_percentage,
                     energy_costs_per_input=build_energy_costs_per_input(furnace_group),
+                    last_production=furnace_group.production,
+                    input_intensities=build_input_intensities(furnace_group),
                 )
                 process_centers.append(process_center)
 
@@ -861,34 +863,204 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
     return trade_lp
 
 
+STEEL_CLASS_COMMODITIES = frozenset({"steel", "liquid_steel"})
+
+
+class CarbonCostReferences(NamedTuple):
+    """Country-level carbon-cost references ($/t) for carbon border adjustments."""
+
+    steel_ref: dict[str, float]  # iso3 -> embedded carbon cost of domestically produced steel
+    iron_ref: dict[str, float]  # iso3 -> carbon cost of domestically produced iron-stage commodities
+    iron_ref_global: float  # production-weighted world average, fallback where a country makes no iron
+    iron_class: frozenset[str]  # commodity names that carry the iron stage's carbon into steel
+    steel_alpha: dict[str, float]  # iso3 -> average iron-class input (t) per tonne of steel
+    steel_alpha_global: float
+
+
+def build_input_intensities(furnace_group: FurnaceGroup) -> dict[str, float] | None:
+    """Material inputs per tonne of product from the furnace group's last allocation.
+
+    Args:
+        furnace_group: Furnace group whose bill_of_materials was set by the previous
+            trade-model allocation.
+
+    Returns:
+        Dict mapping material name to tonnes consumed per tonne of product, or None when
+        the furnace group has no production history (new or idle plants).
+
+    Notes:
+        Same vintage as carbon_cost_per_unit: both reflect the previous year's allocation,
+        the latest realised state available at LP-setup time.
+    """
+    bill = furnace_group.bill_of_materials or {}
+    materials = bill.get("materials") or {}
+    production = furnace_group.production
+    if not materials or not production or production <= 0:
+        return None
+    return {
+        name: entry["demand"] / production
+        for name, entry in materials.items()
+        if isinstance(entry, dict) and entry.get("demand")
+    }
+
+
+def _iron_class_commodities(process_centers: list["tlp.ProcessCenter"]) -> frozenset[str]:
+    """Commodities that carry the iron stage's carbon cost into steelmaking.
+
+    A commodity is iron-class when it is produced by a PRODUCTION process centre and
+    consumed by one that produces steel. Scrap enters only from SUPPLY nodes and iron ore
+    is not consumed at the steel stage, so both fall out naturally.
+    """
+    produced: set[str] = set()
+    consumed_by_steel: set[str] = set()
+    for pc in process_centers:
+        if pc.process.type != tlp.ProcessType.PRODUCTION:
+            continue
+        products = {commodity.name for commodity in pc.process.products}
+        produced |= products
+        if products & STEEL_CLASS_COMMODITIES:
+            consumed_by_steel |= {bom.commodity.name for bom in pc.process.bill_of_materials}
+    return frozenset((produced & consumed_by_steel) - STEEL_CLASS_COMMODITIES)
+
+
+def _reference_weight(pc: "tlp.ProcessCenter") -> float:
+    """Weight of a producer in the reference average: last year's production when known.
+
+    Falls back to capacity when no production history is attached (clustered meta-furnace
+    groups). Idle plants weigh zero and drop out of the reference.
+    """
+    last_production = getattr(pc, "last_production", None)
+    return pc.capacity if last_production is None else last_production
+
+
+def _iron_input_intensity(pc: "tlp.ProcessCenter", references: "CarbonCostReferences") -> float:
+    """Iron-class input (t) per tonne of steel for a producer, with country/global fallback."""
+    intensities = getattr(pc, "input_intensities", None)
+    if intensities is not None:
+        return sum(quantity for name, quantity in intensities.items() if name in references.iron_class)
+    return references.steel_alpha.get(pc.location.iso3, references.steel_alpha_global)
+
+
 def build_reference_producer_carbon_costs(
     process_centers: list["tlp.ProcessCenter"],
-) -> dict[tuple[str, str], float]:
-    """Build production-weighted average carbon cost of active producers, per (iso3, commodity).
+) -> CarbonCostReferences:
+    """Build per-country embedded carbon-cost references from PRODUCTION process centres.
 
-    Demand centres carry no production_cost of their own (it defaults to 0.0), so carbon
-    border adjustments on flows into a demand centre need a stand-in for "the carbon cost a
-    domestic producer of this commodity would have incurred". This aggregates that reference
-    cost from PRODUCTION process centres, weighted by capacity, per country and commodity.
+    Carbon costs in this model are booked almost entirely on the iron stage: steelmaking
+    consumes hot metal / DRI whose emissions were already charged to the upstream furnace
+    group, so a steel plant's own production_cost is near zero by construction. A border
+    mechanism benchmarked on the steel stage alone therefore cannot fire on steel imports.
+    This builds references on the carbon cost EMBEDDED in a tonne of each commodity class:
 
-    Excludes idle producers (production_cost == 0.0) to avoid downward bias from zero-cost
-    idle capacity outweighing active producers.
+    - iron_ref: production-weighted average production_cost of iron-class producers,
+      pooled across iron-class commodities per country (their upstream, ore, is unpriced).
+    - steel_ref: production-weighted average over steel producers of
+      production_cost + iron input intensity x iron_ref of the producer's country
+      (global fallback where the country makes no iron).
+
+    Args:
+        process_centers: All process centres of the trade LP.
+
+    Returns:
+        CarbonCostReferences with country references, the iron-class commodity set, and
+        the intensity/global fallbacks needed to embed source-side costs symmetrically.
+
+    Notes:
+        Producers are weighted by last year's production, so idle plants drop out while
+        actively producing zero-carbon plants dilute the reference honestly (a zero
+        carbon cost overwhelmingly means no priced emissions, not idleness).
     """
-    weighted_cost_sum: dict[tuple[str, str], float] = defaultdict(float)
-    capacity_sum: dict[tuple[str, str], float] = defaultdict(float)
+    iron_class = _iron_class_commodities(process_centers)
+
+    iron_cost_sum: dict[str, float] = defaultdict(float)
+    iron_weight_sum: dict[str, float] = defaultdict(float)
+    global_cost_sum = 0.0
+    global_weight_sum = 0.0
+    steel_producers: list[tuple[Any, float]] = []
 
     for pc in process_centers:
         if pc.process.type != tlp.ProcessType.PRODUCTION:
             continue
-        if pc.production_cost == 0.0:
+        weight = _reference_weight(pc)
+        if weight <= 0:
             continue
+        products = {commodity.name for commodity in pc.process.products}
         iso3 = pc.location.iso3
-        for commodity in pc.process.products:
-            key = (iso3, commodity.name)
-            weighted_cost_sum[key] += pc.production_cost * pc.capacity
-            capacity_sum[key] += pc.capacity
+        if products & iron_class:
+            iron_cost_sum[iso3] += pc.production_cost * weight
+            iron_weight_sum[iso3] += weight
+            global_cost_sum += pc.production_cost * weight
+            global_weight_sum += weight
+        if products & STEEL_CLASS_COMMODITIES:
+            steel_producers.append((pc, weight))
 
-    return {key: weighted_cost_sum[key] / capacity_sum[key] for key in capacity_sum if capacity_sum[key] > 0}
+    iron_ref = {iso3: iron_cost_sum[iso3] / iron_weight_sum[iso3] for iso3 in iron_weight_sum}
+    iron_ref_global = global_cost_sum / global_weight_sum if global_weight_sum > 0 else 0.0
+
+    # Average iron intensity per country from producers with a material-bill history,
+    # used as the stand-in for producers without one (new plants, clustered mode).
+    alpha_sum: dict[str, float] = defaultdict(float)
+    alpha_weight_sum: dict[str, float] = defaultdict(float)
+    global_alpha_sum = 0.0
+    global_alpha_weight = 0.0
+    for pc, weight in steel_producers:
+        intensities = getattr(pc, "input_intensities", None)
+        if intensities is None:
+            continue
+        alpha = sum(quantity for name, quantity in intensities.items() if name in iron_class)
+        iso3 = pc.location.iso3
+        alpha_sum[iso3] += alpha * weight
+        alpha_weight_sum[iso3] += weight
+        global_alpha_sum += alpha * weight
+        global_alpha_weight += weight
+    steel_alpha = {iso3: alpha_sum[iso3] / alpha_weight_sum[iso3] for iso3 in alpha_weight_sum}
+    steel_alpha_global = global_alpha_sum / global_alpha_weight if global_alpha_weight > 0 else 0.0
+
+    references = CarbonCostReferences(
+        steel_ref={},
+        iron_ref=iron_ref,
+        iron_ref_global=iron_ref_global,
+        iron_class=iron_class,
+        steel_alpha=steel_alpha,
+        steel_alpha_global=steel_alpha_global,
+    )
+
+    steel_cost_sum: dict[str, float] = defaultdict(float)
+    steel_weight_sum: dict[str, float] = defaultdict(float)
+    for pc, weight in steel_producers:
+        iso3 = pc.location.iso3
+        alpha = _iron_input_intensity(pc, references)
+        embedded = pc.production_cost + alpha * iron_ref.get(iso3, iron_ref_global)
+        steel_cost_sum[iso3] += embedded * weight
+        steel_weight_sum[iso3] += weight
+    references.steel_ref.update({iso3: steel_cost_sum[iso3] / steel_weight_sum[iso3] for iso3 in steel_weight_sum})
+
+    return references
+
+
+def _source_embedded_carbon_cost(
+    pc: "tlp.ProcessCenter", commodity_name: str, references: CarbonCostReferences
+) -> float:
+    """Carbon cost embedded in a tonne of the commodity leaving this producer.
+
+    For steel, adds the carbon cost of the producer's iron inputs (own realised intensity
+    when known, country/global average otherwise) on top of its own stage cost; iron-class
+    commodities carry their stage cost directly.
+    """
+    if commodity_name not in STEEL_CLASS_COMMODITIES:
+        return pc.production_cost
+    alpha = _iron_input_intensity(pc, references)
+    iron_ref = references.iron_ref.get(pc.location.iso3, references.iron_ref_global)
+    return pc.production_cost + alpha * iron_ref
+
+
+def _destination_reference(iso3: str, commodity_name: str, references: CarbonCostReferences) -> float | None:
+    """Embedded carbon cost domestic producers of this commodity bear, or None if none exist."""
+    if commodity_name in STEEL_CLASS_COMMODITIES:
+        return references.steel_ref.get(iso3)
+    if commodity_name in references.iron_class:
+        return references.iron_ref.get(iso3)
+    return None
 
 
 def adapt_allocation_costs_for_carbon_border_mechanisms(
@@ -910,25 +1082,36 @@ def adapt_allocation_costs_for_carbon_border_mechanisms(
         year: Current simulation year
 
     Notes:
-        - Export rebates: applying_region → other flows get cost increase if carbon cost is higher
-        - Import adjustments: other → applying_region flows get cost increase if carbon cost is higher
-        - Only first mechanism applied to each flow (tracked via adjusted_flows set)
+        - Export rebates: applying_region → other flows get cost decrease if the embedded
+          carbon cost is higher than the destination reference
+        - Import adjustments: other → applying_region flows get cost increase if the embedded
+          carbon cost is lower than the destination reference
+        - Both sides compare the carbon cost EMBEDDED in a tonne of the commodity crossing
+          the border (see build_reference_producer_carbon_costs): steel carries its iron
+          inputs' carbon cost, so the mechanism fires on steel even though carbon is booked
+          on the iron stage. The destination side always uses the country reference for the
+          crossing commodity — never the destination plant's own cost, which is denominated
+          per tonne of a different product.
+        - Only first mechanism applied to each flow (tracked via adjusted_arcs set)
         - Only applies to legal allocations (defined process connectors)
         - Skips supplier sources: their production_cost is raw-material price, not carbon cost.
           CBAM does not apply to scrap feedstock anyway.
-        - Skips flows involving None process centers or locations
-        - Demand-centre destinations have no production_cost of their own, so their carbon
-          cost is stood in for by the capacity-weighted average of domestic PRODUCTION
-          process centres for that commodity (see build_reference_producer_carbon_costs).
-          Destination countries with no domestic producers of the commodity are skipped —
-          there is nothing to protect or rebate against.
+        - A destination country with no domestic producers of the commodity is skipped on
+          the import side (nothing to protect) but treated as an unpriced market (reference
+          0.0, full rebate) on the export side.
     """
+    logger = logging.getLogger(f"{__name__}.adapt_allocation_costs_for_carbon_border_mechanisms")
+
     # Track which arcs have already been adjusted to prevent double-counting across mechanisms
     adjusted_arcs = set()
     adjustments_made = 0
     skipped_duplicates = 0
+    skipped_import_no_reference = 0
+    import_adjustments: list[float] = []
+    export_rebates: list[float] = []
+    counts_by_class: dict[tuple[str, str], int] = defaultdict(int)
 
-    reference_carbon_cost = build_reference_producer_carbon_costs(trade_lp.process_centers)
+    references = build_reference_producer_carbon_costs(trade_lp.process_centers)
 
     for mechanism in carbon_border_mechanisms:
         if not mechanism.is_active(year):
@@ -953,32 +1136,51 @@ def adapt_allocation_costs_for_carbon_border_mechanisms(
                 skipped_duplicates += 1
                 continue
 
-            from_carbon_cost = from_pc.production_cost
-            if to_pc.process.type == tlp.ProcessType.DEMAND:
-                to_carbon_cost = reference_carbon_cost.get((to_iso3, comm.name))
-                if to_carbon_cost is None:
-                    # No domestic producers of this commodity in the destination country —
-                    # nothing to protect (import case) or rebate against (export case).
-                    continue
-            else:
-                to_carbon_cost = to_pc.production_cost
-            differential = to_carbon_cost - from_carbon_cost
+            from_carbon_cost = _source_embedded_carbon_cost(from_pc, comm.name, references)
+            to_carbon_cost = _destination_reference(to_iso3, comm.name, references)
+            commodity_class = "steel" if comm.name in STEEL_CLASS_COMMODITIES else "iron"
 
             # Case 1: Exporting from applying region to non-applying region (export rebates)
             if from_iso3 in applying_countries and to_iso3 not in applying_countries:
-                # Apply the minimum of the carbon costs due to export rebates
-                if from_carbon_cost > to_carbon_cost:
+                # No domestic producers in the destination -> unpriced market, rebate in full
+                to_reference = to_carbon_cost if to_carbon_cost is not None else 0.0
+                if from_carbon_cost > to_reference:
+                    differential = to_reference - from_carbon_cost
                     trade_lp.lp_model.allocation_costs[arc_key] += differential
                     adjusted_arcs.add(arc_key)
                     adjustments_made += 1
+                    export_rebates.append(differential)
+                    counts_by_class[(commodity_class, "export")] += 1
 
             # Case 2: Importing into applying region from non-applying region (border adjustment)
             elif from_iso3 not in applying_countries and to_iso3 in applying_countries:
-                # Apply the maximum of the carbon costs (border adjustment)
+                if to_carbon_cost is None:
+                    # No domestic producers of this commodity — nothing to protect.
+                    skipped_import_no_reference += 1
+                    continue
                 if from_carbon_cost < to_carbon_cost:
+                    differential = to_carbon_cost - from_carbon_cost
                     trade_lp.lp_model.allocation_costs[arc_key] += differential
                     adjusted_arcs.add(arc_key)
                     adjustments_made += 1
+                    import_adjustments.append(differential)
+                    counts_by_class[(commodity_class, "import")] += 1
+
+    def _span(values: list[float]) -> str:
+        if not values:
+            return "n=0"
+        return f"n={len(values)} mean={sum(values) / len(values):.2f} min={min(values):.2f} max={max(values):.2f}"
+
+    logger.info(
+        f"[CBAM ADJUST] year={year} arcs_total={len(trade_lp.legal_allocations)} "
+        f"arcs_adjusted={adjustments_made} duplicates_skipped={skipped_duplicates} "
+        f"imports_skipped_no_reference={skipped_import_no_reference} | "
+        f"imports: {_span(import_adjustments)} | exports: {_span(export_rebates)} | "
+        f"by class: steel imports n={counts_by_class[('steel', 'import')]} "
+        f"exports n={counts_by_class[('steel', 'export')]}, "
+        f"iron imports n={counts_by_class[('iron', 'import')]} "
+        f"exports n={counts_by_class[('iron', 'export')]}"
+    )
 
 
 def set_up_steel_trade_lp(

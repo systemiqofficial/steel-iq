@@ -204,6 +204,10 @@ class ProcessCenter:
         production_cost: Cost per ton to operate this facility (e.g., carbon cost)
         soft_minimum_capacity: Optional target minimum utilization (fraction, e.g., 0.5 for 50%)
         optimal_production: Set after solving, the optimal production quantity
+        last_production: Previous year's realised production (tons), used to weight
+            carbon border reference costs; None falls back to capacity weighting
+        input_intensities: Previous year's material inputs per ton of product, keyed by
+            commodity name; None when the facility has no production history
     """
 
     def __init__(
@@ -215,6 +219,8 @@ class ProcessCenter:
         production_cost: float = 0.0,
         soft_minimum_capacity: float | None = None,
         energy_costs_per_input: dict[str, float] | None = None,
+        last_production: float | None = None,
+        input_intensities: dict[str, float] | None = None,
     ):
         self.name = name
         self.process = process
@@ -223,6 +229,8 @@ class ProcessCenter:
         self.production_cost = production_cost
         self.soft_minimum_capacity = soft_minimum_capacity
         self.optimal_production: float | None = None
+        self.last_production = last_production
+        self.input_intensities = input_intensities
         # Facility-specific energy cost per ton of input, keyed by commodity name. Overrides
         # the shared Process's BOM-element energy_cost (which is baked in from whichever
         # furnace group first built that Process) when present. See add_bom_energy_costs_as_parameter_to_lp.

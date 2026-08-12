@@ -57,6 +57,8 @@ class DummyProcessCenter:
         production_cost=0.1,
         soft_minimum_capacity=0.0,
         energy_costs_per_input=None,
+        last_production=None,
+        input_intensities=None,
     ):
         self.production_cost = production_cost
         self.name = name
@@ -65,6 +67,8 @@ class DummyProcessCenter:
         self.location = location
         self.soft_minimum_capacity = soft_minimum_capacity
         self.energy_costs_per_input = energy_costs_per_input
+        self.last_production = last_production
+        self.input_intensities = input_intensities
 
 
 class DummyProcessConnector:
@@ -288,6 +292,8 @@ class DummyFurnaceGroup:
         self.unit_fopex = unit_fopex
         self.energy_vopex_by_input = {}
         self.chosen_reductant = chosen_reductant
+        self.production = 0.0
+        self.bill_of_materials = None
 
     @property
     def effective_primary_feedstocks(self):
@@ -1202,14 +1208,23 @@ def test_adapt_allocation_costs_cbam_export_from_eu():
     eu_location = DummyLocation("DEU")
     non_eu_location = DummyLocation("USA")
 
+    commodity = DummyCommodity("steel")
     from_pc = DummyProcessCenter(
-        "eu_pc", DummyProcess("p1", DummyProcessType.PRODUCTION, []), 100, eu_location, production_cost=100.0
+        "eu_pc",
+        DummyProcess("p1", DummyProcessType.PRODUCTION, [], products=[commodity]),
+        100,
+        eu_location,
+        production_cost=100.0,
     )
     to_pc = DummyProcessCenter(
-        "us_pc", DummyProcess("p2", DummyProcessType.PRODUCTION, []), 100, non_eu_location, production_cost=50.0
+        "us_pc",
+        DummyProcess("p2", DummyProcessType.PRODUCTION, [], products=[commodity]),
+        100,
+        non_eu_location,
+        production_cost=50.0,
     )
 
-    commodity = DummyCommodity("steel")
+    lp_model.process_centers = [from_pc, to_pc]
     lp_model.legal_allocations = [(from_pc, to_pc, commodity)]
     lp_model.lp_model.allocation_costs = {("eu_pc", "us_pc", "steel"): 10.0}
 
@@ -1241,14 +1256,23 @@ def test_adapt_allocation_costs_cbam_import_to_eu():
     eu_location = DummyLocation("DEU")
     non_eu_location = DummyLocation("USA")
 
+    commodity = DummyCommodity("steel")
     from_pc = DummyProcessCenter(
-        "us_pc", DummyProcess("p1", DummyProcessType.PRODUCTION, []), 100, non_eu_location, production_cost=50.0
+        "us_pc",
+        DummyProcess("p1", DummyProcessType.PRODUCTION, [], products=[commodity]),
+        100,
+        non_eu_location,
+        production_cost=50.0,
     )
     to_pc = DummyProcessCenter(
-        "eu_pc", DummyProcess("p2", DummyProcessType.PRODUCTION, []), 100, eu_location, production_cost=100.0
+        "eu_pc",
+        DummyProcess("p2", DummyProcessType.PRODUCTION, [], products=[commodity]),
+        100,
+        eu_location,
+        production_cost=100.0,
     )
 
-    commodity = DummyCommodity("steel")
+    lp_model.process_centers = [from_pc, to_pc]
     lp_model.legal_allocations = [(from_pc, to_pc, commodity)]
     lp_model.lp_model.allocation_costs = {("us_pc", "eu_pc", "steel"): 10.0}
 
@@ -1262,7 +1286,7 @@ def test_adapt_allocation_costs_cbam_import_to_eu():
         trade_lp=lp_model, carbon_border_mechanisms=[cbam], country_mappings=country_mappings, year=2026
     )
 
-    # Import to EU (high cost) from non-EU (low cost) should add differential (100-50=+50)
+    # Import to EU (reference 100) from non-EU (embedded cost 50) should add differential (+50)
     assert lp_model.lp_model.allocation_costs[("us_pc", "eu_pc", "steel")] == 10.0 + 50.0
 
 
@@ -1314,14 +1338,23 @@ def test_adapt_allocation_costs_cbam_no_double_counting():
     eu_location = DummyLocation("DEU")
     non_eu_location = DummyLocation("USA")
 
+    commodity = DummyCommodity("steel")
     from_pc = DummyProcessCenter(
-        "us_pc", DummyProcess("p1", DummyProcessType.PRODUCTION, []), 100, non_eu_location, production_cost=50.0
+        "us_pc",
+        DummyProcess("p1", DummyProcessType.PRODUCTION, [], products=[commodity]),
+        100,
+        non_eu_location,
+        production_cost=50.0,
     )
     to_pc = DummyProcessCenter(
-        "eu_pc", DummyProcess("p2", DummyProcessType.PRODUCTION, []), 100, eu_location, production_cost=100.0
+        "eu_pc",
+        DummyProcess("p2", DummyProcessType.PRODUCTION, [], products=[commodity]),
+        100,
+        eu_location,
+        production_cost=100.0,
     )
 
-    commodity = DummyCommodity("steel")
+    lp_model.process_centers = [from_pc, to_pc]
     lp_model.legal_allocations = [(from_pc, to_pc, commodity)]
     lp_model.lp_model.allocation_costs = {("us_pc", "eu_pc", "steel"): 10.0}
 
@@ -1355,17 +1388,30 @@ def test_adapt_allocation_costs_cbam_adjusts_all_arcs_on_same_route():
     non_eu_location = DummyLocation("USA")
 
     # Two distinct US process centers exporting to the same EU process center
+    commodity = DummyCommodity("steel")
     from_pc_1 = DummyProcessCenter(
-        "us_pc_1", DummyProcess("p1", DummyProcessType.PRODUCTION, []), 100, non_eu_location, production_cost=50.0
+        "us_pc_1",
+        DummyProcess("p1", DummyProcessType.PRODUCTION, [], products=[commodity]),
+        100,
+        non_eu_location,
+        production_cost=50.0,
     )
     from_pc_2 = DummyProcessCenter(
-        "us_pc_2", DummyProcess("p2", DummyProcessType.PRODUCTION, []), 100, non_eu_location, production_cost=60.0
+        "us_pc_2",
+        DummyProcess("p2", DummyProcessType.PRODUCTION, [], products=[commodity]),
+        100,
+        non_eu_location,
+        production_cost=60.0,
     )
     to_pc = DummyProcessCenter(
-        "eu_pc", DummyProcess("p3", DummyProcessType.PRODUCTION, []), 100, eu_location, production_cost=100.0
+        "eu_pc",
+        DummyProcess("p3", DummyProcessType.PRODUCTION, [], products=[commodity]),
+        100,
+        eu_location,
+        production_cost=100.0,
     )
 
-    commodity = DummyCommodity("steel")
+    lp_model.process_centers = [from_pc_1, from_pc_2, to_pc]
     lp_model.legal_allocations = [
         (from_pc_1, to_pc, commodity),
         (from_pc_2, to_pc, commodity),
@@ -1390,7 +1436,8 @@ def test_adapt_allocation_costs_cbam_adjusts_all_arcs_on_same_route():
     assert lp_model.lp_model.allocation_costs[("us_pc_2", "eu_pc", "steel")] == 20.0 + 40.0
 
 
-def test_build_reference_producer_carbon_costs_capacity_weighted():
+def test_build_reference_producer_carbon_costs_capacity_weight_fallback():
+    """Without production history the reference falls back to capacity weighting."""
     from steelo.domain.trade_modelling.set_up_steel_trade_lp import build_reference_producer_carbon_costs
     import steelo.domain.trade_modelling.trade_lp_modelling as tlp
 
@@ -1420,25 +1467,23 @@ def test_build_reference_producer_carbon_costs_capacity_weighted():
         production_cost=0.0,
     )
 
-    reference_costs = build_reference_producer_carbon_costs([producer_1, producer_2, demand_center])
+    references = build_reference_producer_carbon_costs([producer_1, producer_2, demand_center])
 
     # Weighted average: (100*100 + 300*60) / 400 = 70.0
-    assert reference_costs[("DEU", "steel")] == pytest.approx(70.0)
+    assert references.steel_ref["DEU"] == pytest.approx(70.0)
 
 
 def test_build_reference_producer_carbon_costs_excludes_idle_plants():
-    """Idle producers (production_cost == 0.0) should not dilute the reference carbon cost.
-
-    An idle plant with large capacity should not outweigh a small running plant.
-    This prevents import adjustments from being artificially weakened by idle capacity.
-    """
+    """Idle producers (zero production last year) should not dilute the reference carbon
+    cost, while an actively producing zero-carbon plant must dilute it — a zero carbon
+    cost means no priced emissions, not idleness."""
     from steelo.domain.trade_modelling.set_up_steel_trade_lp import build_reference_producer_carbon_costs
     import steelo.domain.trade_modelling.trade_lp_modelling as tlp
 
     steel = DummyCommodity("steel")
     eu_location = DummyLocation("DEU")
 
-    # Active producer: small capacity, high carbon cost
+    # Active producer: small output, high carbon cost
     active_producer = DummyProcessCenter(
         "eu_active",
         DummyProcess("p1", tlp.ProcessType.PRODUCTION, [], products=[steel]),
@@ -1446,22 +1491,37 @@ def test_build_reference_producer_carbon_costs_excludes_idle_plants():
         location=eu_location,
         production_cost=100.0,
     )
+    active_producer.last_production = 100.0
 
-    # Idle producer: large capacity, zero carbon cost
-    # (This represents a furnace with utilization_rate == 0)
+    # Idle producer: large capacity, produced nothing last year
     idle_producer = DummyProcessCenter(
         "eu_idle",
         DummyProcess("p2", tlp.ProcessType.PRODUCTION, [], products=[steel]),
         capacity=1000,
         location=eu_location,
+        production_cost=50.0,
+    )
+    idle_producer.last_production = 0.0
+
+    references = build_reference_producer_carbon_costs([active_producer, idle_producer])
+
+    # Only the active producer counts: 100*100 / 100 = 100.0
+    assert references.steel_ref["DEU"] == pytest.approx(100.0)
+
+    # A decarbonised plant that IS producing dilutes the reference honestly
+    green_producer = DummyProcessCenter(
+        "eu_green",
+        DummyProcess("p3", tlp.ProcessType.PRODUCTION, [], products=[steel]),
+        capacity=1000,
+        location=eu_location,
         production_cost=0.0,
     )
+    green_producer.last_production = 300.0
 
-    reference_costs = build_reference_producer_carbon_costs([active_producer, idle_producer])
+    references = build_reference_producer_carbon_costs([active_producer, idle_producer, green_producer])
 
-    # Should only use active producer: 100*100 / 100 = 100.0
-    # Without the fix, would be: (100*100 + 1000*0) / 1100 = 9.09
-    assert reference_costs[("DEU", "steel")] == pytest.approx(100.0)
+    # (100*100 + 300*0) / 400 = 25.0
+    assert references.steel_ref["DEU"] == pytest.approx(25.0)
 
 
 def test_adapt_allocation_costs_cbam_import_to_eu_demand_center():
@@ -1564,6 +1624,221 @@ def test_adapt_allocation_costs_cbam_skips_demand_center_without_domestic_produc
     )
 
     assert lp_model.lp_model.allocation_costs[("us_exporter", "eu_demand", "steel")] == 10.0
+
+
+def _embedded_chain_fixture():
+    """DEU iron+steel chain, a DEU demand centre, and US producers, for embedded-cost tests.
+
+    Carbon is booked on the iron stage (hot metal at 100 $/t); both steel stages carry
+    zero own carbon cost, mirroring how the model books emissions.
+    """
+    import steelo.domain.trade_modelling.trade_lp_modelling as tlp
+
+    steel = DummyCommodity("steel")
+    hot_metal = DummyCommodity("hot_metal")
+    scrap = DummyCommodity("scrap")
+    eu_location = DummyLocation("DEU")
+    us_location = DummyLocation("USA")
+
+    steel_bom = [DummyBOMElement("hm", hot_metal, [steel], {}), DummyBOMElement("sc", scrap, [steel], {})]
+
+    eu_iron = DummyProcessCenter(
+        "eu_iron",
+        DummyProcess("bf", tlp.ProcessType.PRODUCTION, [], products=[hot_metal]),
+        capacity=100,
+        location=eu_location,
+        production_cost=100.0,
+    )
+    eu_steel = DummyProcessCenter(
+        "eu_steel",
+        DummyProcess("bof", tlp.ProcessType.PRODUCTION, steel_bom, products=[steel]),
+        capacity=100,
+        location=eu_location,
+        production_cost=0.0,
+    )
+    eu_steel.input_intensities = {"hot_metal": 0.9, "scrap": 0.2}
+    eu_demand = DummyProcessCenter(
+        "eu_demand",
+        DummyProcess("d1", tlp.ProcessType.DEMAND, [], products=[steel]),
+        capacity=200,
+        location=eu_location,
+        production_cost=0.0,
+    )
+    us_steel = DummyProcessCenter(
+        "us_steel",
+        DummyProcess("eaf", tlp.ProcessType.PRODUCTION, steel_bom, products=[steel]),
+        capacity=100,
+        location=us_location,
+        production_cost=0.0,
+    )
+    us_steel.input_intensities = {"scrap": 1.1}
+
+    cbam = DummyCarbonBorderMechanism(mechanism_name="CBAM", applying_region_column="EU", start_year=2025)
+    country_mappings = {
+        "DEU": DummyCountryMapping("DEU", EU=True),
+        "USA": DummyCountryMapping("USA", EU=False),
+    }
+    return steel, hot_metal, eu_iron, eu_steel, eu_demand, us_steel, cbam, country_mappings
+
+
+def test_adapt_allocation_costs_cbam_steel_import_charged_on_embedded_iron_carbon():
+    """Regression for the structurally dead import channel: EU steel plants carry zero own
+    carbon cost because emissions are booked on the iron stage, yet steel imports into an
+    EU demand centre must still be charged against the carbon embedded via the iron inputs."""
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
+        adapt_allocation_costs_for_carbon_border_mechanisms,
+    )
+
+    steel, _, eu_iron, eu_steel, eu_demand, us_steel, cbam, country_mappings = _embedded_chain_fixture()
+
+    lp_model = DummyTradeLPModel()
+    lp_model.process_centers = [eu_iron, eu_steel, eu_demand, us_steel]
+    lp_model.legal_allocations = [(us_steel, eu_demand, steel)]
+    lp_model.lp_model.allocation_costs = {("us_steel", "eu_demand", "steel"): 10.0}
+
+    adapt_allocation_costs_for_carbon_border_mechanisms(
+        trade_lp=lp_model, carbon_border_mechanisms=[cbam], country_mappings=country_mappings, year=2026
+    )
+
+    # DEU steel reference = 0 + 0.9 * 100 = 90; US scrap-based exporter embeds 0 -> +90.
+    # Scrap comes from SUPPLY nodes, so it must not count as embedded iron carbon.
+    assert lp_model.lp_model.allocation_costs[("us_steel", "eu_demand", "steel")] == pytest.approx(10.0 + 90.0)
+
+
+def test_adapt_allocation_costs_cbam_source_side_embedded_cost_reduces_import_charge():
+    """A foreign steel producer that already paid for carbon via its iron inputs must only
+    be charged the shortfall against the destination reference, not the full amount."""
+    import steelo.domain.trade_modelling.trade_lp_modelling as tlp
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
+        adapt_allocation_costs_for_carbon_border_mechanisms,
+    )
+
+    steel, hot_metal, eu_iron, eu_steel, eu_demand, us_steel, cbam, country_mappings = _embedded_chain_fixture()
+
+    us_iron = DummyProcessCenter(
+        "us_iron",
+        DummyProcess("bf_us", tlp.ProcessType.PRODUCTION, [], products=[hot_metal]),
+        capacity=100,
+        location=DummyLocation("USA"),
+        production_cost=50.0,
+    )
+    us_steel.input_intensities = {"hot_metal": 0.8}
+
+    lp_model = DummyTradeLPModel()
+    lp_model.process_centers = [eu_iron, eu_steel, eu_demand, us_steel, us_iron]
+    lp_model.legal_allocations = [(us_steel, eu_demand, steel)]
+    lp_model.lp_model.allocation_costs = {("us_steel", "eu_demand", "steel"): 10.0}
+
+    adapt_allocation_costs_for_carbon_border_mechanisms(
+        trade_lp=lp_model, carbon_border_mechanisms=[cbam], country_mappings=country_mappings, year=2026
+    )
+
+    # US embedded = 0.8 * 50 = 40; DEU reference = 90 -> adjustment +50
+    assert lp_model.lp_model.allocation_costs[("us_steel", "eu_demand", "steel")] == pytest.approx(10.0 + 50.0)
+
+
+def test_adapt_allocation_costs_cbam_iron_import_compared_against_destination_iron_reference():
+    """An iron-stage arc into an EU steel plant must be benchmarked against the destination
+    country's iron reference — not the destination plant's own cost, which is denominated
+    per tonne of steel and near zero by construction."""
+    import steelo.domain.trade_modelling.trade_lp_modelling as tlp
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
+        adapt_allocation_costs_for_carbon_border_mechanisms,
+    )
+
+    steel, hot_metal, eu_iron, eu_steel, eu_demand, us_steel, cbam, country_mappings = _embedded_chain_fixture()
+
+    us_iron = DummyProcessCenter(
+        "us_iron",
+        DummyProcess("bf_us", tlp.ProcessType.PRODUCTION, [], products=[hot_metal]),
+        capacity=100,
+        location=DummyLocation("USA"),
+        production_cost=10.0,
+    )
+
+    lp_model = DummyTradeLPModel()
+    lp_model.process_centers = [eu_iron, eu_steel, eu_demand, us_iron]
+    lp_model.legal_allocations = [(us_iron, eu_steel, hot_metal)]
+    lp_model.lp_model.allocation_costs = {("us_iron", "eu_steel", "hot_metal"): 10.0}
+
+    adapt_allocation_costs_for_carbon_border_mechanisms(
+        trade_lp=lp_model, carbon_border_mechanisms=[cbam], country_mappings=country_mappings, year=2026
+    )
+
+    # DEU iron reference = 100, US iron cost = 10 -> adjustment +90
+    # (against eu_steel's own cost of 0.0, nothing would fire)
+    assert lp_model.lp_model.allocation_costs[("us_iron", "eu_steel", "hot_metal")] == pytest.approx(10.0 + 90.0)
+
+
+def test_adapt_allocation_costs_cbam_export_rebate_uses_embedded_cost():
+    """EU steel exports must be rebated on their embedded carbon cost: down to the
+    destination's reference where one exists, in full where the destination market has
+    no domestic producers (unpriced market)."""
+    import steelo.domain.trade_modelling.trade_lp_modelling as tlp
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
+        adapt_allocation_costs_for_carbon_border_mechanisms,
+    )
+
+    steel, _, eu_iron, eu_steel, eu_demand, us_steel, cbam, country_mappings = _embedded_chain_fixture()
+    country_mappings["CAN"] = DummyCountryMapping("CAN", EU=False)
+
+    us_steel.production_cost = 20.0
+    us_steel.input_intensities = {}
+    us_demand = DummyProcessCenter(
+        "us_demand",
+        DummyProcess("d2", tlp.ProcessType.DEMAND, [], products=[steel]),
+        capacity=200,
+        location=DummyLocation("USA"),
+        production_cost=0.0,
+    )
+    # Canada has demand but no domestic steel production at all
+    can_demand = DummyProcessCenter(
+        "can_demand",
+        DummyProcess("d3", tlp.ProcessType.DEMAND, [], products=[steel]),
+        capacity=200,
+        location=DummyLocation("CAN"),
+        production_cost=0.0,
+    )
+
+    lp_model = DummyTradeLPModel()
+    lp_model.process_centers = [eu_iron, eu_steel, eu_demand, us_steel, us_demand, can_demand]
+    lp_model.legal_allocations = [(eu_steel, us_demand, steel), (eu_steel, can_demand, steel)]
+    lp_model.lp_model.allocation_costs = {
+        ("eu_steel", "us_demand", "steel"): 10.0,
+        ("eu_steel", "can_demand", "steel"): 10.0,
+    }
+
+    adapt_allocation_costs_for_carbon_border_mechanisms(
+        trade_lp=lp_model, carbon_border_mechanisms=[cbam], country_mappings=country_mappings, year=2026
+    )
+
+    # EU embedded = 0.9 * 100 = 90. US reference = 20 -> rebate -70; CAN has no producers -> -90.
+    assert lp_model.lp_model.allocation_costs[("eu_steel", "us_demand", "steel")] == pytest.approx(10.0 - 70.0)
+    assert lp_model.lp_model.allocation_costs[("eu_steel", "can_demand", "steel")] == pytest.approx(10.0 - 90.0)
+
+
+def test_adapt_allocation_costs_cbam_missing_intensities_fall_back_to_country_average():
+    """Producers without a material-bill history (new plants) borrow the production-weighted
+    average iron intensity of their country's steel fleet."""
+    import steelo.domain.trade_modelling.trade_lp_modelling as tlp
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import build_reference_producer_carbon_costs
+
+    steel, hot_metal, eu_iron, eu_steel, eu_demand, us_steel, _, _ = _embedded_chain_fixture()
+
+    new_plant = DummyProcessCenter(
+        "eu_new",
+        DummyProcess("bof2", tlp.ProcessType.PRODUCTION, [], products=[steel]),
+        capacity=100,
+        location=DummyLocation("DEU"),
+        production_cost=0.0,
+    )
+
+    references = build_reference_producer_carbon_costs([eu_iron, eu_steel, new_plant])
+
+    # eu_steel has alpha 0.9, so DEU's average alpha is 0.9; the new plant borrows it and
+    # both producers embed 0.9 * 100 = 90.
+    assert references.steel_alpha["DEU"] == pytest.approx(0.9)
+    assert references.steel_ref["DEU"] == pytest.approx(90.0)
 
 
 # --- Tests for identify_bottlenecks ---
