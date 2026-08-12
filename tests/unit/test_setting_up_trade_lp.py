@@ -1424,6 +1424,44 @@ def test_build_reference_producer_carbon_costs_capacity_weighted():
     assert reference_costs[("DEU", "steel")] == pytest.approx(70.0)
 
 
+def test_build_reference_producer_carbon_costs_excludes_idle_plants():
+    """Idle producers (production_cost == 0.0) should not dilute the reference carbon cost.
+
+    An idle plant with large capacity should not outweigh a small running plant.
+    This prevents import adjustments from being artificially weakened by idle capacity.
+    """
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import build_reference_producer_carbon_costs
+    import steelo.domain.trade_modelling.trade_lp_modelling as tlp
+
+    steel = DummyCommodity("steel")
+    eu_location = DummyLocation("DEU")
+
+    # Active producer: small capacity, high carbon cost
+    active_producer = DummyProcessCenter(
+        "eu_active",
+        DummyProcess("p1", tlp.ProcessType.PRODUCTION, [], products=[steel]),
+        capacity=100,
+        location=eu_location,
+        production_cost=100.0,
+    )
+
+    # Idle producer: large capacity, zero carbon cost
+    # (This represents a furnace with utilization_rate == 0)
+    idle_producer = DummyProcessCenter(
+        "eu_idle",
+        DummyProcess("p2", tlp.ProcessType.PRODUCTION, [], products=[steel]),
+        capacity=1000,
+        location=eu_location,
+        production_cost=0.0,
+    )
+
+    reference_costs = build_reference_producer_carbon_costs([active_producer, idle_producer])
+
+    # Should only use active producer: 100*100 / 100 = 100.0
+    # Without the fix, would be: (100*100 + 1000*0) / 1100 = 9.09
+    assert reference_costs[("DEU", "steel")] == pytest.approx(100.0)
+
+
 def test_adapt_allocation_costs_cbam_import_to_eu_demand_center():
     """Finished-steel imports into an EU demand centre are the primary real-world CBAM
     channel — they must be adjusted against the domestic reference producer carbon cost,
