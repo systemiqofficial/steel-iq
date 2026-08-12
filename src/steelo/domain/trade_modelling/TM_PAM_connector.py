@@ -1,11 +1,12 @@
 import copy
 import logging
+import math
 from typing import Any
 import networkx as nx
-from collections import deque
 from steelo.adapters.repositories.in_memory_repository import (
     PlantInMemoryRepository,
 )
+from steelo.domain.calculate_costs import ENERGY_FEEDSTOCK_KEYS
 from steelo.domain.models import PrimaryFeedstock, FurnaceGroup, TransportKPI
 from steelo.domain.trade_modelling.trade_lp_modelling import Allocations, ProcessType
 from steelo.domain.constants import LP_TOLERANCE
@@ -14,6 +15,68 @@ from steelo.utilities.utils import normalize_name
 
 
 # logging.getLogger().setLevel(logging.WARNING)  # Commented out to avoid setting root logger
+
+
+def _required_quantity_by_charge(fg) -> dict[str, float]:
+    """Map each metallic charge of the FG's chosen-reductant feedstock rows to its req_qty.
+
+    Raises if two rows for the same charge disagree — the snapshot conversion would
+    otherwise silently use whichever row happened to come last."""
+    req_by_charge: dict[str, float] = {}
+    for feedstock in fg.effective_primary_feedstocks:
+        if not isinstance(feedstock.metallic_charge, str):
+            continue
+        charge = feedstock.metallic_charge.lower()
+        req_qty = feedstock.required_quantity_per_ton_of_product
+        if charge in req_by_charge and req_by_charge[charge] != req_qty:
+            raise ValueError(
+                f"Furnace group {fg.furnace_group_id} has conflicting required_quantity_per_ton_of_product "
+                f"values for metallic charge '{charge}': {req_by_charge[charge]} vs {req_qty}"
+            )
+        req_by_charge[charge] = req_qty
+    return req_by_charge
+
+
+def _energy_intensity_by_charge(fg) -> dict[str, dict[str, float]]:
+    """Per-charge carrier quantities per tonne of product (energy requirements plus
+    energy-like secondary feedstocks), keyed by normalised carrier name."""
+    intensities: dict[str, dict[str, float]] = {}
+    for feedstock in fg.effective_primary_feedstocks:
+        if not isinstance(feedstock.metallic_charge, str):
+            continue
+        carriers: dict[str, float] = {}
+        for source in (feedstock.energy_requirements or {}, feedstock.secondary_feedstock or {}):
+            for carrier, amount in source.items():
+                normalized = normalize_name(carrier)
+                if normalized in ENERGY_FEEDSTOCK_KEYS:
+                    carriers[normalized] = carriers.get(normalized, 0.0) + amount
+        intensities[feedstock.metallic_charge.lower()] = carriers
+    return intensities
+
+
+def _ensure_material_shares(materials: dict[str, dict[str, float]]) -> None:
+    """Stamp each material entry with demand_share_pct = demand / product volume (input
+    tonnes per tonne of product), the weight the cost-breakdown product-share maths needs."""
+    if not materials:
+        return
+    product_volume = None
+    for values in materials.values():
+        pv = values.get("product_volume")
+        if isinstance(pv, (int, float)) and pv > 0:
+            product_volume = float(pv)
+            break
+    if product_volume is None or product_volume <= 0:
+        total_output = sum(float(v.get("product_volume") or 0.0) for v in materials.values())
+        if total_output > 0:
+            product_volume = total_output
+        else:
+            demand_sum = sum(float(v.get("demand") or 0.0) for v in materials.values())
+            product_volume = demand_sum if demand_sum > 0 else None
+    if not product_volume or product_volume <= 0:
+        return
+    for values in materials.values():
+        demand = float(values.get("demand") or 0.0)
+        values["demand_share_pct"] = demand / product_volume
 
 
 class TM_PAM_connector:
@@ -44,7 +107,9 @@ class TM_PAM_connector:
         Attributes Created:
             flat_feedstocks_dict: Flattened dict for O(1) feedstock lookup by name.
             feedstock_energy_requirements: Energy requirements per feedstock type.
-            processing_energy_cost: Energy costs (total + carrier breakdown) by furnace group and commodity.
+            processing_energy_cost: Energy costs (total + carrier breakdown) by furnace group and
+                commodity, in USD per tonne of metallic INPUT (converted from the FG's per-tonne-of-
+                product energy_vopex dicts using each charge's required_quantity_per_ton_of_product).
             chosen_reductant: Reductant choice for each furnace group.
             transport_costs: Dict mapping (from_iso, to_iso, commodity) to cost.
             iron_furnaces: List of furnace group IDs producing iron.
@@ -61,12 +126,31 @@ class TM_PAM_connector:
                 per_feed_energy: dict[str, dict[str, dict[str, float] | float]] = {}
                 feed_totals = getattr(fg, "energy_vopex_by_input", {}) or {}
                 feed_breakdowns = getattr(fg, "energy_vopex_breakdown_by_input", {}) or {}
+                req_by_charge = _required_quantity_by_charge(fg) if feed_totals else {}
                 for commodity, total_cost in feed_totals.items():
-                    normalized_commodity = str(commodity).lower()
-                    breakdown = feed_breakdowns.get(commodity) or feed_breakdowns.get(str(commodity).lower()) or {}
-                    normalized_breakdown = {normalize_name(carrier): float(cost) for carrier, cost in breakdown.items()}
+                    if not isinstance(commodity, str):
+                        continue
+                    normalized_commodity = commodity.lower()
+                    # energy_vopex_* values are USD per tonne of product; edge volumes flow in
+                    # metallic-input tonnes, so convert here — once — to USD per tonne of input.
+                    req_qty = req_by_charge.get(normalized_commodity)
+                    if not req_qty:
+                        raise ValueError(
+                            f"Furnace group {fg.furnace_group_id} carries energy cost for metallic charge "
+                            f"'{commodity}' but has no effective primary feedstock row with a "
+                            "required_quantity_per_ton_of_product to convert it with"
+                        )
+                    breakdown = feed_breakdowns.get(commodity) or feed_breakdowns.get(normalized_commodity) or {}
+                    normalized_breakdown = {
+                        normalize_name(carrier): float(cost) / req_qty for carrier, cost in breakdown.items()
+                    }
+                    if float(total_cost) and not normalized_breakdown:
+                        raise ValueError(
+                            f"Furnace group {fg.furnace_group_id} has energy cost for metallic charge "
+                            f"'{commodity}' but no per-carrier breakdown to book it by"
+                        )
                     per_feed_energy[normalized_commodity] = {
-                        "total": float(total_cost),
+                        "total": float(total_cost) / req_qty,
                         "carriers": normalized_breakdown,
                     }
                 self.processing_energy_cost[fg.furnace_group_id] = per_feed_energy
@@ -224,20 +308,14 @@ class TM_PAM_connector:
         Example:
             If 100 tons steel shipped with 0.95 efficiency → allocation = 100/0.95 = 105.3 tons input.
         """
-        G = self.G.copy()
-        for edge in G.edges(keys=True, data=True):
-            from_node, to_node, commodity, data = edge
+        for _from_node, _to_node, _commodity, data in self.G.edges(keys=True, data=True):
             if volume_attr in data:
                 volume = data[volume_attr]
                 effectiveness = data.get(effectiveness_attr, 1)
                 if effectiveness is None:
                     effectiveness = 1
                 # Calculate the allocation based on the volume and effectiveness
-                allocation_value = volume / effectiveness if effectiveness > 0 else 0
-                if commodity_attr in data:
-                    commodity = data[commodity_attr]
-                G[from_node][to_node][commodity][allocation_attr] = allocation_value
-        self.G = G.copy()
+                data[allocation_attr] = volume / effectiveness if effectiveness > 0 else 0
 
     def create_graph(self, solved_trade_allocations):
         """
@@ -269,7 +347,8 @@ class TM_PAM_connector:
         Notes
         -----
         - Uses `self.chosen_reductant` to name reductant-specific processes.
-        - Uses `self.processing_energy_cost` to fetch energy costs per process.
+        - Uses `self.processing_energy_cost` to fetch energy costs per process (USD per
+          tonne of metallic input, matching the input-tonne edge volumes).
         - Uses `self.flat_feedstocks_dict` to lookup primary outputs and efficiencies.
         """
         logger = logging.getLogger(f"{__name__}.create_graph")
@@ -429,33 +508,25 @@ class TM_PAM_connector:
 
         Side Effects
         ------------
-        - Reads from and then replaces `self.G` with a new MultiDiGraph containing:
-            1. Per-commodity cumulative costs in `node[source_attr]` (a dict).
-            2. Per-commodity unit costs in `node[unit_cost_attr]`.
-        - Prints the number of edges processed (for debugging).
-        - Prints each node's computed unit cost (for debugging).
+        Mutates `self.G` in place:
+            1. Per-commodity input costs accumulated in `node[allocation_attr]`.
+            2. Per-commodity export volumes in `node[export_attr]`.
+            3. Per-commodity unit costs in `node[unit_cost_attr]`.
 
         Notes
         -----
-        - Assumes `self.G` is a DAG (no cycles), so BFS/topological layers make sense.
+        - Requires `self.G` to be a DAG; `nx.topological_sort` raises on cycles.
         - Skips any sink node (no outgoing edges) in propagation phase.
         - Leaves zero-volume edges effectively ignored in normalization.
         """
         logger = logging.getLogger(f"{__name__}.propage_cost_forward_by_layers_and_normalize")
-        # Make a copy so we don't mutate the original in the middle of traversal
-        G = self.G.copy()
-
-        # Identify “roots” = nodes with zero in-degree
-        roots = [n for n in G.nodes if G.in_degree(n) == 0]
-
-        # BFS queue seeded with roots; track visited to avoid repeats
-        q = deque(roots)
-        seen = set(roots)
+        G = self.G
         edge_count = 0
 
-        # 1) Propagate costs forward layer by layer
-        while q:
-            u = q.popleft()
+        # Topological order guarantees a node is processed only after ALL of its suppliers
+        # have pushed costs into it — BFS discovery order does not, and made downstream
+        # costs depend on the allocation dict's insertion order on multi-tier chains.
+        for u in nx.topological_sort(G):
             node_cost = G.nodes[u].get(source_attr, {})  # may be dict by commodity
             unit_cost = {}
 
@@ -464,7 +535,7 @@ class TM_PAM_connector:
                 if export_attr not in G.nodes[u]:
                     G.nodes[u][export_attr] = {}
                 # Accumulate export volumes by commodity
-                for src, v, comm, edata in self.G.out_edges(u, keys=True, data=True):
+                for src, v, comm, edata in G.out_edges(u, keys=True, data=True):
                     G.nodes[u][export_attr][comm] = G.nodes[u][export_attr].get(comm, 0) + edata.get(volume_attr, 0)
             # If G[u] is also a to-node
             # For each outgoing edge (u → v) carrying commodity `comm`
@@ -568,11 +639,6 @@ class TM_PAM_connector:
                             ],
                         )
 
-                # Initialize the target node's cost dict if needed
-                if source_attr not in G.nodes[v] or not isinstance(G.nodes[v][source_attr], dict):
-                    G.nodes[v][source_attr] = {}
-                    G.nodes[v][allocation_attr] = {}
-
                 # Accumulate cost and volume
                 # Store both total cost and material cost (excluding current step's energy)
                 # MaterialCost includes upstream material + ALL upstream costs
@@ -583,31 +649,8 @@ class TM_PAM_connector:
                 prev["MaterialCost"] += material_tariff_transportation_cost  # Excludes current step's energy only
                 prev["Volume"] += volume
                 G.nodes[v][allocation_attr][comm] = prev
-                G.nodes[v][source_attr][comm] = prev["Cost"]
-
-                # For multi-output processes (e.g., BF producing both hot_metal and pig_iron),
-                # allocate the total input cost proportionally across all output commodities
-                # based on their respective volumes, ensuring equal per-unit costs
-                output_edges = list(G.out_edges(v, keys=True, data=True))
-                if output_edges:
-                    # Calculate total output volume across all commodities
-                    total_output_volume = sum(edge_data.get(volume_attr, 0.0) for _, _, _, edge_data in output_edges)
-
-                    if total_output_volume > 0:
-                        # Allocate cost proportionally to each output commodity
-                        for _, _, out_comm, edge_data in output_edges:
-                            out_volume = edge_data.get(volume_attr, 0.0)
-                            # Cost for this output = (total input cost) × (this output volume / total output volume)
-                            allocated_cost = prev["Cost"] * (out_volume / total_output_volume)
-                            G.nodes[v][source_attr][out_comm] = allocated_cost
-
-                # Enqueue v if not yet visited
-                if v not in seen:
-                    seen.add(v)
-                    q.append(v)
 
             G.nodes[u][unit_cost_attr].update(unit_cost)
-            # print(f"Node {u} unit costs: {unit_cost}")
 
         logger.info(f"Processed {edge_count} edges")
 
@@ -868,9 +911,9 @@ class TM_PAM_connector:
                     },
                     "energy": {
                         commodity_name: {
-                            "demand": float,       # Total energy demand
+                            "demand": float,       # Carrier quantity (t or kWh, post-conversion units)
                             "total_cost": float,   # Total energy cost (USD)
-                            "unit_cost": float     # Energy cost per unit (USD/unit)
+                            "unit_cost": float     # Energy cost per tonne of product (USD/t)
                         }
                     }
                 }
@@ -907,25 +950,17 @@ class TM_PAM_connector:
             _ = {"materials": [], "energy": []}
             product_volume = 0.0
             if self.G is not None:
-                in_edges = list(self.G.in_edges(fg.furnace_group_id))
+                # Iterate edge-wise: keyless in_edges repeats the (u, v) pair once per parallel
+                # edge and get_edge_data(u, v) returns ALL parallel edges, double-booking every
+                # commodity arriving from a multi-commodity source (e.g. a DRI plant shipping
+                # dri_mid and hbi_mid to the same BOF).
+                in_edges = list(self.G.in_edges(fg.furnace_group_id, data=True))
                 logger.debug(f"[BOM] FG {fg.furnace_group_id}: Found {len(in_edges)} incoming edges")
-                for edges in in_edges:
-                    edge_data = self.G.get_edge_data(*edges)
-                    for commodity, attr_dict in edge_data.items():
-                        # costs = self.G.nodes[edges[0]]["unit_cost"]
-                        # unit_costs = costs[commodity] if isinstance(costs, dict) and commodity in costs else costs
-                        processing_energy_cost = attr_dict.get("processing_energy_cost", 0.0)
-                        energy_breakdown = attr_dict.get("processing_energy_breakdown") or {}
-
-                        if energy_breakdown:
-                            for carrier, carrier_unit_cost in energy_breakdown.items():
-                                _["energy"].append(
-                                    {carrier: {"demand": attr_dict["volume"], "unit_cost": carrier_unit_cost}}
-                                )
-                        elif processing_energy_cost:
-                            _["energy"].append(
-                                {commodity: {"demand": attr_dict["volume"], "unit_cost": processing_energy_cost}}
-                            )
+                for _source, _target, attr_dict in in_edges:
+                    # The __init__ snapshot guarantees a per-carrier breakdown wherever energy cost exists.
+                    energy_breakdown = attr_dict.get("processing_energy_breakdown") or {}
+                    for carrier, carrier_unit_cost in energy_breakdown.items():
+                        _["energy"].append({carrier: {"demand": attr_dict["volume"], "unit_cost": carrier_unit_cost}})
             else:
                 logger.debug(f"[BOM] FG {fg.furnace_group_id}: Graph is None, no edges to process")
 
@@ -1020,8 +1055,44 @@ class TM_PAM_connector:
 
             logger.debug(f"[BOM] FG {fg.furnace_group_id}: Final BOM materials = {list(collect['materials'].keys())}")
 
+            # Two-leg check on freshly booked energy: the ledger total (built from edge costs
+            # x volumes) must equal the FG's own per-product energy vopex x product tonnes.
+            # Divergence means a unit or booking regression somewhere in the edge pipeline.
+            if collect["energy"] and collect["materials"]:
+                vopex_by_charge = {
+                    str(charge).lower(): float(value)
+                    for charge, value in (getattr(fg, "energy_vopex_by_input", {}) or {}).items()
+                    if isinstance(charge, str)
+                }
+                req_by_charge = _required_quantity_by_charge(fg)
+                expected_energy = sum(
+                    material["demand"] / req * vopex_by_charge[charge]
+                    for charge, material in collect["materials"].items()
+                    if charge in vopex_by_charge and (req := req_by_charge.get(charge))
+                )
+                booked_energy = sum(entry["total_cost"] for entry in collect["energy"].values())
+                if not math.isclose(booked_energy, expected_energy, rel_tol=0.0, abs_tol=0.01):
+                    logger.error(
+                        "Energy booking mismatch for furnace group %s: booked %.2f USD vs %.2f USD "
+                        "expected from per-product energy vopex x product tonnes",
+                        fg.furnace_group_id,
+                        booked_energy,
+                        expected_energy,
+                    )
+
+                # Restate energy demand as carrier quantities (t / kWh, matching the price
+                # units) instead of the edge's metallic input tonnage.
+                intensity_by_charge = _energy_intensity_by_charge(fg)
+                for carrier, entry in collect["energy"].items():
+                    entry["demand"] = sum(
+                        material["demand"] / req * intensity_by_charge.get(charge, {}).get(carrier, 0.0)
+                        for charge, material in collect["materials"].items()
+                        if (req := req_by_charge.get(charge))
+                    )
+
             util_rate = getattr(fg, "utilization_rate", None)
             if util_rate is not None and util_rate <= 0:
+                _ensure_material_shares(collect["materials"])
                 fg.bill_of_materials = collect
             else:
                 # make sure BOM exists when we have allocations, otherwise use existing BOM
@@ -1048,28 +1119,6 @@ class TM_PAM_connector:
                     # Fall through to initialize or keep the merged_bom structure
 
                 merged_bom: dict[str, dict[str, dict[str, float]]] = existing_bom or {"materials": {}, "energy": {}}
-
-                def _ensure_material_shares(materials: dict[str, dict[str, float]]) -> None:
-                    if not materials:
-                        return
-                    product_volume = None
-                    for values in materials.values():
-                        pv = values.get("product_volume")
-                        if isinstance(pv, (int, float)) and pv > 0:
-                            product_volume = float(pv)
-                            break
-                    if product_volume is None or product_volume <= 0:
-                        total_output = sum(float(v.get("product_volume") or 0.0) for v in materials.values())
-                        if total_output > 0:
-                            product_volume = total_output
-                        else:
-                            demand_sum = sum(float(v.get("demand") or 0.0) for v in materials.values())
-                            product_volume = demand_sum if demand_sum > 0 else None
-                    if not product_volume or product_volume <= 0:
-                        return
-                    for commodity, values in materials.items():
-                        demand = float(values.get("demand") or 0.0)
-                        values["demand_share_pct"] = demand / product_volume
 
                 if collect["materials"]:
                     merged_bom["materials"] = collect["materials"]
@@ -1379,6 +1428,9 @@ class TM_PAM_connector:
         4. Keeping the constrained commodity's BOM demand unchanged; scaling all other
            metallic BOM entries down so ``T_new`` is satisfied.
         5. Scaling non-metallic BOM entries with production.
+        6. Refreshing ``demand_share_pct`` and rebuilding the BOM energy entries from the
+           corrected material demands (``demand / req x intensity`` and ``x vopex``), since
+           the metallic mix changes non-uniformly.
 
         For each FG the most-binding violation (smallest ``actual_share / required_share``)
         is used.
@@ -1526,25 +1578,54 @@ class TM_PAM_connector:
                 comm_lower = comm.lower()
                 if comm_lower in constrained_equiv:
                     # Constrained commodity: demand fixed, but unit_cost rises (less output)
-                    pass
+                    scale = 1.0
                 elif comm_lower in METALLIC_COMMODITIES:
                     # Other metallics: reduce to maintain valid share
-                    old_demand = float(info.get("demand", 0.0))
-                    info["demand"] = old_demand * scale_other
-                    if "total_cost" in info:
-                        info["total_cost"] = float(info["total_cost"]) * scale_other
+                    scale = scale_other
                 else:
                     # Non-metallic inputs (iron ore, flux, gases): scale with production
-                    old_demand = float(info.get("demand", 0.0))
-                    info["demand"] = old_demand * scale_production
-                    if "total_cost" in info:
-                        info["total_cost"] = float(info["total_cost"]) * scale_production
+                    scale = scale_production
 
-                # Recompute unit_cost against new production
-                if new_production > 0 and "total_cost" in info:
-                    info["unit_cost"] = float(info["total_cost"]) / new_production
+                info["demand"] = float(info.get("demand", 0.0)) * scale
+                for total_key, unit_key in (
+                    ("total_cost", "unit_cost"),
+                    ("total_material_cost", "unit_material_cost"),
+                ):
+                    if total_key in info:
+                        info[total_key] = float(info[total_key]) * scale
+                        if new_production > 0:
+                            info[unit_key] = info[total_key] / new_production
 
                 info["product_volume"] = new_production
+
+            # The metallic mix changed non-uniformly, so the share weights and the
+            # per-pathway energy legs must be recomputed from the corrected demands —
+            # a single scale factor would misstate both.
+            _ensure_material_shares(materials)
+
+            energy = bom.get("energy", {})
+            if energy:
+                req_by_charge = _required_quantity_by_charge(fg)
+                intensity_by_charge = _energy_intensity_by_charge(fg)
+                vopex_by_charge = {
+                    str(charge).lower(): {normalize_name(c): float(v) for c, v in (carriers or {}).items()}
+                    for charge, carriers in (getattr(fg, "energy_vopex_breakdown_by_input", {}) or {}).items()
+                    if isinstance(charge, str)
+                }
+                for carrier, entry in energy.items():
+                    carrier_demand = 0.0
+                    carrier_cost = 0.0
+                    for charge, info in materials.items():
+                        req = req_by_charge.get(charge.lower())
+                        if not req:
+                            continue
+                        product_tonnes = float(info.get("demand", 0.0)) / req
+                        carrier_demand += product_tonnes * intensity_by_charge.get(charge.lower(), {}).get(carrier, 0.0)
+                        carrier_cost += product_tonnes * vopex_by_charge.get(charge.lower(), {}).get(carrier, 0.0)
+                    entry["demand"] = carrier_demand
+                    entry["total_cost"] = carrier_cost
+                    entry["unit_cost"] = carrier_cost / new_production if new_production > 0 else 0.0
+                    entry["product_volume"] = new_production
 
             corrected += 1
 

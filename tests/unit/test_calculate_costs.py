@@ -105,6 +105,36 @@ def test_cost_adjustments_ignore_secondary_feedstocks_and_use_product_volume():
     assert pytest.approx(adjustment, 1e-9) == -10.0
 
 
+def test_cost_adjustments_raise_without_required_quantity():
+    """A matched pathway without required_quantity_per_ton_of_product cannot derive its
+    product contribution and must fail loudly instead of falling back to total production."""
+
+    class DummyDBC:
+        def __init__(self):
+            self.metallic_charge = "io_low"
+            self.outputs = {"slag": 1.0}
+            self.carbon_outputs: dict[str, float] = {}
+            self.reductant = "coke"
+            self.required_quantity_per_ton_of_product = 0.0
+
+    bill_of_materials = {
+        "materials": {
+            "io_low": {
+                "demand": 1611.0,
+                "total_cost": 0.0,
+                "product_volume": 1000.0,
+            }
+        },
+    }
+
+    with pytest.raises(ValueError, match="io_low.*required_quantity_per_ton_of_product"):
+        calculate_cost_adjustments_from_secondary_outputs(
+            bill_of_materials=bill_of_materials,
+            dynamic_business_cases=[DummyDBC()],
+            output_costs={"slag": -10.0},
+        )
+
+
 def test_empty_materials_demand_cost():
     # Test with empty materials_demand_cost - should return only energy unit cost
     # Note: Function now expects product_volume and total_cost for energy costs
@@ -583,6 +613,7 @@ class _BreakdownDBC:
         energy_requirements: dict | None = None,
         secondary_feedstock: dict | None = None,
         primary_output_keys: set | None = None,
+        required_quantity_per_ton_of_product: float = 1.0,
     ):
         self.metallic_charge = metallic_charge
         self.reductant = reductant
@@ -592,6 +623,7 @@ class _BreakdownDBC:
         self.energy_requirements = energy_requirements or {}
         self.secondary_feedstock = secondary_feedstock or {}
         self._primary_output_keys = primary_output_keys or set()
+        self.required_quantity_per_ton_of_product = required_quantity_per_ton_of_product
 
     def get_primary_outputs(self, primary_products=None):
         """Return dict of primary outputs (keys used for filtering)."""
@@ -626,7 +658,6 @@ def test_cost_breakdown_includes_output_revenue():
         bill_of_materials=bom,
         chosen_reductant="coke",
         dynamic_business_cases=[dbc],
-        energy_costs={},
         output_costs=input_costs,
     )
 
@@ -652,9 +683,6 @@ def test_cost_breakdown_nets_dual_carrier():
                 "product_volume": 1000.0,
             },
         },
-        "energy": {
-            "bf_gas": {"unit_cost": 10.0, "demand": 100.0},
-        },
     }
     # bf_gas has POSITIVE price (cost to buy); output should still be revenue via -abs()
     input_costs = {"bf_gas": 5.0}
@@ -663,11 +691,11 @@ def test_cost_breakdown_nets_dual_carrier():
         bill_of_materials=bom,
         chosen_reductant="coke",
         dynamic_business_cases=[dbc],
-        energy_costs={},
+        energy_vopex_breakdown_by_input={"io_low": {"bf_gas": 10.0}},
         output_costs=input_costs,
     )
 
-    # Energy input: bf_gas unit_cost = 10.0 (full allocation, single feedstock)
+    # Energy input: per-product vopex 10.0 x product share 1.0
     # Output revenue: 0.2 * -abs(5.0) * 1.0 = -1.0 (physical output → always revenue)
     # Net: 10.0 + (-1.0) = 9.0
     assert result["io_low"]["bf_gas"] == pytest.approx(9.0)
@@ -699,7 +727,6 @@ def test_cost_breakdown_excludes_primary_products():
         bill_of_materials=bom,
         chosen_reductant="",
         dynamic_business_cases=[dbc],
-        energy_costs={},
         output_costs=input_costs,
     )
 
@@ -734,7 +761,6 @@ def test_cost_breakdown_skips_outputs_without_price():
         bill_of_materials=bom,
         chosen_reductant="coke",
         dynamic_business_cases=[dbc],
-        energy_costs={},
         output_costs=input_costs,
         cost_breakdown_keys=cost_breakdown_keys,
     )
@@ -776,7 +802,6 @@ def test_cost_breakdown_co2_stored_revenue():
         bill_of_materials=bom,
         chosen_reductant="coke",
         dynamic_business_cases=[dbc],
-        energy_costs={},
         output_costs=input_costs,
     )
 
@@ -995,7 +1020,6 @@ def test_breakdown_disposal_cost_output():
     result = calculate_cost_breakdown_by_feedstock(
         bill_of_materials=bom,
         dynamic_business_cases=[dbc],
-        energy_costs={},
         chosen_reductant="coke",
         output_costs=output_costs,
         disposal_cost_outputs=frozenset({"steelmaking_slag"}),
@@ -1028,10 +1052,108 @@ def test_breakdown_disposal_cost_none_preserves_legacy():
     result = calculate_cost_breakdown_by_feedstock(
         bill_of_materials=bom,
         dynamic_business_cases=[dbc],
-        energy_costs={},
         chosen_reductant="coke",
         output_costs=output_costs,
     )
 
     # No disposal flag: -abs(15) * 0.3 * 1.0 = -4.5 (revenue)
     assert result["io_low"]["steelmaking_slag"] == pytest.approx(-4.5)
+
+
+def test_cost_breakdown_credits_weighted_by_product_share():
+    """Multi-pathway by-product credits use product shares, not input-tonne shares."""
+    dbcs = [
+        _BreakdownDBC(
+            metallic_charge="io_low",
+            reductant="coke",
+            outputs={"ironmaking_slag": 0.3},
+            required_quantity_per_ton_of_product=1.6,
+        ),
+        _BreakdownDBC(
+            metallic_charge="io_mid",
+            reductant="coke",
+            outputs={"ironmaking_slag": 0.2},
+            required_quantity_per_ton_of_product=1.5,
+        ),
+    ]
+    bom = {
+        "materials": {
+            "io_low": {
+                "demand": 160.0,
+                "demand_share_pct": 0.8,
+                "unit_material_cost": 100.0,
+                "product_volume": 200.0,
+            },
+            "io_mid": {
+                "demand": 150.0,
+                "demand_share_pct": 0.75,
+                "unit_material_cost": 90.0,
+                "product_volume": 200.0,
+            },
+        },
+        "energy": {},
+    }
+
+    result = calculate_cost_breakdown_by_feedstock(
+        bill_of_materials=bom,
+        chosen_reductant="coke",
+        dynamic_business_cases=dbcs,
+        output_costs={"ironmaking_slag": -10.0},
+    )
+
+    # product shares: io_low 0.8/1.6 = 0.5, io_mid 0.75/1.5 = 0.5
+    assert result["io_low"]["ironmaking_slag"] == pytest.approx(0.3 * -10.0 * 0.5)
+    assert result["io_mid"]["ironmaking_slag"] == pytest.approx(0.2 * -10.0 * 0.5)
+
+
+def test_secondary_output_scalar_matches_breakdown_credits():
+    """The unit_secondary_output_costs scalar equals the summed breakdown credits."""
+    dbcs = [
+        _BreakdownDBC(
+            metallic_charge="io_low",
+            reductant="coke",
+            outputs={"ironmaking_slag": 0.3},
+            required_quantity_per_ton_of_product=1.6,
+        ),
+        _BreakdownDBC(
+            metallic_charge="io_mid",
+            reductant="coke",
+            outputs={"ironmaking_slag": 0.2},
+            required_quantity_per_ton_of_product=1.5,
+        ),
+    ]
+    bom = {
+        "materials": {
+            "io_low": {
+                "demand": 160.0,
+                "demand_share_pct": 0.8,
+                "unit_material_cost": 100.0,
+                "product_volume": 200.0,
+            },
+            "io_mid": {
+                "demand": 150.0,
+                "demand_share_pct": 0.75,
+                "unit_material_cost": 90.0,
+                "product_volume": 200.0,
+            },
+        },
+        "energy": {},
+    }
+    output_costs = {"ironmaking_slag": -10.0}
+
+    breakdown = calculate_cost_breakdown_by_feedstock(
+        bill_of_materials=bom,
+        chosen_reductant="coke",
+        dynamic_business_cases=dbcs,
+        output_costs=output_costs,
+    )
+    scalar = calculate_cost_adjustments_from_secondary_outputs(
+        bill_of_materials=bom,
+        dynamic_business_cases=dbcs,
+        output_costs=output_costs,
+    )
+
+    credits = breakdown["io_low"]["ironmaking_slag"] + breakdown["io_mid"]["ironmaking_slag"]
+    # (100 t x -10 x 0.3 + 100 t x -10 x 0.2) / 200 t = -2.5 USD/t product
+    assert scalar == pytest.approx(-2.5)
+    assert credits == pytest.approx(scalar)
