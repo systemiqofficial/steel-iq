@@ -26,6 +26,14 @@ TECHNOLOGIES = [
         switching_to=None,
         swap_ratio=None,
     ),
+    TechnologyRow(
+        technology="EAF",
+        product="steel",
+        reductant=None,
+        is_emission_intense=False,
+        switching_to=None,
+        swap_ratio=None,
+    ),
 ]
 
 
@@ -555,6 +563,49 @@ def expansion_hook_call(hook, **overrides):
     )
     kwargs.update(overrides)
     return hook(**kwargs)
+
+
+class TestIncreaseSizingHook:
+    """The non-consuming ③ sizing query: pure arithmetic, no pool, no records."""
+
+    def test_unbound_accessor_returns_none(self):
+        assert cp_handlers.increase_sizing_hook() is None
+
+    def test_bound_accessor_returns_a_callable(self, bound: CapacityPool):
+        assert callable(cp_handlers.increase_sizing_hook())
+
+    def test_non_chinese_build_never_reaches_the_evaluator(self, pool: CapacityPool, mocker):
+        evaluator = TreeEvaluator(REGIONS, TECHNOLOGIES, CapacityPolicyConfig())
+        cp_handlers.bind_capacity_policy(evaluator, pool, CapacityPolicyRecorder())
+        spy = mocker.spy(evaluator, "increase_build_capacity")
+        query = cp_handlers.increase_sizing_hook()
+        assert query is not None
+
+        assert query(iso3="DEU", technology="not-a-technology", reductant=None, capacity=3.0) == 3.0
+        assert spy.call_count == 0
+
+    def test_emission_intense_route_is_sized_down(self, bound: CapacityPool):
+        query = cp_handlers.increase_sizing_hook()
+        assert query is not None
+        assert query(iso3="CHN", technology="BF", reductant="Coke+PCI", capacity=3.0) == pytest.approx(2.0)
+
+    def test_clean_route_keeps_its_planned_capacity(self, bound: CapacityPool):
+        query = cp_handlers.increase_sizing_hook()
+        assert query is not None
+        assert query(iso3="CHN", technology="EAF", reductant="Electricity", capacity=3.0) == 3.0
+
+    def test_an_empty_pool_sizes_identically(self, bound: CapacityPool, recorder: CapacityPolicyRecorder):
+        """Availability is not sizing: what a build may build does not depend on
+        whether credits exist to fund it, and asking costs the pool nothing."""
+        query = cp_handlers.increase_sizing_hook()
+        assert query is not None
+        on_empty = query(iso3="CHN", technology="BF", reductant="Coke+PCI", capacity=3.0)
+
+        bound.deposit(Credit(amount_mt=9.0, vintage_year=2020, region_tag=None, owner_id="E9", product="iron"))
+        assert query(iso3="CHN", technology="BF", reductant="Coke+PCI", capacity=3.0) == on_empty
+        assert bound.total() == 9.0
+        assert recorder._ledger == []
+        assert recorder._gate_decisions == []
 
 
 class TestExpansionCapacityHook:

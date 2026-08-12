@@ -1,7 +1,8 @@
 """Chinese capacity-replacement policy plugin.
 
-Fully threaded — deposit handlers, the REPLACE pre-NPV hook and both INCREASE
-withdrawal gates — and activated per run by bootstrapping:
+Fully threaded — deposit handlers, the REPLACE pre-NPV hook, the INCREASE
+sizing query and both INCREASE withdrawal gates — and activated per run by
+bootstrapping:
 :func:`steelo.capacity_policy.bootstrap.configure_capacity_policy` binds a
 fresh evaluator and pool when ``config.capacity_policy.enabled`` is True, and
 guarantees the module is unbound otherwise. Unbound, every accessor returns

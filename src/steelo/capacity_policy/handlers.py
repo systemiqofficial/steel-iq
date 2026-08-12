@@ -8,7 +8,9 @@ policy — every handler returns immediately and behaviour is byte-identical.
 Once bound, only Chinese events act. The same binding drives the decision-path
 gates the plant agent threads on every evaluation: :func:`replace_capacity_hook`,
 the pre-NPV ② REPLACE gate on ``Plant.evaluate_furnace_group_strategy``;
-:func:`expansion_capacity_hook`, the ③ INCREASE withdrawal gate on
+:func:`increase_sizing_hook`, the non-consuming ③ INCREASE sizing query every
+pre-NPV valuation of a new build runs through; :func:`expansion_capacity_hook`,
+the ③ INCREASE withdrawal gate on
 ``PlantGroup.evaluate_expansion``; and :func:`greenfield_capacity_hook`, the
 ③ INCREASE withdrawal gate at considered→announced in
 ``FurnaceGroup.track_business_opportunities``, whose single-owner grant
@@ -138,6 +140,40 @@ def replace_capacity_hook() -> Callable[..., float | None] | None:
         )
 
     return permitted_replace_capacity
+
+
+def increase_sizing_hook() -> Callable[..., float] | None:
+    """Return the live ③ INCREASE sizing query, or None while unbound.
+
+    The non-consuming half of the ③ split: it answers what a build would be
+    allowed to build, so the agent values the capacity the policy permits
+    rather than the one it planned. Pool availability is deliberately not part
+    of the answer — a build blocked for want of credits is blocked whatever it
+    was worth, and probing the pool per candidate would make valuation depend
+    on the order plants are evaluated in. The consuming withdrawal stays at the
+    point of commitment, in the gates below.
+    """
+    policy = _policy
+    if policy is None:
+        return None
+
+    def increase_sizing_query(*, iso3: str, technology: str, reductant: str | None, capacity: float) -> float:
+        """Size one INCREASE candidate for its NPV — branch ③ INCREASE, no pool state.
+
+        Runs per candidate per plant per year, so it neither logs nor records;
+        the consuming gate that follows a winning candidate carries the
+        observability. A non-Chinese build passes through at its planned
+        capacity without reaching the evaluator.
+        """
+        if iso3 != "CHN":
+            return capacity
+        return policy.evaluator.increase_build_capacity(
+            capacity_mt=capacity,
+            technology=technology,
+            reductant=reductant or None,
+        )
+
+    return increase_sizing_query
 
 
 def expansion_capacity_hook() -> Callable[..., float | None] | None:

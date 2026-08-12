@@ -3018,6 +3018,7 @@ class FurnaceGroup:
         permitted_greenfield_capacity: Callable[..., tuple[float, str | None, bool, tuple["Credit", ...]] | None]
         | None = None,
         capacity_pool_max_retry_years: int | None = None,
+        increase_sizing_query: Callable[..., float] | None = None,
     ) -> commands.Command | None:
         """
         Tracks whether an identified business opportunity remains interesting over time to avoid making
@@ -3067,6 +3068,11 @@ class FurnaceGroup:
                 before it is discarded rather than retried. Counts capacity blocks only — CO2
                 blocks and failed announcement draws sit in other branches and never reach the
                 counter. None (the default) retries forever.
+            increase_sizing_query: China capacity-policy sizing query, applied to each yearly
+                re-valuation so the announcement decision rests on the capacity the policy
+                permits. Non-consuming and never mutates ``self.capacity``, which stays the
+                planned amount the gate withdraws against. None (the default) re-values at the
+                planned capacity.
 
         Returns:
             Command to update the status of the FurnaceGroup, or None if no status change.
@@ -3155,9 +3161,22 @@ class FurnaceGroup:
 
             # Calculate updated NPV (carbon and by-products live inside the score)
             years_to_construction_start = int(earliest_operation_start_year) - construction_time - int(year)
+            # The capacity the policy would permit, known before the NPV that decides announcement
+            npv_capacity = (
+                self.capacity
+                if increase_sizing_query is None
+                else Volumes(
+                    increase_sizing_query(
+                        iso3=location.iso3,
+                        technology=self.technology.name,
+                        reductant=self.chosen_reductant,
+                        capacity=float(self.capacity),
+                    )
+                )
+            )
             npv_value = calculate_npv_full(
                 capex=self.technology.capex,
-                capacity=self.capacity,
+                capacity=npv_capacity,
                 unit_total_opex_list=unit_total_opex_list,
                 expected_utilisation_rate=self.utilization_rate,
                 price_series=market_price[self.technology.product][years_to_construction_start:],
@@ -5464,7 +5483,8 @@ class PlantGroup:
         get_co2_headroom: Callable[[str, int, float], float] | None = None,
         get_co2_need_by_name: Callable[[str, float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
-    ) -> dict[str, tuple[float | None, str, float, str]]:
+        increase_sizing_query: Callable[..., float] | None = None,
+    ) -> dict[str, tuple[float | None, str, float, str, Volumes]]:
         """
         Calculate NPV and optimal technology choice for all plants in the group considering allowed technologies and
         subsidies.
@@ -5510,10 +5530,17 @@ class PlantGroup:
                 subsidies (carrier -> geo_key -> technology -> subsidies). Collected per plant
                 geography inside the loop; candidate technologies are priced from unsubsidised
                 carrier prices with these applied for the candidate's operating start year
+            increase_sizing_query (Callable | None): China capacity-policy sizing query, called
+                per candidate with plain values (capacities in model tonnes) to resolve the
+                capacity the policy permits that technology to build. Non-consuming — it reads
+                no pool state — so the NPV values the build that would actually be allowed.
+                None (the default) values every candidate at its planned capacity.
 
         Returns:
-            dict[str, tuple[float | None, str, float]]: Dictionary mapping plant IDs to tuples of (NPV, best_technology,
-                subsidized_capex) for the optimal expansion option. Returns empty dict if no viable options exist.
+            dict[str, tuple[float | None, str, float, str, Volumes]]: Dictionary mapping plant IDs
+                to tuples of (NPV, best_technology, subsidized_capex, committed_reductant,
+                build_capacity) for the optimal expansion option, where build_capacity is the
+                capacity the NPV was taken at. Returns empty dict if no viable options exist.
         """
         from steelo.domain import calculate_costs as cc
 
@@ -5581,6 +5608,7 @@ class PlantGroup:
                     if carrier in base_energy_costs
                 }
             reductant_by_tech: dict[str, str] = {}
+            npv_capacity_by_tech: dict[str, Volumes] = {}
 
             # Evaluate each allowed technology for this plant
             for tech in allowed_techs_in_year:
@@ -5701,6 +5729,20 @@ class PlantGroup:
                         )
                     bill_of_materials = rebuilt_bom
                 reductant_by_tech[tech] = committed_reductant
+                # The capacity the policy would permit this route, known before its NPV
+                npv_capacity = (
+                    capacity
+                    if increase_sizing_query is None
+                    else Volumes(
+                        increase_sizing_query(
+                            iso3=plant.location.iso3,
+                            technology=tech,
+                            reductant=committed_reductant,
+                            capacity=float(capacity),
+                        )
+                    )
+                )
+                npv_capacity_by_tech[tech] = npv_capacity
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
                         "[REDUCTANT NPV] plant %s: tech=%s committed=%r picks=%s",
@@ -5776,7 +5818,7 @@ class PlantGroup:
                 # Carbon and by-product terms are already inside the per-year opex list
                 NPV[tech] = cc.calculate_npv_full(
                     capex=capex,
-                    capacity=capacity,
+                    capacity=npv_capacity,
                     unit_total_opex_list=unit_total_opex_list,
                     cost_of_debt=cost_of_debt,
                     cost_of_equity=cost_of_equity,
@@ -5810,7 +5852,13 @@ class PlantGroup:
                 best_capex_subsidies = filter_subsidies_for_year(all_best_capex_subsidies, current_year)
                 best_capex = cc.calculate_capex_with_subsidies(greenfield_capex[best_tech], best_capex_subsidies)
 
-                NPV_p[plant.plant_id] = NPV.get(best_tech), best_tech, best_capex, reductant_by_tech[best_tech]
+                NPV_p[plant.plant_id] = (
+                    NPV.get(best_tech),
+                    best_tech,
+                    best_capex,
+                    reductant_by_tech[best_tech],
+                    npv_capacity_by_tech[best_tech],
+                )
 
         logger.info(
             "[PG EXPANSION OPTIONS] plant_group_id=%s num_pairs_evaluated=%d "
@@ -5860,6 +5908,7 @@ class PlantGroup:
         get_co2_need_by_name: Callable[[str, float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
         permitted_expansion_capacity: Callable[..., float | None] | None = None,
+        increase_sizing_query: Callable[..., float] | None = None,
     ) -> commands.Command | None:
         """
         Evaluate and execute the most profitable furnace expansion across all plants in the plant group.
@@ -5879,7 +5928,8 @@ class PlantGroup:
         9. Validate plant exists and has location data
         10. Apply subsidies (CAPEX, debt) and calculate subsidized costs
         11. Withdraw from the China capacity pool when the policy gate is threaded
-            (blocked means no expansion this year; an emission-intense grant shrinks the build)
+            (blocked means no expansion this year; the grant must match the capacity
+            the sizing query already valued the winner at)
         12. Create and return AddFurnaceGroup command with all parameters
 
         Args:
@@ -5915,6 +5965,10 @@ class PlantGroup:
                 (capacities in model tonnes end-to-end). Returns the capacity the pool allows to
                 be built, or None when the withdrawal is blocked and no expansion happens this
                 year. None (the default) leaves the decision path untouched.
+            increase_sizing_query (Callable | None): China capacity-policy sizing query, forwarded
+                to ``evaluate_expansion_options`` so every candidate is valued at the capacity the
+                policy permits. Bound in production from the same holder as the gate above, so a
+                gate threaded without it diverges at Stage 11.5 and raises.
 
         Returns:
             commands.Command | None: AddFurnaceGroup command if expansion is approved, None otherwise.
@@ -5970,6 +6024,7 @@ class PlantGroup:
             get_co2_headroom=get_co2_headroom,
             get_co2_need_by_name=get_co2_need_by_name,
             co2_storage_diagnostics=co2_storage_diagnostics,
+            increase_sizing_query=increase_sizing_query,
         )
 
         # ========== STAGE 3: CHECK IF ANY EXPANSION OPTIONS EXIST ==========
@@ -5979,13 +6034,13 @@ class PlantGroup:
 
         # Log all expansion options found
         logger.debug(f"[PG EXPANSION] Found {len(expansion_options)} options:")
-        for pid, (npv, tech, capex, _reductant) in expansion_options.items():
+        for pid, (npv, tech, capex, _reductant, _build_capacity) in expansion_options.items():
             npv_str = "None" if npv is None else f"${npv:,.0f}"
             logger.debug(f"[PG EXPANSION]   {pid}: {tech} NPV={npv_str} CAPEX=${capex:.2f}/t")
 
         # ========== STAGE 4: SELECT HIGHEST NPV OPTION ==========
         highest_plant_and_tech = max(expansion_options.items(), key=lambda item: item[1][0] or float("-inf"))
-        plant_id, (npv, tech, capex, chosen_reductant) = highest_plant_and_tech
+        plant_id, (npv, tech, capex, chosen_reductant, build_capacity) = highest_plant_and_tech
 
         npv_str = "None" if npv is None else f"{npv:,.0f}"
         logger.debug(f"[PG EXPANSION] Best: {plant_id} {tech} NPV=${npv_str} CAPEX=${capex:,.2f}/t")
@@ -5998,8 +6053,8 @@ class PlantGroup:
             return None
 
         # ========== STAGE 6: CHECK BALANCE SUFFICIENCY ==========
-        # Equity = capex × capacity × equity_share
-        investment = capacity * capex
+        # Equity = capex × capacity × equity_share, on the capacity the policy permits
+        investment = build_capacity * capex
         equity_needed = investment * equity_share
 
         if self.balance < equity_needed:
@@ -6062,15 +6117,15 @@ class PlantGroup:
                 raise ValueError(f"Unknown product type: '{expansion_product}' for technology: '{tech}'")
 
             # Check if expansion would exceed limit
-            if expansion_and_switch_capacity + capacity > expansion_limit:
+            if expansion_and_switch_capacity + build_capacity > expansion_limit:
                 logger.warning("[PG EXPANSION] === Stage 8: Capacity limit EXCEEDED ===")
                 logger.warning(f"[PG EXPANSION]   - Product: {expansion_product}")
                 logger.warning(
                     f"[PG EXPANSION]   - Current expansion/switch capacity: {expansion_and_switch_capacity * T_TO_KT:,.0f} kt"
                 )
-                logger.warning(f"[PG EXPANSION]   - New expansion capacity: {capacity * T_TO_KT:,.0f} kt")
+                logger.warning(f"[PG EXPANSION]   - New expansion capacity: {build_capacity * T_TO_KT:,.0f} kt")
                 logger.warning(
-                    f"[PG EXPANSION]   - Total after expansion: {(expansion_and_switch_capacity + capacity) * T_TO_KT:,.0f} kt"
+                    f"[PG EXPANSION]   - Total after expansion: {(expansion_and_switch_capacity + build_capacity) * T_TO_KT:,.0f} kt"
                 )
                 logger.warning(f"[PG EXPANSION]   - Limit: {expansion_limit * T_TO_KT:,.0f} kt")
                 logger.warning("[PG EXPANSION]   - DECISION - No expansion (capacity limit reached)")
@@ -6157,8 +6212,9 @@ class PlantGroup:
 
         # ========== STAGE 11.5: CHINA CAPACITY-POOL GATE ==========
         # A threaded gate must withdraw matching retirement credits (model tonnes) at the
-        # point of commitment or the expansion is off this year; an emission-intense grant
-        # builds less than it withdrew, so equity follows the capacity actually built
+        # point of commitment or the expansion is off this year. The withdrawal is always
+        # of the planned capacity; what it grants to build is the sizing query's answer,
+        # which the NPV already used, so the two must agree exactly
         if permitted_expansion_capacity is not None:
             granted_capacity = permitted_expansion_capacity(
                 iso3=plant.location.iso3,
@@ -6173,10 +6229,11 @@ class PlantGroup:
             if granted_capacity is None:
                 logger.info("[PG EXPANSION] DECISION - No expansion (capacity pool blocked)")
                 return None
-            if granted_capacity != capacity:
-                capacity = Volumes(granted_capacity)
-                investment = capacity * capex
-                equity_needed = investment * equity_share
+            if granted_capacity != float(build_capacity):
+                raise ValueError(
+                    f"Capacity pool granted {granted_capacity} for {tech} at plant {plant_id} but the NPV was "
+                    f"taken at {float(build_capacity)}: the sizing query and the gate must agree"
+                )
 
         # Log subsidy details being passed to command
         subsidy_details = []
@@ -6201,7 +6258,7 @@ class PlantGroup:
 
         logger.info("[PG EXPANSION] ✓ SUCCESS - Expansion approved")
         logger.info(f"[PG EXPANSION]   - Plant: {plant_id}, Technology: {tech}, Product: {product}")
-        logger.info(f"[PG EXPANSION]   - Capacity: {capacity * T_TO_KT:,.0f} kt, NPV: ${npv:,.0f}")
+        logger.info(f"[PG EXPANSION]   - Capacity: {build_capacity * T_TO_KT:,.0f} kt, NPV: ${npv:,.0f}")
         logger.info(f"[PG EXPANSION]   - Investment: ${investment:,.0f} (equity to debit: ${equity_needed:,.0f})")
         logger.info(f"[PG EXPANSION]   - CAPEX: ${base_capex:.2f}/t → ${capex:.2f}/t (with subsidies)")
         logger.info(
@@ -6217,7 +6274,7 @@ class PlantGroup:
             furnace_group_id=furnace_group_id,
             plant_id=plant_id,
             technology_name=tech,
-            capacity=capacity,
+            capacity=build_capacity,
             product=product,
             chosen_reductant=chosen_reductant,
             equity_share=equity_share,
@@ -6275,6 +6332,7 @@ class PlantGroup:
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
         derive_geo_unit: Callable[[float, float, str], str | None] | None = None,
         probabilistic_agents: bool = True,
+        increase_sizing_query: Callable[..., float] | None = None,
     ) -> commands.Command:
         """
         Identifies new business opportunities for plants at given locations with specific technologies.
@@ -6341,6 +6399,10 @@ class PlantGroup:
                 calculate_npv_sites_share is forced to 1.0 by SimulationConfig.__post_init__ so
                 step 2 evaluates every candidate location instead of a random sample — see
                 docs/domain_simulation_logic/geospatial_model/new_plant_opening.md.
+            increase_sizing_query: China capacity-policy sizing query, threaded into step 4 so
+                each candidate's NPV rests on the capacity the policy permits it to build. The
+                opportunity itself is still created at nameplate — what the policy shrinks is the
+                build, not the plan. None (the default) values every candidate at nameplate.
 
         Returns:
             Command to add new Plant and FurnaceGroup objects for the identified business opportunities
@@ -6453,6 +6515,7 @@ class PlantGroup:
             plant_lifetime=plant_lifetime,
             construction_time=construction_time,
             equity_share=equity_share,
+            increase_sizing_query=increase_sizing_query,
         )
         # G1 CO2 storage gate: drop CCS techs per (iso3, tech) when annual need exceeds
         # country headroom at the opportunity's operating-start lookup year.
@@ -6791,6 +6854,7 @@ class PlantGroup:
         permitted_greenfield_capacity: Callable[..., tuple[float, str | None, bool, tuple["Credit", ...]] | None]
         | None = None,
         capacity_pool_max_retry_years: int | None = None,
+        increase_sizing_query: Callable[..., float] | None = None,
     ) -> list[commands.Command]:
         """
         Recalculate the NPV and update the status of all considered and announced business opportunities.
@@ -6821,6 +6885,9 @@ class PlantGroup:
                 the considered→announced transition; None (the default) leaves it untouched
             capacity_pool_max_retry_years: Retry cap for opportunities that gate blocks,
                 threaded alongside it; None (the default) retries forever
+            increase_sizing_query: China capacity-policy sizing query, threaded to the yearly
+                re-valuation so it values the capacity the policy permits; None (the default)
+                leaves it untouched
 
         Returns:
             List of commands to update the status of furnace groups.
@@ -6912,6 +6979,7 @@ class PlantGroup:
                         co2_storage_diagnostics=co2_storage_diagnostics,
                         permitted_greenfield_capacity=permitted_greenfield_capacity,
                         capacity_pool_max_retry_years=capacity_pool_max_retry_years,
+                        increase_sizing_query=increase_sizing_query,
                     )
                     if update_status_cmd:
                         status_change_cmds.append(update_status_cmd)

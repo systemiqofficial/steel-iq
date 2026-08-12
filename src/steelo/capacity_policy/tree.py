@@ -250,6 +250,35 @@ class TreeEvaluator:
         )
         return permitted
 
+    def increase_build_capacity(self, *, capacity_mt: float, technology: str, reductant: str | None) -> float:
+        """Resolve the capacity an INCREASE build may actually build — branch ③ INCREASE, sizing only.
+
+        Pure arithmetic over the classification rows: no pool state is read, so
+        the answer serves both the pre-NPV sizing query — which must know the
+        permitted capacity before the agent values the build — and the
+        consuming gate, by construction identically.
+
+        Args:
+            capacity_mt: Planned new capacity in Mt.
+            technology: Technology being built.
+            reductant: The reductant the build is evaluated with.
+
+        Returns:
+            The planned capacity divided by the penalty divisor when the route
+            is emission-intense, else the planned capacity unchanged.
+
+        Raises:
+            ValueError: If the route has no classification row or its
+                emission-intense flag is unauthored.
+        """
+        row = self._classification(technology, reductant)
+        if row.is_emission_intense is None:
+            raise ValueError(
+                f"is_emission_intense unauthored for {technology!r} (reductant {reductant!r}); "
+                "the policy cannot evaluate an increase without it"
+            )
+        return capacity_mt / self.config.emission_intense_penalty_divisor if row.is_emission_intense else capacity_mt
+
     def on_increase(
         self,
         *,
@@ -281,18 +310,9 @@ class TreeEvaluator:
             ValueError: If the route has no classification row or its
                 emission-intense flag is unauthored.
         """
-        row = self._classification(technology, reductant)
-        if row.is_emission_intense is None:
-            raise ValueError(
-                f"is_emission_intense unauthored for {technology!r} (reductant {reductant!r}); "
-                "the policy cannot evaluate an increase without it"
-            )
-        build_mt = (
-            capacity_mt / self.config.emission_intense_penalty_divisor if row.is_emission_intense else capacity_mt
-        )
         return WithdrawSpec(
             withdraw_mt=capacity_mt,
-            build_mt=build_mt,
+            build_mt=self.increase_build_capacity(capacity_mt=capacity_mt, technology=technology, reductant=reductant),
             region_tag=self.key_regions.get(geo_key),
             product=product,
         )

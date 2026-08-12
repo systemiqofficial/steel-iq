@@ -244,6 +244,44 @@ class TestUtilizationGate:
         assert permitted(evaluator, historical_utilization={2027: 0.20, 2028: 0.20, 2029: 0.20}) is None
 
 
+class TestIncreaseBuildCapacity:
+    """The non-consuming sizing half of ③, which the pre-NPV query calls."""
+
+    def test_clean_route_builds_the_planned_amount(self):
+        assert make_evaluator().increase_build_capacity(capacity_mt=2.0, technology="EAF", reductant=None) == 2.0
+
+    def test_emission_intense_route_is_divided(self):
+        assert make_evaluator().increase_build_capacity(
+            capacity_mt=3.0, technology="BF", reductant=None
+        ) == pytest.approx(2.0)
+
+    def test_penalty_divisor_comes_from_config(self):
+        evaluator = make_evaluator(config=CapacityPolicyConfig(emission_intense_penalty_divisor=3.0))
+        assert evaluator.increase_build_capacity(capacity_mt=3.0, technology="BF", reductant=None) == pytest.approx(1.0)
+
+    def test_unauthored_intense_flag_raises(self):
+        with pytest.raises(ValueError, match="is_emission_intense unauthored"):
+            make_evaluator().increase_build_capacity(capacity_mt=1.0, technology="BF_CHARCOAL", reductant=None)
+
+    def test_unknown_technology_raises(self):
+        with pytest.raises(ValueError, match="No classification row"):
+            make_evaluator().increase_build_capacity(capacity_mt=1.0, technology="NOPE", reductant=None)
+
+    @pytest.mark.parametrize(
+        "technology, reductant",
+        [("EAF", None), ("BF", None), ("DRI", "Coal"), ("DRI", "Hydrogen"), ("DRI", None)],
+    )
+    def test_the_gate_builds_exactly_what_the_query_sized(self, technology, reductant):
+        """One arithmetic, two callers: the stage-11.5 equality check rests on this."""
+        evaluator = make_evaluator()
+        spec = evaluator.on_increase(
+            geo_key="CHN:CN-GD", product="iron", capacity_mt=3.0, technology=technology, reductant=reductant
+        )
+        assert spec.build_mt == evaluator.increase_build_capacity(
+            capacity_mt=3.0, technology=technology, reductant=reductant
+        )
+
+
 class TestOnIncrease:
     def test_key_province_restricts_to_cluster(self):
         """A build in a key province may only spend that cluster's credits."""

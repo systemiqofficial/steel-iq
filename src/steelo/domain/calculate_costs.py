@@ -1,5 +1,5 @@
 import logging
-from typing import TYPE_CHECKING, NamedTuple, Sequence, TypedDict, Any
+from typing import TYPE_CHECKING, Callable, NamedTuple, Sequence, TypedDict, Any
 import math
 
 from steelo.utilities.utils import normalize_name
@@ -1236,6 +1236,7 @@ def calculate_business_opportunity_npvs(
     plant_lifetime: int,
     construction_time: int,
     equity_share: float,
+    increase_sizing_query: Callable[..., float] | None = None,
 ) -> dict[str, dict[tuple[float, float, str], dict[str, float]]]:
     """
     Calculates the NPV for a series of business opportunities. If the calculation fails, it returns a very
@@ -1259,6 +1260,9 @@ def calculate_business_opportunity_npvs(
         plant_lifetime: Lifetime of the plant in years
         construction_time: Time required for plant construction in years
         equity_share: Share of investment financed by equity
+        increase_sizing_query: China capacity-policy sizing query, applied per candidate so the
+            NPV rests on the capacity the policy permits that route to build rather than the
+            nameplate it would plan. None (the default) values every candidate at nameplate.
 
     Returns:
         Dictionary mapping product -> site_id -> technology -> NPV.
@@ -1269,7 +1273,8 @@ def calculate_business_opportunity_npvs(
           picks them up. In real life, subsidies are often announced years in advance of actual plant
           construction. This metric only affects the decision to open a plant, not the actual costs once
           opened.
-        - The plant capacity does not affect the NPV calculation.
+        - Capacity scales every term of the NPV except the capacity-independent railway cost,
+          so two candidates sized differently do not rank as they would at equal capacity.
         - cost_data has been validated by validate_and_clean_cost_data to ensure all required fields are
           present with correct types (floats for costs, dict for bom).
         - The per-capacity fixed OPEX is converted to per-production terms (divided by the expected
@@ -1319,10 +1324,22 @@ def calculate_business_opportunity_npvs(
                     end_year=end_year,
                 )
 
+                # The capacity the policy would permit this route, known before its NPV
+                npv_capacity = (
+                    steel_plant_capacity
+                    if increase_sizing_query is None
+                    else increase_sizing_query(
+                        iso3=site_id[2],
+                        technology=tech,
+                        reductant=str(bo_costs["reductant"]),
+                        capacity=float(steel_plant_capacity),
+                    )
+                )
+
                 # Calculate NPV
                 npv_value = calculate_npv_full(
                     capex=bo_costs["capex"],  # type: ignore[arg-type]
-                    capacity=steel_plant_capacity,
+                    capacity=npv_capacity,
                     unit_total_opex_list=unit_total_opex_list,  # type: ignore[arg-type]
                     expected_utilisation_rate=bo_costs["utilization_rate"],  # type: ignore[arg-type]
                     price_series=market_price[prod],

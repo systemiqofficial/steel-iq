@@ -30,6 +30,7 @@ from steelo.capacity_policy import handlers as cp_handlers
 from steelo.capacity_policy.inputs import RegionRow, TechnologyRow
 from steelo.devdata import get_furnace_group, get_plant
 from steelo.domain import PointInTime, TimeFrame, Volumes, Year, events
+from steelo.domain.calculate_costs import calculate_business_opportunity_npvs
 from steelo.domain.commands import UpdateFurnaceGroupStatus
 from steelo.domain.models import Location, PlantGroup
 from steelo.service_layer.handlers import update_status_of_furnace_group
@@ -252,6 +253,144 @@ class TestBoundGreenfieldGate:
         assert try_withdraw_spy.call_count == 0
         assert fg.capacity_pool_granted_withdraw_mt is None
         assert fg.capacity_pool_attributed_owner_id is None
+
+
+def capture_npv_full(mocker) -> list[dict]:
+    """Record the kwargs each NPV is taken with; the NPV itself is the capacity, so a
+    sized valuation is visible in the returned figure too."""
+    captured: list[dict] = []
+
+    def fake(**kwargs):
+        captured.append(kwargs)
+        return float(kwargs["capacity"])
+
+    mocker.patch("steelo.domain.calculate_costs.calculate_npv_full", side_effect=fake)
+    return captured
+
+
+class TestSizedRevaluation:
+    """The yearly re-check values what the policy would let the site build."""
+
+    def test_intense_opportunity_is_valued_at_the_penalised_capacity(self, mocker):
+        bind_policy()
+        captured = capture_npv_full(mocker)
+        fg = make_opportunity(tech_name="EAF", capacity=3_000_000.0)
+
+        track(fg, increase_sizing_query=cp_handlers.increase_sizing_hook())
+
+        assert [call["capacity"] for call in captured] == [pytest.approx(2_000_000.0)]
+
+    def test_valuation_leaves_the_planned_capacity_alone(self, mocker):
+        """Sizing is a question, not a decision: only a granted withdrawal shrinks the
+        group, and the gate still withdraws against the plan."""
+        bind_policy()
+        capture_npv_full(mocker)
+        fg = make_opportunity(tech_name="EAF", capacity=3_000_000.0)
+
+        track(fg, increase_sizing_query=cp_handlers.increase_sizing_hook())
+
+        assert fg.capacity == pytest.approx(3_000_000.0)
+
+    def test_clean_opportunity_is_valued_at_the_planned_capacity(self, mocker):
+        bind_policy()
+        captured = capture_npv_full(mocker)
+        fg = make_opportunity(tech_name="DRI", capacity=3_000_000.0)
+
+        track(fg, increase_sizing_query=cp_handlers.increase_sizing_hook())
+
+        assert [call["capacity"] for call in captured] == [pytest.approx(3_000_000.0)]
+
+    def test_absent_query_values_even_an_intense_opportunity_at_the_plan(self, mocker):
+        captured = capture_npv_full(mocker)
+        fg = make_opportunity(tech_name="EAF", capacity=3_000_000.0)
+
+        track(fg)
+
+        assert [call["capacity"] for call in captured] == [pytest.approx(3_000_000.0)]
+
+    def test_a_foreign_opportunity_is_never_sized(self, mocker):
+        bind_policy()
+        captured = capture_npv_full(mocker)
+        fg = make_opportunity(tech_name="EAF", capacity=3_000_000.0)
+
+        track(fg, iso3="IND", geo_unit=None, increase_sizing_query=cp_handlers.increase_sizing_hook())
+
+        assert [call["capacity"] for call in captured] == [pytest.approx(3_000_000.0)]
+
+
+def bo_cost_data(iso3: str, tech: str = "EAF", reductant: str = "Electricity") -> dict:
+    """One costed candidate in the shape ``prepare_cost_data_for_business_opportunity`` returns."""
+    return {
+        "steel" if tech == "EAF" else "iron": {
+            (30.0, 110.0, iso3): {
+                tech: {
+                    "bom": BOM,
+                    "fopex": 50.0,
+                    "utilization_rate": 0.8,
+                    "score_series": [0.0] * 20,
+                    "capex": 900.0,
+                    "cost_of_debt": 0.05,
+                    "cost_of_equity": 0.1,
+                    "railway_cost": 0.0,
+                    "all_opex_subsidies": [],
+                    "reductant": reductant,
+                }
+            }
+        }
+    }
+
+
+def identify_npvs(cost_data: dict, *, sizing_query=None) -> dict:
+    return calculate_business_opportunity_npvs(
+        cost_data=cost_data,
+        target_year=2029,
+        market_price={"steel": [600.0] * 30, "iron": [400.0] * 30},
+        steel_plant_capacity=3_000_000.0,
+        plant_lifetime=20,
+        construction_time=2,
+        equity_share=0.3,
+        increase_sizing_query=sizing_query,
+    )
+
+
+class TestSizedIdentification:
+    """Step 4 of identification sizes per candidate, before the top-N draw ranks them."""
+
+    def test_intense_site_is_valued_at_the_penalised_capacity(self, mocker):
+        bind_policy()
+        captured = capture_npv_full(mocker)
+
+        npvs = identify_npvs(bo_cost_data("CHN"), sizing_query=cp_handlers.increase_sizing_hook())
+
+        assert [call["capacity"] for call in captured] == [pytest.approx(2_000_000.0)]
+        assert npvs["steel"][(30.0, 110.0, "CHN")]["EAF"] == pytest.approx(2_000_000.0)
+
+    def test_a_clean_site_keeps_its_nameplate(self, mocker):
+        bind_policy()
+        captured = capture_npv_full(mocker)
+
+        identify_npvs(bo_cost_data("CHN", "DRI", "Natural gas"), sizing_query=cp_handlers.increase_sizing_hook())
+
+        assert [call["capacity"] for call in captured] == [pytest.approx(3_000_000.0)]
+
+    def test_a_foreign_site_is_untouched(self, mocker):
+        bind_policy()
+        captured = capture_npv_full(mocker)
+
+        npvs = identify_npvs(bo_cost_data("IND"), sizing_query=cp_handlers.increase_sizing_hook())
+
+        assert [call["capacity"] for call in captured] == [pytest.approx(3_000_000.0)]
+        assert npvs["steel"][(30.0, 110.0, "IND")]["EAF"] == pytest.approx(3_000_000.0)
+
+    def test_no_query_leaves_even_an_intense_chinese_site_at_nameplate(self, mocker):
+        """The default path is output-identical to the same site sized abroad."""
+        bind_policy()
+        captured = capture_npv_full(mocker)
+
+        npvs = identify_npvs(bo_cost_data("CHN"))
+
+        assert [call["capacity"] for call in captured] == [pytest.approx(3_000_000.0)]
+        assert npvs["steel"][(30.0, 110.0, "CHN")]["EAF"] == pytest.approx(3_000_000.0)
 
 
 class TestRetryCap:

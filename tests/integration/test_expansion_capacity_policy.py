@@ -24,6 +24,7 @@ from steelo.capacity_policy import (
 from steelo.capacity_policy import handlers as cp_handlers
 from steelo.capacity_policy.inputs import RegionRow, TechnologyRow
 from steelo.devdata import get_furnace_group, get_plant
+from steelo.domain import calculate_costs as cc
 from steelo.domain import PointInTime, TimeFrame, Volumes, Year
 from steelo.domain.commands import AddFurnaceGroup
 from steelo.domain.models import Location, PlantGroup
@@ -112,6 +113,9 @@ def make_group(*, iso3: str = "CHN", geo_unit: str | None = "CN-HE", group_id: s
     return group
 
 
+PAIRED = object()
+
+
 def run_expansion(
     mocker,
     group: PlantGroup,
@@ -121,15 +125,38 @@ def run_expansion(
     year: int = 2027,
     capacity: float = 2_500_000.0,
     hook=None,
+    sizing_query=PAIRED,
 ):
-    """Drive evaluate_expansion with the NPV fan-out mocked to one winning option."""
+    """Drive evaluate_expansion with the NPV fan-out mocked to one winning option.
+
+    The mocked option carries the capacity its NPV was taken at, which the sizing
+    query decides — so the driver sizes the winner exactly as the real fan-out
+    would. Production binds gate and query from one holder, hence PAIRED; pass
+    ``sizing_query=None`` alongside a gate to drive the mismatch deliberately.
+    """
     plant_id = group.plants[0].plant_id
+    if sizing_query is PAIRED:
+        sizing_query = None if hook is None else cp_handlers.increase_sizing_hook()
+    npv_capacity = (
+        capacity
+        if sizing_query is None
+        else sizing_query(
+            iso3=group.plants[0].location.iso3,
+            technology=tech,
+            reductant=reductant,
+            capacity=capacity,
+        )
+    )
     mocker.patch.object(
         group,
         "evaluate_expansion_options",
-        return_value={plant_id: (5_000_000.0, tech, CAPEX[tech], reductant)},
+        return_value={plant_id: (5_000_000.0, tech, CAPEX[tech], reductant, Volumes(npv_capacity))},
     )
-    extra = {} if hook is None else {"permitted_expansion_capacity": hook}
+    extra = {}
+    if hook is not None:
+        extra["permitted_expansion_capacity"] = hook
+    if sizing_query is not None:
+        extra["increase_sizing_query"] = sizing_query
     return group.evaluate_expansion(
         price_series={"steel": [600.0] * 22, "iron": [400.0] * 22},
         capacity=Volumes(capacity),
@@ -158,6 +185,61 @@ def run_expansion(
         new_capacity_share_from_new_plants=0.5,
         active_statuses=["operating"],
         **extra,
+    )
+
+
+def capture_npv_full(monkeypatch) -> list[dict]:
+    """Replace calculate_npv_full with a recorder; the options loop resolves it from the module."""
+    captured: list[dict] = []
+
+    def fake(**kwargs):
+        captured.append(kwargs)
+        return 1_000_000.0
+
+    monkeypatch.setattr(cc, "calculate_npv_full", fake)
+    return captured
+
+
+def stub_bom(_energy_costs, _tech, _capacity, _reductant=None):
+    return ({"materials": {"iron_ore": {"unit_cost": 100.0, "demand": 1.0}}, "energy": {}}, 0.9, "natural_gas", {})
+
+
+def stub_score_series(*_args, **_kwargs):
+    return cc.ReductantScoreSeries(scores=[0.0] * 20, picks=["natural_gas"] * 20)
+
+
+def run_expansion_options(
+    group: PlantGroup,
+    *,
+    techs: tuple[str, ...] = ("DRI",),
+    year: int = 2027,
+    capacity: float = 3_000_000.0,
+    sizing_query=None,
+):
+    """Drive the real per-candidate fan-out, which is where sizing happens."""
+    fopex = {tech.lower(): 10.0 for tech in CAPEX}
+    return group.evaluate_expansion_options(
+        price_series={"steel": [600.0] * 30, "iron": [400.0] * 30},
+        capacity=Volumes(capacity),
+        region_capex={"Asia": CAPEX},
+        cost_of_debt_dict={"CHN": DEBT_RATES, "IND": DEBT_RATES},
+        cost_of_equity_dict={"CHN": EQUITY_RATES, "IND": EQUITY_RATES},
+        get_bom_from_avg_boms=stub_bom,
+        reductant_score_series=stub_score_series,
+        dynamic_feedstocks={},
+        fopex_for_iso3={"CHN": fopex, "IND": fopex},
+        iso3_to_region_map={"CHN": "Asia", "IND": "Asia"},
+        chosen_emissions_boundary_for_carbon_costs="scope_1",
+        technology_emission_factors=[],
+        global_risk_free_rate=0.02,
+        equity_share=EQUITY_SHARE,
+        tech_to_product=TECH_TO_PRODUCT,
+        plant_lifetime=20,
+        construction_time=2,
+        current_year=Year(year),
+        allowed_techs={Year(y): list(techs) for y in range(2020, 2041)},
+        active_statuses=["operating"],
+        increase_sizing_query=sizing_query,
     )
 
 
@@ -324,6 +406,92 @@ class TestOwnerPartition:
 
         assert isinstance(command, AddFurnaceGroup)
         assert pool.total() == 0.0
+
+
+class TestSizedValuation:
+    """The sizing query decides the capacity each candidate's NPV is taken at."""
+
+    def test_intense_candidate_is_valued_at_the_penalised_capacity(self, monkeypatch):
+        bind_policy()
+        captured = capture_npv_full(monkeypatch)
+        group = make_group()
+
+        options = run_expansion_options(group, techs=("EAF",), sizing_query=cp_handlers.increase_sizing_hook())
+
+        assert [call["capacity"] for call in captured] == [pytest.approx(2_000_000.0)]
+        assert options[group.plants[0].plant_id][4] == pytest.approx(2_000_000.0)
+
+    def test_clean_candidate_is_valued_at_the_planned_capacity(self, monkeypatch):
+        bind_policy()
+        captured = capture_npv_full(monkeypatch)
+        group = make_group()
+
+        options = run_expansion_options(group, techs=("DRI",), sizing_query=cp_handlers.increase_sizing_hook())
+
+        assert [call["capacity"] for call in captured] == [pytest.approx(3_000_000.0)]
+        assert options[group.plants[0].plant_id][4] == pytest.approx(3_000_000.0)
+
+    def test_absent_query_values_even_an_intense_candidate_at_the_plan(self, monkeypatch):
+        """The default path: no query threaded, nothing sized."""
+        captured = capture_npv_full(monkeypatch)
+        group = make_group()
+
+        options = run_expansion_options(group, techs=("EAF",))
+
+        assert [call["capacity"] for call in captured] == [pytest.approx(3_000_000.0)]
+        assert options[group.plants[0].plant_id][4] == pytest.approx(3_000_000.0)
+
+    def test_a_foreign_plant_is_never_sized(self, monkeypatch):
+        bind_policy()
+        captured = capture_npv_full(monkeypatch)
+        group = make_group(iso3="IND", geo_unit=None, group_id="gem_foreign_opts")
+
+        run_expansion_options(group, techs=("EAF",), sizing_query=cp_handlers.increase_sizing_hook())
+
+        assert [call["capacity"] for call in captured] == [pytest.approx(3_000_000.0)]
+
+
+class TestPenaltyReachesTheDecision:
+    def test_a_balance_between_the_two_equities_now_expands(self, mocker):
+        """The point of the split: equity follows the penalised build, so a group that
+        could not afford the plan can afford what the policy lets it build."""
+        pool = bind_policy()
+        pool.deposit(credit(3_000_000.0, 2020, tag="Jing-Jin-Ji", product="steel"))
+        group = make_group()
+        penalised_equity = 2_000_000.0 * CAPEX["EAF"] * EQUITY_SHARE
+        planned_equity = 3_000_000.0 * CAPEX["EAF"] * EQUITY_SHARE
+        group.balance = (penalised_equity + planned_equity) / 2
+
+        command = run_expansion(
+            mocker,
+            group,
+            tech="EAF",
+            reductant="Electricity",
+            capacity=3_000_000.0,
+            hook=cp_handlers.expansion_capacity_hook(),
+        )
+
+        assert isinstance(command, AddFurnaceGroup)
+        assert command.capacity == pytest.approx(2_000_000.0)
+        assert command.equity_needed == pytest.approx(penalised_equity)
+
+    def test_a_gate_without_its_sizing_query_raises(self, mocker):
+        """Production binds the pair from one holder; a gate that grants less than the
+        NPV was taken at is a wiring fault, not something to correct silently."""
+        pool = bind_policy()
+        pool.deposit(credit(3_000_000.0, 2020, tag="Jing-Jin-Ji", product="steel"))
+        group = make_group()
+
+        with pytest.raises(ValueError, match="sizing query and the gate must agree"):
+            run_expansion(
+                mocker,
+                group,
+                tech="EAF",
+                reductant="Electricity",
+                capacity=3_000_000.0,
+                hook=cp_handlers.expansion_capacity_hook(),
+                sizing_query=None,
+            )
 
 
 class TestNonChinesePassthrough:

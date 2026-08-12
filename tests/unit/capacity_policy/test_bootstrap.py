@@ -158,6 +158,7 @@ def test_disabled_configure_unbinds_stale_state(tmp_path):
     configure_capacity_policy(CapacityPolicyConfig(enabled=False), fake_repository_json(tmp_path), start_year=2025)
 
     assert cp_handlers.replace_capacity_hook() is None
+    assert cp_handlers.increase_sizing_hook() is None
     assert cp_handlers.expansion_capacity_hook() is None
     assert cp_handlers.greenfield_capacity_hook() is None
 
@@ -172,6 +173,7 @@ def test_enabled_binds_and_seeds_in_model_tonnes(tmp_path, caplog, propagating_p
     configure_capacity_policy(CapacityPolicyConfig(enabled=True), fake_repository_json(tmp_path), start_year=2025)
 
     assert cp_handlers.replace_capacity_hook() is not None
+    assert cp_handlers.increase_sizing_hook() is not None
     policy = cp_handlers._policy
     assert policy is not None
     assert policy.pool.total() == pytest.approx(2.25e6)
@@ -333,6 +335,7 @@ def test_bootstrap_simulation_disabled_unbinds_stale_binding(tmp_path):
 
     assert runner is not None
     assert cp_handlers.replace_capacity_hook() is None
+    assert cp_handlers.increase_sizing_hook() is None
     assert cp_handlers.expansion_capacity_hook() is None
     assert cp_handlers.greenfield_capacity_hook() is None
 
