@@ -16,6 +16,7 @@ from steelo.adapters.repositories.in_memory_repository import InMemoryRepository
 from steelo.capacity_policy.handlers import (
     expansion_capacity_hook,
     greenfield_capacity_hook,
+    greenfield_retry_cap,
     replace_capacity_hook,
 )
 from steelo.domain import Year
@@ -259,6 +260,7 @@ class GeospatialModel:
                     co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
                     reserved_discount_factor=bus.env.config.co2_storage_reserved_discount_factor,
                     permitted_greenfield_capacity=greenfield_capacity_hook(),
+                    capacity_pool_max_retry_years=greenfield_retry_cap(),
                 )
             )
         if status_commands:

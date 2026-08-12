@@ -17,6 +17,8 @@ def test_defaults_are_dormant():
     assert config.utilization_window_years == 2
     assert config.inter_company_swap_cutoff_year == 2028
     assert config.banked_credit_rule == "reassign"
+    assert config.credit_validity_years is None
+    assert config.capacity_pool_max_retry_years == 5
     assert config.reline_counts_as_replace is False
 
 
@@ -34,6 +36,15 @@ def test_non_positive_ratios_and_window_raise():
         CapacityPolicyConfig(emission_intense_penalty_divisor=-1.5)
     with pytest.raises(ValueError, match="utilization_window_years must be positive"):
         CapacityPolicyConfig(utilization_window_years=0)
+
+
+def test_non_positive_validity_and_retry_cap_raise():
+    """A shelf life is optional but, once set, must be a real number of years."""
+    with pytest.raises(ValueError, match="credit_validity_years must be positive when set"):
+        CapacityPolicyConfig(credit_validity_years=0)
+    with pytest.raises(ValueError, match="capacity_pool_max_retry_years must be positive"):
+        CapacityPolicyConfig(capacity_pool_max_retry_years=0)
+    assert CapacityPolicyConfig(credit_validity_years=None).credit_validity_years is None
 
 
 def test_utilization_floor_outside_unit_interval_raises():

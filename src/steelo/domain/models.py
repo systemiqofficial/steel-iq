@@ -52,6 +52,7 @@ from steelo.domain.constants import (
 )
 
 if TYPE_CHECKING:
+    from steelo.capacity_policy.pool import Credit
     from steelo.simulation import SimulationConfig
 
 
@@ -1162,10 +1163,15 @@ class FurnaceGroup:
         self.future_switch_year: Optional[int] = None
 
         # China capacity-policy stash, set at announcement when a live greenfield gate
-        # withdraws for this opportunity: the withdrawn amount makes a later discard's
-        # leaked credit quantifiable, and the owner carries attribution to construction
+        # withdraws for this opportunity: the withdrawn amount quantifies a later
+        # discard, the owner carries attribution to construction, and the consumed
+        # slices are what a discard refunds to the pool at their original vintages
         self.capacity_pool_granted_withdraw_mt: float | None = None
         self.capacity_pool_attributed_owner_id: str | None = None
+        self.capacity_pool_consumed_credits: tuple["Credit", ...] | None = None
+        # Years the capacity gate has blocked this opportunity; at the configured cap
+        # it is discarded, never having withdrawn
+        self.capacity_pool_blocked_years: int = 0
 
         # Economic variables
         self.equity_share = equity_share
@@ -3009,7 +3015,9 @@ class FurnaceGroup:
         get_co2_headroom: Callable[[str, int, float], float] | None = None,
         get_co2_need: Callable[["Technology", float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
-        permitted_greenfield_capacity: Callable[..., tuple[float, str | None, bool] | None] | None = None,
+        permitted_greenfield_capacity: Callable[..., tuple[float, str | None, bool, tuple["Credit", ...]] | None]
+        | None = None,
+        capacity_pool_max_retry_years: int | None = None,
     ) -> commands.Command | None:
         """
         Tracks whether an identified business opportunity remains interesting over time to avoid making
@@ -3048,12 +3056,17 @@ class FurnaceGroup:
                 override_reference_year) -> ReductantScoreSeries`` (``Environment.reductant_score_series``)
             permitted_greenfield_capacity: China capacity-policy withdrawal gate, called once
                 when the announcement draw succeeds (capacities in model tonnes end-to-end).
-                Returns ``(build_capacity, attributed_owner_id, withdrew)`` on a grant — the
-                capacity actually allowed, the single credit holder funding it (None for the
-                unowned pot or when no withdrawal ran), and whether the pool was drawn on — or
-                None when the withdrawal is blocked, in which case the opportunity stays
-                considered and retries next year exactly like the CO2 gate. None (the default)
-                leaves the decision path untouched.
+                Returns ``(build_capacity, attributed_owner_id, withdrew, credits_consumed)``
+                on a grant — the capacity actually allowed, the single credit holder funding
+                it (None for the unowned pot or when no withdrawal ran), whether the pool was
+                drawn on, and the consumed credit slices a later discard refunds — or None
+                when the withdrawal is blocked, in which case the opportunity stays considered
+                and retries next year exactly like the CO2 gate. None (the default) leaves the
+                decision path untouched.
+            capacity_pool_max_retry_years: Years the capacity gate may block this opportunity
+                before it is discarded rather than retried. Counts capacity blocks only — CO2
+                blocks and failed announcement draws sit in other branches and never reach the
+                counter. None (the default) retries forever.
 
         Returns:
             Command to update the status of the FurnaceGroup, or None if no status change.
@@ -3230,13 +3243,35 @@ class FurnaceGroup:
                             year=int(year),
                         )
                         if grant is None:
+                            self.capacity_pool_blocked_years += 1
                             if status_stats is not None:
                                 status_stats["capacity_pool_blocked"] += 1
+                            if (
+                                capacity_pool_max_retry_years is not None
+                                and self.capacity_pool_blocked_years >= capacity_pool_max_retry_years
+                            ):
+                                # Discarded without ever withdrawing, so nothing to refund;
+                                # the announced-only guard in the status handler keeps the
+                                # CO2 release out of it too
+                                logger.info(
+                                    f"[CAPACITY POOL] gate=greenfield decision=discarded_retry_cap "
+                                    f"fg={self.furnace_group_id} iso3={location.iso3} "
+                                    f"tech={self.technology.name} blocked_years={self.capacity_pool_blocked_years} "
+                                    f"cap={capacity_pool_max_retry_years} year={int(year)}"
+                                )
+                                if status_stats is not None:
+                                    status_stats["capacity_pool_retry_cap_discarded"] += 1
+                                return commands.UpdateFurnaceGroupStatus(
+                                    fg_id=self.furnace_group_id,
+                                    plant_id=self.get_furnace_plant_id(),
+                                    new_status="discarded",
+                                )
                             return None  # stay considered
-                        build_capacity, attributed_owner_id, withdrew = grant
+                        build_capacity, attributed_owner_id, withdrew, credits_consumed = grant
                         if withdrew:
                             self.capacity_pool_granted_withdraw_mt = float(self.capacity)
                             self.capacity_pool_attributed_owner_id = attributed_owner_id
+                            self.capacity_pool_consumed_credits = credits_consumed
                             if build_capacity != self.capacity:
                                 # Emission-intense grant: the pool withdrew the planned
                                 # amount but the build itself is penalised
@@ -6753,7 +6788,9 @@ class PlantGroup:
         get_co2_need: Callable[["Technology", float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
         reserved_discount_factor: float = 0.9,
-        permitted_greenfield_capacity: Callable[..., tuple[float, str | None, bool] | None] | None = None,
+        permitted_greenfield_capacity: Callable[..., tuple[float, str | None, bool, tuple["Credit", ...]] | None]
+        | None = None,
+        capacity_pool_max_retry_years: int | None = None,
     ) -> list[commands.Command]:
         """
         Recalculate the NPV and update the status of all considered and announced business opportunities.
@@ -6782,6 +6819,8 @@ class PlantGroup:
             opex_subsidies: Dictionary mapping iso3 -> tech -> list of opex subsidies
             permitted_greenfield_capacity: China capacity-policy withdrawal gate, threaded to
                 the considered→announced transition; None (the default) leaves it untouched
+            capacity_pool_max_retry_years: Retry cap for opportunities that gate blocks,
+                threaded alongside it; None (the default) retries forever
 
         Returns:
             List of commands to update the status of furnace groups.
@@ -6872,6 +6911,7 @@ class PlantGroup:
                         get_co2_need=get_co2_need,
                         co2_storage_diagnostics=co2_storage_diagnostics,
                         permitted_greenfield_capacity=permitted_greenfield_capacity,
+                        capacity_pool_max_retry_years=capacity_pool_max_retry_years,
                     )
                     if update_status_cmd:
                         status_change_cmds.append(update_status_cmd)

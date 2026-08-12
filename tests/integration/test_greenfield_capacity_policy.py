@@ -32,6 +32,7 @@ from steelo.devdata import get_furnace_group, get_plant
 from steelo.domain import PointInTime, TimeFrame, Volumes, Year, events
 from steelo.domain.commands import UpdateFurnaceGroupStatus
 from steelo.domain.models import Location, PlantGroup
+from steelo.service_layer.handlers import update_status_of_furnace_group
 from steelo.service_layer.unit_of_work import UnitOfWork
 
 # Synthetic policy rows shared with the expansion-gate tests: EAF is authored
@@ -113,11 +114,14 @@ def make_opportunity(*, tech_name: str = "DRI", capacity: float = 2_000_000.0, f
     return fg
 
 
-def track(fg, *, year: int = 2026, iso3: str = "CHN", geo_unit: str | None = "CN-GD", hook=None, stats=None):
-    """Drive the real considered→announced re-check for one year."""
+def track(fg, *, year: int = 2026, iso3: str = "CHN", geo_unit: str | None = "CN-GD", hook=None, stats=None, **extra):
+    """Drive the real considered→announced re-check for one year.
+
+    The gate parameter is omitted entirely when no hook is given, so the default
+    path is the untouched one.
+    """
     location = Location(lat=30.0, lon=110.0, country="China", region="Asia", iso3=iso3, geo_unit=geo_unit)
-    extra = {} if hook is None else {"permitted_greenfield_capacity": hook}
-    return fg.track_business_opportunities(
+    kwargs = dict(
         year=Year(year),
         location=location,
         market_price={"steel": [600.0] * 30, "iron": [400.0] * 30},
@@ -129,8 +133,11 @@ def track(fg, *, year: int = 2026, iso3: str = "CHN", geo_unit: str | None = "CN
         all_opex_subsidies=[],
         reductant_score_series=lambda *args, **kwargs: SimpleNamespace(scores=[0.0] * 20),
         status_stats=stats,
-        **extra,
     )
+    if hook is not None:
+        kwargs["permitted_greenfield_capacity"] = hook
+    kwargs.update(extra)
+    return fg.track_business_opportunities(**kwargs)
 
 
 class TestDefaultPath:
@@ -245,6 +252,110 @@ class TestBoundGreenfieldGate:
         assert try_withdraw_spy.call_count == 0
         assert fg.capacity_pool_granted_withdraw_mt is None
         assert fg.capacity_pool_attributed_owner_id is None
+
+
+class TestRetryCap:
+    """D-I: an opportunity the capacity gate keeps refusing is eventually discarded.
+
+    Counting is structural — the CO2 gate and the announcement draw return from
+    their own branches and never reach the counter.
+    """
+
+    def test_below_the_cap_the_opportunity_still_retries(self):
+        pool = bind_policy()
+        fg = make_opportunity()
+
+        blocked = track(fg, hook=cp_handlers.greenfield_capacity_hook(), capacity_pool_max_retry_years=3)
+
+        assert blocked is None
+        assert fg.status == "considered"
+        assert fg.capacity_pool_blocked_years == 1
+        assert pool.total() == 0.0
+
+    def test_at_the_cap_the_opportunity_is_discarded_without_withdrawing(self, caplog):
+        pool = bind_policy()
+        fg = make_opportunity()
+        stats: Counter = Counter()
+
+        first = track(fg, year=2026, hook=cp_handlers.greenfield_capacity_hook(), capacity_pool_max_retry_years=2)
+        with caplog.at_level(logging.INFO, logger="steelo.domain.models.FurnaceGroup.track_business_opportunities"):
+            second = track(
+                fg,
+                year=2027,
+                hook=cp_handlers.greenfield_capacity_hook(),
+                capacity_pool_max_retry_years=2,
+                stats=stats,
+            )
+
+        assert first is None
+        assert isinstance(second, UpdateFurnaceGroupStatus)
+        assert second.new_status == "discarded"
+        assert stats["capacity_pool_retry_cap_discarded"] == 1
+        assert "decision=discarded_retry_cap" in caplog.text
+        assert "blocked_years=2 cap=2" in caplog.text
+        # Never withdrew, so there is nothing to refund
+        assert pool.total() == 0.0
+        assert fg.capacity_pool_granted_withdraw_mt is None
+
+    def test_no_cap_retries_forever(self):
+        """The unbound accessor hands None through, and the counter cannot fire."""
+        bind_policy()
+        fg = make_opportunity()
+
+        for year in range(2026, 2036):
+            assert track(fg, year=year, hook=cp_handlers.greenfield_capacity_hook()) is None
+
+        assert fg.capacity_pool_blocked_years == 10
+        assert fg.status == "considered"
+
+    def test_a_granted_year_leaves_the_counter_where_it_was(self):
+        """The counter is cumulative capacity blocks, not consecutive ones."""
+        pool = bind_policy()
+        fg = make_opportunity()
+
+        assert track(fg, year=2026, hook=cp_handlers.greenfield_capacity_hook()) is None
+        pool.deposit(credit(2_000_000.0, 2026, owner="E_c"))
+        granted = track(fg, year=2027, hook=cp_handlers.greenfield_capacity_hook())
+
+        assert isinstance(granted, UpdateFurnaceGroupStatus)
+        assert fg.capacity_pool_blocked_years == 1
+
+    def test_a_co2_block_never_advances_the_counter(self):
+        """G2 keeps its no-TTL semantics: it returns before the capacity gate runs."""
+        bind_policy()
+        fg = make_opportunity()
+        stats: Counter = Counter()
+
+        command = track(
+            fg,
+            hook=cp_handlers.greenfield_capacity_hook(),
+            capacity_pool_max_retry_years=1,
+            get_co2_need=lambda technology, capacity, reductant: 1.0,
+            get_co2_headroom=lambda iso3, year, own: 0.0,
+            stats=stats,
+        )
+
+        assert command is None
+        assert stats["co2_storage_blocked"] == 1
+        assert fg.capacity_pool_blocked_years == 0
+
+    def test_a_failed_announcement_draw_never_advances_the_counter(self):
+        """The draw sits before the gate; a failure returns from its own branch."""
+        bind_policy()
+        fg = make_opportunity()
+        stats: Counter = Counter()
+
+        command = track(
+            fg,
+            hook=cp_handlers.greenfield_capacity_hook(),
+            capacity_pool_max_retry_years=1,
+            probability_of_announcement=0.0,
+            stats=stats,
+        )
+
+        assert command is None
+        assert stats["announcement_probability_failed"] == 1
+        assert fg.capacity_pool_blocked_years == 0
 
 
 def make_attribution_world(
@@ -383,41 +494,123 @@ class TestIsDormant:
         assert group.is_dormant is False
 
 
-class TestDiscardLeak:
-    def test_discarded_announced_greenfield_logs_the_leak(self, caplog):
+class FakeStatusEnv:
+    """Only what the status handler's discarded branch reads."""
+
+    def __init__(self, year: int = 2028):
+        self.year = Year(year)
+        self.config = SimpleNamespace(co2_storage_reserved_discount_factor=0.9)
+        self.co2_storage_reserved: dict[str, float] = {}
+
+    def get_co2_need(self, technology, capacity, reductant) -> float:
+        return 0.0
+
+
+def discard_through_the_status_handler(status: str):
+    """Drive the real status handler from ``status`` to discarded, stash in place."""
+    fg = make_opportunity()
+    fg.status = status
+    fg.capacity_pool_granted_withdraw_mt = 2_000_000.0
+    fg.capacity_pool_attributed_owner_id = "E_c"
+    fg.capacity_pool_consumed_credits = (credit(1_500_000.0, 2019, owner="E_c"), credit(500_000.0, 2021, owner="E_c"))
+    plant = get_plant(
+        furnace_groups=[fg],
+        plant_id="plant_gf_opp",
+        location=Location(lat=30.0, lon=110.0, country="China", region="Asia", iso3="CHN", geo_unit="CN-GD"),
+    )
+    uow = UnitOfWork()
+    uow.plants.add_list([plant])
+    update_status_of_furnace_group(
+        UpdateFurnaceGroupStatus(fg_id=fg.furnace_group_id, plant_id=plant.plant_id, new_status="discarded"),
+        uow=uow,
+        env=FakeStatusEnv(),  # type: ignore[arg-type]
+    )
+    return fg
+
+
+class TestDiscardRoutesThroughTheStatusHandler:
+    """Both post-announcement discard paths — technology no longer allowed and the P1
+    CO2 refusal — emit the same command into the same handler branch, so the refund
+    is wired once for both."""
+
+    def test_an_announced_discard_hands_the_slices_back(self):
+        pool = bind_policy()
+
+        fg = discard_through_the_status_handler("announced")
+
+        assert fg.status == "discarded"
+        assert [c.vintage_year for c in pool.snapshot()] == [2019, 2021]
+        assert pool.total() == pytest.approx(2_000_000.0)
+        assert fg.capacity_pool_consumed_credits is None
+
+    def test_a_considered_discard_refunds_nothing(self):
+        """The retry-cap discard arrives from considered, and the announced-only guard
+        keeps it out of the refund — it never withdrew. The stash here is artificial;
+        it is what makes the guard, rather than an empty stash, the thing under test."""
+        pool = bind_policy()
+
+        fg = discard_through_the_status_handler("considered")
+
+        assert fg.status == "discarded"
+        assert pool.total() == 0.0
+        assert fg.capacity_pool_consumed_credits is not None
+
+
+class TestDiscardRefund:
+    def test_discarded_announced_greenfield_logs_the_refund(self, caplog):
         fg = make_opportunity()
         fg.capacity_pool_granted_withdraw_mt = 2_000_000.0
         fg.capacity_pool_attributed_owner_id = "E_c"
 
         with caplog.at_level(logging.INFO, logger="steelo.capacity_policy.handlers"):
-            cp_handlers.note_greenfield_discard(fg, "CHN", "CN-HE", 2027)
+            cp_handlers.refund_greenfield_on_discard(fg, "CHN", "CN-HE", 2027)
 
         assert "event=greenfield_discarded" in caplog.text
-        assert "leaked_withdraw_mt=2000000.000" in caplog.text
+        assert "refunded_withdraw_mt=2000000.000" in caplog.text
         assert "attributed_owner=E_c" in caplog.text
 
     def test_ungated_discard_stays_silent(self, caplog):
         fg = make_opportunity()
 
         with caplog.at_level(logging.INFO, logger="steelo.capacity_policy.handlers"):
-            cp_handlers.note_greenfield_discard(fg, "CHN", "CN-HE", 2027)
+            cp_handlers.refund_greenfield_on_discard(fg, "CHN", "CN-HE", 2027)
 
         assert "[CAPACITY POOL]" not in caplog.text
 
-    def test_bound_discard_records_the_leak_as_a_ledger_row(self):
-        """The leak becomes a run artefact, not just a log line — but it never
-        re-credits the pool, so it stays out of the reconciliation sum."""
-        bind_policy()
+    def test_bound_discard_returns_the_slices_and_records_both_facts(self):
+        """The refund rows are the flow; the discard row records the fact and stays
+        out of the reconciliation sum."""
+        pool = bind_policy()
         recorder = cp_handlers._policy.recorder
+        slices = (credit(1_200_000.0, 2019, owner="E_c"), credit(800_000.0, 2021, owner="E_c"))
         fg = make_opportunity()
         fg.capacity_pool_granted_withdraw_mt = 2_000_000.0
         fg.capacity_pool_attributed_owner_id = "E_c"
+        fg.capacity_pool_consumed_credits = slices
 
-        cp_handlers.note_greenfield_discard(fg, "CHN", "CN-HE", 2027)
+        cp_handlers.refund_greenfield_on_discard(fg, "CHN", "CN-HE", 2027)
 
-        (row,) = recorder._ledger
-        assert row["operation"] == "greenfield_discard"
-        assert row["amount_t"] == pytest.approx(2_000_000.0)
-        assert row["attributed_owner_id"] == "E_c"
-        assert row["geo_key"] == "CHN:CN-HE"
-        assert row["furnace_group_id"] == fg.furnace_group_id
+        assert pool.snapshot() == slices
+        refunded, discard = recorder._ledger[:2], recorder._ledger[2]
+        assert [row["operation"] for row in refunded] == ["refunded", "refunded"]
+        assert [row["vintage_year"] for row in refunded] == [2019, 2021]
+        assert [row["amount_t"] for row in refunded] == [pytest.approx(1_200_000.0), pytest.approx(800_000.0)]
+        assert discard["operation"] == "greenfield_discard"
+        assert discard["amount_t"] == pytest.approx(2_000_000.0)
+        assert discard["attributed_owner_id"] == "E_c"
+        assert discard["geo_key"] == "CHN:CN-HE"
+        assert discard["furnace_group_id"] == fg.furnace_group_id
+
+    def test_the_stash_is_cleared_so_a_second_discard_refunds_nothing(self):
+        pool = bind_policy()
+        fg = make_opportunity()
+        fg.capacity_pool_granted_withdraw_mt = 2_000_000.0
+        fg.capacity_pool_consumed_credits = (credit(2_000_000.0, 2019, owner="E_c"),)
+
+        cp_handlers.refund_greenfield_on_discard(fg, "CHN", "CN-HE", 2027)
+        cp_handlers.refund_greenfield_on_discard(fg, "CHN", "CN-HE", 2027)
+
+        assert pool.total() == pytest.approx(2_000_000.0)
+        assert fg.capacity_pool_granted_withdraw_mt is None
+        assert fg.capacity_pool_attributed_owner_id is None
+        assert fg.capacity_pool_consumed_credits is None

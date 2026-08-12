@@ -13,17 +13,20 @@ all rather than empty ones.
 **Reconciliation invariant.** The ledger and the state snapshots are two views
 of one arithmetic, and they agree exactly:
 
-    state(Y) = seed + Σ deposits ≤ Y − Σ consumed credits ≤ Y
+    state(Y) = seed + Σ deposits − Σ consumed − Σ expired + Σ refunded, all ≤ Y
 
 per ``(region_tag, owner_id, product)`` and in aggregate, where "deposits" means
 every ``deposit_*`` operation — the mechanism is part of the fact, not a
 separate stock. It holds because the
 yearly snapshot is taken *before* ``finalise_iteration`` increments the year, so
 the transactions that boundary triggers (scheduled switches, end-of-life
-closures) stamp Y+1 and land in the next snapshot; the final boundary
+closures) stamp Y+1 and land in the next snapshot; the boundary purge runs
+after the increment and stamps Y+1 for the same reason; the final boundary
 increments by zero, which is why the flush re-snapshots the pool under the last
 recorded year label. ``blocked_*`` rows record refusals and ``greenfield_discard``
-annotates an already-debited withdrawal, so both stay outside the sum.
+annotates a withdrawal already accounted for — as a debit, and again as
+``refunded`` rows where the discard handed the slices back — so both stay
+outside the sum.
 
 All amounts are model tonnes, suffixed ``_t``: the pool's ``amount_mt`` naming
 is an internal convention from the sheet side and must not leak into an
@@ -102,6 +105,8 @@ LEDGER_OPERATIONS = (
     "deposit_replace",
     "withdraw_expansion",
     "withdraw_greenfield",
+    "expired",
+    "refunded",
     "blocked_expansion",
     "blocked_greenfield",
     "greenfield_discard",
@@ -147,12 +152,15 @@ class CapacityPolicyRecorder:
                 rows the vintage itself, which keeps every seed inside the
                 reconciliation window.
             operation: One of :data:`LEDGER_OPERATIONS`.
-            amount_t: Deposited, withdrawn, refused or leaked capacity.
+            amount_t: Deposited, withdrawn, expired, refunded, refused or
+                discarded capacity.
             region_tag: Cluster tag of the credit or of the request.
-            owner_id: Depositor on deposits and seeds, withdrawer on
-                expansions, ``indi_<iso3>`` on greenfield attempts.
+            owner_id: Depositor on deposits and seeds, holder on expired and
+                refunded credits, withdrawer on expansions, ``indi_<iso3>`` on
+                greenfield attempts.
             product: ``"iron"`` or ``"steel"``.
-            vintage_year: Credit vintage on deposit and seed rows.
+            vintage_year: Credit vintage on deposit, seed, expired and refunded
+                rows — a refund keeps the vintage it was withdrawn under.
             credits_consumed: The consumed portions of a granted withdrawal;
                 serialised as ``[owner_id, vintage_year, region_tag, amount_t]``
                 tuples. The tag belongs in the tuple — a build may spend a
@@ -187,6 +195,25 @@ class CapacityPolicyRecorder:
                 "furnace_group_id": furnace_group_id,
             }
         )
+
+    def record_expired(self, year: int, credits: Sequence[Credit]) -> None:
+        """Append one ``expired`` row per credit the boundary purge removed.
+
+        One row per credit rather than an aggregate: expired-unused capacity has
+        to be readable per key region and nationally (Decision 27), and the
+        per-credit rows are what make both groupings — and the reconciliation
+        subtraction — fall out of the same file.
+        """
+        for credit in credits:
+            self.record_ledger(
+                year=year,
+                operation="expired",
+                amount_t=credit.amount_mt,
+                region_tag=credit.region_tag,
+                owner_id=credit.owner_id,
+                product=credit.product,
+                vintage_year=credit.vintage_year,
+            )
 
     def record_motion(
         self,
@@ -352,8 +379,10 @@ class CapacityPolicyRecorder:
         """Aggregate each year's credits to one row per (tag, owner, product).
 
         Carries the pool's own caveat: under ``banked_credit_rule="expire"``
-        the remaining capacity overstates what is usable, because expiry is an
-        applicability predicate at withdrawal, not a purge of the queue.
+        the remaining capacity overstates what is usable, because that rule is
+        an applicability predicate at withdrawal, not a purge of the queue. The
+        shelf life (``credit_validity_years``) is the other concept and does
+        sweep, so it leaves these rows honest.
         """
         rows: list[dict[str, Any]] = []
         for year in sorted(self._state):

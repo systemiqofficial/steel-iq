@@ -225,6 +225,14 @@ class TestInertness:
             service_handlers.finalise_iteration
         )
 
+    def test_purge_runs_after_the_year_increment(self):
+        """A credit usable through Y belongs in Y's snapshot and must be gone before
+        any Y+1 decision, so the purge sits between the increment and everything after."""
+        iteration_over = service_handlers.EVENT_HANDLERS[events.IterationOver]
+        assert iteration_over.index(cp_handlers.purge_expired_credits) > iteration_over.index(
+            service_handlers.finalise_iteration
+        )
+
     def test_unbound_handlers_are_no_ops(self):
         """Unbound, the handlers return before touching uow, env or any pool."""
         cp_handlers.deposit_on_furnace_group_closed(closed_event(), uow=None, env=None)  # type: ignore[arg-type]
@@ -235,6 +243,7 @@ class TestInertness:
         cp_handlers.record_motion_on_furnace_group_renovated(renovated_event(), uow=None, env=None)  # type: ignore[arg-type]
         cp_handlers.record_motion_on_furnace_group_added(added_event(), uow=None, env=None)  # type: ignore[arg-type]
         cp_handlers.snapshot_pool_state(events.IterationOver(time_step_increment=1, iron_price=1.0), env=None)  # type: ignore[arg-type]
+        cp_handlers.purge_expired_credits(events.IterationOver(time_step_increment=1, iron_price=1.0), env=None)  # type: ignore[arg-type]
 
     def test_bound_handlers_ignore_non_chinese_events(self, bound: CapacityPool):
         cp_handlers.deposit_on_furnace_group_closed(
@@ -620,7 +629,7 @@ class TestGreenfieldCapacityHook:
         hook = cp_handlers.greenfield_capacity_hook()
         assert hook is not None
         grant = greenfield_hook_call(hook, iso3="DEU", geo_unit=None, technology="not-a-technology")
-        assert grant == (3.0, None, False)
+        assert grant == (3.0, None, False, ())
         assert bound.total() == 0.0
 
     def test_single_owner_rule_blocks_an_ample_pool(self, bound: CapacityPool, caplog):
@@ -639,15 +648,22 @@ class TestGreenfieldCapacityHook:
     def test_intense_grant_names_the_single_funding_owner(self, bound: CapacityPool, caplog):
         """BF is emission-intense: the grant withdraws the planned 3.0 from one holder
         and allows a 2.0 build attributed to that holder."""
-        bound.deposit(Credit(amount_mt=3.0, vintage_year=2019, region_tag=None, owner_id="E_a", product="iron"))
+        consumed = Credit(amount_mt=3.0, vintage_year=2019, region_tag=None, owner_id="E_a", product="iron")
+        bound.deposit(consumed)
         hook = cp_handlers.greenfield_capacity_hook()
         assert hook is not None
         with caplog.at_level(logging.INFO, logger="steelo.capacity_policy.handlers"):
             grant = greenfield_hook_call(hook)
-        assert grant == (pytest.approx(2.0), "E_a", True)
+        assert grant == (pytest.approx(2.0), "E_a", True, (consumed,))
         assert bound.total() == 0.0
         assert "gate=greenfield decision=granted" in caplog.text
         assert "attributed_owner=E_a" in caplog.text
+
+    def test_unbound_retry_cap_accessor_returns_none(self):
+        assert cp_handlers.greenfield_retry_cap() is None
+
+    def test_bound_retry_cap_accessor_returns_the_configured_years(self, bound: CapacityPool):
+        assert cp_handlers.greenfield_retry_cap() == CapacityPolicyConfig().capacity_pool_max_retry_years
 
 
 class TestGateLedgerRows:
@@ -840,3 +856,59 @@ class TestSnapshotHandler:
         )
 
         assert recorder._state[2031][0].amount_mt == pytest.approx(5.0)
+
+
+class TestPurgeHandler:
+    @pytest.fixture
+    def expiring(self, recorder: CapacityPolicyRecorder) -> CapacityPool:
+        """A pool with a five-year shelf life, bound for the handler to find."""
+        pool = CapacityPool(credit_validity_years=5)
+        evaluator = TreeEvaluator(REGIONS, TECHNOLOGIES, CapacityPolicyConfig(), recorder=recorder)
+        cp_handlers.bind_capacity_policy(evaluator, pool, recorder)
+        return pool
+
+    def test_purges_and_records_at_the_year_just_entered(
+        self, expiring: CapacityPool, recorder: CapacityPolicyRecorder
+    ):
+        """finalise_iteration has already advanced env.year, so 2031 is the year the
+        purge is entering — the 2026 vintage is exactly one year past its validity."""
+        expiring.deposit(
+            Credit(amount_mt=4.0, vintage_year=2026, region_tag="Jing-Jin-Ji", owner_id="E1", product="iron")
+        )
+        expiring.deposit(Credit(amount_mt=1.0, vintage_year=2030, region_tag=None, owner_id="E1", product="iron"))
+
+        cp_handlers.purge_expired_credits(
+            events.IterationOver(time_step_increment=1, iron_price=1.0),
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
+
+        assert [c.vintage_year for c in expiring.snapshot()] == [2030]
+        (row,) = recorder._ledger
+        assert row["operation"] == "expired"
+        assert row["year"] == 2031
+        assert row["vintage_year"] == 2026
+        assert row["amount_t"] == pytest.approx(4.0)
+        assert row["region_tag"] == "Jing-Jin-Ji"
+        assert row["owner_id"] == "E1"
+
+    def test_repurging_the_same_year_removes_nothing(self, expiring: CapacityPool, recorder: CapacityPolicyRecorder):
+        """The final boundary increments by zero and fires the handler again."""
+        expiring.deposit(Credit(amount_mt=4.0, vintage_year=2026, region_tag=None, owner_id="E1", product="iron"))
+        event = events.IterationOver(time_step_increment=1, iron_price=1.0)
+
+        cp_handlers.purge_expired_credits(event, env=FakeEnv())  # type: ignore[arg-type]
+        cp_handlers.purge_expired_credits(event, env=FakeEnv())  # type: ignore[arg-type]
+
+        assert len(recorder._ledger) == 1
+
+    def test_no_shelf_life_purges_nothing(self, bound: CapacityPool, recorder: CapacityPolicyRecorder):
+        """The shipped default: the handler runs and the pool is untouched."""
+        bound.deposit(Credit(amount_mt=4.0, vintage_year=1990, region_tag=None, owner_id="E1", product="iron"))
+
+        cp_handlers.purge_expired_credits(
+            events.IterationOver(time_step_increment=1, iron_price=1.0),
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
+
+        assert bound.total() == pytest.approx(4.0)
+        assert recorder._ledger == []

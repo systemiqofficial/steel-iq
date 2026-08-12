@@ -155,7 +155,7 @@ def test_disabled_configure_unbinds_stale_state(tmp_path):
     bind_stale_policy()
     assert cp_handlers.replace_capacity_hook() is not None
 
-    configure_capacity_policy(CapacityPolicyConfig(enabled=False), fake_repository_json(tmp_path))
+    configure_capacity_policy(CapacityPolicyConfig(enabled=False), fake_repository_json(tmp_path), start_year=2025)
 
     assert cp_handlers.replace_capacity_hook() is None
     assert cp_handlers.expansion_capacity_hook() is None
@@ -163,13 +163,13 @@ def test_disabled_configure_unbinds_stale_state(tmp_path):
 
 
 def test_disabled_configure_without_repositories_is_dormant():
-    configure_capacity_policy(CapacityPolicyConfig(enabled=False), None)
+    configure_capacity_policy(CapacityPolicyConfig(enabled=False), None, start_year=2025)
     assert cp_handlers.replace_capacity_hook() is None
 
 
 def test_enabled_binds_and_seeds_in_model_tonnes(tmp_path, caplog, propagating_policy_logs):
     caplog.set_level(logging.INFO)
-    configure_capacity_policy(CapacityPolicyConfig(enabled=True), fake_repository_json(tmp_path))
+    configure_capacity_policy(CapacityPolicyConfig(enabled=True), fake_repository_json(tmp_path), start_year=2025)
 
     assert cp_handlers.replace_capacity_hook() is not None
     policy = cp_handlers._policy
@@ -190,7 +190,7 @@ def test_enabled_logs_every_config_field(tmp_path, caplog, propagating_policy_lo
     from dataclasses import fields
 
     config = CapacityPolicyConfig(enabled=True)
-    configure_capacity_policy(config, fake_repository_json(tmp_path))
+    configure_capacity_policy(config, fake_repository_json(tmp_path), start_year=2025)
 
     config_lines = [
         record.getMessage() for record in caplog.records if "[CAPACITY POOL] config " in record.getMessage()
@@ -203,7 +203,7 @@ def test_enabled_logs_every_config_field(tmp_path, caplog, propagating_policy_lo
 def test_enabled_promotes_validation_warnings_to_errors(tmp_path):
     repository = fake_repository_json(tmp_path, technologies=technology_rows(unauthored_coal_flag=True))
     with pytest.raises(ValueError, match="warnings promoted") as excinfo:
-        configure_capacity_policy(CapacityPolicyConfig(enabled=True), repository)
+        configure_capacity_policy(CapacityPolicyConfig(enabled=True), repository, start_year=2025)
     assert "unauthored" in str(excinfo.value)
     assert cp_handlers.replace_capacity_hook() is None
 
@@ -211,19 +211,46 @@ def test_enabled_promotes_validation_warnings_to_errors(tmp_path):
 def test_reenabling_builds_a_fresh_pool(tmp_path):
     from steelo.capacity_policy import Credit
 
-    configure_capacity_policy(CapacityPolicyConfig(enabled=True), fake_repository_json(tmp_path))
+    configure_capacity_policy(CapacityPolicyConfig(enabled=True), fake_repository_json(tmp_path), start_year=2025)
     first_policy = cp_handlers._policy
     assert first_policy is not None
     first_policy.pool.deposit(
         Credit(amount_mt=123.0, vintage_year=2030, region_tag=None, owner_id="E9", product="iron")
     )
 
-    configure_capacity_policy(CapacityPolicyConfig(enabled=True), fake_repository_json(tmp_path))
+    configure_capacity_policy(CapacityPolicyConfig(enabled=True), fake_repository_json(tmp_path), start_year=2025)
     second_policy = cp_handlers._policy
     assert second_policy is not None
     assert second_policy is not first_policy
     assert second_policy.pool is not first_policy.pool
     assert second_policy.pool.total() == pytest.approx(2.25e6)
+
+
+def test_seeded_vintages_already_past_validity_are_purged_at_the_start_year(tmp_path):
+    """The opening pool is historical state, so a run with a shelf life must not open
+    holding dead credit. Seeds are 2020 and 2022; a four-year validity kills the first."""
+    configure_capacity_policy(
+        CapacityPolicyConfig(enabled=True, credit_validity_years=4),
+        fake_repository_json(tmp_path),
+        start_year=2025,
+    )
+
+    policy = cp_handlers._policy
+    assert policy is not None
+    assert [c.vintage_year for c in policy.pool.snapshot()] == [2022]
+    assert policy.pool.total() == pytest.approx(0.75e6)
+    expired = [row for row in policy.recorder._ledger if row["operation"] == "expired"]
+    assert [(row["year"], row["vintage_year"], row["owner_id"]) for row in expired] == [(2025, 2020, "E1")]
+
+
+def test_no_shelf_life_seeds_every_vintage(tmp_path):
+    """The shipped default keeps the whole opening pool, however old."""
+    configure_capacity_policy(CapacityPolicyConfig(enabled=True), fake_repository_json(tmp_path), start_year=2025)
+
+    policy = cp_handlers._policy
+    assert policy is not None
+    assert [c.vintage_year for c in policy.pool.snapshot()] == [2020, 2022]
+    assert [row for row in policy.recorder._ledger if row["operation"] == "expired"] == []
 
 
 def minimal_simulation_config(tmp_path):
@@ -313,7 +340,9 @@ def test_bootstrap_simulation_disabled_unbinds_stale_binding(tmp_path):
 def test_enabled_with_missing_fixtures_raises_naming_them(tmp_path):
     """Criterion 17: enabled=True with no capacity pool fixtures refuses, naming each one."""
     with pytest.raises(ValueError) as excinfo:
-        configure_capacity_policy(CapacityPolicyConfig(enabled=True), fake_repository_json(tmp_path, write=()))
+        configure_capacity_policy(
+            CapacityPolicyConfig(enabled=True), fake_repository_json(tmp_path, write=()), start_year=2025
+        )
     message = str(excinfo.value)
     assert "capacity_pool_provinces.json is missing" in message
     assert "capacity_pool_technologies.json is missing" in message
@@ -324,7 +353,7 @@ def test_enabled_with_missing_fixtures_raises_naming_them(tmp_path):
 def test_enabled_with_one_missing_fixture_names_only_it(tmp_path):
     repository = fake_repository_json(tmp_path, write=("provinces", "technologies"))
     with pytest.raises(ValueError) as excinfo:
-        configure_capacity_policy(CapacityPolicyConfig(enabled=True), repository)
+        configure_capacity_policy(CapacityPolicyConfig(enabled=True), repository, start_year=2025)
     message = str(excinfo.value)
     assert "capacity_pool_opening_credits.json is missing" in message
     assert "capacity_pool_provinces.json" not in message
@@ -334,13 +363,13 @@ def test_enabled_with_empty_fixture_raises_as_empty(tmp_path):
     """An empty fixture is refused distinctly from a missing one — never silent dormancy."""
     repository = fake_repository_json(tmp_path, credits=[])
     with pytest.raises(ValueError, match="capacity_pool_opening_credits.json is empty"):
-        configure_capacity_policy(CapacityPolicyConfig(enabled=True), repository)
+        configure_capacity_policy(CapacityPolicyConfig(enabled=True), repository, start_year=2025)
 
 
 def test_enabled_with_injected_repository_raises():
     """A run without fixture repositories cannot claim policy-on."""
     with pytest.raises(ValueError, match="no fixture repositories"):
-        configure_capacity_policy(CapacityPolicyConfig(enabled=True), None)
+        configure_capacity_policy(CapacityPolicyConfig(enabled=True), None, start_year=2025)
     assert cp_handlers.replace_capacity_hook() is None
 
 

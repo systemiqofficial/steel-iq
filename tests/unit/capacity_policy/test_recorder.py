@@ -71,6 +71,8 @@ class TestSchema:
             "deposit_replace",
             "withdraw_expansion",
             "withdraw_greenfield",
+            "expired",
+            "refunded",
             "blocked_expansion",
             "blocked_greenfield",
             "greenfield_discard",
@@ -107,6 +109,33 @@ class TestSchema:
 
         (row,) = read_rows(tmp_path / LEDGER_FILE)
         assert json.loads(row["credits_consumed"]) == [["E_a", 2019, "Yangtze", 2.0], [None, 2021, None, 1.0]]
+
+    def test_expired_credits_record_one_row_each(self, tmp_path):
+        """Per credit, not per sweep: the groupings and the reconciliation subtraction
+        both fall out of the rows."""
+        recorder = CapacityPolicyRecorder()
+        recorder.record_expired(
+            2030,
+            [credit(1.0, 2019, tag="Jing-Jin-Ji", owner="E_a"), credit(2.0, 2020, product="steel")],
+        )
+
+        recorder.write_csvs(tmp_path)
+
+        rows = read_rows(tmp_path / LEDGER_FILE)
+        assert [row["operation"] for row in rows] == ["expired", "expired"]
+        assert [(row["year"], row["vintage_year"]) for row in rows] == [("2030", "2019"), ("2030", "2020")]
+        assert [(row["region_tag"], row["owner_id"], row["product"]) for row in rows] == [
+            ("Jing-Jin-Ji", "E_a", "iron"),
+            ("", "", "steel"),
+        ]
+
+    def test_an_empty_sweep_records_nothing(self, tmp_path):
+        recorder = CapacityPolicyRecorder()
+        recorder.record_expired(2030, [])
+
+        recorder.write_csvs(tmp_path)
+
+        assert read_rows(tmp_path / LEDGER_FILE) == []
 
     def test_blank_cells_stay_blank(self, tmp_path):
         """Not-applicable columns must not acquire a value of their own."""
@@ -179,19 +208,23 @@ class TestSchema:
 
 
 def flows_by_key(ledger: list[dict[str, str]], year: int) -> dict[tuple[str, str, str], float]:
-    """Seed plus every deposit minus consumed credits, up to and including ``year``.
+    """Seed + deposits − consumed − expired + refunded, up to and including ``year``.
 
-    Blocked rows are refusals and the discard row annotates an already-debited
-    withdrawal, so neither enters the sum; a withdrawal moves exactly the credit
-    portions it consumed, which carry their own owner and tag.
+    Blocked rows are refusals and the discard row annotates a withdrawal already
+    accounted for, so neither enters the sum; a withdrawal moves exactly the
+    credit portions it consumed, which carry their own owner and tag, and a
+    refund hands those same portions back under the same key.
     """
     totals: dict[tuple[str, str, str], float] = {}
     for row in ledger:
         if int(row["year"]) > year:
             continue
-        if row["operation"] == "seed" or row["operation"].startswith("deposit_"):
+        if row["operation"] == "seed" or row["operation"].startswith("deposit_") or row["operation"] == "refunded":
             key = (row["region_tag"], row["owner_id"], row["product"])
             totals[key] = totals.get(key, 0.0) + float(row["amount_t"])
+        elif row["operation"] == "expired":
+            key = (row["region_tag"], row["owner_id"], row["product"])
+            totals[key] = totals.get(key, 0.0) - float(row["amount_t"])
         elif row["operation"].startswith("withdraw_"):
             for owner_id, _vintage, region_tag, amount in json.loads(row["credits_consumed"]):
                 key = (region_tag or "", owner_id or "", row["product"])
@@ -212,8 +245,9 @@ class TestReconciliation:
 
     @pytest.fixture
     def written(self, tmp_path) -> Path:
-        """A run's worth of pool traffic: seeds, deposits, grants, blocks, a leak."""
-        pool = CapacityPool(inter_company_swap_cutoff_year=None)
+        """A run's worth of pool traffic: seeds, deposits, grants, blocks, a discarded
+        greenfield refunded at its original vintages, and a boundary purge."""
+        pool = CapacityPool(inter_company_swap_cutoff_year=None, credit_validity_years=8)
         recorder = CapacityPolicyRecorder()
         seeds = [
             credit(6.0, 2020, tag="Jing-Jin-Ji", owner="E_a"),
@@ -291,27 +325,46 @@ class TestReconciliation:
             credits_consumed=leaked.credits_consumed,
             attributed_owner_id=leaked.attributed_owner_id,
         )
+        recorder.record_state(2027, pool.snapshot())
+
+        # The greenfield is discarded: the slices go back at their original vintages,
+        # and the discard row records the fact without re-entering the sum
+        for consumed in leaked.credits_consumed:
+            pool.refund(consumed)
+            recorder.record_ledger(
+                year=2028,
+                operation="refunded",
+                amount_t=consumed.amount_mt,
+                region_tag=consumed.region_tag,
+                owner_id=consumed.owner_id,
+                product=consumed.product,
+                vintage_year=consumed.vintage_year,
+            )
         recorder.record_ledger(
-            year=2027,
+            year=2028,
             operation="greenfield_discard",
             amount_t=2.0,
             owner_id="indi_CHN",
             product="iron",
             attributed_owner_id=leaked.attributed_owner_id,
         )
-        recorder.record_state(2027, pool.snapshot())
+        recorder.record_state(2028, pool.snapshot())
+
+        # The boundary purge catches the 2021 vintages, the refunded slice among them
+        recorder.record_expired(2029, pool.purge_expired(2029))
+        recorder.record_state(2029, pool.snapshot())
 
         recorder.write_csvs(tmp_path)
         return tmp_path
 
-    @pytest.mark.parametrize("year", [2025, 2026, 2027])
+    @pytest.mark.parametrize("year", [2025, 2026, 2027, 2028, 2029])
     def test_state_equals_the_flows_stamped_up_to_that_year(self, written, year):
         ledger = read_rows(written / LEDGER_FILE)
         state = read_rows(written / STATE_FILE)
 
         assert state_by_key(state, year) == pytest.approx(flows_by_key(ledger, year))
 
-    @pytest.mark.parametrize("year", [2025, 2026, 2027])
+    @pytest.mark.parametrize("year", [2025, 2026, 2027, 2028, 2029])
     def test_totals_reconcile_in_aggregate(self, written, year):
         ledger = read_rows(written / LEDGER_FILE)
         state = read_rows(written / STATE_FILE)
@@ -328,6 +381,30 @@ class TestReconciliation:
         )
 
         assert excluded > 0
+
+    def test_expired_rows_are_readable_per_region_tag(self, written):
+        """Decision 27's paired accounting: expired-unused capacity by key region and
+        nationally, both groupings of the same rows."""
+        ledger = read_rows(written / LEDGER_FILE)
+        expired = [row for row in ledger if row["operation"] == "expired"]
+
+        assert {row["region_tag"] for row in expired} == {""}
+        assert {row["vintage_year"] for row in expired} == {"2021"}
+        assert sum(float(row["amount_t"]) for row in expired) == pytest.approx(3.0)
+
+    def test_the_refunded_slice_carries_its_original_vintage_into_the_purge(self, written):
+        """It came back at vintage 2021, so it expired with the rest of that vintage
+        rather than restarting its clock at the refund."""
+        ledger = read_rows(written / LEDGER_FILE)
+        (refunded,) = [row for row in ledger if row["operation"] == "refunded"]
+
+        assert refunded["year"] == "2028"
+        assert refunded["vintage_year"] == "2021"
+        assert state_by_key(read_rows(written / STATE_FILE), 2029) == {
+            ("Jing-Jin-Ji", "E_a", "iron"): pytest.approx(1.5),
+            ("", "E_b", "iron"): pytest.approx(3.0),
+            ("", "E_b", "steel"): pytest.approx(2.0),
+        }
 
     def test_a_partial_consumption_keeps_its_vintage(self, written):
         """The remainder of a split credit stays where it was in the queue."""
@@ -373,7 +450,7 @@ class TestEmissionOnlyWhenBound:
 
     def test_a_disabled_bootstrap_leaves_no_policy_files(self, tmp_path):
         """Through the bootstrap seam: disabled unbinds, so the flush emits nothing."""
-        configure_capacity_policy(CapacityPolicyConfig(enabled=False), None)
+        configure_capacity_policy(CapacityPolicyConfig(enabled=False), None, start_year=2025)
 
         cp_handlers.flush_capacity_policy_outputs(tmp_path)
 

@@ -37,7 +37,7 @@ from steelo.domain import events
 from steelo.domain.models import Environment, FurnaceGroup, Plant, compose_geo_key
 from steelo.service_layer.unit_of_work import UnitOfWork
 
-from .pool import CapacityPool
+from .pool import CapacityPool, Credit
 from .recorder import CapacityPolicyRecorder
 from .tree import TreeEvaluator
 
@@ -248,7 +248,19 @@ def expansion_capacity_hook() -> Callable[..., float | None] | None:
     return permitted_expansion_capacity
 
 
-def greenfield_capacity_hook() -> Callable[..., tuple[float, str | None, bool] | None] | None:
+def greenfield_retry_cap() -> int | None:
+    """Return the years the greenfield gate may block before discarding, or None while unbound.
+
+    The plant agent threads this beside the gate itself, so an unbound run
+    hands the decision path None and the retry counter can never fire.
+    """
+    policy = _policy
+    if policy is None:
+        return None
+    return policy.evaluator.config.capacity_pool_max_retry_years
+
+
+def greenfield_capacity_hook() -> Callable[..., tuple[float, str | None, bool, tuple[Credit, ...]] | None] | None:
     """Return the live ③ INCREASE greenfield gate callable, or None while unbound.
 
     The plant agent threads this value through
@@ -272,7 +284,7 @@ def greenfield_capacity_hook() -> Callable[..., tuple[float, str | None, bool] |
         capacity: float,
         product: str,
         year: int,
-    ) -> tuple[float, str | None, bool] | None:
+    ) -> tuple[float, str | None, bool, tuple[Credit, ...]] | None:
         """Withdraw retirement credits for one announced greenfield — branch ③ INCREASE.
 
         Called when the announcement draw succeeds, so consumption coincides
@@ -282,16 +294,18 @@ def greenfield_capacity_hook() -> Callable[..., tuple[float, str | None, bool] |
         can be refused with an ample pool when no one holder covers it, which
         the block log states distinctly. A non-Chinese opportunity passes
         through untouched without reaching the evaluator or the pool. The
-        credit is consumed at announcement, all-or-nothing: a later discarded
-        project has still spent it (accepted leak, logged at discard).
+        credit is consumed at announcement and handed back at the two
+        post-announcement discard paths, so the consumed slices travel with the
+        opportunity.
 
         Returns:
-            ``(build_capacity, attributed_owner_id, withdrew)`` on a grant —
-            the unowned pot attributes to None — or None when blocked, which
-            leaves the opportunity considered to retry next year.
+            ``(build_capacity, attributed_owner_id, withdrew, credits_consumed)``
+            on a grant — the unowned pot attributes to None, and the slices are
+            what a discard refunds — or None when blocked, which leaves the
+            opportunity considered to retry next year.
         """
         if iso3 != "CHN":
-            return (capacity, None, False)
+            return (capacity, None, False, ())
         spec = policy.evaluator.on_increase(
             geo_key=compose_geo_key(iso3, geo_unit),
             product=product,
@@ -357,7 +371,7 @@ def greenfield_capacity_hook() -> Callable[..., tuple[float, str | None, bool] |
             year,
             [(c.owner_id, c.vintage_year, round(c.amount_mt, 6)) for c in result.credits_consumed],
         )
-        return (spec.build_mt, result.attributed_owner_id, True)
+        return (spec.build_mt, result.attributed_owner_id, True, result.credits_consumed)
 
     return permitted_greenfield_capacity
 
@@ -673,20 +687,25 @@ def attribute_greenfield_on_furnace_group_added(event: events.FurnaceGroupAdded,
         uow.commit()
 
 
-def note_greenfield_discard(furnace_group: FurnaceGroup, iso3: str, geo_unit: str | None, year: int) -> None:
-    """Log the credit a discarded announced greenfield leaks — accepted, not reclaimed.
+def refund_greenfield_on_discard(furnace_group: FurnaceGroup, iso3: str, geo_unit: str | None, year: int) -> None:
+    """Return a discarded announced greenfield's credits to the pool.
 
-    Called from the announced→discarded branch of the status handler. The
-    withdrawal stash is only ever set by a live greenfield gate, so this is
-    inert by construction on unbound runs; reservation machinery is deliberate
-    non-scope (spec §Deferred, reserve-then-firm). The ledger row annotates the
-    leak rather than reversing it — the withdrawal already debited the pool, so
-    the row stays outside the reconciliation sum.
+    Called from the announced→discarded branch of the status handler, which
+    both post-announcement discard paths route through. The withdrawal stash is
+    only ever set by a live greenfield gate, so this is inert by construction on
+    unbound runs.
+
+    Each consumed slice is refunded under its original vintage, so it resumes
+    its FIFO position and its shelf life keeps running from the retirement that
+    minted it: a slice handed back already past validity survives to the next
+    boundary purge and no further. The ``greenfield_discard`` row records the
+    discard itself and stays outside the reconciliation sum; the ``refunded``
+    rows are the flow.
     """
     if furnace_group.capacity_pool_granted_withdraw_mt is None:
         return
     logger.info(
-        "[CAPACITY POOL] event=greenfield_discarded leaked_withdraw_mt=%.3f fg=%s iso3=%s attributed_owner=%s",
+        "[CAPACITY POOL] event=greenfield_discarded refunded_withdraw_mt=%.3f fg=%s iso3=%s attributed_owner=%s",
         furnace_group.capacity_pool_granted_withdraw_mt,
         furnace_group.furnace_group_id,
         iso3,
@@ -695,6 +714,20 @@ def note_greenfield_discard(furnace_group: FurnaceGroup, iso3: str, geo_unit: st
     policy = _policy
     if policy is None:
         return
+    geo_key = compose_geo_key(iso3, geo_unit)
+    for credit in furnace_group.capacity_pool_consumed_credits or ():
+        policy.pool.refund(credit)
+        policy.recorder.record_ledger(
+            year=year,
+            operation="refunded",
+            amount_t=credit.amount_mt,
+            region_tag=credit.region_tag,
+            owner_id=credit.owner_id,
+            product=credit.product,
+            vintage_year=credit.vintage_year,
+            geo_key=geo_key,
+            furnace_group_id=furnace_group.furnace_group_id,
+        )
     policy.recorder.record_ledger(
         year=year,
         operation="greenfield_discard",
@@ -702,9 +735,12 @@ def note_greenfield_discard(furnace_group: FurnaceGroup, iso3: str, geo_unit: st
         owner_id=f"indi_{iso3}",
         product=furnace_group.technology.product,
         attributed_owner_id=furnace_group.capacity_pool_attributed_owner_id,
-        geo_key=compose_geo_key(iso3, geo_unit),
+        geo_key=geo_key,
         furnace_group_id=furnace_group.furnace_group_id,
     )
+    furnace_group.capacity_pool_granted_withdraw_mt = None
+    furnace_group.capacity_pool_attributed_owner_id = None
+    furnace_group.capacity_pool_consumed_credits = None
 
 
 def snapshot_pool_state(_event: events.IterationOver, env: Environment) -> None:
@@ -719,6 +755,25 @@ def snapshot_pool_state(_event: events.IterationOver, env: Environment) -> None:
     if policy is None:
         return
     policy.recorder.record_state(int(env.year), policy.pool.snapshot())
+
+
+def purge_expired_credits(_event: events.IterationOver, env: Environment) -> None:
+    """Sweep credits past their shelf life at the year boundary.
+
+    Registered *after* ``finalise_iteration``, which is what makes the yearly
+    state honest at both ends: the year-Y snapshot is taken before the
+    increment, so a credit still usable through Y legitimately appears in it,
+    and the purge then runs on Y+1 — after the increment, before any Y+1
+    decision or snapshot — so no yearly state ever shows a dead credit. The
+    end-of-life closures at the same boundary deposit at vintage Y+1 and can
+    never be purge-eligible at birth. The final boundary increments by zero and
+    re-purges the same year, which removes nothing.
+    """
+    policy = _policy
+    if policy is None:
+        return
+    year = int(env.year)
+    policy.recorder.record_expired(year, policy.pool.purge_expired(year))
 
 
 def record_motion_on_furnace_group_closed(event: events.FurnaceGroupClosed, uow: UnitOfWork, env: Environment) -> None:

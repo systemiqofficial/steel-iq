@@ -9,7 +9,8 @@ fixtures — never silent dormancy — re-runs the cross-row sheet validation wi
 warnings promoted to errors, builds a fresh evaluator, pool and observability
 recorder from the fixtures and config, seeds the pool (converting the sheet's
 Mt into the model tonnes every runtime capacity flows in) and opens the ledger
-with those seed rows, and makes the single ``bind_capacity_policy`` call that
+with those seed rows, purges any seeded vintage already past its shelf life at
+the start year, and makes the single ``bind_capacity_policy`` call that
 activates the deposit handlers, all three decision gates and the CSV emission
 together.
 """
@@ -41,7 +42,9 @@ FIXTURE_NAMES = (
 )
 
 
-def configure_capacity_policy(config: CapacityPolicyConfig, repository_json: "JsonRepository | None") -> None:
+def configure_capacity_policy(
+    config: CapacityPolicyConfig, repository_json: "JsonRepository | None", *, start_year: int
+) -> None:
     """Bind the capacity policy for this run, or make sure it is unbound.
 
     Always unbinds first: binding is module-level state and simulations can run
@@ -54,6 +57,10 @@ def configure_capacity_policy(config: CapacityPolicyConfig, repository_json: "Js
         config: The run's ``capacity_policy`` scenario levers.
         repository_json: The run's fixture repositories, or None when a
             repository was injected directly (test runs without fixtures).
+        start_year: First simulation year, used to purge seeded credits that
+            are already past their shelf life at t=0 — the opening pool holds
+            historical vintages, so the run must not open with dead credit in
+            it.
 
     Raises:
         ValueError: With ``enabled=True``, when any capacity pool fixture is
@@ -117,6 +124,7 @@ def configure_capacity_policy(config: CapacityPolicyConfig, repository_json: "Js
     pool = CapacityPool(
         inter_company_swap_cutoff_year=config.inter_company_swap_cutoff_year,
         banked_credit_rule=config.banked_credit_rule,
+        credit_validity_years=config.credit_validity_years,
     )
     entries = [
         SeedEntry(
@@ -148,6 +156,7 @@ def configure_capacity_policy(config: CapacityPolicyConfig, repository_json: "Js
             vintage_year=entry.vintage_year,
             geo_key=entry.geo_key,
         )
+    recorder.record_expired(start_year, pool.purge_expired(start_year))
     bind_capacity_policy(evaluator, pool, recorder)
     logger.info("[CAPACITY POOL] policy bound: deposits and all three gates are live for this run")
 

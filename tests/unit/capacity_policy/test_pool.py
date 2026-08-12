@@ -375,3 +375,113 @@ def test_seed_from_derives_cluster_tags_orders_by_vintage_and_counts_unowned(cap
     # Member provinces share the cluster tag, so a Hebei build can spend a Tianjin credit
     assert pool.total_by_tag() == {"Jing-Jin-Ji": 3.5, None: 1.5}
     assert "1 of 4 seeded credit(s) name no owner" in caplog.text
+
+
+# ---- Shelf life: a real sweep, distinct from banked_credit_rule="expire" ----
+
+
+def test_credit_is_usable_through_its_last_valid_year():
+    """Vintage V with validity N is usable through V + N − 1."""
+    pool = CapacityPool(credit_validity_years=3)
+    pool.deposit(make_credit(vintage_year=2020))
+
+    assert pool.purge_expired(2022) == []
+    assert pool.total() == 1.0
+
+
+def test_credit_is_purged_on_entering_the_year_after():
+    """…and gone on entering V + N, returned so the caller can account for it."""
+    pool = CapacityPool(credit_validity_years=3)
+    credit = make_credit(vintage_year=2020)
+    pool.deposit(credit)
+
+    assert pool.purge_expired(2023) == [credit]
+    assert pool.total() == 0.0
+    assert pool.snapshot() == ()
+
+
+def test_purge_keeps_the_credits_still_within_validity():
+    pool = CapacityPool(credit_validity_years=3)
+    pool.deposit(make_credit(amount_mt=1.0, vintage_year=2020))
+    pool.deposit(make_credit(amount_mt=2.0, vintage_year=2022))
+
+    expired = pool.purge_expired(2023)
+
+    assert [c.vintage_year for c in expired] == [2020]
+    assert [c.vintage_year for c in pool.snapshot()] == [2022]
+
+
+def test_no_shelf_life_never_expires():
+    """None is the shipped default: today's behaviour, unchanged."""
+    pool = CapacityPool()
+    pool.deposit(make_credit(vintage_year=1990))
+
+    assert pool.purge_expired(2060) == []
+    assert pool.total() == 1.0
+
+
+def test_unowned_credits_expire_like_any_other():
+    """The unowned exemption is an owner rule, not an age rule."""
+    pool = CapacityPool(credit_validity_years=2)
+    pool.deposit(make_credit(owner_id=None, vintage_year=2020))
+
+    assert len(pool.purge_expired(2022)) == 1
+    assert pool.total() == 0.0
+
+
+def test_banked_credit_expire_rule_is_not_a_purge():
+    """The two ``expire`` concepts stay apart: the ownership rule blocks a withdrawal
+    but leaves the credit in the queue, and no shelf life means no sweep."""
+    pool = CapacityPool(banked_credit_rule="expire")
+    pool.deposit(make_credit(owner_id="owner-a", vintage_year=PRE_CUTOFF_YEAR))
+
+    blocked = pool.try_withdraw(1.0, region_tag=None, product="steel", owner_id="owner-a", year=POST_CUTOFF_YEAR)
+
+    assert blocked.granted is False
+    assert pool.purge_expired(POST_CUTOFF_YEAR) == []
+    assert pool.total() == 1.0
+
+
+# ---- Refund: a consumed slice returning to the place it left ----
+
+
+def test_refunded_slice_resumes_its_fifo_position():
+    """The refunded slice is spent again before younger credits, as its vintage says."""
+    pool = CapacityPool()
+    pool.deposit(make_credit(amount_mt=1.0, vintage_year=2018))
+    pool.deposit(make_credit(amount_mt=1.0, vintage_year=2022))
+    consumed = pool.try_withdraw(1.0, region_tag=None, product="steel", owner_id="owner-a", year=PRE_CUTOFF_YEAR)
+    assert [c.vintage_year for c in consumed.credits_consumed] == [2018]
+
+    for credit in consumed.credits_consumed:
+        pool.refund(credit)
+
+    assert [c.vintage_year for c in pool.snapshot()] == [2018, 2022]
+    again = pool.try_withdraw(1.0, region_tag=None, product="steel", owner_id="owner-a", year=PRE_CUTOFF_YEAR)
+    assert [c.vintage_year for c in again.credits_consumed] == [2018]
+
+
+def test_refund_sits_after_credits_of_the_same_vintage():
+    """Same-vintage credits keep their relative order; the returned slice goes last."""
+    pool = CapacityPool()
+    pool.deposit(make_credit(amount_mt=1.0, vintage_year=2020, owner_id="owner-a"))
+
+    pool.refund(make_credit(amount_mt=2.0, vintage_year=2020, owner_id="owner-b"))
+
+    assert [c.owner_id for c in pool.snapshot()] == ["owner-a", "owner-b"]
+
+
+def test_refund_rejects_non_positive_amount():
+    pool = CapacityPool()
+    with pytest.raises(ValueError):
+        pool.refund(make_credit(amount_mt=0.0))
+
+
+def test_refund_past_validity_survives_only_to_the_next_purge():
+    """A slice handed back with a dead vintage keeps its clock; the next boundary takes it."""
+    pool = CapacityPool(credit_validity_years=2)
+    pool.refund(make_credit(amount_mt=1.0, vintage_year=2020))
+
+    assert pool.total() == 1.0
+    assert len(pool.purge_expired(2023)) == 1
+    assert pool.total() == 0.0

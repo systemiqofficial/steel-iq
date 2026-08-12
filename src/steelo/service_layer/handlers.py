@@ -749,7 +749,7 @@ def update_status_of_furnace_group(cmd: commands.UpdateFurnaceGroupStatus, uow: 
                     need = env.get_co2_need(fg.technology, fg.capacity, fg.chosen_reductant)
                     if need > 0.0:
                         env.co2_storage_reserved[iso3] = env.co2_storage_reserved.get(iso3, 0.0) - d * need
-                    capacity_policy_handlers.note_greenfield_discard(fg, iso3, plant.location.geo_unit, int(year))
+                    capacity_policy_handlers.refund_greenfield_on_discard(fg, iso3, plant.location.geo_unit, int(year))
         uow.commit()
 
 
@@ -834,7 +834,14 @@ EVENT_HANDLERS: dict[type[events.Event], list[Callable]] = {
     ],
     events.SinteringCapacityAdded: [update_future_cost_curve],
     events.SteelAllocationsCalculated: [update_furnace_utilization_rates, update_cost_curve, update_future_cost_curve],
-    events.IterationOver: [capacity_policy_handlers.snapshot_pool_state, finalise_iteration, update_cost_curve],
+    events.IterationOver: [
+        capacity_policy_handlers.snapshot_pool_state,
+        finalise_iteration,
+        # After the year increment, so credits still usable through the year just
+        # snapshotted are purged on entering the next one, before any decision
+        capacity_policy_handlers.purge_expired_credits,
+        update_cost_curve,
+    ],
     events.SaveCheckpoint: [save_checkpoint_handler],
     events.LoadCheckpoint: [load_checkpoint_handler],
 }

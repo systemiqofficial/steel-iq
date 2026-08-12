@@ -35,12 +35,20 @@ class CapacityPolicyConfig:
             its own credits; None disables the owner partition.
         banked_credit_rule: Treatment of pre-cutoff credits from the cutoff
             year on — ``"reassign"``, ``"persist"`` or ``"expire"``.
+        credit_validity_years: Shelf life of a banked credit; a vintage ``V``
+            credit is usable through ``V + N − 1`` and purged on entering
+            ``V + N``. None (the default) never expires. A different concept
+            from ``banked_credit_rule="expire"``, which is a withdrawal-time
+            applicability rule over the ownership cutoff, not an age rule.
+        capacity_pool_max_retry_years: Years the capacity gate may block a
+            considered greenfield before the opportunity is discarded.
         reline_counts_as_replace: Whether a reline is treated as a replacement
             rather than as neutral.
 
     Raises:
-        ValueError: On an unknown ``banked_credit_rule``, a non-positive ratio
-            or window, or a utilisation floor outside [0, 1].
+        ValueError: On an unknown ``banked_credit_rule``, a non-positive ratio,
+            window, validity or retry cap, or a utilisation floor outside
+            [0, 1].
     """
 
     enabled: bool = False
@@ -50,6 +58,8 @@ class CapacityPolicyConfig:
     utilization_window_years: int = 2
     inter_company_swap_cutoff_year: int | None = 2028
     banked_credit_rule: str = "reassign"
+    credit_validity_years: int | None = None
+    capacity_pool_max_retry_years: int = 5
     reline_counts_as_replace: bool = False
 
     def __post_init__(self) -> None:
@@ -65,6 +75,12 @@ class CapacityPolicyConfig:
             )
         if self.utilization_window_years <= 0:
             raise ValueError(f"utilization_window_years must be positive, got {self.utilization_window_years}")
+        if self.credit_validity_years is not None and self.credit_validity_years <= 0:
+            raise ValueError(f"credit_validity_years must be positive when set, got {self.credit_validity_years}")
+        if self.capacity_pool_max_retry_years <= 0:
+            raise ValueError(
+                f"capacity_pool_max_retry_years must be positive, got {self.capacity_pool_max_retry_years}"
+            )
         if not 0 <= self.min_utilization_for_renovation <= 1:
             raise ValueError(
                 f"min_utilization_for_renovation must be within [0, 1], got {self.min_utilization_for_renovation}"

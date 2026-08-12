@@ -6,6 +6,7 @@ unchanged — it is reallocated: a penalised replacement surrenders capacity tha
 cleaner project can then claim, which is the swap regime doing its job.
 """
 
+import bisect
 import logging
 from dataclasses import dataclass, replace
 from typing import Callable, Iterable, Mapping
@@ -89,7 +90,8 @@ class CapacityPool:
     are instead served from exactly one holder's credits, uniformly across the
     run. Grants are all-or-nothing. A partially-consumed credit splits and the
     remainder keeps its original vintage — restamping would send it to the back
-    of the queue and break FIFO.
+    of the queue and break FIFO. Credits may also carry a shelf life, swept at
+    the year boundary by :meth:`purge_expired`.
     """
 
     def __init__(
@@ -97,6 +99,7 @@ class CapacityPool:
         *,
         inter_company_swap_cutoff_year: int | None = 2028,
         banked_credit_rule: str = "reassign",
+        credit_validity_years: int | None = None,
     ) -> None:
         """
         Args:
@@ -106,7 +109,10 @@ class CapacityPool:
                 year on: ``"reassign"`` keeps them with their depositor (the
                 owner filter applies), ``"persist"`` leaves them freely
                 spendable, ``"expire"`` makes them unusable. Unowned credits are
-                exempt from all three.
+                exempt from all three. Not an age rule — see
+                ``credit_validity_years``.
+            credit_validity_years: Years a credit may sit banked before it is
+                purged. None never expires.
 
         Raises:
             ValueError: On an unknown ``banked_credit_rule``.
@@ -117,6 +123,7 @@ class CapacityPool:
             )
         self.inter_company_swap_cutoff_year = inter_company_swap_cutoff_year
         self.banked_credit_rule = banked_credit_rule
+        self.credit_validity_years = credit_validity_years
         self._credits: list[Credit] = []
 
     def deposit(self, credit: Credit) -> None:
@@ -134,6 +141,63 @@ class CapacityPool:
         if credit.amount_mt <= 0:
             raise ValueError(f"Credit amount must be positive, got {credit.amount_mt}")
         self._credits.append(credit)
+
+    def refund(self, credit: Credit) -> None:
+        """Hand back a consumed slice whose build never happened.
+
+        Inserted after every credit of the same or older vintage rather than
+        appended, so the queue stays age-ordered and the slice resumes the FIFO
+        position it left; appending would park it behind younger credits and
+        quietly reorder later spends.
+
+        Args:
+            credit: The consumed portion being returned, original vintage
+                intact — its shelf life runs from the retirement it came from,
+                not from the refund, so a slice handed back past its validity
+                survives only until the next purge.
+
+        Raises:
+            ValueError: If the credit amount is not positive.
+        """
+        if credit.amount_mt <= 0:
+            raise ValueError(f"Credit amount must be positive, got {credit.amount_mt}")
+        position = bisect.bisect_right(self._credits, credit.vintage_year, key=lambda c: c.vintage_year)
+        self._credits.insert(position, credit)
+
+    def purge_expired(self, year: int) -> list[Credit]:
+        """Remove every credit whose shelf life has run out on entering ``year``.
+
+        A vintage ``V`` credit is usable through ``V + validity − 1`` and gone
+        from ``V + validity``. Deliberately not the same mechanism as
+        ``banked_credit_rule="expire"``, which is an applicability predicate
+        applied at withdrawal over the *ownership* cutoff and leaves the credits
+        it disallows sitting in ``snapshot()`` and ``total()``. This is a real
+        sweep, so the pool's own totals stay honest. Expiry applies to unowned
+        seeded credits too: the unowned exemption is an owner rule, not an age
+        rule.
+
+        Args:
+            year: The year being entered.
+
+        Returns:
+            The removed credits, so the caller can account for them; empty when
+            no shelf life is configured.
+        """
+        validity = self.credit_validity_years
+        if validity is None:
+            return []
+        expired = [credit for credit in self._credits if credit.vintage_year + validity <= year]
+        if not expired:
+            return []
+        self._credits = [credit for credit in self._credits if credit.vintage_year + validity > year]
+        logger.info(
+            "[CAPACITY POOL] purged expired credits year=%d credits=%d expired_mt=%.3f remaining_mt=%.3f",
+            year,
+            len(expired),
+            sum(credit.amount_mt for credit in expired),
+            self.total(),
+        )
+        return expired
 
     def try_withdraw(
         self,

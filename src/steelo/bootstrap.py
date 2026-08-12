@@ -330,7 +330,7 @@ def bootstrap_simulation(
 
     # China capacity policy: unbind any state a previous run in this process left,
     # then bind a fresh evaluator and pool when the config enables the policy
-    configure_capacity_policy(config.capacity_policy, repository_json)
+    configure_capacity_policy(config.capacity_policy, repository_json, start_year=int(config.start_year))
 
     # Create UoW
     uow = UnitOfWork(repository=repository)
