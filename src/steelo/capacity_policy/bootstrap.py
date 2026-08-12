@@ -4,8 +4,9 @@
 and owns the binding lifecycle: it always unbinds first, so no evaluator or
 pool state can survive from a previous simulation in the same process
 (steeloweb, test suites), and a disabled run is guaranteed dormant even after
-an enabled one. With ``enabled=True`` it refuses to run without complete
-fixtures — never silent dormancy — re-runs the cross-row sheet validation with
+an enabled one. With ``enabled=True`` it refuses to run without the
+classification fixtures — never silent dormancy — while an empty opening-credits
+fixture is a legitimate zero-pool start, re-runs the cross-row sheet validation with
 warnings promoted to errors, builds a fresh evaluator, pool and observability
 recorder from the fixtures and config, seeds the pool (converting the sheet's
 Mt into the model tonnes every runtime capacity flows in) and opens the ledger
@@ -64,9 +65,11 @@ def configure_capacity_policy(
 
     Raises:
         ValueError: With ``enabled=True``, when any capacity pool fixture is
-            missing or empty (named in the message), or when the promoted
-            cross-row validation finds any issue — unauthored classification
-            flags only warn at data preparation, but block a policy run.
+            missing, when either classification fixture is empty (named in the
+            message), or when the promoted cross-row validation finds any issue
+            — unauthored classification flags only warn at data preparation,
+            but block a policy run. An empty opening-credits fixture does not
+            raise: it is a zero-pool start.
     """
     unbind_capacity_policy()
     if not config.enabled:
@@ -89,7 +92,7 @@ def configure_capacity_policy(
     for name, repo in zip(FIXTURE_NAMES, repos):
         if repo.path is None or not repo.path.exists():
             problems.append(f"{name}.json is missing")
-        elif not repo.list():
+        elif name != "capacity_pool_opening_credits" and not repo.list():
             problems.append(f"{name}.json is empty")
     if problems:
         raise ValueError(
@@ -99,6 +102,11 @@ def configure_capacity_policy(
         )
 
     province_rows, technology_rows, credit_rows = (repo.list() for repo in repos)
+    if not credit_rows:
+        logger.info(
+            "[CAPACITY POOL] opening credits fixture is empty: zero-pool start, "
+            "so every INCREASE is blocked until a Chinese retirement banks the first credit"
+        )
     _validate_promoted(
         [
             *validate_provinces(province_rows, chinese_geo_keys=_chinese_geo_keys()),

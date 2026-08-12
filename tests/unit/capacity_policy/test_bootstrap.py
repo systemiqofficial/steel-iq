@@ -362,11 +362,60 @@ def test_enabled_with_one_missing_fixture_names_only_it(tmp_path):
     assert "capacity_pool_provinces.json" not in message
 
 
-def test_enabled_with_empty_fixture_raises_as_empty(tmp_path):
-    """An empty fixture is refused distinctly from a missing one — never silent dormancy."""
-    repository = fake_repository_json(tmp_path, credits=[])
-    with pytest.raises(ValueError, match="capacity_pool_opening_credits.json is empty"):
+def test_enabled_with_empty_provinces_raises_as_empty(tmp_path):
+    """An empty classification fixture is refused distinctly from a missing one."""
+    repository = fake_repository_json(tmp_path, provinces=[])
+    with pytest.raises(ValueError, match="capacity_pool_provinces.json is empty"):
         configure_capacity_policy(CapacityPolicyConfig(enabled=True), repository, start_year=2025)
+    assert cp_handlers.replace_capacity_hook() is None
+
+
+def test_enabled_with_empty_technologies_raises_as_empty(tmp_path):
+    repository = fake_repository_json(tmp_path, technologies=[])
+    with pytest.raises(ValueError, match="capacity_pool_technologies.json is empty"):
+        configure_capacity_policy(CapacityPolicyConfig(enabled=True), repository, start_year=2025)
+    assert cp_handlers.replace_capacity_hook() is None
+
+
+def test_enabled_with_empty_opening_credits_starts_from_a_zero_pool(tmp_path, caplog, propagating_policy_logs):
+    """The production default: an authored-but-empty credits sheet binds the policy with
+    nothing banked, rather than refusing. Only the classification fixtures are mandatory."""
+    caplog.set_level(logging.INFO)
+    configure_capacity_policy(
+        CapacityPolicyConfig(enabled=True), fake_repository_json(tmp_path, credits=[]), start_year=2025
+    )
+
+    assert cp_handlers.replace_capacity_hook() is not None
+    assert cp_handlers.expansion_capacity_hook() is not None
+    policy = cp_handlers._policy
+    assert policy is not None
+    assert policy.pool.total() == 0.0
+    assert policy.pool.snapshot() == ()
+    assert "zero-pool start" in caplog.text
+
+
+def test_zero_pool_start_blocks_the_first_chinese_increase(tmp_path):
+    """A zero pool is a live policy, not a dormant one: nothing may be built until a
+    Chinese retirement banks the first credit."""
+    configure_capacity_policy(
+        CapacityPolicyConfig(enabled=True), fake_repository_json(tmp_path, credits=[]), start_year=2025
+    )
+
+    expansion_hook = cp_handlers.expansion_capacity_hook()
+    assert expansion_hook is not None
+    assert (
+        expansion_hook(
+            iso3="CHN",
+            geo_unit="CN-HE",
+            technology="EAF",
+            reductant=None,
+            capacity=1.0e6,
+            product="steel",
+            owner_id="E1",
+            year=2025,
+        )
+        is None
+    )
 
 
 def test_enabled_with_injected_repository_raises():
