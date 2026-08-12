@@ -20,6 +20,12 @@ evaluation-side log in :mod:`.tree`, reductant drift between approval and
 operation is measurable from any run. The same call sites feed the run's
 :class:`~steelo.capacity_policy.recorder.CapacityPolicyRecorder`, whose CSVs
 :func:`flush_capacity_policy_outputs` writes at the end of a bound run.
+
+Credit and motion ownership is **group membership** throughout: every handler
+resolves ``uow.plant_groups.get_by_plant_id(...)`` rather than reading the
+events' own ``owner_id``, which carries ``Plant.ultimate_plant_group`` and
+therefore still reports ``indi_<iso3>`` for a plant this package attributed to
+its funding company. A plant with no registered group raises, the D6 discipline.
 """
 
 import logging
@@ -377,11 +383,12 @@ def deposit_on_furnace_group_closed(event: events.FurnaceGroupClosed, uow: UnitO
     if event.iso3 != "CHN":
         return
     with uow:
+        plant, furnace_group = _get_plant_and_furnace_group(uow, event.furnace_group_id)
         geo_key = compose_geo_key(event.iso3, event.geo_unit)
         credit = policy.evaluator.on_close(
             geo_key=geo_key,
             capacity_mt=event.capacity,
-            owner_id=event.owner_id,
+            owner_id=uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id,
             product=event.product,
             year=int(env.year),
         )
@@ -397,7 +404,6 @@ def deposit_on_furnace_group_closed(event: events.FurnaceGroupClosed, uow: UnitO
             geo_key=geo_key,
             furnace_group_id=event.furnace_group_id,
         )
-        _, furnace_group = _get_plant_and_furnace_group(uow, event.furnace_group_id)
         logger.info(
             "[CAPACITY POOL] event=closed deposit_mt=%.3f fg=%s geo_key=%s tag=%s "
             "product=%s owner=%s vintage=%d chosen_reductant=%s",
@@ -430,11 +436,12 @@ def deposit_on_furnace_group_tech_changed(
     if freed <= 0:
         return
     with uow:
+        plant, furnace_group = _get_plant_and_furnace_group(uow, event.furnace_group_id)
         geo_key = compose_geo_key(event.iso3, event.geo_unit)
         credit = policy.evaluator.on_close(
             geo_key=geo_key,
             capacity_mt=freed,
-            owner_id=event.owner_id,
+            owner_id=uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id,
             product=event.product,
             year=int(env.year),
         )
@@ -450,7 +457,6 @@ def deposit_on_furnace_group_tech_changed(
             geo_key=geo_key,
             furnace_group_id=event.furnace_group_id,
         )
-        _, furnace_group = _get_plant_and_furnace_group(uow, event.furnace_group_id)
         logger.info(
             "[CAPACITY POOL] event=tech_changed deposit_mt=%.3f fg=%s geo_key=%s tag=%s "
             "product=%s owner=%s vintage=%d old=%s new=%s chosen_reductant=%s",
@@ -484,11 +490,12 @@ def deposit_on_furnace_group_renovated(event: events.FurnaceGroupRenovated, uow:
     if freed <= 0:
         return
     with uow:
+        plant, furnace_group = _get_plant_and_furnace_group(uow, event.furnace_group_id)
         geo_key = compose_geo_key(event.iso3, event.geo_unit)
         credit = policy.evaluator.on_close(
             geo_key=geo_key,
             capacity_mt=freed,
-            owner_id=event.owner_id,
+            owner_id=uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id,
             product=event.product,
             year=int(env.year),
         )
@@ -504,7 +511,6 @@ def deposit_on_furnace_group_renovated(event: events.FurnaceGroupRenovated, uow:
             geo_key=geo_key,
             furnace_group_id=event.furnace_group_id,
         )
-        _, furnace_group = _get_plant_and_furnace_group(uow, event.furnace_group_id)
         logger.info(
             "[CAPACITY POOL] event=renovated deposit_mt=%.3f fg=%s geo_key=%s tag=%s "
             "product=%s owner=%s vintage=%d technology=%s chosen_reductant=%s",
@@ -518,6 +524,80 @@ def deposit_on_furnace_group_renovated(event: events.FurnaceGroupRenovated, uow:
             event.new_technology_name,
             furnace_group.chosen_reductant,
         )
+
+
+def deposit_on_end_of_life_closure(
+    plant: Plant, furnace_group: FurnaceGroup, uow: UnitOfWork, env: Environment
+) -> None:
+    """Branch ① RETIRE at end of life: bank the full freed capacity, and record the motion.
+
+    Called from ``finalise_iteration`` immediately after it closes an expired
+    group with a bare status flip. That path raises no ``FurnaceGroupClosed``,
+    so the deposit handler never sees it — yet Decision 28 credits every
+    retirement, whoever decided it. The deposit is made pool-scoped rather than
+    by emitting the event, which would also wake the shared closed-handlers the
+    direct path deliberately bypasses.
+
+    The vintage is the *post-increment* year: ``finalise_iteration`` advances
+    ``env.year`` before closing anything, so these credits belong to the next
+    yearly snapshot, exactly like the scheduled switches at the same boundary.
+    The ledger names the mechanism (``deposit_close_end_of_life``) because an
+    end-of-life retirement is not an agent decision and the two must be
+    separable in the artefacts.
+
+    Runs inside ``finalise_iteration``'s own unit-of-work context and only
+    reads, so it opens none of its own.
+    """
+    policy = _policy
+    if policy is None:
+        return
+    if plant.location.iso3 != "CHN":
+        return
+    geo_key = compose_geo_key(plant.location.iso3, plant.location.geo_unit)
+    owner_id = uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id
+    credit = policy.evaluator.on_close(
+        geo_key=geo_key,
+        capacity_mt=float(furnace_group.capacity),
+        owner_id=owner_id,
+        product=furnace_group.technology.product,
+        year=int(env.year),
+    )
+    policy.pool.deposit(credit)
+    policy.recorder.record_ledger(
+        year=int(env.year),
+        operation="deposit_close_end_of_life",
+        amount_t=credit.amount_mt,
+        region_tag=credit.region_tag,
+        owner_id=credit.owner_id,
+        product=credit.product,
+        vintage_year=credit.vintage_year,
+        geo_key=geo_key,
+        furnace_group_id=furnace_group.furnace_group_id,
+    )
+    policy.recorder.record_motion(
+        year=int(env.year),
+        kind="close",
+        plant_id=plant.plant_id,
+        furnace_group_id=furnace_group.furnace_group_id,
+        geo_key=geo_key,
+        old_technology=furnace_group.technology.name,
+        old_capacity_t=float(furnace_group.capacity),
+        owner_id=owner_id,
+        product=furnace_group.technology.product,
+        reductant=furnace_group.chosen_reductant,
+    )
+    logger.info(
+        "[CAPACITY POOL] event=end_of_life_closed deposit_mt=%.3f fg=%s geo_key=%s tag=%s "
+        "product=%s owner=%s vintage=%d chosen_reductant=%s",
+        credit.amount_mt,
+        furnace_group.furnace_group_id,
+        geo_key,
+        credit.region_tag,
+        credit.product,
+        credit.owner_id,
+        credit.vintage_year,
+        furnace_group.chosen_reductant,
+    )
 
 
 def attribute_greenfield_on_furnace_group_added(event: events.FurnaceGroupAdded, uow: UnitOfWork) -> None:
@@ -658,7 +738,7 @@ def record_motion_on_furnace_group_closed(event: events.FurnaceGroupClosed, uow:
             geo_key=compose_geo_key(event.iso3, event.geo_unit),
             old_technology=furnace_group.technology.name,
             old_capacity_t=event.capacity,
-            owner_id=event.owner_id,
+            owner_id=uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id,
             product=event.product,
             reductant=furnace_group.chosen_reductant,
         )
@@ -691,7 +771,7 @@ def record_motion_on_furnace_group_tech_changed(
             new_technology=event.technology_name,
             old_capacity_t=event.old_capacity,
             new_capacity_t=event.capacity,
-            owner_id=event.owner_id,
+            owner_id=uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id,
             product=event.product,
             reductant=furnace_group.chosen_reductant,
         )
@@ -718,7 +798,7 @@ def record_motion_on_furnace_group_renovated(
             new_technology=event.new_technology_name,
             old_capacity_t=event.old_capacity,
             new_capacity_t=event.capacity,
-            owner_id=event.owner_id,
+            owner_id=uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id,
             product=event.product,
             reductant=furnace_group.chosen_reductant,
         )

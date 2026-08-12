@@ -1,5 +1,6 @@
 """Tests for the deposit and motion handlers: inert until bound, China-only, correct rows."""
 
+import inspect
 import logging
 from dataclasses import dataclass, field
 
@@ -39,6 +40,7 @@ class FakeFurnaceGroup:
     furnace_group_id: str
     chosen_reductant: str = "Coke+PCI"
     technology: FakeTechnology = field(default_factory=FakeTechnology)
+    capacity: float = 2.0
 
 
 @dataclass
@@ -79,9 +81,9 @@ class FakePlantGroupsRepo:
 
 
 class FakeUoW:
-    def __init__(self, furnace_groups: list[FakeFurnaceGroup], *, iso3: str = "CHN"):
+    def __init__(self, furnace_groups: list[FakeFurnaceGroup], *, iso3: str = "CHN", group_id: str = "E1"):
         self.plants = FakePlantsRepo([FakePlant(furnace_groups=furnace_groups, location=FakeLocation(iso3=iso3))])
-        self.plant_groups = FakePlantGroupsRepo()
+        self.plant_groups = FakePlantGroupsRepo(group_id=group_id)
 
     def __enter__(self):
         return self
@@ -119,18 +121,18 @@ def bound(pool: CapacityPool, recorder: CapacityPolicyRecorder) -> CapacityPool:
     return pool
 
 
-def closed_event(geo_unit: str | None = "CN-HE", iso3: str = "CHN") -> events.FurnaceGroupClosed:
+def closed_event(geo_unit: str | None = "CN-HE", iso3: str = "CHN", owner_id: str = "E1") -> events.FurnaceGroupClosed:
     return events.FurnaceGroupClosed(
         furnace_group_id="fg-1",
         capacity=2.0,
         iso3=iso3,
         geo_unit=geo_unit,
-        owner_id="E1",
+        owner_id=owner_id,
         product="iron",
     )
 
 
-def tech_changed_event(old_capacity: float, capacity: float) -> events.FurnaceGroupTechChanged:
+def tech_changed_event(old_capacity: float, capacity: float, owner_id: str = "E1") -> events.FurnaceGroupTechChanged:
     return events.FurnaceGroupTechChanged(
         furnace_group_id="fg-1",
         technology_name="BF+CCS",
@@ -139,13 +141,13 @@ def tech_changed_event(old_capacity: float, capacity: float) -> events.FurnaceGr
         geo_unit="CN-GD",
         old_technology_name="BF",
         old_capacity=old_capacity,
-        owner_id="E1",
+        owner_id=owner_id,
         product="iron",
     )
 
 
 def renovated_event(
-    old_capacity: float = 2.0, capacity: float = 2.0, iso3: str = "CHN"
+    old_capacity: float = 2.0, capacity: float = 2.0, iso3: str = "CHN", owner_id: str = "E1"
 ) -> events.FurnaceGroupRenovated:
     return events.FurnaceGroupRenovated(
         furnace_group_id="fg-1",
@@ -155,7 +157,7 @@ def renovated_event(
         geo_unit="CN-HE",
         old_technology_name="BF",
         new_technology_name="BF",
-        owner_id="E1",
+        owner_id=owner_id,
         product="iron",
     )
 
@@ -170,8 +172,8 @@ def added_event(is_new_plant: bool = False) -> events.FurnaceGroupAdded:
     )
 
 
-def make_uow(iso3: str = "CHN") -> FakeUoW:
-    return FakeUoW([FakeFurnaceGroup(furnace_group_id="fg-1")], iso3=iso3)
+def make_uow(iso3: str = "CHN", group_id: str = "E1") -> FakeUoW:
+    return FakeUoW([FakeFurnaceGroup(furnace_group_id="fg-1")], iso3=iso3, group_id=group_id)
 
 
 class TestInertness:
@@ -316,6 +318,155 @@ class TestRenovatedDeposit:
             )
         assert "event=renovated" in caplog.text
         assert "chosen_reductant=Coke+PCI" in caplog.text
+
+
+class TestEndOfLifeDeposit:
+    """Retirements nobody decided: the bare status flip in ``finalise_iteration``."""
+
+    def test_wired_into_the_end_of_life_branch(self):
+        """The deposit must sit on the status flip itself, not on a later step that a
+        scheduled switch or a foreign plant would also reach."""
+        source = inspect.getsource(service_handlers.finalise_iteration)
+        assert 'fg.status = "closed"\n' in source
+        flip, _, rest = source.partition('fg.status = "closed"\n')
+        assert rest.lstrip().startswith("capacity_policy_handlers.deposit_on_end_of_life_closure(plant, fg, uow, env)")
+        assert flip.count("deposit_on_end_of_life_closure") == 0
+
+    def test_deposits_the_full_capacity_at_the_post_increment_vintage(
+        self, bound: CapacityPool, recorder: CapacityPolicyRecorder
+    ):
+        """finalise_iteration advances the year before closing, so the credit belongs
+        to the next snapshot — the same convention the scheduled switches follow."""
+        uow = make_uow()
+        plant = uow.plants.list()[0]
+
+        cp_handlers.deposit_on_end_of_life_closure(plant, plant.furnace_groups[0], uow=uow, env=FakeEnv())  # type: ignore[arg-type]
+
+        (credit,) = bound.snapshot()
+        assert credit.amount_mt == pytest.approx(2.0)
+        assert credit.vintage_year == 2031
+        assert credit.region_tag == "Jing-Jin-Ji"
+        assert credit.owner_id == "E1"
+        assert credit.product == "iron"
+        (row,) = recorder._ledger
+        assert row["operation"] == "deposit_close_end_of_life"
+        assert row["furnace_group_id"] == "fg-1"
+        assert row["geo_key"] == "CHN:CN-HE"
+
+    def test_records_the_closure_as_a_motion(self, bound: CapacityPool, recorder: CapacityPolicyRecorder):
+        """End-of-life closures move the fleet too; the mix is only readable from the
+        complete set of motions."""
+        uow = make_uow()
+        plant = uow.plants.list()[0]
+
+        cp_handlers.deposit_on_end_of_life_closure(plant, plant.furnace_groups[0], uow=uow, env=FakeEnv())  # type: ignore[arg-type]
+
+        (row,) = recorder._motions
+        assert row["kind"] == "close"
+        assert row["old_technology"] == "BF"
+        assert row["old_capacity_t"] == pytest.approx(2.0)
+        assert row["owner_id"] == "E1"
+        assert row["reductant"] == "Coke+PCI"
+
+    def test_unbound_closure_deposits_nothing(self, pool: CapacityPool):
+        uow = make_uow()
+        plant = uow.plants.list()[0]
+
+        cp_handlers.deposit_on_end_of_life_closure(plant, plant.furnace_groups[0], uow=uow, env=FakeEnv())  # type: ignore[arg-type]
+
+        assert pool.total() == 0.0
+
+    def test_off_china_closure_deposits_nothing(self, bound: CapacityPool, recorder: CapacityPolicyRecorder):
+        uow = make_uow(iso3="DEU")
+        plant = uow.plants.list()[0]
+
+        cp_handlers.deposit_on_end_of_life_closure(plant, plant.furnace_groups[0], uow=uow, env=FakeEnv())  # type: ignore[arg-type]
+
+        assert bound.total() == 0.0
+        assert recorder._ledger == []
+        assert recorder._motions == []
+
+    def test_log_carries_the_chosen_reductant(self, bound: CapacityPool, caplog):
+        uow = make_uow()
+        plant = uow.plants.list()[0]
+
+        with caplog.at_level(logging.INFO, logger="steelo.capacity_policy.handlers"):
+            cp_handlers.deposit_on_end_of_life_closure(plant, plant.furnace_groups[0], uow=uow, env=FakeEnv())  # type: ignore[arg-type]
+
+        assert "event=end_of_life_closed" in caplog.text
+        assert "chosen_reductant=Coke+PCI" in caplog.text
+
+
+class TestMembershipOwner:
+    """D-F: every credit and every motion names the plant's group by membership.
+
+    The events stamp ``ultimate_plant_group``, which keeps reporting
+    ``indi_<iso3>`` for a credit-funded plant this package moved into its funding
+    company — so each case below hands the handler an event whose owner disagrees
+    with the membership the repository holds.
+    """
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda: cp_handlers.deposit_on_furnace_group_closed(
+                closed_event(owner_id="indi_CHN"),
+                uow=make_uow(group_id="E_a"),  # type: ignore[arg-type]
+                env=FakeEnv(),  # type: ignore[arg-type]
+            ),
+            lambda: cp_handlers.deposit_on_furnace_group_tech_changed(
+                tech_changed_event(3.0, 2.0, owner_id="indi_CHN"),
+                uow=make_uow(group_id="E_a"),  # type: ignore[arg-type]
+                env=FakeEnv(),  # type: ignore[arg-type]
+            ),
+            lambda: cp_handlers.deposit_on_furnace_group_renovated(
+                renovated_event(old_capacity=3.0, capacity=2.0, owner_id="indi_CHN"),
+                uow=make_uow(group_id="E_a"),  # type: ignore[arg-type]
+                env=FakeEnv(),  # type: ignore[arg-type]
+            ),
+        ],
+    )
+    def test_deposits_credit_the_membership_group(self, bound: CapacityPool, call):
+        call()
+
+        (credit,) = bound.snapshot()
+        assert credit.owner_id == "E_a"
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda: cp_handlers.record_motion_on_furnace_group_closed(
+                closed_event(owner_id="indi_CHN"),
+                uow=make_uow(group_id="E_a"),  # type: ignore[arg-type]
+                env=FakeEnv(),  # type: ignore[arg-type]
+            ),
+            lambda: cp_handlers.record_motion_on_furnace_group_tech_changed(
+                tech_changed_event(3.0, 2.0, owner_id="indi_CHN"),
+                uow=make_uow(group_id="E_a"),  # type: ignore[arg-type]
+                env=FakeEnv(),  # type: ignore[arg-type]
+            ),
+            lambda: cp_handlers.record_motion_on_furnace_group_renovated(
+                renovated_event(owner_id="indi_CHN"),
+                uow=make_uow(group_id="E_a"),  # type: ignore[arg-type]
+                env=FakeEnv(),  # type: ignore[arg-type]
+            ),
+        ],
+    )
+    def test_motions_name_the_membership_group(self, bound: CapacityPool, recorder: CapacityPolicyRecorder, call):
+        call()
+
+        (row,) = recorder._motions
+        assert row["owner_id"] == "E_a"
+
+    def test_end_of_life_closure_credits_the_membership_group(self, bound: CapacityPool):
+        """The retirement of a credit-funded plant banks to its funding company."""
+        uow = make_uow(group_id="E_a")
+        plant = uow.plants.list()[0]
+
+        cp_handlers.deposit_on_end_of_life_closure(plant, plant.furnace_groups[0], uow=uow, env=FakeEnv())  # type: ignore[arg-type]
+
+        (credit,) = bound.snapshot()
+        assert credit.owner_id == "E_a"
 
 
 class TestReplaceCapacityHook:

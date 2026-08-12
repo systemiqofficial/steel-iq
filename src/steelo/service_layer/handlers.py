@@ -534,6 +534,7 @@ def finalise_iteration(
                             f"was '{fg.status}')"
                         )
                         fg.status = "closed"
+                        capacity_policy_handlers.deposit_on_end_of_life_closure(plant, fg, uow, env)
                     else:
                         # Technology switch scenario: transition to construction phase of new technology
                         fg.status = "construction switching technology"

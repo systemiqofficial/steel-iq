@@ -117,7 +117,7 @@ class TreeEvaluator:
         Args:
             geo_key: Combined geo key of the freeing plant, e.g. ``"CHN:CN-HE"``.
             capacity_mt: Freed capacity in Mt.
-            owner_id: Ultimate plant group of the freeing plant.
+            owner_id: Plant group the freeing plant belongs to, by membership.
             product: ``"iron"`` or ``"steel"``.
             year: Deposit year; becomes the credit's vintage.
 

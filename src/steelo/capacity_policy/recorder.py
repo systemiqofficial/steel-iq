@@ -15,7 +15,9 @@ of one arithmetic, and they agree exactly:
 
     state(Y) = seed + Σ deposits ≤ Y − Σ consumed credits ≤ Y
 
-per ``(region_tag, owner_id, product)`` and in aggregate. It holds because the
+per ``(region_tag, owner_id, product)`` and in aggregate, where "deposits" means
+every ``deposit_*`` operation — the mechanism is part of the fact, not a
+separate stock. It holds because the
 yearly snapshot is taken *before* ``finalise_iteration`` increments the year, so
 the transactions that boundary triggers (scheduled switches, end-of-life
 closures) stamp Y+1 and land in the next snapshot; the final boundary
@@ -96,6 +98,7 @@ GATE_DECISIONS_COLUMNS = (
 LEDGER_OPERATIONS = (
     "seed",
     "deposit_close",
+    "deposit_close_end_of_life",
     "deposit_replace",
     "withdraw_expansion",
     "withdraw_greenfield",

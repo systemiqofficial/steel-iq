@@ -67,6 +67,7 @@ class TestSchema:
         operations = (
             "seed",
             "deposit_close",
+            "deposit_close_end_of_life",
             "deposit_replace",
             "withdraw_expansion",
             "withdraw_greenfield",
@@ -178,7 +179,7 @@ class TestSchema:
 
 
 def flows_by_key(ledger: list[dict[str, str]], year: int) -> dict[tuple[str, str, str], float]:
-    """Seed plus deposits minus consumed credits, up to and including ``year``.
+    """Seed plus every deposit minus consumed credits, up to and including ``year``.
 
     Blocked rows are refusals and the discard row annotates an already-debited
     withdrawal, so neither enters the sum; a withdrawal moves exactly the credit
@@ -188,7 +189,7 @@ def flows_by_key(ledger: list[dict[str, str]], year: int) -> dict[tuple[str, str
     for row in ledger:
         if int(row["year"]) > year:
             continue
-        if row["operation"] in ("seed", "deposit_close", "deposit_replace"):
+        if row["operation"] == "seed" or row["operation"].startswith("deposit_"):
             key = (row["region_tag"], row["owner_id"], row["product"])
             totals[key] = totals.get(key, 0.0) + float(row["amount_t"])
         elif row["operation"].startswith("withdraw_"):
@@ -267,6 +268,18 @@ class TestReconciliation:
         )
         recorder.record_state(2026, pool.snapshot())
 
+        # An end-of-life retirement: nobody decided it, so it carries its own operation
+        retired = credit(1.5, 2027, tag="Jing-Jin-Ji", owner="E_a")
+        pool.deposit(retired)
+        recorder.record_ledger(
+            year=2027,
+            operation="deposit_close_end_of_life",
+            amount_t=retired.amount_mt,
+            region_tag=retired.region_tag,
+            owner_id=retired.owner_id,
+            product=retired.product,
+            vintage_year=retired.vintage_year,
+        )
         leaked = pool.try_withdraw(2.0, None, product="iron", owner_id="indi_CHN", year=2027, single_owner=True)
         assert leaked.granted
         recorder.record_ledger(

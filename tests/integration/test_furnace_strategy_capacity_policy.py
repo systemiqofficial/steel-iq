@@ -84,9 +84,22 @@ class FakePlantsRepo:
         return list(self._plants)
 
 
+class FakePlantGroupsRepo:
+    """Membership, the canonical credit owner: a plant outside the group raises."""
+
+    def __init__(self, plant_group):
+        self._plant_group = plant_group
+
+    def get_by_plant_id(self, plant_id: str):
+        if not any(plant.plant_id == plant_id for plant in self._plant_group.plants):
+            raise ValueError(f"No plant group found for plant ID: {plant_id}")
+        return self._plant_group
+
+
 class FakeUoW:
-    def __init__(self, *plants):
-        self.plants = FakePlantsRepo(plants)
+    def __init__(self, plant, plant_group):
+        self.plants = FakePlantsRepo([plant])
+        self.plant_groups = FakePlantGroupsRepo(plant_group)
 
     def __enter__(self):
         return self
@@ -292,11 +305,12 @@ class TestBoundReplacePath:
         assert event.old_capacity == pytest.approx(3.0)
         assert event.capacity == pytest.approx(2.0)
 
-        cp_handlers.deposit_on_furnace_group_tech_changed(event, uow=FakeUoW(plant), env=FakeEnv())
+        cp_handlers.deposit_on_furnace_group_tech_changed(event, uow=FakeUoW(plant, plant_group), env=FakeEnv())
         (credit,) = pool.snapshot()
         assert credit.amount_mt == pytest.approx(1.0)
         assert credit.region_tag == "Jing-Jin-Ji"
-        assert credit.owner_id == "E_cpool_owner"
+        # Membership, not the event's ultimate_plant_group (parent_gem_id "E_cpool_owner")
+        assert credit.owner_id == "gem_cpool_test"
         # A switch keeps the group's product (change_furnace_group_technology carries it
         # over), so the freed credit banks under what the shrunk capacity actually made
         assert credit.product == "steel"
@@ -313,7 +327,7 @@ class TestBoundReplacePath:
         assert command.capacity == pytest.approx(3.0)
 
         event = apply_switch(plant, command)
-        cp_handlers.deposit_on_furnace_group_tech_changed(event, uow=FakeUoW(plant), env=FakeEnv())
+        cp_handlers.deposit_on_furnace_group_tech_changed(event, uow=FakeUoW(plant, plant_group), env=FakeEnv())
         assert pool.total() == 0.0
 
     def test_exempt_province_replaces_one_to_one(self, mocker):
@@ -364,7 +378,7 @@ class TestBoundReplacePath:
         assert spy.call_count == 0
 
         event = apply_switch(plant, command)
-        cp_handlers.deposit_on_furnace_group_tech_changed(event, uow=FakeUoW(plant), env=FakeEnv())
+        cp_handlers.deposit_on_furnace_group_tech_changed(event, uow=FakeUoW(plant, plant_group), env=FakeEnv())
         assert pool.total() == 0.0
 
 
@@ -389,7 +403,7 @@ class TestRenovationRuling:
         assert event.old_capacity == pytest.approx(3.0)
         assert event.capacity == pytest.approx(2.0)
 
-        cp_handlers.deposit_on_furnace_group_renovated(event, uow=FakeUoW(plant), env=FakeEnv())
+        cp_handlers.deposit_on_furnace_group_renovated(event, uow=FakeUoW(plant, plant_group), env=FakeEnv())
         (credit,) = pool.snapshot()
         assert credit.amount_mt == pytest.approx(1.0)
         assert credit.region_tag == "Jing-Jin-Ji"
@@ -420,5 +434,5 @@ class TestRenovationRuling:
         assert event.old_capacity == pytest.approx(3.0)
         assert event.capacity == pytest.approx(3.0)
 
-        cp_handlers.deposit_on_furnace_group_renovated(event, uow=FakeUoW(plant), env=FakeEnv())
+        cp_handlers.deposit_on_furnace_group_renovated(event, uow=FakeUoW(plant, plant_group), env=FakeEnv())
         assert pool.total() == 0.0
