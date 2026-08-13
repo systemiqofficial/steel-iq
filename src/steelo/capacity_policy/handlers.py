@@ -54,6 +54,7 @@ class _BoundPolicy:
 
 
 _policy: _BoundPolicy | None = None
+_warned_bare_chn_contexts: set[str] = set()
 
 
 def bind_capacity_policy(evaluator: TreeEvaluator, pool: CapacityPool, recorder: CapacityPolicyRecorder) -> None:
@@ -65,12 +66,37 @@ def bind_capacity_policy(evaluator: TreeEvaluator, pool: CapacityPool, recorder:
     """
     global _policy
     _policy = _BoundPolicy(evaluator=evaluator, pool=pool, recorder=recorder)
+    _warned_bare_chn_contexts.clear()
 
 
 def unbind_capacity_policy() -> None:
     """Deactivate the deposit handlers; they become no-ops again."""
     global _policy
     _policy = None
+
+
+def _policy_geo_key(iso3: str, geo_unit: str | None, *, context: str) -> str:
+    """Compose the policy geo key, loudly when a Chinese location is untagged.
+
+    ``compose_geo_key("CHN", None)`` yields the bare country key, which the
+    evaluator treats as non-key: untagged deposits, unrestricted withdrawals,
+    never the exempt-province 1:1. That is the most permissive treatment the
+    policy has, so it must never happen silently — it means the plant row or
+    site missed province derivation (admin-1 layer absent, point-in-polygon
+    rejected, or an untagged fleet row).
+    """
+    if iso3 == "CHN" and not geo_unit:
+        message = (
+            "[CAPACITY POOL] context=%s iso3=CHN has no geo_unit: falling back to the bare "
+            "country key, which the policy treats as non-key (untagged deposit, unrestricted "
+            "withdrawal, never exempt) — check the admin-1 layer and the province tagging"
+        )
+        if context in _warned_bare_chn_contexts:
+            logger.debug(message, context)
+        else:
+            _warned_bare_chn_contexts.add(context)
+            logger.warning(message + " (further occurrences log at DEBUG)", context)
+    return compose_geo_key(iso3, geo_unit)
 
 
 def flush_capacity_policy_outputs(output_dir: Path) -> None:
@@ -141,7 +167,7 @@ def replace_capacity_hook() -> Callable[..., float | None] | None:
                 technology=old_technology,
                 reductant=old_reductant or None,
                 capacity_mt=capacity,
-                geo_key=compose_geo_key(iso3, geo_unit),
+                geo_key=_policy_geo_key(iso3, geo_unit, context="replace_gate"),
                 historical_utilization=historical_utilization,
                 year=year,
                 furnace_group_id=furnace_group_id,
@@ -152,7 +178,7 @@ def replace_capacity_hook() -> Callable[..., float | None] | None:
             new_technology=new_technology,
             new_reductant=new_reductant or None,
             capacity_mt=capacity,
-            geo_key=compose_geo_key(iso3, geo_unit),
+            geo_key=_policy_geo_key(iso3, geo_unit, context="replace_gate"),
             historical_utilization=historical_utilization,
             year=year,
             furnace_group_id=furnace_group_id,
@@ -234,8 +260,9 @@ def expansion_capacity_hook() -> Callable[..., float | None] | None:
         """
         if iso3 != "CHN":
             return capacity
+        geo_key = _policy_geo_key(iso3, geo_unit, context="expansion_gate")
         spec = policy.evaluator.on_increase(
-            geo_key=compose_geo_key(iso3, geo_unit),
+            geo_key=geo_key,
             product=product,
             capacity_mt=capacity,
             technology=technology,
@@ -255,7 +282,7 @@ def expansion_capacity_hook() -> Callable[..., float | None] | None:
                 "technology=%s reductant=%s product=%s withdraw_mt=%.3f tag=%s year=%d",
                 result.blocked_reason,
                 owner_id,
-                compose_geo_key(iso3, geo_unit),
+                geo_key,
                 technology,
                 reductant,
                 spec.product,
@@ -271,7 +298,7 @@ def expansion_capacity_hook() -> Callable[..., float | None] | None:
                 owner_id=owner_id,
                 product=spec.product,
                 blocked_reason=result.blocked_reason,
-                geo_key=compose_geo_key(iso3, geo_unit),
+                geo_key=geo_key,
             )
             return None
         policy.recorder.record_ledger(
@@ -282,13 +309,13 @@ def expansion_capacity_hook() -> Callable[..., float | None] | None:
             owner_id=owner_id,
             product=spec.product,
             credits_consumed=result.credits_consumed,
-            geo_key=compose_geo_key(iso3, geo_unit),
+            geo_key=geo_key,
         )
         logger.info(
             "[CAPACITY POOL] gate=expansion decision=granted owner=%s geo_key=%s technology=%s "
             "reductant=%s product=%s withdraw_mt=%.3f build_mt=%.3f tag=%s year=%d credits_consumed=%s",
             owner_id,
-            compose_geo_key(iso3, geo_unit),
+            geo_key,
             technology,
             reductant,
             spec.product,
@@ -361,8 +388,9 @@ def greenfield_capacity_hook() -> Callable[..., tuple[float, str | None, bool, t
         """
         if iso3 != "CHN":
             return (capacity, None, False, ())
+        geo_key = _policy_geo_key(iso3, geo_unit, context="greenfield_gate")
         spec = policy.evaluator.on_increase(
-            geo_key=compose_geo_key(iso3, geo_unit),
+            geo_key=geo_key,
             product=product,
             capacity_mt=capacity,
             technology=technology,
@@ -381,7 +409,7 @@ def greenfield_capacity_hook() -> Callable[..., tuple[float, str | None, bool, t
                 "[CAPACITY POOL] gate=greenfield decision=blocked reason=%s geo_key=%s "
                 "technology=%s reductant=%s product=%s withdraw_mt=%.3f tag=%s year=%d",
                 result.blocked_reason,
-                compose_geo_key(iso3, geo_unit),
+                geo_key,
                 technology,
                 reductant,
                 spec.product,
@@ -397,7 +425,7 @@ def greenfield_capacity_hook() -> Callable[..., tuple[float, str | None, bool, t
                 owner_id=f"indi_{iso3}",
                 product=spec.product,
                 blocked_reason=result.blocked_reason,
-                geo_key=compose_geo_key(iso3, geo_unit),
+                geo_key=geo_key,
             )
             return None
         policy.recorder.record_ledger(
@@ -409,14 +437,14 @@ def greenfield_capacity_hook() -> Callable[..., tuple[float, str | None, bool, t
             product=spec.product,
             credits_consumed=result.credits_consumed,
             attributed_owner_id=result.attributed_owner_id,
-            geo_key=compose_geo_key(iso3, geo_unit),
+            geo_key=geo_key,
         )
         logger.info(
             "[CAPACITY POOL] gate=greenfield decision=granted attributed_owner=%s geo_key=%s "
             "technology=%s reductant=%s product=%s withdraw_mt=%.3f build_mt=%.3f tag=%s year=%d "
             "credits_consumed=%s",
             result.attributed_owner_id,
-            compose_geo_key(iso3, geo_unit),
+            geo_key,
             technology,
             reductant,
             spec.product,
@@ -453,7 +481,7 @@ def deposit_on_furnace_group_closed(event: events.FurnaceGroupClosed, uow: UnitO
         return
     with uow:
         plant, furnace_group = _get_plant_and_furnace_group(uow, event.furnace_group_id)
-        geo_key = compose_geo_key(event.iso3, event.geo_unit)
+        geo_key = _policy_geo_key(event.iso3, event.geo_unit, context="deposit_close")
         credit = policy.evaluator.on_close(
             geo_key=geo_key,
             capacity_mt=event.capacity,
@@ -506,7 +534,7 @@ def deposit_on_furnace_group_tech_changed(
         return
     with uow:
         plant, furnace_group = _get_plant_and_furnace_group(uow, event.furnace_group_id)
-        geo_key = compose_geo_key(event.iso3, event.geo_unit)
+        geo_key = _policy_geo_key(event.iso3, event.geo_unit, context="deposit_replace")
         credit = policy.evaluator.on_close(
             geo_key=geo_key,
             capacity_mt=freed,
@@ -564,7 +592,7 @@ def deposit_on_furnace_group_renovated(event: events.FurnaceGroupRenovated, uow:
         return
     with uow:
         plant, furnace_group = _get_plant_and_furnace_group(uow, event.furnace_group_id)
-        geo_key = compose_geo_key(event.iso3, event.geo_unit)
+        geo_key = _policy_geo_key(event.iso3, event.geo_unit, context="deposit_renovation")
         credit = policy.evaluator.on_close(
             geo_key=geo_key,
             capacity_mt=freed,
@@ -626,7 +654,7 @@ def deposit_on_end_of_life_closure(
         return
     if plant.location.iso3 != "CHN":
         return
-    geo_key = compose_geo_key(plant.location.iso3, plant.location.geo_unit)
+    geo_key = _policy_geo_key(plant.location.iso3, plant.location.geo_unit, context="deposit_end_of_life")
     owner_id = uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id
     credit = policy.evaluator.on_close(
         geo_key=geo_key,

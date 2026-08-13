@@ -436,3 +436,13 @@ def test_bootstrap_simulation_enabled_without_pool_fixtures_raises(tmp_path):
     with pytest.raises(ValueError, match="capacity_pool_provinces.json is missing"):
         bootstrap_simulation(config)
     assert cp_handlers.replace_capacity_hook() is None
+
+
+def test_missing_geo_unit_reference_data_warns_at_bootstrap(tmp_path, caplog, propagating_policy_logs, monkeypatch):
+    """An enabled run whose greenfield sites would silently resolve at country level
+    must say so: the regional rules will not bind on that channel."""
+    monkeypatch.setenv("STEELO_HOME", str(tmp_path / "nowhere"))
+    with caplog.at_level(logging.WARNING):
+        configure_capacity_policy(CapacityPolicyConfig(enabled=True), fake_repository_json(tmp_path), start_year=2025)
+
+    assert "geo_unit reference data unavailable" in caplog.text

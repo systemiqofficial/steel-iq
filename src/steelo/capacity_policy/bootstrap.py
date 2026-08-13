@@ -127,6 +127,8 @@ def configure_capacity_policy(
         ]
     )
 
+    _warn_when_geo_unit_data_unavailable()
+
     recorder = CapacityPolicyRecorder()
     evaluator = TreeEvaluator(province_rows, technology_rows, config, recorder=recorder)
     pool = CapacityPool(
@@ -167,6 +169,30 @@ def configure_capacity_policy(
     recorder.record_expired(start_year, pool.purge_expired(start_year))
     bind_capacity_policy(evaluator, pool, recorder)
     logger.info("[CAPACITY POOL] policy bound: deposits and all three gates are live for this run")
+
+
+def _warn_when_geo_unit_data_unavailable() -> None:
+    """Warn loudly when province derivation would silently degrade to country level.
+
+    ``derive_geo_unit_for_site`` returns None for every site when the admin-1
+    layer or geo_hierarchy is absent, and ``compose_geo_key("CHN", None)`` is
+    the bare country key the evaluator treats as non-key — so an enabled run
+    without the reference data would apply the whole greenfield side of the
+    policy region-blind (untagged deposits, unrestricted withdrawals, no
+    exemption) without a word. Not a refusal: existing plants carry their own
+    fixture-tagged geo_units and are unaffected, so the run may still be
+    meaningful — but never silently.
+    """
+    from steelo.adapters.geospatial.geo_unit_lookup import geo_unit_reference_data_available
+
+    available, detail = geo_unit_reference_data_available()
+    if not available:
+        logger.warning(
+            "[CAPACITY POOL] geo_unit reference data unavailable (%s): every greenfield site "
+            "will resolve at country level and be treated as non-key — the policy's regional "
+            "rules will not bind on the greenfield channel this run",
+            detail,
+        )
 
 
 def _validate_promoted(issues: list[ValidationIssue]) -> None:

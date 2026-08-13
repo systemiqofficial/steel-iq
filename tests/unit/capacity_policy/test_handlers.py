@@ -774,6 +774,38 @@ class TestGreenfieldCapacityHook:
         assert cp_handlers.greenfield_retry_cap() == CapacityPolicyConfig().capacity_pool_max_retry_years
 
 
+class TestBareCountryGeoKeyWarning:
+    """A Chinese location without a geo_unit must never fall through silently."""
+
+    def test_first_occurrence_warns_then_debug(self, bound: CapacityPool, caplog):
+        gate = cp_handlers.greenfield_capacity_hook()
+        assert gate is not None
+
+        with caplog.at_level(logging.WARNING, logger="steelo.capacity_policy.handlers"):
+            greenfield_hook_call(gate, geo_unit=None)
+            greenfield_hook_call(gate, geo_unit=None)
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "iso3=CHN has no geo_unit" in warnings[0].getMessage()
+
+    def test_rebinding_resets_the_warning_dedup(self, bound: CapacityPool, caplog, pool, recorder):
+        gate = cp_handlers.greenfield_capacity_hook()
+        assert gate is not None
+        with caplog.at_level(logging.WARNING, logger="steelo.capacity_policy.handlers"):
+            greenfield_hook_call(gate, geo_unit=None)
+        evaluator = TreeEvaluator(REGIONS, TECHNOLOGIES, CapacityPolicyConfig(), recorder=recorder)
+        cp_handlers.bind_capacity_policy(evaluator, pool, recorder)
+        gate = cp_handlers.greenfield_capacity_hook()
+        assert gate is not None
+
+        with caplog.at_level(logging.WARNING, logger="steelo.capacity_policy.handlers"):
+            greenfield_hook_call(gate, geo_unit=None)
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 2
+
+
 class TestGateLedgerRows:
     """Each gate outcome writes exactly the ledger row its log line states."""
 
