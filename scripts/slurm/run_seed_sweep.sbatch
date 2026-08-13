@@ -1,64 +1,41 @@
 #!/bin/bash
-# 5-seed PAM noise-floor sweep (co2_ramp_seed_sweep.yaml) on SLURM, as a job array:
-# one independent SLURM task per seed (task_id -> seed = task_id + 1), instead of 5
-# subprocesses sharing one job's resource allocation. This makes per-seed memory/time
-# sizing tractable (one process's footprint, not a guessed aggregate for 5 concurrent
-# growing processes) and means a single seed timing out or OOMing doesn't take the
-# other 4 down with it.
+# 5-seed PAM noise-floor sweep (co2_ramp_seed_sweep.yaml) as a SLURM job array --
+# one independent task per seed (task_id -> seed = task_id + 1) instead of 5
+# subprocesses sharing one job's resources. See CLUSTER_RUNBOOK.md for setup,
+# data prep, and full sizing detail.
 #
-# Submit with:
-#   sbatch scripts/slurm/run_seed_sweep.sbatch
-# Note the printed job ID (call it <ARRAY_JOBID>), then queue the analysis step to run
-# once all 5 tasks are done (successfully or not -- see run_seed_sweep_analyze.sbatch,
-# whose manifest reader already skips non-"success" rows, so e.g. 4/5 seeds still
-# produces a valid, smaller analysis):
+# Submit:  sbatch scripts/slurm/run_seed_sweep.sbatch
+# Then, once all 5 tasks finish (success or not), queue analysis:
 #   sbatch --dependency=afterany:<ARRAY_JOBID> scripts/slurm/run_seed_sweep_analyze.sbatch
-#
-# Retrying a single failed/timed-out seed (task IDs are 0-based, seed = task_id + 1):
+# Retry a single seed (reuses the same scratch dir, only overwrites that seed's run_000N):
 #   sbatch --array=<TASK_ID> scripts/slurm/run_seed_sweep.sbatch
-# This reuses the same fixed scratch output dir, so it only overwrites that seed's
-# run_000N directory -- the other already-succeeded runs are untouched. Re-run the
-# analyze job afterward (new dependency on the retry's job ID) to pick up the fix.
 #
-# One-time setup before first submission (on the login node, needs internet):
-#   git clone -b pam-benchmark-cluster https://github.com/systemiqofficial/steel-iq.git ~/steel-iq && cd ~/steel-iq && uv sync
-#   rsync the already-prepared co2_ramp_authored data dir to
-#   ~/.steelo/preparation_cache/co2_ramp_authored/data (and the authored master Excel to
-#   ~/.steelo/data_cache/master-input-co2-ramp/) rather than re-running
-#   author_carbon_cost_scenario.py + steelo-data-prepare on the cluster -- see
-#   CLUSTER_RUNBOOK.md §2.
+# One-time setup, full data-prep steps, and sizing detail: see CLUSTER_RUNBOOK.md §2/§4.
 #
-# Sizing rationale: smoke test job 27886 (single process, 1 cpu, 2 years 2025-2026)
-# needed 16G and took 3h32m. Each array task here runs the exact same shape of work
-# (1 cpu, 1 process) just for 25 years instead of 2, so that number is directly
-# load-bearing, not a rough proxy across a 5-process aggregate like before. Naive
-# linear extrapolation of the time gives ~44h/seed; budgeted to ~2x that since
-# per-year cost likely grows as more plants/locations accumulate over the run, so
-# early years are probably cheaper than later ones. Memory budgeted to ~3x the
-# 2-year figure for the same reason (state accumulates over simulated years).
-# Refine both from a real peak_rss_mb reading out of the smoke test log if you have
-# one -- these are conservative estimates, not measurements.
+# Sizing: --time=48:00:00 / --mem=32G, from job 27923's real 36.4-39.0h/seed runtime
+# (`sacct`) and a ~20-25G doc-guidance ballpark for memory -- this cluster's SLURM
+# accounting doesn't sample memory (JobAcctGatherType=jobacct_gather/none), so the
+# /usr/bin/time -v wrapper below is the real peak-RSS source instead. --log-level
+# INFO captures the year-by-year operation=/memory_snapshot trend; run the
+# WARNING-vs-INFO precheck in CLUSTER_RUNBOOK.md before trusting a full run's
+# numbers. Partition must stay verylong -- long caps at 6h; confirm cluster tiers
+# with `sinfo -o "%P %l"`.
 
 #SBATCH --job-name=steelo-seed-sweep
-#SBATCH --partition=verylong       # labgpu01 is the cluster's only node; partitions are
-#SBATCH --nodelist=labgpu01        # time-limit tiers (short<=1h/medium<=3h/long<=6h/verylong<=4d).
+#SBATCH --partition=verylong
+#SBATCH --nodelist=labgpu01        # cluster's only node
 #SBATCH --array=0-4                # one task per seed (task_id -> seed = task_id + 1)
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=1          # each seed run is single-threaded -- see run_one.py
-#SBATCH --mem=48G                  # ~3x the smoke test's 16G-at-2-years figure (see above)
-#SBATCH --time=90:00:00            # ~2x the naive 44h/seed linear extrapolation (see above)
-#SBATCH --mail-type=END,FAIL
-#SBATCH --mail-user=jan.tautorus@it-u.at
+#SBATCH --cpus-per-task=1          # single-threaded run, see run_one.py
+#SBATCH --mem=32G
+#SBATCH --time=48:00:00
 #SBATCH --output=logs/seed-sweep-%A_%a.out
 #SBATCH --error=logs/seed-sweep-%A_%a.err
 
 set -euo pipefail
-# `module` is only defined as a shell function in interactive/login shells on this
-# cluster; sbatch runs non-interactively, so it's absent here regardless of array vs
-# single-job. This workflow has no environment-module dependency (plain Python/uv
-# venv), so skip purge entirely when the command isn't available instead of assuming
-# it must succeed.
+# `module` isn't defined in sbatch's non-interactive shell here; skip purge if
+# absent instead of failing (this workflow has no environment-module dependency).
 command -v module >/dev/null 2>&1 && module purge || true
 
 export MPLBACKEND=Agg
@@ -71,8 +48,7 @@ cd "$HOME/steel-iq"
 SEED=$((SLURM_ARRAY_TASK_ID + 1))
 RUN_ID=$(printf "run_%04d" "$SLURM_ARRAY_TASK_ID")
 
-# Fixed (not job-ID-suffixed): a retry of a single failed task must land in the same
-# tree as the other already-succeeded seeds, not a fresh directory.
+# Fixed (not job-ID-suffixed) so a retry lands in the same tree as already-succeeded seeds.
 SCRATCH_OUT="/local/$USER/outputs/co2_ramp_seed_sweep"
 RUN_DIR="$SCRATCH_OUT/$RUN_ID"
 mkdir -p "$RUN_DIR" "$SCRATCH_OUT/manifest_fragments"
@@ -83,21 +59,23 @@ PARAMS_JSON="{\"probabilistic_agents\": false, \"random_seed\": $SEED}"
 
 T0=$(date +%s)
 STATUS="failed"
-if python -m scripts.sensitivity.run_one \
+# /usr/bin/time -v writes peak RSS to stderr (captured by --error), independent of
+# --log-level.
+if /usr/bin/time -v python -m scripts.sensitivity.run_one \
     --data-dir "$HOME/.steelo/preparation_cache/co2_ramp_authored/data" \
     --master-excel "$HOME/.steelo/data_cache/master-input-co2-ramp/master_input.xlsx" \
     --output-dir "$RUN_DIR" \
     --start-year 2025 --end-year 2050 \
+    --log-level INFO \
     --params-json "$PARAMS_JSON"; then
     STATUS="success"
 fi
 T1=$(date +%s)
 DURATION=$((T1 - T0))
 
-# run_one.py's own status.json is authoritative when present (matches run_sweep.py's
-# logic) -- covers the case where the process exits 0 but the run itself failed, or
-# vice versa. If SLURM hard-kills the process (timeout/OOM) before it can write
-# status.json at all, the file won't exist and STATUS stays "failed" from above.
+# status.json (if present) is authoritative -- covers the process exiting 0 while
+# the run itself failed, or vice versa. Absent if SLURM hard-kills the process
+# (timeout/OOM) before it can write one, in which case STATUS stays "failed".
 if [ -f "$RUN_DIR/status.json" ]; then
     STATUS=$(python -c "import json; print(json.load(open('$RUN_DIR/status.json'))['status'])")
 fi

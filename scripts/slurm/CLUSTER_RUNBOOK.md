@@ -94,7 +94,7 @@ visible from the login node, so copy final results back to NFS at job end
 ## 3. Smoke test before the real submission
 
 Grab a short interactive session and run one tiny simulation end-to-end
-before trusting a 10-16 hour batch job to an unverified setup:
+before trusting a 36h+ batch job to an unverified setup:
 ```bash
 salloc --partition=<PARTITION> --nodelist=labgpu01 --cpus-per-task=1 --mem=8G --time=00:30:00
 srun --pty bash
@@ -107,12 +107,9 @@ python -m scripts.sensitivity.run_one \
     --params-json '{"probabilistic_agents": false, "random_seed": 1}'
 ```
 Confirms the whole pipeline (imports, data paths, `/local` writability) works
-on this node/filesystem. While it runs, check `top`/`htop` for that process —
-CPU usage should stay near 1 core. That confirms `OMP_NUM_THREADS=1` (etc.,
-set by `run_sweep.py --threads-per-job`) is actually being honored by
-HiGHS/numpy/BLAS on this platform — otherwise 5 concurrent runs in the real
-job would thread-thrash against each other even though SLURM's cgroup caps
-the job at 5 cores total.
+on this node/filesystem. While it runs, check `top`/`htop` — CPU usage should
+stay near 1 core, confirming HiGHS/numpy/BLAS actually honour single-threaded
+execution on this platform rather than oversubscribing.
 
 ## 4. Submit the sweep
 
@@ -147,14 +144,54 @@ sbatch --array=<TASK_ID> scripts/slurm/run_seed_sweep.sbatch
 ```
 
 Sizing: each array task requests `--cpus-per-task=1` — each run is
-single-threaded since the annual simulation loop is strictly sequential, more
-cores per run doesn't speed one run up. Budgeted from the smoke test (single
-process, 1 cpu, 2 years, 16G peak, 3h32m) with margin: `--mem=48G` (~3x, since
-memory likely grows with accumulated plants/locations over the full 25 years)
-and `--time=90:00:00` (~2x the naive 44h/seed linear extrapolation from the
-smoke test's per-year rate, since per-year cost likely isn't flat either).
-These are conservative estimates, not measurements — tighten them if you get
-a real `peak_rss_mb` reading from a full-length run.
+single-threaded (the annual simulation loop is strictly sequential, more
+cores doesn't speed one run up). `--time=48:00:00` / `--mem=32G` come from
+job `27923`'s real ~36.4-39.0h/seed runtime (`sacct`) and a ~20-25G
+doc-guidance ballpark for memory — see the sbatch file's own header comment
+for the full numbers, including why `sacct` can't supply a real `MaxRSS` on
+this cluster (`JobAcctGatherType=jobacct_gather/none`, confirmed via
+`scontrol show config`, cluster-wide and not fixable from this repo).
+
+**Partition**: confirm `long` really caps at 6h and `verylong` at 4d before
+trusting `--partition=verylong` — `sinfo -o "%P %l"`.
+
+### Capturing fine-grained runtime/memory data
+
+`run_seed_sweep.sbatch` now wraps the run in `/usr/bin/time -v` (real
+peak-RSS, independent of `--log-level` and this cluster's broken accounting)
+and passes `--log-level INFO` (was `WARNING`) to capture `plant_agent.py`'s
+per-stage `operation=<stage> year=<Y> duration_s=<T>` timers and
+`simulation.py`'s `_log_memory_usage` snapshots every year — a year-by-year
+trend instead of one end-of-run number, piggybacked onto the real sweep
+rather than a separate diagnostic job.
+
+**Caution**: `--log-level INFO` also surfaces ~260 other INFO-level log call
+sites across the codebase. `logging_config.yaml`'s `function_overrides` can't
+narrow this to just these two sources — the CLI `--log-level` sets a single
+shared handler threshold (`src/steelo/logging_config.py`), and Python drops
+INFO records before the YAML filter ever runs when the floor is `WARNING`;
+`function_overrides` can only suppress below that floor, never promote above
+it. **Before submitting the real sweep**, rule out logging overhead as a
+confound with a cheap side-by-side (a few minutes, not the real 36h+):
+```bash
+salloc --partition=<PARTITION> --nodelist=labgpu01 --cpus-per-task=1 --mem=8G --time=00:30:00
+srun --pty bash
+source ~/steel-iq/.venv/bin/activate && cd ~/steel-iq
+for LEVEL in WARNING INFO; do
+  /usr/bin/time -v python -m scripts.sensitivity.run_one \
+    --data-dir ~/.steelo/preparation_cache/co2_ramp_authored/data \
+    --master-excel ~/.steelo/data_cache/master-input-co2-ramp/master_input.xlsx \
+    --output-dir /tmp/logcheck_$LEVEL --start-year 2025 --end-year 2027 \
+    --log-level $LEVEL \
+    --params-json '{"probabilistic_agents": false, "random_seed": 1}' \
+    2> /tmp/logcheck_$LEVEL.err
+done
+grep "Elapsed (wall clock)" /tmp/logcheck_*.err   # compare wall time
+wc -l /tmp/logcheck_*.err                          # compare log volume
+```
+If `INFO` adds meaningful wall-time overhead or produces an unmanageably
+large `.err` file, revert `run_seed_sweep.sbatch`'s `--log-level` to
+`WARNING` and rely on `/usr/bin/time -v` alone for this round.
 
 ## 5. Once it finishes
 
