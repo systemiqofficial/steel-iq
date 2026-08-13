@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 BANKED_CREDIT_RULES = ("reassign", "persist", "expire")
 
+# Relative slack on the all-or-nothing sufficiency checks
+_REL_TOL = 1e-9
+
 
 @dataclass(frozen=True)
 class Credit:
@@ -199,6 +202,41 @@ class CapacityPool:
         )
         return expired
 
+    def can_withdraw(
+        self,
+        amount_mt: float,
+        region_tag: str | None,
+        product: str,
+        owner_id: str,
+        year: int,
+        single_owner: bool = False,
+    ) -> str | None:
+        """Non-consuming feasibility check: would :meth:`try_withdraw` grant this?
+
+        Applies exactly the rules of :meth:`try_withdraw` — the applicable-pool
+        filters, the sufficiency sum, and the single-holder selection — without
+        consuming anything, so a gate can probe fundability before committing
+        (the greenfield pre-draw probe) or a diagnostic can ask without
+        touching state.
+
+        Args:
+            Same as :meth:`try_withdraw`.
+
+        Returns:
+            None when the withdrawal would be granted, else the
+            ``blocked_reason`` it would be refused with.
+        """
+        applicable_credits = [
+            c for c in self._credits if self._is_applicable(c, region_tag, product, owner_id, year, single_owner)
+        ]
+        if sum(c.amount_mt for c in applicable_credits) < amount_mt * (1.0 - _REL_TOL):
+            return "insufficient_applicable_pool"
+        if single_owner:
+            found, _ = self._select_single_holder(applicable_credits, amount_mt)
+            if not found:
+                return "no_single_owner_with_sufficient_credits"
+        return None
+
     def try_withdraw(
         self,
         amount_mt: float,
@@ -246,24 +284,18 @@ class CapacityPool:
         def applicable(credit: Credit) -> bool:
             return self._is_applicable(credit, region_tag, product, owner_id, year, single_owner)
 
-        applicable_credits = [c for c in self._credits if applicable(c)]
-        if sum(c.amount_mt for c in applicable_credits) < amount_mt:
+        blocked_reason = self.can_withdraw(amount_mt, region_tag, product, owner_id, year, single_owner)
+        if blocked_reason is not None:
             return WithdrawResult(
                 granted=False,
                 credits_consumed=(),
                 attributed_owner_id=None,
-                blocked_reason="insufficient_applicable_pool",
+                blocked_reason=blocked_reason,
             )
 
         if single_owner:
-            found, holder = self._select_single_holder(applicable_credits, amount_mt)
-            if not found:
-                return WithdrawResult(
-                    granted=False,
-                    credits_consumed=(),
-                    attributed_owner_id=None,
-                    blocked_reason="no_single_owner_with_sufficient_credits",
-                )
+            applicable_credits = [c for c in self._credits if applicable(c)]
+            _, holder = self._select_single_holder(applicable_credits, amount_mt)
             consumed = self._consume(amount_mt, lambda c: c.owner_id == holder and applicable(c))
             return WithdrawResult(
                 granted=True,
@@ -374,6 +406,8 @@ class CapacityPool:
         for credit in self._credits:
             if remaining > 0 and wanted(credit):
                 take = min(credit.amount_mt, remaining)
+                if credit.amount_mt - take <= credit.amount_mt * _REL_TOL:
+                    take = credit.amount_mt
                 consumed.append(replace(credit, amount_mt=take))
                 remaining -= take
                 if take < credit.amount_mt:
@@ -402,6 +436,6 @@ class CapacityPool:
                 first_seen.append(credit.owner_id)
             totals[credit.owner_id] = totals.get(credit.owner_id, 0.0) + credit.amount_mt
         for holder in first_seen:
-            if totals[holder] >= amount_mt:
+            if totals[holder] >= amount_mt * (1.0 - _REL_TOL):
                 return True, holder
         return False, None

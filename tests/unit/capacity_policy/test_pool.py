@@ -485,3 +485,66 @@ def test_refund_past_validity_survives_only_to_the_next_purge():
     assert pool.total() == 1.0
     assert len(pool.purge_expired(2023)) == 1
     assert pool.total() == 0.0
+
+
+def test_can_withdraw_probes_without_consuming():
+    """The probe answers with the blocked reason (or None) and touches nothing."""
+    pool = CapacityPool()
+    pool.deposit(make_credit(amount_mt=1.0, owner_id="owner-a"))
+    pool.deposit(make_credit(amount_mt=1.5, vintage_year=2021, owner_id="owner-b"))
+
+    assert pool.can_withdraw(2.0, region_tag=None, product="steel", owner_id="anyone", year=PRE_CUTOFF_YEAR) is None
+    assert (
+        pool.can_withdraw(3.0, region_tag=None, product="steel", owner_id="anyone", year=PRE_CUTOFF_YEAR)
+        == "insufficient_applicable_pool"
+    )
+    assert (
+        pool.can_withdraw(
+            2.0, region_tag=None, product="steel", owner_id="indi_CHN", year=PRE_CUTOFF_YEAR, single_owner=True
+        )
+        == "no_single_owner_with_sufficient_credits"
+    )
+    assert pool.total() == pytest.approx(2.5)
+    assert len(pool.snapshot()) == 2
+
+
+def test_can_withdraw_agrees_with_try_withdraw():
+    """A None probe is a granted withdrawal; a reason is the same refusal, verbatim."""
+    pool = CapacityPool()
+    pool.deposit(make_credit(amount_mt=1.0, owner_id="owner-a"))
+
+    reason = pool.can_withdraw(1.0, region_tag=None, product="steel", owner_id="owner-a", year=PRE_CUTOFF_YEAR)
+    result = pool.try_withdraw(1.0, region_tag=None, product="steel", owner_id="owner-a", year=PRE_CUTOFF_YEAR)
+    assert reason is None and result.granted is True
+
+    reason = pool.can_withdraw(1.0, region_tag=None, product="steel", owner_id="owner-a", year=PRE_CUTOFF_YEAR)
+    result = pool.try_withdraw(1.0, region_tag=None, product="steel", owner_id="owner-a", year=PRE_CUTOFF_YEAR)
+    assert reason == result.blocked_reason == "insufficient_applicable_pool"
+
+
+def test_float_dust_does_not_block_an_exactly_fundable_withdrawal():
+    """Credits built from division arithmetic can sum an epsilon short of the
+    requested amount; the relative tolerance keeps all-or-nothing honest."""
+    pool = CapacityPool()
+    # 0.1 + 0.7 sums to 0.7999999999999999 in floats — an epsilon short of 0.8
+    pool.deposit(make_credit(amount_mt=0.1, vintage_year=2019, owner_id=None))
+    pool.deposit(make_credit(amount_mt=0.7, vintage_year=2020, owner_id=None))
+    assert sum(c.amount_mt for c in pool.snapshot()) < 0.8  # the epsilon this test exists for
+
+    result = pool.try_withdraw(0.8, region_tag=None, product="steel", owner_id="anyone", year=PRE_CUTOFF_YEAR)
+
+    assert result.granted is True
+    assert pool.total() == pytest.approx(0.0, abs=1e-9)
+
+
+def test_partial_split_absorbs_dust_instead_of_keeping_a_sliver():
+    """A remainder below the relative tolerance is consumed with the slice, so no
+    near-zero credit lingers in the queue or the state snapshots."""
+    pool = CapacityPool()
+    pool.deposit(make_credit(amount_mt=1.0))
+
+    result = pool.try_withdraw(1.0 - 5e-11, region_tag=None, product="steel", owner_id="owner-a", year=PRE_CUTOFF_YEAR)
+
+    assert result.granted is True
+    assert pool.snapshot() == ()  # dust absorbed, not kept
+    assert result.credits_consumed[0].amount_mt == pytest.approx(1.0)
