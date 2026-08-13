@@ -28,17 +28,21 @@
 #   apply_scenario_overrides.py on the cluster.
 #
 # Sizing rationale (updated with real job 27923 data, all 5 seeds succeeded):
-# real elapsed runtime was ~36h/seed for the full 25-year run (2025-2050) -- this
-# replaces the old 44h naive-linear-extrapolation guess. --time=48:00:00 below keeps
-# ~33% margin over that; tighten further only once multiple full runs confirm 36h
-# holds across all 5 seeds and the per-year cost curve doesn't accelerate late in
+# real elapsed runtime for the full 25-year run (2025-2050) ranged 36.4h-39.0h across
+# all 5 seeds (worst case: 39h01m) -- this replaces the old 44h naive-linear-
+# extrapolation guess. --time=48:00:00 below keeps ~23% margin over the observed
+# worst case, not a huge cushion -- if the --log-level INFO change below (not yet
+# measured for overhead) pushes wall time up meaningfully, bump toward 60:00:00
+# rather than trust a tight margin. Tighten further only once multiple full runs
+# confirm this range holds and the per-year cost curve doesn't accelerate late in
 # the run -- this run is now the one collecting that data, see --log-level note below.
 #
-# --mem=32G is a ballpark, not a measurement: it sits above the ~20-25G range the
-# model docs suggest for a full run. Real peak-RSS is now captured two
-# log-level-independent ways: `sacct -j <this job> --format=JobID,Elapsed,MaxRSS,
-# MaxVMSize,State --units=G` (SLURM's own accounting) and the /usr/bin/time -v
-# wrapper below (writes "Maximum resident set size" to the .err log).
+# --mem=32G is a ballpark, not a measurement. `sacct -j 27923 --format=JobID,Elapsed,
+# MaxRSS,MaxVMSize,State --units=G` came back with MaxRSS blank for every task --
+# this cluster's SLURM accounting isn't sampling memory at all (JobAcctGatherType
+# likely "none"; confirm with `scontrol show config | grep -i JobAcctGather`), so
+# there is no retroactive real number to pull. The /usr/bin/time -v wrapper below is
+# now the only real peak-RSS source, in-app-log-level-independent, for future runs.
 #
 # Partition: this cluster's tiers (short<=1h/medium<=3h/long<=6h/verylong<=4d) mean
 # --time=48:00:00 only fits verylong -- long's 6h cap is nowhere near enough.
@@ -57,7 +61,7 @@
 # cheap short check first (see CLUSTER_RUNBOOK.md): a 2-3 year salloc run at
 # --log-level WARNING vs --log-level INFO, comparing wall time and .err log size.
 # If INFO turns out to add meaningful overhead or unmanageable log volume, revert
-# this to WARNING and fall back to the sacct/time -v numbers only.
+# this to WARNING and fall back to the /usr/bin/time -v numbers only.
 
 #SBATCH --job-name=steelo-seed-sweep
 #SBATCH --partition=verylong       # labgpu01 is the cluster's only node; partitions are time-limit

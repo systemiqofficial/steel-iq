@@ -137,15 +137,20 @@ single-threaded since the annual simulation loop is strictly sequential, more
 cores per run doesn't speed one run up.
 
 Job `27923` (all 5 seeds, full 25-year runs) is real measured data, not the
-old 2-year smoke-test extrapolation: elapsed runtime was **~36h/seed**.
-`--time=48:00:00` keeps ~33% margin over that. `--mem=32G` is still a
-**ballpark**, not a measurement — job 27923 ran at the default
-`--log-level WARNING`, so the in-app `peak_rss_mb` snapshots
-(`simulation.py`'s `_log_memory_usage`) were never emitted to its logs, and
+old 2-year smoke-test extrapolation: `sacct` gives elapsed runtime ranging
+**36.4h-39.0h** across the 5 seeds (worst case 39h01m).
+`--time=48:00:00` keeps ~23% margin over that worst case — real, but not
+huge, and it doesn't yet account for the `--log-level INFO` change below
+(untested for overhead) eating into it. `--mem=32G` is still a **ballpark**,
+not a measurement: `sacct`'s `MaxRSS` column came back **blank** for all 5
+tasks of job 27923 — this cluster's SLURM accounting isn't sampling memory at
+all (confirm with `scontrol show config | grep -i JobAcctGather`; likely
+`jobacct_gather/none`), so there's no retroactive real number to pull here.
 32G is chosen only because it sits comfortably above the ~20-25G the model
-docs suggest for a full run. Pull a real number instead — see "Capturing
-fine-grained runtime/memory data" below, both parts of which are now baked
-into `run_seed_sweep.sbatch` for the next submission.
+docs suggest for a full run. See "Capturing fine-grained runtime/memory data"
+below — both parts are now baked into `run_seed_sweep.sbatch` for the next
+submission, and are the only way left to get a real memory number since
+`sacct` can't provide one on this cluster.
 
 **Partition**: `--time=48:00:00` only fits `verylong` on this cluster's tiers
 (`short<=1h/medium<=3h/long<=6h/verylong<=4d`, per the sbatch file's own
@@ -156,12 +161,12 @@ real limits before relying on this: `sinfo -o "%P %l"`.
 
 `run_seed_sweep.sbatch` now captures both automatically:
 
-1. **Coarse peak-RSS/runtime, zero extra cost**: wrapped in `/usr/bin/time
+1. **Peak-RSS/runtime, zero app-logging cost**: wrapped in `/usr/bin/time
    -v`, so every run's `.err` log carries a "Maximum resident set size"
-   reading independent of `--log-level`. (The same data is also retrievable
-   after the fact for any past job via SLURM's own accounting: `sacct -j
-   <jobid> --format=JobID,Elapsed,MaxRSS,MaxVMSize,State --units=G` — no
-   rerun needed, e.g. for job 27923.)
+   reading independent of `--log-level`. This is now the only source of a
+   real memory number on this cluster — `sacct`'s `MaxRSS` doesn't work here
+   (see above), so unlike runtime, memory can't be pulled retroactively for
+   past jobs; it only starts working from the next submission onward.
 
 2. **Fine-grained, per-year trend**: the script now passes `--log-level INFO`
    (was `WARNING`) to `run_one.py`, turning on `plant_agent.py`'s
