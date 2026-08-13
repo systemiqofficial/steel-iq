@@ -27,26 +27,38 @@
 #   ~/.steelo/data_cache/master-input-2026-08-07/) rather than re-running
 #   apply_scenario_overrides.py on the cluster.
 #
-# Sizing rationale: smoke test job 27886 (single process, 1 cpu, 2 years 2025-2026)
-# needed 16G and took 3h32m. Each array task here runs the exact same shape of work
-# (1 cpu, 1 process) just for 25 years instead of 2, so that number is directly
-# load-bearing, not a rough proxy across a 5-process aggregate like before. Naive
-# linear extrapolation of the time gives ~44h/seed; budgeted to ~2x that since
-# per-year cost likely grows as more plants/locations accumulate over the run, so
-# early years are probably cheaper than later ones. Memory budgeted to ~3x the
-# 2-year figure for the same reason (state accumulates over simulated years).
-# Refine both from a real peak_rss_mb reading out of the smoke test log if you have
-# one -- these are conservative estimates, not measurements.
+# Sizing rationale (updated with real job 27923 data, all 5 seeds succeeded):
+# real elapsed runtime was ~36h/seed for the full 25-year run (2025-2050) -- this
+# replaces the old 44h naive-linear-extrapolation guess. --time=48:00:00 below keeps
+# ~33% margin over that; tighten further only once multiple full runs confirm 36h
+# holds across all 5 seeds and the per-year cost curve doesn't accelerate late in
+# the run (unconfirmed -- see CLUSTER_RUNBOOK.md's "Capturing fine-grained
+# runtime/memory data" section for how to check).
+#
+# --mem=32G is a ballpark, not a measurement: it sits above the ~20-25G range the
+# model docs suggest for a full run, but job 27923's own logs ran at the default
+# --log-level WARNING, so the in-app peak_rss_mb snapshots (simulation.py's
+# _log_memory_usage) were never emitted -- see SWEEP_DIAGNOSTICS_HANDOFF.md. Pull a
+# real number instead of trusting this ballpark: SLURM's own accounting sampled
+# memory independently of app log level, so
+#   sacct -j 27923 --format=JobID,Elapsed,MaxRSS,MaxVMSize,State --units=G
+# gives a real peak-RSS reading for all 5 already-completed tasks with no rerun
+# needed. The /usr/bin/time -v wrapper added below captures the same thing (Maximum
+# resident set size) for every future run as a second, log-level-independent check.
+#
+# Partition: this cluster's tiers (short<=1h/medium<=3h/long<=6h/verylong<=4d) mean
+# --time=48:00:00 only fits verylong -- long's 6h cap is nowhere near enough.
+# Confirm the real limits before trusting this: sinfo -o "%P %l".
 
 #SBATCH --job-name=steelo-seed-sweep
-#SBATCH --partition=verylong       # labgpu01 is the cluster's only node; partitions are
-#SBATCH --nodelist=labgpu01        # time-limit tiers (short<=1h/medium<=3h/long<=6h/verylong<=4d).
-#SBATCH --array=0-4                # one task per seed (task_id -> seed = task_id + 1)
+#SBATCH --partition=verylong       # labgpu01 is the cluster's only node; partitions are time-limit
+#SBATCH --nodelist=labgpu01        # tiers (short<=1h/medium<=3h/long<=6h/verylong<=4d) -- confirm on
+#SBATCH --array=0-4                # the real cluster with `sinfo -o "%P %l"`. One task per seed (task_id -> seed = task_id + 1)
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1          # each seed run is single-threaded -- see run_one.py
-#SBATCH --mem=48G                  # ~3x the smoke test's 16G-at-2-years figure (see above)
-#SBATCH --time=90:00:00            # ~2x the naive 44h/seed linear extrapolation (see above)
+#SBATCH --mem=32G                  # ballpark above the ~20-25G doc guidance -- see sacct note above
+#SBATCH --time=48:00:00            # ~33% margin over the real ~36h/seed measured in job 27923
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=jan.tautorus@it-u.at
 #SBATCH --output=logs/seed-sweep-%A_%a.out
@@ -82,7 +94,11 @@ PARAMS_JSON="{\"probabilistic_agents\": false, \"random_seed\": $SEED}"
 
 T0=$(date +%s)
 STATUS="failed"
-if python -m scripts.sensitivity.run_one \
+# /usr/bin/time -v writes "Maximum resident set size" (KB) plus CPU/wall stats to
+# stderr, already captured by --error above -- a real peak-RSS reading independent
+# of the app's own --log-level, so it's captured on every run regardless of whether
+# --log-level is raised for the fine-grained operation=/memory_snapshot logs below.
+if /usr/bin/time -v python -m scripts.sensitivity.run_one \
     --data-dir "$HOME/.steelo/preparation_cache/co2_ramp_scenario/data" \
     --master-excel "$HOME/.steelo/data_cache/master-input-2026-08-07/master_input.xlsx" \
     --output-dir "$RUN_DIR" \

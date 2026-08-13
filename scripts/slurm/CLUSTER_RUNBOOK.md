@@ -134,13 +134,62 @@ sbatch --array=<TASK_ID> scripts/slurm/run_seed_sweep.sbatch
 
 Sizing: each array task requests `--cpus-per-task=1` — each run is
 single-threaded since the annual simulation loop is strictly sequential, more
-cores per run doesn't speed one run up. Budgeted from the smoke test (single
-process, 1 cpu, 2 years, 16G peak, 3h32m) with margin: `--mem=48G` (~3x, since
-memory likely grows with accumulated plants/locations over the full 25 years)
-and `--time=90:00:00` (~2x the naive 44h/seed linear extrapolation from the
-smoke test's per-year rate, since per-year cost likely isn't flat either).
-These are conservative estimates, not measurements — tighten them if you get
-a real `peak_rss_mb` reading from a full-length run.
+cores per run doesn't speed one run up.
+
+Job `27923` (all 5 seeds, full 25-year runs) is real measured data, not the
+old 2-year smoke-test extrapolation: elapsed runtime was **~36h/seed**.
+`--time=48:00:00` keeps ~33% margin over that. `--mem=32G` is still a
+**ballpark**, not a measurement — job 27923 ran at the default
+`--log-level WARNING`, so the in-app `peak_rss_mb` snapshots
+(`simulation.py`'s `_log_memory_usage`) were never emitted to its logs, and
+32G is chosen only because it sits comfortably above the ~20-25G the model
+docs suggest for a full run. Pull a real number before trusting it further —
+see "Capturing fine-grained runtime/memory data" below.
+
+**Partition**: `--time=48:00:00` only fits `verylong` on this cluster's tiers
+(`short<=1h/medium<=3h/long<=6h/verylong<=4d`, per the sbatch file's own
+comment) — `long`'s 6h cap is nowhere near enough for a 36h+ run. Confirm the
+real limits before relying on this: `sinfo -o "%P %l"`.
+
+### Capturing fine-grained runtime/memory data
+
+Two independent ways to measure, in order of effort:
+
+1. **Retroactive, zero rerun**: SLURM's own accounting samples memory
+   independently of the app's log level, so a real peak-RSS reading for
+   already-completed job 27923 (or any past job) is one command away:
+   ```bash
+   sacct -j 27923 --format=JobID,Elapsed,MaxRSS,MaxVMSize,State --units=G
+   ```
+   `run_seed_sweep.sbatch` now also wraps its `python -m
+   scripts.sensitivity.run_one` call in `/usr/bin/time -v`, so every future
+   run's `.err` log carries the same "Maximum resident set size" reading for
+   free, regardless of `--log-level`.
+
+2. **Fine-grained, per-year trend**: `run_one.py --log-level INFO` (default
+   is `WARNING`) turns on `plant_agent.py`'s per-pipeline-stage
+   `operation=<stage> year=<Y> duration_s=<T>` timers and `simulation.py`'s
+   `_log_memory_usage` snapshots (`rss_mb`/`peak_rss_mb` at
+   `simulation_start`, every `year_complete`, and `simulation_end`) — the
+   only way to get a year-by-year curve instead of one end-of-run number.
+   **`logging_config.yaml`'s `function_overrides` cannot substitute for
+   this**: the CLI `--log-level` sets a single shared handler threshold
+   (`src/steelo/logging_config.py`'s `configure_from_yaml`), and Python's own
+   logger-level check drops INFO records before the YAML filter ever sees
+   them when the CLI floor is `WARNING`. `function_overrides` can only
+   *suppress* a function below the CLI floor, never promote one above it —
+   so there's no way to turn on just these two sources' INFO output while
+   leaving everything else at `WARNING`. Once `--log-level INFO` is set,
+   though, `function_overrides` (already suppressing
+   `calculate_unit_production_cost`, `extract_price_from_costcurve`,
+   `get_bom_from_avg_boms`) can quiet other noisy INFO sources you find in a
+   real run's output.
+   Before trusting numbers from an INFO-level run, sanity-check that the
+   extra logging itself isn't a meaningful confound (a short 2-3 year
+   `WARNING` vs `INFO` side-by-side should be enough to rule this out or
+   quantify it). Whether to piggyback this on a future real sweep or spend a
+   dedicated diagnostic run is a cluster-time-cost call, not this doc's to
+   make.
 
 ## 5. Once it finishes
 
