@@ -207,6 +207,7 @@ class GeospatialModel:
                 pg.update_dynamic_costs_for_business_opportunities(
                     current_year=bus.env.year,
                     consideration_time=bus.env.config.consideration_time,
+                    construction_time=bus.env.config.construction_time,
                     custom_energy_costs=custom_energy_costs,  # type: ignore[arg-type]  # needed to avoid importing xarray into the domain
                     capex_dict_all_locs=bus.env.name_to_capex["greenfield"],
                     cost_debt_all_locs=bus.env.cost_of_debt_by_tech,

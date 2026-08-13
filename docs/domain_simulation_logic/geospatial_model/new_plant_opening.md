@@ -14,7 +14,7 @@ Business opportunities progress through the following stages:
 The system updates the costs and status of business opportunities each simulation year:
 1. **Update Dynamic Costs**
    - Refresh CAPEX, cost of debt, and energy prices for all carriers
-   - Apply subsidies based on earliest construction start year
+   - Apply subsidies (CAPEX and debt at the earliest construction start year; energy carriers at the operating start year that follows it)
    - Update bill of materials with new energy prices
 
 2. **Update Status**
@@ -239,23 +239,24 @@ Updates dynamic costs for all CONSIDERED and ANNOUNCED business opportunities ea
   - `output_energy_costs`: subsidised output prices (increased by subsidy for physical carriers) — used for by-product revenue
   - `energy_costs_no_subsidy`: original unsubsidised prices — used as baseline for yearly refresh
 - Electricity and hydrogen prices sourced from the geospatial layer (custom power mix / capped LCOH); other carriers from the furnace group's existing cost base
+- Energy subsidies are collected for the plant's geography (country and province rows apply additively) and filtered at the operating start year (construction start + construction time), matching opportunity creation and the plant agent model
 - Bill of materials (updated with new subsidised input energy prices)
 
 **Note:** For more information on the electricity and hydrogen prices see related documentation [Priority Location Selection](priority_location_selection.md).
 
 **Target Year Calculation:**
 
-The system uses subsidies from the earliest construction start year, reflecting that subsidies are often announced in advance.
+The system uses CAPEX and debt subsidies from the earliest construction start year, reflecting that subsidies are often announced in advance. Energy subsidies use the operating start year (construction start + construction time), because subsidised carrier prices are what the plant pays once it is running.
 
-| Status | Target Year | Reasoning |
-|--------|-------------|-----------|
-| CONSIDERED | `current + consideration_time + 1 - years_considered` | Earliest construction start based on consideration progress |
+| Status | Target Year (construction start) | Reasoning |
+|--------|---------------------------------|-----------|
+| CONSIDERED | `max(current + consideration_time + 1 - years_considered, current + 1)` | Earliest construction start based on consideration progress, floored at the soonest path still open (announce now, construct from next year) — the same floor the NPV re-valuation applies |
 | ANNOUNCED | `current + 1` | Next year (announcement time = 1) |
 
 **Process:**
 For each business opportunity:
-1. Calculate appropriate target year based on opportunity status
-2. Filter subsidies active in target year and calculate new costs
+1. Calculate the construction start year based on opportunity status
+2. Filter CAPEX and debt subsidies at that year, energy subsidies at construction start + construction time, and calculate new costs
 3. Update bill of materials with new energy prices
 4. Skip updates if costs haven't changed and update modified costs
 

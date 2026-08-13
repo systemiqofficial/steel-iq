@@ -6256,6 +6256,7 @@ class PlantGroup:
         self,
         current_year: Year,
         consideration_time: int,
+        construction_time: int,
         custom_energy_costs: dict,
         capex_dict_all_locs: dict[str, dict[str, float]],
         cost_debt_all_locs: dict[str, dict[str, float]],
@@ -6277,13 +6278,17 @@ class PlantGroup:
         Dynamic costs are updated based on the following logic:
             - Base costs: CAPEX, cost of debt, electricity costs, and hydrogen costs are set to the
               current year.
-            - Subsidies: the subsidies which are applied on top of CAPEX and cost of debt are set to
-              the target year, which is the [current year + consideration time + announcement time -
-              years considered] for considered BOs and [current year + 1] for announced BOs.
+            - CAPEX and debt subsidies: set to the construction start year, which is the [current year
+              + consideration time + announcement time - years considered] for considered BOs and
+              [current year + 1] for announced BOs, floored at [current year + 1].
+            - Energy subsidies: set to the operating start year [construction start + construction
+              time], since subsidised carrier prices are what the plant pays once running. This matches
+              opportunity creation, PAM and the window the score series prices.
 
         Args:
             current_year: Current simulation year
             consideration_time: Number of years to consider before announcement
+            construction_time: Years to build the plant, offsetting construction start to operating start
             custom_energy_costs: Dictionary containing power_price and capped_lcoh data arrays
             capex_dict_all_locs: Dictionary mapping region -> tech -> capex
             cost_debt_all_locs: Dictionary mapping iso3 -> tech -> cost of debt
@@ -6358,9 +6363,12 @@ class PlantGroup:
                             years_already_considered = len(fg.historical_npv_business_opportunities)
                         else:
                             years_already_considered = 0
+                        # Floored at the soonest path still open to a considered opportunity:
+                        # announce now, construct from next year (mirrors track_business_opportunities)
                         year = Year(
-                            current_year + consideration_time + 1 - years_already_considered
+                            max(current_year + consideration_time + 1 - years_already_considered, current_year + 1)
                         )  # announcement_time = 1
+                    operating_start_year = Year(year + construction_time)
 
                     selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, year)
                     selected_capex_subsidies = filter_subsidies_for_year(all_capex_subsidies, year)
@@ -6407,7 +6415,7 @@ class PlantGroup:
                         all_subs = collect_subsidies_for_geo(carrier_subs, plant.location.geo_key).get(
                             fg.technology.name, []
                         )
-                        active = filter_subsidies_for_year(all_subs, year)
+                        active = filter_subsidies_for_year(all_subs, operating_start_year)
                         if active:
                             active_energy_subs[carrier] = active
 
@@ -6424,7 +6432,7 @@ class PlantGroup:
                         )
                         sub_summary = ", ".join(f"{len(s)} {c}" for c, s in active_energy_subs.items())
                         logger.debug(
-                            f"[NEW PLANTS] {iso3}/{fg.technology.name} year={year} Subs: {sub_summary}",
+                            f"[NEW PLANTS] {iso3}/{fg.technology.name} year={operating_start_year} Subs: {sub_summary}",
                         )
                     else:
                         new_energy_costs = dict(base_costs)
