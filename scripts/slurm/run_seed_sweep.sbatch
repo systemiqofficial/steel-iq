@@ -32,23 +32,32 @@
 # replaces the old 44h naive-linear-extrapolation guess. --time=48:00:00 below keeps
 # ~33% margin over that; tighten further only once multiple full runs confirm 36h
 # holds across all 5 seeds and the per-year cost curve doesn't accelerate late in
-# the run (unconfirmed -- see CLUSTER_RUNBOOK.md's "Capturing fine-grained
-# runtime/memory data" section for how to check).
+# the run -- this run is now the one collecting that data, see --log-level note below.
 #
 # --mem=32G is a ballpark, not a measurement: it sits above the ~20-25G range the
-# model docs suggest for a full run, but job 27923's own logs ran at the default
-# --log-level WARNING, so the in-app peak_rss_mb snapshots (simulation.py's
-# _log_memory_usage) were never emitted -- see SWEEP_DIAGNOSTICS_HANDOFF.md. Pull a
-# real number instead of trusting this ballpark: SLURM's own accounting sampled
-# memory independently of app log level, so
-#   sacct -j 27923 --format=JobID,Elapsed,MaxRSS,MaxVMSize,State --units=G
-# gives a real peak-RSS reading for all 5 already-completed tasks with no rerun
-# needed. The /usr/bin/time -v wrapper added below captures the same thing (Maximum
-# resident set size) for every future run as a second, log-level-independent check.
+# model docs suggest for a full run. Real peak-RSS is now captured two
+# log-level-independent ways: `sacct -j <this job> --format=JobID,Elapsed,MaxRSS,
+# MaxVMSize,State --units=G` (SLURM's own accounting) and the /usr/bin/time -v
+# wrapper below (writes "Maximum resident set size" to the .err log).
 #
 # Partition: this cluster's tiers (short<=1h/medium<=3h/long<=6h/verylong<=4d) mean
 # --time=48:00:00 only fits verylong -- long's 6h cap is nowhere near enough.
 # Confirm the real limits before trusting this: sinfo -o "%P %l".
+#
+# --log-level INFO (below, was WARNING) turns on plant_agent.py's per-stage
+# operation=<stage> year=<Y> duration_s=<T> timers and simulation.py's
+# _log_memory_usage peak_rss_mb snapshots every year -- the year-by-year trend
+# CLUSTER_RUNBOOK.md's "Capturing fine-grained runtime/memory data" section asks
+# for, piggybacked onto this real sweep rather than a separate diagnostic run.
+# CAUTION: this also surfaces every other INFO-level log in the codebase (~260
+# call sites across geo/pam/tm), not just these two sources -- logging_config.yaml's
+# function_overrides can only suppress a function, never promote one above the CLI
+# floor, so there's no way to isolate just these two without also seeing the rest.
+# Before trusting this run's numbers, rule out logging itself as a confound with a
+# cheap short check first (see CLUSTER_RUNBOOK.md): a 2-3 year salloc run at
+# --log-level WARNING vs --log-level INFO, comparing wall time and .err log size.
+# If INFO turns out to add meaningful overhead or unmanageable log volume, revert
+# this to WARNING and fall back to the sacct/time -v numbers only.
 
 #SBATCH --job-name=steelo-seed-sweep
 #SBATCH --partition=verylong       # labgpu01 is the cluster's only node; partitions are time-limit
@@ -103,6 +112,7 @@ if /usr/bin/time -v python -m scripts.sensitivity.run_one \
     --master-excel "$HOME/.steelo/data_cache/master-input-2026-08-07/master_input.xlsx" \
     --output-dir "$RUN_DIR" \
     --start-year 2025 --end-year 2050 \
+    --log-level INFO \
     --params-json "$PARAMS_JSON"; then
     STATUS="success"
 fi
