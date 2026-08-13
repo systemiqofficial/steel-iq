@@ -1,15 +1,10 @@
 #!/bin/bash
-# Post-processing step for run_seed_sweep.sbatch's array job: merges each task's
-# manifest fragment into one manifest.csv, copies results to the persistent home-dir
-# tree, then runs analyze_seed_sensitivity.py.
-#
-# Submit only after the array job (all 5 tasks) has finished, successfully or not --
-# analyze_seed_sensitivity.py's manifest reader already skips non-"success" rows, so
-# partial results (e.g. 4/5 seeds) still produce a valid, smaller analysis:
+# Post-processing for run_seed_sweep.sbatch's array job: merges each task's manifest
+# fragment into one manifest.csv, runs analyze_seed_sensitivity.py, and syncs results
+# to NFS home. Submit only after all 5 array tasks finish, successfully or not --
+# the manifest reader skips non-"success" rows, so partial results still work:
 #   sbatch --dependency=afterany:<ARRAY_JOBID> scripts/slurm/run_seed_sweep_analyze.sbatch
-#
-# If you later retry a failed seed with `sbatch --array=<TASK_ID> run_seed_sweep.sbatch`,
-# re-run this analyze job afterward (depending on the retry's job ID) to fold the fix in.
+# Re-run after retrying any failed seed to fold the fix into the analysis.
 
 #SBATCH --job-name=steelo-seed-sweep-analyze
 #SBATCH --partition=short
@@ -19,8 +14,6 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=8G
 #SBATCH --time=00:30:00
-#SBATCH --mail-type=END,FAIL
-#SBATCH --mail-user=jan.tautorus@it-u.at
 #SBATCH --output=logs/seed-sweep-analyze-%j.out
 #SBATCH --error=logs/seed-sweep-analyze-%j.err
 
