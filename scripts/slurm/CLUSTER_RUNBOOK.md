@@ -50,6 +50,20 @@ The CO2-ramp scenario is authored directly into a clone of the master Excel's
 then prepared through the normal `steelo-data-prepare` pipeline — no separate
 post-prep patch step, unlike earlier versions of this workflow.
 
+**Run `steelo-data-prepare` on the cluster, not on Windows.** Its console
+output has a pre-existing Windows-only crash (`UnicodeEncodeError` on rich's
+checkmark glyphs under the cp1252 codepage) that can hit *after* all fixture
+files are written, making the run look fully successful even when it wasn't.
+That's a real trap: `recreate_fallback_material_costs` in
+`src/steelo/data/recreation_functions.py` catches any read failure and
+silently writes an empty `fallback_material_costs.json` with only a
+`[yellow]` console warning — easy to miss, especially if the console then
+crashes on a later print before you'd scroll back to see it. It only
+surfaced once, hours into a real cluster run, as `Run failed: No fallback
+material costs loaded from fixtures`. Preparing on the cluster's Linux
+console sidesteps the crash entirely, and also means only the ~50MB authored
+Excel needs to cross the network, not the ~900MB prepared fixture tree.
+
 **Step 1 — author the scenario workbook**, on whichever machine holds the
 real master Excel (this only reads it; the original stays untouched as the
 source of truth):
@@ -60,28 +74,35 @@ uv run python -m scripts.sensitivity.author_carbon_cost_scenario \
     --output-path ~/.steelo/data_cache/master-input-co2-ramp/master_input.xlsx
 ```
 
-**Step 2 — prepare fixtures from the authored workbook:**
+**Step 2 — get the authored workbook onto the cluster's NFS home** (the real
+master Excel never needs to leave the machine that holds it):
+```bash
+rsync -av ~/.steelo/data_cache/master-input-co2-ramp/master_input.xlsx \
+    <cluster-host>:~/.steelo/data_cache/master-input-co2-ramp/master_input.xlsx
+```
+
+**Step 3 — prepare fixtures on the cluster**, from the authored workbook now
+sitting there. `--no-skip-existing` matters if `--output-dir` was ever
+populated before (e.g. by an earlier, possibly-broken run) -- by default
+`steelo-data-prepare` treats any file already present at the destination as
+done and leaves it alone (`skip_existing=True` in
+`src/steelo/data/preparation.py`), so a stale/broken fixture from a prior
+run silently survives a "successful" re-prep otherwise:
 ```bash
 uv run steelo-data-prepare \
     --master-excel ~/.steelo/data_cache/master-input-co2-ramp/master_input.xlsx \
-    --output-dir ~/.steelo/preparation_cache/co2_ramp_authored/data
+    --output-dir ~/.steelo/preparation_cache/co2_ramp_authored/data \
+    --no-skip-existing
 ```
-Spot-check a couple of countries afterward — `carbon_costs.json`'s per-ISO3
-`carbon_cost` series should read `{"2025": 0.0, "2030": 60.0, "2035": 120.0,
-"2040": 180.0, "2045": 180.0, "2050": 180.0}` uniformly.
+Spot-check afterward:
+- `carbon_costs.json`'s per-ISO3 `carbon_cost` series should read
+  `{"2025": 0.0, "2030": 60.0, "2035": 120.0, "2040": 180.0, "2045": 180.0,
+  "2050": 180.0}` uniformly.
+- `fixtures/fallback_material_costs.json` must **not** be a bare `[]`/`{}` —
+  see the warning above.
 
-**Step 3 — get both onto the cluster.** `rsync`/`scp` from wherever you ran
-the steps above to the cluster's NFS home:
-- `~/.steelo/data_cache/master-input-co2-ramp/master_input.xlsx` — the
-  *authored/modified* workbook. This is the copy that belongs on the cluster;
-  the real master Excel (source of truth) never needs to leave the machine
-  that holds it.
-- `~/.steelo/preparation_cache/co2_ramp_authored/data` — the prepared
-  fixtures.
-
-(Steps 1-2 need S3 credentials only if you don't already have the real master
-Excel locally — see `docs/data_management/`. If you do, both steps run
-offline.)
+(Step 1 needs S3 credentials only if you don't already have the real master
+Excel locally — see `docs/data_management/`. If you do, it runs offline.)
 
 Either way: **prepared input data goes on NFS home** (small, read-mostly,
 survives across jobs). **Per-run scratch/output goes on `/local/$USER` on

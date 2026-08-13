@@ -23,6 +23,11 @@ preserves everything else as openpyxl read it, but if the master workbook uses f
 openpyxl can't represent, re-saving could still drop them. Spot-check --output-path
 opens cleanly in Excel with its other sheets intact before relying on it for a real run.
 
+Also: every formula cell anywhere in the workbook gets baked down to its last-calculated
+value (see data_only=True below) -- --output-path won't recalculate if reopened in Excel
+and an upstream value changes. That's fine for a one-shot scenario snapshot, but don't
+treat --output-path itself as a source of truth to keep editing.
+
 Usage:
     uv run python -m scripts.sensitivity.author_carbon_cost_scenario \\
         --master-excel-path ~/.steelo/data_cache/master-input/master_input.xlsx \\
@@ -77,7 +82,16 @@ def _author_carbon_cost_sheet(output_path: Path, sheet_name: str, params: dict) 
     if trajectory_type != "linear_ramp":
         raise NotImplementedError(f"Unsupported carbon_cost_trajectory type: {trajectory_type!r}")
 
-    workbook = openpyxl.load_workbook(output_path)
+    # data_only=True: read each formula cell's last-calculated result instead of its
+    # formula text. Without this, any *other* sheet whose values are formulas (not
+    # literals) -- e.g. "Fallback material cost" -- silently loses its data on save,
+    # since openpyxl doesn't recalculate formulas and a formula cell with no cached
+    # value in memory just gets written back as blank. This bakes every formula in the
+    # workbook down to a static value, which is fine here: --output-path is a one-shot
+    # scenario snapshot for a single simulation run, not something meant to be reopened
+    # in Excel and recalculated -- the real master workbook (with live formulas) stays
+    # untouched as the source of truth.
+    workbook = openpyxl.load_workbook(output_path, data_only=True)
     if sheet_name not in workbook.sheetnames:
         raise ValueError(f"Sheet {sheet_name!r} not found in {output_path}; have: {workbook.sheetnames}")
     sheet = workbook[sheet_name]
@@ -122,6 +136,38 @@ def _author_carbon_cost_sheet(output_path: Path, sheet_name: str, params: dict) 
     print(f"  {output_path} [{sheet_name}]: {rows_written} rows set to a uniform schedule ({years[0]}-{years[-1]})")
 
 
+def _verify_no_sheet_regressed(master_excel_path: Path, output_path: Path) -> None:
+    """Fail loudly if any sheet lost its data in the round-trip through openpyxl.
+
+    Catches the class of bug this script hit once already: a sheet whose values are
+    formulas (not literals) can come back empty after load+save unless the workbook was
+    loaded with data_only=True (see _author_carbon_cost_sheet). A cheap row-count
+    comparison per sheet -- not a full value diff -- is enough to catch "sheet went
+    from real data to basically nothing," which is the failure mode that actually
+    occurred (Fallback material cost silently losing 35 of its year columns).
+    """
+    source_wb = openpyxl.load_workbook(master_excel_path, read_only=True, data_only=True)
+    output_wb = openpyxl.load_workbook(output_path, read_only=True, data_only=True)
+    try:
+        problems = []
+        for sheet_name in source_wb.sheetnames:
+            if sheet_name not in output_wb.sheetnames:
+                problems.append(f"{sheet_name!r}: missing entirely from output")
+                continue
+            source_rows = source_wb[sheet_name].max_row or 0
+            output_rows = output_wb[sheet_name].max_row or 0
+            if source_rows > 1 and output_rows <= 1:
+                problems.append(f"{sheet_name!r}: had {source_rows} rows, now has {output_rows}")
+        if problems:
+            raise ValueError(
+                "Authored workbook lost data on sheet(s) that should have round-tripped "
+                "untouched:\n  " + "\n  ".join(problems)
+            )
+    finally:
+        source_wb.close()
+        output_wb.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--master-excel-path", type=Path, required=True, help="Real master Excel workbook to clone")
@@ -142,6 +188,9 @@ def main() -> None:
 
     print(f"Authoring carbon_cost_trajectory into {args.sheet_name!r}")
     _author_carbon_cost_sheet(args.output_path, args.sheet_name, scenario["carbon_cost_trajectory"])
+
+    print("Verifying no other sheet lost data in the round-trip")
+    _verify_no_sheet_regressed(args.master_excel_path, args.output_path)
 
     print("Done.")
 
