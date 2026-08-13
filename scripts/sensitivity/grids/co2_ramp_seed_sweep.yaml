@@ -4,10 +4,11 @@
 # 6-11) move the final technology mix, once probabilistic_agents=False removes the
 # tech-selection and accept/reject randomness?
 #
-# Run against the CO2-ramp scenario data dir (produced by apply_scenario_overrides.py
-# + scenarios/co2_ramp.yaml), not the default data dir -- the default carbon price is
-# flat/near-zero for most major producers and wouldn't force enough switching for
-# seed-driven divergence to be observable. See uncertainty_study_considerations.md §13.
+# Run against data prepared from the CO2-ramp-authored master Excel (produced by
+# author_carbon_cost_scenario.py + scenarios/co2_ramp.yaml), not the default data dir --
+# the default carbon price is flat/near-zero for most major producers and wouldn't force
+# enough switching for seed-driven divergence to be observable. See
+# uncertainty_study_considerations.md §13.
 
 base_params:
   probabilistic_agents: false

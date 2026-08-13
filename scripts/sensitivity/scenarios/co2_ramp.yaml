@@ -1,4 +1,4 @@
-# Uniform, global, linearly-ramping CO2 price scenario for apply_scenario_overrides.py.
+# Uniform, global, linearly-ramping CO2 price scenario for author_carbon_cost_scenario.py.
 #
 # The real carbon_costs.json fixture (master Excel-derived) is flat/near-zero for most
 # major steel producers (China, USA, India: 0.0 every year) -- there's no existing
