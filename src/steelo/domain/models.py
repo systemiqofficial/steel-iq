@@ -6013,8 +6013,9 @@ class PlantGroup:
             2. Randomly select a subset of top locations for a more in-depth assessment to reduce runtime.
             3. Prepare all required inputs (input costs with electricity and hydrogen costs from own parc,
                capex and cost of debt with subsidies, cost of equity, fixed OPEX, market price of product,
-               railway costs, average BOM, and utilization rate). If any data is missing, the location-
-               technology pair is skipped (business opportunity not considered) and a warning is logged.
+               railway costs, average BOM, and utilization rate). Sites missing critical data
+               (energy costs, cost of equity or debt) raise a ValueError, as do invalid data types;
+               technologies with an incomplete field set are dropped in validation.
             4. Calculate the NPV for all business opportunities (location-technology pairs) for each product.
             5. Choose top N location-technology combinations with high NPVs and list them as potential
                business opportunities. This step includes some randomness, but is mainly driven by NPV
@@ -6049,11 +6050,13 @@ class PlantGroup:
             chosen_emissions_boundary_for_carbon_costs: Emission boundary for carbon costs
             active_statuses: Status strings whose furnace groups vote in the group's
                 most-common-reductant aggregation
-            top_n_loctechs_as_business_op: Number of top opportunities to select (default: 5)
-            capex_subsidies: Dictionary mapping iso3 -> tech -> list of capex subsidies
-            debt_subsidies: Dictionary mapping iso3 -> tech -> list of debt subsidies
-            opex_subsidies: Dictionary mapping iso3 -> tech -> list of opex subsidies
-            energy_subsidies: Dictionary mapping carrier -> iso3 -> tech -> list of energy subsidies
+            top_n_loctechs_as_business_op: Number of top opportunities to select (signature
+                default 5; the simulation config default is 15)
+            capex_subsidies: Dictionary mapping geo_key -> tech -> list of capex subsidies
+                (geo_key = "ISO3" or "ISO3:unit"; country and sub-national rows merge additively)
+            debt_subsidies: Dictionary mapping geo_key -> tech -> list of debt subsidies
+            opex_subsidies: Dictionary mapping geo_key -> tech -> list of opex subsidies
+            energy_subsidies: Dictionary mapping carrier -> geo_key -> tech -> list of energy subsidies
             derive_geo_unit: Optional ``(lat, lon, iso3) -> geo_unit | None`` derivation (injected
                 from the geospatial adapter) tagging each spawned plant's sub-national unit
             probabilistic_agents: If True (default), step 5 draws a rank-weighted mix of top
@@ -6286,9 +6289,10 @@ class PlantGroup:
             cost_debt_all_locs: Dictionary mapping iso3 -> tech -> cost of debt
             iso3_to_region_map: Dictionary mapping ISO3 country codes to regions
             global_risk_free_rate: Global risk-free interest rate
-            capex_subsidies: Dictionary mapping iso3 -> tech -> list of capex subsidies
-            debt_subsidies: Dictionary mapping iso3 -> tech -> list of debt subsidies
-            energy_subsidies: Dictionary mapping carrier -> iso3 -> tech -> list of energy subsidies
+            capex_subsidies: Dictionary mapping geo_key -> tech -> list of capex subsidies
+                (geo_key = "ISO3" or "ISO3:unit"; country and sub-national rows merge additively)
+            debt_subsidies: Dictionary mapping geo_key -> tech -> list of debt subsidies
+            energy_subsidies: Dictionary mapping carrier -> geo_key -> tech -> list of energy subsidies
 
         Returns:
             List of UpdateDynamicCosts commands for each furnace group that was updated.

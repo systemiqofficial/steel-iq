@@ -156,20 +156,20 @@ Randomly samples a subset of top priority locations to reduce computational burd
 
 **Function:** `prepare_cost_data_for_business_opportunity()`
 
-Gathers all cost inputs needed for NPV calculation for each location-technology pair. Location-technology combinations with missing or invalid critical data are skipped and a warning is logged.
+Gathers all cost inputs needed for NPV calculation for each location-technology pair. Sites missing critical data (energy costs, cost of equity or debt) raise a hard error, as do invalid data types; technologies with an incomplete field set are dropped in validation, so only complete entries reach the NPV.
 
 **Required Inputs:**
 
 | Input Category | Components | Source |
 |----------------|-----------|---------|
-| Energy costs | Electricity, hydrogen, gas, coal prices | Country-level data + site-specific renewable calculations for energy costs |
+| Energy costs | Electricity, hydrogen, gas, coal prices | Geography-resolved data (province row when the site falls in one, else country) + site-specific renewable calculations for electricity and hydrogen |
 | Financial parameters | Cost of debt, cost of equity | Country-level financial data |
 | CAPEX | Capital expenditure per tonne capacity | Regional technology-specific estimates |
 | OPEX | Fixed operating costs per tonne | Country and technology-specific |
 | Infrastructure | Railway buildout cost | From priority location selection |
 | Production | Bill of materials, utilization rate, reductant type | Technology-specific averages |
-| Subsidies | CAPEX, debt, and OPEX subsidies | Country and technology-specific policies |
-| Carbon pricing | Carbon cost time series | Country-level projections |
+| Subsidies | CAPEX, debt, and OPEX subsidies | Geography- and technology-specific policies (country and province rows apply additively) |
+| Carbon pricing | Enters via the per-year reductant score series, not a separate cost field | Country-level projections |
 
 ### Step 4: NPV Calculation
 
@@ -181,6 +181,8 @@ Calculates Net Present Value for each business opportunity using an **adjusted N
 
 Subsidies are often announced years before plants are built. Standard NPV using current-year subsidies would make subsidized technologies appear less attractive until subsidies activate. The adjusted NPV assumes subsidies announced for the target year will be available, preventing artificial delays in subsidized technology adoption. This adjusted NPV is only used for the decision to create a business opportunity. Once a plant is constructed, it uses actual year-by-year costs, not the adjusted values.
 
+**Price/cost alignment:** the market-price series handed to the NPV is anchored at the target (construction-start) year, so after the construction-time lag each revenue year prices the same calendar year as its costs — the NPV values the plant's actual operating window. The yearly re-valuation of existing opportunities re-anchors the same way, floored at the soonest path still open (announce now, construct from next year).
+
 **NPV Components:**
 
 | Component | Composition | Subsidy Timing | Period |
@@ -190,8 +192,8 @@ Subsidies are often announced years before plants are built. Standard NPV using 
 | **Cost of Equity** | Return required by investors | No subsidies | Financing period |
 | **OPEX - Variable** | Materials + energy from bill of materials × unit costs | OPEX subsidies: Operation years | Annual (plant lifetime) |
 | **OPEX - Fixed** | Fixed operating costs per tonne | OPEX subsidies: Operation years | Annual (plant lifetime) |
-| **Energy Costs** | Energy prices for all carriers (electricity, hydrogen, gas, etc.) | Energy subsidies: Target year | Annual (plant lifetime) |
-| **Carbon Costs** | Emissions × carbon price trajectory | No subsidies | Annual (plant lifetime) |
+| **Energy Costs** | Energy prices for all carriers (electricity, hydrogen, gas, etc.) | Energy subsidies: Operating start year | Annual (plant lifetime) |
+| **Carbon Costs** | Emissions × carbon price trajectory (inside the reductant score series) | No subsidies | Annual (plant lifetime) |
 | **Revenue** | Production capacity × utilization rate × market price projections | N/A | Annual (plant lifetime) |
 | **Discount Rate** | Weighted average cost of capital (WACC = debt share × cost of debt + equity share × cost of equity) | Applied to debt portion only | NPV calculation |
 

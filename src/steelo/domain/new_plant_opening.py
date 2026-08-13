@@ -142,7 +142,8 @@ def prepare_cost_data_for_business_opportunity(
 ) -> dict[str, dict[tuple[float, float, str], dict[str, dict[str, Any]]]]:
     """
     For each business opportunity (top location-technology pair), prepare all required inputs to calculate the NPV
-    and create a new plant. If inputs are missing, skip the location-technology pair and log a warning.
+    and create a new plant. Sites missing critical data (energy costs, cost of equity or debt) raise a ValueError,
+    as do invalid data types; technologies with an incomplete field set are dropped in validation.
 
     Args:
         product_to_tech: Dictionary mapping products to their allowed technologies (product -> list of techs)
@@ -161,10 +162,11 @@ def prepare_cost_data_for_business_opportunity(
         get_bom_from_avg_boms: Function to retrieve the bill of materials and utilization rate for a given technology and energy costs
         iso3_to_region_map: Mapping from ISO3 country codes to regions for CAPEX lookup
         global_risk_free_rate: Global risk-free rate used in debt subsidy calculations
-        capex_subsidies: Nested dictionary with CAPEX subsidies per country and technology (iso3 -> tech -> list of subsidies)
-        debt_subsidies: Nested dictionary with debt subsidies per country and technology (iso3 -> tech -> list of subsidies)
-        opex_subsidies: Nested dictionary with OPEX subsidies per country and technology (iso3 -> tech -> list of subsidies)
-        energy_subsidies: Nested dictionary with energy carrier subsidies (carrier -> iso3 -> tech -> list of subsidies)
+        capex_subsidies: Nested dictionary with CAPEX subsidies per geography and technology (geo_key -> tech -> list
+            of subsidies; geo_key = "ISO3" or "ISO3:unit", country and sub-national rows merge additively)
+        debt_subsidies: Nested dictionary with debt subsidies per geography and technology (geo_key -> tech -> list of subsidies)
+        opex_subsidies: Nested dictionary with OPEX subsidies per geography and technology (geo_key -> tech -> list of subsidies)
+        energy_subsidies: Nested dictionary with energy carrier subsidies (carrier -> geo_key -> tech -> list of subsidies)
         most_common_reductant: Dictionary mapping technology to most common reductant from plant group (tech -> reductant)
         environment_most_common_reductant: Fallback dict mapping technology to most common reductant from environment (tech -> reductant)
         derive_geo_unit: Optional ``(lat, lon, iso3) -> geo_unit | None`` derivation (injected from
