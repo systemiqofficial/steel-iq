@@ -23,8 +23,8 @@ VOCABULARY = {"Coal", "Hydrogen"}
 GEO_KEYS = {"CHN:CN-HE", "CHN:CN-SD"}
 
 
-def region(geo_key, region_name=None, type=None, from_year=None):
-    return RegionRow(geo_key=geo_key, region_name=region_name, type=type, from_year=from_year)
+def region(geo_key, region_name=None, type=None):
+    return RegionRow(geo_key=geo_key, region_name=region_name, type=type)
 
 
 def tech(

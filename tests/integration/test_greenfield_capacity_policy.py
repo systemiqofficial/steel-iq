@@ -39,8 +39,8 @@ from steelo.service_layer.unit_of_work import UnitOfWork
 # Synthetic policy rows shared with the expansion-gate tests: EAF is authored
 # emission-intense so a steel greenfield is penalised; DRI is a clean iron build.
 REGIONS = [
-    RegionRow(geo_key="CHN:CN-HE", region_name="Jing-Jin-Ji", type="key", from_year=None),
-    RegionRow(geo_key="CHN:CN-GD", region_name=None, type=None, from_year=None),
+    RegionRow(geo_key="CHN:CN-HE", region_name="Jing-Jin-Ji", type="key"),
+    RegionRow(geo_key="CHN:CN-GD", region_name=None, type=None),
 ]
 TECHNOLOGIES = [
     TechnologyRow(

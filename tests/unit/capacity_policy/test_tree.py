@@ -8,7 +8,7 @@ from steelo.capacity_policy.inputs import RegionRow, TechnologyRow
 
 def region(geo_key: str, region_name: str | None = None, type: str | None = None) -> RegionRow:
     """Build a province row; key rows carry their cluster as region_name."""
-    return RegionRow(geo_key=geo_key, region_name=region_name, type=type, from_year=None)
+    return RegionRow(geo_key=geo_key, region_name=region_name, type=type)
 
 
 def classification(

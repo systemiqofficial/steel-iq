@@ -22,13 +22,11 @@ class RegionRow:
             becomes the credit tag (member provinces share it).
         type: ``"key"``, ``"exempt"``, or None for a non-key province
             (untagged deposits, unrestricted withdrawals).
-        from_year: First year the classification applies, or None for always.
     """
 
     geo_key: str
     region_name: str | None
     type: str | None
-    from_year: int | None
 
 
 @dataclass(frozen=True)

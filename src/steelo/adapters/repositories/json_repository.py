@@ -3093,14 +3093,12 @@ class CapacityPoolProvinceInDb(BaseModel):
     geo_key: str
     region_name: Optional[str]
     type: Optional[str]
-    from_year: Optional[int]
 
     def to_domain(self) -> RegionRow:
         return RegionRow(
             geo_key=self.geo_key,
             region_name=self.region_name,
             type=self.type,
-            from_year=self.from_year,
         )
 
     @classmethod
@@ -3109,7 +3107,6 @@ class CapacityPoolProvinceInDb(BaseModel):
             geo_key=obj.geo_key,
             region_name=obj.region_name,
             type=obj.type,
-            from_year=obj.from_year,
         )
 
 

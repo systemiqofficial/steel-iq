@@ -55,9 +55,9 @@ def propagating_policy_logs():
 
 def province_rows() -> list[RegionRow]:
     """Enumerate every Chinese unit, with one key province, as validation demands."""
-    rows = [RegionRow(geo_key=KEY_PROVINCE, region_name="Jing-Jin-Ji", type="key", from_year=None)]
+    rows = [RegionRow(geo_key=KEY_PROVINCE, region_name="Jing-Jin-Ji", type="key")]
     rows += [
-        RegionRow(geo_key=geo_key, region_name=None, type=None, from_year=None)
+        RegionRow(geo_key=geo_key, region_name=None, type=None)
         for geo_key in sorted(chinese_capacity_pool_geo_keys())
         if geo_key != KEY_PROVINCE
     ]
@@ -144,7 +144,7 @@ def fake_repository_json(
 def bind_stale_policy() -> None:
     """Simulate a binding left behind by a previous enabled run."""
     evaluator = TreeEvaluator(
-        [RegionRow(geo_key=KEY_PROVINCE, region_name="Jing-Jin-Ji", type="key", from_year=None)],
+        [RegionRow(geo_key=KEY_PROVINCE, region_name="Jing-Jin-Ji", type="key")],
         [technology_rows()[0]],
         CapacityPolicyConfig(),
     )
@@ -436,6 +436,65 @@ def test_bootstrap_simulation_enabled_without_pool_fixtures_raises(tmp_path):
     with pytest.raises(ValueError, match="capacity_pool_provinces.json is missing"):
         bootstrap_simulation(config)
     assert cp_handlers.replace_capacity_hook() is None
+
+
+def test_future_seed_vintages_are_clamped_to_the_start_year(tmp_path, caplog, propagating_policy_logs):
+    """The opening pool is state at t=0: a vintage after the start year would sit
+    ahead of older runtime deposits and quietly bend FIFO, so it is scaled down."""
+    credits = opening_credit_rows() + [
+        OpeningCreditRow(
+            vintage_year=2030,
+            capacity_mt=0.5,
+            geo_key=NON_KEY_PROVINCE,
+            product="iron",
+            technology=None,
+            plant_group_id="E1",
+        )
+    ]
+    with caplog.at_level(logging.WARNING):
+        configure_capacity_policy(
+            CapacityPolicyConfig(enabled=True),
+            fake_repository_json(tmp_path, credits=credits),
+            start_year=2025,
+        )
+
+    policy = cp_handlers._policy
+    assert policy is not None
+    assert [c.vintage_year for c in policy.pool.snapshot()] == [2020, 2022, 2025]
+    assert "vintage_year after the start year 2025" in caplog.text
+    assert "2030" in caplog.text
+
+
+def test_unknown_seed_owner_warns_when_a_plants_fixture_exists(tmp_path, caplog, propagating_policy_logs):
+    """A seeded owner no plant group carries can never spend post-cutoff through the
+    expansion path — said out loud rather than masquerading as the policy binding."""
+    repository = fake_repository_json(tmp_path)
+    repository.plants = SimpleNamespace(
+        all={"P1": SimpleNamespace(parent_gem_id="E1"), "P2": SimpleNamespace(parent_gem_id="E2")}
+    )
+    with caplog.at_level(logging.WARNING):
+        configure_capacity_policy(CapacityPolicyConfig(enabled=True), repository, start_year=2025)
+
+    assert "match no plant group in the plants fixture" not in caplog.text  # E1 is known
+
+    cp_handlers.unbind_capacity_policy()
+    caplog.clear()
+    credits = [
+        OpeningCreditRow(
+            vintage_year=2020,
+            capacity_mt=1.0,
+            geo_key=NON_KEY_PROVINCE,
+            product="iron",
+            technology=None,
+            plant_group_id="E_TYPO",
+        )
+    ]
+    repository = fake_repository_json(tmp_path, credits=credits)
+    repository.plants = SimpleNamespace(all={"P1": SimpleNamespace(parent_gem_id="E1")})
+    with caplog.at_level(logging.WARNING):
+        configure_capacity_policy(CapacityPolicyConfig(enabled=True), repository, start_year=2025)
+
+    assert "1 seeded owner id(s) match no plant group in the plants fixture: E_TYPO" in caplog.text
 
 
 def test_missing_geo_unit_reference_data_warns_at_bootstrap(tmp_path, caplog, propagating_policy_logs, monkeypatch):

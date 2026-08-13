@@ -38,8 +38,8 @@ EQUITY_SHARE = 0.2
 # Synthetic policy rows: EAF is authored emission-intense so a steel expansion is
 # penalised; DRI and MOE are clean iron builds.
 REGIONS = [
-    RegionRow(geo_key="CHN:CN-HE", region_name="Jing-Jin-Ji", type="key", from_year=None),
-    RegionRow(geo_key="CHN:CN-GD", region_name=None, type=None, from_year=None),
+    RegionRow(geo_key="CHN:CN-HE", region_name="Jing-Jin-Ji", type="key"),
+    RegionRow(geo_key="CHN:CN-GD", region_name=None, type=None),
 ]
 TECHNOLOGIES = [
     TechnologyRow(

@@ -26,6 +26,7 @@ from steelo.domain.constants import MT_TO_T
 
 from .config import CapacityPolicyConfig
 from .handlers import bind_capacity_policy, unbind_capacity_policy
+from .inputs import OpeningCreditRow
 from .pool import CapacityPool, SeedEntry
 from .recorder import CapacityPolicyRecorder
 from .tree import TreeEvaluator
@@ -58,10 +59,11 @@ def configure_capacity_policy(
         config: The run's ``capacity_policy`` scenario levers.
         repository_json: The run's fixture repositories, or None when a
             repository was injected directly (test runs without fixtures).
-        start_year: First simulation year, used to purge seeded credits that
-            are already past their shelf life at t=0 — the opening pool holds
-            historical vintages, so the run must not open with dead credit in
-            it.
+        start_year: First simulation year. Seeded vintages after it are
+            clamped down to it with a warning (the opening pool is state at
+            t=0, and a future vintage would quietly bend FIFO), and seeded
+            credits already past their shelf life at t=0 are purged — the
+            run must not open with dead credit in it.
 
     Raises:
         ValueError: With ``enabled=True``, when any capacity pool fixture is
@@ -128,6 +130,7 @@ def configure_capacity_policy(
     )
 
     _warn_when_geo_unit_data_unavailable()
+    _warn_on_unknown_seed_owners(credit_rows, repository_json)
 
     recorder = CapacityPolicyRecorder()
     evaluator = TreeEvaluator(province_rows, technology_rows, config, recorder=recorder)
@@ -136,10 +139,21 @@ def configure_capacity_policy(
         banked_credit_rule=config.banked_credit_rule,
         credit_validity_years=config.credit_validity_years,
     )
+    future_vintages = sorted({row.vintage_year for row in credit_rows if row.vintage_year > start_year})
+    if future_vintages:
+        # A vintage after the start year would sit ahead of older runtime deposits
+        # and quietly bend FIFO; the opening pool is state at t=0, so clamp it there
+        logger.warning(
+            "[CAPACITY POOL] %d opening credit row(s) carry a vintage_year after the start year %d "
+            "(%s): scaling them down to the start year",
+            sum(1 for row in credit_rows if row.vintage_year > start_year),
+            start_year,
+            ", ".join(str(v) for v in future_vintages),
+        )
     entries = [
         SeedEntry(
             amount_mt=row.capacity_mt * MT_TO_T,
-            vintage_year=row.vintage_year,
+            vintage_year=min(row.vintage_year, start_year),
             geo_key=row.geo_key,
             owner_id=row.plant_group_id,
             product=row.product,
@@ -192,6 +206,40 @@ def _warn_when_geo_unit_data_unavailable() -> None:
             "will resolve at country level and be treated as non-key — the policy's regional "
             "rules will not bind on the greenfield channel this run",
             detail,
+        )
+
+
+def _warn_on_unknown_seed_owners(credit_rows: list[OpeningCreditRow], repository_json: "JsonRepository") -> None:
+    """Warn when a seeded owner id matches no plant group in the plants fixture.
+
+    Post-cutoff, an ordinary withdrawal may only spend the withdrawer's own
+    credits — credits owned by an id no company carries can then never be spent
+    through the expansion path, which is indistinguishable from the policy
+    binding unless it is said out loud. (The greenfield single-owner path can
+    still select them; attribution falls back to ``indi_<iso3>``.) The owner
+    universe is the plants fixture's ``parent_gem_id`` values, read from the
+    raw rows without domain conversion; an absent or empty plants fixture
+    (injected test repositories) skips the check.
+    """
+    plants_repo = getattr(repository_json, "plants", None)
+    if plants_repo is None:
+        return
+    known_owners = {plant.parent_gem_id for plant in plants_repo.all.values()}
+    if not known_owners:
+        return
+    unknown = sorted(
+        {
+            row.plant_group_id
+            for row in credit_rows
+            if row.plant_group_id is not None and row.plant_group_id not in known_owners
+        }
+    )
+    if unknown:
+        logger.warning(
+            "[CAPACITY POOL] %d seeded owner id(s) match no plant group in the plants fixture: %s "
+            "— from the cutoff year no company can spend these credits through the expansion path",
+            len(unknown),
+            ", ".join(unknown),
         )
 
 

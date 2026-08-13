@@ -36,6 +36,8 @@ def _provinces_df(**overrides) -> pd.DataFrame:
         "geo_key": ["CHN:CN-HE", "CHN:CN-QH", "CHN:CN-SC"],
         "region_name": ["Jing-Jin-Ji", "Qinghai", "Sichuan"],
         "type": ["key", "exempt", None],
+        # A retired schema column: the reader must tolerate leftovers, since the
+        # workbook keeps dead columns until they are deleted manually
         "from_year": [None, None, 2030],
         "notes": ["sourced", None, None],
     }
@@ -72,7 +74,7 @@ def _opening_credits_df(**overrides) -> pd.DataFrame:
 
 
 def test_read_provinces_happy_path(tmp_path):
-    """Rows come back in sheet order with blanks as None and from_year as int."""
+    """Rows come back in sheet order with blanks as None; legacy columns are ignored."""
     path = tmp_path / "master.xlsx"
     _write_workbook(path, {PROVINCES_SHEET: _provinces_df()})
 
@@ -80,7 +82,7 @@ def test_read_provinces_happy_path(tmp_path):
 
     assert [row.geo_key for row in rows] == ["CHN:CN-HE", "CHN:CN-QH", "CHN:CN-SC"]
     assert rows[0].type == "key" and rows[0].region_name == "Jing-Jin-Ji"
-    assert rows[2].type is None and rows[2].from_year == 2030
+    assert rows[2].type is None
 
 
 def test_read_technologies_happy_path(tmp_path):

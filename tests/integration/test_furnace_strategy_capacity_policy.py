@@ -44,9 +44,9 @@ CANDIDATE_PICKS = {"EAF": "Electricity", "DRI": "Hydrogen", "MOE": "Electricity"
 # same-technology renovation reads as a penalised REPLACE under the shipped default;
 # DRI is the penalised switch target, MOE the non-intense one.
 REGIONS = [
-    RegionRow(geo_key="CHN:CN-HE", region_name="Jing-Jin-Ji", type="key", from_year=None),
-    RegionRow(geo_key="CHN:CN-QH", region_name=None, type="exempt", from_year=None),
-    RegionRow(geo_key="CHN:CN-GD", region_name=None, type=None, from_year=None),
+    RegionRow(geo_key="CHN:CN-HE", region_name="Jing-Jin-Ji", type="key"),
+    RegionRow(geo_key="CHN:CN-QH", region_name=None, type="exempt"),
+    RegionRow(geo_key="CHN:CN-GD", region_name=None, type=None),
 ]
 TECHNOLOGIES = [
     TechnologyRow(

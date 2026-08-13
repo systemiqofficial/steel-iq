@@ -3087,7 +3087,7 @@ def read_capacity_pool_provinces(
 
     Raises:
         ValueError: On structural problems within a present sheet (missing
-            columns, blank geo_key, non-integer from_year). Semantic checks
+            columns, blank geo_key). Semantic checks
             live in ``steelo.capacity_policy.validation``.
     """
     df = _read_capacity_pool_sheet(excel_path, sheet_name, {"geo_key", "region_name", "type"})
@@ -3100,15 +3100,11 @@ def read_capacity_pool_provinces(
         geo_key = _capacity_pool_str(row["geo_key"])
         if geo_key is None:
             raise ValueError(f"Sheet '{sheet_name}' row {row_num}: geo_key must not be blank")
-        from_year_raw = row.get("from_year")
         rows.append(
             RegionRow(
                 geo_key=geo_key,
                 region_name=_capacity_pool_str(row["region_name"]),
                 type=_capacity_pool_str(row["type"]),
-                from_year=None
-                if from_year_raw is None or pd.isna(from_year_raw)
-                else _capacity_pool_number(from_year_raw, sheet_name, row_num, "from_year", as_int=True),
             )
         )
     logger.info(f"Successfully read {len(rows)} capacity pool province rows from '{sheet_name}'")

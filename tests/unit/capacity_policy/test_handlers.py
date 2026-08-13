@@ -13,8 +13,8 @@ from steelo.domain import events
 from steelo.service_layer import handlers as service_handlers
 
 REGIONS = [
-    RegionRow(geo_key="CHN:CN-HE", region_name="Jing-Jin-Ji", type="key", from_year=None),
-    RegionRow(geo_key="CHN:CN-GD", region_name="Guangdong", type=None, from_year=None),
+    RegionRow(geo_key="CHN:CN-HE", region_name="Jing-Jin-Ji", type="key"),
+    RegionRow(geo_key="CHN:CN-GD", region_name="Guangdong", type=None),
 ]
 
 TECHNOLOGIES = [
