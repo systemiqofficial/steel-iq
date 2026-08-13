@@ -16,6 +16,7 @@ from steelo.adapters.repositories.in_memory_repository import InMemoryRepository
 from steelo.capacity_policy.handlers import (
     expansion_capacity_hook,
     greenfield_capacity_hook,
+    greenfield_feasibility_hook,
     greenfield_retry_cap,
     increase_sizing_hook,
     replace_capacity_hook,
@@ -263,6 +264,7 @@ class GeospatialModel:
                     permitted_greenfield_capacity=greenfield_capacity_hook(),
                     capacity_pool_max_retry_years=greenfield_retry_cap(),
                     increase_sizing_query=increase_sizing_hook(),
+                    greenfield_feasibility_probe=greenfield_feasibility_hook(),
                 )
             )
         if status_commands:

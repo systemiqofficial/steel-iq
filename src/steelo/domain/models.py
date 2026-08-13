@@ -3020,6 +3020,7 @@ class FurnaceGroup:
         | None = None,
         capacity_pool_max_retry_years: int | None = None,
         increase_sizing_query: Callable[..., float] | None = None,
+        greenfield_feasibility_probe: Callable[..., str | None] | None = None,
     ) -> commands.Command | None:
         """
         Tracks whether an identified business opportunity remains interesting over time to avoid making
@@ -3065,15 +3066,24 @@ class FurnaceGroup:
                 when the withdrawal is blocked, in which case the opportunity stays considered
                 and retries next year exactly like the CO2 gate. None (the default) leaves the
                 decision path untouched.
-            capacity_pool_max_retry_years: Years the capacity gate may block this opportunity
-                before it is discarded rather than retried. Counts capacity blocks only — CO2
-                blocks and failed announcement draws sit in other branches and never reach the
-                counter. None (the default) retries forever.
+            capacity_pool_max_retry_years: Cumulative years the capacity gate may block this
+                opportunity before it is discarded rather than retried. Counts capacity blocks
+                only — CO2 blocks sit in another branch and never reach the counter. With the
+                feasibility probe threaded a blocked year counts whether or not the
+                announcement draw ran; without it, only a blocked successful draw counts.
+                None (the default) retries forever.
             increase_sizing_query: China capacity-policy sizing query, applied to each yearly
                 re-valuation so the announcement decision rests on the capacity the policy
                 permits. Non-consuming and never mutates ``self.capacity``, which stays the
                 planned amount the gate withdraws against. None (the default) re-values at the
                 planned capacity.
+            greenfield_feasibility_probe: China capacity-policy pre-draw probe: would the
+                single-owner withdrawal be granted at the current pool state? Non-consuming;
+                called before the announcement draw so an unfundable year counts toward the
+                retry cap regardless of the draw, and the blocked ledger row covers every
+                blocked year. A blocked probe skips the draw entirely (one fewer RNG call
+                than the pre-probe behaviour — enabled runs only). None (the default) leaves
+                the block accounting to the consuming gate alone.
 
         Returns:
             Command to update the status of the FurnaceGroup, or None if no status change.
@@ -3246,12 +3256,61 @@ class FurnaceGroup:
                                 status_stats["co2_storage_blocked"] += 1
                             return None  # stay considered
 
+                def register_capacity_block() -> commands.Command | None:
+                    """Count one blocked year; at the retry cap, discard the opportunity.
+
+                    Shared by the pre-draw probe and the consuming gate's blocked branch, so
+                    the counter has exactly one semantics wherever the block is detected. A
+                    cap discard never withdrew, so there is nothing to refund; the
+                    announced-only guard in the status handler keeps the CO2 release out of
+                    it too.
+                    """
+                    self.capacity_pool_blocked_years += 1
+                    if status_stats is not None:
+                        status_stats["capacity_pool_blocked"] += 1
+                    if (
+                        capacity_pool_max_retry_years is not None
+                        and self.capacity_pool_blocked_years >= capacity_pool_max_retry_years
+                    ):
+                        logger.info(
+                            f"[CAPACITY POOL] gate=greenfield decision=discarded_retry_cap "
+                            f"fg={self.furnace_group_id} iso3={location.iso3} "
+                            f"tech={self.technology.name} blocked_years={self.capacity_pool_blocked_years} "
+                            f"cap={capacity_pool_max_retry_years} year={int(year)}"
+                        )
+                        if status_stats is not None:
+                            status_stats["capacity_pool_retry_cap_discarded"] += 1
+                        return commands.UpdateFurnaceGroupStatus(
+                            fg_id=self.furnace_group_id,
+                            plant_id=self.get_furnace_plant_id(),
+                            new_status="discarded",
+                        )
+                    return None  # stay considered
+
+                # Pre-draw feasibility probe (non-consuming): an unfundable year counts
+                # toward the retry cap whether or not the draw would have run, so the cap
+                # measures years, not draws; the probe records the blocked ledger row itself
+                if greenfield_feasibility_probe is not None:
+                    probe_blocked_reason = greenfield_feasibility_probe(
+                        iso3=location.iso3,
+                        geo_unit=location.geo_unit,
+                        technology=self.technology.name,
+                        reductant=self.chosen_reductant,
+                        capacity=float(self.capacity),
+                        product=self.technology.product,
+                        year=int(year),
+                    )
+                    if probe_blocked_reason is not None:
+                        return register_capacity_block()
+
                 announcement_draw = random.random()
                 if announcement_draw < probability_of_announcement:
                     # China capacity-policy gate (③ INCREASE): announcement is the commitment
                     # point, so a threaded gate must withdraw matching retirement credits
                     # (model tonnes) here or the opportunity stays considered and retries
-                    # next year, exactly as the CO2 gate above
+                    # next year, exactly as the CO2 gate above. With the probe threaded this
+                    # blocked branch is defensive — probe and withdrawal read the same state
+                    # within one call — but it keeps the counter honest without the probe
                     if permitted_greenfield_capacity is not None:
                         grant = permitted_greenfield_capacity(
                             iso3=location.iso3,
@@ -3263,30 +3322,7 @@ class FurnaceGroup:
                             year=int(year),
                         )
                         if grant is None:
-                            self.capacity_pool_blocked_years += 1
-                            if status_stats is not None:
-                                status_stats["capacity_pool_blocked"] += 1
-                            if (
-                                capacity_pool_max_retry_years is not None
-                                and self.capacity_pool_blocked_years >= capacity_pool_max_retry_years
-                            ):
-                                # Discarded without ever withdrawing, so nothing to refund;
-                                # the announced-only guard in the status handler keeps the
-                                # CO2 release out of it too
-                                logger.info(
-                                    f"[CAPACITY POOL] gate=greenfield decision=discarded_retry_cap "
-                                    f"fg={self.furnace_group_id} iso3={location.iso3} "
-                                    f"tech={self.technology.name} blocked_years={self.capacity_pool_blocked_years} "
-                                    f"cap={capacity_pool_max_retry_years} year={int(year)}"
-                                )
-                                if status_stats is not None:
-                                    status_stats["capacity_pool_retry_cap_discarded"] += 1
-                                return commands.UpdateFurnaceGroupStatus(
-                                    fg_id=self.furnace_group_id,
-                                    plant_id=self.get_furnace_plant_id(),
-                                    new_status="discarded",
-                                )
-                            return None  # stay considered
+                            return register_capacity_block()
                         build_capacity, attributed_owner_id, withdrew, credits_consumed = grant
                         if withdrew:
                             self.capacity_pool_granted_withdraw_mt = float(self.capacity)
@@ -6875,6 +6911,7 @@ class PlantGroup:
         | None = None,
         capacity_pool_max_retry_years: int | None = None,
         increase_sizing_query: Callable[..., float] | None = None,
+        greenfield_feasibility_probe: Callable[..., str | None] | None = None,
     ) -> list[commands.Command]:
         """
         Recalculate the NPV and update the status of all considered and announced business opportunities.
@@ -6908,6 +6945,9 @@ class PlantGroup:
             increase_sizing_query: China capacity-policy sizing query, threaded to the yearly
                 re-valuation so it values the capacity the policy permits; None (the default)
                 leaves it untouched
+            greenfield_feasibility_probe: China capacity-policy pre-draw feasibility probe,
+                threaded to the considered→announced transition so blocked years count
+                toward the retry cap draw-independently; None (the default) leaves it out
 
         Returns:
             List of commands to update the status of furnace groups.
@@ -7000,6 +7040,7 @@ class PlantGroup:
                         permitted_greenfield_capacity=permitted_greenfield_capacity,
                         capacity_pool_max_retry_years=capacity_pool_max_retry_years,
                         increase_sizing_query=increase_sizing_query,
+                        greenfield_feasibility_probe=greenfield_feasibility_probe,
                     )
                     if update_status_cmd:
                         status_change_cmds.append(update_status_cmd)

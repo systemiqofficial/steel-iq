@@ -41,8 +41,11 @@ class CapacityPolicyConfig:
             ``V + N``. None (the default) never expires. A different concept
             from ``banked_credit_rule="expire"``, which is a withdrawal-time
             applicability rule over the ownership cutoff, not an age rule.
-        capacity_pool_max_retry_years: Years the capacity gate may block a
-            considered greenfield before the opportunity is discarded.
+        capacity_pool_max_retry_years: Cumulative years the capacity gate may
+            block a considered greenfield before the opportunity is discarded.
+            Counted per blocked *year* via the non-consuming pre-draw probe —
+            not per blocked announcement draw — so the cap means what it says
+            regardless of the announcement probability.
         renovation_counts_as_replace: Whether a same-technology renovation is
             a full REPLACE, paying the replacement ratio like any switch — the
             default, per Decision 36: the tree's ② branch draws no
@@ -63,7 +66,7 @@ class CapacityPolicyConfig:
     inter_company_swap_cutoff_year: int | None = 2028
     banked_credit_rule: str = "reassign"
     credit_validity_years: int | None = None
-    capacity_pool_max_retry_years: int = 5
+    capacity_pool_max_retry_years: int = 2
     renovation_counts_as_replace: bool = True
 
     def __post_init__(self) -> None:

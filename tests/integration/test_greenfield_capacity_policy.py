@@ -393,6 +393,104 @@ class TestSizedIdentification:
         assert npvs["steel"][(30.0, 110.0, "CHN")]["EAF"] == pytest.approx(3_000_000.0)
 
 
+class TestPreDrawFeasibilityProbe:
+    """The retry cap counts blocked *years*: the probe runs before the announcement
+    draw, so an unfundable year counts whether or not the draw would have run."""
+
+    def test_blocked_year_counts_even_when_the_draw_never_runs(self):
+        """probability_of_announcement=0 — under the old draw-gated counting this
+        year could never have counted; with the probe it does."""
+        pool = bind_policy()
+        fg = make_opportunity()
+        stats: Counter = Counter()
+
+        blocked = track(
+            fg,
+            hook=cp_handlers.greenfield_capacity_hook(),
+            greenfield_feasibility_probe=cp_handlers.greenfield_feasibility_hook(),
+            capacity_pool_max_retry_years=3,
+            probability_of_announcement=0.0,
+            stats=stats,
+        )
+
+        assert blocked is None
+        assert fg.status == "considered"
+        assert fg.capacity_pool_blocked_years == 1
+        assert stats["capacity_pool_blocked"] == 1
+        assert stats["announcement_probability_failed"] == 0  # the draw never ran
+        assert pool.total() == 0.0
+
+    def test_cap_discards_through_the_probe_alone(self, caplog):
+        """Two unfundable years at cap 2 discard the opportunity draw-independently."""
+        pool = bind_policy()
+        fg = make_opportunity()
+        stats: Counter = Counter()
+
+        first = track(
+            fg,
+            year=2026,
+            hook=cp_handlers.greenfield_capacity_hook(),
+            greenfield_feasibility_probe=cp_handlers.greenfield_feasibility_hook(),
+            capacity_pool_max_retry_years=2,
+            probability_of_announcement=0.0,
+        )
+        with caplog.at_level(logging.INFO, logger="steelo.domain.models.FurnaceGroup.track_business_opportunities"):
+            second = track(
+                fg,
+                year=2027,
+                hook=cp_handlers.greenfield_capacity_hook(),
+                greenfield_feasibility_probe=cp_handlers.greenfield_feasibility_hook(),
+                capacity_pool_max_retry_years=2,
+                probability_of_announcement=0.0,
+                stats=stats,
+            )
+
+        assert first is None
+        assert isinstance(second, UpdateFurnaceGroupStatus)
+        assert second.new_status == "discarded"
+        assert stats["capacity_pool_retry_cap_discarded"] == 1
+        assert "decision=discarded_retry_cap" in caplog.text
+        assert pool.total() == 0.0
+        assert fg.capacity_pool_granted_withdraw_mt is None
+
+    def test_fundable_probe_leaves_the_grant_path_untouched(self):
+        """When the pool can fund, the probe passes through to the draw and the
+        consuming gate withdraws exactly as without the probe."""
+        pool = bind_policy()
+        pool.deposit(credit(2_000_000.0, 2019, owner="E_a"))
+        fg = make_opportunity()
+
+        command = track(
+            fg,
+            hook=cp_handlers.greenfield_capacity_hook(),
+            greenfield_feasibility_probe=cp_handlers.greenfield_feasibility_hook(),
+            capacity_pool_max_retry_years=2,
+        )
+
+        assert isinstance(command, UpdateFurnaceGroupStatus)
+        assert command.new_status == "announced"
+        assert pool.total() == 0.0
+        assert fg.capacity_pool_blocked_years == 0
+        assert fg.capacity_pool_granted_withdraw_mt == pytest.approx(2_000_000.0)
+
+    def test_blocked_probe_writes_the_blocked_ledger_row(self):
+        """The policy-bite series covers years the draw never ran."""
+        bind_policy()
+        recorder = cp_handlers._policy.recorder
+        fg = make_opportunity()
+
+        track(
+            fg,
+            hook=cp_handlers.greenfield_capacity_hook(),
+            greenfield_feasibility_probe=cp_handlers.greenfield_feasibility_hook(),
+            probability_of_announcement=0.0,
+        )
+
+        (row,) = recorder._ledger
+        assert row["operation"] == "blocked_greenfield"
+        assert row["blocked_reason"] == "insufficient_applicable_pool"
+
+
 class TestRetryCap:
     """D-I: an opportunity the capacity gate keeps refusing is eventually discarded.
 

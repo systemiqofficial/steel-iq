@@ -342,6 +342,87 @@ def greenfield_retry_cap() -> int | None:
     return policy.evaluator.config.capacity_pool_max_retry_years
 
 
+def greenfield_feasibility_hook() -> Callable[..., str | None] | None:
+    """Return the live pre-draw greenfield feasibility probe, or None while unbound.
+
+    The non-consuming half of the greenfield gate: called once per considered
+    Chinese opportunity per year, before the announcement draw, it answers
+    whether the single-owner withdrawal would be granted at the current pool
+    state — via :meth:`CapacityPool.can_withdraw`, the exact rules of the
+    consuming withdrawal, nothing consumed. A blocked answer is what the retry
+    cap counts (per blocked *year*, not per blocked draw) and records the same
+    ``blocked_greenfield`` ledger row the consuming gate would, so the
+    policy-bite series covers every blocked year including those the draw
+    never ran. A fundable answer records nothing — the consuming gate carries
+    the observability of the withdrawal itself.
+    """
+    policy = _policy
+    if policy is None:
+        return None
+
+    def greenfield_feasibility(
+        *,
+        iso3: str,
+        geo_unit: str | None,
+        technology: str,
+        reductant: str | None,
+        capacity: float,
+        product: str,
+        year: int,
+    ) -> str | None:
+        """Probe one considered greenfield's fundability — no state is touched.
+
+        Returns None when the withdrawal would be granted (or the opportunity
+        is not Chinese), else the ``blocked_reason`` the consuming gate would
+        refuse with.
+        """
+        if iso3 != "CHN":
+            return None
+        geo_key = _policy_geo_key(iso3, geo_unit, context="greenfield_gate")
+        spec = policy.evaluator.on_increase(
+            geo_key=geo_key,
+            product=product,
+            capacity_mt=capacity,
+            technology=technology,
+            reductant=reductant or None,
+        )
+        reason = policy.pool.can_withdraw(
+            spec.withdraw_mt,
+            spec.region_tag,
+            product=spec.product,
+            owner_id=f"indi_{iso3}",
+            year=year,
+            single_owner=True,
+        )
+        if reason is None:
+            return None
+        logger.info(
+            "[CAPACITY POOL] gate=greenfield decision=blocked stage=pre_draw reason=%s geo_key=%s "
+            "technology=%s reductant=%s product=%s withdraw_mt=%.3f tag=%s year=%d",
+            reason,
+            geo_key,
+            technology,
+            reductant,
+            spec.product,
+            spec.withdraw_mt,
+            spec.region_tag,
+            year,
+        )
+        policy.recorder.record_ledger(
+            year=year,
+            operation="blocked_greenfield",
+            amount_t=spec.withdraw_mt,
+            region_tag=spec.region_tag,
+            owner_id=f"indi_{iso3}",
+            product=spec.product,
+            blocked_reason=reason,
+            geo_key=geo_key,
+        )
+        return reason
+
+    return greenfield_feasibility
+
+
 def greenfield_capacity_hook() -> Callable[..., tuple[float, str | None, bool, tuple[Credit, ...]] | None] | None:
     """Return the live ③ INCREASE greenfield gate callable, or None while unbound.
 

@@ -774,6 +774,61 @@ class TestGreenfieldCapacityHook:
         assert cp_handlers.greenfield_retry_cap() == CapacityPolicyConfig().capacity_pool_max_retry_years
 
 
+class TestGreenfieldFeasibilityHook:
+    """The non-consuming pre-draw probe: can_withdraw's answer plus the blocked row."""
+
+    def test_unbound_accessor_returns_none(self):
+        assert cp_handlers.greenfield_feasibility_hook() is None
+
+    def test_non_chinese_opportunity_is_always_fundable(self, bound: CapacityPool):
+        probe = cp_handlers.greenfield_feasibility_hook()
+        assert probe is not None
+        assert greenfield_hook_call(probe, iso3="DEU", technology="not-a-technology") is None
+
+    def test_fundable_probe_returns_none_and_records_nothing(
+        self, bound: CapacityPool, recorder: CapacityPolicyRecorder
+    ):
+        """A fundable answer consumes nothing and leaves observability to the gate."""
+        bound.deposit(Credit(amount_mt=3.0, vintage_year=2019, region_tag=None, owner_id="E_a", product="iron"))
+        probe = cp_handlers.greenfield_feasibility_hook()
+        assert probe is not None
+
+        assert greenfield_hook_call(probe) is None
+        assert bound.total() == pytest.approx(3.0)
+        assert recorder._ledger == []
+
+    def test_blocked_probe_names_the_reason_and_records_the_blocked_row(
+        self, bound: CapacityPool, recorder: CapacityPolicyRecorder, caplog
+    ):
+        """A blocked year is visible in the artefacts even though no draw ever ran."""
+        bound.deposit(Credit(amount_mt=2.0, vintage_year=2019, region_tag=None, owner_id="E_a", product="iron"))
+        bound.deposit(Credit(amount_mt=1.5, vintage_year=2020, region_tag=None, owner_id="E_b", product="iron"))
+        probe = cp_handlers.greenfield_feasibility_hook()
+        assert probe is not None
+
+        with caplog.at_level(logging.INFO, logger="steelo.capacity_policy.handlers"):
+            reason = greenfield_hook_call(probe)
+
+        assert reason == "no_single_owner_with_sufficient_credits"
+        assert bound.total() == pytest.approx(3.5)
+        (row,) = recorder._ledger
+        assert row["operation"] == "blocked_greenfield"
+        assert row["blocked_reason"] == "no_single_owner_with_sufficient_credits"
+        assert row["amount_t"] == pytest.approx(3.0)
+        assert "stage=pre_draw" in caplog.text
+
+    def test_probe_and_gate_agree_on_the_same_pool_state(self, bound: CapacityPool):
+        """A fundable probe is a granted withdrawal within the same state."""
+        bound.deposit(Credit(amount_mt=3.0, vintage_year=2019, region_tag=None, owner_id="E_a", product="iron"))
+        probe = cp_handlers.greenfield_feasibility_hook()
+        gate = cp_handlers.greenfield_capacity_hook()
+        assert probe is not None and gate is not None
+
+        assert greenfield_hook_call(probe) is None
+        grant = greenfield_hook_call(gate)
+        assert grant is not None and grant[2] is True
+
+
 class TestBareCountryGeoKeyWarning:
     """A Chinese location without a geo_unit must never fall through silently."""
 
