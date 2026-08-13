@@ -16,7 +16,7 @@ so run_sweep.py can build a manifest and skip already-completed runs on resume.
 Usage:
     uv run python -m scripts.sensitivity.run_one \\
         --data-dir ~/.steelo/preparation_cache/<hash>/data \\
-        --master-excel ~/.steelo/data_cache/master-input-v2.0.0/master_input.xlsx \\
+        --master-excel ~/.steelo/data_cache/master-input-2026-08-07/master_input.xlsx \\
         --output-dir outputs/sensitivity/demo/run_0003 \\
         --start-year 2025 --end-year 2027 \\
         --params-json '{"steel_price_buffer": 250.0, "chosen_demand_scenario": "BAU"}'

@@ -52,8 +52,8 @@ the cluster): `rsync`/`scp` these two directories from the machine that
 already prepared them to the cluster's NFS home:
 - `~/.steelo/preparation_cache/co2_ramp_scenario/data` (the CO2-ramp scenario
   fixtures)
-- `~/.steelo/data_cache/master-input-v2.0.0/master_input.xlsx` (the master
-  Excel)
+- `~/.steelo/data_cache/master-input-2026-08-07/master_input.xlsx` (the
+  master Excel)
 
 **(b) Regenerate from scratch** on the login node (needs S3 credentials
 configured there — see `docs/data_management/`):
@@ -88,7 +88,7 @@ source ~/steel-iq/.venv/bin/activate
 cd ~/steel-iq
 python -m scripts.sensitivity.run_one \
     --data-dir ~/.steelo/preparation_cache/co2_ramp_scenario/data \
-    --master-excel ~/.steelo/data_cache/master-input-v2.0.0/master_input.xlsx \
+    --master-excel ~/.steelo/data_cache/master-input-2026-08-07/master_input.xlsx \
     --output-dir /tmp/smoke_test --start-year 2025 --end-year 2026 \
     --params-json '{"probabilistic_agents": false, "random_seed": 1}'
 ```

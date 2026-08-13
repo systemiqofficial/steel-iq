@@ -31,7 +31,7 @@ Usage:
     uv run python -m scripts.sensitivity.run_sweep \\
         --grid-file scripts/sensitivity/grids/example.yaml \\
         --data-dir ~/.steelo/preparation_cache/<hash>/data \\
-        --master-excel ~/.steelo/data_cache/master-input-v2.0.0/master_input.xlsx \\
+        --master-excel ~/.steelo/data_cache/master-input-2026-08-07/master_input.xlsx \\
         --out-dir outputs/sensitivity/example --jobs 4
 """
 
