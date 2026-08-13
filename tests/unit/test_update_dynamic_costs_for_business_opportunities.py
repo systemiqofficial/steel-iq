@@ -160,6 +160,7 @@ def test_update_costs_for_considered_plant_no_subsidies(
     commands = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=3,
+        construction_time=4,
         custom_energy_costs=mock_custom_energy_costs,
         capex_dict_all_locs=capex_dict_all_locs,
         cost_debt_all_locs=cost_debt_all_locs,
@@ -225,6 +226,7 @@ def test_update_costs_for_announced_plant_no_subsidies(
     commands = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=3,
+        construction_time=4,
         custom_energy_costs=mock_custom_energy_costs,
         capex_dict_all_locs=capex_dict_all_locs,
         cost_debt_all_locs=cost_debt_all_locs,
@@ -298,6 +300,7 @@ def test_update_costs_with_capex_subsidies(
     commands = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=3,
+        construction_time=4,
         custom_energy_costs=mock_custom_energy_costs,
         capex_dict_all_locs=capex_dict_all_locs,
         cost_debt_all_locs=cost_debt_all_locs,
@@ -370,6 +373,7 @@ def test_update_costs_with_debt_subsidies(
     commands = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=3,
+        construction_time=4,
         custom_energy_costs=mock_custom_energy_costs,
         capex_dict_all_locs=capex_dict_all_locs,
         cost_debt_all_locs=cost_debt_all_locs,
@@ -413,6 +417,7 @@ def test_skip_operating_plants(mock_custom_energy_costs, capex_dict_all_locs, co
     commands = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=3,
+        construction_time=4,
         custom_energy_costs=mock_custom_energy_costs,
         capex_dict_all_locs=capex_dict_all_locs,
         cost_debt_all_locs=cost_debt_all_locs,
@@ -495,6 +500,7 @@ def test_skip_plant_with_missing_cost_of_debt(mock_custom_energy_costs, capex_di
     commands = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=3,
+        construction_time=4,
         custom_energy_costs=mock_custom_energy_costs,
         capex_dict_all_locs=capex_dict_all_locs,
         cost_debt_all_locs=cost_debt_all_locs,
@@ -542,6 +548,7 @@ def test_skip_furnace_group_with_missing_capex(mock_custom_energy_costs, cost_de
     commands = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=3,
+        construction_time=4,
         custom_energy_costs=mock_custom_energy_costs,
         capex_dict_all_locs=capex_dict_all_locs,
         cost_debt_all_locs=cost_debt_all_locs,
@@ -599,6 +606,7 @@ def test_skip_furnace_group_with_no_cost_changes(
     commands = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=3,
+        construction_time=4,
         custom_energy_costs=mock_custom_energy_costs,
         capex_dict_all_locs=capex_dict_all_locs,
         cost_debt_all_locs=cost_debt_all_locs,
@@ -686,6 +694,7 @@ def test_multiple_plants_mixed_statuses(
     commands = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=3,
+        construction_time=4,
         custom_energy_costs=mock_custom_energy_costs,
         capex_dict_all_locs=capex_dict_all_locs,
         cost_debt_all_locs=cost_debt_all_locs,
@@ -764,6 +773,7 @@ def test_considered_plant_with_historical_npv(
     commands = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=3,
+        construction_time=4,
         custom_energy_costs=mock_custom_energy_costs,
         capex_dict_all_locs=capex_dict_all_locs,
         cost_debt_all_locs=cost_debt_all_locs,
@@ -819,6 +829,7 @@ def test_furnace_group_without_bill_of_materials(
     commands = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=3,
+        construction_time=4,
         custom_energy_costs=mock_custom_energy_costs,
         capex_dict_all_locs=capex_dict_all_locs,
         cost_debt_all_locs=cost_debt_all_locs,
@@ -914,6 +925,7 @@ def test_update_costs_with_energy_subsidies(
     commands = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=3,
+        construction_time=4,
         custom_energy_costs=mock_custom_energy_costs,
         capex_dict_all_locs=capex_dict_all_locs,
         cost_debt_all_locs=cost_debt_all_locs,
@@ -1016,6 +1028,7 @@ def test_update_costs_with_province_scoped_energy_subsidies(
     commands = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=3,
+        construction_time=4,
         custom_energy_costs=mock_custom_energy_costs,
         capex_dict_all_locs=capex_dict_all_locs,
         cost_debt_all_locs=cost_debt_all_locs,
@@ -1032,3 +1045,192 @@ def test_update_costs_with_province_scoped_energy_subsidies(
     assert cmd.new_energy_costs["hydrogen"] == pytest.approx(2.5)
     assert cmd.new_output_energy_costs["hydrogen"] == pytest.approx(4.5)
     assert cmd.new_energy_costs_no_subsidy["hydrogen"] == pytest.approx(3.5)
+
+
+def _dri_opportunity_plant_group(status: str, historical_npvs: dict[int, float] | None = None) -> PlantGroup:
+    """A single USA/DRI opportunity furnace group, for the subsidy-timing tests below."""
+    fg = get_furnace_group(
+        fg_id="fg_timing",
+        tech_name="DRI",
+        capacity=150,
+        lifetime=PointInTime(
+            current=Year(2025),
+            time_frame=TimeFrame(start=Year(2030), end=Year(2050)),
+            plant_lifetime=20,
+        ),
+        utilization_rate=0.7,
+    )
+    fg.status = status
+    fg.cost_of_debt = 0.06
+    fg.technology.capex = 3000.0
+    fg.energy_costs = {"electricity": 60.0, "hydrogen": 5.0}
+    fg.energy_costs_no_subsidy = {"electricity": 60.0, "hydrogen": 5.0}
+    fg.output_energy_costs = {"electricity": 60.0, "hydrogen": 5.0}
+    fg.bill_of_materials = {
+        "energy": {
+            "electricity": {"unit_cost": 60.0, "demand": 0.4},
+            "hydrogen": {"unit_cost": 5.0, "demand": 0.8},
+        },
+        "materials": {
+            "iron_ore": {"unit_cost": 100.0, "demand": 1.5},
+        },
+    }
+    if historical_npvs is not None:
+        fg.historical_npv_business_opportunities = historical_npvs
+
+    plant = get_plant(plant_id="plant_timing", furnace_groups=[fg])
+    plant.location = Location(lat=40.0, lon=-100.0, country="USA", region="Americas", iso3="USA")
+    return PlantGroup(plant_group_id="test_group", plants=[plant])
+
+
+def _hydrogen_subsidy(start_year: int, end_year: int) -> dict:
+    return {
+        "hydrogen": {
+            "USA": {
+                "DRI": [
+                    Subsidy(
+                        scenario_name="test",
+                        iso3="USA",
+                        start_year=Year(start_year),
+                        end_year=Year(end_year),
+                        technology_name="DRI",
+                        cost_item="hydrogen",
+                        subsidy_type="absolute",
+                        subsidy_amount=1.0,
+                    )
+                ],
+            },
+        },
+    }
+
+
+def _capex_subsidy(start_year: int, end_year: int) -> dict:
+    return {
+        "USA": {
+            "DRI": [
+                Subsidy(
+                    scenario_name="test",
+                    iso3="USA",
+                    start_year=Year(start_year),
+                    end_year=Year(end_year),
+                    technology_name="DRI",
+                    cost_item="capex",
+                    subsidy_type="relative",
+                    subsidy_amount=0.5,
+                )
+            ],
+        }
+    }
+
+
+def test_energy_subsidies_filtered_at_operating_start_year(
+    mock_custom_energy_costs,
+    capex_dict_all_locs,
+    cost_debt_all_locs,
+    iso3_to_region_map,
+):
+    """Energy subsidies price what the plant pays once running, not at construction start.
+
+    Notes:
+        Announced FG in 2025 with construction_time=4: construction starts 2026, the plant first
+        operates in 2030. A subsidy expiring in 2029 (during construction) must not move the energy
+        costs, while one starting in 2030 must - matching opportunity creation and PAM.
+    """
+    kwargs = dict(
+        current_year=Year(2025),
+        consideration_time=3,
+        construction_time=4,
+        custom_energy_costs=mock_custom_energy_costs,
+        capex_dict_all_locs=capex_dict_all_locs,
+        cost_debt_all_locs=cost_debt_all_locs,
+        iso3_to_region_map=iso3_to_region_map,
+        global_risk_free_rate=0.02,
+    )
+
+    expires_during_construction = _dri_opportunity_plant_group(
+        "announced"
+    ).update_dynamic_costs_for_business_opportunities(energy_subsidies=_hydrogen_subsidy(2026, 2029), **kwargs)
+    assert len(expires_during_construction) == 1
+    # Mock provides hydrogen=3.5; the subsidy is dead by 2030, so the raw price stands
+    assert expires_during_construction[0].new_energy_costs["hydrogen"] == pytest.approx(3.5)
+
+    live_at_operating_start = _dri_opportunity_plant_group("announced").update_dynamic_costs_for_business_opportunities(
+        energy_subsidies=_hydrogen_subsidy(2030, 2035), **kwargs
+    )
+    assert len(live_at_operating_start) == 1
+    # $1.0 absolute subsidy -> input 2.5, output 4.5
+    assert live_at_operating_start[0].new_energy_costs["hydrogen"] == pytest.approx(2.5)
+    assert live_at_operating_start[0].new_output_energy_costs["hydrogen"] == pytest.approx(4.5)
+
+
+def test_capex_subsidies_stay_filtered_at_construction_start_year(
+    mock_custom_energy_costs,
+    capex_dict_all_locs,
+    cost_debt_all_locs,
+    iso3_to_region_map,
+):
+    """CAPEX is incurred at construction start, so its subsidies must not shift to the operating year.
+
+    Notes:
+        Guards the energy-subsidy alignment against over-shifting: same 2026 construction start /
+        2030 operating start as the test above, with the opposite expectations.
+    """
+    kwargs = dict(
+        current_year=Year(2025),
+        consideration_time=3,
+        construction_time=4,
+        custom_energy_costs=mock_custom_energy_costs,
+        capex_dict_all_locs=capex_dict_all_locs,
+        cost_debt_all_locs=cost_debt_all_locs,
+        iso3_to_region_map=iso3_to_region_map,
+        global_risk_free_rate=0.02,
+    )
+
+    live_at_construction_start = _dri_opportunity_plant_group(
+        "announced"
+    ).update_dynamic_costs_for_business_opportunities(capex_subsidies=_capex_subsidy(2026, 2026), **kwargs)
+    assert len(live_at_construction_start) == 1
+    assert live_at_construction_start[0].new_capex_no_subsidy == 2000.0
+    assert live_at_construction_start[0].new_capex == 1000.0  # 50% subsidy applied
+
+    live_only_once_operating = _dri_opportunity_plant_group(
+        "announced"
+    ).update_dynamic_costs_for_business_opportunities(capex_subsidies=_capex_subsidy(2030, 2035), **kwargs)
+    assert len(live_only_once_operating) == 1
+    assert live_only_once_operating[0].new_capex == 2000.0  # unsubsidised
+
+
+def test_considered_target_year_is_floored_at_next_year(
+    mock_custom_energy_costs,
+    capex_dict_all_locs,
+    cost_debt_all_locs,
+    iso3_to_region_map,
+):
+    """A long-considered opportunity must not drift its subsidy year into the past.
+
+    Notes:
+        With consideration_time=3 and 5 years of NPV history, the raw formula
+        [current + consideration_time + 1 - years_considered] gives 2024 - a year already gone.
+        The floor pins it to 2026, the soonest path still open (announce now, construct next year),
+        matching track_business_opportunities. Asserted on CAPEX, which is filtered at that year
+        itself; an energy subsidy would be filtered four years later and could not pin the floor.
+    """
+    plant_group = _dri_opportunity_plant_group(
+        "considered",
+        historical_npvs={2021: 1.0, 2022: 1.0, 2023: 1.0, 2024: 1.0, 2025: 1.0},
+    )
+
+    commands = plant_group.update_dynamic_costs_for_business_opportunities(
+        current_year=Year(2025),
+        consideration_time=3,
+        construction_time=4,
+        custom_energy_costs=mock_custom_energy_costs,
+        capex_dict_all_locs=capex_dict_all_locs,
+        cost_debt_all_locs=cost_debt_all_locs,
+        iso3_to_region_map=iso3_to_region_map,
+        global_risk_free_rate=0.02,
+        capex_subsidies=_capex_subsidy(2026, 2026),
+    )
+
+    assert len(commands) == 1
+    assert commands[0].new_capex == 1000.0  # 50% subsidy live in the floored year 2026

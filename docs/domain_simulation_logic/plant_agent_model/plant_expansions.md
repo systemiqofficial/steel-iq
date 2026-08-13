@@ -139,9 +139,10 @@ graph TD
 - **Subsidy Types**:
   - Debt subsidies: Reduce cost of borrowing
   - CAPEX subsidies: Reduce upfront investment
+  - Energy carrier subsidies: Reduce the carrier prices used to price the candidate's bill of materials
 - **Actions**:
   - Get all subsidies for location and technology
-  - Filter to only active subsidies for current year using `filter_subsidies_for_year()`
+  - Filter to only active subsidies using `filter_subsidies_for_year()`: CAPEX and debt at the current year (when they are incurred), energy carriers at the operating start year (`current_year + construction_time`, when the expansion starts consuming them)
   - Calculate adjusted cost of debt using `calculate_debt_with_subsidies()`
   - Calculate adjusted CAPEX using `calculate_capex_with_subsidies()`
 - **Key Variables**: `selected_debt_subsidies`, `selected_capex_subsidies`, adjusted `cost_of_debt`, adjusted `capex`
@@ -253,7 +254,7 @@ Returns either:
    - Higher cost/benefit ratio results in lower acceptance probability
 
 4. **Subsidy Application**:
-   - Subsidies are filtered to only include those active in the current year
+   - CAPEX and debt subsidies are filtered to those active in the current year; energy carrier subsidies to those active at the operating start year (`current_year + construction_time`)
    - CAPEX subsidies reduce upfront investment costs
    - Debt subsidies reduce the cost of borrowing
    - Both types are passed to the AddFurnaceGroup command

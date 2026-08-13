@@ -68,7 +68,7 @@ Emissions and cost-curve plots write to top-level sibling folders rather than un
 output/
   plots/
     PAM/        # plant-agent plots (capacity, capex, charges, prices)
-    GEO/        # geospatial / new-plant plots
+    GEO/        # geospatial / new-plant plots (maps on milestone years; power-price histogram and mine map final-year-only)
     TM/         # trade-model plots
     emissions/  # SteelPlotter.plot_emissions_by_technology
     cost_curves/  # SteelPlotter cost-curve methods

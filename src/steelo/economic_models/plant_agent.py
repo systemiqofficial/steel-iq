@@ -88,9 +88,10 @@ class GeospatialModel:
             3. Updates dynamic costs (e.g., grid cell-specific power and hydrogen prices, CAPEX, cost of debt, and subsidies) for all
             business opportunities yearly (status: considered and announced).
             4. Updates the NPV of all potential business opportunities each year with new costs (status: considered).
-            5. Business opportunities (status: considered) that remain NPV-positive for the first X years (default=3y) are announced
-            with a certain probability (default=70%; uniformly sampled), changing their status to 'announced'. This reflects that
-            not all opportunities are taken up by investors.
+            5. Business opportunities (status: considered) whose last X (=consideration_time, default=3y) yearly NPVs are all
+            positive (a rolling window, not necessarily the first years) are announced with a certain probability (default=70%;
+            uniformly sampled), changing their status to 'announced'. This reflects that not all opportunities are taken up by
+            investors.
             6. Business opportunities (status: considered) that have a negative NPV for at least X years (default=3y) in a row are
             discarded (status: discarded).
             7. Announced plants, if their technology is still allowed, are constructed after 1 year with a certain probability
@@ -206,6 +207,7 @@ class GeospatialModel:
                 pg.update_dynamic_costs_for_business_opportunities(
                     current_year=bus.env.year,
                     consideration_time=bus.env.config.consideration_time,
+                    construction_time=bus.env.config.construction_time,
                     custom_energy_costs=custom_energy_costs,  # type: ignore[arg-type]  # needed to avoid importing xarray into the domain
                     capex_dict_all_locs=bus.env.name_to_capex["greenfield"],
                     cost_debt_all_locs=bus.env.cost_of_debt_by_tech,
