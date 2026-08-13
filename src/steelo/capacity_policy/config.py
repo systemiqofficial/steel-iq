@@ -29,7 +29,7 @@ class CapacityPolicyConfig:
             that happens to share the 1.5 default.
         min_utilization_for_renovation: Utilisation floor; a group at or
             below it for the whole window is not eligible for renovation, nor
-            for replacement, whatever ``reline_counts_as_replace`` says.
+            for replacement, whatever ``renovation_counts_as_replace`` says.
         utilization_window_years: Number of consecutive recorded years at or
             below the floor that make a group ineligible for renovation.
         inter_company_swap_cutoff_year: First year a company may only spend
@@ -43,9 +43,11 @@ class CapacityPolicyConfig:
             applicability rule over the ownership cutoff, not an age rule.
         capacity_pool_max_retry_years: Years the capacity gate may block a
             considered greenfield before the opportunity is discarded.
-        reline_counts_as_replace: Whether a reline also pays the replacement
-            ratio. The utilisation gate applies to a renovation either way
-            (Decision 34), so this flag is the ratio question alone.
+        renovation_counts_as_replace: Whether a same-technology renovation is
+            a full REPLACE, paying the replacement ratio like any switch — the
+            default, per Decision 36: the tree's ② branch draws no
+            same-technology exemption. ``False`` exempts a renovation from the
+            ratio alone; the utilisation gate applies either way (Decision 34).
 
     Raises:
         ValueError: On an unknown ``banked_credit_rule``, a non-positive ratio,
@@ -62,7 +64,7 @@ class CapacityPolicyConfig:
     banked_credit_rule: str = "reassign"
     credit_validity_years: int | None = None
     capacity_pool_max_retry_years: int = 5
-    reline_counts_as_replace: bool = False
+    renovation_counts_as_replace: bool = True
 
     def __post_init__(self) -> None:
         if self.banked_credit_rule not in BANKED_CREDIT_RULES:

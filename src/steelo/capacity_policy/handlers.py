@@ -120,9 +120,10 @@ def replace_capacity_hook() -> Callable[..., float | None] | None:
         applicability lives here rather than in the domain module. A
         non-Chinese plant passes through at its own capacity without reaching
         the evaluator. A same-technology candidate — the renovation option —
-        faces the utilisation gate but not the ratio, unless
-        ``reline_counts_as_replace`` makes a reline a full REPLACE and both
-        apply (Decision 34). None means the gate blocks the decision.
+        is a full REPLACE under ``renovation_counts_as_replace``, the shipped
+        default, so the utilisation gate and the ratio both apply; with the
+        flag off it faces the gate alone (Decision 34). None means the gate
+        blocks the decision.
 
         ``new_reductant`` is the candidate's operating-start pick (Decision
         30), not the fleet's modal reductant. A reductant-split technology —
@@ -135,7 +136,7 @@ def replace_capacity_hook() -> Callable[..., float | None] | None:
         """
         if iso3 != "CHN":
             return capacity
-        if new_technology == old_technology and not policy.evaluator.config.reline_counts_as_replace:
+        if new_technology == old_technology and not policy.evaluator.config.renovation_counts_as_replace:
             return policy.evaluator.permitted_renovation(
                 technology=old_technology,
                 reductant=old_reductant or None,
@@ -542,14 +543,16 @@ def deposit_on_furnace_group_tech_changed(
 
 
 def deposit_on_furnace_group_renovated(event: events.FurnaceGroupRenovated, uow: UnitOfWork, env: Environment) -> None:
-    """Branch ② REPLACE via renovation: bank capacity a reline shrank away.
+    """Branch ② REPLACE via renovation: bank capacity a renovation shrank away.
 
-    A renovation shrinks only when the pre-NPV hook treats a reline as a
-    replacement (``reline_counts_as_replace``); under the default flag the
-    event always carries ``old_capacity == capacity`` and this handler stays
-    silent, exactly like an unshrunk tech change. The utilisation gate is a
-    separate question the hook answers under both flags, and a group it blocks
-    raises no renovation event to begin with.
+    A renovation shrinks when the pre-NPV hook treats it as a replacement
+    (``renovation_counts_as_replace``, the shipped default): a qualifying
+    emission-intense renovation carries ``old_capacity > capacity`` and banks
+    the delta. A 1:1 renovation — a non-intense derivation, an exempt
+    province, or the flag off — carries ``old_capacity == capacity`` and this
+    handler stays silent, exactly like an unshrunk tech change. The
+    utilisation gate is a separate question the hook answers under both flags,
+    and a group it blocks raises no renovation event to begin with.
     """
     policy = _policy
     if policy is None:

@@ -3775,7 +3775,7 @@ class Plant:
         # Switch to brownfield CAPEX (renovation costs are different from greenfield construction)
         furnace_group.technology.capex_type = "brownfield"
 
-        # Apply the renovated capacity; a no-op unless the capacity policy shrank the reline
+        # Apply the renovated capacity; a no-op unless the capacity policy shrank the renovation
         furnace_group.capacity = Volumes(capacity)
 
         # Update financial parameters with both subsidized and unsubsidized values

@@ -305,7 +305,7 @@ class TestTechChangedDeposit:
 
 class TestRenovatedDeposit:
     def test_positive_shrink_deposits_the_delta(self, bound: CapacityPool):
-        """A reline shrunk by the pre-NPV hook banks exactly old_capacity − capacity."""
+        """A renovation shrunk by the pre-NPV hook banks exactly old_capacity − capacity."""
         cp_handlers.deposit_on_furnace_group_renovated(
             renovated_event(old_capacity=3.0, capacity=2.0),
             uow=make_uow(),  # type: ignore[arg-type]
@@ -318,7 +318,7 @@ class TestRenovatedDeposit:
 
     @pytest.mark.parametrize("old_capacity, capacity", [(2.0, 2.0), (2.0, 3.0)])
     def test_non_positive_delta_deposits_nothing(self, bound: CapacityPool, old_capacity, capacity):
-        """An unshrunk renovation — the norm under the default reline flag — banks nothing."""
+        """An unshrunk renovation — 1:1 by derivation, or ratio-exempt — banks nothing."""
         cp_handlers.deposit_on_furnace_group_renovated(
             renovated_event(old_capacity=old_capacity, capacity=capacity),
             uow=make_uow(),  # type: ignore[arg-type]
@@ -512,8 +512,9 @@ class TestReplaceCapacityHook:
         )
         assert permitted == 3.0
 
-    def test_same_technology_is_gated_under_the_default_reline_flag(self, bound: CapacityPool):
-        """Decision 34: the utilisation gate reaches a renovation whatever the flag says."""
+    def test_same_technology_is_gated_under_the_default_flag(self, bound: CapacityPool):
+        """The utilisation gate blocks a renovation on either branch; under the shipped
+        default it reaches the candidate as a full REPLACE (Decisions 34 and 36)."""
         hook = cp_handlers.replace_capacity_hook()
         assert hook is not None
         permitted = hook(
@@ -529,9 +530,47 @@ class TestReplaceCapacityHook:
         )
         assert permitted is None
 
+    def test_an_intense_renovation_shrinks_under_the_default_flag(self, bound: CapacityPool):
+        """Decision 36: a BF→BF renovation of an intense group is a full REPLACE and
+        derives 1.5:1 from the flags."""
+        hook = cp_handlers.replace_capacity_hook()
+        assert hook is not None
+        permitted = hook(
+            iso3="CHN",
+            geo_unit="CN-GD",
+            old_technology="BF",
+            old_reductant="Coke+PCI",
+            new_technology="BF",
+            new_reductant="Coke+PCI",
+            capacity=3.0,
+            historical_utilization=None,
+            year=2025,
+        )
+        assert permitted == pytest.approx(2.0)
+
     @pytest.mark.parametrize("history", [None, {2024: 0.9, 2025: 0.9}, {2025: 0.1}])
-    def test_an_ungated_same_technology_renovation_keeps_its_capacity(self, bound: CapacityPool, history):
-        """The flag stays the ratio question alone: an unblocked reline never shrinks."""
+    def test_a_non_intense_renovation_passes_one_to_one_under_the_default(self, bound: CapacityPool, history):
+        """Even as a full REPLACE a non-intense renovation derives 1:1, so nothing shrinks."""
+        hook = cp_handlers.replace_capacity_hook()
+        assert hook is not None
+        permitted = hook(
+            iso3="CHN",
+            geo_unit="CN-GD",
+            old_technology="EAF",
+            old_reductant="Electricity",
+            new_technology="EAF",
+            new_reductant="Electricity",
+            capacity=3.0,
+            historical_utilization=history,
+            year=2025,
+        )
+        assert permitted == 3.0
+
+    @pytest.mark.parametrize("history", [None, {2024: 0.9, 2025: 0.9}, {2025: 0.1}])
+    def test_a_ratio_exempt_renovation_keeps_its_capacity(self, pool: CapacityPool, history):
+        """With the flag off a renovation faces no ratio: an unblocked BF→BF stays whole."""
+        evaluator = TreeEvaluator(REGIONS, TECHNOLOGIES, CapacityPolicyConfig(renovation_counts_as_replace=False))
+        cp_handlers.bind_capacity_policy(evaluator, pool, CapacityPolicyRecorder())
         hook = cp_handlers.replace_capacity_hook()
         assert hook is not None
         permitted = hook(
@@ -547,9 +586,9 @@ class TestReplaceCapacityHook:
         )
         assert permitted == 3.0
 
-    def test_same_technology_shrinks_when_reline_counts_as_replace(self, pool: CapacityPool):
-        """With the flag on, a BF→BF reline of an intense group derives 1.5:1 from the flags."""
-        evaluator = TreeEvaluator(REGIONS, TECHNOLOGIES, CapacityPolicyConfig(reline_counts_as_replace=True))
+    def test_a_ratio_exempt_renovation_is_still_gated(self, pool: CapacityPool):
+        """Decision 34: the flag is the ratio question alone — the gate applies regardless."""
+        evaluator = TreeEvaluator(REGIONS, TECHNOLOGIES, CapacityPolicyConfig(renovation_counts_as_replace=False))
         cp_handlers.bind_capacity_policy(evaluator, pool, CapacityPolicyRecorder())
         hook = cp_handlers.replace_capacity_hook()
         assert hook is not None
@@ -561,10 +600,10 @@ class TestReplaceCapacityHook:
             new_technology="BF",
             new_reductant="Coke+PCI",
             capacity=3.0,
-            historical_utilization=None,
+            historical_utilization={2024: 0.1, 2025: 0.1},
             year=2025,
         )
-        assert permitted == pytest.approx(2.0)
+        assert permitted is None
 
 
 def expansion_hook_call(hook, **overrides):
@@ -832,7 +871,7 @@ class TestDepositLedgerRows:
         ],
     )
     def test_both_shrink_paths_record_a_replace_row(self, bound: CapacityPool, recorder, call):
-        """A shrunk switch and a shrunk reline are the same ① RETIRE-side fact."""
+        """A shrunk switch and a shrunk renovation are the same ① RETIRE-side fact."""
         call()
         (row,) = recorder._ledger
         assert row["operation"] == "deposit_replace"

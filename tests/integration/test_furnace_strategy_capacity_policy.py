@@ -5,8 +5,9 @@ A bound adapter evaluates every candidate at its permitted capacity: penalised
 transitions shrink, non-intense targets and exempt-province cells stay 1:1, a
 utilisation-gated group loses its replace candidates while continue and close
 survive, and the executed command deposits the freed delta into the pool via
-the real handlers. Renovation participates only when
-``reline_counts_as_replace`` is True.
+the real handlers. A same-technology renovation is a full REPLACE under the
+shipped default (``renovation_counts_as_replace``); explicit False exempts it
+from the ratio while the utilisation gate still applies.
 """
 
 import logging
@@ -40,7 +41,7 @@ FLEET_REDUCTANTS = {"DRI": "Natural gas", "MOE": "Electricity"}
 CANDIDATE_PICKS = {"EAF": "Electricity", "DRI": "Hydrogen", "MOE": "Electricity"}
 
 # Synthetic policy rows: the incumbent EAF is authored emission-intense so a
-# same-technology renovation reads as a penalised REPLACE under the reline flag;
+# same-technology renovation reads as a penalised REPLACE under the shipped default;
 # DRI is the penalised switch target, MOE the non-intense one.
 REGIONS = [
     RegionRow(geo_key="CHN:CN-HE", region_name="Jing-Jin-Ji", type="key", from_year=None),
@@ -160,14 +161,14 @@ def unbind_after_test():
 
 
 def bind_policy(
-    *, reline_counts_as_replace: bool = False, technologies: list[TechnologyRow] | None = None
+    *, renovation_counts_as_replace: bool = True, technologies: list[TechnologyRow] | None = None
 ) -> tuple[TreeEvaluator, CapacityPool]:
     """Bind a real evaluator and pool; return both for spying and pool asserts."""
     recorder = CapacityPolicyRecorder()
     evaluator = TreeEvaluator(
         REGIONS,
         TECHNOLOGIES if technologies is None else technologies,
-        CapacityPolicyConfig(reline_counts_as_replace=reline_counts_as_replace),
+        CapacityPolicyConfig(renovation_counts_as_replace=renovation_counts_as_replace),
         recorder=recorder,
     )
     pool = CapacityPool()
@@ -342,7 +343,8 @@ class TestBoundReplacePath:
         passed = mock.call_args.kwargs["candidate_capacities"]
         assert passed["DRI"] == pytest.approx(2.0)
         assert passed["MOE"] == pytest.approx(3.0)
-        assert passed["EAF"] == pytest.approx(3.0)
+        # The incumbent's renovation candidate is itself a penalised REPLACE under the default
+        assert passed["EAF"] == pytest.approx(2.0)
         # Switch equity is debited at the permitted capacity
         assert plant_group.balance == pytest.approx(1_000_000.0 - REGION_CAPEX["DRI"] * 2.0 * fg.equity_share)
         # The drift instrumentation carries both routes' reductants; the new side is the
@@ -483,9 +485,10 @@ class TestCandidatePickClassification:
 
 
 class TestRenovationRuling:
-    def test_reline_true_shrinks_renovation_and_deposits(self, mocker):
-        """Under the flag a same-tech renovation of an intense group is a penalised REPLACE."""
-        _, pool = bind_policy(reline_counts_as_replace=True)
+    def test_default_renovation_of_an_intense_group_shrinks_and_deposits(self, mocker):
+        """Under the shipped default a same-tech renovation of an intense group is a
+        penalised REPLACE."""
+        _, pool = bind_policy()
         plant, plant_group = make_plant_and_group(expired=True)
         fg = plant.furnace_groups[0]
         mock = mock_npvs(mocker, fg, {"EAF": 1_000_000.0, "DRI": 500.0, "MOE": 400.0})
@@ -508,8 +511,8 @@ class TestRenovationRuling:
         assert credit.amount_mt == pytest.approx(1.0)
         assert credit.region_tag == "Jing-Jin-Ji"
 
-    def test_reline_true_gate_blocked_expired_group_falls_through_to_close(self, mocker):
-        bind_policy(reline_counts_as_replace=True)
+    def test_gate_blocked_expired_group_falls_through_to_close_under_the_default(self, mocker):
+        bind_policy()
         plant, plant_group = make_plant_and_group(expired=True)
         fg = plant.furnace_groups[0]
         fg.historical_utilization = {2024: 0.20, 2025: 0.22}
@@ -519,10 +522,10 @@ class TestRenovationRuling:
 
         assert isinstance(command, CloseFurnaceGroup)
 
-    def test_reline_false_gate_blocked_expired_group_falls_through_to_close(self, mocker):
-        """Decision 34: under the default flag the gate still reaches the renovation, so a
+    def test_ratio_exempt_gate_blocked_expired_group_falls_through_to_close(self, mocker):
+        """Decision 34: the gate reaches a ratio-exempt renovation too, so a
         low-utilisation expired group loses the incumbent option and closes."""
-        bind_policy(reline_counts_as_replace=False)
+        bind_policy(renovation_counts_as_replace=False)
         plant, plant_group = make_plant_and_group(expired=True)
         fg = plant.furnace_groups[0]
         fg.historical_utilization = {2024: 0.1, 2025: 0.1}
@@ -533,9 +536,9 @@ class TestRenovationRuling:
         assert isinstance(command, CloseFurnaceGroup)
         assert mock.call_args.kwargs["allowed_furnace_transitions"]["EAF"] == []
 
-    def test_reline_false_renovation_untouched_and_event_unshrunk(self, mocker):
-        """Default flag: renovation at full capacity, event carries old_capacity == capacity."""
-        _, pool = bind_policy(reline_counts_as_replace=False)
+    def test_ratio_exempt_renovation_untouched_and_event_unshrunk(self, mocker):
+        """Flag off: renovation at full capacity, event carries old_capacity == capacity."""
+        _, pool = bind_policy(renovation_counts_as_replace=False)
         plant, plant_group = make_plant_and_group(expired=True)
         mock_npvs(mocker, plant.furnace_groups[0], {"EAF": 1_000_000.0, "DRI": 500.0, "MOE": 400.0})
 

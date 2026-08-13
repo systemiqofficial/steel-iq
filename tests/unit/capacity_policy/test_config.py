@@ -19,7 +19,7 @@ def test_defaults_are_dormant():
     assert config.banked_credit_rule == "reassign"
     assert config.credit_validity_years is None
     assert config.capacity_pool_max_retry_years == 5
-    assert config.reline_counts_as_replace is False
+    assert config.renovation_counts_as_replace is True
 
 
 def test_unknown_banked_credit_rule_raises():

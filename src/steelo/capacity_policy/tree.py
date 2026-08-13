@@ -5,7 +5,7 @@ environment, no domain-model imports — so the module stays deletable and
 testable against hand-built rows. The methods transcribe the policy tree's
 branches: ① RETIRE (:meth:`TreeEvaluator.on_close`), ② REPLACE
 (:meth:`TreeEvaluator.permitted_capacity` for a switch,
-:meth:`TreeEvaluator.permitted_renovation` for the gate-only renovation),
+:meth:`TreeEvaluator.permitted_renovation` for the ratio-exempt renovation),
 ③ INCREASE (:meth:`TreeEvaluator.on_increase`). Ratio precedence and
 derivation are consumed from :mod:`.inputs`, never reimplemented.
 """
@@ -265,10 +265,10 @@ class TreeEvaluator:
         """Resolve whether a same-technology renovation is allowed at all — the gate alone.
 
         Decision 34: the utilisation gate applies to renovations whatever
-        ``reline_counts_as_replace`` says; that flag decides only whether a
-        reline also pays the replacement ratio. A renovation outside REPLACE
-        therefore has nothing to classify and nothing to shrink — it either
-        proceeds untouched or is blocked outright.
+        ``renovation_counts_as_replace`` says; that flag decides only whether
+        a renovation also pays the replacement ratio. A ratio-exempt
+        renovation therefore has nothing to classify and nothing to shrink —
+        it either proceeds untouched or is blocked outright.
 
         The D5 letter is untouched: the predicate blocks only on a fully
         recorded window at or below the floor, so insufficient history never
