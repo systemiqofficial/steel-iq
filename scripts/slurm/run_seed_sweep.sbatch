@@ -39,10 +39,13 @@
 #
 # --mem=32G is a ballpark, not a measurement. `sacct -j 27923 --format=JobID,Elapsed,
 # MaxRSS,MaxVMSize,State --units=G` came back with MaxRSS blank for every task --
-# this cluster's SLURM accounting isn't sampling memory at all (JobAcctGatherType
-# likely "none"; confirm with `scontrol show config | grep -i JobAcctGather`), so
-# there is no retroactive real number to pull. The /usr/bin/time -v wrapper below is
-# now the only real peak-RSS source, in-app-log-level-independent, for future runs.
+# this cluster's SLURM accounting isn't sampling memory at all -- confirmed via
+# `scontrol show config`: JobAcctGatherType=jobacct_gather/none, cluster-wide, not
+# just this job. sacct will never supply MaxRSS here (past or future) unless
+# whoever administers the cluster changes that slurm.conf setting -- not something
+# to route around in this script. The /usr/bin/time -v wrapper below is the
+# permanent real peak-RSS source instead, independent of both app --log-level and
+# this cluster's accounting config.
 #
 # Partition: this cluster's tiers (short<=1h/medium<=3h/long<=6h/verylong<=4d) mean
 # --time=48:00:00 only fits verylong -- long's 6h cap is nowhere near enough.
