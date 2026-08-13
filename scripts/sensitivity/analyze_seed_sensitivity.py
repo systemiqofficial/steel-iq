@@ -13,17 +13,21 @@ granularity the geospatial siting lottery (rows 6-11) operates at. Writes, all u
 --out-dir:
 
   - final_tech_share_by_seed.csv: capacity share by (product, technology) in the final
-    simulated year, one row per seed plus range/std across seeds -- the primary
-    technology-mix comparison. Range/std close to 0 supports "this randomness doesn't
-    matter here"; a wide spread means it does.
+    simulated year, one row per seed plus range/std/n_seeds_present across seeds -- the
+    primary technology-mix comparison. A seed that builds zero capacity of a given
+    technology counts as 0% share (not dropped), so range/std reflect the full swing
+    between "built" and "never built"; n_seeds_present says how many of the seeds built
+    any capacity of it at all, since a technology built in only 1-2 seeds can still show
+    a small range/std purely because its typical share is small. Range/std close to 0
+    supports "this randomness doesn't matter here"; a wide spread means it does.
   - tech_share_over_time_by_seed.csv: same shares, every year (long format), so
     divergence that shows up mid-run and later cancels out isn't missed by only
     looking at the final year.
   - capacity_share_by_tech_over_time.png: mean +/- range across seeds, one line per
     technology, faceted by product.
   - final_location_share_by_seed.csv: capacity share by country (iso3) in the final
-    year, one row per seed plus range/std -- the location analogue of the tech-share
-    table.
+    year, one row per seed plus range/std/n_seeds_present -- the location analogue of
+    the tech-share table (same zero-fill treatment for a seed with no capacity there).
   - location_share_over_time_by_seed.csv: capacity share by region, every year, long
     format.
   - capacity_share_by_region_over_time.png: mean +/- range across seeds, one line per
@@ -108,8 +112,16 @@ def _final_year_slice(share_series: pd.Series) -> pd.Series:
 
 def _summarize_across_seeds(per_seed_final: dict[int, pd.Series]) -> pd.DataFrame:
     table = pd.concat(per_seed_final, names=["seed"]).unstack(list(next(iter(per_seed_final.values())).index.names))
+    # A (product, technology)/(iso3) combo missing for a seed means that seed built zero
+    # capacity of it, not "unknown" -- unstack() leaves it NaN, which max()/min()/std()
+    # silently skip (pandas default skipna=True). Left unfilled, a technology built in
+    # 4 of 5 seeds looks like a small range (only the 4 non-zero seeds are compared)
+    # instead of the true, much larger swing between "built" and "not built at all".
+    n_seeds_present = table.notna().sum()
+    table = table.fillna(0.0)
     table.loc["range"] = table.max() - table.min()
     table.loc["std"] = table.iloc[:-1].std()
+    table.loc["n_seeds_present"] = n_seeds_present
     return table
 
 
