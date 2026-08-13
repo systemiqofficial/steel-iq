@@ -22,10 +22,11 @@
 #
 # One-time setup before first submission (on the login node, needs internet):
 #   git clone -b pam-benchmark-cluster https://github.com/systemiqofficial/steel-iq.git ~/steel-iq && cd ~/steel-iq && uv sync
-#   rsync the already-prepared co2_ramp_scenario data dir to
-#   ~/.steelo/preparation_cache/co2_ramp_scenario/data (and the master Excel to
-#   ~/.steelo/data_cache/master-input-2026-08-07/) rather than re-running
-#   apply_scenario_overrides.py on the cluster.
+#   rsync the already-prepared co2_ramp_authored data dir to
+#   ~/.steelo/preparation_cache/co2_ramp_authored/data (and the authored master Excel to
+#   ~/.steelo/data_cache/master-input-co2-ramp/) rather than re-running
+#   author_carbon_cost_scenario.py + steelo-data-prepare on the cluster -- see
+#   CLUSTER_RUNBOOK.md §2.
 #
 # Sizing rationale: smoke test job 27886 (single process, 1 cpu, 2 years 2025-2026)
 # needed 16G and took 3h32m. Each array task here runs the exact same shape of work
@@ -83,8 +84,8 @@ PARAMS_JSON="{\"probabilistic_agents\": false, \"random_seed\": $SEED}"
 T0=$(date +%s)
 STATUS="failed"
 if python -m scripts.sensitivity.run_one \
-    --data-dir "$HOME/.steelo/preparation_cache/co2_ramp_scenario/data" \
-    --master-excel "$HOME/.steelo/data_cache/master-input-2026-08-07/master_input.xlsx" \
+    --data-dir "$HOME/.steelo/preparation_cache/co2_ramp_authored/data" \
+    --master-excel "$HOME/.steelo/data_cache/master-input-co2-ramp/master_input.xlsx" \
     --output-dir "$RUN_DIR" \
     --start-year 2025 --end-year 2050 \
     --params-json "$PARAMS_JSON"; then

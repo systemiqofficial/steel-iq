@@ -45,29 +45,43 @@ uv run python -c "import geopandas, fiona, cartopy, osmnx, highspy; print('ok')"
 
 ## 2. Data
 
-Two options — pick whichever matches the cluster's network posture:
+The CO2-ramp scenario is authored directly into a clone of the master Excel's
+"Carbon cost" sheet (`scripts/sensitivity/author_carbon_cost_scenario.py`),
+then prepared through the normal `steelo-data-prepare` pipeline — no separate
+post-prep patch step, unlike earlier versions of this workflow.
 
-**(a) Reuse already-prepared data** (faster, avoids network/S3 dependency on
-the cluster): `rsync`/`scp` these two directories from the machine that
-already prepared them to the cluster's NFS home:
-- `~/.steelo/preparation_cache/co2_ramp_scenario/data` (the CO2-ramp scenario
-  fixtures)
-- `~/.steelo/data_cache/master-input-v2.0.0/master_input.xlsx` (the master
-  Excel)
-
-**(b) Regenerate from scratch** on the login node (needs S3 credentials
-configured there — see `docs/data_management/`):
+**Step 1 — author the scenario workbook**, on whichever machine holds the
+real master Excel (this only reads it; the original stays untouched as the
+source of truth):
 ```bash
-uv run steelo-data-prepare --master-excel <path-to-master-excel> \
-    --output-dir ~/.steelo/preparation_cache/co2_ramp_baseline/data
-uv run python -m scripts.sensitivity.apply_scenario_overrides \
-    --data-dir ~/.steelo/preparation_cache/co2_ramp_baseline/data \
+uv run python -m scripts.sensitivity.author_carbon_cost_scenario \
+    --master-excel-path <path-to-real-master-excel> \
     --scenario scripts/sensitivity/scenarios/co2_ramp.yaml \
-    --output-dir ~/.steelo/preparation_cache/co2_ramp_scenario/data
+    --output-path ~/.steelo/data_cache/master-input-co2-ramp/master_input.xlsx
+```
+
+**Step 2 — prepare fixtures from the authored workbook:**
+```bash
+uv run steelo-data-prepare \
+    --master-excel ~/.steelo/data_cache/master-input-co2-ramp/master_input.xlsx \
+    --output-dir ~/.steelo/preparation_cache/co2_ramp_authored/data
 ```
 Spot-check a couple of countries afterward — `carbon_costs.json`'s per-ISO3
 `carbon_cost` series should read `{"2025": 0.0, "2030": 60.0, "2035": 120.0,
 "2040": 180.0, "2045": 180.0, "2050": 180.0}` uniformly.
+
+**Step 3 — get both onto the cluster.** `rsync`/`scp` from wherever you ran
+the steps above to the cluster's NFS home:
+- `~/.steelo/data_cache/master-input-co2-ramp/master_input.xlsx` — the
+  *authored/modified* workbook. This is the copy that belongs on the cluster;
+  the real master Excel (source of truth) never needs to leave the machine
+  that holds it.
+- `~/.steelo/preparation_cache/co2_ramp_authored/data` — the prepared
+  fixtures.
+
+(Steps 1-2 need S3 credentials only if you don't already have the real master
+Excel locally — see `docs/data_management/`. If you do, both steps run
+offline.)
 
 Either way: **prepared input data goes on NFS home** (small, read-mostly,
 survives across jobs). **Per-run scratch/output goes on `/local/$USER` on
@@ -87,8 +101,8 @@ srun --pty bash
 source ~/steel-iq/.venv/bin/activate
 cd ~/steel-iq
 python -m scripts.sensitivity.run_one \
-    --data-dir ~/.steelo/preparation_cache/co2_ramp_scenario/data \
-    --master-excel ~/.steelo/data_cache/master-input-v2.0.0/master_input.xlsx \
+    --data-dir ~/.steelo/preparation_cache/co2_ramp_authored/data \
+    --master-excel ~/.steelo/data_cache/master-input-co2-ramp/master_input.xlsx \
     --output-dir /tmp/smoke_test --start-year 2025 --end-year 2026 \
     --params-json '{"probabilistic_agents": false, "random_seed": 1}'
 ```
