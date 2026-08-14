@@ -11,6 +11,7 @@ usage: run_simulation [-h] [--start-year START_YEAR] [--end-year END_YEAR]
                      [--cache-stats] [--clear-cache] [--force-refresh] [--no-cache]
                      [--peg-iron-to-steel-price] [--iron-to-steel-price-ratio RATIO]
                      [--optimization-solver {highs,gurobi}]
+                     [--enable-clustering] [--cluster-hot-metal-by-plant-group [BOOL]]
                      [additional options...]
 
 Run a steel model simulation with automatic caching
@@ -37,6 +38,23 @@ solver options:
                         Trade LP solver backend (default: highs). "gurobi" requires a
                         licensed Gurobi installation (gurobipy) reachable from wherever
                         the simulation runs -- install with `uv sync --extra gurobi`.
+
+trade LP clustering options:
+  --enable-clustering  Enable furnace group clustering to reduce LP complexity. The LP
+                        works with meta-furnace-groups (clusters of same-technology-
+                        reductant-country furnace groups) instead of individual ones,
+                        then disaggregates back to per-plant flows afterward -- exact
+                        plant-level flows become approximate, but region/technology
+                        aggregates are unaffected. Recommended default whenever exact
+                        plant-level precision isn't needed: cuts LP build+solve time
+                        roughly 5x and total per-year runtime up to ~2.6x (benchmarked
+                        2026-08-14, years 2025-2026, Gurobi backend both with and
+                        without clustering).
+  --cluster-hot-metal-by-plant-group [BOOL]
+                        When clustering is enabled, cluster hot-metal-affected techs
+                        (feedstocks/outputs including hot_metal/dri_*/liquid_iron) by
+                        plant_group_id instead of iso3. Accepts a bare flag, `=true`, or
+                        `=false` (default: false). No effect without --enable-clustering.
 
 caching options:
   --cache-stats         Show cache statistics and exit
@@ -68,6 +86,9 @@ Examples:
 
   # Solve the trade LP with Gurobi instead of HiGHS (requires a license, see below)
   run_simulation --optimization-solver gurobi
+
+  # Reduce LP complexity via furnace group clustering (region/tech results only, no exact plant-level precision)
+  run_simulation --enable-clustering
 ```
 
 ### Features:
