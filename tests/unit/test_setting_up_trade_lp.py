@@ -456,6 +456,7 @@ def create_mock_config():
         closely_allocated_products: list[str] = field(default_factory=lambda: ["hot_metal"])
         distantly_allocated_products: list[str] = field(default_factory=lambda: ["pig_iron"])
         lp_epsilon: float = 1e-3
+        optimization_solver: str = "highs"
         random_seed: int = 42
         start_year: Year = Year(2025)
         end_year: Year = Year(2060)

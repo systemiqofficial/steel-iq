@@ -248,13 +248,46 @@ def test_process_connector_init():
 ##############################################
 
 
-def test_trade_lp_model_basic_build_and_solve(location_mock_factory):
+def test_trade_lp_model_rejects_unsupported_solver():
+    """An unrecognized solver name should fail fast at construction, not at solve time."""
+    with pytest.raises(ValueError, match="Unsupported solver"):
+        TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42, solver="cplex")
+
+
+def test_trade_lp_model_solver_options_default_per_solver():
+    """HiGHS and Gurobi don't share a tuning-option vocabulary, so solver_options' default
+    should depend on which solver was selected."""
+    highs_model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42, solver="highs")
+    gurobi_model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42, solver="gurobi")
+    assert highs_model.solver_options["solver"] in ("hipo", "simplex")
+    assert highs_model.solver_options["presolve"] == "on"
+    assert gurobi_model.solver_options == {"Method": 2}
+
+
+def _gurobi_available() -> bool:
+    try:
+        return bool(pyo.SolverFactory("appsi_gurobi").available())
+    except Exception:
+        return False
+
+
+@pytest.mark.parametrize(
+    "solver",
+    [
+        "highs",
+        pytest.param(
+            "gurobi", marks=pytest.mark.skipif(not _gurobi_available(), reason="Gurobi not available/licensed")
+        ),
+    ],
+)
+def test_trade_lp_model_basic_build_and_solve(location_mock_factory, solver):
     """
     End-to-end test that builds a simple supply -> production -> demand scenario,
-    solves it, and checks that the solution is feasible.
+    solves it, and checks that the solution is feasible -- for each supported solver
+    backend (see SimulationConfig.optimization_solver).
     """
     # Create model
-    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42, solver=solver)
 
     # Create Commodities
     iron_ore = Commodity("iron_ore")

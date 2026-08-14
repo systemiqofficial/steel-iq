@@ -10,6 +10,7 @@ usage: run_simulation [-h] [--start-year START_YEAR] [--end-year END_YEAR]
                      [--output-dir OUTPUT_DIR] [--log-level LOG_LEVEL]
                      [--cache-stats] [--clear-cache] [--force-refresh] [--no-cache]
                      [--peg-iron-to-steel-price] [--iron-to-steel-price-ratio RATIO]
+                     [--optimization-solver {highs,gurobi}]
                      [additional options...]
 
 Run a steel model simulation with automatic caching
@@ -30,6 +31,12 @@ price configuration:
   --iron-to-steel-price-ratio RATIO
                         Ratio of steel price for iron floor when pegging is enabled
                         (default: 0.8 = 80%)
+
+solver options:
+  --optimization-solver {highs,gurobi}
+                        Trade LP solver backend (default: highs). "gurobi" requires a
+                        licensed Gurobi installation (gurobipy) reachable from wherever
+                        the simulation runs -- install with `uv sync --extra gurobi`.
 
 caching options:
   --cache-stats         Show cache statistics and exit
@@ -58,6 +65,9 @@ Examples:
 
   # Force fresh preparation
   run_simulation --force-refresh
+
+  # Solve the trade LP with Gurobi instead of HiGHS (requires a license, see below)
+  run_simulation --optimization-solver gurobi
 ```
 
 ### Features:

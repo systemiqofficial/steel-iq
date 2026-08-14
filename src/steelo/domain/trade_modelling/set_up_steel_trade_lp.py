@@ -1007,6 +1007,7 @@ def set_up_steel_trade_lp(
         config: SimulationConfig with:
             - primary_products: List of commodities (e.g., ["steel", "iron"])
             - lp_epsilon: LP solver tolerance (e.g., 1e-3)
+            - optimization_solver: LP solver backend, "highs" (default) or "gurobi"
             - capacity_limit: Production capacity safety factor (typically 0.95)
             - soft_minimum_capacity_percentage: Target minimum utilization
             - active_statuses: Furnace statuses to include (e.g., ["operating"])
@@ -1051,7 +1052,10 @@ def set_up_steel_trade_lp(
         distance_function = None  # Placeholder for now
 
     lp_model = tlp.TradeLPModel(
-        lp_epsilon=config.lp_epsilon, distance_function=distance_function, random_seed=config.random_seed
+        lp_epsilon=config.lp_epsilon,
+        distance_function=distance_function,
+        random_seed=config.random_seed,
+        solver=config.optimization_solver,
     )
     modelled_products = config.primary_products
 

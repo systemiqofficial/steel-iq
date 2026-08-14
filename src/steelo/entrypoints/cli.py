@@ -150,6 +150,14 @@ def run_full_simulation() -> str:
         default=0.8,
         help="Ratio of steel price for iron floor when pegging is enabled (default: 0.8 = 80%%)",
     )
+    parser.add_argument(
+        "--optimization-solver",
+        type=str,
+        choices=["highs", "gurobi"],
+        default="highs",
+        help="Trade LP solver backend (default: highs). 'gurobi' requires a licensed Gurobi "
+        "installation (gurobipy) reachable from wherever the simulation runs.",
+    )
 
     # Parse the command-line arguments
     try:
@@ -284,6 +292,11 @@ def run_full_simulation() -> str:
                     f"[green]Iron price pegging enabled at {args.iron_to_steel_price_ratio:.0%} of steel price[/green]"
                 )
 
+            # Override trade LP solver backend from command line
+            if args.optimization_solver != "highs":
+                config.optimization_solver = args.optimization_solver
+                console.print(f"[green]Trade LP solver backend set to: {args.optimization_solver}[/green]")
+
             # Save config and metadata
             config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
             config_path = output_dir / "simulation_config.json"
@@ -363,6 +376,11 @@ def run_full_simulation() -> str:
                     console.print(
                         f"[green]Iron price pegging enabled at {args.iron_to_steel_price_ratio:.0%} of steel price[/green]"
                     )
+
+                # Override trade LP solver backend from command line
+                if args.optimization_solver != "highs":
+                    config.optimization_solver = args.optimization_solver
+                    console.print(f"[green]Trade LP solver backend set to: {args.optimization_solver}[/green]")
 
                 # Save config and metadata
                 config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
