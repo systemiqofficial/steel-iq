@@ -238,28 +238,44 @@ Sanity-check the output:
   between machines/OS/BLAS builds for the *same* seed is expected, not a bug,
   unless it's large enough to change qualitative conclusions.
 
-## 6. Solver benchmark (highs vs. gurobi vs. gurobi + clustering)
+## 6. Solver benchmark (highs vs. gurobi vs. gurobi + clustering [+ warm-start])
 
-`run_solver_benchmark.sbatch` runs 3 seeds (101-103) under each of 3 configs
-— `highs` (baseline), `gurobi`, and `gurobi` with furnace-group clustering
-enabled — as a 9-task job array, 2025-2040 (shorter than the full sweep's
-2025-2050, to keep this benchmark's turnaround reasonable). Reusing the same
-3 seeds across all 3 configs isolates solver-choice/clustering effects from
-seed-to-seed noise. Answers two questions: does switching solver/clustering
-change *what* gets built (technology mix, plant locations, emissions), and
-how much faster is it.
+`run_solver_benchmark.sbatch` runs 3 seeds (101-103) under each of 4 configs
+— `highs` (baseline, hipo/IPM), `gurobi` (barrier), `gurobi_clustering`
+(furnace-group clustering enabled, barrier), and
+`gurobi_clustering_warmstart` (clustering + dual simplex, so the LP can
+warm-start from the previous year's solution) — as a 12-task job array,
+2025-2040 (shorter than the full sweep's 2025-2050, to keep this benchmark's
+turnaround reasonable). Reusing the same 3 seeds across all 4 configs isolates
+solver-choice/clustering/warm-start effects from seed-to-seed noise. Answers
+two questions: does switching solver/clustering/warm-start change *what* gets
+built (technology mix, plant locations, emissions), and how much faster is it.
+
+The first 3 configs use each backend's own default `solver_options` rather
+than a shared algorithm — the goal is each config's fastest realistic setup,
+not a like-for-like algorithm comparison. `gurobi_clustering_warmstart` is the
+one config testing warm-start (`STEELO_GUROBI_METHOD=1`, set in the sbatch
+script only for this config) because warm-start only works with simplex-family
+methods, and simplex's few-iterations-from-a-good-start advantage is most
+plausible on the small, structurally-stable clustered LP — not on the full
+unclustered LP, where HiGHS's own default already forfeits warm-start in favor
+of `hipo`, a real signal IPM wins there regardless. Unclustered-gurobi+
+warm-start and highs+clustering aren't tested here for the same reason (weaker
+prior, not worth another 3 tasks' cluster time each) — see the sbatch file's
+header comment for the full reasoning.
 
 Prerequisite: `uv sync --extra gurobi` plus a working Gurobi license reachable
 from `labgpu01` — see `GUROBI_CLUSTER_LICENSE_SETUP.md` at the repo root.
 Without a license, the `highs` tasks (array indices 0-2) still succeed; the
-`gurobi`/`gurobi_clustering` tasks (3-8) fail with a `GurobiError` until
-licensing is done — expected, not a bug in the sbatch script itself.
+`gurobi`/`gurobi_clustering`/`gurobi_clustering_warmstart` tasks (3-11) fail
+with a `GurobiError` until licensing is done — expected, not a bug in the
+sbatch script itself.
 
 ```bash
 sbatch scripts/slurm/run_solver_benchmark.sbatch
 ```
 
-Then, once all 9 tasks finish (success or not):
+Then, once all 12 tasks finish (success or not):
 
 ```bash
 sbatch --dependency=afterany:<ARRAY_JOBID> scripts/slurm/run_solver_benchmark_analyze.sbatch
@@ -269,11 +285,11 @@ This produces, under `~/steel-iq/outputs/sensitivity/solver_benchmark/`:
 
 - `<config>/analysis/` — one `analyze_seed_sensitivity.py` output tree per
   config (same files as §5's sweep analysis). Compare the same file (e.g.
-  `final_tech_share_by_seed.csv`) across `highs/analysis/`, `gurobi/analysis/`,
-  `gurobi_clustering/analysis/` — if switching solver/clustering changed the
-  simulation's actual decisions rather than just its runtime, it should show
-  up as a difference here beyond each config's own seed-to-seed range.
-- `runtime_summary.csv` — `config, seed, status, duration_s` for all 9 runs,
+  `final_tech_share_by_seed.csv`) across the 4 configs' `analysis/` dirs — if
+  switching solver/clustering/warm-start changed the simulation's actual
+  decisions rather than just its runtime, it should show up as a difference
+  here beyond each config's own seed-to-seed range.
+- `runtime_summary.csv` — `config, seed, status, duration_s` for all 12 runs,
   the direct answer to "how much faster" (compare `duration_s` across configs
   for the same seed, not just the mean, since one config's seed-to-seed
   variance is itself informative).

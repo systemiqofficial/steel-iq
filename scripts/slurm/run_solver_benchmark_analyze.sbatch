@@ -1,23 +1,24 @@
 #!/bin/bash
-# Post-processing for run_solver_benchmark.sbatch's 9-task array job. Each of the 3
-# configs (highs, gurobi, gurobi_clustering) gets its own manifest.csv merged from that
-# config's task fragments, then analyze_seed_sensitivity.py runs against it unmodified
-# -- that script keys everything by seed and the 3 seeds are reused identically across
-# configs, so each config's analysis dir is a same-seeds noise-floor check on its own
-# terms; comparing the 3 configs' final_tech_share_by_seed.csv etc. by hand is how you
-# check gurobi/clustering didn't change *what* gets built, not just how fast.
+# Post-processing for run_solver_benchmark.sbatch's 12-task array job. Each of the 4
+# configs (highs, gurobi, gurobi_clustering, gurobi_clustering_warmstart) gets its own
+# manifest.csv merged from that config's task fragments, then analyze_seed_sensitivity.py
+# runs against it unmodified -- that script keys everything by seed and the 3 seeds are
+# reused identically across configs, so each config's analysis dir is a same-seeds
+# noise-floor check on its own terms; comparing the 4 configs' final_tech_share_by_seed.csv
+# etc. by hand is how you check solver/clustering/warm-start didn't change *what* gets
+# built, not just how fast.
 #
-# Also writes runtime_summary.csv (config, seed, duration_s, status) across all 9 runs
+# Also writes runtime_summary.csv (config, seed, duration_s, status) across all 12 runs
 # from the manifests directly, plus stage_timing_summary.csv (parse_stage_timings.py) --
 # wall_clock_s/peak_rss_mb from each run's /usr/bin/time -v output; lp_build_s/
 # lp_solve_s/npv_plant_decision_s/geospatial_s/other_s (additive, sum to
 # agent_module_s) and peak_lp_build_rss_mb/peak_lp_solve_rss_mb, parsed out of the
 # operation=.../memory_checkpoint log lines run_solver_benchmark.sbatch already copies
 # into each run dir as task.err -- the actual point of this benchmark, answering "how
-# much faster/leaner is gurobi / gurobi+clustering than highs on this range, and where
-# does the difference come from."
+# much faster/leaner is each config than highs on this range, and where does the
+# difference come from."
 #
-# Submit only after all 9 array tasks finish, successfully or not -- the manifest
+# Submit only after all 12 array tasks finish, successfully or not -- the manifest
 # reader skips non-"success" rows, so partial results still work:
 #   sbatch --dependency=afterany:<ARRAY_JOBID> scripts/slurm/run_solver_benchmark_analyze.sbatch
 # Re-run after retrying any failed (config, seed) task to fold the fix in.
@@ -43,7 +44,7 @@ source "$HOME/steel-iq/.venv/bin/activate"
 cd "$HOME/steel-iq"
 
 SCRATCH_ROOT="/local/$USER/outputs/solver_benchmark"
-CONFIGS=(highs gurobi gurobi_clustering)
+CONFIGS=(highs gurobi gurobi_clustering gurobi_clustering_warmstart)
 
 for CONFIG in "${CONFIGS[@]}"; do
     SCRATCH_OUT="$SCRATCH_ROOT/$CONFIG"

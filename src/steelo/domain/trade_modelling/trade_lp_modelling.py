@@ -37,7 +37,11 @@ def _default_solver_options(solver: str) -> dict[str, Any]:
             "log_to_console": "true",
         }
     if solver == "gurobi":
-        return {"Method": 2}  # 2 = barrier, Gurobi's closest analog to HiGHS's IPM/HiPO default
+        # 2 = barrier, Gurobi's closest analog to HiGHS's IPM/HiPO default. Override for
+        # A/B benchmarking via env var, e.g. STEELO_GUROBI_METHOD=1 for dual simplex --
+        # needed to enable warm-starting (see _solver_supports_warm_start()), which
+        # barrier can't do.
+        return {"Method": int(os.environ.get("STEELO_GUROBI_METHOD", "2"))}
     raise ValueError(f"Unsupported solver {solver!r}; must be one of {sorted(_SOLVER_FACTORY_NAMES)}")
 
 
