@@ -1,11 +1,13 @@
 # Running the CO2-ramp PAM seed-sensitivity sweep on SLURM
 
-This branch (`pam-benchmark-cluster`) carries **only** the CO2-ramp
-seed-sensitivity sweep framework, layered directly on top of `develop`. It
-does not carry the `pam-benchmark` branch's BOA-benchmark tooling,
-HiGHS/Gurobi solver-switch option, or working-notes docs — those were
-deliberately left behind as unrelated to this task. `develop`'s
-`probabilistic_agents=False` behavior is already deterministic (see
+This branch (`pam-benchmark-cluster`) carries the CO2-ramp seed-sensitivity
+sweep framework, layered directly on top of `develop`, plus (as of the
+`feat/trade-lp-gurobi-solver` merge) the HiGHS/Gurobi trade-LP solver-switch
+option and furnace-group clustering flags — see §6 for the solver benchmark
+that exercises those. It does not carry the `pam-benchmark` branch's
+BOA-benchmark tooling or working-notes docs — those were deliberately left
+behind as unrelated to this task. `develop`'s `probabilistic_agents=False`
+behavior is already deterministic (see
 `Plant.evaluate_furnace_group_strategy`, `src/steelo/domain/models.py`) —
 there is no bug fix bundled here, nothing to patch before running.
 
@@ -235,3 +237,67 @@ Sanity-check the output:
   seed number across both platforms — small floating-point divergence
   between machines/OS/BLAS builds for the *same* seed is expected, not a bug,
   unless it's large enough to change qualitative conclusions.
+
+## 6. Solver benchmark (highs vs. gurobi vs. gurobi + clustering)
+
+`run_solver_benchmark.sbatch` runs 3 seeds (101-103) under each of 3 configs
+— `highs` (baseline), `gurobi`, and `gurobi` with furnace-group clustering
+enabled — as a 9-task job array, 2025-2040 (shorter than the full sweep's
+2025-2050, to keep this benchmark's turnaround reasonable). Reusing the same
+3 seeds across all 3 configs isolates solver-choice/clustering effects from
+seed-to-seed noise. Answers two questions: does switching solver/clustering
+change *what* gets built (technology mix, plant locations, emissions), and
+how much faster is it.
+
+Prerequisite: `uv sync --extra gurobi` plus a working Gurobi license reachable
+from `labgpu01` — see `GUROBI_CLUSTER_LICENSE_SETUP.md` at the repo root.
+Without a license, the `highs` tasks (array indices 0-2) still succeed; the
+`gurobi`/`gurobi_clustering` tasks (3-8) fail with a `GurobiError` until
+licensing is done — expected, not a bug in the sbatch script itself.
+
+```bash
+sbatch scripts/slurm/run_solver_benchmark.sbatch
+```
+
+Then, once all 9 tasks finish (success or not):
+
+```bash
+sbatch --dependency=afterany:<ARRAY_JOBID> scripts/slurm/run_solver_benchmark_analyze.sbatch
+```
+
+This produces, under `~/steel-iq/outputs/sensitivity/solver_benchmark/`:
+
+- `<config>/analysis/` — one `analyze_seed_sensitivity.py` output tree per
+  config (same files as §5's sweep analysis). Compare the same file (e.g.
+  `final_tech_share_by_seed.csv`) across `highs/analysis/`, `gurobi/analysis/`,
+  `gurobi_clustering/analysis/` — if switching solver/clustering changed the
+  simulation's actual decisions rather than just its runtime, it should show
+  up as a difference here beyond each config's own seed-to-seed range.
+- `runtime_summary.csv` — `config, seed, status, duration_s` for all 9 runs,
+  the direct answer to "how much faster" (compare `duration_s` across configs
+  for the same seed, not just the mean, since one config's seed-to-seed
+  variance is itself informative).
+- `stage_timing_summary.csv` — one row per `(config, seed)` with
+  `wall_clock_s`/`peak_rss_mb` (from that run's `/usr/bin/time -v` output),
+  `agent_module_s` (the measured `operation=plant_agents_model` total — the
+  whole per-year economic-model step), and four additive buckets that sum to
+  it: `lp_build_s`, `lp_solve_s`, `npv_plant_decision_s` (per-plant renovate/
+  switch/close/expand NPV logic), `geospatial_s` (new-plant siting — kept
+  separate since it doesn't touch the LP and can dominate in later years, see
+  the clustering speedup notes above), and `other_s` (the residual — carbon-
+  cost calc, allocation postprocessing/export, untimed overhead; should stay
+  small, a sanity check as much as a bucket). Plus `peak_lp_build_rss_mb`/
+  `peak_lp_solve_rss_mb`. All parsed by `parse_stage_timings.py` out of the
+  `operation=.../memory_checkpoint` log lines each run already emits at
+  `--log-level INFO` (no simulation-code changes needed — see that script's
+  docstring for exactly which log line feeds which column). This is where to
+  look for *why* one config is faster/leaner than another, not just that it is.
+
+Retry a single failed/timed-out `(config, seed)` task (task IDs are 0-based;
+task -> config,seed mapping is in the sbatch file's header) the same way as
+§4 — reuses the same scratch dir, only overwrites that one run:
+
+```bash
+sbatch --array=<TASK_ID> scripts/slurm/run_solver_benchmark.sbatch
+# then re-run the analyze job, depending on the retry's job ID, to fold the fix in
+```
