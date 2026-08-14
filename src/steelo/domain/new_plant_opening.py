@@ -45,7 +45,8 @@ def select_location_subset(
         logger.info(
             f"[NEW PLANTS] For {product}: Sampling n = {n} out of total locations = {len(locations.get(product, []))} for NPV calculation."
         )
-        logger.info(f"[NEW PLANTS] Sample {product} location: {locations[product][0]}")
+        if best_locations_subset[product]:
+            logger.info(f"[NEW PLANTS] Sample {product} location: {best_locations_subset[product][0]}")
     return best_locations_subset
 
 
@@ -135,14 +136,14 @@ def prepare_cost_data_for_business_opportunity(
     debt_subsidies: dict[str, dict[str, list[Subsidy]]],
     opex_subsidies: dict[str, dict[str, list[Subsidy]]],
     energy_subsidies: dict[str, dict[str, dict[str, list[Subsidy]]]],
-    carbon_costs: dict[str, dict[Year, float]],
     most_common_reductant: dict[str, str],
     environment_most_common_reductant: dict[str, str],
     derive_geo_unit: Callable[[float, float, str], str | None] | None = None,
 ) -> dict[str, dict[tuple[float, float, str], dict[str, dict[str, Any]]]]:
     """
     For each business opportunity (top location-technology pair), prepare all required inputs to calculate the NPV
-    and create a new plant. If inputs are missing, skip the location-technology pair and log a warning.
+    and create a new plant. Sites missing critical data (energy costs, cost of equity or debt) raise a ValueError,
+    as do invalid data types; technologies with an incomplete field set are dropped in validation.
 
     Args:
         product_to_tech: Dictionary mapping products to their allowed technologies (product -> list of techs)
@@ -150,7 +151,9 @@ def prepare_cost_data_for_business_opportunity(
             lon, iso3, power price, hydrogen price, railway cost)
         current_year: The current simulation year.
         target_year: The year when the plant would start operation (current year + consideration time + 1 year announcement lag)
-        energy_costs: Nested dictionary with energy costs per country and year (iso3 -> year -> energy carrier -> cost)
+        energy_costs: Nested dictionary with energy costs per geography and year (geo_key -> year ->
+            energy carrier -> cost); sub-national rows (``"ISO3:unit"``) win over country rows for
+            sites whose derived geo_unit matches
         capex_dict_all_locs_techs: Nested dictionary with CAPEX values per region and technology (region -> tech -> capex)
         cost_of_debt_all_locs: Dictionary with cost of debt per country and technology (iso3 -> tech -> cost of debt)
         cost_of_equity_all_locs: Dictionary with cost of equity per country and technology (iso3 -> tech -> cost of equity)
@@ -159,11 +162,11 @@ def prepare_cost_data_for_business_opportunity(
         get_bom_from_avg_boms: Function to retrieve the bill of materials and utilization rate for a given technology and energy costs
         iso3_to_region_map: Mapping from ISO3 country codes to regions for CAPEX lookup
         global_risk_free_rate: Global risk-free rate used in debt subsidy calculations
-        capex_subsidies: Nested dictionary with CAPEX subsidies per country and technology (iso3 -> tech -> list of subsidies)
-        debt_subsidies: Nested dictionary with debt subsidies per country and technology (iso3 -> tech -> list of subsidies)
-        opex_subsidies: Nested dictionary with OPEX subsidies per country and technology (iso3 -> tech -> list of subsidies)
-        energy_subsidies: Nested dictionary with energy carrier subsidies (carrier -> iso3 -> tech -> list of subsidies)
-        carbon_costs: Dictionary with carbon cost series per country (iso3 -> year -> carbon cost)
+        capex_subsidies: Nested dictionary with CAPEX subsidies per geography and technology (geo_key -> tech -> list
+            of subsidies; geo_key = "ISO3" or "ISO3:unit", country and sub-national rows merge additively)
+        debt_subsidies: Nested dictionary with debt subsidies per geography and technology (geo_key -> tech -> list of subsidies)
+        opex_subsidies: Nested dictionary with OPEX subsidies per geography and technology (geo_key -> tech -> list of subsidies)
+        energy_subsidies: Nested dictionary with energy carrier subsidies (carrier -> geo_key -> tech -> list of subsidies)
         most_common_reductant: Dictionary mapping technology to most common reductant from plant group (tech -> reductant)
         environment_most_common_reductant: Fallback dict mapping technology to most common reductant from environment (tech -> reductant)
         derive_geo_unit: Optional ``(lat, lon, iso3) -> geo_unit | None`` derivation (injected from
@@ -202,6 +205,14 @@ def prepare_cost_data_for_business_opportunity(
             # province. The same derivation runs again at spawn, so the two always agree.
             geo_unit = derive_geo_unit(site["Latitude"], site["Longitude"], site["iso3"]) if derive_geo_unit else None
             site_geo_key = compose_geo_key(site["iso3"], geo_unit)
+            site_location = Location(
+                lat=site["Latitude"],
+                lon=site["Longitude"],
+                country=site["iso3"],
+                region="",
+                iso3=site["iso3"],
+                geo_unit=geo_unit,
+            )
             if site_id not in cost_data[prod]:
                 cost_data[prod][site_id] = {}
 
@@ -209,14 +220,19 @@ def prepare_cost_data_for_business_opportunity(
             incomplete_site = False
             site_missing_fields = []
 
-            # Set the energy costs to those of the country and overwrite electricity and hydrogen costs with
-            # custom values from the own power parc
+            # Set the energy costs to those of the site's geography (province row when the site
+            # falls in one, else country — the same resolution the score series uses) and
+            # overwrite electricity and hydrogen costs with custom values from the own power parc
             energy_costs_site = None
-            if site["iso3"] not in energy_costs:
+            year_costs_for_site = site_location.resolve(energy_costs, what="business-opportunity energy costs")
+            if year_costs_for_site is None:
                 site_missing_fields.append("energy_costs")
                 incomplete_site = True
+            elif current_year not in year_costs_for_site:
+                site_missing_fields.append(f"energy_costs for year {current_year}")
+                incomplete_site = True
             else:
-                energy_costs_site = energy_costs[site["iso3"]][current_year].copy()  # Copy to avoid modifying original
+                energy_costs_site = year_costs_for_site[current_year].copy()  # Copy to avoid modifying original
                 elec_ratio = (
                     site["power_price"] / energy_costs_site["electricity"]
                     if energy_costs_site["electricity"] != 0
@@ -270,12 +286,14 @@ def prepare_cost_data_for_business_opportunity(
                 else:
                     cost_data[prod][site_id][tech]["railway_cost"] = site["rail_cost"]
 
-                # Apply energy carrier subsidies for this technology
+                # Apply energy carrier subsidies for this technology, filtered at the
+                # operating start year (matching PAM and the score-series window)
                 assert energy_costs_site is not None  # Help mypy understand the control flow
+                operating_start_year = Year(target_year + construction_time)
                 active_energy_subs: dict[str, list] = {}
                 for carrier, carrier_subs in energy_subsidies.items():
                     all_subs = cc.collect_subsidies_for_geo(carrier_subs, site_geo_key).get(tech, [])
-                    active = cc.filter_subsidies_for_year(all_subs, target_year)
+                    active = cc.filter_subsidies_for_year(all_subs, operating_start_year)
                     if active:
                         active_energy_subs[carrier] = active
 
@@ -285,7 +303,9 @@ def prepare_cost_data_for_business_opportunity(
                         active_energy_subs,
                     )
                     sub_summary = ", ".join(f"{len(s)} {c}" for c, s in active_energy_subs.items())
-                    logger.debug(f"[NEW PLANTS] {site['iso3']}/{tech} year={target_year} | Subs: {sub_summary}")
+                    logger.debug(
+                        f"[NEW PLANTS] {site['iso3']}/{tech} year={operating_start_year} | Subs: {sub_summary}"
+                    )
                 else:
                     energy_costs_tech = energy_costs_site
                     output_costs_tech = energy_costs_site
@@ -318,14 +338,6 @@ def prepare_cost_data_for_business_opportunity(
                     # power/hydrogen prices are trajectory-scaled from the country series.
                     # TODO: temporary — extract the exact geo point's own year series from
                     # the rasters instead of ratio-scaling the current-year pixel prices.
-                    site_location = Location(
-                        lat=site["Latitude"],
-                        lon=site["Longitude"],
-                        country=site["iso3"],
-                        region="",
-                        iso3=site["iso3"],
-                        geo_unit=geo_unit,
-                    )
                     site_overrides = {
                         "electricity": site["power_price"],
                         "hydrogen": site["capped_lcoh"] * T_TO_KG,
@@ -405,7 +417,6 @@ def prepare_cost_data_for_business_opportunity(
                 cost_data[prod][site_id][tech]["all_opex_subsidies"] = cc.collect_subsidies_for_geo(
                     opex_subsidies, site_geo_key
                 ).get(tech, [])  # type: ignore[assignment]
-                cost_data[prod][site_id][tech]["carbon_cost_series"] = carbon_costs.get(site["iso3"])  # type: ignore[assignment]
 
                 # Raise error if any critical fields are missing
                 if missing_critical_fields:
@@ -415,7 +426,8 @@ def prepare_cost_data_for_business_opportunity(
                     )
 
     # Log error if more than 30% of the sampled locations have anomalous power prices
-    if anomalous_power_prices_count > len(sites) * 0.3:
+    total_sites = sum(len(product_sites) for product_sites in best_locations_subset.values())
+    if anomalous_power_prices_count > total_sites * 0.3:
         logger.error(
             """[NEW PLANTS] More than 30% of the sampled locations have power prices for the own power parc that differ from the local grid " \n
             power price by more than one OOM. Please check the units (expected in USD/kWh)."""
@@ -464,7 +476,6 @@ def validate_and_clean_cost_data(
             "output_costs",
             "no_subsidy_prices",
             "bom",
-            "carbon_cost_series",
             "output_shares",
         ]
     )
@@ -536,13 +547,6 @@ def validate_and_clean_cost_data(
                             if not isinstance(tech_data[field], list):
                                 raise ValueError(
                                     f"{field} must be list, got {type(tech_data[field]).__name__}: {tech_data[field]}"
-                                )
-
-                        # carbon_cost_series: dict[Year, float] or None
-                        if tech_data["carbon_cost_series"] is not None:
-                            if not isinstance(tech_data["carbon_cost_series"], dict):
-                                raise ValueError(
-                                    f"carbon_cost_series must be dict or None, got {type(tech_data['carbon_cost_series']).__name__}"
                                 )
 
                         # output_shares: dict of floats (metallic charge -> share of product)

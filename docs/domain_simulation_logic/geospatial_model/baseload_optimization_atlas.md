@@ -97,6 +97,7 @@ run_simulation --baseload-power-sim-dir path-to-baseload-power-simulation-folder
     - Filter out water bodies (oceans and seas).
     - Set a maximum altitude and slope.
     - Exclude grid points with zero potential for both solar and wind.
+    - Note: this is BOA's own eligibility filter, separate from the steelo siting feasibility mask (which additionally allows land at or below sea level).
 
 5. For each eligible grid point
     - Sample many system design candidates

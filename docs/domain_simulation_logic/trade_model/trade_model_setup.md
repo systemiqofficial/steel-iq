@@ -156,7 +156,7 @@ Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASE
 ### 4. `solve_steel_trade_lp_and_return_commodity_allocations()` - Solve & Extract Results
 
 **What it does:**
-1. Solves the LP optimization problem using Pyomo/HiGHS solver
+1. Solves the LP optimization problem using Pyomo, via HiGHS (default) or Gurobi
 2. Extracts optimal allocation values from solver variables
 3. Maps LP results back to domain objects (plants, suppliers, demand centers)
 4. Filters out negligible allocations (< 0.0001 tons)
@@ -208,6 +208,15 @@ Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASE
 
 **Model behavior:**
 - `lp_epsilon`: Solver tolerance (1e-3) - how close to constraints is acceptable
+- `optimization_solver`: LP solver backend, `"highs"` (default, no license needed) or `"gurobi"`
+  (requires a licensed Gurobi installation, i.e. `gurobipy` importable and able to obtain a
+  license at solve time - install with `uv sync --extra gurobi`). Also settable via
+  `run_simulation --optimization-solver gurobi`. HiGHS and Gurobi don't share a tuning-option
+  vocabulary, so `TradeLPModel.solver_options` defaults differ per backend (see
+  `_default_solver_options()` in `trade_lp_modelling.py`); overriding `solver_options` must use
+  the selected backend's own option names. Warm-starting between simulation years only works
+  with simplex-family methods on either backend - HiGHS's default `hipo` and Gurobi's default
+  barrier method (`Method=2`) both start fresh each year.
 - `capacity_limit`: Production safety factor (0.95) - models realistic availability
 - `active_statuses`: Which furnace states to include (e.g., ["operating", "mothballed"])
 

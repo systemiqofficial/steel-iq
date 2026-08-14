@@ -711,3 +711,86 @@ class TestCalculatePriorityLocationKpi:
         # The 50% selection should have at least as many locations as 10%
         assert len(result["iron"]) >= len(result_small["iron"])
         assert len(result["steel"]) >= len(result_small["steel"])
+
+
+def test_country_lottery_scales_with_country_size():
+    """The per-country lottery selects ~priority_pct/10 % of each country's cells.
+
+    Notes:
+        Guards against the former ``int(priority_pct / 10)`` truncation, which
+        collapsed the lottery to a single pixel per country regardless of size.
+        With priority_pct=5 the per-country share is 0.5%, so a country with 810
+        cells must contribute several locations while a 90-cell country gets one.
+    """
+    n = 30
+    lat = np.linspace(-10.0, 10.0, n)
+    lon = np.linspace(30.0, 50.0, n)
+    iso3 = np.full((n, n), "BIG", dtype=object)
+    iso3[:, :3] = "SML"
+
+    rng = np.random.default_rng(7)
+    cashflow = rng.uniform(100.0, 1000.0, size=(n, n))
+
+    ds = xr.Dataset(
+        {
+            "iso3": xr.DataArray(iso3, coords={"lat": lat, "lon": lon}, dims=["lat", "lon"]),
+            "outgoing_cashflow_steel": xr.DataArray(cashflow, coords={"lat": lat, "lon": lon}, dims=["lat", "lon"]),
+            "top5_steel": xr.DataArray(np.zeros((n, n)), coords={"lat": lat, "lon": lon}, dims=["lat", "lon"]),
+            "feasibility_mask": xr.DataArray(np.ones((n, n)), coords={"lat": lat, "lon": lon}, dims=["lat", "lon"]),
+        }
+    )
+    top_locations = {"steel": pd.DataFrame(columns=["Latitude", "Longitude"])}
+
+    _, locations_df = find_top_locations_per_country(
+        ds=ds,
+        top_locations=top_locations,
+        product="steel",
+        priority_pct=5,
+        random_seed=42,
+    )
+
+    small_country_lons = set(lon[:3])
+    sml_count = locations_df["Longitude"].isin(small_country_lons).sum()
+    big_count = len(locations_df) - sml_count
+
+    assert sml_count >= 1
+    assert big_count >= 3  # 0.5% of 810 cells, not a single token pixel
+    assert big_count > sml_count
+
+
+def test_find_top_locations_per_country_deduplicates_global_and_lottery_rows():
+    """A cell in both the global top and its country's lottery appears once in the frame.
+
+    Notes:
+        Guards against the former plain concat, where such a cell occupied two rows
+        and consumed two slots in the downstream 10% NPV sample, double-weighting
+        exactly the sites that were already best.
+    """
+    lat = np.array([10.0, 20.0])
+    lon = np.array([100.0, 110.0])
+    iso3 = np.full((2, 2), "USA", dtype=object)
+    # (10.0, 100.0) is USA's cheapest cell, so the country lottery re-selects it
+    cashflow = np.array([[100.0, 200.0], [300.0, 400.0]])
+
+    ds = xr.Dataset(
+        {
+            "iso3": xr.DataArray(iso3, coords={"lat": lat, "lon": lon}, dims=["lat", "lon"]),
+            "outgoing_cashflow_steel": xr.DataArray(cashflow, coords={"lat": lat, "lon": lon}, dims=["lat", "lon"]),
+            "top10_steel": xr.DataArray(np.zeros((2, 2)), coords={"lat": lat, "lon": lon}, dims=["lat", "lon"]),
+            "feasibility_mask": xr.DataArray(np.ones((2, 2)), coords={"lat": lat, "lon": lon}, dims=["lat", "lon"]),
+        }
+    )
+    ds["top10_steel"].values[0, 0] = 1
+    top_locations = {"steel": pd.DataFrame({"Latitude": [10.0], "Longitude": [100.0]})}
+
+    _, locations_df = find_top_locations_per_country(
+        ds=ds,
+        top_locations=top_locations,
+        product="steel",
+        priority_pct=10,
+        random_seed=42,
+    )
+
+    assert not locations_df.duplicated(subset=["Latitude", "Longitude"]).any()
+    best_cell_rows = ((locations_df["Latitude"] == 10.0) & (locations_df["Longitude"] == 100.0)).sum()
+    assert best_cell_rows == 1

@@ -123,13 +123,12 @@ class TestSelectLocationSubset:
         assert len(subset["iron"]) == 3  # 50% of 6
 
     def test_empty_location_list(self):
-        """Test handling of empty location lists."""
+        """Empty location lists yield empty subsets without raising."""
         locations = {"steel": [], "iron": []}
 
-        # Function accesses locations[product][0] which will raise IndexError on empty list
-        # This is a bug in the implementation - it tries to log a sample location even when list is empty
-        with pytest.raises(IndexError):
-            select_location_subset(locations=locations, calculate_npv_pct=0.1)
+        subset = select_location_subset(locations=locations, calculate_npv_pct=0.1)
+
+        assert subset == {"steel": [], "iron": []}
 
     def test_single_location_with_low_percentage(self):
         """Test that at least 0 locations are selected when percentage results in < 1."""
@@ -342,7 +341,6 @@ class TestPrepareDataForBusinessOpportunity:
         }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}  # lowercase tech name
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         cost_data = prepare_cost_data_for_business_opportunity(
             product_to_tech=product_to_tech,
@@ -365,7 +363,6 @@ class TestPrepareDataForBusinessOpportunity:
             debt_subsidies={},
             opex_subsidies={},
             energy_subsidies={},
-            carbon_costs=carbon_costs,
             most_common_reductant={},
             environment_most_common_reductant={},
         )
@@ -444,7 +441,6 @@ class TestPrepareDataForBusinessOpportunity:
         }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         # When cost_of_debt is missing, ValueError is raised immediately
         with pytest.raises(ValueError, match="Missing critical site-level data"):
@@ -469,7 +465,6 @@ class TestPrepareDataForBusinessOpportunity:
                 debt_subsidies={},
                 opex_subsidies={},
                 energy_subsidies={},
-                carbon_costs=carbon_costs,
                 most_common_reductant={},
                 environment_most_common_reductant={},
             )
@@ -532,7 +527,6 @@ class TestPrepareDataForBusinessOpportunity:
         }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         capex_subsidy = Subsidy(
             scenario_name="test",
@@ -566,7 +560,6 @@ class TestPrepareDataForBusinessOpportunity:
             debt_subsidies={},
             opex_subsidies={},
             energy_subsidies={},
-            carbon_costs=carbon_costs,
             most_common_reductant={},
             environment_most_common_reductant={},
         )
@@ -642,7 +635,6 @@ class TestPrepareDataForBusinessOpportunity:
         }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         h2_subsidy = Subsidy(
             scenario_name="test_h2",
@@ -689,7 +681,6 @@ class TestPrepareDataForBusinessOpportunity:
                 "hydrogen": {"USA": {"EAF": [h2_subsidy]}},
                 "electricity": {"USA": {"EAF": [elec_subsidy]}},
             },
-            carbon_costs=carbon_costs,
             most_common_reductant={},
             environment_most_common_reductant={},
         )
@@ -762,7 +753,6 @@ class TestPrepareDataForBusinessOpportunity:
         }
         fopex_all_locs_techs = {}  # Missing fopex data
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         # Should raise ValueError immediately due to missing fopex
         with pytest.raises(ValueError, match="Missing critical cost data"):
@@ -787,7 +777,6 @@ class TestPrepareDataForBusinessOpportunity:
                 debt_subsidies={},
                 opex_subsidies={},
                 energy_subsidies={},
-                carbon_costs=carbon_costs,
                 most_common_reductant={},
                 environment_most_common_reductant={},
             )
@@ -961,11 +950,6 @@ class TestPrepareDataForBusinessOpportunity:
             "CHN": {"dri": 70.0},
         }
         iso3_to_region_map = {"USA": "Americas", "DEU": "Europe", "CHN": "Asia"}
-        carbon_costs = {
-            "USA": {Year(2030): 50.0},
-            "DEU": {Year(2030): 60.0},
-            "CHN": {Year(2030): 30.0},
-        }
 
         cost_data = prepare_cost_data_for_business_opportunity(
             product_to_tech=product_to_tech,
@@ -988,7 +972,6 @@ class TestPrepareDataForBusinessOpportunity:
             debt_subsidies={},
             opex_subsidies={},
             energy_subsidies={},
-            carbon_costs=carbon_costs,
             most_common_reductant={},
             environment_most_common_reductant={},
         )
@@ -1218,7 +1201,6 @@ class TestIdentifyNewBusinessOpportunities4indi:
             "allowed_techs": {Year(2025): ["EAF"], Year(2028): ["EAF"]},
             "technology_emission_factors": [],
             "chosen_emissions_boundary_for_carbon_costs": "scope_1",
-            "carbon_costs": {"USA": {Year(2028): 50.0}},
             "top_n_loctechs_as_business_op": 2,
         }
 
@@ -1475,7 +1457,6 @@ def _complete_cost_data_entry():
         "output_costs": {"electricity": 0.05},
         "no_subsidy_prices": {"electricity": 0.05},
         "bom": {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
-        "carbon_cost_series": None,
         "output_shares": {"scrap": 1.0},
     }
 
@@ -1614,3 +1595,80 @@ def test_deterministic_mode_is_reproducible_without_seeding():
     )
 
     assert first == second
+
+
+def test_two_technologies_at_one_site_spawn_two_plants(monkeypatch):
+    """Step 6 creates one plant per selected (site, tech) pair, with distinct plant ids.
+
+    Notes:
+        Guards against the appends sitting at site-loop level, which silently
+        kept only the last technology drawn at a shared site and handed both
+        technologies the same plant id.
+    """
+    site_id = (40.0, -100.0, "USA")
+    tech_entry = {
+        "capex": 1000.0,
+        "capex_no_subsidy": 1200.0,
+        "cost_of_debt": 0.05,
+        "cost_of_debt_no_subsidy": 0.06,
+        "fopex": 50.0,
+        "utilization_rate": 0.7,
+        "reductant": "scrap",
+        "railway_cost": 10.0,
+        "bom": {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
+        "energy_costs": {"electricity": 0.05, "hydrogen": 3500.0},
+        "output_shares": {"scrap": 1.0},
+    }
+    cost_data = {"steel": {site_id: {"EAF": dict(tech_entry), "BOF": dict(tech_entry)}}}
+    npv_dict = {"steel": {site_id: {"EAF": 100.0, "BOF": 90.0}}}
+
+    monkeypatch.setattr(
+        "steelo.domain.new_plant_opening.select_location_subset",
+        lambda *args, **kwargs: {"steel": [{"Latitude": 40.0, "Longitude": -100.0, "iso3": "USA"}]},
+    )
+    monkeypatch.setattr(
+        "steelo.domain.new_plant_opening.prepare_cost_data_for_business_opportunity",
+        lambda *args, **kwargs: cost_data,
+    )
+    monkeypatch.setattr(
+        "steelo.domain.calculate_costs.calculate_business_opportunity_npvs",
+        lambda *args, **kwargs: npv_dict,
+    )
+    monkeypatch.setattr(
+        "steelo.domain.new_plant_opening.select_top_opportunities_by_npv",
+        lambda *args, **kwargs: npv_dict,
+    )
+
+    plant_group = PlantGroup(plant_group_id="indi", plants=[])
+    command = plant_group.identify_new_business_opportunities_4indi(
+        current_year=Year(2025),
+        consideration_time=2,
+        construction_time=3,
+        plant_lifetime=30,
+        input_costs={"USA": {Year(2025): {"electricity": 0.05, "hydrogen": 3500.0}}},
+        locations={"steel": [{"Latitude": 40.0, "Longitude": -100.0, "iso3": "USA"}]},
+        iso3_to_region_map={"USA": "Americas"},
+        market_price={"steel": [100.0] * 50},
+        capex_dict_all_locs_techs={"Americas": {"EAF": 1000.0, "BOF": 1100.0}},
+        cost_of_debt_all_locs={"USA": {"EAF": 0.05, "BOF": 0.05}},
+        cost_of_equity_all_locs={"USA": {"EAF": 0.08, "BOF": 0.08}},
+        steel_plant_capacity=1000.0,
+        all_plant_ids=[],
+        fopex_all_locs_techs={"USA": {"eaf": 50.0, "bof": 50.0}},
+        equity_share=0.3,
+        dynamic_feedstocks={},
+        get_bom_from_avg_boms=lambda *args, **kwargs: (None, 0.7, "scrap", {}),
+        reductant_score_series=_stub_series,
+        global_risk_free_rate=0.03,
+        tech_to_product={"EAF": "steel", "BOF": "steel"},
+        allowed_techs={Year(2028): ["EAF", "BOF"]},
+        technology_emission_factors=[],
+        chosen_emissions_boundary_for_carbon_costs="scope_1",
+        active_statuses=["operating"],
+        top_n_loctechs_as_business_op=2,
+    )
+
+    new_plants = command.new_plants
+    assert len(new_plants) == 2
+    assert len({plant.plant_id for plant in new_plants}) == 2
+    assert {plant.furnace_groups[0].technology.name for plant in new_plants} == {"EAF", "BOF"}

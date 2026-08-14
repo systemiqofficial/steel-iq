@@ -864,18 +864,23 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
 def build_reference_producer_carbon_costs(
     process_centers: list["tlp.ProcessCenter"],
 ) -> dict[tuple[str, str], float]:
-    """Build capacity-weighted average carbon cost of domestic producers, per (iso3, commodity).
+    """Build production-weighted average carbon cost of active producers, per (iso3, commodity).
 
     Demand centres carry no production_cost of their own (it defaults to 0.0), so carbon
     border adjustments on flows into a demand centre need a stand-in for "the carbon cost a
     domestic producer of this commodity would have incurred". This aggregates that reference
     cost from PRODUCTION process centres, weighted by capacity, per country and commodity.
+
+    Excludes idle producers (production_cost == 0.0) to avoid downward bias from zero-cost
+    idle capacity outweighing active producers.
     """
     weighted_cost_sum: dict[tuple[str, str], float] = defaultdict(float)
     capacity_sum: dict[tuple[str, str], float] = defaultdict(float)
 
     for pc in process_centers:
         if pc.process.type != tlp.ProcessType.PRODUCTION:
+            continue
+        if pc.production_cost == 0.0:
             continue
         iso3 = pc.location.iso3
         for commodity in pc.process.products:
@@ -909,6 +914,8 @@ def adapt_allocation_costs_for_carbon_border_mechanisms(
         - Import adjustments: other → applying_region flows get cost increase if carbon cost is higher
         - Only first mechanism applied to each flow (tracked via adjusted_flows set)
         - Only applies to legal allocations (defined process connectors)
+        - Skips supplier sources: their production_cost is raw-material price, not carbon cost.
+          CBAM does not apply to scrap feedstock anyway.
         - Skips flows involving None process centers or locations
         - Demand-centre destinations have no production_cost of their own, so their carbon
           cost is stood in for by the capacity-weighted average of domestic PRODUCTION
@@ -933,6 +940,10 @@ def adapt_allocation_costs_for_carbon_border_mechanisms(
         for from_pc, to_pc, comm in trade_lp.legal_allocations:
             from_iso3 = from_pc.location.iso3
             to_iso3 = to_pc.location.iso3
+
+            # Skip supplier sources: their production_cost is raw-material price, not carbon cost.
+            if from_pc.process.type == tlp.ProcessType.SUPPLY:
+                continue
 
             # Create a unique identifier for this arc
             arc_key = (from_pc.name, to_pc.name, comm.name)
@@ -996,6 +1007,7 @@ def set_up_steel_trade_lp(
         config: SimulationConfig with:
             - primary_products: List of commodities (e.g., ["steel", "iron"])
             - lp_epsilon: LP solver tolerance (e.g., 1e-3)
+            - optimization_solver: LP solver backend, "highs" (default) or "gurobi"
             - capacity_limit: Production capacity safety factor (typically 0.95)
             - soft_minimum_capacity_percentage: Target minimum utilization
             - active_statuses: Furnace statuses to include (e.g., ["operating"])
@@ -1040,7 +1052,10 @@ def set_up_steel_trade_lp(
         distance_function = None  # Placeholder for now
 
     lp_model = tlp.TradeLPModel(
-        lp_epsilon=config.lp_epsilon, distance_function=distance_function, random_seed=config.random_seed
+        lp_epsilon=config.lp_epsilon,
+        distance_function=distance_function,
+        random_seed=config.random_seed,
+        solver=config.optimization_solver,
     )
     modelled_products = config.primary_products
 

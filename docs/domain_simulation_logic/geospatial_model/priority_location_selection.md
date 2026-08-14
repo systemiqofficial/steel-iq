@@ -33,7 +33,7 @@ The pipeline to select the best locations for building new steel and iron plants
 Each grid point is assigned to a country using country boundary shapefiles. This enables country-specific constraints and ensures location data can be mapped to national policies and regulations.
 
 ### Feasibility Mask
-Not all locations are suitable for building steel plants. The feasibility mask filters out locations based on physical constraints: sea points, high altitude locations, steep slopes, and extreme latitudes. The altitude is calculated from geopotential data, and the final mask combines all terrain constraints.
+Not all locations are suitable for building steel plants. The feasibility mask filters out locations based on physical constraints: sea points, high altitude locations, steep slopes, and extreme latitudes. Land at or below sea level is feasible — water is excluded by the land-sea mask, so the altitude constraint is an upper bound only. The altitude is calculated from geopotential data, and the final mask combines all terrain constraints.
 
 **Configuration:**
 - `max_altitude`: Maximum elevation in meters (default: 1'500m)
@@ -127,6 +127,8 @@ Different land cover types and uses are more or less expensive to build on. This
 | Water | 2.0× |
 | Snow and Ice | 2.0× |
 
+Cells without LULC coverage receive the neutral minimum factor 1.0×.
+
 **Purpose:** Accounts for site clearing, grading, and environmental remediation costs.
 **Configuration:** Can be disabled entirely via `include_lulc_cost = False`
 
@@ -175,7 +177,7 @@ To ensure all countries have an opportunity to build new plants (even small coun
 
 **Process:**
 1. For each country (ISO3 code), extract the top X/10% cheapest locations within that country (e.g., if global priority is 5%, select top 0.5% per country)
-2. Add these country-specific locations to the global top locations
+2. Add these country-specific locations to the global top locations (duplicates already present in the global top are dropped)
 3. Number of locations per country is proportional to the country's feasible land area
 4. Uses the same distribution-adaptive selection method as Step 2
 
@@ -201,22 +203,27 @@ The pipeline generates the following plots (saved to `geo_plots_dir`):
 - `altitude_bin.png` - Binary altitude feasibility
 - `slope_bin.png` - Binary slope feasibility
 - `feasibility_mask.png` - Combined binary feasibility mask (land-sea mask, altitude, and slope)
-- `power_price_{year}.png` - Electricity costs by location (grid)
-- `baseload_lcoe_{year}_p{X}.png` - Renewable LCOE (if baseload used)
-- `capped_lcoh_{year}.png` - Hydrogen costs (after regional cap and intraregional trade, if allowed)
-- `distance_to_rail.png` - Distance to nearest railway network
-- `rail_infrastructure_cost.png` - Railway buildout costs
-- `distance_to_demand_{product}_{year}.png` - Distance to nearest demand by product (demand centers for steel, steel plants for iron)
-- `transport_cost_to_demand_{product}_{year}.png` - Per-tonne shipping cost to demand
-- `distance_to_feedstock_{product}_{year}.png` - Distance to nearest feedstock sources by product (iron plants for steel, iron ore mines for iron)
-- `transport_cost_to_feedstock_{product}_{year}.png` - Per-tonne shipping cost from feedstock
+- `grid_power_price_{year}.png` - Grid electricity price by location
+- `power_price_100cov_{year}.png` - Blended power price (baseload LCOE + grid share)
+- `optimal_lcoe_{year}_p{X}.png` - Renewable baseload LCOE (if baseload used)
+- `lcoh_{year}_p{X}.png` - Hydrogen costs (after regional cap and intraregional trade, if allowed)
+- `rail_distance.png` - Distance to nearest railway network
+- `rail_cost.png` - Railway buildout costs
+- `landtype_factor.png` - Land-type CAPEX multiplier map
+- `demand_distance_{product}_{year}.png` - Distance to nearest demand by product (demand centers for steel, steel plants for iron)
+- `demand_transportation_cost_per_ton_{product}_{year}.png` - Per-tonne shipping cost to demand
+- `feedstock_distance_{product}_{year}.png` - Distance to nearest feedstock sources by product (iron plants for steel, iron ore mines for iron)
+- `feedstock_transportation_cost_per_ton_{product}_{year}.png` - Per-tonne shipping cost from feedstock
+- `iron_ore_mines.png` - Iron-ore mine bubble map
 
 ### Priority Calculation Plots (Per Year, Per Product)
-- `outgoing_cashflow_proxy_{product}_{year}_p{X}.png` - Total lifetime costs
+- `lifetime_cost_proxy_{product}_{year}_p{X}.png` - Total lifetime costs
 - `priority_heatmap_{product}_{year}_p{X}.png` - Inverted priority map (higher = better)
-- `top{X}_priority_locations_{product}_{year}.png` - Selected candidate locations
+- `top{priority_pct}_priority_locations_{product}_{year}.png` - Selected candidate locations
 
 Where `{X}` indicates the percentage of grid power vs. baseload (e.g., p5 = 95% baseload + 5% grid).
+
+**Plot cadence:** year-stamped maps are drawn on milestone years only (first and final year, plus every 5th year for price/LCOH layers and every 10th for distance/transport layers). The power-price histogram and the iron-ore mine map are written only in the final simulation year.
 
 ## Code implementation
 
@@ -240,7 +247,7 @@ The wrapper function `get_candidate_locations_for_opening_new_plants()` in `src/
 11. **Extract energy prices** - Stores power and hydrogen costs for downstream NPV calculations
 
 **Timing & Performance:**
-Each step is timed and logged separately. The total pipeline typically takes 30 sec - 5 min depending on:
+Each step is timed and logged separately (`[GEO TIMING]`, DEBUG). After vectorisation of the priority-KPI and lottery loops, a steady-state year takes well under a minute at the default 0.25° resolution; the first year is slower while static layers are built. Runtime depends on:
 - Whether cached layers exist (ISO3, feasibility mask, infrastructure costs) - year 1 vs the rest
 - Available cores for task parallelization
 

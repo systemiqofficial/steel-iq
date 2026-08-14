@@ -2973,7 +2973,9 @@ class FurnaceGroup:
         Args:
             year: Current simulation year
             location: Location of the plant (including latitude, longitude, and country ISO3)
-            market_price: Dictionary mapping product to list of future market prices
+            market_price: Dictionary mapping product to list of future market prices,
+                anchored at the current year; re-anchored to the opportunity's earliest
+                construction start before the NPV
             cost_of_equity: Cost of equity for NPV calculation
             plant_lifetime: Lifetime of the plant in years
             construction_time: Time required for plant construction in years
@@ -3020,10 +3022,14 @@ class FurnaceGroup:
             if status_stats is not None:
                 status_stats["npv_inputs_missing"] += 1
         else:
-            # Get earliest possible operational time period
+            # Earliest possible operating window, floored at the soonest path still open to a
+            # considered opportunity: announce now, construct from next year
             years_already_considered = len(self.historical_npv_business_opportunities)
             earliest_operation_start_year = Year(
-                year + consideration_time + construction_time + 1 - years_already_considered
+                max(
+                    year + consideration_time + construction_time + 1 - years_already_considered,
+                    year + 1 + construction_time,
+                )
             )  # 1 year of announcement time
             earliest_operation_end_year = Year(earliest_operation_start_year + plant_lifetime)
 
@@ -3057,12 +3063,13 @@ class FurnaceGroup:
             )
 
             # Calculate updated NPV (carbon and by-products live inside the score)
+            years_to_construction_start = int(earliest_operation_start_year) - construction_time - int(year)
             npv_value = calculate_npv_full(
                 capex=self.technology.capex,
                 capacity=self.capacity,
                 unit_total_opex_list=unit_total_opex_list,
                 expected_utilisation_rate=self.utilization_rate,
-                price_series=market_price[self.technology.product],
+                price_series=market_price[self.technology.product][years_to_construction_start:],
                 lifetime=plant_lifetime,
                 construction_time=construction_time,
                 cost_of_debt=self.cost_of_debt,
@@ -3136,7 +3143,7 @@ class FurnaceGroup:
                         f"[NEW PLANTS] Announcing the business opportunity for {self.technology} at ({location.lat}, {location.lon}) in {location.iso3} - NPV-positive for {consideration_time} years in a row."
                     )
                     return commands.UpdateFurnaceGroupStatus(
-                        fg_id=self.get_furnace_plant_id(), plant_id=self.furnace_group_id, new_status="announced"
+                        fg_id=self.furnace_group_id, plant_id=self.get_furnace_plant_id(), new_status="announced"
                     )
                 if status_stats is not None:
                     status_stats["announcement_probability_failed"] += 1
@@ -3149,7 +3156,7 @@ class FurnaceGroup:
                     f"[NEW PLANTS] Discarding the business opportunity for {self.technology} at ({location.lat}, {location.lon}) in {location.iso3} - NPV-negative for {consideration_time} years in a row."
                 )
                 return commands.UpdateFurnaceGroupStatus(
-                    fg_id=self.get_furnace_plant_id(), plant_id=self.furnace_group_id, new_status="discarded"
+                    fg_id=self.furnace_group_id, plant_id=self.get_furnace_plant_id(), new_status="discarded"
                 )
             else:
                 if status_stats is not None:
@@ -3218,7 +3225,7 @@ class FurnaceGroup:
             if status_stats is not None:
                 status_stats["tech_not_allowed"] += 1
             return commands.UpdateFurnaceGroupStatus(
-                fg_id=self.get_furnace_plant_id(), plant_id=self.furnace_group_id, new_status="discarded"
+                fg_id=self.furnace_group_id, plant_id=self.get_furnace_plant_id(), new_status="discarded"
             )
 
         # Get capacity from NEW PLANTS only (not expansions) and calculate limits
@@ -3267,8 +3274,8 @@ class FurnaceGroup:
                     if status_stats is not None:
                         status_stats["co2_storage_blocked"] += 1
                     return commands.UpdateFurnaceGroupStatus(
-                        fg_id=self.get_furnace_plant_id(),
-                        plant_id=self.furnace_group_id,
+                        fg_id=self.furnace_group_id,
+                        plant_id=self.get_furnace_plant_id(),
                         new_status="discarded",
                     )
 
@@ -3285,8 +3292,8 @@ class FurnaceGroup:
             if status_stats is not None:
                 status_stats["construction_started"] += 1
             return commands.UpdateFurnaceGroupStatus(
-                fg_id=self.get_furnace_plant_id(),
-                plant_id=self.furnace_group_id,
+                fg_id=self.furnace_group_id,
+                plant_id=self.get_furnace_plant_id(),
                 new_status="construction",
             )
 
@@ -5984,7 +5991,6 @@ class PlantGroup:
         allowed_techs: dict[Year, list[str]],
         technology_emission_factors: list[TechnologyEmissionFactors],
         chosen_emissions_boundary_for_carbon_costs: str,
-        carbon_costs: dict[str, dict[Year, float]],
         active_statuses: list[str],
         top_n_loctechs_as_business_op: int = 5,
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
@@ -6007,8 +6013,9 @@ class PlantGroup:
             2. Randomly select a subset of top locations for a more in-depth assessment to reduce runtime.
             3. Prepare all required inputs (input costs with electricity and hydrogen costs from own parc,
                capex and cost of debt with subsidies, cost of equity, fixed OPEX, market price of product,
-               railway costs, average BOM, and utilization rate). If any data is missing, the location-
-               technology pair is skipped (business opportunity not considered) and a warning is logged.
+               railway costs, average BOM, and utilization rate). Sites missing critical data
+               (energy costs, cost of equity or debt) raise a ValueError, as do invalid data types;
+               technologies with an incomplete field set are dropped in validation.
             4. Calculate the NPV for all business opportunities (location-technology pairs) for each product.
             5. Choose top N location-technology combinations with high NPVs and list them as potential
                business opportunities. This step includes some randomness, but is mainly driven by NPV
@@ -6025,7 +6032,8 @@ class PlantGroup:
             input_costs: Dictionary mapping iso3 -> year -> energy carrier -> cost
             locations: Dictionary of potential plant locations
             iso3_to_region_map: Dictionary mapping ISO3 country codes to regions
-            market_price: Dictionary mapping product to list of future prices
+            market_price: Dictionary mapping product to list of future prices, anchored
+                at the current year; re-anchored to target_year before the NPV
             capex_dict_all_locs_techs: Dictionary mapping region -> tech -> capex
             cost_of_debt_all_locs: Dictionary mapping iso3 -> tech -> cost of debt
             cost_of_equity_all_locs: Dictionary mapping iso3 -> tech -> cost of equity
@@ -6040,14 +6048,15 @@ class PlantGroup:
             allowed_techs: Dictionary mapping year to list of allowed technologies
             technology_emission_factors: List of technology-specific emission factors
             chosen_emissions_boundary_for_carbon_costs: Emission boundary for carbon costs
-            carbon_costs: Dictionary mapping iso3 -> year -> carbon cost
             active_statuses: Status strings whose furnace groups vote in the group's
                 most-common-reductant aggregation
-            top_n_loctechs_as_business_op: Number of top opportunities to select (default: 5)
-            capex_subsidies: Dictionary mapping iso3 -> tech -> list of capex subsidies
-            debt_subsidies: Dictionary mapping iso3 -> tech -> list of debt subsidies
-            opex_subsidies: Dictionary mapping iso3 -> tech -> list of opex subsidies
-            energy_subsidies: Dictionary mapping carrier -> iso3 -> tech -> list of energy subsidies
+            top_n_loctechs_as_business_op: Number of top opportunities to select (signature
+                default 5; the simulation config default is 15)
+            capex_subsidies: Dictionary mapping geo_key -> tech -> list of capex subsidies
+                (geo_key = "ISO3" or "ISO3:unit"; country and sub-national rows merge additively)
+            debt_subsidies: Dictionary mapping geo_key -> tech -> list of debt subsidies
+            opex_subsidies: Dictionary mapping geo_key -> tech -> list of opex subsidies
+            energy_subsidies: Dictionary mapping carrier -> geo_key -> tech -> list of energy subsidies
             derive_geo_unit: Optional ``(lat, lon, iso3) -> geo_unit | None`` derivation (injected
                 from the geospatial adapter) tagging each spawned plant's sub-national unit
             probabilistic_agents: If True (default), step 5 draws a rank-weighted mix of top
@@ -6143,7 +6152,6 @@ class PlantGroup:
             debt_subsidies=debt_subsidies,
             opex_subsidies=opex_subsidies,
             energy_subsidies=energy_subsidies,
-            carbon_costs=carbon_costs,
             most_common_reductant=self.most_common_reductant(active_statuses),
             environment_most_common_reductant=environment_most_common_reductant,
             derive_geo_unit=derive_geo_unit,
@@ -6155,10 +6163,15 @@ class PlantGroup:
 
         # Step 4: Calculate NPVs for all allowed top location-technology combinations with enough data
         # npv_dict: product -> site_id (lat, lon, iso3) -> tech -> NPV
+        # Prices from construction start, so price year i is cost year i in calculate_npv_full
+        years_to_construction_start = int(target_year) - int(current_year)
+        market_price_from_construction_start = {
+            product: series[years_to_construction_start:] for product, series in market_price.items()
+        }
         npv_dict = calculate_business_opportunity_npvs(
             cost_data=cost_data,
             target_year=target_year,
-            market_price=market_price,
+            market_price=market_price_from_construction_start,
             steel_plant_capacity=steel_plant_capacity,
             plant_lifetime=plant_lifetime,
             construction_time=construction_time,
@@ -6232,8 +6245,8 @@ class PlantGroup:
                         disposal_cost_outputs=disposal_cost_outputs,
                         derive_geo_unit=derive_geo_unit,
                     )
-                all_plant_ids.append(new_plant.plant_id)
-                new_plants.append(new_plant)
+                    all_plant_ids.append(new_plant.plant_id)
+                    new_plants.append(new_plant)
         candidate_stats["new_plants_created"] = len(new_plants)
         stats_payload = " ".join(f"{key}={value}" for key, value in candidate_stats.items())
         logger.info(f"operation=new_plant_candidate_summary {stats_payload}")
@@ -6243,6 +6256,7 @@ class PlantGroup:
         self,
         current_year: Year,
         consideration_time: int,
+        construction_time: int,
         custom_energy_costs: dict,
         capex_dict_all_locs: dict[str, dict[str, float]],
         cost_debt_all_locs: dict[str, dict[str, float]],
@@ -6264,21 +6278,26 @@ class PlantGroup:
         Dynamic costs are updated based on the following logic:
             - Base costs: CAPEX, cost of debt, electricity costs, and hydrogen costs are set to the
               current year.
-            - Subsidies: the subsidies which are applied on top of CAPEX and cost of debt are set to
-              the target year, which is the [current year + consideration time + announcement time -
-              years considered] for considered BOs and [current year + 1] for announced BOs.
+            - CAPEX and debt subsidies: set to the construction start year, which is the [current year
+              + consideration time + announcement time - years considered] for considered BOs and
+              [current year + 1] for announced BOs, floored at [current year + 1].
+            - Energy subsidies: set to the operating start year [construction start + construction
+              time], since subsidised carrier prices are what the plant pays once running. This matches
+              opportunity creation, PAM and the window the score series prices.
 
         Args:
             current_year: Current simulation year
             consideration_time: Number of years to consider before announcement
+            construction_time: Years to build the plant, offsetting construction start to operating start
             custom_energy_costs: Dictionary containing power_price and capped_lcoh data arrays
             capex_dict_all_locs: Dictionary mapping region -> tech -> capex
             cost_debt_all_locs: Dictionary mapping iso3 -> tech -> cost of debt
             iso3_to_region_map: Dictionary mapping ISO3 country codes to regions
             global_risk_free_rate: Global risk-free interest rate
-            capex_subsidies: Dictionary mapping iso3 -> tech -> list of capex subsidies
-            debt_subsidies: Dictionary mapping iso3 -> tech -> list of debt subsidies
-            energy_subsidies: Dictionary mapping carrier -> iso3 -> tech -> list of energy subsidies
+            capex_subsidies: Dictionary mapping geo_key -> tech -> list of capex subsidies
+                (geo_key = "ISO3" or "ISO3:unit"; country and sub-national rows merge additively)
+            debt_subsidies: Dictionary mapping geo_key -> tech -> list of debt subsidies
+            energy_subsidies: Dictionary mapping carrier -> geo_key -> tech -> list of energy subsidies
 
         Returns:
             List of UpdateDynamicCosts commands for each furnace group that was updated.
@@ -6344,9 +6363,12 @@ class PlantGroup:
                             years_already_considered = len(fg.historical_npv_business_opportunities)
                         else:
                             years_already_considered = 0
+                        # Floored at the soonest path still open to a considered opportunity:
+                        # announce now, construct from next year (mirrors track_business_opportunities)
                         year = Year(
-                            current_year + consideration_time + 1 - years_already_considered
+                            max(current_year + consideration_time + 1 - years_already_considered, current_year + 1)
                         )  # announcement_time = 1
+                    operating_start_year = Year(year + construction_time)
 
                     selected_debt_subsidies = filter_subsidies_for_year(all_debt_subsidies, year)
                     selected_capex_subsidies = filter_subsidies_for_year(all_capex_subsidies, year)
@@ -6390,8 +6412,10 @@ class PlantGroup:
                     # Apply energy carrier subsidies
                     active_energy_subs: dict[str, list] = {}
                     for carrier, carrier_subs in energy_subsidies.items():
-                        all_subs = carrier_subs.get(iso3, {}).get(fg.technology.name, [])
-                        active = filter_subsidies_for_year(all_subs, year)
+                        all_subs = collect_subsidies_for_geo(carrier_subs, plant.location.geo_key).get(
+                            fg.technology.name, []
+                        )
+                        active = filter_subsidies_for_year(all_subs, operating_start_year)
                         if active:
                             active_energy_subs[carrier] = active
 
@@ -6408,7 +6432,7 @@ class PlantGroup:
                         )
                         sub_summary = ", ".join(f"{len(s)} {c}" for c, s in active_energy_subs.items())
                         logger.debug(
-                            f"[NEW PLANTS] {iso3}/{fg.technology.name} year={year} Subs: {sub_summary}",
+                            f"[NEW PLANTS] {iso3}/{fg.technology.name} year={operating_start_year} Subs: {sub_summary}",
                         )
                     else:
                         new_energy_costs = dict(base_costs)
@@ -6478,7 +6502,9 @@ class PlantGroup:
         Args:
             current_year: Current simulation year
             consideration_time: Number of years to consider before announcement
-            market_price: Dictionary mapping product to list of future market prices
+            market_price: Dictionary mapping product to list of future market prices,
+                anchored at the current year; re-anchored to the opportunity's earliest
+                construction start before the NPV
             cost_of_equity_all_locs: Dictionary mapping iso3 -> tech -> cost of equity
             probability_of_announcement: Probability that a viable opportunity will be announced
             probability_of_construction: Probability that an announced plant starts construction

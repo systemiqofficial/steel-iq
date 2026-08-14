@@ -282,6 +282,7 @@ class SimulationConfig:
     # === Trade Module Parameters ===
     # Solver configuration
     lp_epsilon: float = 1e-3  # LP solver epsilon
+    optimization_solver: str = "highs"  # Trade LP solver backend: "highs" (default) or "gurobi"
     capacity_limit: float = 0.95
     soft_minimum_capacity_percentage: float = 0.6
     minimum_active_utilisation_rate: float = 0.01
@@ -1187,7 +1188,8 @@ class SimulationRunner:
                 plant.update_furnace_tech_unit_fopex()
                 plant.update_furnace_hydrogen_costs(capped_hydrogen_cost_dict)
 
-                # Apply energy carrier subsidies to energy_costs (after H2 price update)
+                # Apply energy carrier subsidies to energy_costs (after H2 price update); opportunity
+                # FGs are re-priced later this year by the geo refresh at their operating start year
                 for fg in plant.furnace_groups:
                     active_energy_subs: dict[str, list] = {}
                     for carrier, carrier_subs in bus.env.energy_subsidies.items():

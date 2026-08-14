@@ -48,6 +48,13 @@ dependencies = [
     "tqdm",
     "dask[array,distributed]>=2025.5.0",
 ]
+
+[project.optional-dependencies]
+# Only needed when SimulationConfig.optimization_solver="gurobi" (or --optimization-solver
+# gurobi on the CLI). Requires a licensed Gurobi installation. Install with
+# `uv sync --extra gurobi`.
+gurobi = ["gurobipy>=13.0.2"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

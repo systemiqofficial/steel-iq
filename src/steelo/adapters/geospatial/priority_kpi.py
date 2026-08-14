@@ -98,7 +98,7 @@ def calculate_outgoing_cashflow_proxy(
     outgoing_cashflow = sum(cost_components.values())
     if not isinstance(outgoing_cashflow, xr.DataArray):
         outgoing_cashflow = xr.DataArray(outgoing_cashflow)
-    if outgoing_cashflow.all() == 0:
+    if bool((outgoing_cashflow.fillna(0) == 0).all()):
         raise ValueError("All locations have zero outgoing cashflow!")
     logger.info("Global average contribution to outgoing cashflow:")
     for component, value in cost_components.items():
@@ -161,7 +161,7 @@ def calculate_outgoing_cashflow_proxy(
 
 
 def extract_priority_locations(
-    ds: xr.Dataset, var_name: str, top_pct: int, random_seed: int, invert: bool = False
+    ds: xr.Dataset, var_name: str, top_pct: float, random_seed: int, invert: bool = False
 ) -> tuple[xr.DataArray, pd.DataFrame]:
     """
     Extract the locations of the top X% values for a given variable in the dataset.
@@ -281,14 +281,16 @@ def find_top_locations_per_country(
     iso3_values = ds["iso3"].values.flatten()
     unique_iso3 = np.unique(iso3_values[(~pd.isnull(iso3_values)) & (iso3_values != "nan")])
 
+    # Only the three variables the extraction reads
+    ds_lottery_vars = ds[["iso3", f"outgoing_cashflow_{product}", "feasibility_mask"]]
     for iso3 in unique_iso3:
         # Get the top locations for the current ISO3 code (if not empty)
-        ds_iso3 = ds.where(ds["iso3"] == iso3)
+        ds_iso3 = ds_lottery_vars.where(ds_lottery_vars["iso3"] == iso3)
         if np.any(~np.isnan(ds_iso3[f"outgoing_cashflow_{product}"].values)):
             top_values_iso3, top_locations_iso3 = extract_priority_locations(
                 ds_iso3,
                 f"outgoing_cashflow_{product}",
-                top_pct=int(priority_pct / 10),
+                top_pct=priority_pct / 10,
                 random_seed=random_seed,
                 invert=True,
             )
@@ -298,6 +300,9 @@ def find_top_locations_per_country(
             if dfs_to_concat:
                 top_locations_wlottery = pd.concat(dfs_to_concat, ignore_index=True)
     top_values = top_wlottery.astype(bool)
+    # A cell can be both in the global top and its country's lottery; duplicate rows would
+    # consume sample slots downstream and double-weight exactly the already-best sites
+    top_locations_wlottery = top_locations_wlottery.drop_duplicates(subset=["Latitude", "Longitude"], ignore_index=True)
 
     return top_values, top_locations_wlottery
 
@@ -408,12 +413,11 @@ def calculate_priority_location_kpi(
                 plot_paths=plot_paths_obj,
             )
 
-        # For each location, pass NPV calculation inputs
-        for row in top_locations_wlottery[product].itertuples():
-            lat = row.Latitude
-            lon = row.Longitude
-            for col in ["iso3", "rail_cost", "power_price", "capped_lcoh"]:
-                top_locations_wlottery[product].loc[row.Index, col] = ds_masked[col].sel(lat=lat, lon=lon).item()
+        # For each location, pass NPV calculation inputs (pointwise selection over all sites at once)
+        site_lats = xr.DataArray(top_locations_wlottery[product]["Latitude"].values, dims="site")
+        site_lons = xr.DataArray(top_locations_wlottery[product]["Longitude"].values, dims="site")
+        for col in ["iso3", "rail_cost", "power_price", "capped_lcoh"]:
+            top_locations_wlottery[product][col] = ds_masked[col].sel(lat=site_lats, lon=site_lons).values
 
     # Filter out empty records
     top_locations_wlottery_dict = {}

@@ -10,6 +10,36 @@ import time
 import functools
 from steelo.adapters.geospatial.geospatial_toolbox import haversine_distance
 
+# Pyomo APPSI solver interface name and reproducibility-seed option name per supported backend.
+_SOLVER_FACTORY_NAMES = {"highs": "appsi_highs", "gurobi": "appsi_gurobi"}
+_SOLVER_SEED_OPTION_NAMES = {"highs": "random_seed", "gurobi": "Seed"}
+
+
+def _default_solver_options(solver: str) -> dict[str, Any]:
+    """Default solver_options for the given backend.
+
+    HiGHS and Gurobi don't share a tuning-option vocabulary (HiGHS: "solver"/"presolve"/
+    "scaling"/"run_crossover"; Gurobi: "Method"/"Presolve"/...), so defaults -- and any
+    overrides callers pass into TradeLPModel.solver_options -- are keyed per backend.
+    """
+    if solver == "highs":
+        return {
+            # Default to HiPO - HiGHS 1.15's interior-point solver (requires highspy[extras]).
+            # Like IPM it does not support warm starts; keeps IPM's low memory footprint.
+            # Override for A/B benchmarking via env var, e.g. STEELO_LP_SOLVER=simplex.
+            "solver": os.environ.get("STEELO_LP_SOLVER", "hipo"),
+            "presolve": "on",
+            "scaling": "on",
+            "run_crossover": "on",
+            # Emit HiGHS logs so we can confirm which algorithm actually ran
+            # (look for "Running HiPO" / "Using dual simplex solver" / "IPX version").
+            "output_flag": "true",
+            "log_to_console": "true",
+        }
+    if solver == "gurobi":
+        return {"Method": 2}  # 2 = barrier, Gurobi's closest analog to HiGHS's IPM/HiPO default
+    raise ValueError(f"Unsupported solver {solver!r}; must be one of {sorted(_SOLVER_FACTORY_NAMES)}")
+
 
 def time_function(func):
     @functools.wraps(func)
@@ -367,6 +397,7 @@ class TradeLPModel:
         lp_model: Pyomo ConcreteModel (the actual LP formulation)
         allocations: Optimal commodity flows after solving
         lp_epsilon: Solver tolerance (1e-3) for constraint validation
+        solver: LP solver backend, "highs" (default) or "gurobi" (requires a Gurobi license)
 
     Constraint Support:
         tariff_quotas_by_iso3: Volume limits on cross-border flows
@@ -380,7 +411,16 @@ class TradeLPModel:
         soft_minimum_capacity_slack_cost: High cost for under-utilization (100k)
     """
 
-    def __init__(self, lp_epsilon: float = 1e-3, distance_function=None, random_seed: int = 42):
+    def __init__(
+        self,
+        lp_epsilon: float = 1e-3,
+        distance_function=None,
+        random_seed: int = 42,
+        solver: str = "highs",
+    ):
+        if solver not in _SOLVER_FACTORY_NAMES:
+            raise ValueError(f"Unsupported solver {solver!r}; must be one of {sorted(_SOLVER_FACTORY_NAMES)}")
+        self.solver = solver
         self.process_centers: list[ProcessCenter] = []
         self.process_connectors: list[ProcessConnector] = []
         self.commodities: list[Commodity] = []
@@ -407,20 +447,9 @@ class TradeLPModel:
         self._external_distance_function = distance_function
         self._pc_by_name: dict[str, ProcessCenter] | None = None
 
-        # Solver options for performance tuning (OPT-4)
-        # Default to HiPO - HiGHS 1.15's interior-point solver (requires highspy[extras]).
-        # Like IPM it does not support warm starts; keeps IPM's low memory footprint.
-        # Override for A/B benchmarking via env var, e.g. STEELO_LP_SOLVER=simplex.
-        self.solver_options: dict[str, Any] = {
-            "solver": os.environ.get("STEELO_LP_SOLVER", "hipo"),
-            "presolve": "on",
-            "scaling": "on",
-            "run_crossover": "on",
-            # Emit HiGHS logs so we can confirm which algorithm actually ran
-            # (look for "Running HiPO" / "Using dual simplex solver" / "IPX version").
-            "output_flag": "true",
-            "log_to_console": "true",
-        }
+        # Solver options for performance tuning (OPT-4), defaulted per backend -- see
+        # _default_solver_options(). Override with the target solver's own option names.
+        self.solver_options: dict[str, Any] = _default_solver_options(solver)
 
         # Warm-start support (OPT-2) - previous year's solution for faster convergence
         self.previous_solution: dict[tuple[str, str, str], float] | None = None
@@ -1747,8 +1776,19 @@ class TradeLPModel:
         # Add objective function:
         self.add_objective_function_to_lp()
 
+    def _solver_supports_warm_start(self) -> bool:
+        """Whether the current solver_options select an algorithm that can be warm-started
+        from a previous solution's basis. Simplex-family methods can; interior-point/barrier
+        methods (HiGHS "ipm"/"hipo", Gurobi Method=2) start from a fresh interior point each
+        time and ignore warm starts."""
+        if self.solver == "highs":
+            return self.solver_options.get("solver", "hipo") == "simplex"
+        if self.solver == "gurobi":
+            return self.solver_options.get("Method", 2) in (0, 1)  # 0=primal simplex, 1=dual simplex
+        return False
+
     def solve_lp_model(self):
-        """Solve the LP optimization problem using HiGHS solver.
+        """Solve the LP optimization problem using the configured solver (HiGHS or Gurobi).
 
         Solves the built LP model using configurable solver options with warm-start support.
         Returns solver results including termination condition and solution status.
@@ -1759,29 +1799,30 @@ class TradeLPModel:
                 - solver.termination_condition: Why solver stopped (optimal, infeasible, etc.)
 
         Notes:
-            - Uses solver_options for configuration (default: IPM for memory efficiency)
-            - Supports warm-starting from previous_solution (simplex only)
+            - Solver backend selected by self.solver ("highs" or "gurobi", set at construction)
+            - Uses solver_options for configuration (default: IPM/barrier for memory efficiency);
+              option names are solver-specific, see _default_solver_options()
+            - Supports warm-starting from previous_solution (simplex-family methods only)
             - Random seed from SimulationConfig.random_seed for reproducibility
             - Does not automatically load solution (call extract_solution() after)
             - Logs detailed diagnostics if model is infeasible
         """
         logger = logging.getLogger(f"{__name__}.solve_lp_model")
         start_time = time.time()
-        solver = pyo.SolverFactory("appsi_highs")
-        solver.options["random_seed"] = self.random_seed
+        solver = pyo.SolverFactory(_SOLVER_FACTORY_NAMES[self.solver])
+        solver.options[_SOLVER_SEED_OPTION_NAMES[self.solver]] = self.random_seed
 
         # Use configurable solver options for performance tuning (OPT-4)
         solver.options.update(self.solver_options)
         solver.config.load_solution = False  # Don't try to load infeasible solution
 
         # Warm-start from previous year's solution if available (OPT-2)
-        # NOTE: HiGHS Appsi only supports warm starts for simplex solver, not IPM/HiPO
+        # NOTE: only simplex-family methods support warm starts -- see _solver_supports_warm_start().
         warm_start_enabled = False
-        solver_type = self.solver_options.get("solver", "hipo")
         n_vars = self.lp_model.nvariables()
 
         if hasattr(self, "previous_solution") and self.previous_solution is not None:
-            if solver_type == "simplex":
+            if self._solver_supports_warm_start():
                 warm_start_count = 0
                 for (from_pc, to_pc, comm), value in self.previous_solution.items():
                     # Only set values for variables that exist in this year's model
@@ -1794,13 +1835,14 @@ class TradeLPModel:
                         f"operation=warm_start variables_initialized={warm_start_count} "
                         f"coverage={(warm_start_count / n_vars) * 100:.1f}%"
                     )
-            elif solver_type in ("ipm", "hipo"):
+            else:
                 logger.info(
-                    f"operation=warm_start status=skipped reason='{solver_type} solver does not support warm starts'"
+                    f"operation=warm_start status=skipped reason='{self.solver} configuration "
+                    "does not support warm starts'"
                 )
 
-        # tee=True forwards HiGHS's own logs (algorithm banner, iterations, timing)
-        # so you can verify HiPO is actually running. Toggle via env STEELO_HIGHS_LOG.
+        # tee=True forwards the solver's own logs (algorithm banner, iterations, timing) --
+        # useful to confirm which algorithm actually ran. Toggle via env STEELO_HIGHS_LOG.
         highs_log = os.environ.get("STEELO_HIGHS_LOG", "").lower() in {"1", "true", "yes"}
         result = solver.solve(self.lp_model, load_solutions=False, warmstart=warm_start_enabled, tee=highs_log)
         elapsed = time.time() - start_time
