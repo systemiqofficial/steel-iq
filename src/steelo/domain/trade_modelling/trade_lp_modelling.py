@@ -1679,7 +1679,12 @@ class TradeLPModel:
             self.lp_model.process_center_type[pc.name] = pc.process.type.value
 
     def build_lp_model(
-        self, willingness_to_pay_list=None, carbon_border_mechanisms=None, country_mappings=None, year=None
+        self,
+        willingness_to_pay_list=None,
+        carbon_border_mechanisms=None,
+        country_mappings=None,
+        year=None,
+        carbon_scope: str = "direct_only",
     ):
         """Build the complete Pyomo LP model with all variables, parameters, and constraints.
 
@@ -1692,6 +1697,8 @@ class TradeLPModel:
             carbon_border_mechanisms: List of CarbonBorderMechanism objects (optional, defaults to None)
             country_mappings: Dictionary mapping ISO3 codes to CountryMapping objects (optional, defaults to None)
             year: Current simulation year for mechanism activation check (optional, defaults to None)
+            carbon_scope: Scope of emissions to use for CBAM references: "direct_only" (Scope 1, default,
+                realistic to real CBAM) or "full_embedded" (Scope 1+2+3, economically complete)
 
         Steps:
             1. Determine legal allocations (valid flows based on process connectors)
@@ -1751,6 +1758,7 @@ class TradeLPModel:
                 carbon_border_mechanisms=carbon_border_mechanisms,
                 country_mappings=country_mappings,
                 year=year,
+                carbon_scope=carbon_scope,
             )
         # Add objective function:
         self.add_objective_function_to_lp()

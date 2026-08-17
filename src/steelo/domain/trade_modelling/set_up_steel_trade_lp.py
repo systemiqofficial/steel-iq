@@ -366,6 +366,85 @@ def create_process_from_meta_furnace_group(
     return process
 
 
+def _calculate_embedded_production_cost(furnace_group_or_meta: Any, carbon_scope: str = "direct_only") -> float:
+    """Calculate production cost per unit for a furnace group, respecting carbon_scope.
+
+    For furnace groups with production history, uses their actual emissions to calculate
+    the appropriate carbon cost for CBAM. This replaces pooled country averages with
+    individual plant costs, providing better accuracy for existing producers.
+
+    Args:
+        furnace_group_or_meta: FurnaceGroup or MetaFurnaceGroup object
+        carbon_scope: "direct_only" (Scope 1, default) or "full_embedded" (Scope 1+2+3)
+
+    Returns:
+        Carbon cost per unit in $/t for CBAM trade model (may differ from plant agent's NPV cost)
+    """
+    if carbon_scope == "direct_only":
+        # Use the standard carbon cost (direct_ghg only, already calculated)
+        if hasattr(furnace_group_or_meta, "carbon_cost_per_unit"):
+            return furnace_group_or_meta.carbon_cost_per_unit
+        elif hasattr(furnace_group_or_meta, "weighted_avg_carbon_cost"):
+            return furnace_group_or_meta.weighted_avg_carbon_cost
+        return 0.0
+
+    elif carbon_scope == "full_embedded":
+        # Calculate embedded cost using direct + indirect emissions
+        if not hasattr(furnace_group_or_meta, "emissions") or not furnace_group_or_meta.emissions:
+            # Fallback to direct-only if no emissions data available
+            if hasattr(furnace_group_or_meta, "carbon_cost_per_unit"):
+                return furnace_group_or_meta.carbon_cost_per_unit
+            elif hasattr(furnace_group_or_meta, "weighted_avg_carbon_cost"):
+                return furnace_group_or_meta.weighted_avg_carbon_cost
+            return 0.0
+
+        # Get production volume for per-unit calculation
+        production = None
+        if hasattr(furnace_group_or_meta, "allocated_volumes") and furnace_group_or_meta.allocated_volumes > 0:
+            production = furnace_group_or_meta.allocated_volumes
+        elif hasattr(furnace_group_or_meta, "production") and furnace_group_or_meta.production > 0:
+            production = furnace_group_or_meta.production
+        else:
+            # No production history - fallback to direct-only
+            if hasattr(furnace_group_or_meta, "carbon_cost_per_unit"):
+                return furnace_group_or_meta.carbon_cost_per_unit
+            elif hasattr(furnace_group_or_meta, "weighted_avg_carbon_cost"):
+                return furnace_group_or_meta.weighted_avg_carbon_cost
+            return 0.0
+
+        # Get carbon price from the object's carbon cost if available
+        carbon_price = 0.0
+        if hasattr(furnace_group_or_meta, "_carbon_cost") and furnace_group_or_meta._carbon_cost:
+            carbon_price = furnace_group_or_meta._carbon_cost.carbon_price
+        elif hasattr(furnace_group_or_meta, "carbon_cost") and furnace_group_or_meta.carbon_cost:
+            carbon_price = furnace_group_or_meta.carbon_cost.carbon_price
+
+        # If no carbon price, return direct-only cost
+        if carbon_price == 0.0:
+            if hasattr(furnace_group_or_meta, "carbon_cost_per_unit"):
+                return furnace_group_or_meta.carbon_cost_per_unit
+            elif hasattr(furnace_group_or_meta, "weighted_avg_carbon_cost"):
+                return furnace_group_or_meta.weighted_avg_carbon_cost
+            return 0.0
+
+        # Calculate embedded emissions per unit across all boundaries
+        total_embedded_cost = 0.0
+        for boundary_name, boundary_data in furnace_group_or_meta.emissions.items():
+            direct_emissions = boundary_data.get("direct_ghg")
+            if direct_emissions is not None:
+                # Use this boundary (typically the first/primary one)
+                indirect_emissions = boundary_data.get("indirect_ghg", 0.0)
+                total_emissions = direct_emissions + indirect_emissions
+                total_emissions_per_unit = total_emissions / production
+                total_embedded_cost = total_emissions_per_unit * carbon_price
+                break  # Use first valid boundary
+
+        return total_embedded_cost
+
+    else:
+        raise ValueError(f"Invalid carbon_scope: {carbon_scope}. Must be 'direct_only' or 'full_embedded'.")
+
+
 def add_furnace_groups_as_process_centers(
     repository, lp_model: tlp.TradeLPModel, config: "SimulationConfig", furnace_groups_override: list[Any] | None = None
 ):
@@ -419,7 +498,7 @@ def add_furnace_groups_as_process_centers(
                 process=process,
                 capacity=config.capacity_limit * meta_fg.total_capacity,
                 location=meta_fg.location,  # This is the capacity-weighted centroid
-                production_cost=meta_fg.weighted_avg_carbon_cost,
+                production_cost=_calculate_embedded_production_cost(meta_fg, carbon_scope=config.cbam_carbon_scope),
                 soft_minimum_capacity=config.soft_minimum_capacity_percentage,
                 energy_costs_per_input=build_energy_costs_per_input_for_meta_fg(meta_fg),
             )
@@ -448,7 +527,9 @@ def add_furnace_groups_as_process_centers(
                     process=process,
                     capacity=config.capacity_limit * furnace_group.capacity,
                     location=plant.location,
-                    production_cost=furnace_group.carbon_cost_per_unit,
+                    production_cost=_calculate_embedded_production_cost(
+                        furnace_group, carbon_scope=config.cbam_carbon_scope
+                    ),
                     soft_minimum_capacity=config.soft_minimum_capacity_percentage,
                     energy_costs_per_input=build_energy_costs_per_input(furnace_group),
                     last_production=furnace_group.production,
@@ -943,33 +1024,40 @@ def _iron_input_intensity(pc: "tlp.ProcessCenter", references: "CarbonCostRefere
 
 def build_reference_producer_carbon_costs(
     process_centers: list["tlp.ProcessCenter"],
+    carbon_scope: str = "direct_only",
 ) -> CarbonCostReferences:
-    """Build per-country embedded carbon-cost references from PRODUCTION process centres.
+    """Build per-country carbon-cost references from PRODUCTION process centres.
 
-    Carbon costs in this model are booked almost entirely on the iron stage: steelmaking
-    consumes hot metal / DRI whose emissions were already charged to the upstream furnace
-    group, so a steel plant's own production_cost is near zero by construction. A border
-    mechanism benchmarked on the steel stage alone therefore cannot fire on steel imports.
-    This builds references on the carbon cost EMBEDDED in a tonne of each commodity class:
+    For furnace groups with production history (last_production set), their production_cost
+    already reflects the carbon_scope setting and is used directly. For new plants or
+    clustered groups without history, this function pools costs into country-level references
+    as a fallback.
 
-    - iron_ref: production-weighted average production_cost of iron-class producers,
-      pooled across iron-class commodities per country (their upstream, ore, is unpriced).
-    - steel_ref: production-weighted average over steel producers of
-      production_cost + iron input intensity x iron_ref of the producer's country
-      (global fallback where the country makes no iron).
+    This approach provides better accuracy: existing producers use their own calculated costs,
+    while new plants default to country/global averages.
 
     Args:
-        process_centers: All process centres of the trade LP.
+        process_centers: All process centres of the trade LP. Each has production_cost
+            already calculated using the carbon_scope setting.
+        carbon_scope: Scope of emissions used (passed for reference; actual cost calculation
+            happened at process center creation time).
+            - "direct_only": Only Scope 1 (realistic to real CBAM)
+            - "full_embedded": Scope 1+2+3 (economically complete)
 
     Returns:
-        CarbonCostReferences with country references, the iron-class commodity set, and
-        the intensity/global fallbacks needed to embed source-side costs symmetrically.
+        CarbonCostReferences with:
+        - iron_ref: per-country average for iron-class producers (fallback for new plants)
+        - steel_ref: per-country average for steel producers (fallback for new plants)
+        - iron_class: set of commodities that carry iron's carbon cost into steel
+        - Intensities and global fallbacks
 
     Notes:
-        Producers are weighted by last year's production, so idle plants drop out while
-        actively producing zero-carbon plants dilute the reference honestly (a zero
-        carbon cost overwhelmingly means no priced emissions, not idleness).
+        - Each process center's production_cost was calculated with carbon_scope at creation time
+        - Producers with last_production > 0 have production history and use their actual cost
+        - Producers without history use country/global references as fallback
     """
+    if carbon_scope not in ("direct_only", "full_embedded"):
+        raise ValueError(f"Invalid carbon_scope: {carbon_scope}. Must be 'direct_only' or 'full_embedded'.")
     iron_class = _iron_class_commodities(process_centers)
 
     iron_cost_sum: dict[str, float] = defaultdict(float)
@@ -987,6 +1075,7 @@ def build_reference_producer_carbon_costs(
         products = {commodity.name for commodity in pc.process.products}
         iso3 = pc.location.iso3
         if products & iron_class:
+            # Use the process center's actual production_cost (already calculated with carbon_scope)
             iron_cost_sum[iso3] += pc.production_cost * weight
             iron_weight_sum[iso3] += weight
             global_cost_sum += pc.production_cost * weight
@@ -1030,6 +1119,7 @@ def build_reference_producer_carbon_costs(
     for pc, weight in steel_producers:
         iso3 = pc.location.iso3
         alpha = _iron_input_intensity(pc, references)
+        # Steel plant's production_cost already includes appropriate scope (direct_only or full_embedded)
         embedded = pc.production_cost + alpha * iron_ref.get(iso3, iron_ref_global)
         steel_cost_sum[iso3] += embedded * weight
         steel_weight_sum[iso3] += weight
@@ -1042,6 +1132,12 @@ def _source_embedded_carbon_cost(
     pc: "tlp.ProcessCenter", commodity_name: str, references: CarbonCostReferences
 ) -> float:
     """Carbon cost embedded in a tonne of the commodity leaving this producer.
+
+    This is ONLY used for CBAM purposes. Does NOT affect plant agent NPV calculations.
+
+    Process center's production_cost already includes the appropriate carbon_scope:
+    - direct_only: only direct (Scope 1) emissions
+    - full_embedded: all embedded (Scope 1+2+3) emissions
 
     For steel, adds the carbon cost of the producer's iron inputs (own realised intensity
     when known, country/global average otherwise) on top of its own stage cost; iron-class
@@ -1064,7 +1160,11 @@ def _destination_reference(iso3: str, commodity_name: str, references: CarbonCos
 
 
 def adapt_allocation_costs_for_carbon_border_mechanisms(
-    trade_lp: tlp.TradeLPModel, carbon_border_mechanisms: list, country_mappings: dict[str, CountryMapping], year: int
+    trade_lp: tlp.TradeLPModel,
+    carbon_border_mechanisms: list,
+    country_mappings: dict[str, CountryMapping],
+    year: int,
+    carbon_scope: str = "direct_only",
 ):
     """Apply carbon border adjustment mechanisms to allocation costs.
 
@@ -1080,18 +1180,21 @@ def adapt_allocation_costs_for_carbon_border_mechanisms(
             - get_applying_region_countries(mappings): Method to get country list
         country_mappings: Dictionary mapping ISO3 codes to CountryMapping objects
         year: Current simulation year
+        carbon_scope: Scope of emissions to use: "direct_only" (Scope 1 only, realistic to
+            real CBAM but creates dead channel for steel) or "full_embedded" (Scope 1+2+3,
+            economically complete but differs from real CBAM)
 
     Notes:
-        - Export rebates: applying_region → other flows get cost decrease if the embedded
-          carbon cost is higher than the destination reference
-        - Import adjustments: other → applying_region flows get cost increase if the embedded
-          carbon cost is lower than the destination reference
-        - Both sides compare the carbon cost EMBEDDED in a tonne of the commodity crossing
-          the border (see build_reference_producer_carbon_costs): steel carries its iron
-          inputs' carbon cost, so the mechanism fires on steel even though carbon is booked
-          on the iron stage. The destination side always uses the country reference for the
-          crossing commodity — never the destination plant's own cost, which is denominated
-          per tonne of a different product.
+        - Export rebates: applying_region → other flows get cost decrease if the carbon
+          cost is higher than the destination reference
+        - Import adjustments: other → applying_region flows get cost increase if the carbon
+          cost is lower than the destination reference
+        - Both sides compare carbon cost that varies based on carbon_scope setting:
+          * "direct_only": Only Scope 1 (direct) emissions, matching real CBAM
+          * "full_embedded": Scope 1+2+3 (full embedded), economically complete
+        - The destination side always uses the country reference for the crossing commodity
+          — never the destination plant's own cost, which is denominated per tonne of a
+          different product.
         - Only first mechanism applied to each flow (tracked via adjusted_arcs set)
         - Only applies to legal allocations (defined process connectors)
         - Skips supplier sources: their production_cost is raw-material price, not carbon cost.
@@ -1102,6 +1205,9 @@ def adapt_allocation_costs_for_carbon_border_mechanisms(
     """
     logger = logging.getLogger(f"{__name__}.adapt_allocation_costs_for_carbon_border_mechanisms")
 
+    if carbon_scope not in ("direct_only", "full_embedded"):
+        raise ValueError(f"Invalid carbon_scope: {carbon_scope}. Must be 'direct_only' or 'full_embedded'.")
+
     # Track which arcs have already been adjusted to prevent double-counting across mechanisms
     adjusted_arcs = set()
     adjustments_made = 0
@@ -1111,7 +1217,7 @@ def adapt_allocation_costs_for_carbon_border_mechanisms(
     export_rebates: list[float] = []
     counts_by_class: dict[tuple[str, str], int] = defaultdict(int)
 
-    references = build_reference_producer_carbon_costs(trade_lp.process_centers)
+    references = build_reference_producer_carbon_costs(trade_lp.process_centers, carbon_scope=carbon_scope)
 
     for mechanism in carbon_border_mechanisms:
         if not mechanism.is_active(year):
@@ -1495,6 +1601,7 @@ def set_up_steel_trade_lp(
         carbon_border_mechanisms=carbon_border_mechanisms,
         country_mappings=country_mappings_dict,
         year=year,
+        carbon_scope=config.cbam_carbon_scope,
     )
     lp_model = fix_to_zero_allocations_where_distance_doesnt_match_commodity(
         trade_lp=lp_model, config=config, env=message_bus.env if hasattr(message_bus, "env") else None

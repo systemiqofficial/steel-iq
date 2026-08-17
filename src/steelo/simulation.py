@@ -403,6 +403,9 @@ class SimulationConfig:
     # Use InitVar to accept but not store deprecated parameter for backward compatibility
     global_bf_ban: InitVar[bool] = None
     include_tariffs: bool = True  # Whether to include tariffs in trade modeling
+    cbam_carbon_scope: str = (
+        "direct_only"  # CBAM carbon scope: "direct_only" (Scope 1) or "full_embedded" (Scope 1+2+3)
+    )
 
     # === Optional paths ===
     # Input data (for locating fixtures)
@@ -569,6 +572,14 @@ class SimulationConfig:
 
         if self.opening_balance_multiplier < 0:
             raise ValueError("opening_balance_multiplier must be >= 0.0")
+
+        # Validate CBAM carbon scope setting
+        if self.cbam_carbon_scope not in ("direct_only", "full_embedded"):
+            raise ValueError(
+                f"Invalid cbam_carbon_scope: {self.cbam_carbon_scope}. "
+                "Must be 'direct_only' (Scope 1 only, realistic to real CBAM) or "
+                "'full_embedded' (Scope 1+2+3, economically complete)."
+            )
 
         # Convert strings to Path objects if needed
         self.output_dir = Path(self.output_dir)
