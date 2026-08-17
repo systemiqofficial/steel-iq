@@ -190,7 +190,12 @@ class DummyTradeLPModel:
         self.connectors.extend(connectors)
 
     def build_lp_model(
-        self, willingness_to_pay_list=None, carbon_border_mechanisms=None, country_mappings=None, year=None
+        self,
+        willingness_to_pay_list=None,
+        carbon_border_mechanisms=None,
+        country_mappings=None,
+        year=None,
+        carbon_scope: str = "direct_only",
     ):
         pass
 
