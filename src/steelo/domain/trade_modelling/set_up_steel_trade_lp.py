@@ -1386,14 +1386,6 @@ def set_up_steel_trade_lp(
                 region="dummy region",
             )
             secondary_supply_locations[commodity] = location
-            _ensure_secondary_feedstock_supplier(
-                repository,
-                supplier_id=f"{commodity}_supply_process_center",
-                commodity=commodity,
-                location=location,
-                capacity=total_capacity,
-                year=year,
-            )
 
     add_suppliers_as_process_centers(repository=repository, lp_model=lp_model, year=year, config=config)
 
