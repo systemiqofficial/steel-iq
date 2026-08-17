@@ -443,6 +443,7 @@ class SimulationConfig:
     geo_plots_dir: Optional[Path] = None  # If None, will be set to plots_dir/GEO
     pam_plots_dir: Optional[Path] = None  # If None, will be set to plots_dir/PAM
     tm_output_dir: Path | None = None  # Computed Trade Module attributes (set in __post_init__)
+    policy_output_dir: Path | None = None  # If None, will be set to output_dir/data/policy
     # Geo Data Paths (for geospatial calculations) - only needed for specific geo calculations and provided by the
     # calling code when needed
     terrain_nc_path: Optional[Path] = None
@@ -641,6 +642,12 @@ class SimulationConfig:
         # Create TM output directory
         self.tm_output_dir = self.output_dir / "TM"
         self.tm_output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Capacity-policy artefacts; created by the flush, so a policy-OFF run leaves no empty directory
+        if self.policy_output_dir is None:
+            self.policy_output_dir = self.output_dir / "data" / "policy"
+        else:
+            self.policy_output_dir = Path(self.policy_output_dir)
 
         # Convert optional geo paths to Path objects if provided
         if self.terrain_nc_path is not None:
@@ -1384,7 +1391,7 @@ class SimulationRunner:
         self.progress_callback(progress)
 
         # China capacity policy (nothing recorded if policy is OFF)
-        flush_capacity_policy_outputs(self.config.output_dir)
+        flush_capacity_policy_outputs(self.config.policy_output_dir)
 
         # Postprocessing
         output_path = extract_and_process_stored_dataCollection(

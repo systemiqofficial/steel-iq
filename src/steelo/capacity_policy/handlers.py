@@ -100,7 +100,13 @@ def _policy_geo_key(iso3: str, geo_unit: str | None, *, context: str) -> str:
 
 
 def flush_capacity_policy_outputs(output_dir: Path) -> None:
-    """Write the run's policy CSVs, or nothing at all while unbound."""
+    """Write the run's policy CSVs, or nothing at all while unbound.
+
+    Args:
+        output_dir: Directory to write into — ``SimulationConfig.policy_output_dir``
+            on a real run; created here rather than with the run's other output
+            directories, so a policy-OFF run leaves no empty directory behind.
+    """
     policy = _policy
     if policy is None:
         return
