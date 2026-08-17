@@ -465,6 +465,7 @@ def create_mock_config():
         random_seed: int = 42
         start_year: Year = Year(2025)
         end_year: Year = Year(2060)
+        cbam_carbon_scope: str = "direct_only"
 
     return MockConfig()
 
