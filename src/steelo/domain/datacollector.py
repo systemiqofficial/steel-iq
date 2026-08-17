@@ -255,22 +255,30 @@ class DataCollector:
 
     def collect_new_plant_data(self, year: Year):
         """
-        Collect the locations of new plants set to operating in the given year, as well as how many.
+        Collect status counts and locations of new (GEO-origin) plants for the given year.
+
+        Args:
+            year: The year to collect new plant data for.
+
+        Notes:
+            Plants are selected by origin (``parent_gem_id`` starting with "indi_"),
+            not by current plant-group membership: under the capacity policy a
+            credit-funded greenfield moves into the funding company's plant group
+            without ceasing to be a GEO build.
         """
         logger = logging.getLogger(f"{__name__}.collect_new_plant_data")
-        indi_groups = [pg for pg in self.plant_groups if pg.plant_group_id.startswith("indi")]
-        if not indi_groups:
-            logger.warning("No indi plant groups found. Skipping new plant data collection.")
+        indi_plants = [plant for plant in self.plants if plant.parent_gem_id.lower().startswith("indi_")]
+        if not indi_plants:
+            logger.warning("No indi-origin plants found. Skipping new plant data collection.")
             return
 
-        for indi_pg in indi_groups:
-            for plant in indi_pg.plants:
-                for fg in plant.furnace_groups:
-                    self.status_counts[fg.technology.product][year][fg.technology.name][fg.status] += 1
-                    if fg.status == "operating" and fg.lifetime.start == year:
-                        self.new_plant_locations[fg.technology.product][year].append(
-                            ({"lat": plant.location.lat, "lon": plant.location.lon})
-                        )
+        for plant in indi_plants:
+            for fg in plant.furnace_groups:
+                self.status_counts[fg.technology.product][year][fg.technology.name][fg.status] += 1
+                if fg.status == "operating" and fg.lifetime.start == year:
+                    self.new_plant_locations[fg.technology.product][year].append(
+                        ({"lat": plant.location.lat, "lon": plant.location.lon})
+                    )
 
     def collect_capex_investments(self, year: Year):
         """
