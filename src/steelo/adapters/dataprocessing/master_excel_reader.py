@@ -545,12 +545,31 @@ class MasterExcelReader:
 
             # Authored geography contract: the sheet carries an ISO3 column (bare country or
             # combined "ISO3:geo_unit", optionally a separate geo_unit column) — no reverse
-            # geocoding.
+            # geocoding. Fallback: derive ISO3 from a "Country" column if the sheet predates
+            # the authored-ISO3 contract (master input < v2.2).
             if "ISO3" not in plant_df.columns:
-                raise ValueError(
-                    "Column 'ISO3' not found in 'Iron and steel plants' sheet — "
-                    "an authored ISO3 column is required (master input >= v2.2)."
+                if "Country" not in plant_df.columns:
+                    raise ValueError(
+                        "Column 'ISO3' not found in 'Iron and steel plants' sheet — "
+                        "an authored ISO3 column is required (master input >= v2.2), and no "
+                        "'Country' column is present to derive it from."
+                    )
+                logger.warning(
+                    "Column 'ISO3' not found in 'Iron and steel plants' sheet; "
+                    "deriving ISO3 from the 'Country' column instead (master input < v2.2)."
                 )
+                from .gem_country_mapping import country_area_to_iso3
+
+                def _resolve_iso3(country_name: Any) -> str:
+                    if pd.isna(country_name):
+                        return ""
+                    try:
+                        return country_area_to_iso3(country_name)
+                    except ValueError:
+                        logger.warning(f"Could not resolve country name to ISO3: {country_name!r}")
+                        return ""
+
+                plant_df["ISO3"] = plant_df["Country"].apply(_resolve_iso3)
 
             # Read historical production data
             try:
@@ -983,6 +1002,182 @@ class MasterExcelReader:
                 return None
         except (ValueError, TypeError, AttributeError):
             return None
+
+    def read_plants_from_furnace_units_sheet(
+        self,
+        dynamic_feedstocks_dict: Optional[dict] = None,
+        simulation_start_year: int = 2025,
+        regional_fopex: dict[str, float] = {},
+        aggregated_constraints: Optional[list] = None,
+    ) -> tuple[list[Any], dict[Any, Any], list[Any]]:
+        """
+        Read plants and furnace groups from the flattened 'Furnace units' sheet
+        (produced by build_furnace_units_sheet.py), where each row already is one
+        furnace group - no per-plant equipment-string splitting required.
+
+        This is a separate pathway from read_plants(): it reads a different sheet,
+        combining GEM's raw unit-level tracker data with external Chinese
+        blast-furnace data. read_plants() and its "Iron and steel plants" sheet
+        are unaffected.
+
+        Args:
+            dynamic_feedstocks_dict: Dictionary mapping technology names to lists of
+                                   dynamic business cases. If None, reads from
+                                   'Bill of Materials' sheet.
+            simulation_start_year: Year representing the start of simulation.
+            regional_fopex: Dictionary mapping region codes to fixed operational
+                           expenses, applied to all plants.
+
+        Returns:
+            tuple[list[Plant], dict[str, FurnaceGroupMetadata]]
+
+        Raises:
+            ValueError: If the 'Furnace units' sheet is not found in the Excel file.
+        """
+        from ...domain.models import Location, Technology, FurnaceGroup, PointInTime, TimeFrame, Year, Volumes
+        from ..dataprocessing.excel_reader import read_dynamic_business_cases
+        from .plant_aggregation import PlantAggregationService, RawPlantData
+        from .plant_metadata import (
+            FurnaceGroupMetadata,
+            validate_commissioning_year,
+            validate_age_at_reference,
+        )
+        from .parsing_utils import compute_furnace_lifetime
+
+        sheet_name = "Furnace units"
+
+        if not self._excel_file:
+            self._excel_file = pd.ExcelFile(self.excel_path)
+
+        if sheet_name not in self._excel_file.sheet_names:
+            raise ValueError(f"Sheet '{sheet_name}' not found in Excel file")
+
+        df = pd.read_excel(self._excel_file, sheet_name=sheet_name)
+
+        if dynamic_feedstocks_dict is None or aggregated_constraints is None:
+            logger.info("Reading dynamic business cases from Bill of Materials sheet")
+            dynamic_feedstocks_dict, aggregated_constraints = read_dynamic_business_cases(
+                str(self.excel_path), excel_sheet="Bill of Materials"
+            )
+
+        raw_canonical_metadata: dict[str, FurnaceGroupMetadata] = {}
+        furnace_groups_by_plant: dict[str, list] = {}
+        plant_first_row: dict[str, Any] = {}
+
+        for row_idx, row in df.iterrows():
+            if pd.isna(row.get("plant_id")):
+                continue
+            plant_id = str(row["plant_id"])
+            excel_row = cast(int, row_idx) + 2
+
+            capacity = row.get("capacity_ttpa")
+            if pd.isna(capacity) or capacity <= 0:
+                continue
+
+            equipment = str(row.get("technology"))
+            tech_business_cases = dynamic_feedstocks_dict.get(
+                equipment, dynamic_feedstocks_dict.get(equipment.lower(), [])
+            )
+            technology = Technology(
+                name=equipment,
+                product="iron" if equipment in ["BF", "DRI", "ESF"] else "steel",
+                technology_readiness_level=None,
+                process_emissions=None,
+                dynamic_business_case=tech_business_cases,
+            )
+
+            start_year_val = row.get("start_year")
+            start_year = Year(int(start_year_val)) if pd.notna(start_year_val) else Year(2020)
+            start_date = date(int(start_year), 1, 1)
+
+            last_renovation_year_val = row.get("last_renovation_year")
+            last_renovation_date = (
+                date(int(last_renovation_year_val), 1, 1) if pd.notna(last_renovation_year_val) else start_date
+            )
+
+            lifetime_start, lifetime_end = compute_furnace_lifetime(start_year, simulation_start_year, PLANT_LIFETIME)
+
+            unit_id = row.get("unit_id")
+            furnace_group_id = f"temp_{plant_id}_{equipment}_{unit_id}_{excel_row}"
+
+            furnace_group = FurnaceGroup(
+                furnace_group_id=furnace_group_id,
+                capacity=Volumes(KT_TO_T * float(capacity)),
+                status=str(row.get("status", "operating")),
+                last_renovation_date=last_renovation_date,
+                technology=technology,
+                historical_production={},
+                utilization_rate=0.0,
+                lifetime=PointInTime(
+                    current=Year(simulation_start_year),
+                    time_frame=TimeFrame(start=lifetime_start, end=lifetime_end),
+                    plant_lifetime=PLANT_LIFETIME,
+                ),
+            )
+
+            furnace_groups_by_plant.setdefault(plant_id, []).append(furnace_group)
+            if plant_id not in plant_first_row:
+                plant_first_row[plant_id] = row
+
+            commissioning_year = Year(int(start_year_val)) if pd.notna(start_year_val) else None
+            age_at_reference = None
+            if commissioning_year is None:
+                plant_age = simulation_start_year - int(start_year)
+                age_at_reference = plant_age if plant_age > 0 else 0
+
+            warnings = validate_commissioning_year(commissioning_year, furnace_group_id)
+            warnings.extend(validate_age_at_reference(age_at_reference, simulation_start_year, furnace_group_id))
+
+            raw_canonical_metadata[furnace_group_id] = FurnaceGroupMetadata(
+                commissioning_year=commissioning_year,
+                age_at_reference_year=age_at_reference,
+                last_renovation_year=(
+                    Year(int(last_renovation_year_val)) if pd.notna(last_renovation_year_val) else None
+                ),
+                age_source="exact" if commissioning_year else "imputed",
+                source_sheet=str(row.get("source_sheet", sheet_name)),
+                source_row=excel_row,
+                validation_warnings=warnings,
+            )
+
+        raw_plants = []
+        for plant_id, furnace_groups in furnace_groups_by_plant.items():
+            row = plant_first_row[plant_id]
+            lat = row.get("latitude")
+            lon = row.get("longitude")
+            geo_unit = row.get("geo_unit_or_province")
+            location = Location(
+                lat=float(lat) if pd.notna(lat) else 0.0,
+                lon=float(lon) if pd.notna(lon) else 0.0,
+                country=str(row.get("iso3")),
+                region=str(row.get("region", "unknown")),
+                iso3=str(row.get("iso3")),
+                geo_unit=str(geo_unit) if pd.notna(geo_unit) else None,
+            )
+            raw_plant = RawPlantData(
+                plant_id=plant_id,
+                location=location,
+                furnace_groups=furnace_groups,
+                power_source=str(row.get("power_source", "unknown")),
+                soe_status=str(row.get("soe_status", "unknown")),
+                parent_gem_id=str(row.get("parent_gem_id", "")),
+                workforce_size=self._parse_workforce_size(row.get("workforce_size")),
+                technology_fopex=regional_fopex,
+            )
+            raw_plants.append(raw_plant)
+
+        aggregator = PlantAggregationService()
+        plants, final_canonical_metadata = aggregator.aggregate_plants_with_metadata(raw_plants, raw_canonical_metadata)
+        aggregator.validate_no_duplicate_furnace_group_ids(plants)
+
+        logger.info(
+            f"Successfully created {len(plants)} plants from 'Furnace units' sheet "
+            f"(from {len(raw_plants)} raw records) with metadata for {len(final_canonical_metadata)} furnace groups"
+        )
+        aggregated_constraints_to_return: list[Any] = (
+            aggregated_constraints if aggregated_constraints is not None else []
+        )
+        return plants, final_canonical_metadata, aggregated_constraints_to_return
 
     def read_technologies_config(self) -> ExtractionResult:
         """

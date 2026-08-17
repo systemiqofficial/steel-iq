@@ -224,6 +224,7 @@ class DataPreparationService:
         progress_callback: Optional[Any] = None,
         geo_version: Optional[str] = None,
         force_refresh: bool = False,
+        use_furnace_units_sheet: bool = True,
     ) -> PreparationResult:
         """
         Prepare all data files for simulation.
@@ -306,6 +307,7 @@ class DataPreparationService:
             verbose=verbose,
             progress_callback=progress_callback,
             geo_version=geo_version,
+            use_furnace_units_sheet=use_furnace_units_sheet,
         )
 
         # Ensure master_excel_path is set in result (it might have been resolved in _prepare_data_internal)
@@ -337,6 +339,7 @@ class DataPreparationService:
         verbose: bool = False,
         progress_callback: Optional[Any] = None,
         geo_version: Optional[str] = None,
+        use_furnace_units_sheet: bool = True,
     ) -> PreparationResult:
         """Internal method - existing prepare_data logic."""
         start_time = time.time()
@@ -381,7 +384,7 @@ class DataPreparationService:
         # Step 7: Create JSON repositories
         step_start = time.time()
         self._create_json_repositories(
-            fixtures_dir, master_excel_path, result, skip_existing, verbose, progress_callback
+            fixtures_dir, master_excel_path, result, skip_existing, verbose, progress_callback, use_furnace_units_sheet
         )
         result.add_step(PreparationStep("JSON repository creation", time.time() - step_start))
 
@@ -788,6 +791,7 @@ class DataPreparationService:
         skip_existing: bool,
         verbose: bool,
         progress_callback: Optional[Any] = None,
+        use_furnace_units_sheet: bool = True,
     ) -> None:
         """Create JSON repositories using the centralized recreation system."""
         # Create recreation config
@@ -808,6 +812,7 @@ class DataPreparationService:
             config=config,
             master_excel_path=master_excel_path,
             package_name="core-data",
+            use_furnace_units_sheet=use_furnace_units_sheet,
         )
 
         # Track all created files

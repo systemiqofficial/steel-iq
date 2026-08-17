@@ -4910,8 +4910,9 @@ def get_new_plant_id(existent_plant_ids: list[str] = []) -> str:
     Generate a new plant id for a potential new plant in the plant group. Adds 1 to the number of the last plant
     id in the repository. Plant ids are formatted as P000000000001, P000000000002, etc.
     """
-    if len(existent_plant_ids) > 0:
-        sorted_plant_ids = sorted(existent_plant_ids, key=lambda x: int(x[1:]))
+    p_plant_ids = [pid for pid in existent_plant_ids if pid.startswith("P")]
+    if len(p_plant_ids) > 0:
+        sorted_plant_ids = sorted(p_plant_ids, key=lambda x: int(x[1:]))
         new_id = f"P{str(int(sorted_plant_ids[-1][1:]) + 1).zfill(12)}"
         return new_id
     else:

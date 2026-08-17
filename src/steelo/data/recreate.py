@@ -67,6 +67,7 @@ class DataRecreator:
         force_download: bool = False,
         master_excel_path: Path | None = None,
         track_timing: bool = False,
+        use_furnace_units_sheet: bool = True,
     ) -> dict[str, Path]:
         """Recreate JSON repositories from a downloaded package.
 
@@ -76,6 +77,8 @@ class DataRecreator:
             force_download: Force re-download of package
             master_excel_path: Optional path to master Excel file for additional data
             track_timing: If True, track and display timing for each file creation
+            use_furnace_units_sheet: If True (default), read from 'Furnace units' sheet (new method).
+                                     If False, read from 'Iron and steel plants' sheet (old method).
 
         Returns:
             Dictionary mapping repository types to their output paths
@@ -327,6 +330,7 @@ class DataRecreator:
         config: RecreationConfig,
         master_excel_path: Path | None = None,
         package_name: str = "core-data",
+        use_furnace_units_sheet: bool = True,
     ) -> dict[str, Path]:
         """
         Recreate files using a RecreationConfig for fine-grained control.
@@ -336,6 +340,8 @@ class DataRecreator:
             config: Recreation configuration
             master_excel_path: Optional path to master Excel file
             package_name: Data package to use for core archive files
+            use_furnace_units_sheet: If True, use new furnace units sheet reader.
+                                    If False, use old iron/steel plants reader.
 
         Returns:
             Dictionary mapping filenames to their output paths
@@ -397,7 +403,9 @@ class DataRecreator:
                         config.report_progress(f"Retrying {filename} (attempt {attempt + 1})", progress)
 
                     # Call the appropriate recreation function
-                    success = self._recreate_single_file(spec, output_dir, package_dir, master_excel_path)
+                    success = self._recreate_single_file(
+                        spec, output_dir, package_dir, master_excel_path, use_furnace_units_sheet
+                    )
 
                     if success and file_path.exists():
                         created_paths[filename] = file_path
@@ -433,6 +441,7 @@ class DataRecreator:
         output_dir: Path,
         package_dir: Path,
         master_excel_path: Path | None,
+        use_furnace_units_sheet: bool = True,
     ) -> bool:
         """
         Recreate a single file based on its specification.
@@ -630,10 +639,30 @@ class DataRecreator:
 
                 # Note: We're not loading gravity distances for now as they need proper JSON serialization
                 with MasterExcelReader(master_excel_path) as reader:
-                    plants, canonical_metadata, aggregated_metallic_constraints = reader.read_plants(
-                        dynamic_feedstocks_dict=dynamic_feedstocks_dict,
-                        simulation_start_year=2025,  # TODO: Make this configurable
-                    )
+                    if use_furnace_units_sheet:
+                        try:
+                            plants, canonical_metadata, aggregated_metallic_constraints = (
+                                reader.read_plants_from_furnace_units_sheet(
+                                    dynamic_feedstocks_dict=dynamic_feedstocks_dict,
+                                    simulation_start_year=2025,  # TODO: Make this configurable
+                                )
+                            )
+                        except ValueError as e:
+                            if "Furnace units" in str(e):
+                                console.print(
+                                    "[yellow]  ⚠ Furnace units sheet not found, falling back to old reader[/yellow]"
+                                )
+                                plants, canonical_metadata, aggregated_metallic_constraints = reader.read_plants(
+                                    dynamic_feedstocks_dict=dynamic_feedstocks_dict,
+                                    simulation_start_year=2025,  # TODO: Make this configurable
+                                )
+                            else:
+                                raise
+                    else:
+                        plants, canonical_metadata, aggregated_metallic_constraints = reader.read_plants(
+                            dynamic_feedstocks_dict=dynamic_feedstocks_dict,
+                            simulation_start_year=2025,  # TODO: Make this configurable
+                        )
 
                 func(
                     plants=plants,
@@ -686,11 +715,15 @@ class DataRecreator:
         else:
             return f"[SOURCE: {spec.source_type}]"
 
-    def recreate_all_packages(self, output_dir: Path) -> dict[str, dict[str, Path]]:
+    def recreate_all_packages(
+        self, output_dir: Path, use_furnace_units_sheet: bool = True
+    ) -> dict[str, dict[str, Path]]:
         """Recreate JSON repositories from all required packages.
 
         Args:
             output_dir: Base directory for output
+            use_furnace_units_sheet: If True, use new furnace units sheet reader.
+                                    If False, use old iron/steel plants reader.
 
         Returns:
             Dictionary mapping package names to their created repository paths
@@ -710,6 +743,7 @@ class DataRecreator:
                 created_paths = self.recreate_from_package(
                     package.name,
                     package_output_dir,
+                    use_furnace_units_sheet=use_furnace_units_sheet,
                 )
                 results[package.name] = created_paths
             except Exception as e:
