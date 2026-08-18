@@ -2601,6 +2601,15 @@ class FurnaceGroup:
                     logger.warning(f"Could not get bill of materials for technology {tech}, skipping")
                     continue
 
+                # A technology the market allocated no fleet-wide production cannot price
+                # a greenfield candidate on its realised utilisation; skip it like Branch A does
+                if util_rate <= 0:
+                    logger.warning(
+                        f"[OPTIMAL TECH] SKIPPING {tech} - zero fleet-wide utilisation, "
+                        f"greenfield candidate cannot be priced"
+                    )
+                    continue
+
                 bill_of_materials = bill_of_materials_opt
 
                 logger.debug(f"[OPTIMAL TECH] Evaluating NEW technology {tech} as greenfield installation")
@@ -2635,6 +2644,12 @@ class FurnaceGroup:
                         raise ValueError(
                             f"BOM rebuild for {tech} with reductant '{committed_reductant}' returned no BOM"
                         )
+                    if util_rate <= 0:
+                        logger.warning(
+                            f"[OPTIMAL TECH] SKIPPING {tech} - zero fleet-wide utilisation after "
+                            f"reductant rebuild, greenfield candidate cannot be priced"
+                        )
+                        continue
                     bill_of_materials = rebuilt_bom
                 bom_dict[tech] = bill_of_materials
                 reductant_dict[tech] = committed_reductant
