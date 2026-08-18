@@ -9,38 +9,42 @@ both already emitted by existing code with no simulation changes needed here:
   - `/usr/bin/time -v`'s own summary lines (wraps every run in
     run_solver_benchmark.sbatch): wall_clock_s, peak_rss_mb for the whole process.
   - `operation=<name> [year=Y] duration_s=T` INFO log lines (logging.basicConfig's
-    default handler writes to stderr, landing in the same task.err) from
-    plant_agent.py and trade_lp_modelling.py, summed across all years into four
-    additive, non-overlapping buckets:
-      - lp_build_s: operation=allocation_setup -- set_up_steel_trade_lp() building the
-        Pyomo model (TradeLPModel.build_lp_model() and everything around it), before
-        the solver call.
-      - lp_solve_s: operation=trade_optimization -- solve_lp_model()'s solver.solve()
-        call specifically (logged without a year field; summed across the whole run
-        the same as the other buckets).
-      - npv_plant_decision_s: operation=pam_evaluate_plants +
-        operation=pam_evaluate_expansions -- the actual per-plant NPV renovate/switch/
-        close/expand decision logic, no LP or geospatial work involved.
-      - geospatial_s: operation=geospatial_model -- siting new plants. Kept separate
-        rather than folded into another bucket: this doesn't touch the LP at all, and
-        can dominate runtime in later years (see CLUSTER_RUNBOOK.md's clustering
-        speedup notes) -- lumping it in elsewhere would misattribute a geospatial-
-        driven slowdown to the solver/clustering choice.
-    agent_module_s is reported separately as the *measured* operation=plant_agents_model
-    total (the whole per-year economic-model step), not computed as the sum of the four
-    buckets above. other_s = agent_module_s - (lp_build_s + lp_solve_s +
-    npv_plant_decision_s + geospatial_s) is the residual -- carbon-cost calc,
-    allocation postprocessing/export, and any untimed overhead. It's a sanity check as
-    much as a bucket: it should stay small; a large other_s means the four buckets
-    above aren't actually explaining most of where the time goes.
-    Also captures memory_checkpoint rss_mb at the after_lp_setup/after_lp_solve
-    phases (utilities/memory_profiling.py's MemoryTracker) as
-    peak_lp_build_rss_mb/peak_lp_solve_rss_mb -- the max RSS logged at that
-    checkpoint across all years (RSS trends upward over a run since it's one
-    long-lived process across the annual loop, not restarted per year, so the max is
-    effectively "how big did the process get by the time it reached this phase"). No
-    equivalent checkpoint exists for npv_plant_decision/geospatial, so there's no
-    memory column for those.
+    default handler writes to stderr, landing in the same task.err).
+
+The annual cycle runs three independent, SIBLING economic-model stages each year
+(src/steelo/economic_models/plant_agent.py: GeospatialModel, AllocationModel,
+PlantAgentsModel -- three separate classes, none nested inside another; confirmed by
+counting operation=trade_optimization and operation=plant_agents_model lines in a real
+16-year run: 16 of each, one per year, and trade_optimization's total (tens of thousands
+of seconds) vastly exceeds plant_agents_model's total -- proof they aren't nested).
+Reported as three directly-measured totals, summed across all years:
+
+  - trade_module_s: operation=allocation_model (AllocationModel.run()'s own total --
+    builds and solves the trade LP, then exports/plots the allocation).
+  - geospatial_s: operation=geospatial_model (GeospatialModel.run()'s own total --
+    siting new plants). Can dominate runtime in later years as more plants exist.
+  - pam_s: operation=plant_agents_model (PlantAgentsModel.run()'s own total -- per-plant
+    renovate/switch/close/expand NPV decisions only; no LP or geospatial work).
+
+Within trade_module_s and pam_s, two further sub-parts are broken out (additive, sum
+towards but not necessarily exactly equal to their parent total -- allocation
+postprocessing/export and carbon-cost calc aren't separately bucketed, so some residual
+is normal, not a bug):
+  - lp_build_s: operation=allocation_setup -- set_up_steel_trade_lp() building the
+    Pyomo model, before the solver call. Sub-part of trade_module_s.
+  - lp_solve_s: operation=trade_optimization -- solve_lp_model()'s solver.solve() call
+    specifically (logged without a year field; summed across the whole run same as the
+    other buckets). Sub-part of trade_module_s.
+  - npv_plant_decision_s: operation=pam_evaluate_plants + operation=pam_evaluate_expansions
+    -- the actual per-plant NPV decision logic. Sub-part of pam_s.
+
+Also captures memory_checkpoint rss_mb at the after_lp_setup/after_lp_solve phases
+(utilities/memory_profiling.py's MemoryTracker) as peak_lp_build_rss_mb/
+peak_lp_solve_rss_mb -- the max RSS logged at that checkpoint across all years (RSS
+trends upward over a run since it's one long-lived process across the annual loop, not
+restarted per year, so the max is effectively "how big had the process gotten by the
+time it reached this phase"). No equivalent checkpoint exists for npv_plant_decision/
+geospatial, so there's no memory column for those.
 
 Usage:
     uv run python -m scripts.sensitivity.parse_stage_timings \\
@@ -61,13 +65,13 @@ _MEMORY_CHECKPOINT_RE = re.compile(r"operation=memory_checkpoint (?:year=\d+ )?p
 _TIME_V_WALL_CLOCK_RE = re.compile(r"Elapsed \(wall clock\) time.*?: (\S+)")
 _TIME_V_PEAK_RSS_KB_RE = re.compile(r"Maximum resident set size \(kbytes\): (\d+)")
 
-# operation= names summed into each bucket -- see module docstring for what each
-# bucket means and why agent_module_s is measured directly rather than derived as
-# their sum.
-_AGENT_MODULE_OPS = {"plant_agents_model"}
+# operation= names summed into each bucket -- see module docstring for the three-
+# sibling-stage structure and which buckets are sub-parts of which stage total.
+_TRADE_MODULE_OPS = {"allocation_model"}
+_GEOSPATIAL_OPS = {"geospatial_model"}
+_PAM_OPS = {"plant_agents_model"}
 _LP_BUILD_OPS = {"allocation_setup"}
 _NPV_PLANT_DECISION_OPS = {"pam_evaluate_plants", "pam_evaluate_expansions"}
-_GEOSPATIAL_OPS = {"geospatial_model"}
 
 
 def _parse_time_v_wall_clock(value: str) -> float:
@@ -82,11 +86,12 @@ def _parse_time_v_wall_clock(value: str) -> float:
 
 def parse_log(log_path: Path) -> dict:
     """Extract stage-level runtime/memory totals from one task's captured log."""
-    agent_module_s = 0.0
+    trade_module_s = 0.0
+    geospatial_s = 0.0
+    pam_s = 0.0
     lp_build_s = 0.0
     lp_solve_s = 0.0
     npv_plant_decision_s = 0.0
-    geospatial_s = 0.0
     peak_lp_build_rss_mb = 0.0
     peak_lp_solve_rss_mb = 0.0
     wall_clock_s: float | None = None
@@ -95,14 +100,16 @@ def parse_log(log_path: Path) -> dict:
     for line in log_path.read_text(errors="replace").splitlines():
         if m := _DURATION_WITH_YEAR_RE.search(line):
             op, _year, duration = m.group(1), m.group(2), float(m.group(3))
-            if op in _AGENT_MODULE_OPS:
-                agent_module_s += duration
+            if op in _TRADE_MODULE_OPS:
+                trade_module_s += duration
+            elif op in _GEOSPATIAL_OPS:
+                geospatial_s += duration
+            elif op in _PAM_OPS:
+                pam_s += duration
             elif op in _LP_BUILD_OPS:
                 lp_build_s += duration
             elif op in _NPV_PLANT_DECISION_OPS:
                 npv_plant_decision_s += duration
-            elif op in _GEOSPATIAL_OPS:
-                geospatial_s += duration
             continue
         if m := _TRADE_OPTIMIZATION_RE.search(line):
             lp_solve_s += float(m.group(1))
@@ -121,17 +128,15 @@ def parse_log(log_path: Path) -> dict:
             peak_rss_mb = int(m.group(1)) / 1024.0
             continue
 
-    other_s = agent_module_s - (lp_build_s + lp_solve_s + npv_plant_decision_s + geospatial_s)
-
     return {
         "wall_clock_s": wall_clock_s,
         "peak_rss_mb": peak_rss_mb,
-        "agent_module_s": agent_module_s,
+        "trade_module_s": trade_module_s,
+        "geospatial_s": geospatial_s,
+        "pam_s": pam_s,
         "lp_build_s": lp_build_s,
         "lp_solve_s": lp_solve_s,
         "npv_plant_decision_s": npv_plant_decision_s,
-        "geospatial_s": geospatial_s,
-        "other_s": other_s,
         "peak_lp_build_rss_mb": peak_lp_build_rss_mb,
         "peak_lp_solve_rss_mb": peak_lp_solve_rss_mb,
     }
@@ -149,12 +154,12 @@ def main() -> None:
         "seed",
         "wall_clock_s",
         "peak_rss_mb",
-        "agent_module_s",
+        "trade_module_s",
+        "geospatial_s",
+        "pam_s",
         "lp_build_s",
         "lp_solve_s",
         "npv_plant_decision_s",
-        "geospatial_s",
-        "other_s",
         "peak_lp_build_rss_mb",
         "peak_lp_solve_rss_mb",
     ]
