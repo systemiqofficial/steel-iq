@@ -12,6 +12,7 @@ from .domain.models import Environment, PlantGroup, Supplier
 from .adapters.repositories import JsonRepository, InMemoryRepository, Repository
 from .capacity_policy.bootstrap import configure_capacity_policy
 from .data.path_resolver import DataPathResolver
+from .motions import bind_global_motions
 
 if TYPE_CHECKING:
     from .simulation import SimulationConfig, SimulationRunner
@@ -331,6 +332,8 @@ def bootstrap_simulation(
     # China capacity policy: unbind any state a previous run in this process left,
     # then bind a fresh evaluator and pool when the config enables the policy
     configure_capacity_policy(config.capacity_policy, repository_json, start_year=int(config.start_year))
+    # Global motions record every run, policy or not: always a fresh recorder
+    bind_global_motions()
 
     # Create UoW
     uow = UnitOfWork(repository=repository)

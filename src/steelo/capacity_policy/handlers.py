@@ -1,12 +1,15 @@
 """Deposit handlers and decision-path hook for the capacity pool.
 
 The event handlers are registered on ``EVENT_HANDLERS`` unconditionally but
-inert until :func:`bind_capacity_policy` installs an evaluator and pool
-(bootstrapping, D8): until then — and whenever
+the deposit handlers stay inert until :func:`bind_capacity_policy` installs an
+evaluator and pool (bootstrapping, D8): until then — and whenever
 ``config.capacity_policy.enabled`` is False, since nothing binds a disabled
-policy — every handler returns immediately and behaviour is byte-identical.
-Once bound, only Chinese events act. The same binding drives the decision-path
-gates the plant agent threads on every evaluation: :func:`replace_capacity_hook`,
+policy — they return immediately and pool behaviour is byte-identical. Once
+bound, only Chinese events deposit. The motion handlers also write into the
+global recorder of :mod:`steelo.motions`, which bootstrap binds on every run,
+so they act for all countries regardless of the policy binding. The same
+binding drives the decision-path gates the plant agent threads on every
+evaluation: :func:`replace_capacity_hook`,
 the pre-NPV ② REPLACE gate on ``Plant.evaluate_furnace_group_strategy``;
 :func:`increase_sizing_hook`, the non-consuming ③ INCREASE sizing query every
 pre-NPV valuation of a new build runs through; :func:`expansion_capacity_hook`,
@@ -21,7 +24,10 @@ Each deposit logs the furnace group's ``chosen_reductant`` so, paired with the
 evaluation-side log in :mod:`.tree`, reductant drift between approval and
 operation is measurable from any run. The same call sites feed the run's
 :class:`~steelo.capacity_policy.recorder.CapacityPolicyRecorder`, whose CSVs
-:func:`flush_capacity_policy_outputs` writes at the end of a bound run.
+:func:`flush_capacity_policy_outputs` writes at the end of a bound run. The
+motion call sites additionally dual-write every country's rows into the
+always-bound global recorder of :mod:`steelo.motions`, so the policy binding
+gates the pool and the China file only — the global motions record on every run.
 
 Credit and motion ownership is **group membership** throughout: every handler
 resolves ``uow.plant_groups.get_by_plant_id(...)`` rather than reading the
@@ -37,6 +43,7 @@ from typing import Callable
 
 from steelo.domain import events
 from steelo.domain.models import Environment, FurnaceGroup, Plant, compose_geo_key
+from steelo.motions import global_motions_recorder
 from steelo.service_layer.unit_of_work import UnitOfWork
 
 from .pool import CapacityPool, Credit
@@ -73,6 +80,23 @@ def unbind_capacity_policy() -> None:
     """Deactivate the deposit handlers; they become no-ops again."""
     global _policy
     _policy = None
+
+
+def _motion_recorders(iso3: str) -> list[CapacityPolicyRecorder]:
+    """The recorders a motion at this location feeds, global-first.
+
+    The global recorder (bound on every real run) takes every country's rows;
+    the policy recorder additionally takes Chinese rows while the policy is
+    bound. Global-first ordering matters to the end-of-life source rule, which
+    asks the first recorder for the broadest in-run renovation history.
+    """
+    recorders: list[CapacityPolicyRecorder] = []
+    global_recorder = global_motions_recorder()
+    if global_recorder is not None:
+        recorders.append(global_recorder)
+    if _policy is not None and iso3 == "CHN":
+        recorders.append(_policy.recorder)
+    return recorders
 
 
 def _policy_geo_key(iso3: str, geo_unit: str | None, *, context: str) -> str:
@@ -734,64 +758,71 @@ def deposit_on_end_of_life_closure(
     separable in the artefacts.
 
     Runs inside ``finalise_iteration``'s own unit-of-work context and only
-    reads, so it opens none of its own.
+    reads, so it opens none of its own. The deposit side is policy-scoped and
+    Chinese; the motion side records every country through the run's motion
+    recorders.
     """
     policy = _policy
-    if policy is None:
+    recorders = _motion_recorders(plant.location.iso3)
+    if not recorders:
         return
-    if plant.location.iso3 != "CHN":
-        return
-    geo_key = _policy_geo_key(plant.location.iso3, plant.location.geo_unit, context="deposit_end_of_life")
     owner_id = uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id
-    credit = policy.evaluator.on_close(
-        geo_key=geo_key,
-        capacity_mt=float(furnace_group.capacity),
-        owner_id=owner_id,
-        product=furnace_group.technology.product,
-        year=int(env.year),
+    if policy is not None and plant.location.iso3 == "CHN":
+        geo_key = _policy_geo_key(plant.location.iso3, plant.location.geo_unit, context="deposit_end_of_life")
+        credit = policy.evaluator.on_close(
+            geo_key=geo_key,
+            capacity_mt=float(furnace_group.capacity),
+            owner_id=owner_id,
+            product=furnace_group.technology.product,
+            year=int(env.year),
+        )
+        policy.pool.deposit(credit)
+        policy.recorder.record_ledger(
+            year=int(env.year),
+            operation="deposit_close_end_of_life",
+            amount_t=credit.amount_mt,
+            region_tag=credit.region_tag,
+            owner_id=credit.owner_id,
+            product=credit.product,
+            vintage_year=credit.vintage_year,
+            geo_key=geo_key,
+            furnace_group_id=furnace_group.furnace_group_id,
+        )
+        logger.info(
+            "[CAPACITY POOL] event=end_of_life_closed deposit_mt=%.3f fg=%s geo_key=%s tag=%s "
+            "product=%s owner=%s vintage=%d chosen_reductant=%s",
+            credit.amount_mt,
+            furnace_group.furnace_group_id,
+            geo_key,
+            credit.region_tag,
+            credit.product,
+            credit.owner_id,
+            credit.vintage_year,
+            furnace_group.chosen_reductant,
+        )
+    # An age-out is data-scheduled only when no model action set the clock that
+    # ran out: builds and switches stamp created_by_PAM, renovations reset the
+    # lifetime without the stamp and are looked up in the run's own motions —
+    # asked of the first (broadest) recorder, the global one whenever bound
+    source = (
+        "pam"
+        if furnace_group.created_by_PAM or recorders[0].has_renovation(furnace_group.furnace_group_id)
+        else "input_data"
     )
-    policy.pool.deposit(credit)
-    policy.recorder.record_ledger(
-        year=int(env.year),
-        operation="deposit_close_end_of_life",
-        amount_t=credit.amount_mt,
-        region_tag=credit.region_tag,
-        owner_id=credit.owner_id,
-        product=credit.product,
-        vintage_year=credit.vintage_year,
-        geo_key=geo_key,
-        furnace_group_id=furnace_group.furnace_group_id,
-    )
-    policy.recorder.record_motion(
-        year=int(env.year),
-        kind="close",
-        # An age-out is data-scheduled only when no model action set the clock that
-        # ran out: builds and switches stamp created_by_PAM, renovations reset the
-        # lifetime without the stamp and are looked up in the run's own motions
-        source="pam"
-        if furnace_group.created_by_PAM or policy.recorder.has_renovation(furnace_group.furnace_group_id)
-        else "input_data",
-        plant_id=plant.plant_id,
-        furnace_group_id=furnace_group.furnace_group_id,
-        geo_key=geo_key,
-        old_technology=furnace_group.technology.name,
-        old_capacity_t=float(furnace_group.capacity),
-        owner_id=owner_id,
-        product=furnace_group.technology.product,
-        reductant=furnace_group.chosen_reductant,
-    )
-    logger.info(
-        "[CAPACITY POOL] event=end_of_life_closed deposit_mt=%.3f fg=%s geo_key=%s tag=%s "
-        "product=%s owner=%s vintage=%d chosen_reductant=%s",
-        credit.amount_mt,
-        furnace_group.furnace_group_id,
-        geo_key,
-        credit.region_tag,
-        credit.product,
-        credit.owner_id,
-        credit.vintage_year,
-        furnace_group.chosen_reductant,
-    )
+    for recorder in recorders:
+        recorder.record_motion(
+            year=int(env.year),
+            kind="close",
+            source=source,
+            plant_id=plant.plant_id,
+            furnace_group_id=furnace_group.furnace_group_id,
+            geo_key=compose_geo_key(plant.location.iso3, plant.location.geo_unit),
+            old_technology=furnace_group.technology.name,
+            old_capacity_t=float(furnace_group.capacity),
+            owner_id=owner_id,
+            product=furnace_group.technology.product,
+            reductant=furnace_group.chosen_reductant,
+        )
 
 
 def attribute_greenfield_on_furnace_group_added(event: events.FurnaceGroupAdded, uow: UnitOfWork) -> None:
@@ -957,127 +988,133 @@ def purge_expired_credits(_event: events.IterationOver, env: Environment) -> Non
 
 
 def record_motion_on_furnace_group_closed(event: events.FurnaceGroupClosed, uow: UnitOfWork, env: Environment) -> None:
-    """Record a Chinese closure as a motion — the deposit's fleet-side counterpart."""
-    policy = _policy
-    if policy is None:
-        return
-    if event.iso3 != "CHN":
+    """Record a decided closure as a motion — the deposit's fleet-side counterpart.
+
+    Every country records globally; a Chinese closure additionally feeds the
+    bound policy's own recorder, identical rows in both.
+    """
+    recorders = _motion_recorders(event.iso3)
+    if not recorders:
         return
     with uow:
         plant, furnace_group = _get_plant_and_furnace_group(uow, event.furnace_group_id)
-        policy.recorder.record_motion(
-            year=int(env.year),
-            kind="close",
-            source="pam",
-            plant_id=plant.plant_id,
-            furnace_group_id=event.furnace_group_id,
-            geo_key=compose_geo_key(event.iso3, event.geo_unit),
-            old_technology=furnace_group.technology.name,
-            old_capacity_t=event.capacity,
-            owner_id=uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id,
-            product=event.product,
-            reductant=furnace_group.chosen_reductant,
-        )
+        owner_id = uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id
+        for recorder in recorders:
+            recorder.record_motion(
+                year=int(env.year),
+                kind="close",
+                source="pam",
+                plant_id=plant.plant_id,
+                furnace_group_id=event.furnace_group_id,
+                geo_key=compose_geo_key(event.iso3, event.geo_unit),
+                old_technology=furnace_group.technology.name,
+                old_capacity_t=event.capacity,
+                owner_id=owner_id,
+                product=event.product,
+                reductant=furnace_group.chosen_reductant,
+            )
 
 
 def record_motion_on_furnace_group_tech_changed(
     event: events.FurnaceGroupTechChanged, uow: UnitOfWork, env: Environment
 ) -> None:
-    """Record a Chinese technology switch as a motion, shrunk or not.
+    """Record a technology switch as a motion, shrunk or not, in every country.
 
     An unshrunk switch deposits nothing but still moves the fleet, so the row
     is written before any of the deposit handler's early returns would apply.
     The reductant is the group's post-switch re-pick, which is exactly what
     pairs with the gate decision the switch was approved under.
     """
-    policy = _policy
-    if policy is None:
-        return
-    if event.iso3 != "CHN":
+    recorders = _motion_recorders(event.iso3)
+    if not recorders:
         return
     with uow:
         plant, furnace_group = _get_plant_and_furnace_group(uow, event.furnace_group_id)
-        policy.recorder.record_motion(
-            year=int(env.year),
-            kind="switch",
-            source="pam",
-            plant_id=plant.plant_id,
-            furnace_group_id=event.furnace_group_id,
-            geo_key=compose_geo_key(event.iso3, event.geo_unit),
-            old_technology=event.old_technology_name,
-            new_technology=event.technology_name,
-            old_capacity_t=event.old_capacity,
-            new_capacity_t=event.capacity,
-            owner_id=uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id,
-            product=event.product,
-            reductant=furnace_group.chosen_reductant,
-        )
+        owner_id = uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id
+        for recorder in recorders:
+            recorder.record_motion(
+                year=int(env.year),
+                kind="switch",
+                source="pam",
+                plant_id=plant.plant_id,
+                furnace_group_id=event.furnace_group_id,
+                geo_key=compose_geo_key(event.iso3, event.geo_unit),
+                old_technology=event.old_technology_name,
+                new_technology=event.technology_name,
+                old_capacity_t=event.old_capacity,
+                new_capacity_t=event.capacity,
+                owner_id=owner_id,
+                product=event.product,
+                reductant=furnace_group.chosen_reductant,
+            )
 
 
 def record_motion_on_furnace_group_renovated(
     event: events.FurnaceGroupRenovated, uow: UnitOfWork, env: Environment
 ) -> None:
-    """Record a Chinese renovation as a motion, shrunk or not."""
-    policy = _policy
-    if policy is None:
-        return
-    if event.iso3 != "CHN":
+    """Record a renovation as a motion, shrunk or not, in every country."""
+    recorders = _motion_recorders(event.iso3)
+    if not recorders:
         return
     with uow:
         plant, furnace_group = _get_plant_and_furnace_group(uow, event.furnace_group_id)
-        policy.recorder.record_motion(
-            year=int(env.year),
-            kind="renovate",
-            source="pam",
-            plant_id=plant.plant_id,
-            furnace_group_id=event.furnace_group_id,
-            geo_key=compose_geo_key(event.iso3, event.geo_unit),
-            old_technology=event.old_technology_name,
-            new_technology=event.new_technology_name,
-            old_capacity_t=event.old_capacity,
-            new_capacity_t=event.capacity,
-            owner_id=uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id,
-            product=event.product,
-            reductant=furnace_group.chosen_reductant,
-        )
+        owner_id = uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id
+        for recorder in recorders:
+            recorder.record_motion(
+                year=int(env.year),
+                kind="renovate",
+                source="pam",
+                plant_id=plant.plant_id,
+                furnace_group_id=event.furnace_group_id,
+                geo_key=compose_geo_key(event.iso3, event.geo_unit),
+                old_technology=event.old_technology_name,
+                new_technology=event.new_technology_name,
+                old_capacity_t=event.old_capacity,
+                new_capacity_t=event.capacity,
+                owner_id=owner_id,
+                product=event.product,
+                reductant=furnace_group.chosen_reductant,
+            )
 
 
 def record_motion_on_furnace_group_added(event: events.FurnaceGroupAdded, uow: UnitOfWork, env: Environment) -> None:
-    """Record a Chinese build as a motion — an expansion or a greenfield.
+    """Record a build as a motion — an expansion or a greenfield, in every country.
 
-    The event carries no location, so the plant lookup precedes the China
-    guard; that costs one repository read per build on a bound run only.
-    Registered after the greenfield attribution so a credit-funded plant is
-    already sitting in its funding company, and the owner is read from group
-    membership rather than ``ultimate_plant_group``, which still reports
-    ``indi_<iso3>`` for an attributed plant.
+    The event carries no location, so the plant lookup precedes the recorder
+    resolution; that costs one repository read per build. Registered after the
+    greenfield attribution so a credit-funded plant is already sitting in its
+    funding company, and the owner is read from group membership rather than
+    ``ultimate_plant_group``, which still reports ``indi_<iso3>`` for an
+    attributed plant.
 
     Expansion rows stamp the decision year; a greenfield row stamps
     construction start, one transition after the withdrawal that funded it.
     """
-    policy = _policy
-    if policy is None:
+    if global_motions_recorder() is None and _policy is None:
         return
     with uow:
         plant = uow.plants.get(event.plant_id)
-        if plant.location.iso3 != "CHN":
+        recorders = _motion_recorders(plant.location.iso3)
+        if not recorders:
             return
         furnace_group = next((fg for fg in plant.furnace_groups if fg.furnace_group_id == event.furnace_group_id), None)
         if furnace_group is None:
             raise ValueError(f"Furnace group {event.furnace_group_id} not found on plant {event.plant_id}")
-        policy.recorder.record_motion(
-            year=int(env.year),
-            kind="greenfield" if event.is_new_plant else "expansion",
-            source="pam",
-            plant_id=plant.plant_id,
-            furnace_group_id=event.furnace_group_id,
-            geo_key=compose_geo_key(plant.location.iso3, plant.location.geo_unit),
-            new_technology=event.technology_name,
-            new_capacity_t=event.capacity,
-            owner_id=uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id,
-            product=furnace_group.technology.product,
-            reductant=furnace_group.chosen_reductant,
-        )
+        owner_id = uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id
+        for recorder in recorders:
+            recorder.record_motion(
+                year=int(env.year),
+                kind="greenfield" if event.is_new_plant else "expansion",
+                source="pam",
+                plant_id=plant.plant_id,
+                furnace_group_id=event.furnace_group_id,
+                geo_key=compose_geo_key(plant.location.iso3, plant.location.geo_unit),
+                new_technology=event.technology_name,
+                new_capacity_t=event.capacity,
+                owner_id=owner_id,
+                product=furnace_group.technology.product,
+                reductant=furnace_group.chosen_reductant,
+            )
 
 
 def record_motion_on_pipeline_group_operating(
@@ -1108,23 +1145,26 @@ def record_motion_on_pipeline_group_operating(
     observes for capacity whose build was decided before the data was cut.
     Called directly rather than via an event, like
     :func:`deposit_on_end_of_life_closure`; it only reads, so it opens no
-    unit-of-work context of its own.
+    unit-of-work context of its own. Records every country globally, plus the
+    policy's China file while bound.
     """
-    policy = _policy
-    if policy is None:
+    if global_motions_recorder() is None and _policy is None:
         return
-    if plant.location.iso3 != "CHN" or furnace_group.created_by_PAM:
+    recorders = _motion_recorders(plant.location.iso3)
+    if not recorders or furnace_group.created_by_PAM:
         return
-    policy.recorder.record_motion(
-        year=int(env.year),
-        kind="pipeline",
-        source="input_data",
-        plant_id=plant.plant_id,
-        furnace_group_id=furnace_group.furnace_group_id,
-        geo_key=compose_geo_key(plant.location.iso3, plant.location.geo_unit),
-        new_technology=furnace_group.technology.name,
-        new_capacity_t=float(furnace_group.capacity),
-        owner_id=uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id,
-        product=furnace_group.technology.product,
-        reductant=furnace_group.chosen_reductant,
-    )
+    owner_id = uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id
+    for recorder in recorders:
+        recorder.record_motion(
+            year=int(env.year),
+            kind="pipeline",
+            source="input_data",
+            plant_id=plant.plant_id,
+            furnace_group_id=furnace_group.furnace_group_id,
+            geo_key=compose_geo_key(plant.location.iso3, plant.location.geo_unit),
+            new_technology=furnace_group.technology.name,
+            new_capacity_t=float(furnace_group.capacity),
+            owner_id=owner_id,
+            product=furnace_group.technology.product,
+            reductant=furnace_group.chosen_reductant,
+        )

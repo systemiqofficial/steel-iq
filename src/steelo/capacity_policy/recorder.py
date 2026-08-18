@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 LEDGER_FILE = "capacity_pool_ledger.csv"
 STATE_FILE = "capacity_pool_state.csv"
-MOTIONS_FILE = "china_pam_motions.csv"
+MOTIONS_FILE = "pam_motions_china.csv"
 GATE_DECISIONS_FILE = "capacity_pool_gate_decisions.csv"
 
 LEDGER_COLUMNS = (
@@ -293,6 +293,11 @@ class CapacityPolicyRecorder:
                 "reductant": reductant,
             }
         )
+
+    @property
+    def motions(self) -> Sequence[dict[str, Any]]:
+        """The recorded motion rows, for writers outside this module."""
+        return self._motions
 
     def has_renovation(self, furnace_group_id: str) -> bool:
         """True when an in-run renovation motion was recorded for this group.

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from steelo import motions as global_motions
 from steelo.capacity_policy import CapacityPolicyConfig, CapacityPolicyRecorder, CapacityPool, Credit, TreeEvaluator
 from steelo.capacity_policy import handlers as cp_handlers
 from steelo.capacity_policy.inputs import RegionRow, TechnologyRow
@@ -90,8 +91,17 @@ class FakePlantGroupsRepo:
 
 
 class FakeUoW:
-    def __init__(self, furnace_groups: list[FakeFurnaceGroup], *, iso3: str = "CHN", group_id: str = "E1"):
-        self.plants = FakePlantsRepo([FakePlant(furnace_groups=furnace_groups, location=FakeLocation(iso3=iso3))])
+    def __init__(
+        self,
+        furnace_groups: list[FakeFurnaceGroup],
+        *,
+        iso3: str = "CHN",
+        geo_unit: str | None = "CN-HE",
+        group_id: str = "E1",
+    ):
+        self.plants = FakePlantsRepo(
+            [FakePlant(furnace_groups=furnace_groups, location=FakeLocation(iso3=iso3, geo_unit=geo_unit))]
+        )
         self.plant_groups = FakePlantGroupsRepo(group_id=group_id)
 
     def __enter__(self):
@@ -108,9 +118,10 @@ class FakeEnv:
 
 @pytest.fixture(autouse=True)
 def unbind_after_test():
-    """Module-level binding must never leak between tests."""
+    """Module-level bindings must never leak between tests."""
     yield
     cp_handlers.unbind_capacity_policy()
+    global_motions.unbind_global_motions()
 
 
 @pytest.fixture
@@ -130,6 +141,15 @@ def bound(pool: CapacityPool, recorder: CapacityPolicyRecorder) -> CapacityPool:
     return pool
 
 
+@pytest.fixture
+def global_recorder() -> CapacityPolicyRecorder:
+    """Bind the all-country motions recorder, as bootstrap does on every run."""
+    global_motions.bind_global_motions()
+    recorder = global_motions.global_motions_recorder()
+    assert recorder is not None
+    return recorder
+
+
 def closed_event(geo_unit: str | None = "CN-HE", iso3: str = "CHN", owner_id: str = "E1") -> events.FurnaceGroupClosed:
     return events.FurnaceGroupClosed(
         furnace_group_id="fg-1",
@@ -141,13 +161,15 @@ def closed_event(geo_unit: str | None = "CN-HE", iso3: str = "CHN", owner_id: st
     )
 
 
-def tech_changed_event(old_capacity: float, capacity: float, owner_id: str = "E1") -> events.FurnaceGroupTechChanged:
+def tech_changed_event(
+    old_capacity: float, capacity: float, owner_id: str = "E1", iso3: str = "CHN", geo_unit: str | None = "CN-GD"
+) -> events.FurnaceGroupTechChanged:
     return events.FurnaceGroupTechChanged(
         furnace_group_id="fg-1",
         technology_name="BF+CCS",
         capacity=capacity,
-        iso3="CHN",
-        geo_unit="CN-GD",
+        iso3=iso3,
+        geo_unit=geo_unit,
         old_technology_name="BF",
         old_capacity=old_capacity,
         owner_id=owner_id,
@@ -156,14 +178,18 @@ def tech_changed_event(old_capacity: float, capacity: float, owner_id: str = "E1
 
 
 def renovated_event(
-    old_capacity: float = 2.0, capacity: float = 2.0, iso3: str = "CHN", owner_id: str = "E1"
+    old_capacity: float = 2.0,
+    capacity: float = 2.0,
+    iso3: str = "CHN",
+    geo_unit: str | None = "CN-HE",
+    owner_id: str = "E1",
 ) -> events.FurnaceGroupRenovated:
     return events.FurnaceGroupRenovated(
         furnace_group_id="fg-1",
         capacity=capacity,
         old_capacity=old_capacity,
         iso3=iso3,
-        geo_unit="CN-HE",
+        geo_unit=geo_unit,
         old_technology_name="BF",
         new_technology_name="BF",
         owner_id=owner_id,
@@ -181,8 +207,8 @@ def added_event(is_new_plant: bool = False) -> events.FurnaceGroupAdded:
     )
 
 
-def make_uow(iso3: str = "CHN", group_id: str = "E1") -> FakeUoW:
-    return FakeUoW([FakeFurnaceGroup(furnace_group_id="fg-1")], iso3=iso3, group_id=group_id)
+def make_uow(iso3: str = "CHN", geo_unit: str | None = "CN-HE", group_id: str = "E1") -> FakeUoW:
+    return FakeUoW([FakeFurnaceGroup(furnace_group_id="fg-1")], iso3=iso3, geo_unit=geo_unit, group_id=group_id)
 
 
 class TestInertness:
@@ -243,7 +269,9 @@ class TestInertness:
         )
 
     def test_unbound_handlers_are_no_ops(self):
-        """Unbound, the handlers return before touching uow, env or any pool."""
+        """With both the policy and the global motions recorder unbound — never the
+        case on a real run, where bootstrap always binds the latter — the handlers
+        return before touching uow, env or any pool."""
         cp_handlers.deposit_on_furnace_group_closed(closed_event(), uow=None, env=None)  # type: ignore[arg-type]
         cp_handlers.deposit_on_furnace_group_tech_changed(tech_changed_event(3.0, 2.0), uow=None, env=None)  # type: ignore[arg-type]
         cp_handlers.deposit_on_furnace_group_renovated(renovated_event(), uow=None, env=None)  # type: ignore[arg-type]
@@ -1130,6 +1158,128 @@ class TestPipelineMotions:
         cp_handlers.record_motion_on_pipeline_group_operating(plant, plant.furnace_groups[0], uow=uow, env=FakeEnv())  # type: ignore[arg-type]
 
         assert recorder._motions == []
+
+
+class TestGlobalMotions:
+    """All-country motion rows through the always-bound recorder of steelo.motions.
+
+    The policy stays unbound in most cases here: the global record must not
+    depend on ``--enable-capacity-policy``.
+    """
+
+    def test_non_chinese_close_records_a_global_row(self, global_recorder: CapacityPolicyRecorder):
+        cp_handlers.record_motion_on_furnace_group_closed(
+            closed_event(iso3="DEU", geo_unit=None),
+            uow=make_uow(iso3="DEU", geo_unit=None),  # type: ignore[arg-type]
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
+        (row,) = global_recorder.motions
+        assert row["kind"] == "close"
+        assert row["source"] == "pam"
+        assert row["geo_key"] == "DEU"
+        assert row["owner_id"] == "E1"
+
+    def test_non_chinese_switch_records_a_global_row(self, global_recorder: CapacityPolicyRecorder):
+        cp_handlers.record_motion_on_furnace_group_tech_changed(
+            tech_changed_event(3.0, 2.0, iso3="DEU", geo_unit=None),
+            uow=make_uow(iso3="DEU", geo_unit=None),  # type: ignore[arg-type]
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
+        (row,) = global_recorder.motions
+        assert row["kind"] == "switch"
+        assert row["geo_key"] == "DEU"
+        assert (row["old_technology"], row["new_technology"]) == ("BF", "BF+CCS")
+
+    def test_non_chinese_renovation_records_a_global_row(self, global_recorder: CapacityPolicyRecorder):
+        cp_handlers.record_motion_on_furnace_group_renovated(
+            renovated_event(iso3="DEU", geo_unit=None),
+            uow=make_uow(iso3="DEU", geo_unit=None),  # type: ignore[arg-type]
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
+        (row,) = global_recorder.motions
+        assert row["kind"] == "renovate"
+        assert row["geo_key"] == "DEU"
+
+    def test_non_chinese_build_records_a_global_row(self, global_recorder: CapacityPolicyRecorder):
+        cp_handlers.record_motion_on_furnace_group_added(
+            added_event(),
+            uow=make_uow(iso3="DEU", geo_unit=None),  # type: ignore[arg-type]
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
+        (row,) = global_recorder.motions
+        assert row["kind"] == "expansion"
+        assert row["geo_key"] == "DEU"
+
+    def test_non_chinese_pipeline_group_records_a_global_row(self, global_recorder: CapacityPolicyRecorder):
+        uow = make_uow(iso3="DEU", geo_unit=None)
+        plant = uow.plants.list()[0]
+
+        cp_handlers.record_motion_on_pipeline_group_operating(plant, plant.furnace_groups[0], uow=uow, env=FakeEnv())  # type: ignore[arg-type]
+
+        (row,) = global_recorder.motions
+        assert row["kind"] == "pipeline"
+        assert row["source"] == "input_data"
+        assert row["geo_key"] == "DEU"
+
+    def test_a_model_built_pipeline_group_is_still_skipped(self, global_recorder: CapacityPolicyRecorder):
+        uow = make_uow(iso3="DEU", geo_unit=None)
+        plant = uow.plants.list()[0]
+        plant.furnace_groups[0].created_by_PAM = True
+
+        cp_handlers.record_motion_on_pipeline_group_operating(plant, plant.furnace_groups[0], uow=uow, env=FakeEnv())  # type: ignore[arg-type]
+
+        assert list(global_recorder.motions) == []
+
+    def test_non_chinese_end_of_life_records_a_motion_and_no_pool_state(self, global_recorder: CapacityPolicyRecorder):
+        uow = make_uow(iso3="DEU", geo_unit=None)
+        plant = uow.plants.list()[0]
+
+        cp_handlers.deposit_on_end_of_life_closure(plant, plant.furnace_groups[0], uow=uow, env=FakeEnv())  # type: ignore[arg-type]
+
+        (row,) = global_recorder.motions
+        assert row["kind"] == "close"
+        assert row["source"] == "input_data"
+        assert row["geo_key"] == "DEU"
+        assert global_recorder._ledger == []
+
+    def test_end_of_life_source_rule_reads_the_global_renovation_history(self, global_recorder: CapacityPolicyRecorder):
+        """A renovated group ages out as a pam motion even off-China, where the
+        policy recorder never saw the renovation."""
+        cp_handlers.record_motion_on_furnace_group_renovated(
+            renovated_event(iso3="DEU", geo_unit=None),
+            uow=make_uow(iso3="DEU", geo_unit=None),  # type: ignore[arg-type]
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
+        uow = make_uow(iso3="DEU", geo_unit=None)
+        plant = uow.plants.list()[0]
+
+        cp_handlers.deposit_on_end_of_life_closure(plant, plant.furnace_groups[0], uow=uow, env=FakeEnv())  # type: ignore[arg-type]
+
+        close_row = global_recorder.motions[-1]
+        assert close_row["kind"] == "close"
+        assert close_row["source"] == "pam"
+
+    def test_chinese_event_records_identical_rows_in_both_recorders(
+        self, bound: CapacityPool, recorder: CapacityPolicyRecorder, global_recorder: CapacityPolicyRecorder
+    ):
+        cp_handlers.record_motion_on_furnace_group_closed(closed_event(), uow=make_uow(), env=FakeEnv())  # type: ignore[arg-type]
+
+        assert len(recorder.motions) == 1
+        assert list(global_recorder.motions) == list(recorder.motions)
+
+    def test_chinese_end_of_life_deposits_once_and_dual_writes_the_motion(
+        self, bound: CapacityPool, recorder: CapacityPolicyRecorder, global_recorder: CapacityPolicyRecorder
+    ):
+        """The pool and ledger stay policy-scoped; only the motion goes global."""
+        uow = make_uow()
+        plant = uow.plants.list()[0]
+
+        cp_handlers.deposit_on_end_of_life_closure(plant, plant.furnace_groups[0], uow=uow, env=FakeEnv())  # type: ignore[arg-type]
+
+        assert bound.total() == pytest.approx(2.0)
+        assert len(recorder._ledger) == 1
+        assert global_recorder._ledger == []
+        assert list(global_recorder.motions) == list(recorder.motions)
 
 
 class TestSnapshotHandler:

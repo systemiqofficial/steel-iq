@@ -40,6 +40,7 @@ from steelo.domain.calculate_costs import (
 )
 from .furnace_breakdown_logging_minimal import FurnaceBreakdownLogger
 from .capacity_policy.handlers import flush_capacity_policy_outputs, record_motion_on_pipeline_group_operating
+from .motions import flush_global_motions
 
 if TYPE_CHECKING:
     from .adapters.repositories import Repository
@@ -1392,6 +1393,8 @@ class SimulationRunner:
 
         # China capacity policy (nothing recorded if policy is OFF)
         flush_capacity_policy_outputs(self.config.policy_output_dir)
+        # Global motions: all countries, every run
+        flush_global_motions(self.config.output_dir / "data")
 
         # Postprocessing
         output_path = extract_and_process_stored_dataCollection(
