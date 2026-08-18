@@ -49,6 +49,7 @@ class FakeFurnaceGroup:
     chosen_reductant: str = "Coke+PCI"
     technology: FakeTechnology = field(default_factory=FakeTechnology)
     capacity: float = 2.0
+    created_by_PAM: bool = False
 
 
 @dataclass
@@ -250,6 +251,7 @@ class TestInertness:
         cp_handlers.record_motion_on_furnace_group_tech_changed(tech_changed_event(3.0, 2.0), uow=None, env=None)  # type: ignore[arg-type]
         cp_handlers.record_motion_on_furnace_group_renovated(renovated_event(), uow=None, env=None)  # type: ignore[arg-type]
         cp_handlers.record_motion_on_furnace_group_added(added_event(), uow=None, env=None)  # type: ignore[arg-type]
+        cp_handlers.record_motion_on_pipeline_group_operating(None, None, uow=None, env=None)  # type: ignore[arg-type]
         cp_handlers.snapshot_pool_state(events.IterationOver(time_step_increment=1, iron_price=1.0), env=None)  # type: ignore[arg-type]
         cp_handlers.purge_expired_credits(events.IterationOver(time_step_increment=1, iron_price=1.0), env=None)  # type: ignore[arg-type]
 
@@ -380,10 +382,40 @@ class TestEndOfLifeDeposit:
 
         (row,) = recorder._motions
         assert row["kind"] == "close"
+        assert row["source"] == "input_data"
         assert row["old_technology"] == "BF"
         assert row["old_capacity_t"] == pytest.approx(2.0)
         assert row["owner_id"] == "E1"
         assert row["reductant"] == "Coke+PCI"
+
+    def test_a_model_built_group_ages_out_as_a_pam_motion(self, bound: CapacityPool, recorder: CapacityPolicyRecorder):
+        """The lifetime that ran out was set by a model action, so the age-out is
+        the model's own; only data-born groups retire on the dataset's clock."""
+        uow = make_uow()
+        plant = uow.plants.list()[0]
+        plant.furnace_groups[0].created_by_PAM = True
+
+        cp_handlers.deposit_on_end_of_life_closure(plant, plant.furnace_groups[0], uow=uow, env=FakeEnv())  # type: ignore[arg-type]
+
+        (row,) = recorder._motions
+        assert row["source"] == "pam"
+
+    def test_a_renovated_group_ages_out_as_a_pam_motion(self, bound: CapacityPool, recorder: CapacityPolicyRecorder):
+        """A renovation resets the lifetime clock without stamping created_by_PAM,
+        so the age-out that follows runs out a model-set schedule, not the data's."""
+        cp_handlers.record_motion_on_furnace_group_renovated(
+            renovated_event(),
+            uow=make_uow(),  # type: ignore[arg-type]
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
+        uow = make_uow()
+        plant = uow.plants.list()[0]
+
+        cp_handlers.deposit_on_end_of_life_closure(plant, plant.furnace_groups[0], uow=uow, env=FakeEnv())  # type: ignore[arg-type]
+
+        close_row = recorder._motions[-1]
+        assert close_row["kind"] == "close"
+        assert close_row["source"] == "pam"
 
     def test_unbound_closure_deposits_nothing(self, pool: CapacityPool):
         uow = make_uow()
@@ -976,6 +1008,7 @@ class TestMotions:
         cp_handlers.record_motion_on_furnace_group_closed(closed_event(), uow=make_uow(), env=FakeEnv())  # type: ignore[arg-type]
         (row,) = recorder._motions
         assert row["kind"] == "close"
+        assert row["source"] == "pam"
         assert row["plant_id"] == "plant-1"
         assert row["old_technology"] == "BF"
         assert row["old_capacity_t"] == pytest.approx(2.0)
@@ -1038,6 +1071,64 @@ class TestMotions:
             uow=make_uow(iso3="DEU"),  # type: ignore[arg-type]
             env=FakeEnv(),  # type: ignore[arg-type]
         )
+        assert recorder._motions == []
+
+
+class TestPipelineMotions:
+    """Input-data pipeline groups entering the operating fleet via the year-start flip."""
+
+    def test_wired_into_the_operating_flip(self):
+        """The recorder must sit on the status flip itself, not on the scheduled-switch
+        branch, which the flip's own guard already excludes."""
+        from steelo.simulation import SimulationRunner
+
+        source = inspect.getsource(SimulationRunner.run)
+        assert 'fg.status = "operating"\n' in source
+        flip, _, rest = source.partition('fg.status = "operating"\n')
+        statements = [line.strip() for line in rest.splitlines() if line.strip() and not line.strip().startswith("#")]
+        assert statements[0].startswith("record_motion_on_pipeline_group_operating(plant, fg, bus.uow, bus.env)")
+        assert flip.count("record_motion_on_pipeline_group_operating") == 0
+
+    def test_a_data_born_group_records_a_pipeline_motion(self, bound: CapacityPool, recorder: CapacityPolicyRecorder):
+        uow = make_uow()
+        plant = uow.plants.list()[0]
+
+        cp_handlers.record_motion_on_pipeline_group_operating(plant, plant.furnace_groups[0], uow=uow, env=FakeEnv())  # type: ignore[arg-type]
+
+        (row,) = recorder._motions
+        assert row["kind"] == "pipeline"
+        assert row["source"] == "input_data"
+        assert row["year"] == 2031
+        assert row["new_technology"] == "BF"
+        assert row["new_capacity_t"] == pytest.approx(2.0)
+        assert row["old_technology"] is None
+        assert row["owner_id"] == "E1"
+        assert row["product"] == "iron"
+        assert row["geo_key"] == "CHN:CN-HE"
+        assert row["reductant"] == "Coke+PCI"
+
+    def test_a_model_built_group_passes_the_flip_unrecorded(
+        self, bound: CapacityPool, recorder: CapacityPolicyRecorder
+    ):
+        """Expansions and greenfields complete their construction through the same
+        flip; both were recorded as motions at their decision, where created_by_PAM
+        is stamped, so a second row would double-count. Switches never reach this
+        branch: the old technology operates through the construction window, and
+        the scheduled execution sets operating itself."""
+        uow = make_uow()
+        plant = uow.plants.list()[0]
+        plant.furnace_groups[0].created_by_PAM = True
+
+        cp_handlers.record_motion_on_pipeline_group_operating(plant, plant.furnace_groups[0], uow=uow, env=FakeEnv())  # type: ignore[arg-type]
+
+        assert recorder._motions == []
+
+    def test_non_chinese_plants_record_nothing(self, bound: CapacityPool, recorder: CapacityPolicyRecorder):
+        uow = make_uow(iso3="DEU")
+        plant = uow.plants.list()[0]
+
+        cp_handlers.record_motion_on_pipeline_group_operating(plant, plant.furnace_groups[0], uow=uow, env=FakeEnv())  # type: ignore[arg-type]
+
         assert recorder._motions == []
 
 

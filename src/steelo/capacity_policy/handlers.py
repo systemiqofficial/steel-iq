@@ -765,6 +765,12 @@ def deposit_on_end_of_life_closure(
     policy.recorder.record_motion(
         year=int(env.year),
         kind="close",
+        # An age-out is data-scheduled only when no model action set the clock that
+        # ran out: builds and switches stamp created_by_PAM, renovations reset the
+        # lifetime without the stamp and are looked up in the run's own motions
+        source="pam"
+        if furnace_group.created_by_PAM or policy.recorder.has_renovation(furnace_group.furnace_group_id)
+        else "input_data",
         plant_id=plant.plant_id,
         furnace_group_id=furnace_group.furnace_group_id,
         geo_key=geo_key,
@@ -962,6 +968,7 @@ def record_motion_on_furnace_group_closed(event: events.FurnaceGroupClosed, uow:
         policy.recorder.record_motion(
             year=int(env.year),
             kind="close",
+            source="pam",
             plant_id=plant.plant_id,
             furnace_group_id=event.furnace_group_id,
             geo_key=compose_geo_key(event.iso3, event.geo_unit),
@@ -993,6 +1000,7 @@ def record_motion_on_furnace_group_tech_changed(
         policy.recorder.record_motion(
             year=int(env.year),
             kind="switch",
+            source="pam",
             plant_id=plant.plant_id,
             furnace_group_id=event.furnace_group_id,
             geo_key=compose_geo_key(event.iso3, event.geo_unit),
@@ -1020,6 +1028,7 @@ def record_motion_on_furnace_group_renovated(
         policy.recorder.record_motion(
             year=int(env.year),
             kind="renovate",
+            source="pam",
             plant_id=plant.plant_id,
             furnace_group_id=event.furnace_group_id,
             geo_key=compose_geo_key(event.iso3, event.geo_unit),
@@ -1059,6 +1068,7 @@ def record_motion_on_furnace_group_added(event: events.FurnaceGroupAdded, uow: U
         policy.recorder.record_motion(
             year=int(env.year),
             kind="greenfield" if event.is_new_plant else "expansion",
+            source="pam",
             plant_id=plant.plant_id,
             furnace_group_id=event.furnace_group_id,
             geo_key=compose_geo_key(plant.location.iso3, plant.location.geo_unit),
@@ -1068,3 +1078,53 @@ def record_motion_on_furnace_group_added(event: events.FurnaceGroupAdded, uow: U
             product=furnace_group.technology.product,
             reductant=furnace_group.chosen_reductant,
         )
+
+
+def record_motion_on_pipeline_group_operating(
+    plant: Plant, furnace_group: FurnaceGroup, uow: UnitOfWork, env: Environment
+) -> None:
+    """Record an input-data pipeline group entering the operating fleet.
+
+    Groups the input data delivers already announced or under construction
+    reach operating through the year-start status flip in the simulation loop,
+    which raises no event — without this call the fleet would gain capacity
+    with no motion row.
+
+    The same flip also completes the model-built constructions: expansions and
+    greenfields sit in plain ``"construction"`` until their start year, were
+    recorded as motions at their decision, and are stamped ``created_by_PAM``
+    at creation. Technology switches never arrive here: every PAM switch is
+    scheduled, the old technology operating through the construction window
+    (``"operating switching technology"``), an end-of-life inside that window
+    parking the group in the ``"construction switching technology"`` status
+    this flip excludes, and the execution at the switch year setting
+    ``"operating"`` itself. That makes ``created_by_PAM`` the exact
+    discriminator at this flip — the input sheet only holds operating (incl.
+    pre-retirement), announced and construction groups, never an in-flight
+    model state — so every unflagged group here is data-born pipeline
+    capacity, and recording a flagged one would double-count its build.
+
+    A pipeline row stamps the first operating year — the only point the run
+    observes for capacity whose build was decided before the data was cut.
+    Called directly rather than via an event, like
+    :func:`deposit_on_end_of_life_closure`; it only reads, so it opens no
+    unit-of-work context of its own.
+    """
+    policy = _policy
+    if policy is None:
+        return
+    if plant.location.iso3 != "CHN" or furnace_group.created_by_PAM:
+        return
+    policy.recorder.record_motion(
+        year=int(env.year),
+        kind="pipeline",
+        source="input_data",
+        plant_id=plant.plant_id,
+        furnace_group_id=furnace_group.furnace_group_id,
+        geo_key=compose_geo_key(plant.location.iso3, plant.location.geo_unit),
+        new_technology=furnace_group.technology.name,
+        new_capacity_t=float(furnace_group.capacity),
+        owner_id=uow.plant_groups.get_by_plant_id(plant.plant_id).plant_group_id,
+        product=furnace_group.technology.product,
+        reductant=furnace_group.chosen_reductant,
+    )

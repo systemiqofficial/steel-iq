@@ -39,7 +39,7 @@ from steelo.domain.calculate_costs import (
     get_subsidised_energy_costs,
 )
 from .furnace_breakdown_logging_minimal import FurnaceBreakdownLogger
-from .capacity_policy.handlers import flush_capacity_policy_outputs
+from .capacity_policy.handlers import flush_capacity_policy_outputs, record_motion_on_pipeline_group_operating
 
 if TYPE_CHECKING:
     from .adapters.repositories import Repository
@@ -1293,6 +1293,10 @@ class SimulationRunner:
                     ):
                         if fg.status.lower() != "construction switching technology":
                             fg.status = "operating"
+                            # Self-filtering: records only data-born pipeline groups; expansions
+                            # and greenfields completing here carry created_by_PAM and were
+                            # recorded at their decision, switches never reach this branch
+                            record_motion_on_pipeline_group_operating(plant, fg, bus.uow, bus.env)
                             logging.info(
                                 f"Transitioned furnace group {fg.furnace_group_id} from construction to operating"
                             )

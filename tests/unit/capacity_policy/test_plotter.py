@@ -112,6 +112,7 @@ def policy_dir(tmp_path: Path) -> Path:
             {"year": 2025, "kind": "switch", "new_technology": "EAF", "new_capacity_t": 7 * MT},
             {"year": 2026, "kind": "expansion", "new_technology": "EAF", "new_capacity_t": 4 * MT},
             {"year": 2026, "kind": "greenfield", "new_technology": "DRI-EAF", "new_capacity_t": 2 * MT},
+            {"year": 2026, "kind": "pipeline", "new_technology": "DRI-EAF", "new_capacity_t": 3 * MT},
             {"year": 2026, "kind": "renovate", "old_technology": "BF-BOF", "old_capacity_t": 5 * MT},
         ],
     )
@@ -215,7 +216,7 @@ def test_technology_mix_by_kind_splits_builds_and_ranks_by_total(policy_dir: Pat
 
     assert list(mix) == ["EAF", "DRI-EAF"]
     assert mix["EAF"] == {"Switch": 7.0, "Expansion": 4.0}
-    assert mix["DRI-EAF"] == {"Greenfield": 2.0}
+    assert mix["DRI-EAF"] == {"Greenfield": 2.0, "Pipeline": 3.0}
 
 
 def test_plot_all_writes_the_full_chart_set(policy_dir: Path, tmp_path: Path) -> None:

@@ -57,7 +57,7 @@ BLOCKED_REASONS = {
     "no_single_owner_with_sufficient_credits": "No single holder covers a greenfield",
 }
 GATE_DECISIONS = {"ratio", "blocked_utilization"}
-BUILD_KINDS = ("switch", "expansion", "greenfield")
+BUILD_KINDS = ("switch", "expansion", "greenfield", "pipeline")
 
 # Fixed-order slice of the house region palette for keys the house has no colour for
 HOUSE_CATEGORICAL_REGIONS = (
@@ -229,9 +229,9 @@ def technology_mix_by_kind(art: PolicyArtefacts) -> dict[str, dict[str, float]]:
     """Capacity moved into each technology, split by the motion that moved it.
 
     Returns:
-        Technology → {Switch/Expansion/Greenfield → Mt}, largest technology
-        first. Only motions that point capacity at a technology count; closes
-        and renovations do not.
+        Technology → {Switch/Expansion/Greenfield/Pipeline → Mt}, largest
+        technology first. Only motions that point capacity at a technology
+        count; closes and renovations do not.
     """
     by_technology: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     for row in art.motions:

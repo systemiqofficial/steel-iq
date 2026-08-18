@@ -70,6 +70,7 @@ STATE_COLUMNS = ("year", "region_tag", "owner_id", "product", "remaining_t", "ol
 MOTIONS_COLUMNS = (
     "year",
     "kind",
+    "source",
     "plant_id",
     "furnace_group_id",
     "geo_key",
@@ -112,7 +113,9 @@ LEDGER_OPERATIONS = (
     "greenfield_discard",
 )
 
-MOTION_KINDS = ("close", "renovate", "switch", "expansion", "greenfield")
+MOTION_KINDS = ("close", "renovate", "switch", "expansion", "greenfield", "pipeline")
+
+MOTION_SOURCES = ("pam", "input_data")
 
 
 class CapacityPolicyRecorder:
@@ -220,6 +223,7 @@ class CapacityPolicyRecorder:
         *,
         year: int,
         kind: str,
+        source: str,
         plant_id: str,
         furnace_group_id: str,
         geo_key: str,
@@ -240,8 +244,16 @@ class CapacityPolicyRecorder:
         Args:
             year: Event year. Expansion rows stamp the decision year, since the
                 command executes in-year; greenfield rows stamp construction
-                start, one announced→construction transition later.
+                start, one announced→construction transition later; pipeline
+                rows stamp the year the group starts operating, the only point
+                the run observes for capacity the input data already had in
+                flight.
             kind: One of :data:`MOTION_KINDS`.
+            source: One of :data:`MOTION_SOURCES` — what set the motion in
+                motion: a model decision (``"pam"``), or the input dataset's
+                own schedule (``"input_data"``: pipeline arrivals, and age-outs
+                of groups the data delivered with their retirement already on
+                the clock).
             plant_id: Plant the group sits on.
             furnace_group_id: The group itself.
             geo_key: Combined geo key of the plant.
@@ -258,14 +270,17 @@ class CapacityPolicyRecorder:
                 the gate decisions measurable.
 
         Raises:
-            ValueError: On an unknown ``kind``.
+            ValueError: On an unknown ``kind`` or ``source``.
         """
         if kind not in MOTION_KINDS:
             raise ValueError(f"Unknown motion kind {kind!r}; expected one of {MOTION_KINDS}")
+        if source not in MOTION_SOURCES:
+            raise ValueError(f"Unknown motion source {source!r}; expected one of {MOTION_SOURCES}")
         self._motions.append(
             {
                 "year": year,
                 "kind": kind,
+                "source": source,
                 "plant_id": plant_id,
                 "furnace_group_id": furnace_group_id,
                 "geo_key": geo_key,
@@ -278,6 +293,15 @@ class CapacityPolicyRecorder:
                 "reductant": reductant,
             }
         )
+
+    def has_renovation(self, furnace_group_id: str) -> bool:
+        """True when an in-run renovation motion was recorded for this group.
+
+        The end-of-life source rule needs it: a renovation resets the lifetime
+        clock without stamping ``created_by_PAM``, so a later age-out runs out
+        a model-set schedule even on a data-born group.
+        """
+        return any(row["kind"] == "renovate" and row["furnace_group_id"] == furnace_group_id for row in self._motions)
 
     def record_gate_decision(
         self,

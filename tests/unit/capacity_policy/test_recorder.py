@@ -84,12 +84,18 @@ class TestSchema:
 
         assert [row["operation"] for row in read_rows(tmp_path / LEDGER_FILE)] == list(operations)
 
-    def test_unknown_operation_and_kind_refuse(self):
+    def test_unknown_operation_kind_and_source_refuse(self):
         recorder = CapacityPolicyRecorder()
         with pytest.raises(ValueError, match="Unknown ledger operation"):
             recorder.record_ledger(year=2026, operation="withdraw", amount_t=1.0)
         with pytest.raises(ValueError, match="Unknown motion kind"):
-            recorder.record_motion(year=2026, kind="build", plant_id="p", furnace_group_id="fg", geo_key="CHN")
+            recorder.record_motion(
+                year=2026, kind="build", source="pam", plant_id="p", furnace_group_id="fg", geo_key="CHN"
+            )
+        with pytest.raises(ValueError, match="Unknown motion source"):
+            recorder.record_motion(
+                year=2026, kind="close", source="destiny", plant_id="p", furnace_group_id="fg", geo_key="CHN"
+            )
 
     def test_consumed_credits_round_trip_through_the_ledger(self, tmp_path):
         """The tag rides inside the tuple: a build may spend a tagged credit, so the
