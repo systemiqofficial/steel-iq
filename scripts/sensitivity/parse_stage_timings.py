@@ -13,11 +13,8 @@ both already emitted by existing code with no simulation changes needed here:
 
 The annual cycle runs three independent, SIBLING economic-model stages each year
 (src/steelo/economic_models/plant_agent.py: GeospatialModel, AllocationModel,
-PlantAgentsModel -- three separate classes, none nested inside another; confirmed by
-counting operation=trade_optimization and operation=plant_agents_model lines in a real
-16-year run: 16 of each, one per year, and trade_optimization's total (tens of thousands
-of seconds) vastly exceeds plant_agents_model's total -- proof they aren't nested).
-Reported as three directly-measured totals, summed across all years:
+PlantAgentsModel -- three separate classes, none nested inside another). Reported as
+three directly-measured totals, summed across all years:
 
   - trade_module_s: operation=allocation_model (AllocationModel.run()'s own total --
     builds and solves the trade LP, then exports/plots the allocation).

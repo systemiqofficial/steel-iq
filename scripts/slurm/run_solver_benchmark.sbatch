@@ -3,34 +3,25 @@
 # no clustering, hipo/IPM), (2) gurobi (no clustering, barrier), (3) gurobi +
 # furnace-group clustering (barrier), (4) gurobi + clustering + dual-simplex warm-start
 # -- as a 12-task SLURM job array, one task per (config, seed) combination. Reusing the
-# same seeds across configs isolates solver-choice/clustering effects from seed noise
-# (see analyze_seed_sensitivity.py's own seed-sweep for the noise-floor question this
-# benchmark deliberately holds fixed).
+# same seeds across configs isolates solver-choice/clustering effects from seed noise.
 #
 # Configs 1-3 use each backend's own default solver_options (see
-# trade_lp_modelling.py's _default_solver_options) rather than forcing a shared
-# algorithm across backends -- the goal here is each backend's/config's fastest
-# realistic setup, not a like-for-like algorithm comparison. Config 4 exists because
-# warm-starting (reusing last year's LP solution as the next year's starting basis)
-# only works with simplex-family methods, not barrier/IPM -- and simplex's
-# few-iterations-from-a-good-start advantage is most plausible on the small,
-# structurally-stable clustered LP (meta-furnace-group IDs are derived from
-# technology+location+reductant, so they persist year to year for an unchanged
-# combination), not on the full unclustered LP, where HiGHS's own default already
-# forfeits warm-start in favor of hipo -- a real signal IPM wins there regardless.
-# Not testing unclustered-gurobi+warm-start or highs+clustering here for the same
-# reason: extra 3-task/config cluster-time cost for combinations with a weaker prior.
+# trade_lp_modelling.py's _default_solver_options) -- each config's fastest realistic
+# setup, not a like-for-like algorithm comparison. Config 4 only pairs warm-start with
+# clustering: warm-starting only works with simplex-family methods, not barrier/IPM,
+# and meta-furnace-group IDs (technology+location+reductant) are stable year to year,
+# making the clustered LP the plausible case for it. Unclustered-gurobi+warm-start and
+# highs+clustering aren't tested here.
 #
 # Each config gets its own self-contained output tree (manifest.csv + run_000N dirs),
-# structured exactly like run_seed_sweep.sbatch's output, so
-# run_solver_benchmark_analyze.sbatch can run analyze_seed_sensitivity.py once per
-# config unmodified, plus a runtime_summary.csv comparing configs.
+# matching run_seed_sweep.sbatch's output layout, so
+# run_solver_benchmark_analyze.sbatch runs analyze_seed_sensitivity.py once per config
+# unmodified, plus a runtime_summary.csv comparing configs.
 #
 # Prerequisite: `uv sync --extra gurobi` (once, on the login node) and a working
-# Gurobi license reachable from labgpu01 -- see GUROBI_CLUSTER_LICENSE_SETUP.md.
-# Without a license, the highs tasks (0-2) still succeed; the gurobi/gurobi_clustering/
-# gurobi_clustering_warmstart tasks (3-11) will fail with a GurobiError, which is
-# expected until licensing is done.
+# Gurobi license reachable from labgpu01. Without a license, the highs tasks (0-2)
+# still succeed; the gurobi/gurobi_clustering/gurobi_clustering_warmstart tasks (3-11)
+# fail with a GurobiError.
 #
 # Submit:  sbatch scripts/slurm/run_solver_benchmark.sbatch
 # Then, once all 12 tasks finish (success or not), queue analysis:
@@ -39,18 +30,11 @@
 # task's run_000N):
 #   sbatch --array=<TASK_ID> scripts/slurm/run_solver_benchmark.sbatch
 #
-# Sizing: 2025-2040 (16 years) is ~62% of the 26-year 2025-2050 range job 27923
-# benchmarked at 36.4-39.0h/seed on highs with no clustering (see
-# run_seed_sweep.sbatch's header) -- extrapolating linearly gives ~24h for this
-# range's slowest (highs, no clustering) task; --time=36:00:00 below adds buffer on
-# top of that extrapolation, since it isn't a real measurement for this shorter range.
-# The 3 gurobi/clustering configs are expected to finish well inside that same budget
-# (~4.6-4.9x LP-stage speedup for gurobi alone, ~2.6x total per-year speedup for
-# clustering, per CLAUDE.md's benchmark notes) -- rerun this comment's math once real
-# sacct numbers exist for this range and update the estimate instead of guessing
-# twice. --mem=32G carries over from the seed sweep's proven sizing (shorter horizon
-# shouldn't increase peak memory). Partition must stay verylong -- long caps at 6h;
-# confirm cluster tiers with `sinfo -o "%P %l"`.
+# Sizing: --mem=32G / --time=36:00:00, sized for the slowest config (highs, no
+# clustering/gurobi) with ~40% headroom over its measured peak wall-clock/RSS. Not
+# right-sized for a gurobi_clustering-only run -- use run_gurobi_clustered_sweep.sbatch
+# for that. Partition must stay verylong -- long caps at 6h; confirm cluster tiers
+# with `sinfo -o "%P %l"`.
 
 #SBATCH --job-name=steelo-solver-benchmark
 #SBATCH --partition=verylong
@@ -61,6 +45,8 @@
 #SBATCH --cpus-per-task=1          # single-threaded run, see run_one.py
 #SBATCH --mem=32G
 #SBATCH --time=36:00:00
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=jan.tautorus@it-u.at
 #SBATCH --output=logs/solver-benchmark-%A_%a.out
 #SBATCH --error=logs/solver-benchmark-%A_%a.err
 

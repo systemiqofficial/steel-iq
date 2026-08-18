@@ -61,3 +61,5 @@ docs/trq_cheapest_steel_allocation.md
 steel-iq-production-readiness-fixes.patch
 TRADE_MODULE_ISSUES.md
 experiments/
+
+scripts/boa_benchmark/
