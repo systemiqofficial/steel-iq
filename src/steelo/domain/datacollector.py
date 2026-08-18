@@ -1,4 +1,4 @@
-from .models import Environment, PlantGroup, Plant
+from .models import Environment, FurnaceGroup, PlantGroup, Plant
 
 # Global variables moved to Environment/Config
 from steelo.domain.constants import Commodities  # Keep enum as constant
@@ -36,6 +36,8 @@ class DataCollector:
             lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
         )
         self.new_plant_locations: dict[Any, dict[Any, list]] = defaultdict(lambda: defaultdict(list))
+        # {furnace_group_id: record} for greenfield (indi-origin) furnace groups; see collect_new_plant_data
+        self.greenfield_plants: dict[str, dict[str, Any]] = {}
         self.trace_capex: dict[int, dict[str, dict[str, float]]] = defaultdict(
             lambda: defaultdict(lambda: defaultdict(float))
         )  # {year: {technology: {iso3: total_capex}}}
@@ -152,16 +154,6 @@ class DataCollector:
 
         return result
 
-    # def collect_params4steel_cost_curve(self):
-    #     """
-    #     This function will return the steel cost curve and the current demand.
-    #     """
-    #     return {
-    #         "steel_cost_curve": self.env.steel_cost_curve,
-    #         "current_demand": self.env.current_demand,
-    #         "plants": self.plants,
-    #     }
-
     def collect_emissions_by_plants(self):
         """
         Collect the emissions by plants
@@ -255,7 +247,8 @@ class DataCollector:
 
     def collect_new_plant_data(self, year: Year):
         """
-        Collect status counts and locations of new (GEO-origin) plants for the given year.
+        Collect status counts, locations, and per-furnace-group records of new
+        (GEO-origin) plants for the given year.
 
         Args:
             year: The year to collect new plant data for.
@@ -267,18 +260,69 @@ class DataCollector:
             without ceasing to be a GEO build.
         """
         logger = logging.getLogger(f"{__name__}.collect_new_plant_data")
-        indi_plants = [plant for plant in self.plants if plant.parent_gem_id.lower().startswith("indi_")]
-        if not indi_plants:
+        found_indi = False
+        for plant_group in self.plant_groups:
+            for plant in plant_group.plants:
+                if plant is None or not plant.parent_gem_id.lower().startswith("indi_"):
+                    continue
+                found_indi = True
+                for fg in plant.furnace_groups:
+                    self.status_counts[fg.technology.product][year][fg.technology.name][fg.status] += 1
+                    if fg.status == "operating" and fg.lifetime.start == year:
+                        self.new_plant_locations[fg.technology.product][year].append(
+                            ({"lat": plant.location.lat, "lon": plant.location.lon})
+                        )
+                    self._record_greenfield_furnace_group(plant_group, plant, fg, year)
+        if not found_indi:
             logger.warning("No indi-origin plants found. Skipping new plant data collection.")
-            return
 
-        for plant in indi_plants:
-            for fg in plant.furnace_groups:
-                self.status_counts[fg.technology.product][year][fg.technology.name][fg.status] += 1
-                if fg.status == "operating" and fg.lifetime.start == year:
-                    self.new_plant_locations[fg.technology.product][year].append(
-                        ({"lat": plant.location.lat, "lon": plant.location.lon})
-                    )
+    def _record_greenfield_furnace_group(
+        self, plant_group: PlantGroup, plant: Plant, fg: FurnaceGroup, year: Year
+    ) -> None:
+        """
+        Track one greenfield furnace group for the end-of-run greenfield plants CSV.
+
+        Args:
+            plant_group: Group the plant currently belongs to.
+            plant: The greenfield (indi-origin) plant.
+            fg: Furnace group being recorded.
+            year: Current simulation year.
+
+        Notes:
+            Static identity/location fields (and the ``*_initial`` technology, reductant
+            and capacity) are captured on first sighting; plant-group membership, the
+            ``*_final`` fields, status and scheduled lifetime are refreshed every
+            year because credit-funded greenfields can move between plant groups,
+            technologies can be switched, and statuses advance. ``status_years`` records
+            the first year each status was observed, giving the announced/construction/
+            operating/closed transition years. ``iso3`` is deliberately omitted: it is
+            the prefix of ``geo_key``.
+        """
+        record = self.greenfield_plants.setdefault(
+            fg.furnace_group_id,
+            {
+                "furnace_group_id": fg.furnace_group_id,
+                "plant_id": plant.plant_id,
+                "parent_gem_id": plant.parent_gem_id,
+                "product": fg.technology.product,
+                "technology_initial": fg.technology.name,
+                "reductant_initial": fg.chosen_reductant,
+                "capacity_initial": float(fg.capacity),
+                "geo_key": plant.location.geo_key,
+                "region": plant.location.region,
+                "lat": plant.location.lat,
+                "lon": plant.location.lon,
+                "status_years": {},
+            },
+        )
+        record["plant_group_id"] = plant_group.plant_group_id
+        record["technology_final"] = fg.technology.name
+        record["reductant_final"] = fg.chosen_reductant
+        record["capacity_final"] = float(fg.capacity)
+        record["status"] = fg.status
+        record["lifetime_start"] = fg.lifetime.start
+        record["lifetime_end"] = fg.lifetime.end
+        record["status_years"].setdefault(fg.status, year)
 
     def collect_capex_investments(self, year: Year):
         """
