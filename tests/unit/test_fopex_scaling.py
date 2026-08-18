@@ -184,6 +184,39 @@ def test_zero_utilisation_incumbent_is_skipped_not_fatal(monkeypatch):
     assert "DRI" in tech_npv_dict
 
 
+def test_zero_utilisation_greenfield_candidate_is_skipped_not_fatal(monkeypatch):
+    """A greenfield candidate the trade LP allocated no fleet-wide production for
+    cannot price its fixed OPEX either, and must be skipped like the incumbent path
+    rather than raising from scale_fopex_to_production.
+    """
+    _capture_npv_full(monkeypatch)
+    fg = _make_fg(utilization_rate=0.8)
+
+    tech_npv_dict, _, _, bom_dict, _ = fg.optimal_technology_name(
+        market_price_series={"steel": [500.0] * 30, "iron": [400.0] * 30},
+        cost_of_debt_by_tech={"BF": 0.05, "DRI": 0.05},
+        cost_of_equity_by_tech={"BF": 0.1, "DRI": 0.1},
+        get_bom_from_avg_boms=_mock_get_bom(util_rate=0.0),
+        score_series_for_tech=_stub_score_series,
+        capex_dict={"BF": 600.0, "DRI": 500.0},
+        capex_renovation_share={"BF": 0.7},
+        technology_fopex_dict={"bf": 10.0, "dri": 50.0},
+        dynamic_business_cases={},
+        chosen_emissions_boundary_for_carbon_costs="Scope 1",
+        technology_emission_factors=[],
+        tech_to_product={"BF": "iron", "DRI": "iron"},
+        plant_lifetime=20,
+        construction_time=2,
+        current_year=Year(2025),
+        risk_free_rate=0.02,
+        allowed_furnace_transitions={"BF": ["BF", "DRI"]},
+    )
+
+    assert "DRI" not in tech_npv_dict
+    assert "DRI" not in bom_dict
+    assert "BF" in tech_npv_dict
+
+
 # ── expansion path ────────────────────────────────────────────────────────────
 
 
@@ -233,6 +266,42 @@ def test_expansion_candidates_count_full_fixed_cost(monkeypatch):
     assert eaf_call["unit_total_opex_list"][0] == pytest.approx(expected_vopex + 40.0 / 0.9)
 
 
+def test_expansion_zero_utilisation_candidates_are_skipped_not_fatal(monkeypatch):
+    """A candidate technology the market/BOM allocated no production for cannot be priced;
+    evaluate_expansion_options must skip it instead of crashing on scale_fopex_to_production.
+    """
+    captured = _capture_npv_full(monkeypatch)
+    fg = _make_fg(utilization_rate=0.0)
+    pg = PlantGroup(plant_group_id="pg1", plants=[_make_plant(fg)])
+    pg.balance = 1e12
+
+    npv_p = pg.evaluate_expansion_options(
+        price_series={"steel": [500.0] * 30, "iron": [400.0] * 30},
+        capacity=Volumes(1000.0),
+        region_capex={"Region": {"DRI": 500.0, "EAF": 400.0}},
+        cost_of_debt_dict={"NZL": {"DRI": 0.05, "EAF": 0.05}},
+        cost_of_equity_dict={"NZL": {"DRI": 0.1, "EAF": 0.1}},
+        get_bom_from_avg_boms=_mock_get_bom(util_rate=0.0),
+        reductant_score_series=lambda *a, **k: ReductantScoreSeries(scores=[0.0] * 20, picks=["hydrogen"] * 20),
+        dynamic_feedstocks={},
+        fopex_for_iso3={"NZL": {"dri": 50.0, "eaf": 40.0}},
+        iso3_to_region_map={"NZL": "Region"},
+        chosen_emissions_boundary_for_carbon_costs="Scope 1",
+        technology_emission_factors=[],
+        global_risk_free_rate=0.02,
+        equity_share=0.3,
+        tech_to_product={"DRI": "iron", "EAF": "steel"},
+        plant_lifetime=20,
+        construction_time=2,
+        current_year=Year(2025),
+        allowed_techs={Year(2025): ["DRI", "EAF"]},
+        active_statuses=["operating"],
+    )
+
+    assert captured == []
+    assert npv_p == {}
+
+
 # ── creation path ─────────────────────────────────────────────────────────────
 
 
@@ -273,3 +342,42 @@ def test_new_plant_npv_counts_full_fixed_cost(monkeypatch):
     assert call["expected_utilisation_rate"] == pytest.approx(0.8)
     assert call["unit_total_opex_list"][0] == pytest.approx(expected_vopex + 50.0 / 0.8)
     assert npvs["iron"][(0.0, 0.0, "SITE1")]["DRI"] == 0.0
+
+
+def test_new_plant_zero_utilisation_returns_neg_inf_not_fatal(monkeypatch):
+    """A site/tech the averaged fleet data gives zero utilisation for cannot be priced;
+    calculate_business_opportunity_npvs must return -inf for it, matching its documented
+    "if the calculation fails, it returns a very negative NPV instead" contract, rather
+    than crashing on scale_fopex_to_production.
+    """
+    captured = _capture_npv_full(monkeypatch)
+    cost_data = {
+        "iron": {
+            (0.0, 0.0, "SITE1"): {
+                "DRI": {
+                    "bom": {"materials": dict(MATERIALS), "energy": {}},
+                    "fopex": 50.0,
+                    "utilization_rate": 0.0,
+                    "score_series": [0.0] * 20,
+                    "capex": 500.0,
+                    "cost_of_debt": 0.05,
+                    "cost_of_equity": 0.1,
+                    "railway_cost": 0.0,
+                    "all_opex_subsidies": [],
+                },
+            },
+        },
+    }
+
+    npvs = calculate_costs.calculate_business_opportunity_npvs(
+        cost_data=cost_data,
+        target_year=2025,
+        market_price={"iron": [400.0] * 30},
+        steel_plant_capacity=2_500_000.0,
+        plant_lifetime=20,
+        construction_time=2,
+        equity_share=0.3,
+    )
+
+    assert captured == []
+    assert npvs["iron"][(0.0, 0.0, "SITE1")]["DRI"] == float("-inf")

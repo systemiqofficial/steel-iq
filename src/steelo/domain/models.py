@@ -22,6 +22,7 @@ from steelo.domain.calculate_costs import (
     calculate_unit_total_opex,
     calculate_variable_opex,
     scale_fopex_to_production,
+    ZeroUtilisationError,
     filter_subsidies_for_year,
     get_subsidised_energy_costs,
     collect_active_subsidies_over_period,
@@ -2530,16 +2531,6 @@ class FurnaceGroup:
                 util_rate = self.utilization_rate
                 reductant = self.chosen_reductant
 
-                # A furnace group the market allocated no production cannot price a
-                # renovation on its realised utilisation; leave the incumbent out of
-                # the candidate set (at an expired boundary this closes the group)
-                if util_rate <= 0:
-                    logger.warning(
-                        f"[OPTIMAL TECH] SKIPPING {tech} - zero utilisation for furnace group "
-                        f"{self.furnace_group_id}, renovation cannot be priced"
-                    )
-                    continue
-
                 # Validate BOM structure before proceeding
                 if not bill_of_materials or "materials" not in bill_of_materials or "energy" not in bill_of_materials:
                     logger.warning(f"[OPTIMAL TECH] SKIPPING {tech} - Invalid or missing BOM structure")
@@ -2636,6 +2627,25 @@ class FurnaceGroup:
                             f"BOM rebuild for {tech} with reductant '{committed_reductant}' returned no BOM"
                         )
                     bill_of_materials = rebuilt_bom
+
+                # Materials-only variable OPEX plus fixed OPEX; energy, carbon and
+                # by-products enter through the per-year score
+                unit_fopex = technology_fopex_dict.get(tech.lower())
+                if unit_fopex is None:
+                    raise ValueError(f"Unit FOPEX for technology {tech} not found")
+
+                # A furnace group (incumbent or candidate) the market allocated no
+                # fleet-wide production for cannot price its fixed OPEX; skip it before
+                # committing it to bom_dict/reductant_dict
+                try:
+                    unit_fopex_scaled = scale_fopex_to_production(unit_fopex, util_rate)
+                except ZeroUtilisationError:
+                    logger.warning(
+                        f"[OPTIMAL TECH] SKIPPING {tech} - zero utilisation for furnace group "
+                        f"{self.furnace_group_id}, cannot price fixed OPEX"
+                    )
+                    continue
+
                 bom_dict[tech] = bill_of_materials
                 reductant_dict[tech] = committed_reductant
 
@@ -2648,14 +2658,8 @@ class FurnaceGroup:
                         summarise_reductant_picks(score_series.picks, operating_start),
                     )
 
-                # Materials-only variable OPEX plus fixed OPEX; energy, carbon and
-                # by-products enter through the per-year score
-                unit_fopex = technology_fopex_dict.get(tech.lower())
-                if unit_fopex is None:
-                    raise ValueError(f"Unit FOPEX for technology {tech} not found")
-
                 unit_base_opex = calculate_unit_total_opex(
-                    unit_fopex=scale_fopex_to_production(unit_fopex, util_rate),
+                    unit_fopex=unit_fopex_scaled,
                     unit_vopex=calculate_variable_opex(bill_of_materials["materials"], {}),
                     utilization_rate=util_rate,
                 )
@@ -3017,6 +3021,14 @@ class FurnaceGroup:
         elif self.output_shares is None:
             logger.warning(
                 f"[NEW PLANTS] Output shares are None for {self.technology.name}. Skipping NPV calculation and returning -inf."
+            )
+            npv_value = float("-inf")
+            if status_stats is not None:
+                status_stats["npv_inputs_missing"] += 1
+        elif self.utilization_rate <= 0:
+            logger.warning(
+                f"[NEW PLANTS] Zero utilisation for {self.technology.name} business opportunity at "
+                f"({location.lat}, {location.lon}) in {location.iso3}. Skipping NPV calculation and returning -inf."
             )
             npv_value = float("-inf")
             if status_stats is not None:
@@ -5510,8 +5522,16 @@ class PlantGroup:
                 tech_unit_fopex_value = technology_unit_fopex.get(tech.lower())
                 if tech_unit_fopex_value is None:
                     raise ValueError(f"No fixed OPEX data for technology: {tech} in country: {plant.location.iso3}")
-                # Per-capacity fixed OPEX spread over the production the NPV multiplies by
-                unit_fopex = cc.scale_fopex_to_production(float(tech_unit_fopex_value), expected_utilisation_rate)
+                # Per-capacity fixed OPEX spread over the production the NPV multiplies by; a
+                # candidate the market allocated no production for cannot be priced this way
+                try:
+                    unit_fopex = cc.scale_fopex_to_production(float(tech_unit_fopex_value), expected_utilisation_rate)
+                except cc.ZeroUtilisationError:
+                    logger.warning(
+                        f"[PG EXPANSION] SKIPPING {tech} for plant {plant.plant_id} - zero expected "
+                        "utilisation, cannot price fixed OPEX"
+                    )
+                    continue
 
                 # Materials-only variable OPEX plus fixed OPEX; energy, carbon and
                 # by-products enter through the per-year score
