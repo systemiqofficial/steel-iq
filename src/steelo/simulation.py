@@ -30,6 +30,7 @@ from .adapters.dataprocessing.postprocessing.post_process_datacollection import 
 from .adapters.dataprocessing.postprocessing.generate_post_run_plots import generate_post_run_cap_prod_plots
 from steelo.utilities.plotting import (
     plot_bar_chart_of_new_plants_by_status,
+    plot_capacity_map_by_grid,
     plot_map_of_new_plants_operating,
 )
 from .adapters.geospatial.geospatial_statistics import aggregate_lcoe_lcoh_statistics
@@ -1354,6 +1355,7 @@ class SimulationRunner:
         )
         plot_bar_chart_of_new_plants_by_status(data_collector.status_counts, plot_paths=bus.env.plot_paths)
         plot_map_of_new_plants_operating(data_collector.new_plant_locations, plot_paths=bus.env.plot_paths)
+        plot_capacity_map_by_grid(data_collector.capacity_map_data, plot_paths=bus.env.plot_paths)
         steel_demand_by_year = {
             year: float(prices["steel_demand"]) for year, prices in data_collector.trace_price.items()
         }

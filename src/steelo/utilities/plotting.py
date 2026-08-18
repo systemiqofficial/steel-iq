@@ -2,6 +2,7 @@ import matplotlib
 import os
 import sys
 import shutil
+import json
 
 import matplotlib.pyplot as plt
 import logging
@@ -11,6 +12,7 @@ import geopandas as gpd  # type: ignore
 import cartopy.io.shapereader as shpreader  # type: ignore
 from cartopy.mpl.geoaxes import GeoAxes  # type: ignore
 import matplotlib.cm as cm
+import matplotlib.colors
 import pandas as pd
 import numpy as np
 from matplotlib.figure import Figure
@@ -307,7 +309,7 @@ tech2colours = {
     "DRI": "#003399",
     "BF": "#DE2910",
     "EAF": "#FF6F00",
-    "BOF": "black",
+    "BOF": "#FFD700",
     "DRI+ESF": "#008000",
     "MOE": "#FFC0CB",
     "BF_CHARCOAL": "#A52A2A",
@@ -1614,6 +1616,490 @@ def plot_detailed_trade_map(
             print(f"\nData saved as CSV files in {output_path}")
 
         print("=" * 80)
+
+
+def _hex_to_rgb(hex_color: str, alpha: int = 200) -> list[int]:
+    """Convert a '#rrggbb' hex color (or a named color, best-effort) to an [r, g, b, a] list."""
+    hex_color = hex_color.lstrip("#")
+    if len(hex_color) == 6:
+        return [int(hex_color[i : i + 2], 16) for i in (0, 2, 4)] + [alpha]
+    # Fall back through matplotlib for named colors (e.g. "black").
+    r, g, b, _ = matplotlib.colors.to_rgba(hex_color)
+    return [int(round(r * 255)), int(round(g * 255)), int(round(b * 255)), alpha]
+
+
+def _bin_capacity_by_grid(capacity_map_data: list[dict], grid_size_km: float = 200.0) -> pd.DataFrame:
+    """
+    Aggregate per-plant capacity records into (year, technology, grid cell) totals.
+
+    The globe is split into latitude bands ``grid_size_km`` tall; within each band,
+    longitude is split into cells sized to be ~``grid_size_km`` wide at that band's
+    center latitude. This latitude-banded scheme keeps cells close to square on the
+    ground everywhere, unlike a fixed-degree grid which shrinks sharply near the poles.
+    """
+    df = pd.DataFrame(capacity_map_data)
+    if df.empty:
+        return df
+
+    km_per_deg_lat = 111.32
+    lat_bin_size_deg = grid_size_km / km_per_deg_lat
+
+    df["lat_bin"] = np.floor((df["lat"] + 90.0) / lat_bin_size_deg).astype(int)
+    lat_bin_center = -90.0 + (df["lat_bin"] + 0.5) * lat_bin_size_deg
+    cos_lat = np.cos(np.radians(lat_bin_center)).clip(lower=0.05)  # guard against pole blow-up
+    lon_bin_size_deg = grid_size_km / (km_per_deg_lat * cos_lat)
+    df["lon_bin"] = np.floor((df["lon"] + 180.0) / lon_bin_size_deg).astype(int)
+
+    # Capacity-weighted centroid so the bubble sits where the capacity actually is,
+    # not at the (arbitrary) geometric center of the grid cell.
+    df["cap_lat"] = df["lat"] * df["capacity"]
+    df["cap_lon"] = df["lon"] * df["capacity"]
+    grouped = (
+        df.groupby(["year", "technology", "lat_bin", "lon_bin"])
+        .agg(
+            capacity=("capacity", "sum"),
+            cap_lat=("cap_lat", "sum"),
+            cap_lon=("cap_lon", "sum"),
+            plant_count=("capacity", "size"),
+        )
+        .reset_index()
+    )
+    grouped["lat"] = grouped["cap_lat"] / grouped["capacity"]
+    grouped["lon"] = grouped["cap_lon"] / grouped["capacity"]
+    return grouped.drop(columns=["cap_lat", "cap_lon"])
+
+
+def plot_capacity_map_by_grid(
+    capacity_map_data: list[dict],
+    plot_paths: "PlotPaths",
+    grid_size_km: float = 200.0,
+) -> None:
+    """
+    Build an interactive pydeck bubble map of installed iron/steel capacity by year.
+
+    All operating capacity of a given technology that falls within the same
+    ``grid_size_km`` x ``grid_size_km`` grid cell is bundled into a single bubble,
+    positioned at the capacity-weighted centroid of that cell. Bubble area is
+    proportional to total capacity; color encodes technology. A year slider and
+    per-technology toggles let the user scrub through the simulation horizon.
+
+    Args:
+        capacity_map_data: Records of the form
+            ``{"year": int, "technology": str, "lat": float, "lon": float, "capacity": float}``,
+            one per active furnace group per year (see ``DataCollector.collect_capacity_map_data``).
+        plot_paths: Must provide ``pam_plots_dir`` for the output HTML file.
+        grid_size_km: Grid cell size in kilometers (default 200 x 200 km).
+    """
+    if not capacity_map_data:
+        logger.warning("No capacity map data available - skipping installed capacity map generation")
+        return
+
+    grouped = _bin_capacity_by_grid(capacity_map_data, grid_size_km=grid_size_km)
+    if grouped.empty:
+        logger.warning("No capacity map data available - skipping installed capacity map generation")
+        return
+
+    grouped["capacity_mt"] = grouped["capacity"] * T_TO_MT
+
+    # Bubble area (not radius) scales with capacity, per standard bubble-map practice;
+    # the min/max radius are shared across all years so sizes stay comparable when scrubbing the slider.
+    radius_min_m, radius_max_m = 15_000.0, 220_000.0
+    max_capacity_mt = grouped["capacity_mt"].max()
+    if max_capacity_mt > 0:
+        grouped["radius"] = radius_min_m + (radius_max_m - radius_min_m) * np.sqrt(
+            grouped["capacity_mt"] / max_capacity_mt
+        )
+    else:
+        grouped["radius"] = radius_min_m
+
+    years = sorted(int(y) for y in grouped["year"].unique())
+    present_techs = set(grouped["technology"].unique())
+    technologies = [t for t in tech2colours if t in present_techs] + sorted(present_techs - set(tech2colours))
+    tech_colors = {t: _hex_to_rgb(tech2colours.get(t, "#999999")) for t in technologies}
+
+    data_by_year: dict[int, list[dict]] = {}
+    for year in years:
+        year_group = grouped[grouped["year"] == year]
+        records = []
+        for row in year_group.to_dict("records"):
+            technology = str(row["technology"])
+            records.append(
+                {
+                    "lat": float(row["lat"]),
+                    "lon": float(row["lon"]),
+                    "radius": float(row["radius"]),
+                    "technology": technology,
+                    "color": tech_colors[technology],
+                    "tooltip": (
+                        f"{technology}\nYear: {int(row['year'])}\n"
+                        f"Capacity: {row['capacity_mt']:,.1f} Mt\nSites in cluster: {int(row['plant_count'])}"
+                    ),
+                }
+            )
+        data_by_year[year] = records
+
+    if plot_paths is None or plot_paths.pam_plots_dir is None:
+        raise ValueError("plot_paths with pam_plots_dir must be provided when saving plots")
+    pam_dir = plot_paths.pam_plots_dir
+    pam_dir.mkdir(parents=True, exist_ok=True)
+
+    output_dir = pam_dir / "capacity_maps"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    deckgl_path = _copy_deckgl_to_output_dir(output_dir)
+    if deckgl_path is None:
+        deckgl_path = "https://unpkg.com/deck.gl@8.9.35/dist.min.js"
+
+    output_file = output_dir / "installed_capacity_map.html"
+    with open(output_file, "w") as f:
+        f.write(
+            _render_capacity_map_html(
+                years=years,
+                data_by_year=data_by_year,
+                technologies=technologies,
+                tech_colors=tech_colors,
+                deckgl_path=deckgl_path,
+                title="Installed Iron &amp; Steel Capacity by Year",
+                show_year_controls=True,
+            )
+        )
+    logger.info(f"Generated installed capacity map at: {output_file}")
+
+    for year in years:
+        year_file = output_dir / f"installed_capacity_map_{year}.html"
+        with open(year_file, "w") as f:
+            f.write(
+                _render_capacity_map_html(
+                    years=[year],
+                    data_by_year={year: data_by_year[year]},
+                    technologies=technologies,
+                    tech_colors=tech_colors,
+                    deckgl_path=deckgl_path,
+                    title=f"Installed Iron &amp; Steel Capacity — {year}",
+                    show_year_controls=False,
+                )
+            )
+        logger.info(f"Generated installed capacity map for {year} at: {year_file}")
+
+
+def _render_capacity_map_html(
+    years: list[int],
+    data_by_year: dict[int, list[dict]],
+    technologies: list[str],
+    tech_colors: dict[str, list[int]],
+    deckgl_path: str,
+    title: str,
+    show_year_controls: bool,
+) -> str:
+    """Render the deck.gl bubble-map page shared by the combined and per-year outputs."""
+    legend_rows = "\n".join(
+        f'                <div class="tech-toggle active" data-tech="{tech}" '
+        f'onclick="toggleTech(&quot;{tech}&quot;)" title="Click to toggle {tech}">'
+        f'<div class="tech-swatch" style="background: rgba({tech_colors[tech][0]}, {tech_colors[tech][1]}, '
+        f'{tech_colors[tech][2]}, 0.9);"></div><div class="tech-label">{tech}</div></div>'
+        for tech in technologies
+    )
+
+    year_panel_html = (
+        f"""
+        <div id="year-panel">
+            <button id="play-btn" onclick="togglePlay()">Play</button>
+            <input type="range" id="year-slider" min="0" max="{len(years) - 1}" step="1" value="0"
+                   oninput="onYearChange(this.value)">
+            <div id="year-label">{years[0]}</div>
+        </div>"""
+        if show_year_controls
+        else ""
+    )
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{title}</title>
+    <!-- Deck.gl: copied to output dir for standalone HTML (file:// protocol support) -->
+    <script src="{deckgl_path}"></script>
+
+    <!-- Mapbox GL JS - EXCEPTION: stays on CDN due to licensing constraints -->
+    <!-- DO NOT vendor this library - see specs/2025-10-13_no_cdn.md -->
+    <script src="https://unpkg.com/mapbox-gl@2.15.0/dist/mapbox-gl.js"></script>
+    <link href="https://unpkg.com/mapbox-gl@2.15.0/dist/mapbox-gl.css" rel="stylesheet" />
+    <style>
+        body {{
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+        }}
+        #container {{
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }}
+        #controls {{
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(40, 40, 40, 0.9);
+            padding: 12px 15px;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+            z-index: 1;
+            pointer-events: auto;
+            min-width: 240px;
+            max-width: 320px;
+            max-height: calc(100vh - 140px);
+            overflow-y: auto;
+        }}
+        #year-panel {{
+            position: absolute;
+            left: 10px;
+            right: 10px;
+            bottom: 20px;
+            margin: 0 auto;
+            max-width: 640px;
+            background: rgba(40, 40, 40, 0.9);
+            padding: 12px 18px;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+            z-index: 1;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }}
+        .control-header {{
+            margin-bottom: 10px;
+            font-weight: 500;
+            color: #e0e0e0;
+            font-size: 13px;
+            letter-spacing: 0.3px;
+        }}
+        .select-buttons {{
+            margin: 5px 0 10px 0;
+        }}
+        .select-btn {{
+            padding: 4px 8px;
+            font-size: 12px;
+            background: rgba(80, 120, 200, 0.8);
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            margin-right: 5px;
+        }}
+        .select-btn:hover {{
+            background: rgba(100, 140, 220, 0.9);
+        }}
+        .tech-toggle {{
+            display: flex;
+            align-items: center;
+            padding: 6px 8px;
+            border-radius: 3px;
+            cursor: pointer;
+            transition: background-color 0.2s ease;
+            user-select: none;
+        }}
+        .tech-toggle:hover {{
+            background: rgba(60, 60, 60, 0.5);
+        }}
+        .tech-toggle.active {{
+            background: rgba(80, 120, 200, 0.15);
+        }}
+        .tech-swatch {{
+            width: 14px;
+            height: 14px;
+            margin-right: 8px;
+            border-radius: 3px;
+            flex-shrink: 0;
+            opacity: 0.35;
+        }}
+        .tech-toggle.active .tech-swatch {{
+            opacity: 1;
+        }}
+        .tech-label {{
+            color: #888;
+            font-size: 13px;
+            flex: 1;
+        }}
+        .tech-toggle.active .tech-label {{
+            color: #f0f0f0;
+            font-weight: 500;
+        }}
+        #year-label {{
+            color: #e0e0e0;
+            font-size: 15px;
+            font-weight: 600;
+            min-width: 48px;
+        }}
+        #year-slider {{
+            flex: 1;
+        }}
+        #play-btn {{
+            padding: 6px 14px;
+            font-size: 13px;
+            background: rgba(80, 120, 200, 0.8);
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+        }}
+        #play-btn:hover {{
+            background: rgba(100, 140, 220, 0.9);
+        }}
+        .mapboxgl-map {{
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 100%;
+        }}
+        .deck-tooltip {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif !important;
+            font-size: 12px !important;
+            background: rgba(40, 40, 40, 0.95) !important;
+            color: #e0e0e0 !important;
+            padding: 8px 12px !important;
+            border-radius: 4px !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3) !important;
+            border: 1px solid rgba(100, 100, 100, 0.3) !important;
+            max-width: 300px !important;
+            line-height: 1.4 !important;
+            white-space: pre-line !important;
+        }}
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="controls">
+            <div class="control-header">Filter by Technology:</div>
+            <div class="select-buttons">
+                <button class="select-btn" onclick="selectAllTechs()">All</button>
+                <button class="select-btn" onclick="selectNoneTechs()">None</button>
+            </div>
+            <div id="tech-toggles">
+{legend_rows}
+            </div>
+        </div>{year_panel_html}
+    </div>
+    <script>
+        const years = {json.dumps(years)};
+        const dataByYear = {json.dumps(data_by_year)};
+
+        const INITIAL_VIEW_STATE = {{
+            latitude: 20,
+            longitude: 10,
+            zoom: 1.4,
+            pitch: 0,
+            bearing: 0
+        }};
+
+        let deckgl;
+        let yearIdx = 0;
+        let playTimer = null;
+
+        function getSelectedTechs() {{
+            return Array.from(document.querySelectorAll('.tech-toggle.active')).map(t => t.dataset.tech);
+        }}
+
+        function createLayers(selectedTechs, idx) {{
+            const year = years[idx];
+            const yearData = dataByYear[year] || [];
+            const filtered = selectedTechs.length ? yearData.filter(d => selectedTechs.includes(d.technology)) : [];
+            return [
+                new deck.ScatterplotLayer({{
+                    id: 'capacity-bubbles',
+                    data: filtered,
+                    getPosition: d => [d.lon, d.lat],
+                    getFillColor: d => d.color,
+                    getRadius: d => d.radius,
+                    radiusUnits: 'meters',
+                    pickable: true,
+                    autoHighlight: true,
+                    stroked: true,
+                    getLineColor: [255, 255, 255, 120],
+                    lineWidthMinPixels: 1
+                }})
+            ];
+        }}
+
+        function updateDeck() {{
+            if (!deckgl) return;
+            deckgl.setProps({{ layers: createLayers(getSelectedTechs(), yearIdx) }});
+        }}
+
+        window.toggleTech = function(tech) {{
+            const toggle = document.querySelector(`.tech-toggle[data-tech="${{tech}}"]`);
+            if (toggle) {{
+                toggle.classList.toggle('active');
+                updateDeck();
+            }}
+        }};
+
+        window.selectAllTechs = function() {{
+            document.querySelectorAll('.tech-toggle').forEach(t => t.classList.add('active'));
+            updateDeck();
+        }};
+
+        window.selectNoneTechs = function() {{
+            document.querySelectorAll('.tech-toggle').forEach(t => t.classList.remove('active'));
+            updateDeck();
+        }};
+
+        window.onYearChange = function(value) {{
+            yearIdx = parseInt(value, 10);
+            document.getElementById('year-label').textContent = years[yearIdx];
+            updateDeck();
+        }};
+
+        window.togglePlay = function() {{
+            const btn = document.getElementById('play-btn');
+            if (playTimer) {{
+                clearInterval(playTimer);
+                playTimer = null;
+                btn.textContent = 'Play';
+                return;
+            }}
+            btn.textContent = 'Pause';
+            playTimer = setInterval(() => {{
+                yearIdx = (yearIdx + 1) % years.length;
+                document.getElementById('year-slider').value = yearIdx;
+                document.getElementById('year-label').textContent = years[yearIdx];
+                updateDeck();
+            }}, 900);
+        }};
+
+        window.addEventListener('DOMContentLoaded', function() {{
+            deckgl = new deck.DeckGL({{
+                container: 'container',
+                mapStyle: {{
+                    version: 8,
+                    sources: {{
+                        'carto-dark': {{
+                            type: 'raster',
+                            tiles: [
+                                'https://a.basemaps.cartocdn.com/dark_all/{{z}}/{{x}}/{{y}}.png',
+                                'https://b.basemaps.cartocdn.com/dark_all/{{z}}/{{x}}/{{y}}.png',
+                                'https://c.basemaps.cartocdn.com/dark_all/{{z}}/{{x}}/{{y}}.png'
+                            ],
+                            tileSize: 256,
+                            attribution: '© OpenStreetMap contributors © CARTO'
+                        }}
+                    }},
+                    layers: [{{
+                        id: 'carto-dark-layer',
+                        type: 'raster',
+                        source: 'carto-dark',
+                        minzoom: 0,
+                        maxzoom: 19
+                    }}]
+                }},
+                initialViewState: INITIAL_VIEW_STATE,
+                controller: true,
+                layers: createLayers(getSelectedTechs(), yearIdx),
+                getTooltip: ({{object}}) => object && object.tooltip
+            }});
+        }});
+    </script>
+</body>
+</html>"""
 
 
 def plot_process_graph(
