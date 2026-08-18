@@ -85,7 +85,7 @@ def test_plot_year_on_year_technology_development(sample_output_df, temp_plot_di
 
     plot_year_on_year_technology_development(sample_output_df, units="Mtpa", plot_paths=plot_paths)
 
-    plot_file = temp_plot_dir / "pam" / "Capacity_development_by_technology.png"
+    plot_file = temp_plot_dir / "pam" / "capacity_development_by_technology.png"
     assert plot_file.exists(), f"Plot file not created at {plot_file}"
 
 

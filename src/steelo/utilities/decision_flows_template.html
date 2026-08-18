@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Furnace-group decision flows</title>
+<style>
+  body { margin: 0; background: #fcfcfb; color: #0b0b0b;
+         font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }
+  #toolbar { display: flex; gap: 24px; align-items: flex-start; padding: 14px 40px 6px; flex-wrap: wrap; }
+  #toolbar label { font-size: 12px; color: #52514e; display: block; margin-bottom: 4px; }
+  select { font-size: 13px; padding: 3px 6px; }
+  #geo-panel { flex: 1; min-width: 480px; }
+  .geo-dropdown { position: relative; display: inline-block; margin-right: 8px; }
+  .geo-dropdown > button { font-size: 12px; padding: 3px 10px; cursor: pointer; }
+  .geo-box-panel { display: none; position: absolute; z-index: 10; top: 100%; left: 0; margin-top: 2px;
+                   background: #fff; border: 1px solid #b5b3ae; box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+                   max-height: 320px; overflow-y: auto; min-width: 200px; padding: 6px 10px; }
+  .geo-box-panel.open { display: block; }
+  .geo-box-panel label { display: flex; align-items: center; gap: 6px; font-size: 12px;
+                         color: #0b0b0b; margin: 0; padding: 1px 0; cursor: pointer; white-space: nowrap; }
+  .geo-btn { font-size: 11px; padding: 1px 8px; margin-left: 8px; cursor: pointer; }
+  #geo-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 10px; max-width: 760px;
+               vertical-align: top; }
+  .geo-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: #0b0b0b;
+              background: #eceae4; border-radius: 10px; padding: 1px 8px; }
+  .geo-chip button { border: none; background: none; font-size: 11px; cursor: pointer; padding: 0;
+                     color: #52514e; line-height: 1; }
+  .geo-chip-note { font-size: 11px; color: #52514e; padding: 3px 0; }
+  #summary { font-size: 12px; color: #52514e; padding: 2px 40px 0; }
+  #chart { margin: 0 auto; }
+</style>
+</head>
+<body>
+<div id="err" style="display:none; background:#c0392b; color:#fff; font-size:13px; padding:8px 40px;"></div>
+<script>
+window.addEventListener("error", function(e) {
+  const el = document.getElementById("err");
+  el.style.display = "block";
+  el.textContent = "Load error: " + (e.message || e.type) + (e.filename ? " @ " + e.lineno : "");
+}, true);
+</script>
+<div id="toolbar">
+  <div>
+    <label for="run-select">Run</label>
+    <select id="run-select"></select>
+  </div>
+  <div id="geo-panel">
+    <label><span id="geo-label"></span>
+      <button class="geo-btn" id="geo-all">All</button>
+      <button class="geo-btn" id="geo-none">None</button>
+    </label>
+    <div class="geo-dropdown" id="country-dropdown">
+      <button id="country-toggle"></button>
+      <div id="country-boxes" class="geo-box-panel"></div>
+    </div>
+    <div class="geo-dropdown" id="unit-dropdown">
+      <button id="unit-toggle"></button>
+      <div id="unit-boxes" class="geo-box-panel"></div>
+    </div>
+    <div id="geo-chips"></div>
+  </div>
+</div>
+<div id="summary"></div>
+<div id="chart"></div>
+<script>__PLOTLYJS__</script>
+<script>
+const CONFIG = __CONFIG__;
+const DATA = __DATA__;
+
+const WIDTH = 1280, HEIGHT = 920;
+const MARGIN = {l: 30, r: 30, t: 112, b: 30};
+const GAP_WITHIN = 3, HEAD_ROOM = 30, BAND_GAP_MIN = 28, BAND_GAP_MAX = 52;
+const TINY_NODE_MT = 10.0;
+const SURFACE = "#fcfcfb", INK = "#0b0b0b", INK_SECONDARY = "#52514e";
+const NEW_BUILD = new Set(CONFIG.newBuildKinds);
+
+function splitNode(id) {
+  const [l, band, tech] = id.split("|");
+  return [parseInt(l.slice(1)), band, tech];
+}
+
+function nodeName(id) {
+  const [layer, band, tech] = splitNode(id);
+  return layer === 1 ? tech : band + " · " + tech;
+}
+
+function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function sortKey(id) {
+  const [layer, band, tech] = splitNode(id);
+  const g = CONFIG.groupOrder.indexOf(band), t = CONFIG.techOrder.indexOf(tech);
+  return [layer, g < 0 ? CONFIG.groupOrder.length : g, t < 0 ? CONFIG.techOrder.length : t, tech];
+}
+
+function cmpKeys(a, b) {
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] < b[i]) return -1;
+    if (a[i] > b[i]) return 1;
+  }
+  return 0;
+}
+
+/* One link row per motion, chained per furnace group (mirrors build_links). */
+function buildLinks(motions) {
+  const byFg = new Map();
+  motions.forEach((m, idx) => {
+    if (!byFg.has(m.fg)) byFg.set(m.fg, []);
+    byFg.get(m.fg).push({...m, idx});
+  });
+  const links = [];
+  for (const rows of byFg.values()) {
+    rows.sort((a, b) => a.year - b.year || a.idx - b.idx);
+    const first = rows[0];
+    const state = NEW_BUILD.has(first.kind) ? "NEW" : first.ot;
+    let prev = "L1|State|" + state;
+    rows.forEach((m, k) => {
+      const band = CONFIG.kindToGroup[m.kind];
+      const tech = m.kind === "close" ? m.ot : m.nt;
+      const node = "L" + (k + 2) + "|" + band + "|" + tech;
+      links.push({source: prev, target: node, year: m.year, mt: NEW_BUILD.has(m.kind) ? m.nm : m.om});
+      prev = node;
+    });
+  }
+  return links;
+}
+
+function yearlyRows(rows) {
+  const byYear = new Map();
+  rows.forEach(r => {
+    if (!byYear.has(r.year)) byYear.set(r.year, {mt: 0, n: 0});
+    const e = byYear.get(r.year); e.mt += r.mt; e.n += 1;
+  });
+  return [...byYear.keys()].sort((a, b) => a - b)
+    .map(y => `${y} · ${byYear.get(y).n} FG · ${byYear.get(y).mt.toFixed(1)} Mt`).join("<br>");
+}
+
+/* Replicates plotly's height scale (sinks count in the last depth column),
+   then finds the smallest pad whose scale leaves room for gaps and headings. */
+function nodePositions(nodeIds, totals, nLayers, sources) {
+  const domain = HEIGHT - MARGIN.t - MARGIN.b;
+  const layerX = k => 0.02 + (k - 1) * 0.96 / (nLayers - 1);
+  const columns = new Map(), depthGroups = new Map();
+  nodeIds.forEach((id, i) => {
+    const layer = splitNode(id)[0];
+    if (!columns.has(layer)) columns.set(layer, []);
+    columns.get(layer).push(i);
+    const depth = sources.has(id) ? layer - 1 : nLayers - 1;
+    if (!depthGroups.has(depth)) depthGroups.set(depth, []);
+    depthGroups.get(depth).push(i);
+  });
+  const sum = ids => ids.reduce((s, i) => s + totals[i], 0);
+  const ky = pad => Math.min(...[...depthGroups.values()].map(ids => (domain - pad * (ids.length - 1)) / sum(ids)));
+  const fits = (ids, scale, bandGapMin) => {
+    const bands = ids.map(i => splitNode(nodeIds[i])[1]);
+    let bandGaps = 0;
+    for (let j = 1; j < bands.length; j++) if (bands[j] !== bands[j - 1]) bandGaps++;
+    const within = ids.length - 1 - bandGaps;
+    return scale * sum(ids) + GAP_WITHIN * within + bandGapMin * bandGaps + HEAD_ROOM <= domain;
+  };
+  let pad = 4, scale = 0;
+  outer:
+  for (const bandGapMin of [BAND_GAP_MIN, 12, 6]) {
+    for (pad = 4; pad < 200; pad++) {
+      scale = ky(pad);
+      if (scale > 0 && [...columns.values()].every(ids => fits(ids, scale, bandGapMin))) break outer;
+    }
+  }
+  const xs = new Array(nodeIds.length), ys = new Array(nodeIds.length), headings = [];
+  for (const [layer, ids] of columns) {
+    const bands = ids.map(i => splitNode(nodeIds[i])[1]);
+    let bandGaps = 0;
+    for (let j = 1; j < bands.length; j++) if (bands[j] !== bands[j - 1]) bandGaps++;
+    const within = ids.length - 1 - bandGaps;
+    const leftover = domain - scale * sum(ids) - GAP_WITHIN * within;
+    let bandGap = 0, top;
+    if (bandGaps) {
+      bandGap = Math.min(BAND_GAP_MAX, (leftover - HEAD_ROOM) / bandGaps);
+      top = Math.min(HEAD_ROOM, leftover - bandGap * bandGaps);
+    } else {
+      top = Math.min(HEAD_ROOM, leftover);
+    }
+    let cursor = top;
+    ids.forEach((i, pos) => {
+      if (pos > 0) cursor += bands[pos] !== bands[pos - 1] ? bandGap : GAP_WITHIN;
+      if ((pos === 0 || bands[pos] !== bands[pos - 1]) && bands[pos] !== "State") {
+        headings.push({x: layerX(layer), y: cursor / domain, text: bands[pos], layer});
+      }
+      const h = totals[i] * scale;
+      xs[i] = layerX(layer);
+      ys[i] = (cursor + h / 2) / domain;
+      cursor += h;
+    });
+  }
+  return {xs, ys, headings, pad};
+}
+
+function render() {
+  const run = document.getElementById("run-select").value;
+  const selected = selectedGeos();
+  const all = DATA[run].motions;
+  const motions = all.filter(m => selected.has(m.geo));
+  const gd = document.getElementById("chart");
+  const nGeos = new Set(all.map(m => m.geo)).size;
+
+  const links = buildLinks(motions);
+  if (!links.length) {
+    Plotly.react(gd, [], {width: WIDTH, height: HEIGHT, paper_bgcolor: SURFACE,
+      annotations: [{text: "No motions for this selection", showarrow: false, font: {size: 16, color: INK_SECONDARY}}]});
+    document.getElementById("summary").textContent = "0 furnace groups";
+    return;
+  }
+
+  const flows = new Map();
+  links.forEach(l => {
+    const key = l.source + "→" + l.target;
+    if (!flows.has(key)) flows.set(key, {source: l.source, target: l.target, mt: 0, n: 0, rows: []});
+    const f = flows.get(key); f.mt += l.mt; f.n += 1; f.rows.push(l);
+  });
+  const flowList = [...flows.values()];
+
+  const nodeIds = [...new Set(flowList.flatMap(f => [f.source, f.target]))];
+  nodeIds.sort((a, b) => cmpKeys(sortKey(a), sortKey(b)));
+  const index = new Map(nodeIds.map((id, i) => [id, i]));
+  const nLayers = Math.max(...nodeIds.map(id => splitNode(id)[0]));
+
+  const inflow = new Map(), outflow = new Map();
+  flowList.forEach(f => {
+    inflow.set(f.target, (inflow.get(f.target) || 0) + f.mt);
+    outflow.set(f.source, (outflow.get(f.source) || 0) + f.mt);
+  });
+  const totals = nodeIds.map(id => Math.max(inflow.get(id) || 0, outflow.get(id) || 0));
+  const labels = nodeIds.map((id, i) =>
+    totals[i] < TINY_NODE_MT ? "" : splitNode(id)[2] + "  " + Math.round(totals[i]) + " Mt");
+  const nodeHover = nodeIds.map((id, i) => {
+    const own = splitNode(id)[0] === 1 ? links.filter(l => l.source === id) : links.filter(l => l.target === id);
+    return `<b>${nodeName(id)}</b> · ${totals[i].toFixed(1)} Mt · ${own.length} FG<br>` + yearlyRows(own);
+  });
+  const colours = nodeIds.map(id => CONFIG.techColours[splitNode(id)[2]]);
+  const sources = new Set(flowList.map(f => f.source));
+  const {xs, ys, headings, pad} = nodePositions(nodeIds, totals, nLayers, sources);
+
+  const linkHover = flowList.map(f =>
+    `<b>${nodeName(f.source)} → ${nodeName(f.target)}</b> · ${f.mt.toFixed(1)} Mt · ${f.n} FG<br>` + yearlyRows(f.rows));
+
+  const annotations = headings.map(h => ({
+    x: h.x, y: 1 - h.y, xref: "paper", yref: "paper",
+    text: "<b>" + h.text.toUpperCase() + "</b>", showarrow: false,
+    font: {size: 10, color: INK_SECONDARY}, bgcolor: "#eceae4", borderpad: 3,
+    xanchor: h.layer === nLayers ? "right" : "left", yanchor: "bottom", yshift: 3,
+  }));
+  const captions = ["Initial state"];
+  for (let k = 1; k < nLayers; k++) captions.push("Decision " + k);
+  captions.forEach((text, i) => {
+    const k = i + 1;
+    annotations.push({
+      x: 0.02 + (k - 1) * 0.96 / (nLayers - 1), y: 1.015, xref: "paper", yref: "paper",
+      text: "<b>" + text + "</b>", showarrow: false, font: {size: 12, color: INK},
+      xanchor: k === 1 ? "left" : (k === nLayers ? "right" : "center"), yanchor: "bottom",
+    });
+  });
+
+  const runGeos = new Set(all.map(m => m.geo));
+  const selRun = [...runGeos].filter(g => selected.has(g));
+  const runCountries = new Set([...runGeos].map(g => g.split(GEO_SEP)[0]));
+  let geoNote;
+  if (selRun.length === runGeos.size) {
+    geoNote = "all " + CONFIG.geoNoun;
+  } else if (runCountries.size > 1) {
+    const selCountries = new Set(selRun.map(g => g.split(GEO_SEP)[0]));
+    geoNote = `${selCountries.size} of ${runCountries.size} ${CONFIG.countryNoun}`;
+  } else {
+    geoNote = `${selRun.length} of ${runGeos.size} ${CONFIG.geoNoun}`;
+  }
+  const years = all.map(m => m.year);
+  const yearRange = Math.min(...years) + "–" + Math.max(...years);
+  Plotly.react(gd, [{
+    type: "sankey",
+    arrangement: "fixed",
+    node: {
+      label: labels, color: colours, x: xs, y: ys, customdata: nodeHover,
+      pad, thickness: 16, line: {width: 0},
+      hovertemplate: "%{customdata}<extra></extra>",
+    },
+    link: {
+      source: flowList.map(f => index.get(f.source)),
+      target: flowList.map(f => index.get(f.target)),
+      value: flowList.map(f => f.mt),
+      color: flowList.map(f => hexToRgba(CONFIG.techColours[splitNode(f.source)[2]], 0.35)),
+      customdata: linkHover,
+      hovertemplate: "%{customdata}<extra></extra>",
+    },
+    valueformat: ".1f",
+    valuesuffix: " Mt",
+  }], {
+    title: {
+      text: `${CONFIG.chartTitle} · ${DATA[run].title} · ${geoNote}` +
+        `<br><sup>Technology at first decision, then each decision round grouped by activity. ` +
+        `Width = capacity entering the decision (Mt), ${yearRange}.</sup>`,
+      font: {color: INK, size: 17},
+    },
+    annotations,
+    font: {family: "Helvetica Neue, Helvetica, Arial", color: INK_SECONDARY, size: 11},
+    hoverlabel: {align: "left", font: {size: 11}},
+    paper_bgcolor: SURFACE,
+    width: WIDTH, height: HEIGHT, margin: MARGIN,
+  }, {displaylogo: false});
+
+  const fgs = new Set(motions.map(m => m.fg)).size;
+  document.getElementById("summary").textContent =
+    `${fgs} furnace groups · ${motions.length} motions · ${links.filter(l => l.source.startsWith("L1|")).reduce((s, l) => s + l.mt, 0).toFixed(0)} Mt entering first decisions · ${DATA[run].provenance} ` +
+    `Only furnace groups that made at least one decision or were created during the simulation are shown.`;
+}
+
+function geoName(geo) {
+  return CONFIG.geoStrip ? geo.replace(CONFIG.geoStrip, "") : geo;
+}
+
+/* Two-level geo filter state. Countries are the ISO3 part of geo_key; keys
+   with a geo_unit suffix (CHN:CN-HE) get their own checkbox in the unit
+   dropdown, and their country's checkbox acts as a select-all over them. */
+const GEO_SEP = ":";
+let allGeoKeys = [];
+const countryCbs = new Map(), unitCbs = new Map(), countryUnits = new Map();
+
+function selectedGeos() {
+  const sel = new Set();
+  allGeoKeys.forEach(geo => {
+    const cb = geo.includes(GEO_SEP) ? unitCbs.get(geo) : countryCbs.get(geo);
+    if (cb.checked) sel.add(geo);
+  });
+  return sel;
+}
+
+/* Refresh derived country states, dropdown-toggle summaries and the chips
+   row of selected geos (a fully selected multi-unit country collapses to
+   one country chip). */
+function updateGeoUi() {
+  for (const [iso3, units] of countryUnits) {
+    const cb = countryCbs.get(iso3);
+    const n = units.filter(u => unitCbs.get(u).checked).length;
+    cb.checked = n === units.length;
+    cb.indeterminate = n > 0 && n < units.length;
+  }
+  const nCountrySel = [...countryCbs.values()].filter(cb => cb.checked || cb.indeterminate).length;
+  document.getElementById("country-toggle").textContent =
+    `${nCountrySel} of ${countryCbs.size} ${CONFIG.countryNoun} ▾`;
+  if (unitCbs.size) {
+    const nUnitSel = [...unitCbs.values()].filter(cb => cb.checked).length;
+    document.getElementById("unit-toggle").textContent =
+      `${nUnitSel} of ${unitCbs.size} ${CONFIG.unitNoun} ▾`;
+  }
+
+  const chips = document.getElementById("geo-chips");
+  chips.innerHTML = "";
+  const sel = selectedGeos();
+  if (sel.size === allGeoKeys.length || !sel.size) {
+    const note = document.createElement("span");
+    note.className = "geo-chip-note";
+    note.textContent = sel.size ? "all " + CONFIG.geoNoun + " selected" : "no " + CONFIG.geoNoun + " selected";
+    chips.appendChild(note);
+    return;
+  }
+  const addChip = (text, uncheck) => {
+    const chip = document.createElement("span");
+    chip.className = "geo-chip";
+    chip.appendChild(document.createTextNode(text));
+    const x = document.createElement("button");
+    x.textContent = "×";
+    x.title = "Remove";
+    x.addEventListener("click", () => { uncheck(); updateGeoUi(); render(); });
+    chip.appendChild(x);
+    chips.appendChild(chip);
+  };
+  for (const [iso3, cb] of countryCbs) {
+    if (countryUnits.has(iso3)) {
+      const units = countryUnits.get(iso3);
+      const selUnits = units.filter(u => unitCbs.get(u).checked);
+      if (selUnits.length === units.length) {
+        addChip(iso3, () => units.forEach(u => unitCbs.get(u).checked = false));
+      } else {
+        selUnits.forEach(u => addChip(geoName(u), () => { unitCbs.get(u).checked = false; }));
+      }
+    } else if (cb.checked) {
+      addChip(iso3, () => { cb.checked = false; });
+    }
+  }
+}
+
+function initControls() {
+  document.title = CONFIG.chartTitle;
+  document.getElementById("geo-label").textContent = CONFIG.geoLabel;
+  const runSelect = document.getElementById("run-select");
+  CONFIG.runs.forEach(run => {
+    const opt = document.createElement("option");
+    opt.value = run;
+    opt.textContent = DATA[run].title;
+    runSelect.appendChild(opt);
+  });
+  runSelect.value = CONFIG.defaultRun || CONFIG.runs[0];
+  runSelect.addEventListener("change", render);
+  if (CONFIG.runs.length === 1) runSelect.parentElement.style.display = "none";
+
+  allGeoKeys = [...new Set(Object.values(DATA).flatMap(d => d.motions.map(m => m.geo)))].sort();
+  const units = allGeoKeys.filter(g => g.includes(GEO_SEP));
+  units.forEach(geo => {
+    const iso3 = geo.split(GEO_SEP)[0];
+    if (!countryUnits.has(iso3)) countryUnits.set(iso3, []);
+    countryUnits.get(iso3).push(geo);
+  });
+  const countries = [...new Set(allGeoKeys.map(g => g.split(GEO_SEP)[0]))].sort();
+
+  const addBox = (parent, value, text, cbs, onChange) => {
+    const label = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.value = value; cb.checked = true;
+    cb.addEventListener("change", () => { onChange(cb); updateGeoUi(); render(); });
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(text));
+    parent.appendChild(label);
+    cbs.set(value, cb);
+  };
+  const countryBoxes = document.getElementById("country-boxes");
+  countries.forEach(iso3 => addBox(countryBoxes, iso3, iso3, countryCbs, cb => {
+    if (countryUnits.has(iso3)) countryUnits.get(iso3).forEach(u => unitCbs.get(u).checked = cb.checked);
+  }));
+  const unitBoxes = document.getElementById("unit-boxes");
+  units.forEach(geo => addBox(unitBoxes, geo, geoName(geo), unitCbs, () => {}));
+  if (!units.length) document.getElementById("unit-dropdown").style.display = "none";
+  if (countries.length === 1 && units.length) document.getElementById("country-dropdown").style.display = "none";
+
+  const dropdowns = [...document.querySelectorAll(".geo-dropdown")];
+  dropdowns.forEach(dd => {
+    const panel = dd.querySelector(".geo-box-panel");
+    dd.querySelector("button").addEventListener("click", () => {
+      dropdowns.forEach(other => {
+        const p = other.querySelector(".geo-box-panel");
+        if (p !== panel) p.classList.remove("open");
+      });
+      panel.classList.toggle("open");
+    });
+  });
+  document.addEventListener("click", e => {
+    if (!dropdowns.some(dd => dd.contains(e.target)))
+      dropdowns.forEach(dd => dd.querySelector(".geo-box-panel").classList.remove("open"));
+  });
+  const setAll = checked => {
+    countryCbs.forEach(cb => cb.checked = checked);
+    unitCbs.forEach(cb => cb.checked = checked);
+    updateGeoUi(); render();
+  };
+  document.getElementById("geo-all").addEventListener("click", () => setAll(true));
+  document.getElementById("geo-none").addEventListener("click", () => setAll(false));
+  updateGeoUi();
+}
+
+initControls();
+render();
+</script>
+</body>
+</html>

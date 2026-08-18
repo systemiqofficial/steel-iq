@@ -2493,7 +2493,7 @@ class SteelPlotter:
     #     self,
     #     data_file: pd.DataFrame,
     #     units: str = "Mt",
-    #     filename: str = "Capacity_development_by_technology.png",
+    #     filename: str = "capacity_development_by_technology.png",
     #     export_csv: bool = True,
     # ) -> Optional[Path]:
     #     """Plot year-on-year capacity development by technology.
@@ -2582,7 +2582,7 @@ class SteelPlotter:
             return None
 
         if filename is None:
-            filename = f"Capacity_development_by_technology_{product_type}.png"
+            filename = f"capacity_development_by_technology_{product_type}.png"
 
         for tech in data_file["technology"].unique():
             self._ensure_tech_color(tech)

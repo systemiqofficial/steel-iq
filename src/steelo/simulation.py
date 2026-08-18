@@ -1438,6 +1438,16 @@ class SimulationRunner:
         if capacity_pool_plotter.plot_all(self.config.policy_output_dir):
             logger.info("Generated capacity pool charts")
 
+        # Interactive decision-flow sankey from the run's global PAM motions
+        from steelo.utilities.decision_flows import write_decision_flows_html
+
+        if self.config.pam_plots_dir is not None:
+            write_decision_flows_html(
+                motions_csv=self.config.output_dir / "data" / "pam_motions.csv",
+                output_path=self.config.pam_plots_dir / "decision_flows.html",
+                run_title=self.config.output_dir.name,
+            )
+
         # Greenfield (GEO-origin) plant status charts, maps, and plant-level CSV
         if data_collector.status_counts:
             plotter.plot_greenfield_plants_by_status(status_counts=data_collector.status_counts)
