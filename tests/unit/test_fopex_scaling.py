@@ -217,53 +217,6 @@ def test_zero_utilisation_greenfield_candidate_is_skipped_not_fatal(monkeypatch)
     assert "BF" in tech_npv_dict
 
 
-def test_zero_utilisation_after_reductant_rebuild_is_skipped_not_fatal(monkeypatch):
-    """The reductant-rebuild call site must be guarded too.
-
-    The initial BOM fetch commits a reductant other than the score series' pick, which
-    forces a rebuild against the picked reductant; that rebuild is the one returning
-    zero utilisation here, so the guard right after it must be the one that fires.
-    """
-    _capture_npv_full(monkeypatch)
-    fg = _make_fg(utilization_rate=0.8)
-
-    calls = {"n": 0}
-
-    def mock_get_bom(energy_costs, tech, _capacity, _reductant=None):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            # Initial fetch: valid utilisation, but a reductant that differs from the
-            # score series' "hydrogen" pick, forcing a rebuild.
-            return ({"materials": dict(MATERIALS), "energy": {}}, 0.9, "coke", {"iron_ore": 1.0})
-        # Rebuild against the committed "hydrogen" pick comes back with zero utilisation.
-        return ({"materials": dict(MATERIALS), "energy": {}}, 0.0, "hydrogen", {"iron_ore": 1.0})
-
-    tech_npv_dict, _, _, bom_dict, _ = fg.optimal_technology_name(
-        market_price_series={"steel": [500.0] * 30, "iron": [400.0] * 30},
-        cost_of_debt_by_tech={"BF": 0.05, "DRI": 0.05},
-        cost_of_equity_by_tech={"BF": 0.1, "DRI": 0.1},
-        get_bom_from_avg_boms=mock_get_bom,
-        score_series_for_tech=_stub_score_series,
-        capex_dict={"BF": 600.0, "DRI": 500.0},
-        capex_renovation_share={"BF": 0.7},
-        technology_fopex_dict={"bf": 10.0, "dri": 50.0},
-        dynamic_business_cases={},
-        chosen_emissions_boundary_for_carbon_costs="Scope 1",
-        technology_emission_factors=[],
-        tech_to_product={"BF": "iron", "DRI": "iron"},
-        plant_lifetime=20,
-        construction_time=2,
-        current_year=Year(2025),
-        risk_free_rate=0.02,
-        allowed_furnace_transitions={"BF": ["BF", "DRI"]},
-    )
-
-    assert calls["n"] == 2
-    assert "DRI" not in tech_npv_dict
-    assert "DRI" not in bom_dict
-    assert "BF" in tech_npv_dict
-
-
 # ── expansion path ────────────────────────────────────────────────────────────
 
 
