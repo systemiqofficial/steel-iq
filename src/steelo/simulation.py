@@ -1424,6 +1424,13 @@ class SimulationRunner:
         plot_config = PlotConfig()
         plotter = SteelPlotter(config=plot_config, plot_paths=bus.env.plot_paths)
 
+        # Capacity-pool policy charts (a policy-OFF run flushed no artefacts, so none are drawn)
+        from steelo.capacity_policy.plotter import CapacityPoolPlotter
+
+        capacity_pool_plotter = CapacityPoolPlotter(config=plot_config, plot_paths=bus.env.plot_paths)
+        if capacity_pool_plotter.plot_all(self.config.policy_output_dir):
+            logger.info("Generated capacity pool charts")
+
         # Greenfield (GEO-origin) plant status charts, maps, and plant-level CSV
         if data_collector.status_counts:
             plotter.plot_greenfield_plants_by_status(status_counts=data_collector.status_counts)
