@@ -130,6 +130,111 @@ class ValidationReport:
         return f"Errors: {len(self.errors)}, Warnings: {len(self.warnings)}, Info: {len(self.info)}"
 
 
+def check_furnace_units_geography(
+    df: pd.DataFrame,
+    valid_countries: set[str],
+    modelled_countries: set[str],
+    valid_geo_keys: set[str],
+) -> list[ValidationError]:
+    """Check the 'Furnace units' sheet's authored geography (``iso3`` + ``geo_unit_or_province``).
+
+    Shared between the advisory validator (``MasterExcelValidator._validate_furnace_units``) and the
+    prep-time reader (``MasterExcelReader.read_plants_from_furnace_units_sheet``), so both gates
+    apply identical rules — the furnace-units counterpart of the plants sheet's
+    ``_check_plant_geography_columns``. Unlike the plants sheet there is no combined
+    ``iso3:geo_unit`` form: the sheet carries the country and sub-national unit in separate columns.
+
+    Args:
+        df: The 'Furnace units' sheet as read from the master Excel.
+        valid_countries: Real country ISO-3 codes (the independent ISO authority).
+        modelled_countries: ISO-3 codes the model actually carries; pass an empty set to skip
+            this cross-check (the prep-time reader does — a prepared ``country_mappings.json``
+            can be one prep stale and must not reject a master that legitimately adds a country).
+        valid_geo_keys: Recognised sub-national ``iso3:code`` geo-keys from ``geo_hierarchy.json``;
+            empty skips the sub-national check (no prepared geo_hierarchy yet).
+
+    Returns:
+        One ``ValidationError`` per offending row/column, empty if the geography is clean.
+
+    Notes:
+        Rows with a blank ``plant_id`` (trailing empties) are skipped. A blank
+        ``geo_unit_or_province`` is intentional country-level and is never flagged.
+    """
+    from steelo.domain.models import compose_geo_key
+
+    sheet_name = "Furnace units"
+    if "iso3" not in df.columns:
+        return [
+            ValidationError(
+                sheet_name=sheet_name,
+                error_type="MISSING_COLUMN",
+                message="Required column 'iso3' is missing.",
+            )
+        ]
+
+    def cell(column: str, position: int) -> str:
+        raw = df[column].iloc[position] if column in df.columns else None
+        return "" if raw is None or pd.isna(raw) else str(raw).strip()
+
+    errors: list[ValidationError] = []
+    for position in range(len(df)):
+        if not cell("plant_id", position):
+            continue
+        row_number = position + 2  # 1-based, plus the header row
+        iso3 = cell("iso3", position)
+        if not iso3:
+            errors.append(
+                ValidationError(
+                    sheet_name=sheet_name,
+                    error_type="INVALID_GEO_KEY",
+                    message="Furnace unit row has no iso3 country code.",
+                    row_number=row_number,
+                    column_name="iso3",
+                )
+            )
+            continue
+        if iso3 not in valid_countries:
+            errors.append(
+                ValidationError(
+                    sheet_name=sheet_name,
+                    error_type="INVALID_GEO_KEY",
+                    message=f"'{iso3}' is not a valid ISO-3 country code.",
+                    row_number=row_number,
+                    column_name="iso3",
+                )
+            )
+            continue
+        if modelled_countries and iso3 not in modelled_countries:
+            errors.append(
+                ValidationError(
+                    sheet_name=sheet_name,
+                    error_type="INVALID_GEO_KEY",
+                    message=f"Country '{iso3}' is not in the model's country mapping.",
+                    row_number=row_number,
+                    column_name="iso3",
+                )
+            )
+            continue
+        geo_unit = cell("geo_unit_or_province", position)
+        if geo_unit and valid_geo_keys:
+            geo_key = compose_geo_key(iso3, geo_unit)
+            if geo_key not in valid_geo_keys:
+                errors.append(
+                    ValidationError(
+                        sheet_name=sheet_name,
+                        error_type="INVALID_GEO_KEY",
+                        message=(
+                            f"geo_unit_or_province '{geo_unit}' does not compose to a recognised "
+                            f"sub-national unit ('{geo_key}' not in geo_hierarchy) — check the "
+                            f"ISO 3166-2 code and level."
+                        ),
+                        row_number=row_number,
+                        column_name="geo_unit_or_province",
+                    )
+                )
+    return errors
+
+
 class MasterExcelValidator:
     """Validates master input Excel files for steel model simulations"""
 
@@ -309,6 +414,11 @@ class MasterExcelValidator:
             # trade blocs with countries and sub-national geo-keys)
             if "Subsidies" in xl_file.sheet_names:
                 self._validate_subsidies_location(pd.read_excel(xl_file, sheet_name="Subsidies"), xl_file)
+
+            # Furnace units is optional but validated when present (it carries the authored
+            # geography for the unit-level reader: iso3 + geo_unit_or_province)
+            if "Furnace units" in xl_file.sheet_names:
+                self._validate_furnace_units(pd.read_excel(xl_file, sheet_name="Furnace units"))
 
             # Cross-sheet validation
             if not self.report.has_errors():
@@ -606,6 +716,17 @@ class MasterExcelValidator:
                             column_name="geo_unit",
                         )
                     )
+
+    def _validate_furnace_units(self, df: pd.DataFrame):
+        """Validate the Furnace units sheet's authored geography (``iso3`` + ``geo_unit_or_province``).
+
+        Delegates to ``check_furnace_units_geography`` — the same rules the prep-time reader
+        enforces — with the model-coverage cross-check included (advisory report only).
+        """
+        for error in check_furnace_units_geography(
+            df, self.valid_countries, self.modelled_countries, self.valid_geo_keys
+        ):
+            self.report.add(error)
 
     def _check_geo_key_column(self, df: pd.DataFrame, sheet_name: str, column: str):
         """Flag values that are not a recognised country code or sub-national geo-key.

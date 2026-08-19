@@ -648,7 +648,7 @@ class DataRecreator:
                                 )
                             )
                         except ValueError as e:
-                            if "Furnace units" in str(e):
+                            if "Sheet 'Furnace units' not found" in str(e):
                                 console.print(
                                     "[yellow]  ⚠ Furnace units sheet not found, falling back to old reader[/yellow]"
                                 )

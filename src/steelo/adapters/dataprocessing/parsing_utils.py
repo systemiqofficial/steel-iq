@@ -1,5 +1,4 @@
-"""Shared parsing helpers for the GEM unit-level furnace ETL and reader
-(build_furnace_units_sheet.py / MasterExcelReader.read_plants_from_furnace_units_sheet).
+"""Shared parsing helpers for the 'Furnace units' sheet reader.
 
 Ambiguous-value handling (parse_capacity) follows the OLD preprocessing pipeline's
 convention in preprocessing/raw_plant_data_processing.py (treat_non_numeric_values):

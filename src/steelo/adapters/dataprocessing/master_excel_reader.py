@@ -18,6 +18,7 @@ from steelo.adapters.dataprocessing.master_excel_validator import (
     MasterExcelValidator,
     ValidationError,
     ValidationReport,
+    check_furnace_units_geography,
 )
 from steelo.domain.constants import KT_TO_T, PLANT_LIFETIME
 
@@ -563,11 +564,7 @@ class MasterExcelReader:
                 def _resolve_iso3(country_name: Any) -> str:
                     if pd.isna(country_name):
                         return ""
-                    try:
-                        return country_area_to_iso3(country_name)
-                    except ValueError:
-                        logger.warning(f"Could not resolve country name to ISO3: {country_name!r}")
-                        return ""
+                    return country_area_to_iso3(country_name)
 
                 plant_df["ISO3"] = plant_df["Country"].apply(_resolve_iso3)
 
@@ -1011,9 +1008,9 @@ class MasterExcelReader:
         aggregated_constraints: Optional[list] = None,
     ) -> tuple[list[Any], dict[Any, Any], list[Any]]:
         """
-        Read plants and furnace groups from the flattened 'Furnace units' sheet
-        (produced by build_furnace_units_sheet.py), where each row already is one
-        furnace group - no per-plant equipment-string splitting required.
+        Read plants and furnace groups from the flattened 'Furnace units' sheet,
+        where each row already is one furnace group - no per-plant
+        equipment-string splitting required.
 
         This is a separate pathway from read_plants(): it reads a different sheet,
         combining GEM's raw unit-level tracker data with external Chinese
@@ -1032,7 +1029,9 @@ class MasterExcelReader:
             tuple[list[Plant], dict[str, FurnaceGroupMetadata]]
 
         Raises:
-            ValueError: If the 'Furnace units' sheet is not found in the Excel file.
+            ValueError: If the 'Furnace units' sheet is not found in the Excel file, or
+                if its geography is invalid (an iso3 that is not a real ISO-3 code, or a
+                geo_unit_or_province that does not compose to a geo_hierarchy key).
         """
         from ...domain.models import Location, Technology, FurnaceGroup, PointInTime, TimeFrame, Year, Volumes
         from ..dataprocessing.excel_reader import read_dynamic_business_cases
@@ -1053,6 +1052,28 @@ class MasterExcelReader:
             raise ValueError(f"Sheet '{sheet_name}' not found in Excel file")
 
         df = pd.read_excel(self._excel_file, sheet_name=sheet_name)
+
+        # Author geo contract, enforced at prep time:
+        # iso3 must be real ISO-3 code and geo_unit_or_province must compose to geo_hierarchy key
+        if (
+            not self.validator.valid_geo_keys
+            and "geo_unit_or_province" in df.columns
+            and df["geo_unit_or_province"].notna().any()
+        ):
+            logger.warning(
+                "No geo_hierarchy available — the sheet's geo_unit_or_province values "
+                "are not checked this run (expected only when the geo-data package has no admin-1)."
+            )
+        geography_errors = check_furnace_units_geography(
+            df,
+            valid_countries=self.validator.valid_countries,
+            modelled_countries=set(),
+            valid_geo_keys=self.validator.valid_geo_keys,
+        )
+        if geography_errors:
+            preview = "; ".join(str(e) for e in geography_errors[:5])
+            suffix = f" (+{len(geography_errors) - 5} more)" if len(geography_errors) > 5 else ""
+            raise ValueError(f"Invalid geography in '{sheet_name}' sheet: {preview}{suffix}")
 
         if dynamic_feedstocks_dict is None or aggregated_constraints is None:
             logger.info("Reading dynamic business cases from Bill of Materials sheet")
