@@ -717,6 +717,8 @@ class ModelRun(models.Model):
             "probability_of_construction",
             "probability_of_announcement",
             "top_n_loctechs_as_business_op",
+            "opportunity_pool_depth",
+            "calculate_npv_pct",
             # Plant capacity parameters
             "expanded_capacity",
             "capacity_limit_iron",

@@ -389,6 +389,10 @@ class SimulationConfig:
     probability_of_announcement: float = 0.7  # Probability of a plant being announced after being considered - given a history of positive NPVs of at least `consideration_time` years
     top_n_loctechs_as_business_op: int = 15  # Number of top location-technology combinations to consider as business
     # opportunities per product per year (e.g., 5 for steel and 5 for iron = 10 total)
+    opportunity_pool_depth: int = 3  # Probabilistic draw eligibility: global top (depth * top_n) by NPV plus each
+    # allowed technology's best `depth` sites, so no technology loses standing to a monoculture head
+    calculate_npv_pct: float = 0.1  # Fraction of priority locations sampled each year for full NPV evaluation;
+    # 0.1 is chosen purely to save computational time, not for model reasons
     co2_storage_reserved_discount_factor: float = (
         0.9  # Fraction of an announced CCS plant's CO2 need that counts toward the reserved storage bucket
     )

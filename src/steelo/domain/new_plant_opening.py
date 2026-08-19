@@ -616,10 +616,97 @@ def validate_and_clean_cost_data(
     return cost_data
 
 
+def build_eligible_pool(
+    valid_pairs: list[tuple[Any, str]],
+    ranked_indices: np.ndarray,
+    head_count: int,
+    sites_per_tech: int,
+) -> list[int]:
+    """
+    Build the eligible candidate pool for the rank-weighted draw: the global NPV head unioned
+    with each technology's best sites.
+
+    Args:
+        valid_pairs: All valid (site_id, technology) candidates for one product
+        ranked_indices: Indices into valid_pairs, sorted by NPV descending
+        head_count: Number of top-ranked candidates that are always eligible (the global head)
+        sites_per_tech: Guaranteed seats per technology; head members count toward the quota
+
+    Returns:
+        Indices into valid_pairs, in descending NPV order, without duplicates
+
+    Notes:
+        - Guarantees every technology keeps min(sites_per_tech, available) eligible candidates
+          even when a single technology occupies the entire head, so a souring head technology
+          can never erase the standing of every alternative
+        - Single ranked pass: a technology's first occurrences are its best sites, so head
+          membership and per-technology seats dedupe naturally
+    """
+    eligible: list[int] = []
+    seen_per_tech: dict[str, int] = {}
+    for rank, idx in enumerate(ranked_indices):
+        tech = valid_pairs[idx][1]
+        seen = seen_per_tech.get(tech, 0)
+        seen_per_tech[tech] = seen + 1
+        if rank < head_count or seen < sites_per_tech:
+            eligible.append(int(idx))
+    return eligible
+
+
+def summarise_opportunity_pool(
+    valid_pairs: list[tuple[Any, str]],
+    valid_npvs: list[float],
+    eligible_indices: list[int],
+    selected_pairs: list[tuple[Any, str]],
+) -> dict[str, Any]:
+    """
+    Aggregate creation-time pool-quality statistics for one product.
+
+    Args:
+        valid_pairs: All valid (site_id, technology) candidates
+        valid_npvs: NPVs aligned with valid_pairs
+        eligible_indices: Indices into valid_pairs that entered the draw
+        selected_pairs: The (site_id, technology) pairs actually drawn
+
+    Returns:
+        Dict with the valid-pool size, eligible-pool median/min/max NPV and negative fraction,
+        technology counts for the eligible and drawn sets, and per-technology best NPV over the
+        full valid pool
+
+    Notes:
+        Pure aggregation for the pool_summary log line - an all-negative pool becomes visible
+        in the year it occurs instead of three years later in the status chart
+    """
+    tech_best: dict[str, float] = {}
+    for (_, tech), npv in zip(valid_pairs, valid_npvs):
+        if tech not in tech_best or npv > tech_best[tech]:
+            tech_best[tech] = npv
+    eligible_npvs = [valid_npvs[i] for i in eligible_indices]
+    eligible_techs: dict[str, int] = {}
+    for i in eligible_indices:
+        tech = valid_pairs[i][1]
+        eligible_techs[tech] = eligible_techs.get(tech, 0) + 1
+    drawn_techs: dict[str, int] = {}
+    for _, tech in selected_pairs:
+        drawn_techs[tech] = drawn_techs.get(tech, 0) + 1
+    return {
+        "valid": len(valid_pairs),
+        "eligible": len(eligible_npvs),
+        "median": float(np.median(eligible_npvs)),
+        "min": float(min(eligible_npvs)),
+        "max": float(max(eligible_npvs)),
+        "frac_negative": sum(1 for v in eligible_npvs if v < 0) / len(eligible_npvs),
+        "eligible_techs": eligible_techs,
+        "drawn_techs": drawn_techs,
+        "tech_best": tech_best,
+    }
+
+
 def select_top_opportunities_by_npv(
     npv_dict: dict[str, dict[Any, dict[str, float]]],
     top_n_loctechs_as_business_op: int,
     probabilistic_agents: bool,
+    opportunity_pool_depth: int,
 ) -> dict[str, dict[tuple[float, float, str], dict[str, float]]]:
     """
     Select top location-technology combinations with high NPVs. When probabilistic_agents is True,
@@ -629,8 +716,12 @@ def select_top_opportunities_by_npv(
     Args:
         npv_dict: Nested dictionary with NPV values (product -> site_id -> tech -> NPV)
         top_n_loctechs_as_business_op: Number of top location-technology combinations to select per product
-        probabilistic_agents: If True, rank-weighted random draw over the top 3N candidates (deliberate
+        probabilistic_agents: If True, rank-weighted random draw over the eligible pool (deliberate
             realism - a mix of high and medium NPV options). If False, deterministic top-N by NPV.
+        opportunity_pool_depth: Depth of the probabilistic draw's eligible pool, in two coupled
+            senses: the global head is the top (depth * N) candidates by NPV, and every allowed
+            technology additionally keeps its best `depth` sites eligible. Higher = more
+            exploration; 1 = near-pure exploitation. Ignored when probabilistic_agents is False.
 
     Returns:
         Dictionary mapping products to site IDs to technologies with their NPVs (product -> site_id (lat, lon, iso3) -> tech -> NPV)
@@ -644,17 +735,21 @@ def select_top_opportunities_by_npv(
 
     Notes:
         - Invalid NPV values (NaN, -inf) are removed before processing
-        - When probabilistic_agents: candidates are ranked by NPV and only the best 3N enter a
-          weighted draw with linearly decreasing rank weights - a mix of high and medium NPV
-          options rather than only the highest, while implausible sites can never be selected
+        - When probabilistic_agents: the eligible pool is the global top (depth * N) by NPV
+          unioned with each technology's best `depth` sites, then a weighted draw with linearly
+          decreasing rank weights - a mix of high and medium NPV options, while every allowed
+          technology keeps standing even when one technology dominates the head
         - Rank weights are scale-free: the draw behaves identically for all-negative,
           mixed and all-positive pools
+        - Logs one pool_summary line per product with pool size, eligible-pool NPV statistics
+          and per-technology best NPV over the full pool
     """
     logger = logging.getLogger(f"{__name__}.select_top_opportunities_by_npv")
     if probabilistic_agents:
         logger.info(
             f"[NEW PLANTS] Drawing {top_n_loctechs_as_business_op} location-technology combinations per product from the "
-            f"top {3 * top_n_loctechs_as_business_op} by NPV (rank-weighted, without replacement)."
+            f"top {opportunity_pool_depth * top_n_loctechs_as_business_op} by NPV unioned with the top "
+            f"{opportunity_pool_depth} sites per technology (rank-weighted, without replacement)."
         )
     else:
         logger.info(
@@ -695,30 +790,43 @@ def select_top_opportunities_by_npv(
         ranked_indices = np.argsort(npvs_array)[::-1]
 
         if probabilistic_agents:
-            # Trim to the plausible head of the pool, then draw with rank weights (best gets
-            # weight `trim`, worst weight 1). The former shift-by-min weighting degenerated
-            # to a near-uniform draw whenever the whole pool was negative.
-            trim = min(len(ranked_indices), 3 * top_n_loctechs_as_business_op)
-            pool_indices = ranked_indices[:trim]
+            # Union trim: the global head keeps its rank-weight dominance in healthy years,
+            # while the per-technology seats stop a monocultural head from erasing every other
+            # technology's standing (rank weights: best gets `trim`, worst 1; the former
+            # shift-by-min weighting degenerated to near-uniform on all-negative pools)
+            head_count = min(len(ranked_indices), opportunity_pool_depth * top_n_loctechs_as_business_op)
+            eligible = build_eligible_pool(valid_pairs, ranked_indices, head_count, opportunity_pool_depth)
+            trim = len(eligible)
 
             if trim > top_n_loctechs_as_business_op:
                 rank_weights = np.arange(trim, 0, -1, dtype=float)
                 probabilities = rank_weights / rank_weights.sum()
                 drawn = np.random.choice(trim, size=top_n_loctechs_as_business_op, replace=False, p=probabilities)
-                selected_pairs = [valid_pairs[pool_indices[i]] for i in drawn]
+                selected_pairs = [valid_pairs[eligible[i]] for i in drawn]
             else:
-                selected_pairs = [valid_pairs[i] for i in pool_indices]
+                selected_pairs = [valid_pairs[i] for i in eligible]
             logger.info(
                 f"[NEW PLANTS] {product}: drew {len(selected_pairs)} of {len(valid_pairs)} valid candidates "
-                f"(rank-weighted over the top {trim})."
+                f"(rank-weighted over {trim} eligible: global top {head_count} + top {opportunity_pool_depth} per technology)."
             )
         else:
-            top_indices = ranked_indices[:top_n_loctechs_as_business_op]
-            selected_pairs = [valid_pairs[i] for i in top_indices]
+            eligible = [int(i) for i in ranked_indices[:top_n_loctechs_as_business_op]]
+            selected_pairs = [valid_pairs[i] for i in eligible]
             logger.info(
                 f"[NEW PLANTS] {product}: selected top {len(selected_pairs)} of {len(valid_pairs)} valid candidates "
                 "by NPV (deterministic)."
             )
+
+        summary = summarise_opportunity_pool(valid_pairs, valid_npvs, eligible, selected_pairs)
+        eligible_techs_str = ",".join(f"{t}:{n}" for t, n in sorted(summary["eligible_techs"].items()))
+        drawn_techs_str = ",".join(f"{t}:{n}" for t, n in sorted(summary["drawn_techs"].items()))
+        tech_best_str = ",".join(f"{t}:{v:.4e}" for t, v in sorted(summary["tech_best"].items(), key=lambda kv: -kv[1]))
+        logger.info(
+            f"[NEW PLANTS] pool_summary product={product} valid={summary['valid']} eligible={summary['eligible']} "
+            f"median={summary['median']:.4e} min={summary['min']:.4e} max={summary['max']:.4e} "
+            f"frac_negative={summary['frac_negative']:.2f} eligible_techs=[{eligible_techs_str}] "
+            f"drawn_techs=[{drawn_techs_str}] tech_best=[{tech_best_str}]"
+        )
 
         # Format selected (site, tech) pairs into business opportunities dict
         top_business_opportunities[product] = {}
