@@ -744,7 +744,9 @@ def create_modelrun(request):
                 "probability_of_announcement": float(form.cleaned_data.get("probability_of_announcement") or 0.7),
                 "probability_of_construction": float(form.cleaned_data.get("probability_of_construction") or 0.9),
                 "top_n_loctechs_as_business_op": form.cleaned_data.get("top_n_loctechs_as_business_op", 15),
+                "opportunity_pool_depth": int(form.cleaned_data.get("opportunity_pool_depth") or 3),
                 "priority_pct": int(form.cleaned_data.get("priority_pct") or 5),
+                "calculate_npv_pct": float(form.cleaned_data.get("calculate_npv_pct") or 0.1),
                 # Plant capacity parameters (convert Mt to t)
                 "expanded_capacity": float(form.cleaned_data.get("expanded_capacity") or 2.5) * 1000000,
                 "capacity_limit_iron": float(form.cleaned_data.get("capacity_limit_iron") or 100) * 1000000,

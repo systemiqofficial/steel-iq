@@ -359,6 +359,19 @@ class ModelRunCreateForm(forms.ModelForm):
         widget=forms.NumberInput(attrs={"class": "form-control field-connected"}),
     )
 
+    opportunity_pool_depth = forms.IntegerField(
+        label="Opportunity pool depth",
+        initial=3,
+        min_value=1,
+        max_value=10,
+        required=False,
+        help_text=(
+            "Draw eligibility: global top (depth × top N) by NPV plus each technology's best 'depth' sites, "
+            "so every technology stays drawable"
+        ),
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected"}),
+    )
+
     priority_pct = forms.IntegerField(
         label="Percentage of considered opportunities",
         initial=5,
@@ -367,6 +380,21 @@ class ModelRunCreateForm(forms.ModelForm):
         required=False,
         help_text="Percentage of global grid points selected as priority locations for business opportunities",
         widget=forms.NumberInput(attrs={"class": "form-control field-connected"}),
+    )
+
+    calculate_npv_pct = forms.DecimalField(
+        label="NPV sample fraction",
+        initial=0.1,
+        min_value=0.0,
+        max_value=1.0,
+        max_digits=3,
+        decimal_places=2,
+        required=False,
+        help_text=(
+            "Fraction (0.0-1.0) of priority locations sampled each year for full NPV evaluation; "
+            "the 0.1 default only saves computational time"
+        ),
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.01"}),
     )
 
     # Plant capacity parameters
@@ -776,7 +804,9 @@ class ModelRunCreateForm(forms.ModelForm):
             "probability_of_announcement",
             "probability_of_construction",
             "top_n_loctechs_as_business_op",
+            "opportunity_pool_depth",
             "priority_pct",
+            "calculate_npv_pct",
             "expanded_capacity",
             "capacity_limit_iron",
             "capacity_limit_steel",

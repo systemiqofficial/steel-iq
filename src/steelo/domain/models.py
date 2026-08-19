@@ -6010,7 +6010,9 @@ class PlantGroup:
         technology_emission_factors: list[TechnologyEmissionFactors],
         chosen_emissions_boundary_for_carbon_costs: str,
         active_statuses: list[str],
-        top_n_loctechs_as_business_op: int = 5,
+        top_n_loctechs_as_business_op: int,
+        opportunity_pool_depth: int,
+        calculate_npv_pct: float,
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
@@ -6068,8 +6070,13 @@ class PlantGroup:
             chosen_emissions_boundary_for_carbon_costs: Emission boundary for carbon costs
             active_statuses: Status strings whose furnace groups vote in the group's
                 most-common-reductant aggregation
-            top_n_loctechs_as_business_op: Number of top opportunities to select (signature
-                default 5; the simulation config default is 15)
+            top_n_loctechs_as_business_op: Number of top opportunities to select per product
+                (single source of truth: SimulationConfig, default 15)
+            opportunity_pool_depth: Depth of the probabilistic draw's eligible pool: global
+                head of (depth * top_n) candidates by NPV unioned with each allowed
+                technology's best `depth` sites (see select_top_opportunities_by_npv)
+            calculate_npv_pct: Fraction (0.0-1.0) of the priority-location subset that is
+                randomly sampled for full NPV evaluation each year
             capex_subsidies: Dictionary mapping geo_key -> tech -> list of capex subsidies
                 (geo_key = "ISO3" or "ISO3:unit"; country and sub-national rows merge additively)
             debt_subsidies: Dictionary mapping geo_key -> tech -> list of debt subsidies
@@ -6141,7 +6148,7 @@ class PlantGroup:
         # Step 2: Select a subset of locations
         best_locations_subset = select_location_subset(
             locations=locations,
-            calculate_npv_pct=0.1,  # 10%; TODO: set as tuneable parameter
+            calculate_npv_pct=calculate_npv_pct,
         )
         subset_counts, subset_total = _count_entries(best_locations_subset)
         candidate_stats["subset_sites_total"] = subset_total
@@ -6237,6 +6244,7 @@ class PlantGroup:
             npv_dict=npv_dict,
             top_n_loctechs_as_business_op=top_n_loctechs_as_business_op,
             probabilistic_agents=probabilistic_agents,
+            opportunity_pool_depth=opportunity_pool_depth,
         )
         selected_counts, selected_total = _count_entries(top_business_opportunities)
         candidate_stats["selected_pairs_total"] = selected_total
