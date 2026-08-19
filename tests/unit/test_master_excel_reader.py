@@ -247,8 +247,30 @@ class TestMasterExcelReaderValidation:
                 assert by_id["P004"].location.geo_unit is None
                 assert by_id["P004"].location.geo_key == "DEU"
 
-    def test_read_plants_missing_iso3_column_raises(self):
-        """A plant sheet without the authored ISO3 column is rejected outright (master >= v2.2)."""
+    def test_read_plants_missing_iso3_and_country_columns_raises(self):
+        """A plant sheet with neither ISO3 nor Country has no way to derive geography."""
+        with tempfile.NamedTemporaryFile(suffix=".xlsx") as tf:
+            df = pd.DataFrame(
+                {
+                    "Plant ID": ["P001"],
+                    "Coordinates": ["52.52, 13.40"],
+                    "Main production equipment": ["EAF"],
+                    "Nominal EAF steel capacity (ttpa)": [800],
+                    "Start date": ["2015"],
+                },
+            )
+            with pd.ExcelWriter(tf.name) as writer:
+                df.to_excel(writer, sheet_name="Iron and steel plants", index=False)
+                self._create_minimal_bom_sheet(writer)
+
+            reader = MasterExcelReader(Path(tf.name))
+            with reader:
+                with pytest.raises(ValueError, match="ISO3"):
+                    reader.read_plants()
+
+    def test_read_plants_missing_iso3_column_falls_back_to_country(self):
+        """A plant sheet without ISO3 but with Country derives ISO3 from the country name
+        (master input < v2.2, pre-dating the authored-ISO3 contract)."""
         with tempfile.NamedTemporaryFile(suffix=".xlsx") as tf:
             df = pd.DataFrame(
                 {
@@ -266,7 +288,31 @@ class TestMasterExcelReaderValidation:
 
             reader = MasterExcelReader(Path(tf.name))
             with reader:
-                with pytest.raises(ValueError, match="ISO3"):
+                plants, _, _ = reader.read_plants()
+                assert len(plants) == 1
+                assert plants[0].location.iso3 == "DEU"
+
+    def test_read_plants_unresolvable_country_name_raises(self):
+        """A named country the mapping cannot resolve fails loudly rather than
+        silently producing a plant with an empty ISO3."""
+        with tempfile.NamedTemporaryFile(suffix=".xlsx") as tf:
+            df = pd.DataFrame(
+                {
+                    "Plant ID": ["P001"],
+                    "Coordinates": ["52.52, 13.40"],
+                    "Country": ["Atlantis"],
+                    "Main production equipment": ["EAF"],
+                    "Nominal EAF steel capacity (ttpa)": [800],
+                    "Start date": ["2015"],
+                },
+            )
+            with pd.ExcelWriter(tf.name) as writer:
+                df.to_excel(writer, sheet_name="Iron and steel plants", index=False)
+                self._create_minimal_bom_sheet(writer)
+
+            reader = MasterExcelReader(Path(tf.name))
+            with reader:
+                with pytest.raises(ValueError, match="Atlantis"):
                     reader.read_plants()
 
     def test_read_plants_skip_invalid_rows(self):

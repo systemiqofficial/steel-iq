@@ -224,6 +224,7 @@ class DataPreparationService:
         progress_callback: Optional[Any] = None,
         geo_version: Optional[str] = None,
         force_refresh: bool = False,
+        use_furnace_units_sheet: bool = True,
     ) -> PreparationResult:
         """
         Prepare all data files for simulation.
@@ -306,6 +307,7 @@ class DataPreparationService:
             verbose=verbose,
             progress_callback=progress_callback,
             geo_version=geo_version,
+            use_furnace_units_sheet=use_furnace_units_sheet,
         )
 
         # Ensure master_excel_path is set in result (it might have been resolved in _prepare_data_internal)
@@ -337,6 +339,7 @@ class DataPreparationService:
         verbose: bool = False,
         progress_callback: Optional[Any] = None,
         geo_version: Optional[str] = None,
+        use_furnace_units_sheet: bool = True,
     ) -> PreparationResult:
         """Internal method - existing prepare_data logic."""
         start_time = time.time()
@@ -378,17 +381,24 @@ class DataPreparationService:
         self._process_core_data(fixtures_dir, result, skip_existing, verbose)
         result.add_step(PreparationStep("Core data processing", time.time() - step_start))
 
-        # Step 7: Create JSON repositories
+        # Step 7: Extract geo data
+        step_start = time.time()
+        valid_geo_keys = self._extract_geo_data(data_dir, result, verbose, geo_version)
+        result.add_step(PreparationStep("Geo data extraction", time.time() - step_start))
+
+        # Step 8: Create JSON repositories
         step_start = time.time()
         self._create_json_repositories(
-            fixtures_dir, master_excel_path, result, skip_existing, verbose, progress_callback
+            fixtures_dir,
+            master_excel_path,
+            result,
+            skip_existing,
+            verbose,
+            progress_callback,
+            use_furnace_units_sheet,
+            valid_geo_keys=valid_geo_keys or None,
         )
         result.add_step(PreparationStep("JSON repository creation", time.time() - step_start))
-
-        # Step 8: Extract geo data
-        step_start = time.time()
-        self._extract_geo_data(data_dir, result, verbose, geo_version)
-        result.add_step(PreparationStep("Geo data extraction", time.time() - step_start))
 
         # Finalize result
         result.total_duration = time.time() - start_time
@@ -788,6 +798,8 @@ class DataPreparationService:
         skip_existing: bool,
         verbose: bool,
         progress_callback: Optional[Any] = None,
+        use_furnace_units_sheet: bool = True,
+        valid_geo_keys: Optional[set[str]] = None,
     ) -> None:
         """Create JSON repositories using the centralized recreation system."""
         # Create recreation config
@@ -808,6 +820,8 @@ class DataPreparationService:
             config=config,
             master_excel_path=master_excel_path,
             package_name="core-data",
+            use_furnace_units_sheet=use_furnace_units_sheet,
+            valid_geo_keys=valid_geo_keys,
         )
 
         # Track all created files
@@ -848,10 +862,16 @@ class DataPreparationService:
 
     def _extract_geo_data(
         self, data_dir: Path, result: PreparationResult, verbose: bool, geo_version: Optional[str] = None
-    ) -> None:
-        """Extract geo data files."""
+    ) -> set[str]:
+        """Extract geo data files.
+
+        Returns:
+            The valid sub-national geo-keys from the freshly built geo_hierarchy, for the
+            plants readers to validate against; empty when the geo package has no admin-1.
+        """
         from .geo_extractor import GeoDataExtractor
 
+        valid_geo_keys: set[str] = set()
         try:
             extractor = GeoDataExtractor(self.data_manager)
             start_time = time.time()
@@ -883,9 +903,9 @@ class DataPreparationService:
                 from .recreation_functions import recreate_geo_hierarchy_data, write_geo_options_csv
 
                 # Generated lookup table → fixtures/, alongside country_mappings.json etc.
-                geo_hierarchy_path = recreate_geo_hierarchy_data(
-                    data_dir / "fixtures" / "geo_hierarchy.json", admin1_shp
-                )
+                geo_hierarchy_path = data_dir / "fixtures" / "geo_hierarchy.json"
+                geo_hierarchy_rows = recreate_geo_hierarchy_data(geo_hierarchy_path, admin1_shp)
+                valid_geo_keys = {row["geo_key"] for row in geo_hierarchy_rows}
                 result.add_file(
                     PreparedFile(
                         filename="geo_hierarchy.json",
@@ -919,3 +939,5 @@ class DataPreparationService:
                 logging.info(f"❌ {error_msg}")
             # Re-raise the exception to stop the preparation process
             raise RuntimeError(error_msg) from e
+
+        return valid_geo_keys
