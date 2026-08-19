@@ -5141,8 +5141,9 @@ class PlantGroup:
 
         Note: The status is set to considered and the plant id is set to the next available id in the
         plant group. The utilization rate is set to the average utilization rate for the technology to
-        calculate realistic NPVs for business opportunities and reset to 0 when the plant is made
-        operational by PAM.
+        calculate realistic NPVs for business opportunities, refreshed yearly from the fleet average
+        while considered (update_dynamic_costs_for_business_opportunities), and reset to 0 when the
+        plant is made operational by PAM.
         """
         # Create new plant
         location = Location(

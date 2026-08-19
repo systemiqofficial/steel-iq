@@ -149,10 +149,10 @@ After cost propagation, the connector updates furnace group attributes:
 
 ```python
 allocated_volumes = sum(outgoing_edge_volumes)
-utilization_rate = allocated_volumes / capacity
+utilization_rate = min(1.0, allocated_volumes / capacity)
 ```
 
-Sets `fg.utilization_rate` based on actual production assigned by Trade Module.
+Sets `fg.utilization_rate` based on actual production assigned by Trade Module. The ratio is clamped at 1.0; an allocation above capacity is a solver anomaly and is logged as a warning.
 
 #### 4b. Update Bill of Materials
 

@@ -16,6 +16,7 @@ The system updates the costs and status of business opportunities each simulatio
    - Refresh CAPEX, cost of debt, and energy prices for all carriers
    - Apply subsidies (CAPEX and debt at the earliest construction start year; energy carriers at the operating start year that follows it)
    - Update bill of materials with new energy prices
+   - Refresh the expected utilisation of CONSIDERED opportunities from the current fleet average for the technology (ANNOUNCED ones keep their value)
 
 2. **Update Status**
    - For CONSIDERED: Recalculate NPV and check for status change
@@ -241,6 +242,7 @@ Updates dynamic costs for all CONSIDERED and ANNOUNCED business opportunities ea
 - Electricity and hydrogen prices sourced from the geospatial layer (custom power mix / capped LCOH); other carriers from the furnace group's existing cost base
 - Energy subsidies are collected for the plant's geography (country and province rows apply additively) and filtered at the operating start year (construction start + construction time), matching opportunity creation and the plant agent model
 - Bill of materials (updated with new subsidised input energy prices)
+- Expected utilisation, refreshed from `Environment.avg_utilization` (the operating fleet's average for the technology, with the same 0.6 fallback as opportunity creation) — CONSIDERED opportunities only. ANNOUNCED ones keep their value: the build decision is already taken, and utilisation is reset to 0 at construction start. A fleet average of zero flows into the zero-utilisation guard in the NPV re-valuation (−inf → discard).
 
 **Note:** For more information on the electricity and hydrogen prices see related documentation [Priority Location Selection](priority_location_selection.md).
 
