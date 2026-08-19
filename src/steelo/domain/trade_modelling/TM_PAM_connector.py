@@ -876,13 +876,20 @@ class TM_PAM_connector:
             - Logs debug warning if capacity is 0.
 
         Notes:
-            - Utilization rate is capped between 0.0 and capacity (no explicit cap applied).
+            - Utilization rate is clamped to at most 1.0; an allocation above capacity is a
+              solver anomaly and is logged as a warning.
             - Zero-capacity furnaces get utilization_rate = 0.
         """
         logger = logging.getLogger(f"{__name__}.update_furnace_group_utilisation")
         self.update_exported_volumes(furnace_groups=furnace_groups, volume_attribute=volume_attribute)
         for fg in furnace_groups:
-            fg.utilization_rate = fg.allocated_volumes / fg.capacity if fg.capacity > 0 else 0
+            raw_rate = fg.allocated_volumes / fg.capacity if fg.capacity > 0 else 0
+            if raw_rate > 1.0:
+                logger.warning(
+                    f"LP allocated {fg.allocated_volumes:,.0f} t to furnace group {fg.furnace_group_id} "
+                    f"with capacity {fg.capacity:,.0f} t (utilisation {raw_rate:.3f}); clamping to 1.0"
+                )
+            fg.utilization_rate = min(1.0, raw_rate)
             if fg.capacity <= 0:
                 # raise Warning(f"Furnace group capacity is 0 for {fg.furnace_group_id}")
                 logger.debug(

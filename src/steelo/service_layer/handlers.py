@@ -282,7 +282,10 @@ def update_cost_curve(_event: events.Event, uow: UnitOfWork, env: Environment):
     with uow:
         env.update_cost_curve(
             world_furnace_groups=[
-                fg for p in uow.plants.list() for fg in p.furnace_groups if (fg.status in env.config.active_statuses)
+                fg
+                for p in uow.plants.list()
+                for fg in p.furnace_groups
+                if (fg.status.lower() in env.config.active_statuses)
             ],
             lag=0,
         )
@@ -303,7 +306,12 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
         raise ValueError("SimulationConfig is required for update_furnace_utilization_rates")
 
     with uow:
-        fgs = [fg for p in uow.plants.list() for fg in p.furnace_groups if (fg.status in env.config.active_statuses)]
+        fgs = [
+            fg
+            for p in uow.plants.list()
+            for fg in p.furnace_groups
+            if (fg.status.lower() in env.config.active_statuses)
+        ]
         active_bof_count = sum(1 for fg in fgs if fg.technology.name.upper() == "BOF")
 
         tmpc = TM_PAM_connector(
@@ -359,7 +367,7 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
         iron_demand_from_production = 0.0
         for plant in uow.plants.list():
             for fg in plant.furnace_groups:
-                if fg.status in env.config.active_statuses and fg.technology.product.lower() == "iron":
+                if fg.status.lower() in env.config.active_statuses and fg.technology.product.lower() == "iron":
                     iron_demand_from_production += fg.production
 
         print(f"Iron demand based on production in year {env.year} is {iron_demand_from_production * T_TO_KT:,.0f} kt")
@@ -639,7 +647,7 @@ def finalise_iteration(
 
     print(f"Demand for year {env.year}: is {env.current_demand * T_TO_KT:,.0f} kt")
     print(
-        f"Steel capacity for year {env.year}: is {sum([fg.capacity for p in uow.plants.list() for fg in p.furnace_groups if fg.status in env.config.active_statuses and fg.technology.product == 'steel']) * T_TO_KT:,.0f} kt"
+        f"Steel capacity for year {env.year}: is {sum([fg.capacity for p in uow.plants.list() for fg in p.furnace_groups if fg.status.lower() in env.config.active_statuses and fg.technology.product == 'steel']) * T_TO_KT:,.0f} kt"
     )
     logger.debug(f"finalising iteration. time: {datetime.now()}")
 
