@@ -456,7 +456,7 @@ def recreate_geo_hierarchy_data(
     geo_hierarchy_json_path: Path,
     admin1_shapefile_path: Path,
     declared_iso2: Iterable[str] = ("CN",),
-) -> Path:
+) -> list[dict]:
     """Recreate geo_hierarchy.json from the Natural Earth admin-1 shapefile.
 
     Args:
@@ -465,7 +465,8 @@ def recreate_geo_hierarchy_data(
         declared_iso2: Countries to populate (China only for now).
 
     Returns:
-        The path the table was written to.
+        The geo_hierarchy rows that were written, for in-memory use by the caller
+        (e.g. handing the valid geo-keys to the plants readers without re-reading the file).
     """
     import geopandas as gpd
 
@@ -476,7 +477,7 @@ def recreate_geo_hierarchy_data(
 
     geo_hierarchy_json_path.write_text(json.dumps(rows, indent=2, ensure_ascii=False))
     console.print(f"[green]Wrote {len(rows)} geo_hierarchy rows to[/green]: {geo_hierarchy_json_path}")
-    return geo_hierarchy_json_path
+    return rows
 
 
 GEO_OPTIONS_COLUMNS = [

@@ -5,7 +5,6 @@ import pandas as pd
 import pytest
 
 from steelo.adapters.dataprocessing.master_excel_reader import MasterExcelReader
-from steelo.adapters.dataprocessing.master_excel_validator import MasterExcelValidator
 
 
 @pytest.fixture
@@ -130,10 +129,9 @@ def _write_geography_variant(base_path, tmp_path, iso3, geo_unit):
 
 
 def _reader_with_injected_geo_keys(excel_path):
-    """A reader whose validator carries deterministic geo-keys (no prepared-data dependency)."""
-    reader = MasterExcelReader(excel_path=excel_path)
-    reader.validator = MasterExcelValidator(valid_geo_keys={"CHN:CN-HE", "CHN:CN-SH"})
-    return reader
+    """A reader with deterministic geo-keys (no prepared-data dependency), as prep passes
+    the in-memory geo_hierarchy."""
+    return MasterExcelReader(excel_path=excel_path, valid_geo_keys={"CHN:CN-HE", "CHN:CN-SH"})
 
 
 class TestReadPlantsFromFurnaceUnitsSheetGeography:

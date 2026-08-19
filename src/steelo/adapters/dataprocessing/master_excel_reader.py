@@ -41,17 +41,20 @@ class ExtractionResult:
 class MasterExcelReader:
     """Reads and transforms master input Excel file data"""
 
-    def __init__(self, excel_path: Path, output_dir: Path | None = None):
+    def __init__(self, excel_path: Path, output_dir: Path | None = None, valid_geo_keys: set[str] | None = None):
         """
         Initialize the reader with an Excel file path.
 
         Args:
             excel_path: Path to the master input Excel file
             output_dir: Directory for output files (uses temp dir if not specified)
+            valid_geo_keys: Recognised sub-national geo-keys for geography checks (the
+                in-memory geo_hierarchy built during prep). None falls back to the
+                prepared geo_hierarchy.json, empty when none exists.
         """
         self.excel_path = excel_path
         self.output_dir = output_dir or Path(tempfile.mkdtemp(prefix="master_excel_"))
-        self.validator = MasterExcelValidator()
+        self.validator = MasterExcelValidator(valid_geo_keys=valid_geo_keys)
         self._excel_file: pd.ExcelFile | None = None
         self._validation_report: ValidationReport | None = None
 
