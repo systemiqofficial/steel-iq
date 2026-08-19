@@ -385,6 +385,60 @@ def test_track_business_opportunity_missing_bom(mock_location, market_price):
     assert fg.historical_npv_business_opportunities[Year(2027)] == float("-inf")
 
 
+def test_track_business_opportunity_zero_utilisation(mock_location, market_price):
+    """Test that NPV is set to -inf when utilization_rate is zero.
+
+    A furnace group the market allocated no fleet-wide production for cannot price its
+    fixed OPEX (scale_fopex_to_production divides by utilization_rate); the opportunity
+    should be re-valued at -inf instead of crashing.
+    """
+    fg = get_furnace_group(
+        fg_id="fg_zero_util",
+        tech_name="EAF",
+        capacity=100,
+        lifetime=PointInTime(
+            current=Year(2025),
+            time_frame=TimeFrame(start=Year(2030), end=Year(2060)),
+            plant_lifetime=20,
+        ),
+        utilization_rate=0.0,  # Zero utilisation
+    )
+    fg.status = "considered"
+    fg.cost_of_debt = 0.05
+    fg.technology.capex = 1000.0
+    fg.tech_unit_fopex = 35.0
+    fg.equity_share = 0.3
+    fg.railway_cost = 0.0
+    fg.chosen_reductant = "scrap"
+    fg.output_shares = {"scrap": 1.0}
+    fg.energy_costs_no_subsidy = {"electricity": 0.05, "hydrogen": 3500.0}
+
+    # Initialize with 2 years of data
+    fg.historical_npv_business_opportunities = {
+        Year(2025): float("-inf"),
+        Year(2026): float("-inf"),
+    }
+
+    command = fg.track_business_opportunities(
+        year=Year(2027),
+        location=mock_location,
+        market_price=market_price,
+        cost_of_equity=0.08,
+        plant_lifetime=20,
+        construction_time=2,
+        consideration_time=3,
+        probability_of_announcement=0.8,
+        all_opex_subsidies=[],
+        reductant_score_series=_stub_series,
+    )
+
+    # Verify - should discard due to negative NPVs
+    assert command is not None
+    assert isinstance(command, UpdateFurnaceGroupStatus)
+    assert command.new_status == "discarded"
+    assert fg.historical_npv_business_opportunities[Year(2027)] == float("-inf")
+
+
 def test_track_business_opportunity_nan_npv(mock_location, market_price):
     """Test that NaN NPV is converted to -inf."""
     fg = get_furnace_group(
