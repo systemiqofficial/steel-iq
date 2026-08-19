@@ -2383,6 +2383,10 @@ def read_biomass_availability(excel_path: Path, sheet_name: str = "Biomass avail
         for year in year_columns:
             if pd.notna(row[year]):
                 try:
+                    if "kg" in unit.lower():
+                        conversion_factor = 1e-3  # Convert kg to t
+                    else:
+                        conversion_factor = 1.0  # No conversion needed
                     availability = BiomassAvailability(
                         region=region,
                         country=country,
@@ -2390,7 +2394,7 @@ def read_biomass_availability(excel_path: Path, sheet_name: str = "Biomass avail
                         scenario=scenario,
                         unit=unit,
                         year=Year(int(year)),
-                        availability=float(row[year]),
+                        availability=float(row[year]) * conversion_factor,
                     )
                     availabilities.append(availability)
                 except (ValueError, TypeError) as e:

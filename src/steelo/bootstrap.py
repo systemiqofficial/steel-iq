@@ -155,7 +155,7 @@ def _load_secondary_feedstock_constraints(env, repository_json):
     logger = logging.getLogger(__name__)
     constraints = []
 
-    # Check if biomass availability data is available (this now includes CO2 storage)
+    # Check if biomass availability data is available
     if hasattr(repository_json, "biomass_availability") and repository_json.biomass_availability:
         # Get country mapping for region-to-ISO3 conversion
         country_mapping = None
