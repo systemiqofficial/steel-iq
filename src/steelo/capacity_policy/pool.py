@@ -30,8 +30,9 @@ class Credit:
             the retirement happened in one — member provinces share the tag, so
             a Hebei build can spend a Tianjin credit — else None (untagged).
         owner_id: Depositing PlantGroup.plant_group_id, or None for seeded
-            historical retirements that name no company. Unowned credits stay
-            freely drawable regardless of the banked-credit rule.
+            historical retirements that name no company. Unowned credits are
+            freely drawable before the swap cutoff and purged at it (kept only
+            under the ``persist`` banked-credit rule).
         product: ``"iron"`` or ``"steel"`` — iron and steel are separate stocks.
     """
 
@@ -94,7 +95,8 @@ class CapacityPool:
     run. Grants are all-or-nothing. A partially-consumed credit splits and the
     remainder keeps its original vintage — restamping would send it to the back
     of the queue and break FIFO. Credits may also carry a shelf life, swept at
-    the year boundary by :meth:`purge_expired`.
+    the year boundary by :meth:`purge_expired`; unowned credits are swept at
+    the cutoff boundary by :meth:`purge_unowned`.
     """
 
     def __init__(
@@ -111,8 +113,9 @@ class CapacityPool:
             banked_credit_rule: Treatment of pre-cutoff credits from the cutoff
                 year on: ``"reassign"`` keeps them with their depositor (the
                 owner filter applies), ``"persist"`` leaves them freely
-                spendable, ``"expire"`` makes them unusable. Unowned credits are
-                exempt from all three. Not an age rule — see
+                spendable, ``"expire"`` makes them unusable. Unowned credits
+                have no depositor to fall back to, so only ``"persist"`` keeps
+                them usable from the cutoff. Not an age rule — see
                 ``credit_validity_years``.
             credit_validity_years: Years a credit may sit banked before it is
                 purged. None never expires.
@@ -176,8 +179,8 @@ class CapacityPool:
         applied at withdrawal over the *ownership* cutoff and leaves the credits
         it disallows sitting in ``snapshot()`` and ``total()``. This is a real
         sweep, so the pool's own totals stay honest. Expiry applies to unowned
-        seeded credits too: the unowned exemption is an owner rule, not an age
-        rule.
+        seeded credits too — the shelf life is an age rule and owner rules have
+        no say in it.
 
         Args:
             year: The year being entered.
@@ -201,6 +204,40 @@ class CapacityPool:
             self.total(),
         )
         return expired
+
+    def purge_unowned(self, year: int) -> list[Credit]:
+        """Remove every unowned credit once ``year`` has reached the swap cutoff.
+
+        From the cutoff a company may only spend credits it deposited, and an
+        unowned credit has no depositor — nobody can ever spend it again, so it
+        is swept rather than left inflating ``snapshot()`` and ``total()``.
+        Under ``banked_credit_rule="persist"`` pre-cutoff vintages stay freely
+        spendable, unowned included, so nothing is purged. Idempotent after the
+        first boundary: runtime deposits always carry an owner.
+
+        Args:
+            year: The year being entered.
+
+        Returns:
+            The removed credits, so the caller can account for them; empty
+            before the cutoff, with no cutoff configured, or under persist.
+        """
+        cutoff = self.inter_company_swap_cutoff_year
+        if cutoff is None or year < cutoff or self.banked_credit_rule == "persist":
+            return []
+        purged = [credit for credit in self._credits if credit.owner_id is None]
+        if not purged:
+            return []
+        self._credits = [credit for credit in self._credits if credit.owner_id is not None]
+        logger.info(
+            "[CAPACITY POOL] purged unowned credits at the swap cutoff year=%d credits=%d "
+            "purged_mt=%.3f remaining_mt=%.3f",
+            year,
+            len(purged),
+            sum(credit.amount_mt for credit in purged),
+            self.total(),
+        )
+        return purged
 
     def can_withdraw(
         self,
@@ -255,7 +292,8 @@ class CapacityPool:
             - product: exact match — an iron credit cannot fund a steel build.
             - owner: from the cutoff year an ordinary withdrawal may spend only
               the withdrawer's own credits, with pre-cutoff vintages treated per
-              the banked-credit rule; unowned credits always stay drawable.
+              the banked-credit rule; unowned credits are drawable before the
+              cutoff and refused from it (except under ``persist``).
 
         ``single_owner=True`` (greenfield) replaces the owner filter: the whole
         withdrawal is served from one holder's credits — the holder whose oldest
@@ -337,7 +375,7 @@ class CapacityPool:
         if unowned:
             logger.warning(
                 "[CAPACITY POOL] %d of %d seeded credit(s) name no owner; "
-                "they stay freely drawable regardless of the banked-credit rule",
+                "they are freely drawable before the swap cutoff and purged at it",
                 unowned,
                 len(ordered),
             )
@@ -377,20 +415,20 @@ class CapacityPool:
             return False
         if credit.product != product:
             return False
-        if credit.owner_id is None:
-            # Unowned seeded credits stay drawable under every banked-credit rule —
-            # silently deleting the seed at the boundary would be an artefact
-            return True
         cutoff = self.inter_company_swap_cutoff_year
         if cutoff is None or year < cutoff:
             return True
         pre_cutoff_vintage = credit.vintage_year < cutoff
+        if pre_cutoff_vintage and self.banked_credit_rule == "persist":
+            return True
         if pre_cutoff_vintage and self.banked_credit_rule == "expire":
+            return False
+        if credit.owner_id is None:
+            # Only opening-pool credits are unowned; with no depositor to keep
+            # them they are unspendable from the cutoff
             return False
         if single_owner:
             # The one-holder restriction is enforced by selection, not per credit
-            return True
-        if pre_cutoff_vintage and self.banked_credit_rule == "persist":
             return True
         return credit.owner_id == owner_id
 

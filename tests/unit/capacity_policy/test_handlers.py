@@ -1354,3 +1354,24 @@ class TestPurgeHandler:
 
         assert bound.total() == pytest.approx(4.0)
         assert recorder._ledger == []
+
+    def test_boundary_past_the_cutoff_sweeps_unowned_credits(
+        self, bound: CapacityPool, recorder: CapacityPolicyRecorder
+    ):
+        """Entering a year at or past the swap cutoff drops the unowned opening
+        credits and writes them to the ledger as ``expired_unowned`` rows."""
+        bound.deposit(Credit(amount_mt=3.0, vintage_year=2020, region_tag=None, owner_id=None, product="iron"))
+        bound.deposit(Credit(amount_mt=1.0, vintage_year=2026, region_tag=None, owner_id="E1", product="iron"))
+
+        cp_handlers.purge_expired_credits(
+            events.IterationOver(time_step_increment=1, iron_price=1.0),
+            env=FakeEnv(),  # type: ignore[arg-type]
+        )
+
+        assert bound.total() == pytest.approx(1.0)
+        (row,) = recorder._ledger
+        assert row["operation"] == "expired_unowned"
+        assert row["year"] == 2031
+        assert row["vintage_year"] == 2020
+        assert row["amount_t"] == pytest.approx(3.0)
+        assert row["owner_id"] is None

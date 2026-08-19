@@ -230,7 +230,7 @@ def flows_by_key(ledger: list[dict[str, str]], year: int) -> dict[tuple[str, str
         if row["operation"] == "seed" or row["operation"].startswith("deposit_") or row["operation"] == "refunded":
             key = (row["region_tag"], row["owner_id"], row["product"])
             totals[key] = totals.get(key, 0.0) + float(row["amount_t"])
-        elif row["operation"] == "expired":
+        elif row["operation"].startswith("expired"):
             key = (row["region_tag"], row["owner_id"], row["product"])
             totals[key] = totals.get(key, 0.0) - float(row["amount_t"])
         elif row["operation"].startswith("withdraw_"):

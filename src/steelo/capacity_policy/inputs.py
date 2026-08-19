@@ -80,7 +80,8 @@ class OpeningCreditRow:
         product: ``"iron"`` or ``"steel"``.
         technology: Retired technology — provenance only, never a filter.
         plant_group_id: Owning company (maps to ``SeedEntry.owner_id``), or
-            None for an unowned, freely drawable credit.
+            None for an unowned credit — freely drawable before the swap
+            cutoff, purged at it.
     """
 
     vintage_year: int

@@ -16,8 +16,8 @@ of one arithmetic, and they agree exactly:
     state(Y) = seed + Σ deposits − Σ consumed − Σ expired + Σ refunded, all ≤ Y
 
 per ``(region_tag, owner_id, product)`` and in aggregate, where "deposits" means
-every ``deposit_*`` operation — the mechanism is part of the fact, not a
-separate stock. It holds because the
+every ``deposit_*`` operation and "expired" every ``expired*`` one — the
+mechanism is part of the fact, not a separate stock. It holds because the
 yearly snapshot is taken *before* ``finalise_iteration`` increments the year, so
 the transactions that boundary triggers (scheduled switches, end-of-life
 closures) stamp Y+1 and land in the next snapshot; the boundary purge runs
@@ -108,6 +108,7 @@ LEDGER_OPERATIONS = (
     "withdraw_expansion",
     "withdraw_greenfield",
     "expired",
+    "expired_unowned",
     "refunded",
     "blocked_expansion",
     "blocked_greenfield",
@@ -200,18 +201,25 @@ class CapacityPolicyRecorder:
             }
         )
 
-    def record_expired(self, year: int, credits: Sequence[Credit]) -> None:
-        """Append one ``expired`` row per credit the boundary purge removed.
+    def record_expired(self, year: int, credits: Sequence[Credit], operation: str = "expired") -> None:
+        """Append one row per credit a boundary purge removed.
 
         One row per credit rather than an aggregate: expired-unused capacity has
         to be readable per key region and nationally (Decision 27), and the
         per-credit rows are what make both groupings — and the reconciliation
         subtraction — fall out of the same file.
+
+        Args:
+            year: The year being entered when the purge ran.
+            credits: The credits the purge removed.
+            operation: ``"expired"`` for the shelf-life sweep,
+                ``"expired_unowned"`` for the swap-cutoff sweep of unowned
+                opening credits.
         """
         for credit in credits:
             self.record_ledger(
                 year=year,
-                operation="expired",
+                operation=operation,
                 amount_t=credit.amount_mt,
                 region_tag=credit.region_tag,
                 owner_id=credit.owner_id,

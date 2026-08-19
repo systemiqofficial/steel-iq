@@ -224,15 +224,39 @@ def test_expire_boundary_vintage_is_post_cutoff():
     assert result.granted is True
 
 
-def test_unowned_credits_drawable_under_every_banked_credit_rule():
-    """Unowned seeded credits stay freely drawable — even under expire."""
-    for rule in ("reassign", "persist", "expire"):
+def test_unowned_credits_drawable_by_anyone_before_the_cutoff():
+    """An unowned opening credit is freely spendable while the owner filter is inactive."""
+    pool = CapacityPool()
+    pool.deposit(make_credit(owner_id=None, vintage_year=2020))
+
+    result = pool.try_withdraw(1.0, region_tag=None, product="steel", owner_id="owner-b", year=PRE_CUTOFF_YEAR)
+
+    assert result.granted is True
+
+
+def test_unowned_credits_refused_from_the_cutoff_except_under_persist():
+    """From the cutoff an unowned credit has no depositor, so nobody may spend it —
+    unless persist keeps every pre-cutoff vintage freely spendable."""
+    for rule, granted in (("reassign", False), ("expire", False), ("persist", True)):
         pool = CapacityPool(banked_credit_rule=rule)
         pool.deposit(make_credit(owner_id=None, vintage_year=PRE_CUTOFF_YEAR))
 
         result = pool.try_withdraw(1.0, region_tag=None, product="steel", owner_id="owner-b", year=POST_CUTOFF_YEAR)
 
-        assert result.granted is True, f"unowned credit not drawable under {rule}"
+        assert result.granted is granted, f"unexpected grant={result.granted} under {rule}"
+
+
+def test_single_owner_cannot_draw_from_the_unowned_pot_from_the_cutoff():
+    """The unowned pot stops being a selectable greenfield holder at the cutoff."""
+    pool = CapacityPool()
+    pool.deposit(make_credit(amount_mt=2.0, vintage_year=2018, owner_id=None))
+
+    result = pool.try_withdraw(
+        1.0, region_tag=None, product="steel", owner_id="indi_CHN", year=POST_CUTOFF_YEAR, single_owner=True
+    )
+
+    assert result.granted is False
+    assert result.blocked_reason == "insufficient_applicable_pool"
 
 
 def test_single_owner_draws_wholly_from_one_holder():
@@ -421,12 +445,53 @@ def test_no_shelf_life_never_expires():
 
 
 def test_unowned_credits_expire_like_any_other():
-    """The unowned exemption is an owner rule, not an age rule."""
+    """The shelf life is an age rule; owner rules have no say in it."""
     pool = CapacityPool(credit_validity_years=2)
     pool.deposit(make_credit(owner_id=None, vintage_year=2020))
 
     assert len(pool.purge_expired(2022)) == 1
     assert pool.total() == 0.0
+
+
+# ---- Unowned sweep: opening credits die at the swap cutoff ----
+
+
+def test_purge_unowned_is_a_noop_before_the_cutoff():
+    pool = CapacityPool()
+    pool.deposit(make_credit(owner_id=None))
+
+    assert pool.purge_unowned(PRE_CUTOFF_YEAR) == []
+    assert pool.total() == 1.0
+
+
+def test_purge_unowned_removes_exactly_the_unowned_credits_at_the_cutoff():
+    """Entering the cutoff year sweeps the unowned credits and returns them; owned
+    credits are untouched."""
+    pool = CapacityPool()
+    unowned = make_credit(amount_mt=2.0, vintage_year=2018, owner_id=None)
+    pool.deposit(unowned)
+    pool.deposit(make_credit(amount_mt=1.0, vintage_year=2020, owner_id="owner-a"))
+
+    assert pool.purge_unowned(2028) == [unowned]
+    assert pool.total() == 1.0
+    assert all(c.owner_id is not None for c in pool.snapshot())
+
+
+def test_purge_unowned_is_a_noop_when_the_cutoff_is_disabled():
+    pool = CapacityPool(inter_company_swap_cutoff_year=None)
+    pool.deposit(make_credit(owner_id=None))
+
+    assert pool.purge_unowned(POST_CUTOFF_YEAR) == []
+    assert pool.total() == 1.0
+
+
+def test_purge_unowned_is_a_noop_under_persist():
+    """persist keeps pre-cutoff vintages freely spendable, unowned included."""
+    pool = CapacityPool(banked_credit_rule="persist")
+    pool.deposit(make_credit(owner_id=None, vintage_year=PRE_CUTOFF_YEAR))
+
+    assert pool.purge_unowned(POST_CUTOFF_YEAR) == []
+    assert pool.total() == 1.0
 
 
 def test_banked_credit_expire_rule_is_not_a_purge():

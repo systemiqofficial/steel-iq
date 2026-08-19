@@ -181,6 +181,7 @@ def configure_capacity_policy(
             geo_key=entry.geo_key,
         )
     recorder.record_expired(start_year, pool.purge_expired(start_year))
+    recorder.record_expired(start_year, pool.purge_unowned(start_year), operation="expired_unowned")
     bind_capacity_policy(evaluator, pool, recorder)
     logger.info("[CAPACITY POOL] policy bound: deposits and all three gates are live for this run")
 

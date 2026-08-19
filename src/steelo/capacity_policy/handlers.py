@@ -972,7 +972,8 @@ def snapshot_pool_state(_event: events.IterationOver, env: Environment) -> None:
 
 
 def purge_expired_credits(_event: events.IterationOver, env: Environment) -> None:
-    """Sweep credits past their shelf life at the year boundary.
+    """Sweep dead credits at the year boundary: shelf-life expiry and, on
+    entering the swap cutoff, the unowned opening credits.
 
     Registered *after* ``finalise_iteration``, which is what makes the yearly
     state honest at both ends: the year-Y snapshot is taken before the
@@ -988,6 +989,7 @@ def purge_expired_credits(_event: events.IterationOver, env: Environment) -> Non
         return
     year = int(env.year)
     policy.recorder.record_expired(year, policy.pool.purge_expired(year))
+    policy.recorder.record_expired(year, policy.pool.purge_unowned(year), operation="expired_unowned")
 
 
 def record_motion_on_furnace_group_closed(event: events.FurnaceGroupClosed, uow: UnitOfWork, env: Environment) -> None:
