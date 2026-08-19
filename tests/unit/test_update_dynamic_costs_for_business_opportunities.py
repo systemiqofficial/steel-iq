@@ -6,6 +6,14 @@ from steelo.domain.models import PlantGroup, Subsidy, Location
 from steelo.domain.commands import UpdateDynamicCosts
 from steelo.devdata import get_furnace_group, get_plant, PointInTime, TimeFrame, Year
 
+# Matches the utilisation each test bakes into its furnace groups, so the yearly
+# refresh is a no-op unless a test overrides it deliberately
+AVG_UTILIZATION = {
+    "EAF": {"utilization_rate": 0.7},
+    "BOF": {"utilization_rate": 0.75},
+    "DRI": {"utilization_rate": 0.7},
+}
+
 
 @pytest.fixture
 def mock_custom_energy_costs():
@@ -166,6 +174,7 @@ def test_update_costs_for_considered_plant_no_subsidies(
         cost_debt_all_locs=cost_debt_all_locs,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
         capex_subsidies={},
         debt_subsidies={},
     )
@@ -232,6 +241,7 @@ def test_update_costs_for_announced_plant_no_subsidies(
         cost_debt_all_locs=cost_debt_all_locs,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
         capex_subsidies={},
         debt_subsidies={},
     )
@@ -306,6 +316,7 @@ def test_update_costs_with_capex_subsidies(
         cost_debt_all_locs=cost_debt_all_locs,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
         capex_subsidies=capex_subsidies,
         debt_subsidies={},
     )
@@ -379,6 +390,7 @@ def test_update_costs_with_debt_subsidies(
         cost_debt_all_locs=cost_debt_all_locs,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
         capex_subsidies={},
         debt_subsidies=debt_subsidies,
     )
@@ -423,6 +435,7 @@ def test_skip_operating_plants(mock_custom_energy_costs, capex_dict_all_locs, co
         cost_debt_all_locs=cost_debt_all_locs,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
     )
 
     # Verify - should return empty list
@@ -506,6 +519,7 @@ def test_skip_plant_with_missing_cost_of_debt(mock_custom_energy_costs, capex_di
         cost_debt_all_locs=cost_debt_all_locs,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
     )
 
     # Verify - should skip this plant
@@ -554,6 +568,7 @@ def test_skip_furnace_group_with_missing_capex(mock_custom_energy_costs, cost_de
         cost_debt_all_locs=cost_debt_all_locs,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
     )
 
     # Verify - should skip this furnace group
@@ -612,6 +627,7 @@ def test_skip_furnace_group_with_no_cost_changes(
         cost_debt_all_locs=cost_debt_all_locs,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
     )
 
     # Verify - no command emitted because all costs match
@@ -700,6 +716,7 @@ def test_multiple_plants_mixed_statuses(
         cost_debt_all_locs=cost_debt_all_locs,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
     )
 
     # Verify - should only process plants 1 and 2
@@ -779,6 +796,7 @@ def test_considered_plant_with_historical_npv(
         cost_debt_all_locs=cost_debt_all_locs,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
         capex_subsidies=capex_subsidies,
         debt_subsidies={},
     )
@@ -835,6 +853,7 @@ def test_furnace_group_without_bill_of_materials(
         cost_debt_all_locs=cost_debt_all_locs,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
     )
 
     # Verify - the cost refresh does not depend on a BOM being present
@@ -931,6 +950,7 @@ def test_update_costs_with_energy_subsidies(
         cost_debt_all_locs=cost_debt_all_locs,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
         capex_subsidies={},
         debt_subsidies={},
         energy_subsidies=energy_subsidies,
@@ -1034,6 +1054,7 @@ def test_update_costs_with_province_scoped_energy_subsidies(
         cost_debt_all_locs=cost_debt_all_locs,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
         capex_subsidies={},
         debt_subsidies={},
         energy_subsidies=energy_subsidies,
@@ -1145,6 +1166,7 @@ def test_energy_subsidies_filtered_at_operating_start_year(
         cost_debt_all_locs=cost_debt_all_locs,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
     )
 
     expires_during_construction = _dri_opportunity_plant_group(
@@ -1184,6 +1206,7 @@ def test_capex_subsidies_stay_filtered_at_construction_start_year(
         cost_debt_all_locs=cost_debt_all_locs,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
     )
 
     live_at_construction_start = _dri_opportunity_plant_group(
@@ -1229,8 +1252,214 @@ def test_considered_target_year_is_floored_at_next_year(
         cost_debt_all_locs=cost_debt_all_locs,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.02,
+        avg_utilization=AVG_UTILIZATION,
         capex_subsidies=_capex_subsidy(2026, 2026),
     )
 
     assert len(commands) == 1
     assert commands[0].new_capex == 1000.0  # 50% subsidy live in the floored year 2026
+
+
+def test_considered_utilisation_refreshed_from_fleet_average(
+    mock_custom_energy_costs,
+    capex_dict_all_locs,
+    cost_debt_all_locs,
+    iso3_to_region_map,
+):
+    """A considered opportunity's utilisation is refreshed from the current fleet average.
+
+    The value baked in at creation must not survive a change in the fleet statistic:
+    the emitted command carries the fresh value even when no other cost moved.
+    """
+    energy = {"electricity": 50.0, "hydrogen": 3.5}
+    fg = get_furnace_group(
+        fg_id="fg_util_refresh",
+        tech_name="EAF",
+        capacity=100,
+        lifetime=PointInTime(
+            current=Year(2025),
+            time_frame=TimeFrame(start=Year(2027), end=Year(2047)),
+            plant_lifetime=20,
+        ),
+        utilization_rate=0.7,
+    )
+    fg.status = "considered"
+    # All costs match what the refresh will compute, so only utilisation changes
+    fg.cost_of_debt = 0.05
+    fg.technology.capex = 1000.0
+    fg.energy_costs = dict(energy)
+    fg.output_energy_costs = dict(energy)
+    fg.energy_costs_no_subsidy = dict(energy)
+
+    plant = get_plant(plant_id="plant_util_refresh", furnace_groups=[fg])
+    plant.location = Location(lat=40.0, lon=-100.0, country="USA", region="Americas", iso3="USA")
+
+    plant_group = PlantGroup(plant_group_id="test_group", plants=[plant])
+
+    commands = plant_group.update_dynamic_costs_for_business_opportunities(
+        current_year=Year(2025),
+        consideration_time=3,
+        construction_time=4,
+        custom_energy_costs=mock_custom_energy_costs,
+        capex_dict_all_locs=capex_dict_all_locs,
+        cost_debt_all_locs=cost_debt_all_locs,
+        iso3_to_region_map=iso3_to_region_map,
+        global_risk_free_rate=0.02,
+        avg_utilization={"EAF": {"utilization_rate": 0.9}},
+    )
+
+    # A utilisation-only change must not be swallowed by the no-change skip
+    assert len(commands) == 1
+    assert commands[0].new_utilization_rate == 0.9
+
+
+def test_considered_utilisation_refreshed_to_zero(
+    mock_custom_energy_costs,
+    capex_dict_all_locs,
+    cost_debt_all_locs,
+    iso3_to_region_map,
+):
+    """A fleet average of exactly 0.0 is a real value, not a missing key.
+
+    The refresh must carry it through (feeding the zero-utilisation guard in
+    track_business_opportunities) rather than falling back to the 0.6 default.
+    """
+    energy = {"electricity": 50.0, "hydrogen": 3.5}
+    fg = get_furnace_group(
+        fg_id="fg_util_zero",
+        tech_name="EAF",
+        capacity=100,
+        lifetime=PointInTime(
+            current=Year(2025),
+            time_frame=TimeFrame(start=Year(2027), end=Year(2047)),
+            plant_lifetime=20,
+        ),
+        utilization_rate=0.7,
+    )
+    fg.status = "considered"
+    fg.cost_of_debt = 0.05
+    fg.technology.capex = 1000.0
+    fg.energy_costs = dict(energy)
+    fg.output_energy_costs = dict(energy)
+    fg.energy_costs_no_subsidy = dict(energy)
+
+    plant = get_plant(plant_id="plant_util_zero", furnace_groups=[fg])
+    plant.location = Location(lat=40.0, lon=-100.0, country="USA", region="Americas", iso3="USA")
+
+    plant_group = PlantGroup(plant_group_id="test_group", plants=[plant])
+
+    commands = plant_group.update_dynamic_costs_for_business_opportunities(
+        current_year=Year(2025),
+        consideration_time=3,
+        construction_time=4,
+        custom_energy_costs=mock_custom_energy_costs,
+        capex_dict_all_locs=capex_dict_all_locs,
+        cost_debt_all_locs=cost_debt_all_locs,
+        iso3_to_region_map=iso3_to_region_map,
+        global_risk_free_rate=0.02,
+        avg_utilization={"EAF": {"utilization_rate": 0.0}},
+    )
+
+    assert len(commands) == 1
+    assert commands[0].new_utilization_rate == 0.0
+
+
+def test_considered_utilisation_missing_tech_falls_back_to_default(
+    mock_custom_energy_costs,
+    capex_dict_all_locs,
+    cost_debt_all_locs,
+    iso3_to_region_map,
+):
+    """A tech absent from avg_utilization gets the 0.6 default, mirroring creation.
+
+    Mirrors the lookup in get_bom_from_avg_boms so refresh and opportunity creation
+    can never disagree on the fallback.
+    """
+    energy = {"electricity": 50.0, "hydrogen": 3.5}
+    fg = get_furnace_group(
+        fg_id="fg_util_fallback",
+        tech_name="EAF",
+        capacity=100,
+        lifetime=PointInTime(
+            current=Year(2025),
+            time_frame=TimeFrame(start=Year(2027), end=Year(2047)),
+            plant_lifetime=20,
+        ),
+        utilization_rate=0.7,
+    )
+    fg.status = "considered"
+    fg.cost_of_debt = 0.05
+    fg.technology.capex = 1000.0
+    fg.energy_costs = dict(energy)
+    fg.output_energy_costs = dict(energy)
+    fg.energy_costs_no_subsidy = dict(energy)
+
+    plant = get_plant(plant_id="plant_util_fallback", furnace_groups=[fg])
+    plant.location = Location(lat=40.0, lon=-100.0, country="USA", region="Americas", iso3="USA")
+
+    plant_group = PlantGroup(plant_group_id="test_group", plants=[plant])
+
+    commands = plant_group.update_dynamic_costs_for_business_opportunities(
+        current_year=Year(2025),
+        consideration_time=3,
+        construction_time=4,
+        custom_energy_costs=mock_custom_energy_costs,
+        capex_dict_all_locs=capex_dict_all_locs,
+        cost_debt_all_locs=cost_debt_all_locs,
+        iso3_to_region_map=iso3_to_region_map,
+        global_risk_free_rate=0.02,
+        avg_utilization={},
+    )
+
+    assert len(commands) == 1
+    assert commands[0].new_utilization_rate == 0.6
+
+
+def test_announced_utilisation_not_refreshed(
+    mock_custom_energy_costs,
+    capex_dict_all_locs,
+    cost_debt_all_locs,
+    iso3_to_region_map,
+):
+    """An announced opportunity keeps its utilisation regardless of the fleet average.
+
+    The build decision is already taken; the value is reset to 0 at construction start,
+    so refreshing it would only perturb unrelated readers.
+    """
+    fg = get_furnace_group(
+        fg_id="fg_announced_util",
+        tech_name="BOF",
+        capacity=200,
+        lifetime=PointInTime(
+            current=Year(2025),
+            time_frame=TimeFrame(start=Year(2026), end=Year(2046)),
+            plant_lifetime=20,
+        ),
+        utilization_rate=0.75,
+    )
+    fg.status = "announced"
+    fg.cost_of_debt = 0.07
+    fg.technology.capex = 1700.0
+    fg.energy_costs = {"electricity": 55.0, "hydrogen": 3.8}
+
+    plant = get_plant(plant_id="plant_announced_util", furnace_groups=[fg])
+    plant.location = Location(lat=51.0, lon=9.0, country="DEU", region="Europe", iso3="DEU")
+
+    plant_group = PlantGroup(plant_group_id="test_group", plants=[plant])
+
+    commands = plant_group.update_dynamic_costs_for_business_opportunities(
+        current_year=Year(2025),
+        consideration_time=3,
+        construction_time=4,
+        custom_energy_costs=mock_custom_energy_costs,
+        capex_dict_all_locs=capex_dict_all_locs,
+        cost_debt_all_locs=cost_debt_all_locs,
+        iso3_to_region_map=iso3_to_region_map,
+        global_risk_free_rate=0.02,
+        avg_utilization={"BOF": {"utilization_rate": 0.2}},
+    )
+
+    # Costs changed (debt 0.07->0.04, capex 1700->1600) so a command is emitted,
+    # but it carries the FG's own utilisation, not the fleet average
+    assert len(commands) == 1
+    assert commands[0].new_utilization_rate == 0.75

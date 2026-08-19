@@ -213,6 +213,7 @@ class GeospatialModel:
                     cost_debt_all_locs=bus.env.cost_of_debt_by_tech,
                     iso3_to_region_map=bus.env.country_mappings.iso3_to_region(),
                     global_risk_free_rate=bus.env.config.global_risk_free_rate,
+                    avg_utilization=bus.env.avg_utilization,
                     capex_subsidies=bus.env.capex_subsidies,
                     debt_subsidies=bus.env.debt_subsidies,
                     energy_subsidies=bus.env.energy_subsidies,

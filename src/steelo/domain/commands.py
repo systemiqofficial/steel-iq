@@ -110,6 +110,7 @@ class UpdateDynamicCosts(Command):
         - Cost of debt (with subsidies, if applicable)
         - CAPEX (with subsidies, if applicable)
         - Energy costs for all carriers (subsidised input, output, and unsubsidised)
+        - Expected utilisation (fleet average for the technology at emission time)
     """
 
     plant_id: str
@@ -121,6 +122,7 @@ class UpdateDynamicCosts(Command):
     new_energy_costs: dict[str, float]
     new_output_energy_costs: dict[str, float]
     new_energy_costs_no_subsidy: dict[str, float]
+    new_utilization_rate: float
 
 
 # @dataclass

@@ -5141,8 +5141,9 @@ class PlantGroup:
 
         Note: The status is set to considered and the plant id is set to the next available id in the
         plant group. The utilization rate is set to the average utilization rate for the technology to
-        calculate realistic NPVs for business opportunities and reset to 0 when the plant is made
-        operational by PAM.
+        calculate realistic NPVs for business opportunities, refreshed yearly from the fleet average
+        while considered (update_dynamic_costs_for_business_opportunities), and reset to 0 when the
+        plant is made operational by PAM.
         """
         # Create new plant
         location = Location(
@@ -6282,6 +6283,7 @@ class PlantGroup:
         cost_debt_all_locs: dict[str, dict[str, float]],
         iso3_to_region_map: dict[str, str],
         global_risk_free_rate: float,
+        avg_utilization: dict[str, dict[str, float]],
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         energy_subsidies: dict[str, dict[str, dict[str, list[Subsidy]]]] = {},
@@ -6294,6 +6296,9 @@ class PlantGroup:
             - CAPEX with subsidies
             - Cost of debt with subsidies
             - Energy costs from custom energy model (with subsidies)
+            - Expected utilisation, refreshed from the current fleet average for the
+              technology (considered opportunities only — announced ones keep their value,
+              which is reset to 0 at construction anyway)
 
         Dynamic costs are updated based on the following logic:
             - Base costs: CAPEX, cost of debt, electricity costs, and hydrogen costs are set to the
@@ -6314,6 +6319,8 @@ class PlantGroup:
             cost_debt_all_locs: Dictionary mapping iso3 -> tech -> cost of debt
             iso3_to_region_map: Dictionary mapping ISO3 country codes to regions
             global_risk_free_rate: Global risk-free interest rate
+            avg_utilization: Fleet-average utilisation per technology
+                (``Environment.avg_utilization``: tech -> {"utilization_rate": rate})
             capex_subsidies: Dictionary mapping geo_key -> tech -> list of capex subsidies
                 (geo_key = "ISO3" or "ISO3:unit"; country and sub-national rows merge additively)
             debt_subsidies: Dictionary mapping geo_key -> tech -> list of debt subsidies
@@ -6459,18 +6466,26 @@ class PlantGroup:
                         new_output_energy_costs = dict(base_costs)
                         new_energy_costs_no_subsidy = dict(base_costs)
 
+                    # Refresh the expected utilisation from the current fleet average
+                    if fg.status == "considered":
+                        new_utilization_rate = avg_utilization.get(fg.technology.name, {}).get("utilization_rate", 0.6)
+                    else:
+                        new_utilization_rate = fg.utilization_rate
+
                     # Check if costs have actually changed
                     old_costs_cmp = {
                         "cost_of_debt": fg.cost_of_debt,
                         "capex": fg.technology.capex,
                         "energy_costs": fg.energy_costs,
                         "output_energy_costs": fg.output_energy_costs,
+                        "utilization_rate": fg.utilization_rate,
                     }
                     new_costs_cmp = {
                         "cost_of_debt": new_costs["cost_of_debt"],
                         "capex": new_costs["capex"],
                         "energy_costs": new_energy_costs,
                         "output_energy_costs": new_output_energy_costs,
+                        "utilization_rate": new_utilization_rate,
                     }
                     if old_costs_cmp == new_costs_cmp:
                         continue  # Skip if no changes
@@ -6489,6 +6504,7 @@ class PlantGroup:
                             new_energy_costs=new_energy_costs,
                             new_output_energy_costs=new_output_energy_costs,
                             new_energy_costs_no_subsidy=new_energy_costs_no_subsidy,
+                            new_utilization_rate=new_utilization_rate,
                         )
                     )
         return update_commands

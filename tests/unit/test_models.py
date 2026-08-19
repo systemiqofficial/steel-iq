@@ -281,6 +281,7 @@ def test_update_dynamic_costs_power_price_not_scaled():
         },
         iso3_to_region_map={"USA": "NAM"},
         global_risk_free_rate=0.03,
+        avg_utilization={},
     )
 
     assert update_cmds, "Expected an UpdateDynamicCosts command to be enqueued."

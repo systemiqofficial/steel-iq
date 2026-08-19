@@ -116,6 +116,7 @@ def test_update_dynamic_costs_uses_geospatial_power_price_without_scaling():
         cost_debt_all_locs=cost_debt_all_locs,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.01,
+        avg_utilization={},
         capex_subsidies={},
         debt_subsidies={},
     )
