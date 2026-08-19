@@ -331,6 +331,7 @@ class DataRecreator:
         master_excel_path: Path | None = None,
         package_name: str = "core-data",
         use_furnace_units_sheet: bool = True,
+        valid_geo_keys: set[str] | None = None,
     ) -> dict[str, Path]:
         """
         Recreate files using a RecreationConfig for fine-grained control.
@@ -342,6 +343,9 @@ class DataRecreator:
             package_name: Data package to use for core archive files
             use_furnace_units_sheet: If True, use new furnace units sheet reader.
                                     If False, use old iron/steel plants reader.
+            valid_geo_keys: Recognised sub-national geo-keys for the plants readers to
+                            validate against (the in-memory geo_hierarchy built during
+                            prep). None falls back to the prepared geo_hierarchy.json.
 
         Returns:
             Dictionary mapping filenames to their output paths
@@ -404,7 +408,7 @@ class DataRecreator:
 
                     # Call the appropriate recreation function
                     success = self._recreate_single_file(
-                        spec, output_dir, package_dir, master_excel_path, use_furnace_units_sheet
+                        spec, output_dir, package_dir, master_excel_path, use_furnace_units_sheet, valid_geo_keys
                     )
 
                     if success and file_path.exists():
@@ -442,6 +446,7 @@ class DataRecreator:
         package_dir: Path,
         master_excel_path: Path | None,
         use_furnace_units_sheet: bool = True,
+        valid_geo_keys: set[str] | None = None,
     ) -> bool:
         """
         Recreate a single file based on its specification.
@@ -638,7 +643,7 @@ class DataRecreator:
                 )
 
                 # Note: We're not loading gravity distances for now as they need proper JSON serialization
-                with MasterExcelReader(master_excel_path) as reader:
+                with MasterExcelReader(master_excel_path, valid_geo_keys=valid_geo_keys) as reader:
                     if use_furnace_units_sheet:
                         try:
                             plants, canonical_metadata, aggregated_metallic_constraints = (
@@ -648,7 +653,7 @@ class DataRecreator:
                                 )
                             )
                         except ValueError as e:
-                            if "Furnace units" in str(e):
+                            if "Sheet 'Furnace units' not found" in str(e):
                                 console.print(
                                     "[yellow]  ⚠ Furnace units sheet not found, falling back to old reader[/yellow]"
                                 )

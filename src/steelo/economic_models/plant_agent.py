@@ -88,9 +88,10 @@ class GeospatialModel:
             3. Updates dynamic costs (e.g., grid cell-specific power and hydrogen prices, CAPEX, cost of debt, and subsidies) for all
             business opportunities yearly (status: considered and announced).
             4. Updates the NPV of all potential business opportunities each year with new costs (status: considered).
-            5. Business opportunities (status: considered) that remain NPV-positive for the first X years (default=3y) are announced
-            with a certain probability (default=70%; uniformly sampled), changing their status to 'announced'. This reflects that
-            not all opportunities are taken up by investors.
+            5. Business opportunities (status: considered) whose last X (=consideration_time, default=3y) yearly NPVs are all
+            positive (a rolling window, not necessarily the first years) are announced with a certain probability (default=70%;
+            uniformly sampled), changing their status to 'announced'. This reflects that not all opportunities are taken up by
+            investors.
             6. Business opportunities (status: considered) that have a negative NPV for at least X years (default=3y) in a row are
             discarded (status: discarded).
             7. Announced plants, if their technology is still allowed, are constructed after 1 year with a certain probability
@@ -128,10 +129,18 @@ class GeospatialModel:
         for iso3, year_costs in bus.env.input_costs.items():
             if iso3 is not None:  # Filter out None keys
                 input_costs_converted[iso3] = {Year(year): costs for year, costs in year_costs.items()}
-        ## Make a price series for COSA and NPV calculations
+        ## Make a price series for COSA and NPV calculations, anchored at the current year.
+        ## Extended by consideration_time + 1 so the opportunity paths can re-anchor it at
+        ## their construction start (up to target_year) and still cover the operating window.
         future_price_series: dict[str, list[float]] = {}
         start_year = bus.env.year
-        end_year = bus.env.year + bus.env.config.construction_time + bus.env.config.plant_lifetime
+        end_year = (
+            bus.env.year
+            + bus.env.config.consideration_time
+            + 1
+            + bus.env.config.construction_time
+            + bus.env.config.plant_lifetime
+        )
         steel_demand = []
         iron_demand = []
         for product in ["steel", "iron"]:
@@ -198,11 +207,13 @@ class GeospatialModel:
                 pg.update_dynamic_costs_for_business_opportunities(
                     current_year=bus.env.year,
                     consideration_time=bus.env.config.consideration_time,
+                    construction_time=bus.env.config.construction_time,
                     custom_energy_costs=custom_energy_costs,  # type: ignore[arg-type]  # needed to avoid importing xarray into the domain
                     capex_dict_all_locs=bus.env.name_to_capex["greenfield"],
                     cost_debt_all_locs=bus.env.cost_of_debt_by_tech,
                     iso3_to_region_map=bus.env.country_mappings.iso3_to_region(),
                     global_risk_free_rate=bus.env.config.global_risk_free_rate,
+                    avg_utilization=bus.env.avg_utilization,
                     capex_subsidies=bus.env.capex_subsidies,
                     debt_subsidies=bus.env.debt_subsidies,
                     energy_subsidies=bus.env.energy_subsidies,
@@ -279,9 +290,10 @@ class GeospatialModel:
                 tech_to_product=bus.env.technology_to_product,
                 allowed_techs=bus.env.allowed_techs,
                 top_n_loctechs_as_business_op=bus.env.config.top_n_loctechs_as_business_op,
+                opportunity_pool_depth=bus.env.config.opportunity_pool_depth,
+                calculate_npv_pct=bus.env.config.calculate_npv_pct,
                 technology_emission_factors=bus.env.technology_emission_factors,
                 chosen_emissions_boundary_for_carbon_costs=bus.env.config.chosen_emissions_boundary_for_carbon_costs,
-                carbon_costs=bus.env.carbon_costs,
                 capex_subsidies=bus.env.capex_subsidies,
                 debt_subsidies=bus.env.debt_subsidies,
                 opex_subsidies=bus.env.opex_subsidies,

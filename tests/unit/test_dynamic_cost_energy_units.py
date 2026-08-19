@@ -110,11 +110,13 @@ def test_update_dynamic_costs_uses_geospatial_power_price_without_scaling():
     commands_generated = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=1,
+        construction_time=4,
         custom_energy_costs=custom_energy_costs,
         capex_dict_all_locs=capex_dict_all_locs,
         cost_debt_all_locs=cost_debt_all_locs,
         iso3_to_region_map=iso3_to_region_map,
         global_risk_free_rate=0.01,
+        avg_utilization={},
         capex_subsidies={},
         debt_subsidies={},
     )

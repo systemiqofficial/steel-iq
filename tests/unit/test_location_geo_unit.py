@@ -55,14 +55,16 @@ def test_resolve_prefers_subnational_value():
 
 
 def test_resolve_logs_when_subnational_value_used(caplog):
-    """A sub-national hit is logged at INFO — the positive counterpart to the fall-back log."""
+    """A sub-national hit is logged at DEBUG only — at INFO it dominated whole simulation logs."""
     costs = {"CHN": 80.0, "CHN:CN-HE": 65.0}
 
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level(logging.DEBUG):
         value = make_location(iso3="CHN", geo_unit="CN-HE").resolve(costs, what="electricity")
 
     assert value == 65.0
     assert "resolved to sub-national unit CHN:CN-HE" in caplog.text
+    hit_records = [r for r in caplog.records if "resolved to sub-national" in r.getMessage()]
+    assert all(r.levelno == logging.DEBUG for r in hit_records)
 
 
 def test_resolve_falls_back_to_country_and_logs(caplog):

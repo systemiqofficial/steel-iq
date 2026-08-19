@@ -136,14 +136,14 @@ def prepare_cost_data_for_business_opportunity(
     debt_subsidies: dict[str, dict[str, list[Subsidy]]],
     opex_subsidies: dict[str, dict[str, list[Subsidy]]],
     energy_subsidies: dict[str, dict[str, dict[str, list[Subsidy]]]],
-    carbon_costs: dict[str, dict[Year, float]],
     most_common_reductant: dict[str, str],
     environment_most_common_reductant: dict[str, str],
     derive_geo_unit: Callable[[float, float, str], str | None] | None = None,
 ) -> dict[str, dict[tuple[float, float, str], dict[str, dict[str, Any]]]]:
     """
     For each business opportunity (top location-technology pair), prepare all required inputs to calculate the NPV
-    and create a new plant. If inputs are missing, skip the location-technology pair and log a warning.
+    and create a new plant. Sites missing critical data (energy costs, cost of equity or debt) raise a ValueError,
+    as do invalid data types; technologies with an incomplete field set are dropped in validation.
 
     Args:
         product_to_tech: Dictionary mapping products to their allowed technologies (product -> list of techs)
@@ -151,7 +151,9 @@ def prepare_cost_data_for_business_opportunity(
             lon, iso3, power price, hydrogen price, railway cost)
         current_year: The current simulation year.
         target_year: The year when the plant would start operation (current year + consideration time + 1 year announcement lag)
-        energy_costs: Nested dictionary with energy costs per country and year (iso3 -> year -> energy carrier -> cost)
+        energy_costs: Nested dictionary with energy costs per geography and year (geo_key -> year ->
+            energy carrier -> cost); sub-national rows (``"ISO3:unit"``) win over country rows for
+            sites whose derived geo_unit matches
         capex_dict_all_locs_techs: Nested dictionary with CAPEX values per region and technology (region -> tech -> capex)
         cost_of_debt_all_locs: Dictionary with cost of debt per country and technology (iso3 -> tech -> cost of debt)
         cost_of_equity_all_locs: Dictionary with cost of equity per country and technology (iso3 -> tech -> cost of equity)
@@ -160,11 +162,11 @@ def prepare_cost_data_for_business_opportunity(
         get_bom_from_avg_boms: Function to retrieve the bill of materials and utilization rate for a given technology and energy costs
         iso3_to_region_map: Mapping from ISO3 country codes to regions for CAPEX lookup
         global_risk_free_rate: Global risk-free rate used in debt subsidy calculations
-        capex_subsidies: Nested dictionary with CAPEX subsidies per country and technology (iso3 -> tech -> list of subsidies)
-        debt_subsidies: Nested dictionary with debt subsidies per country and technology (iso3 -> tech -> list of subsidies)
-        opex_subsidies: Nested dictionary with OPEX subsidies per country and technology (iso3 -> tech -> list of subsidies)
-        energy_subsidies: Nested dictionary with energy carrier subsidies (carrier -> iso3 -> tech -> list of subsidies)
-        carbon_costs: Dictionary with carbon cost series per country (iso3 -> year -> carbon cost)
+        capex_subsidies: Nested dictionary with CAPEX subsidies per geography and technology (geo_key -> tech -> list
+            of subsidies; geo_key = "ISO3" or "ISO3:unit", country and sub-national rows merge additively)
+        debt_subsidies: Nested dictionary with debt subsidies per geography and technology (geo_key -> tech -> list of subsidies)
+        opex_subsidies: Nested dictionary with OPEX subsidies per geography and technology (geo_key -> tech -> list of subsidies)
+        energy_subsidies: Nested dictionary with energy carrier subsidies (carrier -> geo_key -> tech -> list of subsidies)
         most_common_reductant: Dictionary mapping technology to most common reductant from plant group (tech -> reductant)
         environment_most_common_reductant: Fallback dict mapping technology to most common reductant from environment (tech -> reductant)
         derive_geo_unit: Optional ``(lat, lon, iso3) -> geo_unit | None`` derivation (injected from
@@ -203,6 +205,14 @@ def prepare_cost_data_for_business_opportunity(
             # province. The same derivation runs again at spawn, so the two always agree.
             geo_unit = derive_geo_unit(site["Latitude"], site["Longitude"], site["iso3"]) if derive_geo_unit else None
             site_geo_key = compose_geo_key(site["iso3"], geo_unit)
+            site_location = Location(
+                lat=site["Latitude"],
+                lon=site["Longitude"],
+                country=site["iso3"],
+                region="",
+                iso3=site["iso3"],
+                geo_unit=geo_unit,
+            )
             if site_id not in cost_data[prod]:
                 cost_data[prod][site_id] = {}
 
@@ -210,17 +220,19 @@ def prepare_cost_data_for_business_opportunity(
             incomplete_site = False
             site_missing_fields = []
 
-            # Set the energy costs to those of the country and overwrite electricity and hydrogen costs with
-            # custom values from the own power parc
+            # Set the energy costs to those of the site's geography (province row when the site
+            # falls in one, else country — the same resolution the score series uses) and
+            # overwrite electricity and hydrogen costs with custom values from the own power parc
             energy_costs_site = None
-            if site["iso3"] not in energy_costs:
+            year_costs_for_site = site_location.resolve(energy_costs, what="business-opportunity energy costs")
+            if year_costs_for_site is None:
                 site_missing_fields.append("energy_costs")
                 incomplete_site = True
-            elif current_year not in energy_costs[site["iso3"]]:
+            elif current_year not in year_costs_for_site:
                 site_missing_fields.append(f"energy_costs for year {current_year}")
                 incomplete_site = True
             else:
-                energy_costs_site = energy_costs[site["iso3"]][current_year].copy()  # Copy to avoid modifying original
+                energy_costs_site = year_costs_for_site[current_year].copy()  # Copy to avoid modifying original
                 elec_ratio = (
                     site["power_price"] / energy_costs_site["electricity"]
                     if energy_costs_site["electricity"] != 0
@@ -274,12 +286,14 @@ def prepare_cost_data_for_business_opportunity(
                 else:
                     cost_data[prod][site_id][tech]["railway_cost"] = site["rail_cost"]
 
-                # Apply energy carrier subsidies for this technology
+                # Apply energy carrier subsidies for this technology, filtered at the
+                # operating start year (matching PAM and the score-series window)
                 assert energy_costs_site is not None  # Help mypy understand the control flow
+                operating_start_year = Year(target_year + construction_time)
                 active_energy_subs: dict[str, list] = {}
                 for carrier, carrier_subs in energy_subsidies.items():
                     all_subs = cc.collect_subsidies_for_geo(carrier_subs, site_geo_key).get(tech, [])
-                    active = cc.filter_subsidies_for_year(all_subs, target_year)
+                    active = cc.filter_subsidies_for_year(all_subs, operating_start_year)
                     if active:
                         active_energy_subs[carrier] = active
 
@@ -289,7 +303,9 @@ def prepare_cost_data_for_business_opportunity(
                         active_energy_subs,
                     )
                     sub_summary = ", ".join(f"{len(s)} {c}" for c, s in active_energy_subs.items())
-                    logger.debug(f"[NEW PLANTS] {site['iso3']}/{tech} year={target_year} | Subs: {sub_summary}")
+                    logger.debug(
+                        f"[NEW PLANTS] {site['iso3']}/{tech} year={operating_start_year} | Subs: {sub_summary}"
+                    )
                 else:
                     energy_costs_tech = energy_costs_site
                     output_costs_tech = energy_costs_site
@@ -322,14 +338,6 @@ def prepare_cost_data_for_business_opportunity(
                     # power/hydrogen prices are trajectory-scaled from the country series.
                     # TODO: temporary — extract the exact geo point's own year series from
                     # the rasters instead of ratio-scaling the current-year pixel prices.
-                    site_location = Location(
-                        lat=site["Latitude"],
-                        lon=site["Longitude"],
-                        country=site["iso3"],
-                        region="",
-                        iso3=site["iso3"],
-                        geo_unit=geo_unit,
-                    )
                     site_overrides = {
                         "electricity": site["power_price"],
                         "hydrogen": site["capped_lcoh"] * T_TO_KG,
@@ -409,7 +417,6 @@ def prepare_cost_data_for_business_opportunity(
                 cost_data[prod][site_id][tech]["all_opex_subsidies"] = cc.collect_subsidies_for_geo(
                     opex_subsidies, site_geo_key
                 ).get(tech, [])  # type: ignore[assignment]
-                cost_data[prod][site_id][tech]["carbon_cost_series"] = carbon_costs.get(site["iso3"])  # type: ignore[assignment]
 
                 # Raise error if any critical fields are missing
                 if missing_critical_fields:
@@ -469,7 +476,6 @@ def validate_and_clean_cost_data(
             "output_costs",
             "no_subsidy_prices",
             "bom",
-            "carbon_cost_series",
             "output_shares",
         ]
     )
@@ -543,13 +549,6 @@ def validate_and_clean_cost_data(
                                     f"{field} must be list, got {type(tech_data[field]).__name__}: {tech_data[field]}"
                                 )
 
-                        # carbon_cost_series: dict[Year, float] or None
-                        if tech_data["carbon_cost_series"] is not None:
-                            if not isinstance(tech_data["carbon_cost_series"], dict):
-                                raise ValueError(
-                                    f"carbon_cost_series must be dict or None, got {type(tech_data['carbon_cost_series']).__name__}"
-                                )
-
                         # output_shares: dict of floats (metallic charge -> share of product)
                         if not isinstance(tech_data["output_shares"], dict):
                             raise ValueError(
@@ -617,10 +616,97 @@ def validate_and_clean_cost_data(
     return cost_data
 
 
+def build_eligible_pool(
+    valid_pairs: list[tuple[Any, str]],
+    ranked_indices: np.ndarray,
+    head_count: int,
+    sites_per_tech: int,
+) -> list[int]:
+    """
+    Build the eligible candidate pool for the rank-weighted draw: the global NPV head unioned
+    with each technology's best sites.
+
+    Args:
+        valid_pairs: All valid (site_id, technology) candidates for one product
+        ranked_indices: Indices into valid_pairs, sorted by NPV descending
+        head_count: Number of top-ranked candidates that are always eligible (the global head)
+        sites_per_tech: Guaranteed seats per technology; head members count toward the quota
+
+    Returns:
+        Indices into valid_pairs, in descending NPV order, without duplicates
+
+    Notes:
+        - Guarantees every technology keeps min(sites_per_tech, available) eligible candidates
+          even when a single technology occupies the entire head, so a souring head technology
+          can never erase the standing of every alternative
+        - Single ranked pass: a technology's first occurrences are its best sites, so head
+          membership and per-technology seats dedupe naturally
+    """
+    eligible: list[int] = []
+    seen_per_tech: dict[str, int] = {}
+    for rank, idx in enumerate(ranked_indices):
+        tech = valid_pairs[idx][1]
+        seen = seen_per_tech.get(tech, 0)
+        seen_per_tech[tech] = seen + 1
+        if rank < head_count or seen < sites_per_tech:
+            eligible.append(int(idx))
+    return eligible
+
+
+def summarise_opportunity_pool(
+    valid_pairs: list[tuple[Any, str]],
+    valid_npvs: list[float],
+    eligible_indices: list[int],
+    selected_pairs: list[tuple[Any, str]],
+) -> dict[str, Any]:
+    """
+    Aggregate creation-time pool-quality statistics for one product.
+
+    Args:
+        valid_pairs: All valid (site_id, technology) candidates
+        valid_npvs: NPVs aligned with valid_pairs
+        eligible_indices: Indices into valid_pairs that entered the draw
+        selected_pairs: The (site_id, technology) pairs actually drawn
+
+    Returns:
+        Dict with the valid-pool size, eligible-pool median/min/max NPV and negative fraction,
+        technology counts for the eligible and drawn sets, and per-technology best NPV over the
+        full valid pool
+
+    Notes:
+        Pure aggregation for the pool_summary log line - an all-negative pool becomes visible
+        in the year it occurs instead of three years later in the status chart
+    """
+    tech_best: dict[str, float] = {}
+    for (_, tech), npv in zip(valid_pairs, valid_npvs):
+        if tech not in tech_best or npv > tech_best[tech]:
+            tech_best[tech] = npv
+    eligible_npvs = [valid_npvs[i] for i in eligible_indices]
+    eligible_techs: dict[str, int] = {}
+    for i in eligible_indices:
+        tech = valid_pairs[i][1]
+        eligible_techs[tech] = eligible_techs.get(tech, 0) + 1
+    drawn_techs: dict[str, int] = {}
+    for _, tech in selected_pairs:
+        drawn_techs[tech] = drawn_techs.get(tech, 0) + 1
+    return {
+        "valid": len(valid_pairs),
+        "eligible": len(eligible_npvs),
+        "median": float(np.median(eligible_npvs)),
+        "min": float(min(eligible_npvs)),
+        "max": float(max(eligible_npvs)),
+        "frac_negative": sum(1 for v in eligible_npvs if v < 0) / len(eligible_npvs),
+        "eligible_techs": eligible_techs,
+        "drawn_techs": drawn_techs,
+        "tech_best": tech_best,
+    }
+
+
 def select_top_opportunities_by_npv(
     npv_dict: dict[str, dict[Any, dict[str, float]]],
     top_n_loctechs_as_business_op: int,
     probabilistic_agents: bool,
+    opportunity_pool_depth: int,
 ) -> dict[str, dict[tuple[float, float, str], dict[str, float]]]:
     """
     Select top location-technology combinations with high NPVs. When probabilistic_agents is True,
@@ -630,8 +716,12 @@ def select_top_opportunities_by_npv(
     Args:
         npv_dict: Nested dictionary with NPV values (product -> site_id -> tech -> NPV)
         top_n_loctechs_as_business_op: Number of top location-technology combinations to select per product
-        probabilistic_agents: If True, rank-weighted random draw over the top 3N candidates (deliberate
+        probabilistic_agents: If True, rank-weighted random draw over the eligible pool (deliberate
             realism - a mix of high and medium NPV options). If False, deterministic top-N by NPV.
+        opportunity_pool_depth: Depth of the probabilistic draw's eligible pool, in two coupled
+            senses: the global head is the top (depth * N) candidates by NPV, and every allowed
+            technology additionally keeps its best `depth` sites eligible. Higher = more
+            exploration; 1 = near-pure exploitation. Ignored when probabilistic_agents is False.
 
     Returns:
         Dictionary mapping products to site IDs to technologies with their NPVs (product -> site_id (lat, lon, iso3) -> tech -> NPV)
@@ -645,17 +735,21 @@ def select_top_opportunities_by_npv(
 
     Notes:
         - Invalid NPV values (NaN, -inf) are removed before processing
-        - When probabilistic_agents: candidates are ranked by NPV and only the best 3N enter a
-          weighted draw with linearly decreasing rank weights - a mix of high and medium NPV
-          options rather than only the highest, while implausible sites can never be selected
+        - When probabilistic_agents: the eligible pool is the global top (depth * N) by NPV
+          unioned with each technology's best `depth` sites, then a weighted draw with linearly
+          decreasing rank weights - a mix of high and medium NPV options, while every allowed
+          technology keeps standing even when one technology dominates the head
         - Rank weights are scale-free: the draw behaves identically for all-negative,
           mixed and all-positive pools
+        - Logs one pool_summary line per product with pool size, eligible-pool NPV statistics
+          and per-technology best NPV over the full pool
     """
     logger = logging.getLogger(f"{__name__}.select_top_opportunities_by_npv")
     if probabilistic_agents:
         logger.info(
             f"[NEW PLANTS] Drawing {top_n_loctechs_as_business_op} location-technology combinations per product from the "
-            f"top {3 * top_n_loctechs_as_business_op} by NPV (rank-weighted, without replacement)."
+            f"top {opportunity_pool_depth * top_n_loctechs_as_business_op} by NPV unioned with the top "
+            f"{opportunity_pool_depth} sites per technology (rank-weighted, without replacement)."
         )
     else:
         logger.info(
@@ -696,30 +790,43 @@ def select_top_opportunities_by_npv(
         ranked_indices = np.argsort(npvs_array)[::-1]
 
         if probabilistic_agents:
-            # Trim to the plausible head of the pool, then draw with rank weights (best gets
-            # weight `trim`, worst weight 1). The former shift-by-min weighting degenerated
-            # to a near-uniform draw whenever the whole pool was negative.
-            trim = min(len(ranked_indices), 3 * top_n_loctechs_as_business_op)
-            pool_indices = ranked_indices[:trim]
+            # Union trim: the global head keeps its rank-weight dominance in healthy years,
+            # while the per-technology seats stop a monocultural head from erasing every other
+            # technology's standing (rank weights: best gets `trim`, worst 1; the former
+            # shift-by-min weighting degenerated to near-uniform on all-negative pools)
+            head_count = min(len(ranked_indices), opportunity_pool_depth * top_n_loctechs_as_business_op)
+            eligible = build_eligible_pool(valid_pairs, ranked_indices, head_count, opportunity_pool_depth)
+            trim = len(eligible)
 
             if trim > top_n_loctechs_as_business_op:
                 rank_weights = np.arange(trim, 0, -1, dtype=float)
                 probabilities = rank_weights / rank_weights.sum()
                 drawn = np.random.choice(trim, size=top_n_loctechs_as_business_op, replace=False, p=probabilities)
-                selected_pairs = [valid_pairs[pool_indices[i]] for i in drawn]
+                selected_pairs = [valid_pairs[eligible[i]] for i in drawn]
             else:
-                selected_pairs = [valid_pairs[i] for i in pool_indices]
+                selected_pairs = [valid_pairs[i] for i in eligible]
             logger.info(
                 f"[NEW PLANTS] {product}: drew {len(selected_pairs)} of {len(valid_pairs)} valid candidates "
-                f"(rank-weighted over the top {trim})."
+                f"(rank-weighted over {trim} eligible: global top {head_count} + top {opportunity_pool_depth} per technology)."
             )
         else:
-            top_indices = ranked_indices[:top_n_loctechs_as_business_op]
-            selected_pairs = [valid_pairs[i] for i in top_indices]
+            eligible = [int(i) for i in ranked_indices[:top_n_loctechs_as_business_op]]
+            selected_pairs = [valid_pairs[i] for i in eligible]
             logger.info(
                 f"[NEW PLANTS] {product}: selected top {len(selected_pairs)} of {len(valid_pairs)} valid candidates "
                 "by NPV (deterministic)."
             )
+
+        summary = summarise_opportunity_pool(valid_pairs, valid_npvs, eligible, selected_pairs)
+        eligible_techs_str = ",".join(f"{t}:{n}" for t, n in sorted(summary["eligible_techs"].items()))
+        drawn_techs_str = ",".join(f"{t}:{n}" for t, n in sorted(summary["drawn_techs"].items()))
+        tech_best_str = ",".join(f"{t}:{v:.4e}" for t, v in sorted(summary["tech_best"].items(), key=lambda kv: -kv[1]))
+        logger.info(
+            f"[NEW PLANTS] pool_summary product={product} valid={summary['valid']} eligible={summary['eligible']} "
+            f"median={summary['median']:.4e} min={summary['min']:.4e} max={summary['max']:.4e} "
+            f"frac_negative={summary['frac_negative']:.2f} eligible_techs=[{eligible_techs_str}] "
+            f"drawn_techs=[{drawn_techs_str}] tech_best=[{tech_best_str}]"
+        )
 
         # Format selected (site, tech) pairs into business opportunities dict
         top_business_opportunities[product] = {}

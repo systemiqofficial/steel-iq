@@ -7,6 +7,8 @@ from steelo.domain.new_plant_opening import (
     get_list_of_allowed_techs_for_target_year,
     prepare_cost_data_for_business_opportunity,
     select_top_opportunities_by_npv,
+    build_eligible_pool,
+    summarise_opportunity_pool,
     NewPlantLocation,
 )
 from steelo.domain.models import Subsidy, PlantGroup
@@ -341,7 +343,6 @@ class TestPrepareDataForBusinessOpportunity:
         }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}  # lowercase tech name
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         cost_data = prepare_cost_data_for_business_opportunity(
             product_to_tech=product_to_tech,
@@ -364,7 +365,6 @@ class TestPrepareDataForBusinessOpportunity:
             debt_subsidies={},
             opex_subsidies={},
             energy_subsidies={},
-            carbon_costs=carbon_costs,
             most_common_reductant={},
             environment_most_common_reductant={},
         )
@@ -443,7 +443,6 @@ class TestPrepareDataForBusinessOpportunity:
         }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         # When cost_of_debt is missing, ValueError is raised immediately
         with pytest.raises(ValueError, match="Missing critical site-level data"):
@@ -468,7 +467,6 @@ class TestPrepareDataForBusinessOpportunity:
                 debt_subsidies={},
                 opex_subsidies={},
                 energy_subsidies={},
-                carbon_costs=carbon_costs,
                 most_common_reductant={},
                 environment_most_common_reductant={},
             )
@@ -531,7 +529,6 @@ class TestPrepareDataForBusinessOpportunity:
         }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         capex_subsidy = Subsidy(
             scenario_name="test",
@@ -565,7 +562,6 @@ class TestPrepareDataForBusinessOpportunity:
             debt_subsidies={},
             opex_subsidies={},
             energy_subsidies={},
-            carbon_costs=carbon_costs,
             most_common_reductant={},
             environment_most_common_reductant={},
         )
@@ -641,7 +637,6 @@ class TestPrepareDataForBusinessOpportunity:
         }
         fopex_all_locs_techs = {"USA": {"eaf": 50.0}}
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         h2_subsidy = Subsidy(
             scenario_name="test_h2",
@@ -688,7 +683,6 @@ class TestPrepareDataForBusinessOpportunity:
                 "hydrogen": {"USA": {"EAF": [h2_subsidy]}},
                 "electricity": {"USA": {"EAF": [elec_subsidy]}},
             },
-            carbon_costs=carbon_costs,
             most_common_reductant={},
             environment_most_common_reductant={},
         )
@@ -761,7 +755,6 @@ class TestPrepareDataForBusinessOpportunity:
         }
         fopex_all_locs_techs = {}  # Missing fopex data
         iso3_to_region_map = {"USA": "Americas"}
-        carbon_costs = {"USA": {Year(2030): 50.0}}
 
         # Should raise ValueError immediately due to missing fopex
         with pytest.raises(ValueError, match="Missing critical cost data"):
@@ -786,7 +779,6 @@ class TestPrepareDataForBusinessOpportunity:
                 debt_subsidies={},
                 opex_subsidies={},
                 energy_subsidies={},
-                carbon_costs=carbon_costs,
                 most_common_reductant={},
                 environment_most_common_reductant={},
             )
@@ -960,11 +952,6 @@ class TestPrepareDataForBusinessOpportunity:
             "CHN": {"dri": 70.0},
         }
         iso3_to_region_map = {"USA": "Americas", "DEU": "Europe", "CHN": "Asia"}
-        carbon_costs = {
-            "USA": {Year(2030): 50.0},
-            "DEU": {Year(2030): 60.0},
-            "CHN": {Year(2030): 30.0},
-        }
 
         cost_data = prepare_cost_data_for_business_opportunity(
             product_to_tech=product_to_tech,
@@ -987,7 +974,6 @@ class TestPrepareDataForBusinessOpportunity:
             debt_subsidies={},
             opex_subsidies={},
             energy_subsidies={},
-            carbon_costs=carbon_costs,
             most_common_reductant={},
             environment_most_common_reductant={},
         )
@@ -1029,7 +1015,7 @@ class TestSelectTopOpportunitiesByNpv:
             ]
 
             top_opportunities = select_top_opportunities_by_npv(
-                npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True
+                npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True, opportunity_pool_depth=3
             )
 
             # Verify top opportunities were selected
@@ -1059,7 +1045,7 @@ class TestSelectTopOpportunitiesByNpv:
         # The function uses np.random.choice which will filter out invalid NPVs
         # Just verify it runs without error and returns valid results
         top_opportunities = select_top_opportunities_by_npv(
-            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True, opportunity_pool_depth=3
         )
 
         # Should have selected 1 opportunity from the 3 valid ones
@@ -1088,7 +1074,7 @@ class TestSelectTopOpportunitiesByNpv:
             mock_choice.return_value = [0]  # Select first item
 
             select_top_opportunities_by_npv(
-                npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True
+                npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True, opportunity_pool_depth=3
             )
 
             # Verify np.random.choice was called with probabilities
@@ -1113,6 +1099,7 @@ class TestSelectTopOpportunitiesByNpv:
             npv_dict=npv_dict,
             top_n_loctechs_as_business_op=5,  # Request 5 but only 2 available
             probabilistic_agents=True,
+            opportunity_pool_depth=3,
         )
 
         # Should return all available opportunities (2 location-tech pairs)
@@ -1126,7 +1113,7 @@ class TestSelectTopOpportunitiesByNpv:
         # Function raises ValueError when there are no valid NPVs
         with pytest.raises(ValueError, match="No valid NPVs found"):
             select_top_opportunities_by_npv(
-                npv_dict=npv_dict, top_n_loctechs_as_business_op=5, probabilistic_agents=True
+                npv_dict=npv_dict, top_n_loctechs_as_business_op=5, probabilistic_agents=True, opportunity_pool_depth=3
             )
 
     def test_all_negative_npvs(self):
@@ -1139,7 +1126,7 @@ class TestSelectTopOpportunitiesByNpv:
         }
 
         top_opportunities = select_top_opportunities_by_npv(
-            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True, opportunity_pool_depth=3
         )
 
         # Rank weights are scale-free, so an all-negative pool still draws normally
@@ -1155,7 +1142,7 @@ class TestSelectTopOpportunitiesByNpv:
         }
 
         top_opportunities = select_top_opportunities_by_npv(
-            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True, opportunity_pool_depth=3
         )
 
         # Verify structure: product -> site_id -> tech -> NPV
@@ -1217,7 +1204,6 @@ class TestIdentifyNewBusinessOpportunities4indi:
             "allowed_techs": {Year(2025): ["EAF"], Year(2028): ["EAF"]},
             "technology_emission_factors": [],
             "chosen_emissions_boundary_for_carbon_costs": "scope_1",
-            "carbon_costs": {"USA": {Year(2028): 50.0}},
             "top_n_loctechs_as_business_op": 2,
         }
 
@@ -1474,7 +1460,6 @@ def _complete_cost_data_entry():
         "output_costs": {"electricity": 0.05},
         "no_subsidy_prices": {"electricity": 0.05},
         "bom": {"energy": {"electricity": {"unit_cost": 50.0, "demand": 0.5}}},
-        "carbon_cost_series": None,
         "output_shares": {"scrap": 1.0},
     }
 
@@ -1540,7 +1525,9 @@ def test_selection_rank_weights_decrease_with_npv_rank():
 
     with patch("numpy.random.choice") as mock_choice:
         mock_choice.return_value = [0]
-        select_top_opportunities_by_npv(npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True)
+        select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True, opportunity_pool_depth=3
+        )
 
     (pool_size,), kwargs = mock_choice.call_args
     assert pool_size == 3
@@ -1562,7 +1549,7 @@ def test_selection_never_draws_beyond_the_trimmed_pool():
     np.random.seed(42)
     for _ in range(25):
         selected = select_top_opportunities_by_npv(
-            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True, opportunity_pool_depth=3
         )
         (npv,) = [npv for techs in selected["steel"].values() for npv in techs.values()]
         assert npv >= -3.0
@@ -1576,11 +1563,11 @@ def test_selection_is_deterministic_under_a_seed():
 
     np.random.seed(123)
     first = select_top_opportunities_by_npv(
-        npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=True
+        npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=True, opportunity_pool_depth=3
     )
     np.random.seed(123)
     second = select_top_opportunities_by_npv(
-        npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=True
+        npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=True, opportunity_pool_depth=3
     )
 
     assert first == second
@@ -1592,7 +1579,7 @@ def test_deterministic_mode_selects_top_n_by_npv():
 
     with patch("numpy.random.choice") as mock_choice:
         selected = select_top_opportunities_by_npv(
-            npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=False
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=False, opportunity_pool_depth=3
         )
         # Deterministic mode must not touch the random draw at all
         assert not mock_choice.called
@@ -1606,10 +1593,10 @@ def test_deterministic_mode_is_reproducible_without_seeding():
     npv_dict = _npv_dict_from_values([-600.0, -100.0, -400.0, -200.0, -500.0, -300.0])
 
     first = select_top_opportunities_by_npv(
-        npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=False
+        npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=False, opportunity_pool_depth=3
     )
     second = select_top_opportunities_by_npv(
-        npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=False
+        npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=False, opportunity_pool_depth=3
     )
 
     assert first == second
@@ -1682,12 +1669,204 @@ def test_two_technologies_at_one_site_spawn_two_plants(monkeypatch):
         allowed_techs={Year(2028): ["EAF", "BOF"]},
         technology_emission_factors=[],
         chosen_emissions_boundary_for_carbon_costs="scope_1",
-        carbon_costs={"USA": {Year(2028): 50.0}},
         active_statuses=["operating"],
         top_n_loctechs_as_business_op=2,
+        opportunity_pool_depth=3,
+        calculate_npv_pct=0.1,
     )
 
     new_plants = command.new_plants
     assert len(new_plants) == 2
     assert len({plant.plant_id for plant in new_plants}) == 2
     assert {plant.furnace_groups[0].technology.name for plant in new_plants} == {"EAF", "BOF"}
+
+
+def _ranked_pool(tech_npvs):
+    """Build (valid_pairs, valid_npvs, ranked_indices) from {tech: [npvs]}, one site per NPV.
+
+    Sites are synthetic and unique; ranking is by NPV descending, as in the selection function.
+    """
+    import numpy as np
+
+    valid_pairs = []
+    valid_npvs = []
+    for tech, npvs in tech_npvs.items():
+        for i, npv in enumerate(npvs):
+            valid_pairs.append(((40.0 + i, -100.0 - i, "USA"), tech))
+            valid_npvs.append(npv)
+    ranked_indices = np.argsort(np.array(valid_npvs))[::-1]
+    return valid_pairs, valid_npvs, ranked_indices
+
+
+def test_eligible_pool_keeps_every_technology_standing_when_head_is_monocultural():
+    """A head fully occupied by one technology still leaves min(3, available) seats per tech.
+
+    Notes:
+        Guards the union trim: 50 A-sites monopolise a 45-slot head, yet B keeps its top-3
+        and C keeps both of its sites eligible, in descending NPV order without duplicates.
+    """
+    valid_pairs, valid_npvs, ranked_indices = _ranked_pool(
+        {
+            "A": [1000.0 - i for i in range(50)],
+            "B": [10.0, 9.0, 8.0, 7.0, 6.0],
+            "C": [5.0, 4.0],
+        },
+    )
+
+    eligible = build_eligible_pool(valid_pairs, ranked_indices, head_count=45, sites_per_tech=3)
+
+    per_tech = {}
+    for i in eligible:
+        per_tech[valid_pairs[i][1]] = per_tech.get(valid_pairs[i][1], 0) + 1
+    assert per_tech == {"A": 45, "B": 3, "C": 2}
+    assert len(eligible) == len(set(eligible))
+    eligible_npvs = [valid_npvs[i] for i in eligible]
+    assert eligible_npvs == sorted(eligible_npvs, reverse=True)
+
+
+def test_eligible_pool_adds_no_seats_for_technologies_already_covered_by_the_head():
+    """A technology with at least sites_per_tech candidates inside the head gets no extra seats."""
+    valid_pairs, valid_npvs, ranked_indices = _ranked_pool(
+        {
+            "A": [100.0, 99.0, 98.0, 97.0, 96.0],
+            "B": [95.0, 94.0, 93.0, 92.0, 91.0],
+        },
+    )
+
+    # Head of 8 holds A:5 and B:3 - both technologies already covered, union adds nothing
+    eligible = build_eligible_pool(valid_pairs, ranked_indices, head_count=8, sites_per_tech=3)
+
+    assert len(eligible) == 8
+    assert [valid_npvs[i] for i in eligible] == [100.0, 99.0, 98.0, 97.0, 96.0, 95.0, 94.0, 93.0]
+
+
+def test_union_trim_draw_reaches_per_tech_seats_but_never_beyond_them():
+    """The draw can select a guaranteed per-technology seat, yet never a candidate outside the union.
+
+    Notes:
+        With top_n=1 the head is the best 3 (all A). B's top-3 seats join the pool through the
+        union, so B is drawable; A's 4th site and B's 4th site stay ineligible forever.
+    """
+    import numpy as np
+
+    npv_dict = {
+        "steel": {
+            (40.0, -100.0, "USA"): {"A": -1.0},
+            (41.0, -101.0, "USA"): {"A": -2.0},
+            (42.0, -102.0, "USA"): {"A": -3.0},
+            (43.0, -103.0, "USA"): {"A": -4.0},
+            (44.0, -104.0, "USA"): {"B": -100.0},
+            (45.0, -105.0, "USA"): {"B": -101.0},
+            (46.0, -106.0, "USA"): {"B": -102.0},
+            (47.0, -107.0, "USA"): {"B": -200.0},
+        },
+    }
+
+    np.random.seed(7)
+    drawn_npvs = set()
+    for _ in range(300):
+        selected = select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True, opportunity_pool_depth=3
+        )
+        (npv,) = [npv for techs in selected["steel"].values() for npv in techs.values()]
+        drawn_npvs.add(npv)
+
+    assert drawn_npvs & {-100.0, -101.0, -102.0}, "per-technology seats were never drawn"
+    assert -4.0 not in drawn_npvs, "drew A's 4th site, outside head and per-tech seats"
+    assert -200.0 not in drawn_npvs, "drew B's 4th site, beyond its guaranteed seats"
+
+
+def test_pool_summary_reports_per_tech_best_over_the_full_pool():
+    """tech_best covers every technology in the valid pool, not only the eligible head."""
+    valid_pairs, valid_npvs, ranked_indices = _ranked_pool(
+        {
+            "A": [100.0, 50.0],
+            "B": [-10.0, -20.0],
+        },
+    )
+
+    eligible = [int(i) for i in ranked_indices[:2]]  # A only
+    selected_pairs = [valid_pairs[eligible[0]]]
+    summary = summarise_opportunity_pool(valid_pairs, valid_npvs, eligible, selected_pairs)
+
+    assert summary["valid"] == 4
+    assert summary["eligible"] == 2
+    assert summary["tech_best"] == {"A": 100.0, "B": -10.0}
+    assert summary["eligible_techs"] == {"A": 2}
+    assert summary["drawn_techs"] == {"A": 1}
+    assert summary["median"] == 75.0
+    assert summary["min"] == 50.0
+    assert summary["max"] == 100.0
+    assert summary["frac_negative"] == 0.0
+
+
+def test_pool_summary_flags_an_all_negative_eligible_pool():
+    """frac_negative reaches 1.0 when every eligible candidate is underwater."""
+    valid_pairs, valid_npvs, ranked_indices = _ranked_pool(
+        {
+            "A": [-200.0, -300.0, -400.0],
+        },
+    )
+
+    eligible = [int(i) for i in ranked_indices]
+    summary = summarise_opportunity_pool(valid_pairs, valid_npvs, eligible, [valid_pairs[eligible[0]]])
+
+    assert summary["frac_negative"] == 1.0
+    assert summary["max"] == -200.0
+
+
+def test_selection_logs_a_pool_summary_line(caplog):
+    """Every selection call emits one parsable pool_summary line per product."""
+    import logging
+
+    npv_dict = {
+        "steel": {
+            (40.0, -100.0, "USA"): {"EAF": 1000.0, "BOF": -500.0},
+            (41.0, -101.0, "USA"): {"EAF": 800.0},
+        },
+    }
+
+    with caplog.at_level(logging.INFO):
+        select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=1, probabilistic_agents=True, opportunity_pool_depth=3
+        )
+
+    summary_lines = [r.getMessage() for r in caplog.records if "pool_summary product=steel" in r.getMessage()]
+    assert len(summary_lines) == 1
+    assert "valid=3" in summary_lines[0]
+    assert "tech_best=[EAF:1.0000e+03,BOF:-5.0000e+02]" in summary_lines[0]
+
+
+def test_opportunity_pool_depth_drives_head_and_per_tech_seats():
+    """One depth value sets both the global head (depth * N) and each technology's seats.
+
+    Notes:
+        With 6 A-sites, 4 B-sites, top_n=2 and depth=2: the head is the best 4 (all A) and B
+        keeps its top-2 through the union, so the draw runs over exactly 6 eligible candidates.
+        At the default depth 3 the same pool widens to head 6 + B's top-3 = 9.
+    """
+    import numpy as np
+
+    npv_dict = {
+        "steel": {
+            **{(40.0 + i, -100.0 - i, "USA"): {"A": 100.0 - i} for i in range(6)},
+            **{(50.0 + i, -110.0 - i, "USA"): {"B": 50.0 - i} for i in range(4)},
+        },
+    }
+
+    with patch("numpy.random.choice") as mock_choice:
+        mock_choice.return_value = [0, 1]
+        select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=True, opportunity_pool_depth=2
+        )
+    (pool_size,), kwargs = mock_choice.call_args
+    assert pool_size == 6
+    assert list(kwargs["p"]) == pytest.approx(list(np.arange(6, 0, -1) / 21.0))
+
+    with patch("numpy.random.choice") as mock_choice:
+        mock_choice.return_value = [0, 1]
+        select_top_opportunities_by_npv(
+            npv_dict=npv_dict, top_n_loctechs_as_business_op=2, probabilistic_agents=True, opportunity_pool_depth=3
+        )
+    (pool_size,), _ = mock_choice.call_args
+    assert pool_size == 9

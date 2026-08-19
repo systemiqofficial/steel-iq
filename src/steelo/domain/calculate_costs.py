@@ -759,6 +759,15 @@ def calculate_unit_total_opex(unit_vopex: float, unit_fopex: float, utilization_
         return 0.0
 
 
+class ZeroUtilisationError(ValueError):
+    """Raised by scale_fopex_to_production when utilisation is non-positive.
+
+    A distinct type (rather than a bare ValueError) so callers can catch this specific,
+    expected condition — an investment candidate with no expected production — without
+    also swallowing unrelated ValueErrors.
+    """
+
+
 def scale_fopex_to_production(tech_unit_fopex: float, expected_utilisation_rate: float) -> float:
     """
     Convert fixed OPEX per tonne of capacity to fixed OPEX per tonne of production.
@@ -775,11 +784,13 @@ def scale_fopex_to_production(tech_unit_fopex: float, expected_utilisation_rate:
         float: Fixed OPEX per tonne of production ($/t).
 
     Raises:
-        ValueError: If expected_utilisation_rate is not positive — an investment candidate
-            with no expected production cannot be priced.
+        ZeroUtilisationError: If expected_utilisation_rate is not positive — an investment
+            candidate with no expected production cannot be priced. Callers evaluating one
+            candidate among several (a technology switch, a new site, a plant expansion)
+            should catch this and skip the candidate rather than let it propagate.
     """
     if expected_utilisation_rate <= 0:
-        raise ValueError(
+        raise ZeroUtilisationError(
             f"Expected utilisation rate must be positive to scale fixed OPEX, got {expected_utilisation_rate}"
         )
     return tech_unit_fopex / expected_utilisation_rate
@@ -1240,7 +1251,10 @@ def calculate_business_opportunity_npvs(
     Args:
         cost_data: Nested dictionary: product -> site_id -> tech -> cost_type -> cost
         target_year: Target year for the business opportunity
-        market_price: Dictionary mapping product to list of future market prices
+        market_price: Dictionary mapping product to list of future market prices,
+            anchored at target_year (index 0 = earliest construction start), so that
+            after calculate_npv_full's construction-time padding each price year
+            matches the cost year of the operating window
         steel_plant_capacity: Capacity of the steel plant in tonnes
         plant_lifetime: Lifetime of the plant in years
         construction_time: Time required for plant construction in years
@@ -1287,7 +1301,15 @@ def calculate_business_opportunity_npvs(
                 raw_fopex = bo_costs["fopex"]
                 assert isinstance(raw_fopex, (int, float)), f"Expected fopex to be numeric, got {type(raw_fopex)}"
                 # Per-capacity fixed OPEX spread over the production the NPV multiplies by
-                unit_fopex = scale_fopex_to_production(raw_fopex, bo_costs["utilization_rate"])  # type: ignore[arg-type]
+                try:
+                    unit_fopex = scale_fopex_to_production(raw_fopex, bo_costs["utilization_rate"])  # type: ignore[arg-type]
+                except ZeroUtilisationError:
+                    logger.warning(
+                        f"Zero utilisation for product {prod} - site {site_id} - technology {tech}. "
+                        "Cannot price fixed OPEX. Returning -inf."
+                    )
+                    npv_dict[prod][site_id][tech] = float("-inf")
+                    continue
                 score_series = bo_costs["score_series"]
                 assert isinstance(score_series, list), f"Expected score_series to be list, got {type(score_series)}"
                 unit_total_opex_list = calculate_opex_list_with_subsidies(

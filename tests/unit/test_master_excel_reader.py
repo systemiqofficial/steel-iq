@@ -292,6 +292,29 @@ class TestMasterExcelReaderValidation:
                 assert len(plants) == 1
                 assert plants[0].location.iso3 == "DEU"
 
+    def test_read_plants_unresolvable_country_name_raises(self):
+        """A named country the mapping cannot resolve fails loudly rather than
+        silently producing a plant with an empty ISO3."""
+        with tempfile.NamedTemporaryFile(suffix=".xlsx") as tf:
+            df = pd.DataFrame(
+                {
+                    "Plant ID": ["P001"],
+                    "Coordinates": ["52.52, 13.40"],
+                    "Country": ["Atlantis"],
+                    "Main production equipment": ["EAF"],
+                    "Nominal EAF steel capacity (ttpa)": [800],
+                    "Start date": ["2015"],
+                },
+            )
+            with pd.ExcelWriter(tf.name) as writer:
+                df.to_excel(writer, sheet_name="Iron and steel plants", index=False)
+                self._create_minimal_bom_sheet(writer)
+
+            reader = MasterExcelReader(Path(tf.name))
+            with reader:
+                with pytest.raises(ValueError, match="Atlantis"):
+                    reader.read_plants()
+
     def test_read_plants_skip_invalid_rows(self):
         """Test that invalid rows are skipped gracefully."""
         with tempfile.NamedTemporaryFile(suffix=".xlsx") as tf:

@@ -254,6 +254,7 @@ def test_update_dynamic_costs_power_price_not_scaled():
     update_cmds = plant_group.update_dynamic_costs_for_business_opportunities(
         current_year=Year(2025),
         consideration_time=1,
+        construction_time=4,
         custom_energy_costs=custom_energy_costs,
         capex_dict_all_locs={"NAM": {"EAF": 100.0}},
         cost_debt_all_locs={
@@ -280,6 +281,7 @@ def test_update_dynamic_costs_power_price_not_scaled():
         },
         iso3_to_region_map={"USA": "NAM"},
         global_risk_free_rate=0.03,
+        avg_utilization={},
     )
 
     assert update_cmds, "Expected an UpdateDynamicCosts command to be enqueued."

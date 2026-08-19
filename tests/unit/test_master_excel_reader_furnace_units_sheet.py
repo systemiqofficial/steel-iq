@@ -113,3 +113,48 @@ class TestReadPlantsFromFurnaceUnitsSheet:
 
         all_ids = [fg.furnace_group_id for p in plants for fg in p.furnace_groups]
         assert len(all_ids) == len(set(all_ids))
+
+
+def _write_geography_variant(base_path, tmp_path, iso3, geo_unit):
+    """Copy the fixture workbook with plant P1's iso3/geo_unit_or_province replaced (both rows)."""
+    df = pd.read_excel(base_path, sheet_name="Furnace units")
+    bom = pd.read_excel(base_path, sheet_name="Bill of Materials")
+    df.loc[df["plant_id"] == "P1", "iso3"] = iso3
+    df.loc[df["plant_id"] == "P1", "geo_unit_or_province"] = geo_unit
+    path = tmp_path / "furnace_units_geo.xlsx"
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="Furnace units", index=False)
+        bom.to_excel(writer, sheet_name="Bill of Materials", index=False)
+    return path
+
+
+def _reader_with_injected_geo_keys(excel_path):
+    """A reader with deterministic geo-keys (no prepared-data dependency), as prep passes
+    the in-memory geo_hierarchy."""
+    return MasterExcelReader(excel_path=excel_path, valid_geo_keys={"CHN:CN-HE", "CHN:CN-SH"})
+
+
+class TestReadPlantsFromFurnaceUnitsSheetGeography:
+    """Prep-time enforcement of the sheet's authored geography."""
+
+    def test_invalid_iso3_raises(self, furnace_units_excel_path, tmp_path):
+        path = _write_geography_variant(furnace_units_excel_path, tmp_path, iso3="ZZZ", geo_unit=None)
+        reader = _reader_with_injected_geo_keys(path)
+        with pytest.raises(ValueError, match="not a valid ISO-3"):
+            reader.read_plants_from_furnace_units_sheet(dynamic_feedstocks_dict={})
+
+    def test_unrecognised_geo_unit_raises(self, furnace_units_excel_path, tmp_path):
+        """A raw province name where an ISO 3166-2 code is expected fails loudly at read time."""
+        path = _write_geography_variant(furnace_units_excel_path, tmp_path, iso3="CHN", geo_unit="Hebei")
+        reader = _reader_with_injected_geo_keys(path)
+        with pytest.raises(ValueError, match="CHN:Hebei"):
+            reader.read_plants_from_furnace_units_sheet(dynamic_feedstocks_dict={})
+
+    def test_declared_geo_unit_lands_on_location(self, furnace_units_excel_path, tmp_path):
+        path = _write_geography_variant(furnace_units_excel_path, tmp_path, iso3="CHN", geo_unit="CN-HE")
+        reader = _reader_with_injected_geo_keys(path)
+        plants, _, _ = reader.read_plants_from_furnace_units_sheet(dynamic_feedstocks_dict={})
+
+        by_id = {p.plant_id: p for p in plants}
+        assert by_id["P1"].location.geo_unit == "CN-HE"
+        assert by_id["P1"].location.geo_key == "CHN:CN-HE"
