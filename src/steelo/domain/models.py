@@ -292,11 +292,7 @@ class Location:
         """Resolve a value from a geo-keyed lookup, finest-available first.
 
         Tries the sub-national key (``self.geo_key``, e.g. ``"CHN:CN-HE"``) and falls back
-        up to the country ``iso3``. A fall-back from a supplied sub-national unit to its
-        country is logged at INFO (intentional, never silent); a sub-national unit that
-        isn't recognised at all is an error, not a silent national fallback. Country-level
-        locations (``geo_unit is None``) resolve straight to ``iso3`` with no logging, so
-        non-sub-national behaviour is unchanged.
+        up to the country ``iso3``.
 
         Args:
             lookup: Mapping keyed by ``geo_key`` strings — sub-national (``iso3:code``)
@@ -321,7 +317,7 @@ class Location:
                     f"not a recognised unit in geo_hierarchy — check the ISO 3166-2 code and level."
                 )
             if self.geo_key in lookup:
-                logger.info(
+                logger.debug(
                     "%s: resolved to sub-national unit %s (not country %s).",
                     what,
                     self.geo_key,
