@@ -567,6 +567,7 @@ class TestReplaceCapacityHook:
             new_technology="also-not-one",
             new_reductant=None,
             capacity=3.0,
+            product="steel",
             historical_utilization=None,
             year=2025,
         )
@@ -585,6 +586,7 @@ class TestReplaceCapacityHook:
             new_technology="BF",
             new_reductant="Coke+PCI",
             capacity=3.0,
+            product="iron",
             historical_utilization={2024: 0.1, 2025: 0.1},
             year=2025,
         )
@@ -603,6 +605,7 @@ class TestReplaceCapacityHook:
             new_technology="BF",
             new_reductant="Coke+PCI",
             capacity=3.0,
+            product="iron",
             historical_utilization=None,
             year=2025,
         )
@@ -621,6 +624,7 @@ class TestReplaceCapacityHook:
             new_technology="EAF",
             new_reductant="Electricity",
             capacity=3.0,
+            product="steel",
             historical_utilization=history,
             year=2025,
         )
@@ -641,6 +645,7 @@ class TestReplaceCapacityHook:
             new_technology="BF",
             new_reductant="Coke+PCI",
             capacity=3.0,
+            product="iron",
             historical_utilization=history,
             year=2025,
         )
@@ -660,6 +665,7 @@ class TestReplaceCapacityHook:
             new_technology="BF",
             new_reductant="Coke+PCI",
             capacity=3.0,
+            product="iron",
             historical_utilization={2024: 0.1, 2025: 0.1},
             year=2025,
         )

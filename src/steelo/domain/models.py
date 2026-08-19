@@ -4298,6 +4298,7 @@ class Plant:
                 permitted = permitted_replace_capacity(
                     iso3=self.location.iso3,
                     geo_unit=self.location.geo_unit,
+                    product=furnace_group.technology.product,
                     old_technology=furnace_group.technology.name,
                     old_reductant=furnace_group.chosen_reductant,
                     new_technology=tech,

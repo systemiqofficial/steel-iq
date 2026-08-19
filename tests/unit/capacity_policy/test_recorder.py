@@ -194,6 +194,7 @@ class TestSchema:
             year=2026,
             furnace_group_id="fg-1",
             geo_key="CHN:CN-HE",
+            product="iron",
             old_technology="BF",
             old_reductant="coke_pci",
             new_technology="DRI",
@@ -209,6 +210,7 @@ class TestSchema:
 
         (row,) = read_rows(tmp_path / GATE_DECISIONS_FILE)
         assert row["decision"] == "ratio"
+        assert row["product"] == "iron"
         assert row["old_used_conservative_fallback"] == "False"
         assert row["new_used_conservative_fallback"] == "True"
 

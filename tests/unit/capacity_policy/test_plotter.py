@@ -120,8 +120,8 @@ def policy_dir(tmp_path: Path) -> Path:
         directory / GATE_DECISIONS_FILE,
         GATE_DECISIONS_COLUMNS,
         [
-            {"year": 2025, "decision": "ratio", "ratio": 1.5, "capacity_t": 9 * MT},
-            {"year": 2026, "decision": "blocked_utilization", "ratio": "", "capacity_t": 12 * MT},
+            {"year": 2025, "decision": "ratio", "ratio": 1.5, "capacity_t": 9 * MT, "product": "steel"},
+            {"year": 2026, "decision": "blocked_utilization", "ratio": "", "capacity_t": 12 * MT, "product": "iron"},
         ],
     )
     return directory
@@ -177,34 +177,39 @@ def test_applicable_pool_nests_rather_than_stacks(policy_dir: Path) -> None:
 
 
 def test_policy_bite_merges_ledger_blocks_and_utilisation_gate(policy_dir: Path) -> None:
+    """Ledger blocks and gate blocks land under their own product's frame."""
     art = plotter.load_artefacts(policy_dir)
     assert art is not None
 
     reasons = plotter.policy_bite(art)
 
     assert reasons == {
-        "Pool short of applicable credit": [1.0, 0.0],
-        "No single holder covers a greenfield": [0.0, 6.0],
-        "Utilisation gate (replacement refused)": [0.0, 12.0],
+        "steel": {
+            "Pool short of applicable credit": [1.0, 0.0],
+            "No single holder covers a greenfield": [0.0, 6.0],
+        },
+        "iron": {
+            "Utilisation gate (replacement refused)": [0.0, 12.0],
+        },
     }
 
 
-def test_annual_flows_split_deposits_from_withdrawals(policy_dir: Path) -> None:
+def test_annual_flows_split_deposits_from_withdrawals_per_product(policy_dir: Path) -> None:
     """Both sides positive and seed excluded — the chart applies the sign, not the data."""
     art = plotter.load_artefacts(policy_dir)
     assert art is not None
 
-    deposits, withdrawals = plotter.annual_flows(art)
+    flows = plotter.annual_flows(art)
 
-    assert deposits == {
-        "Deposit — closure": [10.0, 0.0],
-        "Deposit — end-of-life retirement": [5.0, 0.0],
-        "Deposit — penalised replacement": [0.0, 3.0],
-    }
-    assert withdrawals == {
-        "Withdrawal — expansion": [0.0, 4.0],
-        "Withdrawal — greenfield": [0.0, 2.0],
-    }
+    assert flows["steel"] == (
+        {
+            "Deposit — closure": [10.0, 0.0],
+            "Deposit — end-of-life retirement": [5.0, 0.0],
+            "Deposit — penalised replacement": [0.0, 3.0],
+        },
+        {"Withdrawal — expansion": [0.0, 4.0]},
+    )
+    assert flows["iron"] == ({}, {"Withdrawal — greenfield": [0.0, 2.0]})
 
 
 def test_technology_mix_by_kind_splits_builds_and_ranks_by_total(policy_dir: Path) -> None:
@@ -230,13 +235,15 @@ def test_plot_all_writes_the_full_chart_set(policy_dir: Path, tmp_path: Path) ->
 
     out_dir = plots_dir / "capacity_pool"
     expected = {
-        "1d_applicable_pool_iron.png",
-        "1d_applicable_pool_steel.png",
-        "1e_pool_area_iron.png",
-        "1e_pool_area_steel.png",
-        "2_policy_bite.png",
-        "3_annual_flows.png",
-        "4b_technology_mix.png",
+        "iron_pool_nested.png",
+        "steel_pool_nested.png",
+        "iron_pool_area.png",
+        "steel_pool_area.png",
+        "iron_capacity_refused.png",
+        "steel_capacity_refused.png",
+        "iron_capacity_flows.png",
+        "steel_capacity_flows.png",
+        "technology_mix.png",
     }
     assert {path.name for path in saved} == expected
     assert {path.name for path in out_dir.glob("*.png")} == expected

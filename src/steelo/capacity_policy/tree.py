@@ -142,6 +142,7 @@ class TreeEvaluator:
         new_reductant: str | None,
         capacity_mt: float,
         geo_key: str,
+        product: str,
         historical_utilization: dict[int, float] | None,
         year: int,
         furnace_group_id: str | None = None,
@@ -165,6 +166,7 @@ class TreeEvaluator:
             new_reductant: The reductant the candidate is evaluated with.
             capacity_mt: The group's current capacity in Mt.
             geo_key: Combined geo key of the plant.
+            product: ``"iron"`` or ``"steel"``, recorded with the decision.
             historical_utilization: Per-year recorded utilisation of the
                 group, or None when no history exists yet.
             year: Decision year.
@@ -197,6 +199,7 @@ class TreeEvaluator:
                 year=year,
                 furnace_group_id=furnace_group_id,
                 geo_key=geo_key,
+                product=product,
                 old_technology=old_technology,
                 old_reductant=old_reductant,
                 new_technology=new_technology,
@@ -240,6 +243,7 @@ class TreeEvaluator:
             year=year,
             furnace_group_id=furnace_group_id,
             geo_key=geo_key,
+            product=product,
             old_technology=old_technology,
             old_reductant=old_reductant,
             new_technology=new_technology,
@@ -258,6 +262,7 @@ class TreeEvaluator:
         reductant: str | None,
         capacity_mt: float,
         geo_key: str,
+        product: str,
         historical_utilization: dict[int, float] | None,
         year: int,
         furnace_group_id: str | None = None,
@@ -279,6 +284,7 @@ class TreeEvaluator:
             reductant: Its current reductant, or None when unset.
             capacity_mt: The group's current capacity in Mt.
             geo_key: Combined geo key of the plant.
+            product: ``"iron"`` or ``"steel"``, recorded with the decision.
             historical_utilization: Per-year recorded utilisation of the group,
                 or None when no history exists yet.
             year: Decision year.
@@ -305,6 +311,7 @@ class TreeEvaluator:
             year=year,
             furnace_group_id=furnace_group_id,
             geo_key=geo_key,
+            product=product,
             old_technology=technology,
             old_reductant=reductant,
             new_technology=technology,
@@ -387,6 +394,7 @@ class TreeEvaluator:
         year: int,
         furnace_group_id: str | None,
         geo_key: str,
+        product: str,
         old_technology: str,
         old_reductant: str | None,
         new_technology: str,
@@ -409,6 +417,7 @@ class TreeEvaluator:
             year=year,
             furnace_group_id=furnace_group_id,
             geo_key=geo_key,
+            product=product,
             old_technology=old_technology,
             old_reductant=old_reductant,
             new_technology=new_technology,

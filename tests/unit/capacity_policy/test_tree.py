@@ -85,6 +85,7 @@ def permitted(
     historical_utilization: dict[int, float] | None = None,
     year: int = 2030,
     furnace_group_id: str | None = None,
+    product: str = "steel",
 ) -> float | None:
     """Call permitted_capacity with defaults suited to single-branch tests."""
     return evaluator.permitted_capacity(
@@ -94,6 +95,7 @@ def permitted(
         new_reductant=new_reductant,
         capacity_mt=capacity_mt,
         geo_key=geo_key,
+        product=product,
         historical_utilization=historical_utilization,
         year=year,
         furnace_group_id=furnace_group_id,
@@ -253,6 +255,7 @@ def renovation(
     historical_utilization: dict[int, float] | None = None,
     year: int = 2030,
     furnace_group_id: str | None = None,
+    product: str = "steel",
 ) -> float | None:
     """Call permitted_renovation with defaults suited to single-branch tests."""
     return evaluator.permitted_renovation(
@@ -260,6 +263,7 @@ def renovation(
         reductant=reductant,
         capacity_mt=capacity_mt,
         geo_key=geo_key,
+        product=product,
         historical_utilization=historical_utilization,
         year=year,
         furnace_group_id=furnace_group_id,

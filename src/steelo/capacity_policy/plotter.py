@@ -1,9 +1,10 @@
 """Capacity-pool charts in the Steel-IQ house style, drawn at the end of a run.
 
 The chart set is the one kept from the capacity-pool experiments: the drawable
-pool by build location (1d), the pool by region tag as a stacked area (1e), the
-capacity the policy refused (2), the pool's annual deposits and withdrawals (3),
-and the technology mix of what was built, split by the motion that built it (4b).
+pool by build location, the pool by region tag as a stacked area, the capacity
+the policy refused and the pool's annual deposits and withdrawals — each drawn
+per product, because iron and steel are separate stocks — plus the technology
+mix of what was built, split by the motion that built it.
 
 Numbers come from the four CSVs :mod:`steelo.capacity_policy.recorder` flushes
 to ``<output>/data/policy``. A policy-OFF run writes no artefacts, so
@@ -183,46 +184,77 @@ def applicable_pool(art: PolicyArtefacts) -> dict[str, tuple[list[float], dict[s
     return frames
 
 
-def policy_bite(art: PolicyArtefacts) -> dict[str, list[float]]:
-    """Capacity the policy refused each year, by reason.
+def policy_bite(art: PolicyArtefacts) -> dict[str, dict[str, list[float]]]:
+    """Capacity the policy refused each year, by product and reason.
 
     Refused, not deferred elsewhere: a blocked expansion or greenfield retries
     in later years (up to the retry cap), while a utilisation block removes the
     candidate from that year's menu altogether.
+
+    Returns:
+        Per product, a reason → per-year Mt series.
     """
     refusals = [
-        {"year": row["year"], "reason": BLOCKED_REASONS[row["blocked_reason"]], "amount": row["amount_t"]}
+        {
+            "year": row["year"],
+            "product": row["product"],
+            "reason": BLOCKED_REASONS[row["blocked_reason"]],
+            "amount": row["amount_t"],
+        }
         for row in art.ledger
         if row["operation"] in BLOCKED
     ]
     refusals += [
-        {"year": row["year"], "reason": "Utilisation gate (replacement refused)", "amount": row["capacity_t"]}
+        {
+            "year": row["year"],
+            "product": row["product"],
+            "reason": "Utilisation gate (replacement refused)",
+            "amount": row["capacity_t"],
+        }
         for row in art.gates
         if row["decision"] == "blocked_utilization"
     ]
-    return _per_year(art.years, refusals, lambda row: row["reason"], lambda row: float(row["amount"]))
+    return {
+        product: _per_year(
+            art.years,
+            [row for row in refusals if row["product"] == product],
+            lambda row: row["reason"],
+            lambda row: float(row["amount"]),
+        )
+        for product in sorted({row["product"] for row in refusals})
+    }
 
 
-def annual_flows(art: PolicyArtefacts) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
+def annual_flows(art: PolicyArtefacts) -> dict[str, tuple[dict[str, list[float]], dict[str, list[float]]]]:
     """Deposits banked and withdrawals spent per year, both as positive Mt.
 
-    Iron and steel are summed here — this is the pool's cash-flow view, not the
-    availability view, which is per product because the stocks are separate.
-    Seed credit is excluded: it is the opening balance, not a flow.
+    Per product, because iron and steel are separate stocks. Seed credit is
+    excluded: it is the opening balance, not a flow.
+
+    Returns:
+        Per product, the ``(deposits, withdrawals)`` label → per-year Mt series.
     """
-    deposits = _per_year(
-        art.years,
-        [row for row in art.ledger if row["operation"] in DEPOSITS],
-        lambda row: DEPOSITS[row["operation"]],
-        lambda row: float(row["amount_t"]),
-    )
-    withdrawals = _per_year(
-        art.years,
-        [row for row in art.ledger if row["operation"] in WITHDRAWALS],
-        lambda row: WITHDRAWALS[row["operation"]],
-        lambda row: float(row["amount_t"]),
-    )
-    return _ordered(deposits, list(DEPOSITS.values())), _ordered(withdrawals, list(WITHDRAWALS.values()))
+    flows = [row for row in art.ledger if row["operation"] in DEPOSITS or row["operation"] in WITHDRAWALS]
+    frames = {}
+    for product in sorted({row["product"] for row in flows}):
+        rows = [row for row in flows if row["product"] == product]
+        deposits = _per_year(
+            art.years,
+            [row for row in rows if row["operation"] in DEPOSITS],
+            lambda row: DEPOSITS[row["operation"]],
+            lambda row: float(row["amount_t"]),
+        )
+        withdrawals = _per_year(
+            art.years,
+            [row for row in rows if row["operation"] in WITHDRAWALS],
+            lambda row: WITHDRAWALS[row["operation"]],
+            lambda row: float(row["amount_t"]),
+        )
+        frames[product] = (
+            _ordered(deposits, list(DEPOSITS.values())),
+            _ordered(withdrawals, list(WITHDRAWALS.values())),
+        )
+    return frames
 
 
 def technology_mix_by_kind(art: PolicyArtefacts) -> dict[str, dict[str, float]]:
@@ -273,8 +305,8 @@ class CapacityPoolPlotter(SteelPlotter):
         saved = [
             *self.plot_applicable_pool(art),
             *self.plot_pool_area(art),
-            self.plot_policy_bite(art),
-            self.plot_annual_flows(art),
+            *self.plot_policy_bite(art),
+            *self.plot_annual_flows(art),
             self.plot_technology_mix(art),
         ]
         return [path for path in saved if path is not None]
@@ -310,7 +342,7 @@ class CapacityPoolPlotter(SteelPlotter):
     # ------------------------------------------------------------------ charts
 
     def plot_applicable_pool(self, art: PolicyArtefacts) -> list[Path]:
-        """1d — nested entitlements: the whole pool as a band, each cluster's pot as a line."""
+        """nested entitlements: the whole pool as a band, each cluster's pot as a line."""
         saved = []
         for product, (total, clusters) in applicable_pool(art).items():
             fig, ax = plt.subplots(figsize=self.config.default_figsize_wide)
@@ -319,12 +351,12 @@ class CapacityPoolPlotter(SteelPlotter):
             for colour, (tag, values) in zip(self._categorical_colours(clusters), clusters.items()):
                 ax.plot(art.years, values, color=colour, linewidth=2, label=tag)
             ax.set_title(
-                f"{product.capitalize()} Capacity Pool a Build May Draw On (Key Regions and Total Pool)",
+                f"{product.capitalize()} Available Credits in Capacity Pool (Key Regions and Total Pool)",
                 fontsize=14,
                 fontweight="bold",
             )
             ax.set_xlabel("Year", fontsize=12)
-            ax.set_ylabel("Drawable Credit (Mt)", fontsize=12)
+            ax.set_ylabel("Drawable Credit [Mt]", fontsize=12)
             ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
             legend = self._style_legend(ax, title="Build location")
             self._ensure_y_axis_starts_at_zero(ax)
@@ -348,11 +380,11 @@ class CapacityPoolPlotter(SteelPlotter):
             )
             table = self._frame(art.years, clusters)
             table["whole pool"] = total
-            saved.append(self._save(fig, table, f"1d_applicable_pool_{product}.png"))
+            saved.append(self._save(fig, table, f"{product}_pool_nested.png"))
         return saved
 
     def plot_pool_area(self, art: PolicyArtefacts) -> list[Path]:
-        """1e — the pool's credit per year as a stacked area, partitioned by region tag."""
+        """the pool's credit per year as a stacked area, partitioned by region tag."""
         saved = []
         for product, series in pool_by_tag(art).items():
             if not series:
@@ -362,67 +394,77 @@ class CapacityPoolPlotter(SteelPlotter):
             colours = self._categorical_colours(table.columns)
             ax.stackplot(table.index, *[table[column] for column in table.columns], colors=colours)
             ax.set_title(
-                f"{product.capitalize()} Retirement Credit in the Capacity Pool (Stacked Area)",
+                f"{product.capitalize()} Available Credits in Capacity Pool (Stacked Area)",
                 fontsize=14,
                 fontweight="bold",
             )
             ax.set_xlabel("Year", fontsize=12)
-            ax.set_ylabel("Credit Available (Mt)", fontsize=12)
+            ax.set_ylabel("Credit Available [Mt]", fontsize=12)
             ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
             handles = [Patch(facecolor=colour, label=column) for colour, column in zip(colours, table.columns)]
             self._style_legend(ax, title="Region tag", handles=handles, labels=list(table.columns))
             self._ensure_y_axis_starts_at_zero(ax)
             fig.tight_layout()
-            saved.append(self._save(fig, table, f"1e_pool_area_{product}.png"))
+            saved.append(self._save(fig, table, f"{product}_pool_area.png"))
         return saved
 
-    def plot_policy_bite(self, art: PolicyArtefacts) -> Optional[Path]:
-        """2 — capacity refused by the policy each year, stacked by reason."""
-        reasons = policy_bite(art)
-        if not reasons:
-            self.logger.info("The policy refused nothing in this run — skipping the policy bite chart")
-            return None
-        table = self._frame(art.years, reasons)
-        fig, ax = plt.subplots(figsize=self.config.default_figsize_wide)
-        colours = self._categorical_colours(table.columns)
-        table.plot.bar(stacked=True, ax=ax, color=colours, width=0.85)
-        ax.set_title("Capacity Refused by the Capacity Policy", fontsize=14, fontweight="bold")
-        ax.set_xlabel("Year", fontsize=12)
-        ax.set_ylabel("Capacity Refused (Mt)", fontsize=12)
-        ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
-        self._year_ticks(ax, art.years)
-        labels = [textwrap.fill(column, width=24) for column in table.columns]
-        handles = [Patch(facecolor=colour, label=label) for colour, label in zip(colours, labels)]
-        self._style_legend(ax, title="Reason", handles=handles, labels=labels)
-        self._ensure_y_axis_starts_at_zero(ax)
-        fig.tight_layout()
-        return self._save(fig, table, "2_policy_bite.png")
+    def plot_policy_bite(self, art: PolicyArtefacts) -> list[Path]:
+        """capacity refused by the policy each year, stacked by reason, per product."""
+        saved = []
+        for product, reasons in policy_bite(art).items():
+            if not reasons:
+                continue
+            table = self._frame(art.years, reasons)
+            fig, ax = plt.subplots(figsize=self.config.default_figsize_wide)
+            colours = self._categorical_colours(table.columns)
+            table.plot.bar(stacked=True, ax=ax, color=colours, width=0.85)
+            ax.set_title(
+                f"Annual Refused {product.capitalize()} Capacity by Capacity Policy",
+                fontsize=14,
+                fontweight="bold",
+            )
+            ax.set_xlabel("Year", fontsize=12)
+            ax.set_ylabel("Capacity Refused [Mt]", fontsize=12)
+            ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
+            self._year_ticks(ax, art.years)
+            labels = [textwrap.fill(column, width=24) for column in table.columns]
+            handles = [Patch(facecolor=colour, label=label) for colour, label in zip(colours, labels)]
+            self._style_legend(ax, title="Reason", handles=handles, labels=labels)
+            self._ensure_y_axis_starts_at_zero(ax)
+            fig.tight_layout()
+            saved.append(self._save(fig, table, f"{product}_capacity_refused.png"))
+        if not saved:
+            self.logger.info("The policy refused nothing in this run — skipping the policy bite charts")
+        return saved
 
-    def plot_annual_flows(self, art: PolicyArtefacts) -> Optional[Path]:
-        """3 — the pool's yearly cash flow: deposits stacked above zero, withdrawals below."""
-        deposits, withdrawals = annual_flows(art)
-        if not deposits and not withdrawals:
-            self.logger.info("No deposits or withdrawals in this run — skipping the annual flows chart")
-            return None
-        series = dict(deposits) | {label: [-value for value in values] for label, values in withdrawals.items()}
-        table = self._frame(art.years, series)
-        fig, ax = plt.subplots(figsize=self.config.default_figsize_wide)
-        colours = self._categorical_colours(table.columns)
-        table.plot.bar(stacked=True, ax=ax, color=colours, width=0.85)
-        ax.axhline(0, color="black", linewidth=1.0)
-        ax.set_title("Annual Capacity Pool Flows", fontsize=14, fontweight="bold")
-        ax.set_xlabel("Year", fontsize=12)
-        ax.set_ylabel("Capacity (Mt)", fontsize=12)
-        ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
-        self._year_ticks(ax, art.years)
-        labels = [textwrap.fill(column, width=24) for column in table.columns]
-        handles = [Patch(facecolor=colour, label=label) for colour, label in zip(colours, labels)]
-        self._style_legend(ax, title="Flow", handles=handles, labels=labels)
-        fig.tight_layout()
-        return self._save(fig, table, "3_annual_flows.png")
+    def plot_annual_flows(self, art: PolicyArtefacts) -> list[Path]:
+        """the pool's yearly capacity flow per product: deposits stacked above zero, withdrawals below."""
+        saved = []
+        for product, (deposits, withdrawals) in annual_flows(art).items():
+            if not deposits and not withdrawals:
+                continue
+            series = dict(deposits) | {label: [-value for value in values] for label, values in withdrawals.items()}
+            table = self._frame(art.years, series)
+            fig, ax = plt.subplots(figsize=self.config.default_figsize_wide)
+            colours = self._categorical_colours(table.columns)
+            table.plot.bar(stacked=True, ax=ax, color=colours, width=0.85)
+            ax.axhline(0, color="black", linewidth=1.0)
+            ax.set_title(f"Annual {product.capitalize()} Capacity Pool Flows", fontsize=14, fontweight="bold")
+            ax.set_xlabel("Year", fontsize=12)
+            ax.set_ylabel("Capacity [Mt]", fontsize=12)
+            ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
+            self._year_ticks(ax, art.years)
+            labels = [textwrap.fill(column, width=24) for column in table.columns]
+            handles = [Patch(facecolor=colour, label=label) for colour, label in zip(colours, labels)]
+            self._style_legend(ax, title="Flow", handles=handles, labels=labels)
+            fig.tight_layout()
+            saved.append(self._save(fig, table, f"{product}_capacity_flows.png"))
+        if not saved:
+            self.logger.info("No deposits or withdrawals in this run — skipping the annual flow charts")
+        return saved
 
     def plot_technology_mix(self, art: PolicyArtefacts) -> Optional[Path]:
-        """4b — capacity moved into each technology, stacked by the motion that moved it."""
+        """capacity moved into each technology, stacked by the motion that moved it."""
         mix = technology_mix_by_kind(art)
         if not mix:
             self.logger.info("No switch, expansion or greenfield moved capacity — skipping the technology mix chart")
@@ -437,12 +479,12 @@ class CapacityPoolPlotter(SteelPlotter):
             ax.barh(technologies, values, left=left, color=colour, height=0.7, label=kind)
             left = [total + value for total, value in zip(left, values)]
         for position, total in enumerate(left):
-            ax.text(total, position, f" {total:,.2f}", va="center", fontsize=9)
+            ax.text(total, position, f" {total:,.0f} Mt", va="center", fontsize=9)
         ax.set_title("Capacity Moved into Each Technology", fontsize=14, fontweight="bold")
-        ax.set_xlabel("Capacity (Mt)", fontsize=12)
+        ax.set_xlabel("Capacity [Mt]", fontsize=12)
         ax.grid(axis="x", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
         handles = [Patch(facecolor=colour, label=kind) for kind, colour in zip(kinds, palette)]
         self._style_legend(ax, title="Motion", handles=handles, labels=kinds)
         fig.tight_layout()
         table = pd.DataFrame(mix).T.reindex(columns=kinds).fillna(0.0).rename_axis("technology")
-        return self._save(fig, table, "4b_technology_mix.png")
+        return self._save(fig, table, "technology_mix.png")

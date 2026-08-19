@@ -87,6 +87,7 @@ GATE_DECISIONS_COLUMNS = (
     "year",
     "furnace_group_id",
     "geo_key",
+    "product",
     "old_technology",
     "old_reductant",
     "new_technology",
@@ -314,6 +315,7 @@ class CapacityPolicyRecorder:
         year: int,
         furnace_group_id: str | None,
         geo_key: str,
+        product: str,
         old_technology: str,
         old_reductant: str | None,
         new_technology: str,
@@ -332,6 +334,7 @@ class CapacityPolicyRecorder:
             furnace_group_id: The group being evaluated, threaded from the
                 decision path; None on evaluations made outside it.
             geo_key: Combined geo key of the plant.
+            product: ``"iron"`` or ``"steel"`` — the evaluated group's product.
             old_technology: Technology being replaced.
             old_reductant: Its reductant, as the decision path knows it.
             new_technology: Candidate technology.
@@ -350,6 +353,7 @@ class CapacityPolicyRecorder:
                 "year": year,
                 "furnace_group_id": furnace_group_id,
                 "geo_key": geo_key,
+                "product": product,
                 "old_technology": old_technology,
                 "old_reductant": old_reductant,
                 "new_technology": new_technology,
