@@ -35,7 +35,14 @@ class CapacityPolicyConfig:
         inter_company_swap_cutoff_year: First year a company may only spend
             its own credits; None disables the owner partition.
         banked_credit_rule: Treatment of pre-cutoff credits from the cutoff
-            year on — ``"reassign"``, ``"persist"`` or ``"expire"``.
+            year on (options: ``"reassign"``, ``"persist"`` or ``"expire"``).
+            ``"reassign"`` subjects them to the owner filter like any
+            other credit, so each stays with its depositor and the unowned
+            opening pool — which has no depositor to stay with — is swept.
+            ``"persist"`` grandfathers them as freely spendable by anyone,
+            unowned included, so the partition bites only on later deposits.
+            ``"expire"`` makes them unusable by everyone, leaving only
+            post-cutoff deposits spendable, each by its own depositor.
         credit_validity_years: Shelf life of a banked credit; a vintage ``V``
             credit is usable through ``V + N − 1`` and purged on entering
             ``V + N``. None (the default) never expires. A different concept
