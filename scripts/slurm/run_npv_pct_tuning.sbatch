@@ -15,14 +15,25 @@
 # Prerequisite: `uv sync --extra gurobi` plus a working Gurobi license reachable from
 # labgpu01 (see GUROBI_CLUSTER_LICENSE_SETUP.md).
 #
-# Sizing: --mem=8G matches run_gurobi_clustered_sweep.sbatch's 2025-2050 gurobi+clustering
-# baseline. --time=24:00:00 is a first-pass estimate with a large safety margin for the
-# npv_pct_full/npv_pct_narrowed combinations, whose whole point is exercising the ~7x
-# slower path in select_location_subset (docs/domain_simulation_logic/geospatial_model/
-# new_plant_opening.md) -- but that 7x figure is for the location-sampling step alone,
-# not the whole annual cycle, so the real multiplier on total wall-clock is unknown until
-# this script has actually run once. Correct against this script's own sacct/task.err
-# numbers afterward. Partition must stay verylong -- long caps at 6h.
+# Sizing derivation (from real data, not a guess): re-parsing
+# outputs/sensitivity/co2_ramp_seed_sweep_cluster/analysis_solver/solver_benchmark/gurobi_clustering/
+# run_000{0,1,2}/task.err (2025-2040, 3 seeds, the existing solver benchmark) with this
+# repo's new_plant_opening_s bucket shows that stage is a consistent ~14-15% of total
+# wall_clock_s (593-1115s of 4088-7472s). Applying the documented ~7x slowdown
+# (docs/domain_simulation_logic/geospatial_model/new_plant_opening.md) to just that
+# fraction, not the whole annual cycle: new_total ~= old_total * (1 + 6*0.15) ~= 1.9x.
+# run_gurobi_clustered_sweep.sbatch budgets 12h for the npv_pct=0.1 baseline over the
+# full 2025-2050 horizon (already padded for that longer horizon's super-linear growth
+# in later years). 12h * 1.9 ~= 23h -- i.e. a naive "big" number like 24h sits right at
+# that estimate, not comfortably above it. --time=40:00:00 below adds real margin on top
+# of the 1.9x estimate itself, since it's an extrapolation from a shorter (2025-2040)
+# horizon and an approximate 7x-on-one-substage model, not a measurement of this exact
+# scenario. --mem bumped from the baseline's 8G to 12G as a precaution: the added NPV
+# evaluations (10x more location-tech pairs held in memory per year in Steps 3/4) have no
+# existing memory-checkpoint coverage (see parse_stage_timings.py's docstring -- no
+# checkpoint exists for npv_plant_decision/geospatial), so there's no real data on their
+# RSS impact, unlike wall-clock. Correct both against this script's own sacct/task.err
+# numbers after the first real run. Partition must stay verylong -- long caps at 6h.
 
 #SBATCH --job-name=steelo-npv-pct-tuning
 #SBATCH --partition=verylong
@@ -31,8 +42,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1          # single-threaded run, see run_one.py
-#SBATCH --mem=8G
-#SBATCH --time=24:00:00
+#SBATCH --mem=12G
+#SBATCH --time=40:00:00
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=jan.tautorus@it-u.at
 #SBATCH --output=logs/npv-pct-tuning-%A_%a.out
