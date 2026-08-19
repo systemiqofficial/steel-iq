@@ -245,7 +245,9 @@ class GeoConfig:
     )
 
     # === Outgoing cashflow estimate (to build a new plant at a certain location) ===
-    priority_pct: int = 5  # Percentage of global grid points selected as priority locations for business opportunities
+    priority_pct: float = (
+        5  # Percentage of global grid points selected as priority locations for business opportunities
+    )
     iron_ore_steel_ratio: float = 1.6  # Amount of iron ore needed to produce 1 unit of steel
     share_iron_vs_steel: dict[str, dict[str, float]] = field(
         default_factory=lambda: {
@@ -390,6 +392,12 @@ class SimulationConfig:
     probability_of_announcement: float = 0.7  # Probability of a plant being announced after being considered - given a history of positive NPVs of at least `consideration_time` years
     top_n_loctechs_as_business_op: int = 15  # Number of top location-technology combinations to consider as business
     # opportunities per product per year (e.g., 5 for steel and 5 for iron = 10 total)
+    # Fraction of priority locations sampled for detailed NPV assessment (Step 2 of new-plant
+    # opening). Not gated by probabilistic_agents: evaluating all candidates measured ~7x slower
+    # for a step judged to be a compute tradeoff rather than modeled decision-making behavior
+    # (see docs/domain_simulation_logic/geospatial_model/new_plant_opening.md). Tunable here for
+    # benchmarking that tradeoff.
+    calculate_npv_pct: float = 0.1
     co2_storage_reserved_discount_factor: float = (
         0.9  # Fraction of an announced CCS plant's CO2 need that counts toward the reserved storage bucket
     )

@@ -69,6 +69,12 @@ _GEOSPATIAL_OPS = {"geospatial_model"}
 _PAM_OPS = {"plant_agents_model"}
 _LP_BUILD_OPS = {"allocation_setup"}
 _NPV_PLANT_DECISION_OPS = {"pam_evaluate_plants", "pam_evaluate_expansions"}
+# Sub-parts of geospatial_s: new-plant-opening candidate identification (Steps 1-5 of
+# docs/domain_simulation_logic/geospatial_model/new_plant_opening.md, includes
+# select_location_subset's calculate_npv_pct sampling) and the separate per-year status
+# update of already-considered/announced opportunities.
+_NEW_PLANT_OPENING_OPS = {"geo_identify_opportunities"}
+_GEO_UPDATE_STATUS_OPS = {"geo_update_status"}
 
 
 def _parse_time_v_wall_clock(value: str) -> float:
@@ -89,6 +95,9 @@ def parse_log(log_path: Path) -> dict:
     lp_build_s = 0.0
     lp_solve_s = 0.0
     npv_plant_decision_s = 0.0
+    new_plant_opening_s = 0.0
+    geo_update_status_s = 0.0
+    priority_tiebreak_count = 0
     peak_lp_build_rss_mb = 0.0
     peak_lp_solve_rss_mb = 0.0
     wall_clock_s: float | None = None
@@ -107,6 +116,10 @@ def parse_log(log_path: Path) -> dict:
                 lp_build_s += duration
             elif op in _NPV_PLANT_DECISION_OPS:
                 npv_plant_decision_s += duration
+            elif op in _NEW_PLANT_OPENING_OPS:
+                new_plant_opening_s += duration
+            elif op in _GEO_UPDATE_STATUS_OPS:
+                geo_update_status_s += duration
             continue
         if m := _TRADE_OPTIMIZATION_RE.search(line):
             lp_solve_s += float(m.group(1))
@@ -124,6 +137,9 @@ def parse_log(log_path: Path) -> dict:
         if m := _TIME_V_PEAK_RSS_KB_RE.search(line):
             peak_rss_mb = int(m.group(1)) / 1024.0
             continue
+        if "operation=priority_tiebreak" in line:
+            priority_tiebreak_count += 1
+            continue
 
     return {
         "wall_clock_s": wall_clock_s,
@@ -134,6 +150,9 @@ def parse_log(log_path: Path) -> dict:
         "lp_build_s": lp_build_s,
         "lp_solve_s": lp_solve_s,
         "npv_plant_decision_s": npv_plant_decision_s,
+        "new_plant_opening_s": new_plant_opening_s,
+        "geo_update_status_s": geo_update_status_s,
+        "priority_tiebreak_count": priority_tiebreak_count,
         "peak_lp_build_rss_mb": peak_lp_build_rss_mb,
         "peak_lp_solve_rss_mb": peak_lp_solve_rss_mb,
     }
@@ -157,6 +176,9 @@ def main() -> None:
         "lp_build_s",
         "lp_solve_s",
         "npv_plant_decision_s",
+        "new_plant_opening_s",
+        "geo_update_status_s",
+        "priority_tiebreak_count",
         "peak_lp_build_rss_mb",
         "peak_lp_solve_rss_mb",
     ]

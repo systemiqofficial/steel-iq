@@ -62,15 +62,24 @@ def main() -> None:
         "--params-json",
         type=str,
         default="{}",
-        help="JSON object of SimulationConfig field overrides applied via setattr after "
-        "construction, e.g. '{\"steel_price_buffer\": 250.0}'. Keys must be valid "
-        "SimulationConfig field names.",
+        help="JSON object of SimulationConfig field overrides, e.g. "
+        "'{\"steel_price_buffer\": 250.0}'. Keys must be valid SimulationConfig field "
+        "names, or a dotted path into a nested dataclass field (e.g. "
+        '"geo_config.priority_pct") for fields that live on GeoConfig rather than '
+        "SimulationConfig directly. Top-level keys are passed as constructor kwargs to "
+        "from_data_directory() -- not applied via setattr after the fact -- so that "
+        "SimulationConfig.__post_init__'s derived invariants (geo_config.random_seed "
+        "propagation; probability_of_construction/probability_of_announcement forced "
+        "to 1.0 when probabilistic_agents=False) see the overridden values, not just "
+        "the dataclass defaults. Dotted nested-path keys have no such invariants and "
+        "are applied via setattr after construction.",
     )
     args = parser.parse_args()
 
     params: dict = json.loads(args.params_json)
     valid_fields = {f.name for f in dataclasses.fields(SimulationConfig)}
-    unknown = set(params) - valid_fields
+    top_level_keys = {key.split(".", 1)[0] for key in params}
+    unknown = top_level_keys - valid_fields
     if unknown:
         raise ValueError(f"Unknown SimulationConfig field(s) {sorted(unknown)} in --params-json")
 
@@ -81,6 +90,9 @@ def main() -> None:
     status_path = args.output_dir / "status.json"
     (args.output_dir / "params.json").write_text(json.dumps(params, indent=2))
 
+    top_level_params = {k: v for k, v in params.items() if "." not in k}
+    nested_params = {k: v for k, v in params.items() if "." in k}
+
     t0 = time.time()
     try:
         config = SimulationConfig.from_data_directory(
@@ -90,9 +102,14 @@ def main() -> None:
             output_dir=args.output_dir,
             master_excel_path=args.master_excel,
             log_level=log_level,
+            **top_level_params,
         )
-        for key, value in params.items():
-            setattr(config, key, value)
+        for key, value in nested_params.items():
+            *nested_path, leaf = key.split(".")
+            target = config
+            for part in nested_path:
+                target = getattr(target, part)
+            setattr(target, leaf, value)
 
         runner = bootstrap_simulation(config)
         runner.run()

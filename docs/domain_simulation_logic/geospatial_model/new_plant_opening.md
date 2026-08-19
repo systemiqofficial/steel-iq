@@ -309,7 +309,7 @@ Models real-world risk factors: financing may fall through, permits may be denie
 | `plant_lifetime` | int | 20 years | Expected operational lifetime of plant |
 | `expanded_capacity` | float | 2.5 Mt/year | Standard capacity for new plants (same than for plant expansion) |
 | `top_n_loctechs_as_business_op` | int | 5 | Number of opportunities to track per product per year |
-| `calculate_npv_pct` | float | 0.1 | Percentage of priority locations to sample for NPV calculation (fixed; not gated by `probabilistic_agents` — evaluating all measured ~7x slower) |
+| `calculate_npv_pct` | float | 0.1 | Percentage of priority locations to sample for NPV calculation (SimulationConfig field; not gated by `probabilistic_agents` — evaluating all measured ~7x slower) |
 
 ### Probability Parameters
 

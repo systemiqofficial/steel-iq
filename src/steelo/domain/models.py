@@ -6024,6 +6024,7 @@ class PlantGroup:
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
         derive_geo_unit: Callable[[float, float, str], str | None] | None = None,
         probabilistic_agents: bool = True,
+        calculate_npv_pct: float = 0.1,
     ) -> commands.Command:
         """
         Identifies new business opportunities for plants at given locations with specific technologies.
@@ -6084,6 +6085,8 @@ class PlantGroup:
                 location sampling is unaffected by this flag (measured ~7x runtime cost to evaluate
                 all candidates deterministically was judged not worth it — see
                 docs/domain_simulation_logic/geospatial_model/new_plant_opening.md).
+            calculate_npv_pct: Fraction of priority locations sampled in step 2 for detailed NPV
+                assessment (SimulationConfig default: 0.1). Not gated by probabilistic_agents.
 
         Returns:
             Command to add new Plant and FurnaceGroup objects for the identified business opportunities
@@ -6143,7 +6146,7 @@ class PlantGroup:
         # Step 2: Select a subset of locations
         best_locations_subset = select_location_subset(
             locations=locations,
-            calculate_npv_pct=0.1,  # 10%; TODO: set as tuneable parameter
+            calculate_npv_pct=calculate_npv_pct,
         )
         subset_counts, subset_total = _count_entries(best_locations_subset)
         candidate_stats["subset_sites_total"] = subset_total

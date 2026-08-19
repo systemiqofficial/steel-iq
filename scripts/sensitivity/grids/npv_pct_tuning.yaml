@@ -1,0 +1,98 @@
+# Benchmark for whether to gate calculate_npv_pct (new-plant-opening Step 2 location
+# sampling, src/steelo/domain/new_plant_opening.py:select_location_subset) on
+# probabilistic_agents, and/or shrink priority_pct to compensate for the added cost.
+#
+# calculate_npv_pct gating was proposed once already and rejected in commit d9cd91a
+# ("Gate greenfield top-opportunity selection on probabilistic_agents") after
+# benchmarking showed evaluating all candidates measured ~7x slower -- see
+# docs/domain_simulation_logic/geospatial_model/new_plant_opening.md. This grid
+# re-measures that tradeoff and checks two open questions the prior benchmark didn't
+# cover: (1) full determinism under repeated identical-seed runs, and (2) whether
+# narrowing priority_pct to offset the added cost trades away one randomness source
+# (unseeded random.sample in select_location_subset) for more of another (the seeded
+# rng.choice tie-break in priority_kpi.py's extract_priority_locations, instrumented
+# via the operation=priority_tiebreak log line).
+#
+# priority_pct lives on the nested GeoConfig dataclass, not SimulationConfig directly
+# (simulation.py: GeoConfig at line ~161, SimulationConfig at line ~268) -- reach it
+# via the dotted "geo_config.priority_pct" key, which run_one.py resolves through
+# nested getattr/setattr.
+#
+# Scenarios (each run four times: random_seed 1, 2, 3, then a repeat of seed 1 to
+# test byte-for-byte determinism of repeated identical-seed runs):
+#   1. baseline        -- current ungated behavior (control group)
+#   2. npv_pct_full    -- calculate_npv_pct gated to 1.0 in deterministic mode
+#   3. npv_pct_narrowed -- (2) plus priority_pct shrunk 5 -> 0.5 to hold NPV-calc
+#      compute roughly constant (benchmark-only; not a proposed production default)
+#
+# Data: run against co2_ramp-authored data (~/.steelo/preparation_cache/co2_ramp_authored/data)
+# -- the default carbon price is too flat to force enough tech switching for
+# location-sampling differences to be observable in outcomes.
+#
+# Locked to gurobi + furnace-group clustering (see run_gurobi_clustered_sweep.sbatch) --
+# not the default HiGHS/no-clustering backend -- since that's the recommended production
+# config (project memory: "solver benchmark verdict") and region/tech aggregates (what
+# this benchmark's deliverables care about) are unaffected by clustering.
+#
+# Cluster submission: scripts/slurm/run_npv_pct_tuning.sbatch (array of these 12
+# scenario x seed combinations) rather than run_sweep.py, matching this repo's existing
+# cluster pattern (CLUSTER_RUNBOOK.md) of one SLURM array task per combination via
+# run_one.py directly. This file is kept as the single source of truth for the 12
+# combinations; the sbatch script's PARAMS_JSON arrays must match it exactly.
+#
+# For a local run instead (e.g. a quick smoke test before submitting), run_sweep.py can
+# still consume this file directly:
+#   uv run python -m scripts.sensitivity.run_sweep \
+#       --grid-file scripts/sensitivity/grids/npv_pct_tuning.yaml \
+#       --data-dir ~/.steelo/preparation_cache/co2_ramp_authored/data \
+#       --master-excel ~/.steelo/data_cache/master-input-co2-ramp/master_input.xlsx \
+#       --out-dir outputs/sensitivity/npv_pct_tuning \
+#       --start-year 2025 --end-year 2050 --log-level INFO
+
+base_params:
+  probabilistic_agents: false
+  optimization_solver: gurobi
+  enable_furnace_group_clustering: true
+
+scenarios:
+  # --- 1. baseline: current ungated behavior ---
+  - random_seed: 1
+    calculate_npv_pct: 0.1
+    geo_config.priority_pct: 5
+  - random_seed: 2
+    calculate_npv_pct: 0.1
+    geo_config.priority_pct: 5
+  - random_seed: 3
+    calculate_npv_pct: 0.1
+    geo_config.priority_pct: 5
+  - random_seed: 1 # repeat, for same-seed determinism check
+    calculate_npv_pct: 0.1
+    geo_config.priority_pct: 5
+
+  # --- 2. npv_pct_full: evaluate every candidate location ---
+  - random_seed: 1
+    calculate_npv_pct: 1.0
+    geo_config.priority_pct: 5
+  - random_seed: 2
+    calculate_npv_pct: 1.0
+    geo_config.priority_pct: 5
+  - random_seed: 3
+    calculate_npv_pct: 1.0
+    geo_config.priority_pct: 5
+  - random_seed: 1 # repeat, for same-seed determinism check
+    calculate_npv_pct: 1.0
+    geo_config.priority_pct: 5
+
+  # --- 3. npv_pct_narrowed: full NPV sampling + shrunk priority pool ---
+  - random_seed: 1
+    calculate_npv_pct: 1.0
+    geo_config.priority_pct: 0.5
+  - random_seed: 2
+    calculate_npv_pct: 1.0
+    geo_config.priority_pct: 0.5
+  - random_seed: 3
+    calculate_npv_pct: 1.0
+    geo_config.priority_pct: 0.5
+  - random_seed: 1 # repeat, for same-seed determinism check
+    calculate_npv_pct: 1.0
+    geo_config.priority_pct: 0.5

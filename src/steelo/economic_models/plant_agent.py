@@ -303,6 +303,7 @@ class GeospatialModel:
                 co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
                 derive_geo_unit=derive_geo_unit_for_site,
                 probabilistic_agents=bus.env.config.probabilistic_agents,
+                calculate_npv_pct=bus.env.config.calculate_npv_pct,
             )
         )
         step_time = time.time() - step_start

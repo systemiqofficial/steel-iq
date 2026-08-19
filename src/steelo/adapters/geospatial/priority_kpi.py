@@ -204,6 +204,10 @@ def extract_priority_locations(
     # Step 2: Select the top locations based on the distribution of values
     ## Case 1: Low-variance distribution
     if len(unique_vals) < 20:
+        logger.info(
+            f"operation=priority_tiebreak var_name={var_name} top_pct={top_pct} "
+            f"unique_vals={len(unique_vals)} n_total={n_total} n_top={n_top}"
+        )
         rng = np.random.default_rng(seed=random_seed)
         if len(unique_vals) == 1:
             # Uniform distribution: select random points
@@ -255,7 +259,7 @@ def extract_priority_locations(
 
 
 def find_top_locations_per_country(
-    ds: xr.Dataset, top_locations: dict[str, pd.DataFrame], product: str, priority_pct: int, random_seed: int
+    ds: xr.Dataset, top_locations: dict[str, pd.DataFrame], product: str, priority_pct: float, random_seed: int
 ) -> tuple[xr.DataArray, pd.DataFrame]:
     """
     Add the top X/10% locations for each country to ensure all countries have representation.
@@ -391,7 +395,7 @@ def calculate_priority_location_kpi(
         ds_masked[f"top{str(geo_config.priority_pct)}_{product}"], top_locations[product] = extract_priority_locations(
             ds_masked,
             f"outgoing_cashflow_{product}",
-            top_pct=int(geo_config.priority_pct),
+            top_pct=geo_config.priority_pct,
             random_seed=geo_config.random_seed,
             invert=True,
         )
