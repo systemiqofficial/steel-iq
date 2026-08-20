@@ -457,9 +457,9 @@ class MetaFurnaceGroup:
     capacity_shares: dict[str, float] = field(default_factory=dict)
     constituent_locations: dict[str, Location] = field(default_factory=dict)
     weighted_avg_energy_costs: dict[str, float] = field(default_factory=dict)
-    # Set when the cluster was keyed by plant_group (hot-metal-affected tech with
-    # cluster_hot_metal_techs_by_plant_group on). Used by the LP to restrict hot
-    # commodity flows to within a plant_group. None for iso3-keyed clusters.
+    # Set when the cluster was keyed by plant_group or plant (hot-metal-affected tech with
+    # geographical_clustering_scope = "plant_group" or "plant"). Used by the LP to restrict hot
+    # commodity flows to within a plant_group/plant. None for iso3-keyed clusters.
     plant_group_id: str | None = None
 
     def __str__(self) -> str:
@@ -634,19 +634,25 @@ def cluster_furnace_groups(
     clusters: dict[ClusterKey, list[tuple[FurnaceGroup, Plant]]] = {}
     n_plant_group_keyed = 0
     n_iso3_keyed = 0
+
+    # Determine geographical clustering scope based on config (once for all FGs)
+    clustering_scope = getattr(config, "geographical_clustering_scope", "iso3")
+
     for fg, plant in active_fgs:
         # Extract clustering attributes
         technology_name = fg.technology.name
         feedstock_signature = _create_feedstock_signature(fg)
 
-        # When the plant-group flag is on, hot-metal-affected techs cluster by plant_group
-        # so cold/hot commodity substitution stays local. Otherwise all techs cluster by iso3.
-        use_plant_group = getattr(config, "cluster_hot_metal_techs_by_plant_group", False) and (
-            _is_affected_by_hot_metal_radius(fg, config)
-        )
-        if use_plant_group:
-            location_key = plant.ultimate_plant_group
-            n_plant_group_keyed += 1
+        # For hot-metal-affected techs, use the configured scope; otherwise default to iso3
+        is_hot_metal_affected = _is_affected_by_hot_metal_radius(fg, config)
+
+        if is_hot_metal_affected and clustering_scope in ("plant_group", "plant"):
+            if clustering_scope == "plant_group":
+                location_key = plant.ultimate_plant_group
+                n_plant_group_keyed += 1
+            else:  # clustering_scope == "plant"
+                location_key = plant.plant_id
+                n_plant_group_keyed += 1
         else:
             location_key = plant.location.iso3
             n_iso3_keyed += 1
@@ -663,7 +669,7 @@ def cluster_furnace_groups(
 
     logger.info(
         f"[CLUSTERING] Created {len(clusters)} unique clusters "
-        f"({n_plant_group_keyed} FGs keyed by plant_group, {n_iso3_keyed} by iso3)"
+        f"({n_plant_group_keyed} FGs keyed by {clustering_scope}, {n_iso3_keyed} by iso3)"
     )
 
     # Filter out FGs without effective_primary_feedstocks from each cluster

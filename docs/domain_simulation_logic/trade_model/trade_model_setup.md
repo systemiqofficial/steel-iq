@@ -130,13 +130,14 @@ Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASE
 #### `fix_to_zero_allocations_where_distance_doesnt_match_commodity()`
 **Purpose:** Enforces physical locality constraints on commodity transport at the LP stage.
 
-**Three modes, selected by config:**
+**Four modes, selected by config:**
 
 1. **Clustering disabled (legacy):** Distance-based fixing against `hot_metal_radius` — hot commodities zeroed beyond the radius, cold commodities zeroed inside it.
-2. **Clustering enabled, iso3 keying:** Hot commodities are fixed to zero across iso3 boundaries; cold commodities remain free. Per-FG radius enforcement is deferred to disaggregation.
-3. **Clustering enabled, plant-group keying** (`cluster_hot_metal_techs_by_plant_group=True`): hot commodities are additionally zeroed between meta-furnace-groups with different `plant_group_id`. Same-plant-group pairs, and pairs involving non-meta-FG process centres (suppliers / demand), fall through to the iso3 rule.
+2. **Clustering enabled, iso3 keying** (`geographical_clustering_scope="iso3"`): Hot commodities are fixed to zero across iso3 boundaries; cold commodities remain free. Per-FG radius enforcement is deferred to disaggregation.
+3. **Clustering enabled, plant-group keying** (`geographical_clustering_scope="plant_group"`): hot commodities are additionally zeroed between meta-furnace-groups with different `plant_group_id`. Same-plant-group pairs, and pairs involving non-meta-FG process centres (suppliers / demand), fall through to the iso3 rule.
+4. **Clustering enabled, plant-level keying** (`geographical_clustering_scope="plant"`): hot commodities are zeroed between meta-furnace-groups with different `plant_id`. Same-plant pairs, and pairs involving non-meta-FG process centres, fall through to the iso3 rule.
 
-**Applied before solving** and reduces model size. Emits a `[LP HOT-METAL] Fixed to zero: X cross-country, Y cross-plant-group, Z missing-iso3 ...` summary per year.
+**Applied before solving** and reduces model size. Emits a `[LP HOT-METAL] Fixed to zero: X cross-country, Y cross-scope, Z missing-iso3 ...` summary per year.
 
 ---
 
@@ -222,7 +223,12 @@ Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASE
 - `closely_allocated_products`: Hot commodities limited to short distances (`hot_metal`, `dri_high`/`dri_mid`/`dri_low`, `liquid_iron`).
 - `distantly_allocated_products`: Cold equivalents that ship globally (`pig_iron`, `hbi_high`/`hbi_mid`/`hbi_low`, `electrolytic_iron`).
 - `enable_furnace_group_clustering`: When enabled, the LP works with meta-furnace-groups (clusters of same-technology-reductant-country FGs) to reduce problem size; all radius and minimum-ratio enforcement runs at disaggregation time as described above.
-- `cluster_hot_metal_techs_by_plant_group`: When clustering is enabled, FGs whose `effective_primary_feedstocks` touch a closely-allocated commodity (as `metallic_charge` or `outputs`) cluster by `plant.ultimate_plant_group` instead of `iso3`. Stored on each `MetaFurnaceGroup.plant_group_id` and consumed by the LP's cross-plant-group zero-fix rule (#1 above). Non-affected techs keep iso3 keying; the `[CLUSTERING]` log line reports the split per year. No effect when `enable_furnace_group_clustering` is off.
+- `geographical_clustering_scope`: When clustering is enabled, controls the geographical granularity of clustering for FGs whose `effective_primary_feedstocks` touch a closely-allocated commodity. Options:
+  - `"iso3"` (default): Cluster by country. Hot commodities are constrained to intra-country flows at the LP stage.
+  - `"plant_group"`: Cluster by corporate group (`plant.ultimate_plant_group`). Hot commodities are additionally constrained to intra-plant-group flows at the LP stage.
+  - `"plant"`: Cluster by individual plant (`plant.plant_id`). Hot commodities are constrained to intra-plant flows at the LP stage.
+  
+  A FG is considered *affected* by the hot-metal radius by looking at its `effective_primary_feedstocks`: any feedstock whose `metallic_charge` or `outputs` key is in `config.closely_allocated_products` (hot_metal, dri_*, liquid_iron) triggers clustering-scope application. Non-affected techs always keep iso3 keying. The `[CLUSTERING]` log line reports the split per year (e.g., "X FGs keyed by plant_group, Y by iso3"). No effect when `enable_furnace_group_clustering` is off.
 
 See the "Disaggregation: Hot-Metal Radius + Minimum-Ratio Enforcement" section in `overview_trade_model.md` for full details.
 

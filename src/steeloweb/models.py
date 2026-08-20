@@ -738,7 +738,7 @@ class ModelRun(models.Model):
             "use_iron_ore_premiums",
             "green_steel_emissions_limit",
             "enable_furnace_group_clustering",
-            "cluster_hot_metal_techs_by_plant_group",
+            "geographical_clustering_scope",
             # Feature flags
             "include_infrastructure_cost",
             "include_transport_cost",
