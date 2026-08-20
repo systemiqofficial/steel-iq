@@ -451,7 +451,7 @@ def create_mock_config():
         primary_products: list[str] = field(default_factory=lambda: ["steel"])
         active_statuses: list[str] = field(default_factory=lambda: ["operating"])
         capacity_limit: float = 0.95
-        soft_minimum_capacity_percentage: float = 0.6
+        soft_minimum_capacity_share: float = 0.6
         hot_metal_radius: float = 5.0
         closely_allocated_products: list[str] = field(default_factory=lambda: ["hot_metal"])
         distantly_allocated_products: list[str] = field(default_factory=lambda: ["pig_iron"])

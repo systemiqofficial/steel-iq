@@ -381,7 +381,7 @@ def add_furnace_groups_as_process_centers(
         config: Simulation configuration with:
             - active_statuses: List of furnace statuses to include
             - capacity_limit: Safety factor to scale capacities (typically 0.95)
-            - soft_minimum_capacity_percentage: Target minimum utilization
+            - soft_minimum_capacity_share: Target minimum utilization
             - primary_products: List of primary products for BOM creation
         furnace_groups_override: Optional list of MetaFurnaceGroup objects to use instead
             of extracting from repository. When provided, uses clustered furnace groups.
@@ -420,7 +420,7 @@ def add_furnace_groups_as_process_centers(
                 capacity=config.capacity_limit * meta_fg.total_capacity,
                 location=meta_fg.location,  # This is the capacity-weighted centroid
                 production_cost=meta_fg.weighted_avg_carbon_cost,
-                soft_minimum_capacity=config.soft_minimum_capacity_percentage,
+                soft_minimum_capacity=config.soft_minimum_capacity_share,
                 energy_costs_per_input=build_energy_costs_per_input_for_meta_fg(meta_fg),
             )
             logger.info(
@@ -449,7 +449,7 @@ def add_furnace_groups_as_process_centers(
                     capacity=config.capacity_limit * furnace_group.capacity,
                     location=plant.location,
                     production_cost=furnace_group.carbon_cost_per_unit,
-                    soft_minimum_capacity=config.soft_minimum_capacity_percentage,
+                    soft_minimum_capacity=config.soft_minimum_capacity_share,
                     energy_costs_per_input=build_energy_costs_per_input(furnace_group),
                 )
                 process_centers.append(process_center)
@@ -1008,7 +1008,7 @@ def set_up_steel_trade_lp(
             - primary_products: List of commodities (e.g., ["steel", "iron"])
             - lp_epsilon: LP solver tolerance (e.g., 1e-3)
             - capacity_limit: Production capacity safety factor (typically 0.95)
-            - soft_minimum_capacity_percentage: Target minimum utilization
+            - soft_minimum_capacity_share: Target minimum utilization
             - active_statuses: Furnace statuses to include (e.g., ["operating"])
             - hot_metal_radius: Max distance for hot metal (km)
             - closely_allocated_products: Short-distance products

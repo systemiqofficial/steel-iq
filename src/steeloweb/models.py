@@ -708,7 +708,7 @@ class ModelRun(models.Model):
             # Core simulation parameters (have defaults)
             "active_statuses",
             "capacity_limit",
-            "soft_minimum_capacity_percentage",
+            "soft_minimum_capacity_share",
             "hot_metal_radius",
             "random_seed",
             "construction_time",
