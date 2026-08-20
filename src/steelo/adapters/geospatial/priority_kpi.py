@@ -255,7 +255,7 @@ def extract_priority_locations(
 
 
 def find_top_locations_per_country(
-    ds: xr.Dataset, top_locations: dict[str, pd.DataFrame], product: str, priority_pct: int, random_seed: int
+    ds: xr.Dataset, top_locations: dict[str, pd.DataFrame], product: str, priority_pct: float, random_seed: int
 ) -> tuple[xr.DataArray, pd.DataFrame]:
     """
     Add the top X/10% locations for each country to ensure all countries have representation.
@@ -391,7 +391,7 @@ def calculate_priority_location_kpi(
         ds_masked[f"top{str(geo_config.priority_pct)}_{product}"], top_locations[product] = extract_priority_locations(
             ds_masked,
             f"outgoing_cashflow_{product}",
-            top_pct=int(geo_config.priority_pct),
+            top_pct=geo_config.priority_pct,
             random_seed=geo_config.random_seed,
             invert=True,
         )
