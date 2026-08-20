@@ -103,43 +103,44 @@ def parse_log(log_path: Path) -> dict:
     wall_clock_s: float | None = None
     peak_rss_mb: float | None = None
 
-    for line in log_path.read_text(errors="replace").splitlines():
-        if m := _DURATION_WITH_YEAR_RE.search(line):
-            op, _year, duration = m.group(1), m.group(2), float(m.group(3))
-            if op in _TRADE_MODULE_OPS:
-                trade_module_s += duration
-            elif op in _GEOSPATIAL_OPS:
-                geospatial_s += duration
-            elif op in _PAM_OPS:
-                pam_s += duration
-            elif op in _LP_BUILD_OPS:
-                lp_build_s += duration
-            elif op in _NPV_PLANT_DECISION_OPS:
-                npv_plant_decision_s += duration
-            elif op in _NEW_PLANT_OPENING_OPS:
-                new_plant_opening_s += duration
-            elif op in _GEO_UPDATE_STATUS_OPS:
-                geo_update_status_s += duration
-            continue
-        if m := _TRADE_OPTIMIZATION_RE.search(line):
-            lp_solve_s += float(m.group(1))
-            continue
-        if m := _MEMORY_CHECKPOINT_RE.search(line):
-            phase, rss_mb = m.group(1), float(m.group(2))
-            if phase == "after_lp_setup":
-                peak_lp_build_rss_mb = max(peak_lp_build_rss_mb, rss_mb)
-            elif phase == "after_lp_solve":
-                peak_lp_solve_rss_mb = max(peak_lp_solve_rss_mb, rss_mb)
-            continue
-        if m := _TIME_V_WALL_CLOCK_RE.search(line):
-            wall_clock_s = _parse_time_v_wall_clock(m.group(1))
-            continue
-        if m := _TIME_V_PEAK_RSS_KB_RE.search(line):
-            peak_rss_mb = int(m.group(1)) / 1024.0
-            continue
-        if "operation=priority_tiebreak" in line:
-            priority_tiebreak_count += 1
-            continue
+    with log_path.open(errors="replace") as f:
+        for line in f:
+            if m := _DURATION_WITH_YEAR_RE.search(line):
+                op, _year, duration = m.group(1), m.group(2), float(m.group(3))
+                if op in _TRADE_MODULE_OPS:
+                    trade_module_s += duration
+                elif op in _GEOSPATIAL_OPS:
+                    geospatial_s += duration
+                elif op in _PAM_OPS:
+                    pam_s += duration
+                elif op in _LP_BUILD_OPS:
+                    lp_build_s += duration
+                elif op in _NPV_PLANT_DECISION_OPS:
+                    npv_plant_decision_s += duration
+                elif op in _NEW_PLANT_OPENING_OPS:
+                    new_plant_opening_s += duration
+                elif op in _GEO_UPDATE_STATUS_OPS:
+                    geo_update_status_s += duration
+                continue
+            if m := _TRADE_OPTIMIZATION_RE.search(line):
+                lp_solve_s += float(m.group(1))
+                continue
+            if m := _MEMORY_CHECKPOINT_RE.search(line):
+                phase, rss_mb = m.group(1), float(m.group(2))
+                if phase == "after_lp_setup":
+                    peak_lp_build_rss_mb = max(peak_lp_build_rss_mb, rss_mb)
+                elif phase == "after_lp_solve":
+                    peak_lp_solve_rss_mb = max(peak_lp_solve_rss_mb, rss_mb)
+                continue
+            if m := _TIME_V_WALL_CLOCK_RE.search(line):
+                wall_clock_s = _parse_time_v_wall_clock(m.group(1))
+                continue
+            if m := _TIME_V_PEAK_RSS_KB_RE.search(line):
+                peak_rss_mb = int(m.group(1)) / 1024.0
+                continue
+            if "operation=priority_tiebreak" in line:
+                priority_tiebreak_count += 1
+                continue
 
     return {
         "wall_clock_s": wall_clock_s,
