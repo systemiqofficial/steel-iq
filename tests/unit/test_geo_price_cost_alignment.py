@@ -131,7 +131,7 @@ def _run_identify(monkeypatch, market_price_steel: list[float]) -> dict:
         active_statuses=["operating"],
         top_n_loctechs_as_business_op=1,
         opportunity_pool_depth=3,
-        calculate_npv_pct=0.1,
+        calculate_npv_sites_share=0.1,
         probabilistic_agents=False,
     )
     return captured["npv_dict"]

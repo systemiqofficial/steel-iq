@@ -462,12 +462,12 @@ class TestFindTopLocationsPerCountry:
         }
 
         # Find top locations per country for steel
-        # priority_pct=10 means top 1% per country (10/10)
+        # priority_sites_share=0.10 means top 1% per country (0.10/10)
         top_values, locations_df = find_top_locations_per_country(
             ds=mock_dataset_with_countries,
             top_locations=top_locations,
             product="steel",
-            priority_pct=10,
+            priority_sites_share=0.10,
             random_seed=42,
         )
 
@@ -516,7 +516,7 @@ class TestFindTopLocationsPerCountry:
             ds=mock_dataset_with_countries,
             top_locations=top_locations,
             product="steel",
-            priority_pct=10,
+            priority_sites_share=0.10,
             random_seed=42,
         )
 
@@ -544,7 +544,7 @@ class TestFindTopLocationsPerCountry:
             ds=mock_dataset_with_countries,
             top_locations=top_locations,
             product="steel",
-            priority_pct=10,
+            priority_sites_share=0.10,
             random_seed=42,
         )
 
@@ -594,7 +594,7 @@ class TestCalculatePriorityLocationKpi:
     def mock_geo_config(self):
         """Create a mock GeoConfig object."""
         config = Mock()
-        config.priority_pct = 25
+        config.pick_priority_sites_share = 0.25
         config.random_seed = 42
         config.share_iron_vs_steel = {
             "iron": {"capex_share": 0.4, "energy_consumption_per_t": 3.0},  # MWh/t for iron
@@ -678,7 +678,7 @@ class TestCalculatePriorityLocationKpi:
     ):
         """Test with different priority percentages."""
         # Test with 50% selection
-        mock_geo_config.priority_pct = 50
+        mock_geo_config.pick_priority_sites_share = 0.50
 
         result = calculate_priority_location_kpi(
             ds=mock_full_dataset,
@@ -696,7 +696,7 @@ class TestCalculatePriorityLocationKpi:
         assert "steel" in result
 
         # With 50% selection, should have more locations than with 25%
-        mock_geo_config.priority_pct = 10
+        mock_geo_config.pick_priority_sites_share = 0.10
         result_small = calculate_priority_location_kpi(
             ds=mock_full_dataset,
             capex=1000000,
@@ -714,12 +714,12 @@ class TestCalculatePriorityLocationKpi:
 
 
 def test_country_lottery_scales_with_country_size():
-    """The per-country lottery selects ~priority_pct/10 % of each country's cells.
+    """The per-country lottery selects ~priority_sites_share/10 % of each country's cells.
 
     Notes:
         Guards against the former ``int(priority_pct / 10)`` truncation, which
         collapsed the lottery to a single pixel per country regardless of size.
-        With priority_pct=5 the per-country share is 0.5%, so a country with 810
+        With priority_sites_share=0.05 the per-country share is 0.5%, so a country with 810
         cells must contribute several locations while a 90-cell country gets one.
     """
     n = 30
@@ -745,7 +745,7 @@ def test_country_lottery_scales_with_country_size():
         ds=ds,
         top_locations=top_locations,
         product="steel",
-        priority_pct=5,
+        priority_sites_share=0.05,
         random_seed=42,
     )
 
@@ -787,7 +787,7 @@ def test_find_top_locations_per_country_deduplicates_global_and_lottery_rows():
         ds=ds,
         top_locations=top_locations,
         product="steel",
-        priority_pct=10,
+        priority_sites_share=0.10,
         random_seed=42,
     )
 

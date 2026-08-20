@@ -55,7 +55,7 @@ function resetConstructionSettings() {
     document.getElementById('id_probabilistic_agents').checked = true;
     document.getElementById('id_probability_of_announcement').value = '0.7';
     document.getElementById('id_probability_of_construction').value = '0.9';
-    resetField('id_priority_pct') || (document.getElementById('id_priority_pct').value = '5');
+    resetField('id_pick_priority_sites_share') || (document.getElementById('id_pick_priority_sites_share').value = '0.05');
     document.getElementById('id_top_n_loctechs_as_business_op').value = '15';
     document.getElementById('id_expanded_capacity').value = '2.5';
     document.getElementById('id_capacity_limit_iron').value = '100.0';
@@ -849,15 +849,15 @@ document.head.appendChild(style);
                                 <h6 class="mb-3 fw-bold">Selection of New Business Opportunities</h6>
 
                                 <div class="mb-3 row">
-                                    <label for="{{ form.priority_pct.id_for_label }}" class="col-sm-3 col-form-label">{{ form.priority_pct.label }}:</label>
+                                    <label for="{{ form.pick_priority_sites_share.id_for_label }}" class="col-sm-3 col-form-label">{{ form.pick_priority_sites_share.label }}:</label>
                                     <div class="col-sm-9">
-                                        {{ form.priority_pct }}
-                                        {% if form.priority_pct.errors %}
+                                        {{ form.pick_priority_sites_share }}
+                                        {% if form.pick_priority_sites_share.errors %}
                                         <div class="invalid-feedback d-block">
-                                            {{ form.priority_pct.errors }}
+                                            {{ form.pick_priority_sites_share.errors }}
                                         </div>
                                         {% endif %}
-                                        <small class="form-text text-muted">{{ form.priority_pct.help_text }}</small>
+                                        <small class="form-text text-muted">{{ form.pick_priority_sites_share.help_text }}</small>
                                     </div>
                                 </div>
 

@@ -149,9 +149,9 @@ Filters technologies based on what will be allowed at the earliest possible cons
 Randomly samples a subset of top priority locations to reduce computational burden, since NPV calculations are resource-intensive.
 
 **Configuration:**
-- `calculate_npv_pct`: Percentage of locations to evaluate (default: 10%) out of the top `geo_config.priority_pct`% extracted by the location priority selection (default: 5% of the world; see related documentation in [Priority Location Selection](priority_location_selection.md)).
+- `calculate_npv_sites_share`: Fraction of locations to evaluate (default: 0.1, i.e. 10%) out of the top `geo_config.pick_priority_sites_share` fraction extracted by the location priority selection (default: 0.05, i.e. 5% of the world; see related documentation in [Priority Location Selection](priority_location_selection.md)).
 
-**Purpose:** Balance computational efficiency with coverage of good opportunities. Sampling 10% of 1000 candidate locations means evaluating 100 instead of all 1000. When `probabilistic_agents` is False, `calculate_npv_pct` is forced to 1.0 (evaluate every candidate) and `geo_config.priority_pct` is forced to 0.5 (narrowing the candidate pool the 100% sampling runs over) — full sampling alone measured ~7x slower, but combined with the narrower pool the runtime cost is negligible.
+**Purpose:** Balance computational efficiency with coverage of good opportunities. Sampling 10% of 1000 candidate locations means evaluating 100 instead of all 1000. When `probabilistic_agents` is False, `calculate_npv_sites_share` is forced to 1.0 (evaluate every candidate) and `geo_config.pick_priority_sites_share` is forced to 0.005 (narrowing the candidate pool the 100% sampling runs over) — full sampling alone measured ~7x slower, but combined with the narrower pool the runtime cost is negligible.
 
 ### Step 3: Cost Data Preparation
 
@@ -316,11 +316,11 @@ Models real-world risk factors: financing may fall through, permits may be denie
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `probabilistic_agents` | bool | True | When True, Step 5 draws a rank-weighted mix of top opportunities; when False, Step 5 picks the top N by NPV deterministically. Also gates Step 2's `calculate_npv_pct` sampling and `geo_config.priority_pct` — see below |
+| `probabilistic_agents` | bool | True | When True, Step 5 draws a rank-weighted mix of top opportunities; when False, Step 5 picks the top N by NPV deterministically. Also gates Step 2's `calculate_npv_sites_share` sampling and `geo_config.pick_priority_sites_share` — see below |
 | `probability_of_announcement` | float | 0.7 | Chance viable opportunity is announced. Forced to 1.0 when `probabilistic_agents` is False |
 | `probability_of_construction` | float | 0.9 | Chance announced project starts construction. Forced to 1.0 when `probabilistic_agents` is False |
-| `calculate_npv_pct` | float | 0.1 | Fraction of priority locations sampled for NPV calculation. Forced to 1.0 when `probabilistic_agents` is False |
-| `geo_config.priority_pct` | float | 5 | Percentage of global grid points selected as priority locations (see [Priority Location Selection](priority_location_selection.md)). Forced to 0.5 when `probabilistic_agents` is False, to keep the cost of full `calculate_npv_pct` sampling low |
+| `calculate_npv_sites_share` | float | 0.1 | Fraction of priority locations sampled for NPV calculation. Forced to 1.0 when `probabilistic_agents` is False |
+| `geo_config.pick_priority_sites_share` | float | 0.05 | Fraction of global grid points selected as priority locations (see [Priority Location Selection](priority_location_selection.md)). Forced to 0.005 when `probabilistic_agents` is False, to keep the cost of full `calculate_npv_sites_share` sampling low |
 
 ### Capacity Limits
 

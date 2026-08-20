@@ -6012,7 +6012,7 @@ class PlantGroup:
         active_statuses: list[str],
         top_n_loctechs_as_business_op: int,
         opportunity_pool_depth: int,
-        calculate_npv_pct: float,
+        calculate_npv_sites_share: float,
         capex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         debt_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
         opex_subsidies: dict[str, dict[str, list[Subsidy]]] = {},  # iso3 -> tech -> list of subsidies
@@ -6075,8 +6075,9 @@ class PlantGroup:
             opportunity_pool_depth: Depth of the probabilistic draw's eligible pool: global
                 head of (depth * top_n) candidates by NPV unioned with each allowed
                 technology's best `depth` sites (see select_top_opportunities_by_npv)
-            calculate_npv_pct: Fraction (0.0-1.0) of the priority-location subset that is
-                randomly sampled for full NPV evaluation each year
+            calculate_npv_sites_share: Fraction (0.0-1.0) of the priority-location subset that is
+                randomly sampled for full NPV evaluation each year. Forced to 1.0 when
+                probabilistic_agents is False (see SimulationConfig.__post_init__)
             capex_subsidies: Dictionary mapping geo_key -> tech -> list of capex subsidies
                 (geo_key = "ISO3" or "ISO3:unit"; country and sub-national rows merge additively)
             debt_subsidies: Dictionary mapping geo_key -> tech -> list of debt subsidies
@@ -6085,10 +6086,10 @@ class PlantGroup:
             derive_geo_unit: Optional ``(lat, lon, iso3) -> geo_unit | None`` derivation (injected
                 from the geospatial adapter) tagging each spawned plant's sub-national unit
             probabilistic_agents: If True (default), step 5 draws a rank-weighted mix of top
-                opportunities. If False, step 5 deterministically picks the top N by NPV. Step 2's
-                location sampling is unaffected by this flag (measured ~7x runtime cost to evaluate
-                all candidates deterministically was judged not worth it — see
-                docs/domain_simulation_logic/geospatial_model/new_plant_opening.md).
+                opportunities. If False, step 5 deterministically picks the top N by NPV, and
+                calculate_npv_sites_share is forced to 1.0 by SimulationConfig.__post_init__ so
+                step 2 evaluates every candidate location instead of a random sample — see
+                docs/domain_simulation_logic/geospatial_model/new_plant_opening.md.
 
         Returns:
             Command to add new Plant and FurnaceGroup objects for the identified business opportunities
@@ -6148,7 +6149,7 @@ class PlantGroup:
         # Step 2: Select a subset of locations
         best_locations_subset = select_location_subset(
             locations=locations,
-            calculate_npv_pct=calculate_npv_pct,
+            calculate_npv_sites_share=calculate_npv_sites_share,
         )
         subset_counts, subset_total = _count_entries(best_locations_subset)
         candidate_stats["subset_sites_total"] = subset_total

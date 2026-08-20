@@ -372,17 +372,19 @@ class ModelRunCreateForm(forms.ModelForm):
         widget=forms.NumberInput(attrs={"class": "form-control field-connected"}),
     )
 
-    priority_pct = forms.IntegerField(
-        label="Percentage of considered opportunities",
-        initial=5,
-        min_value=1,
-        max_value=100,
+    pick_priority_sites_share = forms.DecimalField(
+        label="Priority sites fraction",
+        initial=0.05,
+        min_value=0.001,
+        max_value=1.0,
+        max_digits=4,
+        decimal_places=3,
         required=False,
-        help_text="Percentage of global grid points selected as priority locations for business opportunities",
-        widget=forms.NumberInput(attrs={"class": "form-control field-connected"}),
+        help_text="Fraction (0.0-1.0) of global grid points selected as priority locations for business opportunities",
+        widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.001"}),
     )
 
-    calculate_npv_pct = forms.DecimalField(
+    calculate_npv_sites_share = forms.DecimalField(
         label="NPV sample fraction",
         initial=0.1,
         min_value=0.0,
@@ -805,8 +807,8 @@ class ModelRunCreateForm(forms.ModelForm):
             "probability_of_construction",
             "top_n_loctechs_as_business_op",
             "opportunity_pool_depth",
-            "priority_pct",
-            "calculate_npv_pct",
+            "pick_priority_sites_share",
+            "calculate_npv_sites_share",
             "expanded_capacity",
             "capacity_limit_iron",
             "capacity_limit_steel",

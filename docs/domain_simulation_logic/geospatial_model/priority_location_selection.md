@@ -165,7 +165,7 @@ Iron and steel are calculated separately, each receiving a share of CAPEX and en
 
 ### Step 2: Global Priority Location Extraction
 
-After calculating outgoing cashflow for all feasible locations, the system extracts the top X% cheapest locations globally (where X is defined by `priority_pct`, default 5%) by flattening the 2D cost grid, removing infeasible locations, sorting by cost, and applying a distribution-adaptive selection method:
+After calculating outgoing cashflow for all feasible locations, the system extracts the top X% cheapest locations globally (where X% is `geo_config.pick_priority_sites_share`, a fraction 0.0-1.0, default 0.05 i.e. 5%) by flattening the 2D cost grid, removing infeasible locations, sorting by cost, and applying a distribution-adaptive selection method:
 
 1. **Continuous Distribution** (≥ 20 unique values): Uses quantile threshold to select all locations below the Xth percentile (most common case)
 2. **Low-Variance Distribution** (< 20 unique values): Samples from cost-ranked chunks with random selection within chunks to prevent systematic geographic bias
@@ -219,7 +219,7 @@ The pipeline generates the following plots (saved to `geo_plots_dir`):
 ### Priority Calculation Plots (Per Year, Per Product)
 - `lifetime_cost_proxy_{product}_{year}_p{X}.png` - Total lifetime costs
 - `priority_heatmap_{product}_{year}_p{X}.png` - Inverted priority map (higher = better)
-- `top{priority_pct}_priority_locations_{product}_{year}.png` - Selected candidate locations
+- `top{P}_priority_locations_{product}_{year}.png` - Selected candidate locations, where `{P}` is `pick_priority_sites_share` expressed as a percentage (e.g. `top5` for the 0.05 default; not the same `{X}` as the grid-power-mix plots below)
 
 Where `{X}` indicates the percentage of grid power vs. baseload (e.g., p5 = 95% baseload + 5% grid).
 
@@ -259,7 +259,7 @@ Key parameters affecting priority location selection:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `priority_pct` | 5 | Percentage of global top locations to extract as priority locations |
+| `pick_priority_sites_share` | 0.05 | Fraction of global top locations to extract as priority locations |
 | `included_power_mix` | 85% baseload + 15% grid | Power source for new plants |
 | `include_transport_cost` | True | Whether to include shipping costs |
 | `include_infrastructure_cost` | True | Whether to include railway buildout |

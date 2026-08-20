@@ -245,8 +245,8 @@ class GeoConfig:
     )
 
     # === Outgoing cashflow estimate (to build a new plant at a certain location) ===
-    priority_pct: float = (
-        5  # Percentage of global grid points selected as priority locations for business opportunities
+    pick_priority_sites_share: float = (
+        0.05  # Fraction of global grid points selected as priority locations for business opportunities
     )
     iron_ore_steel_ratio: float = 1.6  # Amount of iron ore needed to produce 1 unit of steel
     share_iron_vs_steel: dict[str, dict[str, float]] = field(
@@ -386,16 +386,16 @@ class SimulationConfig:
         3  # Minimum number of years a considered business opportunity needs to be NPV-positive before being announced
     )
     construction_time: int = 4  # Years it takes to construct a plant after it has been announced
-    # probability_of_construction, probability_of_announcement, calculate_npv_pct, and
-    # geo_config.priority_pct are all forced to deterministic values in __post_init__ when
-    # probabilistic_agents is False.
+    # probability_of_construction, probability_of_announcement, calculate_npv_sites_share, and
+    # geo_config.pick_priority_sites_share are all forced to deterministic values in
+    # __post_init__ when probabilistic_agents is False.
     probability_of_construction: float = 0.9  # Probability of a plant being constructed after being announced
     probability_of_announcement: float = 0.7  # Probability of a plant being announced after being considered - given a history of positive NPVs of at least `consideration_time` years
     top_n_loctechs_as_business_op: int = 15  # Number of top location-technology combinations to consider as business
     # opportunities per product per year (e.g., 5 for steel and 5 for iron = 10 total)
     opportunity_pool_depth: int = 3  # Probabilistic draw eligibility: global top (depth * top_n) by NPV plus each
     # allowed technology's best `depth` sites, so no technology loses standing to a monoculture head
-    calculate_npv_pct: float = 0.1  # Fraction of priority locations sampled each year for full NPV evaluation;
+    calculate_npv_sites_share: float = 0.1  # Fraction of priority locations sampled each year for full NPV evaluation;
     # 0.1 is chosen purely to save computational time, not for model reasons
     co2_storage_reserved_discount_factor: float = (
         0.9  # Fraction of an announced CCS plant's CO2 need that counts toward the reserved storage bucket
@@ -547,12 +547,13 @@ class SimulationConfig:
 
         # Deterministic agents: the announcement/construction draws must always pass, and
         # new-plant siting must evaluate NPV for every candidate location rather than a
-        # random sample (with priority_pct narrowed to keep the full-sampling cost low).
+        # random sample (with pick_priority_sites_share narrowed to keep the full-sampling
+        # cost low).
         if not self.probabilistic_agents:
             self.probability_of_construction = 1.0
             self.probability_of_announcement = 1.0
-            self.calculate_npv_pct = 1.0
-            self.geo_config.priority_pct = 0.5
+            self.calculate_npv_sites_share = 1.0
+            self.geo_config.pick_priority_sites_share = 0.005
 
         # Handle deprecated parameter - preserve semantics by translating to technology_settings
         if global_bf_ban is not None:

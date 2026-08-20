@@ -21,14 +21,14 @@ class NewPlantLocation(TypedDict):
 
 def select_location_subset(
     locations: dict,
-    calculate_npv_pct: float,
+    calculate_npv_sites_share: float,
 ) -> dict:
     """
     Randomly select a subset of top locations for detailed NPV assessment (potential business opportunities).
 
     Args:
         locations: Dictionary mapping products to lists of location dictionaries
-        calculate_npv_pct: Percentage of locations to sample (0.0 to 1.0)
+        calculate_npv_sites_share: Fraction of locations to sample (0.0 to 1.0)
 
     Returns:
         Dictionary mapping products to sampled location lists
@@ -37,10 +37,10 @@ def select_location_subset(
         Logs sampling information and sample locations
     """
     logger = logging.getLogger(f"{__name__}.select_location_subset")
-    logger.info(f"[NEW PLANTS] Sampling {calculate_npv_pct * 100}% of top locations for NPV calculation.")
+    logger.info(f"[NEW PLANTS] Sampling {calculate_npv_sites_share * 100}% of top locations for NPV calculation.")
     best_locations_subset = {}
     for product in ["iron", "steel"]:
-        n = int(len(locations.get(product, [])) * calculate_npv_pct)
+        n = int(len(locations.get(product, [])) * calculate_npv_sites_share)
         best_locations_subset[product] = random.sample(locations[product], n) if n > 0 else []
         logger.info(
             f"[NEW PLANTS] For {product}: Sampling n = {n} out of total locations = {len(locations.get(product, []))} for NPV calculation."

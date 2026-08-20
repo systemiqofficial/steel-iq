@@ -109,11 +109,12 @@ def test_deterministic_agents_force_announcement_and_construction_probabilities_
     assert config.probability_of_announcement == 1.0
 
 
-def test_deterministic_agents_force_full_npv_sampling_with_narrowed_priority_pct():
+def test_deterministic_agents_force_full_npv_sampling_with_narrowed_priority_share():
     """
     Tests that probabilistic_agents=False forces full NPV sampling of candidate
-    locations (calculate_npv_pct=1.0) while narrowing geo_config.priority_pct to 0.5
-    to keep the cost of full sampling low, regardless of defaults or overrides.
+    locations (calculate_npv_sites_share=1.0) while narrowing
+    geo_config.pick_priority_sites_share to 0.005 to keep the cost of full sampling
+    low, regardless of defaults or overrides.
     """
     config = SimulationConfig(
         start_year=Year(2025),
@@ -121,11 +122,11 @@ def test_deterministic_agents_force_full_npv_sampling_with_narrowed_priority_pct
         master_excel_path=Path("test.xlsx"),
         output_dir=Path("/tmp/output"),
         probabilistic_agents=False,
-        calculate_npv_pct=0.3,
+        calculate_npv_sites_share=0.3,
     )
 
-    assert config.calculate_npv_pct == 1.0
-    assert config.geo_config.priority_pct == 0.5
+    assert config.calculate_npv_sites_share == 1.0
+    assert config.geo_config.pick_priority_sites_share == 0.005
 
 
 def test_probabilistic_agents_keep_default_announcement_and_construction_probabilities():
@@ -145,10 +146,10 @@ def test_probabilistic_agents_keep_default_announcement_and_construction_probabi
     assert config.probability_of_announcement == 0.7
 
 
-def test_probabilistic_agents_keep_default_npv_sampling_and_priority_pct():
+def test_probabilistic_agents_keep_default_npv_sampling_and_priority_share():
     """
     Tests that probabilistic_agents=True (the default) preserves the default
-    calculate_npv_pct and geo_config.priority_pct values.
+    calculate_npv_sites_share and geo_config.pick_priority_sites_share values.
     """
     config = SimulationConfig(
         start_year=Year(2025),
@@ -158,5 +159,5 @@ def test_probabilistic_agents_keep_default_npv_sampling_and_priority_pct():
     )
 
     assert config.probabilistic_agents is True
-    assert config.calculate_npv_pct == 0.1
-    assert config.geo_config.priority_pct == 5
+    assert config.calculate_npv_sites_share == 0.1
+    assert config.geo_config.pick_priority_sites_share == 0.05

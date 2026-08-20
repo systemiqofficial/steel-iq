@@ -291,7 +291,7 @@ class GeospatialModel:
                 allowed_techs=bus.env.allowed_techs,
                 top_n_loctechs_as_business_op=bus.env.config.top_n_loctechs_as_business_op,
                 opportunity_pool_depth=bus.env.config.opportunity_pool_depth,
-                calculate_npv_pct=bus.env.config.calculate_npv_pct,
+                calculate_npv_sites_share=bus.env.config.calculate_npv_sites_share,
                 technology_emission_factors=bus.env.technology_emission_factors,
                 chosen_emissions_boundary_for_carbon_costs=bus.env.config.chosen_emissions_boundary_for_carbon_costs,
                 capex_subsidies=bus.env.capex_subsidies,

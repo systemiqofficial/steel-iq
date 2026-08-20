@@ -255,7 +255,11 @@ def extract_priority_locations(
 
 
 def find_top_locations_per_country(
-    ds: xr.Dataset, top_locations: dict[str, pd.DataFrame], product: str, priority_pct: float, random_seed: int
+    ds: xr.Dataset,
+    top_locations: dict[str, pd.DataFrame],
+    product: str,
+    priority_sites_share: float,
+    random_seed: int,
 ) -> tuple[xr.DataArray, pd.DataFrame]:
     """
     Add the top X/10% locations for each country to ensure all countries have representation.
@@ -266,15 +270,16 @@ def find_top_locations_per_country(
         ds: Dataset containing outgoing cashflow data and ISO3 codes
         top_locations: Dictionary mapping product types to DataFrames of global top locations
         product: Product type ("iron" or "steel")
-        priority_pct: Global priority percentage (the per-country percentage is priority_pct/10)
+        priority_sites_share: Global priority fraction (0.0-1.0); the per-country fraction is
+            priority_sites_share/10
         random_seed: Random seed for reproducible sampling
 
     Returns:
         top_values: DataArray with binary values (1 for top locations including country lottery, 0 otherwise)
         top_locations_wlottery: DataFrame containing all top locations including country-specific additions
     """
-
-    top_wlottery = ds[f"top{str(priority_pct)}_{product}"].copy().astype(float)
+    priority_pct_label = f"{priority_sites_share * 100:g}"
+    top_wlottery = ds[f"top{priority_pct_label}_{product}"].copy().astype(float)
     top_locations_wlottery = top_locations[product].copy()
 
     # List of unique ISO3 codes
@@ -290,7 +295,7 @@ def find_top_locations_per_country(
             top_values_iso3, top_locations_iso3 = extract_priority_locations(
                 ds_iso3,
                 f"outgoing_cashflow_{product}",
-                top_pct=priority_pct / 10,
+                top_pct=(priority_sites_share / 10) * 100,  # extract_priority_locations expects 0-100
                 random_seed=random_seed,
                 invert=True,
             )
@@ -357,7 +362,8 @@ def calculate_priority_location_kpi(
         Generates and saves plots of outgoing cashflow and priority heatmaps (decadal
         milestones), and top location maps (5-year milestones).
     """
-    logger.info(f"Identifying the top {geo_config.priority_pct}% priority locations.")
+    priority_pct_label = f"{geo_config.pick_priority_sites_share * 100:g}"
+    logger.info(f"Identifying the top {priority_pct_label}% priority locations.")
 
     # Mask all variables with the feasibility mask and remove NaN values
     ds_masked = ds.where(ds["feasibility_mask"] > 0)
@@ -388,28 +394,28 @@ def calculate_priority_location_kpi(
         )
 
         # Get the top X% locations (bottom X% of the price distribution)
-        ds_masked[f"top{str(geo_config.priority_pct)}_{product}"], top_locations[product] = extract_priority_locations(
+        ds_masked[f"top{priority_pct_label}_{product}"], top_locations[product] = extract_priority_locations(
             ds_masked,
             f"outgoing_cashflow_{product}",
-            top_pct=geo_config.priority_pct,
+            top_pct=geo_config.pick_priority_sites_share * 100,  # extract_priority_locations expects 0-100
             random_seed=geo_config.random_seed,
             invert=True,
         )
 
         # Add the top X/10 % locations for each country to "give everyone a chance". The "chance" is proportional to the size of the country.
-        ds_masked[f"top{str(geo_config.priority_pct)}_{product}_wlottery"], top_locations_wlottery[product] = (
+        ds_masked[f"top{priority_pct_label}_{product}_wlottery"], top_locations_wlottery[product] = (
             find_top_locations_per_country(
-                ds_masked, top_locations, product, geo_config.priority_pct, geo_config.random_seed
+                ds_masked, top_locations, product, geo_config.pick_priority_sites_share, geo_config.random_seed
             )
         )
 
         if is_top_locations_milestone_year:
             plot_paths_obj = PlotPaths(geo_plots_dir=geo_paths.geo_plots_dir)
             plot_screenshot(
-                ds_masked[f"top{str(geo_config.priority_pct)}_{product}_wlottery"],
+                ds_masked[f"top{priority_pct_label}_{product}_wlottery"],
                 var_type="binary",
-                title=f"Top {geo_config.priority_pct}% locations for {product} production in {year}",
-                save_name=f"top{str(geo_config.priority_pct)}_priority_locations_{product}_{str(year)}",
+                title=f"Top {priority_pct_label}% locations for {product} production in {year}",
+                save_name=f"top{priority_pct_label}_priority_locations_{product}_{str(year)}",
                 plot_paths=plot_paths_obj,
             )
 
