@@ -5,6 +5,16 @@
 # array tasks finish, successfully or not:
 #   sbatch --dependency=afterany:<ARRAY_JOBID> scripts/slurm/run_npv_pct_tuning_analyze.sbatch
 # Re-run after retrying any failed task to fold the fix into the analysis.
+#
+# Sizing: --mem=8G (copied from run_gurobi_clustered_sweep_analyze.sbatch's single-sweep
+# pattern) OOM-killed on the first attempt (2026-08-20, job 28446). Unlike that script,
+# analyze_npv_pct_tuning.py runs analyze_seed_sensitivity.py as three sequential
+# subprocesses (one per scenario, each loading full 2025-2050 post_processed_*.csv data
+# under SLURM's cgroup memory limit, which sums the whole process tree, not just this
+# script's own process) plus its own file-hashing pass for the determinism check.
+# Bumped to 24G with no real profiling behind that number beyond "comfortably above the
+# single-scenario 8G baseline for 3x the concurrent-tree memory pressure" -- correct
+# against sacct's MaxRSS for this job after it succeeds.
 
 #SBATCH --job-name=steelo-npv-pct-tuning-analyze
 #SBATCH --partition=short
@@ -12,7 +22,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=8G
+#SBATCH --mem=24G
 #SBATCH --time=00:30:00
 #SBATCH --output=logs/npv-pct-tuning-analyze-%j.out
 #SBATCH --error=logs/npv-pct-tuning-analyze-%j.err

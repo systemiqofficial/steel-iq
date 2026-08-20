@@ -58,7 +58,9 @@ _SEED_ONLY_RUN_IDS = {"run_seed1", "run_seed2", "run_seed3"}
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
-    digest.update(path.read_bytes())
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
     return digest.hexdigest()
 
 
