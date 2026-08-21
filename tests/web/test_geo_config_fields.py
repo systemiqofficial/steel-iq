@@ -598,10 +598,10 @@ def test_max_slope_propagation(db, base_form_data):
     assert modelrun.config["max_slope"] == 5.5
 
 
-def test_priority_pct_propagation(db, base_form_data):
-    """Test that priority_pct is correctly passed to model config."""
+def test_pick_priority_sites_share_propagation(db, base_form_data):
+    """Test that pick_priority_sites_share is correctly passed to model config."""
     form_data = base_form_data.copy()
-    form_data["priority_pct"] = 15
+    form_data["pick_priority_sites_share"] = 0.15
 
     form = ModelRunCreateForm(data=form_data)
     assert form.is_valid(), f"Form errors: {form.errors}"
@@ -610,13 +610,13 @@ def test_priority_pct_propagation(db, base_form_data):
     modelrun.config = build_config_from_form(form)
     modelrun.save()
 
-    assert modelrun.config["priority_pct"] == 15
+    assert modelrun.config["pick_priority_sites_share"] == 0.15
 
 
-def test_priority_pct_default_propagation(db, base_form_data):
-    """Test that priority_pct defaults to 5 when not specified."""
+def test_pick_priority_sites_share_default_propagation(db, base_form_data):
+    """Test that pick_priority_sites_share defaults to 0.05 when not specified."""
     form_data = base_form_data.copy()
-    # Don't set priority_pct
+    # Don't set pick_priority_sites_share
 
     form = ModelRunCreateForm(data=form_data)
     assert form.is_valid(), f"Form errors: {form.errors}"
@@ -625,8 +625,8 @@ def test_priority_pct_default_propagation(db, base_form_data):
     modelrun.config = build_config_from_form(form)
     modelrun.save()
 
-    # Default value should be 5
-    assert modelrun.config.get("priority_pct", 5) == 5
+    # Default value should be 0.05
+    assert modelrun.config.get("pick_priority_sites_share", 0.05) == 0.05
 
 
 # === Default Value Propagation Tests ===

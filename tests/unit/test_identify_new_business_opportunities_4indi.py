@@ -78,7 +78,7 @@ class TestSelectLocationSubset:
             ],
         }
 
-        subset = select_location_subset(locations=locations, calculate_npv_pct=0.1)
+        subset = select_location_subset(locations=locations, calculate_npv_sites_share=0.1)
 
         # Verify structure
         assert "steel" in subset
@@ -119,7 +119,7 @@ class TestSelectLocationSubset:
             ],
         }
 
-        subset = select_location_subset(locations=locations, calculate_npv_pct=0.5)
+        subset = select_location_subset(locations=locations, calculate_npv_sites_share=0.5)
 
         assert len(subset["steel"]) == 5  # 50% of 10
         assert len(subset["iron"]) == 3  # 50% of 6
@@ -128,7 +128,7 @@ class TestSelectLocationSubset:
         """Empty location lists yield empty subsets without raising."""
         locations = {"steel": [], "iron": []}
 
-        subset = select_location_subset(locations=locations, calculate_npv_pct=0.1)
+        subset = select_location_subset(locations=locations, calculate_npv_sites_share=0.1)
 
         assert subset == {"steel": [], "iron": []}
 
@@ -147,14 +147,14 @@ class TestSelectLocationSubset:
             ],
         }
 
-        subset = select_location_subset(locations=locations, calculate_npv_pct=0.1)
+        subset = select_location_subset(locations=locations, calculate_npv_sites_share=0.1)
 
         # 10% of 1 = 0.1, rounds to 0
         assert len(subset["steel"]) == 0
         assert len(subset["iron"]) == 0
 
     def test_full_percentage_selects_every_candidate(self):
-        """calculate_npv_pct=1.0 includes every candidate (just reordered, none dropped)."""
+        """calculate_npv_sites_share=1.0 includes every candidate (just reordered, none dropped)."""
         locations = {
             "steel": [
                 NewPlantLocation(
@@ -180,7 +180,7 @@ class TestSelectLocationSubset:
             ],
         }
 
-        subset = select_location_subset(locations=locations, calculate_npv_pct=1.0)
+        subset = select_location_subset(locations=locations, calculate_npv_sites_share=1.0)
 
         # Every candidate is present (random.sample with n == population size drops nothing,
         # just reorders), regardless of list order.
@@ -1672,7 +1672,7 @@ def test_two_technologies_at_one_site_spawn_two_plants(monkeypatch):
         active_statuses=["operating"],
         top_n_loctechs_as_business_op=2,
         opportunity_pool_depth=3,
-        calculate_npv_pct=0.1,
+        calculate_npv_sites_share=0.1,
     )
 
     new_plants = command.new_plants

@@ -5,7 +5,7 @@
 The new plant opening system transforms candidate locations into actual steel and iron plants through a multi-year business opportunity lifecycle. Companies identify promising locations, track their economic viability over time, announce viable projects, and eventually construct new facilities -all while accounting for uncertainty, capacity constraints, and changing market conditions.
 
 Business opportunities progress through the following stages:
-- **CONSIDERED**: Top location-technology pairs are identified based on NPV calculations and selected using weighted random sampling (or, when `probabilistic_agents` is disabled, deterministically by highest NPV — see [Business Opportunity Identification](#business-opportunity-identification)). Its NPV is recalculated annually with updated costs for several years; opportunities with consistently positive NPV advance to announcement (subject to probability filter), while consistently negative NPV leads to discard.
+- **CONSIDERED**: Top location-technology pairs are identified based on NPV calculations and selected using weighted random sampling (or, when `probabilistic_agents` is disabled, deterministically by highest NPV, evaluated over every candidate location instead of a random sample — see [Business Opportunity Identification](#business-opportunity-identification)). Its NPV is recalculated annually with updated costs for several years; opportunities with consistently positive NPV advance to announcement (subject to probability filter), while consistently negative NPV leads to discard.
 - **ANNOUNCED**: Project waits for construction start; dynamic costs continue to be updated annually; advancement to construction depends on technology remaining allowed, capacity limits, and probability filter.
 - **CONSTRUCTION**: Plant is being built over several years (handled by the plant agent model).
 - **OPERATING**: Plant is operational and removed from business opportunity tracking (fully handled by the plant agent model).
@@ -149,9 +149,9 @@ Filters technologies based on what will be allowed at the earliest possible cons
 Randomly samples a subset of top priority locations to reduce computational burden, since NPV calculations are resource-intensive.
 
 **Configuration:**
-- `calculate_npv_pct`: Percentage of locations to evaluate (default: 10%) out of the top X% extracted by the location priority selection (default: 5% of the world; see related documentation in [Priority Location Selection](priority_location_selection.md)).
+- `calculate_npv_sites_share`: Fraction of locations to evaluate (default: 0.1, i.e. 10%) out of the top `geo_config.pick_priority_sites_share` fraction extracted by the location priority selection (default: 0.05, i.e. 5% of the world; see related documentation in [Priority Location Selection](priority_location_selection.md)).
 
-**Purpose:** Balance computational efficiency with coverage of good opportunities. Sampling 10% of 1000 candidate locations means evaluating 100 instead of all 1000. This step keeps its non-deterministic behavior for runtime efficiency — evaluating every candidate measured ~7x slower — since it is not thematically related to `probabilistic_agents`, which governs assessment of already-identified opportunities, not candidate selection.
+**Purpose:** Balance computational efficiency with coverage of good opportunities. Sampling 10% of 1000 candidate locations means evaluating 100 instead of all 1000. When `probabilistic_agents` is False, `calculate_npv_sites_share` is forced to 1.0 (evaluate every candidate) and `geo_config.pick_priority_sites_share` is forced to 0.005 (narrowing the candidate pool the 100% sampling runs over) — full sampling alone measured ~7x slower, but combined with the narrower pool the runtime cost is negligible.
 
 ### Step 3: Cost Data Preparation
 
@@ -311,15 +311,16 @@ Models real-world risk factors: financing may fall through, permits may be denie
 | `plant_lifetime` | int | 20 years | Expected operational lifetime of plant |
 | `expanded_capacity` | float | 2.5 Mt/year | Standard capacity for new plants (same than for plant expansion) |
 | `top_n_loctechs_as_business_op` | int | 5 | Number of opportunities to track per product per year |
-| `calculate_npv_pct` | float | 0.1 | Percentage of priority locations to sample for NPV calculation (fixed; not gated by `probabilistic_agents` — evaluating all measured ~7x slower) |
 
 ### Probability Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `probabilistic_agents` | bool | True | When True, Step 5 draws a rank-weighted mix of top opportunities; when False, Step 5 picks the top N by NPV deterministically. Does not affect Step 2's `calculate_npv_pct` sampling (kept probabilistic for runtime — see above) |
+| `probabilistic_agents` | bool | True | When True, Step 5 draws a rank-weighted mix of top opportunities; when False, Step 5 picks the top N by NPV deterministically. Also gates Step 2's `calculate_npv_sites_share` sampling and `geo_config.pick_priority_sites_share` — see below |
 | `probability_of_announcement` | float | 0.7 | Chance viable opportunity is announced. Forced to 1.0 when `probabilistic_agents` is False |
 | `probability_of_construction` | float | 0.9 | Chance announced project starts construction. Forced to 1.0 when `probabilistic_agents` is False |
+| `calculate_npv_sites_share` | float | 0.1 | Fraction of priority locations sampled for NPV calculation. Forced to 1.0 when `probabilistic_agents` is False |
+| `geo_config.pick_priority_sites_share` | float | 0.05 | Fraction of global grid points selected as priority locations (see [Priority Location Selection](priority_location_selection.md)). Forced to 0.005 when `probabilistic_agents` is False, to keep the cost of full `calculate_npv_sites_share` sampling low |
 
 ### Capacity Limits
 
