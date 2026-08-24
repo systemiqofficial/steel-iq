@@ -8,6 +8,7 @@ expected by the simulation system. Uses MasterExcelValidator for validation.
 import pandas as pd
 from pathlib import Path
 import logging
+import random
 from typing import Any, Optional, cast
 import tempfile
 from dataclasses import dataclass
@@ -20,7 +21,26 @@ from steelo.adapters.dataprocessing.master_excel_validator import (
     ValidationReport,
     check_furnace_units_geography,
 )
-from steelo.domain.constants import KT_TO_T, PLANT_LIFETIME
+from steelo.domain.constants import KT_TO_T, PLANT_LIFETIME, RANDOM_SEED_DEFAULT
+
+# Inclusive start-year ranges for 'Furnace units' rows with no start_year, by country.
+IMPUTED_START_YEAR_RANGE_CHN = (2000, 2013)
+IMPUTED_START_YEAR_RANGE_DEFAULT = (2005, 2025)
+
+
+def impute_start_year(iso3: str, rng: random.Random) -> int:
+    """Draw a start year for a furnace unit whose start_year is missing.
+
+    Args:
+        iso3: Country of the unit; China gets the older vintage band.
+        rng: Generator seeded with the global RANDOM_SEED_DEFAULT, so the draw is reproducible for a given sheet.
+
+    Returns:
+        A uniformly drawn integer year, inclusive of both range bounds.
+    """
+    lo, hi = IMPUTED_START_YEAR_RANGE_CHN if iso3 == "CHN" else IMPUTED_START_YEAR_RANGE_DEFAULT
+    return rng.randint(lo, hi)
+
 
 logger = logging.getLogger(__name__)
 
@@ -1035,6 +1055,11 @@ class MasterExcelReader:
             ValueError: If the 'Furnace units' sheet is not found in the Excel file, or
                 if its geography is invalid (an iso3 that is not a real ISO-3 code, or a
                 geo_unit_or_province that does not compose to a geo_hierarchy key).
+
+        Notes:
+            Rows with no start_year get one drawn uniformly from a country band
+            (see ``impute_start_year``) with a fixed seed, so the renovation cycles of
+            undated units are spread across vintages instead of all expiring at once.
         """
         from ...domain.models import Location, Technology, FurnaceGroup, PointInTime, TimeFrame, Year, Volumes
         from ..dataprocessing.excel_reader import read_dynamic_business_cases
@@ -1087,6 +1112,8 @@ class MasterExcelReader:
         raw_canonical_metadata: dict[str, FurnaceGroupMetadata] = {}
         furnace_groups_by_plant: dict[str, list] = {}
         plant_first_row: dict[str, Any] = {}
+        start_year_rng = random.Random(RANDOM_SEED_DEFAULT)
+        imputed_start_years = 0
 
         for row_idx, row in df.iterrows():
             if pd.isna(row.get("plant_id")):
@@ -1110,8 +1137,15 @@ class MasterExcelReader:
                 dynamic_business_case=tech_business_cases,
             )
 
+            status = str(row.get("status", "operating"))
             start_year_val = row.get("start_year")
-            start_year = Year(int(start_year_val)) if pd.notna(start_year_val) else Year(2020)
+            vintage_imputed = False
+            if pd.notna(start_year_val):
+                start_year = Year(int(start_year_val))
+            else:
+                start_year = Year(impute_start_year(str(row.get("iso3")), start_year_rng))
+                vintage_imputed = True
+                imputed_start_years += 1
             start_date = date(int(start_year), 1, 1)
 
             last_renovation_year_val = row.get("last_renovation_year")
@@ -1127,7 +1161,7 @@ class MasterExcelReader:
             furnace_group = FurnaceGroup(
                 furnace_group_id=furnace_group_id,
                 capacity=Volumes(KT_TO_T * float(capacity)),
-                status=str(row.get("status", "operating")),
+                status=status,
                 last_renovation_date=last_renovation_date,
                 technology=technology,
                 historical_production={},
@@ -1143,11 +1177,13 @@ class MasterExcelReader:
             if plant_id not in plant_first_row:
                 plant_first_row[plant_id] = row
 
-            commissioning_year = Year(int(start_year_val)) if pd.notna(start_year_val) else None
-            age_at_reference = None
-            if commissioning_year is None:
-                plant_age = simulation_start_year - int(start_year)
-                age_at_reference = plant_age if plant_age > 0 else 0
+            # The repository rebuilds each group's lifetime from this metadata, not from the stored lifetime.
+            if vintage_imputed:
+                commissioning_year: Year | None = None
+                age_at_reference = max(simulation_start_year - int(start_year), 0)
+            else:
+                commissioning_year = start_year
+                age_at_reference = None
 
             warnings = validate_commissioning_year(commissioning_year, furnace_group_id)
             warnings.extend(validate_age_at_reference(age_at_reference, simulation_start_year, furnace_group_id))
@@ -1158,7 +1194,7 @@ class MasterExcelReader:
                 last_renovation_year=(
                     Year(int(last_renovation_year_val)) if pd.notna(last_renovation_year_val) else None
                 ),
-                age_source="exact" if commissioning_year else "imputed",
+                age_source="imputed" if vintage_imputed else "exact",
                 source_sheet=str(row.get("source_sheet", sheet_name)),
                 source_row=excel_row,
                 validation_warnings=warnings,
@@ -1198,6 +1234,11 @@ class MasterExcelReader:
             f"Successfully created {len(plants)} plants from 'Furnace units' sheet "
             f"(from {len(raw_plants)} raw records) with metadata for {len(final_canonical_metadata)} furnace groups"
         )
+        if imputed_start_years:
+            logger.info(
+                f"Imputed a random start_year for {imputed_start_years} furnace units with none in the sheet "
+                f"(CHN {IMPUTED_START_YEAR_RANGE_CHN}, elsewhere {IMPUTED_START_YEAR_RANGE_DEFAULT})"
+            )
         aggregated_constraints_to_return: list[Any] = (
             aggregated_constraints if aggregated_constraints is not None else []
         )

@@ -51,7 +51,7 @@ class CacheMetadata:
 class DataPreparationCache:
     """Manages cached data preparations based on content hashing."""
 
-    CACHE_VERSION = "1.6"  # Bump to invalidate all caches (year columns read through to 2060)
+    CACHE_VERSION = "1.7"  # Bump to invalidate all caches (imputed start years for undated furnace units)
 
     def __init__(self, cache_root: Optional[Path] = None):
         """Initialize cache manager.

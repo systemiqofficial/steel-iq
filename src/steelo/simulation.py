@@ -20,6 +20,7 @@ from steelo.simulation_types import TechSettingsMap, get_default_technology_sett
 from steelo.utilities.memory_profiling import MemoryTracker
 
 from .domain import Year, PlantGroup
+from .domain.constants import RANDOM_SEED_DEFAULT
 from .service_layer.message_bus import MessageBus
 from .economic_models import EconomicModel, PlantAgentsModel, AllocationModel, GeospatialModel
 from .domain.events import IterationOver
@@ -263,7 +264,7 @@ class GeoConfig:
     )
 
     # === Other ===
-    random_seed: int = 42  # Seed for random number generation to ensure reproducibility
+    random_seed: int = RANDOM_SEED_DEFAULT  # Seed for random number generation to ensure reproducibility
 
 
 @dataclass
@@ -447,7 +448,7 @@ class SimulationConfig:
     # === Randomness ===
     # Single seed shared by Plant Agent, Geospatial, and Trade LP modules.
     # Propagated to geo_config.random_seed in __post_init__.
-    random_seed: int = 42
+    random_seed: int = RANDOM_SEED_DEFAULT
 
     # === Other ===
     # Verbosity

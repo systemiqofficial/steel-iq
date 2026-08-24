@@ -158,3 +158,80 @@ class TestReadPlantsFromFurnaceUnitsSheetGeography:
         by_id = {p.plant_id: p for p in plants}
         assert by_id["P1"].location.geo_unit == "CN-HE"
         assert by_id["P1"].location.geo_key == "CHN:CN-HE"
+
+
+@pytest.fixture
+def undated_furnace_units_excel_path(tmp_path):
+    """Sheet with one dated unit and many undated CHN / non-CHN units."""
+    path = tmp_path / "undated_furnace_units.xlsx"
+    n = 40
+    iso3 = ["USA"] + ["CHN"] * n + ["IND"] * n
+    furnace_units = pd.DataFrame(
+        {
+            "plant_id": [f"P{i}" for i in range(len(iso3))],
+            "plant_name": [f"Plant {i}" for i in range(len(iso3))],
+            "iso3": iso3,
+            "region": ["x"] * len(iso3),
+            "geo_unit_or_province": [None] * len(iso3),
+            "latitude": [10.0] * len(iso3),
+            "longitude": [10.0] * len(iso3),
+            "technology": ["BOF"] * len(iso3),
+            "capacity_ttpa": [1000.0] * len(iso3),
+            "status": ["operating"] * len(iso3),
+            "start_year": [2005] + [None] * (2 * n),
+            "last_renovation_year": [None] * len(iso3),
+            "soe_status": ["private"] * len(iso3),
+            "power_source": ["grid"] * len(iso3),
+            "parent_gem_id": [""] * len(iso3),
+            "workforce_size": [100] * len(iso3),
+            "source": ["gem_unit"] * len(iso3),
+            "source_sheet": ["Basic oxygen furnaces"] * len(iso3),
+            "source_row": list(range(2, len(iso3) + 2)),
+            "unit_id": [f"U{i}" for i in range(len(iso3))],
+        }
+    )
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        furnace_units.to_excel(writer, sheet_name="Furnace units", index=False)
+    return path
+
+
+def _drawn_start_years(plants, metadata, iso3):
+    """Start years imputed for every furnace group in the given country, recovered from the metadata age."""
+    years = []
+    for plant in plants:
+        if plant.location.iso3 != iso3:
+            continue
+        for fg in plant.furnace_groups:
+            meta = metadata[fg.furnace_group_id]
+            assert meta.age_source == "imputed" and meta.commissioning_year is None
+            years.append(2025 - meta.age_at_reference_year)
+    return sorted(years)
+
+
+def test_missing_start_year_is_drawn_from_country_band(undated_furnace_units_excel_path):
+    """Undated CHN units draw from 2000-2013, others from 2005-2025; dated rows are kept."""
+    reader = MasterExcelReader(excel_path=undated_furnace_units_excel_path)
+    plants, metadata, _ = reader.read_plants_from_furnace_units_sheet(
+        dynamic_feedstocks_dict={}, aggregated_constraints=[]
+    )
+    chn = _drawn_start_years(plants, metadata, "CHN")
+    ind = _drawn_start_years(plants, metadata, "IND")
+    assert len(chn) == 40 and all(2000 <= y <= 2013 for y in chn)
+    assert len(ind) == 40 and all(2005 <= y <= 2025 for y in ind)
+    assert len(set(chn)) > 1 and len(set(ind)) > 1, "draws should spread across vintages"
+    (usa,) = [fg for p in plants if p.location.iso3 == "USA" for fg in p.furnace_groups]
+    assert metadata[usa.furnace_group_id].commissioning_year == 2005
+    assert metadata[usa.furnace_group_id].age_source == "exact"
+
+
+def test_missing_start_year_draw_is_reproducible(undated_furnace_units_excel_path):
+    """Two reads of the same sheet impute identical start years."""
+    reads = [
+        MasterExcelReader(excel_path=undated_furnace_units_excel_path).read_plants_from_furnace_units_sheet(
+            dynamic_feedstocks_dict={}, aggregated_constraints=[]
+        )
+        for _ in range(2)
+    ]
+    (plants_a, meta_a, _), (plants_b, meta_b, _) = reads
+    for iso3 in ("CHN", "IND"):
+        assert _drawn_start_years(plants_a, meta_a, iso3) == _drawn_start_years(plants_b, meta_b, iso3)
