@@ -1570,12 +1570,13 @@ class CarbonCostsJsonRepository:
 # ---- Pydantic "In-DB" Models ----
 class RegionEmissivityInDb(BaseModel):
     iso3: str
+    geo_unit: str | None = None
     country_name: str
     scenario: str
     grid_emissivity: dict[Year, dict[str, float]]
     coke_emissivity: dict[str, float]
     gas_emissivity: dict[str, float]
-    id: str = Field(..., description="iso3_scenario id")
+    id: str = Field(..., description="geo_key_scenario id")
 
     def __lt__(self, other: "RegionEmissivityInDb") -> bool:
         return self.id < other.id
@@ -1584,6 +1585,7 @@ class RegionEmissivityInDb(BaseModel):
     def to_domain(self) -> RegionEmissivity:
         return RegionEmissivity(
             iso3=self.iso3,
+            geo_unit=self.geo_unit,
             country_name=self.country_name,
             scenario=self.scenario,
             grid_emissivity=self.grid_emissivity,
@@ -1595,6 +1597,7 @@ class RegionEmissivityInDb(BaseModel):
     def from_domain(cls, domain: RegionEmissivity) -> "RegionEmissivityInDb":
         return cls(
             iso3=domain.iso3,
+            geo_unit=domain.geo_unit,
             country_name=domain.country_name,
             scenario=domain.scenario,
             grid_emissivity=domain.grid_emissivity,

@@ -574,14 +574,21 @@ class RegionEmissivity:
         grid_emissivity: dict[Year, dict[str, float]],
         coke_emissivity: dict[str, float],
         gas_emissivity: dict[str, float],
+        geo_unit: str | None = None,
     ) -> None:
         self.iso3 = iso3
+        self.geo_unit = geo_unit  # ISO 3166-2 code, e.g. "CN-HE"; None ⇒ country-level
         self.country_name = country_name
         self.scenario = scenario
         self.grid_emissivity = grid_emissivity
         self.coke_emissivity = coke_emissivity
         self.gas_emissivity = gas_emissivity
-        self.id = f"{self.iso3}_{self.scenario.lower().replace(' ', '_')}"
+        self.id = f"{self.geo_key}_{self.scenario.lower().replace(' ', '_')}"
+
+    @property
+    def geo_key(self) -> str:
+        """Finest-available geographic key (mirrors ``Location.geo_key``)."""
+        return compose_geo_key(self.iso3, self.geo_unit)
 
     def __repr__(self) -> str:
         return f"RegionEmissivity: <{self.id}>"
@@ -7780,49 +7787,55 @@ class Environment:
             emissivities (list[RegionEmissivity]): A list of RegionEmissivity objects to be added to the environment.
 
         Side Effects:
-            Updates the `grid_emissivities` dictionary to map ISO3 codes to their respective emiss
+            Updates the `grid_emissivities` dictionary to map geo_keys (bare ISO3 or
+            sub-national ``iso3:code``) to their respective emissivities.
+
+        Raises:
+            ValueError: If emissivities are supplied but none match the chosen scenario
+                (a scenario-name typo would otherwise zero all grid emissions silently).
         """
         self.grid_emissivities = {
-            ge.iso3: ge.grid_emissivity
+            ge.geo_key: ge.grid_emissivity
             for ge in emissivities
             if ge.scenario == self.config.chosen_grid_emissions_scenario
         }
+        if emissivities and not self.grid_emissivities:
+            raise ValueError(
+                f"No grid emissivities match scenario {self.config.chosen_grid_emissions_scenario!r}; "
+                f"available: {sorted({ge.scenario for ge in emissivities})}"
+            )
 
     def propagate_grid_emissivity_to_furnace_groups(self, plants: list[Plant]) -> None:
         """
-        Propagate the grid emissivities to all plants and furnace groups based on their location ISO3 code.
+        Propagate the grid emissivities to all plants and furnace groups, resolving each
+        plant's location finest-available first (sub-national geo_key, then country ISO3).
 
         Args:
             plants (list[Plant]): List of Plant objects to update with grid emissivities.
 
         Side Effects:
             Updates the `grid_emissivity` attribute of each FurnaceGroup object for the current year.
+
+        Raises:
+            ValueError: If a plant's location resolves to no grid emissivity entry, or the
+                entry has no Electricity value for the current year.
         """
         logger = logging.getLogger(f"{__name__}.Environment.propagate_grid_emissivity_to_furnace_groups")
-        # If grid_emissivities hasn't been initialized, skip propagation
-        if not hasattr(self, "grid_emissivities") or self.grid_emissivities is None:
+        # If grid_emissivities hasn't been initialized or no data was supplied, skip propagation
+        if not getattr(self, "grid_emissivities", None):
             logger.warning("Grid emissivities not initialized, skipping propagation to furnace groups")
             return
 
         for plant in plants:
-            emissivity_dict = self.grid_emissivities.get(plant.location.iso3)
-            if emissivity_dict is not None:
-                # Extract the grid emissivity for the current year
-                year_data = emissivity_dict.get(self.year)
-                if year_data is not None and "Electricity" in year_data:
-                    emissivity_value = year_data["Electricity"]
-                    for furnace_group in plant.furnace_groups:
-                        furnace_group.grid_emissivity = emissivity_value
-                else:
-                    logger.warning(
-                        f"Grid emissivity not found for ISO3 code {plant.location.iso3} and year {self.year}, setting to 0"
-                    )
-                    for furnace_group in plant.furnace_groups:
-                        furnace_group.grid_emissivity = 0.0
-            else:
-                logger.warning(f"Grid emissivity not found for ISO3 code {plant.location.iso3}, setting to 0")
-                for furnace_group in plant.furnace_groups:
-                    furnace_group.grid_emissivity = 0.0
+            emissivity_dict = plant.location.resolve(self.grid_emissivities, what="grid emissivity")
+            if emissivity_dict is None:
+                raise ValueError(f"Grid emissivity not found for {plant.location.geo_key}")
+            year_data = emissivity_dict.get(self.year)
+            if year_data is None or "Electricity" not in year_data:
+                raise ValueError(f"Grid emissivity not found for {plant.location.geo_key} in year {self.year}")
+            emissivity_value = year_data["Electricity"]
+            for furnace_group in plant.furnace_groups:
+                furnace_group.grid_emissivity = emissivity_value
 
     def initiate_gas_coke_emissivity(self, emissivities: list[RegionEmissivity]) -> None:
         """
@@ -7832,10 +7845,11 @@ class Environment:
             emissivities (list[RegionEmissivity]): A list of RegionEmissivity objects to be added to the environment.
 
         Side Effects:
-            Updates the `fossil_emissivity` dictionary to map ISO3 codes to their respective emiss
+            Updates the `fossil_emissivity` dictionary to map geo_keys (bare ISO3 or
+            sub-national ``iso3:code``) to their respective emissivities.
         """
         self.fossil_emissivity = {
-            ge.iso3: {"Coke": ge.coke_emissivity, "Natural gas": ge.gas_emissivity}
+            ge.geo_key: {"Coke": ge.coke_emissivity, "Natural gas": ge.gas_emissivity}
             for ge in emissivities
             if ge.scenario == self.config.chosen_grid_emissions_scenario
         }

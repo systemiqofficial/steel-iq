@@ -1343,15 +1343,21 @@ def read_carbon_costs(carbon_cost_excel_path: Path, sheet_name="Carbon cost") ->
 
 def read_regional_emissivities(excel_path: Path, grid_sheet_name: str, gas_sheet_name: str) -> list[RegionEmissivity]:
     """
-    Read grid_emissivity from from an Excel file and return a dictionary mapping ISO3 codes to Year and cost.
+    Read regional grid and gas/coke emissivities from the master Excel.
 
     Args:
         excel_path (Path): Path to the Excel file containing grid emissions data.
         grid_sheet_name (str): Name of the sheet containing grid emissions data.
         gas_sheet_name (str): Name of the sheet containing gas coke emissions data.
+
     Returns:
-        list[RegionEmissivity]: A list of RegionEmissivity objects containing emissions data
-        for each country and scenario.
+        list[RegionEmissivity]: One entry per geography and scenario.
+
+    Notes:
+        The grid sheet's ISO column holds either a country ("CHN") or a sub-national
+        geo_key ("CHN:CN-HE"). Sub-national groups take gas/coke factors from their
+        country, and years they do not author are filled from the country's
+        same-scenario values. Sheets without geo_keys are read unchanged.
     """
     grid_emission_df = pd.read_excel(excel_path, sheet_name=grid_sheet_name)
     gas_coke_emissions_df = pd.read_excel(excel_path, sheet_name=gas_sheet_name)
@@ -1413,16 +1419,41 @@ def read_regional_emissivities(excel_path: Path, grid_sheet_name: str, gas_sheet
 
     grouped_gas_coke = gas_coke_emissions_df.groupby([gas_iso_column, "Vector"])[carbon_intensity_columns].sum()
 
+    emissivity_by_group: dict[tuple[str, str], dict[Year, dict[str, float]]] = {
+        (str(key[0]), str(key[1])): dict(metrics)  # type: ignore[index]
+        for key, metrics in grouped_data.items()
+    }
+
+    # Fill years a sub-national group does not author from its country's same-scenario
+    # group, so a resolved sub-national entry never has a year hole the country could cover.
+    gap_fill_logger = logging.getLogger(f"{__name__}.read_regional_emissivities")
+    for (group_key, scenario_key), year_values in emissivity_by_group.items():
+        country_iso3, _, sub_code = group_key.partition(":")
+        if not sub_code:
+            continue
+        parent = emissivity_by_group.get((country_iso3, scenario_key)) or {}
+        filled = sorted(year for year in parent if year not in year_values)
+        if filled:
+            gap_fill_logger.warning(
+                "Grid emissivity: %s (%s) missing %d year(s); filled %s-%s from %s.",
+                group_key,
+                scenario_key,
+                len(filled),
+                filled[0],
+                filled[-1],
+                country_iso3,
+            )
+            for year in filled:
+                year_values[year] = parent[year]
+
     grid_emissivity_list: list[RegionEmissivity] = []
-    for key, metrics in grouped_data.items():
-        iso3_raw, scenario_raw = key  # type: ignore[misc]
-        iso3: str = str(iso3_raw)  # type: ignore[has-type]
-        scenario: str = str(scenario_raw)  # type: ignore[has-type]
-        # metrics is {'grid_carbon_intensity_value': {year: value}}
-        emissivity = metrics  # type: ignore[index]
+    for (group_key, scenario), emissivity in emissivity_by_group.items():
+        # The ISO column holds a country ("CHN") or a sub-national geo_key ("CHN:CN-HE");
+        # gas/coke factors are authored per country only.
+        iso3, _, geo_unit = group_key.partition(":")
 
         # look up the country name & net‐zero year
-        country_name: str = meta.at[(iso3_raw, scenario_raw), "country"]  # type: ignore[assignment]
+        country_name: str = meta.at[(group_key, scenario), "country"]  # type: ignore[assignment]
 
         # Cast the results of to_dict() to the expected type
         coke_dict = cast(dict[str, float], grouped_gas_coke.loc[iso3].loc["Coking coal"].to_dict())
@@ -1430,10 +1461,11 @@ def read_regional_emissivities(excel_path: Path, grid_sheet_name: str, gas_sheet
 
         grid_emissivity_list.append(
             RegionEmissivity(
-                iso3=iso3,  # type: ignore[has-type]
+                iso3=iso3,
+                geo_unit=geo_unit or None,
                 country_name=country_name,
-                scenario=scenario.removeprefix("projection_").replace("_", " ").title(),  # type: ignore[has-type]
-                grid_emissivity={key: value for key, value in emissivity.items()},
+                scenario=scenario.removeprefix("projection_").replace("_", " ").title(),
+                grid_emissivity=emissivity,
                 coke_emissivity=coke_dict,
                 gas_emissivity=gas_dict,
             )
