@@ -285,7 +285,7 @@ class SimulationConfig:
     # Solver configuration
     lp_epsilon: float = 1e-3  # LP solver epsilon
     capacity_limit: float = 0.95
-    soft_minimum_capacity_percentage: float = 0.6
+    soft_minimum_capacity_share: float = 0.6
     minimum_active_utilisation_rate: float = 0.01
     minimum_margin: float = 0.5
     hot_metal_radius: float = 5.0  # km - radius for allocation model
