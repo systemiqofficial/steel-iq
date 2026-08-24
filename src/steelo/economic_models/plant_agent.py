@@ -425,6 +425,9 @@ class AllocationModel:
         if bus.env.previous_lp_solution is not None:
             trade_lp.previous_solution = bus.env.previous_lp_solution
 
+        if bus.env.output_dir is not None:
+            trade_lp.failure_dump_path = bus.env.output_dir / "TM" / f"trade_lp_failed_{bus.env.year}.mps"
+
         setup_elapsed = time.time() - setup_start
         logger.info(f"operation=allocation_setup year={bus.env.year} duration_s={setup_elapsed:.3f}")
         memory_tracker.checkpoint("after_lp_setup", year=bus.env.year)

@@ -684,3 +684,23 @@ def test_short_name_formatter_same_function_different_context(clean_logging_stat
 
     assert pam_result == "DEBUG   | PAM  | calculate_subsidies: Subsidy calc"
     assert geo_result == "DEBUG   | GEO  | calculate_subsidies: Subsidy calc"
+
+
+def test_short_name_formatter_external_logger_outside_context_uses_owning_module(clean_logging_state):
+    """Pyomo/HiGHS output emitted from a thread without module context is tagged TM, not CORE."""
+    formatter = ShortNameFormatter()
+
+    record = logging.LogRecord(
+        name="pyomo.contrib.appsi.solvers.highs",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="Running HiPO",
+        args=(),
+        exc_info=None,
+    )
+
+    _current_module.name = None
+    result = formatter.format(record)
+
+    assert result == "INFO    | TM   | highs: Running HiPO"

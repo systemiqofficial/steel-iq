@@ -813,3 +813,46 @@ def test_get_distance_invalid_type_raises_error(location_mock_factory):
 
     with pytest.raises(ValueError, match="Unknown distance type"):
         model.get_distance("PC1", "PC2", type="unknown_type")
+
+
+def test_solve_lp_model_logs_highs_diagnostics_and_dumps_lp_on_failure(location_mock_factory, tmp_path, caplog):
+    """
+    A non-optimal solve must log HiGHS's raw model status and iteration counts and
+    write the LP to failure_dump_path, so the failing LP can be reproduced offline.
+    """
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
+    steel = Commodity("steel")
+    supply_process = Process(name="SteelSupply", type=ProcessType.SUPPLY, bill_of_materials=[])
+    demand_process = Process(name="SteelDemand", type=ProcessType.DEMAND, bill_of_materials=[])
+    pc_supply = ProcessCenter(
+        name="PC_Supply",
+        process=supply_process,
+        capacity=10.0,
+        location=location_mock_factory(lat=0, lon=0, iso3="SUP"),
+    )
+    pc_demand = ProcessCenter(
+        name="PC_Demand",
+        process=demand_process,
+        capacity=5.0,
+        location=location_mock_factory(lat=1, lon=1, iso3="DEM"),
+    )
+    model.add_commodities([steel])
+    model.add_processes([supply_process, demand_process])
+    model.add_process_centers([pc_supply, pc_demand])
+    model.add_process_connectors([ProcessConnector(from_process=supply_process, to_process=demand_process)])
+    model.build_lp_model()
+
+    # Demand slack is bounded by the 5 t demand, so requiring 100 t of it makes the LP infeasible
+    model.lp_model.force_infeasible = pyo.Constraint(expr=model.lp_model.demand_slack_variable[pc_demand.name] >= 100)
+    model.failure_dump_path = tmp_path / "TM" / "trade_lp_failed_2035.mps"
+
+    with caplog.at_level("ERROR"):
+        result = model.solve_lp_model()
+
+    assert result.solver.termination_condition != pyo.TerminationCondition.optimal
+    diagnostics = [r.getMessage() for r in caplog.records if "highs_status=" in r.getMessage()]
+    assert len(diagnostics) == 1
+    assert "highs_status='Infeasible'" in diagnostics[0]
+    assert "ipm_iterations=" in diagnostics[0] and "crossover_iterations=" in diagnostics[0]
+    assert model.failure_dump_path.exists()
+    assert model.failure_dump_path.read_text().startswith("NAME")
