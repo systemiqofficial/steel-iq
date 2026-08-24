@@ -18,3 +18,5 @@ function_overrides:
 
 external:
   pyomo: ERROR
+  # HiGHS's solver log (banner, iterations, model status) arrives via this Pyomo child logger.
+  pyomo.contrib.appsi.solvers.highs: INFO
