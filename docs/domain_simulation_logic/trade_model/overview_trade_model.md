@@ -352,13 +352,14 @@ min_share × total_input ≤ sum(matching commodities) ≤ max_share × total_in
 
 **Implicit `pig_iron` output for all hot-metal producers.** `PrimaryFeedstock.get_primary_outputs()` mirrors any `hot_metal` output as `pig_iron` when the feedstock does not already declare one (regardless of technology — previously only BF had this mirror). This means smelting-reduction, charcoal-BF and any other hot-metal-producing tech can supply `pig_iron` flows to remote demand centres after the hot→cold relabeling described below, not just BF.
 
-**Solution:** `fix_to_zero_allocations_where_distance_doesnt_match_commodity()` — behavior depends on whether furnace-group clustering is enabled and how clusters are keyed:
+**Solution:** `fix_to_zero_allocations_where_distance_doesnt_match_commodity()` — behavior depends on whether furnace-group clustering is enabled and the geographical scope:
 
 - **Clustering disabled (legacy):** The LP fixes hot-commodity flows to zero for all pairs beyond `hot_metal_radius`, and cold-commodity flows to zero for pairs inside the radius. Called before build to reduce problem size.
-- **Clustering enabled, iso3 keying:** The LP blocks *international* hot-commodity flows (different ISO3). Intra-country hot flows are allowed at the LP stage because clusters aggregate furnace groups whose individual locations aren't visible to the LP. The actual per-FG radius check is deferred to **disaggregation** (see below).
-- **Clustering enabled, plant-group keying** (`cluster_hot_metal_techs_by_plant_group=True`): The LP additionally blocks hot-commodity flows between meta-furnace-groups that belong to *different plant groups*, even within the same country. This matches the clustering key for hot-metal-affected technologies and limits LP-level hot flows to pairs that can plausibly stay within radius at disaggregation. Supplier / demand-centre edges (which don't have a `plant_group_id`) fall through to the iso3 rule.
+- **Clustering enabled, iso3 keying** (`geographical_clustering_scope="iso3"`): The LP blocks *international* hot-commodity flows (different ISO3). Intra-country hot flows are allowed at the LP stage because clusters aggregate furnace groups whose individual locations aren't visible to the LP. The actual per-FG radius check is deferred to **disaggregation** (see below).
+- **Clustering enabled, plant-group keying** (`geographical_clustering_scope="plant_group"`): The LP additionally blocks hot-commodity flows between meta-furnace-groups that belong to *different plant groups*, even within the same country. This matches the clustering key for hot-metal-affected technologies and limits LP-level hot flows to pairs that can plausibly stay within radius at disaggregation. Supplier / demand-centre edges (which don't have a `plant_group_id`) fall through to the iso3 rule.
+- **Clustering enabled, plant-level keying** (`geographical_clustering_scope="plant"`): The LP additionally blocks hot-commodity flows between meta-furnace-groups that belong to *different plants*, even within the same plant group. This is the finest-grained constraint, limiting hot flows to same-plant pairs. Supplier / demand-centre edges fall through to the iso3 rule.
 
-A summary line `[LP HOT-METAL] Fixed to zero: X cross-country, Y cross-plant-group, Z missing-iso3 ...` is emitted per year so the operator can see how often each rule bound.
+A summary line `[LP HOT-METAL] Fixed to zero: X cross-country, Y cross-scope, Z missing-iso3 ...` is emitted per year so the operator can see how often each rule bound.
 
 ---
 
@@ -378,7 +379,12 @@ Nine mechanisms work together:
 
 - **Effective BOF cluster capacity.** For each BOF FG, effective capacity = `min(physical_capacity, Σ[reachable_BF_capacity within radius] / min_hot_metal_share)`. The cluster's `total_capacity`, `capacity_shares`, and weighted costs are all derived from these effective capacities. This prevents the LP from allocating more hot metal to a BOF cluster than its geographically reachable BF neighbours can physically supply.
 
-**Cluster key.** The cluster key is `(technology_name, location_key, feedstock_signature)` where `location_key` is `plant.location.iso3` for most FGs, but switches to `plant.ultimate_plant_group` for FGs affected by the hot-metal radius when `cluster_hot_metal_techs_by_plant_group=True`. A FG is considered *affected* by looking at its `effective_primary_feedstocks`: any feedstock whose `metallic_charge` or `outputs` key is in `config.closely_allocated_products` (hot_metal, dri_*, liquid_iron) triggers plant-group keying. The resulting `MetaFurnaceGroup.plant_group_id` is consumed by the LP's cross-plant-group rule above. A log line `[CLUSTERING] Created N clusters (X FGs keyed by plant_group, Y by iso3)` confirms the split per year.
+**Cluster key.** The cluster key is `(technology_name, location_key, feedstock_signature)` where `location_key` is determined by `geographical_clustering_scope`:
+- Default (`iso3`): `location_key = plant.location.iso3`
+- Plant-group scope: `location_key = plant.ultimate_plant_group` for hot-metal-affected FGs; iso3 for others
+- Plant scope: `location_key = plant.plant_id` for hot-metal-affected FGs; iso3 for others
+
+A FG is considered *affected* by looking at its `effective_primary_feedstocks`: any feedstock whose `metallic_charge` or `outputs` key is in `config.closely_allocated_products` (hot_metal, dri_*, liquid_iron) triggers the configured scope keying. Non-affected techs always use iso3 keying. The resulting `plant_group_id` (for plant_group or plant scope) is consumed by the LP's cross-scope rule above. A log line `[CLUSTERING] Created N clusters (X FGs keyed by plant_group, Y by iso3)` (or similarly for plant scope) confirms the split per year.
 
 #### 2. Joint transportation problem for hot-metal disaggregation (pre-pass)
 

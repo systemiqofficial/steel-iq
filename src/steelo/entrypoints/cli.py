@@ -119,24 +119,16 @@ def run_full_simulation() -> str:
         help="Enable furnace group clustering to reduce LP complexity",
     )
 
-    def _str2bool(v: str) -> bool:
-        if v.lower() in ("true", "t", "yes", "y", "1"):
-            return True
-        if v.lower() in ("false", "f", "no", "n", "0"):
-            return False
-        raise argparse.ArgumentTypeError(f"expected a boolean value, got {v!r}")
-
     parser.add_argument(
-        "--cluster-hot-metal-by-plant-group",
-        type=_str2bool,
-        nargs="?",
-        const=True,
-        default=False,
+        "--clustering-scope",
+        type=str,
+        choices=["iso3", "plant_group", "plant"],
+        default="iso3",
         help=(
-            "When clustering is enabled, cluster hot-metal-affected techs "
-            "(those whose feedstocks or outputs include hot_metal/dri_*/liquid_iron) "
-            "by plant_group_id instead of iso3. Accepts bare flag, =True, or =False. "
-            "No effect without --enable-clustering."
+            "When clustering is enabled, geographical scope for clustering hot-metal-affected techs. "
+            "'iso3' (default): cluster by country. 'plant_group': cluster by corporate group. "
+            "'plant': cluster by individual plant. "
+            "Only affects FGs with hot_metal/dri_*/liquid_iron feedstocks or outputs."
         ),
     )
     parser.add_argument(
@@ -272,9 +264,9 @@ def run_full_simulation() -> str:
             if args.enable_clustering:
                 config.enable_furnace_group_clustering = True
                 console.print("[green]Furnace group clustering enabled[/green]")
-            if args.cluster_hot_metal_by_plant_group:
-                config.cluster_hot_metal_techs_by_plant_group = True
-                console.print("[green]Hot-metal-affected techs will cluster by plant_group[/green]")
+            if args.clustering_scope != "iso3":
+                config.geographical_clustering_scope = args.clustering_scope
+                console.print(f"[green]Hot-metal-affected techs will cluster by {args.clustering_scope}[/green]")
 
             # Override iron price pegging settings from command line
             if args.peg_iron_to_steel_price:
@@ -352,9 +344,9 @@ def run_full_simulation() -> str:
                 if args.enable_clustering:
                     config.enable_furnace_group_clustering = True
                     console.print("[green]Furnace group clustering enabled[/green]")
-                if args.cluster_hot_metal_by_plant_group:
-                    config.cluster_hot_metal_techs_by_plant_group = True
-                    console.print("[green]Hot-metal-affected techs will cluster by plant_group[/green]")
+                if args.clustering_scope != "iso3":
+                    config.geographical_clustering_scope = args.clustering_scope
+                    console.print(f"[green]Hot-metal-affected techs will cluster by {args.clustering_scope}[/green]")
 
                 # Override iron price pegging settings from command line
                 if args.peg_iron_to_steel_price:

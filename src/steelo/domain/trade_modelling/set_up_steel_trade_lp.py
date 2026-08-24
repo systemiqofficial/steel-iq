@@ -771,8 +771,8 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
 
     if enable_clustering:
         # NEW BEHAVIOR: Allow both hot and cold commodities with geographic constraints
-        # Hot commodities are restricted to intra-country allocations (or intra-plant-group
-        # when cluster_hot_metal_techs_by_plant_group is on, which keeps flows physically
+        # Hot commodities are restricted to intra-country allocations (or intra-plant-group/intra-plant
+        # when geographical_clustering_scope is plant_group or plant, which keeps flows physically
         # local).
         # Cold commodities can go anywhere.
 
@@ -782,10 +782,11 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
             if pc.location and pc.location.iso3:
                 pc_name_to_iso3[pc.name] = pc.location.iso3
 
-        # When plant-group clustering is on, build pc_name → plant_group_id for meta-FGs
+        # When clustering scope is plant_group or plant, build pc_name → scope_id for meta-FGs
         # so we can tighten the hot-commodity rule beyond iso3.
         pc_name_to_plant_group: dict[str, str] = {}
-        use_plant_group_rule = getattr(config, "cluster_hot_metal_techs_by_plant_group", False)
+        clustering_scope = getattr(config, "geographical_clustering_scope", "iso3")
+        use_plant_group_rule = clustering_scope in ("plant_group", "plant")
         if use_plant_group_rule:
             meta_fgs = getattr(env, "meta_furnace_groups", None) if env is not None else None
             if meta_fgs:
@@ -822,9 +823,8 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
 
         logger.info(
             f"[LP HOT-METAL] Fixed to zero: {blocked_cross_country} cross-country, "
-            f"{blocked_cross_plant_group} cross-plant-group, {blocked_missing_iso3} missing-iso3 "
-            f"(plant_group rule={'on' if use_plant_group_rule else 'off'}, "
-            f"plant-group-keyed PCs={len(pc_name_to_plant_group)})"
+            f"{blocked_cross_plant_group} cross-scope, {blocked_missing_iso3} missing-iso3 "
+            f"(clustering_scope={clustering_scope}, scope-keyed PCs={len(pc_name_to_plant_group)})"
         )
 
     else:

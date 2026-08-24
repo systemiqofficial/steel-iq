@@ -473,15 +473,21 @@ class ModelRunCreateForm(forms.ModelForm):
         widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
     )
 
-    cluster_hot_metal_techs_by_plant_group = forms.BooleanField(
-        label="Cluster hot metal technologies by plant group",
-        initial=False,
+    geographical_clustering_scope = forms.ChoiceField(
+        label="Geographical clustering scope",
+        choices=[
+            ("iso3", "Country (ISO3)"),
+            ("plant_group", "Plant group (corporate)"),
+            ("plant", "Individual plant"),
+        ],
+        initial="iso3",
         required=False,
         help_text=(
-            "Cluster furnace groups consuming/producing closely-allocated commodities by plant group "
-            "instead of country, keeping cold/hot commodity substitution local (requires clustering on)"
+            "Geographical scope for clustering furnace groups consuming/producing closely-allocated commodities. "
+            "Determines how fine-grained the clustering is while keeping cold/hot commodity substitution local. "
+            "(requires clustering on)"
         ),
-        widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
+        widget=forms.Select(attrs={"class": "form-select field-connected"}),
     )
 
     # Demand and Circularity fields
@@ -819,7 +825,7 @@ class ModelRunCreateForm(forms.ModelForm):
             "use_iron_ore_premiums",
             "include_tariffs",
             "enable_furnace_group_clustering",
-            "cluster_hot_metal_techs_by_plant_group",
+            "geographical_clustering_scope",
             "chosen_grid_emissions_scenario",
             # Demand and Circularity
             "total_steel_demand_scenario",
@@ -874,11 +880,11 @@ class ModelRunCreateForm(forms.ModelForm):
         if cleaned_data.get("random_seed") is None:
             cleaned_data["random_seed"] = secrets.randbelow(2**31) if randomise else 42
 
-        # cluster_hot_metal_techs_by_plant_group is a no-op unless
-        # enable_furnace_group_clustering is also on; coerce to False so the
+        # geographical_clustering_scope is a no-op unless
+        # enable_furnace_group_clustering is also on; coerce to iso3 (no-op) so the
         # stored config reflects actual runtime behaviour.
         if not cleaned_data.get("enable_furnace_group_clustering"):
-            cleaned_data["cluster_hot_metal_techs_by_plant_group"] = False
+            cleaned_data["geographical_clustering_scope"] = "iso3"
 
         # Set default values for fields that are not required but need values
         if not cleaned_data.get("scrap_generation_scenario"):
