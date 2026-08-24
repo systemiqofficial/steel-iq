@@ -7,6 +7,7 @@ from typing import Tuple, Any
 import logging
 import os
 import time
+from pathlib import Path
 import functools
 from steelo.adapters.geospatial.geospatial_toolbox import haversine_distance
 
@@ -424,6 +425,9 @@ class TradeLPModel:
 
         # Warm-start support (OPT-2) - previous year's solution for faster convergence
         self.previous_solution: dict[tuple[str, str, str], float] | None = None
+
+        # Where to write the LP (MPS) when the solve does not end optimal, for offline reproduction
+        self.failure_dump_path: Path | None = None
 
     def add_transportation_costs(self, transportation_costs: list[TransportationCost]) -> None:
         """Add transportation costs to the model."""
@@ -1799,13 +1803,16 @@ class TradeLPModel:
                     f"operation=warm_start status=skipped reason='{solver_type} solver does not support warm starts'"
                 )
 
-        # tee=True forwards HiGHS's own logs (algorithm banner, iterations, timing)
-        # so you can verify HiPO is actually running. Toggle via env STEELO_HIGHS_LOG.
+        # HiGHS's own log reaches the steelo log via the pyomo.contrib.appsi.solvers.highs
+        # logger (see logging_config.yaml); tee=True additionally mirrors it to stdout.
         highs_log = os.environ.get("STEELO_HIGHS_LOG", "").lower() in {"1", "true", "yes"}
         result = solver.solve(self.lp_model, load_solutions=False, warmstart=warm_start_enabled, tee=highs_log)
         elapsed = time.time() - start_time
         logger.info(f"operation=trade_optimization duration_s={elapsed:.3f}")
         self.solution_status = result.solver.status
+
+        if result.solver.termination_condition != pyo.TerminationCondition.optimal:
+            self._log_solver_failure(solver, result.solver.termination_condition, logger)
 
         # Check if solution was found
         if result.solver.termination_condition == pyo.TerminationCondition.infeasible:
@@ -1854,6 +1861,36 @@ class TradeLPModel:
                 logger.info("LP Solution: No demand centers found")
 
         return result
+
+    def _log_solver_failure(self, solver, termination_condition, logger: logging.Logger) -> None:
+        """Log HiGHS's own account of a non-optimal solve and dump the LP for offline reproduction.
+
+        Args:
+            solver: The appsi_highs solver instance that just ran
+            termination_condition: Pyomo termination condition of the failed solve
+            logger: Logger to write the diagnostics to
+
+        Notes:
+            - Pyomo folds HiGHS's load/model/presolve/solve/postsolve errors into a single
+              TerminationCondition.error; the raw HiGHS status and iteration counts are the
+              only way to tell a HiPO divergence from a crossover or postsolve failure.
+            - The MPS file (written only when failure_dump_path is set) lets the exact failing
+              LP be re-solved with highspy under different options without re-running the simulation.
+        """
+        highs = solver._solver_model  # appsi keeps the highspy.Highs handle here
+        info = highs.getInfo()
+        logger.error(
+            f"operation=trade_optimization termination={termination_condition} "
+            f"highs_status='{highs.modelStatusToString(highs.getModelStatus())}' "
+            f"ipm_iterations={info.ipm_iteration_count} crossover_iterations={info.crossover_iteration_count} "
+            f"simplex_iterations={info.simplex_iteration_count} "
+            f"primal_status='{highs.solutionStatusToString(info.primal_solution_status)}' "
+            f"dual_status='{highs.solutionStatusToString(info.dual_solution_status)}'"
+        )
+        if self.failure_dump_path is not None:
+            self.failure_dump_path.parent.mkdir(parents=True, exist_ok=True)
+            highs.writeModel(str(self.failure_dump_path))
+            logger.error(f"Failed LP written to {self.failure_dump_path} for offline reproduction")
 
     def extract_solution(self):
         """Extract optimal allocation values from solved LP model.

@@ -30,6 +30,16 @@ from contextlib import contextmanager
 # Thread-local storage for current module context
 _current_module = threading.local()
 
+# Module tags for third-party loggers that emit outside the thread-local context, by name prefix.
+EXTERNAL_LOGGER_MODULES = {"pyomo": "tm"}
+
+
+def _external_logger_module(logger_name: str) -> Optional[str]:
+    for prefix, module in EXTERNAL_LOGGER_MODULES.items():
+        if logger_name == prefix or logger_name.startswith(prefix + "."):
+            return module
+    return None
+
 
 class ShortNameFormatter(logging.Formatter):
     """
@@ -58,8 +68,8 @@ class ShortNameFormatter(logging.Formatter):
         parts = record.name.split(".")
         func_name = parts[-1] if len(parts) > 1 else record.name
 
-        # Get current module context from thread-local
-        context = getattr(_current_module, "name", None)
+        # Module context from thread-local, else from the logger's owning module
+        context = getattr(_current_module, "name", None) or _external_logger_module(record.name)
         context_str = context.upper() if context else "CORE"
 
         return f"{record.levelname:<7} | {context_str:<4} | {func_name}: {record.getMessage()}"
