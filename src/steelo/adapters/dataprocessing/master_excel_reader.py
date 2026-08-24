@@ -21,11 +21,19 @@ from steelo.adapters.dataprocessing.master_excel_validator import (
     ValidationReport,
     check_furnace_units_geography,
 )
-from steelo.domain.constants import KT_TO_T, PLANT_LIFETIME, RANDOM_SEED_DEFAULT
+from steelo.domain.constants import (
+    ANNOUNCEMENT_TIME,
+    CONSTRUCTION_TIME_DEFAULT,
+    KT_TO_T,
+    PLANT_LIFETIME,
+    RANDOM_SEED_DEFAULT,
+)
 
 # Inclusive start-year ranges for 'Furnace units' rows with no start_year, by country.
 IMPUTED_START_YEAR_RANGE_CHN = (2000, 2013)
 IMPUTED_START_YEAR_RANGE_DEFAULT = (2005, 2025)
+# Statuses of units not built yet; undated ones are dated forward from the reference year.
+PIPELINE_STATUSES = ("announced", "construction")
 
 
 def impute_start_year(iso3: str, rng: random.Random) -> int:
@@ -40,6 +48,25 @@ def impute_start_year(iso3: str, rng: random.Random) -> int:
     """
     lo, hi = IMPUTED_START_YEAR_RANGE_CHN if iso3 == "CHN" else IMPUTED_START_YEAR_RANGE_DEFAULT
     return rng.randint(lo, hi)
+
+
+def impute_pipeline_start_year(status: str, reference_year: int, rng: random.Random) -> int:
+    """Draw the year an announced or under-construction unit comes online.
+
+    Args:
+        status: One of PIPELINE_STATUSES (lower-case).
+        reference_year: Year the sheet describes (the simulation start year); the unit is dated forward from it.
+        rng: Seeded generator shared with ``impute_start_year``, so the draw is reproducible for a given sheet.
+
+    Returns:
+        construction: uniform in [reference_year, reference_year + CONSTRUCTION_TIME_DEFAULT] — the unit is
+        somewhere in its construction phase. announced: construction has not started yet, so its start is
+        drawn uniformly in [reference_year, reference_year + ANNOUNCEMENT_TIME] and the unit comes online a
+        fixed CONSTRUCTION_TIME_DEFAULT years after that.
+    """
+    if status == "construction":
+        return reference_year + rng.randint(0, CONSTRUCTION_TIME_DEFAULT)
+    return reference_year + rng.randint(0, ANNOUNCEMENT_TIME) + CONSTRUCTION_TIME_DEFAULT
 
 
 logger = logging.getLogger(__name__)
@@ -1060,6 +1087,10 @@ class MasterExcelReader:
             Rows with no start_year get one drawn uniformly from a country band
             (see ``impute_start_year``) with a fixed seed, so the renovation cycles of
             undated units are spread across vintages instead of all expiring at once.
+            Announced / under-construction rows with no start_year, or one before
+            simulation_start_year, are instead dated forward from simulation_start_year
+            (see ``impute_pipeline_start_year``): the simulation only switches such units on
+            in the year equal to their start year, so a past one would strand them forever.
         """
         from ...domain.models import Location, Technology, FurnaceGroup, PointInTime, TimeFrame, Year, Volumes
         from ..dataprocessing.excel_reader import read_dynamic_business_cases
@@ -1114,6 +1145,7 @@ class MasterExcelReader:
         plant_first_row: dict[str, Any] = {}
         start_year_rng = random.Random(RANDOM_SEED_DEFAULT)
         imputed_start_years = 0
+        imputed_pipeline_start_years = 0
 
         for row_idx, row in df.iterrows():
             if pd.isna(row.get("plant_id")):
@@ -1139,9 +1171,15 @@ class MasterExcelReader:
 
             status = str(row.get("status", "operating"))
             start_year_val = row.get("start_year")
+            in_pipeline = status.lower() in PIPELINE_STATUSES
+            pipeline_start_imputed = False
             vintage_imputed = False
-            if pd.notna(start_year_val):
+            if pd.notna(start_year_val) and not (in_pipeline and int(start_year_val) < simulation_start_year):
                 start_year = Year(int(start_year_val))
+            elif in_pipeline:
+                start_year = Year(impute_pipeline_start_year(status.lower(), simulation_start_year, start_year_rng))
+                pipeline_start_imputed = True
+                imputed_pipeline_start_years += 1
             else:
                 start_year = Year(impute_start_year(str(row.get("iso3")), start_year_rng))
                 vintage_imputed = True
@@ -1194,7 +1232,7 @@ class MasterExcelReader:
                 last_renovation_year=(
                     Year(int(last_renovation_year_val)) if pd.notna(last_renovation_year_val) else None
                 ),
-                age_source="imputed" if vintage_imputed else "exact",
+                age_source="imputed" if pipeline_start_imputed or vintage_imputed else "exact",
                 source_sheet=str(row.get("source_sheet", sheet_name)),
                 source_row=excel_row,
                 validation_warnings=warnings,
@@ -1238,6 +1276,13 @@ class MasterExcelReader:
             logger.info(
                 f"Imputed a random start_year for {imputed_start_years} furnace units with none in the sheet "
                 f"(CHN {IMPUTED_START_YEAR_RANGE_CHN}, elsewhere {IMPUTED_START_YEAR_RANGE_DEFAULT})"
+            )
+        if imputed_pipeline_start_years:
+            logger.info(
+                f"Dated {imputed_pipeline_start_years} announced/construction furnace units with no start_year or "
+                f"one before {simulation_start_year} forward from {simulation_start_year} "
+                f"(construction +0..{CONSTRUCTION_TIME_DEFAULT}, announced +{CONSTRUCTION_TIME_DEFAULT}.."
+                f"{ANNOUNCEMENT_TIME + CONSTRUCTION_TIME_DEFAULT} years)"
             )
         aggregated_constraints_to_return: list[Any] = (
             aggregated_constraints if aggregated_constraints is not None else []

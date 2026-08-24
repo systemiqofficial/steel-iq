@@ -20,7 +20,7 @@ from steelo.simulation_types import TechSettingsMap, get_default_technology_sett
 from steelo.utilities.memory_profiling import MemoryTracker
 
 from .domain import Year, PlantGroup
-from .domain.constants import RANDOM_SEED_DEFAULT
+from .domain.constants import CONSTRUCTION_TIME_DEFAULT, RANDOM_SEED_DEFAULT
 from .service_layer.message_bus import MessageBus
 from .economic_models import EconomicModel, PlantAgentsModel, AllocationModel, GeospatialModel
 from .domain.events import IterationOver
@@ -386,7 +386,9 @@ class SimulationConfig:
     consideration_time: int = (
         3  # Minimum number of years a considered business opportunity needs to be NPV-positive before being announced
     )
-    construction_time: int = 4  # Years it takes to construct a plant after it has been announced
+    construction_time: int = (
+        CONSTRUCTION_TIME_DEFAULT  # Years it takes to construct a plant after it has been announced
+    )
     # probability_of_construction, probability_of_announcement, calculate_npv_sites_share, and
     # geo_config.pick_priority_sites_share are all forced to deterministic values in
     # __post_init__ when probabilistic_agents is False.

@@ -235,3 +235,140 @@ def test_missing_start_year_draw_is_reproducible(undated_furnace_units_excel_pat
     (plants_a, meta_a, _), (plants_b, meta_b, _) = reads
     for iso3 in ("CHN", "IND"):
         assert _drawn_start_years(plants_a, meta_a, iso3) == _drawn_start_years(plants_b, meta_b, iso3)
+
+
+@pytest.fixture
+def pipeline_furnace_units_excel_path(tmp_path):
+    """Sheet with undated and stale-dated announced / construction units next to dated and inactive ones."""
+    path = tmp_path / "pipeline_furnace_units.xlsx"
+    n = 30
+    status = ["construction"] * n + ["announced"] * n + ["announced", "construction", "cancelled", "retired"]
+    start_year = [None] * (2 * n) + [2028, 2023, None, None]
+    rows = len(status)
+    furnace_units = pd.DataFrame(
+        {
+            "plant_id": [f"P{i}" for i in range(rows)],
+            "plant_name": [f"Plant {i}" for i in range(rows)],
+            "iso3": ["IND"] * rows,
+            "region": ["x"] * rows,
+            "geo_unit_or_province": [None] * rows,
+            "latitude": [10.0] * rows,
+            "longitude": [10.0] * rows,
+            "technology": ["EAF"] * rows,
+            "capacity_ttpa": [1000.0] * rows,
+            "status": status,
+            "start_year": start_year,
+            "last_renovation_year": [None] * rows,
+            "soe_status": ["private"] * rows,
+            "power_source": ["grid"] * rows,
+            "parent_gem_id": [""] * rows,
+            "workforce_size": [100] * rows,
+            "source": ["gem_unit"] * rows,
+            "source_sheet": ["Electric arc furnaces"] * rows,
+            "source_row": list(range(2, rows + 2)),
+            "unit_id": [f"U{i}" for i in range(rows)],
+        }
+    )
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        furnace_units.to_excel(writer, sheet_name="Furnace units", index=False)
+    return path
+
+
+def _furnace_groups_by_status(plants):
+    by_status: dict[str, list] = {}
+    for plant in plants:
+        for fg in plant.furnace_groups:
+            by_status.setdefault(fg.status, []).append(fg)
+    return by_status
+
+
+def test_undated_pipeline_units_are_dated_forward_from_the_reference_year(pipeline_furnace_units_excel_path):
+    """Undated construction units start in 2025-2029 (mid-build), undated announced ones in 2029-2030 (a full
+    construction time after a drawn construction start), both spread; the lifetime and renovation date follow
+    the imputed start, so the simulation can switch them on."""
+    reader = MasterExcelReader(excel_path=pipeline_furnace_units_excel_path)
+    plants, metadata, _ = reader.read_plants_from_furnace_units_sheet(
+        dynamic_feedstocks_dict={}, aggregated_constraints=[], simulation_start_year=2025
+    )
+    by_status = _furnace_groups_by_status(plants)
+    undated = {
+        "construction": [fg for fg in by_status["construction"] if metadata[fg.furnace_group_id].source_row != 63],
+        "announced": [fg for fg in by_status["announced"] if metadata[fg.furnace_group_id].source_row != 62],
+    }
+    expected_range = {"construction": (2025, 2029), "announced": (2029, 2030)}
+    for status, fgs in undated.items():
+        lo, hi = expected_range[status]
+        starts = [fg.lifetime.time_frame.start for fg in fgs]
+        assert len(starts) == 30
+        assert all(lo <= y <= hi for y in starts), (status, sorted(starts))
+        assert len(set(starts)) > 1, f"{status} draws should spread across years"
+        for fg in fgs:
+            assert fg.last_renovation_date.year == fg.lifetime.time_frame.start
+            assert fg.lifetime.time_frame.end == fg.lifetime.time_frame.start + 20
+            meta = metadata[fg.furnace_group_id]
+            assert meta.age_source == "imputed"
+            assert meta.commissioning_year == fg.lifetime.time_frame.start, "metadata must anchor the imputed start"
+            assert meta.age_at_reference_year is None
+
+
+def test_dated_pipeline_units_keep_a_future_start_year_but_not_a_past_one(pipeline_furnace_units_excel_path):
+    """An announced unit dated 2028 keeps it; a construction unit dated 2023 (before the reference year) is
+    re-dated into the construction window instead of being stranded with a start year that never arrives."""
+    reader = MasterExcelReader(excel_path=pipeline_furnace_units_excel_path)
+    plants, metadata, _ = reader.read_plants_from_furnace_units_sheet(
+        dynamic_feedstocks_dict={}, aggregated_constraints=[], simulation_start_year=2025
+    )
+    by_row = {metadata[fg.furnace_group_id].source_row: fg for p in plants for fg in p.furnace_groups}
+    future_dated = by_row[62]
+    assert future_dated.status == "announced" and future_dated.lifetime.time_frame.start == 2028
+    assert metadata[future_dated.furnace_group_id].commissioning_year == 2028
+    assert metadata[future_dated.furnace_group_id].age_source == "exact"
+    stale_dated = by_row[63]
+    assert stale_dated.status == "construction" and 2025 <= stale_dated.lifetime.time_frame.start <= 2029
+    assert metadata[stale_dated.furnace_group_id].commissioning_year == stale_dated.lifetime.time_frame.start
+    assert metadata[stale_dated.furnace_group_id].age_source == "imputed"
+
+
+def test_undated_inactive_units_keep_the_vintage_draw(pipeline_furnace_units_excel_path):
+    """Cancelled / retired rows are not pipeline: they get the country vintage band, not a future start."""
+    reader = MasterExcelReader(excel_path=pipeline_furnace_units_excel_path)
+    plants, metadata, _ = reader.read_plants_from_furnace_units_sheet(
+        dynamic_feedstocks_dict={}, aggregated_constraints=[], simulation_start_year=2025
+    )
+    by_row = {metadata[fg.furnace_group_id].source_row: fg for p in plants for fg in p.furnace_groups}
+    for row in (64, 65):
+        fg = by_row[row]
+        assert fg.status in ("cancelled", "retired")
+        assert 2005 <= 2025 - metadata[fg.furnace_group_id].age_at_reference_year <= 2025
+
+
+def test_imputed_pipeline_start_survives_the_repository_round_trip(pipeline_furnace_units_excel_path, tmp_path):
+    """The simulation rebuilds every lifetime from plants_metadata.json, so the imputed start must come back
+    from a PlantJsonRepository load unchanged — otherwise the year loop would switch the units on at once."""
+    from steelo.adapters.dataprocessing.plant_metadata import create_metadata_dict, write_metadata_sidecar
+    from steelo.adapters.repositories.json_repository import PlantJsonRepository
+
+    reader = MasterExcelReader(excel_path=pipeline_furnace_units_excel_path)
+    plants, metadata, _ = reader.read_plants_from_furnace_units_sheet(
+        dynamic_feedstocks_dict={}, aggregated_constraints=[], simulation_start_year=2025
+    )
+    PlantJsonRepository(tmp_path / "plants.json", plant_lifetime=20).add_list(plants)
+    write_metadata_sidecar(
+        create_metadata_dict(
+            furnace_group_metadata=metadata,
+            plant_lifetime_used=20,
+            data_reference_year=2025,
+            master_excel_path=pipeline_furnace_units_excel_path,
+            master_excel_version="test",
+        ),
+        tmp_path,
+    )
+    prepared = {fg.furnace_group_id: fg for p in plants for fg in p.furnace_groups}
+    repo = PlantJsonRepository(tmp_path / "plants.json", plant_lifetime=20, current_simulation_year=2025)
+    loaded = {fg.furnace_group_id: fg for p in repo.list() for fg in p.furnace_groups}
+    assert loaded.keys() == prepared.keys()
+    pipeline = [fg for fg in loaded.values() if fg.status in ("announced", "construction")]
+    assert len(pipeline) == 62
+    for fg in pipeline:
+        assert fg.lifetime.time_frame.start == prepared[fg.furnace_group_id].lifetime.time_frame.start
+    assert sum(fg.lifetime.time_frame.start == 2025 for fg in pipeline) < len(pipeline) / 3
