@@ -20,6 +20,7 @@ from steelo.simulation_types import TechSettingsMap, get_default_technology_sett
 from steelo.utilities.memory_profiling import MemoryTracker
 
 from .domain import Year, PlantGroup
+from .domain.constants import CONSTRUCTION_TIME_DEFAULT, RANDOM_SEED_DEFAULT
 from .service_layer.message_bus import MessageBus
 from .economic_models import EconomicModel, PlantAgentsModel, AllocationModel, GeospatialModel
 from .domain.events import IterationOver
@@ -263,7 +264,7 @@ class GeoConfig:
     )
 
     # === Other ===
-    random_seed: int = 42  # Seed for random number generation to ensure reproducibility
+    random_seed: int = RANDOM_SEED_DEFAULT  # Seed for random number generation to ensure reproducibility
 
 
 @dataclass
@@ -385,7 +386,9 @@ class SimulationConfig:
     consideration_time: int = (
         3  # Minimum number of years a considered business opportunity needs to be NPV-positive before being announced
     )
-    construction_time: int = 4  # Years it takes to construct a plant after it has been announced
+    construction_time: int = (
+        CONSTRUCTION_TIME_DEFAULT  # Years it takes to construct a plant after it has been announced
+    )
     # probability_of_construction, probability_of_announcement, calculate_npv_sites_share, and
     # geo_config.pick_priority_sites_share are all forced to deterministic values in
     # __post_init__ when probabilistic_agents is False.
@@ -447,7 +450,7 @@ class SimulationConfig:
     # === Randomness ===
     # Single seed shared by Plant Agent, Geospatial, and Trade LP modules.
     # Propagated to geo_config.random_seed in __post_init__.
-    random_seed: int = 42
+    random_seed: int = RANDOM_SEED_DEFAULT
 
     # === Other ===
     # Verbosity
