@@ -1,5 +1,7 @@
 import pytest
 import math
+import types
+import highspy
 from geopy.distance import geodesic
 import pyomo.environ as pyo
 
@@ -815,44 +817,112 @@ def test_get_distance_invalid_type_raises_error(location_mock_factory):
         model.get_distance("PC1", "PC2", type="unknown_type")
 
 
-def test_solve_lp_model_logs_highs_diagnostics_and_dumps_lp_on_failure(location_mock_factory, tmp_path, caplog):
-    """
-    A non-optimal solve must log HiGHS's raw model status and iteration counts and
-    write the LP to failure_dump_path, so the failing LP can be reproduced offline.
-    """
+def _build_supply_to_demand_model(location_mock_factory) -> tuple[TradeLPModel, ProcessCenter]:
+    """Smallest deliverable trade LP: iron ore supply -> 5 t steel production -> 5 t steel demand."""
     model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
+    iron_ore = Commodity("iron_ore")
     steel = Commodity("steel")
-    supply_process = Process(name="SteelSupply", type=ProcessType.SUPPLY, bill_of_materials=[])
-    demand_process = Process(name="SteelDemand", type=ProcessType.DEMAND, bill_of_materials=[])
+    bom = BOMElement(
+        name="BOM_Iron2Steel",
+        commodity=iron_ore,
+        output_commodities=[steel],
+        parameters={MaterialParameters.INPUT_RATIO: 1.5},
+    )
+    # Supply and demand processes carry pass-through BOM elements, as in set_up_steel_trade_lp,
+    # so that Process.products and the legal allocations are populated
+    supply_bom = BOMElement(name="iron_ore_supply", commodity=iron_ore, output_commodities=[iron_ore], parameters={})
+    demand_bom = BOMElement(name="steel_demand", commodity=steel, output_commodities=[steel], parameters={})
+    supply_process = Process(name="IronOreSupply", type=ProcessType.SUPPLY, bill_of_materials=[supply_bom])
+    production_process = Process(name="SteelProduction", type=ProcessType.PRODUCTION, bill_of_materials=[bom])
+    demand_process = Process(name="SteelDemand", type=ProcessType.DEMAND, bill_of_materials=[demand_bom])
     pc_supply = ProcessCenter(
         name="PC_Supply",
         process=supply_process,
         capacity=10.0,
         location=location_mock_factory(lat=0, lon=0, iso3="SUP"),
     )
+    pc_prod = ProcessCenter(
+        name="PC_Prod",
+        process=production_process,
+        capacity=5.0,
+        location=location_mock_factory(lat=1, lon=1, iso3="PRO"),
+    )
     pc_demand = ProcessCenter(
         name="PC_Demand",
         process=demand_process,
         capacity=5.0,
-        location=location_mock_factory(lat=1, lon=1, iso3="DEM"),
+        location=location_mock_factory(lat=2, lon=2, iso3="DEM"),
     )
-    model.add_commodities([steel])
-    model.add_processes([supply_process, demand_process])
-    model.add_process_centers([pc_supply, pc_demand])
-    model.add_process_connectors([ProcessConnector(from_process=supply_process, to_process=demand_process)])
+    model.add_commodities([iron_ore, steel])
+    model.add_processes([supply_process, production_process, demand_process])
+    model.add_process_centers([pc_supply, pc_prod, pc_demand])
+    model.add_bom_elements([supply_bom, bom, demand_bom])
+    model.add_process_connectors(
+        [
+            ProcessConnector(from_process=supply_process, to_process=production_process),
+            ProcessConnector(from_process=production_process, to_process=demand_process),
+        ]
+    )
     model.build_lp_model()
+    return model, pc_demand
+
+
+def test_solve_lp_model_logs_highs_diagnostics_and_dumps_lp_on_failure(location_mock_factory, tmp_path, caplog):
+    """
+    A non-optimal solve must log HiGHS's raw model status and iteration counts for the primary
+    solve and every fallback, and write the LP to failure_dump_path once for offline reproduction.
+    """
+    model, pc_demand = _build_supply_to_demand_model(location_mock_factory)
 
     # Demand slack is bounded by the 5 t demand, so requiring 100 t of it makes the LP infeasible
     model.lp_model.force_infeasible = pyo.Constraint(expr=model.lp_model.demand_slack_variable[pc_demand.name] >= 100)
     model.failure_dump_path = tmp_path / "TM" / "trade_lp_failed_2035.mps"
 
-    with caplog.at_level("ERROR"):
+    with caplog.at_level("WARNING"):
         result = model.solve_lp_model()
 
     assert result.solver.termination_condition != pyo.TerminationCondition.optimal
     diagnostics = [r.getMessage() for r in caplog.records if "highs_status=" in r.getMessage()]
-    assert len(diagnostics) == 1
-    assert "highs_status='Infeasible'" in diagnostics[0]
+    assert len(diagnostics) == 1 + len(model.fallback_solvers)
+    assert all("highs_status='Infeasible'" in line for line in diagnostics)
     assert "ipm_iterations=" in diagnostics[0] and "crossover_iterations=" in diagnostics[0]
+    retries = [r.getMessage() for r in caplog.records if "status=retry" in r.getMessage()]
+    assert retries == [
+        f"operation=trade_optimization status=retry solver={s} after=hipo" for s in model.fallback_solvers
+    ]
     assert model.failure_dump_path.exists()
     assert model.failure_dump_path.read_text().startswith("NAME")
+
+
+def test_solve_lp_model_falls_back_to_cold_ipx_when_hipo_errors(location_mock_factory, caplog, monkeypatch):
+    """
+    When the HiPO solve ends in a solver error, the LP is re-solved from scratch with IPX
+    and the model carries on with that optimal solution as if nothing had happened.
+    """
+    model, pc_demand = _build_supply_to_demand_model(location_mock_factory)
+    real_run_solver = TradeLPModel._run_solver
+    attempts: list[str] = []
+
+    def hipo_errors_out(self, solver_name, warm_start, logger):
+        attempts.append(solver_name)
+        if solver_name == "hipo":
+            failed = types.SimpleNamespace(
+                solver=types.SimpleNamespace(
+                    termination_condition=pyo.TerminationCondition.error, status=pyo.SolverStatus.error
+                )
+            )
+            return types.SimpleNamespace(_solver_model=highspy.Highs()), failed
+        return real_run_solver(self, solver_name, warm_start, logger)
+
+    monkeypatch.setattr(TradeLPModel, "_run_solver", hipo_errors_out)
+
+    with caplog.at_level("WARNING"):
+        result = model.solve_lp_model()
+
+    assert attempts == ["hipo", "ipx"]
+    assert result.solver.termination_condition == pyo.TerminationCondition.optimal
+    assert model.solution_status == pyo.SolverStatus.ok
+    assert any("status=retry solver=ipx after=hipo" in r.getMessage() for r in caplog.records)
+    model.extract_solution()
+    delivered = sum(vol for (_, to_pc, _), vol in model.allocations.allocations.items() if to_pc == pc_demand)
+    assert delivered == pytest.approx(5.0, abs=LP_EPSILON)
