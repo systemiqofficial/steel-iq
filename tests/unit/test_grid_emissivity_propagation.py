@@ -2,8 +2,10 @@
 
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
+from steelo.adapters.dataprocessing.excel_reader import read_regional_emissivities
 from steelo.devdata import get_plant
 from steelo.domain.models import Environment, Location, RegionEmissivity, Year
 from steelo.simulation import SimulationConfig
@@ -92,6 +94,47 @@ def test_scenario_mismatch_raises_on_initiate(tmp_path):
 
     with pytest.raises(ValueError, match="No grid emissivities match scenario 'Business As Usual'"):
         env.initiate_grid_emissivity(emissivities=[region("CHN", years={2025: 0.5}, scenario="Net Zero")])
+
+
+def test_provincial_values_flow_from_sheet_to_furnace_groups(tmp_path):
+    """Authored provincial sheet values reach furnace groups in that province end to end."""
+    grid_rows = [
+        {
+            "Vector": "Electricity",
+            "country": country,
+            "country_iso3": iso3,
+            "region": "Asia",
+            "year": 2025,
+            "projection_scenario": "projection_business_as_usual",
+            "ghg_factor_unit": "tCO2/kWh",
+            "ghg_factor_scope_2": value,
+        }
+        for iso3, country, value in [
+            ("CHN", "China", 0.5),
+            ("CHN:CN-AH", "Anhui", 0.3),
+            ("CHN:CN-HE", "Hebei", 0.4),
+        ]
+    ]
+    gas_rows = [
+        {"Vector": vector, "country": "China", "country_iso3": "CHN", "year": 2020, "ghg_factor_scope_1": 1.0}
+        for vector in ("Coking coal", "Natural gas")
+    ]
+    master = tmp_path / "master.xlsx"
+    with pd.ExcelWriter(master) as writer:
+        pd.DataFrame(grid_rows).to_excel(writer, sheet_name="Power grid emissivity", index=False)
+        pd.DataFrame(gas_rows).to_excel(writer, sheet_name="Met coal & gas emissions", index=False)
+
+    env = make_env(tmp_path)
+    env.initiate_grid_emissivity(
+        emissivities=read_regional_emissivities(master, "Power grid emissivity", "Met coal & gas emissions")
+    )
+    anhui, hebei, national = chn_plant(geo_unit="CN-AH"), chn_plant(geo_unit="CN-HE"), chn_plant()
+
+    env.propagate_grid_emissivity_to_furnace_groups(plants=[anhui, hebei, national])
+
+    assert all(fg.grid_emissivity == pytest.approx(0.3) for fg in anhui.furnace_groups)
+    assert all(fg.grid_emissivity == pytest.approx(0.4) for fg in hebei.furnace_groups)
+    assert all(fg.grid_emissivity == pytest.approx(0.5) for fg in national.furnace_groups)
 
 
 def test_empty_emissivities_skip_propagation(tmp_path):

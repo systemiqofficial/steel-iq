@@ -1400,6 +1400,11 @@ def read_regional_emissivities(excel_path: Path, grid_sheet_name: str, gas_sheet
     )
 
     # 2) Group gas coke emissions by vector name (only one year data) and no projections
+    # TODO FOR BACKLOG: coke/gas emissivity is scaffolding — it feeds env.fossil_emissivity,
+    # which nothing consumes. Known data bugs to fix before wiring it in: the sheet authors only
+    # ghg_factor_scope_1, so the .sum() below fabricates 0.0 for the all-NaN scope_2/scope_3_rest
+    # columns; the ghg_factor_scope3_methane_* columns miss the "ghg_factor_scope_" prefix and are
+    # silently dropped; units differ per vector (coal tCO2e/t vs gas tCO2e/GJ) and are not recorded.
     carbon_intensity_columns = [
         col for col in gas_coke_emissions_df.columns if col.lower().startswith("ghg_factor_scope_")
     ]

@@ -7848,6 +7848,8 @@ class Environment:
             Updates the `fossil_emissivity` dictionary to map geo_keys (bare ISO3 or
             sub-national ``iso3:code``) to their respective emissivities.
         """
+        # TODO FOR BACKLOG: fossil_emissivity is never consumed — scaffolding for a future
+        # coke/gas emissions feature; see the data bugs noted in read_regional_emissivities.
         self.fossil_emissivity = {
             ge.geo_key: {"Coke": ge.coke_emissivity, "Natural gas": ge.gas_emissivity}
             for ge in emissivities
