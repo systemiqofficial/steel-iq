@@ -40,6 +40,12 @@ def _git_sha() -> str | None:
 
 def provenance(path_config: PathConfig) -> dict[str, Any]:
     """Everything that must stay fixed within a run."""
+    from boa.inputs.profiles import detect_weather_year  # lazy: config must stay importable without the inputs package
+
+    try:
+        weather_year = detect_weather_year(path_config)
+    except (FileNotFoundError, ValueError):
+        weather_year = None
     return {
         "input_set": path_config.input_set,
         "cost_set": path_config.cost_set,
@@ -50,7 +56,7 @@ def provenance(path_config: PathConfig) -> dict[str, Any]:
             "min_survivor_fraction": settings.MIN_SURVIVOR_FRACTION,
             "overscale_sampling_means": settings.OVERSCALE_SAMPLING_MEANS,
             "lifetimes": settings.LIFETIMES,
-            "era5_data_year": settings.ERA5_DATA_YEAR,
+            "era5_data_year": weather_year,
         },
     }
 

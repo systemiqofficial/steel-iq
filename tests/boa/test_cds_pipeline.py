@@ -32,7 +32,7 @@ from boa.config.settings import (
     ERA5_DATA_YEAR,
     REGION_COORDS,
 )
-from boa.inputs.profiles import _filename_stem
+from boa.inputs.profiles import dataset_path
 from boa.store_schema import max_cap_store_stem, profile_store_stem
 
 
@@ -50,9 +50,13 @@ def test_zip_and_extract_dir_names_agree():
     assert cf_extract_dir_name("solar", 2024) == "cds_solar_cf_ic6hh135_0_25_degree_2024"
 
 
-def test_store_stem_parity_with_profiles():
-    assert _filename_stem("profile", "DE") == profile_store_stem("DE", ERA5_DATA_YEAR)
-    assert _filename_stem("max_cap", "EU") == max_cap_store_stem("EU", ERA5_DATA_YEAR)
+def test_store_stem_parity_with_profiles(tmp_config):
+    assert dataset_path("profile", "DE", tmp_config, ERA5_DATA_YEAR).name == (
+        profile_store_stem("DE", ERA5_DATA_YEAR) + ".zarr"
+    )
+    assert dataset_path("max_cap", "EU", tmp_config, ERA5_DATA_YEAR).name == (
+        max_cap_store_stem("EU", ERA5_DATA_YEAR) + ".zarr"
+    )
 
 
 # ---- CDS -> profile conversion ---------------------------------------------
@@ -327,7 +331,7 @@ def test_missing_live_store_raises_actionable_error(tmp_config, monkeypatch):
     monkeypatch.setenv("PROFILE_DATA_SOURCE", "local_zarr")
     from boa.inputs.profiles import open_regional_dataset
 
-    with pytest.raises(FileNotFoundError, match="boa_cds install"):
+    with pytest.raises(FileNotFoundError, match="boa-cds-prepare"):
         open_regional_dataset("profile", "EU", tmp_config)
 
 

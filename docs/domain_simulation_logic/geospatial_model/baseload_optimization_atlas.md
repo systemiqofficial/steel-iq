@@ -15,50 +15,58 @@ Ensure all required data files are in place:
 - Master input Excel file - is generated automatically when running the main pipeline, but can also be added manually
 
 ### 2. Running the simulation
-The simulation can be run using the `run_boa` command (after installing with `uv sync`):
+The simulation is run with the `boa-run` command (after installing with `uv sync`). Runs
+are always GLOBAL (all 9 regions); the one exception is the single-point mode:
 
 ```bash
-# Run with default parameters (GLOBAL, 2025-2050, 500 MW demand)
-run_boa
+# Full run with default parameters (2025-2050, 500 MW demand)
+boa-run
 
-# Run for specific region with custom parameters
-run_boa --region EU --baseload-demand 1000 --coverage 0.95
+# Full run with custom parameters
+boa-run --baseload-demand 1000 --coverage 0.95
 
-# Run single year simulation
-run_boa --start-year 2030 --end-year 2030
+# Build only the year-independent design caches
+boa-run build-cache --samples 2000
+
+# Re-derive optimal-solution NetCDFs from pre-built caches
+boa-run query --start-year 2030 --end-year 2030
+
+# Single-point run (region auto-derived from coordinates)
+boa-run point --lat 52.5 --lon 13.4
 
 # See all available options
-run_boa --help
-```
-
-Alternatively, you can run the script directly:
-```bash
-python src/baseload_optimisation_atlas/boa_run_simulation.py
+boa-run --help
 ```
 
 ### 3. Available parameters
 
-**Temporal Parameters:**
-- `--start-year`: Starting year for simulation (default: 2025)
-- `--end-year`: Ending year for simulation (default: 2050)
+**Temporal Parameters** (full run, `query`, `point`):
+- `--start-year`: Starting investment year (default: 2025)
+- `--end-year`: Ending investment year (default: 2050)
 - `--frequency`: Years between simulations (default: 5)
 
-**Spatial Parameters:**
-- `--region`: Region to simulate - GLOBAL, EU, NORTH_ASIA, SOUTH_ASIA, MENA, AFRICA, ALASKA, NORTH_AMERICA, SOUTH_AMERICA, INDO_AUS (default: GLOBAL)
-
-**Technical Parameters:**
+**Scenario Parameters:**
 - `--baseload-demand`: Baseload demand in MW (default: 500.0, typical range: 150-1000)
 - `--coverage`: Required demand coverage fraction, e.g., 0.85 means 85% coverage (default: 0.85)
 - `--samples`: Number of design samples per grid point (default: 1000)
 
+**Data Selection:**
+- `--inputs`: Input set under the data root's `inputs/` (profile + max-capacity stores and
+  design cache; the weather year is read off the store filenames)
+- `--costs`: Cost set under `costs/` (workbook + per-year cost cache)
+- `--run`: Run name for outputs (default: `<inputs>__<costs>`)
+
 **Optional Parameters:**
+- `--workers`: Threads for parallel grid-point optimisation (integer or preset small/normal/fast)
 - `--verbose`: Enable detailed logging output
-- `--dry-run`: Print configuration without running simulation
+- `--no-plots`: Skip map plotting during the run
+- `--dry-run` (full run only): Resolve paths and run the preflight check without simulating
+- `--force` (`build-cache` and `query` only): Rebuild the targeted artifacts even if present
 
 ### 4. Output
 The simulation will:
 - Run the baseload power simulation for the selected years
-- Process all regions (or selected region) in parallel
+- Process all regions in parallel
 - Generate optimal renewable energy system designs for each grid point
 - Save results as NetCDF files in `outputs/GEO/baseload_power_simulation/p{X}/`
 - Create visualization plots in `outputs/plots/geo_layers/baseload_power_simulation/`

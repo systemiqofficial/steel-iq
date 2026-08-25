@@ -1,8 +1,34 @@
-# boa
+# BOA: Baseload Optimisation Atlas
 
 Baseload Optimisation Atlas: optimal solar/wind/battery systems for a fixed baseload
 demand, world-wide. Model core in `model/`, model-input loading in `inputs/`, geography in
 `geo/`, input-data pipeline in `cds/`, assumptions in `config/`.
+
+## End-to-end pipeline
+
+The full pipeline is three commands — costs, weather stores, run — each detailed in its
+own section below:
+
+```bash
+# 1. Cost side: static geo data + cost workbook          -> costs/default/
+boa-data-prepare
+
+# 2. Weather side: profile + max-capacity stores          -> inputs/cds-2024/
+#    (stops and names the boa-cds-download command if the raw data is missing)
+boa-cds-prepare --weather_year 2024
+
+# 3. Sanity-check the pairing, then run at production settings
+boa-run --inputs cds-2024 --baseload-demand 1000 --coverage 0.95 --samples 2000 --dry-run
+boa-run --inputs cds-2024 --baseload-demand 1000 --coverage 0.95 --samples 2000 --no-plots
+```
+
+Steps 1 and 2 are idempotent and independent — rerun either at any time; existing
+artefacts are reused. The run defaults (`--start-year 2025 --end-year 2050 --frequency 5`,
+`--workers fast`) suit a production sweep; drop to `--samples 1000` and a single year
+(`--start-year 2030 --end-year 2030`) for a faster exploratory run. To change only cost
+assumptions afterwards, skip the rebuild entirely: `boa-data-prepare --input-file
+edited.xlsx --scenario rev2` then `boa-run query --inputs cds-2024 --costs rev2 ...` reuses
+the design caches and re-derives the NetCDFs in minutes per year.
 
 ## Preparing input data
 
@@ -48,7 +74,7 @@ data/
 inputs/<set>/                         e.g. cds-2024, tagged by weather year
 ├── cds-zarr/                         live profile + max-capacity stores the model reads
 ├── staging/                          freshly built stores (transient; emptied on install)
-└── cache_designs/                    design cache, built by run_boa
+└── cache_designs/                    design cache, built by boa-run
 costs/<scenario>/
 ├── boa_cost_data.xlsx    the four extracted sheets (RES CAPEX projections, RES OPEX,
 │                         Cost of capital, Country mapping)
@@ -56,7 +82,7 @@ costs/<scenario>/
 └── cache_costs/          cost_of_renewables_<year>_investment_year.nc, one per year
 ```
 
-Run against a scenario with `run_boa ... --costs <scenario>`.
+Run against a scenario with `boa-run ... --costs <scenario>`.
 
 ## CDS input stores
 
@@ -79,6 +105,43 @@ in `data/cds/` (~6 GB per year); the convert stage builds a shared global interm
 `data/cds/global_zarr/` (~12 GB per year, deletable — it rebuilds in about a minute), after
 which each region converts in seconds. Max-capacity stores are geometry-only (pixel area x
 density; no land-use term for now).
+
+Already have the raw data (from another machine or an earlier checkout)? Drop the
+*extracted* per-year directories — 12 monthly NetCDFs each — into `data/cds/` under the
+boa data root (`$BOA_DATA_ROOT` → `$STEELO_HOME/boa` → `~/.steelo/boa`) and prepare will
+use them without downloading:
+
+```
+data/cds/
+├── cds_solar_cf_ic6hh135_0_25_degree_2024/        *.nc, one per month
+└── cds_wind_onshore_cf_ic6hh135_0_25_degree_2024/ *.nc, one per month
+```
+
+A zip dropped on its own is not enough: the downloader treats an existing zip as
+already-handled and never extracts it, so unzip into the sibling directory named after the
+zip stem. `boa-cds-download` also skips any (technology, year) whose extracted directory
+already exists, so partial reuse works too.
+
+## Running the model
+
+`boa-run` is always GLOBAL (all 9 regions); the one exception is the single-point mode:
+
+```bash
+boa-run --baseload-demand 1000 --coverage 0.95   # full run: build caches if missing, query every year
+boa-run build-cache --samples 2000               # year-independent design caches only
+boa-run query --start-year 2030 --end-year 2030  # NetCDFs from pre-built caches (--force to re-derive)
+boa-run point --lat 52.5 --lon 13.4              # single point; region auto-derived
+boa-run --inputs cds-2023 --costs rev3 --dry-run # resolve paths + preflight, run nothing
+```
+
+`--inputs` alone identifies the weather side (stores + design cache; the weather year is
+read off the store filenames, never passed), `--costs` the cost side (xlsx + per-year cost
+cache), and `--run` names the output pairing (default `<inputs>__<costs>`). A preflight
+check fails fast with the exact `boa-cds-prepare` / `boa-data-prepare` command when the
+selected sets are incomplete. The full run never rebuilds an existing design cache; use
+`build-cache --force` or `query --force` for targeted rebuilds. Expect hours for a full
+multi-year GLOBAL run at production settings (`--samples 2000`); a `query` against warm
+caches is minutes per year.
 
 ## Sources for model assumptions
 
@@ -108,3 +171,13 @@ with older copies in `steelo` (`data/recreation_functions.build_geo_hierarchy`,
 `data/geo_hierarchy_overrides.py`, `adapters/dataprocessing/preprocessing/iso3_finder.py`).
 The `boa` versions are the newer ones; the intent is for steelo to import them from here so
 the repo carries a single province taxonomy and ISO3 lookup.
+
+## TODO
+
+- CLI command to ingest pre-downloaded CDS capacity-factor data (today the extracted
+  directories must be dropped into `data/cds/` by hand, see above).
+- Record the CDS data version in the store metadata, and rebuild/add newly processed
+  stores when the version differs for the same weather year.
+- Multi-year weather-data runs (an input set currently holds exactly one weather year).
+- Model: battery optimisation improvements.
+- Options to use the new BOA outputs in the steel-iq simulation.
