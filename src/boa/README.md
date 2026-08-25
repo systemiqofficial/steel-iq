@@ -43,7 +43,12 @@ data/
 ├── ne_50m_admin_0_map_subunits/      NE 1:50m shapefile (source of the iso3 grid)
 ├── ne_10m_admin_1_states_provinces/  NE 1:10m admin-1 shapefile (sub-national cost keys)
 ├── lsm_025_deg.nc                    ERA5 0.25 deg land-sea mask
-└── iso3_grid.nc                      per-pixel ISO3 grid, built locally
+├── iso3_grid.nc                      per-pixel ISO3 grid, built locally
+└── cds/                              raw CDS NetCDFs (+ global_zarr/ build cache)
+inputs/<set>/                         e.g. cds-2024, tagged by weather year
+├── cds-zarr/                         live profile + max-capacity stores the model reads
+├── staging/                          freshly built stores (transient; emptied on install)
+└── cache_designs/                    design cache, built by run_boa
 costs/<scenario>/
 ├── boa_cost_data.xlsx    the four extracted sheets (RES CAPEX projections, RES OPEX,
 │                         Cost of capital, Country mapping)
@@ -52,6 +57,28 @@ costs/<scenario>/
 ```
 
 Run against a scenario with `run_boa ... --costs <scenario>`.
+
+## CDS input stores
+
+`boa-cds-prepare` builds the profile + max-capacity Zarr stores for one input set from raw
+CDS NetCDFs (dataset sis-energy-global-reanalysis) and installs them into
+`inputs/<set>/cds-zarr/`, the live dir the model reads:
+
+```bash
+boa-cds-prepare --weather_year 2024            # build + install what is missing -> inputs/cds-2024/
+boa-cds-prepare --weather_year 2024 --force    # rebuild everything
+boa-cds-download --year 2025                   # fetch raw NetCDFs for another year
+```
+
+The input set is tagged automatically as `cds-<weather_year>`; pass `--inputs` only to
+override. Re-running is idempotent: regions whose stores already exist in the live dir are
+reused; `--force` rebuilds them. If the raw files for the requested year are missing, prepare stops
+and names the `boa-cds-download` command to run (which needs a CDS account, `~/.cdsapirc`
+with the dataset licence accepted, and `uv sync --extra cds` for the client). Raw files land
+in `data/cds/` (~6 GB per year); the convert stage builds a shared global intermediate at
+`data/cds/global_zarr/` (~12 GB per year, deletable — it rebuilds in about a minute), after
+which each region converts in seconds. Max-capacity stores are geometry-only (pixel area x
+density; no land-use term for now).
 
 ## Sources for model assumptions
 

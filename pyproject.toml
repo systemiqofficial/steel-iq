@@ -50,6 +50,13 @@ dependencies = [
     # BOA (src/boa)
     "zarr>=3.0.0",
 ]
+
+[project.optional-dependencies]
+# Kept optional so CI skips the CDS client; lazy-imported by boa.cds.download
+cds = [
+    "cdsapi>=0.7.4",  # Copernicus Climate Data Store client (boa-cds-download)
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -96,6 +103,8 @@ show_plants_on_map = "steelo.entrypoints.cli:show_plants_on_map"
 show_cost_of_x_on_map = "steelo.entrypoints.cli:show_cost_of_x_on_map"
 run_simulation = "steelo.entrypoints.cli:run_full_simulation"
 run_boa = "boa.cli.run_simulation:main"
+boa-cds-prepare = "boa.cli.run_cds:prepare"
+boa-cds-download = "boa.cli.run_cds:download"
 llm-content = "steelo.entrypoints.developer_tools:llm_content"
 steelo-data-download = "steelo.entrypoints.data_cli:steelo_data_download"
 steelo-data-list = "steelo.entrypoints.data_cli:steelo_data_list"
