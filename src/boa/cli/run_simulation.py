@@ -1,12 +1,29 @@
 #!/usr/bin/env python
 """
-Baseload Optimisation Atlas (BOA) Simulation Runner
+Baseload Optimisation Atlas (BOA) simulation runner: the `boa-run` console script.
 
-This script runs the baseload power simulation to find optimal renewable energy
-configurations (solar, wind, battery) for steel plants across different regions.
+Finds optimal renewable energy configurations (solar, wind, battery) to meet a
+fixed baseload demand while minimising LCOE. Runs are always GLOBAL (all 9
+regions); the one exception is the single-point mode.
 
-The simulation optimizes the sizing of renewable energy installations to meet
-baseload demand while minimizing the Levelized Cost of Electricity (LCOE).
+Subcommands:
+    boa-run                  full simulation: build design caches if missing, then query every year
+    boa-run build-cache      year-independent design caches only (all regions)
+    boa-run query            optimal-solution NetCDFs from pre-built caches (all regions, all years)
+    boa-run point            single-point run at --lat/--lon (region auto-derived)
+
+The weather year is never passed in: it is read off the profile-store filenames
+of the selected input set (`--inputs`), so the stores are the single source of
+truth. Input data is prepared separately — `boa-cds-prepare` for the profile +
+max-capacity stores, `boa-data-prepare` for the cost workbook — and a preflight
+check points at the right command when something is missing.
+
+Examples:
+    boa-run --baseload-demand 1000 --coverage 0.95
+    boa-run --inputs cds-2023 --costs xlsx-rev3 --dry-run
+    boa-run build-cache --samples 2000 --workers fast
+    boa-run query --start-year 2030 --end-year 2030 --force
+    boa-run point --lat 52.5 --lon 13.4
 """
 
 import argparse
@@ -22,12 +39,15 @@ from boa.config.settings import REGION_COORDS
 from boa.model.global_extension import (
     build_design_cache_for_region,
     combine_regional_datasets_into_global_dataset,
-    execute_baseload_power_simulation,
     query_design_cache_for_region,
+)
+from boa.model.diagnostics import (
+    plot_global_optimum_baseload_power_simulation_map,
+    plot_regional_optimum_baseload_power_simulation_map,
 )
 from boa.inputs.costs import process_global_baseload_simulation_costs
 from boa.config import run_manifest
-from boa.inputs.profiles import open_regional_dataset
+from boa.inputs.profiles import DataKind, dataset_path, detect_weather_year, open_regional_dataset
 from boa.model.single_point_run import execute_single_point_baseload_power_simulation
 from boa.geo.iso3_finder import (
     load_subregion_polygons,
@@ -35,6 +55,10 @@ from boa.geo.iso3_finder import (
     validate_subregion_keys,
 )
 from boa.conversions import coverage_to_percentile
+
+# Anchor year for the cost-set sanity check before a cache build; any year works
+# since the build itself never reads costs (cost_keys are derived per query).
+COST_ANCHOR_YEAR = 2025
 
 
 def parse_workers(value: str) -> int:
@@ -69,6 +93,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logging.getLogger("distributed").setLevel(logging.WARNING)
 
 
+class _HelpFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
+    """Auto-append each argument's default to its help text while preserving the raw,
+    pre-formatted description block (examples, line breaks)."""
+
+    pass
+
+
 def add_data_args(parser: argparse.ArgumentParser) -> None:
     """``--inputs/--costs/--run`` select which provenance slots a command reads and writes."""
     group = parser.add_argument_group("Data Selection")
@@ -85,101 +116,38 @@ def add_data_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def resolve_paths(args: argparse.Namespace, command: str, argv: list[str]) -> PathConfig:
-    """Build the PathConfig for the selected sets and record this invocation in run.json."""
-    path_config = PathConfig.from_auto_detect(input_set=args.inputs, cost_set=args.costs, run=args.run)
-    logging.info(f"Data root: {path_config.root}")
-    logging.info(f"Inputs: {path_config.input_set}; costs: {path_config.cost_set}; run: {path_config.run}")
-    run_manifest.record_invocation(path_config, command, argv)
-    return path_config
-
-
-class _HelpFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
-    """Auto-append each argument's default to its help text while preserving the raw,
-    pre-formatted description block (examples, line breaks)."""
-
-    pass
-
-
-def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
-    """
-    Parse command-line arguments for the baseload power simulation.
-
-    Returns:
-        Parsed command-line arguments with simulation parameters.
-    """
-    parser = argparse.ArgumentParser(
-        description="""
-        Baseload Optimisation Atlas (BOA) - Find optimal renewable energy configurations
-        for steel plants to meet baseload demand while minimizing LCOE.
-        
-        Example usage:
-            # Run global simulation for 2025-2050 with default parameters
-            python boa_run_simulation.py
-            
-            # Run for specific region with custom demand
-            python boa_run_simulation.py --region EU --baseload-demand 1000
-            
-            # Run single year with high coverage requirement
-            python boa_run_simulation.py --start-year 2030 --end-year 2030 --coverage 0.95
-
-            # Query a different cost set against the same CDS inputs
-            run_boa query --inputs cds-2024 --costs xlsx-rev3
-        """,
-        formatter_class=_HelpFormatter,
-    )
-
-    # Temporal parameters
-    temporal_group = parser.add_argument_group("Temporal Parameters")
-    temporal_group.add_argument("--start-year", type=int, default=2025, help="Starting year for simulation")
-    temporal_group.add_argument("--end-year", type=int, default=2050, help="Ending year for simulation")
-    temporal_group.add_argument("--frequency", type=int, default=5, help="Frequency in years between simulations")
-
-    # Spatial parameters
-    ## Required for global and regional runs
-    spatial_group = parser.add_argument_group("Spatial Parameters")
-    spatial_group.add_argument(
-        "--region",
-        type=str,
-        default="GLOBAL",
-        choices=["GLOBAL"] + list(REGION_COORDS.keys()),
-        help="Region to simulate. Use GLOBAL to run all regions.",
-    )
-    ## Required for single-point runs
-    spatial_group.add_argument(
-        "--lat",
-        type=float,
-        default=None,
-        help="Latitude for specific location simulation.",
-    )
-    spatial_group.add_argument(
-        "--lon",
-        type=float,
-        default=None,
-        help="Longitude for specific location simulation.",
-    )
-
-    # Technical parameters
-    technical_group = parser.add_argument_group("Technical Parameters")
-    technical_group.add_argument(
+def add_scenario_args(parser: argparse.ArgumentParser) -> None:
+    """Scenario parameters; together with the input set they identify the design cache."""
+    group = parser.add_argument_group("Scenario Parameters")
+    group.add_argument(
         "--baseload-demand",
         type=float,
         default=500.0,
         help="Baseload demand in MW. Typical range: 150-1000 MW",
     )
-    technical_group.add_argument(
+    group.add_argument(
         "--coverage",
         type=float,
         default=0.85,
         help="Required demand coverage fraction (0-1). E.g., 0.85 means RE must cover demand 85%% of the time",
     )
-    technical_group.add_argument(
+    group.add_argument(
         "--samples",
         type=int,
         default=1000,
         help="Number of random designs to sample. Higher values increase accuracy but also runtime",
     )
-    technical_group.add_argument(
+
+
+def add_temporal_args(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group("Temporal Parameters")
+    group.add_argument("--start-year", type=int, default=2025, help="Starting investment year")
+    group.add_argument("--end-year", type=int, default=2050, help="Ending investment year")
+    group.add_argument("--frequency", type=int, default=5, help="Frequency in years between simulations")
+
+
+def add_workers_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
         "--workers",
         type=parse_workers,
         default="fast",
@@ -187,74 +155,22 @@ def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "(small ~25%% of cores, normal ~50%%, fast cpu_count-2).",
     )
 
-    # Optional parameters
-    optional_group = parser.add_argument_group("Optional Parameters")
-    optional_group.add_argument("--verbose", action="store_true", help="Enable verbose logging output")
-    optional_group.add_argument("--dry-run", action="store_true", help="Print configuration without running simulation")
-    optional_group.add_argument(
-        "--no-plots",
-        action="store_true",
-        help="Skip per-region and global map plotting during the run (saves time for long batch runs; plots can be regenerated later from saved NetCDFs)",
-    )
-    optional_group.add_argument(
-        "--force",
-        action="store_true",
-        help="Re-derive every artifact (design cache, regional/GLOBAL NetCDFs) "
-        "even if it already exists on disk. Default is "
-        "skip-if-exists: cached artifacts are reused, making interrupted "
-        "runs resumable.",
-    )
 
-    add_data_args(parser)
-
-    return parser.parse_args(argv)
-
-
-def validate_arguments(args: argparse.Namespace) -> None:
-    """
-    Validate command-line arguments for logical consistency.
-
-    Args:
-        args: Parsed command-line arguments
-
-    Raises:
-        ValueError: If arguments are invalid or inconsistent
-    """
-    # Validate general arguments (all runs)
-    if args.start_year > args.end_year:
-        raise ValueError(f"Start year ({args.start_year}) must be <= end year ({args.end_year})")
-
-    if not isinstance(args.frequency, int) or args.frequency <= 0:
-        raise ValueError(f"Frequency must be a positive integer, got {args.frequency}")
-
+def validate_scenario_args(args: argparse.Namespace) -> None:
+    """Raise ValueError on logically inconsistent parameters."""
     if not 0 < args.coverage <= 1:
         raise ValueError(f"Coverage must be between 0 and 1, got {args.coverage}")
-
     if args.baseload_demand <= 0:
         raise ValueError(f"Baseload demand must be positive, got {args.baseload_demand}")
-
-    if not isinstance(args.samples, int) or args.samples <= 0:
+    if args.samples <= 0:
         raise ValueError(f"Number of samples must be a positive integer, got {args.samples}")
 
-    # Validate lat/lon arguments (single run)
-    if (args.lat is None) != (args.lon is None):
-        raise ValueError("Both --lat and --lon must be provided together, or neither")
 
-    if args.lat is not None:
-        if not -90 <= args.lat <= 90:
-            raise ValueError(f"Latitude must be between -90 and 90, got {args.lat}")
-
-    if args.lon is not None:
-        if not -180 <= args.lon <= 180:
-            raise ValueError(f"Longitude must be between -180 and 180, got {args.lon}")
-
-    # Don't allow both region and lat/lon to be specified explicitly
-    if args.lat is not None and args.lon is not None and args.region != "GLOBAL":
-        raise ValueError(
-            f"Cannot specify both --region ({args.region}) and --lat/--lon ({args.lat}, {args.lon}). "
-            f"Please use either --region for regional simulation OR --lat/--lon for single-point simulation "
-            f"(region will be auto-derived from coordinates)."
-        )
+def validate_temporal_args(args: argparse.Namespace) -> None:
+    if args.start_year > args.end_year:
+        raise ValueError(f"Start year ({args.start_year}) must be <= end year ({args.end_year})")
+    if args.frequency <= 0:
+        raise ValueError(f"Frequency must be a positive integer, got {args.frequency}")
 
 
 def get_simulation_years(start_year: int, end_year: int, frequency: int) -> List[int]:
@@ -278,296 +194,397 @@ def get_simulation_years(start_year: int, end_year: int, frequency: int) -> List
     return years
 
 
-def main_run(argv: list[str] | None = None):
+def build_path_config(args: argparse.Namespace) -> PathConfig:
+    """Resolve the PathConfig for the selected sets and log where everything lives."""
+    path_config = PathConfig.from_auto_detect(input_set=args.inputs, cost_set=args.costs, run=args.run)
+    logging.info(f"Data root: {path_config.root}")
+    logging.info(f"Inputs: {path_config.input_set}; costs: {path_config.cost_set}; run: {path_config.run}")
+    return path_config
+
+
+def preflight(path_config: PathConfig, require_all_stores: bool = True) -> int:
     """
-    Default `run` entry point: full build-if-missing + query for each requested
-    year. Same UX as the pre-cache CLI; the design cache speedup is transparent
-    to callers.
+    Fail fast, before any compute, if the selected sets are incomplete.
+
+    Returns the weather year detected from the input set's profile stores.
+    Raises FileNotFoundError/ValueError with the exact preparation command to run.
     """
-    # Parse and validate arguments
-    args = parse_arguments(argv)
-
-    try:
-        validate_arguments(args)
-    except ValueError as e:
-        logging.error(f"Invalid arguments: {e}")
-        return 1
-
-    # Set logging level
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-
-    # Calculate coverage percentile (p = percentage of time NOT covered)
-    p = coverage_to_percentile(args.coverage)
-
-    # Get simulation years
-    years = get_simulation_years(args.start_year, args.end_year, args.frequency)
-
-    # Print configuration
-    logging.info("=" * 60)
-    logging.info("Baseload Optimisation Atlas (BOA) Configuration")
-    logging.info("=" * 60)
-    if args.lat is not None and args.lon is not None:
-        logging.info("Mode: Single-point simulation")
-        logging.info(f"Location: Lat={args.lat}, Lon={args.lon}")
-        logging.info("Region: Auto-derived from coordinates")
-    else:
-        logging.info("Mode: Regional simulation")
-        logging.info(f"Region: {args.region}")
-    logging.info(f"Years to simulate: {years}")
-    logging.info(f"Baseload demand: {args.baseload_demand} MW")
-    logging.info(f"Coverage requirement: {args.coverage * 100:.1f}% (p={p})")
-    logging.info(f"Number of samples: {args.samples}")
-    logging.info(f"Worker threads: {args.workers}")
-    is_single_point = args.lat is not None and args.lon is not None
-    logging.info(f"Generate plots: {not args.no_plots}")
-    logging.info("=" * 60)
-
-    if args.dry_run:
-        logging.info("Dry run - exiting without running simulation")
-        return 0
-
-    path_config = resolve_paths(args, "run", list(argv or sys.argv[1:]))
-
-    # Run simulations and collect results
-    results = {}
-    for year in years:
-        logging.info(f"\nStarting simulation for year {year}")
-        try:
-            if is_single_point:
-                # Single-location simulation
-                logging.info(f"Running single-location simulation at ({args.lat}, {args.lon})")
-                optimal_sol = execute_single_point_baseload_power_simulation(
-                    path_config=path_config,
-                    year=year,
-                    lat=args.lat,
-                    lon=args.lon,
-                    baseload_demand=args.baseload_demand,
-                    p=p,
-                    n=args.samples,
-                )
-                results[year] = optimal_sol
-            else:
-                # Regional simulation (default)
-                logging.info(f"Running regional simulation for region: {args.region}")
-                optimal_sol = execute_baseload_power_simulation(
-                    path_config=path_config,
-                    year=year,
-                    region=args.region,
-                    baseload_demand=args.baseload_demand,
-                    p=p,
-                    n=args.samples,
-                    generate_plots=not args.no_plots,
-                    n_workers=args.workers,
-                    force=args.force,
-                )
-                results[year] = optimal_sol
-            logging.info(f"Completed simulation for year {year}")
-        except Exception as e:
-            logging.error(f"Failed to run simulation for year {year}: {e}")
-            if args.verbose:
-                logging.exception("Detailed error:")
-            return None
-
-    logging.info("\nAll simulations completed successfully!")
-    return results
+    weather_year = detect_weather_year(path_config)
+    if require_all_stores:
+        kinds: tuple[DataKind, ...] = ("profile", "max_cap")
+        missing = [
+            (kind, region)
+            for region in REGION_COORDS
+            for kind in kinds
+            if not dataset_path(kind, region, path_config, weather_year).exists()
+        ]
+        if missing:
+            regions = sorted({region for _, region in missing})
+            raise FileNotFoundError(
+                f"Input set '{path_config.input_set}' is missing {len(missing)} store(s) "
+                f"for regions {regions} (weather year {weather_year}) — build them with "
+                f"`boa-cds-prepare --weather_year {weather_year} --inputs {path_config.input_set}`."
+            )
+    if not path_config.input_data_path.exists():
+        raise FileNotFoundError(
+            f"Cost workbook {path_config.input_data_path} not found — build the cost set with "
+            f"`boa-data-prepare --scenario {path_config.cost_set}`."
+        )
+    logging.info(f"Preflight OK: weather year {weather_year}, cost set '{path_config.cost_set}'.")
+    return weather_year
 
 
-def _resolve_regions(region_arg: str) -> List[str]:
-    """Expand GLOBAL → all 9 regions; otherwise return [region_arg]."""
-    if region_arg == "GLOBAL":
-        return list(REGION_COORDS.keys())
-    return [region_arg]
-
-
-def main_build_cache(argv: list[str]) -> int | None:
-    """
-    `build-cache` subcommand: build the year-independent design cache for a region
-    (or all regions if --region GLOBAL). No NetCDF output; only the per-region Zarr
-    store is written. Idempotent — existing caches at the hashed path are skipped.
-    """
-    p = argparse.ArgumentParser(
-        prog="boa.cli.run_simulation build-cache",
-        description="Build the design cache(s) without producing optimal-solution NetCDFs.",
-        formatter_class=_HelpFormatter,
-    )
-    p.add_argument(
-        "--region",
-        type=str,
-        default="GLOBAL",
-        choices=["GLOBAL"] + list(REGION_COORDS.keys()),
-        help="Region to build the cache for (GLOBAL = all 9 regions).",
-    )
-    p.add_argument("--baseload-demand", type=float, default=500.0, help="Baseload demand in MW.")
-    p.add_argument("--coverage", type=float, default=0.85, help="Required demand coverage fraction.")
-    p.add_argument("--samples", type=int, default=1000, help="Number of Monte Carlo samples per point.")
-    p.add_argument("--workers", type=parse_workers, default="fast", help="Number of threads (integer or preset).")
-    p.add_argument(
-        "--cost-anchor-year",
-        type=int,
-        default=2025,
-        help="Year used only to load a costs dataset for cost_key derivation; "
-        "any year works since iso3 dim is year-independent.",
-    )
-    p.add_argument(
-        "--force", action="store_true", help="Rebuild the design cache even if it already exists at the hashed path."
-    )
-    p.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
-    add_data_args(p)
-    args = p.parse_args(argv)
-
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-    p_pct = coverage_to_percentile(args.coverage)
-    regions = _resolve_regions(args.region)
-
-    logging.info("=" * 60)
-    logging.info("BOA: build-cache")
-    logging.info("=" * 60)
-    logging.info(f"Regions: {regions}")
-    logging.info(
-        f"Baseload: {args.baseload_demand} MW; coverage p={p_pct}; samples={args.samples}; workers={args.workers}"
-    )
-
-    path_config = resolve_paths(args, "build-cache", list(argv))
-    costs, _ = process_global_baseload_simulation_costs(
-        investment_year=args.cost_anchor_year,
+def _validate_cost_set(path_config: PathConfig, investment_year: int) -> tuple[xr.Dataset, int]:
+    """Load one year's costs and check subregion coverage/keys against the shapefile."""
+    costs, horizon = process_global_baseload_simulation_costs(
+        investment_year=investment_year,
         input_data_path=path_config.input_data_path,
         cost_cache_dir=path_config.cost_cache_dir,
     )
     load_subregion_polygons(path_config.admin1_10m_shapefile_path)
     validate_subregion_coverage(costs)
     validate_subregion_keys(costs, path_config.admin1_10m_shapefile_path)
+    return costs, horizon
 
-    for region in regions:
+
+def build_all_caches(
+    path_config: PathConfig,
+    baseload_demand: float,
+    p: int,
+    n: int,
+    n_workers: int,
+    force: bool = False,
+) -> None:
+    """Build the year-independent design cache for every region (skip-if-exists unless force)."""
+    costs, _ = _validate_cost_set(path_config, COST_ANCHOR_YEAR)
+    for region in REGION_COORDS:
         logging.info(f"\nBuilding design cache for {region}")
         profile = open_regional_dataset("profile", region, path_config)
         build_design_cache_for_region(
             region=region,
-            baseload_demand=args.baseload_demand,
-            p=p_pct,
-            n=args.samples,
+            baseload_demand=baseload_demand,
+            p=p,
+            n=n,
             profile=profile,
             costs=costs,
             path_config=path_config,
-            n_workers=args.workers,
-            force=args.force,
+            n_workers=n_workers,
+            force=force,
         )
+
+
+def query_all_years(
+    path_config: PathConfig,
+    years: List[int],
+    baseload_demand: float,
+    p: int,
+    n: int,
+    n_workers: int,
+    force: bool = False,
+    generate_plots: bool = True,
+) -> None:
+    """Derive optimal-solution NetCDFs for every (region, year) from the design caches, then combine."""
+    # Profiles depend only on region; load once per region and reuse across years.
+    profiles: dict[str, xr.Dataset] = {
+        region: open_regional_dataset("profile", region, path_config) for region in REGION_COORDS
+    }
+    for year in years:
+        costs, horizon = _validate_cost_set(path_config, year)
+        for region in REGION_COORDS:
+            logging.info(f"\nQuerying design cache for {region} y{year}")
+            query_design_cache_for_region(
+                year=year,
+                region=region,
+                baseload_demand=baseload_demand,
+                p=p,
+                profile=profiles[region],
+                costs=costs,
+                investment_horizon=horizon,
+                n=n,
+                path_config=path_config,
+                n_workers=n_workers,
+                force=force,
+            )
+            if generate_plots:
+                plot_regional_optimum_baseload_power_simulation_map(year, region, p, baseload_demand, path_config)
+        global_optimal_sol = combine_regional_datasets_into_global_dataset(
+            year,
+            p,
+            baseload_demand,
+            path_config,
+            force=force,
+        )
+        if generate_plots and global_optimal_sol is not None:
+            plot_global_optimum_baseload_power_simulation_map(global_optimal_sol, year, p, baseload_demand, path_config)
+
+
+def main_run(argv: list[str]) -> int:
+    """
+    Bare `boa-run`: full GLOBAL simulation. Composes build-cache (once, skip-if-exists)
+    with query (per year), so the year-independent cache is never rebuilt per year.
+    Use the subcommands with --force for targeted rebuilds.
+    """
+    parser = argparse.ArgumentParser(
+        prog="boa-run",
+        description=__doc__,
+        formatter_class=_HelpFormatter,
+    )
+    add_temporal_args(parser)
+    add_scenario_args(parser)
+    add_workers_arg(parser)
+    optional_group = parser.add_argument_group("Optional Parameters")
+    optional_group.add_argument("--verbose", action="store_true", help="Enable verbose logging output")
+    optional_group.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Resolve paths and run the preflight check without simulating",
+    )
+    optional_group.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Skip per-region and global map plotting during the run (saves time for long batch runs; plots can be regenerated later from saved NetCDFs)",
+    )
+    add_data_args(parser)
+    args = parser.parse_args(argv)
+
+    try:
+        validate_temporal_args(args)
+        validate_scenario_args(args)
+    except ValueError as e:
+        logging.error(f"Invalid arguments: {e}")
+        return 1
+
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    p = coverage_to_percentile(args.coverage)
+    years = get_simulation_years(args.start_year, args.end_year, args.frequency)
+
+    logging.info("=" * 60)
+    logging.info("BOA: full GLOBAL simulation")
+    logging.info("=" * 60)
+    logging.info(f"Years to simulate: {years}")
+    logging.info(f"Baseload demand: {args.baseload_demand} MW")
+    logging.info(f"Coverage requirement: {args.coverage * 100:.1f}% (p={p})")
+    logging.info(f"Number of samples: {args.samples}")
+    logging.info(f"Worker threads: {args.workers}")
+    logging.info(f"Generate plots: {not args.no_plots}")
+    logging.info("=" * 60)
+
+    path_config = build_path_config(args)
+    try:
+        preflight(path_config)
+    except (FileNotFoundError, ValueError) as e:
+        logging.error(str(e))
+        return 1
+
+    if args.dry_run:
+        logging.info(f"Design caches: {path_config.design_cache_dir}")
+        logging.info(f"Outputs: {path_config.outputs_dir}")
+        logging.info("Dry run - exiting without running simulation")
+        return 0
+
+    run_manifest.record_invocation(path_config, "run", list(argv))
+    build_all_caches(path_config, args.baseload_demand, p, args.samples, args.workers)
+    query_all_years(
+        path_config,
+        years,
+        args.baseload_demand,
+        p,
+        args.samples,
+        args.workers,
+        generate_plots=not args.no_plots,
+    )
+    logging.info("\nAll simulations completed successfully!")
+    return 0
+
+
+def main_build_cache(argv: list[str]) -> int:
+    """
+    `build-cache` subcommand: build the year-independent design caches for all regions.
+    No NetCDF output; only the per-region Zarr stores are written. Idempotent —
+    existing caches at the parameterised path are skipped.
+    """
+    parser = argparse.ArgumentParser(
+        prog="boa-run build-cache",
+        description="Build the design caches (all regions) without producing optimal-solution NetCDFs.",
+        formatter_class=_HelpFormatter,
+    )
+    add_scenario_args(parser)
+    add_workers_arg(parser)
+    parser.add_argument("--force", action="store_true", help="Rebuild each design cache even if it already exists.")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
+    add_data_args(parser)
+    args = parser.parse_args(argv)
+
+    try:
+        validate_scenario_args(args)
+    except ValueError as e:
+        logging.error(f"Invalid arguments: {e}")
+        return 1
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+    p = coverage_to_percentile(args.coverage)
+
+    logging.info("=" * 60)
+    logging.info("BOA: build-cache")
+    logging.info("=" * 60)
+    logging.info(f"Baseload: {args.baseload_demand} MW; coverage p={p}; samples={args.samples}; workers={args.workers}")
+
+    path_config = build_path_config(args)
+    try:
+        preflight(path_config)
+    except (FileNotFoundError, ValueError) as e:
+        logging.error(str(e))
+        return 1
+    run_manifest.record_invocation(path_config, "build-cache", list(argv))
+    build_all_caches(path_config, args.baseload_demand, p, args.samples, args.workers, force=args.force)
     logging.info("\nbuild-cache: all regions complete.")
     return 0
 
 
-def main_query(argv: list[str]) -> int | None:
+def main_query(argv: list[str]) -> int:
     """
     `query` subcommand: re-derive optimal-solution NetCDFs from pre-built design
-    caches for one or more years. Requires the cache to exist; will not build.
+    caches for the requested years. Requires the caches to exist; will not build.
     """
-    p = argparse.ArgumentParser(
-        prog="boa.cli.run_simulation query",
-        description="Run the LCOE-only query against pre-built design caches.",
+    parser = argparse.ArgumentParser(
+        prog="boa-run query",
+        description="Run the LCOE-only query against pre-built design caches (all regions).",
         formatter_class=_HelpFormatter,
     )
-    p.add_argument(
-        "--region",
-        type=str,
-        default="GLOBAL",
-        choices=["GLOBAL"] + list(REGION_COORDS.keys()),
-        help="Region to query (GLOBAL = all 9 regions).",
-    )
-    p.add_argument("--start-year", type=int, default=2025, help="Starting year.")
-    p.add_argument("--end-year", type=int, default=2050, help="Ending year.")
-    p.add_argument("--frequency", type=int, default=5, help="Years between queries.")
-    p.add_argument("--baseload-demand", type=float, default=500.0, help="Baseload demand in MW.")
-    p.add_argument("--coverage", type=float, default=0.85, help="Required demand coverage fraction.")
-    p.add_argument("--samples", type=int, default=1000, help="Number of Monte Carlo samples per point.")
-    p.add_argument("--workers", type=parse_workers, default="fast", help="Number of threads (integer or preset).")
-    p.add_argument(
+    add_temporal_args(parser)
+    add_scenario_args(parser)
+    add_workers_arg(parser)
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Re-derive every artifact (regional NetCDFs, GLOBAL combine) even if it already exists on disk.",
     )
-    p.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
-    add_data_args(p)
-    args = p.parse_args(argv)
+    parser.add_argument("--no-plots", action="store_true", help="Skip per-region and global map plotting.")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
+    add_data_args(parser)
+    args = parser.parse_args(argv)
 
+    try:
+        validate_temporal_args(args)
+        validate_scenario_args(args)
+    except ValueError as e:
+        logging.error(f"Invalid arguments: {e}")
+        return 1
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-    p_pct = coverage_to_percentile(args.coverage)
-    regions = _resolve_regions(args.region)
+    p = coverage_to_percentile(args.coverage)
     years = get_simulation_years(args.start_year, args.end_year, args.frequency)
 
     logging.info("=" * 60)
     logging.info("BOA: query (design-cache → NetCDF)")
     logging.info("=" * 60)
-    logging.info(f"Regions: {regions}; years: {years}")
-    logging.info(
-        f"Baseload: {args.baseload_demand} MW; coverage p={p_pct}; samples={args.samples}; workers={args.workers}"
-    )
+    logging.info(f"Years: {years}")
+    logging.info(f"Baseload: {args.baseload_demand} MW; coverage p={p}; samples={args.samples}; workers={args.workers}")
 
-    path_config = resolve_paths(args, "query", list(argv))
-    # Profiles depend only on region; load once per region and reuse across years.
-    profiles: dict[str, xr.Dataset] = {
-        region: open_regional_dataset("profile", region, path_config) for region in regions
-    }
-    for year in years:
-        costs, horizon = process_global_baseload_simulation_costs(
-            investment_year=year,
-            input_data_path=path_config.input_data_path,
-            cost_cache_dir=path_config.cost_cache_dir,
-        )
-        load_subregion_polygons(path_config.admin1_10m_shapefile_path)
-        validate_subregion_coverage(costs)
-        validate_subregion_keys(costs, path_config.admin1_10m_shapefile_path)
-        for region in regions:
-            logging.info(f"\nQuerying design cache for {region} y{year}")
-            query_design_cache_for_region(
-                year=year,
-                region=region,
-                baseload_demand=args.baseload_demand,
-                p=p_pct,
-                profile=profiles[region],
-                costs=costs,
-                investment_horizon=horizon,
-                n=args.samples,
-                path_config=path_config,
-                n_workers=args.workers,
-                force=args.force,
-            )
-        # Consolidated GLOBAL NetCDF for the year. No-op (warns) when not all 9
-        # regions are in place — i.e. when the user queried a single region.
-        combine_regional_datasets_into_global_dataset(
-            year,
-            p_pct,
-            args.baseload_demand,
-            path_config,
-            force=args.force,
-        )
+    path_config = build_path_config(args)
+    try:
+        preflight(path_config)
+    except (FileNotFoundError, ValueError) as e:
+        logging.error(str(e))
+        return 1
+    run_manifest.record_invocation(path_config, "query", list(argv))
+    query_all_years(
+        path_config,
+        years,
+        args.baseload_demand,
+        p,
+        args.samples,
+        args.workers,
+        force=args.force,
+        generate_plots=not args.no_plots,
+    )
     logging.info("\nquery: all (region, year) pairs complete.")
     return 0
 
 
-_SUBCOMMANDS = {"build-cache": main_build_cache, "query": main_query}
+def main_point(argv: list[str]) -> int:
+    """
+    `point` subcommand: single-point simulation at (--lat, --lon); the region and
+    country are auto-derived from the coordinates.
+    """
+    parser = argparse.ArgumentParser(
+        prog="boa-run point",
+        description="Single-point simulation; region auto-derived from coordinates.",
+        formatter_class=_HelpFormatter,
+    )
+    parser.add_argument("--lat", type=float, required=True, help="Latitude of the point.")
+    parser.add_argument("--lon", type=float, required=True, help="Longitude of the point.")
+    add_temporal_args(parser)
+    add_scenario_args(parser)
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
+    add_data_args(parser)
+    args = parser.parse_args(argv)
+
+    try:
+        validate_temporal_args(args)
+        validate_scenario_args(args)
+        if not -90 <= args.lat <= 90:
+            raise ValueError(f"Latitude must be between -90 and 90, got {args.lat}")
+        if not -180 <= args.lon <= 180:
+            raise ValueError(f"Longitude must be between -180 and 180, got {args.lon}")
+    except ValueError as e:
+        logging.error(f"Invalid arguments: {e}")
+        return 1
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+    p = coverage_to_percentile(args.coverage)
+    years = get_simulation_years(args.start_year, args.end_year, args.frequency)
+
+    logging.info("=" * 60)
+    logging.info("BOA: single-point simulation")
+    logging.info("=" * 60)
+    logging.info(f"Location: Lat={args.lat}, Lon={args.lon} (region auto-derived)")
+    logging.info(f"Years: {years}; baseload: {args.baseload_demand} MW; coverage p={p}; samples={args.samples}")
+
+    path_config = build_path_config(args)
+    try:
+        # The point's region is derived downstream, so only the year + cost set are preflighted.
+        preflight(path_config, require_all_stores=False)
+    except (FileNotFoundError, ValueError) as e:
+        logging.error(str(e))
+        return 1
+    run_manifest.record_invocation(path_config, "point", list(argv))
+
+    for year in years:
+        logging.info(f"\nRunning single-point simulation for year {year}")
+        try:
+            execute_single_point_baseload_power_simulation(
+                path_config=path_config,
+                year=year,
+                lat=args.lat,
+                lon=args.lon,
+                baseload_demand=args.baseload_demand,
+                p=p,
+                n=args.samples,
+            )
+        except Exception as e:
+            logging.error(f"Failed to run simulation for year {year}: {e}")
+            if args.verbose:
+                logging.exception("Detailed error:")
+            return 1
+    logging.info("\npoint: all years complete.")
+    return 0
+
+
+_SUBCOMMANDS = {"build-cache": main_build_cache, "query": main_query, "point": main_point}
 
 
 def main() -> int:
     """
-    Top-level dispatcher. `python -m boa.cli.run_simulation [build-cache|query] ...`
-    routes to the named subcommand; bare `python -m boa.cli.run_simulation ...` keeps
-    the legacy "run" path (build-if-missing + query for the requested year range).
-
-    Returns a process exit code (0 success, 1 failure) so the `run_boa` console
-    entry point — which does `sys.exit(main())` — reports correctly. The run
-    itself returns its results object; a None result signals failure.
+    Top-level dispatcher for `boa-run`. A recognised first argument routes to the
+    named subcommand; anything else is parsed by the bare full-run command.
+    Returns a process exit code (0 success, 1 failure).
     """
     if len(sys.argv) > 1 and sys.argv[1] in _SUBCOMMANDS:
-        result = _SUBCOMMANDS[sys.argv[1]](sys.argv[2:])
-    else:
-        result = main_run(sys.argv[1:])
-    if result is None:
-        return 1
-    if isinstance(result, int):
-        return result
-    return 0
+        return _SUBCOMMANDS[sys.argv[1]](sys.argv[2:]) or 0
+    return main_run(sys.argv[1:]) or 0
 
 
 if __name__ == "__main__":

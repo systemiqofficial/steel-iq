@@ -229,7 +229,7 @@ def main_prepare(argv: list[str]) -> int:
         f"[green]✓ Installed {len(need_profile)} profile + {len(need_max_cap)} max-capacity store(s) into[/green] "
         f"[dim]{live}[/dim]"
     )
-    console.print(f"Run the model against it via [cyan]run_boa ... --inputs {input_set}[/cyan]")
+    console.print(f"Run the model against it via [cyan]boa-run ... --inputs {input_set}[/cyan]")
     console.print(f"[green]boa-cds-prepare completed in {time.monotonic() - started:.1f} s[/green]")
     return 0
 
