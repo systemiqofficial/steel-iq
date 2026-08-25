@@ -4,7 +4,7 @@ designs + coverage) to disk so future cost-side runs can re-derive LCOE in
 minutes instead of hours.
 
 One Zarr store per region:
-    data/cache/design_cache/<REGION>_<HASH>.zarr/
+    inputs/<input_set>/cache_designs/<REGION>_<HASH>.zarr/
 
 The 16-hex-char <HASH> is a stable digest of the cache-invalidating params
 (baseload, p, n, seed, weather_year, era5_res). Caches for different parameter
@@ -12,20 +12,21 @@ choices coexist; mismatch -> cache miss -> rebuild.
 
 Layout mirrors the per-scenario outputs tree for browse-friendliness:
     outputs/<baseload>MW/p<p>/nc/<REGION>/optimal_sol_<baseload>MW_p<p>_<REGION>_<year>.nc
-    data/cache/design_cache/<baseload>MW/p<p>/<REGION>/<n_seed_year_res>.zarr/
+    inputs/<input_set>/cache_designs/<baseload>MW/p<p>/<REGION>/<n_seed_year_res>.zarr/
 
-Per-region store layout:
-    all_lats         (n_lat,) float64  -- full region grid (lat axis)
-    all_lons         (n_lon,) float64  -- full region grid (lon axis)
-    lats             (npts,) float64   -- land-point identification (subset of all_lats)
-    lons             (npts,) float64
+Per-region store layout (float32 throughout: the 0.25-degree grid coords are
+float32-exact and the design/coverage values don't need float64 precision):
+    all_lats         (n_lat,) float32  -- full region grid (lat axis)
+    all_lons         (n_lon,) float32  -- full region grid (lon axis)
+    lats             (npts,) float32   -- land-point identification (subset of all_lats)
+    lons             (npts,) float32
     iy               (npts,) int32     -- index into all_lats per land point
     ix               (npts,) int32     -- index into all_lons per land point
-    pv_max           (npts,) float64   -- physical capacity ceiling (MW)
-    wind_max         (npts,) float64
-    designs_flat     (sum_mp, 3) float64  -- CSR-style ragged; cols: solar/wind/battery
+    pv_max           (npts,) float32   -- physical capacity ceiling (MW)
+    wind_max         (npts,) float32
+    designs_flat     (sum_mp, 3) float32  -- CSR-style ragged; cols: solar/wind/battery
     design_offsets   (npts+1,) int32   -- designs_flat[offsets[k]:offsets[k+1]] is point k
-    coverage_flat    (sum_mp,) float64
+    coverage_flat    (sum_mp,) float32
 
     group.attrs["meta"] = {schema_version, region, cache_key, n_points,
                            n_designs_total, params {...}, built_at, code_git_sha}
@@ -166,17 +167,17 @@ class RegionDesignCache:
     """In-memory representation of a single-region cache (build output / query input)."""
 
     region: str
-    all_lats: np.ndarray  # (n_lat,) float64 -- full region grid (lat axis)
-    all_lons: np.ndarray  # (n_lon,) float64 -- full region grid (lon axis)
-    lats: np.ndarray  # (npts,) float64 -- land-point lats
+    all_lats: np.ndarray  # (n_lat,) float32 -- full region grid (lat axis)
+    all_lons: np.ndarray  # (n_lon,) float32 -- full region grid (lon axis)
+    lats: np.ndarray  # (npts,) float32 -- land-point lats
     lons: np.ndarray  # (npts,)
     iy: np.ndarray  # (npts,) int32 -- index into all_lats
     ix: np.ndarray  # (npts,) int32 -- index into all_lons
-    pv_max: np.ndarray  # (npts,) float64
-    wind_max: np.ndarray  # (npts,) float64
-    designs_flat: np.ndarray  # (sum_mp, 3) float64 -- cols: solar / wind / battery
+    pv_max: np.ndarray  # (npts,) float32
+    wind_max: np.ndarray  # (npts,) float32
+    designs_flat: np.ndarray  # (sum_mp, 3) float32 -- cols: solar / wind / battery
     design_offsets: np.ndarray  # (npts+1,) int32
-    coverage_flat: np.ndarray  # (sum_mp,) float64
+    coverage_flat: np.ndarray  # (sum_mp,) float32
     meta: dict = field(default_factory=dict)
 
     @property
@@ -207,12 +208,12 @@ def pack_csr(
     design_offsets = np.concatenate([[0], np.cumsum(n_per_point)]).astype(np.int32)
     if n_per_point.sum() == 0:
         return (
-            np.empty((0, 3), dtype=np.float64),
+            np.empty((0, 3), dtype=np.float32),
             design_offsets,
-            np.empty(0, dtype=np.float64),
+            np.empty(0, dtype=np.float32),
         )
-    designs_flat = np.concatenate(designs_per_point, axis=0).astype(np.float64, copy=False)
-    coverage_flat = np.concatenate(coverage_per_point, axis=0).astype(np.float64, copy=False)
+    designs_flat = np.concatenate(designs_per_point, axis=0).astype(np.float32, copy=False)
+    coverage_flat = np.concatenate(coverage_per_point, axis=0).astype(np.float32, copy=False)
     return designs_flat, design_offsets, coverage_flat
 
 
@@ -283,34 +284,34 @@ def write_cache(cache: RegionDesignCache, path: Path) -> Path:
 
     # Full region grid coords (so the query path can assemble the output NetCDF
     # without needing the profile dataset).
-    g.create_array("all_lats", shape=(n_lat,), dtype=np.float64)
-    g["all_lats"][:] = np.ascontiguousarray(cache.all_lats, dtype=np.float64)
-    g.create_array("all_lons", shape=(n_lon,), dtype=np.float64)
-    g["all_lons"][:] = np.ascontiguousarray(cache.all_lons, dtype=np.float64)
+    g.create_array("all_lats", shape=(n_lat,), dtype=np.float32)
+    g["all_lats"][:] = np.ascontiguousarray(cache.all_lats, dtype=np.float32)
+    g.create_array("all_lons", shape=(n_lon,), dtype=np.float32)
+    g["all_lons"][:] = np.ascontiguousarray(cache.all_lons, dtype=np.float32)
 
     # Per-point arrays
-    g.create_array("lats", shape=(npts,), dtype=np.float64)
-    g["lats"][:] = np.ascontiguousarray(cache.lats, dtype=np.float64)
-    g.create_array("lons", shape=(npts,), dtype=np.float64)
-    g["lons"][:] = np.ascontiguousarray(cache.lons, dtype=np.float64)
+    g.create_array("lats", shape=(npts,), dtype=np.float32)
+    g["lats"][:] = np.ascontiguousarray(cache.lats, dtype=np.float32)
+    g.create_array("lons", shape=(npts,), dtype=np.float32)
+    g["lons"][:] = np.ascontiguousarray(cache.lons, dtype=np.float32)
     g.create_array("iy", shape=(npts,), dtype=np.int32)
     g["iy"][:] = np.ascontiguousarray(cache.iy, dtype=np.int32)
     g.create_array("ix", shape=(npts,), dtype=np.int32)
     g["ix"][:] = np.ascontiguousarray(cache.ix, dtype=np.int32)
-    g.create_array("pv_max", shape=(npts,), dtype=np.float64)
-    g["pv_max"][:] = np.ascontiguousarray(cache.pv_max, dtype=np.float64)
-    g.create_array("wind_max", shape=(npts,), dtype=np.float64)
-    g["wind_max"][:] = np.ascontiguousarray(cache.wind_max, dtype=np.float64)
+    g.create_array("pv_max", shape=(npts,), dtype=np.float32)
+    g["pv_max"][:] = np.ascontiguousarray(cache.pv_max, dtype=np.float32)
+    g.create_array("wind_max", shape=(npts,), dtype=np.float32)
+    g["wind_max"][:] = np.ascontiguousarray(cache.wind_max, dtype=np.float32)
 
     # Ragged CSR arrays (designs + coverage)
-    g.create_array("designs_flat", shape=(sum_mp, 3), dtype=np.float64)
+    g.create_array("designs_flat", shape=(sum_mp, 3), dtype=np.float32)
     if sum_mp > 0:
-        g["designs_flat"][:] = np.ascontiguousarray(cache.designs_flat, dtype=np.float64)
+        g["designs_flat"][:] = np.ascontiguousarray(cache.designs_flat, dtype=np.float32)
     g.create_array("design_offsets", shape=(npts + 1,), dtype=np.int32)
     g["design_offsets"][:] = np.ascontiguousarray(cache.design_offsets, dtype=np.int32)
-    g.create_array("coverage_flat", shape=(sum_mp,), dtype=np.float64)
+    g.create_array("coverage_flat", shape=(sum_mp,), dtype=np.float32)
     if sum_mp > 0:
-        g["coverage_flat"][:] = np.ascontiguousarray(cache.coverage_flat, dtype=np.float64)
+        g["coverage_flat"][:] = np.ascontiguousarray(cache.coverage_flat, dtype=np.float32)
 
     g.attrs["meta"] = cache.meta
 
