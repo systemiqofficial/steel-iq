@@ -1,6 +1,7 @@
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -59,6 +60,48 @@ def boa_root(tmp_path, monkeypatch):
     return root
 
 
+@pytest.fixture(autouse=True)
+def geo_package(tmp_path, monkeypatch):
+    """Fake boa-data package cache + stubbed iso3 grid build, so no network or slow sjoin in tests."""
+    package_dir = tmp_path / "boa-data-cache"
+    for item in boa_data_cli.GEO_DATA_ITEMS:
+        source = package_dir / item
+        if item.endswith(".nc"):
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(b"fake-nc")
+        else:
+            source.mkdir(parents=True, exist_ok=True)
+            (source / f"{item}.shp").write_bytes(b"fake-shp")
+    downloads: list[str] = []
+
+    class FakeDataManager:
+        def download_package(self, name, version=None, force=False):
+            downloads.append(name)
+
+        def get_package_path(self, name, version=None):
+            return package_dir
+
+    monkeypatch.setattr(boa_data_cli, "DataManager", FakeDataManager)
+
+    import boa.geo.iso3_grid_builder as grid_builder
+
+    def fake_build(output_path, *, shapefile_path, resolution=0.25, force=False, on_stage=None):
+        assert shapefile_path.exists()
+        if on_stage is not None:
+            for stage in range(grid_builder.BUILD_STAGE_COUNT):
+                on_stage(f"stage {stage}")
+        output_path.write_bytes(b"fake-grid")
+        return output_path
+
+    monkeypatch.setattr(grid_builder, "build_iso3_grid_from_shapefile", fake_build)
+    monkeypatch.setattr(
+        grid_builder,
+        "iso3_grid_is_current",
+        lambda grid_path, shapefile_path: grid_path.exists() and grid_path.read_bytes() == b"fake-grid",
+    )
+    return SimpleNamespace(package_dir=package_dir, downloads=downloads)
+
+
 def _run(monkeypatch, master: Path, scenario: str = "test") -> str:
     monkeypatch.setattr(sys, "argv", ["boa-data-prepare", "--input-file", str(master), "--scenario", scenario])
     return boa_data_cli.boa_data_prepare()
@@ -91,7 +134,6 @@ def test_rerun_with_unchanged_data_is_noop_and_keeps_cache(tmp_path, monkeypatch
 
     fixture = boa_root / "costs" / "test" / "boa_cost_data.xlsx"
     cache_marker = boa_root / "costs" / "test" / "cache_costs" / "marker.nc"
-    cache_marker.parent.mkdir(parents=True)
     cache_marker.touch()
     mtime = fixture.stat().st_mtime_ns
 
@@ -102,30 +144,34 @@ def test_rerun_with_unchanged_data_is_noop_and_keeps_cache(tmp_path, monkeypatch
     assert cache_marker.exists()
 
 
-def test_changed_data_replaces_fixture_and_clears_cache(tmp_path, monkeypatch, boa_root):
+def test_changed_data_replaces_fixture_and_rebuilds_cache(tmp_path, monkeypatch, boa_root):
     master = tmp_path / "master.xlsx"
     _write_master(master)
     _run(monkeypatch, master)
 
     cache_dir = boa_root / "costs" / "test" / "cache_costs"
-    cache_dir.mkdir(parents=True)
+    stale_marker = cache_dir / "marker.nc"
+    stale_marker.touch()
     _write_master(master, europe_solar_capex=350.0)
 
     result = _run(monkeypatch, master)
 
     assert result == "Updated scenario 'test'"
-    assert not cache_dir.exists()
+    assert not stale_marker.exists()  # stale cache cleared before the rebuild
+    assert sorted(p.name for p in cache_dir.iterdir()) == [
+        "cost_of_renewables_2024_investment_year.nc",
+        "cost_of_renewables_2025_investment_year.nc",
+    ]
     capex = pd.read_excel(boa_root / "costs" / "test" / "boa_cost_data.xlsx", sheet_name="RES CAPEX projections")
     europe_solar = capex[(capex["irena_region"] == "Europe") & (capex["Technology"] == "Solar PV")]
     assert europe_solar[2024].item() == 350.0
 
 
-def test_full_builds_cost_cache_for_all_sheet_years(tmp_path, monkeypatch, boa_root):
+def test_builds_cost_cache_for_all_sheet_years(tmp_path, monkeypatch, boa_root):
     master = tmp_path / "master.xlsx"
     _write_master(master)
 
-    monkeypatch.setattr(sys, "argv", ["boa-data-prepare", "--input-file", str(master), "--scenario", "test", "--full"])
-    result = boa_data_cli.boa_data_prepare()
+    result = _run(monkeypatch, master)
 
     assert result == "Created scenario 'test'"
     cache_dir = boa_root / "costs" / "test" / "cache_costs"
@@ -135,7 +181,7 @@ def test_full_builds_cost_cache_for_all_sheet_years(tmp_path, monkeypatch, boa_r
     ]
 
 
-def test_year_flags_narrow_cache_and_imply_full(tmp_path, monkeypatch, boa_root):
+def test_year_flags_narrow_cache(tmp_path, monkeypatch, boa_root):
     master = tmp_path / "master.xlsx"
     _write_master(master)
 
@@ -146,6 +192,46 @@ def test_year_flags_narrow_cache_and_imply_full(tmp_path, monkeypatch, boa_root)
 
     cache_dir = boa_root / "costs" / "test" / "cache_costs"
     assert sorted(p.name for p in cache_dir.iterdir()) == ["cost_of_renewables_2025_investment_year.nc"]
+
+
+def test_geo_data_installed_and_grid_built(tmp_path, monkeypatch, boa_root, geo_package):
+    master = tmp_path / "master.xlsx"
+    _write_master(master)
+
+    _run(monkeypatch, master)
+
+    assert geo_package.downloads == ["boa-data"]
+    data_dir = boa_root / "data"
+    assert (data_dir / "ne_50m_admin_0_map_subunits" / "ne_50m_admin_0_map_subunits.shp").exists()
+    assert (data_dir / "ne_10m_admin_1_states_provinces" / "ne_10m_admin_1_states_provinces.shp").exists()
+    assert (data_dir / "lsm_025_deg.nc").exists()
+    assert (data_dir / "iso3_grid.nc").read_bytes() == b"fake-grid"
+
+
+def test_geo_data_skips_download_and_build_when_present(tmp_path, monkeypatch, boa_root, geo_package):
+    master = tmp_path / "master.xlsx"
+    _write_master(master)
+    _run(monkeypatch, master)
+    geo_package.downloads.clear()
+    grid = boa_root / "data" / "iso3_grid.nc"
+    grid_mtime = grid.stat().st_mtime_ns
+
+    _run(monkeypatch, master)
+
+    assert geo_package.downloads == []
+    assert grid.stat().st_mtime_ns == grid_mtime
+
+
+def test_stale_iso3_grid_is_rebuilt(tmp_path, monkeypatch, boa_root, geo_package):
+    master = tmp_path / "master.xlsx"
+    _write_master(master)
+    _run(monkeypatch, master)
+    grid = boa_root / "data" / "iso3_grid.nc"
+    grid.write_bytes(b"grid-from-old-ne-shapefile")
+
+    _run(monkeypatch, master)
+
+    assert grid.read_bytes() == b"fake-grid"
 
 
 def test_missing_sheet_fails(tmp_path, monkeypatch, boa_root, capsys):

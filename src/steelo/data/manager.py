@@ -14,7 +14,14 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from tqdm import tqdm
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    TextColumn,
+    TimeRemainingColumn,
+    TransferSpeedColumn,
+)
 
 from .exceptions import DataDownloadError, DataIntegrityError
 from .manifest import DataManifest, DataPackage
@@ -212,11 +219,21 @@ class DataManager:
 
                 bytes_downloaded = 0
                 with open(temp_file, "wb") as f:
-                    with tqdm(total=total_size, unit="iB", unit_scale=True) as pbar:
+                    with Progress(
+                        TextColumn("[progress.description]{task.description}"),
+                        BarColumn(),
+                        DownloadColumn(),
+                        TransferSpeedColumn(),
+                        TimeRemainingColumn(),
+                    ) as progress:
+                        task = progress.add_task(
+                            f"Downloading [cyan]{package.name}[/cyan] v{package.version}",
+                            total=total_size or None,
+                        )
                         for chunk in response.iter_bytes(block_size):
                             f.write(chunk)
                             bytes_downloaded += len(chunk)
-                            pbar.update(len(chunk))
+                            progress.update(task, advance=len(chunk))
                     f.flush()
                     import os
 
