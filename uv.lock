@@ -3805,6 +3805,11 @@ dependencies = [
     { name = "zarr" },
 ]
 
+[package.optional-dependencies]
+cds = [
+    { name = "cdsapi" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "atlite" },
@@ -3835,6 +3840,7 @@ dev = [
 requires-dist = [
     { name = "black" },
     { name = "cartopy" },
+    { name = "cdsapi", marker = "extra == 'cds'", specifier = ">=0.7.4" },
     { name = "dash" },
     { name = "dash-extensions" },
     { name = "dash-leaflet" },
@@ -3875,6 +3881,7 @@ requires-dist = [
     { name = "whitenoise" },
     { name = "zarr", specifier = ">=3.0.0" },
 ]
+provides-extras = ["cds"]
 
 [package.metadata.requires-dev]
 dev = [

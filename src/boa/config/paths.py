@@ -25,9 +25,10 @@ class PathConfig:
     reusing a stale cache:
 
         <root>/
-        ├── data/                          single slot: shapefiles, lsm, iso3 grid
-        ├── inputs/<input_set>/            profile + max-capacity stores (cds/, lulc/, atlite/)
-        │   └── cache/design_cache/        year-independent designs; depends only on the stores
+        ├── data/                          single slot: shapefiles, lsm, iso3 grid, cds/ raw NetCDFs
+        ├── inputs/<input_set>/            profile + max-capacity stores (cds-zarr/, lulc/, atlite/)
+        │   ├── staging/                   freshly built stores (transient; emptied by boa_cds install)
+        │   └── cache_designs/             year-independent designs; depends only on the stores
         ├── costs/<cost_set>/boa_cost_data.xlsx
         │   └── cache_costs/               per-year costs; depends only on the xlsx
         └── runs/<run>/                    one (input_set, cost_set) pairing
@@ -142,16 +143,19 @@ class PathConfig:
             # Legacy atlite NetCDFs, read by the PROFILE_DATA_SOURCE=local_nc backend only.
             atlite_output_dir=inputs_dir / "atlite" / "output",
             cav_dir=inputs_dir / "atlite" / "cav",
-            # Live Zarr stores the model reads (profiles + max-capacity); `boa_cds install` target.
-            zarr_dir=inputs_dir / "cds" / "zarr",
-            cds_dir=inputs_dir / "cds",
-            cds_staging_dir=inputs_dir / "cds" / "staging",
+            # Live Zarr stores the model reads (profiles + max-capacity), directly in cds-zarr/.
+            zarr_dir=inputs_dir / "cds-zarr",
+            # Raw CDS downloads (extracted monthly NetCDFs); single-slot — their
+            # provenance is fixed by CDS, not by an input set.
+            cds_dir=data_dir / "cds",
+            # Freshly built stores await promotion to zarr_dir here.
+            cds_staging_dir=inputs_dir / "staging",
             lulc_dir=inputs_dir / "lulc",
             costs_dir=costs_dir,
             run_dir=run_dir,
             outputs_dir=run_dir / "outputs",
             # Design cache follows the profile stores it was built from.
-            design_cache_dir=inputs_dir / "cache" / "design_cache",
+            design_cache_dir=inputs_dir / "cache_designs",
             # Cost cache follows the xlsx it was preprocessed from.
             cost_cache_dir=costs_dir / "cache_costs",
         )
