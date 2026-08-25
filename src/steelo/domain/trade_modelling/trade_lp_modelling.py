@@ -422,6 +422,11 @@ class TradeLPModel:
             # (look for "Running HiPO" / "Using dual simplex solver" / "IPX version").
             "output_flag": "true",
             "log_to_console": "true",
+            # Optimality tolerances for faster convergence
+            "ipm_optimality_tolerance": 1e-3,
+            "primal_feasibility_tolerance": 1e-3,
+            "dual_feasibility_tolerance": 1e-3,
+            "kkt_tolerance": 1e-3,
         }
 
         # Warm-start support (OPT-2) - previous year's solution for faster convergence
