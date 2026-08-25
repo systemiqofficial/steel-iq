@@ -10,7 +10,7 @@ from boa.geo.geospatial import CountryMappings
 
 ALLOWED_TECHS = {"solar", "wind", "battery"}
 
-# The CAPEX projections and Operational costs sheets use descriptive labels
+# The RES CAPEX projections and RES OPEX sheets use descriptive labels
 TECH_LABEL_MAP = {
     "Solar PV": "solar",
     "Onshore wind": "wind",
@@ -28,13 +28,13 @@ def preprocess_renewable_energy_cost_data(
 
     Data sources:
         - CAPEX projections: regional time series 2024–2050 for solar, wind, and battery
-          ("CAPEX projections" sheet). Replaces the IRENA-2022-baseline + learning-curve path.
+          ("RES CAPEX projections" sheet). Replaces the IRENA-2022-baseline + learning-curve path.
         - OPEX: world-wide percentage of CAPEX, applied uniformly to every country.
         - Cost of capital: country-level WACC; missing values filled with the global max.
 
     The `iso3` index of both outputs has a hybrid value-set: a plain iso3 for most countries,
     and `<iso3>:<subregion>` (e.g. `CHN:CN-HB`, ISO 3166-2) for any country whose region carries
-    a Subregion split in the CAPEX projections sheet.
+    a Subregion split in the RES CAPEX projections sheet.
 
     Returns:
         cost_per_country: DataFrame indexed by iso3 (hybrid) with OPEX and cost-of-capital columns.
@@ -42,9 +42,9 @@ def preprocess_renewable_energy_cost_data(
     """
     logging.info("Preprocessing renewable energy cost data")
 
-    renewable_opex = pd.read_excel(input_data_path, sheet_name="Operational costs")
+    renewable_opex = pd.read_excel(input_data_path, sheet_name="RES OPEX")
     cost_of_capital = pd.read_excel(input_data_path, sheet_name="Cost of capital")
-    capex_projections = pd.read_excel(input_data_path, sheet_name="CAPEX projections")
+    capex_projections = pd.read_excel(input_data_path, sheet_name="RES CAPEX projections")
 
     if "Unit" in renewable_opex.columns:
         renewable_opex.drop(columns=["Unit"], inplace=True)
@@ -57,7 +57,7 @@ def preprocess_renewable_energy_cost_data(
     # that would silently break the merge against Country mapping.
     capex_projections["irena_region"] = capex_projections["irena_region"].astype(str).str.strip()
 
-    for sheet_name, df in (("CAPEX projections", capex_projections), ("Operational costs", renewable_opex)):
+    for sheet_name, df in (("RES CAPEX projections", capex_projections), ("RES OPEX", renewable_opex)):
         unknown = set(df["Technology"].unique()) - set(TECH_LABEL_MAP) - ALLOWED_TECHS
         if unknown:
             raise ValueError(
@@ -140,7 +140,7 @@ def preprocess_renewable_energy_cost_data(
             .to_dict(orient="records")
         )
         raise ValueError(
-            f"Duplicate (Region/Subregion, Technology) rows in CAPEX projections: {dups}. "
+            f"Duplicate (Region/Subregion, Technology) rows in RES CAPEX projections: {dups}. "
             f"Ensure each row is uniquely identified by (Region+Subregion, Technology)."
         )
     # Per-(cost_key, technology) CAPEX cascade: exact key -> national iso3 -> IRENA region.
@@ -249,12 +249,12 @@ def _slice_capex_to_horizon(
     """
     available_years = sorted([c for c in capex_per_country.columns if isinstance(c, (int, np.integer))])
     if not available_years:
-        raise ValueError("CAPEX projections sheet has no year columns.")
+        raise ValueError("RES CAPEX projections sheet has no year columns.")
 
     min_available, max_available = available_years[0], available_years[-1]
     if min(years) < min_available:
         raise ValueError(
-            f"investment_year={min(years)} is before the earliest year in CAPEX projections ({min_available})."
+            f"investment_year={min(years)} is before the earliest year in RES CAPEX projections ({min_available})."
         )
 
     sliced = {y: capex_per_country.loc[:, min(y, max_available)] for y in years}
@@ -268,11 +268,11 @@ def process_global_baseload_simulation_costs(
 ) -> tuple[xr.Dataset, int]:
     """
     Process inputs for the baseload simulation for all countries in the world. CAPEX is loaded
-    directly from the 'CAPEX projections' sheet (per region, per tech, 2024-2050) and mapped to
+    directly from the 'RES CAPEX projections' sheet (per region, per tech, 2024-2050) and mapped to
     countries via IRENA regions. No learning curve is applied.
 
     The per-year result is cached as ``cost_of_renewables_<year>_investment_year.nc`` under
-    ``cost_cache_dir`` (``PathConfig.cost_cache_dir``, i.e. ``data/cache/cost_of_renewables/``)
+    ``cost_cache_dir`` (``PathConfig.cost_cache_dir``, i.e. ``costs/<set>/cache_costs/``)
     and reused on subsequent runs; the cache is shared across all baseloads/coverages/regions
     since costs depend only on year + the Excel inputs.
 

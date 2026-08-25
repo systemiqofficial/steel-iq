@@ -4,6 +4,43 @@ Baseload Optimisation Atlas: optimal solar/wind/battery systems for a fixed base
 demand, world-wide. Model core in `model/`, model-input loading in `inputs/`, geography in
 `geo/`, input-data pipeline in `cds/`, assumptions in `config/`.
 
+## Preparing cost inputs
+
+`boa-data-prepare` (a steelo-side command) extracts the four sheets boa reads from a
+master excel workbook into a costs scenario:
+
+```bash
+boa-data-prepare                                              # S3 master-input package -> costs/default/
+boa-data-prepare --input-file wb.xlsx --scenario cheap_renewables
+boa-data-prepare --scenario cheap_renewables --full           # + cost cache for all sheet years
+boa-data-prepare --scenario cheap_renewables --year_start 2025 --year_end 2050 --year_step 5
+```
+
+- `--input-file` — source workbook; omitted → the `master-input` DataManager package (S3),
+  the same source `steelo-data-prepare` uses.
+- `--scenario` — costs-set name (default `default`). A scenario is a whole hand-edited
+  workbook variant; the extracted copy doubles as the provenance record of what a run used.
+- `--full` — also pre-build the per-year cost cache for every year column in the
+  RES CAPEX projections sheet.
+- `--year_start` / `--year_end` / `--year_step` — narrow the cache years (defaults:
+  earliest/latest in the sheet, step 1); each implies `--full`.
+
+Re-running is an idempotent upsert: unchanged data is a no-op (cache kept); changed data
+replaces the workbook and clears the scenario's cost cache.
+
+Data lands under the boa data root (`$BOA_DATA_ROOT` → `$STEELO_HOME/boa` → `~/.steelo/boa`):
+
+```
+costs/<scenario>/
+├── boa_cost_data.xlsx    the four extracted sheets (RES CAPEX projections, RES OPEX,
+│                         Cost of capital, Country mapping)
+├── source.json           scenario, prepared_at, source workbook path + sha256
+└── cache_costs/          cost_of_renewables_<year>_investment_year.nc, one per year
+```
+
+Pre-building the cache is optional — a simulation builds any missing year on the fly from
+`boa_cost_data.xlsx`. Run against a scenario with `run_boa ... --costs <scenario>`.
+
 ## Sources for model assumptions
 
 References behind the numeric assumptions in `config/settings.py`.
