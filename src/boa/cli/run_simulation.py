@@ -78,7 +78,7 @@ def add_data_args(parser: argparse.ArgumentParser) -> None:
         help="Input set under <root>/inputs/ (profile + max-capacity stores, design cache).",
     )
     group.add_argument(
-        "--costs", default=DEFAULT_SET, help="Cost set under <root>/costs/ (input_data.xlsx, cost cache)."
+        "--costs", default=DEFAULT_SET, help="Cost set under <root>/costs/ (boa_cost_data.xlsx, cost cache)."
     )
     group.add_argument(
         "--run", default=None, help="Run name under <root>/runs/ for outputs. Default: <inputs>__<costs>."

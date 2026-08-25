@@ -22,8 +22,8 @@ def test_layout_splits_by_provenance(tmp_path):
     assert cfg.iso3_grid_path == tmp_path / "data" / "iso3_grid.nc"
     assert cfg.zarr_dir == tmp_path / "inputs" / "cds-2024" / "cds" / "zarr"
     assert cfg.design_cache_dir == tmp_path / "inputs" / "cds-2024" / "cache" / "design_cache"
-    assert cfg.input_data_path == tmp_path / "costs" / "xlsx-rev3" / "input_data.xlsx"
-    assert cfg.cost_cache_dir == tmp_path / "costs" / "xlsx-rev3" / "cache" / "cost_of_renewables"
+    assert cfg.input_data_path == tmp_path / "costs" / "xlsx-rev3" / "boa_cost_data.xlsx"
+    assert cfg.cost_cache_dir == tmp_path / "costs" / "xlsx-rev3" / "cache_costs"
     assert cfg.run_manifest_path == tmp_path / "runs" / "cds-2024__xlsx-rev3" / "run.json"
     assert cfg.optimal_sol_path(1230, 5, "GLOBAL", 2030) == (
         tmp_path
