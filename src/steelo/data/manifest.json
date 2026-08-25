@@ -110,6 +110,28 @@
       "description": "Master input Excel file containing all simulation input data - Updated 2026-05-07 (v2.0.0)",
       "required": false,
       "files": ["master_input.xlsx"]
+    },
+    {
+      "name": "boa-data",
+      "version": "1.0.0",
+      "url": "https://steelo-data.s3.eu-north-1.amazonaws.com/boa-data-v1.0.0.zip",
+      "size_mb": 15.77,
+      "checksum": "cea318bb2d5aa5cc9f3475f8e70a98ed9d5c47de6dcf75e7d27ad48d4aa81592",
+      "description": "Static geo inputs for the vendored BOA model: pinned Natural Earth shapefiles (1:50m map subunits, 1:10m admin-1) and the ERA5 0.25 deg land-sea mask; boa-data-prepare installs them into <boa root>/data/",
+      "required": false,
+      "files": [
+        "ne_50m_admin_0_map_subunits/ne_50m_admin_0_map_subunits.shp",
+        "ne_50m_admin_0_map_subunits/ne_50m_admin_0_map_subunits.shx",
+        "ne_50m_admin_0_map_subunits/ne_50m_admin_0_map_subunits.dbf",
+        "ne_50m_admin_0_map_subunits/ne_50m_admin_0_map_subunits.prj",
+        "ne_50m_admin_0_map_subunits/ne_50m_admin_0_map_subunits.cpg",
+        "ne_10m_admin_1_states_provinces/ne_10m_admin_1_states_provinces.shp",
+        "ne_10m_admin_1_states_provinces/ne_10m_admin_1_states_provinces.shx",
+        "ne_10m_admin_1_states_provinces/ne_10m_admin_1_states_provinces.dbf",
+        "ne_10m_admin_1_states_provinces/ne_10m_admin_1_states_provinces.prj",
+        "ne_10m_admin_1_states_provinces/ne_10m_admin_1_states_provinces.cpg",
+        "lsm_025_deg.nc"
+      ]
     }
   ]
 }

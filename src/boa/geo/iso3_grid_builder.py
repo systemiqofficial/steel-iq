@@ -10,11 +10,13 @@ being lost by point-in-polygon at the cell centre.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import logging
 import urllib.request
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 import geopandas as gpd
@@ -146,12 +148,37 @@ def _load_countries(shapefile_path: Path) -> gpd.GeoDataFrame:
     return out
 
 
+def shapefile_fingerprint(shapefile_path: Path) -> str:
+    """sha256 over the shapefile's .shp + .dbf pair (geometry + attribute table)."""
+    digest = hashlib.sha256()
+    for suffix in (".shp", ".dbf"):
+        digest.update(shapefile_path.with_suffix(suffix).read_bytes())
+    return digest.hexdigest()
+
+
+def iso3_grid_is_current(grid_path: Path, shapefile_path: Path) -> bool:
+    """True if the grid's ``source_sha256`` attr matches ``shapefile_path``; missing/unreadable/attr-less grids are stale."""
+    if not grid_path.exists():
+        return False
+    try:
+        with xr.open_dataset(grid_path) as ds:
+            stored = ds.attrs.get("source_sha256")
+    except Exception:
+        return False
+    return stored == shapefile_fingerprint(shapefile_path)
+
+
+# Number of ``on_stage`` callbacks build_iso3_grid_from_shapefile makes — for progress bars.
+BUILD_STAGE_COUNT = 5
+
+
 def build_iso3_grid_from_shapefile(
     output_path: Path,
     *,
     shapefile_path: Path,
     resolution: float = 0.25,
     force: bool = False,
+    on_stage: Callable[[str], None] | None = None,
 ) -> Path:
     """Generate ``data/iso3_grid.nc`` from NE 1:50m via polygon-cell intersection.
 
@@ -174,7 +201,7 @@ def build_iso3_grid_from_shapefile(
       data vars: iso3_code (uint8, lat,lon), multi_country (uint8, lat,lon)
       attrs:     iso3_lookup (JSON list[str]; index = code; last entry is 'nan'),
                  multi_country_candidates (JSON dict[str, list[str]]),
-                 description, source
+                 description, source, source_sha256 (shapefile fingerprint)
 
     Returns the output path.
     """
@@ -182,15 +209,22 @@ def build_iso3_grid_from_shapefile(
         logger.info("iso3 grid already exists at %s (use --force to rebuild)", output_path)
         return output_path
 
+    def stage(description: str) -> None:
+        if on_stage is not None:
+            on_stage(description)
+
+    stage("loading NE 1:50m polygons")
     logger.info("Loading NE 1:50m countries from %s", shapefile_path)
     countries = _load_countries(shapefile_path)
     logger.info("  %d polygons across %d iso3s", len(countries), countries["iso3"].nunique())
 
+    stage("building the cell grid")
     logger.info("Building %g deg cell grid", resolution)
     lats, lons, cells = _build_cell_grid(resolution)
     n_lat, n_lon = len(lats), len(lons)
     logger.info("  %d cells (%d lat x %d lon)", n_lat * n_lon, n_lat, n_lon)
 
+    stage("intersecting cells with country polygons")
     logger.info("Spatial join (cells x countries, intersects)")
     joined = gpd.sjoin(cells, countries, predicate="intersects", how="inner").reset_index(drop=True)
     # Element-wise intersection area per (cell, polygon) — used to pick the
@@ -205,6 +239,7 @@ def build_iso3_grid_from_shapefile(
     logger.info("  %d (cell, country) intersection pairs", len(joined))
 
     # Aggregate per cell: largest-area iso3 + list of all candidates.
+    stage("aggregating candidates per cell")
     by_cell = joined.groupby(["iy", "ix"], sort=False)
     primary_idx = by_cell["_inter_area"].idxmax()
     primary = joined.loc[primary_idx, ["iy", "ix", "iso3"]].set_index(["iy", "ix"])
@@ -233,6 +268,7 @@ def build_iso3_grid_from_shapefile(
 
     # Encode iso3 strings -> uint8 codes + JSON lookup. 'nan' is the last entry
     # so the (iso3_code == nan_code) check matches the legacy schema.
+    stage("encoding and writing the NetCDF")
     distinct = sorted(set(iso3_grid.flatten()) - {"nan"})
     lookup = distinct + ["nan"]
     if len(lookup) > 255:
@@ -261,6 +297,8 @@ def build_iso3_grid_from_shapefile(
                 f"Natural Earth 1:50m countries ({shapefile_path.name}) -> "
                 "build_iso3_grid_from_shapefile (NE_TO_BOA remap applied)"
             ),
+            # Source-shapefile fingerprint; iso3_grid_is_current uses it to detect staleness.
+            "source_sha256": shapefile_fingerprint(shapefile_path),
         },
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)

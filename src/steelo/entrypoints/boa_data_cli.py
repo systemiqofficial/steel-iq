@@ -1,7 +1,11 @@
-"""CLI for preparing the BOA cost fixtures from a master excel workbook.
+"""CLI for preparing the BOA input data: static geo files and cost fixtures.
 
-A scenario is a whole workbook variant (hand-edited copy of the master excel). The
-four sheets the vendored ``boa`` package reads are extracted into
+Geo side: the pinned Natural Earth shapefiles and ERA5 land-sea mask are installed
+into ``<boa root>/data/`` from the ``boa-data`` S3 package, and the per-pixel iso3
+grid is built locally from the 1:50m shapefile (``boa.geo.iso3_grid_builder``).
+
+Cost side: a scenario is a whole workbook variant (hand-edited copy of the master
+excel). The four sheets the vendored ``boa`` package reads are extracted into
 ``<boa root>/costs/<scenario>/boa_cost_data.xlsx``, which doubles as the provenance
 record of the cost data a run used. ``run_boa --costs <scenario>`` consumes it.
 """
@@ -11,13 +15,22 @@ import hashlib
 import json
 import shutil
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from rich.console import Console
-from rich.progress import track
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    track,
+)
 
 from ..data import DataManager
 
@@ -31,6 +44,66 @@ SHEET_RENAMES: dict[str, dict[str, str]] = {
     "Cost of capital": {"ISO-3 Code": "Code"},
     "Country mapping": {"ISO 3-letter code": "Code"},
 }
+
+
+# Contents of the boa-data S3 package, installed verbatim into <boa root>/data/.
+GEO_DATA_PACKAGE = "boa-data"
+GEO_DATA_ITEMS = ("ne_50m_admin_0_map_subunits", "ne_10m_admin_1_states_provinces", "lsm_025_deg.nc")
+
+
+def _install_geo_data(data_dir: Path) -> None:
+    """Copy any missing NE shapefiles / land-sea mask from the boa-data package into ``data_dir``."""
+    missing = [item for item in GEO_DATA_ITEMS if not (data_dir / item).exists()]
+    if not missing:
+        return
+    console.print(
+        f"Fetching the [cyan]{GEO_DATA_PACKAGE}[/cyan] package "
+        f"(pinned NE shapefiles + ERA5 land-sea mask) for: {', '.join(missing)}"
+    )
+    manager = DataManager()
+    manager.download_package(GEO_DATA_PACKAGE, force=False)
+    package_dir = manager.get_package_path(GEO_DATA_PACKAGE)
+    if package_dir is None:
+        raise ValueError(f"Failed to resolve the {GEO_DATA_PACKAGE} package")
+    data_dir.mkdir(parents=True, exist_ok=True)
+    for item in missing:
+        source = package_dir / item
+        if not source.exists():
+            raise ValueError(f"{GEO_DATA_PACKAGE} package is missing {item}")
+        if source.is_dir():
+            shutil.copytree(source, data_dir / item)
+        else:
+            shutil.copy2(source, data_dir / item)
+        console.print(f"Installed [cyan]{item}[/cyan] into {data_dir}")
+
+
+def _prepare_geo_data(data_dir: Path, iso3_grid_path: Path, subunits_shapefile_path: Path) -> None:
+    """Ensure the static geo inputs exist and build the per-pixel iso3 grid from them."""
+    from boa.geo.iso3_grid_builder import BUILD_STAGE_COUNT, build_iso3_grid_from_shapefile, iso3_grid_is_current
+
+    _install_geo_data(data_dir)
+    if not iso3_grid_is_current(iso3_grid_path, subunits_shapefile_path):
+        if iso3_grid_path.exists():
+            console.print("iso3 grid is stale (built from a different NE 1:50m shapefile); rebuilding.")
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Building the iso3 grid...", total=BUILD_STAGE_COUNT)
+
+            def on_stage(description: str) -> None:
+                progress.update(task, description=f"Building the iso3 grid: {description}", advance=1)
+
+            # force=True: a stale grid is only replaced once the new one is written.
+            build_iso3_grid_from_shapefile(
+                iso3_grid_path, shapefile_path=subunits_shapefile_path, force=True, on_stage=on_stage
+            )
+            progress.update(task, description="Built the iso3 grid", completed=BUILD_STAGE_COUNT)
+    console.print("[green]✓ Geo data ready (NE shapefiles, land-sea mask, iso3 grid).[/green]")
 
 
 def _resolve_source(input_file: str | None) -> Path:
@@ -114,11 +187,14 @@ def _build_cost_cache(input_data_path: Path, cost_cache_dir: Path, years: range)
 
 
 def boa_data_prepare():
-    """Extract the boa cost sheets from a master excel into costs/<scenario>/boa_cost_data.xlsx."""
+    """Install the static geo data, then extract the boa cost sheets into costs/<scenario>/boa_cost_data.xlsx."""
     from boa.config.paths import PathConfig
 
     parser = argparse.ArgumentParser(
-        description="Prepare BOA cost fixtures (costs/<scenario>/boa_cost_data.xlsx) from a master excel workbook."
+        description=(
+            "Prepare BOA input data: install the static geo files (NE shapefiles, land-sea mask, iso3 grid) "
+            "and extract cost fixtures (costs/<scenario>/boa_cost_data.xlsx) from a master excel workbook."
+        )
     )
     parser.add_argument(
         "--input-file",
@@ -131,32 +207,26 @@ def boa_data_prepare():
         default="default",
         help="Cost-set name under <boa root>/costs/ (default: default).",
     )
-    parser.add_argument(
-        "--full",
-        action="store_true",
-        help="Also pre-build the per-year cost cache for all years in the RES CAPEX projections sheet.",
-    )
-    parser.add_argument(
-        "--year_start", type=int, help="First cache year (default: earliest in the sheet); implies --full."
-    )
-    parser.add_argument("--year_end", type=int, help="Last cache year (default: latest in the sheet); implies --full.")
-    parser.add_argument("--year_step", type=int, help="Step between cache years (default: 1); implies --full.")
+    parser.add_argument("--year_start", type=int, help="First cache year (default: earliest in the sheet).")
+    parser.add_argument("--year_end", type=int, help="Last cache year (default: latest in the sheet).")
+    parser.add_argument("--year_step", type=int, help="Step between cache years (default: 1).")
 
     try:
+        started = time.monotonic()
         args = parser.parse_args()
-        build_cache = args.full or any(v is not None for v in (args.year_start, args.year_end, args.year_step))
 
         source = _resolve_source(args.input_file)
         console.print(f"Extracting boa sheets from [cyan]{source}[/cyan]")
         sheets = _extract_sheets(source)
 
         paths = PathConfig.from_auto_detect(cost_set=args.scenario)
+        _prepare_geo_data(paths.data_dir, paths.iso3_grid_path, paths.subunits_50m_shapefile_path)
         target = paths.input_data_path
         if target.exists() and _sheets_match(target, sheets):
-            console.print(f"[green]✓ Costs scenario '{args.scenario}' is already up to date; cost cache kept.[/green]")
-            if build_cache:
-                _build_cost_cache(target, paths.cost_cache_dir, _cache_years(sheets, args))
+            console.print(f"[green]✓ Costs scenario '{args.scenario}' is already up to date.[/green]")
+            _build_cost_cache(target, paths.cost_cache_dir, _cache_years(sheets, args))
             console.print(f"Run a full BOA simulation with it via [cyan]run_boa --costs {args.scenario}[/cyan]")
+            console.print(f"[green]boa-data-prepare completed in {time.monotonic() - started:.1f} s[/green]")
             return "Already up to date"
 
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -185,9 +255,9 @@ def boa_data_prepare():
 
         verb = "Updated" if replaced else "Created"
         console.print(f"[green]✓ {verb} costs scenario '{args.scenario}'[/green] [dim]({target})[/dim]")
-        if build_cache:
-            _build_cost_cache(target, paths.cost_cache_dir, _cache_years(sheets, args))
+        _build_cost_cache(target, paths.cost_cache_dir, _cache_years(sheets, args))
         console.print(f"Run a full BOA simulation with it via [cyan]run_boa --costs {args.scenario}[/cyan]")
+        console.print(f"[green]boa-data-prepare completed in {time.monotonic() - started:.1f} s[/green]")
         return f"{verb} scenario '{args.scenario}'"
 
     except Exception as e:
