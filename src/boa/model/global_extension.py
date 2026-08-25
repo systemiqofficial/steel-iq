@@ -17,7 +17,6 @@ from boa.config.paths import PathConfig
 from boa.config.settings import (
     REGION_COORDS,
     ERA5_DATA_RESOLUTION,
-    ERA5_DATA_YEAR,
     MIN_SURVIVOR_FRACTION,
     RANDOM_SEED,
     OVERSCALE_SAMPLING_MEANS,
@@ -39,7 +38,7 @@ from boa.model.logic import (
     state_of_charge,
 )
 from boa.model import design_cache
-from boa.inputs.profiles import open_regional_dataset
+from boa.inputs.profiles import detect_weather_year, open_regional_dataset
 from boa.model.diagnostics import (
     plot_regional_optimum_baseload_power_simulation_map,
     plot_global_optimum_baseload_power_simulation_map,
@@ -270,6 +269,7 @@ def build_design_cache_for_region(
     # cache dir into the current nested layout. Idempotent: fast no-op once done.
     design_cache.migrate_legacy_cache_filenames(path_config.design_cache_dir)
 
+    weather_year = detect_weather_year(path_config)
     cache_file = design_cache.cache_path(
         path_config.design_cache_dir,
         region,
@@ -277,7 +277,7 @@ def build_design_cache_for_region(
         p,
         n,
         RANDOM_SEED,
-        ERA5_DATA_YEAR,
+        weather_year,
         ERA5_DATA_RESOLUTION,
     )
     if cache_file.exists() and not force:
@@ -381,7 +381,7 @@ def build_design_cache_for_region(
             p,
             n,
             RANDOM_SEED,
-            ERA5_DATA_YEAR,
+            weather_year,
             ERA5_DATA_RESOLUTION,
         ),
     )
@@ -422,6 +422,7 @@ def query_design_cache_for_region(
         return xr.open_dataset(optimal_sol_path)
 
     design_cache.migrate_legacy_cache_filenames(path_config.design_cache_dir)
+    weather_year = detect_weather_year(path_config)
     cache_file = design_cache.cache_path(
         path_config.design_cache_dir,
         region,
@@ -429,7 +430,7 @@ def query_design_cache_for_region(
         p,
         n,
         RANDOM_SEED,
-        ERA5_DATA_YEAR,
+        weather_year,
         ERA5_DATA_RESOLUTION,
     )
     cache = design_cache.read_cache(cache_file)
@@ -666,7 +667,7 @@ def query_design_cache_for_region(
             "min_survivor_fraction": MIN_SURVIVOR_FRACTION,
             "min_survivors": min_survivors,
             "region": region,
-            "era5_weather_year": ERA5_DATA_YEAR,
+            "era5_weather_year": weather_year,
             "era5_resolution_deg": ERA5_DATA_RESOLUTION,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "source": "Baseload Optimisation Atlas (BOA)",

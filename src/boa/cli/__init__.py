@@ -1,1 +1,1 @@
-"""Console-script entry points: run_boa, boa_summaries, boa_cogs, boa_plots, boa_publish."""
+"""Console-script entry points: boa-run, boa-cds-prepare, boa-cds-download."""

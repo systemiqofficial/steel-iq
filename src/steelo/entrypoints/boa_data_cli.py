@@ -7,7 +7,7 @@ grid is built locally from the 1:50m shapefile (``boa.geo.iso3_grid_builder``).
 Cost side: a scenario is a whole workbook variant (hand-edited copy of the master
 excel). The four sheets the vendored ``boa`` package reads are extracted into
 ``<boa root>/costs/<scenario>/boa_cost_data.xlsx``, which doubles as the provenance
-record of the cost data a run used. ``run_boa --costs <scenario>`` consumes it.
+record of the cost data a run used. ``boa-run --costs <scenario>`` consumes it.
 """
 
 import argparse
@@ -225,7 +225,7 @@ def boa_data_prepare():
         if target.exists() and _sheets_match(target, sheets):
             console.print(f"[green]✓ Costs scenario '{args.scenario}' is already up to date.[/green]")
             _build_cost_cache(target, paths.cost_cache_dir, _cache_years(sheets, args))
-            console.print(f"Run a full BOA simulation with it via [cyan]run_boa --costs {args.scenario}[/cyan]")
+            console.print(f"Run a full BOA simulation with it via [cyan]boa-run --costs {args.scenario}[/cyan]")
             console.print(f"[green]boa-data-prepare completed in {time.monotonic() - started:.1f} s[/green]")
             return "Already up to date"
 
@@ -256,7 +256,7 @@ def boa_data_prepare():
         verb = "Updated" if replaced else "Created"
         console.print(f"[green]✓ {verb} costs scenario '{args.scenario}'[/green] [dim]({target})[/dim]")
         _build_cost_cache(target, paths.cost_cache_dir, _cache_years(sheets, args))
-        console.print(f"Run a full BOA simulation with it via [cyan]run_boa --costs {args.scenario}[/cyan]")
+        console.print(f"Run a full BOA simulation with it via [cyan]boa-run --costs {args.scenario}[/cyan]")
         console.print(f"[green]boa-data-prepare completed in {time.monotonic() - started:.1f} s[/green]")
         return f"{verb} scenario '{args.scenario}'"
 
