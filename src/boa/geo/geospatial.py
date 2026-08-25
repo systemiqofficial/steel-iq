@@ -32,7 +32,7 @@ class CountryMappings:
         Load country mappings from Excel file.
 
         Args:
-            excel_path: Path to input_data.xlsx.
+            excel_path: Path to boa_cost_data.xlsx.
 
         Returns:
             CountryMappings instance with mapping dictionaries:

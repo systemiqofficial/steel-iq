@@ -28,8 +28,8 @@ class PathConfig:
         ├── data/                          single slot: shapefiles, lsm, iso3 grid
         ├── inputs/<input_set>/            profile + max-capacity stores (cds/, lulc/, atlite/)
         │   └── cache/design_cache/        year-independent designs; depends only on the stores
-        ├── costs/<cost_set>/input_data.xlsx
-        │   └── cache/cost_of_renewables/  per-year costs; depends only on the xlsx
+        ├── costs/<cost_set>/boa_cost_data.xlsx
+        │   └── cache_costs/               per-year costs; depends only on the xlsx
         └── runs/<run>/                    one (input_set, cost_set) pairing
             ├── run.json                   provenance
             └── outputs/<bl>MW/p<p>/nc/<REGION>/optimal_sol_<bl>MW_p<p>_<REGION>_<year>.nc
@@ -126,7 +126,7 @@ class PathConfig:
             input_set=input_set,
             cost_set=cost_set,
             run=run,
-            input_data_path=costs_dir / "input_data.xlsx",
+            input_data_path=costs_dir / "boa_cost_data.xlsx",
             # NE 1:50m map_subunits: source of the per-pixel iso3 grid; splits
             # sovereigns into constituent iso3s (France -> FRA + GUF + ...).
             subunits_50m_shapefile_path=data_dir / "ne_50m_admin_0_map_subunits" / "ne_50m_admin_0_map_subunits.shp",
@@ -153,5 +153,5 @@ class PathConfig:
             # Design cache follows the profile stores it was built from.
             design_cache_dir=inputs_dir / "cache" / "design_cache",
             # Cost cache follows the xlsx it was preprocessed from.
-            cost_cache_dir=costs_dir / "cache" / "cost_of_renewables",
+            cost_cache_dir=costs_dir / "cache_costs",
         )
