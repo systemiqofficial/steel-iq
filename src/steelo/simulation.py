@@ -444,6 +444,7 @@ class SimulationConfig:
     disputed_areas_shapefile_dir: Optional[Path] = None
     landtype_percentage_nc_path: Optional[Path] = None
     baseload_power_sim_dir: Optional[Path] = None
+    baseload_lcoe_file: Optional[Path] = None
     feasibility_mask_path: Optional[Path] = None
 
     # === Data Settings ===
