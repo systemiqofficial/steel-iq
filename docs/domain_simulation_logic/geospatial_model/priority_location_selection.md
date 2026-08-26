@@ -283,6 +283,7 @@ Required file paths:
 | `lulc_nc_path` | NetCDF file with land cover classifications |
 | `shp_countries_path` | Shapefile with country boundaries (for ISO3 codes) |
 | `baseload_power_sim_dir` | Directory with pre-calculated renewable LCOE files - see baseload power documentation to modify |
+| `baseload_lcoe_file` | Combined `(year, lat, lon)` LCOE file promoted from a BOA run; takes precedence over `baseload_power_sim_dir` |
 | `geo_plots_dir` | Output directory for plots |
 
 ### Output Format
