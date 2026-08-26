@@ -451,9 +451,9 @@ def main_run(argv: list[str]) -> int:
         help="Resolve paths and run the preflight check without simulating",
     )
     optional_group.add_argument(
-        "--no-plots",
+        "--plots",
         action="store_true",
-        help="Skip per-region and global map plotting during the run (saves time for long batch runs; plots can be regenerated later from saved NetCDFs)",
+        help="Generate per-region and global map plots during the run (off by default; plots can be regenerated later from saved NetCDFs)",
     )
     add_promote_lcoe_arg(optional_group)
     add_data_args(parser)
@@ -480,7 +480,7 @@ def main_run(argv: list[str]) -> int:
     logging.info(f"Coverage requirement: {args.coverage * 100:.1f}% (p={p})")
     logging.info(f"Number of samples: {args.samples}")
     logging.info(f"Worker threads: {args.workers}")
-    logging.info(f"Generate plots: {not args.no_plots}")
+    logging.info(f"Generate plots: {args.plots}")
     logging.info("=" * 60)
 
     resolve_data_sets(args)
@@ -508,7 +508,7 @@ def main_run(argv: list[str]) -> int:
         p,
         args.samples,
         args.workers,
-        generate_plots=not args.no_plots,
+        generate_plots=args.plots,
     )
     if args.promote_lcoe and run_promotion(path_config, args.demand, p) != 0:
         return 1
@@ -581,7 +581,7 @@ def main_query(argv: list[str]) -> int:
         action="store_true",
         help="Re-derive every artifact (regional NetCDFs, GLOBAL combine) even if it already exists on disk.",
     )
-    parser.add_argument("--no-plots", action="store_true", help="Skip per-region and global map plotting.")
+    parser.add_argument("--plots", action="store_true", help="Generate per-region and global map plots.")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
     add_promote_lcoe_arg(parser)
     add_data_args(parser)
@@ -622,7 +622,7 @@ def main_query(argv: list[str]) -> int:
         args.samples,
         args.workers,
         force=args.force,
-        generate_plots=not args.no_plots,
+        generate_plots=args.plots,
     )
     if args.promote_lcoe and run_promotion(path_config, args.demand, p) != 0:
         return 1
