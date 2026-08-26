@@ -105,7 +105,8 @@ def test_point_validates_coordinate_ranges():
 
 def test_dry_run_preflights_without_writing_run_manifest(tmp_path, monkeypatch):
     monkeypatch.setenv("BOA_DATA_ROOT", str(tmp_path))
-    config = PathConfig.from_root(tmp_path)
+    # Bare boa-run defaults to the cds-2024 input set.
+    config = PathConfig.from_root(tmp_path, input_set="cds-2024")
     _make_store_dirs(config, 2024)
     config.input_data_path.parent.mkdir(parents=True)
     config.input_data_path.touch()
@@ -113,6 +114,55 @@ def test_dry_run_preflights_without_writing_run_manifest(tmp_path, monkeypatch):
     assert not config.run_manifest_path.exists()
 
 
+def test_dry_run_accepts_short_flags(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOA_DATA_ROOT", str(tmp_path))
+    config = PathConfig.from_root(tmp_path, input_set="cds-2024")
+    _make_store_dirs(config, 2024)
+    config.input_data_path.parent.mkdir(parents=True)
+    config.input_data_path.touch()
+    assert (
+        main_run(["--dry-run", "-d", "800", "-c", "0.9", "-n", "500", "-s", "2030", "-e", "2035", "-f", "5", "-w", "2"])
+        == 0
+    )
+
+
 def test_dry_run_fails_cleanly_on_missing_inputs(tmp_path, monkeypatch):
     monkeypatch.setenv("BOA_DATA_ROOT", str(tmp_path))
     assert main_run(["--dry-run"]) == 1
+
+
+# ---- data-set resolution -----------------------------------------------------
+
+
+def _namespace(**overrides):
+    import argparse
+
+    defaults = dict(weather_input=None, cost_input=None, cds_prepare=None, data_prepare=None)
+    return argparse.Namespace(**{**defaults, **overrides})
+
+
+def test_resolve_data_sets_defaults():
+    from boa.cli.run_simulation import resolve_data_sets
+
+    args = _namespace()
+    resolve_data_sets(args)
+    assert args.weather_input == "cds-2024"
+    assert args.cost_input == "default"
+
+
+def test_resolve_data_sets_follows_prepare_flags():
+    from boa.cli.run_simulation import resolve_data_sets
+
+    args = _namespace(cds_prepare=2023, data_prepare=["master.xlsx", "test_scenario"])
+    resolve_data_sets(args)
+    assert args.weather_input == "cds-2023"
+    assert args.cost_input == "test_scenario"
+
+
+def test_resolve_data_sets_keeps_explicit_choices():
+    from boa.cli.run_simulation import resolve_data_sets
+
+    args = _namespace(weather_input="my-set", cost_input="my-costs", cds_prepare=2023, data_prepare=["m.xlsx", "s"])
+    resolve_data_sets(args)
+    assert args.weather_input == "my-set"
+    assert args.cost_input == "my-costs"
