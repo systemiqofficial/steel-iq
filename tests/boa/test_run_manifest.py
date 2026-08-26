@@ -20,6 +20,13 @@ def test_creates_then_appends(tmp_path):
     assert m2["provenance"]["cost_set"] == "c1"
 
 
+def test_records_resolved_parameters(tmp_path):
+    cfg = _cfg(tmp_path, input_set="cds", cost_set="c1")
+    params = {"demand_mw": 1000.0, "coverage": 0.85, "p": 15, "samples": 1000, "years": [2025, 2026]}
+    m = run_manifest.record_invocation(cfg, "run", [], parameters=params)
+    assert m["invocations"][-1]["parameters"] == params
+
+
 def test_refuses_mixed_provenance(tmp_path):
     cfg = _cfg(tmp_path, input_set="cds", cost_set="c1", run="shared")
     run_manifest.record_invocation(cfg, "query", [])

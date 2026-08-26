@@ -63,9 +63,12 @@ def detect_weather_year(path_config: PathConfig) -> int:
         if (m := _PROFILE_STEM_RE.match(f.stem)) is not None
     }
     if not years:
+        if m := re.fullmatch(r"cds-(\d{4})", path_config.input_set):
+            hint = f"`boa-cds-prepare --weather_year {m.group(1)}` (or pass `--cds-prepare {m.group(1)}` to boa-run)"
+        else:
+            hint = f"`boa-cds-prepare --weather_year <year> --inputs {path_config.input_set}`"
         raise FileNotFoundError(
-            f"No profile stores found in {store_dir} — build the input set first: "
-            f"`boa-cds-prepare --weather_year <year> --inputs {path_config.input_set}` "
+            f"No profile stores found in {store_dir} — build the input set first: {hint} "
             f"(see docs/cds-data-pipeline.md)."
         )
     if len(years) > 1:

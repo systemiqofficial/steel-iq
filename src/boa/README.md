@@ -18,17 +18,19 @@ boa-data-prepare
 boa-cds-prepare --weather_year 2024
 
 # 3. Sanity-check the pairing, then run at production settings
-boa-run --inputs cds-2024 --baseload-demand 1000 --coverage 0.95 --samples 2000 --dry-run
-boa-run --inputs cds-2024 --baseload-demand 1000 --coverage 0.95 --samples 2000 --no-plots
+boa-run --demand 1000 --coverage 0.95 --samples 2000 --dry-run
+boa-run --demand 1000 --coverage 0.95 --samples 2000 --no-plots
 ```
 
 Steps 1 and 2 are idempotent and independent — rerun either at any time; existing
-artefacts are reused. The run defaults (`--start-year 2025 --end-year 2050 --frequency 5`,
-`--workers fast`) suit a production sweep; drop to `--samples 1000` and a single year
-(`--start-year 2030 --end-year 2030`) for a faster exploratory run. To change only cost
-assumptions afterwards, skip the rebuild entirely: `boa-data-prepare --input-file
-edited.xlsx --scenario rev2` then `boa-run query --inputs cds-2024 --costs rev2 ...` reuses
-the design caches and re-derives the NetCDFs in minutes per year.
+artefacts are reused (both can also run inline via `boa-run --cds-prepare 2024
+--data-prepare wb.xlsx rev2`). The run defaults (`--start-year 2025 --end-year 2060
+--frequency 1`, `--weather-input cds-2024`, `--workers fast`) suit a production sweep;
+drop to `--samples 1000` and a single year (`--start-year 2030 --end-year 2030`) for a
+faster exploratory run. To change only cost assumptions afterwards, skip the rebuild
+entirely: `boa-data-prepare --input-file edited.xlsx --scenario rev2` then
+`boa-run query --cost-input rev2 ...` reuses the design caches and re-derives the
+NetCDFs in minutes per year.
 
 ## Preparing input data
 
@@ -82,7 +84,7 @@ costs/<scenario>/
 └── cache_costs/          cost_of_renewables_<year>_investment_year.nc, one per year
 ```
 
-Run against a scenario with `boa-run ... --costs <scenario>`.
+Run against a scenario with `boa-run ... --cost-input <scenario>`.
 
 ## CDS input stores
 
@@ -127,16 +129,18 @@ already exists, so partial reuse works too.
 `boa-run` is always GLOBAL (all 9 regions); the one exception is the single-point mode:
 
 ```bash
-boa-run --baseload-demand 1000 --coverage 0.95   # full run: build caches if missing, query every year
+boa-run --demand 1000 --coverage 0.95            # full run: build caches if missing, query every year
 boa-run build-cache --samples 2000               # year-independent design caches only
 boa-run query --start-year 2030 --end-year 2030  # NetCDFs from pre-built caches (--force to re-derive)
 boa-run point --lat 52.5 --lon 13.4              # single point; region auto-derived
-boa-run --inputs cds-2023 --costs rev3 --dry-run # resolve paths + preflight, run nothing
+boa-run --weather-input cds-2023 --cost-input rev3 --dry-run  # resolve paths + preflight, run nothing
+boa-run --cds-prepare 2024 --data-prepare wb.xlsx rev2        # prepare both sides inline, then run
 ```
 
-`--inputs` alone identifies the weather side (stores + design cache; the weather year is
-read off the store filenames, never passed), `--costs` the cost side (xlsx + per-year cost
-cache), and `--run` names the output pairing (default `<inputs>__<costs>`). A preflight
+`--weather-input` alone identifies the weather side (stores + design cache; the weather
+year is read off the store filenames, never passed; default `cds-2024`), `--cost-input`
+the cost side (xlsx + per-year cost cache), and `--run` names the output pairing (default
+`<weather-input>__<cost-input>`). A preflight
 check fails fast with the exact `boa-cds-prepare` / `boa-data-prepare` command when the
 selected sets are incomplete. The full run never rebuilds an existing design cache; use
 `build-cache --force` or `query --force` for targeted rebuilds. Expect hours for a full
@@ -181,3 +185,5 @@ the repo carries a single province taxonomy and ISO3 lookup.
 - Multi-year weather-data runs (an input set currently holds exactly one weather year).
 - Model: battery optimisation improvements.
 - Options to use the new BOA outputs in the steel-iq simulation.
+- Save run log and config file
+- Output short status while running in terminal
