@@ -54,7 +54,7 @@ def provenance(path_config: PathConfig) -> dict[str, Any]:
         "settings": {
             "random_seed": settings.RANDOM_SEED,
             "min_survivor_fraction": settings.MIN_SURVIVOR_FRACTION,
-            "overscale_sampling_means": settings.OVERSCALE_SAMPLING_MEANS,
+            "overscale_sampling_k": settings.OVERSCALE_SAMPLING_K,
             "lifetimes": settings.LIFETIMES,
             "era5_data_year": weather_year,
         },

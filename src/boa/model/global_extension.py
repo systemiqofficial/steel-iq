@@ -19,7 +19,7 @@ from boa.config.settings import (
     ERA5_DATA_RESOLUTION,
     MIN_SURVIVOR_FRACTION,
     RANDOM_SEED,
-    OVERSCALE_SAMPLING_MEANS,
+    OVERSCALE_SAMPLING_K,
 )
 from boa.inputs.costs import (
     process_global_baseload_simulation_costs,
@@ -33,9 +33,13 @@ from boa.model.logic import (
     PointDesignState,
     calculate_served_fraction,
     compute_lcoe_from_state,
+    corner_design_feasible,
     min_survivors_required,
+    overscale_mus_from_cf,
     precompute_point_state,
     state_of_charge,
+    top_up_point_state,
+    top_up_quality_threshold,
 )
 from boa.model import design_cache
 from boa.inputs.profiles import detect_weather_year, open_regional_dataset
@@ -113,9 +117,6 @@ def _precompute_tile(
     tile_indices: np.ndarray,
     solar_arr: np.ndarray,
     wind_arr: np.ndarray,
-    pv_max: np.ndarray,
-    wind_max: np.ndarray,
-    baseload_demand: float,
     p: int,
     n: int,
     seed: int,
@@ -125,6 +126,8 @@ def _precompute_tile(
     filter + battery sizing) for every point in `tile_indices`, returning each
     point's accepted designs as a CSR-ready (designs, coverage) pair. Zero-potential
     points and points where no design passed the filter both emit empty arrays.
+    The proposal is baseload-independent (mu = k / time-mean CF; the capacity
+    ceiling is applied at query time), so one build serves every baseload.
     """
     t0 = time.time()
     empty_d = np.empty((0, 3), dtype=np.float64)
@@ -136,11 +139,8 @@ def _precompute_tile(
         if solar.sum() == 0 and wind.sum() == 0:
             out.append((empty_d, empty_c))
             continue
-        overbuild_limit = {
-            "solar": float(pv_max[k]) / baseload_demand,
-            "wind": float(wind_max[k]) / baseload_demand,
-        }
-        state = precompute_point_state(solar, wind, p, n, seed, mus=OVERSCALE_SAMPLING_MEANS, limit=overbuild_limit)
+        mus = overscale_mus_from_cf(float(solar.mean()), float(wind.mean()))
+        state = precompute_point_state(solar, wind, p, n, seed, mus=mus)
         accepted = state.accepted_mask
         if accepted is None or not accepted.any():
             out.append((empty_d, empty_c))
@@ -159,6 +159,8 @@ def _query_lcoe_tile(
     designs_flat: np.ndarray,
     design_offsets: np.ndarray,
     coverage_flat: np.ndarray,
+    pv_max: np.ndarray,
+    wind_max: np.ndarray,
     capex_per_tech: dict,
     opex_per_tech: dict,
     coc_arr: np.ndarray,
@@ -167,19 +169,31 @@ def _query_lcoe_tile(
     wind_profiles: np.ndarray,
     baseload_demand: float,
     investment_horizon: int,
+    p: int,
+    n: int,
+    seed: int,
     min_survivors: int = 1,
-) -> tuple[float, list[dict]]:
+) -> tuple[float, list[dict], dict[str, int]]:
     """
     Query-phase worker. Per point in `tile_indices`: look up cached surviving
-    designs, run closed-form LCOE on all of them, pick the minimum, then re-run
-    a single-design SoC dispatch on the picked optimum to swap the LCOE
-    denominator from binary coverage to served_fraction. Points with no cached
-    designs, and points whose survivor count is below `min_survivors`, emit a
-    _ZERO_RESULT (with their cost_key). Every result carries a `status` code
-    (see STATUS_CODES) recording which of those cases it is.
+    designs, mask them to this baseload's capacity box (L = max_capacity /
+    baseload, `<=` so a design exactly at the ceiling stays in), run closed-form
+    LCOE on the survivors, pick the minimum, then re-run a single-design SoC
+    dispatch on the picked optimum to swap the LCOE denominator from binary
+    coverage to served_fraction. A point whose masked survivor count is below
+    `min_survivors` is corner-screened (an infeasible corner proves the whole box
+    infeasible by coverage monotonicity) and otherwise re-searched via the
+    box-truncated top-up; a sparse point (fewer masked survivors than
+    `top_up_quality_threshold(n)`) is topped up without the screen. The argmin
+    runs over the union of masked cache survivors and top-up survivors. Points
+    with no usable optimum emit a
+    _ZERO_RESULT (with their cost_key); every result carries a `status` code
+    (see STATUS_CODES). Returns (elapsed, results, top-up counters).
     """
     t0 = time.time()
     results: list[dict] = []
+    counters = {"starved": 0, "corner_infeasible": 0, "topped_up": 0, "resolved": 0, "quality": 0}
+    quality_min = top_up_quality_threshold(n)
 
     def _zero_result(cost_key: str, status: int) -> dict:
         zero = dict(_ZERO_RESULT)
@@ -191,18 +205,48 @@ def _query_lcoe_tile(
     for k in tile_indices:
         cost_key = str(cost_keys[k]) if cost_keys[k] else ""
         lo, hi = int(design_offsets[k]), int(design_offsets[k + 1])
-        if lo == hi:
-            # The cache conflates "no design met coverage" with "no resource at all";
-            # split them on the query-time profiles the worker already holds.
-            zero_potential = solar_profiles[k].sum() == 0 and wind_profiles[k].sum() == 0
-            results.append(_zero_result(cost_key, 3 if zero_potential else 2))
+        if solar_profiles[k].sum() == 0 and wind_profiles[k].sum() == 0:
+            results.append(_zero_result(cost_key, 3))
             continue
-        if hi - lo < min_survivors:
-            results.append(_zero_result(cost_key, 4))
-            continue
+        limit = {
+            "solar": float(pv_max[k]) / baseload_demand,
+            "wind": float(wind_max[k]) / baseload_demand,
+        }
+        d = designs_flat[lo:hi]
+        c = coverage_flat[lo:hi]
+        inbox = (d[:, 0] <= limit["solar"]) & (d[:, 1] <= limit["wind"])
+        designs_k = d[inbox]
+        coverage_k = c[inbox]
+        if designs_k.shape[0] < max(min_survivors, quality_min):
+            # Below min_survivors the corner screen gates the top-up; a merely sparse
+            # pixel skips it — any masked survivor implies a feasible corner by monotonicity.
+            starved = designs_k.shape[0] < min_survivors
+            run_top_up = True
+            if starved:
+                counters["starved"] += 1
+                if corner_design_feasible(solar_profiles[k], wind_profiles[k], p, limit):
+                    counters["topped_up"] += 1
+                else:
+                    counters["corner_infeasible"] += 1
+                    run_top_up = False
+            else:
+                counters["quality"] += 1
+            if run_top_up:
+                mus = overscale_mus_from_cf(float(solar_profiles[k].mean()), float(wind_profiles[k].mean()))
+                top_up = top_up_point_state(
+                    solar_profiles[k], wind_profiles[k], p, n, seed, mus, limit
+                ).filter_to_accepted()
+                designs_k = np.concatenate([np.asarray(designs_k, dtype=np.float64), top_up.designs])
+                coverage_k = np.concatenate([np.asarray(coverage_k, dtype=np.float64), top_up.coverage])
+            if designs_k.shape[0] < min_survivors:
+                # Status keeps its pre-mask meaning: 2 = nothing cached met coverage, 4 = too few usable.
+                results.append(_zero_result(cost_key, 2 if lo == hi else 4))
+                continue
+            if starved:
+                counters["resolved"] += 1
         state = PointDesignState(
-            designs=designs_flat[lo:hi],
-            coverage=coverage_flat[lo:hi],
+            designs=designs_k,
+            coverage=coverage_k,
             accepted_mask=None,
         )
         capex_k = {tech: capex_per_tech[tech][k] for tech in ("solar", "wind", "battery")}
@@ -251,12 +295,11 @@ def _query_lcoe_tile(
                 "status": 1 if np.isfinite(lcoe_refined) else 2,
             }
         )
-    return time.time() - t0, results
+    return time.time() - t0, results, counters
 
 
 def build_design_cache_for_region(
     region: str,
-    baseload_demand: float,
     p: int,
     n: int,
     profile: xr.Dataset,
@@ -266,9 +309,11 @@ def build_design_cache_for_region(
     force: bool = False,
 ) -> Path:
     """
-    Build the year-independent design cache for one region and persist it under
-    `path_config.design_cache_dir`. Idempotent: if a cache matching the parameter
-    hash already exists, returns its path without rebuilding.
+    Build the year-independent, baseload-independent design cache for one region and
+    persist it under `path_config.design_cache_dir`. Idempotent: if a cache matching
+    the parameter tuple already exists, returns its path without rebuilding. One
+    cache per (region, p, n, seed, weather year) serves every baseload — the
+    capacity ceiling is applied as a mask at query time.
 
     The build phase no longer touches the iso3 grid or the costs dataset —
     cost_keys are derived fresh per query (see ``query_design_cache_for_region``)
@@ -283,7 +328,6 @@ def build_design_cache_for_region(
     cache_file = design_cache.cache_path(
         path_config.design_cache_dir,
         region,
-        baseload_demand,
         p,
         n,
         RANDOM_SEED,
@@ -335,9 +379,6 @@ def build_design_cache_for_region(
                     t,
                     solar_arr,
                     wind_arr,
-                    pv_max,
-                    wind_max,
-                    baseload_demand,
                     p,
                     n,
                     RANDOM_SEED,
@@ -387,12 +428,12 @@ def build_design_cache_for_region(
             region,
             npts,
             designs_flat.shape[0],
-            baseload_demand,
             p,
             n,
             RANDOM_SEED,
             weather_year,
             ERA5_DATA_RESOLUTION,
+            OVERSCALE_SAMPLING_K,
         ),
     )
     written = design_cache.write_cache(cache, cache_file)
@@ -436,7 +477,6 @@ def query_design_cache_for_region(
     cache_file = design_cache.cache_path(
         path_config.design_cache_dir,
         region,
-        baseload_demand,
         p,
         n,
         RANDOM_SEED,
@@ -555,6 +595,8 @@ def query_design_cache_for_region(
                     cache.designs_flat,
                     cache.design_offsets,
                     cache.coverage_flat,
+                    cache.pv_max,
+                    cache.wind_max,
                     capex_per_tech,
                     opex_per_tech,
                     coc_arr,
@@ -563,6 +605,9 @@ def query_design_cache_for_region(
                     wind_profiles,
                     baseload_demand,
                     investment_horizon,
+                    p,
+                    n,
+                    RANDOM_SEED,
                     min_survivors,
                 ),
                 tiles,
@@ -574,6 +619,17 @@ def query_design_cache_for_region(
         f"[timing] LCOE parallel ({len(tiles)} tiles, n_workers={n_workers}): {wall:.1f}s | "
         f"tile compute min/mean/max {tile_times.min():.2f}/{tile_times.mean():.2f}/{tile_times.max():.2f}s"
     )
+    topup = {
+        key: sum(tr[2][key] for tr in tile_results)
+        for key in ("starved", "corner_infeasible", "topped_up", "resolved", "quality")
+    }
+    if topup["starved"] > 0 or topup["quality"] > 0:
+        logging.info(
+            f"[top-up] {topup['starved']} pixels starved by the capacity mask in {region}: "
+            f"{topup['corner_infeasible']} proven infeasible by the corner screen, "
+            f"{topup['topped_up']} re-sampled ({topup['resolved']} resolved to a usable optimum); "
+            f"{topup['quality']} sparse pixels re-sampled by the quality trigger."
+        )
     tile_results = [tr[1] for tr in tile_results]
 
     # Assemble per-field flat arrays then vectorised assignment into the output grid.
@@ -717,7 +773,6 @@ def execute_baseload_optimization_for_region(
 
     build_design_cache_for_region(
         region,
-        baseload_demand,
         p,
         n,
         profile,

@@ -13,15 +13,29 @@ from boa.model.cost_calculations import (
 from boa.config.settings import (
     BATTERY_UNIT_CAPEX_SCALING_FACTOR,
     MIN_SURVIVOR_FRACTION,
+    OVERSCALE_SAMPLING_K,
+    TOPUP_QUALITY_FRACTION,
 )
 from boa.config.constants import AVERAGE_IMPLIED_STORAGE
+
+
+def overscale_mus_from_cf(cf_solar: float, cf_wind: float) -> dict[str, float]:
+    """
+    Per-point proposal scales mu = k / CF from the time-mean capacity factors (see
+    OVERSCALE_SAMPLING_K). The 1e-9 is a division guard only, not a behavioural floor:
+    a zero-CF technology gets an astronomically large mu, every draw lands outside the
+    capacity ceiling, and the query-time top-up handles the pixel — the correct outcome.
+    """
+    return {
+        "solar": OVERSCALE_SAMPLING_K["solar"] / max(cf_solar, 1e-9),
+        "wind": OVERSCALE_SAMPLING_K["wind"] / max(cf_wind, 1e-9),
+    }
 
 
 def capacity_sampling(
     profile: dict[str, np.ndarray],
     p: float,
     n_samples: int,
-    limit: dict[str, float] | None,
     seed: int,
     mus: dict[str, float],
 ) -> list[dict[str, float]]:
@@ -35,21 +49,19 @@ def capacity_sampling(
     `_draw_overscale_samples` is shared with `optimize_point`, so both produce bit-identical
     designs for the same seed.
 
-    Generates a list of random samples for the wind and solar overscale factors following an exponential distribution
-    and calculates the battery overscale factor based on the sampled wind and solar overscaling factors. If the capacity is limited,
-    the wind overscale factors are sampled from a uniform distribution between 0 and the limit instead. For the solar overscale factors,
-    the exponential distribution is used with a limit on the maximum value.
+    Generates a list of random samples for the wind and solar overscale factors, both drawn
+    from an exponential distribution (one family for both technologies; the capacity ceiling
+    is a downstream mask, never part of the proposal), and calculates the battery overscale
+    factor for every sampled (solar, wind) pair.
 
     Parameters:
         profile: Dictionary containing solar and wind profiles.
         p: Percentile of time where we don't cover the demand (e.g. 5 means 5th percentile).
         n_samples: Number of random samples to generate.
         mus: Dict with keys 'wind' and 'solar' for the respective means of the distributions.
-        limit: Dict with keys 'wind' and 'solar' for the respective capacity limits, which are driven by land availability
-        and physical spacing constraints. Units: scaling factor w.r.t. baseload demand (-).
         seed: random seed for reproducibility.
     """
-    C_w_samples, C_s_samples = _draw_overscale_samples(n_samples, mus, limit, seed)
+    C_w_samples, C_s_samples = _draw_overscale_samples(n_samples, mus, seed)
 
     # Battery overscale factor for every sample, computed in one vectorised pass: build the
     # (n, T) net-energy matrix once and size all batteries in a compiled kernel (was a pure-Python
@@ -66,7 +78,6 @@ def capacity_sampling(
 def _draw_overscale_samples(
     n_samples: int,
     mus: dict[str, float],
-    limit: dict[str, float] | None,
     seed: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -81,12 +92,38 @@ def _draw_overscale_samples(
     for any given seed.
     """
     rng = np.random.RandomState(seed)
-    if limit is None:
-        C_w_samples = rng.exponential(scale=mus["wind"], size=n_samples)
-        C_s_samples = rng.exponential(scale=mus["solar"], size=n_samples)
-    else:
-        C_w_samples = rng.uniform(size=n_samples, low=0, high=limit["wind"])
-        C_s_samples = np.clip(rng.exponential(scale=mus["solar"], size=n_samples), 0, limit["solar"])
+    C_w_samples = rng.exponential(scale=mus["wind"], size=n_samples)
+    C_s_samples = rng.exponential(scale=mus["solar"], size=n_samples)
+    return C_w_samples, C_s_samples
+
+
+def _truncated_exponential(u: np.ndarray, mu: float, limit: float) -> np.ndarray:
+    """
+    Inverse-CDF of Exp(mu) truncated to [0, limit]: x = -mu * log(1 - u * (1 - exp(-L/mu))).
+    As mu/L -> infinity this degrades gracefully to U(0, L) — the doldrums (near-zero CF)
+    regime, where the box-truncated proposal is exactly a uniform search of the box.
+    """
+    ratio = min(limit / mu, 700.0)  # clamp before exp; 1 - exp(-x) saturates long before 700
+    return -mu * np.log1p(u * np.expm1(-ratio))
+
+
+def _draw_truncated_overscale_samples(
+    n_samples: int,
+    mus: dict[str, float],
+    limit: dict[str, float],
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Box-truncated counterpart of `_draw_overscale_samples` for the query-time top-up:
+    Exp(mu) | [0, L] per technology via inverse-CDF on a thread-owned RandomState, so the
+    draws are deterministic per (mus, limit, seed) and safe under concurrent tiles.
+    Draw order (wind then solar) mirrors `_draw_overscale_samples`.
+    """
+    rng = np.random.RandomState(seed)
+    u_w = rng.random_sample(n_samples)
+    u_s = rng.random_sample(n_samples)
+    C_w_samples = _truncated_exponential(u_w, mus["wind"], limit["wind"])
+    C_s_samples = _truncated_exponential(u_s, mus["solar"], limit["solar"])
     return C_w_samples, C_s_samples
 
 
@@ -499,25 +536,23 @@ def min_survivors_required(n: int, fraction: float = MIN_SURVIVOR_FRACTION) -> i
     return max(1, int(np.ceil(fraction * n)))
 
 
-def precompute_point_state(
+def top_up_quality_threshold(n: int) -> int:
+    """Masked survivor count below which the quality top-up fires (see TOPUP_QUALITY_FRACTION)."""
+    return int(np.ceil(TOPUP_QUALITY_FRACTION * n))
+
+
+def _state_from_draws(
     solar_profile: np.ndarray,
     wind_profile: np.ndarray,
     p: float,
-    n: int,
-    seed: int,
-    mus: dict[str, float],
-    limit: dict[str, float] | None = None,
+    C_s: np.ndarray,
+    C_w: np.ndarray,
 ) -> PointDesignState:
     """
-    Year-independent compute for one grid point: Monte Carlo sample → net-energy matrix
-    → deficit percentile → battery sizing → coverage → accepted mask. Returns the full
-    n-design state; downstream code picks the optimum based on cost data (see
-    `compute_lcoe_from_state`).
-
-    All quantities are dimensionless overscale factors relative to demand = 1 unit;
-    `baseload_demand` enters only at the LCOE step.
+    Score arbitrary (solar, wind) overscale draws: net-energy matrix → deficit percentile
+    → battery sizing → coverage → accepted mask. Shared by the base sampler, the
+    query-time top-up, and the corner screen so all three dispatch designs identically.
     """
-    C_w, C_s = _draw_overscale_samples(n, mus, limit, seed)
     net_energy = np.ascontiguousarray((np.outer(solar_profile, C_s) + np.outer(wind_profile, C_w) - 1.0).T)
     deficit_vals = np.percentile(net_energy, p, axis=1)
     batteries = estimate_battery_capacity_batch(net_energy, deficit_vals, 100 - p)
@@ -525,6 +560,72 @@ def precompute_point_state(
     accepted = coverage >= 1 - p / 100.0
     designs = np.column_stack([C_s, C_w, batteries])
     return PointDesignState(designs=designs, coverage=coverage, accepted_mask=accepted)
+
+
+def precompute_point_state(
+    solar_profile: np.ndarray,
+    wind_profile: np.ndarray,
+    p: float,
+    n: int,
+    seed: int,
+    mus: dict[str, float],
+) -> PointDesignState:
+    """
+    Year-independent compute for one grid point: Monte Carlo sample → net-energy matrix
+    → deficit percentile → battery sizing → coverage → accepted mask. Returns the full
+    n-design state; downstream code picks the optimum based on cost data (see
+    `compute_lcoe_from_state`).
+
+    The proposal is baseload-independent: no capacity ceiling enters here (it is applied
+    downstream as a mask), so one precompute serves every baseload. All quantities are
+    dimensionless overscale factors relative to demand = 1 unit; `baseload_demand`
+    enters only at the LCOE step.
+    """
+    C_w, C_s = _draw_overscale_samples(n, mus, seed)
+    return _state_from_draws(solar_profile, wind_profile, p, C_s, C_w)
+
+
+def corner_design_feasible(
+    solar_profile: np.ndarray,
+    wind_profile: np.ndarray,
+    p: float,
+    limit: dict[str, float],
+) -> bool:
+    """
+    Screen for genuine infeasibility: dispatch the single corner design (L_s, L_w) with
+    the usual heuristic battery. Coverage is monotone in build size (the feasible set is
+    up-closed), so if the biggest in-box design fails coverage, no design in the box can
+    pass — the pixel is proven infeasible and the top-up re-sample can be skipped.
+    """
+    state = _state_from_draws(
+        solar_profile,
+        wind_profile,
+        p,
+        np.array([limit["solar"]], dtype=np.float64),
+        np.array([limit["wind"]], dtype=np.float64),
+    )
+    assert state.accepted_mask is not None
+    return bool(state.accepted_mask[0])
+
+
+def top_up_point_state(
+    solar_profile: np.ndarray,
+    wind_profile: np.ndarray,
+    p: float,
+    n: int,
+    seed: int,
+    mus: dict[str, float],
+    limit: dict[str, float],
+) -> PointDesignState:
+    """
+    Query-time top-up for a pixel whose masked survivor count fell below the
+    min-survivor threshold: re-draw n designs from the box-truncated proposal
+    Exp(mu) | [0, L] per technology and score them with the same kernels as the base
+    sample. Deterministic per (profiles, mus, limit, seed); callers take the argmin
+    over the union of masked cache survivors and these top-up survivors.
+    """
+    C_w, C_s = _draw_truncated_overscale_samples(n, mus, limit, seed)
+    return _state_from_draws(solar_profile, wind_profile, p, C_s, C_w)
 
 
 def compute_lcoe_from_state(
@@ -622,20 +723,27 @@ def optimize_point(
 ) -> dict | tuple[dict | None, dict] | None:
     """
     Thin wrapper around `precompute_point_state` + `compute_lcoe_from_state`: runs the
-    full per-point pipeline (sample → coverage filter → LCOE → argmin). Preserved as
-    the backward-compatible entry point for the single-point API (the GLOBAL path
-    uses the split functions directly via the design cache).
+    full per-point pipeline (sample → coverage filter → ceiling mask → LCOE → argmin).
+    Preserved as the backward-compatible entry point for the single-point API (the
+    GLOBAL path uses the split functions directly via the design cache).
 
-    `min_survivors` is the minimum number of designs that must clear the coverage
-    filter for the argmin to be trusted (see `min_survivors_required`); the default
-    of 1 keeps the original behaviour.
+    `limit` is the capacity ceiling in overscale units, applied as a post-hoc mask on
+    the fixed proposal (never inside the sampler). A pixel whose masked survivor count
+    falls below `min_survivors` is corner-screened and, unless proven infeasible,
+    re-searched via the box-truncated top-up; a sparse pixel (fewer masked survivors
+    than `top_up_quality_threshold(n)`) is topped up without the screen. The argmin
+    then runs over the union of masked survivors and top-up survivors.
 
     Returns:
       - `return_intermediates=False` (default): optimal design dict, or None if fewer
-        than `min_survivors` sampled designs met the coverage threshold.
+        than `min_survivors` designs survived coverage, mask and top-up.
       - `return_intermediates=True`: `(optimum, intermediates)` tuple, where
         `intermediates` carries the full design space (samples, accepted mask, LCOEs,
-        costs, coverages) for plotting / API plot-data payloads.
+        costs, coverages; length n, or n + n top-up draws when the top-up ran) for
+        plotting / API plot-data payloads. `accepted_mask` marks the designs the
+        argmin ran over; when no optimum was found it falls back to the coverage-only
+        mask, from which callers derive the status-2-vs-4 split (did any design meet
+        coverage at all?) exactly as the global query path does from its cache.
     """
     state = precompute_point_state(
         profile["solar"],
@@ -644,39 +752,69 @@ def optimize_point(
         n,
         seed,
         mus=mus,
-        limit=limit,
     )
     accepted = state.accepted_mask
     assert accepted is not None  # precompute always returns the full form
 
-    if int(accepted.sum()) < min_survivors:
+    # Ceiling as a post-hoc mask: survivors must clear coverage AND fit in the box.
+    if limit is not None:
+        inbox = (state.designs[:, 0] <= limit["solar"]) & (state.designs[:, 1] <= limit["wind"])
+        survivors = accepted & inbox
+    else:
+        survivors = accepted
+
+    # Starved or sparse pixel: top-up from the truncated proposal. The corner screen is only
+    # needed below min_survivors — any masked survivor implies a feasible corner by monotonicity.
+    top_up = None
+    if limit is not None:
+        n_surv = int(survivors.sum())
+        if n_surv < max(min_survivors, top_up_quality_threshold(n)):
+            if n_surv >= min_survivors or corner_design_feasible(profile["solar"], profile["wind"], p, limit):
+                top_up = top_up_point_state(profile["solar"], profile["wind"], p, n, seed, mus, limit)
+
+    if top_up is not None:
+        assert top_up.accepted_mask is not None
+        designs_all = np.concatenate([state.designs, top_up.designs])
+        coverage_all = np.concatenate([state.coverage, top_up.coverage])
+        # Top-up draws are in-box by construction, so their coverage mask is their survivor mask.
+        survivors_all = np.concatenate([survivors, top_up.accepted_mask])
+        coverage_only = np.concatenate([accepted, top_up.accepted_mask])
+    else:
+        designs_all, coverage_all = state.designs, state.coverage
+        survivors_all, coverage_only = survivors, accepted
+    m = designs_all.shape[0]
+
+    if int(survivors_all.sum()) < min_survivors:
         if return_intermediates:
             return None, {
                 "feasible_designs": {
-                    "solar": state.designs[:, 0],
-                    "wind": state.designs[:, 1],
-                    "battery": state.designs[:, 2],
+                    "solar": designs_all[:, 0],
+                    "wind": designs_all[:, 1],
+                    "battery": designs_all[:, 2],
                 },
-                "accepted_mask": accepted,
-                "lcoes": np.zeros(n),
-                "installation_costs": np.zeros(n),
+                "accepted_mask": coverage_only,
+                "lcoes": np.zeros(m),
+                "installation_costs": np.zeros(m),
                 "installation_cost_breakdowns": {
-                    "solar": np.zeros(n),
-                    "wind": np.zeros(n),
-                    "battery": np.zeros(n),
+                    "solar": np.zeros(m),
+                    "wind": np.zeros(m),
+                    "battery": np.zeros(m),
                 },
-                "coverages": state.coverage,
+                "coverages": coverage_all,
             }
         return None
 
-    # Only the accepted designs contribute to the optimum (argmin) and to the
+    # Only the surviving designs contribute to the optimum (argmin) and to the
     # consumed intermediates fields (every reader downstream slices the lcoes /
-    # installation_costs arrays by accepted_mask). Filter the state before the
-    # LCOE pass so rejected designs — including any with coverage == 0, which
-    # would divide-by-zero in the realised-coverage denominator — never enter
-    # the calculation. Mirrors what the global build/query paths already do via
-    # the design cache.
-    state_acc = state.filter_to_accepted()
+    # installation_costs arrays by accepted_mask). Filter before the LCOE pass so
+    # rejected designs — including any with coverage == 0, which would
+    # divide-by-zero in the realised-coverage denominator — never enter the
+    # calculation. Mirrors what the global query path does via the design cache.
+    state_acc = PointDesignState(
+        designs=designs_all,
+        coverage=coverage_all,
+        accepted_mask=survivors_all,
+    ).filter_to_accepted()
     lcoe = compute_lcoe_from_state(
         state_acc,
         baseload_demand,
@@ -688,25 +826,25 @@ def optimize_point(
     lcoes_acc = lcoe["lcoes"]
 
     # `argmin` is over the filtered array; map back to the original sample index
-    # so callers still see the design's position in the full (n,) state.
-    accepted_idx = np.where(accepted)[0]
+    # so callers still see the design's position in the full (m,) state.
+    accepted_idx = np.where(survivors_all)[0]
     k_acc = int(np.argmin(lcoes_acc))
     k = int(accepted_idx[k_acc])
 
     # Refine the picked optimum's LCOE: re-dispatch on this one design and swap
     # the denominator from binary coverage to dispatch-aware served_fraction.
-    coverage_pick = float(state.coverage[k])
+    coverage_pick = float(coverage_all[k])
     lcoe_coverage_based = float(lcoes_acc[k_acc])
-    net_nrg_pick = state.designs[k, 0] * profile["solar"] + state.designs[k, 1] * profile["wind"] - 1.0
-    soc_pick = state_of_charge(net_nrg_pick, float(state.designs[k, 2]))
+    net_nrg_pick = designs_all[k, 0] * profile["solar"] + designs_all[k, 1] * profile["wind"] - 1.0
+    soc_pick = state_of_charge(net_nrg_pick, float(designs_all[k, 2]))
     served_fraction_pick = calculate_served_fraction(soc_pick, net_nrg_pick)
     lcoe_refined = lcoe_coverage_based * coverage_pick / served_fraction_pick
 
     optimum = {
         "design": {
-            "solar": float(state.designs[k, 0]),
-            "wind": float(state.designs[k, 1]),
-            "battery": float(state.designs[k, 2]),
+            "solar": float(designs_all[k, 0]),
+            "wind": float(designs_all[k, 1]),
+            "battery": float(designs_all[k, 2]),
         },
         "lcoe": float(lcoe_refined),
         "lcoe_coverage_based": lcoe_coverage_based,
@@ -721,23 +859,23 @@ def optimize_point(
     }
 
     if return_intermediates:
-        # Re-expand the (n_accepted,) LCOE/cost arrays back to (n,) for the
+        # Re-expand the (n_survivors,) LCOE/cost arrays back to (m,) for the
         # intermediates payload, with zero in the rejected slots. This matches
         # the existing schema (downstream consumers always slice by
-        # accepted_mask) and the `if not accepted.any()` early-return above,
-        # which also uses zeros for "uncomputed".
+        # accepted_mask) and the starved early-return above, which also uses
+        # zeros for "uncomputed".
         def _expand(values: np.ndarray) -> np.ndarray:
-            full = np.zeros(n)
-            full[accepted] = values
+            full = np.zeros(m)
+            full[survivors_all] = values
             return full
 
         return optimum, {
             "feasible_designs": {
-                "solar": state.designs[:, 0],
-                "wind": state.designs[:, 1],
-                "battery": state.designs[:, 2],
+                "solar": designs_all[:, 0],
+                "wind": designs_all[:, 1],
+                "battery": designs_all[:, 2],
             },
-            "accepted_mask": accepted,
+            "accepted_mask": survivors_all,
             "lcoes": _expand(lcoes_acc),
             "installation_costs": _expand(lcoe["installation_costs"]),
             "installation_cost_breakdowns": {
@@ -745,7 +883,7 @@ def optimize_point(
                 "wind": _expand(lcoe["ic_wind"]),
                 "battery": _expand(lcoe["ic_battery"]),
             },
-            "coverages": state.coverage,
+            "coverages": coverage_all,
         }
     return optimum
 

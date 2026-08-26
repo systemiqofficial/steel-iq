@@ -33,28 +33,31 @@ MAINTENANCE_DOWNTIME_DAYS = 10  # days/year
 # Random seed for reproducibility
 RANDOM_SEED = 42
 
-# Mean (scale) of the exponential distribution the Monte Carlo search draws candidate solar
-# and wind overscale factors from (see logic._draw_overscale_samples). Units: multiples of
-# baseload demand — each build is sampled from Exp(mean=mu), so larger values steer the
-# sampler towards bigger installations. With a finite sample count this shifts where the
-# design space is explored densely; it is a search-tuning knob, not a physical parameter.
-# Note: when a land/capacity limit applies, wind is drawn uniformly up to that limit and only
-# the solar mean is used.
-OVERSCALE_SAMPLING_MEANS = {"wind": 5.0, "solar": 5.0}
+# Scale of the Monte Carlo design proposal, as a multiple of 1/CF: overscale draws come
+# from Exp(mean=mu) with mu = OVERSCALE_SAMPLING_K[tech] / CF_tech (per-pixel time-mean
+# capacity factor), so the search tracks the site's resource. The capacity ceiling is
+# applied downstream as a query-time mask, never inside the sampler. Search-tuning knob,
+# not a physical parameter; validated for baseloads up to 20,000 MW.
+OVERSCALE_SAMPLING_K = {"wind": 0.75, "solar": 0.75}
 
 # Minimum share of the n sampled designs that must clear the coverage filter before a
 # pixel's LCOE argmin is trusted (threshold = ceil(fraction * n); n=2000 -> 20 designs).
 # With a single survivor the "optimum" is one Monte Carlo draw, not a reproducible
 # optimum, so such pixels are reported as infeasible (status 4) instead. Like
-# OVERSCALE_SAMPLING_MEANS this is a search-quality knob, not a physical parameter;
+# OVERSCALE_SAMPLING_K this is a search-quality knob, not a physical parameter;
 # 0.0 disables the cut, restoring the "at least one surviving design" behaviour.
 MIN_SURVIVOR_FRACTION = 0.01
 
+# Quality trigger for the query-time top-up: a pixel whose masked survivor count falls
+# below this fraction of n is re-sampled from the box-truncated proposal (the adequacy
+# trigger, MIN_SURVIVOR_FRACTION, always applies on top). Raising it trades query time
+# for a thinner pessimistic LCOE tail on sparsely-covered pixels.
+TOPUP_QUALITY_FRACTION = 0.25
+
 # ===== Max-capacity ceiling parameters (boa_cds max-capacity) =====
 # Installable capacity densities implied by the shipped max_capacity files.
-# steel-iq's availability.py says wind 10.42; which is right for the ic6hh135
-# turbine is an open team decision (P3d) — override with --wind-density until settled.
-CAPACITY_DENSITY_MW_PER_KM2 = {"pv": 141.9, "wind": 20.5}
+# override with --wind-density until settled.
+CAPACITY_DENSITY_MW_PER_KM2 = {"pv": 140, "wind": 10}
 
 # ESA-CCI LCCS class -> usable land fraction, ported from steel-iq
 # wind_and_pv/availability.py LULC_CODES (values pending team sign-off).

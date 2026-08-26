@@ -1,7 +1,7 @@
 import pytest
 
 from boa.config.paths import PathConfig
-from boa.config import run_manifest
+from boa.config import run_manifest, settings
 
 
 def _cfg(tmp_path, **kw):
@@ -25,6 +25,13 @@ def test_records_resolved_parameters(tmp_path):
     params = {"demand_mw": 1000.0, "coverage": 0.85, "p": 15, "samples": 1000, "years": [2025, 2026]}
     m = run_manifest.record_invocation(cfg, "run", [], parameters=params)
     assert m["invocations"][-1]["parameters"] == params
+
+
+def test_provenance_records_overscale_sampling_k(tmp_path):
+    cfg = _cfg(tmp_path, input_set="cds", cost_set="c1")
+    m = run_manifest.record_invocation(cfg, "run", [])
+    assert m["provenance"]["settings"]["overscale_sampling_k"] == settings.OVERSCALE_SAMPLING_K
+    assert "overscale_sampling_means" not in m["provenance"]["settings"]
 
 
 def test_refuses_mixed_provenance(tmp_path):

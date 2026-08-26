@@ -360,20 +360,18 @@ def _validate_cost_set(path_config: PathConfig, investment_year: int) -> tuple[x
 
 def build_all_caches(
     path_config: PathConfig,
-    baseload_demand: float,
     p: int,
     n: int,
     n_workers: int,
     force: bool = False,
 ) -> None:
-    """Build the year-independent design cache for every region (skip-if-exists unless force)."""
+    """Build the year- and baseload-independent design cache for every region (skip-if-exists unless force)."""
     costs, _ = _validate_cost_set(path_config, COST_ANCHOR_YEAR)
     for region in REGION_COORDS:
         logging.info(f"\nBuilding design cache for {region}")
         profile = open_regional_dataset("profile", region, path_config)
         build_design_cache_for_region(
             region=region,
-            baseload_demand=baseload_demand,
             p=p,
             n=n,
             profile=profile,
@@ -500,7 +498,7 @@ def main_run(argv: list[str]) -> int:
         return 0
 
     run_manifest.record_invocation(path_config, "run", list(argv), parameters=resolved_parameters(args, p, years))
-    build_all_caches(path_config, args.demand, p, args.samples, args.workers)
+    build_all_caches(path_config, p, args.samples, args.workers)
     query_all_years(
         path_config,
         years,
@@ -546,7 +544,7 @@ def main_build_cache(argv: list[str]) -> int:
     logging.info("=" * 60)
     logging.info("BOA: build-cache")
     logging.info("=" * 60)
-    logging.info(f"Baseload: {args.demand} MW; coverage p={p}; samples={args.samples}; workers={args.workers}")
+    logging.info(f"Coverage p={p}; samples={args.samples}; workers={args.workers} (caches are baseload-independent)")
 
     resolve_data_sets(args)
     if (rc := run_prepare_flags(args)) != 0:
@@ -558,7 +556,7 @@ def main_build_cache(argv: list[str]) -> int:
         logging.error(str(e))
         return 1
     run_manifest.record_invocation(path_config, "build-cache", list(argv), parameters=resolved_parameters(args, p))
-    build_all_caches(path_config, args.demand, p, args.samples, args.workers, force=args.force)
+    build_all_caches(path_config, p, args.samples, args.workers, force=args.force)
     logging.info("\nbuild-cache: all regions complete.")
     return 0
 
