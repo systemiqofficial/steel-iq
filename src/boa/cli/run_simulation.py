@@ -12,6 +12,9 @@ Subcommands:
     boa-run query            optimal-solution NetCDFs from pre-built caches (all regions, all years)
     boa-run point            single-point run at --lat/--lon (region auto-derived)
 
+`--promote-lcoe` combines the per-year GLOBAL NetCDFs into the single LCOE file the
+steel simulation reads; `boa-promote-lcoe` does the same for a finished run.
+
 The weather year is never passed in: it is read off the profile-store filenames
 of the selected input set (`--weather-input`), so the stores are the single
 source of truth. Input data is prepared separately — `boa-cds-prepare` for the
@@ -21,6 +24,7 @@ also be run inline via `--cds-prepare <year>` / `--data-prepare <xlsx> <scenario
 
 Examples:
     boa-run --demand 1000 --coverage 0.95
+    boa-run --demand 1000 --coverage 0.95 --promote-lcoe
     boa-run --weather-input cds-2023 --cost-input xlsx-rev3 --dry-run
     boa-run --cds-prepare 2024 --data-prepare master.xlsx test_scenario
     boa-run build-cache --samples 2000 --workers fast
@@ -43,6 +47,7 @@ from boa.model.global_extension import (
     combine_regional_datasets_into_global_dataset,
     query_design_cache_for_region,
 )
+from boa.model.lcoe_promotion import promote_lcoe
 from boa.model.diagnostics import (
     plot_global_optimum_baseload_power_simulation_map,
     plot_regional_optimum_baseload_power_simulation_map,
@@ -222,6 +227,26 @@ def add_workers_arg(parser: argparse.ArgumentParser) -> None:
         help="Number of threads for parallel grid-point optimization. Integer or preset "
         "(small ~25%% of cores, normal ~50%%, fast cpu_count-2).",
     )
+
+
+def add_promote_lcoe_arg(parser: argparse._ActionsContainer) -> None:
+    """Takes a parser or an argument group, so the flag lands beside the other optional ones."""
+    parser.add_argument(
+        "--promote-lcoe",
+        action="store_true",
+        help="After the query, combine the per-year GLOBAL NetCDFs into one LCOE file for the steel simulation "
+        "(same as running boa-promote-lcoe afterwards).",
+    )
+
+
+def run_promotion(path_config: PathConfig, baseload_demand: float, p: int) -> int:
+    """Promote this scenario's LCOE, reporting a failure without discarding the completed query."""
+    try:
+        promote_lcoe(path_config, baseload_demand, p)
+    except (FileNotFoundError, ValueError) as e:
+        logging.error(f"LCOE promotion failed: {e}")
+        return 1
+    return 0
 
 
 def validate_scenario_args(args: argparse.Namespace) -> None:
@@ -430,6 +455,7 @@ def main_run(argv: list[str]) -> int:
         action="store_true",
         help="Skip per-region and global map plotting during the run (saves time for long batch runs; plots can be regenerated later from saved NetCDFs)",
     )
+    add_promote_lcoe_arg(optional_group)
     add_data_args(parser)
     args = parser.parse_args(argv)
 
@@ -484,6 +510,8 @@ def main_run(argv: list[str]) -> int:
         args.workers,
         generate_plots=not args.no_plots,
     )
+    if args.promote_lcoe and run_promotion(path_config, args.demand, p) != 0:
+        return 1
     logging.info("\nAll simulations completed successfully!")
     return 0
 
@@ -555,6 +583,7 @@ def main_query(argv: list[str]) -> int:
     )
     parser.add_argument("--no-plots", action="store_true", help="Skip per-region and global map plotting.")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
+    add_promote_lcoe_arg(parser)
     add_data_args(parser)
     args = parser.parse_args(argv)
 
@@ -595,6 +624,8 @@ def main_query(argv: list[str]) -> int:
         force=args.force,
         generate_plots=not args.no_plots,
     )
+    if args.promote_lcoe and run_promotion(path_config, args.demand, p) != 0:
+        return 1
     logging.info("\nquery: all (region, year) pairs complete.")
     return 0
 
