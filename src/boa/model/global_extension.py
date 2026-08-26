@@ -6,12 +6,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from boa.geo.iso3_finder import (
-    iso3_at_batch,
-    load_subregion_polygons,
-    validate_subregion_coverage,
-    validate_subregion_keys,
-)
+from boa.geo.iso3_finder import iso3_at_batch
 from boa.geo.geospatial import choose_land_points_in_cutout
 from boa.config.paths import PathConfig
 from boa.config.settings import (
@@ -21,9 +16,6 @@ from boa.config.settings import (
     RANDOM_SEED,
     OVERSCALE_SAMPLING_K,
     TOPUP_QUALITY_FRACTION,
-)
-from boa.inputs.costs import (
-    process_global_baseload_simulation_costs,
 )
 from boa.model.single_point_run import (
     build_cost_lookup_indices,
@@ -44,10 +36,6 @@ from boa.model.logic import (
 )
 from boa.model import design_cache
 from boa.inputs.profiles import detect_weather_year, open_regional_dataset
-from boa.model.diagnostics import (
-    plot_regional_optimum_baseload_power_simulation_map,
-    plot_global_optimum_baseload_power_simulation_map,
-)
 
 _ZERO_RESULT = {
     "design": {"solar": 0.0, "wind": 0.0, "battery": 0.0},
@@ -1004,57 +992,6 @@ def query_design_cache_for_region(
     return optimal_sol
 
 
-def execute_baseload_optimization_for_region(
-    year: int,
-    region: str,
-    baseload_demand: float,
-    p: int,
-    profile: xr.Dataset,
-    costs: xr.Dataset,
-    investment_horizon: int,
-    n: int,
-    path_config: PathConfig,
-    n_workers: int,
-    force: bool = False,
-) -> xr.Dataset:
-    """
-    Run the per-region pipeline: build the design cache if missing, then query it
-    with year-specific costs to produce the optimal-solution NetCDF. Caller
-    contract is unchanged from the pre-cache implementation; the speedup comes
-    from cache hits on subsequent (year, scenario) runs over the same region.
-    """
-    optimal_sol_path = path_config.optimal_sol_path(baseload_demand, p, region, year)
-    if optimal_sol_path.exists() and not force:
-        logging.info(
-            f"Optimal solution for {region} already exists. Loading from {optimal_sol_path} (use --force to re-derive)."
-        )
-        return xr.open_dataset(optimal_sol_path)
-
-    build_design_cache_for_region(
-        region,
-        p,
-        n,
-        profile,
-        costs,
-        path_config,
-        n_workers,
-        force=force,
-    )
-    return query_design_cache_for_region(
-        year,
-        region,
-        baseload_demand,
-        p,
-        profile,
-        costs,
-        investment_horizon,
-        n,
-        path_config,
-        n_workers,
-        force=force,
-    )
-
-
 def combine_regional_datasets_into_global_dataset(
     year: int,
     p: int,
@@ -1159,115 +1096,3 @@ def combine_regional_datasets_into_global_dataset(
         global_ds.to_netcdf(global_output_path, encoding=_float32_output_encoding(global_ds))
 
         return global_ds
-
-
-def execute_baseload_power_simulation(
-    path_config: PathConfig,
-    year: int,
-    region: str,
-    baseload_demand: float,
-    p: int,
-    n: int,
-    n_workers: int,
-    generate_plots: bool = True,
-    force: bool = False,
-) -> xr.Dataset | None:
-    """
-    Execute the baseload power simulation for a given region or globally. Land grid points are
-    optimised in parallel via a ThreadPoolExecutor; results are saved to NetCDF and optionally
-    plotted.
-
-    Parameters:
-        - path_config: Configuration object containing all necessary paths for the baseload power simulation.
-        - year: Investment year for the simulation.
-        - region: Region to run the simulation for. If "GLOBAL", the simulation is run for all regions and combined to a
-        global map by the end.
-        - baseload_demand: Baseload demand in MW (default: 500.0).
-        - p: Percentile of time where we don't cover the demand (e.g. 15 means 15th percentile).
-        - n: Number of random samples to generate for each grid point. Controls the variability of the distributions of
-        overscale factors for solar, wind, and batteries.
-        - generate_plots: If True, generate regional and global map plots during the run. If False, skip plotting
-        (useful for long runs where plots can be regenerated later from saved NetCDFs).
-        - n_workers: Number of threads to use for parallel grid-point optimization.
-
-    Returns:
-        xr.Dataset | None: Optimal solution dataset containing lcoe, installation_cost, solar_factor, wind_factor,
-        and battery_factor. Returns None if the simulation fails.
-    """
-    start = time.time()
-
-    # Preprocess costs globally and save to file
-    projected_cost_per_country, investment_horizon = process_global_baseload_simulation_costs(
-        investment_year=year,
-        input_data_path=path_config.input_data_path,
-        cost_cache_dir=path_config.cost_cache_dir,
-    )
-    # Subregion polygons are needed only when the cost dataset declares multi-subregion iso3s.
-    # Load (no-op if file missing) then validate that any such iso3 has matching polygons.
-    load_subregion_polygons(path_config.admin1_10m_shapefile_path)
-    validate_subregion_coverage(projected_cost_per_country)
-    validate_subregion_keys(projected_cost_per_country, path_config.admin1_10m_shapefile_path)
-
-    if region == "GLOBAL":
-        logging.info(f"Running global baseload optimization for year {year}.")
-        # Run for all continents
-        for continent in REGION_COORDS.keys():
-            logging.info(f"Running baseload optimization for {continent}")
-            # Profiles for REs (backend selected by PROFILE_DATA_SOURCE; spatially-chunked Zarr is
-            # dramatically faster for the per-point reads than scanning the regional NetCDF)
-            profile = open_regional_dataset("profile", continent, path_config)
-            # Optimization
-            execute_baseload_optimization_for_region(
-                year,
-                continent,
-                baseload_demand,
-                p,
-                profile,
-                projected_cost_per_country,
-                investment_horizon,
-                n=n,
-                path_config=path_config,
-                n_workers=n_workers,
-                force=force,
-            )
-            # Plot results for single continent
-            if generate_plots:
-                plot_regional_optimum_baseload_power_simulation_map(year, continent, p, baseload_demand, path_config)
-        # Combine all regions into a single dataset and save to file
-        global_optimal_sol = combine_regional_datasets_into_global_dataset(
-            year, p, baseload_demand, path_config, force=force
-        )
-        # Plot global results
-        if generate_plots and global_optimal_sol is not None:
-            plot_global_optimum_baseload_power_simulation_map(global_optimal_sol, year, p, baseload_demand, path_config)
-
-        end = time.time()
-        logging.info(f"Total runtime: {(end - start) / 60} minutes")
-        return global_optimal_sol
-
-    else:
-        logging.info(f"Running baseload optimization for {region} in {year}.")
-        # Profiles for REs (backend selected by PROFILE_DATA_SOURCE; spatially-chunked Zarr is
-        # dramatically faster for the per-point reads than scanning the regional NetCDF)
-        profile = open_regional_dataset("profile", region, path_config)
-        # Optimization
-        regional_optimal_sol = execute_baseload_optimization_for_region(
-            year,
-            region,
-            baseload_demand,
-            p,
-            profile,
-            projected_cost_per_country,
-            investment_horizon,
-            n=n,
-            path_config=path_config,
-            n_workers=n_workers,
-            force=force,
-        )
-        # Plot results for selected region
-        if generate_plots:
-            plot_regional_optimum_baseload_power_simulation_map(year, region, p, baseload_demand, path_config)
-
-        end = time.time()
-        logging.info(f"Total runtime: {(end - start) / 60} minutes")
-        return regional_optimal_sol
