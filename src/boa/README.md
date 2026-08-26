@@ -19,7 +19,7 @@ boa-cds-prepare --weather_year 2024
 
 # 3. Sanity-check the pairing, then run at production settings
 boa-run --demand 1000 --coverage 0.95 --samples 2000 --dry-run
-boa-run --demand 1000 --coverage 0.95 --samples 2000 --no-plots --promote-lcoe
+boa-run --demand 1000 --coverage 0.95 --samples 2000 --promote-lcoe
 ```
 
 Steps 1 and 2 are idempotent and independent — rerun either at any time; existing
