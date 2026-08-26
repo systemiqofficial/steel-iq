@@ -19,11 +19,14 @@ The simulation is run with the `boa-run` command (after installing with `uv sync
 are always GLOBAL (all 9 regions); the one exception is the single-point mode:
 
 ```bash
-# Full run with default parameters (2025-2050, 500 MW demand)
+# Full run with default parameters (2025-2060, 1000 MW demand, cds-2024 weather)
 boa-run
 
 # Full run with custom parameters
-boa-run --baseload-demand 1000 --coverage 0.95
+boa-run --demand 800 --coverage 0.95
+
+# Prepare the weather stores and cost set inline, then run
+boa-run --cds-prepare 2024 --data-prepare master.xlsx test_scenario
 
 # Build only the year-independent design caches
 boa-run build-cache --samples 2000
@@ -41,23 +44,27 @@ boa-run --help
 ### 3. Available parameters
 
 **Temporal Parameters** (full run, `query`, `point`):
-- `--start-year`: Starting investment year (default: 2025)
-- `--end-year`: Ending investment year (default: 2050)
-- `--frequency`: Years between simulations (default: 5)
+- `-s`/`--start-year`: Starting investment year (default: 2025)
+- `-e`/`--end-year`: Ending investment year (default: 2060)
+- `-f`/`--frequency`: Years between simulations (default: 1)
 
 **Scenario Parameters:**
-- `--baseload-demand`: Baseload demand in MW (default: 500.0, typical range: 150-1000)
-- `--coverage`: Required demand coverage fraction, e.g., 0.85 means 85% coverage (default: 0.85)
-- `--samples`: Number of design samples per grid point (default: 1000)
+- `-d`/`--demand`: Baseload demand in MW (default: 1000.0, typical range: 150-1000)
+- `-c`/`--coverage`: Required demand coverage fraction, e.g., 0.85 means 85% coverage (default: 0.85)
+- `-n`/`--samples`: Number of design samples per grid point (default: 1000)
 
 **Data Selection:**
-- `--inputs`: Input set under the data root's `inputs/` (profile + max-capacity stores and
-  design cache; the weather year is read off the store filenames)
-- `--costs`: Cost set under `costs/` (workbook + per-year cost cache)
-- `--run`: Run name for outputs (default: `<inputs>__<costs>`)
+- `--weather-input`: Input set under the data root's `inputs/` (profile + max-capacity stores and
+  design cache; the weather year is read off the store filenames; default: `cds-2024`)
+- `--cost-input`: Cost set under `costs/` (workbook + per-year cost cache; default: `default`)
+- `--run`: Run name for outputs (default: `<weather-input>__<cost-input>`)
+- `--cds-prepare YEAR`: Run `boa-cds-prepare` for YEAR first, building the weather-input
+  set's missing stores (the weather-input default then becomes `cds-<YEAR>`)
+- `--data-prepare XLSX SCENARIO`: Run `boa-data-prepare` first, extracting the cost workbook
+  XLSX into cost set SCENARIO (the cost-input default then becomes SCENARIO)
 
 **Optional Parameters:**
-- `--workers`: Threads for parallel grid-point optimisation (integer or preset small/normal/fast)
+- `-w`/`--workers`: Threads for parallel grid-point optimisation (integer or preset small/normal/fast)
 - `--verbose`: Enable detailed logging output
 - `--no-plots`: Skip map plotting during the run
 - `--dry-run` (full run only): Resolve paths and run the preflight check without simulating

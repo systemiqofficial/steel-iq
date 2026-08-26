@@ -66,8 +66,14 @@ def load(path_config: PathConfig) -> dict[str, Any] | None:
     return json.loads(p.read_text()) if p.exists() else None
 
 
-def record_invocation(path_config: PathConfig, command: str, argv: list[str]) -> dict[str, Any]:
-    """Create the manifest on first use, verify provenance on later ones, append this invocation."""
+def record_invocation(
+    path_config: PathConfig, command: str, argv: list[str], parameters: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Create the manifest on first use, verify provenance on later ones, append this invocation.
+
+    ``parameters`` holds the fully resolved settings (defaults expanded), so a bare
+    ``boa-run`` is reconstructible from the manifest even though its argv is empty.
+    """
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     current = provenance(path_config)
     manifest = load(path_config)
@@ -87,11 +93,14 @@ def record_invocation(path_config: PathConfig, command: str, argv: list[str]) ->
         if diffs:
             raise RuntimeError(
                 f"Run '{path_config.run}' was produced with different provenance: {diffs}. "
-                f"Use a new --run (or --costs/--inputs set) instead of mixing outputs."
+                f"Use a new --run (or --cost-input/--weather-input set) instead of mixing outputs."
             )
 
     manifest["updated_at"] = now
-    manifest["invocations"].append({"at": now, "command": command, "argv": argv, "git_sha": _git_sha()})
+    invocation: dict[str, Any] = {"at": now, "command": command, "argv": argv, "git_sha": _git_sha()}
+    if parameters is not None:
+        invocation["parameters"] = parameters
+    manifest["invocations"].append(invocation)
     path_config.run_dir.mkdir(parents=True, exist_ok=True)
     path_config.run_manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     logging.info(f"Run manifest: {path_config.run_manifest_path}")
