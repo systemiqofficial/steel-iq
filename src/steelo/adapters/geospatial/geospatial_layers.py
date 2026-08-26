@@ -37,6 +37,7 @@ from steelo.utilities.plotting import (
     plot_value_histogram,
     plot_global_grid_with_iso3,
 )
+from pathlib import Path
 from typing import Optional, Any, cast, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -367,49 +368,46 @@ def add_feasibility_mask(ds: xr.Dataset, geo_config: "GeoConfig", geo_paths: "Ge
     return ds
 
 
-def add_baseload_power_price(
-    ds: xr.Dataset,
-    baseload_coverage: float,
-    target_year: int,
-    geo_paths: "GeoDataPaths",
-    start_year: int | None = None,
-    end_year: int | None = None,
-) -> xr.Dataset:
+def _lcoe_from_combined_file(lcoe_file: Path, p: int, target_year: int, logger: logging.Logger) -> xr.DataArray:
     """
-    Add pre-calculated baseload power price to the dataset.
+    Read one year's LCOE (USD/MWh) off a combined BOA file with dims (year, lat, lon).
 
-    The baseload power price is the LCOE (Levelized Cost of Energy) of the optimal renewable energy solution
-    for the given coverage percentage. LCOE values are pre-calculated for select years and linearly interpolated
-    for in-between years to reduce computational cost. Target years outside the pre-calculated span reuse the
-    nearest snapshot unchanged — so a simulation running past the last BOA year holds that year's LCOE flat.
-
-    Args:
-        ds: Dataset to add baseload power price to
-        baseload_coverage: Baseload power coverage percentage (0.0 to 1.0)
-        target_year: Simulation year for which to retrieve/interpolate LCOE
-        geo_paths: Paths to geospatial data files (baseload power simulation directory)
-        start_year: Simulation start year. Used together with ``end_year`` to limit the
-            optimal-LCOE map plot to milestone years (start, end, and every 5 years after
-            start). If either bound is None, every year is plotted.
-        end_year: Simulation end year. See ``start_year`` for plotting behaviour.
-
-    Returns:
-        Dataset with added 'lcoe' variable containing baseload power price (USD/kWh)
-
-    Side Effects:
-        - Generates and saves plot of optimal LCOE (milestone years only) and histogram
+    Outside the span the file covers, the nearest endpoint is held flat, exactly as the
+    per-year path does; in-span years that BOA did not run are interpolated linearly.
     """
-    logger = logging.getLogger(f"{__name__}.add_baseload_power_price")
-    # Ensure required paths are provided
-    if not geo_paths or not geo_paths.baseload_power_sim_dir:
-        raise ValueError(
-            "baseload_power_sim_dir is required for baseload power cost calculations. "
-            "Ensure geo_paths is provided and contains baseload_power_sim_dir."
+    ds = xr.open_dataset(lcoe_file)
+    file_p = ds.attrs.get("p_percentile")
+    if file_p is not None and int(file_p) != p:
+        logger.warning(
+            f"[GEO LAYERS] Baseload LCOE file {lcoe_file.name} was run at p{int(file_p)}, but this simulation's "
+            f"power mix implies p{p}. Power is being priced at the file's coverage."
         )
-    baseload_dir = geo_paths.baseload_power_sim_dir
+    logger.info(f"[GEO LAYERS] Pricing baseload power from {lcoe_file} (run '{ds.attrs.get('run', 'unknown')}').")
 
+    available_years = [int(y) for y in ds["year"].values]
+    effective_year = min(max(target_year, min(available_years)), max(available_years))
+    if effective_year != target_year:
+        logger.warning(
+            f"[GEO LAYERS] No baseload LCOE snapshot at or beyond year {target_year}; "
+            f"reusing the {effective_year} values."
+        )
+    if effective_year in available_years:
+        logger.info(f"[GEO LAYERS] Explicitly calculated LCOE is available for year {effective_year}.")
+        return ds["lcoe"].sel(year=effective_year).drop_vars("year")
+    logger.debug(f"[GEO LAYERS] Interpolating baseload LCOE for year {effective_year} within {available_years}.")
+    return ds["lcoe"].interp(year=effective_year, method="linear").drop_vars("year")
+
+
+def _lcoe_from_yearly_files(
+    baseload_dir: Path, p: int, target_year: int, logger: logging.Logger
+) -> tuple[xr.DataArray, dict[str, xr.DataArray]]:
+    """
+    Legacy read path: one BOA NetCDF per year under ``<baseload_dir>/p<p>/GLOBAL``.
+
+    Returns the year's LCOE (USD/MWh) and the overbuild factors, which are empty when the
+    files do not carry them. Kept for runs predating the combined-file promotion.
+    """
     # Find all available LCOE files and their years
-    p = int((1 - baseload_coverage) * 100)
     lcoe_dir = baseload_dir / f"p{str(p)}" / "GLOBAL"
     lcoe_files = list(lcoe_dir.glob(f"optimal_sol_GLOBAL_*_p{str(p)}.nc"))
     available_years = []
@@ -481,13 +479,70 @@ def add_baseload_power_price(
             wind_factor_year = wind_factor_concat.interp(year=effective_year, method="linear").drop_vars("year")
             battery_factor_concat = xr.concat(battery_factors, dim="year")
             battery_factor_year = battery_factor_concat.interp(year=effective_year, method="linear").drop_vars("year")
-    baseload_lcoe_year = baseload_lcoe_year * PERMWh_TO_PERkWh  # USD/MWh to USD/kWh (BOA in USD/MWh, PAM in USD/kWh)
+    return baseload_lcoe_year, (
+        {"solar_factor": solar_factor_year, "wind_factor": wind_factor_year, "battery_factor": battery_factor_year}
+        if has_overbuild_factors
+        else {}
+    )
 
-    # Merge LCOE and overbuild factors if available
-    if has_overbuild_factors:
-        ds = xr.merge([ds, baseload_lcoe_year, solar_factor_year, wind_factor_year, battery_factor_year])
+
+def add_baseload_power_price(
+    ds: xr.Dataset,
+    baseload_coverage: float,
+    target_year: int,
+    geo_paths: "GeoDataPaths",
+    start_year: int | None = None,
+    end_year: int | None = None,
+) -> xr.Dataset:
+    """
+    Add pre-calculated baseload power price to the dataset.
+
+    The baseload power price is the LCOE (Levelized Cost of Energy) of the optimal renewable energy solution
+    for the given coverage percentage. LCOE values are pre-calculated for select years and linearly interpolated
+    for in-between years to reduce computational cost. Target years outside the pre-calculated span reuse the
+    nearest snapshot unchanged — so a simulation running past the last BOA year holds that year's LCOE flat.
+
+    Args:
+        ds: Dataset to add baseload power price to
+        baseload_coverage: Baseload power coverage percentage (0.0 to 1.0)
+        target_year: Simulation year for which to retrieve/interpolate LCOE
+        geo_paths: Paths to geospatial data files. ``baseload_lcoe_file`` selects the combined
+            BOA file; without it the per-year files under ``baseload_power_sim_dir`` are read
+        start_year: Simulation start year. Used together with ``end_year`` to limit the
+            optimal-LCOE map plot to milestone years (start, end, and every 5 years after
+            start). If either bound is None, every year is plotted.
+        end_year: Simulation end year. See ``start_year`` for plotting behaviour.
+
+    Returns:
+        Dataset with added 'lcoe' variable containing baseload power price (USD/kWh)
+
+    Side Effects:
+        - Generates and saves plot of optimal LCOE (milestone years only) and histogram
+    """
+    logger = logging.getLogger(f"{__name__}.add_baseload_power_price")
+    if not geo_paths:
+        raise ValueError("geo_paths is required for baseload power cost calculations.")
+    p = int((1 - baseload_coverage) * 100)
+
+    if geo_paths.baseload_lcoe_file is not None:
+        baseload_lcoe_year = _lcoe_from_combined_file(Path(geo_paths.baseload_lcoe_file), p, target_year, logger)
+        overbuild_factors: dict[str, xr.DataArray] = {}
     else:
-        ds = xr.merge([ds, baseload_lcoe_year])
+        if not geo_paths.baseload_power_sim_dir:
+            raise ValueError(
+                "baseload_power_sim_dir is required for baseload power cost calculations. "
+                "Ensure geo_paths is provided and contains baseload_power_sim_dir."
+            )
+        logger.info(
+            f"[GEO LAYERS] No combined BOA LCOE file configured; falling back to the per-year files under "
+            f"{geo_paths.baseload_power_sim_dir}."
+        )
+        baseload_lcoe_year, overbuild_factors = _lcoe_from_yearly_files(
+            geo_paths.baseload_power_sim_dir, p, target_year, logger
+        )
+
+    baseload_lcoe_year = baseload_lcoe_year * PERMWh_TO_PERkWh  # USD/MWh to USD/kWh (BOA in USD/MWh, PAM in USD/kWh)
+    ds = xr.merge([ds, baseload_lcoe_year, *overbuild_factors.values()])
 
     # Only plot the optimal-LCOE map on milestone years to avoid one map per simulation year.
     is_milestone_year = (

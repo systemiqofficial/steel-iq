@@ -361,6 +361,10 @@ class GeoDataPaths:
     # Natural Earth admin-1 (first-order divisions), used by the geo_hierarchy calibration.
     admin1_shapefile_dir: Optional[Path] = None
 
+    # Combined (year, lat, lon) LCOE file promoted from a BOA run; None falls back to the
+    # per-year files under baseload_power_sim_dir.
+    baseload_lcoe_file: Optional[Path] = None
+
 
 @dataclass
 class PlotPaths:

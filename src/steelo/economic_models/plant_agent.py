@@ -187,8 +187,11 @@ class GeospatialModel:
             except Exception as e:
                 logger.warning(f"Failed to export LCOE/LCOH statistics for year {bus.env.year}: {e}")
 
-            # Export overbuild factor statistics for solar, wind, and battery
-            for factor_name in ["solar_factor", "wind_factor", "battery_factor"]:
+            # Export overbuild factor statistics for solar, wind, and battery; the combined
+            # BOA LCOE file carries none, so skip quietly rather than warn once per year.
+            for factor_name in [
+                f for f in ("solar_factor", "wind_factor", "battery_factor") if f in custom_energy_costs
+            ]:
                 try:
                     export_overbuild_factor_statistics_by_country(
                         energy_prices=custom_energy_costs,
