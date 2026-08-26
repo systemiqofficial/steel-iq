@@ -19,7 +19,7 @@ boa-cds-prepare --weather_year 2024
 
 # 3. Sanity-check the pairing, then run at production settings
 boa-run --demand 1000 --coverage 0.95 --samples 2000 --dry-run
-boa-run --demand 1000 --coverage 0.95 --samples 2000 --no-plots
+boa-run --demand 1000 --coverage 0.95 --samples 2000 --no-plots --promote-lcoe
 ```
 
 Steps 1 and 2 are idempotent and independent — rerun either at any time; existing
@@ -147,6 +147,34 @@ selected sets are incomplete. The full run never rebuilds an existing design cac
 multi-year GLOBAL run at production settings (`--samples 2000`); a `query` against warm
 caches is minutes per year.
 
+## Handing LCOE to the steel simulation
+
+The steel simulation reads exactly one variable off a run — `lcoe` — so a finished run is
+promoted into one combined file per scenario. Promotion stacks every year into a single
+`(year, lat, lon)` float32 variable and stores the cost keys and status codes once (they are
+year-invariant, and promotion refuses to run if they are not), which turned 5.49 GB of
+per-year files into 25.7 MB on a 36-year GLOBAL run:
+
+```bash
+boa-promote-lcoe --run cds-2024__china_test   # every scenario in a finished run
+boa-run --demand 1000 --coverage 0.95 --promote-lcoe   # or inline, right after the query
+```
+
+Output: `lcoe-for-steel-iq/<run>/optimal_lcoe_<bl>MW_p<p>_<first>_<last>.nc`, chunked one
+year at a time so a single-year read stays cheap. The file carries its own provenance — run
+name, input/cost sets, workbook sha256, boa version, git sha, and the scenario settings —
+so it identifies what produced it without the run directory. Cost keys travel as int16 ids
+plus a `cost_key_legend` attribute; `status` keeps the `STATUS_CODES` values, legend in
+`status_legend`.
+
+The per-year NetCDFs stay put: they hold the overbuild factors and the cost breakdown, and
+remain the artefacts for crash recovery, plots and forensics. The steel side opts into a local
+run with `run_simulation --boa-run <run>` (add `--boa-demand` only when a run holds several
+demands); without `--boa-run` it reads the per-year files shipped with the geo data as before.
+Which percentile it reads is not a flag — it follows steelo's `GeoConfig.included_power_mix`,
+so an 85% baseload mix takes the p15 file and a 95% one the p5 file. A run missing that
+percentile stops the simulation before any data preparation and lists what is available.
+
 ## Sources for model assumptions
 
 References behind the numeric assumptions in `config/settings.py`.
@@ -184,6 +212,5 @@ the repo carries a single province taxonomy and ISO3 lookup.
   stores when the version differs for the same weather year.
 - Multi-year weather-data runs (an input set currently holds exactly one weather year).
 - Model: battery optimisation improvements.
-- Options to use the new BOA outputs in the steel-iq simulation.
 - Save run log and config file
 - Output short status while running in terminal

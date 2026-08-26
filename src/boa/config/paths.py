@@ -31,9 +31,10 @@ class PathConfig:
         │   └── cache_designs/             year-independent designs; depends only on the stores
         ├── costs/<cost_set>/boa_cost_data.xlsx
         │   └── cache_costs/               per-year costs; depends only on the xlsx
-        └── runs/<run>/                    one (input_set, cost_set) pairing
-            ├── run.json                   provenance
-            └── outputs/<bl>MW/p<p>/nc/<REGION>/optimal_sol_<bl>MW_p<p>_<REGION>_<year>.nc
+        ├── runs/<run>/                    one (input_set, cost_set) pairing
+        │   ├── run.json                   provenance
+        │   └── outputs/<bl>MW/p<p>/nc/<REGION>/optimal_sol_<bl>MW_p<p>_<REGION>_<year>.nc
+        └── lcoe-for-steel-iq/<run>/       combined per-run LCOE files the steel simulation reads
 
     Build paths through the helpers rather than inline so a layout change touches one place.
     """
@@ -86,6 +87,23 @@ class PathConfig:
     def optimal_sol_path(self, baseload_demand: float, p: int, region: str, year: int) -> Path:
         """Canonical path of one region-year optimal-solution NetCDF."""
         return self.maps_dir(baseload_demand, p, region) / self.optimal_sol_filename(baseload_demand, p, region, year)
+
+    def optimal_sol_year_glob(self, baseload_demand: float, p: int, region: str) -> str:
+        """Glob matching every year of one region's optimal-solution NetCDFs."""
+        return f"optimal_sol_{baseload_demand:g}MW_p{int(p)}_{region}_*.nc"
+
+    @property
+    def lcoe_promotion_dir(self) -> Path:
+        """``lcoe-for-steel-iq/<run>`` — combined LCOE files handed to the steel simulation."""
+        return self.root / "lcoe-for-steel-iq" / self.run
+
+    def promoted_lcoe_filename(self, baseload_demand: float, p: int, year_start: int, year_end: int) -> str:
+        """Self-describing combined-LCOE filename: ``optimal_lcoe_<bl>MW_p<p>_<first>_<last>.nc``."""
+        return f"optimal_lcoe_{baseload_demand:g}MW_p{int(p)}_{int(year_start)}_{int(year_end)}.nc"
+
+    def promoted_lcoe_path(self, baseload_demand: float, p: int, year_start: int, year_end: int) -> Path:
+        """Canonical path of one scenario's combined-LCOE file."""
+        return self.lcoe_promotion_dir / self.promoted_lcoe_filename(baseload_demand, p, year_start, year_end)
 
     def map_plots_dir(self, baseload_demand: float, p: int, region: str) -> Path:
         """Per-region diagnostic-plot dir for the scenario."""
