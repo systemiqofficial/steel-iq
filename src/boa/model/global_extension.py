@@ -99,6 +99,16 @@ def _adaptive_n_tiles(npts: int, n_workers: int, target_pts_per_tile: int = TARG
     return min(n_tiles, npts)
 
 
+def _float32_output_encoding(ds: xr.Dataset) -> dict[str, dict[str, str]]:
+    """
+    netCDF encoding that stores float data variables as float32: the values are
+    Monte-Carlo estimates (n=1000), so float32's ~7 significant digits lose nothing
+    while halving the numeric payload. Coordinates keep float64 — the global combiner
+    matches regional grids by exact coordinate equality.
+    """
+    return {name: {"dtype": "float32"} for name, v in ds.data_vars.items() if v.dtype.kind == "f"}
+
+
 def _precompute_tile(
     tile_indices: np.ndarray,
     solar_arr: np.ndarray,
@@ -675,7 +685,7 @@ def query_design_cache_for_region(
         }
     )
     optimal_sol_path.parent.mkdir(parents=True, exist_ok=True)
-    optimal_sol.to_netcdf(optimal_sol_path, mode="w", format="NETCDF4")
+    optimal_sol.to_netcdf(optimal_sol_path, mode="w", format="NETCDF4", encoding=_float32_output_encoding(optimal_sol))
     return optimal_sol
 
 
@@ -832,7 +842,7 @@ def combine_regional_datasets_into_global_dataset(
 
         # Save the global dataset
         global_output_path.parent.mkdir(parents=True, exist_ok=True)
-        global_ds.to_netcdf(global_output_path)
+        global_ds.to_netcdf(global_output_path, encoding=_float32_output_encoding(global_ds))
 
         return global_ds
 
