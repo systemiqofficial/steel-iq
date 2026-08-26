@@ -131,6 +131,7 @@ already exists, so partial reuse works too.
 ```bash
 boa-run --demand 1000 --coverage 0.95            # full run: build caches if missing, query every year
 boa-run build-cache --samples 2000               # year- and baseload-independent design caches only
+boa-run build-topup --demand 1000                # per-baseload top-up supplements against existing caches
 boa-run query --start-year 2030 --end-year 2030  # NetCDFs from pre-built caches (--force to re-derive)
 boa-run point --lat 52.5 --lon 13.4              # single point; region auto-derived
 boa-run --weather-input cds-2023 --cost-input rev3 --dry-run  # resolve paths + preflight, run nothing
@@ -150,6 +151,15 @@ starves or leaves sparsely sampled are re-searched by a query-time top-up (suppo
 baseload: up to 20,000 MW). Expect hours
 for a full multi-year GLOBAL run at production settings (`--samples 2000`); a `query`
 against warm caches is minutes per year.
+
+The top-up itself is cached per baseload: the first query at a given `--demand`
+computes it and persists a top-up supplement beside each region's design cache
+(`<cache-stem>__topup_<demand>MW.zarr`); every later query at that demand replays the
+supplement bit-identically, so multi-year sweeps and cost-scenario re-queries skip the
+top-up compute (~8 min per global pass at `--samples 1000`, ~16 at 2000).
+`boa-run build-topup --demand <MW>` prebuilds the supplements without producing
+NetCDFs, e.g. for shipping bundles. Rebuilding a design cache invalidates its
+supplements; the next query refuses the stale sidecar and rebuilds it automatically.
 
 ## Handing LCOE to the steel simulation
 

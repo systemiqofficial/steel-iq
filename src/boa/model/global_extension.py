@@ -20,6 +20,7 @@ from boa.config.settings import (
     MIN_SURVIVOR_FRACTION,
     RANDOM_SEED,
     OVERSCALE_SAMPLING_K,
+    TOPUP_QUALITY_FRACTION,
 )
 from boa.inputs.costs import (
     process_global_baseload_simulation_costs,
@@ -154,6 +155,35 @@ def _precompute_tile(
     return time.time() - t0, out
 
 
+_EMPTY_TOPUP_D = np.empty((0, 3), dtype=np.float64)
+_EMPTY_TOPUP_C = np.empty(0, dtype=np.float64)
+
+
+def _topup_point(
+    solar_profile: np.ndarray,
+    wind_profile: np.ndarray,
+    p: int,
+    n: int,
+    seed: int,
+    limit: dict[str, float],
+    starved: bool,
+) -> tuple[int, np.ndarray, np.ndarray]:
+    """
+    Compute the top-up for one trigger-band pixel: corner screen when starved
+    (any masked survivor implies a feasible corner by monotonicity, so merely
+    sparse pixels skip it), then the box-truncated re-sample. Returns (verdict,
+    designs, coverage): verdict 1 = topped up (rows are the accepted designs,
+    float64), 2 = corner-screen proved the box infeasible (no rows).
+    Deterministic per (profiles, limit, p, n, seed), which is what makes the
+    result persistable per (cache, baseload) and replayable bit-identically.
+    """
+    if starved and not corner_design_feasible(solar_profile, wind_profile, p, limit):
+        return 2, _EMPTY_TOPUP_D, _EMPTY_TOPUP_C
+    mus = overscale_mus_from_cf(float(solar_profile.mean()), float(wind_profile.mean()))
+    top_up = top_up_point_state(solar_profile, wind_profile, p, n, seed, mus, limit).filter_to_accepted()
+    return 1, top_up.designs, top_up.coverage
+
+
 def _query_lcoe_tile(
     tile_indices: np.ndarray,
     designs_flat: np.ndarray,
@@ -173,7 +203,8 @@ def _query_lcoe_tile(
     n: int,
     seed: int,
     min_survivors: int = 1,
-) -> tuple[float, list[dict], dict[str, int]]:
+    supplement: design_cache.TopupSupplement | None = None,
+) -> tuple[float, list[dict], dict[str, int], list[tuple[int, np.ndarray, np.ndarray]] | None]:
     """
     Query-phase worker. Per point in `tile_indices`: look up cached surviving
     designs, mask them to this baseload's capacity box (L = max_capacity /
@@ -188,12 +219,19 @@ def _query_lcoe_tile(
     runs over the union of masked cache survivors and top-up survivors. Points
     with no usable optimum emit a
     _ZERO_RESULT (with their cost_key); every result carries a `status` code
-    (see STATUS_CODES). Returns (elapsed, results, top-up counters).
+    (see STATUS_CODES).
+
+    With a valid `supplement`, trigger-band pixels replay its stored verdicts and
+    rows instead of running the corner screen and top-up (bit-identical results);
+    without one, the per-pixel (verdict, designs, coverage) triples are computed
+    and returned so the caller can persist them. Returns (elapsed, results,
+    top-up counters, topup_out) — topup_out is None when a supplement was used.
     """
     t0 = time.time()
     results: list[dict] = []
-    counters = {"starved": 0, "corner_infeasible": 0, "topped_up": 0, "resolved": 0, "quality": 0}
+    counters = {"starved": 0, "corner_infeasible": 0, "topped_up": 0, "resolved": 0, "quality": 0, "from_supplement": 0}
     quality_min = top_up_quality_threshold(n)
+    topup_out: list[tuple[int, np.ndarray, np.ndarray]] | None = None if supplement is not None else []
 
     def _zero_result(cost_key: str, status: int) -> dict:
         zero = dict(_ZERO_RESULT)
@@ -206,6 +244,8 @@ def _query_lcoe_tile(
         cost_key = str(cost_keys[k]) if cost_keys[k] else ""
         lo, hi = int(design_offsets[k]), int(design_offsets[k + 1])
         if solar_profiles[k].sum() == 0 and wind_profiles[k].sum() == 0:
+            if topup_out is not None:
+                topup_out.append((0, _EMPTY_TOPUP_D, _EMPTY_TOPUP_C))
             results.append(_zero_result(cost_key, 3))
             continue
         limit = {
@@ -217,27 +257,28 @@ def _query_lcoe_tile(
         inbox = (d[:, 0] <= limit["solar"]) & (d[:, 1] <= limit["wind"])
         designs_k = d[inbox]
         coverage_k = c[inbox]
-        if designs_k.shape[0] < max(min_survivors, quality_min):
-            # Below min_survivors the corner screen gates the top-up; a merely sparse
-            # pixel skips it — any masked survivor implies a feasible corner by monotonicity.
+        if designs_k.shape[0] >= max(min_survivors, quality_min):
+            if topup_out is not None:
+                topup_out.append((0, _EMPTY_TOPUP_D, _EMPTY_TOPUP_C))
+        else:
             starved = designs_k.shape[0] < min_survivors
-            run_top_up = True
+            if supplement is None:
+                verdict, top_d, top_c = _topup_point(solar_profiles[k], wind_profiles[k], p, n, seed, limit, starved)
+                assert topup_out is not None
+                topup_out.append((verdict, top_d, top_c))
+            else:
+                verdict = int(supplement.verdict[k])
+                assert verdict in (1, 2), f"supplement verdict {verdict} for in-band point {k}; stale supplement?"
+                top_d, top_c = supplement.rows_for_point(k)
+                counters["from_supplement"] += 1
             if starved:
                 counters["starved"] += 1
-                if corner_design_feasible(solar_profiles[k], wind_profiles[k], p, limit):
-                    counters["topped_up"] += 1
-                else:
-                    counters["corner_infeasible"] += 1
-                    run_top_up = False
+                counters["corner_infeasible" if verdict == 2 else "topped_up"] += 1
             else:
                 counters["quality"] += 1
-            if run_top_up:
-                mus = overscale_mus_from_cf(float(solar_profiles[k].mean()), float(wind_profiles[k].mean()))
-                top_up = top_up_point_state(
-                    solar_profiles[k], wind_profiles[k], p, n, seed, mus, limit
-                ).filter_to_accepted()
-                designs_k = np.concatenate([np.asarray(designs_k, dtype=np.float64), top_up.designs])
-                coverage_k = np.concatenate([np.asarray(coverage_k, dtype=np.float64), top_up.coverage])
+            if verdict == 1:
+                designs_k = np.concatenate([np.asarray(designs_k, dtype=np.float64), top_d])
+                coverage_k = np.concatenate([np.asarray(coverage_k, dtype=np.float64), top_c])
             if designs_k.shape[0] < min_survivors:
                 # Status keeps its pre-mask meaning: 2 = nothing cached met coverage, 4 = too few usable.
                 results.append(_zero_result(cost_key, 2 if lo == hi else 4))
@@ -295,7 +336,70 @@ def _query_lcoe_tile(
                 "status": 1 if np.isfinite(lcoe_refined) else 2,
             }
         )
-    return time.time() - t0, results, counters
+    return time.time() - t0, results, counters, topup_out
+
+
+def _load_topup_supplement(
+    topup_file: Path,
+    parent_meta: dict,
+    baseload_demand: float,
+) -> design_cache.TopupSupplement | None:
+    """Load a valid top-up supplement, or None (logging why) so the caller computes fresh and persists."""
+    try:
+        supplement = design_cache.read_topup_supplement(
+            topup_file, parent_meta, baseload_demand, TOPUP_QUALITY_FRACTION, MIN_SURVIVOR_FRACTION
+        )
+    except FileNotFoundError:
+        logging.info(f"[top-up] no supplement at {topup_file.name}; the top-up will compute fresh.")
+        return None
+    except ValueError as e:
+        logging.info(f"[top-up] supplement refused ({e}); the top-up will compute fresh.")
+        return None
+    logging.info(
+        f"[top-up] supplement loaded: {topup_file.name} ({int((supplement.verdict != 0).sum())} trigger-band pixels)."
+    )
+    return supplement
+
+
+def _pack_topup_supplement(
+    npts: int,
+    tiles: list[np.ndarray],
+    per_tile_out: list[list[tuple[int, np.ndarray, np.ndarray]]],
+    parent_meta: dict,
+    baseload_demand: float,
+) -> design_cache.TopupSupplement:
+    """Scatter per-tile top-up outputs back to point order and pack them CSR-style (float64)."""
+    verdict = np.zeros(npts, dtype=np.int8)
+    per_point_designs: list[np.ndarray] = [_EMPTY_TOPUP_D] * npts
+    per_point_coverage: list[np.ndarray] = [_EMPTY_TOPUP_C] * npts
+    for tile_indices, out in zip(tiles, per_tile_out):
+        for j, k in enumerate(tile_indices):
+            v, top_d, top_c = out[j]
+            verdict[int(k)] = v
+            per_point_designs[int(k)] = top_d
+            per_point_coverage[int(k)] = top_c
+    designs_flat, row_offsets, coverage_flat = design_cache.pack_csr(
+        per_point_designs, per_point_coverage, dtype=np.float64
+    )
+    return design_cache.TopupSupplement(
+        verdict=verdict,
+        designs_flat=designs_flat,
+        row_offsets=row_offsets,
+        coverage_flat=coverage_flat,
+        meta=design_cache.build_topup_meta(
+            parent_meta,
+            baseload_demand,
+            TOPUP_QUALITY_FRACTION,
+            MIN_SURVIVOR_FRACTION,
+            npts,
+            designs_flat.shape[0],
+        ),
+    )
+
+
+def _store_size_mb(path: Path) -> float:
+    """Total on-disk size of a Zarr store directory in MB."""
+    return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file()) / 1e6
 
 
 def build_design_cache_for_region(
@@ -444,6 +548,144 @@ def build_design_cache_for_region(
     return written
 
 
+def _topup_tile(
+    tile_indices: np.ndarray,
+    designs_flat: np.ndarray,
+    design_offsets: np.ndarray,
+    pv_max: np.ndarray,
+    wind_max: np.ndarray,
+    solar_profiles: np.ndarray,
+    wind_profiles: np.ndarray,
+    baseload_demand: float,
+    p: int,
+    n: int,
+    seed: int,
+    min_survivors: int,
+) -> tuple[float, list[tuple[int, np.ndarray, np.ndarray]], dict[str, int]]:
+    """
+    Prebuild worker: only the trigger-band decision + top-up per point (no LCOE),
+    producing the same per-pixel (verdict, designs, coverage) triples the query
+    path returns, so an explicitly prebuilt supplement is bit-identical to one
+    persisted as a query side effect.
+    """
+    t0 = time.time()
+    quality_min = top_up_quality_threshold(n)
+    out: list[tuple[int, np.ndarray, np.ndarray]] = []
+    counters = {"starved": 0, "corner_infeasible": 0, "topped_up": 0, "quality": 0}
+    for k in tile_indices:
+        if solar_profiles[k].sum() == 0 and wind_profiles[k].sum() == 0:
+            out.append((0, _EMPTY_TOPUP_D, _EMPTY_TOPUP_C))
+            continue
+        limit = {
+            "solar": float(pv_max[k]) / baseload_demand,
+            "wind": float(wind_max[k]) / baseload_demand,
+        }
+        lo, hi = int(design_offsets[k]), int(design_offsets[k + 1])
+        d = designs_flat[lo:hi]
+        n_masked = int(((d[:, 0] <= limit["solar"]) & (d[:, 1] <= limit["wind"])).sum())
+        if n_masked >= max(min_survivors, quality_min):
+            out.append((0, _EMPTY_TOPUP_D, _EMPTY_TOPUP_C))
+            continue
+        starved = n_masked < min_survivors
+        verdict, top_d, top_c = _topup_point(solar_profiles[k], wind_profiles[k], p, n, seed, limit, starved)
+        if starved:
+            counters["starved"] += 1
+            counters["corner_infeasible" if verdict == 2 else "topped_up"] += 1
+        else:
+            counters["quality"] += 1
+        out.append((verdict, top_d, top_c))
+    return time.time() - t0, out, counters
+
+
+def build_topup_supplement_for_region(
+    region: str,
+    baseload_demand: float,
+    p: int,
+    n: int,
+    profile: xr.Dataset,
+    path_config: PathConfig,
+    n_workers: int,
+    force: bool = False,
+) -> Path:
+    """
+    Build the per-baseload top-up supplement for one region against its existing
+    design cache (raises FileNotFoundError if the cache is missing), without
+    producing NetCDFs. Idempotent: a valid supplement at the target path is kept
+    unless `force`. The query path persists the same supplement as a side effect;
+    this exists to pre-pay the top-up for shipped bundles.
+    """
+    weather_year = detect_weather_year(path_config)
+    cache_file = design_cache.cache_path(
+        path_config.design_cache_dir,
+        region,
+        p,
+        n,
+        RANDOM_SEED,
+        weather_year,
+        ERA5_DATA_RESOLUTION,
+    )
+    cache = design_cache.read_cache(cache_file)
+    topup_file = design_cache.topup_supplement_path(cache_file, baseload_demand)
+    if not force and _load_topup_supplement(topup_file, cache.meta, baseload_demand) is not None:
+        logging.info(f"[top-up] valid supplement already exists for {region}; skipping (use --force to rebuild).")
+        return topup_file
+
+    npts = cache.n_points
+    t_prof = time.time()
+    prof_pts = (
+        profile[["solar", "wind"]]
+        .sel(
+            x=xr.DataArray(cache.lons, dims="point"),
+            y=xr.DataArray(cache.lats, dims="point"),
+            method="nearest",
+        )
+        .transpose("point", "time")
+    )
+    solar_profiles = prof_pts["solar"].values
+    wind_profiles = prof_pts["wind"].values
+    logging.info(f"[timing] profile extraction for top-up build: {time.time() - t_prof:.1f}s ({npts} points)")
+
+    n_tiles = _adaptive_n_tiles(npts, n_workers)
+    order = np.arange(npts)
+    tiles = [order[i::n_tiles] for i in range(n_tiles)]
+    tiles = [t for t in tiles if len(t)]
+    min_survivors = min_survivors_required(n)
+    t_topup = time.time()
+    with ThreadPoolExecutor(max_workers=n_workers) as ex:
+        tile_results = list(
+            ex.map(
+                lambda t: _topup_tile(
+                    t,
+                    cache.designs_flat,
+                    cache.design_offsets,
+                    cache.pv_max,
+                    cache.wind_max,
+                    solar_profiles,
+                    wind_profiles,
+                    baseload_demand,
+                    p,
+                    n,
+                    RANDOM_SEED,
+                    min_survivors,
+                ),
+                tiles,
+            )
+        )
+    counters = {
+        key: sum(tr[2][key] for tr in tile_results) for key in ("starved", "corner_infeasible", "topped_up", "quality")
+    }
+    written = design_cache.write_topup_supplement(
+        _pack_topup_supplement(npts, tiles, [tr[1] for tr in tile_results], cache.meta, baseload_demand),
+        topup_file,
+    )
+    logging.info(
+        f"[top-up] supplement built for {region}: {written.name} in {time.time() - t_topup:.1f}s "
+        f"({counters['topped_up'] + counters['quality']} pixels re-sampled, "
+        f"{counters['corner_infeasible']} proven infeasible by the corner screen; {_store_size_mb(written):.1f} MB)."
+    )
+    return written
+
+
 def query_design_cache_for_region(
     year: int,
     region: str,
@@ -486,6 +728,10 @@ def query_design_cache_for_region(
     cache = design_cache.read_cache(cache_file)
     npts = cache.n_points
     logging.info(f"Loaded design cache for {region}: {npts} pts, {cache.n_designs_total} surviving designs.")
+
+    # Per-baseload top-up supplement: replay if valid, else compute fresh in the tiles and persist below.
+    topup_file = design_cache.topup_supplement_path(cache_file, baseload_demand)
+    supplement = _load_topup_supplement(topup_file, cache.meta, baseload_demand)
 
     # Derive cost_keys fresh from the canonical iso3 grid + subregion polygons.
     # Empty cached cost_keys are skipped (zero-potential pixels — no LCOE to compute).
@@ -609,6 +855,7 @@ def query_design_cache_for_region(
                     n,
                     RANDOM_SEED,
                     min_survivors,
+                    supplement,
                 ),
                 tiles,
             )
@@ -621,14 +868,26 @@ def query_design_cache_for_region(
     )
     topup = {
         key: sum(tr[2][key] for tr in tile_results)
-        for key in ("starved", "corner_infeasible", "topped_up", "resolved", "quality")
+        for key in ("starved", "corner_infeasible", "topped_up", "resolved", "quality", "from_supplement")
     }
     if topup["starved"] > 0 or topup["quality"] > 0:
+        served = f" ({topup['from_supplement']} pixels served from the supplement)" if supplement is not None else ""
         logging.info(
             f"[top-up] {topup['starved']} pixels starved by the capacity mask in {region}: "
             f"{topup['corner_infeasible']} proven infeasible by the corner screen, "
             f"{topup['topped_up']} re-sampled ({topup['resolved']} resolved to a usable optimum); "
-            f"{topup['quality']} sparse pixels re-sampled by the quality trigger."
+            f"{topup['quality']} sparse pixels re-sampled by the quality trigger.{served}"
+        )
+    if supplement is None:
+        t_topup = time.time()
+        written = design_cache.write_topup_supplement(
+            _pack_topup_supplement(npts, tiles, [tr[3] for tr in tile_results], cache.meta, baseload_demand),
+            topup_file,
+        )
+        logging.info(
+            f"[top-up] supplement written: {written.name} "
+            f"({_store_size_mb(written):.1f} MB, {time.time() - t_topup:.1f}s); "
+            f"later queries at {baseload_demand:g} MW skip the top-up compute."
         )
     tile_results = [tr[1] for tr in tile_results]
 
