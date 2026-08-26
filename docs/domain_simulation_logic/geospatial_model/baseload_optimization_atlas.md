@@ -66,7 +66,7 @@ boa-run --help
 **Optional Parameters:**
 - `-w`/`--workers`: Threads for parallel grid-point optimisation (integer or preset small/normal/fast)
 - `--verbose`: Enable detailed logging output
-- `--no-plots`: Skip map plotting during the run
+- `--plots`: Generate map plots during the run (off by default)
 - `--dry-run` (full run only): Resolve paths and run the preflight check without simulating
 - `--force` (`build-cache` and `query` only): Rebuild the targeted artifacts even if present
 - `--promote-lcoe` (full run and `query`): Combine the per-year GLOBAL NetCDFs into the single
@@ -78,7 +78,7 @@ The simulation will:
 - Process all regions in parallel
 - Generate optimal renewable energy system designs for each grid point
 - Save results as NetCDF files in `outputs/GEO/baseload_power_simulation/p{X}/`
-- Create visualization plots in `outputs/plots/geo_layers/baseload_power_simulation/`
+- With `--plots`, create visualization plots in `outputs/plots/geo_layers/baseload_power_simulation/`
 
 Results include:
 - LCOE (Levelized Cost of Energy) in USD/MWh
