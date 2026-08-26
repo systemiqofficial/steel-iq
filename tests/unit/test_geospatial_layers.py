@@ -4,6 +4,8 @@ Unit tests for the geospatial layers - 80/20 approach focusing on key functional
     - For the CAPEX proxy calculation, tests various input structures and ensures correct averaging logic.
 """
 
+import logging
+
 import pytest
 import numpy as np
 import xarray as xr
@@ -40,6 +42,7 @@ def mock_geo_paths():
     geo_paths.grid_power_price_nc_path = Mock(spec=Path)
     geo_paths.lulc_nc_path = Mock(spec=Path)
     geo_paths.geo_plots_dir = Mock(spec=Path)  # Add geo_plots_dir for plotting functions
+    geo_paths.baseload_lcoe_file = None  # default to the per-year read path
     return geo_paths
 
 
@@ -877,3 +880,95 @@ def test_add_feasibility_mask_keeps_land_at_or_below_sea_level(sample_dataset, m
     assert mask.values[0, 0] == 1  # sea-level land is feasible
     assert mask.values[0, 1] == 1  # below-sea-level land is feasible
     assert mask.values[0, 2] == 0  # high terrain stays excluded
+
+
+@pytest.fixture
+def combined_lcoe_file(tmp_path, sample_dataset):
+    """A promoted BOA file: LCOE for 2045 and 2050, cost keys and status stored once."""
+    shape = (len(sample_dataset.lat), len(sample_dataset.lon))
+    years = [2045, 2050]
+    ds = xr.Dataset(
+        coords={
+            "year": np.array(years, dtype="int32"),
+            "lat": sample_dataset.lat,
+            "lon": sample_dataset.lon,
+        },
+        data_vars={
+            "lcoe": (("year", "lat", "lon"), np.stack([np.full(shape, 80.0), np.full(shape, 60.0)]).astype("float32")),
+            "cost_key_id": (("lat", "lon"), np.zeros(shape, dtype="int16")),
+            "status": (("lat", "lon"), np.ones(shape, dtype="int8")),
+        },
+        attrs={"run": "cds-2024__test", "p_percentile": 15, "cost_key_legend": "DEU"},
+    )
+    path = tmp_path / "optimal_lcoe_1230MW_p15_2045_2050.nc"
+    ds.to_netcdf(path)
+    return path
+
+
+def test_combined_lcoe_file_selects_an_exact_year(sample_dataset, mock_geo_paths, combined_lcoe_file):
+    mock_geo_paths.baseload_lcoe_file = combined_lcoe_file
+
+    prices = _lcoe_for_year(sample_dataset, mock_geo_paths, 2050)
+
+    assert "year" not in prices.dims
+    np.testing.assert_allclose(prices.values, 0.06)  # 60 USD/MWh -> 0.06 USD/kWh
+
+
+def test_combined_lcoe_file_interpolates_between_years(sample_dataset, mock_geo_paths, combined_lcoe_file):
+    mock_geo_paths.baseload_lcoe_file = combined_lcoe_file
+
+    prices = _lcoe_for_year(sample_dataset, mock_geo_paths, 2047)
+
+    np.testing.assert_allclose(prices.values, 0.072)  # 80 -> 60 USD/MWh, 2/5 of the way
+
+
+@pytest.mark.parametrize("target_year,expected", [(2025, 0.08), (2060, 0.06)])
+def test_combined_lcoe_file_holds_the_nearest_snapshot_outside_its_span(
+    sample_dataset, mock_geo_paths, combined_lcoe_file, target_year, expected
+):
+    """Years outside the promoted span reuse the endpoint rather than extrapolating to NaN."""
+    mock_geo_paths.baseload_lcoe_file = combined_lcoe_file
+
+    prices = _lcoe_for_year(sample_dataset, mock_geo_paths, target_year)
+
+    assert not np.any(np.isnan(prices.values))
+    np.testing.assert_allclose(prices.values, expected)
+
+
+def test_combined_lcoe_file_carries_no_overbuild_factors(sample_dataset, mock_geo_paths, combined_lcoe_file):
+    mock_geo_paths.baseload_lcoe_file = combined_lcoe_file
+    sample_dataset["feasibility_mask"] = (
+        ("lat", "lon"),
+        np.ones((len(sample_dataset.lat), len(sample_dataset.lon))),
+    )
+
+    with (
+        patch("steelo.adapters.geospatial.geospatial_layers.plot_screenshot"),
+        patch("steelo.adapters.geospatial.geospatial_layers.plot_value_histogram"),
+    ):
+        result = add_baseload_power_price(
+            sample_dataset, baseload_coverage=0.85, target_year=2050, geo_paths=mock_geo_paths
+        )
+
+    assert "lcoe" in result.data_vars
+    assert not any(factor in result.data_vars for factor in ("solar_factor", "wind_factor", "battery_factor"))
+
+
+def test_combined_lcoe_file_warns_when_its_percentile_differs(
+    sample_dataset, mock_geo_paths, combined_lcoe_file, caplog
+):
+    """A p15 file used by a 95%-baseload simulation is a mismatch worth saying out loud."""
+    mock_geo_paths.baseload_lcoe_file = combined_lcoe_file
+    sample_dataset["feasibility_mask"] = (
+        ("lat", "lon"),
+        np.ones((len(sample_dataset.lat), len(sample_dataset.lon))),
+    )
+
+    with (
+        patch("steelo.adapters.geospatial.geospatial_layers.plot_screenshot"),
+        patch("steelo.adapters.geospatial.geospatial_layers.plot_value_histogram"),
+        caplog.at_level(logging.WARNING),
+    ):
+        add_baseload_power_price(sample_dataset, baseload_coverage=0.95, target_year=2050, geo_paths=mock_geo_paths)
+
+    assert "was run at p15" in caplog.text
