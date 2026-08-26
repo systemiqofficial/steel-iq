@@ -478,6 +478,7 @@ def bootstrap_simulation(
             baseload_power_sim_dir=path_resolver.baseload_power_sim_dir
             if path_resolver.baseload_power_sim_dir.exists()
             else config.data_dir / "baseload_power_sim",
+            baseload_lcoe_file=config.baseload_lcoe_file,
             static_layers_dir=config.data_dir / "outputs" / "GEO",  # Use outputs/GEO for static layers
             landtype_percentage_path=path_resolver.landtype_percentage_nc_path
             if path_resolver.landtype_percentage_nc_path.exists()

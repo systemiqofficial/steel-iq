@@ -69,6 +69,8 @@ boa-run --help
 - `--no-plots`: Skip map plotting during the run
 - `--dry-run` (full run only): Resolve paths and run the preflight check without simulating
 - `--force` (`build-cache` and `query` only): Rebuild the targeted artifacts even if present
+- `--promote-lcoe` (full run and `query`): Combine the per-year GLOBAL NetCDFs into the single
+  LCOE file the steel simulation reads (same as running `boa-promote-lcoe` afterwards)
 
 ### 4. Output
 The simulation will:
@@ -85,11 +87,41 @@ Results include:
 - Battery overscale factor (relative to baseload demand)
 - Total installation cost in USD
 
-To run the steelo simulation based on the custom BOA output for the LCOE (instead of the default), the path to the output data must be provided explicitly:
+### 5. Handing the LCOE to the steel simulation
+
+The steel simulation reads exactly one variable off a BOA run — `lcoe` — so a finished run
+is promoted into a single combined file before it is used. Promotion stacks every year into
+one `(year, lat, lon)` float32 variable and stores the cost keys and status codes once,
+which turns 5.49 GB of per-year files (36 years) into about 26 MB:
 
 ```bash
-run_simulation --baseload-power-sim-dir path-to-baseload-power-simulation-folder
+boa-promote-lcoe --run cds-2024__china_test    # or: boa-run ... --promote-lcoe
 ```
+
+The result lands in `<boa data root>/lcoe-for-steel-iq/<run>/optimal_lcoe_<bl>MW_p<p>_<first>_<last>.nc`
+and carries its own provenance (run name, input/cost sets, workbook hash, versions, scenario
+settings), so the file alone identifies what produced it.
+
+Point the steel simulation at a promoted run:
+
+```bash
+run_simulation --boa-run cds-2024__china_test
+```
+
+- `--boa-run`: local BOA run to price baseload power from. Omitted — the default — the
+  simulation reads the per-year files shipped with the geo data, exactly as before
+- `--boa-demand`: baseload demand in MW, needed only when the run holds more than one; requires `--boa-run`
+
+The coverage is not a flag: it follows `GeoConfig.included_power_mix` (`simulation.py`), the
+setting the simulation prices power at. `85% baseload + 15% grid` reads the run's p15 file,
+`95% baseload + 5% grid` its p5 file — change the setting and the matching file is used. If
+the run has no file at that percentile, the simulation stops before any data preparation and
+names the mix that required it, rather than quietly pricing power off whatever sits in the
+data directory. A grid-only mix has no baseload component at all, so pairing it with
+`--boa-run` is rejected instead of resolving a file that would never be read.
+
+The per-year files stay in place — they carry the overbuild factors and the cost breakdown —
+and `--baseload-power-sim-dir` still points at a directory of them.
 
 ## Methodology:
 1. Project investment costs for solar and wind technologies for each country and year

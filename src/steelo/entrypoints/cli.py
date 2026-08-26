@@ -20,9 +20,91 @@ from rich.table import Table
 from ..domain import Year
 from ..domain.constants import RANDOM_SEED_DEFAULT
 
-from ..simulation import SimulationConfig
+from ..simulation import GeoConfig, SimulationConfig
 from ..bootstrap import bootstrap_simulation
 from ..utils.symlink_manager import update_data_symlink, update_output_symlink, setup_legacy_symlinks
+
+
+def _available_boa_runs(promotion_root: Path) -> str:
+    """Human-readable inventory of promoted runs, for the error paths below."""
+    runs = sorted(d for d in promotion_root.glob("*") if d.is_dir()) if promotion_root.is_dir() else []
+    if not runs:
+        return (
+            f"No promoted BOA runs under {promotion_root}. "
+            "Produce one with `boa-promote-lcoe --run <name>` (or `boa-run ... --promote-lcoe`)."
+        )
+    lines = [f"Promoted BOA runs under {promotion_root}:"]
+    for run_dir in runs:
+        files = sorted(f.name for f in run_dir.glob("optimal_lcoe_*.nc"))
+        lines.append(f"  {run_dir.name}: {', '.join(files) if files else '(no promoted files)'}")
+    return "\n".join(lines)
+
+
+def resolve_boa_lcoe_file(console: Console, run: str | None, demand: float | None) -> Path | None:
+    """
+    Locate the promoted BOA LCOE file for ``run`` at the percentile the power mix implies.
+
+    Without ``--boa-run`` there is no local BOA run to read and None selects the per-year
+    files shipped with the geo data. With one, any miss exits rather than returning None:
+    a named run that is not there would otherwise silently price power off whatever happens
+    to sit in the data directory instead.
+
+    The coverage is never passed in. It follows ``GeoConfig.included_power_mix``, the setting the
+    simulation itself prices power at, so a local run can only ever be read at the coverage it was
+    actually asked for.
+    """
+    from boa.config.paths import default_root
+    from boa.conversions import coverage_to_percentile
+
+    from ..adapters.geospatial.geospatial_calculations import get_baseload_coverage
+
+    if run is None:
+        if demand is not None:
+            console.print("[red]--boa-demand only applies together with --boa-run[/red]")
+            sys.exit(1)
+        return None
+
+    power_mix = GeoConfig.included_power_mix
+    coverage = get_baseload_coverage(power_mix)
+    if coverage == 0:
+        console.print(
+            f"[red]Power mix '{power_mix}' has no baseload component, so no BOA run is ever read. "
+            "Drop --boa-run, or set included_power_mix to a baseload mix.[/red]"
+        )
+        sys.exit(1)
+        return None
+
+    p = coverage_to_percentile(coverage)
+    promotion_root = default_root() / "lcoe-for-steel-iq"
+    run_dir = promotion_root / run
+    if not run_dir.is_dir():
+        console.print(f"[red]BOA run '{run}' not found at {run_dir}[/red]")
+        console.print(_available_boa_runs(promotion_root))
+        sys.exit(1)
+        return None
+
+    demand_pattern = f"{demand:g}MW" if demand is not None else "*MW"
+    matches = sorted(run_dir.glob(f"optimal_lcoe_{demand_pattern}_p{p}_*.nc"))
+    if not matches:
+        console.print(
+            f"[red]BOA run '{run}' has no promoted LCOE file for p{p}, the percentile the configured power mix "
+            f"'{power_mix}' requires"
+            + (f" (--boa-demand {demand:g})" if demand is not None else "")
+            + f", in {run_dir}[/red]"
+        )
+        console.print(_available_boa_runs(promotion_root))
+        sys.exit(1)
+        return None
+    if len(matches) > 1:
+        console.print(
+            f"[red]BOA run '{run}' holds several baseload demands at p{p}: "
+            f"{', '.join(f.name for f in matches)}. Pick one with --boa-demand.[/red]"
+        )
+        sys.exit(1)
+        return None
+
+    console.print(f"[blue]Baseload power priced from BOA run '{run}' at p{p} ('{power_mix}'):[/blue] {matches[0]}")
+    return matches[0]
 
 
 def run_full_simulation() -> str:
@@ -142,6 +224,19 @@ def run_full_simulation() -> str:
         help="Path to BOA-generated baseload power simulation output directory (overrides default)",
     )
     parser.add_argument(
+        "--boa-run",
+        type=str,
+        default=None,
+        help="Local BOA run whose promoted LCOE file prices baseload power, at the percentile the "
+        "configured power mix implies (default: none, i.e. the per-year files shipped with the geo data)",
+    )
+    parser.add_argument(
+        "--boa-demand",
+        type=float,
+        default=None,
+        help="Baseload demand in MW, needed only when the BOA run holds more than one. Requires --boa-run",
+    )
+    parser.add_argument(
         "--enable-clustering",
         action="store_true",
         help="Enable furnace group clustering to reduce LP complexity",
@@ -183,6 +278,9 @@ def run_full_simulation() -> str:
     # Parse the command-line arguments
     try:
         args = parser.parse_args()
+
+        # Resolve the BOA LCOE file first: a named run that is missing must stop us before any data prep.
+        boa_lcoe_file = resolve_boa_lcoe_file(console, args.boa_run, args.boa_demand)
 
         # Setup directories
         steelo_home = Path(args.steelo_home)
@@ -310,6 +408,7 @@ def run_full_simulation() -> str:
                     sys.exit(1)
                 config_kwargs["baseload_power_sim_dir"] = baseload_dir
                 console.print(f"[blue]Using custom baseload power simulation directory: {baseload_dir}[/blue]")
+            config_kwargs["baseload_lcoe_file"] = boa_lcoe_file
 
             config = SimulationConfig.from_data_directory(**config_kwargs)
 
@@ -399,6 +498,7 @@ def run_full_simulation() -> str:
                         sys.exit(1)
                     config_kwargs["baseload_power_sim_dir"] = baseload_dir
                     console.print(f"[blue]Using custom baseload power simulation directory: {baseload_dir}[/blue]")
+                config_kwargs["baseload_lcoe_file"] = boa_lcoe_file
 
                 config = SimulationConfig.from_data_directory(**config_kwargs)
 
