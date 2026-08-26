@@ -130,7 +130,7 @@ already exists, so partial reuse works too.
 
 ```bash
 boa-run --demand 1000 --coverage 0.95            # full run: build caches if missing, query every year
-boa-run build-cache --samples 2000               # year-independent design caches only
+boa-run build-cache --samples 2000               # year- and baseload-independent design caches only
 boa-run query --start-year 2030 --end-year 2030  # NetCDFs from pre-built caches (--force to re-derive)
 boa-run point --lat 52.5 --lon 13.4              # single point; region auto-derived
 boa-run --weather-input cds-2023 --cost-input rev3 --dry-run  # resolve paths + preflight, run nothing
@@ -143,9 +143,13 @@ the cost side (xlsx + per-year cost cache), and `--run` names the output pairing
 `<weather-input>__<cost-input>`). A preflight
 check fails fast with the exact `boa-cds-prepare` / `boa-data-prepare` command when the
 selected sets are incomplete. The full run never rebuilds an existing design cache; use
-`build-cache --force` or `query --force` for targeted rebuilds. Expect hours for a full
-multi-year GLOBAL run at production settings (`--samples 2000`); a `query` against warm
-caches is minutes per year.
+`build-cache --force` or `query --force` for targeted rebuilds. Design caches are
+baseload-independent: one cache per (coverage, samples, weather year) serves every
+`--demand`, with the capacity ceiling applied as a query-time mask; pixels the mask
+starves or leaves sparsely sampled are re-searched by a query-time top-up (supported
+baseload: up to 20,000 MW). Expect hours
+for a full multi-year GLOBAL run at production settings (`--samples 2000`); a `query`
+against warm caches is minutes per year.
 
 ## Handing LCOE to the steel simulation
 

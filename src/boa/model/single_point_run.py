@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from boa.config.paths import PathConfig
-from boa.config.settings import OVERSCALE_SAMPLING_MEANS, RANDOM_SEED
+from boa.config.settings import RANDOM_SEED
 from boa.geo.iso3_finder import (
     derive_subregion,
     iso3_at,
@@ -24,6 +24,7 @@ from boa.geo.geospatial import build_region_selection, select_region, wrap_lon_t
 from boa.model.logic import (
     min_survivors_required,
     optimize_point,
+    overscale_mus_from_cf,
     return_global_average_costs,
     calculate_net_energy_production,
     state_of_charge,
@@ -258,8 +259,10 @@ def run_baseload_optimization_for_point(
     logging.debug(f"Physical capacity limit for grid point {lat}, {lon}: {overbuild_limit}")
 
     # Sample, filter by coverage, and pick the minimum-LCOE design in one vectorised pass.
+    # Proposal scale mu = k / time-mean CF; the ceiling enters only as a mask inside optimize_point.
     capex, opex_pct, cost_of_capital, cost_key = extract_costs_for_point(lat, lon, costs)
     min_survivors = _resolve_min_survivors(n, min_survivor_fraction)
+    mus = overscale_mus_from_cf(float(profile_grid_point["solar"].mean()), float(profile_grid_point["wind"].mean()))
     optimum, intermediates = optimize_point(
         profile_grid_point,
         p,
@@ -271,7 +274,7 @@ def run_baseload_optimization_for_point(
         n,
         limit=overbuild_limit,
         seed=RANDOM_SEED,
-        mus=OVERSCALE_SAMPLING_MEANS,
+        mus=mus,
         return_intermediates=True,
         min_survivors=min_survivors,
     )
@@ -449,6 +452,7 @@ def execute_single_point_baseload_power_simulation(
     _progress(60, f"Sampling {n:,} feasible designs + filtering by coverage...")
     logging.info(f"Sampling {n} feasible designs and computing optimum...")
     min_survivors = _resolve_min_survivors(n, min_survivor_fraction)
+    mus = overscale_mus_from_cf(float(profile["solar"].mean()), float(profile["wind"].mean()))
     optimum, intermediates = optimize_point(
         profile,
         p,
@@ -460,15 +464,16 @@ def execute_single_point_baseload_power_simulation(
         n,
         limit=overbuild_limit,
         seed=RANDOM_SEED,
-        mus=OVERSCALE_SAMPLING_MEANS,
+        mus=mus,
         return_intermediates=True,
         min_survivors=min_survivors,
     )
 
-    feasible = intermediates["feasible_designs"]  # {"solar": (n,), "wind": (n,), "battery": (n,)}
-    accepted_mask = intermediates["accepted_mask"]  # (n,)
-    all_lcoes = intermediates["lcoes"]  # (n,)
-    all_install_costs = intermediates["installation_costs"]  # (n,)
+    # Intermediates have length n, or n + n top-up draws when the top-up re-searched a starved pixel.
+    feasible = intermediates["feasible_designs"]  # {"solar": (m,), "wind": (m,), "battery": (m,)}
+    accepted_mask = intermediates["accepted_mask"]  # (m,)
+    all_lcoes = intermediates["lcoes"]  # (m,)
+    all_install_costs = intermediates["installation_costs"]  # (m,)
 
     # Plot 2: Feasible design distributions
     if generate_plots:
@@ -479,7 +484,7 @@ def execute_single_point_baseload_power_simulation(
                 "wind": float(feasible["wind"][i]),
                 "battery": float(feasible["battery"][i]),
             }
-            for i in range(n)
+            for i in range(len(feasible["solar"]))
         ]
         plot_design_distributions(feasible_list, output_path=output_dir / f"{filename_prefix}_feasible_designs.png")
 

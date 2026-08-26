@@ -4,15 +4,13 @@ designs + coverage) to disk so future cost-side runs can re-derive LCOE in
 minutes instead of hours.
 
 One Zarr store per region:
-    inputs/<input_set>/cache_designs/<REGION>_<HASH>.zarr/
+    inputs/<input_set>/cache_designs/p<p>/<REGION>/<n_seed_year_res>.zarr/
 
-The 16-hex-char <HASH> is a stable digest of the cache-invalidating params
-(baseload, p, n, seed, weather_year, era5_res). Caches for different parameter
-choices coexist; mismatch -> cache miss -> rebuild.
-
-Layout mirrors the per-scenario outputs tree for browse-friendliness:
-    outputs/<baseload>MW/p<p>/nc/<REGION>/optimal_sol_<baseload>MW_p<p>_<REGION>_<year>.nc
-    inputs/<input_set>/cache_designs/<baseload>MW/p<p>/<REGION>/<n_seed_year_res>.zarr/
+The cache is baseload-independent (schema v2): the sampler's proposal is scaled to
+the pixel's capacity factors, and the capacity ceiling is applied as a query-time
+mask, so one cache per (region, p, n, seed, weather_year, era5_res) serves every
+baseload. Caches for different parameter choices coexist; mismatch -> cache miss
+-> rebuild.
 
 Per-region store layout (float32 throughout: the 0.25-degree grid coords are
 float32-exact and the design/coverage values don't need float64 precision):
@@ -46,7 +44,7 @@ import numpy as np
 import zarr
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 # ----- cache path resolution -------------------------------------------------
@@ -55,7 +53,6 @@ SCHEMA_VERSION = 1
 def cache_path(
     cache_dir: Path,
     region: str,
-    baseload_demand: float,
     p: int,
     n_samples: int,
     seed: int,
@@ -63,15 +60,16 @@ def cache_path(
     era5_resolution_deg: float,
 ) -> Path:
     """
-    Resolve a cache's on-disk path from its parameters. Layout mirrors the
-    `outputs/<baseload>MW/p<p>/nc/<REGION>/...` hierarchy:
+    Resolve a cache's on-disk path from its parameters:
 
-        <cache_dir>/<baseload>MW/p<p>/<REGION>/n<n>_s<seed>_y<year>_r<res>.zarr/
+        <cache_dir>/p<p>/<REGION>/n<n>_s<seed>_y<year>_r<res>.zarr/
 
-    Deterministic from the parameter tuple: same params produce the same path.
+    No baseload level: v2 caches are baseload-independent (the capacity ceiling is
+    a query-time mask). Deterministic from the parameter tuple: same params produce
+    the same path.
     """
     rest = f"n{int(n_samples)}_s{int(seed)}_y{int(weather_year)}_r{round(era5_resolution_deg * 100):03d}"
-    return Path(cache_dir) / f"{baseload_demand:g}MW" / f"p{int(p)}" / region / f"{rest}.zarr"
+    return Path(cache_dir) / f"p{int(p)}" / region / f"{rest}.zarr"
 
 
 # Pattern for the legacy v1.0 16-hex-char hash filenames at the top level of the
@@ -112,15 +110,17 @@ def migrate_legacy_cache_filenames(cache_dir: Path) -> int:
             if region is None:
                 logging.warning(f"Cache {path.name} missing region in meta; skipping")
                 continue
-            new_path = cache_path(
-                cache_dir,
-                str(region),
-                params["baseload_demand_mw"],
-                params["p_percentile"],
-                params["n_samples"],
-                params["random_seed"],
-                params["weather_year"],
-                params["era5_resolution_deg"],
+            # Legacy caches keep the v1.2 <baseload>MW layout; the baseload-free v2 layout is v2-only.
+            rest = (
+                f"n{int(params['n_samples'])}_s{int(params['random_seed'])}_"
+                f"y{int(params['weather_year'])}_r{round(params['era5_resolution_deg'] * 100):03d}"
+            )
+            new_path = (
+                cache_dir
+                / f"{params['baseload_demand_mw']:g}MW"
+                / f"p{int(params['p_percentile'])}"
+                / str(region)
+                / f"{rest}.zarr"
             )
             if new_path.exists():
                 logging.warning(
@@ -139,7 +139,6 @@ def migrate_legacy_cache_filenames(cache_dir: Path) -> int:
 def cache_exists(
     cache_dir: Path,
     region: str,
-    baseload_demand: float,
     p: int,
     n_samples: int,
     seed: int,
@@ -150,7 +149,6 @@ def cache_exists(
     return cache_path(
         cache_dir,
         region,
-        baseload_demand,
         p,
         n_samples,
         seed,
@@ -238,12 +236,12 @@ def build_cache_meta(
     region: str,
     n_points: int,
     n_designs_total: int,
-    baseload_demand: float,
     p: int,
     n_samples: int,
     seed: int,
     weather_year: int,
     era5_resolution_deg: float,
+    overscale_sampling_k: dict,
 ) -> dict:
     """Assemble the meta dict that goes into `group.attrs["meta"]`."""
     return {
@@ -252,12 +250,12 @@ def build_cache_meta(
         "n_points": int(n_points),
         "n_designs_total": int(n_designs_total),
         "params": {
-            "baseload_demand_mw": float(baseload_demand),
             "p_percentile": int(p),
             "n_samples": int(n_samples),
             "random_seed": int(seed),
             "weather_year": int(weather_year),
             "era5_resolution_deg": float(era5_resolution_deg),
+            "overscale_sampling_k": {tech: float(k) for tech, k in overscale_sampling_k.items()},
         },
         "built_at": datetime.now(timezone.utc).isoformat(),
         "code_git_sha": _git_sha_short(),
@@ -330,6 +328,13 @@ def read_cache(path: Path) -> RegionDesignCache:
     g = zarr.open_group(str(path), mode="r")
     raw_meta = g.attrs.get("meta", {})
     meta = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+    version = meta.get("schema_version")
+    if version != SCHEMA_VERSION:
+        # No migration exists (the sampler change altered the cached designs); refuse, never a wrong answer.
+        raise ValueError(
+            f"design cache at {path} has schema version {version}; this code requires "
+            f"v{SCHEMA_VERSION}. Delete the cache and rebuild (`boa-run build-cache`)."
+        )
     region = str(meta.get("region", path.parent.name))
     return RegionDesignCache(
         region=region,
