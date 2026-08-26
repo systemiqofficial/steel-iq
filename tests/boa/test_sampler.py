@@ -266,7 +266,7 @@ def test_design_exactly_at_the_ceiling_stays_in_box():
     opex_per_tech = {tech: np.array([opex[tech]]) for tech in ("solar", "wind", "battery")}
 
     # n=4 keeps the quality threshold at 1, so no top-up competes with the cached pair.
-    _, results, counters = _query_lcoe_tile(
+    _, results, counters, _ = _query_lcoe_tile(
         np.array([0]),
         designs,
         offsets,

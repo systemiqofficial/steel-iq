@@ -28,6 +28,11 @@ float32-exact and the design/coverage values don't need float64 precision):
 
     group.attrs["meta"] = {schema_version, region, cache_key, n_points,
                            n_designs_total, params {...}, built_at, code_git_sha}
+
+A per-baseload top-up supplement (`<parent-stem>__topup_<baseload>MW.zarr`) can sit
+beside each cache: it persists the query-time top-up results (truncated re-sample
+designs + corner-screen verdicts), which depend only on (pixel, baseload, p, n, seed),
+so repeated queries skip the top-up compute. See the "top-up supplement" section below.
 """
 
 from __future__ import annotations
@@ -45,6 +50,7 @@ import zarr
 
 
 SCHEMA_VERSION = 2
+TOPUP_SCHEMA_VERSION = 1
 
 
 # ----- cache path resolution -------------------------------------------------
@@ -195,23 +201,25 @@ class RegionDesignCache:
 def pack_csr(
     designs_per_point: list[np.ndarray],
     coverage_per_point: list[np.ndarray],
+    dtype: type = np.float32,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Pack per-point design lists into CSR-style flat arrays.
 
     Returns (designs_flat, design_offsets, coverage_flat).
     `design_offsets[k+1] - design_offsets[k]` == count of designs for point k.
+    The main cache packs float32; the top-up supplement packs float64 (bit-identity).
     """
     n_per_point = np.array([d.shape[0] for d in designs_per_point], dtype=np.int64)
     design_offsets = np.concatenate([[0], np.cumsum(n_per_point)]).astype(np.int32)
     if n_per_point.sum() == 0:
         return (
-            np.empty((0, 3), dtype=np.float32),
+            np.empty((0, 3), dtype=dtype),
             design_offsets,
-            np.empty(0, dtype=np.float32),
+            np.empty(0, dtype=dtype),
         )
-    designs_flat = np.concatenate(designs_per_point, axis=0).astype(np.float32, copy=False)
-    coverage_flat = np.concatenate(coverage_per_point, axis=0).astype(np.float32, copy=False)
+    designs_flat = np.concatenate(designs_per_point, axis=0).astype(dtype, copy=False)
+    coverage_flat = np.concatenate(coverage_per_point, axis=0).astype(dtype, copy=False)
     return designs_flat, design_offsets, coverage_flat
 
 
@@ -348,6 +356,138 @@ def read_cache(path: Path) -> RegionDesignCache:
         wind_max=np.asarray(g["wind_max"][:]),
         designs_flat=np.asarray(g["designs_flat"][:]),
         design_offsets=np.asarray(g["design_offsets"][:]),
+        coverage_flat=np.asarray(g["coverage_flat"][:]),
+        meta=meta,
+    )
+
+
+# ----- per-baseload top-up supplement -----------------------------------------
+
+
+def topup_supplement_path(cache_file: Path, baseload_demand_mw: float) -> Path:
+    """Sidecar path beside the parent cache: `<parent-stem>__topup_<baseload:g>MW.zarr`."""
+    cache_file = Path(cache_file)
+    return cache_file.with_name(f"{cache_file.stem}__topup_{baseload_demand_mw:g}MW.zarr")
+
+
+@dataclass
+class TopupSupplement:
+    """
+    Persisted query-time top-up results for one (parent cache, baseload) pair.
+
+    Verdict codes per parent-cache point: 0 = not in the trigger band (no rows),
+    1 = topped up (rows are the accepted truncated re-sample designs), 2 = the
+    corner screen proved the capacity box infeasible (no rows). Designs and
+    coverage are float64 — a query replayed from the supplement must be
+    bit-identical to one computing the top-up fresh, so the main cache's float32
+    convention does not apply (the files are small).
+    """
+
+    verdict: np.ndarray  # (npts,) int8
+    designs_flat: np.ndarray  # (m, 3) float64 -- cols: solar / wind / battery
+    row_offsets: np.ndarray  # (npts+1,) int32
+    coverage_flat: np.ndarray  # (m,) float64
+    meta: dict = field(default_factory=dict)
+
+    @property
+    def n_points(self) -> int:
+        return int(self.verdict.shape[0])
+
+    def rows_for_point(self, k: int) -> tuple[np.ndarray, np.ndarray]:
+        """Return (designs, coverage) top-up rows for point k (zero-length for verdicts 0 and 2)."""
+        lo, hi = int(self.row_offsets[k]), int(self.row_offsets[k + 1])
+        return self.designs_flat[lo:hi], self.coverage_flat[lo:hi]
+
+
+def build_topup_meta(
+    parent_meta: dict,
+    baseload_demand_mw: float,
+    topup_quality_fraction: float,
+    min_survivor_fraction: float,
+    n_points: int,
+    n_rows: int,
+) -> dict:
+    """Meta for a top-up supplement, tying it to the exact parent cache build."""
+    return {
+        "schema_version": TOPUP_SCHEMA_VERSION,
+        "baseload_demand_mw": float(baseload_demand_mw),
+        "topup_quality_fraction": float(topup_quality_fraction),
+        "min_survivor_fraction": float(min_survivor_fraction),
+        "parent_params": parent_meta.get("params", {}),
+        "parent_built_at": parent_meta.get("built_at"),
+        "n_points": int(n_points),
+        "n_rows": int(n_rows),
+        "built_at": datetime.now(timezone.utc).isoformat(),
+        "code_git_sha": _git_sha_short(),
+    }
+
+
+def write_topup_supplement(supplement: TopupSupplement, path: Path) -> Path:
+    """Atomic write of a top-up supplement (tmp-then-swap, mirroring `write_cache`)."""
+    final = Path(path)
+    tmp = final.parent / f"{final.name}.tmp"
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    final.parent.mkdir(parents=True, exist_ok=True)
+
+    g = zarr.open_group(str(tmp), mode="w")
+    npts = supplement.n_points
+    m = int(supplement.designs_flat.shape[0])
+    g.create_array("verdict", shape=(npts,), dtype=np.int8)
+    g["verdict"][:] = np.ascontiguousarray(supplement.verdict, dtype=np.int8)
+    g.create_array("row_offsets", shape=(npts + 1,), dtype=np.int32)
+    g["row_offsets"][:] = np.ascontiguousarray(supplement.row_offsets, dtype=np.int32)
+    g.create_array("designs_flat", shape=(m, 3), dtype=np.float64)
+    if m > 0:
+        g["designs_flat"][:] = np.ascontiguousarray(supplement.designs_flat, dtype=np.float64)
+    g.create_array("coverage_flat", shape=(m,), dtype=np.float64)
+    if m > 0:
+        g["coverage_flat"][:] = np.ascontiguousarray(supplement.coverage_flat, dtype=np.float64)
+    g.attrs["meta"] = supplement.meta
+
+    if final.exists():
+        shutil.rmtree(final)
+    tmp.rename(final)
+    return final
+
+
+def read_topup_supplement(
+    path: Path,
+    parent_meta: dict,
+    baseload_demand_mw: float,
+    topup_quality_fraction: float,
+    min_survivor_fraction: float,
+) -> TopupSupplement:
+    """
+    Load a top-up supplement, refusing (ValueError) on any validity mismatch: wrong
+    schema, different baseload or fraction settings, or a parent cache whose params
+    or built_at no longer match — a rebuilt cache silently invalidates its
+    supplements. Exact-match semantics only (no superset reuse across fractions).
+    Raises FileNotFoundError on a missing store.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"top-up supplement missing: {path}")
+    g = zarr.open_group(str(path), mode="r")
+    raw_meta = g.attrs.get("meta", {})
+    meta = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+    checks = [
+        ("schema_version", meta.get("schema_version"), TOPUP_SCHEMA_VERSION),
+        ("baseload_demand_mw", meta.get("baseload_demand_mw"), float(baseload_demand_mw)),
+        ("topup_quality_fraction", meta.get("topup_quality_fraction"), float(topup_quality_fraction)),
+        ("min_survivor_fraction", meta.get("min_survivor_fraction"), float(min_survivor_fraction)),
+        ("parent_params", meta.get("parent_params"), parent_meta.get("params", {})),
+        ("parent_built_at", meta.get("parent_built_at"), parent_meta.get("built_at")),
+    ]
+    for name, found, expected in checks:
+        if found != expected:
+            raise ValueError(
+                f"top-up supplement at {path.name}: {name} mismatch (found {found!r}, expected {expected!r})"
+            )
+    return TopupSupplement(
+        verdict=np.asarray(g["verdict"][:]),
+        designs_flat=np.asarray(g["designs_flat"][:]),
+        row_offsets=np.asarray(g["row_offsets"][:]),
         coverage_flat=np.asarray(g["coverage_flat"][:]),
         meta=meta,
     )

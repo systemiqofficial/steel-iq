@@ -9,6 +9,7 @@ regions); the one exception is the single-point mode.
 Subcommands:
     boa-run                  full simulation: build design caches if missing, then query every year
     boa-run build-cache      year-independent design caches only (all regions)
+    boa-run build-topup      per-baseload top-up supplements against existing caches (all regions)
     boa-run query            optimal-solution NetCDFs from pre-built caches (all regions, all years)
     boa-run point            single-point run at --lat/--lon (region auto-derived)
 
@@ -44,6 +45,7 @@ from boa.config.paths import DEFAULT_SET, PathConfig
 from boa.config.settings import REGION_COORDS
 from boa.model.global_extension import (
     build_design_cache_for_region,
+    build_topup_supplement_for_region,
     combine_regional_datasets_into_global_dataset,
     query_design_cache_for_region,
 )
@@ -382,6 +384,30 @@ def build_all_caches(
         )
 
 
+def build_all_topups(
+    path_config: PathConfig,
+    baseload_demand: float,
+    p: int,
+    n: int,
+    n_workers: int,
+    force: bool = False,
+) -> None:
+    """Build the per-baseload top-up supplement for every region against its existing design cache."""
+    for region in REGION_COORDS:
+        logging.info(f"\nBuilding top-up supplement for {region}")
+        profile = open_regional_dataset("profile", region, path_config)
+        build_topup_supplement_for_region(
+            region=region,
+            baseload_demand=baseload_demand,
+            p=p,
+            n=n,
+            profile=profile,
+            path_config=path_config,
+            n_workers=n_workers,
+            force=force,
+        )
+
+
 def query_all_years(
     path_config: PathConfig,
     years: List[int],
@@ -561,6 +587,57 @@ def main_build_cache(argv: list[str]) -> int:
     return 0
 
 
+def main_build_topup(argv: list[str]) -> int:
+    """
+    `build-topup` subcommand: build the per-baseload top-up supplements for all
+    regions against existing design caches (no NetCDF output). Requires the caches
+    to exist; will not build them. Idempotent — valid supplements are kept.
+    """
+    parser = argparse.ArgumentParser(
+        prog="boa-run build-topup",
+        description="Build the per-baseload top-up supplements (all regions) against existing design caches.",
+        formatter_class=_HelpFormatter,
+    )
+    add_scenario_args(parser)
+    add_workers_arg(parser)
+    parser.add_argument("--force", action="store_true", help="Rebuild each supplement even if a valid one exists.")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
+    add_data_args(parser)
+    args = parser.parse_args(argv)
+
+    try:
+        validate_scenario_args(args)
+    except ValueError as e:
+        logging.error(f"Invalid arguments: {e}")
+        return 1
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+    p = coverage_to_percentile(args.coverage)
+
+    logging.info("=" * 60)
+    logging.info("BOA: build-topup")
+    logging.info("=" * 60)
+    logging.info(f"Baseload: {args.demand} MW; coverage p={p}; samples={args.samples}; workers={args.workers}")
+
+    resolve_data_sets(args)
+    if (rc := run_prepare_flags(args)) != 0:
+        return rc
+    path_config = build_path_config(args)
+    try:
+        preflight(path_config)
+    except (FileNotFoundError, ValueError) as e:
+        logging.error(str(e))
+        return 1
+    run_manifest.record_invocation(path_config, "build-topup", list(argv), parameters=resolved_parameters(args, p))
+    try:
+        build_all_topups(path_config, args.demand, p, args.samples, args.workers, force=args.force)
+    except FileNotFoundError as e:
+        logging.error(f"{e} — build the design caches first (`boa-run build-cache`).")
+        return 1
+    logging.info("\nbuild-topup: all regions complete.")
+    return 0
+
+
 def main_query(argv: list[str]) -> int:
     """
     `query` subcommand: re-derive optimal-solution NetCDFs from pre-built design
@@ -700,7 +777,12 @@ def main_point(argv: list[str]) -> int:
     return 0
 
 
-_SUBCOMMANDS = {"build-cache": main_build_cache, "query": main_query, "point": main_point}
+_SUBCOMMANDS = {
+    "build-cache": main_build_cache,
+    "build-topup": main_build_topup,
+    "query": main_query,
+    "point": main_point,
+}
 
 
 def main() -> int:
