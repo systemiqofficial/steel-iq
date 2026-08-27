@@ -1414,21 +1414,6 @@ class SimulationRunner:
             )
             logger.info("Generated emissions stacked area charts")
 
-        # Interactive viewers (self-contained plotly HTML) under plots/interactive
-        from steelo.utilities.interactive import InteractivePlotter
-
-        if self.config.plots_dir is not None:
-            interactive = InteractivePlotter(
-                plots_dir=self.config.plots_dir,
-                country_mappings=bus.env.country_mappings.mappings,
-                run_title=self.config.output_dir.name,
-                geo_hierarchy_json=self.config.data_dir / "fixtures" / "geo_hierarchy.json"
-                if self.config.data_dir
-                else None,
-            )
-            interactive.plot_emissions(post_processed_csv=Path(output_path))
-            interactive.plot_capacity_and_production(post_processed_csv=Path(output_path))
-
         # Plot iron ore consumption stacked area chart by quality
         if data_collector.trace_iron_ore:
             plotter.plot_iron_ore_by_quality(trace_iron_ore=data_collector.trace_iron_ore)
@@ -1472,6 +1457,7 @@ class SimulationRunner:
                     "year": year,
                     "steel_price_usd_per_t": prices.get("steel", 0.0),
                     "iron_price_usd_per_t": prices.get("iron", 0.0),
+                    "steel_demand_t": prices["steel_demand"],
                 }
                 if "scrap" in prices:
                     row["scrap_price_usd_per_t"] = prices["scrap"]
@@ -1495,6 +1481,34 @@ class SimulationRunner:
             )
             if price_plot_path is not None:
                 logger.info(f"Saved market prices plot to {price_plot_path}")
+
+        # Interactive viewers (self-contained plotly HTML) under plots/interactive; after the
+        # market-prices export so the cost curves can read the recorded steel demand
+        from steelo.utilities.interactive import InteractivePlotter, clearing_config
+
+        if self.config.plots_dir is not None:
+            interactive = InteractivePlotter(
+                plots_dir=self.config.plots_dir,
+                country_mappings=bus.env.country_mappings.mappings,
+                run_title=self.config.output_dir.name,
+                geo_hierarchy_json=self.config.data_dir / "fixtures" / "geo_hierarchy.json"
+                if self.config.data_dir
+                else None,
+            )
+            interactive.plot_emissions(post_processed_csv=Path(output_path))
+            interactive.plot_capacity_and_production(post_processed_csv=Path(output_path))
+            interactive.plot_cost_curves(
+                post_processed_csv=Path(output_path),
+                market_prices_csv=self.config.output_dir / "data" / f"market_prices_{start_year}_{end_year}.csv",
+                clearing=clearing_config(
+                    capacity_limit=bus.env.config.capacity_limit,
+                    steel_share=bus.env.config.steel_market_clearing_share,
+                    steel_buffer=bus.env.config.steel_price_buffer,
+                    iron_share=bus.env.config.iron_market_clearing_share,
+                    iron_buffer=bus.env.config.iron_price_buffer,
+                ),
+            )
+            interactive.plot_decision_flows(motions_csv=self.config.output_dir / "data" / "pam_motions.csv")
 
         # Aggregate per-year LCOE/LCOH statistics into stacked CSVs
         aggregate_lcoe_lcoh_statistics(self.config.output_dir, start_year, end_year)

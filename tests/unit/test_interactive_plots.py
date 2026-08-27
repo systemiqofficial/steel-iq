@@ -5,9 +5,12 @@ import json
 import pandas as pd
 
 from steelo.domain.models import CountryMapping
-from steelo.utilities.interactive import InteractivePlotter, interactive_plots
+from steelo.utilities.interactive import InteractivePlotter, clearing_config, interactive_plots
 
 BOUNDARY = "worldsteel_opt_credits"
+CLEARING = clearing_config(
+    capacity_limit=0.95, steel_share=0.95, steel_buffer=200.0, iron_share=0.95, iron_buffer=200.0
+)
 
 
 def sample_country_mappings() -> list[CountryMapping]:
@@ -108,3 +111,32 @@ def test_plot_capacity_and_production_writes_self_contained_viewer(tmp_path) -> 
     assert "const Interactive" in html
     assert '"cap": 3.0' in html and '"pr": 2.0' in html
     assert list(plotter._tables) == [csv_path]
+
+
+def test_plot_cost_curves_writes_self_contained_viewer(tmp_path) -> None:
+    """The cost-curve viewer embeds the clearing parameters, the furnace-group rows and the per-year demand."""
+    csv_path = tmp_path / "post_processed_test.csv"
+    table = sample_post_processed()
+    table["unit_production_cost"] = [300.0, 500.0]
+    table.to_csv(csv_path, index=False)
+    prices_csv = tmp_path / "market_prices_2025_2025.csv"
+    pd.DataFrame({"year": [2025], "steel_price_usd_per_t": [600.0], "steel_demand_t": [900_000.0]}).to_csv(
+        prices_csv, index=False
+    )
+    plotter = InteractivePlotter(tmp_path / "plots", sample_country_mappings(), run_title="sim_test")
+
+    written = plotter.plot_cost_curves(csv_path, prices_csv, CLEARING)
+
+    assert written == tmp_path / "plots" / "interactive" / "cost_curves.html"
+    html = written.read_text()
+    for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
+        assert placeholder not in html
+    assert "const Interactive" in html
+    assert '"clearing": {"capacityLimit": 0.95, "steel": {"share": 0.95, "buffer": 200.0}' in html
+    assert '"fg": "P1_0", "cap": 3.0, "pr": 2.0, "c": 300.0' in html
+    assert '"steel": {"2025": {"d": 0.9, "c": 500.0}}' in html
+    assert "steel demand from market_prices_2025_2025.csv" in html
+
+    # Without a recorded demand (older runs) steel clears against its production.
+    assert plotter.plot_cost_curves(csv_path, tmp_path / "absent.csv", CLEARING) == written
+    assert '"steel": {"2025": {"d": 1.0, "c": 500.0}}' in written.read_text()

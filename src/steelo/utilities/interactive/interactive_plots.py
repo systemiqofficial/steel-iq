@@ -24,7 +24,7 @@ from plotly.offline import get_plotlyjs
 from steelo.domain.models import CountryMapping
 from steelo.utilities.plotting import region2colours, tech2colours
 
-from . import capacity_production, emissions
+from . import capacity_production, cost_curves, emissions
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,7 @@ class InteractivePlotter:
         >>> interactive = InteractivePlotter(plots_dir, country_mappings, run_title="sim_2026")
         >>> interactive.plot_emissions(post_processed_csv)
         >>> interactive.plot_capacity_and_production(post_processed_csv)
+        >>> interactive.plot_cost_curves(post_processed_csv, market_prices_csv, clearing)
     """
 
     SUBDIR = "interactive"
@@ -180,6 +181,50 @@ class InteractivePlotter:
         }
         path = self._write("capacity_and_production.html", self._config("Capacity and production"), data)
         logger.info("Wrote capacity and production viewer %s (%d aggregated rows)", path, len(aggregated))
+        return path
+
+    def plot_cost_curves(
+        self, post_processed_csv: Path, market_prices_csv: Path, clearing: dict[str, Any]
+    ) -> Optional[Path]:
+        """Write the cost-curve viewer (``cost_curves.html``) from the post-processed furnace-group table.
+
+        Args:
+            post_processed_csv: The run's ``post_processed_<timestamp>.csv``.
+            market_prices_csv: The run's ``data/market_prices_<start>_<end>.csv``, whose
+                ``steel_demand_t`` column gives the engine's steel demand per year. When the
+                file or column is missing (older runs) steel clears against realised production,
+                as the static chart does without a demand.
+            clearing: Output of :func:`~.cost_curves.clearing_config` — the engine's capacity
+                limit, clearing shares and shortage premiums.
+
+        Returns:
+            The written path, or None when the table is missing or lacks a required column
+            (logged as warnings so the plot stage never fails).
+        """
+        table = self._read_post_processed(post_processed_csv, "cost-curve")
+        if table is None:
+            return None
+        try:
+            fgs = cost_curves.furnace_group_rows(table)
+        except ValueError as exc:
+            logger.warning("%s — skipping the cost-curve viewer", exc)
+            return None
+        steel_demand = cost_curves.steel_demand_by_year(market_prices_csv)
+        demand_source = (
+            f"steel demand from {market_prices_csv.name}"
+            if steel_demand is not None
+            else "steel demand = realised production (no recorded demand)"
+        )
+        data = {
+            self.run_title: {
+                "title": self.run_title,
+                "provenance": f"Furnace-group unit costs and capacity from {post_processed_csv.name}; {demand_source}.",
+                "rows": cost_curves.pack_rows(fgs),
+                "demand": cost_curves.clearing_table(fgs, steel_demand, clearing),
+            },
+        }
+        path = self._write("cost_curves.html", self._config("Cost curves", clearing=clearing), data)
+        logger.info("Wrote cost-curve viewer %s (%d furnace-group rows)", path, len(fgs))
         return path
 
     def _config(self, chart_title: str, **chart_config: Any) -> dict[str, Any]:

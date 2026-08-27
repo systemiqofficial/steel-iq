@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cost curves</title>
+<style>__COMMON_CSS__</style>
+</head>
+<body>
+<div id="err"></div>
+<script>
+window.addEventListener("error", function(e) {
+  const el = document.getElementById("err");
+  el.style.display = "block";
+  el.textContent = "Load error: " + (e.message || e.type) + (e.filename ? " @ " + e.lineno : "");
+}, true);
+</script>
+<div class="toolbar">
+  <div>
+    <label for="product-select">Product</label>
+    <select id="product-select">
+      <option value="steel">Steel</option>
+      <option value="iron">Iron</option>
+    </select>
+  </div>
+  <div>
+    <label for="year-select">Year</label>
+    <select id="year-select"></select>
+  </div>
+  <div>
+    <label for="colour-select">Colour by</label>
+    <select id="colour-select">
+      <option value="technology">Technology</option>
+      <option value="region">Region</option>
+    </select>
+  </div>
+</div>
+<div class="toolbar" id="shared-filters"></div>
+<div id="summary"></div>
+<div id="chart"></div>
+<script>__PLOTLYJS__</script>
+<script>
+const CONFIG = __CONFIG__;
+const DATA = __DATA__;
+</script>
+<script>__COMMON_JS__</script>
+<script>
+const WIDTH = 1280, HEIGHT = 720;
+const MARGIN = {l: 70, r: 250, t: 90, b: 60};
+const FILL_ALPHA = 0.85, OUTLIER_CAP = 2000;
+const T = Interactive.theme;
+const CLEARING = CONFIG.clearing;
+const REFERENCE = {price: "#d62728", demand: "#2ca02c", share: "#696969"};
+
+function capitalise(text) { return text.charAt(0).toUpperCase() + text.slice(1); }
+
+/* pandas' default (linear interpolation) quantile of an ascending array. */
+function quantile(sorted, q) {
+  const pos = (sorted.length - 1) * q, lo = Math.floor(pos), frac = pos - lo;
+  return lo + 1 < sorted.length ? sorted[lo] + frac * (sorted[lo + 1] - sorted[lo]) : sorted[lo];
+}
+
+/* Port of _compute_market_clearing (utilities/plotting.py): demand beyond the
+   dispatchable share pays the last dispatchable cost plus the premium; otherwise the
+   first furnace group whose cumulative capacity meets demand sets the price. */
+function marketClearing(cumulative, costs, demand, share, buffer) {
+  const n = costs.length;
+  if (!n) return {price: 0, demandX: 0, total: 0};
+  const total = cumulative[n - 1];
+  const demandX = total > 0 ? Math.min(demand, total) : 0;
+  let threshold = share * total;
+  let last = -1;
+  for (let i = 0; i < n; i++) if (cumulative[i] <= threshold) last = i;
+  if (last < 0) { last = n - 1; threshold = total; }  // degenerate share: full curve, no premium
+  if (demand > threshold) return {price: costs[last] + buffer, demandX, total};
+  return {price: costs[cumulative.findIndex(c => c >= demand)], demandX, total};
+}
+
+/* The static chart's y-limit: outliers clipped at $2000/t, otherwise a 99.5th-percentile
+   band when the maximum sits far above it. */
+function yLimit(sortedCosts) {
+  const max = sortedCosts[sortedCosts.length - 1];
+  if (max > OUTLIER_CAP) return OUTLIER_CAP;
+  const upper = quantile(sortedCosts, 0.995);
+  return max > upper * 1.5 ? upper * 1.1 : max * 1.1;
+}
+
+function geoLabel(geo) {
+  const iso3 = Interactive.isoOf(geo);
+  const country = Interactive.countryName(iso3) ? `${Interactive.countryName(iso3)} (${iso3})` : iso3;
+  if (geo === iso3) return country;
+  return `${Interactive.unitName(geo) || geo.split(Interactive.GEO_SEP)[1]}, ${country} (${geo})`;
+}
+
+function referenceLegend(name, colour) {
+  return {type: "scatter", mode: "lines", x: [null], y: [null], name, legendgroup: "reference",
+          legendgrouptitle: {text: "Reference lines"}, legendrank: 2000, hoverinfo: "skip",
+          line: {color: colour, dash: "dash", width: 1.5}};
+}
+
+function render() {
+  const run = DATA[Interactive.run()];
+  const product = document.getElementById("product-select").value;
+  const year = Number(document.getElementById("year-select").value);
+  const colourBy = document.getElementById("colour-select").value;
+  const selectedGeo = Interactive.selectedGeos(), selectedTech = Interactive.selectedTechs();
+  const gd = document.getElementById("chart");
+  const {share, buffer} = CLEARING[product];
+  const limitPct = Math.round(CLEARING.capacityLimit * 100), sharePct = Math.round(share * 100);
+
+  const yearRows = run.rows.filter(r => r.p === product && r.y === year);
+  const selected = yearRows.filter(r => selectedGeo.has(r.g) && selectedTech.has(r.t));
+  const curve = selected.filter(r => r.c > 0 && r.cap > 0).sort((a, b) => a.c - b.c);
+  if (!curve.length) {
+    Interactive.showEmpty(gd, `No ${product} furnace groups with a cost in ${year} for this selection`, WIDTH, HEIGHT);
+    Interactive.summary("0 furnace groups");
+    return;
+  }
+
+  /* Demand and the clearing price only mean something on the full curve: once a geography
+     or technology filter removes a furnace group of this product and year, the curve is
+     drawn bare. */
+  const runGeos = new Set(run.rows.map(r => r.g));
+  const reference = run.demand[product][year];
+  const fullCurve = selected.length === yearRows.length;
+
+  const caps = curve.map(r => r.cap * CLEARING.capacityLimit);
+  const costs = curve.map(r => r.c);
+  const cumulative = [];
+  caps.reduce((sum, cap) => { cumulative.push(sum + cap); return sum + cap; }, 0);
+  const total = cumulative[cumulative.length - 1];
+  const clearing = fullCurve ? marketClearing(cumulative, costs, reference.d, share, buffer) : null;
+
+  const keyOf = colourBy === "technology" ? (r => r.t) : (r => Interactive.regionOf(r.g));
+  const keys = [...new Set(curve.map(keyOf))].sort();
+  const colours = Interactive.colourTable(colourBy === "technology" ? CONFIG.techColours : CONFIG.regionColours, keys);
+  const groupLabel = colourBy === "technology" ? "Technology" : "Region";
+  const members = new Map(keys.map(k => [k, []]));
+  curve.forEach((r, i) => members.get(keyOf(r)).push(i));
+  const traces = keys.map(key => {
+    const idx = members.get(key);
+    return {
+      type: "bar", name: key, legendgroup: "series", legendgrouptitle: {text: groupLabel},
+      x: idx.map(i => cumulative[i] - caps[i] / 2), width: idx.map(i => caps[i]), y: idx.map(i => costs[i]),
+      marker: {color: Interactive.hexToRgba(colours[key], FILL_ALPHA), line: {width: 0}},
+      customdata: idx.map(i => [curve[i].fg, geoLabel(curve[i].g), curve[i].t, curve[i].cap, caps[i], cumulative[i]]),
+      hovertemplate: "<b>%{customdata[0]}</b><br>%{customdata[1]}<br>%{customdata[2]}<br>" +
+        `%{customdata[3]:.3f} Mt capacity (%{customdata[4]:.3f} Mt at ${limitPct}%)<br>` +
+        "%{y:.1f} $/t<br>%{customdata[5]:.1f} Mt cumulative<extra></extra>",
+    };
+  });
+  // The curve's silhouette, as the static chart's black step outline.
+  traces.push({
+    type: "scatter", mode: "lines", line: {shape: "hv", color: T.ink, width: 0.6}, hoverinfo: "skip",
+    showlegend: false, x: [0, ...cumulative], y: [...costs, costs[costs.length - 1]],
+  });
+  const yMax = yLimit(costs);
+  const shapes = [], annotations = [];
+  if (clearing) {
+    const {price, demandX} = clearing;
+    const displayPrice = Math.min(price, yMax);
+    shapes.push(
+      {type: "line", xref: "paper", x0: 0, x1: 1, y0: displayPrice, y1: displayPrice,
+       line: {color: REFERENCE.price, dash: "dash", width: 1.2}},
+      {type: "line", yref: "paper", y0: 0, y1: 1, x0: demandX, x1: demandX,
+       line: {color: REFERENCE.demand, dash: "dash", width: 1.2}});
+    traces.push(referenceLegend("Market clearing price", REFERENCE.price), referenceLegend("Demand", REFERENCE.demand));
+    if (share < 1 && total > 0) {
+      shapes.push({type: "line", yref: "paper", y0: 0, y1: 1, x0: share * total, x1: share * total,
+                   line: {color: REFERENCE.share, dash: "dash", width: 1.2}});
+      traces.push(referenceLegend(`Market clearing share (${sharePct}%)`, REFERENCE.share));
+    }
+    const notes = [`Market clearing price = ${price.toFixed(1)} $/t`];
+    if (reference.d > total) notes.push(`(Demand exceeds total supply: boundary cost + $${Math.trunc(buffer)} shortage premium)`);
+    else if (demandX > share * total)
+      notes.push(`(Demand exceeds dispatchable ${sharePct}%: boundary cost + $${Math.trunc(buffer)} shortage premium)`);
+    if (displayPrice < price) notes.push("(clipped for scale)");
+    annotations.push({xref: "paper", yref: "paper", x: 0.02, y: 0.98, xanchor: "left", yanchor: "top", align: "left",
+                      text: notes.join("<br>"), showarrow: false, font: {size: 12, color: T.ink},
+                      bgcolor: "rgba(255, 255, 255, 0.8)", borderpad: 4});
+  }
+
+  const layout = {
+    title: {text: `${capitalise(product)} cost curve ${year} by ${groupLabel}<br><sup>${run.title} · ${Interactive.geoNote(runGeos)}</sup>`,
+            font: {color: T.ink, size: 17}, x: 0.05},
+    xaxis: {title: {text: `Cumulative capacity at ${limitPct}% limit (Mt)`}, range: [0, clearing && reference.d > total ? total * 1.02 : total],
+            gridcolor: T.grid, zeroline: false},
+    yaxis: {title: {text: "Production cost ($/t)"}, range: [0, yMax], gridcolor: T.grid,
+            zeroline: true, zerolinecolor: T.ink, zerolinewidth: 1},
+    barmode: "overlay", bargap: 0,
+    shapes, annotations,
+    legend: {x: 1.02, xanchor: "left", y: 1, yanchor: "top", font: {size: 11}, bgcolor: T.surface, tracegroupgap: 12},
+    hovermode: "closest",
+    hoverlabel: {align: "left", font: {size: 11}, bgcolor: "#fff"},
+    font: {family: "Helvetica Neue, Helvetica, Arial", color: T.inkSecondary, size: 11},
+    paper_bgcolor: T.surface, plot_bgcolor: T.surface,
+    width: WIDTH, height: HEIGHT, margin: MARGIN,
+  };
+  Plotly.react(gd, traces, layout, {displaylogo: false, responsive: false});
+
+  const offCurve = selected.length - curve.length;
+  const clearingNote = clearing
+    ? `demand ${reference.d.toFixed(1)} Mt · clearing price ${clearing.price.toFixed(1)} $/t · ` +
+      `static-chart clearing price ${reference.c.toFixed(1)} $/t` + (Math.abs(reference.c - clearing.price) > 0.05 ? " (MISMATCH)" : "")
+    : "no demand or clearing price for a partial curve";
+  Interactive.summary(
+    `${curve.length} furnace groups on the curve` + (offCurve ? ` (${offCurve} without a positive cost or capacity)` : "") +
+    ` · ${total.toFixed(1)} Mt at ${limitPct}% · ${clearingNote} · ${run.provenance}`);
+}
+
+const allRows = Object.values(DATA).flatMap(d => d.rows);
+const yearSelect = document.getElementById("year-select");
+[...new Set(allRows.map(r => r.y))].sort((a, b) => a - b).forEach(y => {
+  const option = document.createElement("option");
+  option.value = y;
+  option.textContent = y;
+  yearSelect.appendChild(option);
+});
+["product-select", "year-select", "colour-select"].forEach(id =>
+  document.getElementById(id).addEventListener("change", render));
+Interactive.init({geoKeys: allRows.map(r => r.g), techs: allRows.map(r => r.t), onChange: render});
+render();
+</script>
+</body>
+</html>
