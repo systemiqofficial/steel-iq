@@ -363,3 +363,59 @@ def test_chosen_reductant_values_are_normalized():
         reductants = df.loc[df["furnace_group_id"] == "plant_001_fg_001", "chosen_reductant"].unique()
         assert len(reductants) == 1
         assert reductants[0] == "natural_gas"
+
+
+def test_geo_key_column_follows_iso3_when_present():
+    """Plant records carrying a geo_key land in the CSV right after iso3; older pickles without it still process."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        data_dir = Path(tmpdir)
+        furnace_groups = pd.DataFrame(
+            [
+                {
+                    "furnace_group_id": "P1_0",
+                    "technology": "BF",
+                    "product": "iron",
+                    "chosen_reductant": "coke",
+                    "capacity": 1000,
+                    "production": 900,
+                    "unit_vopex": 100,
+                    "unit_fopex": 50,
+                    "unit_production_cost": 150,
+                    "debt_repayment_for_current_year": 10,
+                    "furnace_group_profit_and_loss": 500,
+                    "materials": {},
+                    "energy": {},
+                }
+            ]
+        )
+        sample_data = {
+            "P1": {
+                "location": "CHN",
+                "geo_key": "CHN:CN-HE",
+                "plant_profit_and_loss": 1000,
+                "plant_group_id": "plant_001_group",
+                "plant_group_balance": 1000,
+                "furnace_groups": furnace_groups,
+            },
+        }
+        with open(data_dir / "datacollection_post_allocation_2025.pkl", "wb") as f:
+            pickle.dump(sample_data, f)
+
+        df = pd.read_csv(
+            extract_and_process_stored_dataCollection(
+                commands={2025: {}}, data_dir=data_dir, output_path=data_dir / "with_geo_key.csv", store=True
+            )
+        )
+        columns = list(df.columns)
+        assert columns.index("geo_key") == columns.index("iso3") + 1
+        assert df["geo_key"].iloc[0] == "CHN:CN-HE"
+
+        del sample_data["P1"]["geo_key"]
+        with open(data_dir / "datacollection_post_allocation_2025.pkl", "wb") as f:
+            pickle.dump(sample_data, f)
+        df = pd.read_csv(
+            extract_and_process_stored_dataCollection(
+                commands={2025: {}}, data_dir=data_dir, output_path=data_dir / "without_geo_key.csv", store=True
+            )
+        )
+        assert "geo_key" not in df.columns
