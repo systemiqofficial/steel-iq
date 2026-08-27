@@ -92,8 +92,6 @@ DISTANTLY_ALLOCATED_PRODUCTS = [
     Commodities.ELECTROLYTIC_IRON.value,
 ]
 IRON_PRODUCTS = ["iron", "hot_metal", "pig_iron", "dri_low", "dri_mid", "dri_high", "hbi_low", "hbi_mid", "hbi_high"]
-# Note: CLOSElY_ALLOCATED_PRODUCTS with lowercase 'l' is an alias for CLOSELY_ALLOCATED_PRODUCTS
-CLOSElY_ALLOCATED_PRODUCTS = CLOSELY_ALLOCATED_PRODUCTS
 
 
 # Sub-country demand and scrap share per center for major steel consuming countries
