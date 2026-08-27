@@ -11,6 +11,13 @@ __pycache__/
 # Ignore ruff cache
 .ruff_cache/
 
+# Virtual environments
+.venv/
+venv/
+
+# pytest cache
+.pytest_cache/
+
 # PyCharm
 .idea/
 
