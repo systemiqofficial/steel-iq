@@ -10,7 +10,7 @@
    Interactive.selectedGeos() / selectedTechs() and the helpers below. */
 const Interactive = (() => {
   const GEO_SEP = ":";
-  const theme = {surface: "#fcfcfb", ink: "#0b0b0b", inkSecondary: "#52514e", grid: "#e3e1db"};
+  const theme = {surface: "#fcfcfb", ink: "#0b0b0b", inkSecondary: "#52514e", grid: "#b5b3ae"};
   const FALLBACK_COLOURS = ["#a52a2a", "#6b6b6b", "#b8860b", "#556b2f", "#708090", "#8b008b"];
 
   let allGeoKeys = [], onChange = () => {};
@@ -81,6 +81,7 @@ const Interactive = (() => {
 
   function showEmpty(gd, text, width, height) {
     Plotly.react(gd, [], {width, height, paper_bgcolor: theme.surface, plot_bgcolor: theme.surface,
+      xaxis: {visible: false}, yaxis: {visible: false},
       annotations: [{text, showarrow: false, font: {size: 16, color: theme.inkSecondary}}]});
   }
 
