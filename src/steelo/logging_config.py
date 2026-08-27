@@ -137,8 +137,9 @@ class ContextAwareFilter(logging.Filter):
 class LoggingConfig:
     """Manages logging configuration for the simulation."""
 
-    # Feature flag for furnace group debug output (set from YAML)
+    # Feature flags (set from YAML)
     FURNACE_GROUP_BREAKDOWN = True
+    DUMP_FAILED_LP = False  # Write the trade LP as MPS when it does not solve optimally
 
     @classmethod
     @contextmanager
@@ -177,6 +178,7 @@ class LoggingConfig:
             global_level: WARNING
             features:
               furnace_group_breakdown: true
+              dump_failed_lp: false
             modules:
               geo: DEBUG
               pam: INFO
@@ -206,6 +208,7 @@ class LoggingConfig:
         # Set feature flags
         features = config.get("features", {})
         cls.FURNACE_GROUP_BREAKDOWN = features.get("furnace_group_breakdown", True)
+        cls.DUMP_FAILED_LP = features.get("dump_failed_lp", False)
 
         # Create filter and formatter
         context_filter = ContextAwareFilter(module_levels, function_overrides, cli_max_level)

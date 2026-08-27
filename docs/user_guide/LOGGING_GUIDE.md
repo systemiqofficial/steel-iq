@@ -121,6 +121,7 @@ global_level: WARNING
 
 features:
   furnace_group_breakdown: true  # Show detailed furnace-level logs
+  dump_failed_lp: false          # Write TM/trade_lp_failed_<year>.mps (large) when the trade LP does not solve optimally
 
 modules:
   geo: DEBUG   # Enables DEBUG for GeospatialModel
