@@ -33,6 +33,11 @@ def location(iso3: str, geo_unit: str | None = None) -> str:
     )
 
 
+def mine_location(region: str) -> str:
+    """A mine's Location repr: the mine sheet's region label as country, no resolved ISO3."""
+    return f"Location(lat=1.0, lon=2.0, country='{region}', region='{region}', iso3='', distance_to_other_iso3=None, geo_unit=None)"
+
+
 def allocation(commodity: str, source: str, tech: str, destination: str, volume: float) -> list:
     return [
         commodity,
@@ -63,7 +68,7 @@ def write_allocations(tm_dir: Path, year: int, rows: list[list]) -> Path:
 
 
 def sample_tm_dir(tmp_path: Path) -> Path:
-    """2025 with steel, iron and feedstock allocations; 2026 header-only, as a failed trade LP leaves it."""
+    """2025 with steel, iron, ore and scrap allocations; 2026 header-only, as a failed trade LP leaves it."""
     tm_dir = tmp_path / "TM"
     write_allocations(
         tm_dir,
@@ -78,9 +83,11 @@ def sample_tm_dir(tmp_path: Path) -> Path:
             # Iron products go plant → steelmaking furnace group
             allocation("pig_iron", location("CHN", "CN-HE"), "BF", location("JPN"), 5_000_000.0),
             allocation("hot_metal", location("CHN", "CN-HE"), "BF", location("CHN"), 200_000_000.0),
-            # Feedstock allocations are not metal trade
+            # Ore goes mine → furnace group; its origin is the mine sheet's label, ISO3-mapped or not
+            allocation("io_high", mine_location("Australia"), "N/A", location("CHN"), 80_000_000.0),
+            allocation("io_mid", mine_location("Guinea"), "N/A", location("CHN"), 30_000_000.0),
+            # Scrap is not metal trade
             allocation("scrap", location("DEU"), "N/A", location("DEU"), 50_000_000.0),
-            allocation("io_high", location("AUS"), "N/A", location("CHN"), 80_000_000.0),
         ],
     )
     write_allocations(tm_dir, 2026, [])
@@ -100,7 +107,7 @@ def test_allocation_files_keyed_by_year(tmp_path: Path) -> None:
 
 
 def test_read_flows_sums_metal_per_commodity_country_pair_and_technology(tmp_path: Path) -> None:
-    """Plant-level allocations collapse to commodity × origin × destination × technology in Mt; feedstocks are ignored."""
+    """Allocations collapse to commodity × origin × destination × technology in Mt; ore origins are mine labels; scrap is ignored."""
     flows = trade_matrix.read_flows(trade_matrix.allocation_files(sample_tm_dir(tmp_path)))
 
     assert list(flows.columns) == ["year", "product", "commodity", "origin", "destination", "technology", "volume_mt"]
@@ -111,7 +118,9 @@ def test_read_flows_sums_metal_per_commodity_country_pair_and_technology(tmp_pat
     assert by_key[("steel", "steel", "DEU", "DEU", "EAF")] == pytest.approx(10.0)
     assert by_key[("iron", "pig_iron", "CHN", "JPN", "BF")] == pytest.approx(5.0)
     assert by_key[("iron", "hot_metal", "CHN", "CHN", "BF")] == pytest.approx(200.0)
-    assert len(by_key) == 6
+    assert by_key[("ore", "io_high", "Australia", "CHN", "N/A")] == pytest.approx(80.0)
+    assert by_key[("ore", "io_mid", "Guinea", "CHN", "N/A")] == pytest.approx(30.0)
+    assert len(by_key) == 8
 
 
 def test_read_flows_rejects_location_without_iso3(tmp_path: Path) -> None:
@@ -120,6 +129,15 @@ def test_read_flows_rejects_location_without_iso3(tmp_path: Path) -> None:
     write_allocations(tm_dir, 2025, [allocation("steel", "Location(lat=1.0, lon=2.0)", "BOF", location("CHN"), 1.0)])
 
     with pytest.raises(ValueError, match="No iso3"):
+        trade_matrix.read_flows(trade_matrix.allocation_files(tm_dir))
+
+
+def test_read_flows_rejects_mine_without_label(tmp_path: Path) -> None:
+    """An ore origin needs the mine's label; an empty one fails loudly."""
+    tm_dir = tmp_path / "TM"
+    write_allocations(tm_dir, 2025, [allocation("io_low", mine_location(""), "N/A", location("CHN"), 1.0)])
+
+    with pytest.raises(ValueError, match="No country label"):
         trade_matrix.read_flows(trade_matrix.allocation_files(tm_dir))
 
 
@@ -132,4 +150,4 @@ def test_pack_rows_compacts_flows_and_drops_rounded_zeros(tmp_path: Path) -> Non
     assert {"y": 2025, "p": "steel", "c": "steel", "o": "CHN", "d": "IND", "t": "EAF", "v": 25.0} in packed
     assert {"y": 2025, "p": "iron", "c": "pig_iron", "o": "CHN", "d": "JPN", "t": "BF", "v": 5.0} in packed
     assert not any(row["o"] == "DEU" and row["d"] == "IND" for row in packed)
-    assert len(packed) == 5
+    assert len(packed) == 7

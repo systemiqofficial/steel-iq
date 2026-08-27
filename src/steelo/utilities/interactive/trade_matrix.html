@@ -20,6 +20,7 @@ window.addEventListener("error", function(e) {
     <select id="product-select">
       <option value="steel">Steel</option>
       <option value="iron">Iron</option>
+      <option value="ore">Iron ore</option>
     </select>
   </div>
   <div>
@@ -27,7 +28,7 @@ window.addEventListener("error", function(e) {
     <select id="year-select"></select>
   </div>
   <div class="ticks" id="commodity-panel">
-    <label>Iron products</label>
+    <label id="commodity-label">Iron products</label>
   </div>
   <div>
     <label for="group-select">Group by</label>
@@ -73,8 +74,8 @@ const DATA = __DATA__;
 <script>__COMMON_JS__</script>
 <script>
 const REST = "Rest of world";
-const CELL_MIN = 12, CELL_MAX = 90, MATRIX_PX = 960, TEXT_MAX_CELLS = 20;
-const MARGIN = {l: 120, r: 130, t: 150, b: 40};
+const CELL_MIN = 12, CELL_MAX = 90, MATRIX_PX = 960, MIN_WIDTH = 1100, LABEL_MIN_CELL = 28;
+const MARGIN = {l: 120, r: 130, t: 150, b: 40}, LABELLED_MARGIN_L = 170;
 const T = Interactive.theme;
 // One blue ramp whose lightest step still reads against the surface, so the smallest
 // flow is a visible cell. The stops sit at squared positions: colour grows with the
@@ -84,10 +85,15 @@ const COLOURSCALE = [...Array(21).keys()].map(i => { const p = i / 20; return [p
 const UNITS = {mt: "Mt", origin: "%", destination: "%"};
 // Display names of the commodities, in tick order; a commodity without one shows its key.
 const COMMODITY_NAMES = {steel: "steel", pig_iron: "pig iron", hbi_high: "HBI high grade", hbi_mid: "HBI mid grade",
-                         dri_high: "DRI high grade", dri_mid: "DRI mid grade", hot_metal: "hot metal"};
-const PRODUCT_NOTES = {
-  steel: "destinations = demand centres",
-  iron: "destinations = steelmaking furnace groups; hot metal = on-site transfers",
+                         dri_high: "DRI high grade", dri_mid: "DRI mid grade", hot_metal: "hot metal",
+                         io_high: "high grade", io_mid: "mid grade", io_low: "low grade"};
+const PRODUCTS = {
+  steel: {name: "steel", ticks: "Steel", note: "destinations = demand centres"},
+  iron: {name: "iron", ticks: "Iron products", note: "destinations = steelmaking furnace groups; hot metal = on-site transfers"},
+  // Ore origins are the mine sheet's own labels: rows are never grouped or folded and
+  // there is no diagonal, so the matrix is rectangular.
+  ore: {name: "iron ore", ticks: "Ore grades", note: "origins = mine regions as named in the mine sheet; destinations = furnace groups",
+        labelledOrigins: true},
 };
 // What a diagonal cell means under each grouping, singular and plural.
 const SAME = {
@@ -96,6 +102,7 @@ const SAME = {
   bloc: ["member country (or the rest of the world)", "members and the rest of the world"],
 };
 const allRows = Object.values(DATA).flatMap(d => d.rows);
+const countryRows = allRows.filter(r => !PRODUCTS[r.p].labelledOrigins);
 const commodityCbs = new Map();
 let commodityProduct = null;
 
@@ -147,28 +154,51 @@ function cellLabel(value, unit) {
   return (value >= 0.95 ? value.toFixed(0) : value.toFixed(1)) + (unit === "%" ? "%" : "");
 }
 
-/* Sum the flows into a label × label matrix, keeping the per-commodity parts of each
-   cell; rows/columns ordered by descending traffic with "Rest of world" last. */
-function buildMatrix(rows, labelOf, topN) {
-  const traffic = new Map();
-  rows.forEach(r => {
-    const o = labelOf(r.o), d = labelOf(r.d);
-    traffic.set(o, (traffic.get(o) || 0) + r.v);
-    traffic.set(d, (traffic.get(d) || 0) + r.v);
-  });
-  const ranked = [...traffic.keys()].filter(l => l !== REST).sort((a, b) => traffic.get(b) - traffic.get(a));
+function rankedBy(traffic) {
+  return [...traffic.keys()].filter(l => l !== REST).sort((a, b) => traffic.get(b) - traffic.get(a));
+}
+
+/* Keep the top-N labels of a ranking and fold the rest into "Rest of world". */
+function folder(ranked, topN) {
   const kept = new Set(ranked.slice(0, topN));
-  const fold = label => kept.has(label) ? label : REST;
-  const folded = rows.some(r => fold(labelOf(r.o)) === REST || fold(labelOf(r.d)) === REST);
-  const labels = ranked.filter(l => kept.has(l)).concat(folded ? [REST] : []);
-  const idx = new Map(labels.map((l, i) => [l, i]));
-  const parts = labels.map(() => labels.map(() => new Map()));
+  return {fold: label => kept.has(label) ? label : REST, kept: ranked.filter(l => kept.has(l))};
+}
+
+/* Sum the flows into an origin × destination matrix, keeping the per-commodity parts
+   of each cell. Square matrices share one label set on both axes (so the diagonal is
+   domestic), ordered by descending traffic with "Rest of world" last; with labelled
+   origins the rows are every origin label by descending outbound volume and only the
+   destination axis is grouped and folded. */
+function buildMatrix(rows, originOf, destOf, topN, square) {
+  const outbound = new Map(), inbound = new Map();
   rows.forEach(r => {
-    const cell = parts[idx.get(fold(labelOf(r.o)))][idx.get(fold(labelOf(r.d)))];
+    outbound.set(originOf(r.o), (outbound.get(originOf(r.o)) || 0) + r.v);
+    inbound.set(destOf(r.d), (inbound.get(destOf(r.d)) || 0) + r.v);
+  });
+  let rowLabels, colLabels, foldRow, foldCol;
+  if (square) {
+    const traffic = new Map(outbound);
+    inbound.forEach((v, l) => traffic.set(l, (traffic.get(l) || 0) + v));
+    const {fold, kept} = folder(rankedBy(traffic), topN);
+    const folded = rows.some(r => fold(originOf(r.o)) === REST || fold(destOf(r.d)) === REST);
+    rowLabels = colLabels = kept.concat(folded ? [REST] : []);
+    foldRow = foldCol = fold;
+  } else {
+    rowLabels = [...outbound.keys()].sort((a, b) => outbound.get(b) - outbound.get(a));
+    foldRow = label => label;
+    const {fold, kept} = folder(rankedBy(inbound), topN);
+    const folded = rows.some(r => fold(destOf(r.d)) === REST);
+    colLabels = kept.concat(folded ? [REST] : []);
+    foldCol = fold;
+  }
+  const ri = new Map(rowLabels.map((l, i) => [l, i])), ci = new Map(colLabels.map((l, i) => [l, i]));
+  const parts = rowLabels.map(() => colLabels.map(() => new Map()));
+  rows.forEach(r => {
+    const cell = parts[ri.get(foldRow(originOf(r.o)))][ci.get(foldCol(destOf(r.d)))];
     cell.set(r.c, (cell.get(r.c) || 0) + r.v);
   });
   const mt = parts.map(row => row.map(cell => [...cell.values()].reduce((s, v) => s + v, 0)));
-  return {labels, mt, parts};
+  return {rowLabels, colLabels, mt, parts};
 }
 
 function syncYears() {
@@ -183,13 +213,14 @@ function syncYears() {
 }
 
 /* Rebuild the commodity ticks when the product changes; a single-commodity product
-   needs no ticks. */
-function syncCommodities() {
+   needs no ticks. Labelled origins have no diagonal and cannot join trade blocs. */
+function syncProduct() {
   const product = document.getElementById("product-select").value;
   if (product === commodityProduct) return;
   commodityProduct = product;
   const panel = document.getElementById("commodity-panel");
   panel.querySelectorAll("label.inline").forEach(node => node.remove());
+  document.getElementById("commodity-label").textContent = PRODUCTS[product].ticks;
   commodityCbs.clear();
   const commodities = productCommodities(product);
   commodities.forEach(c => {
@@ -205,6 +236,17 @@ function syncCommodities() {
     commodityCbs.set(c, cb);
   });
   panel.style.display = commodities.length > 1 ? "" : "none";
+
+  const labelled = Boolean(PRODUCTS[product].labelledOrigins);
+  const groupSelect = document.getElementById("group-select");
+  const blocOption = groupSelect.querySelector('option[value="bloc"]');
+  if (blocOption) {
+    blocOption.disabled = labelled;
+    if (labelled && groupSelect.value === "bloc") groupSelect.value = "country";
+  }
+  const domestic = document.getElementById("domestic-toggle");
+  domestic.disabled = labelled;
+  domestic.parentElement.style.color = labelled ? T.grid : "";
 }
 
 function selectedCommodities() {
@@ -212,51 +254,56 @@ function selectedCommodities() {
 }
 
 function render() {
-  syncCommodities();
+  syncProduct();
   const run = DATA[Interactive.run()];
   const product = document.getElementById("product-select").value;
+  const spec = PRODUCTS[product];
+  const square = !spec.labelledOrigins;
   const year = +document.getElementById("year-select").value;
   const groupBy = document.getElementById("group-select").value;
   const bloc = document.getElementById("bloc-select").value;
   const show = document.getElementById("show-select").value;
   const valueMode = document.getElementById("values-select").value;
-  const hideDomestic = document.getElementById("domestic-toggle").checked;
+  const hideDomestic = square && document.getElementById("domestic-toggle").checked;
   document.getElementById("bloc-panel").style.display = groupBy === "bloc" ? "" : "none";
   const selectedGeo = Interactive.selectedGeos(), selectedTech = Interactive.selectedTechs();
   const selectedCommodity = selectedCommodities();
   const gd = document.getElementById("chart");
 
+  // Supplier sources carry no technology, so the technology filter only applies to plants.
   const yearRows = run.rows.filter(r => r.y === year && r.p === product);
-  const rows = yearRows.filter(r => selectedCommodity.has(r.c) && selectedTech.has(r.t));
+  const rows = yearRows.filter(r => selectedCommodity.has(r.c) && (!square || selectedTech.has(r.t)));
   const totalYear = yearRows.reduce((s, r) => s + r.v, 0);
   if (!yearRows.length || !rows.length || !selectedGeo.size) {
-    const why = !yearRows.length ? `No ${product} allocations for ${year}`
-      : !rows.length ? `No ${product} products or technologies selected` : "No countries selected";
+    const why = !yearRows.length ? `No ${spec.name} allocations for ${year}`
+      : !rows.length ? `No ${spec.name} products or technologies selected` : "No countries selected";
     Interactive.showEmpty(gd, why, MATRIX_PX, MATRIX_PX / 2);
-    Interactive.summary(`${totalYear.toFixed(0)} Mt ${product} allocated in ${year} · ${run.provenance}`);
+    Interactive.summary(`${totalYear.toFixed(0)} Mt ${spec.name} allocated in ${year} · ${run.provenance}`);
     return;
   }
 
   // Countries outside the geography filter fold into "Rest of world" rather than
   // vanishing, so the row and column totals stay the full production and consumption.
   const group = grouper(groupBy, bloc);
-  const labelOf = iso3 => selectedGeo.has(iso3) ? group(iso3) : REST;
-  const {labels, mt, parts} = buildMatrix(rows, labelOf, show === "all" ? Infinity : +show);
-  const n = labels.length;
+  const destOf = iso3 => selectedGeo.has(iso3) ? group(iso3) : REST;
+  const originOf = square ? destOf : (label => label);
+  const {rowLabels, colLabels, mt, parts} = buildMatrix(rows, originOf, destOf, show === "all" ? Infinity : +show, square);
+  const nRows = rowLabels.length, nCols = colLabels.length;
   const rowTotals = mt.map(r => r.reduce((s, v) => s + v, 0));
-  const colTotals = labels.map((_, j) => mt.reduce((s, r) => s + r[j], 0));
+  const colTotals = colLabels.map((_, j) => mt.reduce((s, r) => s + r[j], 0));
   const breakdown = selectedCommodity.size > 1;
 
   const z = [], hover = [], text = [];
-  labels.forEach((o, i) => {
+  rowLabels.forEach((o, i) => {
     z.push([]); hover.push([]); text.push([]);
-    labels.forEach((d, j) => {
+    colLabels.forEach((d, j) => {
       const v = mt[i][j];
       const shareO = rowTotals[i] > 0 ? 100 * v / rowTotals[i] : 0;
       const shareD = colTotals[j] > 0 ? 100 * v / colTotals[j] : 0;
-      const shown = v > 0 && !(hideDomestic && i === j);
+      const diagonal = square && i === j;
+      const shown = v > 0 && !(hideDomestic && diagonal);
       z[i].push(shown ? (valueMode === "origin" ? shareO : valueMode === "destination" ? shareD : v) : null);
-      const route = i === j ? `Stayed in ${labelName(o, groupBy)}` : `${labelName(o, groupBy)} → ${labelName(d, groupBy)}`;
+      const route = diagonal ? `Stayed in ${labelName(o, groupBy)}` : `${labelName(o, groupBy)} → ${labelName(d, groupBy)}`;
       const partsNote = breakdown && parts[i][j].size
         ? "<br>" + [...parts[i][j]].sort((a, b) => b[1] - a[1]).map(([c, pv]) => `${commodityName(c)} ${fmtMt(pv)}`).join(" · ")
         : "";
@@ -266,54 +313,60 @@ function render() {
     });
   });
 
-  const cell = Math.max(CELL_MIN, Math.min(CELL_MAX, Math.floor(MATRIX_PX / n)));
-  const size = n * cell;
+  const cell = Math.max(CELL_MIN, Math.min(CELL_MAX, Math.floor(MATRIX_PX / Math.max(nRows, nCols))));
+  const width = nCols * cell, height = nRows * cell;
+  const margin = {...MARGIN, l: square ? MARGIN.l : LABELLED_MARGIN_L};
   const trace = {
-    type: "heatmap", x: labels, y: labels, z, text, customdata: hover, hovertemplate: "%{customdata}<extra></extra>",
+    type: "heatmap", x: colLabels, y: rowLabels, z, text, customdata: hover, hovertemplate: "%{customdata}<extra></extra>",
     colorscale: COLOURSCALE, zmin: 0, zmax: valueMode === "mt" ? undefined : 100, hoverongaps: false,
     xgap: 1, ygap: 1,
-    colorbar: {title: {text: UNITS[valueMode]}, thickness: 12, len: Math.min(1, 400 / (size + MARGIN.t + MARGIN.b)),
+    colorbar: {title: {text: UNITS[valueMode]}, thickness: 12, len: Math.min(1, 400 / (height + margin.t + margin.b)),
                yanchor: "top", y: 1, outlinewidth: 0, tickfont: {size: 10}},
   };
-  if (n <= TEXT_MAX_CELLS) {
+  if (cell >= LABEL_MIN_CELL) {
     trace.texttemplate = "%{text}";
     trace.textfont = {size: 10};
   }
 
-  const domestic = labels.reduce((s, _, i) => s + mt[i][i], 0);
   const groupLabel = groupBy === "bloc" ? `trade bloc ${bloc}` : groupBy;
-  const runGeos = new Set(run.rows.flatMap(r => [r.o, r.d]));
+  const runGeos = new Set(run.rows.flatMap(r => PRODUCTS[r.p].labelledOrigins ? [r.d] : [r.o, r.d]));
   const [same, plural] = SAME[groupBy];
-  const notes = [run.title, Interactive.geoNote(runGeos), PRODUCT_NOTES[product],
-                 `rows = origin (producer), columns = destination (consumer), diagonal = stayed within the same ${same}`];
+  const notes = [run.title, Interactive.geoNote(runGeos), spec.note,
+                 `rows = origin (producer), columns = destination (consumer)` + (square ? `, diagonal = stayed within the same ${same}` : "")];
   const layout = {
-    title: {text: `${capitalise(product)} trade matrix by ${groupLabel}, ${year}<br><sup>${notes.join(" · ")}</sup>`,
+    title: {text: `${capitalise(spec.name)} trade matrix by ${groupLabel}, ${year}<br><sup>${notes.join(" · ")}</sup>`,
             font: {color: T.ink, size: 17}, x: 0.02, y: 0.985, yanchor: "top"},
     xaxis: {title: {text: "Destination"}, side: "top", tickangle: cell < 20 ? -90 : cell < 60 ? -45 : 0, tickfont: {size: 10},
-            showgrid: false, zeroline: false, constrain: "domain"},
+            showgrid: false, zeroline: false, constrain: "domain", constraintoward: "left"},
     yaxis: {title: {text: "Origin"}, autorange: "reversed", tickfont: {size: 10}, showgrid: false, zeroline: false,
             scaleanchor: "x", scaleratio: 1, constrain: "domain"},
     hoverlabel: {align: "left", font: {size: 11}, bgcolor: "#fff"},
     font: {family: "Helvetica Neue, Helvetica, Arial", color: T.inkSecondary, size: 11},
     paper_bgcolor: T.surface, plot_bgcolor: T.surface,
-    width: size + MARGIN.l + MARGIN.r, height: size + MARGIN.t + MARGIN.b, margin: MARGIN,
+    // A narrow matrix still gets room for its title line.
+    width: Math.max(width + margin.l + margin.r, MIN_WIDTH), height: height + margin.t + margin.b, margin,
   };
   Plotly.react(gd, [trace], layout, {displaylogo: false, responsive: false});
 
-  const selectedRows = rows.filter(r => selectedGeo.has(r.o) || selectedGeo.has(r.d));
+  const selectedRows = rows.filter(r => !square || selectedGeo.has(r.o) || selectedGeo.has(r.d));
   const origins = new Set(selectedRows.map(r => r.o)).size, destinations = new Set(selectedRows.map(r => r.d)).size;
   const total = rowTotals.reduce((s, v) => s + v, 0);
   let largest = null;
-  labels.forEach((o, i) => labels.forEach((d, j) => {
-    if (i !== j && (!largest || mt[i][j] > largest.v)) largest = {o, d, v: mt[i][j]};
+  rowLabels.forEach((o, i) => colLabels.forEach((d, j) => {
+    if (!(square && i === j) && (!largest || mt[i][j] > largest.v)) largest = {o, d, v: mt[i][j]};
   }));
   const largestNote = largest && largest.v > 0
-    ? ` · largest flow between ${plural}: ${largest.o} → ${largest.d} ${fmtMt(largest.v)} Mt` : "";
+    ? ` · largest flow${square ? ` between ${plural}` : ""}: ${largest.o} → ${largest.d} ${fmtMt(largest.v)} Mt` : "";
   const productNote = breakdown ? ` (${[...selectedCommodity].map(commodityName).join(", ")})` : "";
+  let split = "";
+  if (square) {
+    const domestic = rowLabels.reduce((s, _, i) => s + mt[i][i], 0);
+    split = `: ${domestic.toFixed(0)} Mt (${(100 * domestic / total).toFixed(0)}%) stayed within the same ${same}, ` +
+            `${(total - domestic).toFixed(0)} Mt moved between ${plural}`;
+  }
   Interactive.summary(
-    `${origins} origin → ${destinations} destination countries · ${total.toFixed(0)} Mt ${product}${productNote} ` +
-    `allocated in ${year}: ${domestic.toFixed(0)} Mt (${(100 * domestic / total).toFixed(0)}%) stayed within the same ${same}, ` +
-    `${(total - domestic).toFixed(0)} Mt moved between ${plural}${largestNote} · ${run.provenance}`);
+    `${origins} origin${square ? "" : " label"}s → ${destinations} destination countries · ${total.toFixed(0)} Mt ${spec.name}${productNote} ` +
+    `allocated in ${year}${split}${largestNote} · ${run.provenance}`);
 }
 
 function initControls() {
@@ -322,8 +375,10 @@ function initControls() {
   if (!blocs().length) document.querySelector('#group-select option[value="bloc"]').remove();
   ["product-select", "year-select", "group-select", "bloc-select", "show-select", "values-select", "domestic-toggle"]
     .forEach(id => document.getElementById(id).addEventListener("change", render));
-  Interactive.init({geoKeys: allRows.flatMap(r => [r.o, r.d]), techs: allRows.map(r => r.t),
-                    onChange: () => { syncYears(); render(); }});
+  // Mine origins are labels, not countries, so they stay out of the geography filter;
+  // suppliers carry no technology, so only plant rows feed the technology filter.
+  Interactive.init({geoKeys: allRows.flatMap(r => PRODUCTS[r.p].labelledOrigins ? [r.d] : [r.o, r.d]),
+                    techs: countryRows.map(r => r.t), onChange: () => { syncYears(); render(); }});
   syncYears();
 }
 

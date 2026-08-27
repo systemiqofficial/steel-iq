@@ -1,13 +1,14 @@
 """Row packing for the trade-matrix viewer (``trade_matrix.html``).
 
-The viewer shows, for one year, how much steel or iron each geography shipped to
-each other geography — the diagonal is metal consumed where it was made — grouped
-by country, region or trade bloc, from the trade model's per-year allocation files
-(``TM/steel_trade_allocations_<year>.csv``). Steel rows run plant → demand centre;
-iron rows (pig iron, HBI and DRI by grade, and the on-site hot metal) run iron plant
-→ steelmaking furnace group. Origins and destinations are kept at country grain:
-plants carry a sub-national geo_unit but demand centres do not, so a finer diagonal
-is not definable.
+The viewer shows, for one year, how much steel, iron or iron ore each geography
+shipped to each other geography, from the trade model's per-year allocation
+files (``TM/steel_trade_allocations_<year>.csv``). Steel rows run plant →
+demand centre, iron rows (pig iron, HBI and DRI by grade, and the on-site hot
+metal) iron plant → steelmaking furnace group, and ore rows mine → furnace
+group. Steel and iron origins and destinations are countries (plants carry a
+sub-national geo_unit but demand centres do not, so a finer diagonal is not
+definable); ore origins are the mine sheet's own region labels, as mines carry
+that label rather than a resolved ISO3.
 """
 
 import re
@@ -17,7 +18,7 @@ from typing import Any
 import pandas as pd
 
 ALLOCATIONS_PATTERN = re.compile(r"^steel_trade_allocations_(\d{4})\.csv$")
-# Traded commodity → product of the viewer; ore and scrap feedstocks are not metal trade.
+# Traded commodity → product of the viewer; scrap is not metal trade.
 COMMODITY_PRODUCTS = {
     "steel": "steel",
     "pig_iron": "iron",
@@ -26,10 +27,16 @@ COMMODITY_PRODUCTS = {
     "dri_high": "iron",
     "dri_mid": "iron",
     "hot_metal": "iron",
+    "io_high": "ore",
+    "io_mid": "ore",
+    "io_low": "ore",
 }
+# Products whose origin is the location's country label rather than its ISO3.
+LABELLED_ORIGINS = {"ore"}
 COLUMNS = ["commodity", "source_location", "source_tech", "destination_location", "allocated_volume"]
-# The location columns hold Location reprs; the country is their iso3='XXX' field.
+# The location columns hold Location reprs; the fields are read off them.
 ISO3_PATTERN = re.compile(r"\biso3='([A-Z]{3})'")
+COUNTRY_PATTERN = re.compile(r"\bcountry='([^']*)'")
 FLOW_KEYS = ["year", "product", "commodity", "origin", "destination", "technology"]
 
 
@@ -71,8 +78,26 @@ def iso3_of(location: str) -> str:
     return match.group(1)
 
 
+def country_label_of(location: str) -> str:
+    """The country label of a Location repr — for mines, the mine sheet's region name.
+
+    Args:
+        location: A ``Location(...)`` repr as written to the allocation files.
+
+    Returns:
+        Its non-empty ``country`` field.
+
+    Raises:
+        ValueError: If the repr carries no country label.
+    """
+    match = COUNTRY_PATTERN.search(location)
+    if match is None or not match.group(1):
+        raise ValueError(f"No country label in location {location!r}")
+    return match.group(1)
+
+
 def read_flows(files: dict[int, Path]) -> pd.DataFrame:
-    """Metal flows per year, commodity, origin country, destination country and technology.
+    """Flows per year, commodity, origin, destination country and technology.
 
     Args:
         files: Output of :func:`allocation_files`.
@@ -80,25 +105,37 @@ def read_flows(files: dict[int, Path]) -> pd.DataFrame:
     Returns:
         Columns ``year, product, commodity, origin, destination, technology, volume_mt``:
         the allocated tonnes of each commodity in :data:`COMMODITY_PRODUCTS` summed over
-        the plants of the origin country and the receivers of the destination country. A
-        year whose file holds no such allocations (a failed trade LP writes a header-only
-        file) contributes no rows.
+        the sources of the origin and the receivers of the destination country. Origins
+        are ISO3 codes, except for :data:`LABELLED_ORIGINS` where they are the source's
+        country label. A year whose file holds no such allocations (a failed trade LP
+        writes a header-only file) contributes no rows.
 
     Raises:
-        ValueError: If a file lacks the allocation columns or a location carries no ISO3.
+        ValueError: If a file lacks the allocation columns or a location lacks the
+        needed field.
     """
     frames = []
     for year, path in files.items():
-        table = pd.read_csv(path, usecols=COLUMNS)
+        # Suppliers write the literal technology "N/A", which pandas would otherwise read as NaN
+        # and the grouping would then drop.
+        table = pd.read_csv(path, usecols=COLUMNS, keep_default_na=False)
         metal = table[table["commodity"].isin(COMMODITY_PRODUCTS)]
         if metal.empty:
             continue
+        product = metal["commodity"].map(COMMODITY_PRODUCTS)
+        labelled = product.isin(LABELLED_ORIGINS)
+        origin = pd.concat(
+            [
+                metal.loc[labelled, "source_location"].map(country_label_of),
+                metal.loc[~labelled, "source_location"].map(iso3_of),
+            ]
+        )
         flows = pd.DataFrame(
             {
                 "year": year,
-                "product": metal["commodity"].map(COMMODITY_PRODUCTS),
+                "product": product,
                 "commodity": metal["commodity"],
-                "origin": metal["source_location"].map(iso3_of),
+                "origin": origin,
                 "destination": metal["destination_location"].map(iso3_of),
                 "technology": metal["source_tech"],
                 "volume_mt": metal["allocated_volume"] / 1e6,
