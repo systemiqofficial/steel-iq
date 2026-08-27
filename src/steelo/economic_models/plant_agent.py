@@ -287,7 +287,11 @@ class GeospatialModel:
                 get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
                 reductant_score_series=bus.env.reductant_score_series,
                 global_risk_free_rate=bus.env.config.global_risk_free_rate,
-                tech_to_product=bus.env.technology_to_product,
+                tech_to_product={
+                    tech: product
+                    for tech, product in bus.env.technology_to_product.items()
+                    if tech not in geo_config.excluded_greenfield_technologies
+                },
                 allowed_techs=bus.env.allowed_techs,
                 top_n_loctechs_as_business_op=bus.env.config.top_n_loctechs_as_business_op,
                 opportunity_pool_depth=bus.env.config.opportunity_pool_depth,

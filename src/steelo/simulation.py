@@ -263,6 +263,10 @@ class GeoConfig:
         }
     )
 
+    # === Technology scope ===
+    # Technologies never considered for new greenfield plants; brownfield switching is unaffected
+    excluded_greenfield_technologies: list[str] = field(default_factory=lambda: ["BOF"])
+
     # === Other ===
     random_seed: int = RANDOM_SEED_DEFAULT  # Seed for random number generation to ensure reproducibility
 
