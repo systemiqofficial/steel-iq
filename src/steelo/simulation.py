@@ -1414,6 +1414,20 @@ class SimulationRunner:
             )
             logger.info("Generated emissions stacked area charts")
 
+        # Interactive viewers (self-contained plotly HTML) under plots/interactive
+        from steelo.utilities.interactive import InteractivePlotter
+
+        if self.config.plots_dir is not None:
+            interactive = InteractivePlotter(
+                plots_dir=self.config.plots_dir,
+                country_mappings=bus.env.country_mappings.mappings,
+                run_title=self.config.output_dir.name,
+                geo_hierarchy_json=self.config.data_dir / "fixtures" / "geo_hierarchy.json"
+                if self.config.data_dir
+                else None,
+            )
+            interactive.plot_emissions(post_processed_csv=Path(output_path))
+
         # Plot iron ore consumption stacked area chart by quality
         if data_collector.trace_iron_ore:
             plotter.plot_iron_ore_by_quality(trace_iron_ore=data_collector.trace_iron_ore)

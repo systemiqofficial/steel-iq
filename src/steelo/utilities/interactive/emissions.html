@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Emissions</title>
+<style>__COMMON_CSS__</style>
+</head>
+<body>
+<div id="err"></div>
+<script>
+window.addEventListener("error", function(e) {
+  const el = document.getElementById("err");
+  el.style.display = "block";
+  el.textContent = "Load error: " + (e.message || e.type) + (e.filename ? " @ " + e.lineno : "");
+}, true);
+</script>
+<div class="toolbar">
+  <div>
+    <label for="boundary-select">Emissions boundary</label>
+    <select id="boundary-select"></select>
+  </div>
+  <div>
+    <label for="scope-select">Scope</label>
+    <select id="scope-select"></select>
+  </div>
+  <div>
+    <label for="group-select">Stack by</label>
+    <select id="group-select">
+      <option value="technology">Technology</option>
+      <option value="region">Region</option>
+    </select>
+  </div>
+  <div>
+    <label class="inline"><input type="checkbox" id="production-toggle" checked>Overlay iron &amp; steel production</label>
+  </div>
+</div>
+<div class="toolbar" id="shared-filters"></div>
+<div id="summary"></div>
+<div id="chart"></div>
+<script>__PLOTLYJS__</script>
+<script>
+const CONFIG = __CONFIG__;
+const DATA = __DATA__;
+</script>
+<script>__COMMON_JS__</script>
+<script>
+const WIDTH = 1280, HEIGHT = 720;
+const MARGIN = {l: 70, r: 250, t: 90, b: 60};
+const FILL_ALPHA = 0.85, INDIRECT_LIGHTEN = 0.45;
+const PRODUCTION_STYLES = {iron: "#FFD700", steel: "#FFFFFF"};
+const T = Interactive.theme;
+
+/* The five views of the static emissions charts. Direct (excl. biogenic) and direct
+   (incl. biogenic) are alternative accountings of the same emissions and are never
+   summed; the combined views stack indirect (lighter shade) on top of direct. */
+const SCOPE_VIEWS = [
+  {id: "direct", title: "Direct emissions (excl. biogenic)",
+   parts: [{scope: "direct_ghg", kind: "direct"}]},
+  {id: "direct_bio", title: "Direct emissions (incl. biogenic)",
+   parts: [{scope: "direct_with_biomass_ghg", kind: "direct"}]},
+  {id: "indirect", title: "Indirect emissions",
+   parts: [{scope: "indirect_ghg", kind: "indirect"}]},
+  {id: "direct_plus_indirect", title: "Direct (excl. biogenic) + Indirect emissions",
+   parts: [{scope: "direct_ghg", kind: "direct"}, {scope: "indirect_ghg", kind: "indirect"}]},
+  {id: "direct_bio_plus_indirect", title: "Direct (incl. biogenic) + Indirect emissions",
+   parts: [{scope: "direct_with_biomass_ghg", kind: "direct"}, {scope: "indirect_ghg", kind: "indirect"}]},
+];
+
+const KEY_INDEX = new Map(CONFIG.emissionKeys.map((k, i) => [k, i]));
+const BOUNDARIES = [...new Set(CONFIG.emissionKeys.map(k => k.split("|")[0]))];
+
+function emissionValue(row, boundary, scope) {
+  const idx = KEY_INDEX.get(boundary + "|" + scope);
+  return idx === undefined ? 0 : row.e[idx];
+}
+
+function render() {
+  const run = DATA[Interactive.run()];
+  const boundary = document.getElementById("boundary-select").value;
+  const view = SCOPE_VIEWS.find(v => v.id === document.getElementById("scope-select").value);
+  const groupBy = document.getElementById("group-select").value;
+  const showProduction = document.getElementById("production-toggle").checked;
+  const selectedGeo = Interactive.selectedGeos(), selectedTech = Interactive.selectedTechs();
+  const gd = document.getElementById("chart");
+
+  const years = [...new Set(run.rows.map(r => r.y))].sort((a, b) => a - b);
+  const yearIdx = new Map(years.map((y, i) => [y, i]));
+  const rows = run.rows.filter(r => selectedGeo.has(r.g) && selectedTech.has(r.t));
+  const keyOf = groupBy === "technology" ? (r => r.t) : (r => Interactive.regionOf(r.g));
+
+  const series = new Map();  // key -> {kind -> values per year}
+  const production = {iron: years.map(() => 0), steel: years.map(() => 0)};
+  const totals = years.map(() => 0);
+  rows.forEach(r => {
+    const key = keyOf(r), yi = yearIdx.get(r.y);
+    if (!series.has(key)) series.set(key, Object.fromEntries(view.parts.map(p => [p.kind, years.map(() => 0)])));
+    view.parts.forEach(p => {
+      const v = emissionValue(r, boundary, p.scope);
+      series.get(key)[p.kind][yi] += v;
+      totals[yi] += v;
+    });
+    if (production[r.p]) production[r.p][yi] += r.pr;
+  });
+
+  const keys = [...series.keys()].filter(k => view.parts.some(p => series.get(k)[p.kind].some(v => v !== 0))).sort();
+  if (!keys.length) {
+    Interactive.showEmpty(gd, "No emissions for this selection", WIDTH, HEIGHT);
+    Interactive.summary("0 furnace groups");
+    return;
+  }
+  const colours = Interactive.colourTable(groupBy === "technology" ? CONFIG.techColours : CONFIG.regionColours, keys);
+  const combined = view.parts.length > 1;
+
+  const traces = [];
+  keys.forEach((key, order) => {
+    let inLegend = false;  // one legend entry per key, on whichever band is drawn first
+    view.parts.forEach(p => {
+      const values = series.get(key)[p.kind];
+      if (!values.some(v => v !== 0)) return;
+      const base = colours[key];
+      const colour = p.kind === "indirect" && combined ? Interactive.lighten(base, INDIRECT_LIGHTEN) : base;
+      const hover = combined ? `%{customdata:.1f} Mt (${p.kind})` : "%{customdata:.1f} Mt";
+      const positive = values.map(v => v > 0 ? v : 0), negative = values.map(v => v < 0 ? v : 0);
+      const halves = [["pos", positive], ["neg", negative]].filter(([, half]) => half.some(v => v !== 0));
+      halves.forEach(([sign, half], i) => {
+        traces.push({
+          type: "scatter", mode: "lines", x: years, y: half, customdata: values,
+          name: key, legendgroup: key, legendrank: 1000 - order, showlegend: !inLegend,
+          stackgroup: sign, line: {width: 0, color: colour}, fillcolor: Interactive.hexToRgba(colour, FILL_ALPHA),
+          hovertemplate: hover,
+          hoverinfo: i === 0 ? undefined : "skip",  // a split series hovers once, via its first half
+        });
+        inLegend = true;
+      });
+    });
+  });
+
+  const anyProduction = showProduction && Object.values(production).some(vals => vals.some(v => v > 0));
+  if (anyProduction) {
+    Object.entries(PRODUCTION_STYLES).forEach(([product, colour], i) => {
+      const vals = production[product];
+      if (!vals.some(v => v > 0)) return;
+      const name = product + " production";
+      // Halo, then the coloured line. legendrank orders both the legend and the unified hover, so the
+      // drawn line keeps its legend entry after the series and an invisible twin ranks first for the hover.
+      traces.push({type: "scatter", mode: "lines", x: years, y: vals, yaxis: "y2", name,
+        line: {width: 3.5, color: T.ink}, showlegend: false, hoverinfo: "skip"});
+      traces.push({type: "scatter", mode: "lines", x: years, y: vals, yaxis: "y2", name,
+        line: {width: 1.5, color: colour}, legendrank: 2000 + i, hoverinfo: "skip"});
+      traces.push({type: "scatter", mode: "lines", x: years, y: vals, yaxis: "y2", name, opacity: 0,
+        line: {width: 1.5, color: colour}, legendrank: i, showlegend: false, hovertemplate: "%{y:.0f} Mt"});
+    });
+  }
+  // Hover-only net total; the unified hover orders items by legendrank, so it lists last.
+  traces.push({
+    type: "scatter", mode: "lines", x: years, y: totals, name: "Net total",
+    line: {width: 0}, fill: "none", showlegend: false, legendrank: 3000,
+    hovertemplate: "<b>%{y:.1f} Mt</b>",
+  });
+
+  const groupLabel = groupBy === "technology" ? "Technology" : "Region";
+  const runGeos = new Set(run.rows.map(r => r.g));
+  const subtitle = [`Emissions boundary: ${boundary.replace(/_/g, " ")}`, run.title, Interactive.geoNote(runGeos)]
+    .concat(combined ? ["lighter shade = indirect"] : []).join(" · ");
+
+  const layout = {
+    title: {text: `${view.title} by ${groupLabel}<br><sup>${subtitle}</sup>`, font: {color: T.ink, size: 17}, x: 0.05},
+    xaxis: {title: {text: "Year"}, range: [years[0], years[years.length - 1]], dtick: years.length > 12 ? 5 : 1,
+            gridcolor: T.grid,
+            zeroline: false, showspikes: true, spikemode: "across", spikethickness: 1, spikecolor: T.inkSecondary},
+    yaxis: {title: {text: "Total emissions (Mt CO2e)"}, gridcolor: T.grid, zeroline: true, zerolinecolor: T.ink,
+            zerolinewidth: 1},
+    legend: {x: 1.08, xanchor: "left", y: 1, yanchor: "top", font: {size: 11}, bgcolor: T.surface},
+    hovermode: "x unified",
+    hoverlabel: {align: "left", font: {size: 11}, bgcolor: "#fff"},
+    font: {family: "Helvetica Neue, Helvetica, Arial", color: T.inkSecondary, size: 11},
+    paper_bgcolor: T.surface, plot_bgcolor: T.surface,
+    width: WIDTH, height: HEIGHT, margin: MARGIN,
+  };
+  if (anyProduction) {
+    layout.yaxis2 = {title: {text: "Total production (Mt)"}, overlaying: "y", side: "right", rangemode: "tozero",
+                     showgrid: false, zeroline: false};
+  }
+  Plotly.react(gd, traces, layout, {displaylogo: false, responsive: false});
+
+  const lastYear = years[years.length - 1];
+  const fgs = rows.filter(r => r.y === lastYear).reduce((s, r) => s + r.n, 0);
+  const nCountries = new Set(Interactive.geoKeys().map(Interactive.isoOf)).size;
+  const selCountries = new Set([...selectedGeo].map(Interactive.isoOf)).size;
+  const allTechs = new Set(run.rows.map(r => r.t)).size;
+  Interactive.summary(
+    `${selCountries} of ${nCountries} countries · ${selectedTech.size} of ${allTechs} technologies · ` +
+    `${fgs} furnace groups and ${totals[totals.length - 1].toFixed(0)} Mt CO2e net in ${lastYear} · ${run.provenance}`);
+}
+
+function initControls() {
+  const boundarySelect = document.getElementById("boundary-select");
+  BOUNDARIES.forEach(b => {
+    const opt = document.createElement("option");
+    opt.value = b;
+    opt.textContent = b.replace(/_/g, " ");
+    boundarySelect.appendChild(opt);
+  });
+  const scopeSelect = document.getElementById("scope-select");
+  SCOPE_VIEWS.forEach(v => {
+    const opt = document.createElement("option");
+    opt.value = v.id;
+    opt.textContent = v.title.replace(" emissions", "");
+    scopeSelect.appendChild(opt);
+  });
+  scopeSelect.value = "direct_plus_indirect";
+  ["boundary-select", "scope-select", "group-select", "production-toggle"].forEach(id =>
+    document.getElementById(id).addEventListener("change", render));
+
+  const allRows = Object.values(DATA).flatMap(d => d.rows);
+  Interactive.init({geoKeys: allRows.map(r => r.g), techs: allRows.map(r => r.t), onChange: render});
+}
+
+initControls();
+render();
+</script>
+</body>
+</html>

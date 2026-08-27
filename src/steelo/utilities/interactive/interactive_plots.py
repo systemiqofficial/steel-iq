@@ -17,12 +17,14 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Optional
 
+import pandas as pd
 from matplotlib.colors import to_hex
 from plotly.offline import get_plotlyjs
 
 from steelo.domain.models import CountryMapping
 from steelo.utilities.plotting import region2colours, tech2colours
 
+from . import emissions
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +110,37 @@ class InteractivePlotter:
         self.country_mappings = country_mappings
         self.run_title = run_title
         self.geo_unit_names = geo_unit_names(geo_hierarchy_json)
+
+    def plot_emissions(self, post_processed_csv: Path) -> Optional[Path]:
+        """Write the emissions viewer (``emissions.html``) from the post-processed furnace-group table.
+
+        Args:
+            post_processed_csv: The run's ``post_processed_<timestamp>.csv``.
+
+        Returns:
+            The written path, or None when the table is missing or has no emissions columns
+            (logged as warnings so the plot stage never fails).
+        """
+        if not post_processed_csv.is_file():
+            logger.warning("No post-processed table at %s — skipping the emissions viewer", post_processed_csv)
+            return None
+        table = pd.read_csv(post_processed_csv, low_memory=False)
+        try:
+            emission_keys, aggregated = emissions.aggregate_emissions(table)
+        except ValueError as exc:
+            logger.warning("%s — skipping the emissions viewer", exc)
+            return None
+        data = {
+            self.run_title: {
+                "title": self.run_title,
+                "provenance": f"Furnace-group emissions from {post_processed_csv.name}, "
+                "one row per furnace group and year.",
+                "rows": emissions.pack_rows(aggregated, emission_keys),
+            },
+        }
+        path = self._write("emissions.html", self._config("Emissions", emissionKeys=emission_keys), data)
+        logger.info("Wrote emissions viewer %s (%d aggregated rows)", path, len(aggregated))
+        return path
 
     def _config(self, chart_title: str, **chart_config: Any) -> dict[str, Any]:
         """The shell's config (colours, geography, runs) plus chart-specific keys."""

@@ -2,8 +2,12 @@
 
 import json
 
+import pandas as pd
+
 from steelo.domain.models import CountryMapping
 from steelo.utilities.interactive import InteractivePlotter, interactive_plots
+
+BOUNDARY = "worldsteel_opt_credits"
 
 
 def sample_country_mappings() -> list[CountryMapping]:
@@ -25,6 +29,16 @@ def sample_country_mappings() -> list[CountryMapping]:
         ),
         CountryMapping(country="Aruba", iso2="AW", iso3="ABW", region_for_outputs="Latin America", **common),
     ]
+
+
+def sample_post_processed() -> pd.DataFrame:
+    """Two furnace groups over one year, with a sub-national geo_key."""
+    columns = ["year", "geo_key", "furnace_group_id", "technology", "product", "production"]
+    rows = [[2025, "CHN:CN-HE", "P1_0", "BF", "iron", 2_000_000.0], [2025, "DEU", "P2_0", "EAF", "steel", 1_000_000.0]]
+    table = pd.DataFrame(rows, columns=columns)
+    table[f"emissions_{BOUNDARY}_direct_ghg"] = [5_000_000.0, 100_000.0]
+    table[f"emissions_{BOUNDARY}_indirect_ghg"] = [1_000_000.0, 300_000.0]
+    return table
 
 
 def test_trade_bloc_members_from_boolean_attributes() -> None:
@@ -55,3 +69,23 @@ def test_geo_info_names_and_regions_per_iso3() -> None:
 
     assert info["DEU"] == {"country": "Germany", "region": "Europe"}
     assert set(info) == {"DEU", "CHN", "ABW"}
+
+
+def test_plot_emissions_writes_self_contained_viewer(tmp_path) -> None:
+    """The emissions viewer lands in plots/interactive with plotly.js, the shell and the payload inlined."""
+    csv_path = tmp_path / "post_processed_test.csv"
+    sample_post_processed().to_csv(csv_path, index=False)
+    plotter = InteractivePlotter(tmp_path / "plots", sample_country_mappings(), run_title="sim_test")
+
+    written = plotter.plot_emissions(csv_path)
+
+    assert written == tmp_path / "plots" / "interactive" / "emissions.html"
+    html = written.read_text()
+    for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
+        assert placeholder not in html
+    assert "const Interactive" in html and ".box-dropdown" in html
+    assert "sim_test" in html
+    assert f'"{BOUNDARY}|direct_ghg"' in html
+    assert '"G20": ["CHN", "DEU"]' in html
+    assert '"DEU": {"country": "Germany", "region": "Europe"}' in html
+    assert "CHN:CN-HE" in html
