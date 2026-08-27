@@ -63,7 +63,7 @@ def write_allocations(tm_dir: Path, year: int, rows: list[list]) -> Path:
 
 
 def sample_tm_dir(tmp_path: Path) -> Path:
-    """2025 with steel and scrap allocations; 2026 header-only, as a failed trade LP leaves it."""
+    """2025 with steel, iron and feedstock allocations; 2026 header-only, as a failed trade LP leaves it."""
     tm_dir = tmp_path / "TM"
     write_allocations(
         tm_dir,
@@ -75,8 +75,12 @@ def sample_tm_dir(tmp_path: Path) -> Path:
             allocation("steel", location("CHN", "CN-SD"), "EAF", location("IND"), 25_000_000.0),
             allocation("steel", location("DEU"), "EAF", location("DEU"), 10_000_000.0),
             allocation("steel", location("DEU"), "EAF", location("IND"), 20.0),
-            # Feedstock allocations are not steel trade
+            # Iron products go plant → steelmaking furnace group
+            allocation("pig_iron", location("CHN", "CN-HE"), "BF", location("JPN"), 5_000_000.0),
+            allocation("hot_metal", location("CHN", "CN-HE"), "BF", location("CHN"), 200_000_000.0),
+            # Feedstock allocations are not metal trade
             allocation("scrap", location("DEU"), "N/A", location("DEU"), 50_000_000.0),
+            allocation("io_high", location("AUS"), "N/A", location("CHN"), 80_000_000.0),
         ],
     )
     write_allocations(tm_dir, 2026, [])
@@ -95,17 +99,19 @@ def test_allocation_files_keyed_by_year(tmp_path: Path) -> None:
     assert trade_matrix.allocation_files(tmp_path / "absent") == {}
 
 
-def test_read_flows_sums_steel_per_country_pair_and_technology(tmp_path: Path) -> None:
-    """Plant-level steel allocations collapse to origin × destination × technology in Mt; other commodities are ignored."""
+def test_read_flows_sums_metal_per_commodity_country_pair_and_technology(tmp_path: Path) -> None:
+    """Plant-level allocations collapse to commodity × origin × destination × technology in Mt; feedstocks are ignored."""
     flows = trade_matrix.read_flows(trade_matrix.allocation_files(sample_tm_dir(tmp_path)))
 
-    assert list(flows.columns) == ["year", "origin", "destination", "technology", "volume_mt"]
+    assert list(flows.columns) == ["year", "product", "commodity", "origin", "destination", "technology", "volume_mt"]
     assert set(flows["year"]) == {2025}
-    by_key = {(r.origin, r.destination, r.technology): r.volume_mt for r in flows.itertuples()}
-    assert by_key[("CHN", "CHN", "BOF")] == pytest.approx(400.0)
-    assert by_key[("CHN", "IND", "EAF")] == pytest.approx(25.0)
-    assert by_key[("DEU", "DEU", "EAF")] == pytest.approx(10.0)
-    assert len(by_key) == 4
+    by_key = {(r.product, r.commodity, r.origin, r.destination, r.technology): r.volume_mt for r in flows.itertuples()}
+    assert by_key[("steel", "steel", "CHN", "CHN", "BOF")] == pytest.approx(400.0)
+    assert by_key[("steel", "steel", "CHN", "IND", "EAF")] == pytest.approx(25.0)
+    assert by_key[("steel", "steel", "DEU", "DEU", "EAF")] == pytest.approx(10.0)
+    assert by_key[("iron", "pig_iron", "CHN", "JPN", "BF")] == pytest.approx(5.0)
+    assert by_key[("iron", "hot_metal", "CHN", "CHN", "BF")] == pytest.approx(200.0)
+    assert len(by_key) == 6
 
 
 def test_read_flows_rejects_location_without_iso3(tmp_path: Path) -> None:
@@ -123,6 +129,7 @@ def test_pack_rows_compacts_flows_and_drops_rounded_zeros(tmp_path: Path) -> Non
 
     packed = trade_matrix.pack_rows(flows)
 
-    assert {"y": 2025, "o": "CHN", "d": "IND", "t": "EAF", "v": 25.0} in packed
+    assert {"y": 2025, "p": "steel", "c": "steel", "o": "CHN", "d": "IND", "t": "EAF", "v": 25.0} in packed
+    assert {"y": 2025, "p": "iron", "c": "pig_iron", "o": "CHN", "d": "JPN", "t": "BF", "v": 5.0} in packed
     assert not any(row["o"] == "DEU" and row["d"] == "IND" for row in packed)
-    assert len(packed) == 3
+    assert len(packed) == 5

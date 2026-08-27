@@ -229,7 +229,7 @@ class InteractivePlotter:
         return path
 
     def plot_trade_matrix(self, tm_dir: Path) -> Optional[Path]:
-        """Write the trade-matrix viewer (``trade_matrix.html``) from the per-year steel allocation files.
+        """Write the trade-matrix viewer (``trade_matrix.html``) from the per-year allocation files.
 
         Args:
             tm_dir: The run's ``TM`` output directory holding ``steel_trade_allocations_<year>.csv``.
@@ -237,7 +237,7 @@ class InteractivePlotter:
         Returns:
             The written path, or None when no allocation file exists or one cannot be read
             (logged as warnings so the plot stage never fails). A year whose file holds no
-            steel allocations stays in the viewer's year selector with an empty-state note.
+            steel or iron allocations stays in the viewer's year selector with an empty-state note.
         """
         files = trade_matrix.allocation_files(tm_dir)
         if not files:
@@ -251,8 +251,8 @@ class InteractivePlotter:
         data = {
             self.run_title: {
                 "title": self.run_title,
-                "provenance": "Steel allocations of the trade LP (plant → demand centre) from "
-                "TM/steel_trade_allocations_<year>.csv.",
+                "provenance": "Trade-LP allocations from TM/steel_trade_allocations_<year>.csv: steel plant → "
+                "demand centre, iron products plant → steelmaking furnace group.",
                 "years": list(files),
                 "rows": trade_matrix.pack_rows(flows),
             },

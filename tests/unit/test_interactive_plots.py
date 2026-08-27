@@ -166,5 +166,5 @@ def test_plot_trade_matrix_writes_self_contained_viewer(tmp_path) -> None:
         assert placeholder not in html
     assert "const Interactive" in html
     assert '"years": [2025, 2026]' in html
-    assert '{"y": 2025, "o": "CHN", "d": "IND", "t": "BOF", "v": 2.0}' in html
+    assert '{"y": 2025, "p": "steel", "c": "steel", "o": "CHN", "d": "IND", "t": "BOF", "v": 2.0}' in html
     assert plotter.plot_trade_matrix(tmp_path / "absent") is None
