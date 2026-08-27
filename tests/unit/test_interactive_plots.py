@@ -36,6 +36,7 @@ def sample_post_processed() -> pd.DataFrame:
     columns = ["year", "geo_key", "furnace_group_id", "technology", "product", "production"]
     rows = [[2025, "CHN:CN-HE", "P1_0", "BF", "iron", 2_000_000.0], [2025, "DEU", "P2_0", "EAF", "steel", 1_000_000.0]]
     table = pd.DataFrame(rows, columns=columns)
+    table["capacity"] = [3_000_000.0, 1_200_000.0]
     table[f"emissions_{BOUNDARY}_direct_ghg"] = [5_000_000.0, 100_000.0]
     table[f"emissions_{BOUNDARY}_indirect_ghg"] = [1_000_000.0, 300_000.0]
     return table
@@ -89,3 +90,21 @@ def test_plot_emissions_writes_self_contained_viewer(tmp_path) -> None:
     assert '"G20": ["CHN", "DEU"]' in html
     assert '"DEU": {"country": "Germany", "region": "Europe"}' in html
     assert "CHN:CN-HE" in html
+
+
+def test_plot_capacity_and_production_writes_self_contained_viewer(tmp_path) -> None:
+    """The capacity and production viewer reuses the table read for the emissions viewer."""
+    csv_path = tmp_path / "post_processed_test.csv"
+    sample_post_processed().to_csv(csv_path, index=False)
+    plotter = InteractivePlotter(tmp_path / "plots", sample_country_mappings(), run_title="sim_test")
+
+    assert plotter.plot_emissions(csv_path) is not None
+    written = plotter.plot_capacity_and_production(csv_path)
+
+    assert written == tmp_path / "plots" / "interactive" / "capacity_and_production.html"
+    html = written.read_text()
+    for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
+        assert placeholder not in html
+    assert "const Interactive" in html
+    assert '"cap": 3.0' in html and '"pr": 2.0' in html
+    assert list(plotter._tables) == [csv_path]

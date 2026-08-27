@@ -1,25 +1,19 @@
 """Row packing for the emissions viewer (``emissions.html``).
 
-The post-processed table carries one row per furnace group, year *and*
-feedstock (the material-allocation breakdown), so emissions and production
-repeat across those rows; the aggregation keeps a single row per furnace group
-and year before summing per year, geography, technology and product. The
-viewer offers the same five scope views as the static emissions PNGs, every
-emissions boundary found in the table, stacking by technology or region, and
-the shell's geography and technology filters.
+The viewer offers the same five scope views as the static emissions PNGs,
+every emissions boundary found in the post-processed table, stacking by
+technology or region, and the shell's geography and technology filters.
 """
 
 from typing import Any
 
 import pandas as pd
 
+from .post_processed import aggregate_furnace_groups
+
 EMISSIONS_PREFIX = "emissions_"
 # Longest first so the suffix match on ``direct_with_biomass_ghg`` never hits ``direct_ghg``.
 SCOPES = ("direct_with_biomass_ghg", "direct_ghg", "indirect_ghg")
-
-# Geographic grain of a row: the sub-national geo_key when the table carries one, else the country.
-GEO_COLUMNS = ("geo_key", "iso3")
-AGGREGATION_KEYS = ["year", "geo", "technology", "product"]
 
 
 def emission_boundaries(columns: list[str]) -> list[str]:
@@ -50,15 +44,13 @@ def aggregate_emissions(post_processed: pd.DataFrame) -> tuple[list[str], pd.Dat
     """Sum emissions and production per year, geography, technology and product.
 
     Args:
-        post_processed: The post-processed furnace-group table (one row per furnace
-            group, year and feedstock).
+        post_processed: The post-processed furnace-group table.
 
     Returns:
         ``(emission_keys, aggregated)`` where ``emission_keys`` are ``"<boundary>|<scope>"``
         strings naming the summed emissions columns in order, and ``aggregated`` has the
-        columns ``year, geo, technology, product, n`` (furnace groups), ``production_mt``
-        and one column per emission key, all quantities in Mt. Emissions are counted once
-        per furnace group and year regardless of how many feedstock rows repeat them.
+        columns ``year, geo, technology, product, n``, ``production_mt`` and one column per
+        emission key, all in Mt (see :func:`~.post_processed.aggregate_furnace_groups`).
 
     Raises:
         ValueError: If the table carries no emissions columns.
@@ -67,24 +59,17 @@ def aggregate_emissions(post_processed: pd.DataFrame) -> tuple[list[str], pd.Dat
     if not boundaries:
         raise ValueError("The post-processed table has no emissions_<boundary>_<scope> columns")
 
-    geo_column = next(column for column in GEO_COLUMNS if column in post_processed.columns)
-    per_fg = post_processed.drop_duplicates(subset=["furnace_group_id", "year"]).rename(columns={geo_column: "geo"})
-
     emission_keys: list[str] = []
     value_columns: dict[str, str] = {}
     for boundary in boundaries:
         for scope in SCOPES:
             column = f"{EMISSIONS_PREFIX}{boundary}_{scope}"
-            if column in per_fg.columns:
+            if column in post_processed.columns:
                 key = f"{boundary}|{scope}"
                 emission_keys.append(key)
                 value_columns[column] = key
     value_columns["production"] = "production_mt"
-
-    grouped = per_fg.groupby(AGGREGATION_KEYS, dropna=False)
-    aggregated = grouped[list(value_columns)].sum().rename(columns=value_columns) / 1e6
-    aggregated["n"] = grouped.size()
-    return emission_keys, aggregated.reset_index()
+    return emission_keys, aggregate_furnace_groups(post_processed, value_columns)
 
 
 def pack_rows(aggregated: pd.DataFrame, emission_keys: list[str]) -> list[dict[str, Any]]:

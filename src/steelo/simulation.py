@@ -1427,6 +1427,7 @@ class SimulationRunner:
                 else None,
             )
             interactive.plot_emissions(post_processed_csv=Path(output_path))
+            interactive.plot_capacity_and_production(post_processed_csv=Path(output_path))
 
         # Plot iron ore consumption stacked area chart by quality
         if data_collector.trace_iron_ore:
