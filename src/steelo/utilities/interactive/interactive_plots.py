@@ -24,7 +24,7 @@ from plotly.offline import get_plotlyjs
 from steelo.domain.models import CountryMapping
 from steelo.utilities.plotting import region2colours, tech2colours
 
-from . import capacity_production, cost_curves, emissions
+from . import capacity_production, cost_curves, emissions, trade_matrix
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,7 @@ class InteractivePlotter:
         >>> interactive.plot_emissions(post_processed_csv)
         >>> interactive.plot_capacity_and_production(post_processed_csv)
         >>> interactive.plot_cost_curves(post_processed_csv, market_prices_csv, clearing)
+        >>> interactive.plot_trade_matrix(tm_dir)
     """
 
     SUBDIR = "interactive"
@@ -225,6 +226,39 @@ class InteractivePlotter:
         }
         path = self._write("cost_curves.html", self._config("Cost curves", clearing=clearing), data)
         logger.info("Wrote cost-curve viewer %s (%d furnace-group rows)", path, len(fgs))
+        return path
+
+    def plot_trade_matrix(self, tm_dir: Path) -> Optional[Path]:
+        """Write the trade-matrix viewer (``trade_matrix.html``) from the per-year steel allocation files.
+
+        Args:
+            tm_dir: The run's ``TM`` output directory holding ``steel_trade_allocations_<year>.csv``.
+
+        Returns:
+            The written path, or None when no allocation file exists or one cannot be read
+            (logged as warnings so the plot stage never fails). A year whose file holds no
+            steel allocations stays in the viewer's year selector with an empty-state note.
+        """
+        files = trade_matrix.allocation_files(tm_dir)
+        if not files:
+            logger.warning("No steel_trade_allocations_<year>.csv under %s — skipping the trade-matrix viewer", tm_dir)
+            return None
+        try:
+            flows = trade_matrix.read_flows(files)
+        except ValueError as exc:
+            logger.warning("%s — skipping the trade-matrix viewer", exc)
+            return None
+        data = {
+            self.run_title: {
+                "title": self.run_title,
+                "provenance": "Steel allocations of the trade LP (plant → demand centre) from "
+                "TM/steel_trade_allocations_<year>.csv.",
+                "years": list(files),
+                "rows": trade_matrix.pack_rows(flows),
+            },
+        }
+        path = self._write("trade_matrix.html", self._config("Trade matrix"), data)
+        logger.info("Wrote trade-matrix viewer %s (%d flows over %d years)", path, len(flows), len(files))
         return path
 
     def _config(self, chart_title: str, **chart_config: Any) -> dict[str, Any]:

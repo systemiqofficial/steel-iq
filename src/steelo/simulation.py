@@ -1509,6 +1509,7 @@ class SimulationRunner:
                 ),
             )
             interactive.plot_decision_flows(motions_csv=self.config.output_dir / "data" / "pam_motions.csv")
+            interactive.plot_trade_matrix(tm_dir=self.config.output_dir / "TM")
 
         # Aggregate per-year LCOE/LCOH statistics into stacked CSVs
         aggregate_lcoe_lcoh_statistics(self.config.output_dir, start_year, end_year)

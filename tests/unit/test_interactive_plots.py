@@ -140,3 +140,31 @@ def test_plot_cost_curves_writes_self_contained_viewer(tmp_path) -> None:
     # Without a recorded demand (older runs) steel clears against its production.
     assert plotter.plot_cost_curves(csv_path, tmp_path / "absent.csv", CLEARING) == written
     assert '"steel": {"2025": {"d": 1.0, "c": 500.0}}' in written.read_text()
+
+
+def test_plot_trade_matrix_writes_self_contained_viewer(tmp_path) -> None:
+    """The trade-matrix viewer embeds every allocation year and the country-pair flows; no files → no viewer."""
+    tm_dir = tmp_path / "TM"
+    tm_dir.mkdir()
+    header = "commodity,source_type,source_id,source_location,capacity_at_source,source_tech,destination_type,"
+    header += (
+        "destination_id,destination_location,allocated_volume,allocation_cost,demand_at_destination,supply_at_source"
+    )
+    loc = (
+        "Location(lat=1.0, lon=2.0, country='{0}', region='R', iso3='{0}', distance_to_other_iso3=None, geo_unit=None)"
+    )
+    row = f'steel,Plant-FurnaceGroup,P1_0,"{loc.format("CHN")}",1e6,BOF,DemandCenter,India,"{loc.format("IND")}",2e6,0,2e6,N/A'
+    (tm_dir / "steel_trade_allocations_2025.csv").write_text(f"{header}\n{row}\n")
+    (tm_dir / "steel_trade_allocations_2026.csv").write_text(f"{header}\n")
+    plotter = InteractivePlotter(tmp_path / "plots", sample_country_mappings(), run_title="sim_test")
+
+    written = plotter.plot_trade_matrix(tm_dir)
+
+    assert written == tmp_path / "plots" / "interactive" / "trade_matrix.html"
+    html = written.read_text()
+    for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
+        assert placeholder not in html
+    assert "const Interactive" in html
+    assert '"years": [2025, 2026]' in html
+    assert '{"y": 2025, "o": "CHN", "d": "IND", "t": "BOF", "v": 2.0}' in html
+    assert plotter.plot_trade_matrix(tmp_path / "absent") is None
