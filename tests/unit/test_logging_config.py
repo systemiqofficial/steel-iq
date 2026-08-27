@@ -138,14 +138,16 @@ def test_configure_from_yaml_sets_feature_flags(
     yaml_config_file,
     clean_logging_state,
 ):
-    """Verify FURNACE_GROUP_BREAKDOWN is updated from YAML."""
-    # First set to opposite value
+    """Verify FURNACE_GROUP_BREAKDOWN and DUMP_FAILED_LP are updated from YAML."""
+    # First set to opposite values
     LoggingConfig.FURNACE_GROUP_BREAKDOWN = True
+    LoggingConfig.DUMP_FAILED_LP = False
 
     content = """
 version: 1
 features:
   furnace_group_breakdown: false
+  dump_failed_lp: true
 modules:
   geo: INFO
 """
@@ -153,9 +155,11 @@ modules:
     LoggingConfig.configure_from_yaml(str(yaml_path))
 
     assert LoggingConfig.FURNACE_GROUP_BREAKDOWN is False
+    assert LoggingConfig.DUMP_FAILED_LP is True
 
     # Reset for other tests
     LoggingConfig.FURNACE_GROUP_BREAKDOWN = True
+    LoggingConfig.DUMP_FAILED_LP = False
 
 
 def test_configure_from_yaml_sets_external_loggers(
