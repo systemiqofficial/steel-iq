@@ -19,9 +19,11 @@ window.addEventListener("error", function(e) {
     <label for="boundary-select">Emissions boundary</label>
     <select id="boundary-select"></select>
   </div>
-  <div>
-    <label for="scope-select">Scope</label>
-    <select id="scope-select"></select>
+  <div class="ticks">
+    <label>Scope</label>
+    <label class="inline"><input type="checkbox" id="scope-direct" checked>Direct</label>
+    <label class="inline"><input type="checkbox" id="scope-indirect" checked>Indirect</label>
+    <label class="inline"><input type="checkbox" id="scope-biogenic">incl. biogenic</label>
   </div>
   <div>
     <label for="group-select">Stack by</label>
@@ -50,21 +52,20 @@ const FILL_ALPHA = 0.85, INDIRECT_LIGHTEN = 0.45;
 const PRODUCTION_STYLES = {iron: "#FFD700", steel: "#FFFFFF"};
 const T = Interactive.theme;
 
-/* The five views of the static emissions charts. Direct (excl. biogenic) and direct
-   (incl. biogenic) are alternative accountings of the same emissions and are never
-   summed; the combined views stack indirect (lighter shade) on top of direct. */
-const SCOPE_VIEWS = [
-  {id: "direct", title: "Direct emissions (excl. biogenic)",
-   parts: [{scope: "direct_ghg", kind: "direct"}]},
-  {id: "direct_bio", title: "Direct emissions (incl. biogenic)",
-   parts: [{scope: "direct_with_biomass_ghg", kind: "direct"}]},
-  {id: "indirect", title: "Indirect emissions",
-   parts: [{scope: "indirect_ghg", kind: "indirect"}]},
-  {id: "direct_plus_indirect", title: "Direct (excl. biogenic) + Indirect emissions",
-   parts: [{scope: "direct_ghg", kind: "direct"}, {scope: "indirect_ghg", kind: "indirect"}]},
-  {id: "direct_bio_plus_indirect", title: "Direct (incl. biogenic) + Indirect emissions",
-   parts: [{scope: "direct_with_biomass_ghg", kind: "direct"}, {scope: "indirect_ghg", kind: "indirect"}]},
-];
+/* The scope ticks give the five views of the static emissions charts. Direct (excl.
+   biogenic) and direct (incl. biogenic) are alternative accountings of the same
+   emissions and are never summed — "incl. biogenic" swaps the direct band — and
+   ticking both direct and indirect stacks indirect (lighter shade) on top of direct. */
+function scopeView() {
+  const ticked = id => document.getElementById(id).checked;
+  const direct = ticked("scope-direct"), indirect = ticked("scope-indirect"), biogenic = ticked("scope-biogenic");
+  const parts = [];
+  if (direct) parts.push({scope: biogenic ? "direct_with_biomass_ghg" : "direct_ghg", kind: "direct"});
+  if (indirect) parts.push({scope: "indirect_ghg", kind: "indirect"});
+  const directLabel = `Direct${indirect ? "" : " emissions"} (${biogenic ? "incl." : "excl."} biogenic)`;
+  const title = direct && indirect ? `${directLabel} + Indirect emissions` : direct ? directLabel : "Indirect emissions";
+  return {parts, title};
+}
 
 const KEY_INDEX = new Map(CONFIG.emissionKeys.map((k, i) => [k, i]));
 const BOUNDARIES = [...new Set(CONFIG.emissionKeys.map(k => k.split("|")[0]))];
@@ -77,7 +78,7 @@ function emissionValue(row, boundary, scope) {
 function render() {
   const run = DATA[Interactive.run()];
   const boundary = document.getElementById("boundary-select").value;
-  const view = SCOPE_VIEWS.find(v => v.id === document.getElementById("scope-select").value);
+  const view = scopeView();
   const groupBy = document.getElementById("group-select").value;
   const showProduction = document.getElementById("production-toggle").checked;
   const selectedGeo = Interactive.selectedGeos(), selectedTech = Interactive.selectedTechs();
@@ -104,7 +105,8 @@ function render() {
 
   const keys = [...series.keys()].filter(k => view.parts.some(p => series.get(k)[p.kind].some(v => v !== 0))).sort();
   if (!keys.length) {
-    Interactive.showEmpty(gd, "No emissions for this selection", WIDTH, HEIGHT);
+    Interactive.showEmpty(gd, view.parts.length ? "No emissions for this selection" : "Tick direct and/or indirect",
+                          WIDTH, HEIGHT);
     Interactive.summary("0 furnace groups");
     return;
   }
@@ -201,16 +203,10 @@ function initControls() {
     opt.textContent = b.replace(/_/g, " ");
     boundarySelect.appendChild(opt);
   });
-  const scopeSelect = document.getElementById("scope-select");
-  SCOPE_VIEWS.forEach(v => {
-    const opt = document.createElement("option");
-    opt.value = v.id;
-    opt.textContent = v.title.replace(" emissions", "");
-    scopeSelect.appendChild(opt);
-  });
-  scopeSelect.value = "direct_plus_indirect";
-  ["boundary-select", "scope-select", "group-select", "production-toggle"].forEach(id =>
-    document.getElementById(id).addEventListener("change", render));
+  const biogenic = document.getElementById("scope-biogenic");
+  document.getElementById("scope-direct").addEventListener("change", e => { biogenic.disabled = !e.target.checked; });
+  ["boundary-select", "scope-direct", "scope-indirect", "scope-biogenic", "group-select", "production-toggle"]
+    .forEach(id => document.getElementById(id).addEventListener("change", render));
 
   const allRows = Object.values(DATA).flatMap(d => d.rows);
   Interactive.init({geoKeys: allRows.map(r => r.g), techs: allRows.map(r => r.t), onChange: render});
