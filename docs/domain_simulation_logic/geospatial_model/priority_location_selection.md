@@ -271,6 +271,7 @@ Key parameters affecting priority location selection:
 | `hydrogen_ceiling_percentile` | 20 | Regional hydrogen cost cap (percentile) |
 | `intraregional_trade_allowed` | True | Enable hydrogen imports between regions |
 | `long_dist_pipeline_transport_cost` | 1.0 | Pipeline transport cost (USD/kg H2) |
+| `excluded_greenfield_technologies` | `["BOF"]` | Technologies never considered for new greenfield plants (see [New Plant Opening](new_plant_opening.md)); brownfield switching is unaffected |
 
 #### `GeoDataPaths` Parameters
 

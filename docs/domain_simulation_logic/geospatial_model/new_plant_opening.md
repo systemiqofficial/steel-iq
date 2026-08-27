@@ -138,6 +138,7 @@ Filters technologies based on what will be allowed at the earliest possible cons
 **Purpose:** Prevents companies from considering plants using technologies that would be illegal to build by the time construction begins. For example, if BF-BOF will be banned in 2034, it won't be considered as an opportunity in 2030 even though it's currently legal.
 
 **Process:**
+- Drop technologies listed in `geo_config.excluded_greenfield_technologies` (default `["BOF"]`) before anything else; these are never built greenfield regardless of `technology_settings`
 - Calculate target year when the earliest possible construction would start 
 - Check which technologies are allowed in that future year
 - Filter opportunities to only include permitted technologies
@@ -311,6 +312,7 @@ Models real-world risk factors: financing may fall through, permits may be denie
 | `plant_lifetime` | int | 20 years | Expected operational lifetime of plant |
 | `expanded_capacity` | float | 2.5 Mt/year | Standard capacity for new plants (same than for plant expansion) |
 | `top_n_loctechs_as_business_op` | int | 5 | Number of opportunities to track per product per year |
+| `geo_config.excluded_greenfield_technologies` | list[str] | `["BOF"]` | Technologies removed from the greenfield candidate set before the allowed-technology filter of Step 1. A greenfield plant has a single furnace group, so a BOF built this way has no hot-metal supply of its own. Brownfield switching and renovation are unaffected (they use `technology_settings`) |
 
 ### Probability Parameters
 

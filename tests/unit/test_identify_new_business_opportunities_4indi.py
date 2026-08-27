@@ -13,6 +13,7 @@ from steelo.domain.new_plant_opening import (
 )
 from steelo.domain.models import Subsidy, PlantGroup
 from steelo.devdata import Year
+from steelo.simulation import GeoConfig
 from steelo.domain.calculate_costs import ReductantScoreSeries
 
 
@@ -264,6 +265,27 @@ class TestGetListOfAllowedTechsForTargetYear:
                 tech_to_product=tech_to_product,
                 target_year=Year(2030),  # Not in allowed_techs
             )
+
+    def test_excluded_greenfield_technologies_never_reach_the_candidate_set(self):
+        """BOF is dropped from greenfield candidates by the GeoConfig default even when allowed in the target year."""
+        geo_config = GeoConfig()
+        assert geo_config.excluded_greenfield_technologies == ["BOF"]
+
+        allowed_techs = {Year(2030): ["EAF", "BOF", "DRI"]}
+        tech_to_product = {"EAF": "steel", "BOF": "steel", "DRI": "iron"}
+        greenfield_tech_to_product = {
+            tech: product
+            for tech, product in tech_to_product.items()
+            if tech not in geo_config.excluded_greenfield_technologies
+        }
+
+        product_to_tech = get_list_of_allowed_techs_for_target_year(
+            allowed_techs=allowed_techs,
+            tech_to_product=greenfield_tech_to_product,
+            target_year=Year(2030),
+        )
+
+        assert product_to_tech == {"steel": ["EAF"], "iron": ["DRI"]}
 
 
 class TestPrepareDataForBusinessOpportunity:
