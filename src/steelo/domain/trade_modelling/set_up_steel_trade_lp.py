@@ -755,7 +755,7 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
     Args:
         trade_lp: The trade LP model with allocation variables to constrain
         config: Simulation configuration with:
-            - hot_metal_radius: Maximum distance for hot metal transport (km, typically ~100)
+            - hot_metal_radius: Maximum distance for hot metal transport (km)
             - closely_allocated_products: Products limited to short distances (e.g., ["hot_metal"])
             - distantly_allocated_products: Products requiring longer distances (e.g., ["pig_iron", "steel"])
             - enable_furnace_group_clustering: Whether clustering is enabled (optional)

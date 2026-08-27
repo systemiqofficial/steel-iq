@@ -1365,6 +1365,15 @@ class FurnaceGroup:
         return "ccs" in name or "ccu" in name
 
     @property
+    def produces_hot_metal(self) -> bool:
+        """Whether the technology's bill of materials outputs hot metal, the feedstock behind a BOF's minimum share."""
+        return any(
+            normalize_name(output) == Commodities.HOT_METAL.value
+            for feedstock in self.technology.dynamic_business_case or []
+            for output in feedstock.outputs
+        )
+
+    @property
     def effective_primary_feedstocks(self) -> list[PrimaryFeedstock]:
         """
         Returns the effective primary feedstock for the furnace group.
@@ -4958,12 +4967,9 @@ class PlantGroup:
         self.plants = plants
         self.balance = 0.0
         self.events: list[events.Event] = []
-        self.hot_metal_access: dict[str, list[str]] = defaultdict(
-            list
-        )  # BOF furnace group -> list of furnace groups that produce hot metal for it
 
     def update_hot_metal_access(self, hot_metal_radius: float) -> None:
-        """Update the hot metal access mapping for BOF furnace groups in the plant group.
+        """Flag BOF furnace groups (and their plants) that a hot-metal producer in the group can feed.
 
         Args:
             hot_metal_radius: Maximum distance (km) over which hot metal can be transported.
@@ -4973,32 +4979,14 @@ class PlantGroup:
             for fg in plant.furnace_groups:
                 if fg.technology.name.lower() == "bof":
                     fg.has_hot_metal_access = False  # Initialize access flag
-                    self.hot_metal_access[fg.furnace_group_id] = []  # Initialize list for this BOF furnace group
-                    # Identify furnace groups that produce hot metal for this BOF group
                     for other_plant in self.plants:
                         for other_fg in other_plant.furnace_groups:
-                            # check if other furnace group produces hot metal and is within hot metal radius of the BOF plant
                             if (
-                                other_fg.technology.name.lower()
-                                in [
-                                    "bf",
-                                    "dri+esf",
-                                    "sr",
-                                    "bf+ccu",
-                                    "dri+esf+ccu",
-                                    "sr+ccu",
-                                    "bf+ccs",
-                                    "dri+esf+ccs",
-                                    "sr+ccs",
-                                    "bf_charcoal",
-                                    "bf_charcoal+ccu",
-                                    "bf_charcoal+ccs",
-                                ]
+                                other_fg.produces_hot_metal
                                 and plant.distance_to(other_plant.location) <= hot_metal_radius
                             ):
                                 fg.has_hot_metal_access = True
                                 plant.has_hot_metal_access = True
-                                self.hot_metal_access[fg.furnace_group_id].append(other_fg.furnace_group_id)
 
     def deduct_equity(self, amount: float, reason: str) -> None:
         """

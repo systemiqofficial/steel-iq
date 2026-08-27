@@ -17,6 +17,7 @@ class MockConfig:
 
     active_statuses: list[str]
     closely_allocated_products: list[str] = None  # Add field with default
+    hot_metal_radius: float = 5.0
 
     def __post_init__(self):
         if self.closely_allocated_products is None:
@@ -63,8 +64,9 @@ def create_test_furnace_group(
     chosen_reductant: str = "coke",
     carbon_cost: float = 50.0,
     status: str = "operating",
+    outputs: dict[str, float] | None = None,
 ) -> FurnaceGroup:
-    """Helper to create a test furnace group."""
+    """Helper to create a test furnace group; ``outputs`` is attached to every feedstock of its business case."""
     from steelo.domain.models import PrimaryFeedstock
 
     # Create dynamic_business_case with appropriate feedstocks based on technology
@@ -85,6 +87,8 @@ def create_test_furnace_group(
         dynamic_business_case = [
             PrimaryFeedstock(metallic_charge="io_mid", reductant=chosen_reductant, technology=technology_name),
         ]
+    for feedstock in dynamic_business_case:
+        feedstock.outputs = dict(outputs or {})
 
     technology = Technology(
         name=technology_name,
@@ -113,6 +117,68 @@ def create_test_furnace_group(
     )
 
     return fg
+
+
+HOT_METAL_PRODUCERS = [
+    "BF",
+    "BF+CCS",
+    "BF+CCU",
+    "BF_CHARCOAL",
+    "BF_CHARCOAL+CCS",
+    "BF_CHARCOAL+CCU",
+    "DRI+ESF",
+    "DRI+ESF+CCS",
+    "DRI+ESF+CCU",
+    "SR",
+    "SR+CCS",
+    "SR+CCU",
+]
+
+
+def _clustered_fg_ids(mapping: dict[str, list[str]]) -> set[str]:
+    return {fg_id for fg_ids in mapping.values() for fg_id in fg_ids}
+
+
+@pytest.mark.parametrize("producer_tech", HOT_METAL_PRODUCERS)
+def test_bof_is_kept_when_any_hot_metal_producer_is_within_radius(producer_tech):
+    """A BOF stays in the LP when a co-located furnace of any hot-metal-producing technology is active."""
+    plant = create_test_plant("plant1", create_test_location(lat=35.0, lon=110.0, iso3="CHN"))
+    producer = create_test_furnace_group("producer", producer_tech, capacity=1000.0, outputs={"hot_metal": 1.0})
+    bof = create_test_furnace_group("bof", "BOF", capacity=1000.0, chosen_reductant="hot_metal")
+    plant.furnace_groups = [producer, bof]
+
+    _, mapping = cluster_furnace_groups([plant], MockConfig(active_statuses=["operating"]))
+
+    assert "bof" in _clustered_fg_ids(mapping)
+
+
+def test_bof_is_dropped_without_hot_metal_producer_within_radius():
+    """A BOF whose only neighbour outputs DRI/HBI (no hot metal) is filtered out of the LP."""
+    plant = create_test_plant("plant1", create_test_location(lat=35.0, lon=110.0, iso3="CHN"))
+    dri = create_test_furnace_group(
+        "dri", "DRI", capacity=1000.0, chosen_reductant="natural_gas", outputs={"dri_high": 1.0, "hbi_high": 1.0}
+    )
+    bof = create_test_furnace_group("bof", "BOF", capacity=1000.0, chosen_reductant="hot_metal")
+    plant.furnace_groups = [dri, bof]
+
+    _, mapping = cluster_furnace_groups([plant], MockConfig(active_statuses=["operating"]))
+
+    assert "bof" not in _clustered_fg_ids(mapping)
+
+
+def test_bof_effective_capacity_counts_every_hot_metal_producer():
+    """Reachable hot-metal supply sums all producing technologies, so a BF + BF+CCS site is not halved."""
+    plant = create_test_plant("plant1", create_test_location(lat=35.0, lon=110.0, iso3="CHN"))
+    bf = create_test_furnace_group("bf", "BF", capacity=700.0, outputs={"hot_metal": 1.0})
+    bf_ccs = create_test_furnace_group("bf_ccs", "BF+CCS", capacity=700.0, outputs={"hot_metal": 1.0})
+    bof = create_test_furnace_group("bof", "BOF", capacity=3000.0, chosen_reductant="hot_metal")
+    bof.technology.dynamic_business_case[0].minimum_share_in_product = 0.7
+    plant.furnace_groups = [bf, bf_ccs, bof]
+
+    meta_fgs, _ = cluster_furnace_groups([plant], MockConfig(active_statuses=["operating"]))
+
+    bof_meta = next(meta_fg for meta_fg in meta_fgs if meta_fg.technology_name == "BOF")
+    assert float(bof_meta.total_capacity) == pytest.approx(1400.0 / 0.7)
 
 
 class TestClusterKey:
