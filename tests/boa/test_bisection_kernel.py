@@ -174,18 +174,24 @@ def test_b_min_warm_start_is_result_invariant(profiles, hint):
     bracket before bisecting, so every hint converges to the same value within
     tolerance -- including hints that are absurdly high or low.
 
-    The three tolerances differ for a reason worth stating. `b_min` is only pinned to
-    `tol_rel_patch`, since bisection stops there. Coverage is a *step* function of
-    battery size, so every hint lands on the same plateau and the values are bit-equal.
-    Served fraction is smooth in battery size, so it inherits `b_min`'s uncertainty --
-    asserting it more tightly than `b_min` itself is solved would be incoherent.
+    Every tolerance here is tied to `tol_rel_patch`, because that is the only thing
+    `b_min` is pinned to -- bisection stops there. Asserting any of the three more
+    tightly than `b_min` itself is solved would be incoherent, and would silently turn
+    a change to that knob into a test failure that says nothing about correctness.
+
+    Coverage is a *step* function of battery size, so within the tolerance band two
+    bracket histories can land one covered hour apart. What is guaranteed, and what is
+    checked here, is that both are feasible: the bisection returns the feasible end, so
+    every hint yields a battery that meets the target, never one that misses it.
     """
     solar, wind = profiles["solar"], profiles["wind"]
+    target = 1.0 - 15 / 100.0
     cold, cold_cov, cold_sf = b_min_at(solar, wind, 3.0, 2.0, 15, PARAMS, hint=-1.0)
     warm, warm_cov, warm_sf = b_min_at(solar, wind, 3.0, 2.0, 15, PARAMS, hint=hint)
 
     assert warm == pytest.approx(cold, rel=2 * PARAMS.tol_rel_patch)
-    assert warm_cov == cold_cov, "coverage is a step function; every bracket lands on one plateau"
+    assert cold_cov >= target and warm_cov >= target, "both must be feasible whatever the hint"
+    assert warm_cov == pytest.approx(cold_cov, abs=2 * PARAMS.tol_rel_patch)
     assert warm_sf == pytest.approx(cold_sf, rel=2 * PARAMS.tol_rel_patch)
 
 
