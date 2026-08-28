@@ -168,6 +168,10 @@ class GeoConfig:
     # === Power and Hydrogen ===
     included_power_mix: str = "85% baseload + 15% grid"  # Options: "85% baseload + 15% grid", "95% baseload + 5% grid", "Not included", "Grid only"
     hydrogen_ceiling_percentile: float = 20.0  # Hydrogen price cap percentage to engage in interregional trade (e.g., within the EU). Set to 100 to inhibit interregional trade.
+    hydrogen_power_mix: Optional[str] = (
+        None  # Power mix electrolysis is priced at; None follows included_power_mix. Same options as included_power_mix
+    )
+    hydrogen_lcoe_percentile: float = 50.0  # Percentile of a geo_key's BOA pixel LCOEs used as its baseload price for hydrogen (50 = median, 25 = lower quartile)
     intraregional_trade_allowed: bool = (
         True  # Whether trade among linked regions is allowed (e.g., Soviet Union and EU)
     )
@@ -269,6 +273,12 @@ class GeoConfig:
 
     # === Other ===
     random_seed: int = RANDOM_SEED_DEFAULT  # Seed for random number generation to ensure reproducibility
+
+    def hydrogen_baseload_coverage(self) -> float:
+        """Baseload share of the power mix electrolysis is priced at (hydrogen_power_mix, else included_power_mix)."""
+        from .adapters.geospatial.geospatial_calculations import get_baseload_coverage
+
+        return get_baseload_coverage(self.hydrogen_power_mix or self.included_power_mix)
 
 
 @dataclass

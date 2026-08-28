@@ -37,6 +37,8 @@ def _make_env(tmp_path: Path) -> Environment:
         "BBB": {y: {"electricity": 0.09 - 0.01 * i} for i, y in enumerate(years)},
     }
     env.hydrogen_efficiency = {y: 0.05 for y in years}
+    # Default power mix is 85/15, so the precompute needs a baseload LCOE per geo_key and year
+    env.initiate_baseload_lcoe_by_geo_key({y: {"AAA": 0.03, "BBB": 0.04} for y in years})
     env.hydrogen_capex_opex = {
         "AAA": {y: 1.0 for y in years},
         "BBB": {y: 1.5 for y in years},

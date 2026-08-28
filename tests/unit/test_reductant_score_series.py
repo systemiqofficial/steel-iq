@@ -14,7 +14,7 @@ from steelo.domain.models import (
     TechnologyEmissionFactors,
     Year,
 )
-from steelo.simulation import SimulationConfig
+from steelo.simulation import GeoConfig, SimulationConfig
 
 YEARS = [Year(y) for y in range(2025, 2031)]
 LOCATION = Location(lat=0.0, lon=0.0, country="Aland", region="TestRegion", iso3="AAA")
@@ -47,6 +47,7 @@ def _make_env(tmp_path: Path, carbon_by_year: dict[int, float] | None = None) ->
         end_year=Year(2030),
         master_excel_path=Path("test.xlsx"),
         output_dir=tmp_path,
+        geo_config=GeoConfig(included_power_mix="Grid only"),  # hydrogen off the grid price; no BOA LCOE here
     )
     tech_switches_csv = tmp_path / "tech_switches_allowed.csv"
     tech_switches_csv.write_text("origin,DRI\nDRI,YES\n", encoding="utf-8")
