@@ -6,16 +6,10 @@ battery with a heuristic, the search evaluates a deterministic grid over the
 `(solar, wind)` overscale plane and, at each node, bisects for the smallest battery
 that meets the hourly-coverage target.
 
-The method is ported from `scripts/boa_benchmark/core/gbs.py` on the
-`boa-sampling-benchmark` branch, which reproduced a certified PyPSA LP optimum to
-5e-8 relative. Two deliberate departures from that reference:
-
-  * the hours metric is hard-wired and cyclic state-of-charge and standing loss are
-    not ported -- cyclic is ~6x slower for a <=0.3% LCOE effect, and production has
-    no standing loss, so the un-decayed-SOC quirk the reference preserves is moot;
-  * the absolute bisection tolerance becomes relative. `gamma = 0.85` means a 1e-3
-    relative error in battery size moves LCOE by under 3e-4, so the reference's
-    absolute 1e-4 bought roughly four wasted bisection steps.
+The method follows `scripts/boa_benchmark/core/gbs.py` on the `boa-sampling-benchmark`
+branch. Three differences from that reference are deliberate: the hours metric is
+hard-wired, cyclic state-of-charge and standing loss are not modelled, and the battery
+bisection tolerance is relative rather than absolute.
 
 Everything here is dimensionless. A design is three overscale factors against a
 demand normalised to 1: solar and wind in multiples of baseload MW, battery in
@@ -63,25 +57,51 @@ class SearchParams:
     Everything that determines what the search looks at, and therefore what a cache
     holds. The whole set is hashed into the cache path, so changing any field yields a
     different store rather than silently reusing an incompatible one.
+
+    None of these is a physical parameter -- they are all search-quality dials. That
+    matters for how to reason about them: a wrong value costs precision or build time,
+    never feasibility, because hourly coverage is enforced at every node regardless.
+
+    TODO: these defaults are provisional and are not the final set. `patch_grid` and
+    `tol_rel_patch` drive build cost; what accuracy they buy is only known so far on a
+    small regional sample, which is enough to choose values for the next runs but not to
+    settle them. Fix the set once a sweep at global coverage has run.
     """
 
-    coarse_grid: int = 25
-    coarse_stride: int = 3
-    coarse_bisect_steps: int = 3
-    patch_grid: int = 15
+    # -- The search box: how far out in overscale the search looks at all. --------------
+    box_multiple: float = 6.0  # box = this x mu, where mu = k / capacity_factor
+    box_min: float = 2.0  # floor, so an excellent resource still gets a usable box
+    box_abs_max: float = 200.0  # ceiling, catching the ~7.5e8 mu a zero-CF tech produces
+    max_box_widenings: int = 2  # doublings allowed when a seed lands on the outer ring
+
+    # -- Coarse tier: ranks basins and bounds the containment proof. Deliberately cheap;
+    #    its output is a lower bound on b_min, never an answer. -------------------------
+    coarse_grid: int = 25  # nodes per axis in the stored bound grid
+    coarse_stride: int = 3  # only every 3rd node is solved; the rest inherit
+    coarse_bisect_steps: int = 3  # early stop -- `lo` bounds b_min after any number
+
+    # -- Patch tier: resolves the actual optimum, and drives build cost. ---------------
+    patch_grid: int = 15  # nodes per axis, per patch; cost scales with the square
+    patch_halfwidth: float = 0.45  # patch spans seed x (1 +/- this), floored at one
+    #                                lattice step, since that is the seed's own resolution
+    seed_tolerance: float = 0.05  # coarse cells within 5% of the best also get a patch
+    max_seeds: int = 3  # cap on patches per pixel; bounds worst-case cache size
+
+    # -- Battery ladder: rungs at and above b_min, because dividing by served fraction
+    #    can put the optimum above the smallest feasible battery. Not implemented yet;
+    #    these three are placeholders. --------------------------------------------------
     ladder_rungs: int = 5
     ladder_span: float = 2.5
     ladder_sat_tol: float = 1e-4
-    box_multiple: float = 6.0
-    box_min: float = 2.0
-    box_abs_max: float = 200.0
-    max_box_widenings: int = 2
-    patch_halfwidth: float = 0.45
-    seed_tolerance: float = 0.05
-    max_seeds: int = 3
-    b_cap: float = 500.0
-    tol_rel_patch: float = 1e-3
-    repair_rate_cap: float = 0.02
+
+    # -- Bisection tolerances. `tol_rel_patch` sets how many dispatch passes each patch
+    #    node spends on the battery, so it is the other build-cost driver. gamma = 0.85
+    #    damps its accuracy cost: a relative error e in battery size moves LCOE by well
+    #    under e. -----------------------------------------------------------------------
+    b_cap: float = 500.0  # baseload-hours; above this a pixel is called infeasible
+    tol_rel_patch: float = 1e-2
+    repair_rate_cap: float = 0.02  # share of pixels the containment certificate may
+    #                                send back for repair before the run is suspect
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -154,40 +174,31 @@ def dispatch_metrics(solar, wind, s, w, b):
 
 
 @numba.njit(cache=True, nogil=True)
-def _b_min_jit(solar, wind, s, w, target, hint, b_cap, tol_rel):
+def _bracket_jit(solar, wind, s, w, target, hint, b_cap):
     """
-    Smallest battery reaching `target` coverage at this `(s, w)`, with the metrics at
-    that battery. Returns `(inf, 0, 0)` when no battery at or below `b_cap` gets there.
+    An infeasible/feasible pair straddling `b_min`, as `(lo, hi, coverage, served_fraction)`
+    with the metrics taken at `hi`.
 
-    Sound because coverage is non-decreasing in battery size, so the predicate is
-    monotone and bisection converges on its jump point. The feasible end of the bracket
-    is returned, so any residual error is on the safe side: `b_min` may sit marginally
-    above the true minimum, never below it, and a design that missed the coverage target
-    would be a correctness failure rather than an imprecision.
+    `(0, 0, ...)` when no battery is needed at all; `hi = inf` when none at or below
+    `b_cap` reaches the target. Shared by both bisections above it, which differ only in
+    how they then close the bracket.
 
     `hint` is a `b_min` from a nearby grid point, or `<= 0` for none. `b_min` varies
-    smoothly in `(s, w)`, so a neighbour is usually within a factor of two, which
-    collapses up to ~11 doublings into a handful of probes. It changes only what the
-    bracket costs to find: both branches still establish a genuine infeasible/feasible
-    pair before bisecting, so the answer is hint-independent.
-
-    The metrics come from the last probe that set `hi`, which by construction sits at the
-    returned battery size -- so the ladder's first rung costs nothing.
+    smoothly in `(s, w)`, so a neighbour is usually within a factor of two, which collapses
+    up to ~11 doublings into a handful of probes. It changes only what the bracket costs to
+    find: both branches still establish a genuine infeasible/feasible pair, so whatever
+    closes the bracket is hint-independent to its own tolerance.
     """
     cov, sf = dispatch_metrics(solar, wind, s, w, 0.0)
     if cov >= target:
-        return 0.0, cov, sf
-
-    cov_hi = 0.0
-    sf_hi = 0.0
+        return 0.0, 0.0, cov, sf
 
     if hint > 0.0:
         cov_h, sf_h = dispatch_metrics(solar, wind, s, w, hint)
         if cov_h >= target:
             # Already feasible at the hint: halve downward for a tighter lower bound
             # rather than restarting the doubling from scratch.
-            hi, lo = hint, 0.0
-            cov_hi, sf_hi = cov_h, sf_h
+            lo, hi, cov_hi, sf_hi = 0.0, hint, cov_h, sf_h
             probe = hint
             for _ in range(64):
                 probe *= 0.5
@@ -199,36 +210,40 @@ def _b_min_jit(solar, wind, s, w, target, hint, b_cap, tol_rel):
                 else:
                     lo = probe
                     break
-        else:
-            lo, hi = hint, hint * 2.0
-            found = False
-            while hi <= b_cap:
-                cov_p, sf_p = dispatch_metrics(solar, wind, s, w, hi)
-                if cov_p >= target:
-                    cov_hi, sf_hi = cov_p, sf_p
-                    found = True
-                    break
-                lo = hi
-                hi *= 2.0
-            if not found:
-                return np.inf, 0.0, 0.0
+            return lo, hi, cov_hi, sf_hi
+        lo, hi = hint, hint * 2.0
     else:
-        hi = 0.25
-        found = False
-        while hi <= b_cap:
-            cov_p, sf_p = dispatch_metrics(solar, wind, s, w, hi)
-            if cov_p >= target:
-                cov_hi, sf_hi = cov_p, sf_p
-                found = True
-                break
-            hi *= 2.0
-        if not found:
-            return np.inf, 0.0, 0.0
-        lo = 0.0 if hi == 0.25 else 0.5 * hi
+        lo, hi = 0.0, 0.25
 
-    tol = tol_rel * hi
-    if tol < _B_TOL_ABS:
-        tol = _B_TOL_ABS
+    while hi <= b_cap:
+        cov_p, sf_p = dispatch_metrics(solar, wind, s, w, hi)
+        if cov_p >= target:
+            return lo, hi, cov_p, sf_p
+        lo = hi
+        hi *= 2.0
+    return 0.0, np.inf, 0.0, 0.0
+
+
+@numba.njit(cache=True, nogil=True)
+def _b_min_jit(solar, wind, s, w, target, hint, b_cap, tol_rel):
+    """
+    Smallest battery reaching `target` coverage at this `(s, w)`, with the metrics at
+    that battery. Returns `(inf, 0, 0)` when no battery at or below `b_cap` gets there.
+
+    Sound because coverage is non-decreasing in battery size, so the predicate is
+    monotone and bisection converges on its jump point. The feasible end of the bracket
+    is returned, so any residual error is on the safe side: `b_min` may sit marginally
+    above the true minimum, never below it, and a design that missed the coverage target
+    would be a correctness failure rather than an imprecision.
+
+    The metrics come from the last probe that set `hi`, which by construction sits at the
+    returned battery size -- so the ladder's first rung costs nothing.
+    """
+    lo, hi, cov_hi, sf_hi = _bracket_jit(solar, wind, s, w, target, hint, b_cap)
+    if not np.isfinite(hi):
+        return np.inf, 0.0, 0.0
+
+    tol = max(tol_rel * hi, _B_TOL_ABS)
     while hi - lo > tol:
         mid = 0.5 * (lo + hi)
         cov_m, sf_m = dispatch_metrics(solar, wind, s, w, mid)
@@ -236,10 +251,36 @@ def _b_min_jit(solar, wind, s, w, target, hint, b_cap, tol_rel):
             hi, cov_hi, sf_hi = mid, cov_m, sf_m
         else:
             lo = mid
-        tol = tol_rel * hi
-        if tol < _B_TOL_ABS:
-            tol = _B_TOL_ABS
+        tol = max(tol_rel * hi, _B_TOL_ABS)
     return hi, cov_hi, sf_hi
+
+
+@numba.njit(cache=True, nogil=True)
+def _b_min_bound_jit(solar, wind, s, w, target, hint, b_cap, max_steps):
+    """
+    A *lower bound* on `b_min`, plus a feasible battery above it, as `(lo, hi)`.
+
+    Same bracket as `_b_min_jit`, then `max_steps` bisection steps instead of running to
+    tolerance. The running `lo` is infeasible after any number of steps, so it is a valid
+    lower bound at every point, which is all the coarse sweep needs.
+
+    `hi` comes back only so the caller can chain it into the next node's `hint`; it is a
+    feasible battery, not an answer.
+    """
+    lo, hi, _, _ = _bracket_jit(solar, wind, s, w, target, hint, b_cap)
+    if not np.isfinite(hi):
+        return np.inf, np.inf
+    if hi <= 0.0:
+        return 0.0, 0.0
+
+    for _ in range(max_steps):
+        mid = 0.5 * (lo + hi)
+        cov_m, _sf = dispatch_metrics(solar, wind, s, w, mid)
+        if cov_m >= target:
+            hi = mid
+        else:
+            lo = mid
+    return lo, hi
 
 
 def b_min_at(
@@ -260,3 +301,398 @@ def b_min_at(
     """
     target = 1.0 - p / 100.0
     return _b_min_jit(solar, wind, float(s), float(w), target, float(hint), params.b_cap, params.tol_rel_patch)
+
+
+@dataclass(frozen=True)
+class PixelFrontier:
+    """
+    One pixel's cached physics: a coarse lower-bound grid over the whole search box, plus
+    up to `max_seeds` dense patches around the basins worth resolving.
+
+    Everything here is dispatch, not economics. The only place a cost touches the build is
+    which coarse cells become seeds, and that uses frozen anchor ratios rather than a
+    query year's prices -- so a frontier serves every investment year and every cost
+    scenario unchanged.
+
+    Patch arrays are always allocated at the full `max_seeds` depth; only the first
+    `n_patches` slots hold real values. Fixed shape is what lets the region cache index
+    directly instead of carrying CSR offsets.
+    """
+
+    status: int
+    n_patches: int
+    box_widenings: int
+    s_coarse: np.ndarray  # (Gc,) float32 -- the box axes
+    w_coarse: np.ndarray  # (Gc,) float32
+    b_coarse: np.ndarray  # (Gc, Gc) float16, rounded toward zero; inf where infeasible
+    s_patch: np.ndarray  # (K, Gp) float32
+    w_patch: np.ndarray  # (K, Gp) float32
+    b_patch: np.ndarray  # (K, Gp, Gp, R) float32
+    sf_patch: np.ndarray  # (K, Gp, Gp, R) float64
+    cov_patch: np.ndarray  # (K, Gp, Gp, R) float64
+    sf_inf: np.ndarray  # (K, Gp, Gp) float64 -- served fraction at an unbounded battery
+
+
+def search_box(solar: np.ndarray, wind: np.ndarray, params: SearchParams) -> tuple[float, float]:
+    """
+    The `(s_max, w_max)` extent of the physics box, from this pixel's capacity factors.
+
+    Reuses `overscale_mus_from_cf` verbatim, so the box tracks `k / CF` -- the same
+    resource scaling the deleted sampler used for its proposal distribution. A fixed box
+    would either truncate poor pixels or spend most of its resolution on good ones.
+
+    Both clamps earn their place. `box_min` keeps an excellent resource from getting a box
+    too narrow to hold the optimum. `box_abs_max` catches `overscale_mus_from_cf`'s
+    division guard: a zero-CF technology yields a mu of ~7.5e8, and an unclamped box that
+    wide is unresolvable at any grid size.
+
+    Nothing here reads a capacity ceiling. The box is physics; the ceiling is
+    `boa.model.capacity_box`.
+    """
+    from boa.model.logic import overscale_mus_from_cf
+
+    mus = overscale_mus_from_cf(float(np.mean(solar)), float(np.mean(wind)))
+    s_max = float(np.clip(params.box_multiple * mus["solar"], params.box_min, params.box_abs_max))
+    w_max = float(np.clip(params.box_multiple * mus["wind"], params.box_min, params.box_abs_max))
+    return s_max, w_max
+
+
+def _sub_lattice(n: int, stride: int) -> np.ndarray:
+    """Indices `0, stride, 2*stride, ...` always including `n-1`, so every node has a
+    dominating lattice node to inherit from."""
+    idx = list(range(0, n, max(1, stride)))
+    if idx[-1] != n - 1:
+        idx.append(n - 1)
+    return np.asarray(idx, dtype=np.int64)
+
+
+def coarse_b_min_grid(
+    solar: np.ndarray,
+    wind: np.ndarray,
+    s_vals: np.ndarray,
+    w_vals: np.ndarray,
+    p: float,
+    params: SearchParams,
+) -> np.ndarray:
+    """
+    Lower bounds on `b_min` across the whole box, cheaply.
+
+    The coarse grid has two jobs -- rank basins so seeds land in the right places, and
+    supply the query-time containment certificate with something to bound against -- and
+    **neither needs `b_min`, only a lower bound on it**. Two economies follow, and both
+    trade a looser bound for build time, never an answer:
+
+      * **Sub-lattice.** `b_min` is non-increasing in both solar and wind, so a value
+        computed at any *dominating* node `(i' >= i, j' >= j)` is at or below the exact
+        `b_min` at `(i, j)`. Only the stride-`coarse_stride` lattice is solved; every
+        other node inherits from the nearest dominating lattice node.
+      * **Early stop.** `_b_min_bound_jit` returns the infeasible bracket end after
+        `coarse_bisect_steps` steps rather than converging.
+
+    A suffix-**maximum** over the lattice runs before the fill. Monotonicity holds for the
+    exact `b_min` but not automatically for bounds -- two nodes' brackets are independent,
+    so a dominating node can come back with the larger `lo`. The repair is to take, at
+    each node, the largest lower bound found anywhere above-and-right of it. That is
+    sound because a dominating node's `lo` bounds `b_min` there, which is itself at or
+    below `b_min(i, j)`; and because a superset maximum can only shrink as the index
+    grows, the result is non-increasing in both axes by construction.
+
+    It has to be the max, not the min. Both are valid bounds, but the min would drag the
+    far corner's near-zero `b_min` back across the whole grid, collapsing the bound to
+    nothing near the origin and destroying the ranking the seeds depend on. The max is
+    the tightest bound the lattice supports, and it carries infeasibility for free: an
+    infeasible node correctly condemns everything it dominates.
+
+    Returns float64 with `inf` where no battery at or below `b_cap` meets the target;
+    `inf` propagates down-and-left correctly, since a dominated node needs at least as
+    much battery.
+    """
+    target = 1.0 - p / 100.0
+    si = _sub_lattice(len(s_vals), params.coarse_stride)
+    wj = _sub_lattice(len(w_vals), params.coarse_stride)
+
+    lattice = np.empty((len(si), len(wj)), dtype=np.float64)
+    row_hint = -1.0
+    for a, i in enumerate(si):
+        hint = row_hint
+        for b, j in enumerate(wj):
+            lo, hi = _b_min_bound_jit(
+                solar, wind, float(s_vals[i]), float(w_vals[j]), target, hint, params.b_cap, params.coarse_bisect_steps
+            )
+            lattice[a, b] = lo
+            if np.isfinite(hi) and hi > 0.0:
+                hint = hi
+                if b == 0:
+                    row_hint = hi
+
+    # Suffix maximum from the high corner: lattice[a, b] <- max over a' >= a, b' >= b.
+    # `np.asarray` only pins the type; numpy's ufunc `.accumulate` stub is not specific
+    # enough for a type checker to see that the result is still indexable.
+    lattice = np.asarray(np.maximum.accumulate(lattice[::-1, :], axis=0))[::-1]
+    lattice = np.asarray(np.maximum.accumulate(lattice[:, ::-1], axis=1))[:, ::-1]
+
+    # Each full node inherits from the first lattice node that dominates it on each axis.
+    pos_s = np.searchsorted(si, np.arange(len(s_vals)), side="left")
+    pos_w = np.searchsorted(wj, np.arange(len(w_vals)), side="left")
+    return lattice[np.ix_(pos_s, pos_w)]
+
+
+def anchor_score(s_vals: np.ndarray, w_vals: np.ndarray, b_lower: np.ndarray, anchor: CostCoefficients) -> np.ndarray:
+    """
+    The LCOE numerator on the coarse grid, under frozen anchor cost ratios.
+
+    Used only to rank basins for seeding, which is why three simplifications are fine and
+    one of them is deliberate:
+
+      * `d0` is dropped -- a positive scalar rescales but never reorders;
+      * `served_fraction` is unknown on the coarse grid, so this is a numerator, not an
+        LCOE. The denominator lies in `[coverage, 1]`, a narrow band near 1, so it cannot
+        reorder basins that are more than a few percent apart -- and `seed_tolerance`
+        exists precisely to keep the ones that are;
+      * `b_lower` is a lower bound, so the score is optimistic. That is the right
+        direction: a basin is explored if it *could* be good, and the query-time
+        containment certificate catches any basin that was skipped and should not have
+        been.
+
+    The anchor ratios are frozen rather than the query year's real prices. That is what
+    keeps the build year-agnostic, and it costs at most repair work, never accuracy.
+    """
+    numerator = anchor.a_s * s_vals[:, None] + anchor.a_w * w_vals[None, :]
+    return numerator + anchor.a_b * np.power(b_lower, GAMMA)
+
+
+def select_seeds(
+    values: np.ndarray,
+    tolerance: float,
+    min_separation: int,
+    max_seeds: int,
+) -> list[tuple[int, int]]:
+    """
+    Grid cells worth refining: the cheapest, plus any within `tolerance` of it that sit in
+    a genuinely different basin.
+
+    Two rules, each answering a different failure. The **tolerance** admits near-ties: the
+    objective is not convex, and a solar-heavy and a wind-heavy design can land within a
+    few percent of each other while being far apart in `(s, w)`, so refining only the
+    argmin can miss the basin that wins once resolved. The **separation** rule stops the
+    opposite failure -- a single minimum's immediate neighbours are all near-ties too, and
+    without it every seed slot goes to one basin.
+
+    Ports `gbs._select_seeds`' greedy Chebyshev-separation loop and adds the tolerance cut,
+    since a fixed `k` would force patches onto basins that are not close to competitive.
+    Returns cheapest first; non-finite cells can never be seeds.
+    """
+    finite = np.isfinite(values)
+    if not finite.any():
+        return []
+
+    threshold = float(values[finite].min()) * (1.0 + tolerance)
+    order = np.argsort(values, axis=None, kind="stable")
+    seeds: list[tuple[int, int]] = []
+    for flat in order:
+        i, j = (int(x) for x in np.unravel_index(flat, values.shape))
+        if not finite[i, j] or values[i, j] > threshold:
+            break
+        if all(max(abs(i - si), abs(j - sj)) >= min_separation for si, sj in seeds):
+            seeds.append((i, j))
+        if len(seeds) == max_seeds:
+            break
+    return seeds
+
+
+def patch_box(
+    s_coarse: np.ndarray,
+    w_coarse: np.ndarray,
+    i: int,
+    j: int,
+    params: SearchParams,
+) -> tuple[np.ndarray, np.ndarray, tuple[int, int, int, int]]:
+    """
+    The dense sub-grid around seed `(i, j)`, as `(s_vals, w_vals, (i0, i1, j0, j1))`.
+
+    The half-width is *relative* to the seed's own coordinate, so a patch around a large
+    overscale is proportionally wider -- the coarse grid's placement error scales the same
+    way.
+
+    It is floored at `coarse_stride` coarse cells, which is the resolution the seed itself
+    was chosen at: seeds come from the sub-lattice, so the true optimum can sit anywhere
+    within roughly one lattice step of the seed and the patch has to bracket that. The
+    floor also keeps a seed at the origin from producing a patch of zero width.
+
+    **The box is then snapped outward to whole coarse cells, and that is load-bearing.**
+    The query-time containment certificate partitions the coarse grid into "inside some
+    patch" and "outside every patch", and bounds the second set from below. If a patch
+    edge cut through a coarse cell, that cell would be neither swept densely nor bounded,
+    and the certificate would have a hole in it that nothing else would detect.
+
+    Snapping outward also guarantees `i0 <= i <= i1`: the seed sits strictly inside the
+    un-snapped interval, and snapping only ever widens.
+    """
+    ds = float(s_coarse[1] - s_coarse[0]) * params.coarse_stride
+    dw = float(w_coarse[1] - w_coarse[0]) * params.coarse_stride
+    half_s = max(params.patch_halfwidth * float(s_coarse[i]), ds)
+    half_w = max(params.patch_halfwidth * float(w_coarse[j]), dw)
+
+    i0 = max(0, int(np.searchsorted(s_coarse, s_coarse[i] - half_s, side="right")) - 1)
+    i1 = min(len(s_coarse) - 1, int(np.searchsorted(s_coarse, s_coarse[i] + half_s, side="left")))
+    j0 = max(0, int(np.searchsorted(w_coarse, w_coarse[j] - half_w, side="right")) - 1)
+    j1 = min(len(w_coarse) - 1, int(np.searchsorted(w_coarse, w_coarse[j] + half_w, side="left")))
+
+    s_vals = np.linspace(float(s_coarse[i0]), float(s_coarse[i1]), params.patch_grid)
+    w_vals = np.linspace(float(w_coarse[j0]), float(w_coarse[j1]), params.patch_grid)
+    return s_vals, w_vals, (i0, i1, j0, j1)
+
+
+def _to_float16_toward_zero(values: np.ndarray) -> np.ndarray:
+    """
+    Cast to float16, stepping down one ulp wherever the default round-to-nearest rounded
+    *up*.
+
+    `b_coarse` is only ever read as a lower bound in a proof, so its precision barely
+    matters but its **direction** is absolute. float16 spacing is ~0.5 near `b = 500`, so
+    a single round-to-nearest could lift a bound above the value it is meant to bound and
+    silently invalidate the containment certificate -- with nothing failing loudly
+    anywhere. Infinities are left alone: `inf > inf` is false, and `nextafter` would turn
+    them into 65504.
+    """
+    out = values.astype(np.float16)
+    too_high = out.astype(np.float64) > values
+    if too_high.any():
+        out[too_high] = np.nextafter(out[too_high], np.float16(0.0))
+    return out
+
+
+def build_pixel_frontier(
+    solar: np.ndarray,
+    wind: np.ndarray,
+    p: float,
+    params: SearchParams,
+    anchor: CostCoefficients,
+    hint: float = -1.0,
+) -> PixelFrontier:
+    """
+    Everything one pixel contributes to the design cache.
+
+    Degenerate check, coarse sweep, seed selection, box widening, then a dense patch per
+    seed. Deterministic: no RNG survives the rewrite, so two builds of the same pixel are
+    bit-identical.
+
+    `hint` is a `b_min` carried in from a neighbouring pixel, and it reaches **only the
+    patch bisections**, never the coarse sweep. That is not an oversight. The coarse sweep
+    stops after `coarse_bisect_steps` steps, so its output genuinely depends on where the
+    bracket started -- threading a neighbour's value in would change the bounds, which
+    would change the seeds, which would move the patches. A warm start must not be able to
+    do that. The patch bisections run to tolerance, so there the hint changes only cost.
+
+    No cost year, cost scenario or baseload is read anywhere in here, which is what makes
+    `status` year-invariant -- the property `lcoe_promotion` requires.
+    """
+    gc, gp, k, r = params.coarse_grid, params.patch_grid, params.max_seeds, params.ladder_rungs
+    # Allocated once at full depth and filled in place: an early return simply hands back
+    # the zeros, which is the right content for `n_patches = 0`.
+    patches: dict[str, np.ndarray] = {
+        "s_patch": np.zeros((k, gp), dtype=np.float32),
+        "w_patch": np.zeros((k, gp), dtype=np.float32),
+        "b_patch": np.zeros((k, gp, gp, r), dtype=np.float32),
+        "sf_patch": np.zeros((k, gp, gp, r), dtype=np.float64),
+        "cov_patch": np.zeros((k, gp, gp, r), dtype=np.float64),
+        "sf_inf": np.zeros((k, gp, gp), dtype=np.float64),
+    }
+
+    s_max, w_max = search_box(solar, wind, params)
+
+    # Physics outranks economics: a pixel with no resource is not "expensive", it is
+    # impossible, and no amount of searching changes that.
+    if float(np.sum(solar)) <= 0.0 and float(np.sum(wind)) <= 0.0:
+        return PixelFrontier(
+            status=STATUS_ZERO_POTENTIAL,
+            n_patches=0,
+            box_widenings=0,
+            s_coarse=np.linspace(0.0, s_max, gc, dtype=np.float32),
+            w_coarse=np.linspace(0.0, w_max, gc, dtype=np.float32),
+            b_coarse=np.full((gc, gc), np.inf, dtype=np.float16),
+            **patches,
+        )
+
+    widenings = 0
+    while True:
+        s_coarse = np.linspace(0.0, s_max, gc)
+        w_coarse = np.linspace(0.0, w_max, gc)
+        b_coarse = coarse_b_min_grid(solar, wind, s_coarse, w_coarse, p, params)
+
+        # Rank on the sub-lattice only, never on the filled grid. A filled node inherits
+        # its bound from a *dominating* node at higher (s, w), so cells just inside the
+        # infeasible region carry a small finite bound: they look cheap, and the score
+        # would send the seed straight at them, building a patch around a point where
+        # nothing dispatches.
+        #
+        # On a lattice node the bound is about that node, and the suffix-max leaves it
+        # infinite exactly when the node is infeasible -- infeasibility only ever
+        # propagates to dominated nodes, so a feasible lattice node cannot inherit one.
+        # A lattice seed is therefore always feasible. Scoring only the lattice also keeps
+        # separation in its natural unit -- adjacent lattice nodes are usually the same
+        # basin, so two lattice steps is the rule; on the filled grid it would have to be
+        # restated in coarse cells to bind at all.
+        li = _sub_lattice(gc, params.coarse_stride)
+        seeds = [
+            (int(li[i]), int(li[j]))
+            for i, j in select_seeds(
+                anchor_score(s_coarse[li], w_coarse[li], b_coarse[np.ix_(li, li)], anchor),
+                params.seed_tolerance,
+                2,
+                params.max_seeds,
+            )
+        ]
+        if not seeds:
+            break
+
+        # A seed on the outer ring means the optimum may lie beyond the box. Widen and
+        # redo rather than report a truncated answer -- and record it, so a pixel that ran
+        # out of widenings is visible in the cache instead of silently wrong.
+        on_edge = any(i == gc - 1 or j == gc - 1 for i, j in seeds)
+        at_abs_max = s_max >= params.box_abs_max and w_max >= params.box_abs_max
+        if on_edge and widenings < params.max_box_widenings and not at_abs_max:
+            s_max = min(2.0 * s_max, params.box_abs_max)
+            w_max = min(2.0 * w_max, params.box_abs_max)
+            widenings += 1
+            continue
+        break
+
+    axes: dict[str, np.ndarray] = {
+        "s_coarse": s_coarse.astype(np.float32),
+        "w_coarse": w_coarse.astype(np.float32),
+        "b_coarse": _to_float16_toward_zero(b_coarse),
+    }
+
+    if not seeds:
+        # No battery at or below `b_cap` meets the coverage target anywhere in the box.
+        # Proven at build time from the profiles alone, so it holds for every year.
+        return PixelFrontier(status=STATUS_NO_OPTIMUM, n_patches=0, box_widenings=widenings, **axes, **patches)
+
+    for slot, (i, j) in enumerate(seeds):
+        s_vals, w_vals, _ = patch_box(s_coarse, w_coarse, i, j, params)
+        patches["s_patch"][slot] = s_vals
+        patches["w_patch"][slot] = w_vals
+        row_hint = hint
+        for a in range(gp):
+            node_hint = row_hint
+            for b in range(gp):
+                b_min, cov, sf = b_min_at(solar, wind, s_vals[a], w_vals[b], p, params, node_hint)
+                if np.isfinite(b_min):
+                    _, sf_unbounded = dispatch_metrics(solar, wind, float(s_vals[a]), float(w_vals[b]), params.b_cap)
+                    patches["sf_inf"][slot, a, b] = sf_unbounded
+                    if b_min > 0.0:
+                        node_hint = b_min
+                        if b == 0:
+                            row_hint = b_min
+                else:
+                    cov = 0.0
+                    sf = 0.0
+                # No ladder yet, so every rung holds `b_min`. That is exactly the shape a
+                # fully saturated ladder produces, so the query needs no special case and
+                # the cache schema does not move.
+                patches["b_patch"][slot, a, b, :] = b_min
+                patches["sf_patch"][slot, a, b, :] = sf
+                patches["cov_patch"][slot, a, b, :] = cov
+
+    return PixelFrontier(status=STATUS_OK, n_patches=len(seeds), box_widenings=widenings, **axes, **patches)

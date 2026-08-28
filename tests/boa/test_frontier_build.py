@@ -112,7 +112,13 @@ def test_sublattice_fill_is_a_lower_bound_on_exact_b_min(profiles):
 
 
 def test_coarse_grid_is_monotone_non_increasing(profiles):
-    """The stored lower bounds must preserve the monotonicity the fill relies on."""
+    """
+    The stored lower bounds must preserve the monotonicity the fill relies on.
+
+    Compared as shifted slices rather than with `np.diff`, because infeasible cells carry
+    `inf` and `inf - inf` is `nan`, which fails every comparison. Two adjacent infeasible
+    cells are perfectly monotone; only a difference-based test would say otherwise.
+    """
     solar, wind = profiles["solar"], profiles["wind"]
     s_max, w_max = search_box(solar, wind, PARAMS)
     grid = coarse_b_min_grid(
@@ -123,9 +129,8 @@ def test_coarse_grid_is_monotone_non_increasing(profiles):
         15,
         PARAMS,
     )
-    finite = np.where(np.isfinite(grid), grid, np.inf)
-    assert np.all(np.diff(finite, axis=0) <= 1e-9), "b_min rose with solar"
-    assert np.all(np.diff(finite, axis=1) <= 1e-9), "b_min rose with wind"
+    assert np.all(grid[:-1, :] >= grid[1:, :] - 1e-9), "b_min rose with solar"
+    assert np.all(grid[:, :-1] >= grid[:, 1:] - 1e-9), "b_min rose with wind"
 
 
 def test_coarse_b_min_is_a_lower_bound_after_float16_rounding(profiles, anchor_costs):
