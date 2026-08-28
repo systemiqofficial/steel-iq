@@ -55,7 +55,7 @@ def _write_subsidies_excel(path: Path, locations: list[str]):
             "Technology": ["EAF"] * len(locations),
             "Cost item": ["CAPEX"] * len(locations),
             "Subsidy type": ["relative"] * len(locations),
-            "Subsidy amount": [10.0] * len(locations),
+            "Subsidy amount": [0.1] * len(locations),
             "Start year": [2025] * len(locations),
             "End year": [2035] * len(locations),
         },
