@@ -685,7 +685,7 @@ def test_read_subsidies_empty_subsidy_type_defaults_to_absolute():
 
 
 def test_read_subsidies_relative_percentage_conversion():
-    """Test that relative subsidy amounts are converted from percentage to decimal."""
+    """Test that relative subsidy amounts are read as decimal fractions."""
     # Arrange
     subsidies_df = _make_subsidies_df(
         [
@@ -695,7 +695,7 @@ def test_read_subsidies_relative_percentage_conversion():
                 "Technology": "DRI",
                 "Cost item": "capex",
                 "Subsidy type": "relative",
-                "Subsidy amount": 10,  # 10%
+                "Subsidy amount": 0.1,  # 10%
                 "Start year": 2025,
                 "End year": 2060,
             }
@@ -707,7 +707,7 @@ def test_read_subsidies_relative_percentage_conversion():
         mock_read.side_effect = [subsidies_df, _make_country_df(), _make_techno_df()]
         result = read_subsidies(Path("dummy.xlsx"))
 
-    # Assert - 10% -> 0.1
+    # Assert - 0.1 stays 0.1
     assert len(result) == 1
     assert result[0].subsidy_amount == pytest.approx(0.1)
 
@@ -967,7 +967,7 @@ def test_read_subsidies_multiple_rows():
                 "Technology": "EAF",
                 "Cost item": "opex",
                 "Subsidy type": "relative",
-                "Subsidy amount": 15,
+                "Subsidy amount": 0.15,
                 "Start year": 2030,
                 "End year": 2060,
             },
@@ -1030,7 +1030,7 @@ def test_read_subsidies_electricity_cost_item():
                 "Technology": "DRI",
                 "Cost item": "electricity",
                 "Subsidy type": "relative",
-                "Subsidy amount": 5,
+                "Subsidy amount": 0.05,
                 "Start year": 2025,
                 "End year": 2060,
             }
@@ -1046,3 +1046,26 @@ def test_read_subsidies_electricity_cost_item():
     assert len(result) == 1
     assert result[0].cost_item == "electricity"
     assert result[0].subsidy_amount == pytest.approx(0.05)
+
+
+def test_read_subsidies_relative_amount_above_one_raises():
+    """A relative amount above 1 is the old whole-percentage convention and must fail loudly."""
+    subsidies_df = _make_subsidies_df(
+        [
+            {
+                "Scenario name": "Old convention",
+                "Location": "DEU",
+                "Technology": "DRI",
+                "Cost item": "capex",
+                "Subsidy type": "relative",
+                "Subsidy amount": 30,
+                "Start year": 2025,
+                "End year": 2060,
+            }
+        ]
+    )
+
+    with patch("steelo.adapters.dataprocessing.excel_reader.pd.read_excel") as mock_read:
+        mock_read.side_effect = [subsidies_df, _make_country_df(), _make_techno_df()]
+        with pytest.raises(ValueError, match="exceeds 1"):
+            read_subsidies(Path("dummy.xlsx"))

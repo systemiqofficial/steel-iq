@@ -2226,7 +2226,8 @@ def read_subsidies(
     - Single 'Subsidy amount' + 'Subsidy type' columns
     - Technology wildcard matching (e.g., 'CCS*' matches all CCS technologies)
     - Cost item normalization (OPEX, CAPEX, COST OF DEBT)
-    - Percentage values as whole numbers (10 = 10%), converted to decimal internally
+    - Relative amounts as decimal fractions (0.1 = 10%); cost-of-debt absolute amounts as
+      percentage points (5 = 5 pp), converted to decimal internally
     - Location as a trade bloc, a bare iso3, or a sub-national geo_key ("CHN:CN-HE")
 
     Args:
@@ -2319,12 +2320,16 @@ def read_subsidies(
         if subsidy_type is None:
             continue
 
-        # Convert percentage values to decimal
-        # - Relative subsidies: percentage to decimal (e.g., 10% -> 0.1)
+        # - Relative subsidies: already a decimal fraction (e.g., 0.1 = 10%)
         # - Cost of debt absolute: percentage points to decimal (e.g., 5 -> 0.05)
         # - Other absolute subsidies: keep as-is (e.g., USD/t output)
         if subsidy_type == "relative":
-            subsidy_amount = float(subsidy_amount) / 100
+            subsidy_amount = float(subsidy_amount)
+            if subsidy_amount > 1:
+                raise ValueError(
+                    f"Row {_index}: relative subsidy amount {subsidy_amount} exceeds 1 — "
+                    "relative amounts are decimal fractions (0.3 = 30%), not percentages"
+                )
         elif cost_item == "cost of debt":
             # Absolute cost of debt subsidy is given as percentage point reduction
             subsidy_amount = float(subsidy_amount) / 100
