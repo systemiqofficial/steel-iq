@@ -110,14 +110,21 @@ def test_cds_mask_is_inverted_to_a_factor(cds_masks_dir):
     Copernicus convention is 1 = excluded, 0 = suitable, so the availability factor is
     one minus the mask. Getting this backwards zeroes exactly the cells that should
     survive, and the only symptom is a world that looks uniformly infeasible.
+
+    The indices also pin the latitude flip. The delivered mask stores latitude
+    descending, while the model grid and `pixel_area` are ascending, so the result must
+    be indexed by the requested `y` order and not by the file's. The fixture excludes
+    (lat 0.25, lon 0.25), which lands at `[1, 1]` here and would land at `[0, 1]` if the
+    flip were missing.
     """
     y = np.array([0.0, 0.25])
     x = np.array([0.0, 0.25])
 
     factor = availability.cds_exclusion_factor(y, x, "pv", cds_masks_dir)
 
-    assert factor[0, 1] == pytest.approx(0.0), "an excluded cell must contribute zero"
+    assert factor[1, 1] == pytest.approx(0.0), "an excluded cell must contribute zero"
     assert factor[0, 0] == pytest.approx(1.0), "a suitable cell must pass through unchanged"
+    assert factor[0, 1] == pytest.approx(1.0), "row 0 is lat 0.0, so the flip must have happened"
     assert set(np.unique(factor)) <= {0.0, 1.0}, "the CDS masks are binary, not fractional"
 
 

@@ -60,8 +60,21 @@ TOPUP_QUALITY_FRACTION = 0.25
 CAPACITY_DENSITY_MW_PER_KM2 = {"pv": 140, "wind": 10}
 
 # ESA-CCI LCCS class -> usable land fraction, ported from steel-iq
-# wind_and_pv/availability.py LULC_CODES (values pending team sign-off).
+# wind_and_pv/availability.py LULC_CODES.
 # Unlisted classes (notably forests) get fraction 0, i.e. are fully excluded.
+#
+# !!! UNVALIDATED, AND THESE VALUES DOMINATE THE RESULT. RECHECK BEFORE TRUSTING A RUN. !!!
+#
+# Together with CAPACITY_DENSITY_MW_PER_KM2 above they imply an effective ceiling of
+# roughly 1.8 MW/km2 for pv and 1.5 MW/km2 for wind on typical European land -- a 0.25 deg
+# cell then tops out far below what a 500 MW baseload needs. Applied alongside the
+# cds_exclusion layer, nearly every central-European land cell fails annual energy balance
+# at its own ceiling, and is therefore reported infeasible before any dispatch runs.
+#
+# That is what the numbers here say, not a defect in the code that applies them. Whether it
+# is the intended model behaviour is an open question for the team. The levers are the
+# fractions below, the densities above, the baseload, and whether a plant is confined to a
+# single cell at all.
 LULC_CODES = {
     "pv": {
         10: 0.02,
