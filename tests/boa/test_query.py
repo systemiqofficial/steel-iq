@@ -14,7 +14,17 @@ import inspect
 import numpy as np
 import pytest
 
-pytest.importorskip("boa.model.bisection")
+from _gate import require
+
+require(
+    "boa.model.bisection",
+    "CostCoefficients",
+    "SearchParams",
+    "argmin_lcoe",
+    "build_pixel_frontier",
+    "check_repair_budget",
+)
+require("boa.model.cost_calculations", "lcoe_coefficients")
 
 from boa.config.constants import AVERAGE_IMPLIED_STORAGE, HOURS_IN_YEAR  # noqa: E402
 from boa.model.bisection import (  # noqa: E402

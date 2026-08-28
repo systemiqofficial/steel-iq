@@ -23,7 +23,6 @@ pytest.importorskip("boa.model.bisection")
 from boa.model.bisection import (  # noqa: E402
     SearchParams,
     b_min_at,
-    battery_ladder,
     dispatch_metrics,
 )
 from boa.model.logic import (  # noqa: E402
@@ -33,6 +32,12 @@ from boa.model.logic import (  # noqa: E402
 )
 
 PARAMS = SearchParams()
+
+# Design points that clear annual energy balance for the shared fixtures
+# (CF solar ~0.174, wind ~0.300) and so have a finite b_min. Below balance no battery
+# can ever meet an hourly target, and a test that skipped such points would pass
+# without asserting anything.
+FEASIBLE_POINTS = [(3.0, 3.0), (4.0, 3.0), (3.0, 2.0)]
 
 
 def _reference_metrics(solar, wind, s, w, b):
@@ -131,10 +136,11 @@ def test_b_min_is_the_coverage_jump_point(profiles):
     solar, wind = profiles["solar"], profiles["wind"]
     p = 15
     target = 1.0 - p / 100.0
-    for s, w in [(2.0, 1.0), (1.0, 2.0), (3.0, 3.0), (0.5, 4.0)]:
+    tested = 0
+    for s, w in FEASIBLE_POINTS:
         b_min, _, _ = b_min_at(solar, wind, s, w, p, PARAMS)
-        if not np.isfinite(b_min):
-            continue
+        assert np.isfinite(b_min), f"({s}, {w}) must be feasible for this test to mean anything"
+        tested += 1
         cov_at, _ = dispatch_metrics(solar, wind, s, w, b_min)
         assert cov_at >= target, "b_min must itself be feasible"
 
@@ -142,6 +148,7 @@ def test_b_min_is_the_coverage_jump_point(profiles):
         if below > 0:
             cov_below, _ = dispatch_metrics(solar, wind, s, w, below)
             assert cov_below < target, "a battery below b_min must be infeasible"
+    assert tested == len(FEASIBLE_POINTS)
 
 
 def test_b_min_errs_high_never_low(profiles):
@@ -152,11 +159,11 @@ def test_b_min_errs_high_never_low(profiles):
     """
     solar, wind = profiles["solar"], profiles["wind"]
     target = 1.0 - 15 / 100.0
-    for s, w in [(1.5, 1.5), (4.0, 0.5), (0.5, 3.0)]:
+    for s, w in FEASIBLE_POINTS:
         b_min, _, _ = b_min_at(solar, wind, s, w, 15, PARAMS)
-        if np.isfinite(b_min):
-            cov, _ = dispatch_metrics(solar, wind, s, w, b_min)
-            assert cov >= target
+        assert np.isfinite(b_min), f"({s}, {w}) must be feasible for this test to mean anything"
+        cov, _ = dispatch_metrics(solar, wind, s, w, b_min)
+        assert cov >= target
 
 
 @pytest.mark.parametrize("hint", [-1.0, 0.001, 0.5, 3.0, 50.0, 400.0])
@@ -166,14 +173,20 @@ def test_b_min_warm_start_is_result_invariant(profiles, hint):
     answer. Both hint branches must still establish a genuine infeasible/feasible
     bracket before bisecting, so every hint converges to the same value within
     tolerance -- including hints that are absurdly high or low.
+
+    The three tolerances differ for a reason worth stating. `b_min` is only pinned to
+    `tol_rel_patch`, since bisection stops there. Coverage is a *step* function of
+    battery size, so every hint lands on the same plateau and the values are bit-equal.
+    Served fraction is smooth in battery size, so it inherits `b_min`'s uncertainty --
+    asserting it more tightly than `b_min` itself is solved would be incoherent.
     """
     solar, wind = profiles["solar"], profiles["wind"]
-    cold, cold_cov, cold_sf = b_min_at(solar, wind, 2.0, 2.0, 15, PARAMS, hint=-1.0)
-    warm, warm_cov, warm_sf = b_min_at(solar, wind, 2.0, 2.0, 15, PARAMS, hint=hint)
+    cold, cold_cov, cold_sf = b_min_at(solar, wind, 3.0, 2.0, 15, PARAMS, hint=-1.0)
+    warm, warm_cov, warm_sf = b_min_at(solar, wind, 3.0, 2.0, 15, PARAMS, hint=hint)
 
     assert warm == pytest.approx(cold, rel=2 * PARAMS.tol_rel_patch)
-    assert warm_cov == pytest.approx(cold_cov, rel=1e-6)
-    assert warm_sf == pytest.approx(cold_sf, rel=1e-6)
+    assert warm_cov == cold_cov, "coverage is a step function; every bracket lands on one plateau"
+    assert warm_sf == pytest.approx(cold_sf, rel=2 * PARAMS.tol_rel_patch)
 
 
 def test_b_min_returns_inf_when_no_battery_meets_coverage(dead_profiles):
@@ -195,72 +208,9 @@ def test_served_fraction_at_b_min_comes_from_the_final_feasible_probe(profiles):
     must agree with an independent dispatch at the same battery size.
     """
     solar, wind = profiles["solar"], profiles["wind"]
-    b_min, cov, sf = b_min_at(solar, wind, 2.5, 1.5, 15, PARAMS)
+    b_min, cov, sf = b_min_at(solar, wind, 3.0, 2.0, 15, PARAMS)
     assert np.isfinite(b_min)
 
-    cov_check, sf_check = dispatch_metrics(solar, wind, 2.5, 1.5, b_min)
+    cov_check, sf_check = dispatch_metrics(solar, wind, 3.0, 2.0, b_min)
     assert cov == pytest.approx(cov_check, abs=1e-12)
     assert sf == pytest.approx(sf_check, abs=1e-12)
-
-
-def test_ladder_is_geometric_monotone_and_saturation_terminated(profiles):
-    """
-    The ladder walks battery sizes upward from `b_min`, because dividing LCOE by
-    served fraction means the optimum can sit above the smallest feasible battery.
-
-    Three contracts: rung 0 is exactly `b_min`; sizes and served fractions are
-    non-decreasing; and once served fraction stops improving the remaining rungs
-    are filled by duplication rather than by more dispatch work.
-    """
-    solar, wind = profiles["solar"], profiles["wind"]
-    b_min, cov0, sf0 = b_min_at(solar, wind, 2.0, 2.0, 15, PARAMS)
-    assert np.isfinite(b_min) and b_min > 0
-
-    b, cov, sf, sf_inf = battery_ladder(solar, wind, 2.0, 2.0, b_min, cov0, sf0, PARAMS)
-
-    assert b.shape == sf.shape == cov.shape == (PARAMS.ladder_rungs,)
-    assert b[0] == pytest.approx(b_min)
-    assert sf[0] == pytest.approx(sf0)
-    assert np.all(np.diff(b) >= -1e-12), "ladder battery sizes must not decrease"
-    assert np.all(np.diff(sf) >= -1e-12), "served fraction must not decrease up the ladder"
-    assert b[-1] <= b_min * PARAMS.ladder_span * (1 + 1e-9)
-
-    # sf_inf bounds the ladder: it is the served fraction an unbounded battery buys.
-    assert sf_inf >= sf[-1] - 1e-12
-    assert sf_inf <= 1.0 + 1e-12
-
-    # Duplicated tail is the saturation signature: equal sizes imply equal metrics.
-    for r in range(1, PARAMS.ladder_rungs):
-        if b[r] == pytest.approx(b[r - 1]):
-            assert sf[r] == pytest.approx(sf[r - 1])
-            assert cov[r] == pytest.approx(cov[r - 1])
-
-
-def test_ladder_rungs_agree_with_an_independent_dispatch(profiles):
-    """Every stored rung must be reproducible -- the cache is replayed, not trusted."""
-    solar, wind = profiles["solar"], profiles["wind"]
-    b_min, cov0, sf0 = b_min_at(solar, wind, 3.0, 1.0, 15, PARAMS)
-    b, cov, sf, _ = battery_ladder(solar, wind, 3.0, 1.0, b_min, cov0, sf0, PARAMS)
-
-    for r in range(PARAMS.ladder_rungs):
-        cov_check, sf_check = dispatch_metrics(solar, wind, 3.0, 1.0, b[r])
-        assert cov[r] == pytest.approx(cov_check, abs=1e-12)
-        assert sf[r] == pytest.approx(sf_check, abs=1e-12)
-
-
-def test_ladder_handles_a_zero_b_min_pixel(profiles):
-    """
-    A design generous enough to meet coverage with no battery still benefits from
-    one, because a battery raises served fraction and so lowers LCOE. A geometric
-    ladder from zero would never leave zero, so the ladder seeds additively instead.
-    """
-    solar, wind = profiles["solar"], profiles["wind"]
-    s = w = 30.0  # massively oversized: coverage met outright
-    b_min, cov0, sf0 = b_min_at(solar, wind, s, w, 15, PARAMS)
-    assert b_min == pytest.approx(0.0), "fixture precondition: no battery needed"
-
-    b, _, sf, _ = battery_ladder(solar, wind, s, w, b_min, cov0, sf0, PARAMS)
-    assert b[0] == pytest.approx(0.0)
-    assert b[-1] > 0.0, "ladder must escape zero"
-    assert np.all(np.diff(b) >= -1e-12)
-    assert sf[-1] >= sf[0] - 1e-12

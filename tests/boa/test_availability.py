@@ -16,7 +16,19 @@ unexpectedly infeasible.
 import numpy as np
 import pytest
 
-pytest.importorskip("boa.cds.availability")
+from _gate import require
+
+require(
+    "boa.cds.availability",
+    "LAYER_FUNCS",
+    "availability_factor",
+    "availability_signature",
+    "availability_tag",
+    "cds_exclusion_factor",
+    "layer_specs",
+    "lulc_fraction",
+    "read_lulc_codes",
+)
 
 from boa.cds import availability  # noqa: E402
 from boa.config.settings import CAPACITY_DENSITY_MW_PER_KM2, LULC_CODES  # noqa: E402

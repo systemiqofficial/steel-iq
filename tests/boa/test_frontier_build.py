@@ -12,7 +12,18 @@ or a bound would not fail loudly anywhere else.
 import numpy as np
 import pytest
 
-pytest.importorskip("boa.model.bisection")
+from _gate import require
+
+require(
+    "boa.model.bisection",
+    "SearchParams",
+    "b_min_at",
+    "build_pixel_frontier",
+    "coarse_b_min_grid",
+    "patch_box",
+    "search_box",
+    "select_seeds",
+)
 
 from boa.config.settings import OVERSCALE_SAMPLING_K  # noqa: E402
 from boa.model.bisection import (  # noqa: E402
