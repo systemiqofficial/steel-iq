@@ -5,11 +5,12 @@ from datetime import date
 from pathlib import Path
 import copy
 import math
+import csv
 import logging
 import random
 import uuid
 from geopy.distance import geodesic  # type: ignore
-from typing import TYPE_CHECKING, TypeVar, ClassVar, FrozenSet, Dict, Tuple, Union, Any, Callable, Optional
+from typing import TYPE_CHECKING, TypeVar, ClassVar, FrozenSet, Dict, Tuple, Union, Any, Callable, Optional, TypedDict
 from collections import defaultdict, Counter
 from steelo.domain import events, commands
 from steelo.domain.calculate_costs import (
@@ -49,6 +50,7 @@ from steelo.domain.constants import (
     MioUSD_TO_USD,
     MINIMUM_UTILIZATION_RATE_FOR_COST_CURVE,
     MINIMUM_PRODUCTION_VOLUME_FOR_COST_CURVE,
+    PERkWh_TO_PERMWh,
 )
 
 if TYPE_CHECKING:
@@ -331,6 +333,17 @@ class Location:
                 self.iso3,
             )
         return lookup.get(self.iso3)
+
+
+class HydrogenPriceInputs(TypedDict):
+    """Inputs behind one geo_key's hydrogen price in one year (USD/kWh for power, USD/kg for hydrogen)."""
+
+    coverage: float
+    grid: float
+    lcoe: float | None  # None when the power mix has no baseload share
+    electricity: float
+    lcoh: float
+    capped_lcoh: float
 
 
 @dataclass
@@ -7325,6 +7338,10 @@ class Environment:
         self.input_costs: dict[str, dict[Year, dict[str, float]]] = {}
         # Precomputed capped-LCOH series (year -> geo_key -> USD/kg), filled at bootstrap
         self.capped_hydrogen_costs_by_year: dict[Year, dict[str, float]] = {}
+        # Baseload LCOE per geo_key (year -> geo_key -> USD/kWh) at the hydrogen power mix, filled at bootstrap
+        self.baseload_lcoe_by_geo_key: dict[Year, dict[str, float]] = {}
+        # Inputs behind each hydrogen price (year -> geo_key -> grid/lcoe/electricity USD/kWh, lcoh/capped USD/kg)
+        self.hydrogen_price_inputs_by_year: dict[Year, dict[str, HydrogenPriceInputs]] = {}
         # Initialize cost curves as empty dicts
         self.cost_curve: dict[str, list[dict[str, float]]] = {"steel": [], "iron": []}
         self.future_cost_curve: dict[str, list[dict[str, float]]] = {"steel": [], "iron": []}
@@ -8193,8 +8210,8 @@ class Environment:
         Calculate country-level hydrogen prices with regional ceilings and trade adjustments.
 
         Steps:
-            1. Extract electricity prices for all countries in the given year and calculate Levelized Cost of Hydrogen
-            (LCOH) for each country using electricity prices, CAPEX, and OPEX.
+            1. Price electrolysis power per geo_key at the hydrogen power mix, (1 - c) x grid + c x baseload
+            LCOE, and calculate the Levelized Cost of Hydrogen (LCOH) from it with CAPEX and OPEX.
             2. Determine regional hydrogen price ceilings based on percentile thresholds
             3. Apply price caps considering regional ceilings, interregional trade options, and pipeline transport costs. Pipeline
             transport costs are added when importing hydrogen from trading partners.
@@ -8213,6 +8230,7 @@ class Environment:
             - Requires self.config with geo_config settings for hydrogen ceiling percentile and trade parameters
             - Requires self.country_mappings for regional groupings
             - Requires self.hydrogen_efficiency and self.hydrogen_capex_opex data for LCOH calculation
+            - Requires self.baseload_lcoe_by_geo_key whenever the hydrogen power mix has a baseload share
         """
         logger = logging.getLogger(f"{__name__}.Environment.calculate_capped_hydrogen_costs_per_country")
         from steelo.domain.calculate_costs import (
@@ -8233,15 +8251,35 @@ class Environment:
         geo_config = self.config.geo_config
         target_year = self.year if year is None else year
 
-        # Step 1: LCOH per geo_key (country rows + any authored sub-national rows)
+        # Step 1: electrolysis power per geo_key (country rows + any authored sub-national rows) at the
+        # hydrogen power mix; a baseload share is always priced off BOA LCOE, never the grid
+        coverage = geo_config.hydrogen_baseload_coverage()
+        if coverage > 0 and not self.baseload_lcoe_by_geo_key:
+            raise ValueError(
+                f"Hydrogen power mix '{geo_config.hydrogen_power_mix or geo_config.included_power_mix}' needs "
+                "baseload LCOE; call initiate_baseload_lcoe_by_geo_key first"
+            )
         electricity_by_geo_key = {}
+        grid_by_geo_key: dict[str, float] = {}
+        lcoe_by_geo_key: dict[str, float | None] = {}
         for geo_key, year_costs in self.input_costs.items():
             if geo_key is None:
                 continue
             if target_year in year_costs:
                 if "electricity" not in year_costs[target_year]:
                     raise ValueError(f"Electricity price not found for {geo_key} in year {target_year}")
-                electricity_by_geo_key[geo_key] = year_costs[target_year]["electricity"]
+                grid_price = year_costs[target_year]["electricity"]
+                grid_by_geo_key[geo_key] = grid_price
+                if coverage > 0:
+                    try:
+                        lcoe = self.baseload_lcoe_by_geo_key[target_year][geo_key]
+                    except KeyError as exc:
+                        raise ValueError(f"No baseload LCOE for {geo_key} in year {target_year}") from exc
+                    lcoe_by_geo_key[geo_key] = lcoe
+                    electricity_by_geo_key[geo_key] = (1 - coverage) * grid_price + coverage * lcoe
+                else:
+                    lcoe_by_geo_key[geo_key] = None
+                    electricity_by_geo_key[geo_key] = grid_price
         lcoh_by_geo_key = calculate_lcoh_from_electricity_country_level(
             electricity_by_country=electricity_by_geo_key,
             hydrogen_efficiency=self.hydrogen_efficiency,
@@ -8271,33 +8309,118 @@ class Environment:
             long_dist_pipeline_transport_cost=geo_config.long_dist_pipeline_transport_cost,
         )
 
+        # Keep the inputs behind every price so a run can be audited (sample lines at bootstrap, CSV export)
+        self.hydrogen_price_inputs_by_year[target_year] = {
+            geo_key: HydrogenPriceInputs(
+                coverage=coverage,
+                grid=grid_by_geo_key[geo_key],
+                lcoe=lcoe_by_geo_key[geo_key],
+                electricity=electricity_by_geo_key[geo_key],
+                lcoh=lcoh_by_geo_key[geo_key],
+                capped_lcoh=capped,
+            )
+            for geo_key, capped in capped_hydrogen_prices.items()
+        }
         logger.info(f"Calculated capped hydrogen prices for {len(capped_hydrogen_prices)} countries")
         return capped_hydrogen_prices
+
+    def hydrogen_price_years(self) -> range:
+        """Years the hydrogen price series covers: config.start_year through the last year in input_costs."""
+        if self.config is None:
+            raise ValueError("SimulationConfig is required to precompute hydrogen prices")
+        data_years = {y for year_costs in self.input_costs.values() for y in year_costs}
+        if not data_years:
+            raise ValueError("Input costs must be initiated before precomputing hydrogen prices")
+        return range(int(self.config.start_year), int(max(data_years)) + 1)
+
+    def initiate_baseload_lcoe_by_geo_key(self, series: dict[Year, dict[str, float]]) -> None:
+        """Store the baseload LCOE series (year -> geo_key -> USD/kWh) the hydrogen price blends with the grid."""
+        self.baseload_lcoe_by_geo_key = series
 
     def initiate_capped_hydrogen_costs_by_year(self) -> None:
         """
         Precompute the capped-LCOH series for the full data horizon.
 
-        Every input to the capped hydrogen price is exogenous (Excel trajectories,
-        static geo config), so the whole series is knowable at bootstrap. Covers
+        Every input to the capped hydrogen price is exogenous (Excel trajectories, BOA LCOE
+        snapshots, static geo config), so the whole series is knowable at bootstrap. Covers
         config.start_year through the last year present in input_costs.
 
         Returns:
             None. Fills self.capped_hydrogen_costs_by_year.
 
         Notes:
-            Requires input_costs, hydrogen_efficiency, hydrogen_capex_opex and
-            country_mappings to be initiated first; raises if input costs are empty.
+            Requires input_costs, hydrogen_efficiency, hydrogen_capex_opex, country_mappings
+            and (for a baseload power mix) baseload_lcoe_by_geo_key to be initiated first;
+            raises if input costs are empty.
         """
-        if self.config is None:
-            raise ValueError("SimulationConfig is required to precompute hydrogen prices")
-        data_years = {y for year_costs in self.input_costs.values() for y in year_costs}
-        if not data_years:
-            raise ValueError("Input costs must be initiated before precomputing hydrogen prices")
+        logger = logging.getLogger(f"{__name__}.Environment.initiate_capped_hydrogen_costs_by_year")
         self.capped_hydrogen_costs_by_year = {
-            Year(y): self.calculate_capped_hydrogen_costs_per_country(year=Year(y))
-            for y in range(int(self.config.start_year), int(max(data_years)) + 1)
+            Year(y): self.calculate_capped_hydrogen_costs_per_country(year=Year(y)) for y in self.hydrogen_price_years()
         }
+        geo_config = self.config.geo_config
+        mix = geo_config.hydrogen_power_mix or geo_config.included_power_mix
+        coverage = geo_config.hydrogen_baseload_coverage()
+        if coverage > 0:
+            logger.info(
+                "[H2 PRICE] Hydrogen priced at '%s' (coverage %.2f, BOA LCOE percentile %g)",
+                mix,
+                coverage,
+                geo_config.hydrogen_lcoe_percentile,
+            )
+        else:
+            logger.info("[H2 PRICE] Hydrogen priced at grid electricity ('%s')", mix)
+        # Fixed audit sample: major H2 users, one sub-national unit, at the first, middle and last year
+        years = sorted(self.hydrogen_price_inputs_by_year)
+        first_year_inputs = self.hydrogen_price_inputs_by_year[years[0]]
+        sample_keys = [k for k in ("CHN", "DEU", "IND") if k in first_year_inputs]
+        sample_keys += sorted(k for k in first_year_inputs if k.startswith("CHN:"))[:1]
+        for year in sorted({years[0], years[len(years) // 2], years[-1]}):
+            for key in sample_keys:
+                row = self.hydrogen_price_inputs_by_year[year][key]
+                lcoe = row["lcoe"]
+                logger.info(
+                    "[H2 PRICE] %s %d: grid %.1f | lcoe %s | electricity %.1f USD/MWh -> LCOH %.2f, capped %.2f USD/kg",
+                    key,
+                    int(year),
+                    row["grid"] * PERkWh_TO_PERMWh,
+                    "n/a" if lcoe is None else f"{lcoe * PERkWh_TO_PERMWh:.1f}",
+                    row["electricity"] * PERkWh_TO_PERMWh,
+                    row["lcoh"],
+                    row["capped_lcoh"],
+                )
+
+    def export_hydrogen_price_inputs(self, path: Path) -> None:
+        """Write the inputs behind every precomputed hydrogen price (all geo_keys, all years) as CSV; prices in USD/MWh."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(
+                [
+                    "geo_key",
+                    "year",
+                    "coverage",
+                    "grid_usd_per_mwh",
+                    "lcoe_usd_per_mwh",
+                    "electricity_usd_per_mwh",
+                    "lcoh_usd_per_kg",
+                    "capped_lcoh_usd_per_kg",
+                ]
+            )
+            for year in sorted(self.hydrogen_price_inputs_by_year):
+                for geo_key, row in sorted(self.hydrogen_price_inputs_by_year[year].items()):
+                    lcoe = row["lcoe"]
+                    writer.writerow(
+                        [
+                            geo_key,
+                            int(year),
+                            row["coverage"],
+                            row["grid"] * PERkWh_TO_PERMWh,
+                            "" if lcoe is None else lcoe * PERkWh_TO_PERMWh,
+                            row["electricity"] * PERkWh_TO_PERMWh,
+                            row["lcoh"],
+                            row["capped_lcoh"],
+                        ]
+                    )
 
     def capped_hydrogen_costs_for_year(self, year: Year) -> dict[str, float]:
         """

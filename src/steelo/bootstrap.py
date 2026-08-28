@@ -337,6 +337,47 @@ def bootstrap_simulation(
         tech_switches_path = None
     env = Environment(config=config, tech_switches_csv=tech_switches_path)
 
+    # Initialize GeoDataPaths if data_dir is available
+    if config.data_dir:
+        from .domain.models import GeoDataPaths
+
+        # Use DataPathResolver to get actual paths
+        path_resolver = DataPathResolver(data_directory=config.data_dir)
+
+        # Check what actually exists and set paths accordingly
+        terrain_path = (
+            path_resolver.terrain_nc_path if path_resolver.terrain_nc_path.exists() else config.data_dir / "terrain.nc"
+        )
+        rail_distance_path = (
+            path_resolver.rail_distance_nc_path
+            if path_resolver.rail_distance_nc_path.exists()
+            else config.data_dir / "rail_distance.nc"
+        )
+
+        env.geo_paths = GeoDataPaths(
+            data_dir=config.data_dir,
+            atlite_dir=config.data_dir / "atlite",
+            geo_plots_dir=config.output_dir / "plots" / "GEO"
+            if config.output_dir
+            else config.data_dir / "output" / "plots" / "GEO",
+            terrain_nc_path=terrain_path,
+            rail_distance_nc_path=rail_distance_path,
+            railway_capex_csv_path=config.data_dir / "railway_capex.csv",
+            lcoh_capex_csv_path=config.data_dir / "lcoh_capex.csv",
+            regional_energy_prices_xlsx=config.data_dir / "regional_energy_prices.xlsx",
+            countries_shapefile_dir=path_resolver.countries_shapefile_dir,
+            disputed_areas_shapefile_dir=config.data_dir / "ne_10m_admin_0_disputed_areas",
+            admin1_shapefile_dir=path_resolver.admin1_shapefile_dir,
+            baseload_power_sim_dir=path_resolver.baseload_power_sim_dir
+            if path_resolver.baseload_power_sim_dir.exists()
+            else config.data_dir / "baseload_power_sim",
+            baseload_lcoe_file=config.baseload_lcoe_file,
+            static_layers_dir=config.data_dir / "outputs" / "GEO",  # Use outputs/GEO for static layers
+            landtype_percentage_path=path_resolver.landtype_percentage_nc_path
+            if path_resolver.landtype_percentage_nc_path.exists()
+            else config.data_dir / "landtype_percentage.nc",
+        )
+
     # Load all the data into the environment using the initiate methods
     if repository_json:
         # Initialize country mappings first as it's needed by other methods
@@ -396,7 +437,25 @@ def bootstrap_simulation(
         )
         env.initiate_hydrogen_efficiency(repository_json.hydrogen_efficiency.list())
         env.initiate_hydrogen_capex_opex(repository_json.hydrogen_capex_opex.list())
+        # A baseload share of the hydrogen power mix is priced off BOA LCOE per geo_key, so the
+        # series must exist before the capped-LCOH precompute
+        if config.geo_config.hydrogen_baseload_coverage() > 0:
+            if env.geo_paths is None:
+                raise ValueError("Pricing hydrogen off baseload LCOE needs config.data_dir for the BOA files")
+            from .adapters.geospatial.hydrogen_lcoe import baseload_lcoe_by_geo_key_series
+
+            env.initiate_baseload_lcoe_by_geo_key(
+                baseload_lcoe_by_geo_key_series(
+                    geo_paths=env.geo_paths,
+                    coverage=config.geo_config.hydrogen_baseload_coverage(),
+                    percentile=config.geo_config.hydrogen_lcoe_percentile,
+                    years=env.hydrogen_price_years(),
+                    geo_keys=[geo_key for geo_key in env.input_costs if geo_key is not None],
+                )
+            )
         env.initiate_capped_hydrogen_costs_by_year()
+        if config.output_dir:
+            env.export_hydrogen_price_inputs(config.output_dir / "data" / "hydrogen_price_inputs.csv")
         env.initiate_technology_emission_factors(repository_json.technology_emission_factors.list())
 
         # Load secondary feedstock constraints from biomass availability data
@@ -442,47 +501,6 @@ def bootstrap_simulation(
             pam_plots_dir=pam_plots_dir,
             geo_plots_dir=geo_plots_dir,
             tm_plots_dir=tm_plots_dir,
-        )
-
-    # Initialize GeoDataPaths if data_dir is available
-    if config.data_dir:
-        from .domain.models import GeoDataPaths
-
-        # Use DataPathResolver to get actual paths
-        path_resolver = DataPathResolver(data_directory=config.data_dir)
-
-        # Check what actually exists and set paths accordingly
-        terrain_path = (
-            path_resolver.terrain_nc_path if path_resolver.terrain_nc_path.exists() else config.data_dir / "terrain.nc"
-        )
-        rail_distance_path = (
-            path_resolver.rail_distance_nc_path
-            if path_resolver.rail_distance_nc_path.exists()
-            else config.data_dir / "rail_distance.nc"
-        )
-
-        env.geo_paths = GeoDataPaths(
-            data_dir=config.data_dir,
-            atlite_dir=config.data_dir / "atlite",
-            geo_plots_dir=config.output_dir / "plots" / "GEO"
-            if config.output_dir
-            else config.data_dir / "output" / "plots" / "GEO",
-            terrain_nc_path=terrain_path,
-            rail_distance_nc_path=rail_distance_path,
-            railway_capex_csv_path=config.data_dir / "railway_capex.csv",
-            lcoh_capex_csv_path=config.data_dir / "lcoh_capex.csv",
-            regional_energy_prices_xlsx=config.data_dir / "regional_energy_prices.xlsx",
-            countries_shapefile_dir=path_resolver.countries_shapefile_dir,
-            disputed_areas_shapefile_dir=config.data_dir / "ne_10m_admin_0_disputed_areas",
-            admin1_shapefile_dir=path_resolver.admin1_shapefile_dir,
-            baseload_power_sim_dir=path_resolver.baseload_power_sim_dir
-            if path_resolver.baseload_power_sim_dir.exists()
-            else config.data_dir / "baseload_power_sim",
-            baseload_lcoe_file=config.baseload_lcoe_file,
-            static_layers_dir=config.data_dir / "outputs" / "GEO",  # Use outputs/GEO for static layers
-            landtype_percentage_path=path_resolver.landtype_percentage_nc_path
-            if path_resolver.landtype_percentage_nc_path.exists()
-            else config.data_dir / "landtype_percentage.nc",
         )
 
     # Calculate initial state using Environment methods
