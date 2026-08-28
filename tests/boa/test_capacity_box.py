@@ -19,7 +19,17 @@ Two properties carry most of the weight:
 import numpy as np
 import pytest
 
-pytest.importorskip("boa.model.capacity_box")
+from _gate import require
+
+require("boa.model.bisection", "STATUS_CAPACITY_INFEASIBLE", "argmin_lcoe", "build_pixel_frontier")
+require(
+    "boa.model.capacity_box",
+    "build_box_frontier",
+    "clips",
+    "fits",
+    "limits_for",
+    "resolve",
+)
 
 from boa.model import capacity_box  # noqa: E402
 from boa.model.bisection import (  # noqa: E402

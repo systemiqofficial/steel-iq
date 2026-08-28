@@ -13,7 +13,10 @@ import dataclasses
 import numpy as np
 import pytest
 
-pytest.importorskip("boa.model.bisection")
+from _gate import require, require_schema
+
+require("boa.model.bisection", "SearchParams")
+require_schema("boa.model.design_cache", "SCHEMA_VERSION", 3)
 
 from boa.model import design_cache  # noqa: E402
 from boa.model.bisection import SearchParams  # noqa: E402
