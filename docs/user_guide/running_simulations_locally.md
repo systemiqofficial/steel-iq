@@ -15,6 +15,7 @@ Common options:
 - `--start-year` / `--end-year`: define the scenario horizon.
 - `--config-file`: load a saved configuration.
 - `--log-level`: control verbosity (`INFO`, `DEBUG`, etc.).
+- `--demand-scenario` / `--scrap-scenario`: pick the `Scenario` rows of the master Excel "Demand and scrap availability" sheet used for steel demand and for scrap availability (both default to `BAU`; `--scrap-scenario` falls back to the demand scenario). Applied when the data is prepared, so each scenario pair gets its own preparation cache entry.
 
 The CLI writes metrics, logs, and artefacts to the chosen output directory. Review the [Configuration](configuration.md) guide for a comprehensive list of parameters and environment variables.
 
@@ -193,7 +194,7 @@ The CLI implements a content-based caching system that significantly speeds up r
 
 ### How It Works
 
-1. **Content Hashing**: The master Excel file is hashed using SHA256 to create a unique cache key
+1. **Content Hashing**: The master Excel file is hashed using SHA256, together with the selected demand/scrap scenarios, to create a unique cache key
 2. **Cache Storage**: Prepared data is stored in `$STEELO_HOME/preparation_cache/prep_<hash>/`
 3. **Fast Lookups**: An index file tracks all cached preparations for instant lookups
 4. **Automatic Reuse**: When running with the same master Excel, cached data is reused instantly

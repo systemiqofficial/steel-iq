@@ -226,10 +226,13 @@ def recreate_demand_center_data(
     demand_sheet_name: str,
     gravity_distances_path: Path | None = None,
     location_csv: Path | None = None,
+    *,
+    demand_scenario: str,
 ) -> DemandCenterJsonRepository:
     """
     Recreate the JSON sample demand center data from the current CSV file.
 
+    Only the rows of `demand_scenario` (the sheet's "Scenario" column) are read.
     Note: gravity_distances_path and location_csv must be provided by the caller.
     """
     if not gravity_distances_path:
@@ -242,6 +245,7 @@ def recreate_demand_center_data(
         demand_excel_path=demand_excel_path,
         demand_sheet_name=demand_sheet_name,
         location_csv=location_csv,
+        demand_scenario=demand_scenario,
     )
 
     write_repository = DemandCenterJsonRepository(json_path)
@@ -258,10 +262,13 @@ def recreate_mines_and_scrap_as_suppliers_data(
     mines_sheet_name: str = "Iron ore mines",
     location_csv: Path | None = None,
     gravity_distances_pkl_path: Path | None = None,
+    *,
+    scrap_scenario: str,
 ) -> SupplierJsonRepository:
     """
     Recreate the JSON sample mines/scrap suppliers data from the current Excel file.
 
+    Scrap suppliers are read for `scrap_scenario` (the sheet's "Scenario" column); mines have no scenario.
     Note: location_csv is now a required parameter.
     """
     if location_csv is None:
@@ -277,6 +284,7 @@ def recreate_mines_and_scrap_as_suppliers_data(
         scrap_sheet_name=scrap_sheet_name,
         location_csv=location_path,
         gravity_distances_pkl_path=gravity_path,
+        scrap_scenario=scrap_scenario,
     )
     console.print(f"[blue]  Read {len(scrap_suppliers)} scrap suppliers[/blue]")
 
