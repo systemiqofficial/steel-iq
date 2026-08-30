@@ -10,6 +10,22 @@ import os
 from .constants import Year
 import logging
 
+# Products treated as "iron and steel" for reporting purposes (shared by collect()
+# and collect_capacity_map_data() so the two filters can't drift apart).
+IRON_STEEL_PRODUCTS = {
+    Commodities.STEEL.value,
+    Commodities.IRON.value,
+    Commodities.HOT_METAL.value,
+    Commodities.DRI_LOW.value,
+    Commodities.DRI_MID.value,
+    Commodities.DRI_HIGH.value,
+    Commodities.HBI_LOW.value,
+    Commodities.HBI_MID.value,
+    Commodities.HBI_HIGH.value,
+    Commodities.PIG_IRON.value,
+    Commodities.LIQUID_STEEL.value,
+}
+
 
 class DataCollector:
     def __init__(
@@ -36,6 +52,9 @@ class DataCollector:
             lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
         )
         self.new_plant_locations: dict[Any, dict[Any, list]] = defaultdict(lambda: defaultdict(list))
+        # Per-year snapshot of every active furnace group's location/technology/capacity,
+        # used to build the installed-capacity grid map.
+        self.capacity_map_data: list[dict[str, Any]] = []
         self.trace_capex: dict[int, dict[str, dict[str, float]]] = defaultdict(
             lambda: defaultdict(lambda: defaultdict(float))
         )  # {year: {technology: {iso3: total_capex}}}
@@ -252,6 +271,31 @@ class DataCollector:
         event_collection = {evt.furnace_group_id: type(evt) for evt in self.logged_events}
         self.logged_events = []
         return event_collection
+
+    def collect_capacity_map_data(self, year: Year) -> None:
+        """
+        Record each active furnace group's location, technology and capacity for this year,
+        for use in the installed-capacity grid map.
+        """
+        active_statuses = self.env.config.active_statuses
+        for plant in self.plants:
+            for fg in plant.furnace_groups:
+                if fg is None or not isinstance(fg.status, str) or not isinstance(fg.technology.product, str):
+                    continue
+                if fg.status.lower() not in active_statuses or fg.technology.product.lower() not in IRON_STEEL_PRODUCTS:
+                    continue
+                if not fg.capacity:
+                    continue
+                self.capacity_map_data.append(
+                    {
+                        "year": int(year),
+                        "technology": fg.technology.name,
+                        "lat": plant.location.lat,
+                        "lon": plant.location.lon,
+                        "iso3": plant.location.iso3,
+                        "capacity": float(fg.capacity),
+                    }
+                )
 
     def collect_new_plant_data(self, year: Year):
         """
@@ -621,6 +665,7 @@ class DataCollector:
         self.capacity_by_technology_and_PAM_status[self.step] = self.collect_capacity_by_technology_and_PAM_status()
         self.plant_emissions[self.step] = self.collect_emissions_by_plants().copy()
         self.collect_new_plant_data(self.env.year)
+        self.collect_capacity_map_data(self.env.year)
         self.collect_capex_investments(self.env.year)
         self.collect_emissions_by_technology(self.env.year)
         self.collect_iron_ore_by_quality(self.env.year)
@@ -641,22 +686,9 @@ class DataCollector:
                 if not isinstance(fg.status, str) or not isinstance(fg.technology.product, str):
                     continue
                 # Include all iron and steel related products for reporting
-                iron_steel_products = [
-                    Commodities.STEEL.value,
-                    Commodities.IRON.value,
-                    Commodities.HOT_METAL.value,
-                    Commodities.DRI_LOW.value,
-                    Commodities.DRI_MID.value,
-                    Commodities.DRI_HIGH.value,
-                    Commodities.HBI_LOW.value,
-                    Commodities.HBI_MID.value,
-                    Commodities.HBI_HIGH.value,
-                    Commodities.PIG_IRON.value,
-                    Commodities.LIQUID_STEEL.value,
-                ]
                 if (
                     fg.status.lower() not in self.env.config.active_statuses
-                    or fg.technology.product.lower() not in iron_steel_products
+                    or fg.technology.product.lower() not in IRON_STEEL_PRODUCTS
                 ):
                     continue
 
