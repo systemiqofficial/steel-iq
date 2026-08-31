@@ -1,6 +1,7 @@
 """Tests for the trade-matrix viewer's flow packing (steelo.utilities.interactive.trade_matrix)."""
 
 import csv
+import logging
 from pathlib import Path
 
 import pytest
@@ -140,6 +141,31 @@ def test_read_flows_rejects_mine_without_label(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="No country label"):
         trade_matrix.read_flows(trade_matrix.allocation_files(tm_dir))
+
+
+def test_read_flows_covers_electrowinning_and_low_grades_and_warns_on_unknown(tmp_path: Path, caplog) -> None:
+    """E-WIN/ESF outputs and the low grades count as iron; deliberate exclusions stay silent, anything else warns."""
+    tm_dir = tmp_path / "TM"
+    write_allocations(
+        tm_dir,
+        2025,
+        [
+            allocation("electrolytic_iron", location("CHN"), "E-WIN", location("JPN"), 2_000_000.0),
+            allocation("liquid_iron", location("CHN"), "ESF", location("CHN"), 3_000_000.0),
+            allocation("hbi_low", location("IND"), "DRI", location("IND"), 1_000_000.0),
+            allocation("dri_low", location("IND"), "DRI", location("IND"), 1_000_000.0),
+            allocation("bio_pci", location("BRA"), "N/A", location("CHN"), 9_000_000.0),
+            allocation("unobtainium", location("BRA"), "N/A", location("CHN"), 9_000_000.0),
+        ],
+    )
+
+    with caplog.at_level(logging.WARNING):
+        flows = trade_matrix.read_flows(trade_matrix.allocation_files(tm_dir))
+
+    assert set(flows["commodity"]) == {"electrolytic_iron", "liquid_iron", "hbi_low", "dri_low"}
+    assert set(flows["product"]) == {"iron"}
+    assert "unobtainium" in caplog.text
+    assert "bio_pci" not in caplog.text
 
 
 def test_pack_rows_compacts_flows_and_drops_rounded_zeros(tmp_path: Path) -> None:

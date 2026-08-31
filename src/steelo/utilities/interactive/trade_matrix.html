@@ -96,11 +96,13 @@ const COLOURSCALE = [...Array(21).keys()].map(i => { const p = i / 20; return [p
 const UNITS = {mt: "Mt", origin: "%", destination: "%"};
 // Display names of the commodities, in tick order; a commodity without one shows its key.
 const COMMODITY_NAMES = {steel: "steel", scrap: "scrap", pig_iron: "pig iron", hbi_high: "HBI high grade",
-                         hbi_mid: "HBI mid grade", dri_high: "DRI high grade", dri_mid: "DRI mid grade",
-                         hot_metal: "hot metal", io_high: "high grade", io_mid: "mid grade", io_low: "low grade"};
+                         hbi_mid: "HBI mid grade", hbi_low: "HBI low grade", dri_high: "DRI high grade",
+                         dri_mid: "DRI mid grade", dri_low: "DRI low grade", hot_metal: "hot metal",
+                         liquid_iron: "liquid iron", electrolytic_iron: "electrolytic iron",
+                         io_high: "high grade", io_mid: "mid grade", io_low: "low grade"};
 const PRODUCTS = {
   steel: {name: "steel", ticks: "Steel", note: "destinations = demand centres"},
-  iron: {name: "iron", ticks: "Iron products", note: "destinations = steelmaking furnace groups; hot metal = on-site transfers"},
+  iron: {name: "iron", ticks: "Iron products", note: "destinations = steelmaking furnace groups; hot metal and liquid iron = on-site transfers"},
   // Ore origins are the mine sheet's own labels: rows are never grouped or folded and
   // there is no diagonal, so the matrix is rectangular.
   ore: {name: "iron ore", ticks: "Ore grades", note: "origins = mine regions as named in the mine sheet; destinations = furnace groups",

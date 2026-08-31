@@ -12,11 +12,14 @@ definable); ore origins are the mine sheet's own region labels, as mines carry
 that label rather than a resolved ISO3.
 """
 
+import logging
 import re
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 ALLOCATIONS_PATTERN = re.compile(r"^steel_trade_allocations_(\d{4})\.csv$")
 # Traded commodity → product of the viewer.
@@ -26,13 +29,20 @@ COMMODITY_PRODUCTS = {
     "pig_iron": "iron",
     "hbi_high": "iron",
     "hbi_mid": "iron",
+    "hbi_low": "iron",
     "dri_high": "iron",
     "dri_mid": "iron",
+    "dri_low": "iron",
     "hot_metal": "iron",
+    "liquid_iron": "iron",
+    "electrolytic_iron": "iron",
     "io_high": "ore",
     "io_mid": "ore",
     "io_low": "ore",
 }
+# Allocated commodities that are deliberately not metal trade (reductants, captured CO2).
+# Anything in neither set is dropped with a warning, so a new commodity surfaces loudly.
+EXCLUDED_COMMODITIES = {"bio_pci", "co2_stored"}
 # Products whose origin is the location's country label rather than its ISO3.
 LABELLED_ORIGINS = {"ore"}
 COLUMNS = ["commodity", "source_location", "source_tech", "destination_location", "allocated_volume"]
@@ -110,17 +120,21 @@ def read_flows(files: dict[int, Path]) -> pd.DataFrame:
         the sources of the origin and the receivers of the destination country. Origins
         are ISO3 codes, except for :data:`LABELLED_ORIGINS` where they are the source's
         country label. A year whose file holds no such allocations (a failed trade LP
-        writes a header-only file) contributes no rows.
+        writes a header-only file) contributes no rows. Commodities in neither
+        :data:`COMMODITY_PRODUCTS` nor :data:`EXCLUDED_COMMODITIES` are dropped with
+        a warning naming them.
 
     Raises:
         ValueError: If a file lacks the allocation columns or a location lacks the
         needed field.
     """
     frames = []
+    unknown: set[str] = set()
     for year, path in files.items():
         # Suppliers write the literal technology "N/A", which pandas would otherwise read as NaN
         # and the grouping would then drop.
         table = pd.read_csv(path, usecols=COLUMNS, keep_default_na=False)
+        unknown |= set(table["commodity"]) - COMMODITY_PRODUCTS.keys() - EXCLUDED_COMMODITIES
         metal = table[table["commodity"].isin(COMMODITY_PRODUCTS)]
         if metal.empty:
             continue
@@ -144,6 +158,12 @@ def read_flows(files: dict[int, Path]) -> pd.DataFrame:
             }
         )
         frames.append(flows.groupby(FLOW_KEYS, as_index=False)["volume_mt"].sum())
+    if unknown:
+        logger.warning(
+            "Commodities missing from the trade viewers: %s — map them in COMMODITY_PRODUCTS "
+            "or add them to EXCLUDED_COMMODITIES",
+            ", ".join(sorted(unknown)),
+        )
     if not frames:
         return pd.DataFrame(columns=FLOW_KEYS + ["volume_mt"])
     return pd.concat(frames, ignore_index=True)
