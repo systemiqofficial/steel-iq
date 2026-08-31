@@ -32,6 +32,8 @@ baseload at all.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
 from json import dumps
@@ -47,6 +49,11 @@ from boa.config.settings import ERA5_DATA_RESOLUTION, LULC_CODES
 
 # Side of the ESA-CCI block that tiles one model cell: 0.25 deg x 360 cells/deg.
 BLOCK = int(ERA5_DATA_RESOLUTION * ESA_CCI_CELLS_PER_DEG)
+
+# Class bytes held at once while reading LULC. The delivered raster is tiled 2025 x 2025,
+# so a region read is already cheap in time; this only bounds the working set, which the
+# class-to-fraction expansion multiplies by four on top.
+READ_BAND_BYTES = 64 << 20
 
 # Canonical order. Layers commute, so this does not change the composed factor -- it
 # fixes the provenance string, which would otherwise depend on argument order.
@@ -75,22 +82,13 @@ def fraction_lut(tech: str) -> np.ndarray:
     return lut
 
 
-def read_lulc_codes(
-    path: Path,
-    lat: slice = slice(None),
-    lon: slice = slice(None),
-) -> np.ndarray:
+@contextmanager
+def _open_lccs(path: Path) -> Iterator[xr.DataArray]:
     """
-    ESA-CCI class codes as uint8, optionally windowed.
+    The 2-D `lccs_class` array, still lazy, from either a NetCDF or a Zarr store.
 
-    The dtype is load-bearing, because the codes index a 256-entry lookup table: a float
-    decode makes the index raise, and an int8 decode makes codes at or above 128 index
-    from the wrong end, which is silently wrong rather than a crash. So the file is
-    opened with `mask_and_scale=False` to stop xarray promoting to float, and anything
-    that still is not a byte-ranged integer is refused by name rather than cast.
-
-    `lat`/`lon` window the read. The full raster is 64800 x 129600, so production always
-    passes slices; the default exists for small files and tests.
+    `mask_and_scale=False` is the load-bearing part: it stops xarray promoting the class
+    codes to float, which would make them unusable as indices into the fraction table.
     """
     path = Path(path)
     if path.suffix == ".zarr":
@@ -99,19 +97,41 @@ def read_lulc_codes(
         ds = xr.open_dataset(path, mask_and_scale=False)
     with ds:
         codes = ds["lccs_class"]
-        if "time" in codes.dims:
-            codes = codes.isel(time=0)
-        values = codes.isel(lat=lat, lon=lon).values
+        yield codes.isel(time=0) if "time" in codes.dims else codes
 
+
+def _as_class_bytes(values: np.ndarray, name: str) -> np.ndarray:
+    """
+    Refuse anything that cannot index the 256-entry fraction table, by name.
+
+    The dtype fails in two different ways: a float decode makes the index raise, and an
+    int8 decode makes codes at or above 128 index from the wrong end, which is silently
+    wrong rather than a crash.
+    """
     if values.dtype == np.uint8:
         return values
     if np.issubdtype(values.dtype, np.integer) and values.min() >= 0 and values.max() <= 255:
         return values.astype(np.uint8)
     raise ValueError(
-        f"{path.name}: lccs_class decoded as {values.dtype}, which cannot index the class "
+        f"{name}: lccs_class decoded as {values.dtype}, which cannot index the class "
         "lookup table. Check the file for a scale_factor, add_offset or _FillValue that "
         "would need handling deliberately."
     )
+
+
+def read_lulc_codes(
+    path: Path,
+    lat: slice = slice(None),
+    lon: slice = slice(None),
+) -> np.ndarray:
+    """
+    ESA-CCI class codes as uint8, optionally windowed.
+
+    `lat`/`lon` window the read. The full raster is 64800 x 129600, so production always
+    passes slices; the default exists for small files and tests.
+    """
+    with _open_lccs(path) as codes:
+        return _as_class_bytes(codes.isel(lat=lat, lon=lon).values, Path(path).name)
 
 
 def lulc_fraction(y: np.ndarray, x: np.ndarray, tech: str, lulc_path: Path) -> np.ndarray:
@@ -124,29 +144,51 @@ def lulc_fraction(y: np.ndarray, x: np.ndarray, tech: str, lulc_path: Path) -> n
 
     `y` is expected ascending and the ESA-CCI latitude axis descends, hence the flip on
     the way out.
+
+    The read is banded over latitude, which is purely about memory. A whole region is
+    hundreds of millions of ESA-CCI pixels, and the class-to-fraction step expands each
+    byte to a float32, so an unbanded read peaks at five times the window -- gigabytes for
+    the larger regions, for an output of a few hundred kilobytes. Banding costs nothing:
+    the same bytes are read either way, and the block mean is per-cell so bands are
+    independent.
     """
     i0 = int(round((90.0 - (y.max() + ERA5_DATA_RESOLUTION / 2)) * ESA_CCI_CELLS_PER_DEG))
     j0 = int(round((x.min() - ERA5_DATA_RESOLUTION / 2 + 180.0) * ESA_CCI_CELLS_PER_DEG))
     ny, nx = len(y), len(x)
+    name = Path(lulc_path).name
+    lut = fraction_lut(tech)
+    rows_per_band = max(1, READ_BAND_BYTES // (nx * BLOCK * BLOCK))
+    out = np.empty((ny, nx), dtype=np.float64)
 
-    with xr.open_dataset(lulc_path) as ds:
-        n_lat, n_lon = ds.sizes["lat"], ds.sizes["lon"]
-    # Bounds are checked here rather than left to the slice: an out-of-range slice comes
-    # back short and only fails later, in a reshape that names neither axis nor cell.
-    if i0 < 0 or j0 < 0 or i0 + ny * BLOCK > n_lat or j0 + nx * BLOCK > n_lon:
-        raise ValueError(
-            f"requested cells fall outside {Path(lulc_path).name}: "
-            f"lat {y.min()}..{y.max()}, lon {x.min()}..{x.max()} maps to rows "
-            f"{i0}..{i0 + ny * BLOCK} of {n_lat} and columns {j0}..{j0 + nx * BLOCK} of {n_lon}"
-        )
+    with _open_lccs(lulc_path) as codes:
+        n_lat, n_lon = codes.sizes["lat"], codes.sizes["lon"]
+        # Bounds are checked here rather than left to the slice: an out-of-range slice
+        # comes back short and only fails later, in a reshape naming neither axis nor cell.
+        if i0 < 0 or j0 < 0 or i0 + ny * BLOCK > n_lat or j0 + nx * BLOCK > n_lon:
+            raise ValueError(
+                f"requested cells fall outside {name}: "
+                f"lat {y.min()}..{y.max()}, lon {x.min()}..{x.max()} maps to rows "
+                f"{i0}..{i0 + ny * BLOCK} of {n_lat} and columns {j0}..{j0 + nx * BLOCK} of {n_lon}"
+            )
 
-    codes = read_lulc_codes(lulc_path, slice(i0, i0 + ny * BLOCK), slice(j0, j0 + nx * BLOCK))
-    # The expansion stays float32 because it is the memory peak -- one float per ESA-CCI
-    # pixel in the window -- but the mean accumulates 8100 of them per cell, so the sum
-    # is taken in float64. In float32 that accumulation drifts by ~1e-6 relative, which
-    # is larger than the fractions themselves are meaningful to.
-    frac = fraction_lut(tech)[codes].reshape(ny, BLOCK, nx, BLOCK).mean(axis=(1, 3), dtype=np.float64)
-    return frac[::-1]
+        for top in range(0, ny, rows_per_band):
+            rows = min(rows_per_band, ny - top)
+            band = codes.isel(
+                lat=slice(i0 + top * BLOCK, i0 + (top + rows) * BLOCK),
+                lon=slice(j0, j0 + nx * BLOCK),
+            ).values
+            # The expansion stays float32 because it is the memory peak -- one float per
+            # ESA-CCI pixel in the band -- but the mean accumulates 8100 of them per cell,
+            # so the sum is taken in float64. In float32 that accumulation drifts by ~1e-6
+            # relative, which is coarser than the fractions are meaningful to.
+            #
+            # Kept as one expression on purpose: naming the expanded array would hold it
+            # past the end of the iteration, so it would still be alive while the next
+            # band was read and expanded, doubling the peak this banding exists to bound.
+            out[top : top + rows] = (
+                lut[_as_class_bytes(band, name)].reshape(rows, BLOCK, nx, BLOCK).mean(axis=(1, 3), dtype=np.float64)
+            )
+    return out[::-1]
 
 
 def cds_exclusion_factor(y: np.ndarray, x: np.ndarray, tech: str, masks_dir: Path) -> np.ndarray:
