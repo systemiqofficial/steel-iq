@@ -1518,6 +1518,10 @@ class SimulationRunner:
                 suppliers_json=fixtures_dir / "suppliers.json" if fixtures_dir else None,
                 biomass_availability_json=fixtures_dir / "biomass_availability.json" if fixtures_dir else None,
             )
+            interactive.plot_reductant_use(
+                post_processed_csv=Path(output_path),
+                primary_feedstocks_json=fixtures_dir / "primary_feedstocks.json" if fixtures_dir else None,
+            )
 
         # Aggregate per-year LCOE/LCOH statistics into stacked CSVs
         aggregate_lcoe_lcoh_statistics(self.config.output_dir, start_year, end_year)

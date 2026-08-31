@@ -25,7 +25,7 @@ from plotly.offline import get_plotlyjs
 from steelo.domain.models import CountryMapping
 from steelo.utilities.plotting import region2colours, tech2colours
 
-from . import capacity_production, cost_curves, emissions, supply_demand, trade_matrix
+from . import capacity_production, cost_curves, emissions, reductant_use, supply_demand, trade_matrix
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +109,7 @@ class InteractivePlotter:
         >>> interactive.plot_cost_curves(post_processed_csv, market_prices_csv, clearing)
         >>> interactive.plot_trade_matrix(tm_dir)
         >>> interactive.plot_trade_network(tm_dir)
+        >>> interactive.plot_reductant_use(post_processed_csv, primary_feedstocks_json)
     """
 
     SUBDIR = "interactive"
@@ -408,6 +409,66 @@ class InteractivePlotter:
         config = self._config("Supply and demand", regionBudgets=region_budgets)
         path = self._write("supply_demand.html", config, data)
         logger.info("Wrote supply-demand viewer %s (%d usage rows over %d years)", path, len(used), len(files))
+        return path
+
+    def plot_reductant_use(
+        self, post_processed_csv: Path, primary_feedstocks_json: Optional[Path] = None
+    ) -> Optional[Path]:
+        """Write the reductant and energy use viewer (``reductant_use.html``).
+
+        The viewer covers iron production only — steelmaking never uses a reductant.
+
+        Args:
+            post_processed_csv: The run's ``post_processed_<timestamp>.csv``, giving each
+                furnace group's production, chosen reductant and feedstock allocations.
+            primary_feedstocks_json: The prepared ``fixtures/primary_feedstocks.json``
+                (the Bill of Materials), whose per-tonne intensities turn the feedstock
+                allocations into absolute reductant quantities — only the chosen
+                reductant's components count, not auxiliary energy inputs. None (or a
+                missing file) omits the reductant-use metrics with a warning, leaving
+                the production-by-reductant view.
+
+        Returns:
+            The written path, or None when the table is missing, lacks a required column,
+            or the Bill of Materials carries an unknown carrier (logged as warnings so
+            the plot stage never fails).
+        """
+        from steelo.adapters.repositories.json_repository import PrimaryFeedstockJsonRepository
+
+        table = self._read_post_processed(post_processed_csv, "reductant-use")
+        if table is None:
+            return None
+        feedstocks = []
+        if primary_feedstocks_json is not None and primary_feedstocks_json.is_file():
+            feedstocks = PrimaryFeedstockJsonRepository(primary_feedstocks_json).list()
+        else:
+            logger.warning(
+                "No primary feedstocks fixture at %s — carrier use omitted from the reductant viewer",
+                primary_feedstocks_json,
+            )
+        try:
+            carriers, aggregated = reductant_use.aggregate_reductant_use(table, feedstocks)
+        except ValueError as exc:
+            logger.warning("%s — skipping the reductant-use viewer", exc)
+            return None
+        data = {
+            self.run_title: {
+                "title": self.run_title,
+                "provenance": f"Iron production and chosen reductants from {post_processed_csv.name}; reductant "
+                "quantities = feedstock allocations × the chosen reductant's Bill of Materials "
+                "intensities (fixtures/primary_feedstocks.json).",
+                "rows": reductant_use.pack_rows(aggregated, carriers),
+            },
+        }
+        config = self._config(
+            "Reductant and energy use",
+            carriers=reductant_use.carrier_meta(carriers),
+            reductantColours=reductant_use.REDUCTANT_COLOURS,
+        )
+        path = self._write("reductant_use.html", config, data)
+        logger.info(
+            "Wrote reductant-use viewer %s (%d aggregated rows, %d carriers)", path, len(aggregated), len(carriers)
+        )
         return path
 
     def _config(self, chart_title: str, **chart_config: Any) -> dict[str, Any]:

@@ -5,8 +5,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from steelo.adapters.repositories.json_repository import BiomassAvailabilityJsonRepository, SupplierJsonRepository
-from steelo.domain.models import BiomassAvailability, CountryMapping, Location, Supplier, Year
+from steelo.adapters.repositories.json_repository import (
+    BiomassAvailabilityJsonRepository,
+    PrimaryFeedstockJsonRepository,
+    SupplierJsonRepository,
+)
+from steelo.domain.models import BiomassAvailability, CountryMapping, Location, PrimaryFeedstock, Supplier, Year
 from steelo.domain.models import Volumes
 from steelo.utilities.interactive import InteractivePlotter, clearing_config, interactive_plots
 from steelo.utilities.interactive import supply_demand
@@ -44,6 +48,9 @@ def sample_post_processed() -> pd.DataFrame:
     rows = [[2025, "CHN:CN-HE", "P1_0", "BF", "iron", 2_000_000.0], [2025, "DEU", "P2_0", "EAF", "steel", 1_000_000.0]]
     table = pd.DataFrame(rows, columns=columns)
     table["capacity"] = [3_000_000.0, 1_200_000.0]
+    table["chosen_reductant"] = ["coke+pci", None]
+    table["feedstock"] = ["io_low", "scrap"]
+    table["demand"] = [3_000_000.0, 1_100_000.0]
     table[f"emissions_{BOUNDARY}_direct_ghg"] = [5_000_000.0, 100_000.0]
     table[f"emissions_{BOUNDARY}_indirect_ghg"] = [1_000_000.0, 300_000.0]
     return table
@@ -367,3 +374,55 @@ def test_plot_supply_demand_writes_self_contained_viewer(tmp_path) -> None:
     assert '{"y": 2030, "c": "ore", "g": "BIH", "v": 0.2, "s": "io_mid"}' in html
     assert '"c": "bio", "g": "region:CHI"' not in html
     assert plotter.plot_supply_demand(tmp_path / "absent") is None
+
+
+def sample_primary_feedstocks() -> list[PrimaryFeedstock]:
+    """Bill of Materials entries matching sample_post_processed's furnace groups."""
+
+    def entry(technology, metallic_charge, reductant, required, energy):
+        feedstock = PrimaryFeedstock(metallic_charge=metallic_charge, reductant=reductant, technology=technology)
+        feedstock.required_quantity_per_ton_of_product = required
+        feedstock.energy_requirements = energy
+        return feedstock
+
+    return [
+        entry("BF", "io_low", "coke+pci", 1.5, {"coking_coal": 0.4, "pci": 0.1, "electricity": 300.0}),
+        entry("EAF", "scrap", "", 1.1, {"electricity": 500.0}),
+    ]
+
+
+def test_plot_reductant_use_writes_self_contained_viewer(tmp_path) -> None:
+    """The reductant-use viewer embeds the carrier metadata and the per-reductant cube."""
+    csv_path = tmp_path / "post_processed_test.csv"
+    sample_post_processed().to_csv(csv_path, index=False)
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    PrimaryFeedstockJsonRepository(fixtures / "primary_feedstocks.json").add_list(sample_primary_feedstocks())
+    plotter = InteractivePlotter(tmp_path / "plots", sample_country_mappings(), run_title="sim_test")
+
+    written = plotter.plot_reductant_use(csv_path, fixtures / "primary_feedstocks.json")
+
+    assert written == tmp_path / "plots" / "interactive" / "reductant_use.html"
+    html = written.read_text()
+    for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
+        assert placeholder not in html
+    assert "const Interactive" in html
+    # Only the chosen reductant's components count — auxiliary electricity is no carrier.
+    assert (
+        '"carriers": [{"key": "coking_coal", "label": "Coking coal", "unit": "Mt"}, '
+        '{"key": "pci", "label": "PCI", "unit": "Mt"}]'
+    ) in html
+    # BF: 3 Mt io_low / 1.5 t/t → 2 Mt attributed × (0.4 t/t coking coal, 0.1 t/t PCI)
+    assert '"r": "coke+pci", "n": 1, "pr": 2.0, "e": [0.8, 0.2]' in html
+    assert '"t": "EAF"' not in html
+    assert '"reductantColours"' in html
+
+    # A missing fixture still produces the viewer, with the production view only.
+    assert plotter.plot_reductant_use(csv_path, fixtures / "absent.json") == written
+    assert '"carriers": []' in written.read_text()
+
+    # A missing table or a table without the reductant column skips the viewer.
+    assert plotter.plot_reductant_use(tmp_path / "absent.csv") is None
+    bare_csv = tmp_path / "post_processed_bare.csv"
+    sample_post_processed().drop(columns=["chosen_reductant"]).to_csv(bare_csv, index=False)
+    assert plotter.plot_reductant_use(bare_csv, fixtures / "primary_feedstocks.json") is None
