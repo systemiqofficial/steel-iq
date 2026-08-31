@@ -44,8 +44,8 @@ const DATA = __DATA__;
 </script>
 <script>__COMMON_JS__</script>
 <script>
-const WIDTH = 1280, HEIGHT = 720;
-const MARGIN = {l: 70, r: 250, t: 90, b: 60};
+const MAX_WIDTH = 1280, MAX_HEIGHT = 720;
+const MARGIN = {l: 70, t: 90, b: 60};  // right margin is sized per render to fit the legend
 const FILL_ALPHA = 0.85, OUTLIER_CAP = 2000;
 const T = Interactive.theme;
 const CLEARING = CONFIG.clearing;
@@ -98,6 +98,7 @@ function referenceLegend(name, colour) {
 }
 
 function render() {
+  const {width: WIDTH, height: HEIGHT} = Interactive.plotSize(MAX_WIDTH, MAX_HEIGHT);
   const run = DATA[Interactive.run()];
   const product = document.getElementById("product-select").value;
   const year = Number(document.getElementById("year-select").value);
@@ -179,6 +180,8 @@ function render() {
                       bgcolor: "rgba(255, 255, 255, 0.8)", borderpad: 4});
   }
 
+  const legendLabels = keys.concat(clearing ? ["Market clearing price", `Market clearing share (${sharePct}%)`] : []);
+  const margin = {...MARGIN, r: 12 + Interactive.legendWidth(legendLabels)};
   const layout = {
     title: {text: `${capitalise(product)} cost curve ${year} by ${groupLabel}<br><sup>${run.title} · ${Interactive.geoNote(runGeos)}</sup>`,
             font: {color: T.ink, size: 17}, x: 0.05},
@@ -188,12 +191,13 @@ function render() {
             zeroline: true, zerolinecolor: T.ink, zerolinewidth: 1},
     barmode: "overlay", bargap: 0,
     shapes, annotations,
-    legend: {x: 1.02, xanchor: "left", y: 1, yanchor: "top", font: {size: 11}, bgcolor: T.surface, tracegroupgap: 12},
+    legend: {x: 1 + 12 / (WIDTH - margin.l - margin.r), xanchor: "left", y: 1, yanchor: "top",
+             font: {size: 11}, bgcolor: T.surface, tracegroupgap: 12},
     hovermode: "closest",
     hoverlabel: {align: "left", font: {size: 11}, bgcolor: "#fff"},
     font: {family: "Helvetica Neue, Helvetica, Arial", color: T.inkSecondary, size: 11},
     paper_bgcolor: T.surface, plot_bgcolor: T.surface,
-    width: WIDTH, height: HEIGHT, margin: MARGIN,
+    width: WIDTH, height: HEIGHT, margin,
   };
   Plotly.react(gd, traces, layout, {displaylogo: false, responsive: false});
 
@@ -204,7 +208,7 @@ function render() {
     : "no demand or clearing price for a partial curve";
   Interactive.summary(
     `${curve.length} furnace groups on the curve` + (offCurve ? ` (${offCurve} without a positive cost or capacity)` : "") +
-    ` · ${total.toFixed(1)} Mt at ${limitPct}% · ${clearingNote} · ${run.provenance}`);
+    ` · ${total.toFixed(1)} Mt at ${limitPct}% · ${clearingNote}\n${run.provenance}`);
 }
 
 const allRows = Object.values(DATA).flatMap(d => d.rows);
@@ -218,6 +222,7 @@ const yearSelect = document.getElementById("year-select");
 ["product-select", "year-select", "colour-select"].forEach(id =>
   document.getElementById(id).addEventListener("change", render));
 Interactive.init({geoKeys: allRows.map(r => r.g), techs: allRows.map(r => r.t), onChange: render});
+Interactive.onResize(render);
 render();
 </script>
 </body>

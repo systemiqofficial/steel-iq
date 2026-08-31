@@ -46,8 +46,8 @@ const DATA = __DATA__;
 </script>
 <script>__COMMON_JS__</script>
 <script>
-const WIDTH = 1280, HEIGHT = 720;
-const MARGIN = {l: 70, r: 250, t: 90, b: 60};
+const MAX_WIDTH = 1280, MAX_HEIGHT = 720;
+const MARGIN = {l: 70, t: 90, b: 60};  // right margin is sized per render to fit the legend (and the y2 axis)
 const FILL_ALPHA = 0.85, INDIRECT_LIGHTEN = 0.45;
 const PRODUCTION_STYLES = {iron: "#FFD700", steel: "#FFFFFF"};
 const T = Interactive.theme;
@@ -76,6 +76,7 @@ function emissionValue(row, boundary, scope) {
 }
 
 function render() {
+  const {width: WIDTH, height: HEIGHT} = Interactive.plotSize(MAX_WIDTH, MAX_HEIGHT);
   const run = DATA[Interactive.run()];
   const boundary = document.getElementById("boundary-select").value;
   const view = scopeView();
@@ -143,14 +144,20 @@ function render() {
       const vals = production[product];
       if (!vals.some(v => v > 0)) return;
       const name = product + " production";
-      // Halo, then the coloured line. legendrank orders both the legend and the unified hover, so the
-      // drawn line keeps its legend entry after the series and an invisible twin ranks first for the hover.
+      // Halo, then the coloured line. legendrank orders both the legend and the unified hover: an
+      // ink-bordered marker carries the legend entry after the series (a bare white line sample
+      // would vanish on the surface) and a zero-width twin ranks first for the hover. The hover
+      // bullet cannot carry a border, so the white line hovers with its halo colour instead.
+      const hoverColour = colour === "#FFFFFF" ? T.ink : colour;
       traces.push({type: "scatter", mode: "lines", x: years, y: vals, yaxis: "y2", name,
-        line: {width: 3.5, color: T.ink}, showlegend: false, hoverinfo: "skip"});
+        line: {width: 4.5, color: T.ink}, showlegend: false, hoverinfo: "skip"});
       traces.push({type: "scatter", mode: "lines", x: years, y: vals, yaxis: "y2", name,
-        line: {width: 1.5, color: colour}, legendrank: 2000 + i, hoverinfo: "skip"});
-      traces.push({type: "scatter", mode: "lines", x: years, y: vals, yaxis: "y2", name, opacity: 0,
-        line: {width: 1.5, color: colour}, legendrank: i, showlegend: false, hovertemplate: "%{y:.0f} Mt"});
+        line: {width: 2.5, color: colour}, showlegend: false, hoverinfo: "skip"});
+      traces.push({type: "scatter", mode: "markers", x: [null], y: [null], yaxis: "y2", name,
+        marker: {color: colour, size: 9, symbol: "square", line: {color: T.ink, width: 1.5}},
+        legendrank: 2000 + i, hoverinfo: "skip"});
+      traces.push({type: "scatter", mode: "lines", x: years, y: vals, yaxis: "y2", name,
+        line: {width: 0, color: hoverColour}, legendrank: i, showlegend: false, hovertemplate: "%{y:.0f} Mt"});
     });
   }
   // Hover-only net total; the unified hover orders items by legendrank, so it lists last.
@@ -162,22 +169,28 @@ function render() {
 
   const groupLabel = groupBy === "technology" ? "Technology" : "Region";
   const runGeos = new Set(run.rows.map(r => r.g));
-  const subtitle = [`Emissions boundary: ${boundary.replace(/_/g, " ")}`, run.title, Interactive.geoNote(runGeos)]
+  const subtitle = [run.title, Interactive.geoNote(runGeos)]
     .concat(combined ? ["lighter shade = indirect"] : []).join(" · ");
 
+  // The production overlay puts its axis on the right, between the plot and the legend.
+  const legendGap = anyProduction ? 78 : 12;
+  const legendLabels = keys.concat(anyProduction ? ["iron production", "steel production"] : []);
+  const margin = {...MARGIN, r: legendGap + Interactive.legendWidth(legendLabels)};
   const layout = {
-    title: {text: `${view.title} by ${groupLabel}<br><sup>${subtitle}</sup>`, font: {color: T.ink, size: 17}, x: 0.05},
+    title: {text: `${view.title} by ${groupLabel} (boundary: ${boundary.replace(/_/g, " ")})<br><sup>${subtitle}</sup>`,
+            font: {color: T.ink, size: 17}, x: 0.05},
     xaxis: {title: {text: "Year"}, range: [years[0], years[years.length - 1]], dtick: years.length > 12 ? 5 : 1,
             gridcolor: T.grid,
             zeroline: false, showspikes: true, spikemode: "across", spikethickness: 1, spikecolor: T.inkSecondary},
     yaxis: {title: {text: "Total emissions (Mt CO2e)"}, gridcolor: T.grid, zeroline: true, zerolinecolor: T.ink,
             zerolinewidth: 1},
-    legend: {x: 1.08, xanchor: "left", y: 1, yanchor: "top", font: {size: 11}, bgcolor: T.surface},
+    legend: {x: 1 + legendGap / (WIDTH - margin.l - margin.r), xanchor: "left", y: 1, yanchor: "top",
+             font: {size: 11}, bgcolor: T.surface},
     hovermode: "x unified",
     hoverlabel: {align: "left", font: {size: 11}, bgcolor: "#fff"},
     font: {family: "Helvetica Neue, Helvetica, Arial", color: T.inkSecondary, size: 11},
     paper_bgcolor: T.surface, plot_bgcolor: T.surface,
-    width: WIDTH, height: HEIGHT, margin: MARGIN,
+    width: WIDTH, height: HEIGHT, margin,
   };
   if (anyProduction) {
     layout.yaxis2 = {title: {text: "Total production (Mt)"}, overlaying: "y", side: "right", rangemode: "tozero",
@@ -192,7 +205,7 @@ function render() {
   const allTechs = new Set(run.rows.map(r => r.t)).size;
   Interactive.summary(
     `${selCountries} of ${nCountries} countries · ${selectedTech.size} of ${allTechs} technologies · ` +
-    `${fgs} furnace groups and ${totals[totals.length - 1].toFixed(0)} Mt CO2e net in ${lastYear} · ${run.provenance}`);
+    `${fgs} furnace groups and ${totals[totals.length - 1].toFixed(0)} Mt CO2e net in ${lastYear}\n${run.provenance}`);
 }
 
 function initControls() {
@@ -213,6 +226,7 @@ function initControls() {
 }
 
 initControls();
+Interactive.onResize(render);
 render();
 </script>
 </body>

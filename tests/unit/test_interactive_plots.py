@@ -1,6 +1,7 @@
 """Tests for the interactive viewer writer (steelo.utilities.interactive.interactive_plots)."""
 
 import json
+from pathlib import Path
 
 import pandas as pd
 
@@ -65,6 +66,20 @@ def test_geo_unit_names_from_geo_hierarchy(tmp_path) -> None:
 
     plotter = InteractivePlotter(tmp_path / "plots", [], run_title="sim_test", geo_hierarchy_json=hierarchy)
     assert plotter._config("Emissions")["geoUnitNames"] == {"CHN:CN-HE": "Hebei"}
+
+
+def test_run_display_title_names_the_run_with_its_completion_time() -> None:
+    """The title is the run name (or the fallback) with the CSV's completion timestamp in brackets."""
+    csv = Path("post_processed_2026-08-29_05-21.csv")
+
+    assert (
+        interactive_plots.run_display_title("china BAU", "sim_20260829_002848", csv) == "china BAU (2026-08-29 05:21)"
+    )
+    assert (
+        interactive_plots.run_display_title(None, "sim_20260829_002848", csv)
+        == "sim_20260829_002848 (2026-08-29 05:21)"
+    )
+    assert interactive_plots.run_display_title(None, "sim_test", Path("post_processed_test.csv")) == "sim_test"
 
 
 def test_geo_info_names_and_regions_per_iso3() -> None:

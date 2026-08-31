@@ -13,6 +13,7 @@ technology filter, all driven by the country mappings passed in here.
 
 import json
 import logging
+import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Optional
@@ -75,6 +76,23 @@ def geo_unit_names(geo_hierarchy_json: Optional[Path]) -> dict[str, str]:
     if geo_hierarchy_json is None or not geo_hierarchy_json.is_file():
         return {}
     return {row["geo_key"]: row["display_name"] for row in json.loads(geo_hierarchy_json.read_text())}
+
+
+def run_display_title(run_name: Optional[str], fallback: str, post_processed_csv: Path) -> str:
+    """Run title shown in the viewers: the run's name with its completion time in brackets.
+
+    Args:
+        run_name: Human-readable run name (e.g. from ``--run-name``), or None.
+        fallback: Name used when no run name was given (e.g. the output dir name ``sim_<ts>``).
+        post_processed_csv: The run's ``post_processed_<date>_<time>.csv``, whose file name
+            carries the completion timestamp.
+
+    Returns:
+        ``"<name> (<date> <hh:mm>)"``, or just the name when the CSV name holds no timestamp.
+    """
+    stamp = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})", post_processed_csv.name)
+    suffix = f" ({stamp.group(1)} {stamp.group(2)}:{stamp.group(3)})" if stamp else ""
+    return f"{run_name or fallback}{suffix}"
 
 
 def _hex(colours: dict[str, str]) -> dict[str, str]:
@@ -145,8 +163,7 @@ class InteractivePlotter:
         data = {
             self.run_title: {
                 "title": self.run_title,
-                "provenance": f"Furnace-group emissions from {post_processed_csv.name}, "
-                "one row per furnace group and year.",
+                "provenance": f"Furnace-group emissions from {post_processed_csv.name}.",
                 "rows": emissions.pack_rows(aggregated, emission_keys),
             },
         }
@@ -175,8 +192,7 @@ class InteractivePlotter:
         data = {
             self.run_title: {
                 "title": self.run_title,
-                "provenance": f"Furnace-group capacity and production from {post_processed_csv.name}, "
-                "one row per furnace group and year.",
+                "provenance": f"Furnace-group capacity and production from {post_processed_csv.name}.",
                 "rows": capacity_production.pack_rows(aggregated),
             },
         }

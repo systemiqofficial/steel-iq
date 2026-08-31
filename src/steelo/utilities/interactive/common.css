@@ -8,6 +8,11 @@ body { margin: 0; background: #fcfcfb; color: #0b0b0b;
 .toolbar .ticks label.inline { padding-top: 5px; margin-right: 8px; }
 select { font-size: 13px; padding: 3px 6px; }
 #geo-panel { flex: 1; min-width: 480px; }
+#tech-panel { display: flex; align-items: center; gap: 4px 14px; flex-wrap: wrap; padding: 2px 40px 0; }
+#tech-panel > label { font-size: 12px; color: #52514e; margin: 0; }
+#tech-boxes { display: inline-flex; flex-wrap: wrap; gap: 2px 14px; }
+#tech-boxes label { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: #0b0b0b;
+                    margin: 0; cursor: pointer; white-space: nowrap; }
 .box-dropdown { position: relative; display: inline-block; margin-right: 8px; }
 .box-dropdown > button { font-size: 12px; padding: 3px 10px; cursor: pointer; }
 .box-panel { display: none; position: absolute; z-index: 10; top: 100%; left: 0; margin-top: 2px;
@@ -25,5 +30,5 @@ select { font-size: 13px; padding: 3px 6px; }
 .geo-chip button { border: none; background: none; font-size: 11px; cursor: pointer; padding: 0;
                    color: #52514e; line-height: 1; }
 .geo-chip-note { font-size: 11px; color: #52514e; padding: 3px 0; }
-#summary { font-size: 12px; color: #52514e; padding: 2px 40px 0; }
+#summary { font-size: 12px; color: #52514e; padding: 2px 40px 0; white-space: pre-line; line-height: 1.6; }
 #chart { margin: 0 auto; }

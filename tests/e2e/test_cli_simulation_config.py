@@ -190,3 +190,37 @@ def test_cli_random_seed_lands_on_the_config_and_geo_config(
         config = mock_create_runner.call_args[0][0]
         assert config.random_seed == expected
         assert config.geo_config.random_seed == expected
+
+
+@pytest.mark.parametrize(
+    "flag_argv, expected",
+    [([], None), (["--run-name", "china BAU"], "china BAU")],
+)
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_run_name_lands_on_the_config(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    flag_argv,
+    expected,
+):
+    """``--run-name`` names the run in the interactive plot titles; absent, the config carries None."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cli_temp_base = Path(tmpdir)
+        stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+
+        argv = ["run_simulation", "--start-year", "2026", "--end-year", "2027", *flag_argv]
+        with patch.object(sys, "argv", argv):
+            with patch("sys.exit"):
+                run_full_simulation()
+
+        config = mock_create_runner.call_args[0][0]
+        assert config.run_name == expected

@@ -460,6 +460,8 @@ class SimulationConfig:
     random_seed: int = RANDOM_SEED_DEFAULT
 
     # === Other ===
+    # Human-readable run name shown in the interactive viewer titles (default: the output dir name)
+    run_name: Optional[str] = None
     # Verbosity
     log_level: int = logging.DEBUG
     # Repository (lazy-loaded, not serialized)
@@ -1484,13 +1486,13 @@ class SimulationRunner:
 
         # Interactive viewers (self-contained plotly HTML) under plots/interactive; after the
         # market-prices export so the cost curves can read the recorded steel demand
-        from steelo.utilities.interactive import InteractivePlotter, clearing_config
+        from steelo.utilities.interactive import InteractivePlotter, clearing_config, run_display_title
 
         if self.config.plots_dir is not None:
             interactive = InteractivePlotter(
                 plots_dir=self.config.plots_dir,
                 country_mappings=bus.env.country_mappings.mappings,
-                run_title=self.config.output_dir.name,
+                run_title=run_display_title(self.config.run_name, self.config.output_dir.name, Path(output_path)),
                 geo_hierarchy_json=self.config.data_dir / "fixtures" / "geo_hierarchy.json"
                 if self.config.data_dir
                 else None,
@@ -1508,7 +1510,6 @@ class SimulationRunner:
                     iron_buffer=bus.env.config.iron_price_buffer,
                 ),
             )
-            interactive.plot_decision_flows(motions_csv=self.config.output_dir / "data" / "pam_motions.csv")
             interactive.plot_trade_matrix(tm_dir=self.config.output_dir / "TM")
 
         # Aggregate per-year LCOE/LCOH statistics into stacked CSVs

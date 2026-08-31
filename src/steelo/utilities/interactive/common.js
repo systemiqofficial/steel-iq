@@ -79,6 +79,32 @@ const Interactive = (() => {
   /* ---- chart chrome ---- */
   function summary(text) { document.getElementById("summary").textContent = text; }
 
+  /* Width fitted to the window: the design width on a wide screen, shrinking with the
+     window down to a floor that keeps the chart legible. */
+  function fitWidth(maxWidth) {
+    return Math.max(Math.min(maxWidth, window.innerWidth - 32), 480);
+  }
+
+  /* Chart size fitted to the window at the design aspect ratio, so a smaller window
+     shows the whole chart smaller instead of clipping it. */
+  function plotSize(maxWidth, maxHeight) {
+    const width = fitWidth(maxWidth);
+    return {width, height: Math.round(maxHeight * width / maxWidth)};
+  }
+
+  /* Re-render on window resizes, debounced so a drag redraws once. */
+  function onResize(render) {
+    let timer;
+    window.addEventListener("resize", () => { clearTimeout(timer); timer = setTimeout(render, 150); });
+  }
+
+  /* Estimated pixel width of a side legend: swatch and padding plus the longest label
+     at the legend's 11px font, so the right margin fits the legend without dead space. */
+  function legendWidth(labels) {
+    const longest = Math.max(0, ...labels.map(label => String(label).length));
+    return Math.min(240, Math.max(80, 40 + Math.round(longest * 6.5)));
+  }
+
   function showEmpty(gd, text, width, height) {
     Plotly.react(gd, [], {width, height, paper_bgcolor: theme.surface, plot_bgcolor: theme.surface,
       xaxis: {visible: false}, yaxis: {visible: false},
@@ -113,11 +139,14 @@ const Interactive = (() => {
       dropdown("country"), dropdown("unit"), dropdown("bloc"), dropdown("region"),
       el("div", {id: "geo-chips"})]));
     if (withTechs) {
-      container.appendChild(el("div", {id: "tech-panel"}, [
+      // Technologies get their own row of always-visible ticks between the chart's
+      // controls and the geography row.
+      const row = el("div", {id: "tech-panel"}, [
         el("label", {}, [document.createTextNode("Technologies"),
           el("button", {id: "tech-all", class: "small-btn", text: "All"}),
           el("button", {id: "tech-none", class: "small-btn", text: "None"})]),
-        dropdown("tech")]));
+        el("div", {id: "tech-boxes"})]);
+      container.parentNode.insertBefore(row, container);
     }
   }
 
@@ -284,5 +313,6 @@ const Interactive = (() => {
   }
 
   return {init, run, geoKeys, selectedGeos, selectedTechs, geoNote, isoOf, regionOf, countryName, unitName,
-          summary, showEmpty, hexToRgba, lighten, colourTable, theme, GEO_SEP};
+          summary, showEmpty, fitWidth, plotSize, onResize, legendWidth, hexToRgba, lighten, colourTable,
+          theme, GEO_SEP};
 })();

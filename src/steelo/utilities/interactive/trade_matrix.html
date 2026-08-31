@@ -4,6 +4,11 @@
 <meta charset="utf-8">
 <title>Trade matrix</title>
 <style>__COMMON_CSS__</style>
+<style>
+/* The analysis snippets carry this viewer's headline numbers — darker and a touch
+   larger than the shared summary styling, with a gap before the chart title below. */
+#summary { font-size: 13px; color: #0b0b0b; padding-bottom: 14px; }
+</style>
 </head>
 <body>
 <div id="err"></div>
@@ -45,6 +50,7 @@ window.addEventListener("error", function(e) {
   <div>
     <label for="show-select">Show</label>
     <select id="show-select">
+      <option value="5">Top 5</option>
       <option value="15">Top 15</option>
       <option value="30" selected>Top 30</option>
       <option value="50">Top 50</option>
@@ -74,8 +80,12 @@ const DATA = __DATA__;
 <script>__COMMON_JS__</script>
 <script>
 const REST = "Rest of world";
-const CELL_MIN = 12, CELL_MAX = 90, MATRIX_PX = 960, MIN_WIDTH = 1100, LABEL_MIN_CELL = 28;
-const MARGIN = {l: 120, r: 130, t: 150, b: 40}, LABELLED_MARGIN_L = 170;
+// The matrix grows with the window up to WIDTH_CAP so a bigger window buys bigger cells;
+// MIN_WIDTH only floors the paper so the title keeps room. Cell numbers render at 10px
+// from LABEL_MIN_CELL and drop to 8px down to LABEL_MIN_CELL_TIGHT before hiding.
+const CELL_MIN = 12, CELL_MAX = 90, WIDTH_CAP = 2000, MIN_WIDTH = 1100;
+const LABEL_MIN_CELL = 28, LABEL_MIN_CELL_TIGHT = 18;
+const MARGIN = {l: 120, r: 130, t: 165, b: 40}, LABELLED_MARGIN_L = 170;  // t fits the two-line subtitle
 const T = Interactive.theme;
 // One blue ramp whose lightest step still reads against the surface, so the smallest
 // flow is a visible cell. The stops sit at squared positions: colour grows with the
@@ -269,6 +279,7 @@ function render() {
   const selectedGeo = Interactive.selectedGeos(), selectedTech = Interactive.selectedTechs();
   const selectedCommodity = selectedCommodities();
   const gd = document.getElementById("chart");
+  const fit = Interactive.fitWidth(WIDTH_CAP);
 
   // Supplier sources carry no technology, so the technology filter only applies to plants.
   const yearRows = run.rows.filter(r => r.y === year && r.p === product);
@@ -277,8 +288,9 @@ function render() {
   if (!yearRows.length || !rows.length || !selectedGeo.size) {
     const why = !yearRows.length ? `No ${spec.name} allocations for ${year}`
       : !rows.length ? `No ${spec.name} products or technologies selected` : "No countries selected";
-    Interactive.showEmpty(gd, why, MATRIX_PX, MATRIX_PX / 2);
-    Interactive.summary(`${totalYear.toFixed(0)} Mt ${spec.name} allocated in ${year} · ${run.provenance}`);
+    const emptyWidth = Math.min(fit, MIN_WIDTH);
+    Interactive.showEmpty(gd, why, emptyWidth, emptyWidth / 2);
+    Interactive.summary(`${totalYear.toFixed(0)} Mt ${spec.name} allocated in ${year}\n${run.provenance}`);
     return;
   }
 
@@ -313,9 +325,12 @@ function render() {
     });
   });
 
-  const cell = Math.max(CELL_MIN, Math.min(CELL_MAX, Math.floor(MATRIX_PX / Math.max(nRows, nCols))));
-  const width = nCols * cell, height = nRows * cell;
+  // Cells sized so matrix plus margins fits the window (no sideways scrolling); only a
+  // matrix too large even at the minimum cell size still overflows.
   const margin = {...MARGIN, l: square ? MARGIN.l : LABELLED_MARGIN_L};
+  const cellBudget = fit - margin.l - margin.r;
+  const cell = Math.max(CELL_MIN, Math.min(CELL_MAX, Math.floor(cellBudget / Math.max(nRows, nCols))));
+  const width = nCols * cell, height = nRows * cell;
   const trace = {
     type: "heatmap", x: colLabels, y: rowLabels, z, text, customdata: hover, hovertemplate: "%{customdata}<extra></extra>",
     colorscale: COLOURSCALE, zmin: 0, zmax: valueMode === "mt" ? undefined : 100, hoverongaps: false,
@@ -323,18 +338,20 @@ function render() {
     colorbar: {title: {text: UNITS[valueMode]}, thickness: 12, len: Math.min(1, 400 / (height + margin.t + margin.b)),
                yanchor: "top", y: 1, outlinewidth: 0, tickfont: {size: 10}},
   };
-  if (cell >= LABEL_MIN_CELL) {
+  if (cell >= LABEL_MIN_CELL_TIGHT) {
     trace.texttemplate = "%{text}";
-    trace.textfont = {size: 10};
+    trace.textfont = {size: cell >= LABEL_MIN_CELL ? 10 : 8};
   }
 
   const groupLabel = groupBy === "bloc" ? `trade bloc ${bloc}` : groupBy;
   const runGeos = new Set(run.rows.flatMap(r => PRODUCTS[r.p].labelledOrigins ? [r.d] : [r.o, r.d]));
   const [same, plural] = SAME[groupBy];
-  const notes = [run.title, Interactive.geoNote(runGeos), spec.note,
-                 `rows = origin (producer), columns = destination (consumer)` + (square ? `, diagonal = stayed within the same ${same}` : "")];
+  const runNote = `${run.title} · ${Interactive.geoNote(runGeos)}`;
+  const readingNote = `${spec.note} · rows = origin (producer), columns = destination (consumer)` +
+    (square ? `, diagonal = stayed within the same ${same}` : "");
   const layout = {
-    title: {text: `${capitalise(spec.name)} trade matrix by ${groupLabel}, ${year}<br><sup>${notes.join(" · ")}</sup>`,
+    title: {text: `${capitalise(spec.name)} trade matrix by ${groupLabel}, ${year}` +
+              `<br><sup>${runNote}</sup><br><sup>${readingNote}</sup>`,
             font: {color: T.ink, size: 17}, x: 0.02, y: 0.985, yanchor: "top"},
     xaxis: {title: {text: "Destination"}, side: "top", tickangle: cell < 20 ? -90 : cell < 60 ? -45 : 0, tickfont: {size: 10},
             showgrid: false, zeroline: false, constrain: "domain", constraintoward: "left"},
@@ -344,7 +361,7 @@ function render() {
     font: {family: "Helvetica Neue, Helvetica, Arial", color: T.inkSecondary, size: 11},
     paper_bgcolor: T.surface, plot_bgcolor: T.surface,
     // A narrow matrix still gets room for its title line.
-    width: Math.max(width + margin.l + margin.r, MIN_WIDTH), height: height + margin.t + margin.b, margin,
+    width: Math.max(width + margin.l + margin.r, Math.min(fit, MIN_WIDTH)), height: height + margin.t + margin.b, margin,
   };
   Plotly.react(gd, [trace], layout, {displaylogo: false, responsive: false});
 
@@ -355,18 +372,22 @@ function render() {
   rowLabels.forEach((o, i) => colLabels.forEach((d, j) => {
     if (!(square && i === j) && (!largest || mt[i][j] > largest.v)) largest = {o, d, v: mt[i][j]};
   }));
-  const largestNote = largest && largest.v > 0
-    ? ` · largest flow${square ? ` between ${plural}` : ""}: ${largest.o} → ${largest.d} ${fmtMt(largest.v)} Mt` : "";
   const productNote = breakdown ? ` (${[...selectedCommodity].map(commodityName).join(", ")})` : "";
-  let split = "";
+  // One analysis snippet per line, the data source last, so the numbers stay readable.
+  const lines = [
+    `${origins} origin${square ? "" : " label"}s → ${destinations} destination countries · ` +
+    `${total.toFixed(0)} Mt ${spec.name}${productNote} allocated in ${year}`,
+  ];
   if (square) {
     const domestic = rowLabels.reduce((s, _, i) => s + mt[i][i], 0);
-    split = `: ${domestic.toFixed(0)} Mt (${(100 * domestic / total).toFixed(0)}%) stayed within the same ${same}, ` +
-            `${(total - domestic).toFixed(0)} Mt moved between ${plural}`;
+    lines.push(`${domestic.toFixed(0)} Mt (${(100 * domestic / total).toFixed(0)}%) stayed within the same ${same} · ` +
+               `${(total - domestic).toFixed(0)} Mt moved between ${plural}`);
   }
-  Interactive.summary(
-    `${origins} origin${square ? "" : " label"}s → ${destinations} destination countries · ${total.toFixed(0)} Mt ${spec.name}${productNote} ` +
-    `allocated in ${year}${split}${largestNote} · ${run.provenance}`);
+  if (largest && largest.v > 0) {
+    lines.push(`Largest flow${square ? ` between ${plural}` : ""}: ${largest.o} → ${largest.d} ${fmtMt(largest.v)} Mt`);
+  }
+  lines.push(run.provenance);
+  Interactive.summary(lines.join("\n"));
 }
 
 function initControls() {
@@ -383,6 +404,7 @@ function initControls() {
 }
 
 initControls();
+Interactive.onResize(render);
 render();
 </script>
 </body>
