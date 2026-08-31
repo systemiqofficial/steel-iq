@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
+from boa.cds import availability as cds_availability
 from boa.cds import install as cds_install
 from boa.cds import max_capacity as cds_max_capacity
 from boa.cds.convert import (
@@ -197,49 +198,40 @@ def test_density_overrides_propagate(tmp_path, tmp_config):
     ds.close()
 
 
-def test_apply_lulc_requires_lulc_path(tmp_path, tmp_config):
+def test_build_region_records_the_layer_set(tmp_path, tmp_config, lulc_raster, cds_masks_dir):
+    """
+    A ceiling store is only reusable if it says what produced it. The signature is the
+    part a machine compares; the per-layer source and params are for whoever opens it.
+    """
+    layers = cds_availability.layer_specs(["lulc"], lulc_path=lulc_raster, masks_dir=cds_masks_dir)
+    attrs = cds_max_capacity.store_attrs(layers, CAPACITY_DENSITY_MW_PER_KM2)
+
+    assert attrs["availability_layers"] == "lulc"
+    assert attrs["layer_lulc_source"] == lulc_raster.name
+    assert attrs[cds_max_capacity.SIGNATURE_ATTR]
+    # Deprecated aliases stay for one release so pre-layer readers keep working.
+    assert attrs["lulc_source"] == lulc_raster.name
+
+
+def test_geometry_only_store_still_carries_a_signature(tmp_path, tmp_config):
+    """
+    No layers is a layer set too. Without a signature here, the geometry-only stores
+    would be the one case that could never be checked for reuse.
+    """
+    attrs = cds_max_capacity.store_attrs([], CAPACITY_DENSITY_MW_PER_KM2)
+    assert attrs["availability_layers"] == ""
+    assert attrs[cds_max_capacity.SIGNATURE_ATTR]
+    assert attrs["lulc_source"] == "none"
+
+
+def test_a_layer_without_its_source_is_refused(tmp_path, tmp_config):
+    """
+    Successor to test_apply_lulc_requires_lulc_path. Validation moved with the layers:
+    `build_region` now takes configured specs, and it is `layer_specs` that refuses to
+    configure a layer whose data it was not told where to find.
+    """
     with pytest.raises(ValueError, match="lulc_path"):
-        cds_max_capacity.build_region("EU", tmp_path, tmp_config, apply_lulc=True)
-
-
-def _write_lulc(path: Path, codes: np.ndarray) -> None:
-    """ESA-CCI-style file: uint8 lccs_class with a leading time dim, lat descending."""
-    da = xr.DataArray(
-        codes[None, :, :].astype("uint8"),
-        coords={
-            "time": [np.datetime64("2022-01-01")],
-            "lat": np.linspace(90, 89, codes.shape[0]),
-            "lon": np.linspace(-180, -179, codes.shape[1]),
-        },
-        dims=("time", "lat", "lon"),
-        name="lccs_class",
-    )
-    da.to_dataset().to_netcdf(path)
-
-
-def test_usable_fraction_block_mean_and_flip(tmp_path):
-    # Two 0.25 deg cells stacked in latitude near the north-west corner of the
-    # global ESA grid, so the computed start indices stay small: y rows begin at
-    # (90 - (89.75 + 0.125)) * 360 = 45, x columns at (-179.875 + 180) * 360 = 45.
-    y = np.array([89.5, 89.75])
-    x = np.array([-179.75])
-    block = cds_max_capacity.BLOCK  # 90
-    codes = np.zeros((45 + 2 * block, 45 + block), dtype=np.uint8)
-    # Top ESA block (higher latitude, y=89.75): urban, pv fraction 0.024.
-    codes[45 : 45 + block, 45:] = 190
-    # Bottom block (y=89.5): half bare (0.33), half unlisted code 50 (-> 0).
-    codes[45 + block :, 45 : 45 + block // 2] = 200
-    codes[45 + block :, 45 + block // 2 :] = 50
-    lulc_path = tmp_path / "lulc.nc"
-    _write_lulc(lulc_path, codes)
-
-    frac = cds_max_capacity.usable_fraction(y, x, "pv", lulc_path)
-    assert frac.shape == (2, 1)
-    np.testing.assert_allclose(frac[1, 0], 0.024, rtol=1e-6)  # y=89.75 (top block)
-    np.testing.assert_allclose(frac[0, 0], 0.33 / 2, rtol=1e-6)  # y=89.5, half usable
-    # Wind has no urban entry -> the 190 block is fully excluded.
-    frac_wind = cds_max_capacity.usable_fraction(y, x, "wind", lulc_path)
-    np.testing.assert_allclose(frac_wind[1, 0], 0.0)
+        cds_availability.layer_specs(["lulc"])
 
 
 # ---- install ----------------------------------------------------------------
@@ -260,7 +252,67 @@ def _stage_stores(staging: Path, region: str, year: int) -> None:
         {"pv": (("y", "x"), np.ones((2, 2))), "wind": (("y", "x"), np.ones((2, 2)))},
         coords={"y": [0.0, 0.25], "x": [0.0, 0.25]},
     )
+    # Real attrs from the real writer, not a hand-faked signature: install now refuses a
+    # ceiling store that cannot say what built it, so the fixture has to be a valid store.
+    max_cap.attrs = cds_max_capacity.store_attrs([], CAPACITY_DENSITY_MW_PER_KM2)
     max_cap.to_zarr(staging / (max_cap_store_stem(region, year) + ".zarr"), consolidated=True)
+
+
+def test_validate_store_requires_an_availability_signature(tmp_path):
+    """
+    A ceiling store with no signature cannot be checked for reuse at all, and its
+    ceilings get baked into the design cache where nothing downstream would notice they
+    came from different parameters. Refuse it at the door instead.
+    """
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    path = staging / (max_cap_store_stem("EU", ERA5_DATA_YEAR) + ".zarr")
+    xr.Dataset(
+        {"pv": (("y", "x"), np.ones((2, 2))), "wind": (("y", "x"), np.ones((2, 2)))},
+        coords={"y": [0.0, 0.25], "x": [0.0, 0.25]},
+    ).to_zarr(path, consolidated=True)
+
+    with pytest.raises(ValueError, match="availability_signature"):
+        cds_install.validate_store(path, "max-cap")
+
+
+def test_validate_store_rejects_negative_ceilings(tmp_path):
+    """
+    An availability layer is one sign away from catastrophe: `mask` instead of
+    `1 - mask` yields negative ceilings, which would otherwise surface only as a world
+    that had quietly become infeasible everywhere.
+    """
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    path = staging / (max_cap_store_stem("EU", ERA5_DATA_YEAR) + ".zarr")
+    ds = xr.Dataset(
+        {"pv": (("y", "x"), -np.ones((2, 2))), "wind": (("y", "x"), np.ones((2, 2)))},
+        coords={"y": [0.0, 0.25], "x": [0.0, 0.25]},
+    )
+    ds.attrs = cds_max_capacity.store_attrs([], CAPACITY_DENSITY_MW_PER_KM2)
+    ds.to_zarr(path, consolidated=True)
+
+    with pytest.raises(ValueError, match="negative"):
+        cds_install.validate_store(path, "max-cap")
+
+
+def test_store_carrying_a_different_signature_is_rebuilt_not_reused(tmp_path):
+    """
+    The live defect this closes: today the rebuild check is presence-only, so changing
+    --pv-density or the layer set reuses the old ceilings in silence. Presence is not
+    enough -- the store has to have been built from the parameters now being asked for.
+    """
+    live = tmp_path / "live"
+    live.mkdir()
+    _stage_stores(live, "EU", ERA5_DATA_YEAR)
+    built_with = cds_availability.availability_signature([], CAPACITY_DENSITY_MW_PER_KM2)
+
+    assert run_cds._max_cap_rebuild_reason(live, "EU", ERA5_DATA_YEAR, built_with) is None
+
+    denser = cds_availability.availability_signature([], {"pv": 200.0, "wind": 10})
+    reason = run_cds._max_cap_rebuild_reason(live, "EU", ERA5_DATA_YEAR, denser)
+    assert reason is not None and "availability changed" in reason
+    assert run_cds._max_cap_rebuild_reason(live, "AFRICA", ERA5_DATA_YEAR, built_with) == "missing"
 
 
 def test_install_moves_both_kinds(tmp_path):
@@ -386,6 +438,24 @@ def test_prepare_auto_tags_input_set_by_year(tmp_path, monkeypatch):
     live = tmp_path / "inputs" / f"cds-{ERA5_DATA_YEAR}" / "cds-zarr"
     assert (live / (profile_store_stem("TEST", ERA5_DATA_YEAR) + ".zarr")).exists()
     assert (live / (max_cap_store_stem("TEST", ERA5_DATA_YEAR) + ".zarr")).exists()
+
+
+def test_layer_set_separates_the_input_set():
+    """
+    Path separation is what stops a design cache built against one ceiling being reused
+    by a run with another: a different input set means a different zarr_dir and, through
+    it, a different design-cache dir.
+
+    Geometry-only keeps the bare name, which is correct rather than merely convenient --
+    every store that exists today is geometry-only, so renaming them would orphan them.
+    """
+    assert run_cds.default_input_set(2024, []) == "cds-2024"
+    assert run_cds.default_input_set(2024, ["lulc"]) == "cds-2024-lulc"
+    assert run_cds.default_input_set(2024, ["lulc", "cds_exclusion"]) == "cds-2024-lulc+excl"
+    # Argument order must not produce a second name for the same layer set.
+    assert run_cds.default_input_set(2024, ["cds_exclusion", "lulc"]) == run_cds.default_input_set(
+        2024, ["lulc", "cds_exclusion"]
+    )
 
 
 def test_prepare_missing_raw_year_names_download_command(tmp_path, monkeypatch, capsys):

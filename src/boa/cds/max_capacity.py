@@ -1,30 +1,29 @@
 """
-Build max_capacity stores: spherical pixel area x density x LULC usable fraction.
+Build max_capacity stores: spherical pixel area x density x availability layers.
 
 Regenerates the per-region max-capacity ceilings. The original generator was
 never committed, but the shipped files reproduce exactly as
-pixel_area(lat, R=6371.0) x density, with no land-cover signal in them. This
-module adds the land-use term they lack: the ESA-CCI 300 m land-cover class
-map is converted to a per-class usable fraction (settings.LULC_CODES) and
-averaged over each 0.25 deg cell, scaling ONLY the capacity ceiling —
-capacity factors are never touched (CF = per-machine efficiency, LULC = how
-many machines fit).
+pixel_area(lat, R=6371.0) x density, with no availability signal in them.
 
-The ESA-CCI grid is 360 cells/degree, so each 0.25 deg cell covers exactly a
-90x90 block; aggregation is an exact block mean, no reprojection involved.
+The layers scale ONLY the capacity ceiling — capacity factors are never touched
+(CF = per-machine efficiency, availability = how many machines fit). They live in
+boa.cds.availability; this module composes them and records which set was used.
 
-DIVERGENCE from upstream BOA: geometry-only (apply_lulc=False) is the
-production default here and its output installs under the plain store name —
-upstream treats it as a regression mode with a _nolulc suffix. Geometry-only
-reproduces the shipped stores bit-for-bit; the LULC term returns when the
-availability question is settled (the `lulc_source` attr records which one a
-store is).
+Geometry-only (no layers) is the production default and installs under the plain
+store name, reproducing the shipped stores bit-for-bit. A layered build belongs to
+a different input set, since the ceiling it produces is not interchangeable.
+
+Every store carries an `availability_signature` over the layer set and the
+densities. It is what makes a stale store detectable: the ceilings are baked into
+the design cache, so reusing one built from different parameters is wrong with no
+downstream symptom.
 
 Output is a NetCDF (for inspection and the legacy local_nc backend) plus a
 Zarr twin, which is what `boa_cds install` promotes to the live dir.
 """
 
 import datetime
+import json
 import logging
 import shutil
 import time
@@ -33,7 +32,8 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from boa.config.constants import EARTH_RADIUS_KM, ESA_CCI_CELLS_PER_DEG
+from boa.cds.availability import LayerSpec, availability_factor, availability_signature
+from boa.config.constants import EARTH_RADIUS_KM
 from boa.config.paths import PathConfig
 from boa.config.settings import (
     CAPACITY_DENSITY_MW_PER_KM2,
@@ -46,19 +46,12 @@ from boa.store_schema import MAX_CAP_CHUNKS, ZARR_FORMAT, max_cap_store_stem, pr
 
 log = logging.getLogger(__name__)
 
-BLOCK = int(ERA5_DATA_RESOLUTION * ESA_CCI_CELLS_PER_DEG)  # 90
+SIGNATURE_ATTR = "availability_signature"
 
 
 def pixel_area(lat: np.ndarray) -> np.ndarray:
     y_size = ERA5_DATA_RESOLUTION * 2 * np.pi * EARTH_RADIUS_KM / 360
     return y_size * (y_size * np.cos(np.radians(lat)))
-
-
-def fraction_lut(tech: str) -> np.ndarray:
-    lut = np.zeros(256, dtype=np.float32)
-    for code, frac in LULC_CODES[tech].items():
-        lut[code] = frac
-    return lut
 
 
 def target_grid(region: str, path_config: PathConfig) -> tuple[np.ndarray, np.ndarray]:
@@ -82,46 +75,52 @@ def target_grid(region: str, path_config: PathConfig) -> tuple[np.ndarray, np.nd
     return (np.arange(south, north + step / 2, step), np.arange(west, min(east, 180.0 - step) + step / 2, step))
 
 
-def usable_fraction(y: np.ndarray, x: np.ndarray, tech: str, lulc_path: Path) -> np.ndarray:
-    """Mean usable fraction per 0.25 deg cell from exact 90x90 ESA-CCI blocks.
-
-    Cell for node (y, x) spans [y-0.125, y+0.125] x [x-0.125, x+0.125]; the
-    ESA-CCI axes are cell-centred at half-steps of 1/360 deg, so each node's
-    block starts at a computable integer index.
+def store_attrs(layers: list[LayerSpec], density: dict[str, float]) -> dict[str, str]:
     """
-    ds = xr.open_dataset(lulc_path)
-    i0 = int(round((90.0 - (y.max() + ERA5_DATA_RESOLUTION / 2)) * ESA_CCI_CELLS_PER_DEG))
-    j0 = int(round((x.min() - ERA5_DATA_RESOLUTION / 2 + 180.0) * ESA_CCI_CELLS_PER_DEG))
-    ny, nx = len(y), len(x)
-    codes = (
-        ds["lccs_class"]
-        .isel(
-            time=0,
-            lat=slice(i0, i0 + ny * BLOCK),
-            lon=slice(j0, j0 + nx * BLOCK),
-        )
-        .values
-    )  # uint8, (ny*90, nx*90); ESA lat axis is descending
-    ds.close()
+    Self-describing provenance for a max-capacity store.
 
-    frac = fraction_lut(tech)[codes]
-    frac = frac.reshape(ny, BLOCK, nx, BLOCK).mean(axis=(1, 3))
-    return frac[::-1]  # flip to ascending latitude to match the y axis
+    `availability_signature` is the load-bearing entry: it is what a later run compares
+    against to decide whether a store on disk was built from the parameters now being
+    asked for. The per-layer source and params are for a human reading the store; the
+    signature is for the machine.
+
+    `lulc_source` and `lulc_codes` are kept as deprecated aliases for one release, so a
+    reader written against the pre-layer stores still finds what it expects.
+    """
+    names = [spec.name for spec in layers]
+    attrs = {
+        "description": "Maximum installable capacity per pixel (MW)",
+        "method": f"pixel_area(lat, R={EARTH_RADIUS_KM} km) x density"
+        + (" x " + " x ".join(names) if names else " (no availability layers)"),
+        "density_mw_per_km2": str(density),
+        "availability_layers": ",".join(names),
+        SIGNATURE_ATTR: availability_signature(layers, density),
+        "generated_by": "boa.cds.max_capacity",
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+    }
+    for spec in layers:
+        attrs[f"layer_{spec.name}_source"] = spec.source
+        attrs[f"layer_{spec.name}_params"] = json.dumps(spec.params, sort_keys=True)
+
+    lulc = next((spec for spec in layers if spec.name == "lulc"), None)
+    attrs["lulc_source"] = lulc.source if lulc else "none"
+    attrs["lulc_codes"] = str(LULC_CODES) if lulc else "n/a"
+    return attrs
 
 
 def build_region(
     region: str,
     out_dir: Path,
     path_config: PathConfig,
-    apply_lulc: bool = False,
-    lulc_path: Path | None = None,
+    layers: list[LayerSpec] | None = None,
     pv_density: float = CAPACITY_DENSITY_MW_PER_KM2["pv"],
     wind_density: float = CAPACITY_DENSITY_MW_PER_KM2["wind"],
     year: int = ERA5_DATA_YEAR,
 ) -> Path:
-    """Build one region's ceiling; `year` only stamps the filename — the data
-    depends solely on the LULC map and the densities."""
-    log.info(f"Building max_capacity for {region} (lulc={'on' if apply_lulc else 'off'})")
+    """Build one region's ceiling; `year` only stamps the filename — the data depends
+    solely on the availability layers and the densities."""
+    layers = layers or []
+    log.info(f"Building max_capacity for {region} (layers: {','.join(s.name for s in layers) or 'none'})")
     t0 = time.perf_counter()
     y, x = target_grid(region, path_config)
     areas = pixel_area(y)[:, None]
@@ -130,23 +129,12 @@ def build_region(
     data = {}
     for tech in ["pv", "wind"]:
         cap = np.broadcast_to(areas * density[tech], (len(y), len(x))).astype("float64")
-        if apply_lulc:
-            if lulc_path is None:
-                raise ValueError("apply_lulc=True requires lulc_path")
-            cap = cap * usable_fraction(y, x, tech, lulc_path)
+        if layers:
+            cap = cap * availability_factor(y, x, tech, layers)
         data[tech] = xr.DataArray(cap, coords={"y": y, "x": x}, dims=["y", "x"])
 
     ds = xr.Dataset(data)
-    ds.attrs = {
-        "description": "Maximum installable capacity per pixel (MW)",
-        "method": f"pixel_area(lat, R={EARTH_RADIUS_KM} km) x density"
-        + (" x ESA-CCI usable land fraction" if apply_lulc else " (no land-use term)"),
-        "density_mw_per_km2": str(density),
-        "lulc_source": (lulc_path.name if apply_lulc else "none"),
-        "lulc_codes": (str(LULC_CODES) if apply_lulc else "n/a"),
-        "generated_by": "boa.cds.max_capacity",
-        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-    }
+    ds.attrs = store_attrs(layers, density)
     nc_dir = out_dir / "cav"
     nc_dir.mkdir(parents=True, exist_ok=True)
     out = nc_dir / (max_cap_store_stem(region, year) + ".nc")

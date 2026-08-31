@@ -12,8 +12,10 @@ import os
 import shutil
 from pathlib import Path
 
+import numpy as np
 import xarray as xr
 
+from boa.cds.max_capacity import SIGNATURE_ATTR
 from boa.config.settings import ERA5_DATA_YEAR
 from boa.store_schema import max_cap_store_stem, profile_store_stem
 
@@ -40,8 +42,44 @@ def validate_store(path: Path, kind: str) -> None:
         for var in ds.data_vars:
             if tuple(ds[var].dims) != expected["dims"]:
                 raise ValueError(f"{path.name}: {var} dims {tuple(ds[var].dims)} != expected {expected['dims']}")
+        if kind == "max-cap":
+            _validate_max_cap(ds, path)
     finally:
         ds.close()
+
+
+def _validate_max_cap(ds: xr.Dataset, path: Path) -> None:
+    """
+    A ceiling store must say what built it, and must hold plausible ceilings.
+
+    The signature is required rather than optional because it is what a later run
+    compares to decide whether a store can be reused. A store without one cannot be
+    checked at all, and the ceilings it holds get baked into the design cache where
+    nothing downstream can notice they came from different parameters.
+
+    The value check exists because an availability layer is one sign away from
+    catastrophe: a mask inverted the wrong way produces negative ceilings, which would
+    otherwise surface only as a world that had become uniformly infeasible.
+    """
+    if not ds.attrs.get(SIGNATURE_ATTR):
+        raise ValueError(
+            f"{path.name}: no {SIGNATURE_ATTR} attr. It is written by boa.cds.max_capacity; "
+            "a store without one predates the availability layers and must be rebuilt."
+        )
+    for var in ds.data_vars:
+        values = ds[var].values
+        if not np.isfinite(values).all():
+            raise ValueError(f"{path.name}: {var} holds non-finite ceilings")
+        if (values < 0).any():
+            raise ValueError(f"{path.name}: {var} holds negative ceilings (an inverted availability layer?)")
+
+
+def stored_signature(path: Path) -> str | None:
+    """The availability signature a max-capacity store was built with, or None."""
+    if not path.exists():
+        return None
+    with xr.open_zarr(path, consolidated=True) as ds:
+        return ds.attrs.get(SIGNATURE_ATTR)
 
 
 def install_store(
