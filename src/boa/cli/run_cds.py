@@ -47,7 +47,7 @@ from boa.cds import convert as cds_convert
 from boa.cds import download as cds_download
 from boa.cds import install as cds_install
 from boa.cds import max_capacity as cds_max_capacity
-from boa.cds.spec import CDS_VARS, TECHS, lulc_nc_name, masks_extract_dir_name
+from boa.cds.spec import CDS_VARS, LULC_DATASET, TECHS, lulc_nc_name, masks_extract_dir_name
 from boa.config.paths import DEFAULT_SET, PathConfig
 from boa.config.settings import CAPACITY_DENSITY_MW_PER_KM2, ERA5_DATA_YEAR, REGION_COORDS
 from boa.store_schema import max_cap_store_stem, profile_store_stem
@@ -326,22 +326,48 @@ def main_download(argv: list[str]) -> int:
     )
     parser.add_argument("--month", action="append", help="Month to download, e.g. 01 (repeatable; default: all 12)")
     parser.add_argument("--out-dir", type=Path, help="Output directory (default: data/cds/)")
+    parser.add_argument(
+        "--masks",
+        action="store_true",
+        help="Also fetch the static mask bundle, which carries the per-technology exclusion masks "
+        "the cds_exclusion availability layer reads (small; one request)",
+    )
+    parser.add_argument(
+        "--lulc",
+        action="store_true",
+        help=f"Also fetch the ESA-CCI land-cover raster the lulc availability layer reads "
+        f"(~2.35 GB, {LULC_DATASET}). Its licence must be accepted once on the CDS account by hand.",
+    )
+    parser.add_argument(
+        "--skip-capacity-factors",
+        action="store_true",
+        help="Fetch only what --masks/--lulc ask for, leaving the capacity factors alone",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print requests without downloading")
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)
 
+    if args.skip_capacity_factors and not (args.masks or args.lulc):
+        logging.error("--skip-capacity-factors leaves nothing to do; add --masks and/or --lulc")
+        return 1
     if not args.dry_run and not cds_download.cdsapi_available():
         logging.error(cds_download.CDSAPI_INSTALL_HINT)
         return 1
 
     path_config = PathConfig.from_auto_detect(input_set=DEFAULT_SET)  # raw dir is input-set-independent
-    cds_download.download_capacity_factors(
-        out_dir=args.out_dir or path_config.cds_dir,
-        techs=args.tech or list(TECHS),
-        years=args.year or [str(ERA5_DATA_YEAR)],
-        months=args.month,
-        dry_run=args.dry_run,
-    )
+    if not args.skip_capacity_factors or args.masks:
+        cds_download.download_capacity_factors(
+            out_dir=args.out_dir or path_config.cds_dir,
+            techs=[] if args.skip_capacity_factors else (args.tech or list(TECHS)),
+            years=args.year or [str(ERA5_DATA_YEAR)],
+            months=args.month,
+            masks=args.masks,
+            dry_run=args.dry_run,
+        )
+    if args.lulc:
+        # Not under the input set: the raster is provider data, identical for every set,
+        # and re-fetching 2.35 GB per set is why this was never wired up before.
+        cds_download.download_lulc(out_dir=path_config.lulc_dir, dry_run=args.dry_run)
     return 0
 
 

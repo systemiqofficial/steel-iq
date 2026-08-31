@@ -49,3 +49,17 @@ def test_explicit_run_name_and_defaults(tmp_path):
 def test_from_auto_detect_uses_env_root(monkeypatch, tmp_path):
     monkeypatch.setenv("BOA_DATA_ROOT", str(tmp_path))
     assert PathConfig.from_auto_detect(input_set="x").inputs_dir == tmp_path / "inputs" / "x"
+
+
+def test_lulc_dir_is_input_set_independent(tmp_path):
+    """
+    The 2.35 GB land-cover raster is provider data, identical for every input set. Under
+    `inputs/<set>/` it would have to be re-fetched per set, which is the likeliest reason
+    `lulc_dir` was declared and never wired up.
+    """
+    a = PathConfig.from_root(tmp_path, input_set="cds-2024")
+    b = PathConfig.from_root(tmp_path, input_set="cds-2024-lulc+excl")
+
+    assert a.lulc_dir == tmp_path / "data" / "lulc"
+    assert a.lulc_dir == b.lulc_dir
+    assert a.zarr_dir != b.zarr_dir, "the derived stores must still separate by input set"
