@@ -16,7 +16,7 @@ import boa
 from boa.config import settings
 from boa.config.paths import PathConfig
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _sha256(path) -> str | None:
@@ -38,6 +38,24 @@ def _git_sha() -> str | None:
         return None
 
 
+def _availability_signature(path_config: PathConfig) -> str | None:
+    """
+    The availability signature the installed ceiling stores were built with.
+
+    Recorded so the drift guard actually fires: the ceilings are baked into the design
+    cache, so rebuilding max-capacity against a different layer set or density and then
+    reusing a warm cache is wrong with no downstream symptom. `mixed:` marks a live dir
+    holding stores from more than one build, which is itself the thing to notice.
+    """
+    from boa.cds.install import stored_signature  # lazy: config must not import the cds package
+
+    stores = sorted(path_config.zarr_dir.glob("max_capacity_*.zarr")) if path_config.zarr_dir.exists() else []
+    found = {sig for sig in (stored_signature(store) for store in stores) if sig}
+    if not found:
+        return None
+    return found.pop() if len(found) == 1 else "mixed:" + ",".join(sorted(found))
+
+
 def provenance(path_config: PathConfig) -> dict[str, Any]:
     """Everything that must stay fixed within a run."""
     from boa.inputs.profiles import detect_weather_year  # lazy: config must stay importable without the inputs package
@@ -50,6 +68,7 @@ def provenance(path_config: PathConfig) -> dict[str, Any]:
         "input_set": path_config.input_set,
         "cost_set": path_config.cost_set,
         "input_data_sha256": _sha256(path_config.input_data_path),
+        "availability_signature": _availability_signature(path_config),
         "boa_version": boa.__version__,
         "settings": {
             "random_seed": settings.RANDOM_SEED,
@@ -86,6 +105,15 @@ def record_invocation(
             "provenance": current,
             "invocations": [],
         }
+    elif manifest.get("schema_version") != SCHEMA_VERSION:
+        # A v1 manifest predates `availability_signature`, so every field-by-field
+        # comparison against it would report a spurious difference. Refuse rather than
+        # guess which of the two provenances the outputs in this dir actually came from.
+        raise RuntimeError(
+            f"Run '{path_config.run}' has a schema-{manifest.get('schema_version')} manifest, "
+            f"but this build writes schema {SCHEMA_VERSION}. Its outputs predate the "
+            f"availability signature and cannot be verified against it -- use a new --run."
+        )
     else:
         diffs = {
             k: (manifest["provenance"].get(k), v) for k, v in current.items() if manifest["provenance"].get(k) != v

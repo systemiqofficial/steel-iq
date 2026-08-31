@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from boa.config.paths import PathConfig
@@ -40,3 +42,27 @@ def test_refuses_mixed_provenance(tmp_path):
     cfg.input_data_path.write_bytes(b"xlsx-v2")
     with pytest.raises(RuntimeError, match="input_data_sha256"):
         run_manifest.record_invocation(cfg, "query", [])
+
+
+def test_v1_manifest_is_refused_rather_than_compared(tmp_path):
+    """
+    `provenance` gained `availability_signature`, which a schema-1 manifest cannot have.
+    Comparing field by field would report a spurious difference on every key that moved,
+    so a stale-schema manifest is refused with an actionable message instead.
+    """
+    path_config = _cfg(tmp_path, input_set="cds", cost_set="c1", run="legacy")
+    path_config.run_dir.mkdir(parents=True, exist_ok=True)
+    path_config.run_manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run": "legacy",
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "provenance": {"input_set": path_config.input_set, "cost_set": path_config.cost_set},
+                "invocations": [],
+            }
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="new --run"):
+        run_manifest.record_invocation(path_config, "boa-run", [])

@@ -13,8 +13,11 @@ wrong number, and the only downstream symptom is a world that has become
 unexpectedly infeasible.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
+import xarray as xr
 
 from _gate import require
 
@@ -98,6 +101,53 @@ def test_lulc_fraction_is_bounded(lulc_raster):
     for tech in ("pv", "wind"):
         frac = availability.lulc_fraction(CELL_LAT, CELL_LONS, tech, lulc_raster)
         assert np.all(frac >= 0.0) and np.all(frac <= 1.0)
+
+
+def _write_lulc(path: Path, codes: np.ndarray) -> None:
+    """ESA-CCI-style file: uint8 lccs_class with a leading time dim, lat descending."""
+    da = xr.DataArray(
+        codes[None, :, :].astype("uint8"),
+        coords={
+            "time": [np.datetime64("2022-01-01")],
+            "lat": np.linspace(90, 89, codes.shape[0]),
+            "lon": np.linspace(-180, -179, codes.shape[1]),
+        },
+        dims=("time", "lat", "lon"),
+        name="lccs_class",
+    )
+    da.to_dataset().to_netcdf(path)
+
+
+def test_block_mean_and_latitude_flip_over_two_rows(tmp_path):
+    """
+    Moved here from test_cds_pipeline when `usable_fraction` became `lulc_fraction`.
+
+    Two cells stacked in *latitude*, which is what makes it a real flip test: the
+    shared-fixture cells sit side by side in longitude, so a missing flip would not
+    show up there.
+    """
+    # Two 0.25 deg cells stacked in latitude near the north-west corner of the
+    # global ESA grid, so the computed start indices stay small: y rows begin at
+    # (90 - (89.75 + 0.125)) * 360 = 45, x columns at (-179.875 + 180) * 360 = 45.
+    y = np.array([89.5, 89.75])
+    x = np.array([-179.75])
+    block = availability.BLOCK  # 90
+    codes = np.zeros((45 + 2 * block, 45 + block), dtype=np.uint8)
+    # Top ESA block (higher latitude, y=89.75): urban, pv fraction 0.024.
+    codes[45 : 45 + block, 45:] = 190
+    # Bottom block (y=89.5): half bare (0.33), half unlisted code 50 (-> 0).
+    codes[45 + block :, 45 : 45 + block // 2] = 200
+    codes[45 + block :, 45 + block // 2 :] = 50
+    lulc_path = tmp_path / "lulc.nc"
+    _write_lulc(lulc_path, codes)
+
+    frac = availability.lulc_fraction(y, x, "pv", lulc_path)
+    assert frac.shape == (2, 1)
+    np.testing.assert_allclose(frac[1, 0], 0.024, rtol=1e-6)  # y=89.75 (top block)
+    np.testing.assert_allclose(frac[0, 0], 0.33 / 2, rtol=1e-6)  # y=89.5, half usable
+    # Wind has no urban entry -> the 190 block is fully excluded.
+    frac_wind = availability.lulc_fraction(y, x, "wind", lulc_path)
+    np.testing.assert_allclose(frac_wind[1, 0], 0.0)
 
 
 # --------------------------------------------------------------------------

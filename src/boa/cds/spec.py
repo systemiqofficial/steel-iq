@@ -69,6 +69,11 @@ def masks_zip_name(tech_spec: str = CDS_TECH_SPEC, resolution: str = CDS_RESOLUT
     return f"cds_masks_{tech_spec}_{resolution}.zip"
 
 
+def masks_extract_dir_name(tech_spec: str = CDS_TECH_SPEC, resolution: str = CDS_RESOLUTION) -> str:
+    """Directory the mask bundle is extracted to (the exclusion masks live here)."""
+    return masks_zip_name(tech_spec, resolution)[: -len(".zip")]
+
+
 def lulc_nc_name(year: int = LULC_YEAR, version: str = LULC_VERSION) -> str:
     """NetCDF filename inside the ESA-CCI land-cover delivery, e.g.
     C3S-LC-L4-LCCS-Map-300m-P1Y-2022-v2.1.1.nc."""

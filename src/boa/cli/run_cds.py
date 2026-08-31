@@ -42,11 +42,12 @@ from rich.progress import (
     track,
 )
 
+from boa.cds import availability as cds_availability
 from boa.cds import convert as cds_convert
 from boa.cds import download as cds_download
 from boa.cds import install as cds_install
 from boa.cds import max_capacity as cds_max_capacity
-from boa.cds.spec import CDS_VARS, TECHS
+from boa.cds.spec import CDS_VARS, TECHS, lulc_nc_name, masks_extract_dir_name
 from boa.config.paths import DEFAULT_SET, PathConfig
 from boa.config.settings import CAPACITY_DENSITY_MW_PER_KM2, ERA5_DATA_YEAR, REGION_COORDS
 from boa.store_schema import max_cap_store_stem, profile_store_stem
@@ -120,6 +121,66 @@ def _missing_raw_techs(cds_dir: Path, year: int) -> list[str]:
     return missing
 
 
+def _add_layer_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--layers",
+        default="",
+        help=(
+            "Comma-separated availability layers applied to the capacity ceiling "
+            f"(known: {','.join(cds_availability.LAYER_ORDER)}; default: none, pure geometry). "
+            "A layer set is part of the input-set identity, so a layered build lands in its "
+            "own input set rather than overwriting the geometry-only stores."
+        ),
+    )
+    parser.add_argument("--lulc-path", type=Path, help="ESA-CCI land-cover NetCDF (default: under the lulc dir)")
+    parser.add_argument("--masks-dir", type=Path, help="CDS exclusion mask directory (default: under the raw CDS dir)")
+
+
+def _resolve_layers(args: argparse.Namespace, path_config: PathConfig) -> list[cds_availability.LayerSpec]:
+    """Turn `--layers` into configured specs, defaulting each layer's source path."""
+    names = [name.strip() for name in args.layers.split(",") if name.strip()]
+    if not names:
+        return []
+    return cds_availability.layer_specs(
+        names,
+        lulc_path=args.lulc_path or (path_config.lulc_dir / lulc_nc_name()),
+        masks_dir=args.masks_dir or (path_config.cds_dir / masks_extract_dir_name()),
+    )
+
+
+def default_input_set(year: int, layer_names: list[str]) -> str:
+    """
+    The input-set name a prepare defaults to.
+
+    The layer set is part of the input-set identity. Different ceilings then land in
+    different zarr_dirs and, through them, different design-cache dirs, so a cache built
+    against one ceiling cannot be reused by a run with another. Geometry-only keeps the
+    bare `cds-<year>` name it has always had, which is correct rather than merely
+    convenient: geometry-only is what every existing store already holds.
+    """
+    if not layer_names:
+        return f"cds-{year}"
+    return f"cds-{year}-{cds_availability.availability_tag(layer_names)}"
+
+
+def _max_cap_rebuild_reason(live: Path, region: str, year: int, signature: str) -> str | None:
+    """Why this region's ceiling store cannot be reused, or None if it can.
+
+    Presence alone is not enough. The ceilings are baked into the design cache, so a store
+    built from a different layer set or different densities is silently wrong rather than
+    merely stale -- which is exactly the defect the signature exists to catch.
+    """
+    store = live / (max_cap_store_stem(region, year) + ".zarr")
+    if not store.exists():
+        return "missing"
+    stored = cds_install.stored_signature(store)
+    if stored is None:
+        return "no availability signature (built before layers existed)"
+    if stored != signature:
+        return f"availability changed: {stored} -> {signature}"
+    return None
+
+
 def main_prepare(argv: list[str]) -> int:
     parser = _parser(
         "prepare",
@@ -132,6 +193,7 @@ def main_prepare(argv: list[str]) -> int:
         "--region", action="append", help="Region to prepare (repeatable; default: all production regions)"
     )
     _add_density_args(parser)
+    _add_layer_args(parser)
     parser.add_argument(
         "--force", action="store_true", help="Rebuild and reinstall every region store even if it already exists"
     )
@@ -146,8 +208,12 @@ def main_prepare(argv: list[str]) -> int:
     regions = args.region or list(REGION_COORDS)
     year = args.weather_year
 
-    input_set = args.inputs or f"cds-{year}"
+    layer_names = [name.strip() for name in args.layers.split(",") if name.strip()]
+    input_set = args.inputs or default_input_set(year, layer_names)
     path_config = PathConfig.from_auto_detect(input_set=input_set)
+    layers = _resolve_layers(args, path_config)
+    densities = {"pv": args.pv_density, "wind": args.wind_density}
+    signature = cds_availability.availability_signature(layers, densities)
     live = path_config.zarr_dir
     staging = path_config.cds_staging_dir
     console.print(
@@ -157,8 +223,16 @@ def main_prepare(argv: list[str]) -> int:
     console.print(f"  staging     [dim]{staging}[/dim]")
     console.print(f"  live stores [dim]{live}[/dim]")
 
+    console.print(
+        f"  availability [cyan]{','.join(layer_names) or 'none (pure geometry)'}[/cyan] [dim]{signature}[/dim]"
+    )
+
     need_profile = [r for r in regions if args.force or not (live / (profile_store_stem(r, year) + ".zarr")).exists()]
-    need_max_cap = [r for r in regions if args.force or not (live / (max_cap_store_stem(r, year) + ".zarr")).exists()]
+    rebuild_reasons = {r: _max_cap_rebuild_reason(live, r, year, signature) for r in regions}
+    need_max_cap = [r for r in regions if args.force or rebuild_reasons[r] is not None]
+    for region in need_max_cap:
+        if not args.force and rebuild_reasons[region] != "missing":
+            console.print(f"  [yellow]rebuilding {region} max-capacity: {rebuild_reasons[region]}[/yellow]")
     complete = [r for r in regions if r not in need_profile and r not in need_max_cap]
     if complete:
         console.print(
@@ -209,7 +283,13 @@ def main_prepare(argv: list[str]) -> int:
     if need_max_cap:
         for region in track(need_max_cap, description="Building max-capacity...", console=console):
             cds_max_capacity.build_region(
-                region, staging, path_config, pv_density=args.pv_density, wind_density=args.wind_density, year=year
+                region,
+                staging,
+                path_config,
+                layers=layers,
+                pv_density=args.pv_density,
+                wind_density=args.wind_density,
+                year=year,
             )
         console.print(f"[green]✓ Built {len(need_max_cap)} max-capacity store(s).[/green]")
 
