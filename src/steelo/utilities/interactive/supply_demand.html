@@ -4,8 +4,16 @@
 <meta charset="utf-8">
 <title>Supply and demand</title>
 <style>__COMMON_CSS__</style>
-<!-- The shared .toolbar display:flex would override the hidden attribute on the grade row. -->
-<style>#grade-panel[hidden] { display: none; }</style>
+<style>
+/* The ore-grade ticks sit on their own row between the top controls and the geography
+   filter, styled like the shell's technologies row; the flex display would otherwise
+   override the hidden attribute. */
+#grade-panel { display: flex; align-items: center; gap: 4px 14px; flex-wrap: wrap; padding: 8px 40px 0; }
+#grade-panel[hidden] { display: none; }
+#grade-label { font-size: 12px; color: #52514e; margin: 0; }
+#grade-panel label.inline { display: inline-flex; align-items: center; gap: 4px; font-size: 12px;
+                            color: #0b0b0b; margin: 0; padding: 0; cursor: pointer; white-space: nowrap; }
+</style>
 </head>
 <body>
 <div id="err"></div>
@@ -38,11 +46,8 @@ window.addEventListener("error", function(e) {
     <label class="inline"><input type="checkbox" id="avail-toggle" checked>Availability line</label>
   </div>
 </div>
-<!-- Own row between the chart's controls and the geography filter, like the shell's technology row. -->
-<div class="toolbar" id="grade-panel" hidden>
-  <div class="ticks">
-    <label>Ore grades</label>
-  </div>
+<div id="grade-panel" hidden>
+  <label id="grade-label">Ore grades<button id="grade-all" class="small-btn">All</button><button id="grade-none" class="small-btn">None</button></label>
 </div>
 <div class="toolbar" id="shared-filters"></div>
 <div id="summary"></div>
@@ -110,7 +115,7 @@ function partlyCoveredBudgets(availRows, selectedGeo) {
 /* Grade tickboxes, built from the grades in the data; visible on the ore tab only. */
 const gradeCbs = new Map();
 {
-  const panel = document.querySelector("#grade-panel .ticks");
+  const panel = document.getElementById("grade-panel");
   const grades = [...new Set(Object.values(DATA).flatMap(d => d.rows.concat(d.avail).filter(r => r.s).map(r => r.s)))]
     .sort((a, b) => GRADE_ORDER.indexOf(a) - GRADE_ORDER.indexOf(b));
   grades.forEach(grade => {
@@ -125,6 +130,9 @@ const gradeCbs = new Map();
     panel.appendChild(label);
     gradeCbs.set(grade, cb);
   });
+  const setAllGrades = checked => { gradeCbs.forEach(cb => cb.checked = checked); render(); };
+  document.getElementById("grade-all").addEventListener("click", () => setAllGrades(true));
+  document.getElementById("grade-none").addEventListener("click", () => setAllGrades(false));
 }
 
 function selectedGrades() {

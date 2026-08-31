@@ -8,6 +8,12 @@
 /* The analysis snippets carry this viewer's headline numbers — darker and a touch
    larger than the shared summary styling, with a gap before the chart title below. */
 #summary { font-size: 13px; color: #0b0b0b; padding-bottom: 14px; }
+/* The commodity ticks sit on their own row between the top controls and the
+   technologies row, styled like the technologies row. */
+#commodity-panel { display: flex; align-items: center; gap: 4px 14px; flex-wrap: wrap; padding: 8px 40px 0; }
+#commodity-label { font-size: 12px; color: #52514e; margin: 0; }
+#commodity-panel label.inline { display: inline-flex; align-items: center; gap: 4px; font-size: 12px;
+                                color: #0b0b0b; margin: 0; padding: 0; cursor: pointer; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -32,9 +38,6 @@ window.addEventListener("error", function(e) {
   <div>
     <label for="year-select">Year</label>
     <select id="year-select"></select>
-  </div>
-  <div class="ticks" id="commodity-panel">
-    <label id="commodity-label">Iron products</label>
   </div>
   <div>
     <label for="group-select">Group by</label>
@@ -69,6 +72,9 @@ window.addEventListener("error", function(e) {
   <div>
     <label class="inline"><input type="checkbox" id="domestic-toggle">Hide domestic (diagonal)</label>
   </div>
+</div>
+<div id="commodity-panel">
+  <label id="commodity-label">Iron products<button id="commodity-all" class="small-btn">All</button><button id="commodity-none" class="small-btn">None</button></label>
 </div>
 <div class="toolbar" id="shared-filters"></div>
 <div id="summary"></div>
@@ -237,7 +243,8 @@ function syncProduct() {
   commodityProduct = product;
   const panel = document.getElementById("commodity-panel");
   panel.querySelectorAll("label.inline").forEach(node => node.remove());
-  document.getElementById("commodity-label").textContent = PRODUCTS[product].ticks;
+  // The label's first child is its text node; the All/None buttons behind it stay put.
+  document.getElementById("commodity-label").firstChild.textContent = PRODUCTS[product].ticks;
   commodityCbs.clear();
   const commodities = productCommodities(product);
   commodities.forEach(c => {
@@ -264,6 +271,9 @@ function syncProduct() {
   const domestic = document.getElementById("domestic-toggle");
   domestic.disabled = labelled;
   domestic.parentElement.style.color = labelled ? T.grid : "";
+  // Mine and supplier origins carry no technology, so the technologies row is noise there.
+  const techPanel = document.getElementById("tech-panel");
+  if (techPanel) techPanel.style.display = labelled || PRODUCTS[product].supplierOrigins ? "none" : "";
 }
 
 function selectedCommodities() {
@@ -404,6 +414,9 @@ function initControls() {
   if (!blocs().length) document.querySelector('#group-select option[value="bloc"]').remove();
   ["product-select", "year-select", "group-select", "bloc-select", "show-select", "values-select", "domestic-toggle"]
     .forEach(id => document.getElementById(id).addEventListener("change", render));
+  const setAllCommodities = checked => { commodityCbs.forEach(cb => cb.checked = checked); render(); };
+  document.getElementById("commodity-all").addEventListener("click", () => setAllCommodities(true));
+  document.getElementById("commodity-none").addEventListener("click", () => setAllCommodities(false));
   // Mine origins are labels, not countries, so they stay out of the geography filter;
   // suppliers carry no technology, so only plant rows feed the technology filter.
   Interactive.init({geoKeys: allRows.flatMap(r => PRODUCTS[r.p].labelledOrigins ? [r.d] : [r.o, r.d]),
