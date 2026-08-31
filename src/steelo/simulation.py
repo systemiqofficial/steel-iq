@@ -1511,6 +1511,12 @@ class SimulationRunner:
                 ),
             )
             interactive.plot_trade_matrix(tm_dir=self.config.output_dir / "TM")
+            fixtures_dir = self.config.data_dir / "fixtures" if self.config.data_dir else None
+            interactive.plot_supply_demand(
+                tm_dir=self.config.output_dir / "TM",
+                suppliers_json=fixtures_dir / "suppliers.json" if fixtures_dir else None,
+                biomass_availability_json=fixtures_dir / "biomass_availability.json" if fixtures_dir else None,
+            )
 
         # Aggregate per-year LCOE/LCOH statistics into stacked CSVs
         aggregate_lcoe_lcoh_statistics(self.config.output_dir, start_year, end_year)

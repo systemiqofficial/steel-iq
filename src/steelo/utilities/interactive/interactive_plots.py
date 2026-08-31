@@ -25,7 +25,7 @@ from plotly.offline import get_plotlyjs
 from steelo.domain.models import CountryMapping
 from steelo.utilities.plotting import region2colours, tech2colours
 
-from . import capacity_production, cost_curves, emissions, trade_matrix
+from . import capacity_production, cost_curves, emissions, supply_demand, trade_matrix
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +275,77 @@ class InteractivePlotter:
         }
         path = self._write("trade_matrix.html", self._config("Trade matrix"), data)
         logger.info("Wrote trade-matrix viewer %s (%d flows over %d years)", path, len(flows), len(files))
+        return path
+
+    def plot_supply_demand(
+        self,
+        tm_dir: Path,
+        suppliers_json: Optional[Path] = None,
+        biomass_availability_json: Optional[Path] = None,
+    ) -> Optional[Path]:
+        """Write the supply and demand viewer (``supply_demand.html``).
+
+        Args:
+            tm_dir: The run's ``TM`` output directory holding ``steel_trade_allocations_<year>.csv``,
+                which gives every commodity's use (and the steel demand).
+            suppliers_json: The prepared ``fixtures/suppliers.json``, for scrap and ore
+                availability. None (or a missing file) omits those availabilities with a warning.
+            biomass_availability_json: The prepared ``fixtures/biomass_availability.json``,
+                for the CO2 storage limits and biomass budgets. None (or a missing file)
+                omits them with a warning.
+
+        Returns:
+            The written path, or None when no allocation file exists or one cannot be read
+            (logged as warnings so the plot stage never fails).
+        """
+        from steelo.adapters.repositories.json_repository import (
+            BiomassAvailabilityJsonRepository,
+            SupplierJsonRepository,
+        )
+
+        files = trade_matrix.allocation_files(tm_dir)
+        if not files:
+            logger.warning("No steel_trade_allocations_<year>.csv under %s — skipping the supply-demand viewer", tm_dir)
+            return None
+        resolve = supply_demand.geo_resolver(self.country_mappings)
+        try:
+            used, steel_demand = supply_demand.read_usage(files, resolve)
+        except ValueError as exc:
+            logger.warning("%s — skipping the supply-demand viewer", exc)
+            return None
+
+        suppliers = []
+        if suppliers_json is not None and suppliers_json.is_file():
+            suppliers = SupplierJsonRepository(suppliers_json).list()
+        else:
+            logger.warning("No suppliers fixture at %s — scrap and ore availability omitted", suppliers_json)
+        biomass_items = []
+        if biomass_availability_json is not None and biomass_availability_json.is_file():
+            biomass_items = BiomassAvailabilityJsonRepository(biomass_availability_json).list()
+        else:
+            logger.warning(
+                "No biomass availability fixture at %s — CO2 storage and biomass limits omitted",
+                biomass_availability_json,
+            )
+        avail, region_budgets = supply_demand.availability_rows(
+            suppliers, biomass_items, self.country_mappings, set(files)
+        )
+        avail = pd.concat([avail, steel_demand.assign(group="steel", grade="")], ignore_index=True)
+
+        data = {
+            self.run_title: {
+                "title": self.run_title,
+                "provenance": "Use and steel demand from TM/steel_trade_allocations_<year>.csv; scrap and ore "
+                "availability from fixtures/suppliers.json; CO2 storage and biomass limits from "
+                "fixtures/biomass_availability.json.",
+                "years": list(files),
+                "rows": supply_demand.pack_rows(used),
+                "avail": supply_demand.pack_rows(avail),
+            },
+        }
+        config = self._config("Supply and demand", regionBudgets=region_budgets)
+        path = self._write("supply_demand.html", config, data)
+        logger.info("Wrote supply-demand viewer %s (%d usage rows over %d years)", path, len(used), len(files))
         return path
 
     def _config(self, chart_title: str, **chart_config: Any) -> dict[str, Any]:

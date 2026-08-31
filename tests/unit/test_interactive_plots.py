@@ -5,8 +5,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from steelo.domain.models import CountryMapping
+from steelo.adapters.repositories.json_repository import BiomassAvailabilityJsonRepository, SupplierJsonRepository
+from steelo.domain.models import BiomassAvailability, CountryMapping, Location, Supplier, Year
+from steelo.domain.models import Volumes
 from steelo.utilities.interactive import InteractivePlotter, clearing_config, interactive_plots
+from steelo.utilities.interactive import supply_demand
 
 BOUNDARY = "worldsteel_opt_credits"
 CLEARING = clearing_config(
@@ -183,3 +186,154 @@ def test_plot_trade_matrix_writes_self_contained_viewer(tmp_path) -> None:
     assert '"years": [2025, 2026]' in html
     assert '{"y": 2025, "p": "steel", "c": "steel", "o": "CHN", "d": "IND", "t": "BOF", "v": 2.0}' in html
     assert plotter.plot_trade_matrix(tmp_path / "absent") is None
+
+
+def supply_demand_country_mappings() -> list[CountryMapping]:
+    """Three countries with TIAM-UCL regions, one of them commonly labelled with an ampersand."""
+    common = {"irena_name": "", "ssp_region": ""}
+    return [
+        CountryMapping(
+            country="China", iso2="CN", iso3="CHN", region_for_outputs="China", tiam_ucl_region="CHI", **common
+        ),
+        CountryMapping(
+            country="Germany", iso2="DE", iso3="DEU", region_for_outputs="Europe", tiam_ucl_region="WEU", **common
+        ),
+        CountryMapping(
+            country="Bosnia and Herzegovina",
+            iso2="BA",
+            iso3="BIH",
+            region_for_outputs="Europe",
+            tiam_ucl_region="EEU",
+            **common,
+        ),
+    ]
+
+
+def write_supply_demand_allocations(tm_dir: Path) -> None:
+    """One allocation file with steel to a demand centre, scrap, a label-only ore mine and bio-PCI."""
+    tm_dir.mkdir(parents=True, exist_ok=True)
+    header = "commodity,source_type,source_id,source_location,capacity_at_source,source_tech,destination_type,"
+    header += (
+        "destination_id,destination_location,allocated_volume,allocation_cost,demand_at_destination,supply_at_source"
+    )
+    loc = (
+        "Location(lat=1.0, lon=2.0, country='{0}', region='R', iso3='{1}', distance_to_other_iso3=None, geo_unit=None)"
+    )
+    deu, chn = loc.format("Germany", "DEU"), loc.format("China", "CHN")
+    mine = loc.format("Bosnia & Herzegovina", "")
+    rows = [
+        # Two plants supply the same demand centre: its demand counts once, deliveries sum.
+        f'steel,Plant-FurnaceGroup,P1_0,"{deu}",1e6,EAF,DemandCenter,China_2,"{chn}",1000000.0,0,2000000.0,N/A',
+        f'steel,Plant-FurnaceGroup,P2_0,"{chn}",1e6,BOF,DemandCenter,China_2,"{chn}",500000.0,0,2000000.0,N/A',
+        f'scrap,Supplier,Germany_scrap,"{deu}",N/A,N/A,Plant-FurnaceGroup,P2_0,"{chn}",300000.0,0,N/A,1000000.0',
+        f'io_mid,Supplier,sup_1,"{mine}",N/A,N/A,Plant-FurnaceGroup,P2_0,"{chn}",200000.0,0,N/A,500000.0',
+        f'bio_pci,Supplier,bio_pci_supply,"{loc.format("virtual", "XXX")}",N/A,N/A,Plant-FurnaceGroup,P2_0,"{chn}",'
+        "100000.0,0,N/A,1e9",
+    ]
+    (tm_dir / "steel_trade_allocations_2030.csv").write_text("\n".join([header, *rows]) + "\n")
+
+
+def test_geo_resolver_maps_labels_to_iso3() -> None:
+    """ISO3 codes pass through, country names resolve (ampersand read as 'and'), unknowns stay as labels."""
+    resolve = supply_demand.geo_resolver(supply_demand_country_mappings())
+
+    assert resolve("CHN") == "CHN"
+    assert resolve("Germany") == "DEU"
+    assert resolve("Bosnia & Herzegovina") == "BIH"
+    assert resolve("Atlantis") == "Atlantis"
+
+
+def test_tiam_regions_members_by_label() -> None:
+    """TIAM-UCL regions map to their member ISO3 codes for the shared regional budgets."""
+    assert supply_demand.tiam_regions(supply_demand_country_mappings()) == {
+        "CHI": ["CHN"],
+        "EEU": ["BIH"],
+        "WEU": ["DEU"],
+    }
+
+
+def test_read_usage_groups_use_and_steel_demand_by_country(tmp_path) -> None:
+    """Steel counts at the demand centre (demand once per centre), scrap/ore at the source, bio at the consumer."""
+    write_supply_demand_allocations(tmp_path / "TM")
+    resolve = supply_demand.geo_resolver(supply_demand_country_mappings())
+
+    used, steel_demand = supply_demand.read_usage({2030: tmp_path / "TM" / "steel_trade_allocations_2030.csv"}, resolve)
+
+    used_rows = {(r.year, r.group, r.geo, r.grade): r.volume_mt for r in used.itertuples()}
+    assert used_rows == {
+        (2030, "steel", "CHN", ""): 1.5,
+        (2030, "scrap", "DEU", ""): 0.3,
+        (2030, "ore", "BIH", "io_mid"): 0.2,  # ore keeps its grade for the viewer's grade ticks
+        (2030, "bio", "CHN", ""): 0.1,
+    }
+    assert [(r.year, r.geo, r.volume_mt) for r in steel_demand.itertuples()] == [(2030, "CHN", 2.0)]
+
+
+def test_availability_rows_from_suppliers_and_constraints() -> None:
+    """Scrap/ore capacity per country, CO2 limits per country, biomass budgets per prefixed TIAM region;
+    a region label that is itself an ISO3 code maps to that single country, an unknown one is dropped."""
+    mappings = supply_demand_country_mappings()
+    scrap_location = Location(lat=1.0, lon=2.0, country="Germany", region="R", iso3="DEU")
+    mine_location = Location(lat=1.0, lon=2.0, country="Bosnia & Herzegovina", region="R", iso3="")
+    suppliers = [
+        Supplier("Germany_scrap", scrap_location, "scrap", {2030: 1_000_000, 2031: 9e9}, {}),
+        Supplier("Germany_scrap_2", scrap_location, "scrap", {2030: 500_000}, {}),
+        Supplier("sup_1", mine_location, "io_mid", {2030: 400_000}, {}),
+        Supplier("other", scrap_location, "coal", {2030: 7e7}, {}),
+    ]
+    items = [
+        BiomassAvailability("WEU", "DEU", "CO2 storage capacity", "base", "t", 2030, 2_000_000.0),
+        BiomassAvailability("CHI", None, "Biomass availability", "base", "t", 2030, 3_000_000.0),
+        BiomassAvailability("DEU", None, "Biomass availability", "base", "t", 2030, 1_000_000.0),
+        BiomassAvailability("Nowhere", None, "Biomass availability", "base", "t", 2030, 5e6),
+    ]
+
+    avail, budgets = supply_demand.availability_rows(suppliers, items, mappings, {2030})
+
+    rows = {(r.year, r.group, r.geo, r.grade): r.volume_mt for r in avail.itertuples()}
+    assert rows == {
+        (2030, "scrap", "DEU", ""): 1.5,  # sub-centres summed; 2031 and non-scrap/ore commodities excluded
+        (2030, "ore", "BIH", "io_mid"): 0.4,
+        (2030, "co2", "DEU", ""): 2.0,
+        (2030, "bio", "region:CHI", ""): 3.0,  # the unknown region's budget is dropped
+        (2030, "bio", "DEU", ""): 1.0,  # region label "DEU" is an ISO3, so a single-country budget
+    }
+    assert budgets == {"region:CHI": ["CHN"]}
+
+
+def test_plot_supply_demand_writes_self_contained_viewer(tmp_path) -> None:
+    """The viewer embeds usage, availability and the regional budgets; missing fixtures only omit availability."""
+    write_supply_demand_allocations(tmp_path / "TM")
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    scrap_location = Location(lat=1.0, lon=2.0, country="Germany", region="R", iso3="DEU")
+    SupplierJsonRepository(fixtures / "suppliers.json").add_list(
+        [Supplier("Germany_scrap", scrap_location, "scrap", {Year(2030): Volumes(1_000_000)}, {})]
+    )
+    BiomassAvailabilityJsonRepository(fixtures / "biomass_availability.json").add_list(
+        [BiomassAvailability("CHI", None, "Biomass availability", "base", "t", Year(2030), 3_000_000.0)]
+    )
+    plotter = InteractivePlotter(tmp_path / "plots", supply_demand_country_mappings(), run_title="sim_test")
+
+    written = plotter.plot_supply_demand(
+        tmp_path / "TM",
+        suppliers_json=fixtures / "suppliers.json",
+        biomass_availability_json=fixtures / "biomass_availability.json",
+    )
+
+    assert written == tmp_path / "plots" / "interactive" / "supply_demand.html"
+    html = written.read_text()
+    for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
+        assert placeholder not in html
+    assert "const Interactive" in html
+    assert '{"y": 2030, "c": "scrap", "g": "DEU", "v": 0.3}' in html
+    assert '{"y": 2030, "c": "steel", "g": "CHN", "v": 2.0}' in html  # the demand centre's demand
+    assert '{"y": 2030, "c": "bio", "g": "region:CHI", "v": 3.0}' in html
+    assert '"regionBudgets": {"region:CHI": ["CHN"]}' in html
+
+    # Missing fixtures still produce the viewer, with usage and steel demand only.
+    assert plotter.plot_supply_demand(tmp_path / "TM") == written
+    html = written.read_text()
+    assert '{"y": 2030, "c": "ore", "g": "BIH", "v": 0.2, "s": "io_mid"}' in html
+    assert '"c": "bio", "g": "region:CHI"' not in html
+    assert plotter.plot_supply_demand(tmp_path / "absent") is None
