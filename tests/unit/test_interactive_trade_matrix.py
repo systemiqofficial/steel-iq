@@ -107,7 +107,7 @@ def test_allocation_files_keyed_by_year(tmp_path: Path) -> None:
 
 
 def test_read_flows_sums_metal_per_commodity_country_pair_and_technology(tmp_path: Path) -> None:
-    """Allocations collapse to commodity × origin × destination × technology in Mt; ore origins are mine labels; scrap is ignored."""
+    """Allocations collapse to commodity × origin × destination × technology in Mt; ore origins are mine labels."""
     flows = trade_matrix.read_flows(trade_matrix.allocation_files(sample_tm_dir(tmp_path)))
 
     assert list(flows.columns) == ["year", "product", "commodity", "origin", "destination", "technology", "volume_mt"]
@@ -120,7 +120,8 @@ def test_read_flows_sums_metal_per_commodity_country_pair_and_technology(tmp_pat
     assert by_key[("iron", "hot_metal", "CHN", "CHN", "BF")] == pytest.approx(200.0)
     assert by_key[("ore", "io_high", "Australia", "CHN", "N/A")] == pytest.approx(80.0)
     assert by_key[("ore", "io_mid", "Guinea", "CHN", "N/A")] == pytest.approx(30.0)
-    assert len(by_key) == 8
+    assert by_key[("scrap", "scrap", "DEU", "DEU", "N/A")] == pytest.approx(50.0)
+    assert len(by_key) == 9
 
 
 def test_read_flows_rejects_location_without_iso3(tmp_path: Path) -> None:
@@ -149,5 +150,6 @@ def test_pack_rows_compacts_flows_and_drops_rounded_zeros(tmp_path: Path) -> Non
 
     assert {"y": 2025, "p": "steel", "c": "steel", "o": "CHN", "d": "IND", "t": "EAF", "v": 25.0} in packed
     assert {"y": 2025, "p": "iron", "c": "pig_iron", "o": "CHN", "d": "JPN", "t": "BF", "v": 5.0} in packed
+    assert {"y": 2025, "p": "scrap", "c": "scrap", "o": "DEU", "d": "DEU", "t": "N/A", "v": 50.0} in packed
     assert not any(row["o"] == "DEU" and row["d"] == "IND" for row in packed)
-    assert len(packed) == 7
+    assert len(packed) == 8

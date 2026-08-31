@@ -26,6 +26,7 @@ window.addEventListener("error", function(e) {
       <option value="steel">Steel</option>
       <option value="iron">Iron</option>
       <option value="ore">Iron ore</option>
+      <option value="scrap">Scrap</option>
     </select>
   </div>
   <div>
@@ -61,8 +62,8 @@ window.addEventListener("error", function(e) {
     <label for="values-select">Values</label>
     <select id="values-select">
       <option value="mt">Mt</option>
-      <option value="origin">% of origin's production</option>
-      <option value="destination">% of destination's consumption</option>
+      <option value="origin">% of origin</option>
+      <option value="destination">% of destination</option>
     </select>
   </div>
   <div>
@@ -94,9 +95,9 @@ const BLUES = ["#cde2fb", "#86b6ef", "#3987e5", "#1c5cab", "#0f3a70"];
 const COLOURSCALE = [...Array(21).keys()].map(i => { const p = i / 20; return [p * p, rampColour(p)]; });
 const UNITS = {mt: "Mt", origin: "%", destination: "%"};
 // Display names of the commodities, in tick order; a commodity without one shows its key.
-const COMMODITY_NAMES = {steel: "steel", pig_iron: "pig iron", hbi_high: "HBI high grade", hbi_mid: "HBI mid grade",
-                         dri_high: "DRI high grade", dri_mid: "DRI mid grade", hot_metal: "hot metal",
-                         io_high: "high grade", io_mid: "mid grade", io_low: "low grade"};
+const COMMODITY_NAMES = {steel: "steel", scrap: "scrap", pig_iron: "pig iron", hbi_high: "HBI high grade",
+                         hbi_mid: "HBI mid grade", dri_high: "DRI high grade", dri_mid: "DRI mid grade",
+                         hot_metal: "hot metal", io_high: "high grade", io_mid: "mid grade", io_low: "low grade"};
 const PRODUCTS = {
   steel: {name: "steel", ticks: "Steel", note: "destinations = demand centres"},
   iron: {name: "iron", ticks: "Iron products", note: "destinations = steelmaking furnace groups; hot metal = on-site transfers"},
@@ -104,6 +105,10 @@ const PRODUCTS = {
   // there is no diagonal, so the matrix is rectangular.
   ore: {name: "iron ore", ticks: "Ore grades", note: "origins = mine regions as named in the mine sheet; destinations = furnace groups",
         labelledOrigins: true},
+  // Scrap suppliers are per-country and carry no technology, so the matrix is square
+  // (diagonal = domestic scrap) but the technology filter does not apply.
+  scrap: {name: "scrap", ticks: "Scrap", note: "origins = per-country scrap suppliers; destinations = furnace groups",
+          supplierOrigins: true},
 };
 // What a diagonal cell means under each grouping, singular and plural.
 const SAME = {
@@ -112,7 +117,7 @@ const SAME = {
   bloc: ["member country (or the rest of the world)", "members and the rest of the world"],
 };
 const allRows = Object.values(DATA).flatMap(d => d.rows);
-const countryRows = allRows.filter(r => !PRODUCTS[r.p].labelledOrigins);
+const countryRows = allRows.filter(r => !PRODUCTS[r.p].labelledOrigins && !PRODUCTS[r.p].supplierOrigins);
 const commodityCbs = new Map();
 let commodityProduct = null;
 
@@ -283,7 +288,8 @@ function render() {
 
   // Supplier sources carry no technology, so the technology filter only applies to plants.
   const yearRows = run.rows.filter(r => r.y === year && r.p === product);
-  const rows = yearRows.filter(r => selectedCommodity.has(r.c) && (!square || selectedTech.has(r.t)));
+  const plantSourced = square && !spec.supplierOrigins;
+  const rows = yearRows.filter(r => selectedCommodity.has(r.c) && (!plantSourced || selectedTech.has(r.t)));
   const totalYear = yearRows.reduce((s, r) => s + r.v, 0);
   if (!yearRows.length || !rows.length || !selectedGeo.size) {
     const why = !yearRows.length ? `No ${spec.name} allocations for ${year}`

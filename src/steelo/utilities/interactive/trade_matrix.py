@@ -1,11 +1,12 @@
 """Row packing for the trade-matrix viewer (``trade_matrix.html``).
 
-The viewer shows, for one year, how much steel, iron or iron ore each geography
-shipped to each other geography, from the trade model's per-year allocation
-files (``TM/steel_trade_allocations_<year>.csv``). Steel rows run plant →
-demand centre, iron rows (pig iron, HBI and DRI by grade, and the on-site hot
-metal) iron plant → steelmaking furnace group, and ore rows mine → furnace
-group. Steel and iron origins and destinations are countries (plants carry a
+The viewer shows, for one year, how much steel, iron, iron ore or scrap each
+geography shipped to each other geography, from the trade model's per-year
+allocation files (``TM/steel_trade_allocations_<year>.csv``). Steel rows run
+plant → demand centre, iron rows (pig iron, HBI and DRI by grade, and the
+on-site hot metal) iron plant → steelmaking furnace group, ore rows mine →
+furnace group, and scrap rows per-country scrap supplier → furnace group.
+Steel, iron and scrap origins and destinations are countries (plants carry a
 sub-national geo_unit but demand centres do not, so a finer diagonal is not
 definable); ore origins are the mine sheet's own region labels, as mines carry
 that label rather than a resolved ISO3.
@@ -18,9 +19,10 @@ from typing import Any
 import pandas as pd
 
 ALLOCATIONS_PATTERN = re.compile(r"^steel_trade_allocations_(\d{4})\.csv$")
-# Traded commodity → product of the viewer; scrap is not metal trade.
+# Traded commodity → product of the viewer.
 COMMODITY_PRODUCTS = {
     "steel": "steel",
+    "scrap": "scrap",
     "pig_iron": "iron",
     "hbi_high": "iron",
     "hbi_mid": "iron",
