@@ -18,6 +18,7 @@ from rich.console import Console
 from rich.table import Table
 
 from ..domain import Year
+from ..domain.constants import RANDOM_SEED_DEFAULT
 
 from ..simulation import SimulationConfig
 from ..bootstrap import bootstrap_simulation
@@ -163,6 +164,15 @@ def run_full_simulation() -> str:
         default=0.8,
         help="Ratio of steel price for iron floor when pegging is enabled (default: 0.8 = 80%%)",
     )
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=RANDOM_SEED_DEFAULT,
+        help=(
+            "Seed for the run-time RNGs shared by the plant agent, geospatial and trade LP modules "
+            "(default: %(default)s); data preparation keeps its own fixed seed"
+        ),
+    )
 
     # Parse the command-line arguments
     try:
@@ -282,6 +292,7 @@ def run_full_simulation() -> str:
                 "chosen_scrap_scenario": scrap_scenario,
                 "chosen_grid_emissions_scenario": grid_emissions_scenario,
                 "log_level": log_level,
+                "random_seed": args.random_seed,
             }
 
             # Add custom baseload_power_sim_dir if provided
@@ -367,6 +378,7 @@ def run_full_simulation() -> str:
                     "chosen_scrap_scenario": scrap_scenario,
                     "chosen_grid_emissions_scenario": grid_emissions_scenario,
                     "log_level": log_level,
+                    "random_seed": args.random_seed,
                 }
 
                 # Add custom baseload_power_sim_dir if provided

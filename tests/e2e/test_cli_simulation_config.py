@@ -155,3 +155,38 @@ def test_cli_grid_emissions_scenario_flag_lands_on_the_config(
 
         config = mock_create_runner.call_args[0][0]
         assert config.chosen_grid_emissions_scenario == expected
+
+
+@pytest.mark.parametrize(
+    "flag_argv, expected",
+    [([], 42), (["--random-seed", "7"], 7)],
+)
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_random_seed_lands_on_the_config_and_geo_config(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    flag_argv,
+    expected,
+):
+    """``--random-seed`` sets the run-time seed and propagates into GeoConfig; absent, the default 42 applies."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cli_temp_base = Path(tmpdir)
+        stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+
+        argv = ["run_simulation", "--start-year", "2026", "--end-year", "2027", *flag_argv]
+        with patch.object(sys, "argv", argv):
+            with patch("sys.exit"):
+                run_full_simulation()
+
+        config = mock_create_runner.call_args[0][0]
+        assert config.random_seed == expected
+        assert config.geo_config.random_seed == expected
