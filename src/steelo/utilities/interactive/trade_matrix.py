@@ -1,11 +1,13 @@
-"""Row packing for the trade-matrix viewer (``trade_matrix.html``).
+"""Row packing for the trade-matrix and trade-network viewers (``trade_matrix.html``,
+``trade_network.html``).
 
-The viewer shows, for one year, how much steel, iron, iron ore or scrap each
+The viewers show, for one year, how much steel, iron, iron ore or scrap each
 geography shipped to each other geography, from the trade model's per-year
 allocation files (``TM/steel_trade_allocations_<year>.csv``). Steel rows run
-plant → demand centre, iron rows (pig iron, HBI and DRI by grade, and the
-on-site hot metal) iron plant → steelmaking furnace group, ore rows mine →
-furnace group, and scrap rows per-country scrap supplier → furnace group.
+plant → demand centre, iron rows (pig iron, HBI and DRI by grade, electrolytic
+iron, and the on-site hot metal and liquid iron) iron plant → steelmaking
+furnace group, ore rows mine → furnace group, and scrap rows per-country scrap
+supplier → furnace group.
 Steel, iron and scrap origins and destinations are countries (plants carry a
 sub-national geo_unit but demand centres do not, so a finer diagonal is not
 definable); ore origins are the mine sheet's own region labels, as mines carry
@@ -49,6 +51,7 @@ COLUMNS = ["commodity", "source_location", "source_tech", "destination_location"
 # The location columns hold Location reprs; the fields are read off them.
 ISO3_PATTERN = re.compile(r"\biso3='([A-Z]{3})'")
 COUNTRY_PATTERN = re.compile(r"\bcountry='([^']*)'")
+COORD_PATTERN = re.compile(r"\blat=([-+0-9.eE]+), lon=([-+0-9.eE]+)")
 FLOW_KEYS = ["year", "product", "commodity", "origin", "destination", "technology"]
 
 
@@ -167,6 +170,52 @@ def read_flows(files: dict[int, Path]) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame(columns=FLOW_KEYS + ["volume_mt"])
     return pd.concat(frames, ignore_index=True)
+
+
+def read_coords(files: dict[int, Path]) -> dict[str, list[float]]:
+    """Volume-weighted mean coordinates of every flow endpoint, for the map layout.
+
+    Args:
+        files: Output of :func:`allocation_files`.
+
+    Returns:
+        ``{key: [lat, lon]}`` with the keys of :func:`read_flows` — origin ISO3 codes (or
+        the mine label for labelled origins) and destination ISO3 codes — each at the
+        allocation-weighted mean position of its plants, suppliers, mines and demand
+        centres over all years, rounded to two decimals. Empty when no file holds metal
+        allocations.
+
+    Raises:
+        ValueError: If a file lacks the allocation columns or a location lacks the
+        needed field.
+    """
+    frames = []
+    for path in files.values():
+        table = pd.read_csv(path, usecols=COLUMNS, keep_default_na=False)
+        metal = table[table["commodity"].isin(COMMODITY_PRODUCTS)]
+        if metal.empty:
+            continue
+        labelled = metal["commodity"].map(COMMODITY_PRODUCTS).isin(LABELLED_ORIGINS)
+        origin = pd.concat(
+            [
+                metal.loc[labelled, "source_location"].map(country_label_of),
+                metal.loc[~labelled, "source_location"].map(iso3_of),
+            ]
+        )
+        destination = metal["destination_location"].map(iso3_of)
+        for key, side in ((origin, "source_location"), (destination, "destination_location")):
+            latlon = metal[side].str.extract(COORD_PATTERN).astype(float)
+            frames.append(
+                pd.DataFrame({"key": key, "lat": latlon[0], "lon": latlon[1], "v": metal["allocated_volume"]})
+            )
+    if not frames:
+        return {}
+    endpoints = pd.concat(frames, ignore_index=True)
+    endpoints["wlat"] = endpoints["lat"] * endpoints["v"]
+    endpoints["wlon"] = endpoints["lon"] * endpoints["v"]
+    sums = endpoints.groupby("key")[["wlat", "wlon", "v"]].sum()
+    sums = sums[sums["v"] > 0]
+    return {str(key): [round(row.wlat / row.v, 2), round(row.wlon / row.v, 2)] for key, row in sums.iterrows()}
 
 
 def pack_rows(flows: pd.DataFrame) -> list[dict[str, Any]]:

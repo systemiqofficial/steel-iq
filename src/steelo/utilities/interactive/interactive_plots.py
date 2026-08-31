@@ -108,6 +108,7 @@ class InteractivePlotter:
         >>> interactive.plot_capacity_and_production(post_processed_csv)
         >>> interactive.plot_cost_curves(post_processed_csv, market_prices_csv, clearing)
         >>> interactive.plot_trade_matrix(tm_dir)
+        >>> interactive.plot_trade_network(tm_dir)
     """
 
     SUBDIR = "interactive"
@@ -132,6 +133,7 @@ class InteractivePlotter:
         self.run_title = run_title
         self.geo_unit_names = geo_unit_names(geo_hierarchy_json)
         self._tables: dict[Path, pd.DataFrame] = {}
+        self._trade_rows: dict[Path, tuple[list[int], list[dict[str, Any]]]] = {}
 
     def _read_post_processed(self, post_processed_csv: Path, viewer: str) -> Optional[pd.DataFrame]:
         """The post-processed table, read once per plotter; None (with a warning) when the file is missing."""
@@ -244,6 +246,38 @@ class InteractivePlotter:
         logger.info("Wrote cost-curve viewer %s (%d furnace-group rows)", path, len(fgs))
         return path
 
+    TRADE_PROVENANCE = (
+        "Trade-LP allocations from TM/steel_trade_allocations_<year>.csv: steel plant → demand centre, "
+        "iron products plant → steelmaking furnace group, ore mine → furnace group, "
+        "scrap supplier → furnace group."
+    )
+
+    def _trade_flows(self, tm_dir: Path, viewer: str) -> Optional[tuple[list[int], list[dict[str, Any]]]]:
+        """Years and packed country-level flows from the allocation files, read once per plotter.
+
+        Args:
+            tm_dir: The run's ``TM`` output directory holding ``steel_trade_allocations_<year>.csv``.
+            viewer: Viewer name for the skip warnings.
+
+        Returns:
+            ``(years, rows)`` as embedded in the trade viewers, or None (with a warning) when
+            no allocation file exists or one cannot be read.
+        """
+        if tm_dir not in self._trade_rows:
+            files = trade_matrix.allocation_files(tm_dir)
+            if not files:
+                logger.warning(
+                    "No steel_trade_allocations_<year>.csv under %s — skipping the %s viewer", tm_dir, viewer
+                )
+                return None
+            try:
+                flows = trade_matrix.read_flows(files)
+            except ValueError as exc:
+                logger.warning("%s — skipping the %s viewer", exc, viewer)
+                return None
+            self._trade_rows[tm_dir] = (list(files), trade_matrix.pack_rows(flows))
+        return self._trade_rows[tm_dir]
+
     def plot_trade_matrix(self, tm_dir: Path) -> Optional[Path]:
         """Write the trade-matrix viewer (``trade_matrix.html``) from the per-year allocation files.
 
@@ -255,26 +289,54 @@ class InteractivePlotter:
             (logged as warnings so the plot stage never fails). A year whose file holds no
             metal allocations stays in the viewer's year selector with an empty-state note.
         """
-        files = trade_matrix.allocation_files(tm_dir)
-        if not files:
-            logger.warning("No steel_trade_allocations_<year>.csv under %s — skipping the trade-matrix viewer", tm_dir)
+        flows = self._trade_flows(tm_dir, "trade-matrix")
+        if flows is None:
             return None
-        try:
-            flows = trade_matrix.read_flows(files)
-        except ValueError as exc:
-            logger.warning("%s — skipping the trade-matrix viewer", exc)
-            return None
+        years, rows = flows
         data = {
             self.run_title: {
                 "title": self.run_title,
-                "provenance": "Trade-LP allocations from TM/steel_trade_allocations_<year>.csv: steel plant → "
-                "demand centre, iron products plant → steelmaking furnace group, ore mine → furnace group.",
-                "years": list(files),
-                "rows": trade_matrix.pack_rows(flows),
+                "provenance": self.TRADE_PROVENANCE,
+                "years": years,
+                "rows": rows,
             },
         }
         path = self._write("trade_matrix.html", self._config("Trade matrix"), data)
-        logger.info("Wrote trade-matrix viewer %s (%d flows over %d years)", path, len(flows), len(files))
+        logger.info("Wrote trade-matrix viewer %s (%d flows over %d years)", path, len(rows), len(years))
+        return path
+
+    def plot_trade_network(self, tm_dir: Path) -> Optional[Path]:
+        """Write the trade-network viewer (``trade_network.html``) from the per-year allocation files.
+
+        The network is the trade matrix's sibling rendering: the same country-level flows
+        drawn as a chord diagram of who trades with whom, with nodes grouped by country,
+        region or trade bloc and sized by trade volume. A map layout places the nodes at
+        the allocation-weighted mean position of their plants, suppliers, mines and
+        demand centres, embedded here as per-endpoint coordinates.
+
+        Args:
+            tm_dir: The run's ``TM`` output directory holding ``steel_trade_allocations_<year>.csv``.
+
+        Returns:
+            The written path, or None when no allocation file exists or one cannot be read
+            (logged as warnings so the plot stage never fails). A year whose file holds no
+            metal allocations stays in the viewer's year selector with an empty-state note.
+        """
+        flows = self._trade_flows(tm_dir, "trade-network")
+        if flows is None:
+            return None
+        years, rows = flows
+        data = {
+            self.run_title: {
+                "title": self.run_title,
+                "provenance": self.TRADE_PROVENANCE,
+                "years": years,
+                "rows": rows,
+                "coords": trade_matrix.read_coords(trade_matrix.allocation_files(tm_dir)),
+            },
+        }
+        path = self._write("trade_network.html", self._config("Trade network"), data)
+        logger.info("Wrote trade-network viewer %s (%d flows over %d years)", path, len(rows), len(years))
         return path
 
     def plot_supply_demand(

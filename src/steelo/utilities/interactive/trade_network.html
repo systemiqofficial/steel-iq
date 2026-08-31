@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Trade network</title>
+<style>__COMMON_CSS__</style>
+<style>
+/* The analysis snippets carry this viewer's headline numbers — darker and a touch
+   larger than the shared summary styling, with a gap before the chart title below. */
+#summary { font-size: 13px; color: #0b0b0b; padding-bottom: 14px; }
+/* The commodity ticks sit on their own row between the top controls and the
+   technologies row, styled like the technologies row. */
+#commodity-panel { display: flex; align-items: center; gap: 4px 14px; flex-wrap: wrap; padding: 8px 40px 0; }
+#commodity-label { font-size: 12px; color: #52514e; margin: 0; }
+#commodity-panel label.inline { display: inline-flex; align-items: center; gap: 4px; font-size: 12px;
+                                color: #0b0b0b; margin: 0; padding: 0; cursor: pointer; white-space: nowrap; }
+</style>
+</head>
+<body>
+<div id="err"></div>
+<script>
+window.addEventListener("error", function(e) {
+  const el = document.getElementById("err");
+  el.style.display = "block";
+  el.textContent = "Load error: " + (e.message || e.type) + (e.filename ? " @ " + e.lineno : "");
+}, true);
+</script>
+<div class="toolbar">
+  <div>
+    <label for="product-select">Product</label>
+    <select id="product-select">
+      <option value="steel">Steel</option>
+      <option value="iron">Iron</option>
+      <option value="ore">Iron ore</option>
+      <option value="scrap">Scrap</option>
+    </select>
+  </div>
+  <div>
+    <label for="year-select">Year</label>
+    <select id="year-select"></select>
+  </div>
+  <div>
+    <label for="group-select">Group by</label>
+    <select id="group-select">
+      <option value="country">Country</option>
+      <option value="region">Region</option>
+      <option value="bloc">Trade bloc</option>
+    </select>
+  </div>
+  <div id="bloc-panel">
+    <label for="bloc-select">Trade bloc</label>
+    <select id="bloc-select"></select>
+  </div>
+  <div>
+    <label for="layout-select">Layout</label>
+    <select id="layout-select">
+      <option value="map" selected>Map</option>
+      <option value="circle">Circle</option>
+    </select>
+  </div>
+  <div>
+    <label for="show-select">Show</label>
+    <select id="show-select">
+      <option value="10">Top 10 flows</option>
+      <option value="20" selected>Top 20 flows</option>
+      <option value="40">Top 40 flows</option>
+      <option value="all">All flows</option>
+    </select>
+  </div>
+  <div>
+    <label for="values-select">Values</label>
+    <select id="values-select">
+      <option value="gross">Gross flows</option>
+      <option value="net">Net flows</option>
+    </select>
+  </div>
+</div>
+<div id="commodity-panel">
+  <label id="commodity-label">Iron products<button id="commodity-all" class="small-btn">All</button><button id="commodity-none" class="small-btn">None</button></label>
+</div>
+<div class="toolbar" id="shared-filters"></div>
+<div id="summary"></div>
+<div id="chart"></div>
+<script>__PLOTLYJS__</script>
+<script>
+const CONFIG = __CONFIG__;
+const DATA = __DATA__;
+</script>
+<script>__COMMON_JS__</script>
+<script>
+const REST = "Rest of world";
+const WIDTH_CAP = 1240, HEIGHT_RATIO = 0.74;
+const MARGIN = {l: 20, r: 20, t: 165, b: 20};  // t fits the two-line subtitle
+const NODE_MIN = 10, NODE_MAX = 44, EDGE_MIN = 1.2, EDGE_MAX = 13;
+// Chords are quadratic beziers pulled towards the centre, sampled densely enough that
+// hovering anywhere along a chord hits a point; the arrowhead sits past the midpoint so
+// crossing chords keep their directions readable.
+const CURVE_POINTS = 24, ARROW_T = 0.62, CHORD_PULL = 0.4;
+const NODE_R = 1, RANGE = 1.45;
+// Map layout: lon/lat axes with padded ranges; flows bow left of travel so a pair's
+// two directions take separate lanes, and overlapping nodes are pushed apart.
+const MAP_BOW = 0.18, MAP_PAD = 12, RELAX_PASSES = 40;
+const GREY = "#7a7874";
+const T = Interactive.theme;
+// Display names of the commodities, in tick order; a commodity without one shows its key.
+const COMMODITY_NAMES = {steel: "steel", scrap: "scrap", pig_iron: "pig iron", hbi_high: "HBI high grade",
+                         hbi_mid: "HBI mid grade", hbi_low: "HBI low grade", dri_high: "DRI high grade",
+                         dri_mid: "DRI mid grade", dri_low: "DRI low grade", hot_metal: "hot metal",
+                         liquid_iron: "liquid iron", electrolytic_iron: "electrolytic iron",
+                         io_high: "high grade", io_mid: "mid grade", io_low: "low grade"};
+const PRODUCTS = {
+  steel: {name: "steel", ticks: "Steel", note: "destinations = demand centres"},
+  iron: {name: "iron", ticks: "Iron products", note: "destinations = steelmaking furnace groups; hot metal and liquid iron = on-site transfers"},
+  // Ore origins are the mine sheet's own labels, so the network is bipartite: grey
+  // origin nodes on the left, destination countries on the right, no domestic flows.
+  ore: {name: "iron ore", ticks: "Ore grades", note: "origins = mine regions as named in the mine sheet; destinations = furnace groups",
+        labelledOrigins: true},
+  scrap: {name: "scrap", ticks: "Scrap", note: "origins = per-country scrap suppliers; destinations = furnace groups",
+          supplierOrigins: true},
+};
+// What staying put means under each grouping, singular and plural.
+const SAME = {
+  country: ["country", "countries"],
+  region: ["region", "regions"],
+  bloc: ["member country (or the rest of the world)", "members and the rest of the world"],
+};
+// Origin-label nodes (mine regions) carry a key prefix so a label can never merge with
+// a country or region node of the same name.
+const SRC = "src:";
+const allRows = Object.values(DATA).flatMap(d => d.rows);
+const countryRows = allRows.filter(r => !PRODUCTS[r.p].labelledOrigins && !PRODUCTS[r.p].supplierOrigins);
+const ALL_REGIONS = [...new Set(allRows.flatMap(r => PRODUCTS[r.p].labelledOrigins ? [r.d] : [r.o, r.d])
+  .map(Interactive.regionOf))].sort();
+const REGION_COLOURS = Interactive.colourTable(CONFIG.regionColours, ALL_REGIONS);
+const commodityCbs = new Map();
+let commodityProduct = null;
+let focus = null, clickBound = false;
+
+function capitalise(text) { return text.charAt(0).toUpperCase() + text.slice(1); }
+function commodityName(c) { return COMMODITY_NAMES[c] || c; }
+function blocs() { return Object.keys(CONFIG.tradeBlocs).sort(); }
+
+/* Commodities of a product present in the data, in display order. */
+function productCommodities(product) {
+  const present = new Set(allRows.filter(r => r.p === product).map(r => r.c));
+  const known = Object.keys(COMMODITY_NAMES).filter(c => present.has(c));
+  return known.concat([...present].filter(c => !COMMODITY_NAMES[c]).sort());
+}
+
+/* Geography label of a country under the chosen grouping. Trade blocs overlap, so a
+   bloc is not a partition: its members appear individually and everyone else folds
+   into "Rest of world". */
+function grouper(groupBy, bloc) {
+  if (groupBy === "region") return Interactive.regionOf;
+  if (groupBy === "bloc") {
+    const members = new Set(CONFIG.tradeBlocs[bloc] || []);
+    return iso3 => members.has(iso3) ? iso3 : REST;
+  }
+  return iso3 => iso3;
+}
+
+function labelName(label, groupBy) {
+  if (label === REST || groupBy === "region") return label;
+  const name = Interactive.countryName(label);
+  return name ? `${label} ${name}` : label;
+}
+
+function fmtMt(v) { return v >= 10 ? v.toFixed(0) : v.toFixed(1); }
+
+function syncYears() {
+  const select = document.getElementById("year-select");
+  const years = DATA[Interactive.run()].years;
+  const current = +select.value;
+  if ([...select.options].map(o => +o.value).join() !== years.join()) {
+    select.innerHTML = "";
+    years.forEach(y => select.appendChild(new Option(y, y)));
+    select.value = years.includes(current) ? current : years[years.length - 1];
+  }
+}
+
+/* Rebuild the commodity ticks when the product changes; a single-commodity product
+   needs no ticks. Labelled origins cannot join trade blocs and, being one-directional,
+   have no net view. */
+function syncProduct() {
+  const product = document.getElementById("product-select").value;
+  if (product === commodityProduct) return;
+  commodityProduct = product;
+  const panel = document.getElementById("commodity-panel");
+  panel.querySelectorAll("label.inline").forEach(node => node.remove());
+  // The label's first child is its text node; the All/None buttons behind it stay put.
+  document.getElementById("commodity-label").firstChild.textContent = PRODUCTS[product].ticks;
+  commodityCbs.clear();
+  const commodities = productCommodities(product);
+  commodities.forEach(c => {
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = true;
+    cb.addEventListener("change", render);
+    const label = document.createElement("label");
+    label.className = "inline";
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(commodityName(c)));
+    panel.appendChild(label);
+    commodityCbs.set(c, cb);
+  });
+  panel.style.display = commodities.length > 1 ? "" : "none";
+
+  const labelled = Boolean(PRODUCTS[product].labelledOrigins);
+  const groupSelect = document.getElementById("group-select");
+  const blocOption = groupSelect.querySelector('option[value="bloc"]');
+  if (blocOption) {
+    blocOption.disabled = labelled;
+    if (labelled && groupSelect.value === "bloc") groupSelect.value = "country";
+  }
+  const valuesSelect = document.getElementById("values-select");
+  valuesSelect.querySelector('option[value="net"]').disabled = labelled;
+  if (labelled && valuesSelect.value === "net") valuesSelect.value = "gross";
+  // Mine and supplier origins carry no technology, so the technologies row is noise there.
+  const techPanel = document.getElementById("tech-panel");
+  if (techPanel) techPanel.style.display = labelled || PRODUCTS[product].supplierOrigins ? "none" : "";
+}
+
+function selectedCommodities() {
+  return new Set([...commodityCbs].filter(([, cb]) => cb.checked).map(([c]) => c));
+}
+
+function displayName(id, groupBy) {
+  return id.startsWith(SRC) ? id.slice(SRC.length) : labelName(id, groupBy);
+}
+
+function nodeColour(id, groupBy) {
+  if (id.startsWith(SRC) || id === REST) return GREY;
+  const region = groupBy === "region" ? id : Interactive.regionOf(id);
+  return REGION_COLOURS[region] || GREY;
+}
+
+/* Text sits away from the circle's centre so labels never cross the chords. */
+function textPosition(angle) {
+  const x = Math.cos(angle), y = Math.sin(angle);
+  if (x > 0.35) return "middle right";
+  if (x < -0.35) return "middle left";
+  return y > 0 ? "top center" : "bottom center";
+}
+
+/* Map layout: nudge overlapping nodes apart with symmetric passes (dense regions such
+   as Europe pile up at their true coordinates), keeping the geography recognisable. */
+function relaxOverlaps(ids, pos, sizeOf, width, height) {
+  const xs = ids.map(id => pos.get(id).x), ys = ids.map(id => pos.get(id).y);
+  const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), 10);
+  const pxPerUnit = Math.min(width - MARGIN.l - MARGIN.r, height - MARGIN.t - MARGIN.b) / (span * 1.15);
+  for (let pass = 0; pass < RELAX_PASSES; pass++) {
+    let moved = false;
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const a = pos.get(ids[i]), b = pos.get(ids[j]);
+        const minDist = (sizeOf(ids[i]) + sizeOf(ids[j])) / 2 / pxPerUnit + 4 / pxPerUnit;
+        let dx = b.x - a.x, dy = b.y - a.y, dist = Math.hypot(dx, dy);
+        if (dist >= minDist) continue;
+        if (dist < 1e-6) { dx = 1; dy = 0; dist = 1; }
+        const push = (minDist - dist) / 2 / dist;
+        a.x -= dx * push; a.y -= dy * push;
+        b.x += dx * push; b.y += dy * push;
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+}
+
+function bindClick(gd) {
+  if (clickBound || !gd.on) return;
+  clickBound = true;
+  gd.on("plotly_click", e => {
+    const pt = e.points && e.points[0];
+    if (!pt || pt.data.meta !== "node") return;
+    focus = focus === pt.customdata ? null : pt.customdata;
+    render();
+  });
+}
+
+function render() {
+  syncProduct();
+  const run = DATA[Interactive.run()];
+  const product = document.getElementById("product-select").value;
+  const spec = PRODUCTS[product];
+  const square = !spec.labelledOrigins;
+  const year = +document.getElementById("year-select").value;
+  const groupBy = document.getElementById("group-select").value;
+  const bloc = document.getElementById("bloc-select").value;
+  const show = document.getElementById("show-select").value;
+  const net = square && document.getElementById("values-select").value === "net";
+  const mapMode = document.getElementById("layout-select").value === "map" && Boolean(run.coords);
+  document.getElementById("bloc-panel").style.display = groupBy === "bloc" ? "" : "none";
+  const selectedGeo = Interactive.selectedGeos(), selectedTech = Interactive.selectedTechs();
+  const selectedCommodity = selectedCommodities();
+  const gd = document.getElementById("chart");
+  const width = Interactive.fitWidth(WIDTH_CAP), height = Math.round(width * HEIGHT_RATIO);
+  const [same, plural] = SAME[groupBy];
+
+  // Supplier and mine sources carry no technology, so the technology filter only applies to plants.
+  const yearRows = run.rows.filter(r => r.y === year && r.p === product);
+  const plantSourced = square && !spec.supplierOrigins;
+  const rows = yearRows.filter(r => selectedCommodity.has(r.c) && (!plantSourced || selectedTech.has(r.t)));
+  const totalYear = yearRows.reduce((s, r) => s + r.v, 0);
+  if (!yearRows.length || !rows.length || !selectedGeo.size) {
+    const why = !yearRows.length ? `No ${spec.name} allocations for ${year}`
+      : !rows.length ? `No ${spec.name} products or technologies selected` : "No countries selected";
+    Interactive.showEmpty(gd, why, width, height / 2);
+    Interactive.summary(`${totalYear.toFixed(0)} Mt ${spec.name} allocated in ${year}\n${run.provenance}`);
+    return;
+  }
+
+  // Countries outside the geography filter fold into "Rest of world" rather than
+  // vanishing, so the network keeps the selection's trade with everyone else visible.
+  const group = grouper(groupBy, bloc);
+  const destOf = iso3 => selectedGeo.has(iso3) ? group(iso3) : REST;
+  const originOf = square ? (iso3 => destOf(iso3)) : (label => SRC + label);
+
+  // Per-node totals over every flow (so hover and sizing stay true regardless of the
+  // top-N cut) and gross flows between distinct nodes, with per-commodity parts.
+  const stats = new Map(), members = new Map();
+  const stat = id => {
+    if (!stats.has(id)) stats.set(id, {out: 0, in: 0, dom: 0});
+    return stats.get(id);
+  };
+  const member = (id, raw, v) => {  // raw flow endpoints per node, weighting its map position
+    if (!members.has(id)) members.set(id, new Map());
+    members.get(id).set(raw, (members.get(id).get(raw) || 0) + v);
+  };
+  const gross = new Map();
+  rows.forEach(r => {
+    const o = originOf(r.o), d = destOf(r.d);
+    member(o, r.o, r.v);
+    member(d, r.d, r.v);
+    if (square && o === d) { stat(o).dom += r.v; return; }
+    stat(o).out += r.v;
+    stat(d).in += r.v;
+    const key = o + "|" + d;
+    if (!gross.has(key)) gross.set(key, {o, d, v: 0, parts: new Map()});
+    const f = gross.get(key);
+    f.v += r.v;
+    f.parts.set(r.c, (f.parts.get(r.c) || 0) + r.v);
+  });
+
+  // Net view collapses each pair's two directions into one chord for the balance.
+  let edges = [...gross.values()];
+  if (net) {
+    const paired = new Map();
+    edges.forEach(f => {
+      const [a, b] = f.o < f.d ? [f.o, f.d] : [f.d, f.o];
+      if (!paired.has(a + "|" + b)) paired.set(a + "|" + b, {a, b, ab: 0, ba: 0});
+      const p = paired.get(a + "|" + b);
+      if (f.o === a) p.ab += f.v; else p.ba += f.v;
+    });
+    edges = [...paired.values()].filter(p => Math.abs(p.ab - p.ba) > 5e-5).map(p => {
+      const forward = p.ab >= p.ba;
+      return {o: forward ? p.a : p.b, d: forward ? p.b : p.a, v: Math.abs(p.ab - p.ba), two: p, parts: null};
+    });
+  }
+  edges.sort((x, y) => y.v - x.v);
+
+  if (focus !== null && !stats.has(focus)) focus = null;  // stale focus from another view
+  let kept = focus !== null ? edges.filter(f => f.o === focus || f.d === focus)
+    : edges.slice(0, show === "all" ? Infinity : +show);
+  if (focus !== null && !kept.length) {  // a focus with nothing to show would dead-end the view
+    focus = null;
+    kept = edges.slice(0, show === "all" ? Infinity : +show);
+  }
+
+  const interTotal = [...gross.values()].reduce((s, f) => s + f.v, 0);
+  const domesticTotal = [...stats.values()].reduce((s, n) => s + n.dom, 0);
+  const total = interTotal + domesticTotal;
+  const flowWord = net ? "net flows" : "flows";
+  const summaryLines = () => {
+    const lines = [];
+    if (square) {
+      const trading = [...stats.keys()].filter(id => id !== REST).length;
+      lines.push(`${trading} trading ${plural} · ${total.toFixed(0)} Mt ${spec.name} allocated in ${year}: ` +
+                 `${domesticTotal.toFixed(0)} Mt (${total > 0 ? (100 * domesticTotal / total).toFixed(0) : 0}%) ` +
+                 `stayed within the same ${same}, ${interTotal.toFixed(0)} Mt moved between ${plural}`);
+    } else {
+      const sources = [...stats.keys()].filter(id => id.startsWith(SRC)).length;
+      lines.push(`${sources} origin labels → ${stats.size - sources} destination ${plural} · ` +
+                 `${interTotal.toFixed(0)} Mt ${spec.name} allocated in ${year}`);
+    }
+    if (focus !== null) {
+      lines.push(`Showing only ${flowWord} touching ${displayName(focus, groupBy)} — click its node again to show all`);
+    } else if (kept.length < edges.length) {
+      const base = edges.reduce((s, f) => s + f.v, 0);
+      const shown = kept.reduce((s, f) => s + f.v, 0);
+      lines.push(`Showing the top ${kept.length} of ${edges.length} ${flowWord} between ${plural} ` +
+                 `(${base > 0 ? (100 * shown / base).toFixed(0) : 0}% of that volume)`);
+    }
+    if (kept.length) {
+      const top = kept.reduce((a, b) => b.v > a.v ? b : a);
+      lines.push(`Largest ${net ? "net " : ""}flow: ${displayName(top.o, groupBy)} → ${displayName(top.d, groupBy)} ` +
+                 `${fmtMt(top.v)} Mt`);
+    }
+    lines.push(run.provenance);
+    return lines.join("\n");
+  };
+
+  if (!kept.length) {
+    Interactive.showEmpty(gd, `No ${spec.name} ${flowWord} between ${plural} to draw`, width, height / 2);
+    Interactive.summary(summaryLines());
+    return;
+  }
+
+  // Nodes on the circle: countries blocked by region (then busiest first), regions and
+  // bloc members busiest first, "Rest of world" last; the bipartite ore view puts
+  // origin labels on a left arc and destination countries on a right arc. The map
+  // layout instead puts every node at the trade-weighted mean position of its members.
+  const shown = new Set(kept.flatMap(f => [f.o, f.d]));
+  if (focus !== null) shown.add(focus);
+  const traffic = id => stats.get(id).out + stats.get(id).in;
+  const byTraffic = (a, b) => traffic(b) - traffic(a);
+  const maxTraffic = Math.max(...[...shown].map(traffic), 1e-9);
+  const sizeOf = id => NODE_MIN + (NODE_MAX - NODE_MIN) * Math.sqrt(traffic(id) / maxTraffic);
+  const pos = new Map();
+  const place = (id, angle) => pos.set(id, {x: NODE_R * Math.cos(angle), y: NODE_R * Math.sin(angle), angle});
+  const arc = (list, fromDeg, toDeg) => list.forEach((id, i) => {
+    const t = list.length === 1 ? 0.5 : i / (list.length - 1);
+    place(id, (fromDeg + (toDeg - fromDeg) * t) * Math.PI / 180);
+  });
+  if (mapMode) {
+    shown.forEach(id => {
+      let wlat = 0, wlon = 0, w = 0;
+      (members.get(id) || new Map()).forEach((v, raw) => {
+        const c = run.coords[raw];
+        if (c) { wlat += c[0] * v; wlon += c[1] * v; w += v; }
+      });
+      pos.set(id, w > 0 ? {x: wlon / w, y: wlat / w} : {x: 0, y: 0});
+    });
+    relaxOverlaps([...shown], pos, sizeOf, width, height);
+  } else if (square) {
+    const ordered = [...shown].filter(id => id !== REST).sort((a, b) => {
+      if (groupBy === "country") {
+        const cmp = Interactive.regionOf(a).localeCompare(Interactive.regionOf(b));
+        if (cmp) return cmp;
+      }
+      return byTraffic(a, b);
+    });
+    if (shown.has(REST)) ordered.push(REST);
+    ordered.forEach((id, i) => place(id, Math.PI / 2 - 2 * Math.PI * i / ordered.length));
+  } else {
+    arc([...shown].filter(id => id.startsWith(SRC)).sort(byTraffic), 115, 245);
+    arc([...shown].filter(id => !id.startsWith(SRC)).sort(byTraffic), 65, -65);
+  }
+
+  const maxKept = kept[0].v;
+  const breakdown = selectedCommodity.size > 1;
+  const pct = (v, of) => of > 0 ? (100 * v / of).toFixed(0) : "0";
+
+  const traces = [];
+  const arrows = {x: [], y: [], angle: [], size: [], color: [], text: []};
+  kept.forEach(f => {
+    const p0 = pos.get(f.o), p1 = pos.get(f.d);
+    let cx, cy;
+    if (mapMode) {
+      cx = (p0.x + p1.x) / 2 - (p1.y - p0.y) * MAP_BOW;
+      cy = (p0.y + p1.y) / 2 + (p1.x - p0.x) * MAP_BOW;
+    } else {
+      cx = (p0.x + p1.x) / 2 * CHORD_PULL;
+      cy = (p0.y + p1.y) / 2 * CHORD_PULL;
+    }
+    const xs = [], ys = [];
+    for (let i = 0; i <= CURVE_POINTS; i++) {
+      const t = i / CURVE_POINTS, u = 1 - t;
+      xs.push(u * u * p0.x + 2 * u * t * cx + t * t * p1.x);
+      ys.push(u * u * p0.y + 2 * u * t * cy + t * t * p1.y);
+    }
+    const route = `<b>${displayName(f.o, groupBy)} → ${displayName(f.d, groupBy)}</b>`;
+    let detail;
+    if (net) {
+      detail = `net ${fmtMt(f.v)} Mt (${displayName(f.o, groupBy)} → ${displayName(f.d, groupBy)} ` +
+               `${fmtMt(f.o < f.d ? f.two.ab : f.two.ba)} Mt · back ${fmtMt(f.o < f.d ? f.two.ba : f.two.ab)} Mt)`;
+    } else {
+      detail = `${fmtMt(f.v)} Mt · ${pct(f.v, stats.get(f.o).out)}% of origin's ` +
+               `${square ? "exports" : "supply"} · ${pct(f.v, stats.get(f.d).in)}% of destination's imports`;
+      if (breakdown && f.parts && f.parts.size) {
+        detail += "<br>" + [...f.parts].sort((a, b) => b[1] - a[1])
+          .map(([c, v]) => `${commodityName(c)} ${fmtMt(v)}`).join(" · ");
+      }
+    }
+    const hover = `${route}<br>${detail}`;
+    const widthPx = EDGE_MIN + (EDGE_MAX - EDGE_MIN) * Math.sqrt(f.v / maxKept);
+    const colour = nodeColour(f.o, groupBy);
+    traces.push({type: "scatter", mode: "lines", x: xs, y: ys, meta: "edge",
+      line: {width: widthPx, color: Interactive.hexToRgba(colour, 0.45)},
+      hoverinfo: "text", hovertext: hover, showlegend: false});
+    const t = ARROW_T, u = 1 - t;
+    const dx = 2 * u * (cx - p0.x) + 2 * t * (p1.x - cx), dy = 2 * u * (cy - p0.y) + 2 * t * (p1.y - cy);
+    arrows.x.push(u * u * p0.x + 2 * u * t * cx + t * t * p1.x);
+    arrows.y.push(u * u * p0.y + 2 * u * t * cy + t * t * p1.y);
+    arrows.angle.push(Math.atan2(dx, dy) * 180 / Math.PI);
+    arrows.size.push(Math.max(7, widthPx * 1.7));
+    arrows.color.push(Interactive.hexToRgba(colour, 0.8));
+    arrows.text.push(hover);
+  });
+  traces.push({type: "scatter", mode: "markers", x: arrows.x, y: arrows.y, meta: "arrow",
+    marker: {symbol: "triangle-up", angle: arrows.angle, size: arrows.size, color: arrows.color},
+    hoverinfo: "text", hovertext: arrows.text, showlegend: false});
+
+  const ids = [...shown];
+  const nodeHover = id => {
+    const s = stats.get(id);
+    if (id.startsWith(SRC)) return `<b>${displayName(id, groupBy)}</b><br>${fmtMt(s.out)} Mt supplied`;
+    if (!square) return `<b>${displayName(id, groupBy)}</b><br>${fmtMt(s.in)} Mt received`;
+    const lines = [`<b>${displayName(id, groupBy)}</b>`,
+                   `exports ${fmtMt(s.out)} Mt · imports ${fmtMt(s.in)} Mt`];
+    if (s.dom > 0) lines.push(`${fmtMt(s.dom)} Mt stayed within the same ${same}`);
+    return lines.join("<br>");
+  };
+  traces.push({type: "scatter", mode: "markers+text", meta: "node",
+    x: ids.map(id => pos.get(id).x), y: ids.map(id => pos.get(id).y),
+    text: ids.map(id => id.startsWith(SRC) ? id.slice(SRC.length) : id),
+    textposition: ids.map(id => mapMode ? "top center" : textPosition(pos.get(id).angle)),
+    textfont: {size: 11, color: T.ink},
+    customdata: ids,
+    marker: {size: ids.map(sizeOf),
+             color: ids.map(id => nodeColour(id, groupBy)),
+             line: {width: ids.map(id => id === focus ? 3 : 1.5),
+                    color: ids.map(id => id === focus ? T.ink : "#ffffff")}},
+    hoverinfo: "text", hovertext: ids.map(nodeHover), showlegend: false});
+
+  const groupLabel = groupBy === "bloc" ? `trade bloc ${bloc}` : groupBy;
+  const runGeos = new Set(run.rows.flatMap(r => PRODUCTS[r.p].labelledOrigins ? [r.d] : [r.o, r.d]));
+  const runNote = `${run.title} · ${Interactive.geoNote(runGeos)}`;
+  const readingNote = `${spec.note} · chords = ${net ? "net " : ""}flows between ${plural}, arrows point to the ` +
+    `destination · node size = trade volume, colour = region` +
+    (mapMode ? " · nodes at the trade-weighted centre of their members, nudged apart where crowded" : "") +
+    ` · click a node to isolate its flows`;
+  let xRange = [-RANGE, RANGE], yRange = [-RANGE, RANGE];
+  if (mapMode) {
+    const xs = ids.map(id => pos.get(id).x), ys = ids.map(id => pos.get(id).y);
+    xRange = [Math.min(...xs) - MAP_PAD, Math.max(...xs) + MAP_PAD];
+    yRange = [Math.min(...ys) - MAP_PAD * 0.7, Math.max(...ys) + MAP_PAD * 0.7];
+  }
+  const layout = {
+    title: {text: `${capitalise(spec.name)} trade network by ${groupLabel}, ${year}` +
+              `<br><sup>${runNote}</sup><br><sup>${readingNote}</sup>`,
+            font: {color: T.ink, size: 17}, x: 0.02, y: 0.985, yanchor: "top"},
+    xaxis: {visible: false, range: xRange, constrain: "domain"},
+    yaxis: {visible: false, range: yRange, scaleanchor: "x", scaleratio: 1, constrain: "domain"},
+    hoverlabel: {align: "left", font: {size: 11}, bgcolor: "#fff"},
+    font: {family: "Helvetica Neue, Helvetica, Arial", color: T.inkSecondary, size: 11},
+    paper_bgcolor: T.surface, plot_bgcolor: T.surface,
+    width, height, margin: MARGIN, showlegend: false,
+  };
+  Plotly.react(gd, traces, layout, {displaylogo: false, responsive: false});
+  bindClick(gd);
+  Interactive.summary(summaryLines());
+}
+
+function initControls() {
+  const blocSelect = document.getElementById("bloc-select");
+  blocs().forEach(b => blocSelect.appendChild(new Option(b, b)));
+  if (!blocs().length) document.querySelector('#group-select option[value="bloc"]').remove();
+  ["product-select", "year-select", "group-select", "bloc-select", "layout-select", "show-select", "values-select"]
+    .forEach(id => document.getElementById(id).addEventListener("change", render));
+  const setAllCommodities = checked => { commodityCbs.forEach(cb => cb.checked = checked); render(); };
+  document.getElementById("commodity-all").addEventListener("click", () => setAllCommodities(true));
+  document.getElementById("commodity-none").addEventListener("click", () => setAllCommodities(false));
+  if (!Object.values(DATA).some(d => d.coords && Object.keys(d.coords).length)) {
+    document.querySelector('#layout-select option[value="map"]').disabled = true;  // pre-coords data
+    document.getElementById("layout-select").value = "circle";
+  }
+  // Mine origins are labels, not countries, so they stay out of the geography filter;
+  // suppliers carry no technology, so only plant rows feed the technology filter.
+  Interactive.init({geoKeys: allRows.flatMap(r => PRODUCTS[r.p].labelledOrigins ? [r.d] : [r.o, r.d]),
+                    techs: countryRows.map(r => r.t), onChange: () => { syncYears(); render(); }});
+  syncYears();
+}
+
+initControls();
+Interactive.onResize(render);
+render();
+</script>
+</body>
+</html>

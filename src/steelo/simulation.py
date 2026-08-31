@@ -1511,6 +1511,7 @@ class SimulationRunner:
                 ),
             )
             interactive.plot_trade_matrix(tm_dir=self.config.output_dir / "TM")
+            interactive.plot_trade_network(tm_dir=self.config.output_dir / "TM")
             fixtures_dir = self.config.data_dir / "fixtures" if self.config.data_dir else None
             interactive.plot_supply_demand(
                 tm_dir=self.config.output_dir / "TM",

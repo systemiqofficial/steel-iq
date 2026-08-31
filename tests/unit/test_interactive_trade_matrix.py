@@ -168,6 +168,36 @@ def test_read_flows_covers_electrowinning_and_low_grades_and_warns_on_unknown(tm
     assert "bio_pci" not in caplog.text
 
 
+def coord_location(iso3: str, lat: float, lon: float) -> str:
+    """A Location repr with explicit coordinates."""
+    return (
+        f"Location(lat={lat}, lon={lon}, country='{iso3}', region='Somewhere', iso3='{iso3}', "
+        f"distance_to_other_iso3=None, geo_unit=None)"
+    )
+
+
+def test_read_coords_weights_endpoints_by_allocated_volume(tmp_path: Path) -> None:
+    """Each endpoint sits at the volume-weighted mean of its locations; mine origins keep their label key,
+    commodities outside the product mapping contribute nothing."""
+    tm_dir = tmp_path / "TM"
+    write_allocations(
+        tm_dir,
+        2025,
+        [
+            allocation("steel", coord_location("CHN", 30.0, 110.0), "BOF", coord_location("IND", 20.0, 78.0), 3e6),
+            allocation("steel", coord_location("CHN", 40.0, 120.0), "BOF", coord_location("IND", 20.0, 78.0), 1e6),
+            allocation("io_high", mine_location("Australia"), "N/A", coord_location("CHN", 30.0, 110.0), 2e6),
+            allocation("bio_pci", coord_location("BRA", -10.0, -50.0), "N/A", coord_location("CHN", 30.0, 110.0), 5e6),
+        ],
+    )
+
+    coords = trade_matrix.read_coords(trade_matrix.allocation_files(tm_dir))
+
+    # CHN = 3 Mt @ (30, 110) + 1 Mt @ (40, 120) as an origin + 2 Mt @ (30, 110) as an ore destination
+    assert coords == {"CHN": [31.67, 111.67], "IND": [20.0, 78.0], "Australia": [1.0, 2.0]}
+    assert trade_matrix.read_coords({}) == {}
+
+
 def test_pack_rows_compacts_flows_and_drops_rounded_zeros(tmp_path: Path) -> None:
     """Rows carry short keys with Mt to four decimals; the 20 t DEU → IND flow rounds away."""
     flows = trade_matrix.read_flows(trade_matrix.allocation_files(sample_tm_dir(tmp_path)))
