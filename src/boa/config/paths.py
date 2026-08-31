@@ -25,8 +25,9 @@ class PathConfig:
     reusing a stale cache:
 
         <root>/
-        ├── data/                          single slot: shapefiles, lsm, iso3 grid, cds/ raw NetCDFs
-        ├── inputs/<input_set>/            profile + max-capacity stores (cds-zarr/, lulc/, atlite/)
+        ├── data/                          single slot: shapefiles, lsm, iso3 grid, cds/ raw NetCDFs,
+        │                                  lulc/ land-cover raster
+        ├── inputs/<input_set>/            profile + max-capacity stores (cds-zarr/, atlite/)
         │   ├── staging/                   freshly built stores (transient; emptied by boa_cds install)
         │   └── cache_designs/             year-independent designs; depends only on the stores
         ├── costs/<cost_set>/boa_cost_data.xlsx
@@ -59,6 +60,9 @@ class PathConfig:
     cav_dir: Path
     cds_dir: Path
     cds_staging_dir: Path
+    # Provider data, not derived: the 2.35 GB land-cover raster is the same file for
+    # every input set, so it lives beside the other single-slot reference data rather
+    # than being re-fetched per set.
     lulc_dir: Path
     costs_dir: Path
     run_dir: Path
@@ -168,7 +172,7 @@ class PathConfig:
             cds_dir=data_dir / "cds",
             # Freshly built stores await promotion to zarr_dir here.
             cds_staging_dir=inputs_dir / "staging",
-            lulc_dir=inputs_dir / "lulc",
+            lulc_dir=data_dir / "lulc",
             costs_dir=costs_dir,
             run_dir=run_dir,
             outputs_dir=run_dir / "outputs",

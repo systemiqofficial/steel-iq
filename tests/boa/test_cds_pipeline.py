@@ -14,6 +14,7 @@ import pytest
 import xarray as xr
 
 from boa.cds import availability as cds_availability
+from boa.cds import download as cds_download
 from boa.cds import install as cds_install
 from boa.cds import max_capacity as cds_max_capacity
 from boa.cds.convert import (
@@ -463,6 +464,37 @@ def test_prepare_missing_raw_year_names_download_command(tmp_path, monkeypatch, 
     assert run_cds.main_prepare(["--region", "TEST", "--inputs", "setA", "--weather_year", "2031"]) == 1
     assert "boa-cds-download --year 2031" in capsys.readouterr().out
     assert not (tmp_path / "inputs" / "setA" / "cds-zarr").exists()
+
+
+def test_download_can_fetch_only_the_availability_inputs(tmp_path, monkeypatch):
+    """
+    `download_lulc` and the masks branch were both implemented and called from nothing.
+    They are now reachable, and reachable *without* re-fetching the capacity factors --
+    the availability inputs are static, so wanting them is not wanting a 6 GB re-download.
+    """
+    monkeypatch.setenv("BOA_DATA_ROOT", str(tmp_path))
+    calls = {}
+
+    def fake_cf(out_dir, techs, years, months, masks=False, dry_run=False, **kw):
+        calls["cf"] = {"techs": list(techs), "masks": masks, "out_dir": out_dir}
+
+    def fake_lulc(out_dir, dry_run=False, **kw):
+        calls["lulc"] = out_dir
+        return out_dir / "lulc.nc"
+
+    monkeypatch.setattr(cds_download, "download_capacity_factors", fake_cf)
+    monkeypatch.setattr(cds_download, "download_lulc", fake_lulc)
+
+    assert run_cds.main_download(["--skip-capacity-factors", "--masks", "--lulc", "--dry-run"]) == 0
+    assert calls["cf"]["techs"] == [], "no capacity-factor request when they are skipped"
+    assert calls["cf"]["masks"] is True
+    assert calls["lulc"] == tmp_path / "data" / "lulc", "the raster is not input-set scoped"
+
+
+def test_download_refuses_a_request_for_nothing(tmp_path, monkeypatch):
+    """--skip-capacity-factors with no --masks/--lulc would silently do nothing at all."""
+    monkeypatch.setenv("BOA_DATA_ROOT", str(tmp_path))
+    assert run_cds.main_download(["--skip-capacity-factors", "--dry-run"]) == 1
 
 
 # ---- CLI entry points --------------------------------------------------------
