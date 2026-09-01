@@ -65,6 +65,13 @@ def sample_post_processed() -> pd.DataFrame:
     return table
 
 
+def sample_motions() -> pd.DataFrame:
+    """One pipeline arrival, as the motion recorder writes it."""
+    columns = ["year", "kind", "furnace_group_id", "geo_key", "old_technology", "new_technology"]
+    columns += ["old_capacity_t", "new_capacity_t"]
+    return pd.DataFrame([[2025, "pipeline", "P1_0", "BGD", None, "DRI", None, 2_200_000.0]], columns=columns)
+
+
 def test_trade_bloc_members_from_boolean_attributes() -> None:
     """Every True boolean attribute counts as a bloc, including ones added dynamically; empty blocs vanish."""
     blocs = interactive_plots.trade_bloc_members(sample_country_mappings())
@@ -186,6 +193,43 @@ def test_plot_cost_curves_writes_self_contained_viewer(tmp_path) -> None:
     # Without a recorded demand (older runs) steel clears against its production.
     assert plotter.plot_cost_curves(csv_path, tmp_path / "absent.csv", CLEARING) == written
     assert '"steel": {"2025": {"d": 1.0, "c": 500.0}}' in written.read_text()
+
+
+def test_plot_decision_flows_writes_self_contained_viewer(tmp_path) -> None:
+    """The decision-flow viewer carries the Sankey banding config alongside the shared shell."""
+    motions_csv = tmp_path / "pam_motions.csv"
+    sample_motions().to_csv(motions_csv, index=False)
+    plotter = InteractivePlotter(tmp_path / "plots", sample_country_mappings(), run_title="sim_test")
+
+    written = plotter.plot_decision_flows(motions_csv)
+
+    assert written == tmp_path / "plots" / "interactive" / "decision_flows.html"
+    html = written.read_text()
+    for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
+        assert placeholder not in html
+    assert "const Interactive" in html
+    assert '"Pipeline"' in html
+    assert "P1_0" in html
+    assert '"tradeBlocs"' in html
+
+
+def test_missing_inputs_skip_the_viewer(tmp_path) -> None:
+    """A missing table or motions file, or a table without a viewer's columns, skips the viewer instead of failing."""
+    plotter = InteractivePlotter(tmp_path / "plots", [], run_title="sim_test")
+
+    assert plotter.plot_emissions(tmp_path / "absent.csv") is None
+    assert plotter.plot_capacity_and_production(tmp_path / "absent.csv") is None
+    assert plotter.plot_cost_curves(tmp_path / "absent.csv", tmp_path / "absent_prices.csv", CLEARING) is None
+    assert plotter.plot_decision_flows(tmp_path / "absent.csv") is None
+
+    csv_path = tmp_path / "post_processed_test.csv"
+    table = sample_post_processed()
+    table.drop(columns=[c for c in table if c.startswith("emissions_")]).to_csv(csv_path, index=False)
+    assert plotter.plot_emissions(csv_path) is None
+    assert plotter.plot_capacity_and_production(csv_path) is not None  # capacity/production need no emissions
+    assert plotter.plot_cost_curves(csv_path, tmp_path / "absent_prices.csv", CLEARING) is None  # no unit cost column
+    (tmp_path / "plots" / "interactive" / "capacity_and_production.html").unlink()
+    assert not list((tmp_path / "plots" / "interactive").iterdir())
 
 
 def test_plot_trade_matrix_writes_self_contained_viewer(tmp_path) -> None:

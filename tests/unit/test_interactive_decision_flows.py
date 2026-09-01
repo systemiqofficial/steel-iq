@@ -1,9 +1,9 @@
-"""Tests for the decision-flow sankey writer (steelo.utilities.decision_flows)."""
+"""Tests for the decision-flow viewer's row packing (steelo.utilities.interactive.decision_flows)."""
 
 import pandas as pd
 import pytest
 
-from steelo.utilities import decision_flows
+from steelo.utilities.interactive import decision_flows
 
 MOTIONS_COLUMNS = [
     "year",
@@ -73,34 +73,8 @@ def test_pack_motions_rejects_unknown_kind() -> None:
         decision_flows.pack_motions(motions)
 
 
-def test_write_decision_flows_html_embeds_data(tmp_path) -> None:
-    """The written HTML is self-contained: config, motions and plotly.js are inlined."""
-    motions_csv = tmp_path / "pam_motions.csv"
-    sample_motions().to_csv(motions_csv, index=False)
-    output_path = tmp_path / "plots" / "PAM" / "decision_flows.html"
-
-    written = decision_flows.write_decision_flows_html(
-        motions_csv=motions_csv,
-        output_path=output_path,
-        run_title="sim_test",
-    )
-
-    assert written == output_path
-    html = output_path.read_text()
-    for placeholder in ("__PLOTLYJS__", "__CONFIG__", "__DATA__"):
-        assert placeholder not in html
-    assert "sim_test" in html
-    assert '"Pipeline"' in html
-    assert "P1_0" in html
-
-
-def test_write_decision_flows_html_missing_csv_returns_none(tmp_path) -> None:
-    """A run without a motions file skips the viewer instead of crashing the plot stage."""
-    written = decision_flows.write_decision_flows_html(
-        motions_csv=tmp_path / "absent.csv",
-        output_path=tmp_path / "decision_flows.html",
-        run_title="sim_test",
-    )
-
-    assert written is None
-    assert not (tmp_path / "decision_flows.html").exists()
+def test_chart_config_bands_every_kind() -> None:
+    """The viewer config names a band for every motion kind and lists the new-build kinds."""
+    assert set(decision_flows.CHART_CONFIG["kindToGroup"]) == set(decision_flows.KIND_TO_GROUP)
+    assert decision_flows.CHART_CONFIG["newBuildKinds"] == ["expansion", "greenfield", "pipeline"]
+    assert all(group in decision_flows.GROUP_ORDER for group in decision_flows.KIND_TO_GROUP.values())
