@@ -35,6 +35,9 @@ window.addEventListener("error", function(e) {
   <div>
     <label class="inline"><input type="checkbox" id="production-toggle" checked>Overlay iron &amp; steel production</label>
   </div>
+  <div>
+    <label class="inline"><input type="checkbox" id="cumulative-toggle">Cumulative</label>
+  </div>
 </div>
 <div class="toolbar" id="shared-filters"></div>
 <div id="summary"></div>
@@ -82,6 +85,7 @@ function render() {
   const view = scopeView();
   const groupBy = document.getElementById("group-select").value;
   const showProduction = document.getElementById("production-toggle").checked;
+  const cumulative = document.getElementById("cumulative-toggle").checked;
   const selectedGeo = Interactive.selectedGeos(), selectedTech = Interactive.selectedTechs();
   const gd = document.getElementById("chart");
 
@@ -92,7 +96,7 @@ function render() {
 
   const series = new Map();  // key -> {kind -> values per year}
   const production = {iron: years.map(() => 0), steel: years.map(() => 0)};
-  const totals = years.map(() => 0);
+  let totals = years.map(() => 0);
   rows.forEach(r => {
     const key = keyOf(r), yi = yearIdx.get(r.y);
     if (!series.has(key)) series.set(key, Object.fromEntries(view.parts.map(p => [p.kind, years.map(() => 0)])));
@@ -103,6 +107,12 @@ function render() {
     });
     if (production[r.p]) production[r.p][yi] += r.pr;
   });
+  if (cumulative) {  // each year then shows the running sum up to and including it
+    const runningSum = vals => { let sum = 0; return vals.map(v => (sum += v)); };
+    series.forEach(kinds => view.parts.forEach(p => { kinds[p.kind] = runningSum(kinds[p.kind]); }));
+    Object.entries(production).forEach(([product, vals]) => { production[product] = runningSum(vals); });
+    totals = runningSum(totals);
+  }
 
   const keys = [...series.keys()].filter(k => view.parts.some(p => series.get(k)[p.kind].some(v => v !== 0))).sort();
   if (!keys.length) {
@@ -170,6 +180,7 @@ function render() {
   const groupLabel = groupBy === "technology" ? "Technology" : "Region";
   const runGeos = new Set(run.rows.map(r => r.g));
   const subtitle = [run.title, Interactive.geoNote(runGeos)]
+    .concat(cumulative ? ["cumulative up to and including each year"] : [])
     .concat(combined ? ["lighter shade = indirect"] : []).join(" · ");
 
   // The production overlay puts its axis on the right, between the plot and the legend.
@@ -182,8 +193,8 @@ function render() {
     xaxis: {title: {text: "Year"}, range: [years[0], years[years.length - 1]], dtick: years.length > 12 ? 5 : 1,
             gridcolor: T.grid,
             zeroline: false, showspikes: true, spikemode: "across", spikethickness: 1, spikecolor: T.inkSecondary},
-    yaxis: {title: {text: "Total emissions (Mt CO2e)"}, gridcolor: T.grid, zeroline: true, zerolinecolor: T.ink,
-            zerolinewidth: 1},
+    yaxis: {title: {text: cumulative ? "Cumulative emissions (Mt CO2e)" : "Total emissions (Mt CO2e)"},
+            gridcolor: T.grid, zeroline: true, zerolinecolor: T.ink, zerolinewidth: 1},
     legend: {x: 1 + legendGap / (WIDTH - margin.l - margin.r), xanchor: "left", y: 1, yanchor: "top",
              font: {size: 11}, bgcolor: T.surface},
     hovermode: "x unified",
@@ -193,8 +204,8 @@ function render() {
     width: WIDTH, height: HEIGHT, margin,
   };
   if (anyProduction) {
-    layout.yaxis2 = {title: {text: "Total production (Mt)"}, overlaying: "y", side: "right", rangemode: "tozero",
-                     showgrid: false, zeroline: false};
+    layout.yaxis2 = {title: {text: cumulative ? "Cumulative production (Mt)" : "Total production (Mt)"},
+                     overlaying: "y", side: "right", rangemode: "tozero", showgrid: false, zeroline: false};
   }
   Plotly.react(gd, traces, layout, {displaylogo: false, responsive: false});
 
@@ -203,9 +214,10 @@ function render() {
   const nCountries = new Set(Interactive.geoKeys().map(Interactive.isoOf)).size;
   const selCountries = new Set([...selectedGeo].map(Interactive.isoOf)).size;
   const allTechs = new Set(run.rows.map(r => r.t)).size;
+  const netLabel = cumulative ? `net cumulative to ${lastYear}` : `net in ${lastYear}`;
   Interactive.summary(
     `${selCountries} of ${nCountries} countries · ${selectedTech.size} of ${allTechs} technologies · ` +
-    `${fgs} furnace groups and ${totals[totals.length - 1].toFixed(0)} Mt CO2e net in ${lastYear}\n${run.provenance}`);
+    `${fgs} furnace groups and ${totals[totals.length - 1].toFixed(0)} Mt CO2e ${netLabel}\n${run.provenance}`);
 }
 
 function initControls() {
@@ -218,7 +230,8 @@ function initControls() {
   });
   const biogenic = document.getElementById("scope-biogenic");
   document.getElementById("scope-direct").addEventListener("change", e => { biogenic.disabled = !e.target.checked; });
-  ["boundary-select", "scope-direct", "scope-indirect", "scope-biogenic", "group-select", "production-toggle"]
+  ["boundary-select", "scope-direct", "scope-indirect", "scope-biogenic", "group-select", "production-toggle",
+   "cumulative-toggle"]
     .forEach(id => document.getElementById(id).addEventListener("change", render));
 
   const allRows = Object.values(DATA).flatMap(d => d.rows);
