@@ -25,7 +25,15 @@ from plotly.offline import get_plotlyjs
 from steelo.domain.models import CountryMapping
 from steelo.utilities.plotting import region2colours, tech2colours
 
-from . import capacity_production, cost_curves, emissions, reductant_use, supply_demand, trade_matrix
+from . import (
+    capacity_production,
+    cost_curves,
+    emissions,
+    metallic_charge_use,
+    reductant_use,
+    supply_demand,
+    trade_matrix,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,11 +113,12 @@ class InteractivePlotter:
     Example:
         >>> interactive = InteractivePlotter(plots_dir, country_mappings, run_title="sim_2026")
         >>> interactive.plot_emissions(post_processed_csv)
-        >>> interactive.plot_capacity_and_production(post_processed_csv)
+        >>> interactive.plot_capacity_and_production(post_processed_csv, demand_centers_json)
         >>> interactive.plot_cost_curves(post_processed_csv, market_prices_csv, clearing)
         >>> interactive.plot_trade_matrix(tm_dir)
         >>> interactive.plot_trade_network(tm_dir)
         >>> interactive.plot_reductant_use(post_processed_csv, primary_feedstocks_json)
+        >>> interactive.plot_metallic_charge_use(post_processed_csv, primary_feedstocks_json, suppliers_json)
     """
 
     SUBDIR = "interactive"
@@ -174,16 +183,24 @@ class InteractivePlotter:
         logger.info("Wrote emissions viewer %s (%d aggregated rows)", path, len(aggregated))
         return path
 
-    def plot_capacity_and_production(self, post_processed_csv: Path) -> Optional[Path]:
+    def plot_capacity_and_production(
+        self, post_processed_csv: Path, demand_centers_json: Optional[Path] = None
+    ) -> Optional[Path]:
         """Write the capacity and production viewer (``capacity_and_production.html``).
 
         Args:
             post_processed_csv: The run's ``post_processed_<timestamp>.csv``.
+            demand_centers_json: The prepared ``fixtures/demand_centers.json``, for the
+                steel demand overlay — the demand the trade LP is asked to serve, per
+                year and country. None (or a missing file) omits the overlay with a
+                warning.
 
         Returns:
             The written path, or None when the table is missing or lacks the capacity or
             production column (logged as warnings so the plot stage never fails).
         """
+        from steelo.adapters.repositories.json_repository import DemandCenterJsonRepository
+
         table = self._read_post_processed(post_processed_csv, "capacity and production")
         if table is None:
             return None
@@ -192,11 +209,25 @@ class InteractivePlotter:
         except ValueError as exc:
             logger.warning("%s — skipping the capacity and production viewer", exc)
             return None
+
+        steel_demand = pd.DataFrame(columns=["year", "geo", "volume_mt"])
+        demand_source = ""
+        if demand_centers_json is not None and demand_centers_json.is_file():
+            centres = DemandCenterJsonRepository(demand_centers_json).list()
+            years = {int(year) for year in aggregated["year"]}
+            steel_demand = capacity_production.steel_demand_rows(centres, years)
+            demand_source = "; steel demand from fixtures/demand_centers.json"
+        else:
+            logger.warning(
+                "No demand centres fixture at %s — steel demand omitted from the capacity and production viewer",
+                demand_centers_json,
+            )
         data = {
             self.run_title: {
                 "title": self.run_title,
-                "provenance": f"Furnace-group capacity and production from {post_processed_csv.name}.",
+                "provenance": f"Furnace-group capacity and production from {post_processed_csv.name}{demand_source}.",
                 "rows": capacity_production.pack_rows(aggregated),
+                "demand": capacity_production.pack_demand(steel_demand),
             },
         }
         path = self._write("capacity_and_production.html", self._config("Capacity and production"), data)
@@ -468,6 +499,86 @@ class InteractivePlotter:
         path = self._write("reductant_use.html", config, data)
         logger.info(
             "Wrote reductant-use viewer %s (%d aggregated rows, %d carriers)", path, len(aggregated), len(carriers)
+        )
+        return path
+
+    def plot_metallic_charge_use(
+        self,
+        post_processed_csv: Path,
+        primary_feedstocks_json: Optional[Path] = None,
+        suppliers_json: Optional[Path] = None,
+    ) -> Optional[Path]:
+        """Write the metallic charge use viewer (``metallic_charge_use.html``).
+
+        The viewer shows the metallic charges steelmakers and ironmakers feed into
+        their products, from the table's per-feedstock allocation rows (a furnace
+        group running several charges at different shares contributes each share to
+        its own charge), with an optional local scrap supply overlay.
+
+        Args:
+            post_processed_csv: The run's ``post_processed_<timestamp>.csv``, whose
+                feedstock rows carry each furnace group's per-charge demand.
+            primary_feedstocks_json: The prepared ``fixtures/primary_feedstocks.json``
+                (the Bill of Materials), whose ``metallic_charge`` fields identify
+                which feedstock rows are charges. Required — None (or a missing file)
+                skips the viewer with a warning.
+            suppliers_json: The prepared ``fixtures/suppliers.json``, for the local
+                scrap supply overlay. None (or a missing file) omits the overlay
+                with a warning.
+
+        Returns:
+            The written path, or None when the table or the Bill of Materials is
+            missing, or a required column is absent (logged as warnings so the plot
+            stage never fails).
+        """
+        from steelo.adapters.repositories.json_repository import PrimaryFeedstockJsonRepository, SupplierJsonRepository
+
+        table = self._read_post_processed(post_processed_csv, "metallic-charge")
+        if table is None:
+            return None
+        if primary_feedstocks_json is None or not primary_feedstocks_json.is_file():
+            logger.warning(
+                "No primary feedstocks fixture at %s — skipping the metallic-charge viewer (charges "
+                "cannot be identified without the Bill of Materials)",
+                primary_feedstocks_json,
+            )
+            return None
+        feedstocks = PrimaryFeedstockJsonRepository(primary_feedstocks_json).list()
+        try:
+            aggregated = metallic_charge_use.aggregate_charge_use(table, feedstocks)
+        except ValueError as exc:
+            logger.warning("%s — skipping the metallic-charge viewer", exc)
+            return None
+
+        suppliers = []
+        if suppliers_json is not None and suppliers_json.is_file():
+            suppliers = SupplierJsonRepository(suppliers_json).list()
+        else:
+            logger.warning("No suppliers fixture at %s — local scrap supply overlay omitted", suppliers_json)
+        years = {int(year) for year in aggregated["year"]}
+        supply = metallic_charge_use.scrap_supply_rows(suppliers, self.country_mappings, years)
+
+        data = {
+            self.run_title: {
+                "title": self.run_title,
+                "provenance": f"Per-feedstock charge allocations from {post_processed_csv.name}; charges "
+                "identified by the Bill of Materials (fixtures/primary_feedstocks.json); local scrap "
+                "supply from fixtures/suppliers.json.",
+                "rows": metallic_charge_use.pack_rows(aggregated),
+                "supply": metallic_charge_use.pack_supply(supply),
+            },
+        }
+        config = self._config(
+            "Metallic charge use",
+            chargeColours=metallic_charge_use.CHARGE_COLOURS,
+            chargeOrder=metallic_charge_use.CHARGE_ORDER,
+        )
+        path = self._write("metallic_charge_use.html", config, data)
+        logger.info(
+            "Wrote metallic-charge viewer %s (%d aggregated rows, %d scrap supply rows)",
+            path,
+            len(aggregated),
+            len(supply),
         )
         return path
 

@@ -37,6 +37,9 @@ window.addEventListener("error", function(e) {
       <option value="region">Region</option>
     </select>
   </div>
+  <div id="demand-panel">
+    <label class="inline" id="demand-label"><input type="checkbox" id="demand-toggle">Steel demand</label>
+  </div>
 </div>
 <div class="toolbar" id="shared-filters"></div>
 <div id="summary"></div>
@@ -110,6 +113,15 @@ function render() {
   const selectedGeo = Interactive.selectedGeos(), selectedTech = Interactive.selectedTechs();
   const gd = document.getElementById("chart");
 
+  // The steel demand overlay needs demand data and the steel product (demand centres
+  // order steel only).
+  const demand = run.demand || [];
+  document.getElementById("demand-panel").style.display = demand.length ? "" : "none";
+  const demandToggle = document.getElementById("demand-toggle");
+  demandToggle.disabled = product !== "steel";
+  document.getElementById("demand-label").title = product === "steel" ? "" : "Only available for steel";
+  const showDemand = demand.length > 0 && demandToggle.checked && product === "steel";
+
   const years = [...new Set(run.rows.map(r => r.y))].sort((a, b) => a - b);
   const yearIdx = new Map(years.map((y, i) => [y, i]));
   const rows = run.rows.filter(r => r.p === product && selectedGeo.has(r.g) && selectedTech.has(r.t));
@@ -129,7 +141,7 @@ function render() {
   const compare = metricId === "compare";
   const metrics = compare ? [METRICS.capacity, METRICS.production] : [METRICS[metricId]];
   const keys = [...series.keys()].filter(k => metrics.some(m => series.get(k)[m.field].some(v => v !== 0))).sort();
-  if (!keys.length) {
+  if (!keys.length && !showDemand) {
     Interactive.showEmpty(gd, `No ${product} ${compare ? "capacity or production" : metricId} for this selection`, WIDTH, HEIGHT);
     Interactive.summary("0 furnace groups");
     return;
@@ -145,12 +157,35 @@ function render() {
     hovertemplate: m.field === "pr" ? "<b>%{y:.1f} Mt</b> · %{customdata:.0f}% of capacity" : "<b>%{y:.1f} Mt</b>",
   }));
 
+  // Demand centres carry no sub-national geography, so the overlay counts a country's
+  // demand once any of its geo units is selected; "met" compares the chart's own
+  // production total against that demand.
+  let demandLast = null, metLast = null;
+  if (showDemand) {
+    const selCountries = new Set([...selectedGeo].map(Interactive.isoOf));
+    const byYear = new Map(years.map(y => [y, null]));
+    demand.forEach(s => {
+      if (!selCountries.has(s.g) || !byYear.has(s.y)) return;
+      byYear.set(s.y, (byYear.get(s.y) || 0) + s.v);
+    });
+    const values = years.map(y => byYear.get(y));
+    const met = values.map((v, i) => v > 0 ? Math.round(100 * totals.pr[i] / v) : null);
+    demandLast = values[values.length - 1];
+    metLast = met[met.length - 1];
+    traces.push({
+      type: "scatter", mode: "lines", x: years, y: values, customdata: met,
+      name: "Steel demand", line: {width: 2, color: T.ink, dash: "dash"}, fill: "none",
+      legendrank: 2000, hovertemplate: "%{y:.1f} Mt (%{customdata}% met)",
+    });
+  }
+
   const groupLabel = groupBy === "technology" ? "Technology" : "Region";
   const metricTitle = compare ? "capacity vs production" : metricId;
   const runGeos = new Set(run.rows.map(r => r.g));
   const subtitle = [run.title, Interactive.geoNote(runGeos)]
-    .concat(compare ? ["solid = production, lighter = idle capacity, stack top = capacity"] : []).join(" · ");
-  const margin = {...MARGIN, r: 12 + Interactive.legendWidth(keys)};
+    .concat(compare ? ["solid = production, lighter = idle capacity, stack top = capacity"] : [])
+    .concat(showDemand ? ["dashed = steel demand (country-level)"] : []).join(" · ");
+  const margin = {...MARGIN, r: 12 + Interactive.legendWidth(keys.concat(showDemand ? ["Steel demand"] : []))};
   const layout = {
     title: {text: `${capitalise(product)} ${metricTitle} by ${groupLabel}<br><sup>${subtitle}</sup>`,
             font: {color: T.ink, size: 17}, x: 0.05},
@@ -178,13 +213,18 @@ function render() {
   Interactive.summary(
     `${selCountries} of ${nCountries} countries · ${selTechs} of ${productTechs.length} ${product} technologies · ` +
     `${fgs} furnace groups, ${totals.pr[last].toFixed(0)} Mt produced on ${totals.cap[last].toFixed(0)} Mt capacity ` +
-    `(${utilisation[last].toFixed(0)}%) in ${years[last]}\n${run.provenance}`);
+    `(${utilisation[last].toFixed(0)}%) in ${years[last]}` +
+    (demandLast !== null ? ` · ${demandLast.toFixed(0)} Mt steel demand${metLast !== null ? ` (${metLast}% met)` : ""}` : "") +
+    `\n${run.provenance}`);
 }
 
-["product-select", "metric-select", "group-select"].forEach(id =>
+["product-select", "metric-select", "group-select", "demand-toggle"].forEach(id =>
   document.getElementById(id).addEventListener("change", render));
+/* The geography filter lists every country with capacity or steel demand, so the
+   overlay can count demand arising where nothing is produced. */
 const allRows = Object.values(DATA).flatMap(d => d.rows);
-Interactive.init({geoKeys: allRows.map(r => r.g), techs: allRows.map(r => r.t), onChange: render});
+const allGeos = allRows.map(r => r.g).concat(Object.values(DATA).flatMap(d => (d.demand || []).map(s => s.g)));
+Interactive.init({geoKeys: allGeos, techs: allRows.map(r => r.t), onChange: render});
 Interactive.onResize(render);
 render();
 </script>
