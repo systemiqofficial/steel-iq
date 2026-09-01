@@ -8,6 +8,8 @@ import xarray as xr
 from steelo.domain.constants import EARTH_RADIUS
 
 
+# Superseded by boa.config.settings.CAPACITY_DENSITY_MW_PER_KM2, which is authoritative
+# for the boa pipeline; kept here unchanged for this module's own callers.
 CAPACITY_PER_AREA = capacity_per_area = {
     "pv": 141.9,  # MW/km^2
     "wind": 10.42,  # MW/km^2

@@ -55,67 +55,91 @@ MIN_SURVIVOR_FRACTION = 0.01
 TOPUP_QUALITY_FRACTION = 0.25
 
 # ===== Max-capacity ceiling parameters (boa_cds max-capacity) =====
-# Installable capacity densities implied by the shipped max_capacity files.
-# override with --wind-density until settled.
-CAPACITY_DENSITY_MW_PER_KM2 = {"pv": 140, "wind": 10}
+# Applied density = theoretical density (stage 1) x packing factor (stage 2) x land-
+# availability fraction (stage 3, LULC_CODES below). Full source trail, the min-vs-multiply
+# reasoning, and per-class rationale: BOA_BISECTION_PLAN.md, "LULC_CODES rewrite".
 
-# ESA-CCI LCCS class -> usable land fraction, ported from steel-iq
-# wind_and_pv/availability.py LULC_CODES.
-# Unlisted classes (notably forests) get fraction 0, i.e. are fully excluded.
+# Stage 1: zero-spacing areal power density. Scholz (2012) REMix PhD thesis, Tab. 4.1.3 (pv)
+# / 4.3.1 (wind) -- https://elib.dlr.de/77976/1/REMix_Thesis_YS.pdf
+THEORETICAL_DENSITY_MW_PER_KM2 = {"pv": 141.9, "wind": 10.42}
+
+# Stage 2: fraction of a site's own footprint actually covered (row spacing, access roads).
+# pv: Scholz Tab. 4.1.3, cross-validated to ~20-40% by 5 independent sources (Ong et al.
+# 2013 NREL/TP-6A20-56290, NREL/TP-6A20-87843 2023, Risch et al. 2022 doi:10.3390/en15155536).
+# wind: 1.0 -- turbine self-spacing is already inside the stage-1 figure.
+PACKING_FACTOR = {"pv": 0.33, "wind": 1.0}
+
+# Overridden per-run via --pv-density / --wind-density.
+CAPACITY_DENSITY_MW_PER_KM2 = {
+    tech: THEORETICAL_DENSITY_MW_PER_KM2[tech] * PACKING_FACTOR[tech] for tech in ("pv", "wind")
+}
+
+# Stage 3: ESA-CCI LCCS class -> land-availability fraction. Unlisted classes get 0.
 #
-# !!! UNVALIDATED, AND THESE VALUES DOMINATE THE RESULT. RECHECK BEFORE TRUSTING A RUN. !!!
+# !!! BALLPARKED, NOT LITERATURE-DERIVED. RECHECK BEFORE TRUSTING A RUN. !!!
 #
-# Together with CAPACITY_DENSITY_MW_PER_KM2 above they imply an effective ceiling of
-# roughly 1.8 MW/km2 for pv and 1.5 MW/km2 for wind on typical European land -- a 0.25 deg
-# cell then tops out far below what a 500 MW baseload needs. Applied alongside the
-# cds_exclusion layer, nearly every central-European land cell fails annual energy balance
-# at its own ceiling, and is therefore reported infeasible before any dispatch runs.
-#
-# That is what the numbers here say, not a defect in the code that applies them. Whether it
-# is the intended model behaviour is an open question for the team. The levers are the
-# fractions below, the densities above, the baseload, and whether a plant is confined to a
-# single cell at all.
+# No source gave a fraction confirmed safe to multiply against stage 2 without double-
+# counting (Scholz's own figures turned out to be Germany-specific fallow-farmland stats,
+# not a transferable constant). These are a team judgement call instead of a citation.
 LULC_CODES = {
     "pv": {
-        10: 0.02,
-        11: 0.02,
-        20: 0.02,
-        30: 0.02,
-        40: 0.02,
-        110: 0.02,
-        120: 0.02,
-        121: 0.02,
-        122: 0.02,
-        130: 0.02,
-        150: 0.33,
-        151: 0.33,
-        152: 0.33,
-        153: 0.33,
-        180: 0.02,
-        190: 0.024,
-        200: 0.33,
-        201: 0.33,
-        202: 0.33,
+        10: 0.10,
+        11: 0.10,
+        12: 0.10,  # cropland, rainfed (+ herbaceous / tree-shrub cover)
+        20: 0.10,  # cropland, irrigated or post-flooding
+        30: 0.10,
+        40: 0.10,  # cropland / natural-vegetation mosaics
+        100: 0.10,
+        110: 0.10,  # tree/shrub <-> herbaceous mosaics
+        120: 0.10,
+        121: 0.10,
+        122: 0.10,  # shrubland
+        130: 0.10,  # grassland
+        140: 1.0,  # lichens and mosses (bare/sparse bracket)
+        150: 1.0,
+        151: 1.0,
+        152: 1.0,
+        153: 1.0,  # sparse vegetation
+        190: 0.20,  # urban -- ground-mount siting only, not rooftop
+        200: 1.0,
+        201: 1.0,
+        202: 1.0,  # bare areas
+        # forest (50-90), wetland (160/170/180), water (210), snow/ice (220): excluded
     },
     "wind": {
-        10: 0.15,
-        11: 0.15,
-        20: 0.15,
-        30: 0.15,
-        40: 0.15,
-        110: 0.15,
-        120: 0.15,
-        121: 0.15,
-        122: 0.15,
-        130: 0.15,
-        150: 0.33,
-        151: 0.33,
-        152: 0.33,
-        153: 0.33,
-        180: 0.15,
-        200: 0.33,
-        201: 0.33,
-        202: 0.33,
+        10: 0.10,
+        11: 0.10,
+        12: 0.10,
+        20: 0.10,
+        30: 0.10,
+        40: 0.10,  # cropland (+ mosaics)
+        50: 0.10,
+        60: 0.10,
+        61: 0.10,
+        62: 0.10,
+        70: 0.10,
+        71: 0.10,
+        72: 0.10,
+        80: 0.10,
+        81: 0.10,
+        82: 0.10,
+        90: 0.10,  # forest, all types -- WDPA-protected forest
+        # is already excluded upstream by cds_exclusion; this covers the non-protected rest
+        100: 0.10,
+        110: 0.10,
+        120: 0.10,
+        121: 0.10,
+        122: 0.10,
+        130: 0.10,
+        140: 1.0,
+        150: 1.0,
+        151: 1.0,
+        152: 1.0,
+        153: 1.0,  # lichens/mosses, sparse vegetation
+        200: 1.0,
+        201: 1.0,
+        202: 1.0,  # bare areas
+        # urban (190), wetland (160/170/180), water (210), snow/ice (220): excluded
     },
 }
 
