@@ -1430,6 +1430,12 @@ def plot_detailed_trade_map(
 
         let deckgl;
 
+        // This map never uses Mapbox-hosted styles/tiles (basemap comes from CARTO's
+        // free CDN), so disable Mapbox GL JS's access-token requirement rather than
+        // needing a real Mapbox account/key.
+        mapboxgl.accessToken = 'not-needed';
+        mapboxgl.config.REQUIRE_ACCESS_TOKEN = false;
+
         // Make functions available globally for onclick handlers
         window.toggleCommodity = function(commodity) {{
             console.log('toggleCommodity called with:', commodity);
