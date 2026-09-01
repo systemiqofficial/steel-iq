@@ -7,7 +7,8 @@ from typing import Optional, TYPE_CHECKING
 
 import numpy as np
 from .service_layer import handlers, UnitOfWork, MessageBus, SimulationCheckpoint
-from .domain.models import Environment, PlantGroup
+from .domain.constants import Commodities
+from .domain.models import Environment, PlantGroup, Supplier
 from .adapters.repositories import JsonRepository, InMemoryRepository, Repository
 from .data.path_resolver import DataPathResolver
 
@@ -209,6 +210,31 @@ def _load_secondary_feedstock_constraints(env, repository_json):
         logger.info(f"Total {len(constraints)} secondary feedstock constraints loaded")
 
 
+def apply_supplier_cost_config(suppliers: list[Supplier], config: "SimulationConfig") -> None:
+    """Apply the configured cost choices to the loaded suppliers' production costs.
+
+    Args:
+        suppliers: The suppliers loaded from the prepared fixtures.
+        config: The simulation configuration.
+
+    Notes:
+        Mines get mine_price_by_year (with iron ore premiums) or mine_cost_by_year (without),
+        per config.use_iron_ore_premiums. Scrap suppliers (empty mine dictionaries) get
+        config.initial_scrap_production_cost for every year, replacing the placeholder written
+        at data preparation; the annual repricing in handlers.py overwrites it from the second
+        year onward.
+    """
+    for supplier in suppliers:
+        if supplier.commodity == Commodities.SCRAP.value:
+            supplier.production_cost_by_year = {
+                year: config.initial_scrap_production_cost for year in supplier.production_cost_by_year
+            }
+        elif config.use_iron_ore_premiums and supplier.mine_price_by_year:
+            supplier.production_cost_by_year = supplier.mine_price_by_year.copy()
+        elif not config.use_iron_ore_premiums and supplier.mine_cost_by_year:
+            supplier.production_cost_by_year = supplier.mine_cost_by_year.copy()
+
+
 def bootstrap_simulation(
     config: "SimulationConfig",
     repository: Optional[Repository] = None,  # Allow injecting a repository for testing
@@ -285,15 +311,8 @@ def bootstrap_simulation(
         repository.demand_centers.add_list(repository_json.demand_centers.list())
         repository.suppliers.add_list(repository_json.suppliers.list())
 
-        # Apply use_iron_ore_premiums flag to iron ore supplier costs
-        for supplier in repository.suppliers.list():
-            if config.use_iron_ore_premiums and supplier.mine_price_by_year:
-                # Copy mine_price_by_year to production_cost_by_year
-                supplier.production_cost_by_year = supplier.mine_price_by_year.copy()
-            elif not config.use_iron_ore_premiums and supplier.mine_cost_by_year:
-                # Copy mine_cost_by_year to production_cost_by_year
-                supplier.production_cost_by_year = supplier.mine_cost_by_year.copy()
-            # If mine_cost/mine_price dictionaries are empty (e.g., for scrap suppliers), keep existing production_cost_by_year
+        # Apply the iron-ore-premium choice and the initial scrap cost to supplier costs
+        apply_supplier_cost_config(repository.suppliers.list(), config)
 
         # Plant groups setup from SimulationRunner.setup()
         plant_groups = []

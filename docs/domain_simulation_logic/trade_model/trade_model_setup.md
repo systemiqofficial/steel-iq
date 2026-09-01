@@ -96,6 +96,8 @@ The model represents the global steel value chain as a network:
 
 Trade-LP setup, the average-commodity-price calculation in `Environment.calculate_average_commodity_price_per_region()`, and downstream callers all read the value for the current simulation year. The same per-year structure applies to non-mine suppliers (scrap, etc.) — they simply populate a flat constant across years if their underlying input has no annual variation. Suppliers whose `production_cost_by_year` does not contain the current year are silently skipped from the average-price calculation.
 
+**Scrap production costs.** Scrap suppliers start the run at `SimulationConfig.initial_scrap_production_cost` (default `INITIAL_SCRAP_PRODUCTION_COST`, 333 USD/t): data preparation writes the constant into `suppliers.json` for every horizon year, and `bootstrap_simulation` re-applies the configured value at run time, so a cached preparation cannot pin a stale placeholder. From the second simulation year onward, `finalise_iteration` (step 4 in `handlers.py`) reprices the current year from BOF hot-metal costs — 0.95 × the average-BOM unit cost when available, else 0.90 × the country's fallback material cost, else the same configured default — meaning only the first year trades scrap at the placeholder.
+
 ---
 
 ### 3. Constraint Functions

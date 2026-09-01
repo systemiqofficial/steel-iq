@@ -35,7 +35,7 @@ from steelo.utilities.plotting import (
 )
 from .adapters.geospatial.geospatial_statistics import aggregate_lcoe_lcoh_statistics
 from .logging_config import LoggingConfig
-from steelo.domain.constants import T_TO_KT, MT_TO_T
+from steelo.domain.constants import T_TO_KT, MT_TO_T, INITIAL_SCRAP_PRODUCTION_COST
 from steelo.domain.calculate_costs import (
     collect_subsidies_for_geo,
     filter_subsidies_for_year,
@@ -362,6 +362,11 @@ class SimulationConfig:
     # Price increase when demand exceeds supply
     steel_price_buffer: float = 200.0  # USD/tonne - buffer above highest cost curve price when demand exceeds supply
     iron_price_buffer: float = 200.0  # USD/tonne - buffer above highest cost curve price when demand exceeds supply
+
+    # Placeholder scrap production cost applied to every scrap supplier at bootstrap; the annual
+    # repricing overwrites it from the second year onward and also uses it as the default when it
+    # has no BOF cost data to price from
+    initial_scrap_production_cost: float = INITIAL_SCRAP_PRODUCTION_COST  # USD/tonne
 
     # Fraction of total capacity that participates in market clearing; above this triggers shortage buffer
     # e.g. 0.95 truncates top 5% at price-extraction; 1.0 keeps the full curve
