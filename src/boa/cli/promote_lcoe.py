@@ -15,6 +15,7 @@ import argparse
 import logging
 import sys
 
+from boa.cli import reconfigure_streams_utf8
 from boa.config.paths import PathConfig
 from boa.model.lcoe_promotion import promote_all
 
@@ -31,6 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
     args = parser.parse_args(argv)
 
+    reconfigure_streams_utf8()
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
