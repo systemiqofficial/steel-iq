@@ -7092,6 +7092,11 @@ class CountryMappingService:
         """Return a mapping from ISO3 codes to regions (region_for_outputs)."""
         return {mapping.iso3: mapping.region_for_outputs for mapping in self._mappings.values()}
 
+    @property
+    def mappings(self) -> list[CountryMapping]:
+        """All country mappings, in sheet order."""
+        return list(self._mappings.values())
+
 
 class VirginIronDemand:
     """
