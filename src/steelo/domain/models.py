@@ -2204,13 +2204,23 @@ class FurnaceGroup:
         """
         Debt repayment per unit of production (USD/t) or per unit of capacity if not producing.
 
+        Mirrors the unit_fopex floor: utilisation is floored at production_threshold.low so a
+        barely-producing furnace group does not spread its debt over a near-zero tonnage.
+
         Returns:
-            float: Debt repayment divided by production when utilization > 0, otherwise divided by capacity.
+            float: Debt repayment divided by floored production when utilization > 0, otherwise
+            divided by capacity.
         """
-        if self.utilization_rate > 0.0:
-            return self.debt_repayment_for_current_year / self.production
-        else:
+        if self.utilization_rate <= 0.0:
             return self.debt_repayment_for_current_year / self.capacity
+
+        threshold_low = self.production_threshold.low
+        if threshold_low is not None and threshold_low > 0:
+            effective_utilisation = max(self.utilization_rate, threshold_low)
+        else:
+            effective_utilisation = self.utilization_rate
+
+        return self.debt_repayment_for_current_year / (effective_utilisation * self.capacity)
 
     @property
     def cost_breakdown_by_feedstock(self) -> dict[str, dict[str, float]]:

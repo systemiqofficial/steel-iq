@@ -40,6 +40,7 @@ from steelo.utilities.utils import normalize_name
 # Import only true constants from global_variables
 from steelo.domain.constants import (
     Commodities,
+    INITIAL_SCRAP_PRODUCTION_COST,
     GJ_TO_KWH,
     MWH_TO_KWH,
     PERMWh_TO_PERkWh,
@@ -1045,6 +1046,19 @@ def read_demand_centers(
     return refine_demand_centers_for_major_countries(demand_centers)
 
 
+def _initial_scrap_costs() -> dict[Year, float]:
+    """Placeholder scrap production cost for the whole simulation horizon.
+
+    Returns:
+        INITIAL_SCRAP_PRODUCTION_COST for every year from EXCEL_READER_START_YEAR to
+        EXCEL_READER_END_YEAR. Overwritten at run time: bootstrap applies the configured
+        value, then the annual repricing in handlers.py reprices from BOF hot-metal costs.
+    """
+    return {
+        Year(year): INITIAL_SCRAP_PRODUCTION_COST for year in range(EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR + 1)
+    }
+
+
 def refine_scrap_centers_for_major_countries(old_centers):
     """
     Refine centers for major (scrap exporting) countries by breaking down the absolute amount from
@@ -1086,12 +1100,6 @@ def refine_scrap_centers_for_major_countries(old_centers):
             for year in years:
                 amount_by_year[Year(year)] = old_center.capacity_by_year[Year(year)] * center["share"]
 
-            # Create constant production cost dictionary for all years in simulation horizon
-            # This initial value of 450 will be overwritten annually in handlers.py based on BOF hot_metal costs
-            production_cost_by_year = {
-                Year(year): 450.0 for year in range(EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR + 1)
-            }
-
             # Create new center with the new location and amount_by_year
             new_centers.append(
                 Supplier(
@@ -1099,7 +1107,7 @@ def refine_scrap_centers_for_major_countries(old_centers):
                     supplier_id=new_id,
                     location=location,
                     capacity_by_year=amount_by_year,
-                    production_cost_by_year=production_cost_by_year,
+                    production_cost_by_year=_initial_scrap_costs(),
                     mine_cost_by_year={},
                     mine_price_by_year={},
                 )
@@ -1189,18 +1197,12 @@ def read_scrap_as_suppliers(
             except ValueError:
                 continue
 
-        # Create constant production cost dictionary for all years in simulation horizon
-        # This initial value of 450 will be overwritten annually in handlers.py based on BOF hot_metal costs
-        production_cost_by_year = {
-            Year(year): 450.0 for year in range(EXCEL_READER_START_YEAR, EXCEL_READER_END_YEAR + 1)
-        }
-
         supply_center = Supplier(
             commodity=Commodities.SCRAP.value,
             supplier_id=f"{scrap_location.country}_scrap",
             location=scrap_location,
             capacity_by_year=scrap_by_year,
-            production_cost_by_year=production_cost_by_year,
+            production_cost_by_year=_initial_scrap_costs(),
             mine_cost_by_year={},
             mine_price_by_year={},
         )

@@ -578,9 +578,9 @@ def finalise_iteration(
         for supplier in uow.repository.suppliers.list():
             if supplier.commodity == "scrap":
                 pricing_source = "default"
-                source_cost = 200.0  # Default scrap cost
+                source_cost = env.config.initial_scrap_production_cost  # Default when no cost data exists
                 sample_size = getattr(env, "_diag_bof_sample_count", None)
-                # Use BOF hot_metal cost if available, otherwise use hardcoded default
+                # Use BOF hot_metal cost if available, otherwise use the configured default
                 if "BOF" in env.avg_boms and "hot_metal" in env.avg_boms["BOF"]:
                     source_cost = env.avg_boms["BOF"]["hot_metal"]["unit_cost"] * 0.95
                     pricing_source = "avg_bom"
@@ -592,7 +592,7 @@ def finalise_iteration(
                         pricing_source = "fallback"
                     else:
                         # Ultimate fallback if no cost data available
-                        source_cost = 200.0
+                        source_cost = env.config.initial_scrap_production_cost
                         pricing_source = "default"
                 # Update production cost for the current year
                 supplier.production_cost_by_year[env.year] = source_cost

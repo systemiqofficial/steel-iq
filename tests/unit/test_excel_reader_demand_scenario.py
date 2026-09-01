@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from steelo.adapters.dataprocessing import excel_reader
+from steelo.domain.constants import INITIAL_SCRAP_PRODUCTION_COST
 from steelo.domain.models import Year
 
 SHEET = "Demand and scrap availability"
@@ -68,6 +69,23 @@ def test_read_scrap_as_suppliers_selects_the_requested_scenario(scenario_workboo
     """Scrap availability follows its own scenario argument."""
     assert _scrap_2025(scenario_workbook, "BAU") == {"AUT": 10 * KT_TO_T, "PRT": 10 * KT_TO_T}
     assert _scrap_2025(scenario_workbook, "China-high") == {"AUT": 20 * KT_TO_T, "PRT": 20 * KT_TO_T}
+
+
+def test_read_scrap_as_suppliers_bootstraps_the_shared_placeholder_cost(scenario_workbook):
+    """Every scrap supplier starts every horizon year at the shared placeholder cost."""
+    excel_path, location_csv, gravity_path = scenario_workbook
+    suppliers = excel_reader.read_scrap_as_suppliers(
+        str(excel_path),
+        SHEET,
+        str(location_csv),
+        gravity_distances_pkl_path=gravity_path,
+        scrap_scenario="BAU",
+    )
+    assert suppliers
+    for supplier in suppliers:
+        assert set(supplier.production_cost_by_year.values()) == {INITIAL_SCRAP_PRODUCTION_COST}
+        assert min(supplier.production_cost_by_year) == excel_reader.EXCEL_READER_START_YEAR
+        assert max(supplier.production_cost_by_year) == excel_reader.EXCEL_READER_END_YEAR
 
 
 def test_unknown_scenario_fails_listing_available_names(scenario_workbook):
