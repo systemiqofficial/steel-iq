@@ -187,16 +187,15 @@ def test_argmin_matches_a_brute_force_scan_of_the_cached_grids(frontier, coeffs)
     for k in range(frontier.n_patches):
         for i in range(PARAMS.patch_grid):
             for j in range(PARAMS.patch_grid):
-                for r in range(PARAMS.ladder_rungs):
-                    s = frontier.s_patch[k, i]
-                    w = frontier.w_patch[k, j]
-                    b = frontier.b_patch[k, i, j, r]
-                    sf = frontier.sf_patch[k, i, j, r]
-                    if not np.isfinite(b) or sf <= 0:
-                        continue
-                    value = (coeffs.a_s * s + coeffs.a_w * w + coeffs.a_b * b**GAMMA) / (coeffs.d0 * sf)
-                    if value < best:
-                        best, best_design = value, (s, w, b)
+                s = frontier.s_patch[k, i]
+                w = frontier.w_patch[k, j]
+                b = frontier.b_patch[k, i, j]
+                sf = frontier.sf_patch[k, i, j]
+                if not np.isfinite(b) or sf <= 0:
+                    continue
+                value = (coeffs.a_s * s + coeffs.a_w * w + coeffs.a_b * b**GAMMA) / (coeffs.d0 * sf)
+                if value < best:
+                    best, best_design = value, (s, w, b)
 
     assert optimum.lcoe == pytest.approx(best, rel=1e-9)
     assert (optimum.solar, optimum.wind, optimum.battery) == pytest.approx(best_design, rel=1e-9)
@@ -225,24 +224,28 @@ def test_winner_can_come_from_the_second_basin_at_a_different_cost_year():
     """
     from boa.model.bisection import PixelFrontier, STATUS_OK
 
-    gp, r = 3, 1
+    gc, gp = PARAMS.coarse_grid, 3
     # Two patches: the first is wind-heavy, the second solar-heavy.
     s_patch = np.array([[0.1, 0.2, 0.3], [4.0, 5.0, 6.0]])
     w_patch = np.array([[4.0, 5.0, 6.0], [0.1, 0.2, 0.3]])
-    b_patch = np.full((2, gp, gp, r), 5.0)
-    sf_patch = np.full((2, gp, gp, r), 0.98)
+    b_patch = np.full((2, gp, gp), 5.0)
+    sf_patch = np.full((2, gp, gp), 0.98)
 
     frontier = PixelFrontier(
-        s_coarse=np.linspace(0, 8, PARAMS.coarse_grid),
-        w_coarse=np.linspace(0, 8, PARAMS.coarse_grid),
-        b_coarse=np.full((PARAMS.coarse_grid, PARAMS.coarse_grid), np.inf, dtype=np.float16),
+        s_coarse=np.linspace(0, 8, gc),
+        w_coarse=np.linspace(0, 8, gc),
+        b_coarse=np.full((gc, gc), 0.0, dtype=np.float16),
         n_patches=2,
         s_patch=s_patch,
         w_patch=w_patch,
         b_patch=b_patch,
         sf_patch=sf_patch,
-        cov_patch=np.full((2, gp, gp, r), 0.95),
-        sf_inf=np.full((2, gp, gp), 0.99),
+        cov_patch=np.full((2, gp, gp), 0.95),
+        # Both patches declared to span the whole coarse grid, so nothing is "outside" and
+        # the containment certificate is trivially satisfied -- this test is about which
+        # patch wins, not the certificate (see
+        # test_coarse_certificate_detects_an_optimum_outside_the_patch for that).
+        patch_bounds=np.array([[0, gc - 1, 0, gc - 1], [0, gc - 1, 0, gc - 1]], dtype=np.int32),
         status=STATUS_OK,
         box_widenings=0,
     )
@@ -281,26 +284,16 @@ def test_battery_optimum_can_sit_above_b_min(profiles, frontier, coeffs):
     """
     The headline consequence of dividing by served fraction: buying more battery
     than feasibility demands can still lower LCOE, because it raises the denominator.
-
-    If this never happened the ladder would be dead weight, so the test asserts the
-    mechanism is reachable rather than that it always fires.
+    `battery_ladder` is what makes the search side of this reachable at all -- checked
+    directly in `test_battery_ladder.py`; this test only holds the resulting invariant
+    at the query layer, that the reported optimum never sits below b_min.
     """
     optimum = argmin_lcoe(frontier, coeffs)
     b_min, _, _ = b_min_at(profiles["solar"], profiles["wind"], optimum.solar, optimum.wind, 15, PARAMS)
-    assert optimum.battery >= b_min - 1e-9, "the optimum can never sit below b_min"
-
-    # And the ladder must actually be able to win: a rung above b_min priced under
-    # the b_min design for at least one grid point somewhere on this pixel.
-    ladder_wins = False
-    for k in range(frontier.n_patches):
-        base = frontier.b_patch[k, :, :, 0]
-        base_sf = frontier.sf_patch[k, :, :, 0]
-        for r in range(1, PARAMS.ladder_rungs):
-            up = frontier.b_patch[k, :, :, r]
-            up_sf = frontier.sf_patch[k, :, :, r]
-            better = (coeffs.a_b * up**GAMMA) / up_sf < (coeffs.a_b * base**GAMMA) / base_sf
-            ladder_wins |= bool(np.any(better & (up > base)))
-    assert ladder_wins, "no ladder rung ever improved on b_min; the ladder would be pointless"
+    # Not bit-exact: the frontier's own b_min was found warm-started from a neighbouring
+    # node, this one is cold -- both are valid within `tol_rel_patch`, per
+    # `test_b_min_warm_start_is_result_invariant`'s own precedent.
+    assert optimum.battery >= b_min * (1.0 - PARAMS.tol_rel_patch), "the optimum can never sit below b_min"
 
 
 def test_lcoe_and_design_are_exactly_baseload_invariant(frontier):
@@ -323,26 +316,37 @@ def test_lcoe_and_design_are_exactly_baseload_invariant(frontier):
 # --------------------------------------------------------------------------
 
 
-def test_certificates_pass_on_a_well_formed_frontier(frontier, coeffs):
-    """The normal case: a full ladder and a patch that genuinely contains the optimum."""
-    optimum = argmin_lcoe(frontier, coeffs)
-    assert optimum.ladder_certified
+def test_certificate_passes_when_the_outside_region_is_provably_infeasible():
+    """
+    Certified True when every outside cell's own bound cannot beat the incumbent --
+    checked on a controlled synthetic frontier rather than assumed of any particular
+    real one. A real frontier can legitimately fail to certify even when queried with
+    the exact costs it was built with: the coarse bound is deliberately loose (2-3
+    early-stopped bisection steps, propagated by domination), and a finite propagated
+    bound does not mean a cell is actually feasible -- a dominated cell can be truly
+    infeasible while still inheriting a finite (just very loose) lower bound from a
+    feasible dominating neighbour. See BOA_BISECTION_PLAN.md, "containment certificate
+    finding" -- accepted as designed, not treated as a bug.
+    """
+    from boa.model.bisection import PixelFrontier, STATUS_OK
+
+    gc, gp = PARAMS.coarse_grid, 3
+    frontier = PixelFrontier(
+        s_coarse=np.linspace(0, 8, gc),
+        w_coarse=np.linspace(0, 8, gc),
+        b_coarse=np.full((gc, gc), np.inf, dtype=np.float16),  # every outside cell proven infeasible
+        n_patches=1,
+        s_patch=np.array([[1.0, 2.0, 3.0]]),
+        w_patch=np.array([[1.0, 2.0, 3.0]]),
+        b_patch=np.full((1, gp, gp), 5.0),
+        sf_patch=np.full((1, gp, gp), 0.98),
+        cov_patch=np.full((1, gp, gp), 0.95),
+        patch_bounds=np.array([[0, 2, 0, 2]], dtype=np.int32),
+        status=STATUS_OK,
+        box_widenings=0,
+    )
+    optimum = argmin_lcoe(frontier, CostCoefficients(a_s=1.0, a_w=1.0, a_b=1.0, d0=1.0))
     assert optimum.patch_certified
-
-
-def test_ladder_certificate_detects_a_truncated_ladder(frontier, coeffs):
-    """
-    The certificate bounds LCOE above the top rung using `sf_inf`, the served
-    fraction an unbounded battery would buy. Making the top rung look cheap while
-    leaving `sf_inf` high must be caught, since a larger battery might then win.
-    """
-    import dataclasses
-
-    starved = dataclasses.replace(frontier, sf_inf=np.ones_like(frontier.sf_inf))
-    # Force the top rung to be the incumbent so the residual bound binds.
-    starved.b_patch[:, :, :, -1] = starved.b_patch[:, :, :, 0]
-    optimum = argmin_lcoe(starved, coeffs)
-    assert not optimum.ladder_certified
 
 
 def test_coarse_certificate_detects_an_optimum_outside_the_patch(frontier, coeffs):

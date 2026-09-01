@@ -7,6 +7,7 @@ from boa.config.settings import (
     MAINTENANCE_DOWNTIME_DAYS,
 )
 from boa.config.constants import HOURS_IN_YEAR, DAYS_IN_YEAR, HOURS_IN_DAY, AVERAGE_IMPLIED_STORAGE
+from boa.model.bisection import GAMMA, CostCoefficients
 
 
 def calculate_installation_cost(
@@ -249,6 +250,47 @@ def _lcoe_tech_weights(
     return w0, wH
 
 
+def lcoe_coefficients(
+    investment_horizon: int,
+    capex: dict,
+    opex_pct: dict,
+    cost_of_capital: float,
+    baseload_demand: float,
+) -> CostCoefficients:
+    """
+    The four scalars one (year, cost-key) combination's LCOE collapses to:
+
+        LCOE(s, w, b) = (a_s*s + a_w*w + a_b*b**GAMMA) / (d0 * served_fraction)
+
+    with `s`/`w` solar/wind overscale (installed MW / baseload) and `b` battery in
+    baseload-hours (installed MWh / baseload). Closed form of the CAPEX/OPEX/reinstallation
+    accumulation `_lcoe_tech_weights` already expresses, rearranged so a cached `(s, w, b)`
+    design reprices in four multiplications with no dispatch -- see `boa.model.bisection`,
+    "The objective, in closed form".
+
+    Every coefficient scales linearly with `baseload_demand`, which is what makes LCOE
+    exactly baseload-invariant rather than approximately so.
+    """
+    discount_factors = np.array([1.0 / (1.0 + cost_of_capital) ** t for t in range(investment_horizon + 1)])
+    w0, wH = {}, {}
+    for tech in ("solar", "wind", "battery"):
+        w0[tech], wH[tech] = _lcoe_tech_weights(discount_factors, opex_pct[tech], LIFETIMES[tech], investment_horizon)
+
+    a_s = baseload_demand * (w0["solar"] * capex["solar"][0] + wH["solar"] * capex["solar"][investment_horizon])
+    a_w = baseload_demand * (w0["wind"] * capex["wind"][0] + wH["wind"] * capex["wind"][investment_horizon])
+    # AVERAGE_IMPLIED_STORAGE**(1-GAMMA) is the modular battery-CAPEX correction's
+    # normalisation constant, folded in here so a_b*b**GAMMA reproduces
+    # capex * (b/AVERAGE_IMPLIED_STORAGE)**BATTERY_UNIT_CAPEX_SCALING_FACTOR * b exactly
+    # (see the vectorised pricer's own battery term, which this replaces).
+    a_b = (
+        baseload_demand
+        * AVERAGE_IMPLIED_STORAGE ** (1.0 - GAMMA)
+        * (w0["battery"] * capex["battery"][0] + wH["battery"] * capex["battery"][investment_horizon])
+    )
+    d0 = baseload_demand * HOURS_IN_YEAR * discount_factors[1 : investment_horizon + 1].sum()
+    return CostCoefficients(a_s=a_s, a_w=a_w, a_b=a_b, d0=d0)
+
+
 def calculate_lcoe_of_re_installation_vectorised(
     investment_horizon: int,
     installed_solar: np.ndarray,
@@ -297,33 +339,23 @@ def calculate_lcoe_of_re_installation_vectorised(
         )
         realised_delivery_fraction = np.ones(n)
 
-    discount_factors = np.array([1.0 / (1.0 + cost_of_capital) ** t for t in range(investment_horizon + 1)])
-    sold = np.array([0.0] + [baseload_demand * HOURS_IN_YEAR] * investment_horizon)
-    # Horizon-wide discounted demand-MWh assuming full delivery (fraction=1). Scaling by the
-    # per-design realised_delivery_fraction gives an (n,) array of denominators in one broadcast.
-    denominator_unit = float((sold * discount_factors).sum())
-    denominator = denominator_unit * realised_delivery_fraction
+    coeffs = lcoe_coefficients(investment_horizon, capex, opex_pct, cost_of_capital, baseload_demand)
+    denominator = coeffs.d0 * realised_delivery_fraction
 
-    w0, wH = {}, {}
-    for tech in ["solar", "wind", "battery"]:
-        w0[tech], wH[tech] = _lcoe_tech_weights(discount_factors, opex_pct[tech], LIFETIMES[tech], investment_horizon)
+    s_overscale = installed_solar / baseload_demand
+    w_overscale = installed_wind / baseload_demand
+    b_overscale = installed_battery / baseload_demand  # baseload-hours
 
-    numerator = installed_solar * (w0["solar"] * capex["solar"][0] + wH["solar"] * capex["solar"][investment_horizon])
-    numerator = numerator + installed_wind * (
-        w0["wind"] * capex["wind"][0] + wH["wind"] * capex["wind"][investment_horizon]
-    )
-
-    # Battery: modular CAPEX correction is per-design (depends on installed battery capacity).
-    # Mirrors correct_battery_capex_for_modular_installation: capex * (factor/AVERAGE_IMPLIED_STORAGE)^BATTERY_UNIT_CAPEX_SCALING_FACTOR.
-    battery_factor = installed_battery / baseload_demand  # overscale factor (hours), as used in the correction
-    ratio = battery_factor / AVERAGE_IMPLIED_STORAGE
-    ratio[ratio <= 0] = 1.0  # battery==0 designs contribute 0 (installed==0); avoid 0**negative warning
-    corr = ratio**BATTERY_UNIT_CAPEX_SCALING_FACTOR
-    corrected_capex0 = capex["battery"][0] * corr
-    corrected_capexH = capex["battery"][investment_horizon] * corr
-    numerator = numerator + installed_battery * (w0["battery"] * corrected_capex0 + wH["battery"] * corrected_capexH)
-
+    # b_overscale == 0 needs no special case here: 0**GAMMA == 0, unlike the old
+    # ratio**BATTERY_UNIT_CAPEX_SCALING_FACTOR form (negative exponent) it replaces.
+    numerator = coeffs.a_s * s_overscale + coeffs.a_w * w_overscale + coeffs.a_b * np.power(b_overscale, GAMMA)
     lcoes = numerator / denominator
+
+    # Installation-cost breakdown: year-0 cost per tech, battery still via the modular CAPEX
+    # correction directly (not through the closed form, which only prices the LCOE numerator).
+    ratio = b_overscale / AVERAGE_IMPLIED_STORAGE
+    ratio[ratio <= 0] = 1.0  # battery==0 designs contribute 0 (installed==0); avoid 0**negative warning
+    corrected_capex0 = capex["battery"][0] * ratio**BATTERY_UNIT_CAPEX_SCALING_FACTOR
 
     install_solar = installed_solar * capex["solar"][0]
     install_wind = installed_wind * capex["wind"][0]
