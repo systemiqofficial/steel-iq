@@ -80,6 +80,15 @@ def run_full_simulation() -> str:
         help="Scenario name in the same sheet used for scrap availability (default: same as --demand-scenario)",
     )
     parser.add_argument(
+        "--grid-emissions-scenario",
+        type=str,
+        default="Business As Usual",
+        help=(
+            "Grid emissivity projection applied at run time, named as in the 'Power grid emissivity' sheet "
+            "without its 'projection_' prefix (default: 'Business As Usual'; alternative: 'Net Zero')"
+        ),
+    )
+    parser.add_argument(
         "--location-csv",
         type=str,
         default=None,
@@ -202,7 +211,11 @@ def run_full_simulation() -> str:
         # Scrap availability follows the demand scenario unless picked separately
         demand_scenario = args.demand_scenario
         scrap_scenario = args.scrap_scenario or args.demand_scenario
-        console.print(f"[blue]Demand scenario:[/blue] {demand_scenario}  [blue]Scrap scenario:[/blue] {scrap_scenario}")
+        grid_emissions_scenario = args.grid_emissions_scenario
+        console.print(
+            f"[blue]Demand scenario:[/blue] {demand_scenario}  [blue]Scrap scenario:[/blue] {scrap_scenario}  "
+            f"[blue]Grid emissions scenario:[/blue] {grid_emissions_scenario}"
+        )
 
         # Prepare data with caching
         from ..data import DataPreparationService
@@ -267,6 +280,7 @@ def run_full_simulation() -> str:
                 "demand_sheet_name": args.demand_sheet,
                 "chosen_demand_scenario": demand_scenario,
                 "chosen_scrap_scenario": scrap_scenario,
+                "chosen_grid_emissions_scenario": grid_emissions_scenario,
                 "log_level": log_level,
             }
 
@@ -351,6 +365,7 @@ def run_full_simulation() -> str:
                     "demand_sheet_name": args.demand_sheet,
                     "chosen_demand_scenario": demand_scenario,
                     "chosen_scrap_scenario": scrap_scenario,
+                    "chosen_grid_emissions_scenario": grid_emissions_scenario,
                     "log_level": log_level,
                 }
 
