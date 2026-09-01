@@ -54,6 +54,17 @@ MIN_SURVIVOR_FRACTION = 0.01
 # for a thinner pessimistic LCOE tail on sparsely-covered pixels.
 TOPUP_QUALITY_FRACTION = 0.25
 
+# Default spacing (years) for re-anchoring a pixel's frontier against updated costs
+# across a multi-decade horizon, rather than one frontier built once serving every query
+# year off a single frozen anchor. Chosen from BOA_BISECTION_PLAN.md's re-anchoring
+# benchmark: the excess-LCOE tail from an out-of-date anchor stayed in a flat ~1.2-1.4%
+# band out to a 20-year-old anchor and only jumped sharply at 25 years, so 10-year
+# spacing (worst-case drift 5 years) already captures most of the benefit a much more
+# frequent re-anchor would buy, at roughly half the extra build cost. See
+# `boa.model.bisection.anchor_years`/`nearest_anchor` -- building and routing to more
+# than one frontier per pixel is not implemented yet (BOA_BISECTION_PLAN.md's M2).
+REANCHOR_INTERVAL_YEARS = 10
+
 # ===== Max-capacity ceiling parameters (boa_cds max-capacity) =====
 # Applied density = theoretical density (stage 1) x packing factor (stage 2) x land-
 # availability fraction (stage 3, LULC_CODES below). Full source trail, the min-vs-multiply
