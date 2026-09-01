@@ -133,9 +133,9 @@ def test_block_mean_and_latitude_flip_over_two_rows(tmp_path):
     x = np.array([-179.75])
     block = availability.BLOCK  # 90
     codes = np.zeros((45 + 2 * block, 45 + block), dtype=np.uint8)
-    # Top ESA block (higher latitude, y=89.75): urban, pv fraction 0.024.
+    # Top ESA block (higher latitude, y=89.75): urban.
     codes[45 : 45 + block, 45:] = 190
-    # Bottom block (y=89.5): half bare (0.33), half unlisted code 50 (-> 0).
+    # Bottom block (y=89.5): half bare, half unlisted code 50 (-> 0).
     codes[45 + block :, 45 : 45 + block // 2] = 200
     codes[45 + block :, 45 + block // 2 :] = 50
     lulc_path = tmp_path / "lulc.nc"
@@ -143,8 +143,8 @@ def test_block_mean_and_latitude_flip_over_two_rows(tmp_path):
 
     frac = availability.lulc_fraction(y, x, "pv", lulc_path)
     assert frac.shape == (2, 1)
-    np.testing.assert_allclose(frac[1, 0], 0.024, rtol=1e-6)  # y=89.75 (top block)
-    np.testing.assert_allclose(frac[0, 0], 0.33 / 2, rtol=1e-6)  # y=89.5, half usable
+    np.testing.assert_allclose(frac[1, 0], LULC_CODES["pv"][190], rtol=1e-6)  # y=89.75 (top block)
+    np.testing.assert_allclose(frac[0, 0], LULC_CODES["pv"][200] / 2, rtol=1e-6)  # y=89.5, half usable
     # Wind has no urban entry -> the 190 block is fully excluded.
     frac_wind = availability.lulc_fraction(y, x, "wind", lulc_path)
     np.testing.assert_allclose(frac_wind[1, 0], 0.0)

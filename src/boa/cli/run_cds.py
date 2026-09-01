@@ -118,8 +118,7 @@ def _add_density_args(parser: argparse.ArgumentParser) -> None:
         "--wind-density",
         type=float,
         default=CAPACITY_DENSITY_MW_PER_KM2["wind"],
-        help=f"Wind density in MW/km^2 (default: {CAPACITY_DENSITY_MW_PER_KM2['wind']}; "
-        "20.5 vs 10.42 is an open team decision)",
+        help=f"Wind density in MW/km^2 (default: {CAPACITY_DENSITY_MW_PER_KM2['wind']})",
     )
 
 
