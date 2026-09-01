@@ -264,7 +264,7 @@ def minimal_simulation_config(tmp_path):
     preparation without the optional sheets presents.
     """
     from steelo.domain import Year
-    from steelo.simulation import SimulationConfig
+    from steelo.simulation import GeoConfig, SimulationConfig
     from steelo.simulation_types import get_default_technology_settings
 
     data_dir = tmp_path / "data"
@@ -319,6 +319,7 @@ def minimal_simulation_config(tmp_path):
         output_dir=tmp_path / "output",
         technology_settings=get_default_technology_settings(),
         data_dir=data_dir,
+        geo_config=GeoConfig(included_power_mix="Grid only"),  # no geo data on disk: hydrogen off the grid price
     )
 
 
