@@ -41,6 +41,7 @@ from typing import List
 
 import xarray as xr
 
+from boa.cli import reconfigure_streams_utf8
 from boa.config.paths import DEFAULT_SET, PathConfig
 from boa.config.settings import REGION_COORDS
 from boa.model.global_extension import (
@@ -102,6 +103,7 @@ def parse_workers(value: str) -> int:
 
 
 # Configure logging
+reconfigure_streams_utf8()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logging.getLogger("distributed").setLevel(logging.WARNING)
 

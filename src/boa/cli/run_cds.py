@@ -47,11 +47,24 @@ from boa.cds import download as cds_download
 from boa.cds import install as cds_install
 from boa.cds import max_capacity as cds_max_capacity
 from boa.cds.spec import CDS_VARS, TECHS
+from boa.cli import reconfigure_streams_utf8
 from boa.config.paths import DEFAULT_SET, PathConfig
 from boa.config.settings import CAPACITY_DENSITY_MW_PER_KM2, ERA5_DATA_YEAR, REGION_COORDS
 from boa.store_schema import max_cap_store_stem, profile_store_stem
 
-console = Console()
+
+def _utf8_console() -> Console:
+    """
+    A console that survives a non-UTF-8 stdout.
+
+    Fixing the underlying streams (rather than each writer) also covers rich's own
+    progress-bar glyphs (U+2501, U+257A), not just the status ticks this module prints.
+    """
+    reconfigure_streams_utf8()
+    return Console(legacy_windows=False)
+
+
+console = _utf8_console()
 
 
 def _parser(prog: str, description: str) -> argparse.ArgumentParser:
