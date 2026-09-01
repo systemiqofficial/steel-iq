@@ -18,6 +18,7 @@ from rich.console import Console
 from rich.table import Table
 
 from ..domain import Year
+from ..domain.constants import RANDOM_SEED_DEFAULT
 
 from ..simulation import SimulationConfig
 from ..bootstrap import bootstrap_simulation
@@ -66,6 +67,27 @@ def run_full_simulation() -> str:
         type=str,
         default="Steel_Demand_Chris Bataille",
         help="Sheet name in the demand excel file (default: 'Steel_Demand_Chris Bataille')",
+    )
+    parser.add_argument(
+        "--demand-scenario",
+        type=str,
+        default="BAU",
+        help="Scenario name in the 'Demand and scrap availability' sheet used for steel demand (default: BAU)",
+    )
+    parser.add_argument(
+        "--scrap-scenario",
+        type=str,
+        default=None,
+        help="Scenario name in the same sheet used for scrap availability (default: same as --demand-scenario)",
+    )
+    parser.add_argument(
+        "--grid-emissions-scenario",
+        type=str,
+        default="Business As Usual",
+        help=(
+            "Grid emissivity projection applied at run time, named as in the 'Power grid emissivity' sheet "
+            "without its 'projection_' prefix (default: 'Business As Usual'; alternative: 'Net Zero')"
+        ),
     )
     parser.add_argument(
         "--location-csv",
@@ -142,6 +164,15 @@ def run_full_simulation() -> str:
         default=0.8,
         help="Ratio of steel price for iron floor when pegging is enabled (default: 0.8 = 80%%)",
     )
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=RANDOM_SEED_DEFAULT,
+        help=(
+            "Seed for the run-time RNGs shared by the plant agent, geospatial and trade LP modules "
+            "(default: %(default)s); data preparation keeps its own fixed seed"
+        ),
+    )
 
     # Parse the command-line arguments
     try:
@@ -187,6 +218,15 @@ def run_full_simulation() -> str:
         }
         log_level = log_levels[args.log_level]
 
+        # Scrap availability follows the demand scenario unless picked separately
+        demand_scenario = args.demand_scenario
+        scrap_scenario = args.scrap_scenario or args.demand_scenario
+        grid_emissions_scenario = args.grid_emissions_scenario
+        console.print(
+            f"[blue]Demand scenario:[/blue] {demand_scenario}  [blue]Scrap scenario:[/blue] {scrap_scenario}  "
+            f"[blue]Grid emissions scenario:[/blue] {grid_emissions_scenario}"
+        )
+
         # Prepare data with caching
         from ..data import DataPreparationService
 
@@ -221,7 +261,9 @@ def run_full_simulation() -> str:
         # Check if we can use cached data directly
         cached_data_dir = None
         if not args.no_cache and not args.force_refresh:
-            cached_data_dir = cache_manager.get_cached_preparation(master_excel_path)
+            cached_data_dir = cache_manager.get_cached_preparation(
+                master_excel_path, demand_scenario=demand_scenario, scrap_scenario=scrap_scenario
+            )
             if cached_data_dir:
                 # cached_data_dir already points to the data directory
                 console.print(f"[blue]Using cached preparation from:[/blue] {cached_data_dir}")
@@ -246,7 +288,11 @@ def run_full_simulation() -> str:
                 "output_dir": output_dir,
                 "master_excel_path": master_excel_path,
                 "demand_sheet_name": args.demand_sheet,
+                "chosen_demand_scenario": demand_scenario,
+                "chosen_scrap_scenario": scrap_scenario,
+                "chosen_grid_emissions_scenario": grid_emissions_scenario,
                 "log_level": log_level,
+                "random_seed": args.random_seed,
             }
 
             # Add custom baseload_power_sim_dir if provided
@@ -286,6 +332,8 @@ def run_full_simulation() -> str:
                 "cache_used": True,
                 "master_excel": str(master_excel_path),
                 "cached_from": str(cached_data_dir),
+                "demand_scenario": demand_scenario,
+                "scrap_scenario": scrap_scenario,
             }
             (output_dir / "preparation_metadata.json").write_text(json.dumps(prep_metadata, indent=2))
 
@@ -305,6 +353,8 @@ def run_full_simulation() -> str:
                     master_excel_path=master_excel_path,
                     force_refresh=args.force_refresh,
                     verbose=True,
+                    demand_scenario=demand_scenario,
+                    scrap_scenario=scrap_scenario,
                 )
 
                 actual_data_dir = prep_dir
@@ -324,7 +374,11 @@ def run_full_simulation() -> str:
                     "output_dir": output_dir,
                     "master_excel_path": master_excel_path,
                     "demand_sheet_name": args.demand_sheet,
+                    "chosen_demand_scenario": demand_scenario,
+                    "chosen_scrap_scenario": scrap_scenario,
+                    "chosen_grid_emissions_scenario": grid_emissions_scenario,
                     "log_level": log_level,
+                    "random_seed": args.random_seed,
                 }
 
                 # Add custom baseload_power_sim_dir if provided
@@ -368,6 +422,8 @@ def run_full_simulation() -> str:
                     "preparation_duration": prep_result.total_duration,
                     "files_prepared": len(prep_result.files),
                     "temp_prep_dir": str(prep_dir),
+                    "demand_scenario": demand_scenario,
+                    "scrap_scenario": scrap_scenario,
                 }
                 (output_dir / "preparation_metadata.json").write_text(json.dumps(prep_metadata, indent=2))
 

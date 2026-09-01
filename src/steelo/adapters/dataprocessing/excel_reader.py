@@ -53,7 +53,6 @@ from steelo.domain.constants import (
 # TODO: Remove overwriting and replace by simulation config
 EXCEL_READER_START_YEAR = 2020
 EXCEL_READER_END_YEAR = 2060
-CHOSEN_DEMAND_SCENARIO = "BAU"
 
 EXCEL_BIOMASS_CO2_START_YEAR = 2024
 EXCEL_BIOMASS_CO2_END_YEAR = EXCEL_READER_END_YEAR
@@ -937,17 +936,56 @@ def refine_demand_centers_for_major_countries(old_centers):
     return corrected_old_centers + new_centers
 
 
+def _select_scenario_rows(df: pd.DataFrame, scenario: str, sheet_name: str) -> pd.DataFrame:
+    """
+    Return the rows of a demand/scrap sheet that belong to one scenario.
+
+    Args:
+        df: Sheet contents with a "Scenario" column.
+        scenario: Scenario name to keep.
+        sheet_name: Sheet name, used in the error message only.
+
+    Returns:
+        pd.DataFrame: The matching rows.
+
+    Raises:
+        ValueError: If no row carries the scenario, listing the names the sheet does have.
+    """
+    selected = df[df["Scenario"] == scenario]
+    if selected.empty:
+        available = sorted(df["Scenario"].dropna().unique())
+        raise ValueError(f"No rows for scenario {scenario!r} in sheet {sheet_name!r}; available: {available}")
+    return selected
+
+
 def read_demand_centers(
     *,
     gravity_distances_path: Path,
     demand_excel_path: Path,
     demand_sheet_name: str,
     location_csv: Path,
+    demand_scenario: str,
 ) -> list[DemandCenter]:
+    """
+    Read steel demand centres for one scenario from the demand sheet.
+
+    Args:
+        gravity_distances_path: Pickled {iso3: {iso3: distance}} dict.
+        demand_excel_path: Workbook holding the demand sheet.
+        demand_sheet_name: Sheet with "Scenario" / "Metric" columns and one column per year.
+        location_csv: Country centroid CSV used to place each centre.
+        demand_scenario: Value of the "Scenario" column to read.
+
+    Returns:
+        list[DemandCenter]: One centre per country, major countries split into sub-centres.
+
+    Raises:
+        ValueError: If the scenario is not present in the sheet.
+    """
     with gravity_distances_path.open("rb") as f:
         gravity_dict = pickle.load(f)
     demand_df = pd.read_excel(demand_excel_path, sheet_name=demand_sheet_name)
-    demand_df = demand_df[demand_df["Scenario"] == CHOSEN_DEMAND_SCENARIO]
+    demand_df = _select_scenario_rows(demand_df, demand_scenario, demand_sheet_name)
     # Strip whitespace from metric names to handle Excel inconsistencies
     demand_df["Metric"] = demand_df["Metric"].str.strip()
     demand_df = demand_df[demand_df["Metric"] == "Crude steel consumption for forming [kt]"]
@@ -1080,9 +1118,24 @@ def read_scrap_as_suppliers(
     scrap_sheet_name: str,
     location_csv: str,
     gravity_distances_pkl_path: Path | None = None,
+    *,
+    scrap_scenario: str,
 ) -> list[Supplier]:
     """
     Read scrap supply data from Excel and return a list of Supplier domain objects for scrap.
+
+    Args:
+        scrap_excel_path: Workbook holding the scrap sheet.
+        scrap_sheet_name: Sheet with "Scenario" / "Metric" columns and one column per year.
+        location_csv: Country centroid CSV used to place each supplier.
+        gravity_distances_pkl_path: Pickled {iso3: {iso3: distance}} dict (required).
+        scrap_scenario: Value of the "Scenario" column to read.
+
+    Returns:
+        list[Supplier]: One scrap supplier per country, major countries split into sub-centres.
+
+    Raises:
+        ValueError: If the scenario is not present in the sheet, or the gravity path is missing.
     """
     if not gravity_distances_pkl_path:
         raise ValueError("gravity_distances_pkl_path must be provided")
@@ -1090,7 +1143,7 @@ def read_scrap_as_suppliers(
     with gravity_path.open("rb") as f:
         gravity_dict = pickle.load(f)
     scrap_df = pd.read_excel(scrap_excel_path, sheet_name=scrap_sheet_name)
-    scrap_df = scrap_df[scrap_df["Scenario"] == CHOSEN_DEMAND_SCENARIO]
+    scrap_df = _select_scenario_rows(scrap_df, scrap_scenario, scrap_sheet_name)
     # Strip whitespace from metric names to handle Excel inconsistencies
     scrap_df["Metric"] = scrap_df["Metric"].str.strip()
     scrap_df = scrap_df[scrap_df["Metric"] == "Total available scrap"]

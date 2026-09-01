@@ -818,6 +818,7 @@ class DataCollector:
                 "furnace_groups": plant_dict,
                 "plant_group_id": plant_group_id,
                 "location": p.location.iso3,
+                "geo_key": p.location.geo_key,
                 "plant_profit_and_loss": sum(fg.historic_balance for fg in p.furnace_groups),
                 "plant_group_balance": plant_group_balance,
             }

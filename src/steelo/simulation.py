@@ -409,7 +409,10 @@ class SimulationConfig:
     )
 
     # === Scenario and Policy Settings ===
+    # Applied at data-prep time (rows of the "Demand and scrap availability" sheet) and part of the
+    # prep cache key; kept on the config so the choice is recorded in simulation_config.json
     chosen_demand_scenario: str = "BAU"
+    chosen_scrap_scenario: str = "BAU"
     chosen_grid_emissions_scenario: str = "Business As Usual"
     scrap_generation_scenario: str = "business_as_usual"
     chosen_emissions_boundary_for_carbon_costs: str = "rs-inspired"
