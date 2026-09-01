@@ -7,10 +7,19 @@ import pandas as pd
 
 from steelo.adapters.repositories.json_repository import (
     BiomassAvailabilityJsonRepository,
+    DemandCenterJsonRepository,
     PrimaryFeedstockJsonRepository,
     SupplierJsonRepository,
 )
-from steelo.domain.models import BiomassAvailability, CountryMapping, Location, PrimaryFeedstock, Supplier, Year
+from steelo.domain.models import (
+    BiomassAvailability,
+    CountryMapping,
+    DemandCenter,
+    Location,
+    PrimaryFeedstock,
+    Supplier,
+    Year,
+)
 from steelo.domain.models import Volumes
 from steelo.utilities.interactive import InteractivePlotter, clearing_config, interactive_plots
 from steelo.utilities.interactive import supply_demand
@@ -121,13 +130,20 @@ def test_plot_emissions_writes_self_contained_viewer(tmp_path) -> None:
 
 
 def test_plot_capacity_and_production_writes_self_contained_viewer(tmp_path) -> None:
-    """The capacity and production viewer reuses the table read for the emissions viewer."""
+    """The viewer reuses the table read for the emissions viewer and embeds the steel demand."""
     csv_path = tmp_path / "post_processed_test.csv"
     sample_post_processed().to_csv(csv_path, index=False)
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    centre_location = Location(lat=1.0, lon=2.0, country="China", region="R", iso3="CHN")
+    DemandCenterJsonRepository(fixtures / "demand_centers.json").add_list(
+        # 2100 lies outside the table's years and must not reach the viewer.
+        [DemandCenter("China_2", centre_location, {Year(2025): Volumes(2_500_000), Year(2100): Volumes(9e9)})]
+    )
     plotter = InteractivePlotter(tmp_path / "plots", sample_country_mappings(), run_title="sim_test")
 
     assert plotter.plot_emissions(csv_path) is not None
-    written = plotter.plot_capacity_and_production(csv_path)
+    written = plotter.plot_capacity_and_production(csv_path, fixtures / "demand_centers.json")
 
     assert written == tmp_path / "plots" / "interactive" / "capacity_and_production.html"
     html = written.read_text()
@@ -135,7 +151,12 @@ def test_plot_capacity_and_production_writes_self_contained_viewer(tmp_path) -> 
         assert placeholder not in html
     assert "const Interactive" in html
     assert '"cap": 3.0' in html and '"pr": 2.0' in html
+    assert '"demand": [{"y": 2025, "g": "CHN", "v": 2.5}]' in html
     assert list(plotter._tables) == [csv_path]
+
+    # A missing fixture still produces the viewer, without the overlay data.
+    assert plotter.plot_capacity_and_production(csv_path) == written
+    assert '"demand": []' in written.read_text()
 
 
 def test_plot_cost_curves_writes_self_contained_viewer(tmp_path) -> None:
@@ -426,3 +447,42 @@ def test_plot_reductant_use_writes_self_contained_viewer(tmp_path) -> None:
     bare_csv = tmp_path / "post_processed_bare.csv"
     sample_post_processed().drop(columns=["chosen_reductant"]).to_csv(bare_csv, index=False)
     assert plotter.plot_reductant_use(bare_csv, fixtures / "primary_feedstocks.json") is None
+
+
+def test_plot_metallic_charge_use_writes_self_contained_viewer(tmp_path) -> None:
+    """The metallic-charge viewer embeds the per-charge rows and the scrap supply overlay."""
+    csv_path = tmp_path / "post_processed_test.csv"
+    sample_post_processed().to_csv(csv_path, index=False)
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    PrimaryFeedstockJsonRepository(fixtures / "primary_feedstocks.json").add_list(sample_primary_feedstocks())
+    scrap_location = Location(lat=1.0, lon=2.0, country="Germany", region="R", iso3="DEU")
+    SupplierJsonRepository(fixtures / "suppliers.json").add_list(
+        [Supplier("Germany_scrap", scrap_location, "scrap", {Year(2025): Volumes(2_000_000)}, {})]
+    )
+    plotter = InteractivePlotter(tmp_path / "plots", sample_country_mappings(), run_title="sim_test")
+
+    written = plotter.plot_metallic_charge_use(
+        csv_path, fixtures / "primary_feedstocks.json", fixtures / "suppliers.json"
+    )
+
+    assert written == tmp_path / "plots" / "interactive" / "metallic_charge_use.html"
+    html = written.read_text()
+    for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
+        assert placeholder not in html
+    assert "const Interactive" in html
+    assert '{"y": 2025, "g": "CHN:CN-HE", "t": "BF", "p": "iron", "c": "io_low", "n": 1, "v": 3.0}' in html
+    assert '{"y": 2025, "g": "DEU", "t": "EAF", "p": "steel", "c": "scrap", "n": 1, "v": 1.1}' in html
+    assert '"supply": [{"y": 2025, "g": "DEU", "v": 2.0}]' in html
+    assert '"chargeColours"' in html and '"chargeOrder"' in html
+
+    # A missing suppliers fixture still produces the viewer, without the overlay data.
+    assert plotter.plot_metallic_charge_use(csv_path, fixtures / "primary_feedstocks.json") == written
+    assert '"supply": []' in written.read_text()
+
+    # A missing Bill of Materials, a missing table or a table without the feedstock column skips the viewer.
+    assert plotter.plot_metallic_charge_use(csv_path, fixtures / "absent.json") is None
+    assert plotter.plot_metallic_charge_use(tmp_path / "absent.csv", fixtures / "primary_feedstocks.json") is None
+    bare_csv = tmp_path / "post_processed_bare.csv"
+    sample_post_processed().drop(columns=["feedstock"]).to_csv(bare_csv, index=False)
+    assert plotter.plot_metallic_charge_use(bare_csv, fixtures / "primary_feedstocks.json") is None

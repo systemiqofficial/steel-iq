@@ -3,6 +3,7 @@
 import pandas as pd
 import pytest
 
+from steelo.domain.models import DemandCenter, Location
 from steelo.utilities.interactive import capacity_production
 
 
@@ -42,3 +43,22 @@ def test_pack_rows_compacts_aggregates() -> None:
 
     deu_2026 = next(row for row in packed if row["g"] == "DEU" and row["y"] == 2026)
     assert deu_2026 == {"y": 2026, "g": "DEU", "t": "EAF", "p": "steel", "n": 1, "cap": 1.2, "pr": 1.1}
+
+
+def test_steel_demand_rows_sums_centres_by_country_within_years() -> None:
+    """Demand centres sum per country; years outside the table's range are excluded."""
+    beijing = Location(lat=1.0, lon=2.0, country="China", region="R", iso3="CHN")
+    centres = [
+        DemandCenter("China_1", beijing, {2025: 1_000_000, 2100: 9e9}),
+        DemandCenter("China_2", beijing, {2025: 500_000}),
+    ]
+
+    demand = capacity_production.steel_demand_rows(centres, {2025})
+
+    assert [(r.year, r.geo, r.volume_mt) for r in demand.itertuples()] == [(2025, "CHN", 1.5)]
+
+
+def test_pack_demand_drops_zero_rows() -> None:
+    """Demand rows carry short keys; rows that round to zero are dropped."""
+    steel_demand = pd.DataFrame([(2025, "CHN", 2.0), (2025, "ABW", 0.00001)], columns=["year", "geo", "volume_mt"])
+    assert capacity_production.pack_demand(steel_demand) == [{"y": 2025, "g": "CHN", "v": 2.0}]

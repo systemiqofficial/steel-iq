@@ -88,12 +88,13 @@ All viewers share one shell (`common.js` / `common.css`): a run selector, a geog
 | Viewer | Shows | Data source |
 |--------|-------|-------------|
 | `emissions.html` | Furnace-group emissions with direct / indirect / incl.-biogenic scope tickboxes, for every emissions boundary in the table, stacked by technology or region, annual or cumulative-to-year | `post_processed_<timestamp>.csv` |
-| `capacity_and_production.html` | Capacity and production over time, with a capacity-vs-production compare mode | `post_processed_<timestamp>.csv` |
+| `capacity_and_production.html` | Capacity and production over time, with a capacity-vs-production compare mode and a steel demand overlay | `post_processed_<timestamp>.csv` + `fixtures/demand_centers.json` |
 | `cost_curves.html` | Per-commodity cost curves with the engine's market-clearing rule (clearing shares and price buffers from the run config) | `post_processed_<timestamp>.csv` + `data/market_prices_<start>_<end>.csv` |
 | `trade_matrix.html` | Steel, iron products, iron ore (mine-labelled origins) and scrap shipped between geographies, per year, each product selectable individually | `TM/steel_trade_allocations_<year>.csv` |
 | `trade_network.html` | The same trade flows as a chord diagram with a map layout | `TM/steel_trade_allocations_<year>.csv` |
 | `supply_demand.html` | Supply and demand for steel, scrap, iron ore, CO2 storage and biomass | `TM/` allocations + `fixtures/suppliers.json` + `fixtures/biomass_availability.json` |
 | `reductant_use.html` | Iron production and absolute reductant use per reductant | `post_processed_<timestamp>.csv` + `fixtures/primary_feedstocks.json` |
+| `metallic_charge_use.html` | Metallic charges fed into steel (scrap, hot metal, pig iron, DRI/HBI) and iron (ore grades), per charge / technology / region, with a local scrap supply overlay | `post_processed_<timestamp>.csv` + `fixtures/primary_feedstocks.json` + `fixtures/suppliers.json` |
 
 A missing input file skips that viewer with a warning instead of failing the plot stage.
 
