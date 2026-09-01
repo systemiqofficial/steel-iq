@@ -87,7 +87,7 @@ All viewers share one shell (`common.js` / `common.css`): a run selector, a geog
 
 | Viewer | Shows | Data source |
 |--------|-------|-------------|
-| `emissions.html` | Furnace-group emissions with direct / indirect / incl.-biogenic scope tickboxes, for every emissions boundary in the table, stacked by technology or region | `post_processed_<timestamp>.csv` |
+| `emissions.html` | Furnace-group emissions with direct / indirect / incl.-biogenic scope tickboxes, for every emissions boundary in the table, stacked by technology or region, annual or cumulative-to-year | `post_processed_<timestamp>.csv` |
 | `capacity_and_production.html` | Capacity and production over time, with a capacity-vs-production compare mode | `post_processed_<timestamp>.csv` |
 | `cost_curves.html` | Per-commodity cost curves with the engine's market-clearing rule (clearing shares and price buffers from the run config) | `post_processed_<timestamp>.csv` + `data/market_prices_<start>_<end>.csv` |
 | `trade_matrix.html` | Steel, iron products, iron ore (mine-labelled origins) and scrap shipped between geographies, per year, each product selectable individually | `TM/steel_trade_allocations_<year>.csv` |
