@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Supply and demand</title>
+<style>__COMMON_CSS__</style>
+<style>
+/* The ore-grade ticks sit on their own row between the top controls and the geography
+   filter, styled like the shell's technologies row; the flex display would otherwise
+   override the hidden attribute. */
+#grade-panel { display: flex; align-items: center; gap: 4px 14px; flex-wrap: wrap; padding: 8px 40px 0; }
+#grade-panel[hidden] { display: none; }
+#grade-label { font-size: 12px; color: #52514e; margin: 0; }
+#grade-panel label.inline { display: inline-flex; align-items: center; gap: 4px; font-size: 12px;
+                            color: #0b0b0b; margin: 0; padding: 0; cursor: pointer; white-space: nowrap; }
+</style>
+</head>
+<body>
+<div id="err"></div>
+<script>
+window.addEventListener("error", function(e) {
+  const el = document.getElementById("err");
+  el.style.display = "block";
+  el.textContent = "Load error: " + (e.message || e.type) + (e.filename ? " @ " + e.lineno : "");
+}, true);
+</script>
+<div class="toolbar">
+  <div>
+    <label for="commodity-select">Commodity</label>
+    <select id="commodity-select">
+      <option value="steel">Steel demand</option>
+      <option value="scrap">Scrap</option>
+      <option value="ore">Iron ore</option>
+      <option value="co2">CO&#8322; storage</option>
+      <option value="bio">Biomass (bio-PCI)</option>
+    </select>
+  </div>
+  <div id="stack-panel" hidden>
+    <label for="stack-select">Stack by</label>
+    <select id="stack-select">
+      <option value="grade">Ore grade</option>
+      <option value="region">Region</option>
+    </select>
+  </div>
+  <div>
+    <label class="inline"><input type="checkbox" id="avail-toggle" checked>Availability line</label>
+  </div>
+</div>
+<div id="grade-panel" hidden>
+  <label id="grade-label">Ore grades<button id="grade-all" class="small-btn">All</button><button id="grade-none" class="small-btn">None</button></label>
+</div>
+<div class="toolbar" id="shared-filters"></div>
+<div id="summary"></div>
+<div id="chart"></div>
+<script>__PLOTLYJS__</script>
+<script>
+const CONFIG = __CONFIG__;
+const DATA = __DATA__;
+</script>
+<script>__COMMON_JS__</script>
+<script>
+const MAX_WIDTH = 1280, MAX_HEIGHT = 720;
+const MARGIN = {l: 70, t: 90, b: 60};  // right margin is sized per render to fit the legend
+const FILL_ALPHA = 0.85;
+const T = Interactive.theme;
+const REGION_PREFIX = "region:";
+
+/* Wording per commodity: what the solid stack (used) and the dashed line (available) mean. */
+const COMMODITIES = {
+  steel: {title: "Steel demand and deliveries", used: "delivered", avail: "demand", unit: "Mt",
+          noun: "steel demand",
+          availNote: "demand of the selected countries' demand centres"},
+  scrap: {title: "Scrap used and available", used: "used", avail: "available", unit: "Mt",
+          noun: "scrap use or availability",
+          availNote: "scrap availability of the selected source countries"},
+  ore:   {title: "Iron ore supply: mine capacity", used: "drawn", avail: "capacity", unit: "Mt",
+          noun: "iron ore use or mine capacity",
+          availNote: "capacity of the selected countries' mines"},
+  co2:   {title: "CO₂ stored and storage limit", used: "stored", avail: "storage limit", unit: "Mt CO₂",
+          noun: "CO₂ storage use or limits",
+          availNote: "storage limits of the selected countries"},
+  bio:   {title: "Bio-PCI used and biomass budget", used: "used", avail: "budget", unit: "Mt",
+          noun: "biomass use or budgets",
+          availNote: "budgets of TIAM-UCL regions overlapping the selection, counted in full"},
+};
+
+/* Ore grades: names as the trade-matrix viewer labels them, stacked high to low. */
+const GRADE_NAMES = {io_high: "high grade", io_mid: "mid grade", io_low: "low grade"};
+const GRADE_ORDER = ["io_high", "io_mid", "io_low"];
+const GRADE_COLOURS = {"high grade": "#556b2f", "mid grade": "#b8860b", "low grade": "#a52a2a"};
+
+function capitalise(text) { return text.charAt(0).toUpperCase() + text.slice(1); }
+
+/* An availability row counts when its geography is selected; a budget shared by a whole
+   TIAM-UCL region (geo "region:<label>") counts in full as soon as any of its member
+   countries is selected — the render notes how many such budgets are only partly covered. */
+function availabilityFilter(selectedGeo) {
+  const covered = new Set([...selectedGeo].map(Interactive.isoOf));
+  return geo => {
+    if (!geo.startsWith(REGION_PREFIX)) return selectedGeo.has(geo);
+    return (CONFIG.regionBudgets[geo] || []).some(iso3 => covered.has(iso3));
+  };
+}
+
+/* Included regional budgets whose region the selection covers only partly, judged
+   against the countries actually present in the data. */
+function partlyCoveredBudgets(availRows, selectedGeo) {
+  const present = new Set(Interactive.geoKeys().map(Interactive.isoOf));
+  const covered = new Set([...selectedGeo].map(Interactive.isoOf));
+  const included = new Set(availRows.filter(r => r.g.startsWith(REGION_PREFIX)).map(r => r.g));
+  return [...included].filter(geo =>
+    (CONFIG.regionBudgets[geo] || []).some(iso3 => present.has(iso3) && !covered.has(iso3))).length;
+}
+
+/* Grade tickboxes, built from the grades in the data; visible on the ore tab only. */
+const gradeCbs = new Map();
+{
+  const panel = document.getElementById("grade-panel");
+  const grades = [...new Set(Object.values(DATA).flatMap(d => d.rows.concat(d.avail).filter(r => r.s).map(r => r.s)))]
+    .sort((a, b) => GRADE_ORDER.indexOf(a) - GRADE_ORDER.indexOf(b));
+  grades.forEach(grade => {
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = true;
+    cb.addEventListener("change", () => render());
+    const label = document.createElement("label");
+    label.className = "inline";
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(GRADE_NAMES[grade] || grade));
+    panel.appendChild(label);
+    gradeCbs.set(grade, cb);
+  });
+  const setAllGrades = checked => { gradeCbs.forEach(cb => cb.checked = checked); render(); };
+  document.getElementById("grade-all").addEventListener("click", () => setAllGrades(true));
+  document.getElementById("grade-none").addEventListener("click", () => setAllGrades(false));
+}
+
+function selectedGrades() {
+  return new Set([...gradeCbs].filter(([, cb]) => cb.checked).map(([grade]) => grade));
+}
+
+function render() {
+  const {width: WIDTH, height: HEIGHT} = Interactive.plotSize(MAX_WIDTH, MAX_HEIGHT);
+  const run = DATA[Interactive.run()];
+  const commodity = document.getElementById("commodity-select").value;
+  const showAvail = document.getElementById("avail-toggle").checked;
+  const wording = COMMODITIES[commodity];
+  const selectedGeo = Interactive.selectedGeos();
+  const gd = document.getElementById("chart");
+
+  const isOre = commodity === "ore";
+  document.getElementById("grade-panel").hidden = !isOre;
+  document.getElementById("stack-panel").hidden = !isOre;
+  const stackByGrade = isOre && document.getElementById("stack-select").value === "grade";
+  const grades = selectedGrades();
+  const keyOf = stackByGrade ? (r => GRADE_NAMES[r.s] || r.s) : (r => Interactive.regionOf(r.g));
+
+  const years = run.years;
+  const yearIdx = new Map(years.map((y, i) => [y, i]));
+  const rows = run.rows.filter(r => r.c === commodity && selectedGeo.has(r.g) && (!isOre || grades.has(r.s)));
+
+  const series = new Map();  // stack key (region, or ore grade) -> used per year
+  const totalUsed = years.map(() => 0);
+  rows.forEach(r => {
+    const key = keyOf(r), yi = yearIdx.get(r.y);
+    if (!series.has(key)) series.set(key, years.map(() => 0));
+    series.get(key)[yi] += r.v;
+    totalUsed[yi] += r.v;
+  });
+
+  const includeAvail = availabilityFilter(selectedGeo);
+  const availRows = run.avail.filter(r =>
+    r.c === commodity && includeAvail(r.g) && (!isOre || grades.has(r.s)));
+  const totalAvail = years.map(() => 0);
+  const keyAvail = new Map();  // stack key -> available per year (per-country availabilities only)
+  availRows.forEach(r => {
+    totalAvail[yearIdx.get(r.y)] += r.v;
+    if (r.g.startsWith(REGION_PREFIX)) return;  // a shared regional budget has no stack key
+    const key = keyOf(r), yi = yearIdx.get(r.y);
+    if (!keyAvail.has(key)) keyAvail.set(key, years.map(() => 0));
+    keyAvail.get(key)[yi] += r.v;
+  });
+  const partlyCovered = partlyCoveredBudgets(availRows, selectedGeo);
+  const hasAvail = availRows.length > 0;
+
+  const gradeRank = new Map(GRADE_ORDER.map((grade, i) => [GRADE_NAMES[grade] || grade, i]));
+  const keys = [...series.keys()].sort(stackByGrade ? (a, b) => gradeRank.get(a) - gradeRank.get(b) : undefined);
+  if (!keys.length && !hasAvail) {
+    const runHas = run.rows.some(r => r.c === commodity) || run.avail.some(r => r.c === commodity);
+    const text = runHas ? `No ${wording.noun} for this selection`
+                        : `No ${wording.noun} recorded in this run — its inputs carry none`;
+    Interactive.showEmpty(gd, text, WIDTH, HEIGHT);
+    Interactive.summary(run.provenance);
+    return;
+  }
+  const colours = Interactive.colourTable(stackByGrade ? GRADE_COLOURS : CONFIG.regionColours, keys);
+
+  const share = years.map((y, i) => totalAvail[i] > 0 ? 100 * totalUsed[i] / totalAvail[i] : NaN);
+  /* Each band hovers with its share of its own availability (a region's demand met,
+     a grade's capacity drawn) when a per-country availability exists for its key. */
+  const traces = keys.map((key, order) => {
+    const avail = keyAvail.get(key);
+    const used = series.get(key);
+    return {
+      type: "scatter", mode: "lines", x: years, y: used,
+      customdata: avail ? used.map((v, i) => avail[i] > 0 ? 100 * v / avail[i] : 0) : undefined,
+      name: key, legendgroup: key, legendrank: 1000 - order, stackgroup: "used",
+      line: {width: 0, color: colours[key]},
+      fillcolor: Interactive.hexToRgba(colours[key], FILL_ALPHA),
+      hovertemplate: avail ? `%{y:.1f} ${wording.unit} · %{customdata:.0f}% of ${wording.avail}`
+                           : `%{y:.1f} ${wording.unit}`,
+    };
+  });
+  if (keys.length) traces.push({
+    type: "scatter", mode: "lines", x: years, y: totalUsed, customdata: share,
+    name: `Total ${wording.used}`, line: {width: 0}, fill: "none", showlegend: false, legendrank: 3000,
+    hovertemplate: hasAvail ? `<b>%{y:.1f} ${wording.unit}</b> · %{customdata:.0f}% of ${wording.avail}`
+                            : `<b>%{y:.1f} ${wording.unit}</b>`,
+  });
+  if (hasAvail && showAvail) traces.push({
+    type: "scatter", mode: "lines", x: years, y: totalAvail,
+    name: capitalise(wording.avail), legendrank: 2000,
+    line: {width: 2.5, color: T.ink, dash: "dash"},
+    hovertemplate: `<b>%{y:.1f} ${wording.unit}</b> (${wording.avail})`,
+  });
+
+  const notes = [run.title, Interactive.geoNote(new Set(run.rows.map(r => r.g)))];
+  if (hasAvail && showAvail) notes.push(`solid = ${wording.used}, dashed = ${wording.avail}`);
+  if (hasAvail && showAvail && partlyCovered)
+    notes.push(`${partlyCovered} regional budget${partlyCovered > 1 ? "s" : ""} counted in full though only partly selected`);
+  const margin = {...MARGIN, r: 12 + Interactive.legendWidth(keys.concat(capitalise(wording.avail)))};
+  const layout = {
+    title: {text: `${wording.title} by ${stackByGrade ? "iron ore grade" : "region"}<br><sup>${notes.join(" · ")}</sup>`,
+            font: {color: T.ink, size: 17}, x: 0.05},
+    xaxis: {title: {text: "Year"}, range: [years[0], years[years.length - 1]], dtick: years.length > 12 ? 5 : 1,
+            gridcolor: T.grid, zeroline: false, showspikes: true, spikemode: "across", spikethickness: 1,
+            spikecolor: T.inkSecondary},
+    yaxis: {title: {text: `${capitalise(wording.used)} and ${wording.avail} (${wording.unit})`},
+            gridcolor: T.grid, zeroline: true, zerolinecolor: T.ink, zerolinewidth: 1, rangemode: "tozero"},
+    legend: {x: 1 + 12 / (WIDTH - margin.l - margin.r), xanchor: "left", y: 1, yanchor: "top",
+             font: {size: 11}, bgcolor: T.surface},
+    hovermode: "x unified",
+    hoverlabel: {align: "left", font: {size: 11}, bgcolor: "#fff"},
+    font: {family: "Helvetica Neue, Helvetica, Arial", color: T.inkSecondary, size: 11},
+    paper_bgcolor: T.surface, plot_bgcolor: T.surface,
+    width: WIDTH, height: HEIGHT, margin,
+  };
+  Plotly.react(gd, traces, layout, {displaylogo: false, responsive: false});
+
+  const last = years.length - 1;
+  const availText = hasAvail
+    ? `${totalUsed[last].toFixed(1)} of ${totalAvail[last].toFixed(1)} ${wording.unit} ${wording.avail} ` +
+      `${wording.used} (${share[last] ? share[last].toFixed(0) : 0}%) in ${years[last]}`
+    : `${totalUsed[last].toFixed(1)} ${wording.unit} ${wording.used} in ${years[last]} (no recorded ${wording.avail})`;
+  Interactive.summary(`${availText} · ${wording.avail} = ${wording.availNote}\n${run.provenance}`);
+}
+
+["commodity-select", "stack-select", "avail-toggle"].forEach(id =>
+  document.getElementById(id).addEventListener("change", render));
+/* The geography filter lists every country with usage or a per-country availability;
+   regional budgets follow their member countries instead of getting their own entry. */
+const allGeos = Object.values(DATA).flatMap(d =>
+  d.rows.map(r => r.g).concat(d.avail.filter(r => !r.g.startsWith(REGION_PREFIX)).map(r => r.g)));
+Interactive.init({geoKeys: allGeos, onChange: render});
+Interactive.onResize(render);
+render();
+</script>
+</body>
+</html>

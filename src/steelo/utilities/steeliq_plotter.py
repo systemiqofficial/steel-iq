@@ -111,6 +111,8 @@ class PlotConfig:
                 "hbi_high": "#3A8FBF",  # deeper sky blue
                 "pig_iron": "#2F4F4F",  # dark slate gray - molten intermediate
                 "hot_metal": "#696969",  # dim gray - molten metal (similar to pig iron)
+                "liquid_iron": "#4A4A4A",  # charcoal - molten ESF iron
+                "electrolytic_iron": "#7B68EE",  # medium slate blue - electrowon iron
             }
 
 
@@ -1144,6 +1146,8 @@ class SteelPlotter:
             "hbi_low": "#FFB6C1",  # light pink (light) - low grade HBI
             "hbi_mid": "#FF69B4",  # hot pink (medium) - mid grade HBI
             "hbi_high": "#C71585",  # medium violet red (dark) - high grade HBI
+            "liquid_iron": "#FF8C00",  # dark orange - molten ESF iron
+            "electrolytic_iron": "#7B68EE",  # medium slate blue - electrowon iron
         }
 
         # Assign colors

@@ -16,6 +16,7 @@ Common options:
 - `--config-file`: load a saved configuration.
 - `--log-level`: control verbosity (`INFO`, `DEBUG`, etc.).
 - `--demand-scenario` / `--scrap-scenario`: pick the `Scenario` rows of the master Excel "Demand and scrap availability" sheet used for steel demand and for scrap availability (both default to `BAU`; `--scrap-scenario` falls back to the demand scenario). Applied when the data is prepared, so each scenario pair gets its own preparation cache entry.
+- `--run-name`: human-readable run name shown in the interactive viewer titles (default: the `sim_<timestamp>` output directory name). The viewers themselves are described in [Outputs and postprocessing](../domain_simulation_logic/outputs_and_postprocessing.md).
 
 The CLI writes metrics, logs, and artefacts to the chosen output directory. Review the [Configuration](configuration.md) guide for a comprehensive list of parameters and environment variables.
 

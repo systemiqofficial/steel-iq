@@ -90,6 +90,12 @@ def run_full_simulation() -> str:
         ),
     )
     parser.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help="Human-readable run name shown in the interactive plot titles (default: the sim_<timestamp> dir name)",
+    )
+    parser.add_argument(
         "--location-csv",
         type=str,
         default=None,
@@ -291,6 +297,7 @@ def run_full_simulation() -> str:
                 "chosen_demand_scenario": demand_scenario,
                 "chosen_scrap_scenario": scrap_scenario,
                 "chosen_grid_emissions_scenario": grid_emissions_scenario,
+                "run_name": args.run_name,
                 "log_level": log_level,
                 "random_seed": args.random_seed,
             }
@@ -377,6 +384,7 @@ def run_full_simulation() -> str:
                     "chosen_demand_scenario": demand_scenario,
                     "chosen_scrap_scenario": scrap_scenario,
                     "chosen_grid_emissions_scenario": grid_emissions_scenario,
+                    "run_name": args.run_name,
                     "log_level": log_level,
                     "random_seed": args.random_seed,
                 }

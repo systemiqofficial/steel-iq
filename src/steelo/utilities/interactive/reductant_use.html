@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Reductant and energy use</title>
+<style>__COMMON_CSS__</style>
+<style>
+/* Reductant tick row, styled like the shell's technology row (#tech-panel). */
+#reductant-panel { display: flex; align-items: center; gap: 4px 14px; flex-wrap: wrap; padding: 2px 40px 0; }
+#reductant-panel > label { font-size: 12px; color: #52514e; margin: 0; }
+#reductant-boxes { display: inline-flex; flex-wrap: wrap; gap: 2px 14px; }
+#reductant-boxes label { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: #0b0b0b;
+                         margin: 0; cursor: pointer; white-space: nowrap; }
+</style>
+</head>
+<body>
+<div id="err"></div>
+<script>
+window.addEventListener("error", function(e) {
+  const el = document.getElementById("err");
+  el.style.display = "block";
+  el.textContent = "Load error: " + (e.message || e.type) + (e.filename ? " @ " + e.lineno : "");
+}, true);
+</script>
+<div class="toolbar">
+  <div>
+    <label for="metric-select">Metric</label>
+    <select id="metric-select"></select>
+  </div>
+  <div>
+    <label for="group-select">Stack by</label>
+    <select id="group-select">
+      <option value="reductant">Reductant</option>
+      <option value="technology">Technology</option>
+      <option value="region">Region</option>
+    </select>
+  </div>
+  <div>
+    <label for="display-select">Display</label>
+    <select id="display-select">
+      <option value="absolute">Absolute</option>
+      <option value="share">Share (%)</option>
+    </select>
+  </div>
+</div>
+<div id="reductant-panel">
+  <label>Reductants
+    <button id="reductant-all" class="small-btn">All</button>
+    <button id="reductant-none" class="small-btn">None</button>
+  </label>
+  <div id="reductant-boxes"></div>
+</div>
+<div class="toolbar" id="shared-filters"></div>
+<div id="summary"></div>
+<div id="chart"></div>
+<script>__PLOTLYJS__</script>
+<script>
+const CONFIG = __CONFIG__;
+const DATA = __DATA__;
+</script>
+<script>__COMMON_JS__</script>
+<script>
+const MAX_WIDTH = 1280, MAX_HEIGHT = 720;
+const MARGIN = {l: 70, t: 90, b: 60};  // right margin is sized per render to fit the legend
+const FILL_ALPHA = 0.85;
+const T = Interactive.theme;
+const CARRIERS = CONFIG.carriers || [];
+
+/* Metric selector: iron production, then one entry per carrier embedded in the run. */
+const metricSelect = document.getElementById("metric-select");
+metricSelect.appendChild(new Option("Iron production (Mt)", "production"));
+CARRIERS.forEach((c, i) => metricSelect.appendChild(new Option(`${c.label} use (${c.unit})`, `carrier:${i}`)));
+
+const allRows = Object.values(DATA).flatMap(d => d.rows);
+
+/* {label, unit, valueOf} of the selected metric. */
+function metric() {
+  const value = metricSelect.value;
+  if (value === "production") return {label: "Iron production", unit: "Mt", valueOf: r => r.pr};
+  const c = CARRIERS[Number(value.split(":")[1])];
+  return {label: `${c.label} use`, unit: c.unit, valueOf: r => r.e[Number(value.split(":")[1])]};
+}
+
+function colourHouse(groupBy) {
+  if (groupBy === "reductant") return CONFIG.reductantColours || {};
+  return groupBy === "technology" ? CONFIG.techColours : CONFIG.regionColours;
+}
+
+/* ---- reductant filter: ticks for the reductants that contribute to the current
+   metric and run, rebuilt on change; unticked choices are remembered across both. ---- */
+const reductantCbs = new Map();
+const untickedReductants = new Set();
+
+function relevantReductants(run, m) {
+  const present = new Set();
+  run.rows.forEach(r => { if (m.valueOf(r) !== 0) present.add(r.r); });
+  return [...present].sort();
+}
+
+function syncReductantBoxes(relevant) {
+  if (relevant.join("|") === [...reductantCbs.keys()].join("|")) return;
+  const boxes = document.getElementById("reductant-boxes");
+  boxes.innerHTML = "";
+  reductantCbs.clear();
+  relevant.forEach(name => {
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !untickedReductants.has(name);
+    cb.addEventListener("change", () => {
+      untickedReductants[cb.checked ? "delete" : "add"](name);
+      render();
+    });
+    const label = document.createElement("label");
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(name));
+    boxes.appendChild(label);
+    reductantCbs.set(name, cb);
+  });
+}
+
+function selectedReductants() {
+  return new Set([...reductantCbs].filter(([, cb]) => cb.checked).map(([name]) => name));
+}
+
+function setAllReductants(checked) {
+  reductantCbs.forEach((cb, name) => {
+    cb.checked = checked;
+    untickedReductants[checked ? "delete" : "add"](name);
+  });
+  render();
+}
+
+function render() {
+  const {width: WIDTH, height: HEIGHT} = Interactive.plotSize(MAX_WIDTH, MAX_HEIGHT);
+  const run = DATA[Interactive.run()];
+  const m = metric();
+  const groupBy = document.getElementById("group-select").value;
+  const share = document.getElementById("display-select").value === "share";
+  const selectedGeo = Interactive.selectedGeos(), selectedTech = Interactive.selectedTechs();
+  const gd = document.getElementById("chart");
+
+  const relevant = relevantReductants(run, m);
+  syncReductantBoxes(relevant);
+  const selectedRed = selectedReductants();
+
+  const years = [...new Set(run.rows.map(r => r.y))].sort((a, b) => a - b);
+  const yearIdx = new Map(years.map((y, i) => [y, i]));
+  const rows = run.rows.filter(r => selectedRed.has(r.r) && selectedGeo.has(r.g) && selectedTech.has(r.t));
+  const keyOf = {reductant: r => r.r, technology: r => r.t, region: r => Interactive.regionOf(r.g)}[groupBy];
+
+  const series = new Map();  // key -> value per year
+  const totals = years.map(() => 0);
+  rows.forEach(r => {
+    const key = keyOf(r), yi = yearIdx.get(r.y), v = m.valueOf(r);
+    if (!series.has(key)) series.set(key, years.map(() => 0));
+    series.get(key)[yi] += v;
+    totals[yi] += v;
+  });
+
+  const keys = [...series.keys()].filter(k => series.get(k).some(v => v !== 0)).sort();
+  if (!keys.length) {
+    Interactive.showEmpty(gd, `No ${m.label.toLowerCase()} for this selection`, WIDTH, HEIGHT);
+    Interactive.summary("0 furnace groups");
+    return;
+  }
+  const colours = Interactive.colourTable(colourHouse(groupBy), keys);
+  const digits = m.unit === "Mt" && m.label !== "Iron production" ? 2 : 1;
+
+  const traces = keys.map((key, order) => ({
+    type: "scatter", mode: "lines", x: years, y: series.get(key),
+    name: key, legendgroup: key, legendrank: 1000 - order,
+    stackgroup: "use", groupnorm: share ? "percent" : "",
+    line: {width: 0, color: colours[key]},
+    fillcolor: Interactive.hexToRgba(colours[key], FILL_ALPHA),
+    hovertemplate: share ? "%{y:.1f}%" : `%{y:.${digits}f} ${m.unit}`,
+  }));
+  if (!share) {
+    // Hover-only total; the unified hover orders items by legendrank, so it lists last.
+    traces.push({
+      type: "scatter", mode: "lines", x: years, y: totals,
+      name: "Total", line: {width: 0}, fill: "none", showlegend: false, legendrank: 3000,
+      hovertemplate: `<b>%{y:.${digits}f} ${m.unit}</b>`,
+    });
+  }
+
+  const groupLabel = {reductant: "reductant", technology: "technology", region: "region"}[groupBy];
+  const runGeos = new Set(run.rows.map(r => r.g));
+  const subtitle = [run.title, Interactive.geoNote(runGeos)].join(" · ");
+  const margin = {...MARGIN, r: 12 + Interactive.legendWidth(keys)};
+  const layout = {
+    title: {text: `${m.label} by ${groupLabel}<br><sup>${subtitle}</sup>`,
+            font: {color: T.ink, size: 17}, x: 0.05},
+    xaxis: {title: {text: "Year"}, range: [years[0], years[years.length - 1]], dtick: years.length > 12 ? 5 : 1,
+            gridcolor: T.grid, zeroline: false, showspikes: true, spikemode: "across", spikethickness: 1,
+            spikecolor: T.inkSecondary},
+    yaxis: {title: {text: share ? `${m.label} share (%)` : `${m.label} (${m.unit})`},
+            gridcolor: T.grid, zeroline: true, zerolinecolor: T.ink, zerolinewidth: 1, rangemode: "tozero"},
+    legend: {x: 1 + 12 / (WIDTH - margin.l - margin.r), xanchor: "left", y: 1, yanchor: "top",
+             font: {size: 11}, bgcolor: T.surface},
+    hovermode: "x unified",
+    hoverlabel: {align: "left", font: {size: 11}, bgcolor: "#fff"},
+    font: {family: "Helvetica Neue, Helvetica, Arial", color: T.inkSecondary, size: 11},
+    paper_bgcolor: T.surface, plot_bgcolor: T.surface,
+    width: WIDTH, height: HEIGHT, margin,
+  };
+  Plotly.react(gd, traces, layout, {displaylogo: false, responsive: false});
+
+  const last = years.length - 1;
+  const nCountries = new Set(Interactive.geoKeys().map(Interactive.isoOf)).size;
+  const selCountries = new Set([...selectedGeo].map(Interactive.isoOf)).size;
+  const allTechs = [...new Set(run.rows.map(r => r.t))];
+  const selTechs = allTechs.filter(t => selectedTech.has(t)).length;
+  Interactive.summary(
+    `${selCountries} of ${nCountries} countries · ${selTechs} of ${allTechs.length} technologies · ` +
+    `${selectedRed.size} of ${relevant.length} reductants · ` +
+    `${totals[last].toFixed(digits)} ${m.unit} ${m.label.toLowerCase()} in ${years[last]}` +
+    `\n${run.provenance}`);
+}
+
+["metric-select", "group-select", "display-select"].forEach(id =>
+  document.getElementById(id).addEventListener("change", render));
+document.getElementById("reductant-all").addEventListener("click", () => setAllReductants(true));
+document.getElementById("reductant-none").addEventListener("click", () => setAllReductants(false));
+Interactive.init({geoKeys: allRows.map(r => r.g), techs: allRows.map(r => r.t), onChange: render});
+Interactive.onResize(render);
+render();
+</script>
+</body>
+</html>

@@ -72,9 +72,30 @@ output/
     TM/         # trade-model plots
     emissions/  # SteelPlotter.plot_emissions_by_technology
     cost_curves/  # SteelPlotter cost-curve methods
+    interactive/  # InteractivePlotter viewers (self-contained HTML, see below)
 ```
 
 Cost-curve filenames follow `cost_curve_{product}_by_{aggregation}_{year}.png` (e.g. `cost_curve_iron_by_region_2025.png`); the legacy ordering `{product}_cost_curve_by_{aggregation}_{year}.png` is no longer produced by the new methods. `plot_cost_curve_with_breakdown` retains its previous filename convention.
+
+---
+
+## Interactive viewers
+
+`InteractivePlotter` (`src/steelo/utilities/interactive/`) writes a set of interactive plotly viewers to `plots/interactive/` at the end of every run. Each viewer is a single self-contained HTML file with the run's data embedded — open it in any browser, no server or network access needed.
+
+All viewers share one shell (`common.js` / `common.css`): a run selector, a geography filter (countries, sub-national geo units, trade blocs, regions), an opt-in technology filter, and the shared colour schemes. Sub-national units are labelled from the prepared `fixtures/geo_hierarchy.json` (codes when absent). Chart titles carry the run name — `--run-name`, defaulting to the `sim_<timestamp>` output directory name.
+
+| Viewer | Shows | Data source |
+|--------|-------|-------------|
+| `emissions.html` | Furnace-group emissions with direct / indirect / incl.-biogenic scope tickboxes, for every emissions boundary in the table, stacked by technology or region | `post_processed_<timestamp>.csv` |
+| `capacity_and_production.html` | Capacity and production over time, with a capacity-vs-production compare mode | `post_processed_<timestamp>.csv` |
+| `cost_curves.html` | Per-commodity cost curves with the engine's market-clearing rule (clearing shares and price buffers from the run config) | `post_processed_<timestamp>.csv` + `data/market_prices_<start>_<end>.csv` |
+| `trade_matrix.html` | Steel, iron products, iron ore (mine-labelled origins) and scrap shipped between geographies, per year, each product selectable individually | `TM/steel_trade_allocations_<year>.csv` |
+| `trade_network.html` | The same trade flows as a chord diagram with a map layout | `TM/steel_trade_allocations_<year>.csv` |
+| `supply_demand.html` | Supply and demand for steel, scrap, iron ore, CO2 storage and biomass | `TM/` allocations + `fixtures/suppliers.json` + `fixtures/biomass_availability.json` |
+| `reductant_use.html` | Iron production and absolute reductant use per reductant | `post_processed_<timestamp>.csv` + `fixtures/primary_feedstocks.json` |
+
+A missing input file skips that viewer with a warning instead of failing the plot stage.
 
 ---
 

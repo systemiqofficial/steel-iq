@@ -91,7 +91,19 @@ DISTANTLY_ALLOCATED_PRODUCTS = [
     Commodities.PIG_IRON.value,
     Commodities.ELECTROLYTIC_IRON.value,
 ]
-IRON_PRODUCTS = ["iron", "hot_metal", "pig_iron", "dri_low", "dri_mid", "dri_high", "hbi_low", "hbi_mid", "hbi_high"]
+IRON_PRODUCTS = [
+    "iron",
+    "hot_metal",
+    "pig_iron",
+    "dri_low",
+    "dri_mid",
+    "dri_high",
+    "hbi_low",
+    "hbi_mid",
+    "hbi_high",
+    "liquid_iron",
+    "electrolytic_iron",
+]
 
 
 # Sub-country demand and scrap share per center for major steel consuming countries
