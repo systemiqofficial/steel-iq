@@ -323,3 +323,92 @@ def test_cross_pixel_hint_does_not_change_the_result(profiles, anchor_costs):
     cold = build_pixel_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, anchor_costs, hint=-1.0)
     warm = build_pixel_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, anchor_costs, hint=7.5)
     np.testing.assert_allclose(cold.b_patch, warm.b_patch, rtol=2 * PARAMS.tol_rel_patch)
+
+
+# --------------------------------------------------------------------------
+# Shared patch lattice (M2)
+# --------------------------------------------------------------------------
+
+
+def _coarse_axes(s_max=24.0, w_max=12.0, gc=25):
+    return np.linspace(0.0, s_max, gc), np.linspace(0.0, w_max, gc)
+
+
+def test_lattice_points_are_multiples_of_the_lattice_step():
+    """
+    The property the whole design rests on: every patch point is an integer multiple of
+    `coarse_spacing / lattice_refinement`. Without it, two patches on one pixel share no
+    interior points and cross-anchor reuse is impossible.
+    """
+    from boa.model.bisection import patch_lattice
+
+    s_c, w_c = _coarse_axes()
+    params = SearchParams(lattice_refinement=2)
+    step = (s_c[1] - s_c[0]) / params.lattice_refinement
+
+    s_vals, _, _ = patch_lattice(s_c, w_c, 9, 6, params)
+    multiples = s_vals / step
+    assert np.allclose(multiples, np.round(multiples), atol=1e-9)
+
+
+def test_two_patches_on_one_pixel_share_their_overlapping_points_exactly():
+    """
+    Reuse must be exact, not approximate -- a patch node holds dispatch physics with no
+    cost term, so a shared point has an identical value under any anchor. Approximate
+    agreement would mean recomputing anyway.
+    """
+    from boa.model.bisection import patch_lattice
+
+    s_c, w_c = _coarse_axes()
+    params = SearchParams(lattice_refinement=2)
+
+    a_s, _, a_b = patch_lattice(s_c, w_c, 6, 6, params)
+    b_s, _, b_b = patch_lattice(s_c, w_c, 9, 6, params)
+    lo, hi = max(a_b[0], b_b[0]), min(a_b[1], b_b[1])
+    assert lo < hi, "fixture must produce overlapping boxes"
+
+    shared_a = a_s[(a_s >= s_c[lo] - 1e-9) & (a_s <= s_c[hi] + 1e-9)]
+    shared_b = b_s[(b_s >= s_c[lo] - 1e-9) & (b_s <= s_c[hi] + 1e-9)]
+    assert np.allclose(shared_a, shared_b, atol=1e-12)
+
+
+def test_lattice_resolution_does_not_depend_on_box_width():
+    """
+    The accuracy argument for the lattice: `patch_box` puts a fixed point count on a
+    variable box, so a wide patch is resolved more coarsely than a narrow one exactly
+    where the seed is least certain. Spacing here is constant by construction.
+    """
+    from boa.model.bisection import patch_lattice
+
+    s_c, w_c = _coarse_axes()
+    params = SearchParams(lattice_refinement=2)
+
+    spacings = []
+    for i in (3, 9, 18):
+        s_vals, _, bounds = patch_lattice(s_c, w_c, i, 6, params)
+        assert bounds[1] - bounds[0] > 0
+        spacings.append(s_vals[1] - s_vals[0])
+    assert np.allclose(spacings, spacings[0], atol=1e-12)
+
+
+def test_lattice_keeps_the_same_extent_as_the_fixed_grid():
+    """
+    Only the interior spacing changes. The extent still snaps outward to whole coarse
+    cells, which the containment certificate requires -- a cell neither densely swept nor
+    bounded is a hole nothing detects.
+    """
+    from boa.model.bisection import patch_box, patch_lattice
+
+    s_c, w_c = _coarse_axes()
+    params = SearchParams(lattice_refinement=3)
+    for i, j in ((0, 0), (6, 6), (12, 3), (24, 24)):
+        assert patch_box(s_c, w_c, i, j, params)[2] == patch_lattice(s_c, w_c, i, j, params)[2]
+
+
+def test_lattice_refinement_below_one_is_rejected():
+    """A refinement of 0 would ask for a patch with no interior; fail loudly, not by shape."""
+    from boa.model.bisection import patch_lattice
+
+    s_c, w_c = _coarse_axes()
+    with pytest.raises(ValueError, match="lattice_refinement"):
+        patch_lattice(s_c, w_c, 6, 6, SearchParams(lattice_refinement=0))
