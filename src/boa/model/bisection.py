@@ -87,24 +87,28 @@ class SearchParams:
     lattice_refinement: int = 2  # `patch_lattice` only: lattice points per coarse cell.
     #                              Must be an integer so lattice points land on coarse-cell
     #                              boundaries, which is what makes two patches on one pixel
-    #                              share points exactly. TODO: settle alongside `patch_grid`
-    #                              in the grid-configuration sweep; 2 keeps a median-width
-    #                              patch near today's node count.
+    #                              share points exactly. 2 puts a node at each coarse-cell
+    #                              boundary and one between, which is the coarsest spacing
+    #                              that still resolves inside a cell. TODO: settle alongside
+    #                              `patch_grid` in the grid-configuration sweep.
     seed_tolerance: float = 0.05  # coarse cells within 5% of the best also get a patch
     max_seeds: int = 3  # cap on patches per pixel; bounds worst-case cache size
 
-    # -- Battery ladder: LCOE(b) is not monotone once divided by served fraction (which
-    #    keeps rising with b), so a short local search above b_min can still find a
-    #    cheaper battery. Deliberately a cheap heuristic, not a proof: it stops the first
-    #    time LCOE ticks back up and reports whichever step was cheapest, rather than
-    #    certifying that nothing further out could win. An earlier design (5-rung
-    #    geometric ladder to 2.5x b_min, plus a certificate) needed a much longer, costlier
-    #    climb purely to prove that negative, for a benefit measured at under 1% of LCOE
-    #    either way -- see BOA_BISECTION_PLAN.md, "battery ladder redesign", including the
-    #    real-profile plots that motivated trusting LCOE(b) to be single-troughed near
-    #    b_min rather than proving it. -----------------------------------------------------
-    ladder_step_pct: float = 0.02  # step size, as a fraction of b_min
-    ladder_max_span: float = 1.2  # stop climbing past this multiple of b_min regardless
+    # -- Battery rungs: LCOE(b) is not monotone once divided by served fraction (which
+    #    keeps rising with b), so the cheapest battery can sit above b_min. Rather than
+    #    *choosing* one at build time, the build stores dispatch at `ladder_rungs` battery
+    #    sizes spanning `b_min` to `ladder_max_span * b_min` and lets the query pick.
+    #    That is what keeps the cache pure physics: a stored rung is a dispatch result,
+    #    with no cost in it, so it is valid for every year and every cost scenario. It is
+    #    also strictly more accurate than choosing at build time, because the pick then
+    #    uses the query year's real prices instead of a frozen anchor's.
+    #    Rungs are spaced quadratically, so they cluster just above b_min. The span is set
+    #    by how far the optimum can travel: a cheaper battery moves it outward, so 1.35x
+    #    covers the battery costs a multi-decade horizon reaches while staying far short of
+    #    where coverage saturates. TODO: settle the count and the span in the
+    #    grid-configuration sweep -- both are tuned against one cost trajectory.
+    ladder_rungs: int = 4  # battery sizes stored per node; rung 0 is b_min itself
+    ladder_max_span: float = 1.35  # top rung, as a multiple of b_min
 
     # -- Bisection tolerances. `tol_rel_patch` sets how many dispatch passes each patch
     #    node spends on the battery, so it is the other build-cost driver. gamma = 0.85
@@ -358,37 +362,55 @@ def b_min_at(
 
 
 @numba.njit(cache=True, nogil=True)
-def _battery_ladder_jit(solar, wind, s, w, b_min, cov0, sf0, a_s, a_w, a_b, d0, gamma, step_pct, max_span):
+def _rung_metrics_jit(solar, wind, s, w, b_min, cov0, sf0, spans, out_b, out_cov, out_sf):
     """
-    Climb from `b_min` in steps of `step_pct * b_min`, up to `max_span * b_min`, stopping
-    the first time LCOE rises above the previous step. Returns `(b, coverage, served_fraction)`
-    of whichever step was cheapest.
+    Dispatch at each rung above `b_min`, filling `(out_b, out_cov, out_sf)` in place.
 
-    `b_min <= 0` is returned unchanged: a step of `step_pct` of zero never leaves zero, and
-    this design does not special-case seeding a zero-`b_min` pixel away from zero (contrast
-    the abandoned ladder design, which did) -- see `battery_ladder`'s docstring.
+    Rung 0 is `b_min` itself and costs no dispatch: `(cov0, sf0)` are the metrics of the
+    last probe of the bisection that found it. Every later rung is one pass.
+
+    `b_min <= 0` yields every rung at `b_min` with its own metrics: a multiple of zero is
+    still zero, so there is nothing above it to price, and this design does not special-case
+    seeding a zero-`b_min` node away from zero.
     """
+    out_b[0], out_cov[0], out_sf[0] = b_min, cov0, sf0
     if b_min <= 0.0:
-        return b_min, cov0, sf0
+        for r in range(1, spans.shape[0]):
+            out_b[r], out_cov[r], out_sf[r] = b_min, cov0, sf0
+        return
 
-    best_b, best_cov, best_sf = b_min, cov0, sf0
-    best_lcoe = (a_s * s + a_w * w + a_b * b_min**gamma) / (d0 * sf0) if sf0 > 0.0 else np.inf
-
-    n_steps = int(round((max_span - 1.0) / step_pct))
-    b = b_min
-    for _ in range(n_steps):
-        b = b + b_min * step_pct
+    for r in range(1, spans.shape[0]):
+        b = b_min * spans[r]
         cov, sf = dispatch_metrics(solar, wind, s, w, b)
-        if sf <= 0.0:
-            break
-        lcoe = (a_s * s + a_w * w + a_b * b**gamma) / (d0 * sf)
-        if lcoe > best_lcoe:
-            break
-        best_b, best_cov, best_sf, best_lcoe = b, cov, sf, lcoe
-    return best_b, best_cov, best_sf
+        out_b[r], out_cov[r], out_sf[r] = b, cov, sf
 
 
-def battery_ladder(
+def rung_spans(params: SearchParams) -> np.ndarray:
+    """
+    Rung positions as multiples of `b_min`: `ladder_rungs` values from 1.0 to
+    `ladder_max_span`, spaced **quadratically** so they cluster just above `b_min`.
+
+    The spacing is the design, not the count. LCOE(b) has a shallow trough close to
+    `b_min`: the numerator grows as `b**GAMMA` from the first step, while the denominator
+    can only climb toward a served fraction of 1, so the two cross early and the crossing
+    moves outward only as the battery gets cheaper relative to solar and wind. Rungs
+    therefore have to be dense where the trough is and may be sparse beyond it. Even spacing
+    puts the first probe at `1/(R-1)` of the span, which steps over the trough entirely, and
+    adding rungs at the top does not fix that -- they land past the crossing, where the
+    objective is already rising.
+
+    `ladder_max_span` bounds the other end: beyond it the numerator dominates for any cost
+    ratio worth modelling, so further rungs would only ever duplicate the answer.
+    """
+    if params.ladder_rungs < 1:
+        raise ValueError(f"ladder_rungs must be >= 1, got {params.ladder_rungs}")
+    if params.ladder_rungs == 1:
+        return np.ones(1, dtype=np.float64)
+    frac = np.arange(params.ladder_rungs, dtype=np.float64) / (params.ladder_rungs - 1)
+    return 1.0 + (params.ladder_max_span - 1.0) * frac**2
+
+
+def battery_rungs(
     solar: np.ndarray,
     wind: np.ndarray,
     s: float,
@@ -396,51 +418,30 @@ def battery_ladder(
     b_min: float,
     cov0: float,
     sf0: float,
-    coeffs: CostCoefficients,
     params: SearchParams,
-) -> tuple[float, float, float]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Refine `b_min` into the (approximately) LCOE-minimizing battery at this `(s, w)`, as
-    `(b, coverage, served_fraction)`.
+    Dispatch metrics at every stored battery size for one node, as
+    `(b, hours_covered_frac, energy_served_frac)`, each of length `ladder_rungs`.
 
-    A short, cheap local search, not a proof: LCOE divides by served fraction, which keeps
-    rising with `b`, so the true minimum can sit above `b_min`. This climbs in
-    `params.ladder_step_pct`-sized steps up to `params.ladder_max_span * b_min`, stopping
-    the first time LCOE ticks back up, and reports whichever step was cheapest.
+    **Takes no costs, and that is the point.** Choosing *which* battery is cheapest needs
+    prices, and the only ones available at build time are frozen. Storing the candidates
+    instead keeps the cache pure dispatch -- valid for every year and every cost scenario,
+    and shareable between anchors -- and lets `argmin_lcoe` choose with the query year's
+    real prices rather than the build's.
 
-    Superseded a design with a longer, fixed 5-rung geometric ladder (to 2.5x b_min) plus a
-    certificate proving nothing further out could win -- the certificate needed a much
-    longer climb purely to prove that negative, for a benefit measured (real profiles,
-    1000 global sites) at under 1% of LCOE either way, so it was dropped along with the
-    proof it existed to support. See BOA_BISECTION_PLAN.md, "battery ladder redesign".
-
-    Uses `coeffs` -- the same frozen anchor costs `build_pixel_frontier` already receives
-    for seed placement, not the query year's real costs, since this runs at build time.
-    That means the chosen battery is anchor-cost-optimal, not necessarily optimal for
-    whatever costs a later query year actually has -- a real (believed small, not
-    re-measured) narrowing versus re-optimizing per year, accepted for the same reason the
-    seed placement itself accepts frozen costs: the magnitudes here are tiny even before
-    this second-order effect.
-
-    `(cov0, sf0)` are `b_min`'s own metrics -- the last probe of the bisection that found
-    it -- so the first (zero-step) candidate costs no extra dispatch.
+    Feasibility holds at every rung: coverage is non-decreasing in battery size and rung 0
+    is `b_min`, so nothing stored here can miss the coverage target.
     """
-    return _battery_ladder_jit(
-        solar,
-        wind,
-        float(s),
-        float(w),
-        float(b_min),
-        float(cov0),
-        float(sf0),
-        coeffs.a_s,
-        coeffs.a_w,
-        coeffs.a_b,
-        coeffs.d0,
-        GAMMA,
-        params.ladder_step_pct,
-        params.ladder_max_span,
+    spans = rung_spans(params)
+    r = spans.shape[0]
+    out_b = np.empty(r, dtype=np.float64)
+    out_cov = np.empty(r, dtype=np.float64)
+    out_sf = np.empty(r, dtype=np.float64)
+    _rung_metrics_jit(
+        solar, wind, float(s), float(w), float(b_min), float(cov0), float(sf0), spans, out_b, out_cov, out_sf
     )
+    return out_b, out_cov, out_sf
 
 
 @dataclass(frozen=True)
@@ -461,10 +462,11 @@ class PixelFrontier:
     carrying CSR offsets.
 
     The padding is deliberate. Patches sit on a shared lattice with fixed spacing, so a
-    wide patch has more points than a narrow one -- roughly 84% of a full-depth slot is
-    padding at the median. It is zero-filled and compresses away, and chunking the cache
-    along `point` keeps a read to one pixel's worth of it. **Do not chunk across the patch
-    axes**: that is what would turn the padding from a storage detail into a query cost.
+    wide patch has more points than a narrow one, and the allocation is sized for the widest
+    the parameters allow -- most of a typical slot is therefore padding. It is zero-filled
+    and compresses away, and chunking the cache along `point` keeps a read to one pixel's
+    worth of it. **Do not chunk across the patch axes**: that is what would turn the padding
+    from a storage detail into a query cost.
     """
 
     status: int
@@ -475,12 +477,17 @@ class PixelFrontier:
     b_coarse: np.ndarray  # (Gc, Gc) float16, rounded toward zero; inf where infeasible
     s_patch: np.ndarray  # (K, P) float32, P = max_patch_points(params)
     w_patch: np.ndarray  # (K, P) float32
-    # LCOE-refined battery per node (battery_ladder's pick), its served fraction and
-    # coverage -- not just b_min. No ladder-rung dimension: the ladder is a build-time
-    # local search that already picked one battery per node, not a set kept for query time.
-    b_patch: np.ndarray  # (K, P, P) float32
-    sf_patch: np.ndarray  # (K, P, P) float64
-    cov_patch: np.ndarray  # (K, P, P) float64 -- reported, never ranked
+    # Dispatch at each stored battery size per node. The trailing axis is the rung: rung 0
+    # is `b_min`, the rest climb to `ladder_max_span * b_min`. Storing the set rather than
+    # a build-time pick is what keeps this array pure physics -- no cost enters it, so it
+    # serves every year, and `argmin_lcoe` chooses the rung with that year's real prices.
+    b_patch: np.ndarray  # (K, P, P, R) float32 -- battery, in baseload-hours
+    # Fraction of annual *energy* delivered. This is the LCOE denominator.
+    energy_served_frac: np.ndarray  # (K, P, P, R) float64
+    # Fraction of *hours* in which demand was fully met. This is the feasibility
+    # constraint, reported but never ranked on -- the two differ, and conflating them is
+    # the inconsistency this rewrite exists to remove.
+    hours_covered_frac: np.ndarray  # (K, P, P, R) float64
     # Coarse-grid index bounds (i0, i1, j0, j1) each patch was snapped to, so the query-time
     # containment certificate can tell exactly which coarse cells are "inside some patch"
     # without re-deriving it from float comparisons against s_patch/w_patch.
@@ -757,10 +764,10 @@ def patch_lattice(
     holds `(b_min, coverage, served_fraction)`, which carry no cost term. Cost enters only
     in choosing the seeds and in the query-time argmin.
 
-    **Resolution stops depending on box width.** Under `patch_box` a fixed 15 points spread
-    over a variable box gives 1.40 to 2.33 points per coarse cell on real pixels, so the
-    widest patches -- the ones bracketing the least certain seeds -- are resolved most
-    coarsely. Here every patch is resolved identically.
+    **Resolution stops depending on box width.** Under `patch_box` a fixed point count
+    spread over a variable box resolves the widest patches most coarsely -- and those are
+    exactly the ones bracketing the least certain seeds, since the box widens with the
+    seed's own coordinate. Here the spacing is constant, so every patch is resolved alike.
 
     The extent still snaps outward to whole coarse cells, which the containment certificate
     requires: a cell that is neither densely swept nor bounded is a hole nothing detects.
@@ -825,12 +832,13 @@ def build_pixel_frontier(
     # filled in place: an early return simply hands back the zeros, which is the right
     # content for `n_patches = 0`. `patch_points` stays zero there too, so a consumer that
     # honours it sees an empty patch rather than a grid of free designs.
+    rungs = params.ladder_rungs
     patches: dict[str, np.ndarray] = {
         "s_patch": np.zeros((k, pmax), dtype=np.float32),
         "w_patch": np.zeros((k, pmax), dtype=np.float32),
-        "b_patch": np.zeros((k, pmax, pmax), dtype=np.float32),
-        "sf_patch": np.zeros((k, pmax, pmax), dtype=np.float64),
-        "cov_patch": np.zeros((k, pmax, pmax), dtype=np.float64),
+        "b_patch": np.zeros((k, pmax, pmax, rungs), dtype=np.float32),
+        "energy_served_frac": np.zeros((k, pmax, pmax, rungs), dtype=np.float64),
+        "hours_covered_frac": np.zeros((k, pmax, pmax, rungs), dtype=np.float64),
         "patch_bounds": np.zeros((k, 4), dtype=np.int32),
         "patch_points": np.zeros((k, 2), dtype=np.int32),
     }
@@ -922,14 +930,18 @@ def build_pixel_frontier(
                         node_hint = b_min
                         if b == 0:
                             row_hint = b_min
-                    b_best, cov_best, sf_best = battery_ladder(
-                        solar, wind, float(s_vals[a]), float(w_vals[b]), b_min, cov, sf, anchor, params
+                    b_r, cov_r, sf_r = battery_rungs(
+                        solar, wind, float(s_vals[a]), float(w_vals[b]), b_min, cov, sf, params
                     )
                 else:
-                    b_best, cov_best, sf_best = b_min, 0.0, 0.0
-                patches["b_patch"][slot, a, b] = b_best
-                patches["sf_patch"][slot, a, b] = sf_best
-                patches["cov_patch"][slot, a, b] = cov_best
+                    # Infeasible node: every rung carries the infinite b_min, and a zero
+                    # served fraction masks it out of any argmin.
+                    b_r = np.full(params.ladder_rungs, b_min, dtype=np.float64)
+                    cov_r = np.zeros(params.ladder_rungs)
+                    sf_r = np.zeros(params.ladder_rungs)
+                patches["b_patch"][slot, a, b] = b_r
+                patches["energy_served_frac"][slot, a, b] = sf_r
+                patches["hours_covered_frac"][slot, a, b] = cov_r
 
     return PixelFrontier(status=STATUS_OK, n_patches=len(seeds), box_widenings=widenings, **axes, **patches)
 
@@ -1021,15 +1033,18 @@ def argmin_lcoe(frontier: PixelFrontier, coeffs: CostCoefficients) -> Optimum:
     The cheapest design among everything a build cached for this pixel, under this year's
     real costs, plus the containment certificate.
 
-    No dispatch, no bisection, no coverage check: every cached node already sits at or
-    above its own `b_min` (`battery_ladder` only ever climbs upward), so feasibility holds
-    by construction. Searches every populated patch slot -- not just the anchor's favourite
-    -- because a query year's real costs can promote a basin the frozen anchor ranked
-    second.
+    No dispatch, no bisection, no coverage check: every cached rung sits at or above its
+    node's own `b_min`, and coverage is non-decreasing in battery size, so feasibility
+    holds by construction.
+
+    Searches every populated patch slot **and every rung**, not just the anchor's
+    favourite. Both matter for the same reason: the build's frozen anchor costs are not
+    this year's, so a year's real prices can promote a basin the anchor ranked second, and
+    can equally prefer a larger battery than the anchor would have chosen.
     """
     a_s, a_w, a_b, d0 = coeffs.a_s, coeffs.a_w, coeffs.a_b, coeffs.d0
     best_lcoe = np.inf
-    best: tuple[int, int, int, float, float, float] | None = None
+    best: tuple[int, int, int, int, float, float, float] | None = None
 
     for k in range(frontier.n_patches):
         # Slice to the slot's real extent before anything else. Padding is zeros, which
@@ -1040,20 +1055,23 @@ def argmin_lcoe(frontier: PixelFrontier, coeffs: CostCoefficients) -> Optimum:
         s_vals = frontier.s_patch[k, :n_s].astype(np.float64)
         w_vals = frontier.w_patch[k, :n_w].astype(np.float64)
         b = frontier.b_patch[k, :n_s, :n_w].astype(np.float64)
-        sf = frontier.sf_patch[k, :n_s, :n_w]
+        sf = frontier.energy_served_frac[k, :n_s, :n_w]
+        # Broadcast the axes against the trailing rung axis: (n_s, 1, 1) x (1, n_w, 1) x
+        # (n_s, n_w, R). Picking the rung here, rather than at build time, is what lets the
+        # battery be chosen under this year's real prices instead of a frozen anchor's.
         with np.errstate(divide="ignore", invalid="ignore"):
-            lcoe = (a_s * s_vals[:, None] + a_w * w_vals[None, :] + a_b * np.power(b, GAMMA)) / (d0 * sf)
+            lcoe = (a_s * s_vals[:, None, None] + a_w * w_vals[None, :, None] + a_b * np.power(b, GAMMA)) / (d0 * sf)
         lcoe = np.where(np.isfinite(b) & (sf > 0), lcoe, np.inf)
-        i, j = (int(x) for x in np.unravel_index(int(np.argmin(lcoe)), lcoe.shape))
-        val = float(lcoe[i, j])
+        i, j, r = (int(x) for x in np.unravel_index(int(np.argmin(lcoe)), lcoe.shape))
+        val = float(lcoe[i, j, r])
         if val < best_lcoe:
             best_lcoe = val
-            best = (k, i, j, float(s_vals[i]), float(w_vals[j]), float(b[i, j]))
+            best = (k, i, j, r, float(s_vals[i]), float(w_vals[j]), float(b[i, j, r]))
 
     if best is None:
         raise ValueError("argmin_lcoe called on a frontier with no populated patches (status != STATUS_OK)")
-    k, i, j, s, w, b_val = best
-    sf_val = float(frontier.sf_patch[k, i, j])
+    k, i, j, r, s, w, b_val = best
+    sf_val = float(frontier.energy_served_frac[k, i, j, r])
 
     return Optimum(
         lcoe=best_lcoe,

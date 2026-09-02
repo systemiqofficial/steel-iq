@@ -48,8 +48,8 @@ def _make_cache(npts=4, region="EU", params=PARAMS):
         s_patch=rng.uniform(0, 8, (npts, k, gp)).astype(np.float32),
         w_patch=rng.uniform(0, 6, (npts, k, gp)).astype(np.float32),
         b_patch=rng.uniform(0.1, 30, (npts, k, gp, gp, r)).astype(np.float32),
-        sf_patch=rng.uniform(0.85, 1.0, (npts, k, gp, gp, r)),
-        cov_patch=rng.uniform(0.85, 1.0, (npts, k, gp, gp, r)),
+        energy_served_frac=rng.uniform(0.85, 1.0, (npts, k, gp, gp, r)),
+        hours_covered_frac=rng.uniform(0.85, 1.0, (npts, k, gp, gp, r)),
         sf_inf=rng.uniform(0.95, 1.0, (npts, k, gp, gp)),
         status=np.ones(npts, dtype=np.int8),
         box_widenings=np.zeros(npts, dtype=np.int8),
@@ -106,8 +106,8 @@ def test_cache_path_carries_no_sampling_tokens(tmp_path):
 
 def test_v3_round_trips(tmp_path):
     """
-    Every array survives write/read with its shape and semantics. `sf_patch` and
-    `cov_patch` are stored as uint16 fixed-point, so they come back within the
+    Every array survives write/read with its shape and semantics. `energy_served_frac` and
+    `hours_covered_frac` are stored as uint16 fixed-point, so they come back within the
     documented 1.5e-5 quantisation error rather than exactly.
     """
     cache = _make_cache()
@@ -123,7 +123,7 @@ def test_v3_round_trips(tmp_path):
     np.testing.assert_array_equal(loaded.n_patches, cache.n_patches)
     np.testing.assert_array_equal(loaded.b_coarse, cache.b_coarse)
     np.testing.assert_allclose(loaded.b_patch, cache.b_patch, rtol=1e-6)
-    np.testing.assert_allclose(loaded.sf_patch, cache.sf_patch, atol=2e-5)
+    np.testing.assert_allclose(loaded.energy_served_frac, cache.energy_served_frac, atol=2e-5)
     np.testing.assert_allclose(loaded.sf_inf, cache.sf_inf, atol=2e-5)
 
 

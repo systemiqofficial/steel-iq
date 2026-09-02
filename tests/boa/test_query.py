@@ -188,21 +188,23 @@ def test_argmin_matches_a_brute_force_scan_of_the_cached_grids(frontier, coeffs)
         # The slot's real extent, not the padded allocation and not `patch_grid`: patches
         # sit on a shared lattice, so their point count varies with box width.
         n_s, n_w = (int(x) for x in frontier.patch_points[k])
+        n_r = frontier.b_patch.shape[-1]
         for i in range(n_s):
             for j in range(n_w):
-                # float64 throughout, matching `argmin_lcoe`. The arrays are float32 and
-                # `np.float32 ** float` stays float32 (~2.4e-8 relative), which is coarser
-                # than this test's 1e-9 tolerance -- so without the cast this compares
-                # float precision rather than the two search algorithms.
-                s = np.float64(frontier.s_patch[k, i])
-                w = np.float64(frontier.w_patch[k, j])
-                b = np.float64(frontier.b_patch[k, i, j])
-                sf = np.float64(frontier.sf_patch[k, i, j])
-                if not np.isfinite(b) or sf <= 0:
-                    continue
-                value = (coeffs.a_s * s + coeffs.a_w * w + coeffs.a_b * b**GAMMA) / (coeffs.d0 * sf)
-                if value < best:
-                    best, best_design = value, (s, w, b)
+                for r in range(n_r):
+                    # float64 throughout, matching `argmin_lcoe`. The arrays are float32 and
+                    # `np.float32 ** float` stays float32 (~2.4e-8 relative), which is coarser
+                    # than this test's 1e-9 tolerance -- so without the cast this compares
+                    # float precision rather than the two search algorithms.
+                    s = np.float64(frontier.s_patch[k, i])
+                    w = np.float64(frontier.w_patch[k, j])
+                    b = np.float64(frontier.b_patch[k, i, j, r])
+                    sf = np.float64(frontier.energy_served_frac[k, i, j, r])
+                    if not np.isfinite(b) or sf <= 0:
+                        continue
+                    value = (coeffs.a_s * s + coeffs.a_w * w + coeffs.a_b * b**GAMMA) / (coeffs.d0 * sf)
+                    if value < best:
+                        best, best_design = value, (s, w, b)
 
     assert optimum.lcoe == pytest.approx(best, rel=1e-9)
     assert (optimum.solar, optimum.wind, optimum.battery) == pytest.approx(best_design, rel=1e-9)
@@ -235,8 +237,8 @@ def test_winner_can_come_from_the_second_basin_at_a_different_cost_year():
     # Two patches: the first is wind-heavy, the second solar-heavy.
     s_patch = np.array([[0.1, 0.2, 0.3], [4.0, 5.0, 6.0]])
     w_patch = np.array([[4.0, 5.0, 6.0], [0.1, 0.2, 0.3]])
-    b_patch = np.full((2, gp, gp), 5.0)
-    sf_patch = np.full((2, gp, gp), 0.98)
+    b_patch = np.full((2, gp, gp, 1), 5.0)
+    served = np.full((2, gp, gp, 1), 0.98)
 
     frontier = PixelFrontier(
         s_coarse=np.linspace(0, 8, gc),
@@ -246,8 +248,8 @@ def test_winner_can_come_from_the_second_basin_at_a_different_cost_year():
         s_patch=s_patch,
         w_patch=w_patch,
         b_patch=b_patch,
-        sf_patch=sf_patch,
-        cov_patch=np.full((2, gp, gp), 0.95),
+        energy_served_frac=served,
+        hours_covered_frac=np.full((2, gp, gp, 1), 0.95),
         # Both patches declared to span the whole coarse grid, so nothing is "outside" and
         # the containment certificate is trivially satisfied -- this test is about which
         # patch wins, not the certificate (see
@@ -292,7 +294,7 @@ def test_battery_optimum_can_sit_above_b_min(profiles, frontier, coeffs):
     """
     The headline consequence of dividing by served fraction: buying more battery
     than feasibility demands can still lower LCOE, because it raises the denominator.
-    `battery_ladder` is what makes the search side of this reachable at all -- checked
+    The stored rungs are what make the search side of this reachable at all -- checked
     directly in `test_battery_ladder.py`; this test only holds the resulting invariant
     at the query layer, that the reported optimum never sits below b_min.
     """
@@ -346,9 +348,9 @@ def test_certificate_passes_when_the_outside_region_is_provably_infeasible():
         n_patches=1,
         s_patch=np.array([[1.0, 2.0, 3.0]]),
         w_patch=np.array([[1.0, 2.0, 3.0]]),
-        b_patch=np.full((1, gp, gp), 5.0),
-        sf_patch=np.full((1, gp, gp), 0.98),
-        cov_patch=np.full((1, gp, gp), 0.95),
+        b_patch=np.full((1, gp, gp, 1), 5.0),
+        energy_served_frac=np.full((1, gp, gp, 1), 0.98),
+        hours_covered_frac=np.full((1, gp, gp, 1), 0.95),
         patch_bounds=np.array([[0, 2, 0, 2]], dtype=np.int32),
         patch_points=np.array([[gp, gp]], dtype=np.int32),
         status=STATUS_OK,
@@ -404,7 +406,7 @@ def _frontier_with_cheapest_node(bounds, ci, cj, gp=3):
     from boa.model.bisection import PixelFrontier, STATUS_OK
 
     gc = PARAMS.coarse_grid
-    b = np.full((1, gp, gp), 5.0)
+    b = np.full((1, gp, gp, 1), 5.0)
     b[0, ci, cj] = 1.0
     return PixelFrontier(
         s_coarse=np.linspace(0, 8, gc),
@@ -414,8 +416,8 @@ def _frontier_with_cheapest_node(bounds, ci, cj, gp=3):
         s_patch=np.array([np.linspace(1.0, 3.0, gp)]),
         w_patch=np.array([np.linspace(1.0, 3.0, gp)]),
         b_patch=b,
-        sf_patch=np.full((1, gp, gp), 1.0),
-        cov_patch=np.full((1, gp, gp), 0.95),
+        energy_served_frac=np.full((1, gp, gp, 1), 1.0),
+        hours_covered_frac=np.full((1, gp, gp, 1), 0.95),
         patch_bounds=np.array([bounds], dtype=np.int32),
         patch_points=np.array([[gp, gp]], dtype=np.int32),
         status=STATUS_OK,
@@ -439,8 +441,8 @@ def test_padding_beyond_a_slot_extent_cannot_win_the_argmin():
     from boa.model.bisection import PixelFrontier, STATUS_OK
 
     gc, real, alloc = PARAMS.coarse_grid, 3, 6
-    b = np.full((1, alloc, alloc), 5.0)
-    sf = np.full((1, alloc, alloc), 0.5)
+    b = np.full((1, alloc, alloc, 1), 5.0)
+    sf = np.full((1, alloc, alloc, 1), 0.5)
     b[0, real:, :] = b[0, :, real:] = 1e-6  # would price as almost free
     sf[0, real:, :] = sf[0, :, real:] = 1.0
 
@@ -452,8 +454,8 @@ def test_padding_beyond_a_slot_extent_cannot_win_the_argmin():
         s_patch=np.array([np.linspace(1.0, 6.0, alloc)]),
         w_patch=np.array([np.linspace(1.0, 6.0, alloc)]),
         b_patch=b,
-        sf_patch=sf,
-        cov_patch=np.full((1, alloc, alloc), 0.95),
+        energy_served_frac=sf,
+        hours_covered_frac=np.full((1, alloc, alloc, 1), 0.95),
         patch_bounds=np.array([[0, 2, 0, 2]], dtype=np.int32),
         patch_points=np.array([[real, real]], dtype=np.int32),
         status=STATUS_OK,
@@ -469,9 +471,9 @@ def test_padding_beyond_a_slot_extent_cannot_win_the_argmin():
 def test_argmin_on_an_interior_patch_edge_is_flagged_truncated():
     """
     The objective was still improving where the dense sweep stopped, so the reported
-    design may be an artefact of the patch's extent rather than a real optimum. Nothing
-    else reports this: `patch_certified` is false far more often than truncation occurs
-    (24-35% certified against ~1.5% truncated on real pixels), so it cannot stand in.
+    design may be an artefact of the patch's extent rather than a real optimum. Nothing else
+    reports this: `patch_certified` is false whenever *any* outside cell fails to be bounded
+    away, which is a far broader condition, so it cannot stand in.
     """
     optimum = argmin_lcoe(_frontier_with_cheapest_node([2, 4, 2, 4], 2, 1), _EDGE_COEFFS)
     assert optimum.argmin_truncated
@@ -480,9 +482,8 @@ def test_argmin_on_an_interior_patch_edge_is_flagged_truncated():
 def test_argmin_against_a_zero_axis_is_a_corner_not_truncation():
     """
     A wind-only or solar-only optimum sits at `s = 0` / `w = 0` legitimately -- there is
-    nothing below zero it could have missed. This is the common case by a wide margin
-    (~18% of real pixels against ~1.5% genuinely truncated), so flagging it would bury
-    the signal it is meant to carry.
+    nothing below zero it could have missed. Corner solutions are far more common than real
+    truncation, so flagging them would bury the signal this is meant to carry.
     """
     optimum = argmin_lcoe(_frontier_with_cheapest_node([0, 2, 0, 2], 0, 1), _EDGE_COEFFS)
     assert not optimum.argmin_truncated

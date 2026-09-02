@@ -7,7 +7,7 @@ current-production-equivalent optimal (s, w) via the existing S2 grid search
 ladder yet), then compute LCOE(b) densely at that (s, w) to locate the true
 argmin, and check whether a 5-rung ladder spanning 2.5x b_min would have
 found it. Per the plan this is a STOP FOR REVIEW step -- it does not
-implement `battery_ladder`.
+implement a battery ladder.
 
 Cost coefficients are the real EU + Schengen project figures already cited
 in the plan's "S2 measurements" (solar 1115.52, wind 1821.12 USD/kW, battery
@@ -135,7 +135,7 @@ def _argmin_over_frontier(frontier, a_s: float, a_w: float, a_b: float, d0: floa
         s_vals = frontier.s_patch[slot].astype(np.float64)
         w_vals = frontier.w_patch[slot].astype(np.float64)
         b = frontier.b_patch[slot, :, :, 0].astype(np.float64)
-        sf = frontier.sf_patch[slot, :, :, 0]
+        sf = frontier.energy_served_frac[slot, :, :, 0]
         with np.errstate(divide="ignore", invalid="ignore"):
             lcoe = (a_s * s_vals[:, None] + a_w * w_vals[None, :] + a_b * np.power(b, GAMMA)) / (d0 * sf)
         lcoe = np.where(np.isfinite(b) & (sf > 0), lcoe, np.inf)

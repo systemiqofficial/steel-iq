@@ -311,7 +311,7 @@ def test_build_is_deterministic(profiles, anchor_costs):
     a = build_pixel_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, anchor_costs)
     b = build_pixel_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, anchor_costs)
     np.testing.assert_array_equal(a.b_patch, b.b_patch)
-    np.testing.assert_array_equal(a.sf_patch, b.sf_patch)
+    np.testing.assert_array_equal(a.energy_served_frac, b.energy_served_frac)
 
 
 def test_cross_pixel_hint_does_not_change_the_result(profiles, anchor_costs):
