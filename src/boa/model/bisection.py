@@ -84,6 +84,12 @@ class SearchParams:
     patch_grid: int = 15  # nodes per axis, per patch; cost scales with the square
     patch_halfwidth: float = 0.45  # patch spans seed x (1 +/- this), floored at one
     #                                lattice step, since that is the seed's own resolution
+    lattice_refinement: int = 2  # `patch_lattice` only: lattice points per coarse cell.
+    #                              Must be an integer so lattice points land on coarse-cell
+    #                              boundaries, which is what makes two patches on one pixel
+    #                              share points exactly. TODO: settle alongside `patch_grid`
+    #                              in the grid-configuration sweep; 2 keeps a median-width
+    #                              patch near today's node count.
     seed_tolerance: float = 0.05  # coarse cells within 5% of the best also get a patch
     max_seeds: int = 3  # cap on patches per pixel; bounds worst-case cache size
 
@@ -668,6 +674,26 @@ def patch_box(
     Snapping outward also guarantees `i0 <= i <= i1`: the seed sits strictly inside the
     un-snapped interval, and snapping only ever widens.
     """
+    i0, i1, j0, j1 = patch_bounds_for_seed(s_coarse, w_coarse, i, j, params)
+    s_vals = np.linspace(float(s_coarse[i0]), float(s_coarse[i1]), params.patch_grid)
+    w_vals = np.linspace(float(w_coarse[j0]), float(w_coarse[j1]), params.patch_grid)
+    return s_vals, w_vals, (i0, i1, j0, j1)
+
+
+def patch_bounds_for_seed(
+    s_coarse: np.ndarray,
+    w_coarse: np.ndarray,
+    i: int,
+    j: int,
+    params: SearchParams,
+) -> tuple[int, int, int, int]:
+    """
+    The coarse cells a seed's patch covers, as `(i0, i1, j0, j1)`.
+
+    Split out of `patch_box` because `patch_lattice` needs the same extent under a
+    different interior spacing, and the extent rule is the part that must not drift
+    between them.
+    """
     ds = float(s_coarse[1] - s_coarse[0]) * params.coarse_stride
     dw = float(w_coarse[1] - w_coarse[0]) * params.coarse_stride
     half_s = max(params.patch_halfwidth * float(s_coarse[i]), ds)
@@ -677,9 +703,45 @@ def patch_box(
     i1 = min(len(s_coarse) - 1, int(np.searchsorted(s_coarse, s_coarse[i] + half_s, side="left")))
     j0 = max(0, int(np.searchsorted(w_coarse, w_coarse[j] - half_w, side="right")) - 1)
     j1 = min(len(w_coarse) - 1, int(np.searchsorted(w_coarse, w_coarse[j] + half_w, side="left")))
+    return i0, i1, j0, j1
 
-    s_vals = np.linspace(float(s_coarse[i0]), float(s_coarse[i1]), params.patch_grid)
-    w_vals = np.linspace(float(w_coarse[j0]), float(w_coarse[j1]), params.patch_grid)
+
+def patch_lattice(
+    s_coarse: np.ndarray,
+    w_coarse: np.ndarray,
+    i: int,
+    j: int,
+    params: SearchParams,
+) -> tuple[np.ndarray, np.ndarray, tuple[int, int, int, int]]:
+    """
+    The dense sub-grid around seed `(i, j)`, on a lattice shared by the whole pixel.
+
+    Same extent as `patch_box`, different interior: spacing is fixed at one coarse cell
+    divided by `lattice_refinement`, so the point *count* varies with the box width
+    instead of the *spacing* varying. Two consequences, and both are the point:
+
+    **Patches on one pixel share points exactly.** Every value here is an integer multiple
+    of `d / R` where `d` is the coarse spacing, because the box edges are coarse nodes and
+    `R` is an integer. So a node computed for one anchor's patch is reusable by another's
+    wherever the two overlap -- and reuse is exact, not approximate, because a patch node
+    holds `(b_min, coverage, served_fraction)`, which carry no cost term. Cost enters only
+    in choosing the seeds and in the query-time argmin.
+
+    **Resolution stops depending on box width.** Under `patch_box` a fixed 15 points spread
+    over a variable box gives 1.40 to 2.33 points per coarse cell on real pixels, so the
+    widest patches -- the ones bracketing the least certain seeds -- are resolved most
+    coarsely. Here every patch is resolved identically.
+
+    The extent still snaps outward to whole coarse cells, which the containment certificate
+    requires: a cell that is neither densely swept nor bounded is a hole nothing detects.
+    """
+    if params.lattice_refinement < 1:
+        raise ValueError(f"lattice_refinement must be >= 1, got {params.lattice_refinement}")
+
+    i0, i1, j0, j1 = patch_bounds_for_seed(s_coarse, w_coarse, i, j, params)
+    r = params.lattice_refinement
+    s_vals = np.linspace(float(s_coarse[i0]), float(s_coarse[i1]), (i1 - i0) * r + 1)
+    w_vals = np.linspace(float(w_coarse[j0]), float(w_coarse[j1]), (j1 - j0) * r + 1)
     return s_vals, w_vals, (i0, i1, j0, j1)
 
 
