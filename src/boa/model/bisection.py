@@ -454,9 +454,17 @@ class PixelFrontier:
     query year's prices -- so a frontier serves every investment year and every cost
     scenario unchanged.
 
-    Patch arrays are always allocated at the full `max_seeds` depth; only the first
-    `n_patches` slots hold real values. Fixed shape is what lets the region cache index
-    directly instead of carrying CSR offsets.
+    Patch arrays are always allocated at the full `max_seeds` depth and at the widest
+    patch `SearchParams` can produce (`max_patch_points`); only the first `n_patches`
+    slots, and within each slot only the first `patch_points[slot]` rows and columns, hold
+    real values. Fixed shape is what lets the region cache index directly instead of
+    carrying CSR offsets.
+
+    The padding is deliberate. Patches sit on a shared lattice with fixed spacing, so a
+    wide patch has more points than a narrow one -- roughly 84% of a full-depth slot is
+    padding at the median. It is zero-filled and compresses away, and chunking the cache
+    along `point` keeps a read to one pixel's worth of it. **Do not chunk across the patch
+    axes**: that is what would turn the padding from a storage detail into a query cost.
     """
 
     status: int
@@ -465,18 +473,22 @@ class PixelFrontier:
     s_coarse: np.ndarray  # (Gc,) float32 -- the box axes
     w_coarse: np.ndarray  # (Gc,) float32
     b_coarse: np.ndarray  # (Gc, Gc) float16, rounded toward zero; inf where infeasible
-    s_patch: np.ndarray  # (K, Gp) float32
-    w_patch: np.ndarray  # (K, Gp) float32
+    s_patch: np.ndarray  # (K, P) float32, P = max_patch_points(params)
+    w_patch: np.ndarray  # (K, P) float32
     # LCOE-refined battery per node (battery_ladder's pick), its served fraction and
     # coverage -- not just b_min. No ladder-rung dimension: the ladder is a build-time
     # local search that already picked one battery per node, not a set kept for query time.
-    b_patch: np.ndarray  # (K, Gp, Gp) float32
-    sf_patch: np.ndarray  # (K, Gp, Gp) float64
-    cov_patch: np.ndarray  # (K, Gp, Gp) float64 -- reported, never ranked
+    b_patch: np.ndarray  # (K, P, P) float32
+    sf_patch: np.ndarray  # (K, P, P) float64
+    cov_patch: np.ndarray  # (K, P, P) float64 -- reported, never ranked
     # Coarse-grid index bounds (i0, i1, j0, j1) each patch was snapped to, so the query-time
     # containment certificate can tell exactly which coarse cells are "inside some patch"
     # without re-deriving it from float comparisons against s_patch/w_patch.
     patch_bounds: np.ndarray  # (K, 4) int32
+    # Real extent of each slot, as (n_s, n_w). Everything beyond it is padding, and every
+    # consumer must mask it: an unmasked zero reads as a free design and would win the
+    # argmin outright.
+    patch_points: np.ndarray  # (K, 2) int32
 
 
 def search_box(solar: np.ndarray, wind: np.ndarray, params: SearchParams) -> tuple[float, float]:
@@ -706,6 +718,24 @@ def patch_bounds_for_seed(
     return i0, i1, j0, j1
 
 
+def max_patch_points(params: SearchParams) -> int:
+    """
+    Widest lattice patch these parameters can produce, in points per axis.
+
+    Exact rather than a cap or a guess, because `patch_bounds_for_seed` is scale-invariant:
+    the half-width is `max(patch_halfwidth * s_coarse[i], coarse_stride * ds)` and
+    `s_coarse[i] = i * ds`, so the span in coarse cells depends only on the seed's index,
+    never on the axis extent. Evaluating every index therefore gives the true maximum over
+    all pixels, which is what the padded arrays must be sized to.
+    """
+    axis = np.arange(params.coarse_grid, dtype=np.float64)
+    span = 0
+    for i in range(params.coarse_grid):
+        i0, i1, _, _ = patch_bounds_for_seed(axis, axis, i, i, params)
+        span = max(span, i1 - i0)
+    return span * params.lattice_refinement + 1
+
+
 def patch_lattice(
     s_coarse: np.ndarray,
     w_coarse: np.ndarray,
@@ -789,16 +819,20 @@ def build_pixel_frontier(
     No cost year, cost scenario or baseload is read anywhere in here, which is what makes
     `status` year-invariant -- the property `lcoe_promotion` requires.
     """
-    gc, gp, k = params.coarse_grid, params.patch_grid, params.max_seeds
-    # Allocated once at full depth and filled in place: an early return simply hands back
-    # the zeros, which is the right content for `n_patches = 0`.
+    gc, k = params.coarse_grid, params.max_seeds
+    pmax = max_patch_points(params)
+    # Allocated once at full depth and at the widest patch the parameters allow, then
+    # filled in place: an early return simply hands back the zeros, which is the right
+    # content for `n_patches = 0`. `patch_points` stays zero there too, so a consumer that
+    # honours it sees an empty patch rather than a grid of free designs.
     patches: dict[str, np.ndarray] = {
-        "s_patch": np.zeros((k, gp), dtype=np.float32),
-        "w_patch": np.zeros((k, gp), dtype=np.float32),
-        "b_patch": np.zeros((k, gp, gp), dtype=np.float32),
-        "sf_patch": np.zeros((k, gp, gp), dtype=np.float64),
-        "cov_patch": np.zeros((k, gp, gp), dtype=np.float64),
+        "s_patch": np.zeros((k, pmax), dtype=np.float32),
+        "w_patch": np.zeros((k, pmax), dtype=np.float32),
+        "b_patch": np.zeros((k, pmax, pmax), dtype=np.float32),
+        "sf_patch": np.zeros((k, pmax, pmax), dtype=np.float64),
+        "cov_patch": np.zeros((k, pmax, pmax), dtype=np.float64),
         "patch_bounds": np.zeros((k, 4), dtype=np.int32),
+        "patch_points": np.zeros((k, 2), dtype=np.int32),
     }
 
     s_max, w_max = search_box(solar, wind, params)
@@ -872,14 +906,16 @@ def build_pixel_frontier(
         return PixelFrontier(status=STATUS_NO_OPTIMUM, n_patches=0, box_widenings=widenings, **axes, **patches)
 
     for slot, (i, j) in enumerate(seeds):
-        s_vals, w_vals, bounds = patch_box(s_coarse, w_coarse, i, j, params)
-        patches["s_patch"][slot] = s_vals
-        patches["w_patch"][slot] = w_vals
+        s_vals, w_vals, bounds = patch_lattice(s_coarse, w_coarse, i, j, params)
+        n_s, n_w = len(s_vals), len(w_vals)
+        patches["s_patch"][slot, :n_s] = s_vals
+        patches["w_patch"][slot, :n_w] = w_vals
         patches["patch_bounds"][slot] = bounds
+        patches["patch_points"][slot] = (n_s, n_w)
         row_hint = hint
-        for a in range(gp):
+        for a in range(n_s):
             node_hint = row_hint
-            for b in range(gp):
+            for b in range(n_w):
                 b_min, cov, sf = b_min_at(solar, wind, s_vals[a], w_vals[b], p, params, node_hint)
                 if np.isfinite(b_min):
                     if b_min > 0.0:
@@ -950,10 +986,11 @@ def _argmin_truncated(frontier: PixelFrontier, slot: int, i: int, j: int) -> boo
         `box_widenings` already records and which widening already had its chance to fix.
     """
     gc = frontier.b_coarse.shape[0]
-    gp = frontier.s_patch.shape[1]
+    # The slot's real extent, not the padded allocation: the last *valid* node is the edge.
+    n_s, n_w = (int(x) for x in frontier.patch_points[slot])
     i0, i1, j0, j1 = (int(x) for x in frontier.patch_bounds[slot])
     return bool(
-        (i == 0 and i0 > 0) or (i == gp - 1 and i1 < gc - 1) or (j == 0 and j0 > 0) or (j == gp - 1 and j1 < gc - 1)
+        (i == 0 and i0 > 0) or (i == n_s - 1 and i1 < gc - 1) or (j == 0 and j0 > 0) or (j == n_w - 1 and j1 < gc - 1)
     )
 
 
@@ -995,10 +1032,15 @@ def argmin_lcoe(frontier: PixelFrontier, coeffs: CostCoefficients) -> Optimum:
     best: tuple[int, int, int, float, float, float] | None = None
 
     for k in range(frontier.n_patches):
-        s_vals = frontier.s_patch[k].astype(np.float64)
-        w_vals = frontier.w_patch[k].astype(np.float64)
-        b = frontier.b_patch[k].astype(np.float64)
-        sf = frontier.sf_patch[k]
+        # Slice to the slot's real extent before anything else. Padding is zeros, which
+        # would price as a free design and win the argmin outright.
+        n_s, n_w = (int(x) for x in frontier.patch_points[k])
+        if n_s == 0 or n_w == 0:
+            continue
+        s_vals = frontier.s_patch[k, :n_s].astype(np.float64)
+        w_vals = frontier.w_patch[k, :n_w].astype(np.float64)
+        b = frontier.b_patch[k, :n_s, :n_w].astype(np.float64)
+        sf = frontier.sf_patch[k, :n_s, :n_w]
         with np.errstate(divide="ignore", invalid="ignore"):
             lcoe = (a_s * s_vals[:, None] + a_w * w_vals[None, :] + a_b * np.power(b, GAMMA)) / (d0 * sf)
         lcoe = np.where(np.isfinite(b) & (sf > 0), lcoe, np.inf)

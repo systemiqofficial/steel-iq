@@ -185,12 +185,19 @@ def test_argmin_matches_a_brute_force_scan_of_the_cached_grids(frontier, coeffs)
     best = np.inf
     best_design = None
     for k in range(frontier.n_patches):
-        for i in range(PARAMS.patch_grid):
-            for j in range(PARAMS.patch_grid):
-                s = frontier.s_patch[k, i]
-                w = frontier.w_patch[k, j]
-                b = frontier.b_patch[k, i, j]
-                sf = frontier.sf_patch[k, i, j]
+        # The slot's real extent, not the padded allocation and not `patch_grid`: patches
+        # sit on a shared lattice, so their point count varies with box width.
+        n_s, n_w = (int(x) for x in frontier.patch_points[k])
+        for i in range(n_s):
+            for j in range(n_w):
+                # float64 throughout, matching `argmin_lcoe`. The arrays are float32 and
+                # `np.float32 ** float` stays float32 (~2.4e-8 relative), which is coarser
+                # than this test's 1e-9 tolerance -- so without the cast this compares
+                # float precision rather than the two search algorithms.
+                s = np.float64(frontier.s_patch[k, i])
+                w = np.float64(frontier.w_patch[k, j])
+                b = np.float64(frontier.b_patch[k, i, j])
+                sf = np.float64(frontier.sf_patch[k, i, j])
                 if not np.isfinite(b) or sf <= 0:
                     continue
                 value = (coeffs.a_s * s + coeffs.a_w * w + coeffs.a_b * b**GAMMA) / (coeffs.d0 * sf)
@@ -246,6 +253,7 @@ def test_winner_can_come_from_the_second_basin_at_a_different_cost_year():
         # patch wins, not the certificate (see
         # test_coarse_certificate_detects_an_optimum_outside_the_patch for that).
         patch_bounds=np.array([[0, gc - 1, 0, gc - 1], [0, gc - 1, 0, gc - 1]], dtype=np.int32),
+        patch_points=np.array([[gp, gp], [gp, gp]], dtype=np.int32),
         status=STATUS_OK,
         box_widenings=0,
     )
@@ -342,6 +350,7 @@ def test_certificate_passes_when_the_outside_region_is_provably_infeasible():
         sf_patch=np.full((1, gp, gp), 0.98),
         cov_patch=np.full((1, gp, gp), 0.95),
         patch_bounds=np.array([[0, 2, 0, 2]], dtype=np.int32),
+        patch_points=np.array([[gp, gp]], dtype=np.int32),
         status=STATUS_OK,
         box_widenings=0,
     )
@@ -408,12 +417,53 @@ def _frontier_with_cheapest_node(bounds, ci, cj, gp=3):
         sf_patch=np.full((1, gp, gp), 1.0),
         cov_patch=np.full((1, gp, gp), 0.95),
         patch_bounds=np.array([bounds], dtype=np.int32),
+        patch_points=np.array([[gp, gp]], dtype=np.int32),
         status=STATUS_OK,
         box_widenings=0,
     )
 
 
 _EDGE_COEFFS = CostCoefficients(a_s=0.0, a_w=0.0, a_b=1.0, d0=1.0)
+
+
+def test_padding_beyond_a_slot_extent_cannot_win_the_argmin():
+    """
+    Patches are padded to the widest box `SearchParams` can produce, so most of a slot is
+    not real. Consumers must mask it via `patch_points`.
+
+    The padding is zero-filled in practice, and zeros happen to be excluded anyway by the
+    `sf > 0` guard -- which makes this easy to get wrong and never notice. So the padding
+    here is filled with an *attractive* design instead: a near-free battery at full served
+    fraction, which would win outright if the extent were not respected.
+    """
+    from boa.model.bisection import PixelFrontier, STATUS_OK
+
+    gc, real, alloc = PARAMS.coarse_grid, 3, 6
+    b = np.full((1, alloc, alloc), 5.0)
+    sf = np.full((1, alloc, alloc), 0.5)
+    b[0, real:, :] = b[0, :, real:] = 1e-6  # would price as almost free
+    sf[0, real:, :] = sf[0, :, real:] = 1.0
+
+    frontier = PixelFrontier(
+        s_coarse=np.linspace(0, 8, gc),
+        w_coarse=np.linspace(0, 8, gc),
+        b_coarse=np.full((gc, gc), np.inf, dtype=np.float16),
+        n_patches=1,
+        s_patch=np.array([np.linspace(1.0, 6.0, alloc)]),
+        w_patch=np.array([np.linspace(1.0, 6.0, alloc)]),
+        b_patch=b,
+        sf_patch=sf,
+        cov_patch=np.full((1, alloc, alloc), 0.95),
+        patch_bounds=np.array([[0, 2, 0, 2]], dtype=np.int32),
+        patch_points=np.array([[real, real]], dtype=np.int32),
+        status=STATUS_OK,
+        box_widenings=0,
+    )
+    optimum = argmin_lcoe(frontier, CostCoefficients(a_s=1.0, a_w=1.0, a_b=1.0, d0=1.0))
+
+    assert optimum.battery == 5.0, "argmin took a padded node"
+    assert optimum.solar <= frontier.s_patch[0, real - 1]
+    assert optimum.wind <= frontier.w_patch[0, real - 1]
 
 
 def test_argmin_on_an_interior_patch_edge_is_flagged_truncated():
