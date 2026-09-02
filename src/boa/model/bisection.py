@@ -842,6 +842,15 @@ class Optimum:
     One pixel's cheapest cached design under one year's real costs, plus whether that is
     provably the true optimum over the whole search box (`patch_certified`) rather than
     merely the best of what got densely searched.
+
+    `argmin_truncated` is the sharper of the two diagnostics and answers a narrower
+    question: did the winning design sit against a patch edge that the patch itself
+    imposed? `patch_certified` is false whenever *any* outside cell fails to be bounded
+    away, which is common; truncation says this particular answer may be an artefact of
+    where the patch stopped.
+
+    Both are year-dependent -- the argmin moves with the year's costs -- so neither may
+    become a `status` code, which `lcoe_promotion` requires to be year-invariant.
     """
 
     lcoe: float
@@ -851,6 +860,7 @@ class Optimum:
     served_fraction: float
     patch_index: int
     patch_certified: bool
+    argmin_truncated: bool
 
 
 def _patch_membership_mask(frontier: PixelFrontier) -> np.ndarray:
@@ -861,6 +871,28 @@ def _patch_membership_mask(frontier: PixelFrontier) -> np.ndarray:
         i0, i1, j0, j1 = (int(x) for x in frontier.patch_bounds[slot])
         covered[i0 : i1 + 1, j0 : j1 + 1] = True
     return covered
+
+
+def _argmin_truncated(frontier: PixelFrontier, slot: int, i: int, j: int) -> bool:
+    """
+    True iff the winning node sits on a patch edge the *patch* imposed.
+
+    An argmin on the boundary ring means the objective was still improving when the dense
+    sweep ran out, so the reported design may be an artefact of the patch's extent. But
+    only edges interior to the search box count. Two edges are not truncation and must not
+    be flagged:
+
+      * `s = 0` or `w = 0` -- a genuine corner solution (wind-only or solar-only). There is
+        nothing below zero to have missed, and this is the common case by a wide margin.
+      * the outer ring of the coarse grid -- that is the search box running out, which
+        `box_widenings` already records and which widening already had its chance to fix.
+    """
+    gc = frontier.b_coarse.shape[0]
+    gp = frontier.s_patch.shape[1]
+    i0, i1, j0, j1 = (int(x) for x in frontier.patch_bounds[slot])
+    return bool(
+        (i == 0 and i0 > 0) or (i == gp - 1 and i1 < gc - 1) or (j == 0 and j0 > 0) or (j == gp - 1 and j1 < gc - 1)
+    )
 
 
 def _containment_certificate(frontier: PixelFrontier, coeffs: CostCoefficients, incumbent: float) -> bool:
@@ -927,6 +959,7 @@ def argmin_lcoe(frontier: PixelFrontier, coeffs: CostCoefficients) -> Optimum:
         served_fraction=sf_val,
         patch_index=k,
         patch_certified=_containment_certificate(frontier, coeffs, best_lcoe),
+        argmin_truncated=_argmin_truncated(frontier, k, i, j),
     )
 
 

@@ -384,6 +384,82 @@ def test_query_fails_when_the_repair_rate_exceeds_the_cap():
 # --------------------------------------------------------------------------
 
 
+def _frontier_with_cheapest_node(bounds, ci, cj, gp=3):
+    """
+    A frontier whose argmin is forced to patch node `(ci, cj)`, with patch cell `bounds`.
+
+    Costs are set so only the battery term survives (`a_s = a_w = 0`, `d0 = 1`, `sf = 1`),
+    which makes the argmin exactly the smallest `b_patch` entry and keeps the test about
+    edge detection rather than about pricing.
+    """
+    from boa.model.bisection import PixelFrontier, STATUS_OK
+
+    gc = PARAMS.coarse_grid
+    b = np.full((1, gp, gp), 5.0)
+    b[0, ci, cj] = 1.0
+    return PixelFrontier(
+        s_coarse=np.linspace(0, 8, gc),
+        w_coarse=np.linspace(0, 8, gc),
+        b_coarse=np.full((gc, gc), np.inf, dtype=np.float16),
+        n_patches=1,
+        s_patch=np.array([np.linspace(1.0, 3.0, gp)]),
+        w_patch=np.array([np.linspace(1.0, 3.0, gp)]),
+        b_patch=b,
+        sf_patch=np.full((1, gp, gp), 1.0),
+        cov_patch=np.full((1, gp, gp), 0.95),
+        patch_bounds=np.array([bounds], dtype=np.int32),
+        status=STATUS_OK,
+        box_widenings=0,
+    )
+
+
+_EDGE_COEFFS = CostCoefficients(a_s=0.0, a_w=0.0, a_b=1.0, d0=1.0)
+
+
+def test_argmin_on_an_interior_patch_edge_is_flagged_truncated():
+    """
+    The objective was still improving where the dense sweep stopped, so the reported
+    design may be an artefact of the patch's extent rather than a real optimum. Nothing
+    else reports this: `patch_certified` is false far more often than truncation occurs
+    (24-35% certified against ~1.5% truncated on real pixels), so it cannot stand in.
+    """
+    optimum = argmin_lcoe(_frontier_with_cheapest_node([2, 4, 2, 4], 2, 1), _EDGE_COEFFS)
+    assert optimum.argmin_truncated
+
+
+def test_argmin_against_a_zero_axis_is_a_corner_not_truncation():
+    """
+    A wind-only or solar-only optimum sits at `s = 0` / `w = 0` legitimately -- there is
+    nothing below zero it could have missed. This is the common case by a wide margin
+    (~18% of real pixels against ~1.5% genuinely truncated), so flagging it would bury
+    the signal it is meant to carry.
+    """
+    optimum = argmin_lcoe(_frontier_with_cheapest_node([0, 2, 0, 2], 0, 1), _EDGE_COEFFS)
+    assert not optimum.argmin_truncated
+
+
+def test_argmin_against_the_outer_coarse_ring_is_not_patch_truncation():
+    """
+    Reaching the edge of the search box is the box running out, not the patch: that is
+    what `box_widenings` records and what widening already had its chance to fix.
+    """
+    gc = PARAMS.coarse_grid
+    optimum = argmin_lcoe(_frontier_with_cheapest_node([2, gc - 1, 2, 4], 2, 1), _EDGE_COEFFS)
+    assert not optimum.argmin_truncated
+
+
+def test_truncation_is_reported_per_query_not_baked_into_status(frontier, coeffs):
+    """
+    `argmin_truncated` depends on where this year's costs put the argmin, so it is a
+    per-query property. `lcoe_promotion` requires `status` to be year-invariant, so the
+    flag must live on the query result and never on the frontier.
+    """
+    from boa.model.bisection import PixelFrontier
+
+    assert "argmin_truncated" in argmin_lcoe(frontier, coeffs).__dataclass_fields__
+    assert not hasattr(PixelFrontier, "argmin_truncated")
+
+
 def test_grid_one_argmin_takes_no_capacity_parameter():
     """
     Grid 1 answers "what is the best system here?", with no reference to how much
