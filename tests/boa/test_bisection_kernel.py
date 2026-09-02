@@ -134,11 +134,11 @@ def test_b_min_is_the_coverage_jump_point(profiles):
     directly rather than against a brute-force scan, so the assertion is exact.
     """
     solar, wind = profiles["solar"], profiles["wind"]
-    p = 15
-    target = 1.0 - p / 100.0
+    coverage = 0.85
+    target = coverage
     tested = 0
     for s, w in FEASIBLE_POINTS:
-        b_min, _, _ = b_min_at(solar, wind, s, w, p, PARAMS)
+        b_min, _, _ = b_min_at(solar, wind, s, w, coverage, PARAMS)
         assert np.isfinite(b_min), f"({s}, {w}) must be feasible for this test to mean anything"
         tested += 1
         cov_at, _ = dispatch_metrics(solar, wind, s, w, b_min)
@@ -158,9 +158,9 @@ def test_b_min_errs_high_never_low(profiles):
     designs that miss the coverage target.
     """
     solar, wind = profiles["solar"], profiles["wind"]
-    target = 1.0 - 15 / 100.0
+    target = 1.0 - 0.85
     for s, w in FEASIBLE_POINTS:
-        b_min, _, _ = b_min_at(solar, wind, s, w, 15, PARAMS)
+        b_min, _, _ = b_min_at(solar, wind, s, w, 0.85, PARAMS)
         assert np.isfinite(b_min), f"({s}, {w}) must be feasible for this test to mean anything"
         cov, _ = dispatch_metrics(solar, wind, s, w, b_min)
         assert cov >= target
@@ -185,9 +185,9 @@ def test_b_min_warm_start_is_result_invariant(profiles, hint):
     every hint yields a battery that meets the target, never one that misses it.
     """
     solar, wind = profiles["solar"], profiles["wind"]
-    target = 1.0 - 15 / 100.0
-    cold, cold_cov, cold_sf = b_min_at(solar, wind, 3.0, 2.0, 15, PARAMS, hint=-1.0)
-    warm, warm_cov, warm_sf = b_min_at(solar, wind, 3.0, 2.0, 15, PARAMS, hint=hint)
+    target = 1.0 - 0.85
+    cold, cold_cov, cold_sf = b_min_at(solar, wind, 3.0, 2.0, 0.85, PARAMS, hint=-1.0)
+    warm, warm_cov, warm_sf = b_min_at(solar, wind, 3.0, 2.0, 0.85, PARAMS, hint=hint)
 
     assert warm == pytest.approx(cold, rel=2 * PARAMS.tol_rel_patch)
     assert cold_cov >= target and warm_cov >= target, "both must be feasible whatever the hint"
@@ -203,7 +203,7 @@ def test_b_min_returns_inf_when_no_battery_meets_coverage(dead_profiles):
     battery" from "impossible".
     """
     solar, wind = dead_profiles["solar"], dead_profiles["wind"]
-    b_min, _, _ = b_min_at(solar, wind, 5.0, 5.0, 15, PARAMS)
+    b_min, _, _ = b_min_at(solar, wind, 5.0, 5.0, 0.85, PARAMS)
     assert not np.isfinite(b_min)
 
 
@@ -214,7 +214,7 @@ def test_served_fraction_at_b_min_comes_from_the_final_feasible_probe(profiles):
     must agree with an independent dispatch at the same battery size.
     """
     solar, wind = profiles["solar"], profiles["wind"]
-    b_min, cov, sf = b_min_at(solar, wind, 3.0, 2.0, 15, PARAMS)
+    b_min, cov, sf = b_min_at(solar, wind, 3.0, 2.0, 0.85, PARAMS)
     assert np.isfinite(b_min)
 
     cov_check, sf_check = dispatch_metrics(solar, wind, 3.0, 2.0, b_min)

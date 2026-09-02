@@ -27,16 +27,16 @@ def test_layout_splits_by_provenance(tmp_path):
     assert cfg.input_data_path == tmp_path / "costs" / "xlsx-rev3" / "boa_cost_data.xlsx"
     assert cfg.cost_cache_dir == tmp_path / "costs" / "xlsx-rev3" / "cache_costs"
     assert cfg.run_manifest_path == tmp_path / "runs" / "cds-2024__xlsx-rev3" / "run.json"
-    assert cfg.optimal_sol_path(1230, 5, "GLOBAL", 2030) == (
+    assert cfg.optimal_sol_path(1230, 0.95, "GLOBAL", 2030) == (
         tmp_path
         / "runs"
         / "cds-2024__xlsx-rev3"
         / "outputs"
         / "1230MW"
-        / "p5"
+        / "cov0.95"
         / "nc"
         / "GLOBAL"
-        / "optimal_sol_1230MW_p5_GLOBAL_2030.nc"
+        / "optimal_sol_1230MW_cov0.95_GLOBAL_2030.nc"
     )
 
 

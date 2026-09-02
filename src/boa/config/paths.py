@@ -34,7 +34,7 @@ class PathConfig:
         │   └── cache_costs/               per-year costs; depends only on the xlsx
         ├── runs/<run>/                    one (input_set, cost_set) pairing
         │   ├── run.json                   provenance
-        │   └── outputs/<bl>MW/p<p>/nc/<REGION>/optimal_sol_<bl>MW_p<p>_<REGION>_<year>.nc
+        │   └── outputs/<bl>MW/cov<c>/nc/<REGION>/optimal_sol_<bl>MW_cov<c>_<REGION>_<year>.nc
         └── lcoe-for-steel-iq/<run>/       combined per-run LCOE files the steel simulation reads
 
     Build paths through the helpers rather than inline so a layout change touches one place.
@@ -75,43 +75,52 @@ class PathConfig:
         """Provenance record for the run (input/cost set, versions, CLI args)."""
         return self.run_dir / "run.json"
 
-    def scenario_dir(self, baseload_demand: float, p: int) -> Path:
-        """``outputs/<baseload>MW/p<p>`` — root for one scenario's artifacts."""
-        return self.outputs_dir / f"{baseload_demand:g}MW" / f"p{int(p)}"
+    def scenario_dir(self, baseload_demand: float, coverage: float) -> Path:
+        """
+        ``outputs/<baseload>MW/cov<coverage>`` — root for one scenario's artifacts.
 
-    def maps_dir(self, baseload_demand: float, p: int, region: str | None = None) -> Path:
+        The token is the coverage fraction the run was asked for, formatted like the
+        baseload beside it. It was previously the *uncovered* percentile (``p15`` for 85%
+        coverage), which every reader had to invert and which collided under rounding:
+        ``--coverage 0.995`` and ``--coverage 1.0`` both produced ``p0``.
+        """
+        return self.outputs_dir / f"{baseload_demand:g}MW" / f"cov{coverage:g}"
+
+    def maps_dir(self, baseload_demand: float, coverage: float, region: str | None = None) -> Path:
         """Native NetCDF dir for the scenario; per-region when ``region`` given."""
-        d = self.scenario_dir(baseload_demand, p) / "nc"
+        d = self.scenario_dir(baseload_demand, coverage) / "nc"
         return d / region if region else d
 
-    def optimal_sol_filename(self, baseload_demand: float, p: int, region: str, year: int) -> str:
-        """Self-describing NetCDF filename: ``optimal_sol_<bl>MW_p<p>_<REGION>_<year>.nc``."""
-        return f"optimal_sol_{baseload_demand:g}MW_p{int(p)}_{region}_{int(year)}.nc"
+    def optimal_sol_filename(self, baseload_demand: float, coverage: float, region: str, year: int) -> str:
+        """Self-describing NetCDF filename: ``optimal_sol_<bl>MW_cov<c>_<REGION>_<year>.nc``."""
+        return f"optimal_sol_{baseload_demand:g}MW_cov{coverage:g}_{region}_{int(year)}.nc"
 
-    def optimal_sol_path(self, baseload_demand: float, p: int, region: str, year: int) -> Path:
+    def optimal_sol_path(self, baseload_demand: float, coverage: float, region: str, year: int) -> Path:
         """Canonical path of one region-year optimal-solution NetCDF."""
-        return self.maps_dir(baseload_demand, p, region) / self.optimal_sol_filename(baseload_demand, p, region, year)
+        return self.maps_dir(baseload_demand, coverage, region) / self.optimal_sol_filename(
+            baseload_demand, coverage, region, year
+        )
 
-    def optimal_sol_year_glob(self, baseload_demand: float, p: int, region: str) -> str:
+    def optimal_sol_year_glob(self, baseload_demand: float, coverage: float, region: str) -> str:
         """Glob matching every year of one region's optimal-solution NetCDFs."""
-        return f"optimal_sol_{baseload_demand:g}MW_p{int(p)}_{region}_*.nc"
+        return f"optimal_sol_{baseload_demand:g}MW_cov{coverage:g}_{region}_*.nc"
 
     @property
     def lcoe_promotion_dir(self) -> Path:
         """``lcoe-for-steel-iq/<run>`` — combined LCOE files handed to the steel simulation."""
         return self.root / "lcoe-for-steel-iq" / self.run
 
-    def promoted_lcoe_filename(self, baseload_demand: float, p: int, year_start: int, year_end: int) -> str:
-        """Self-describing combined-LCOE filename: ``optimal_lcoe_<bl>MW_p<p>_<first>_<last>.nc``."""
-        return f"optimal_lcoe_{baseload_demand:g}MW_p{int(p)}_{int(year_start)}_{int(year_end)}.nc"
+    def promoted_lcoe_filename(self, baseload_demand: float, coverage: float, year_start: int, year_end: int) -> str:
+        """Self-describing combined-LCOE filename: ``optimal_lcoe_<bl>MW_cov<c>_<first>_<last>.nc``."""
+        return f"optimal_lcoe_{baseload_demand:g}MW_cov{coverage:g}_{int(year_start)}_{int(year_end)}.nc"
 
-    def promoted_lcoe_path(self, baseload_demand: float, p: int, year_start: int, year_end: int) -> Path:
+    def promoted_lcoe_path(self, baseload_demand: float, coverage: float, year_start: int, year_end: int) -> Path:
         """Canonical path of one scenario's combined-LCOE file."""
-        return self.lcoe_promotion_dir / self.promoted_lcoe_filename(baseload_demand, p, year_start, year_end)
+        return self.lcoe_promotion_dir / self.promoted_lcoe_filename(baseload_demand, coverage, year_start, year_end)
 
-    def map_plots_dir(self, baseload_demand: float, p: int, region: str) -> Path:
+    def map_plots_dir(self, baseload_demand: float, coverage: float, region: str) -> Path:
         """Per-region diagnostic-plot dir for the scenario."""
-        return self.scenario_dir(baseload_demand, p) / "plots" / region
+        return self.scenario_dir(baseload_demand, coverage) / "plots" / region
 
     @property
     def plots_dir(self) -> Path:

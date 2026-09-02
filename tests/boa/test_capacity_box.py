@@ -45,7 +45,7 @@ PARAMS = SearchParams()
 
 @pytest.fixture
 def frontier(profiles, anchor_costs):
-    return build_pixel_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, anchor_costs)
+    return build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, anchor_costs)
 
 
 # --------------------------------------------------------------------------
@@ -139,7 +139,7 @@ def test_box_grid_spans_the_intersection(profiles, tight_limits):
     patch resolution. Resolving the box rather than masking a coarser grid is what
     makes a tight box tractable at all -- a mask would leave only a handful of nodes.
     """
-    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, tight_limits)
+    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, tight_limits)
 
     assert box.s_box.shape == (PARAMS.patch_grid,)
     assert box.s_box[0] == pytest.approx(0.0)
@@ -150,7 +150,7 @@ def test_box_grid_spans_the_intersection(profiles, tight_limits):
 
 def test_non_fitting_pixel_triggers_the_constrained_search(profiles, frontier, anchor_costs, tight_limits):
     """When the ceiling binds, the reported design comes from Grid 2 and is flagged."""
-    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, tight_limits)
+    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, tight_limits)
     result = capacity_box.resolve(frontier, anchor_costs, tight_limits, box_frontier=box)
 
     if result.status != STATUS_OK:
@@ -169,7 +169,7 @@ def test_constrained_optimum_is_never_cheaper_than_the_unconstrained_one(
     a bug, not a lucky find.
     """
     unconstrained = argmin_lcoe(frontier, anchor_costs)
-    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, tight_limits)
+    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, tight_limits)
     result = capacity_box.resolve(frontier, anchor_costs, tight_limits, box_frontier=box)
 
     if result.status == STATUS_OK:
@@ -206,7 +206,7 @@ def test_infeasible_corner_is_status_capacity_infeasible_without_a_sweep(profile
     the target, nothing in the box can. That is a one-dispatch proof, and it must
     short-circuit the sweep entirely rather than discovering emptiness node by node.
     """
-    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, infeasible_limits)
+    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, infeasible_limits)
     assert box.box_status == STATUS_CAPACITY_INFEASIBLE
     assert box.b_box.size == 0, "an infeasible box must not be swept"
 
@@ -218,7 +218,7 @@ def test_capacity_infeasible_is_a_distinct_status(profiles, frontier, anchor_cos
     rows. The new code separates "cannot be built this big here" from "cannot work
     here at all".
     """
-    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, infeasible_limits)
+    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, infeasible_limits)
     result = capacity_box.resolve(frontier, anchor_costs, infeasible_limits, box_frontier=box)
 
     assert result.status == STATUS_CAPACITY_INFEASIBLE
@@ -236,7 +236,7 @@ def test_ceiling_binds_is_a_variable_not_a_status(profiles, frontier, anchor_cos
     from the cost-dependent optimum. Folding it into `status` would break
     `lcoe_promotion`, which raises when status differs across investment years.
     """
-    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, tight_limits)
+    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, tight_limits)
     result = capacity_box.resolve(frontier, anchor_costs, tight_limits, box_frontier=box)
 
     assert hasattr(result, "ceiling_binds")
@@ -251,7 +251,7 @@ def test_status_is_year_invariant_while_ceiling_binds_is_not(profiles, frontier,
     """
     from boa.model.bisection import CostCoefficients
 
-    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, tight_limits)
+    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, tight_limits)
     cheap_solar = CostCoefficients(a_s=0.2e6, a_w=1.6e6, a_b=0.30e6, d0=8.76e6)
     cheap_wind = CostCoefficients(a_s=3.0e6, a_w=0.4e6, a_b=0.30e6, d0=8.76e6)
 
@@ -296,7 +296,7 @@ def test_box_sidecar_replays_bit_identically(profiles, tmp_path, tight_limits):
     A replayed sidecar must reproduce a fresh sweep exactly, or a re-query silently
     returns different designs than the run that built it.
     """
-    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, tight_limits)
+    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, tight_limits)
     path = tmp_path / "box_500MW.zarr"
     capacity_box.write_box_frontier(box, path, baseload_demand=500.0, parent_meta={"built_at": "x", "params": {}})
 
@@ -310,7 +310,7 @@ def test_sidecar_refused_when_the_parent_cache_is_rebuilt(profiles, tmp_path, ti
     A rebuilt parent invalidates its sidecars: the box sweep is keyed to the parent's
     axes, so replaying it against a different parent would mix two searches.
     """
-    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, tight_limits)
+    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, tight_limits)
     path = tmp_path / "box_500MW.zarr"
     capacity_box.write_box_frontier(box, path, baseload_demand=500.0, parent_meta={"built_at": "x", "params": {}})
 
@@ -320,7 +320,7 @@ def test_sidecar_refused_when_the_parent_cache_is_rebuilt(profiles, tmp_path, ti
 
 def test_sidecar_refused_at_a_different_baseload(profiles, tmp_path, tight_limits):
     """The box is demand-specific; replaying it at another demand would be wrong."""
-    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, tight_limits)
+    box = capacity_box.build_box_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, tight_limits)
     path = tmp_path / "box_500MW.zarr"
     capacity_box.write_box_frontier(box, path, baseload_demand=500.0, parent_meta={"built_at": "x", "params": {}})
 

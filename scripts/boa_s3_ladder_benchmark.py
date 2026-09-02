@@ -241,9 +241,9 @@ def main() -> None:
         for _, iy, ix, lat, lon in region_points:
             solar = np.ascontiguousarray(profile["solar"].isel(y=iy, x=ix).values, dtype=np.float64)
             wind = np.ascontiguousarray(profile["wind"].isel(y=iy, x=ix).values, dtype=np.float64)
-            for p in (5, 15):
-                target = 1.0 - p / 100.0
-                frontier = build_pixel_frontier(solar, wind, p, params, cost_coeffs)
+            for coverage in (0.95, 0.85):
+                target = coverage
+                frontier = build_pixel_frontier(solar, wind, coverage, params, cost_coeffs)
                 if frontier.status == 3:
                     n_zero_potential += 1
                     continue
@@ -266,7 +266,7 @@ def main() -> None:
                         "region": region,
                         "lat": lat,
                         "lon": lon,
-                        "p": p,
+                        "coverage": coverage,
                         "s_star": s_star,
                         "w_star": w_star,
                         "b_min": b_min_star,
@@ -298,12 +298,12 @@ def main() -> None:
         writer.writerows(rows)
     print(f"Wrote {out_path}")
 
-    for p in (5, 15):
-        sub = [r for r in rows if r["p"] == p]
+    for coverage in (0.95, 0.85):
+        sub = [r for r in rows if r["coverage"] == coverage]
         ratios = np.array([r["ratio_b_true_over_b_min"] for r in sub if np.isfinite(r["ratio_b_true_over_b_min"])])
         excess = np.array([r["ladder_excess_pct"] for r in sub if np.isfinite(r["ladder_excess_pct"])])
         brackets_frac = np.mean([r["brackets_numerically"] for r in sub])
-        print(f"\n--- p={p} ({len(sub)} points, {len(ratios)} with b_min > 0) ---")
+        print(f"\n--- coverage={coverage} ({len(sub)} points, {len(ratios)} with b_min > 0) ---")
         print(
             f"  b_true / b_min:      median={np.median(ratios):.3f}  p90={np.percentile(ratios, 90):.3f}  "
             f"p99={np.percentile(ratios, 99):.3f}  max={ratios.max():.3f}"

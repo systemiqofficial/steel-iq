@@ -6,6 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
 
+from boa.conversions import coverage_to_percentile
 from boa.config.paths import PathConfig
 from boa.config.settings import RANDOM_SEED
 from boa.geo.iso3_finder import (
@@ -185,7 +186,7 @@ def execute_single_point_baseload_power_simulation(
     lat: float,
     lon: float,
     baseload_demand: float,
-    p: int,
+    coverage: float,
     n: int,
     min_survivor_fraction: float | None = None,
     generate_plots: bool = True,
@@ -211,7 +212,7 @@ def execute_single_point_baseload_power_simulation(
         lat: Latitude of the point
         lon: Longitude of the point
         baseload_demand: Baseload demand in MW
-        p: Percentile of time where we don't cover the demand
+        coverage: Fraction of hours in which demand must be fully met
         n: Number of random samples to generate
         min_survivor_fraction: Minimum share of the n samples that must clear the coverage
             filter before an optimum is returned; None uses the model default
@@ -242,7 +243,7 @@ def execute_single_point_baseload_power_simulation(
         lon_str = f"{lon:.2f}".replace(".", "_").replace("-", "neg")
         location_prefix = f"lat_{lat_str}_lon_{lon_str}"
         filename_prefix = f"{year}_{location_prefix}"
-        output_dir = path_config.plots_dir / "single_point" / f"p{p}" / location_prefix
+        output_dir = path_config.plots_dir / "single_point" / f"cov{coverage:g}" / location_prefix
         output_dir.mkdir(parents=True, exist_ok=True)
         logging.info(f"Saving plots to {output_dir}")
 
@@ -329,7 +330,7 @@ def execute_single_point_baseload_power_simulation(
     mus = overscale_mus_from_cf(float(profile["solar"].mean()), float(profile["wind"].mean()))
     optimum, intermediates = optimize_point(
         profile,
-        p,
+        coverage_to_percentile(coverage),
         baseload_demand,
         capex,
         opex_pct,

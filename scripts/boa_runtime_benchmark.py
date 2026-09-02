@@ -56,7 +56,7 @@ import numpy as np
 import xarray as xr
 
 DEFAULT_LIVE = Path.home() / ".steelo/boa/inputs/cds-2024-lulc+excl/cds-zarr"
-COVERAGE = 0.85  # boa-run --coverage default
+COVERAGE = 0.85  # boa-run --coverage default, as a fraction of hours met
 N_SAMPLES = 1000  # boa-run --samples default, i.e. what the MC side ships with
 SEED = 42  # settings.RANDOM_SEED
 WARMUP_PIXELS = 3  # numba compile on the new side, cache warmth on both
@@ -220,7 +220,8 @@ def time_old(profiles: list[tuple[np.ndarray, np.ndarray]]) -> dict:
     def once(solar: np.ndarray, wind: np.ndarray) -> tuple[float, float, bool]:
         mus = overscale_mus_from_cf(float(solar.mean()), float(wind.mean()))
         t0 = time.perf_counter()
-        state = precompute_point_state(solar, wind, COVERAGE, N_SAMPLES, SEED, mus=mus)
+        # `logic.py` still takes the uncovered percentile, so convert at this boundary.
+        state = precompute_point_state(solar, wind, round((1 - COVERAGE) * 100), N_SAMPLES, SEED, mus=mus)
         t1 = time.perf_counter()
         res = compute_lcoe_from_state(state, 1.0, capex, OPEX_PCT, WACC, horizon)
         t2 = time.perf_counter()
