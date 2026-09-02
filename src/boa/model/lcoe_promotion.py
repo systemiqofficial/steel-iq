@@ -43,13 +43,13 @@ CARRIED_ATTRS = (
 )
 
 
-def discover_scenarios(path_config: PathConfig) -> list[tuple[float, int]]:
-    """Every ``(baseload demand, p)`` in the run whose GLOBAL directory holds year files."""
-    found: set[tuple[float, int]] = set()
-    for global_dir in path_config.outputs_dir.glob("*MW/p*/nc/GLOBAL"):
-        demand_dir, p_dir = global_dir.parents[2], global_dir.parents[1]
+def discover_scenarios(path_config: PathConfig) -> list[tuple[float, float]]:
+    """Every ``(baseload demand, coverage)`` in the run whose GLOBAL directory holds year files."""
+    found: set[tuple[float, float]] = set()
+    for global_dir in path_config.outputs_dir.glob("*MW/cov*/nc/GLOBAL"):
+        demand_dir, cov_dir = global_dir.parents[2], global_dir.parents[1]
         try:
-            scenario = (float(demand_dir.name.removesuffix("MW")), int(p_dir.name.removeprefix("p")))
+            scenario = (float(demand_dir.name.removesuffix("MW")), float(cov_dir.name.removeprefix("cov")))
         except ValueError:
             continue
         if any(global_dir.glob(path_config.optimal_sol_year_glob(*scenario, "GLOBAL"))):
@@ -57,11 +57,11 @@ def discover_scenarios(path_config: PathConfig) -> list[tuple[float, int]]:
     return sorted(found)
 
 
-def year_files(path_config: PathConfig, baseload_demand: float, p: int) -> dict[int, Path]:
+def year_files(path_config: PathConfig, baseload_demand: float, coverage: float) -> dict[int, Path]:
     """The scenario's GLOBAL per-year NetCDFs, keyed by investment year, in year order."""
-    global_dir = path_config.maps_dir(baseload_demand, p, "GLOBAL")
+    global_dir = path_config.maps_dir(baseload_demand, coverage, "GLOBAL")
     files: dict[int, Path] = {}
-    for f in global_dir.glob(path_config.optimal_sol_year_glob(baseload_demand, p, "GLOBAL")):
+    for f in global_dir.glob(path_config.optimal_sol_year_glob(baseload_demand, coverage, "GLOBAL")):
         try:
             files[int(f.stem.rsplit("_", 1)[1])] = f
         except ValueError:
@@ -104,7 +104,7 @@ def _provenance_attrs(path_config: PathConfig, reference: xr.Dataset, years: lis
     return attrs
 
 
-def promote_lcoe(path_config: PathConfig, baseload_demand: float, p: int) -> Path:
+def promote_lcoe(path_config: PathConfig, baseload_demand: float, coverage: float) -> Path:
     """
     Combine one scenario's per-year GLOBAL NetCDFs into a single LCOE file and return its path.
 
@@ -112,15 +112,17 @@ def promote_lcoe(path_config: PathConfig, baseload_demand: float, p: int) -> Pat
     scenario attribute — all three are stored once, so year-invariance is a contract
     rather than an assumption.
     """
-    files = year_files(path_config, baseload_demand, p)
+    files = year_files(path_config, baseload_demand, coverage)
     if not files:
         raise FileNotFoundError(
-            f"No GLOBAL optimal-solution NetCDFs for {baseload_demand:g} MW p{p} in "
-            f"{path_config.maps_dir(baseload_demand, p, 'GLOBAL')} — run `boa-run` first."
+            f"No GLOBAL optimal-solution NetCDFs for {baseload_demand:g} MW at coverage {coverage:g} in "
+            f"{path_config.maps_dir(baseload_demand, coverage, 'GLOBAL')} — run `boa-run` first."
         )
     years = list(files)
     t0 = time.time()
-    logging.info(f"Promoting {baseload_demand:g} MW p{p}: {len(years)} years ({years[0]}-{years[-1]}).")
+    logging.info(
+        f"Promoting {baseload_demand:g} MW at coverage {coverage:g}: {len(years)} years ({years[0]}-{years[-1]})."
+    )
 
     with xr.open_dataset(files[years[0]]) as reference:
         lat, lon = reference["lat"].values, reference["lon"].values
@@ -165,7 +167,7 @@ def promote_lcoe(path_config: PathConfig, baseload_demand: float, p: int) -> Pat
         "status": {"dtype": "int8", "zlib": True, "complevel": 4},
     }
 
-    output_path = path_config.promoted_lcoe_path(baseload_demand, p, years[0], years[-1])
+    output_path = path_config.promoted_lcoe_path(baseload_demand, coverage, years[0], years[-1])
     output_path.parent.mkdir(parents=True, exist_ok=True)
     promoted.to_netcdf(output_path, mode="w", format="NETCDF4", encoding=encoding)
     logging.info(

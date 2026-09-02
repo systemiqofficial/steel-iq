@@ -100,13 +100,13 @@ def test_sublattice_fill_is_a_lower_bound_on_exact_b_min(profiles):
     s_vals = np.linspace(0.0, s_max, PARAMS.coarse_grid)
     w_vals = np.linspace(0.0, w_max, PARAMS.coarse_grid)
 
-    grid = coarse_b_min_grid(solar, wind, s_vals, w_vals, 15, PARAMS)
+    grid = coarse_b_min_grid(solar, wind, s_vals, w_vals, 0.85, PARAMS)
     assert grid.shape == (PARAMS.coarse_grid, PARAMS.coarse_grid)
 
     # Spot-check against exact bisections, including nodes the sub-lattice skipped.
     for i in range(0, PARAMS.coarse_grid, 4):
         for j in range(1, PARAMS.coarse_grid, 5):
-            exact, _, _ = b_min_at(solar, wind, s_vals[i], w_vals[j], 15, PARAMS)
+            exact, _, _ = b_min_at(solar, wind, s_vals[i], w_vals[j], 0.85, PARAMS)
             if np.isfinite(exact) and np.isfinite(grid[i, j]):
                 assert grid[i, j] <= exact + 1e-9, f"coarse value exceeded exact b_min at ({i},{j})"
 
@@ -126,7 +126,7 @@ def test_coarse_grid_is_monotone_non_increasing(profiles):
         wind,
         np.linspace(0.0, s_max, PARAMS.coarse_grid),
         np.linspace(0.0, w_max, PARAMS.coarse_grid),
-        15,
+        0.85,
         PARAMS,
     )
     assert np.all(grid[:-1, :] >= grid[1:, :] - 1e-9), "b_min rose with solar"
@@ -139,7 +139,7 @@ def test_coarse_b_min_is_a_lower_bound_after_float16_rounding(profiles, anchor_c
     bound *up* and silently invalidate the containment certificate. The cast must
     round toward zero.
     """
-    frontier = build_pixel_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, anchor_costs)
+    frontier = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, anchor_costs)
     assert frontier.b_coarse.dtype == np.float16
 
     exact = coarse_b_min_grid(
@@ -147,7 +147,7 @@ def test_coarse_b_min_is_a_lower_bound_after_float16_rounding(profiles, anchor_c
         profiles["wind"],
         frontier.s_coarse.astype(np.float64),
         frontier.w_coarse.astype(np.float64),
-        15,
+        0.85,
         PARAMS,
     )
     stored = frontier.b_coarse.astype(np.float64)
@@ -258,7 +258,7 @@ def test_box_widening_is_recorded(anchor_costs, poor_profiles):
     A boundary hit is never silently truncated: either the pixel is dismissed, or
     the box widens and says so.
     """
-    frontier = build_pixel_frontier(poor_profiles["solar"], poor_profiles["wind"], 15, PARAMS, anchor_costs)
+    frontier = build_pixel_frontier(poor_profiles["solar"], poor_profiles["wind"], 0.85, PARAMS, anchor_costs)
     assert 0 <= frontier.box_widenings <= PARAMS.max_box_widenings
     if frontier.box_widenings > 0:
         assert frontier.s_coarse[-1] > PARAMS.box_min
@@ -271,14 +271,14 @@ def test_box_widening_is_recorded(anchor_costs, poor_profiles):
 
 def test_healthy_pixel_is_status_ok(profiles, anchor_costs):
     """The baseline every other status test is a departure from."""
-    frontier = build_pixel_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, anchor_costs)
+    frontier = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, anchor_costs)
     assert frontier.status == STATUS_OK
     assert frontier.n_patches >= 1
 
 
 def test_zero_potential_pixel_is_status_3(dead_profiles, anchor_costs):
     """No sun and no wind is physics, not economics -- it outranks the dismissal screen."""
-    frontier = build_pixel_frontier(dead_profiles["solar"], dead_profiles["wind"], 15, PARAMS, anchor_costs)
+    frontier = build_pixel_frontier(dead_profiles["solar"], dead_profiles["wind"], 0.85, PARAMS, anchor_costs)
     assert frontier.status == STATUS_ZERO_POTENTIAL
     assert frontier.n_patches == 0
 
@@ -290,7 +290,7 @@ def test_infeasible_pixel_is_status_2(anchor_costs):
     """
     hours = 24 * 21
     trickle = {"solar": np.full(hours, 1e-4), "wind": np.zeros(hours)}
-    frontier = build_pixel_frontier(trickle["solar"], trickle["wind"], 15, PARAMS, anchor_costs)
+    frontier = build_pixel_frontier(trickle["solar"], trickle["wind"], 0.85, PARAMS, anchor_costs)
     assert frontier.status == STATUS_NO_OPTIMUM
 
 
@@ -299,8 +299,8 @@ def test_status_is_year_invariant_by_construction(profiles, anchor_costs):
     Nothing in the build phase reads a cost year, so a frontier's status cannot vary
     across the query years that reuse it. `lcoe_promotion.py` requires exactly this.
     """
-    a = build_pixel_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, anchor_costs)
-    b = build_pixel_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, anchor_costs)
+    a = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, anchor_costs)
+    b = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, anchor_costs)
     assert a.status == b.status
     assert a.n_patches == b.n_patches
     np.testing.assert_array_equal(a.b_coarse, b.b_coarse)
@@ -308,8 +308,8 @@ def test_status_is_year_invariant_by_construction(profiles, anchor_costs):
 
 def test_build_is_deterministic(profiles, anchor_costs):
     """No RNG survives the rewrite: two builds of the same pixel are bit-identical."""
-    a = build_pixel_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, anchor_costs)
-    b = build_pixel_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, anchor_costs)
+    a = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, anchor_costs)
+    b = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, anchor_costs)
     np.testing.assert_array_equal(a.b_patch, b.b_patch)
     np.testing.assert_array_equal(a.energy_served_frac, b.energy_served_frac)
 
@@ -320,8 +320,8 @@ def test_cross_pixel_hint_does_not_change_the_result(profiles, anchor_costs):
     bracket search re-establishes a genuine bracket either way, the frontier must
     come out identical within bisection tolerance.
     """
-    cold = build_pixel_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, anchor_costs, hint=-1.0)
-    warm = build_pixel_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, anchor_costs, hint=7.5)
+    cold = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, anchor_costs, hint=-1.0)
+    warm = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, anchor_costs, hint=7.5)
     np.testing.assert_allclose(cold.b_patch, warm.b_patch, rtol=2 * PARAMS.tol_rel_patch)
 
 

@@ -71,8 +71,8 @@ def _make_cache(npts=4, region="EU", params=PARAMS):
 
 def test_cache_path_is_deterministic_from_search_params(tmp_path):
     """Same parameters must resolve to the same path, every time and every process."""
-    a = design_cache.cache_path(tmp_path, "EU", 15, PARAMS, WEATHER_YEAR, RESOLUTION)
-    b = design_cache.cache_path(tmp_path, "EU", 15, PARAMS, WEATHER_YEAR, RESOLUTION)
+    a = design_cache.cache_path(tmp_path, "EU", 0.85, PARAMS, WEATHER_YEAR, RESOLUTION)
+    b = design_cache.cache_path(tmp_path, "EU", 0.85, PARAMS, WEATHER_YEAR, RESOLUTION)
     assert a == b
     assert a.suffix == ".zarr"
     assert a.parent.name == "EU"
@@ -85,7 +85,7 @@ def test_cache_path_separates_different_search_params(tmp_path):
     `n<n>_s<seed>` token is meaningless for a deterministic search, so identity now
     hangs off a hash of the whole parameter set.
     """
-    coarse = design_cache.cache_path(tmp_path, "EU", 15, PARAMS, WEATHER_YEAR, RESOLUTION)
+    coarse = design_cache.cache_path(tmp_path, "EU", 0.85, PARAMS, WEATHER_YEAR, RESOLUTION)
     finer = design_cache.cache_path(
         tmp_path, "EU", 15, dataclasses.replace(PARAMS, patch_grid=PARAMS.patch_grid + 4), WEATHER_YEAR, RESOLUTION
     )
@@ -94,7 +94,7 @@ def test_cache_path_separates_different_search_params(tmp_path):
 
 def test_cache_path_carries_no_sampling_tokens(tmp_path):
     """`--samples` and the RNG seed are gone; their tokens must not linger in the name."""
-    name = design_cache.cache_path(tmp_path, "EU", 15, PARAMS, WEATHER_YEAR, RESOLUTION).name
+    name = design_cache.cache_path(tmp_path, "EU", 0.85, PARAMS, WEATHER_YEAR, RESOLUTION).name
     assert "_s42_" not in name
     assert not name.startswith("n")
 
@@ -111,7 +111,7 @@ def test_v3_round_trips(tmp_path):
     documented 1.5e-5 quantisation error rather than exactly.
     """
     cache = _make_cache()
-    path = design_cache.cache_path(tmp_path, "EU", 15, PARAMS, WEATHER_YEAR, RESOLUTION)
+    path = design_cache.cache_path(tmp_path, "EU", 0.85, PARAMS, WEATHER_YEAR, RESOLUTION)
     design_cache.write_cache(cache, path)
 
     loaded = design_cache.read_cache(path, expected_params=PARAMS)
@@ -133,7 +133,7 @@ def test_round_trip_preserves_the_coarse_lower_bound_direction(tmp_path):
     relies on that. Storage must not round any value upward.
     """
     cache = _make_cache()
-    path = design_cache.cache_path(tmp_path, "EU", 15, PARAMS, WEATHER_YEAR, RESOLUTION)
+    path = design_cache.cache_path(tmp_path, "EU", 0.85, PARAMS, WEATHER_YEAR, RESOLUTION)
     design_cache.write_cache(cache, path)
     loaded = design_cache.read_cache(path, expected_params=PARAMS)
     assert np.all(loaded.b_coarse <= cache.b_coarse)
@@ -142,7 +142,7 @@ def test_round_trip_preserves_the_coarse_lower_bound_direction(tmp_path):
 def test_write_is_atomic(tmp_path):
     """A crashed rebuild must not leave a half-written store that later reads as valid."""
     cache = _make_cache()
-    path = design_cache.cache_path(tmp_path, "EU", 15, PARAMS, WEATHER_YEAR, RESOLUTION)
+    path = design_cache.cache_path(tmp_path, "EU", 0.85, PARAMS, WEATHER_YEAR, RESOLUTION)
     design_cache.write_cache(cache, path)
 
     stale_tmp = path.parent / f"{path.name}.tmp"
@@ -167,7 +167,7 @@ def test_read_cache_refuses_v2_schema(tmp_path):
     """
     cache = _make_cache()
     cache.meta["schema_version"] = 2
-    path = design_cache.cache_path(tmp_path, "EU", 15, PARAMS, WEATHER_YEAR, RESOLUTION)
+    path = design_cache.cache_path(tmp_path, "EU", 0.85, PARAMS, WEATHER_YEAR, RESOLUTION)
     design_cache.write_cache(cache, path)
 
     with pytest.raises(ValueError, match="schema version 2"):
@@ -181,7 +181,7 @@ def test_read_cache_refuses_mismatched_search_params(tmp_path):
     differs.
     """
     cache = _make_cache()
-    path = design_cache.cache_path(tmp_path, "EU", 15, PARAMS, WEATHER_YEAR, RESOLUTION)
+    path = design_cache.cache_path(tmp_path, "EU", 0.85, PARAMS, WEATHER_YEAR, RESOLUTION)
     design_cache.write_cache(cache, path)
 
     other = dataclasses.replace(PARAMS, ladder_rungs=PARAMS.ladder_rungs + 2)
@@ -192,7 +192,7 @@ def test_read_cache_refuses_mismatched_search_params(tmp_path):
 def test_read_cache_without_expected_params_still_checks_schema(tmp_path):
     """Callers that only want to inspect a store skip the parameter check, never the schema one."""
     cache = _make_cache()
-    path = design_cache.cache_path(tmp_path, "EU", 15, PARAMS, WEATHER_YEAR, RESOLUTION)
+    path = design_cache.cache_path(tmp_path, "EU", 0.85, PARAMS, WEATHER_YEAR, RESOLUTION)
     design_cache.write_cache(cache, path)
     assert design_cache.read_cache(path).region == "EU"
 

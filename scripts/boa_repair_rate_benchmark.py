@@ -46,11 +46,11 @@ from boa.model.bisection import (  # noqa: E402
 )
 
 DENSE_N = 60
-P = 15
+COVERAGE = 0.85
 
 
 def dense_physics_grid(
-    solar: np.ndarray, wind: np.ndarray, p: float, params: SearchParams, n: int = DENSE_N
+    solar: np.ndarray, wind: np.ndarray, coverage: float, params: SearchParams, n: int = DENSE_N
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Cost-independent (s, w) -> (b_min, served_fraction) over the whole physics box,
     at `n x n` resolution -- much finer than the coarse (25x25) or patch (15x15) grids.
@@ -67,7 +67,7 @@ def dense_physics_grid(
     for i, s in enumerate(s_vals):
         row_hint = hint
         for j, w in enumerate(w_vals):
-            b_min, _cov, sf = b_min_at(solar, wind, float(s), float(w), p, params, row_hint)
+            b_min, _cov, sf = b_min_at(solar, wind, float(s), float(w), coverage, params, row_hint)
             b_grid[i, j] = b_min
             sf_grid[i, j] = sf
             if np.isfinite(b_min) and b_min > 0.0:
@@ -130,12 +130,12 @@ def main() -> None:
             solar = np.ascontiguousarray(profile["solar"].isel(y=iy, x=ix).values, dtype=np.float64)
             wind = np.ascontiguousarray(profile["wind"].isel(y=iy, x=ix).values, dtype=np.float64)
 
-            frontier = build_pixel_frontier(solar, wind, P, params, anchor)
+            frontier = build_pixel_frontier(solar, wind, COVERAGE, params, anchor)
             if frontier.status != STATUS_OK:
                 n_skipped += 1
                 continue
 
-            s_vals, w_vals, b_grid, sf_grid = dense_physics_grid(solar, wind, P, params)
+            s_vals, w_vals, b_grid, sf_grid = dense_physics_grid(solar, wind, COVERAGE, params)
 
             for name, coeffs in scenarios.items():
                 optimum = argmin_lcoe(frontier, coeffs)

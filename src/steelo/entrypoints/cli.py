@@ -53,7 +53,6 @@ def resolve_boa_lcoe_file(console: Console, run: str | None, demand: float | Non
     actually asked for.
     """
     from boa.config.paths import default_root
-    from boa.conversions import coverage_to_percentile
 
     from ..adapters.geospatial.geospatial_calculations import get_baseload_coverage
 
@@ -73,7 +72,6 @@ def resolve_boa_lcoe_file(console: Console, run: str | None, demand: float | Non
         sys.exit(1)
         return None
 
-    p = coverage_to_percentile(coverage)
     promotion_root = default_root() / "lcoe-for-steel-iq"
     run_dir = promotion_root / run
     if not run_dir.is_dir():
@@ -83,10 +81,10 @@ def resolve_boa_lcoe_file(console: Console, run: str | None, demand: float | Non
         return None
 
     demand_pattern = f"{demand:g}MW" if demand is not None else "*MW"
-    matches = sorted(run_dir.glob(f"optimal_lcoe_{demand_pattern}_p{p}_*.nc"))
+    matches = sorted(run_dir.glob(f"optimal_lcoe_{demand_pattern}_cov{coverage:g}_*.nc"))
     if not matches:
         console.print(
-            f"[red]BOA run '{run}' has no promoted LCOE file for p{p}, the percentile the configured power mix "
+            f"[red]BOA run '{run}' has no promoted LCOE file at coverage {coverage:g}, which the configured power mix "
             f"'{power_mix}' requires"
             + (f" (--boa-demand {demand:g})" if demand is not None else "")
             + f", in {run_dir}[/red]"
@@ -96,13 +94,15 @@ def resolve_boa_lcoe_file(console: Console, run: str | None, demand: float | Non
         return None
     if len(matches) > 1:
         console.print(
-            f"[red]BOA run '{run}' holds several baseload demands at p{p}: "
+            f"[red]BOA run '{run}' holds several baseload demands at coverage {coverage:g}: "
             f"{', '.join(f.name for f in matches)}. Pick one with --boa-demand.[/red]"
         )
         sys.exit(1)
         return None
 
-    console.print(f"[blue]Baseload power priced from BOA run '{run}' at p{p} ('{power_mix}'):[/blue] {matches[0]}")
+    console.print(
+        f"[blue]Baseload power priced from BOA run '{run}' at coverage {coverage:g} ('{power_mix}'):[/blue] {matches[0]}"
+    )
     return matches[0]
 
 

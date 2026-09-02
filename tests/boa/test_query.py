@@ -76,7 +76,7 @@ def coeffs():
 
 @pytest.fixture
 def frontier(profiles, anchor_costs):
-    return build_pixel_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, anchor_costs)
+    return build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, anchor_costs)
 
 
 # --------------------------------------------------------------------------
@@ -216,7 +216,7 @@ def test_argmin_searches_every_patch_and_ignores_unused_slots(profiles, anchor_c
     Unused slots are zero-filled, and a zeroed design would price as free -- so they
     must be excluded, not merely ignored by luck.
     """
-    frontier = build_pixel_frontier(profiles["solar"], profiles["wind"], 15, PARAMS, anchor_costs)
+    frontier = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, anchor_costs)
     if frontier.n_patches >= PARAMS.max_seeds:
         pytest.skip("fixture pixel filled every seed slot; nothing to exclude")
 
@@ -287,7 +287,7 @@ def test_optimum_meets_the_coverage_constraint(profiles, frontier, coeffs):
     """
     optimum = argmin_lcoe(frontier, coeffs)
     cov, _ = dispatch_metrics(profiles["solar"], profiles["wind"], optimum.solar, optimum.wind, optimum.battery)
-    assert cov >= 1.0 - 15 / 100.0 - 1e-9
+    assert cov >= 1.0 - 0.85 - 1e-9
 
 
 def test_battery_optimum_can_sit_above_b_min(profiles, frontier, coeffs):
@@ -299,7 +299,7 @@ def test_battery_optimum_can_sit_above_b_min(profiles, frontier, coeffs):
     at the query layer, that the reported optimum never sits below b_min.
     """
     optimum = argmin_lcoe(frontier, coeffs)
-    b_min, _, _ = b_min_at(profiles["solar"], profiles["wind"], optimum.solar, optimum.wind, 15, PARAMS)
+    b_min, _, _ = b_min_at(profiles["solar"], profiles["wind"], optimum.solar, optimum.wind, 0.85, PARAMS)
     # Not bit-exact: the frontier's own b_min was found warm-started from a neighbouring
     # node, this one is cold -- both are valid within `tol_rel_patch`, per
     # `test_b_min_warm_start_is_result_invariant`'s own precedent.

@@ -53,7 +53,7 @@ def test_rung_zero_is_b_min_and_costs_no_dispatch(profiles):
     """`(cov0, sf0)` are `b_min`'s own metrics -- the bisection's last probe -- so rung 0
     must reproduce them exactly rather than re-dispatching."""
     solar, wind = profiles["solar"], profiles["wind"]
-    b_min, cov0, sf0 = b_min_at(solar, wind, 3.0, 2.0, 15, PARAMS)
+    b_min, cov0, sf0 = b_min_at(solar, wind, 3.0, 2.0, 0.85, PARAMS)
     assert np.isfinite(b_min) and b_min > 0
 
     b, cov, sf = battery_rungs(solar, wind, 3.0, 2.0, b_min, cov0, sf0, PARAMS)
@@ -65,7 +65,7 @@ def test_rung_zero_is_b_min_and_costs_no_dispatch(profiles):
 def test_rungs_are_non_decreasing_and_stay_within_the_span(profiles):
     """Bounded and ordered: no rung below `b_min`, none above `ladder_max_span * b_min`."""
     solar, wind = profiles["solar"], profiles["wind"]
-    b_min, cov0, sf0 = b_min_at(solar, wind, 3.0, 2.0, 15, PARAMS)
+    b_min, cov0, sf0 = b_min_at(solar, wind, 3.0, 2.0, 0.85, PARAMS)
     b, _, _ = battery_rungs(solar, wind, 3.0, 2.0, b_min, cov0, sf0, PARAMS)
 
     assert np.all(np.diff(b) >= -1e-12)
@@ -77,7 +77,7 @@ def test_every_rung_replays_to_an_independent_dispatch(profiles):
     """Stored metrics are replayed, not trusted: dispatching again at each rung's own
     battery must reproduce that rung's coverage and served fraction exactly."""
     solar, wind = profiles["solar"], profiles["wind"]
-    b_min, cov0, sf0 = b_min_at(solar, wind, 4.0, 3.0, 15, PARAMS)
+    b_min, cov0, sf0 = b_min_at(solar, wind, 4.0, 3.0, 0.85, PARAMS)
     b, cov, sf = battery_rungs(solar, wind, 4.0, 3.0, b_min, cov0, sf0, PARAMS)
 
     for r in range(len(b)):
@@ -93,8 +93,8 @@ def test_every_rung_is_feasible(profiles):
     stored rung can miss the target.
     """
     solar, wind = profiles["solar"], profiles["wind"]
-    target = 1.0 - 15 / 100.0
-    b_min, cov0, sf0 = b_min_at(solar, wind, 3.0, 2.0, 15, PARAMS)
+    target = 1.0 - 0.85
+    b_min, cov0, sf0 = b_min_at(solar, wind, 3.0, 2.0, 0.85, PARAMS)
     _, cov, _ = battery_rungs(solar, wind, 3.0, 2.0, b_min, cov0, sf0, PARAMS)
     assert np.all(cov >= target - 1e-9)
 
@@ -109,7 +109,7 @@ def test_a_higher_rung_can_beat_b_min_on_lcoe(profiles):
     solar, wind = profiles["solar"], profiles["wind"]
     beaten = False
     for s, w in [(2.0, 1.5), (3.0, 2.0), (4.0, 3.0), (2.5, 3.5), (5.0, 1.0)]:
-        b_min, cov0, sf0 = b_min_at(solar, wind, s, w, 15, PARAMS)
+        b_min, cov0, sf0 = b_min_at(solar, wind, s, w, 0.85, PARAMS)
         if not np.isfinite(b_min) or b_min <= 0.0:
             continue
         b, _, sf = battery_rungs(solar, wind, s, w, b_min, cov0, sf0, PARAMS)
@@ -128,7 +128,7 @@ def test_a_zero_b_min_node_collapses_every_rung_to_zero(profiles):
     """
     solar, wind = profiles["solar"], profiles["wind"]
     s = w = 30.0  # massively oversized: coverage met outright
-    b_min, cov0, sf0 = b_min_at(solar, wind, s, w, 15, PARAMS)
+    b_min, cov0, sf0 = b_min_at(solar, wind, s, w, 0.85, PARAMS)
     assert b_min == pytest.approx(0.0), "fixture precondition: no battery needed"
 
     b, cov, sf = battery_rungs(solar, wind, s, w, b_min, cov0, sf0, PARAMS)

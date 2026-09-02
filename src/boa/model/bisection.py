@@ -51,6 +51,19 @@ STATUS_CAPACITY_INFEASIBLE = 6
 _B_TOL_ABS = 1e-6
 
 
+def _check_coverage(coverage: float) -> None:
+    """
+    Reject anything that is not a fraction in (0, 1).
+
+    The guard exists because the predecessor of this parameter was an *uncovered
+    percentile*, so `15` and `0.15` were both accepted and meant different things. A
+    percentile passed here now fails immediately instead of quietly running the whole
+    search at the wrong target.
+    """
+    if not 0.0 < coverage < 1.0:
+        raise ValueError(f"coverage must be a fraction in (0, 1), got {coverage!r}; 85% coverage is 0.85, not 15 or 85")
+
+
 @dataclass(frozen=True)
 class SearchParams:
     """
@@ -346,18 +359,20 @@ def b_min_at(
     wind: np.ndarray,
     s: float,
     w: float,
-    p: float,
+    coverage: float,
     params: SearchParams,
     hint: float = -1.0,
 ) -> tuple[float, float, float]:
     """
-    Smallest feasible battery at one grid point, as `(b_min, coverage, served_fraction)`.
+    Smallest feasible battery at one grid point, as `(b_min, hours_covered, served_fraction)`.
 
-    Public callers pass `p`, the percentile of *uncovered* hours the CLI works in; the
-    kernel takes the coverage target it implies. Converting once at the boundary keeps
-    the two from being confused inside the kernels.
+    `coverage` is the fraction of hours that must be fully met, the same number the CLI
+    takes. It used to be the *uncovered percentile* (15 for 85% coverage), which every
+    caller had to invert and which silently accepted a coverage fraction as a percentile —
+    passing 0.85 asked for 99.15% coverage rather than 85%, with no error anywhere.
     """
-    target = 1.0 - p / 100.0
+    _check_coverage(coverage)
+    target = coverage
     return _b_min_jit(solar, wind, float(s), float(w), target, float(hint), params.b_cap, params.tol_rel_patch)
 
 
@@ -536,7 +551,7 @@ def coarse_b_min_grid(
     wind: np.ndarray,
     s_vals: np.ndarray,
     w_vals: np.ndarray,
-    p: float,
+    coverage: float,
     params: SearchParams,
 ) -> np.ndarray:
     """
@@ -572,7 +587,8 @@ def coarse_b_min_grid(
     `inf` propagates down-and-left correctly, since a dominated node needs at least as
     much battery.
     """
-    target = 1.0 - p / 100.0
+    _check_coverage(coverage)
+    target = coverage
     si = _sub_lattice(len(s_vals), params.coarse_stride)
     wj = _sub_lattice(len(w_vals), params.coarse_stride)
 
@@ -804,7 +820,7 @@ def _to_float16_toward_zero(values: np.ndarray) -> np.ndarray:
 def build_pixel_frontier(
     solar: np.ndarray,
     wind: np.ndarray,
-    p: float,
+    coverage: float,
     params: SearchParams,
     anchor: CostCoefficients,
     hint: float = -1.0,
@@ -862,7 +878,7 @@ def build_pixel_frontier(
     while True:
         s_coarse = np.linspace(0.0, s_max, gc)
         w_coarse = np.linspace(0.0, w_max, gc)
-        b_coarse = coarse_b_min_grid(solar, wind, s_coarse, w_coarse, p, params)
+        b_coarse = coarse_b_min_grid(solar, wind, s_coarse, w_coarse, coverage, params)
 
         # Rank on the sub-lattice only, never on the filled grid. A filled node inherits
         # its bound from a *dominating* node at higher (s, w), so cells just inside the
@@ -924,7 +940,7 @@ def build_pixel_frontier(
         for a in range(n_s):
             node_hint = row_hint
             for b in range(n_w):
-                b_min, cov, sf = b_min_at(solar, wind, s_vals[a], w_vals[b], p, params, node_hint)
+                b_min, cov, sf = b_min_at(solar, wind, s_vals[a], w_vals[b], coverage, params, node_hint)
                 if np.isfinite(b_min):
                     if b_min > 0.0:
                         node_hint = b_min

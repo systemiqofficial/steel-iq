@@ -64,7 +64,6 @@ from boa.geo.iso3_finder import (
     validate_subregion_coverage,
     validate_subregion_keys,
 )
-from boa.conversions import coverage_to_percentile
 
 # Anchor year for the cost-set sanity check before a cache build; any year works
 # since the build itself never reads costs (cost_keys are derived per query).
@@ -243,10 +242,10 @@ def add_promote_lcoe_arg(parser: argparse._ActionsContainer) -> None:
     )
 
 
-def run_promotion(path_config: PathConfig, baseload_demand: float, p: int) -> int:
+def run_promotion(path_config: PathConfig, baseload_demand: float, coverage: float) -> int:
     """Promote this scenario's LCOE, reporting a failure without discarding the completed query."""
     try:
-        promote_lcoe(path_config, baseload_demand, p)
+        promote_lcoe(path_config, baseload_demand, coverage)
     except (FileNotFoundError, ValueError) as e:
         logging.error(f"LCOE promotion failed: {e}")
         return 1
@@ -291,12 +290,11 @@ def get_simulation_years(start_year: int, end_year: int, frequency: int) -> List
     return years
 
 
-def resolved_parameters(args: argparse.Namespace, p: int, years: List[int] | None = None) -> dict:
+def resolved_parameters(args: argparse.Namespace, years: List[int] | None = None) -> dict:
     """Fully resolved scenario settings for the run manifest, so defaults are recorded too."""
     params: dict = {
         "demand_mw": args.demand,
         "coverage": args.coverage,
-        "p": p,
         "samples": args.samples,
     }
     if years is not None:
@@ -364,7 +362,7 @@ def _validate_cost_set(path_config: PathConfig, investment_year: int) -> tuple[x
 
 def build_all_caches(
     path_config: PathConfig,
-    p: int,
+    coverage: float,
     n: int,
     n_workers: int,
     force: bool = False,
@@ -376,7 +374,7 @@ def build_all_caches(
         profile = open_regional_dataset("profile", region, path_config)
         build_design_cache_for_region(
             region=region,
-            p=p,
+            coverage=coverage,
             n=n,
             profile=profile,
             costs=costs,
@@ -389,7 +387,7 @@ def build_all_caches(
 def build_all_topups(
     path_config: PathConfig,
     baseload_demand: float,
-    p: int,
+    coverage: float,
     n: int,
     n_workers: int,
     force: bool = False,
@@ -401,7 +399,7 @@ def build_all_topups(
         build_topup_supplement_for_region(
             region=region,
             baseload_demand=baseload_demand,
-            p=p,
+            coverage=coverage,
             n=n,
             profile=profile,
             path_config=path_config,
@@ -414,7 +412,7 @@ def query_all_years(
     path_config: PathConfig,
     years: List[int],
     baseload_demand: float,
-    p: int,
+    coverage: float,
     n: int,
     n_workers: int,
     force: bool = False,
@@ -433,7 +431,7 @@ def query_all_years(
                 year=year,
                 region=region,
                 baseload_demand=baseload_demand,
-                p=p,
+                coverage=coverage,
                 profile=profiles[region],
                 costs=costs,
                 investment_horizon=horizon,
@@ -443,16 +441,20 @@ def query_all_years(
                 force=force,
             )
             if generate_plots:
-                plot_regional_optimum_baseload_power_simulation_map(year, region, p, baseload_demand, path_config)
+                plot_regional_optimum_baseload_power_simulation_map(
+                    year, region, coverage, baseload_demand, path_config
+                )
         global_optimal_sol = combine_regional_datasets_into_global_dataset(
             year,
-            p,
+            coverage,
             baseload_demand,
             path_config,
             force=force,
         )
         if generate_plots and global_optimal_sol is not None:
-            plot_global_optimum_baseload_power_simulation_map(global_optimal_sol, year, p, baseload_demand, path_config)
+            plot_global_optimum_baseload_power_simulation_map(
+                global_optimal_sol, year, coverage, baseload_demand, path_config
+            )
 
 
 def main_run(argv: list[str]) -> int:
@@ -495,7 +497,6 @@ def main_run(argv: list[str]) -> int:
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    p = coverage_to_percentile(args.coverage)
     years = get_simulation_years(args.start_year, args.end_year, args.frequency)
 
     logging.info("=" * 60)
@@ -503,7 +504,7 @@ def main_run(argv: list[str]) -> int:
     logging.info("=" * 60)
     logging.info(f"Years to simulate: {years}")
     logging.info(f"Baseload demand: {args.demand} MW")
-    logging.info(f"Coverage requirement: {args.coverage * 100:.1f}% (p={p})")
+    logging.info(f"Coverage requirement: {args.coverage * 100:.1f}%")
     logging.info(f"Number of samples: {args.samples}")
     logging.info(f"Worker threads: {args.workers}")
     logging.info(f"Generate plots: {args.plots}")
@@ -525,18 +526,18 @@ def main_run(argv: list[str]) -> int:
         logging.info("Dry run - exiting without running simulation")
         return 0
 
-    run_manifest.record_invocation(path_config, "run", list(argv), parameters=resolved_parameters(args, p, years))
-    build_all_caches(path_config, p, args.samples, args.workers)
+    run_manifest.record_invocation(path_config, "run", list(argv), parameters=resolved_parameters(args, years))
+    build_all_caches(path_config, args.coverage, args.samples, args.workers)
     query_all_years(
         path_config,
         years,
         args.demand,
-        p,
+        args.coverage,
         args.samples,
         args.workers,
         generate_plots=args.plots,
     )
-    if args.promote_lcoe and run_promotion(path_config, args.demand, p) != 0:
+    if args.promote_lcoe and run_promotion(path_config, args.demand, args.coverage) != 0:
         return 1
     logging.info("\nAll simulations completed successfully!")
     return 0
@@ -567,12 +568,13 @@ def main_build_cache(argv: list[str]) -> int:
         return 1
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-    p = coverage_to_percentile(args.coverage)
 
     logging.info("=" * 60)
     logging.info("BOA: build-cache")
     logging.info("=" * 60)
-    logging.info(f"Coverage p={p}; samples={args.samples}; workers={args.workers} (caches are baseload-independent)")
+    logging.info(
+        f"Coverage {args.coverage:g}; samples={args.samples}; workers={args.workers} (caches are baseload-independent)"
+    )
 
     resolve_data_sets(args)
     if (rc := run_prepare_flags(args)) != 0:
@@ -583,8 +585,8 @@ def main_build_cache(argv: list[str]) -> int:
     except (FileNotFoundError, ValueError) as e:
         logging.error(str(e))
         return 1
-    run_manifest.record_invocation(path_config, "build-cache", list(argv), parameters=resolved_parameters(args, p))
-    build_all_caches(path_config, p, args.samples, args.workers, force=args.force)
+    run_manifest.record_invocation(path_config, "build-cache", list(argv), parameters=resolved_parameters(args))
+    build_all_caches(path_config, args.coverage, args.samples, args.workers, force=args.force)
     logging.info("\nbuild-cache: all regions complete.")
     return 0
 
@@ -614,12 +616,13 @@ def main_build_topup(argv: list[str]) -> int:
         return 1
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-    p = coverage_to_percentile(args.coverage)
 
     logging.info("=" * 60)
     logging.info("BOA: build-topup")
     logging.info("=" * 60)
-    logging.info(f"Baseload: {args.demand} MW; coverage p={p}; samples={args.samples}; workers={args.workers}")
+    logging.info(
+        f"Baseload: {args.demand} MW; coverage {args.coverage:g}; samples={args.samples}; workers={args.workers}"
+    )
 
     resolve_data_sets(args)
     if (rc := run_prepare_flags(args)) != 0:
@@ -630,9 +633,9 @@ def main_build_topup(argv: list[str]) -> int:
     except (FileNotFoundError, ValueError) as e:
         logging.error(str(e))
         return 1
-    run_manifest.record_invocation(path_config, "build-topup", list(argv), parameters=resolved_parameters(args, p))
+    run_manifest.record_invocation(path_config, "build-topup", list(argv), parameters=resolved_parameters(args))
     try:
-        build_all_topups(path_config, args.demand, p, args.samples, args.workers, force=args.force)
+        build_all_topups(path_config, args.demand, args.coverage, args.samples, args.workers, force=args.force)
     except FileNotFoundError as e:
         logging.error(f"{e} — build the design caches first (`boa-run build-cache`).")
         return 1
@@ -672,14 +675,15 @@ def main_query(argv: list[str]) -> int:
         return 1
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-    p = coverage_to_percentile(args.coverage)
     years = get_simulation_years(args.start_year, args.end_year, args.frequency)
 
     logging.info("=" * 60)
     logging.info("BOA: query (design-cache → NetCDF)")
     logging.info("=" * 60)
     logging.info(f"Years: {years}")
-    logging.info(f"Baseload: {args.demand} MW; coverage p={p}; samples={args.samples}; workers={args.workers}")
+    logging.info(
+        f"Baseload: {args.demand} MW; coverage {args.coverage:g}; samples={args.samples}; workers={args.workers}"
+    )
 
     resolve_data_sets(args)
     if (rc := run_prepare_flags(args)) != 0:
@@ -690,18 +694,18 @@ def main_query(argv: list[str]) -> int:
     except (FileNotFoundError, ValueError) as e:
         logging.error(str(e))
         return 1
-    run_manifest.record_invocation(path_config, "query", list(argv), parameters=resolved_parameters(args, p, years))
+    run_manifest.record_invocation(path_config, "query", list(argv), parameters=resolved_parameters(args, years))
     query_all_years(
         path_config,
         years,
         args.demand,
-        p,
+        args.coverage,
         args.samples,
         args.workers,
         force=args.force,
         generate_plots=args.plots,
     )
-    if args.promote_lcoe and run_promotion(path_config, args.demand, p) != 0:
+    if args.promote_lcoe and run_promotion(path_config, args.demand, args.coverage) != 0:
         return 1
     logging.info("\nquery: all (region, year) pairs complete.")
     return 0
@@ -737,14 +741,13 @@ def main_point(argv: list[str]) -> int:
         return 1
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-    p = coverage_to_percentile(args.coverage)
     years = get_simulation_years(args.start_year, args.end_year, args.frequency)
 
     logging.info("=" * 60)
     logging.info("BOA: single-point simulation")
     logging.info("=" * 60)
     logging.info(f"Location: Lat={args.lat}, Lon={args.lon} (region auto-derived)")
-    logging.info(f"Years: {years}; baseload: {args.demand} MW; coverage p={p}; samples={args.samples}")
+    logging.info(f"Years: {years}; baseload: {args.demand} MW; coverage {args.coverage:g}; samples={args.samples}")
 
     resolve_data_sets(args)
     if (rc := run_prepare_flags(args)) != 0:
@@ -756,7 +759,7 @@ def main_point(argv: list[str]) -> int:
     except (FileNotFoundError, ValueError) as e:
         logging.error(str(e))
         return 1
-    run_manifest.record_invocation(path_config, "point", list(argv), parameters=resolved_parameters(args, p, years))
+    run_manifest.record_invocation(path_config, "point", list(argv), parameters=resolved_parameters(args, years))
 
     for year in years:
         logging.info(f"\nRunning single-point simulation for year {year}")
@@ -767,7 +770,7 @@ def main_point(argv: list[str]) -> int:
                 lat=args.lat,
                 lon=args.lon,
                 baseload_demand=args.demand,
-                p=p,
+                coverage=args.coverage,
                 n=args.samples,
             )
         except Exception as e:

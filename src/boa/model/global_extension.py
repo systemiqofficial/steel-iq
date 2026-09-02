@@ -9,6 +9,7 @@ from pathlib import Path
 from boa.geo.iso3_finder import iso3_at_batch
 from boa.geo.geospatial import choose_land_points_in_cutout
 from boa.config.paths import PathConfig
+from boa.conversions import coverage_to_percentile
 from boa.config.settings import (
     REGION_COORDS,
     ERA5_DATA_RESOLUTION,
@@ -106,7 +107,7 @@ def _precompute_tile(
     tile_indices: np.ndarray,
     solar_arr: np.ndarray,
     wind_arr: np.ndarray,
-    p: int,
+    coverage: float,
     n: int,
     seed: int,
 ) -> tuple[float, list[tuple[np.ndarray, np.ndarray]]]:
@@ -129,7 +130,7 @@ def _precompute_tile(
             out.append((empty_d, empty_c))
             continue
         mus = overscale_mus_from_cf(float(solar.mean()), float(wind.mean()))
-        state = precompute_point_state(solar, wind, p, n, seed, mus=mus)
+        state = precompute_point_state(solar, wind, coverage_to_percentile(coverage), n, seed, mus=mus)
         accepted = state.accepted_mask
         if accepted is None or not accepted.any():
             out.append((empty_d, empty_c))
@@ -150,7 +151,7 @@ _EMPTY_TOPUP_C = np.empty(0, dtype=np.float64)
 def _topup_point(
     solar_profile: np.ndarray,
     wind_profile: np.ndarray,
-    p: int,
+    coverage: float,
     n: int,
     seed: int,
     limit: dict[str, float],
@@ -162,13 +163,15 @@ def _topup_point(
     sparse pixels skip it), then the box-truncated re-sample. Returns (verdict,
     designs, coverage): verdict 1 = topped up (rows are the accepted designs,
     float64), 2 = corner-screen proved the box infeasible (no rows).
-    Deterministic per (profiles, limit, p, n, seed), which is what makes the
+    Deterministic per (profiles, limit, coverage, n, seed), which is what makes the
     result persistable per (cache, baseload) and replayable bit-identically.
     """
-    if starved and not corner_design_feasible(solar_profile, wind_profile, p, limit):
+    if starved and not corner_design_feasible(solar_profile, wind_profile, coverage_to_percentile(coverage), limit):
         return 2, _EMPTY_TOPUP_D, _EMPTY_TOPUP_C
     mus = overscale_mus_from_cf(float(solar_profile.mean()), float(wind_profile.mean()))
-    top_up = top_up_point_state(solar_profile, wind_profile, p, n, seed, mus, limit).filter_to_accepted()
+    top_up = top_up_point_state(
+        solar_profile, wind_profile, coverage_to_percentile(coverage), n, seed, mus, limit
+    ).filter_to_accepted()
     return 1, top_up.designs, top_up.coverage
 
 
@@ -187,7 +190,7 @@ def _query_lcoe_tile(
     wind_profiles: np.ndarray,
     baseload_demand: float,
     investment_horizon: int,
-    p: int,
+    coverage: float,
     n: int,
     seed: int,
     min_survivors: int = 1,
@@ -251,7 +254,9 @@ def _query_lcoe_tile(
         else:
             starved = designs_k.shape[0] < min_survivors
             if supplement is None:
-                verdict, top_d, top_c = _topup_point(solar_profiles[k], wind_profiles[k], p, n, seed, limit, starved)
+                verdict, top_d, top_c = _topup_point(
+                    solar_profiles[k], wind_profiles[k], coverage, n, seed, limit, starved
+                )
                 assert topup_out is not None
                 topup_out.append((verdict, top_d, top_c))
             else:
@@ -392,7 +397,7 @@ def _store_size_mb(path: Path) -> float:
 
 def build_design_cache_for_region(
     region: str,
-    p: int,
+    coverage: float,
     n: int,
     profile: xr.Dataset,
     costs: xr.Dataset,
@@ -404,7 +409,7 @@ def build_design_cache_for_region(
     Build the year-independent, baseload-independent design cache for one region and
     persist it under `path_config.design_cache_dir`. Idempotent: if a cache matching
     the parameter tuple already exists, returns its path without rebuilding. One
-    cache per (region, p, n, seed, weather year) serves every baseload — the
+    cache per (region, coverage, n, seed, weather year) serves every baseload — the
     capacity ceiling is applied as a mask at query time.
 
     The build phase no longer touches the iso3 grid or the costs dataset —
@@ -420,7 +425,7 @@ def build_design_cache_for_region(
     cache_file = design_cache.cache_path(
         path_config.design_cache_dir,
         region,
-        p,
+        coverage_to_percentile(coverage),
         n,
         RANDOM_SEED,
         weather_year,
@@ -471,7 +476,7 @@ def build_design_cache_for_region(
                     t,
                     solar_arr,
                     wind_arr,
-                    p,
+                    coverage,
                     n,
                     RANDOM_SEED,
                 ),
@@ -520,7 +525,7 @@ def build_design_cache_for_region(
             region,
             npts,
             designs_flat.shape[0],
-            p,
+            coverage_to_percentile(coverage),
             n,
             RANDOM_SEED,
             weather_year,
@@ -545,7 +550,7 @@ def _topup_tile(
     solar_profiles: np.ndarray,
     wind_profiles: np.ndarray,
     baseload_demand: float,
-    p: int,
+    coverage: float,
     n: int,
     seed: int,
     min_survivors: int,
@@ -575,7 +580,7 @@ def _topup_tile(
             out.append((0, _EMPTY_TOPUP_D, _EMPTY_TOPUP_C))
             continue
         starved = n_masked < min_survivors
-        verdict, top_d, top_c = _topup_point(solar_profiles[k], wind_profiles[k], p, n, seed, limit, starved)
+        verdict, top_d, top_c = _topup_point(solar_profiles[k], wind_profiles[k], coverage, n, seed, limit, starved)
         if starved:
             counters["starved"] += 1
             counters["corner_infeasible" if verdict == 2 else "topped_up"] += 1
@@ -588,7 +593,7 @@ def _topup_tile(
 def build_topup_supplement_for_region(
     region: str,
     baseload_demand: float,
-    p: int,
+    coverage: float,
     n: int,
     profile: xr.Dataset,
     path_config: PathConfig,
@@ -606,7 +611,7 @@ def build_topup_supplement_for_region(
     cache_file = design_cache.cache_path(
         path_config.design_cache_dir,
         region,
-        p,
+        coverage_to_percentile(coverage),
         n,
         RANDOM_SEED,
         weather_year,
@@ -651,7 +656,7 @@ def build_topup_supplement_for_region(
                     solar_profiles,
                     wind_profiles,
                     baseload_demand,
-                    p,
+                    coverage,
                     n,
                     RANDOM_SEED,
                     min_survivors,
@@ -678,7 +683,7 @@ def query_design_cache_for_region(
     year: int,
     region: str,
     baseload_demand: float,
-    p: int,
+    coverage: float,
     profile: xr.Dataset,
     costs: xr.Dataset,
     investment_horizon: int,
@@ -695,7 +700,7 @@ def query_design_cache_for_region(
     LCOE for every surviving design, picks the minimum per point, and assembles +
     writes the NetCDF.
     """
-    optimal_sol_path = path_config.optimal_sol_path(baseload_demand, p, region, year)
+    optimal_sol_path = path_config.optimal_sol_path(baseload_demand, coverage, region, year)
     if optimal_sol_path.exists() and not force:
         logging.info(
             f"Optimal solution for {region} y{year} already exists; loading from disk (use --force to re-derive)."
@@ -707,7 +712,7 @@ def query_design_cache_for_region(
     cache_file = design_cache.cache_path(
         path_config.design_cache_dir,
         region,
-        p,
+        coverage_to_percentile(coverage),
         n,
         RANDOM_SEED,
         weather_year,
@@ -839,7 +844,7 @@ def query_design_cache_for_region(
                     wind_profiles,
                     baseload_demand,
                     investment_horizon,
-                    p,
+                    coverage,
                     n,
                     RANDOM_SEED,
                     min_survivors,
@@ -973,8 +978,8 @@ def query_design_cache_for_region(
             "investment_year": year,
             "investment_horizon_years": investment_horizon,
             "baseload_demand_mw": baseload_demand,
-            "coverage_fraction": 1 - p / 100,
-            "p_percentile": p,
+            "coverage_fraction": coverage,
+            "p_percentile": coverage_to_percentile(coverage),
             "n_samples": n,
             "random_seed": RANDOM_SEED,
             "min_survivor_fraction": MIN_SURVIVOR_FRACTION,
@@ -994,7 +999,7 @@ def query_design_cache_for_region(
 
 def combine_regional_datasets_into_global_dataset(
     year: int,
-    p: int,
+    coverage: float,
     baseload_demand: float,
     path_config: PathConfig,
     force: bool = False,
@@ -1007,7 +1012,7 @@ def combine_regional_datasets_into_global_dataset(
     regional_datasets = {}
 
     # Check if the global dataset already exists
-    global_output_path = path_config.optimal_sol_path(baseload_demand, p, "GLOBAL", year)
+    global_output_path = path_config.optimal_sol_path(baseload_demand, coverage, "GLOBAL", year)
     if global_output_path.exists() and not force:
         logging.info(f"Global optimal solution already exists at {global_output_path}. (use --force to re-derive)")
         return xr.open_dataset(global_output_path)
@@ -1015,7 +1020,7 @@ def combine_regional_datasets_into_global_dataset(
         logging.info(f"Combining regional datasets into global dataset for {year}.")
         # Load all regional datasets
         for region in regions:
-            optimal_sol_path = path_config.optimal_sol_path(baseload_demand, p, region, year)
+            optimal_sol_path = path_config.optimal_sol_path(baseload_demand, coverage, region, year)
             if not optimal_sol_path.exists():
                 logging.warning(f"Optimal solution for {region} not found. Please check processing.")
                 return None

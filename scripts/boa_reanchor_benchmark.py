@@ -33,7 +33,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from boa_repair_rate_benchmark import P, dense_physics_grid, scenario_coeffs, true_lcoe_argmin  # noqa: E402
+from boa_repair_rate_benchmark import COVERAGE, dense_physics_grid, scenario_coeffs, true_lcoe_argmin  # noqa: E402
 from boa_s3_ladder_benchmark import build_cost_coefficients, sample_points  # noqa: E402
 
 from boa.config.paths import PathConfig  # noqa: E402
@@ -78,12 +78,12 @@ def main() -> None:
             solar = np.ascontiguousarray(profile["solar"].isel(y=iy, x=ix).values, dtype=np.float64)
             wind = np.ascontiguousarray(profile["wind"].isel(y=iy, x=ix).values, dtype=np.float64)
 
-            frontier = build_pixel_frontier(solar, wind, P, params, anchor)
+            frontier = build_pixel_frontier(solar, wind, COVERAGE, params, anchor)
             if frontier.status != STATUS_OK:
                 n_skipped += 1
                 continue
 
-            s_vals, w_vals, b_grid, sf_grid = dense_physics_grid(solar, wind, P, params)
+            s_vals, w_vals, b_grid, sf_grid = dense_physics_grid(solar, wind, COVERAGE, params)
 
             for drift in DRIFT_YEARS:
                 coeffs = scenario_coeffs(anchor, solar_mult_at(drift), 1.0)

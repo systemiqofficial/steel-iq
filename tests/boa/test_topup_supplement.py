@@ -30,7 +30,10 @@ from boa.model.logic import (
 )
 
 T = 24 * 21  # three synthetic weeks
+# `logic.py` and `design_cache` still speak the uncovered percentile; `global_extension`
+# now takes the coverage fraction. Both are carried until M3 deletes the first two.
 P = 15
+COVERAGE = 0.85
 N = 400
 SEED = 42
 HORIZON = 3
@@ -127,7 +130,7 @@ def tile_env():
             env.wind_profiles,
             BASELOAD,
             HORIZON,
-            P,
+            COVERAGE,
             N,
             SEED,
             min_survivors=min_surv,
@@ -202,7 +205,7 @@ def test_supplement_build_is_pure_and_prebuild_matches_query_side_effect(tile_en
         tile_env.solar_profiles,
         tile_env.wind_profiles,
         BASELOAD,
-        P,
+        COVERAGE,
         N,
         SEED,
         tile_env.min_survivors,
