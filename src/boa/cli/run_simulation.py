@@ -7,9 +7,8 @@ fixed baseload demand while minimising LCOE. Runs are always GLOBAL (all 9
 regions); the one exception is the single-point mode.
 
 Subcommands:
-    boa-run                  full simulation: build design caches if missing, then query every year
-    boa-run build-cache      year-independent design caches only (all regions)
-    boa-run build-topup      per-baseload top-up supplements against existing caches (all regions)
+    boa-run                  full simulation: build frontier caches if missing, then query every year
+    boa-run build-cache      year-independent frontier caches only (all regions)
     boa-run query            optimal-solution NetCDFs from pre-built caches (all regions, all years)
     boa-run point            single-point run at --lat/--lon (region auto-derived)
 
@@ -28,7 +27,7 @@ Examples:
     boa-run --demand 1000 --coverage 0.95 --promote-lcoe
     boa-run --weather-input cds-2023 --cost-input xlsx-rev3 --dry-run
     boa-run --cds-prepare 2024 --data-prepare master.xlsx test_scenario
-    boa-run build-cache --samples 2000 --workers fast
+    boa-run build-cache --workers fast
     boa-run query --start-year 2030 --end-year 2030 --force
     boa-run point --lat 52.5 --lon 13.4
 """
@@ -44,11 +43,11 @@ import xarray as xr
 from boa.cli import reconfigure_streams_utf8
 from boa.config.paths import DEFAULT_SET, PathConfig
 from boa.config.settings import REGION_COORDS
+from boa.model.anchors import anchor_cost_coefficients
 from boa.model.global_extension import (
-    build_design_cache_for_region,
-    build_topup_supplement_for_region,
+    build_frontier_cache_for_region,
     combine_regional_datasets_into_global_dataset,
-    query_design_cache_for_region,
+    query_frontier_cache_for_region,
 )
 from boa.model.lcoe_promotion import promote_lcoe
 from boa.model.diagnostics import (
@@ -64,10 +63,6 @@ from boa.geo.iso3_finder import (
     validate_subregion_coverage,
     validate_subregion_keys,
 )
-
-# Anchor year for the cost-set sanity check before a cache build; any year works
-# since the build itself never reads costs (cost_keys are derived per query).
-COST_ANCHOR_YEAR = 2025
 
 # Input set assumed when --weather-input is not given (matches boa-cds-prepare's
 # automatic `cds-<year>` tagging).
@@ -363,45 +358,27 @@ def _validate_cost_set(path_config: PathConfig, investment_year: int) -> tuple[x
 def build_all_caches(
     path_config: PathConfig,
     coverage: float,
-    n: int,
+    years: List[int],
     n_workers: int,
     force: bool = False,
 ) -> None:
-    """Build the year- and baseload-independent design cache for every region (skip-if-exists unless force)."""
-    costs, _ = _validate_cost_set(path_config, COST_ANCHOR_YEAR)
+    """
+    Build the year- and baseload-independent frontier cache for every region.
+
+    Skip-if-exists unless `force`. `years` is the horizon the run will query, and it is used
+    only to choose anchors: seed placement is the one part of the build that reads a cost, so
+    the anchors must cover every (cost key, year) a later query can ask for. The stored values
+    are pure dispatch and serve every year regardless.
+    """
+    anchors = anchor_cost_coefficients(years, lambda year: _validate_cost_set(path_config, year))
     for region in REGION_COORDS:
-        logging.info(f"\nBuilding design cache for {region}")
+        logging.info(f"\nBuilding frontier cache for {region}")
         profile = open_regional_dataset("profile", region, path_config)
-        build_design_cache_for_region(
+        build_frontier_cache_for_region(
             region=region,
             coverage=coverage,
-            n=n,
             profile=profile,
-            costs=costs,
-            path_config=path_config,
-            n_workers=n_workers,
-            force=force,
-        )
-
-
-def build_all_topups(
-    path_config: PathConfig,
-    baseload_demand: float,
-    coverage: float,
-    n: int,
-    n_workers: int,
-    force: bool = False,
-) -> None:
-    """Build the per-baseload top-up supplement for every region against its existing design cache."""
-    for region in REGION_COORDS:
-        logging.info(f"\nBuilding top-up supplement for {region}")
-        profile = open_regional_dataset("profile", region, path_config)
-        build_topup_supplement_for_region(
-            region=region,
-            baseload_demand=baseload_demand,
-            coverage=coverage,
-            n=n,
-            profile=profile,
+            anchors=anchors,
             path_config=path_config,
             n_workers=n_workers,
             force=force,
@@ -413,29 +390,28 @@ def query_all_years(
     years: List[int],
     baseload_demand: float,
     coverage: float,
-    n: int,
     n_workers: int,
     force: bool = False,
     generate_plots: bool = True,
 ) -> None:
-    """Derive optimal-solution NetCDFs for every (region, year) from the design caches, then combine."""
-    # Profiles depend only on region; load once per region and reuse across years.
-    profiles: dict[str, xr.Dataset] = {
-        region: open_regional_dataset("profile", region, path_config) for region in REGION_COORDS
-    }
+    """
+    Derive optimal-solution NetCDFs for every (region, year) from the frontier caches.
+
+    No profiles are opened. The sampler needed them at query time to re-run dispatch on its
+    winner; the frontier store already holds every dispatch result the pricing needs, so a
+    year costs four cost scalars and an argmin per pixel.
+    """
     for year in years:
         costs, horizon = _validate_cost_set(path_config, year)
         for region in REGION_COORDS:
-            logging.info(f"\nQuerying design cache for {region} y{year}")
-            query_design_cache_for_region(
+            logging.info(f"\nQuerying frontier cache for {region} y{year}")
+            query_frontier_cache_for_region(
                 year=year,
                 region=region,
                 baseload_demand=baseload_demand,
                 coverage=coverage,
-                profile=profiles[region],
                 costs=costs,
                 investment_horizon=horizon,
-                n=n,
                 path_config=path_config,
                 n_workers=n_workers,
                 force=force,
@@ -505,7 +481,6 @@ def main_run(argv: list[str]) -> int:
     logging.info(f"Years to simulate: {years}")
     logging.info(f"Baseload demand: {args.demand} MW")
     logging.info(f"Coverage requirement: {args.coverage * 100:.1f}%")
-    logging.info(f"Number of samples: {args.samples}")
     logging.info(f"Worker threads: {args.workers}")
     logging.info(f"Generate plots: {args.plots}")
     logging.info("=" * 60)
@@ -521,19 +496,18 @@ def main_run(argv: list[str]) -> int:
         return 1
 
     if args.dry_run:
-        logging.info(f"Design caches: {path_config.design_cache_dir}")
+        logging.info(f"Frontier caches: {path_config.frontier_cache_dir(detect_weather_year(path_config))}")
         logging.info(f"Outputs: {path_config.outputs_dir}")
         logging.info("Dry run - exiting without running simulation")
         return 0
 
     run_manifest.record_invocation(path_config, "run", list(argv), parameters=resolved_parameters(args, years))
-    build_all_caches(path_config, args.coverage, args.samples, args.workers)
+    build_all_caches(path_config, args.coverage, years, args.workers)
     query_all_years(
         path_config,
         years,
         args.demand,
         args.coverage,
-        args.samples,
         args.workers,
         generate_plots=args.plots,
     )
@@ -572,9 +546,7 @@ def main_build_cache(argv: list[str]) -> int:
     logging.info("=" * 60)
     logging.info("BOA: build-cache")
     logging.info("=" * 60)
-    logging.info(
-        f"Coverage {args.coverage:g}; samples={args.samples}; workers={args.workers} (caches are baseload-independent)"
-    )
+    logging.info(f"Coverage {args.coverage:g}; workers={args.workers} (caches are baseload- and year-independent)")
 
     resolve_data_sets(args)
     if (rc := run_prepare_flags(args)) != 0:
@@ -586,60 +558,14 @@ def main_build_cache(argv: list[str]) -> int:
         logging.error(str(e))
         return 1
     run_manifest.record_invocation(path_config, "build-cache", list(argv), parameters=resolved_parameters(args))
-    build_all_caches(path_config, args.coverage, args.samples, args.workers, force=args.force)
+    build_all_caches(
+        path_config,
+        args.coverage,
+        get_simulation_years(args.start_year, args.end_year, args.frequency),
+        args.workers,
+        force=args.force,
+    )
     logging.info("\nbuild-cache: all regions complete.")
-    return 0
-
-
-def main_build_topup(argv: list[str]) -> int:
-    """
-    `build-topup` subcommand: build the per-baseload top-up supplements for all
-    regions against existing design caches (no NetCDF output). Requires the caches
-    to exist; will not build them. Idempotent — valid supplements are kept.
-    """
-    parser = argparse.ArgumentParser(
-        prog="boa-run build-topup",
-        description="Build the per-baseload top-up supplements (all regions) against existing design caches.",
-        formatter_class=_HelpFormatter,
-    )
-    add_scenario_args(parser)
-    add_workers_arg(parser)
-    parser.add_argument("--force", action="store_true", help="Rebuild each supplement even if a valid one exists.")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
-    add_data_args(parser)
-    args = parser.parse_args(argv)
-
-    try:
-        validate_scenario_args(args)
-    except ValueError as e:
-        logging.error(f"Invalid arguments: {e}")
-        return 1
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-
-    logging.info("=" * 60)
-    logging.info("BOA: build-topup")
-    logging.info("=" * 60)
-    logging.info(
-        f"Baseload: {args.demand} MW; coverage {args.coverage:g}; samples={args.samples}; workers={args.workers}"
-    )
-
-    resolve_data_sets(args)
-    if (rc := run_prepare_flags(args)) != 0:
-        return rc
-    path_config = build_path_config(args)
-    try:
-        preflight(path_config)
-    except (FileNotFoundError, ValueError) as e:
-        logging.error(str(e))
-        return 1
-    run_manifest.record_invocation(path_config, "build-topup", list(argv), parameters=resolved_parameters(args))
-    try:
-        build_all_topups(path_config, args.demand, args.coverage, args.samples, args.workers, force=args.force)
-    except FileNotFoundError as e:
-        logging.error(f"{e} — build the design caches first (`boa-run build-cache`).")
-        return 1
-    logging.info("\nbuild-topup: all regions complete.")
     return 0
 
 
@@ -700,7 +626,6 @@ def main_query(argv: list[str]) -> int:
         years,
         args.demand,
         args.coverage,
-        args.samples,
         args.workers,
         force=args.force,
         generate_plots=args.plots,
@@ -784,7 +709,6 @@ def main_point(argv: list[str]) -> int:
 
 _SUBCOMMANDS = {
     "build-cache": main_build_cache,
-    "build-topup": main_build_topup,
     "query": main_query,
     "point": main_point,
 }
