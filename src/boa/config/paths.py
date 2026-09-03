@@ -4,6 +4,20 @@ from pathlib import Path
 
 DEFAULT_SET = "default"
 
+# Prefix of the weather half of an input-set name, as `default_input_set` composes it.
+WEATHER_SET_PREFIX = "cds-"
+
+
+def weather_set_name(weather_year: int) -> str:
+    """
+    The weather half of an input-set name: ``cds-<year>``.
+
+    Composed from the year, never split back out of ``input_set``. That name reaches us from
+    ``--inputs`` and is user-supplied, and an availability tag containing a hyphen would make
+    any split silently mis-key whatever was derived from it.
+    """
+    return f"{WEATHER_SET_PREFIX}{int(weather_year)}"
+
 
 def default_root() -> Path:
     """Resolve the BOA data root: ``$BOA_DATA_ROOT``, else ``$STEELO_HOME/boa``, else ``~/.steelo/boa``.
@@ -30,6 +44,10 @@ class PathConfig:
         ├── inputs/<input_set>/            profile + max-capacity stores (cds-zarr/, atlite/)
         │   ├── staging/                   freshly built stores (transient; emptied by boa_cds install)
         │   └── cache_designs/             year-independent designs; depends only on the stores
+        ├── inputs/cds-<year>/cache_frontiers/
+        │                                  schema v3 frontier stores, keyed on the weather year
+        │                                  alone: they hold no availability assumption, so every
+        │                                  layer set built on the same weather shares one cache
         ├── costs/<cost_set>/boa_cost_data.xlsx
         │   └── cache_costs/               per-year costs; depends only on the xlsx
         ├── runs/<run>/                    one (input_set, cost_set) pairing
@@ -74,6 +92,27 @@ class PathConfig:
     def run_manifest_path(self) -> Path:
         """Provenance record for the run (input/cost set, versions, CLI args)."""
         return self.run_dir / "run.json"
+
+    def frontier_cache_dir(self, weather_year: int) -> Path:
+        """
+        ``inputs/cds-<year>/cache_frontiers`` — root for the schema v3 frontier stores.
+
+        Keyed on the weather year and deliberately **not** on ``input_set``. A frontier store
+        holds no land-availability assumption — the search box comes from capacity factors and
+        the point set from the ERA5 land-sea mask — so every layer set built on the same
+        weather shares one cache. Revising the LULC table then rebuilds the ceiling and the
+        Grid 2 sidecars but not the physics, and an A/B of two ceilings reads the same physics
+        bytes instead of two independently rebuilt copies of them.
+
+        A method rather than a field because the weather year is not known when the config is
+        built: ``detect_weather_year`` reads it off the profile stores. That is also what keeps
+        it out of ``input_set``, which must not be split (see ``weather_set_name``).
+
+        Known gap: two hand-named input sets holding different profiles for the same year would
+        share this cache. Closing it needs a profile signature in the store meta, the
+        counterpart of ``availability_signature``. Not built.
+        """
+        return self.root / "inputs" / weather_set_name(weather_year) / "cache_frontiers"
 
     def scenario_dir(self, baseload_demand: float, coverage: float) -> Path:
         """
