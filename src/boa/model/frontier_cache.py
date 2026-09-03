@@ -164,7 +164,7 @@ class RegionFrontierCache:
     """
     One region's frontiers, stacked on a leading `point` axis.
 
-    Shapes below use `Gc = coarse_grid`, `K = max_seeds`, `P = max_patch_points(params)`
+    Shapes below use `Gc = coarse_grid`, `K = max_patch_slots`, `P = max_patch_points(params)`
     and `R = ladder_rungs`. Every patch array is allocated at full `K` and `P`; only the
     first `n_patches` slots, and within each slot only `patch_points[k, slot]` rows and
     columns, hold real values.
@@ -507,4 +507,4 @@ def frontier_at(cache: RegionFrontierCache, k: int) -> PixelFrontier:
 def expected_patch_shape(params: SearchParams) -> tuple[int, int, int, int]:
     """`(K, P, P, R)`, the padded patch allocation the parameters imply."""
     p = max_patch_points(params)
-    return (params.max_seeds, p, p, params.ladder_rungs)
+    return (params.max_patch_slots, p, p, params.ladder_rungs)

@@ -106,7 +106,17 @@ class SearchParams:
     #                              that still resolves inside a cell. TODO: settle alongside
     #                              `patch_grid` in the grid-configuration sweep.
     seed_tolerance: float = 0.05  # coarse cells within 5% of the best also get a patch
-    max_seeds: int = 3  # cap on patches per pixel; bounds worst-case cache size
+    max_seeds: int = 3  # cap on seeds *one anchor* may propose
+    max_patch_slots: int = 4  # cap on the union across anchors, and the stored patch depth.
+    #                           Re-anchoring keeps the union of every anchor's seed placement
+    #                           rather than one patch set per anchor, so this is what bounds
+    #                           the cache. Measured on 120 real pixels under the five real
+    #                           cost anchors: 77.5% of pixels have all anchors agreeing on a
+    #                           single box, 99.2% need at most two, and the widest seen was
+    #                           four. Overflow past this is not silently wrong -- a dropped
+    #                           basin is exactly the case the containment certificate detects,
+    #                           so it degrades to an uncertified answer. TODO: confirm the
+    #                           tail at global coverage in the grid-configuration sweep.
 
     # -- Battery rungs: LCOE(b) is not monotone once divided by served fraction (which
     #    keeps rising with b), so the cheapest battery can sit above b_min. Rather than
@@ -895,7 +905,7 @@ def build_pixel_frontier(
     wind: np.ndarray,
     coverage: float,
     params: SearchParams,
-    anchor: CostCoefficients,
+    anchor: CostCoefficients | Sequence[CostCoefficients],
     hint: float = -1.0,
 ) -> PixelFrontier:
     """
@@ -904,6 +914,22 @@ def build_pixel_frontier(
     Degenerate check, coarse sweep, seed selection, box widening, then a dense patch per
     seed. Deterministic: no RNG survives the rewrite, so two builds of the same pixel are
     bit-identical.
+
+    `anchor` may be one set of cost coefficients or several. Several is what re-anchoring
+    means here: rather than storing a patch set per anchor, seed selection runs under each
+    anchor's costs and the **union of the distinct patch boxes** is built once. The stored
+    values are pure dispatch, so one set serves every anchor and every year -- an anchor
+    only ever decides *where* to look, never what is found there. That also removes anchor
+    routing from the query path and is more accurate than routing, since there is no
+    wrong-side-of-the-midpoint error.
+
+    The union is cheap because the anchors mostly agree. Measured on 120 real pixels under
+    the five real cost anchors: all five pick the same single box on 77.5% of pixels, the
+    mean is 1.24 distinct boxes against 1.01 for a single anchor, so the union costs about a
+    fifth more patch work where a frontier per anchor would cost five times as much.
+
+    A single `CostCoefficients` is accepted as the degenerate one-anchor union, because
+    making every caller wrap one anchor in a list adds noise without adding safety.
 
     `hint` is a `b_min` carried in from a neighbouring pixel, and it reaches **only the
     patch bisections**, never the coarse sweep. That is not an oversight. The coarse sweep
@@ -915,7 +941,10 @@ def build_pixel_frontier(
     No cost year, cost scenario or baseload is read anywhere in here, which is what makes
     `status` year-invariant -- the property `lcoe_promotion` requires.
     """
-    gc, k = params.coarse_grid, params.max_seeds
+    anchors = [anchor] if isinstance(anchor, CostCoefficients) else list(anchor)
+    if not anchors:
+        raise ValueError("build_pixel_frontier needs at least one anchor")
+    gc, k = params.coarse_grid, params.max_patch_slots
     pmax = max_patch_points(params)
     # Allocated once at full depth and at the widest patch the parameters allow, then
     # filled in place: an early return simply hands back the zeros, which is the right
@@ -967,15 +996,22 @@ def build_pixel_frontier(
         # basin, so two lattice steps is the rule; on the filled grid it would have to be
         # restated in coarse cells to bind at all.
         li = _sub_lattice(gc, params.coarse_stride)
-        seeds = [
-            (int(li[i]), int(li[j]))
-            for i, j in select_seeds(
-                anchor_score(s_coarse[li], w_coarse[li], b_coarse[np.ix_(li, li)], anchor),
-                params.seed_tolerance,
-                2,
-                params.max_seeds,
-            )
-        ]
+
+        # Union the anchors' seed placements, keyed on the snapped patch box rather than on
+        # the seed cell: two anchors often pick neighbouring cells that snap to the same box,
+        # and building it twice would store the same numbers in two slots. Each box keeps its
+        # best score across the anchors that proposed it, so if the union ever overruns
+        # `max_patch_slots` the boxes dropped are the ones no anchor rated highly.
+        boxes: dict[tuple[int, int, int, int], tuple[float, int, int]] = {}
+        for one in anchors:
+            scores = anchor_score(s_coarse[li], w_coarse[li], b_coarse[np.ix_(li, li)], one)
+            for a, b in select_seeds(scores, params.seed_tolerance, 2, params.max_seeds):
+                i, j = int(li[a]), int(li[b])
+                bounds = patch_bounds_for_seed(s_coarse, w_coarse, i, j, params)
+                score = float(scores[a, b])
+                if bounds not in boxes or score < boxes[bounds][0]:
+                    boxes[bounds] = (score, i, j)
+        seeds = [(i, j) for _, (_, i, j) in sorted(boxes.items(), key=lambda kv: kv[1][0])][:k]
         if not seeds:
             break
 
