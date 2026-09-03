@@ -45,8 +45,6 @@ it is now the only thing keeping a stale ceiling out.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass, field
@@ -79,13 +77,18 @@ _FRACTION_SCALE = 65535.0
 
 def params_hash(params: SearchParams) -> str:
     """
-    Stable 8-hex digest of the full `SearchParams`, for the cache filename.
+    Stable 8-hex digest identifying everything that determines a store's contents.
 
-    Stable across processes and releases, so `hash()` is not usable: it is salted per
-    interpreter run and would give the same parameters a different path every time.
+    Delegates to `SearchParams.identity_hash` rather than hashing the dataclass alone. That
+    distinction is load-bearing: `identity_hash` also folds in `OVERSCALE_SAMPLING_K`, which
+    sets `mu = k / CF` and therefore the search box, and therefore every value in the store.
+    A digest over the dataclass by itself would not move when `k` did, so a changed constant
+    would silently reuse an incompatible store -- the exact defect v2 had.
+
+    Stable across processes, so `hash()` is not usable: it is salted per interpreter run and
+    would send the same parameters to a different path every time.
     """
-    payload = json.dumps(asdict(params), sort_keys=True, separators=(",", ":"))
-    return hashlib.blake2b(payload.encode("utf-8"), digest_size=4).hexdigest()
+    return params.identity_hash()
 
 
 def frontier_cache_path(
