@@ -287,7 +287,16 @@ def test_optimum_meets_the_coverage_constraint(profiles, frontier, coeffs):
     """
     optimum = argmin_lcoe(frontier, coeffs)
     cov, _ = dispatch_metrics(profiles["solar"], profiles["wind"], optimum.solar, optimum.wind, optimum.battery)
-    assert cov >= 1.0 - 0.85 - 1e-9
+    # The frontier is built at 0.85, so that is the bar. `1.0 - 0.85` was the old
+    # percentile arithmetic surviving the coverage conversion, and it asserted 0.15 --
+    # a bar any feasible design clears, so the test passed without checking anything.
+    assert cov >= 0.85 - 1e-9
+
+    # The optimum's own stored coverage must agree with a fresh dispatch of it. They come
+    # from different places -- one quantised out of the cache, one recomputed here -- so a
+    # mismatch would mean the argmin indexed a different node than it reported.
+    assert optimum.hours_covered == pytest.approx(cov, abs=2e-5)
+    assert optimum.served_fraction >= optimum.hours_covered - 1e-9
 
 
 def test_battery_optimum_can_sit_above_b_min(profiles, frontier, coeffs):
