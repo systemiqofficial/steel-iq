@@ -38,13 +38,18 @@ from boa.model.logic import (
 from boa.model import design_cache
 from boa.model.bisection import (
     STATUS_OK,
+    STATUS_ZERO_POTENTIAL,
     CostCoefficients,
     PixelFrontier,
     SearchParams,
+    argmin_lcoe,
     build_pixel_frontier,
 )
+from boa.model.cost_calculations import installation_cost_breakdown, lcoe_coefficients
 from boa.model.frontier_cache import (
+    RegionFrontierCache,
     build_frontier_meta,
+    frontier_at,
     frontier_cache_path,
     stack_pixel_frontiers,
     write_frontier_cache,
@@ -155,6 +160,95 @@ def _precompute_tile(
             )
         )
     return time.time() - t0, out
+
+
+def _query_frontier_tile(
+    tile_indices: np.ndarray,
+    cache: RegionFrontierCache,
+    capex_per_tech: dict,
+    opex_per_tech: dict,
+    coc_arr: np.ndarray,
+    cost_keys: np.ndarray,
+    baseload_demand: float,
+    investment_horizon: int,
+) -> tuple[float, list[dict], dict[str, int]]:
+    """
+    Query-phase worker for the grid-bisection search: price one tile's frontiers.
+
+    Far less work than `_query_lcoe_tile`, and the reductions are the point of the rewrite
+    rather than a simplification of it. There is no capacity mask, no corner screen and no
+    top-up, because the search already resolved the optimum densely. There is no second
+    dispatch either: the sampler had to re-run state-of-charge on its winner to swap the LCOE
+    denominator from binary coverage to served fraction, whereas here the served fraction was
+    stored at build time, so ranking and reporting use the same number by construction.
+
+    What remains is arithmetic: four cost scalars against cached physics, an argmin, and the
+    installation-cost breakdown.
+
+    **The capacity ceiling is not applied.** `argmin_lcoe` takes no capacity parameter -- the
+    ceiling belongs to Grid 2 -- so between M3 and M4 this reports the *unconstrained* optimum.
+    The caller warns about it. Delete that warning together with this note when Grid 2 lands.
+
+    Counters carry the certificate telemetry: how often the patches provably held the optimum,
+    and how often the winner sat against a patch edge.
+    """
+    t0 = time.time()
+    results: list[dict] = []
+    counters = {"certified": 0, "truncated": 0, "no_optimum": 0, "zero_potential": 0}
+
+    for k in tile_indices:
+        cost_key = str(cost_keys[k]) if cost_keys[k] else ""
+        status = int(cache.status[k])
+        if status != STATUS_OK:
+            counters["zero_potential" if status == STATUS_ZERO_POTENTIAL else "no_optimum"] += 1
+            # Built explicitly rather than copied from `_ZERO_RESULT`: the template's nested
+            # breakdown has to be copied separately or every zero result shares one dict, and
+            # spelling the zeros out removes that trap along with the aliasing it guards.
+            results.append(
+                {
+                    "design": {"solar": 0.0, "wind": 0.0, "battery": 0.0},
+                    "lcoe": 0.0,
+                    "lcoe_coverage_based": 0.0,
+                    "installation_cost": 0.0,
+                    "installation_cost_breakdown": {"solar": 0.0, "wind": 0.0, "battery": 0.0},
+                    "coverage": 0.0,
+                    "served_fraction": 0.0,
+                    "cost_of_capital": 0.0,
+                    "cost_key": cost_key,
+                    "status": status,
+                }
+            )
+            continue
+
+        capex_k = {tech: capex_per_tech[tech][k] for tech in ("solar", "wind", "battery")}
+        opex_k = {tech: float(opex_per_tech[tech][k]) for tech in ("solar", "wind", "battery")}
+        coeffs = lcoe_coefficients(investment_horizon, capex_k, opex_k, float(coc_arr[k]), baseload_demand)
+        optimum = argmin_lcoe(frontier_at(cache, int(k)), coeffs)
+        total, ic_s, ic_w, ic_b = installation_cost_breakdown(
+            optimum.solar, optimum.wind, optimum.battery, baseload_demand, capex_k
+        )
+        counters["certified"] += int(optimum.patch_certified)
+        counters["truncated"] += int(optimum.argmin_truncated)
+
+        results.append(
+            {
+                "design": {"solar": optimum.solar, "wind": optimum.wind, "battery": optimum.battery},
+                "lcoe": optimum.lcoe,
+                # Redefined, not dropped: it used to be the ranking value that disagreed with
+                # the reported one. Ranking and reporting now agree, so the variable becomes
+                # "LCOE if every hour were served", which is the curtailment-free reference.
+                "lcoe_coverage_based": optimum.lcoe * optimum.served_fraction,
+                "installation_cost": total,
+                "installation_cost_breakdown": {"solar": ic_s, "wind": ic_w, "battery": ic_b},
+                "coverage": optimum.hours_covered,
+                "served_fraction": optimum.served_fraction,
+                "cost_of_capital": float(coc_arr[k]),
+                "cost_key": cost_key,
+                "status": STATUS_OK,
+            }
+        )
+
+    return time.time() - t0, results, counters
 
 
 _EMPTY_TOPUP_D = np.empty((0, 3), dtype=np.float64)

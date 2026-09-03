@@ -538,3 +538,57 @@ def test_grid_one_optimum_is_reproducible(frontier, coeffs):
     a = argmin_lcoe(frontier, coeffs)
     b = argmin_lcoe(frontier, coeffs)
     assert (a.solar, a.wind, a.battery, a.lcoe) == (b.solar, b.wind, b.battery, b.lcoe)
+
+
+def test_installation_breakdown_matches_the_vectorised_pricer(coeffs):
+    """
+    The breakdown is computed on its own rather than by repricing a one-element population,
+    so it has to be pinned against the pricer it replaces -- including the battery's modular
+    CAPEX correction, which is the part that does not go through the closed form.
+    """
+    from boa.model.cost_calculations import (
+        calculate_lcoe_of_re_installation_vectorised,
+        installation_cost_breakdown,
+    )
+
+    capex = {
+        "solar": np.full(26, 900_000.0),
+        "wind": np.full(26, 1_400_000.0),
+        "battery": np.full(26, 300_000.0),
+    }
+    opex = {"solar": 0.01, "wind": 0.02, "battery": 0.02}
+    baseload, design = 500.0, (3.1, 2.4, 6.7)
+
+    _, total, ic_s, ic_w, ic_b = calculate_lcoe_of_re_installation_vectorised(
+        installed_solar=np.array([design[0] * baseload]),
+        installed_wind=np.array([design[1] * baseload]),
+        installed_battery=np.array([design[2] * baseload]),
+        investment_horizon=25,
+        capex=capex,
+        opex_pct=opex,
+        cost_of_capital=0.08,
+        baseload_demand=baseload,
+        realised_delivery_fraction=np.array([1.0]),
+    )
+    got = installation_cost_breakdown(*design, baseload, capex)
+    assert got == pytest.approx((float(total[0]), float(ic_s[0]), float(ic_w[0]), float(ic_b[0])))
+
+
+def test_a_zero_battery_installs_nothing_rather_than_raising(coeffs):
+    """
+    The modular correction has a negative exponent, so a zero battery would raise zero to a
+    negative power. It contributes nothing either way, and the guard must not disturb the
+    solar and wind terms.
+    """
+    from boa.model.cost_calculations import installation_cost_breakdown
+
+    capex = {
+        "solar": np.full(26, 900_000.0),
+        "wind": np.full(26, 1_400_000.0),
+        "battery": np.full(26, 300_000.0),
+    }
+    total, ic_s, ic_w, ic_b = installation_cost_breakdown(2.0, 1.0, 0.0, 100.0, capex)
+    assert ic_b == 0.0
+    assert ic_s == pytest.approx(2.0 * 100.0 * 900_000.0)
+    assert ic_w == pytest.approx(1.0 * 100.0 * 1_400_000.0)
+    assert total == pytest.approx(ic_s + ic_w)
