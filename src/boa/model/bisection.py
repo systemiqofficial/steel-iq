@@ -1147,7 +1147,13 @@ class Optimum:
     solar: float
     wind: float
     battery: float
+    # The two fractions are not interchangeable and the output reports both. `served_fraction`
+    # is the share of annual *energy* delivered and is the LCOE denominator; `hours_covered` is
+    # the share of *hours* fully met, which is the constraint the search enforced. Ranking on
+    # the second while reporting the first is the inconsistency this rewrite removes, so they
+    # travel together rather than one being re-derived downstream.
     served_fraction: float
+    hours_covered: float
     patch_index: int
     patch_certified: bool
     argmin_truncated: bool
@@ -1259,6 +1265,7 @@ def argmin_lcoe(frontier: PixelFrontier, coeffs: CostCoefficients) -> Optimum:
         wind=w,
         battery=b_val,
         served_fraction=sf_val,
+        hours_covered=float(frontier.hours_covered_frac[k, i, j, r]),
         patch_index=k,
         patch_certified=_containment_certificate(frontier, coeffs, best_lcoe),
         argmin_truncated=_argmin_truncated(frontier, k, i, j),
