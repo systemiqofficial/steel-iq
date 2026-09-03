@@ -24,6 +24,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from json import dumps
+from typing import TypeVar
 
 import numba
 import numpy as np
@@ -50,6 +51,10 @@ STATUS_CAPACITY_INFEASIBLE = 6
 # Floor under the relative bisection tolerance, so a pixel whose `b_min` is near zero does
 # not spend a dozen full-year dispatch passes resolving a battery nobody can measure.
 _B_TOL_ABS = 1e-6
+
+# What an anchor is identified by. Years for a cost trajectory, but `covering_anchors` is
+# generic because the set that actually needs covering is (cost key, year) pairs.
+_AnchorKey = TypeVar("_AnchorKey")
 
 
 def _check_coverage(coverage: float) -> None:
@@ -268,6 +273,56 @@ def distinct_anchor_years(
             kept.append(year)
             reference = ratios
     return kept
+
+
+def covering_anchors(
+    candidates: Sequence[_AnchorKey],
+    coefficients_for: Callable[[_AnchorKey], CostCoefficients],
+    tol: float,
+    max_anchors: int = 32,
+) -> list[_AnchorKey]:
+    """
+    The smallest set of candidates such that every candidate's cost mix lies within `tol`
+    of one of them, chosen greedily farthest-point-first.
+
+    `distinct_anchor_years` walks an ordered trajectory and is right for one; this is right
+    for a set with no natural order, which is what the anchors actually have to cover. The
+    query prices each pixel with its own cost key's coefficients, and mixes differ by key as
+    well as by year -- measured on the real workbook, the cross-key spread at a single year
+    is 0.157 against 0.088 of drift across the whole 2025-2060 horizon, so *where* a cost key
+    sits matters more than *when* it is queried. Anchoring on years alone would leave the
+    keys at the edges of that spread covered by an anchor built for the middle.
+
+    Sequential dedupe is wrong for that set: with no meaningful order, whether a candidate
+    survives would depend on iteration order, and nothing would guarantee the ones dropped
+    are close to the ones kept. Greedy farthest-point gives that guarantee directly, and it
+    subsumes the trajectory case -- a flat tail is at distance zero from an anchor already
+    kept, so it is never selected.
+
+    Candidates come back in their original order, so a list of years stays chronological.
+
+    `max_anchors` bounds the build rather than the answer. Stopping early leaves some
+    candidates further than `tol` from every anchor, which can misplace a seed and cost an
+    uncertified query -- the containment certificate still detects it -- so the cap is a
+    guard against a pathologically small `tol`, not a tuning knob.
+    """
+    if tol < 0.0:
+        raise ValueError(f"tol must be non-negative, got {tol}")
+    if max_anchors < 1:
+        raise ValueError(f"max_anchors must be at least 1, got {max_anchors}")
+    if not candidates:
+        return []
+
+    ratios = [np.asarray(cost_ratio_simplex(coefficients_for(c))) for c in candidates]
+    kept = [0]
+    gaps = np.array([float(np.max(np.abs(r - ratios[0]))) for r in ratios])
+    while len(kept) < max_anchors:
+        far = int(np.argmax(gaps))
+        if gaps[far] <= tol:
+            break
+        kept.append(far)
+        gaps = np.minimum(gaps, [float(np.max(np.abs(r - ratios[far]))) for r in ratios])
+    return [candidates[i] for i in sorted(kept)]
 
 
 def nearest_anchor(query_year: int, anchors: list[int]) -> int:
