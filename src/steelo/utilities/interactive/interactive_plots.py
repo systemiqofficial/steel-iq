@@ -32,6 +32,7 @@ from . import (
     metallic_charge_use,
     reductant_use,
     supply_demand,
+    trade_allocations,
     trade_matrix,
 )
 
@@ -117,6 +118,7 @@ class InteractivePlotter:
         >>> interactive.plot_cost_curves(post_processed_csv, market_prices_csv, clearing)
         >>> interactive.plot_trade_matrix(tm_dir)
         >>> interactive.plot_trade_network(tm_dir)
+        >>> interactive.plot_trade_allocations(tm_dir)
         >>> interactive.plot_reductant_use(post_processed_csv, primary_feedstocks_json)
         >>> interactive.plot_metallic_charge_use(post_processed_csv, primary_feedstocks_json, suppliers_json)
     """
@@ -369,6 +371,50 @@ class InteractivePlotter:
         }
         path = self._write("trade_network.html", self._config("Trade network"), data)
         logger.info("Wrote trade-network viewer %s (%d flows over %d years)", path, len(rows), len(years))
+        return path
+
+    def plot_trade_allocations(self, tm_dir: Path) -> Optional[Path]:
+        """Write the trade-allocations map viewer (``trade_allocations.html``).
+
+        The map is the per-year pydeck trade maps' replacement: every year's
+        allocations as commodity arcs between plants, suppliers and demand centres
+        over an inlined world outline, with a year slider, commodity toggles and the
+        shared geography filter — one self-contained file with no network access.
+
+        Args:
+            tm_dir: The run's ``TM`` output directory holding ``steel_trade_allocations_<year>.csv``.
+
+        Returns:
+            The written path, or None when no allocation file exists or one cannot be
+            read (logged as warnings so the plot stage never fails). A year whose file
+            holds no allocations stays in the year slider with an empty map.
+        """
+        files = trade_matrix.allocation_files(tm_dir)
+        if not files:
+            logger.warning(
+                "No steel_trade_allocations_<year>.csv under %s — skipping the trade-allocations viewer", tm_dir
+            )
+            return None
+        try:
+            years = {year: trade_allocations.records_for_year(path) for year, path in files.items()}
+        except ValueError as exc:
+            logger.warning("%s — skipping the trade-allocations viewer", exc)
+            return None
+        data = {
+            self.run_title: {
+                "title": self.run_title,
+                "provenance": self.TRADE_PROVENANCE,
+                **trade_allocations.pack_years(years),
+            },
+        }
+        config = self._config(
+            "Trade allocations",
+            commodityColours=trade_allocations.COMMODITY_COLOURS,
+            fallbackColour=trade_allocations.FALLBACK_COLOUR,
+        )
+        path = trade_allocations.write_viewer(config, data, self.output_dir / "trade_allocations.html")
+        arcs = sum(len(arc_records) for arc_records, _ in years.values())
+        logger.info("Wrote trade-allocations viewer %s (%d arcs over %d years)", path, arcs, len(years))
         return path
 
     def plot_supply_demand(

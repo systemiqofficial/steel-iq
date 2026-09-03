@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Trade allocations</title>
+<style>__COMMON_CSS__</style>
+<style>
+/* The map fills the viewport below the shared toolbar; the shell's light chrome is
+   re-tinted for the dark page. */
+body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; background: #0b0d12; color: #e0e0e0;
+       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+#topbar { flex: none; background: rgba(22, 24, 31, 0.97); border-bottom: 1px solid #262a34; }
+#topbar .toolbar { padding: 10px 16px 8px; }
+#commodity-row, #place-row { padding-top: 0 !important; }
+#topbar .toolbar label { color: #9aa0ab; }
+#topbar select, #topbar .box-dropdown > button, #topbar .small-btn {
+  background: #262a34; color: #e0e0e0; border: 1px solid #3a3f4d; border-radius: 3px; }
+#topbar .box-panel { background: #1c1f27; border-color: #3a3f4d; }
+#topbar .box-panel label, #topbar .toolbar label.inline { color: #e0e0e0; }
+#topbar .box-panel .muted { color: #9aa0ab; }
+#topbar .geo-chip { background: #2c3140; color: #e0e0e0; }
+#topbar .geo-chip button { color: #9aa0ab; }
+#topbar .geo-chip-note { color: #9aa0ab; }
+#topbar #geo-panel { flex: 1; }
+#place-boxes { display: inline-flex; gap: 2px 14px; }
+#place-boxes label.inline { padding-top: 5px; font-size: 12px; }
+#place-note { margin-top: 2px; }
+.swatch { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; display: inline-block; }
+.swatch.round { border-radius: 50%; border: 1px solid rgba(255,255,255,0.4); }
+#commodity-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 10px; max-width: 760px;
+                   vertical-align: top; align-items: center; }
+#commodity-chips .swatch { width: 9px; height: 9px; margin-right: 4px; }
+#map { position: relative; flex: 1; }
+.panel { position: absolute; z-index: 1; background: rgba(24, 26, 32, 0.92); border-radius: 6px;
+         box-shadow: 0 2px 8px rgba(0,0,0,0.5); padding: 12px 15px; font-size: 13px; }
+#controls { top: 10px; left: 10px; max-width: 420px; }
+#title { font-weight: 600; font-size: 14px; margin-bottom: 8px; }
+#year-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+#year-row button { background: rgba(80, 120, 200, 0.8); color: #fff; border: none; border-radius: 3px;
+                   font-size: 13px; padding: 2px 9px; cursor: pointer; }
+#year-row button:hover { background: rgba(100, 140, 220, 0.9); }
+#year-slider { flex: 1; accent-color: rgb(80, 120, 200); }
+#year-label { font-weight: 600; font-size: 15px; min-width: 42px; text-align: right; }
+#stats, #provenance { font-size: 11px; color: #9aa0ab; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div id="err"></div>
+<script>
+window.addEventListener("error", function(e) {
+  const el = document.getElementById("err");
+  el.style.display = "block";
+  el.textContent = "Load error: " + (e.message || e.type) + (e.filename ? " @ " + e.lineno : "");
+}, true);
+</script>
+<div id="topbar">
+  <div class="toolbar" id="shared-filters"></div>
+  <div class="toolbar" id="commodity-row"></div>
+  <div class="toolbar" id="place-row"></div>
+</div>
+<div id="map">
+  <div id="controls" class="panel">
+    <div id="title"></div>
+    <div id="year-row">
+      <button id="year-prev" title="Previous year">‹</button>
+      <input type="range" id="year-slider">
+      <button id="year-next" title="Next year">›</button>
+      <span id="year-label"></span>
+    </div>
+    <div id="stats"></div>
+    <div id="provenance"></div>
+  </div>
+</div>
+<script>__DECKGL__</script>
+<script>
+const CONFIG = __CONFIG__;
+const DATA = __DATA__;
+const WORLD = __WORLD__;
+</script>
+<script>__COMMON_JS__</script>
+<script>
+const TOOLTIP_STYLE = {
+  backgroundColor: "rgba(40, 40, 40, 0.95)", color: "#e0e0e0", fontSize: "12px", lineHeight: "1.4",
+  padding: "8px 12px", borderRadius: "4px", whiteSpace: "pre-line", maxWidth: "320px",
+  fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+};
+// Node colour per location category; a shared coordinate (several endpoints, e.g. a
+// country's scrap supplier and demand centre) uses the stronger shade.
+const NODE_COLOURS = {
+  plant: {base: [150, 160, 175, 200], strong: [220, 230, 245, 255], label: "Steel/iron plants"},
+  centre: {base: [255, 165, 60, 200], strong: [255, 120, 0, 255], label: "Demand / scrap centres"},
+  mine: {base: [0, 170, 170, 200], strong: [0, 235, 235, 255], label: "Mines / raw materials"},
+};
+const commodities = [...new Set(Object.values(DATA).flatMap(d => d.commodities))].sort();
+// Steel alone is the opening view; the toggles bring in the rest.
+const selected = new Set(commodities.includes("steel") ? ["steel"] : commodities);
+const commodityCbs = new Map();
+const shownKinds = new Set(Object.keys(NODE_COLOURS));
+const colourOf = c => CONFIG.commodityColours[c] || CONFIG.fallbackColour;
+const fmt = n => n.toLocaleString("en-US");
+// Widths reproduce the per-year maps: volume / the year's max volume × 10 pixels.
+const maxVolume = {};
+let arcIdx = [];   // indices of the current year's arcs that pass the commodity and geography filters
+let nodeIdx = [];  // indices of the current year's nodes whose location tick is on
+
+function currentRun() { return DATA[Interactive.run()]; }
+function currentYear() { return currentRun().years[+document.getElementById("year-slider").value]; }
+
+function maxVolumeOf(run, year) {
+  const key = `${Interactive.run()}|${year}`;
+  if (!(key in maxVolume)) maxVolume[key] = run.arcs[year].v.reduce((m, v) => v > m ? v : m, 0) || 1;
+  return maxVolume[key];
+}
+
+function arcTooltip(run, year, index) {
+  const A = run.arcs[year], i = arcIdx[index];
+  const s = run.endpoints[A.s[i]], d = run.endpoints[A.d[i]];
+  return `From ${s[0]} (${s[1]}) to ${d[0]} (${d[1]})\nCommodity: ${run.commodities[A.c[i]]}` +
+         `\nVolume: ${fmt(A.v[i])} t\nCost: $${fmt(A.k[i])}`;
+}
+
+function tooltip(info) {
+  if (!info.layer || info.index < 0) return null;
+  const run = currentRun(), year = currentYear();
+  if (info.layer.id === "arcs") return {text: arcTooltip(run, year, info.index), style: TOOLTIP_STYLE};
+  if (info.layer.id === "nodes") {
+    return {text: run.infos[run.nodes[year].i[nodeIdx[info.index]]], style: TOOLTIP_STYLE};
+  }
+  return null;
+}
+
+function buildLayers() {
+  const run = currentRun(), year = currentYear();
+  const A = run.arcs[year], N = run.nodes[year], E = run.endpoints;
+  const geos = Interactive.selectedGeos();
+  // An arc stays when either end lies in the selected geography (a mine's iso3 can be
+  // empty, and then the arc follows its destination). Nodes ignore the geography and
+  // commodity filters: each location category shows purely on its own tick.
+  arcIdx = [];
+  for (let i = 0; i < A.c.length; i++) {
+    if (!selected.has(run.commodities[A.c[i]])) continue;
+    const s = E[A.s[i]], d = E[A.d[i]];
+    if (geos.has(s[1]) || geos.has(d[1])) arcIdx.push(i);
+  }
+  nodeIdx = [];
+  for (let i = 0; i < N.p.length; i++) {
+    if (shownKinds.has(run.kinds[N.t[i]])) nodeIdx.push(i);
+  }
+  document.getElementById("stats").textContent =
+    `${fmt(arcIdx.length)} of ${fmt(A.c.length)} arcs · ${fmt(nodeIdx.length)} of ${fmt(N.p.length)} nodes`;
+  const maxV = maxVolumeOf(run, year);
+  return [
+    new deck.GeoJsonLayer({id: "land", data: WORLD.land, filled: true, stroked: false,
+                           getFillColor: [30, 33, 42]}),
+    new deck.GeoJsonLayer({id: "borders", data: WORLD.borders, filled: false, stroked: true,
+                           getLineColor: [80, 86, 102], lineWidthMinPixels: 0.5}),
+    new deck.ArcLayer({
+      id: "arcs",
+      data: {length: arcIdx.length},
+      getSourcePosition: (_, {index}) => { const e = E[A.s[arcIdx[index]]]; return [e[3], e[2]]; },
+      getTargetPosition: (_, {index}) => { const e = E[A.d[arcIdx[index]]]; return [e[3], e[2]]; },
+      getSourceColor: (_, {index}) => colourOf(run.commodities[A.c[arcIdx[index]]]),
+      getTargetColor: (_, {index}) => colourOf(run.commodities[A.c[arcIdx[index]]]),
+      getWidth: (_, {index}) => A.v[arcIdx[index]] / maxV * 10,
+      wrapLongitude: true,
+      pickable: true,
+      autoHighlight: true,
+    }),
+    new deck.ScatterplotLayer({
+      id: "nodes",
+      data: {length: nodeIdx.length},
+      getPosition: (_, {index}) => { const p = run.points[N.p[nodeIdx[index]]]; return [p[1], p[0]]; },
+      getFillColor: (_, {index}) => {
+        const colour = NODE_COLOURS[run.kinds[N.t[nodeIdx[index]]]];
+        return N.n[nodeIdx[index]] > 1 ? colour.strong : colour.base;
+      },
+      getRadius: (_, {index}) => N.n[nodeIdx[index]] > 1 ? 25000 : 20000,
+      radiusMinPixels: 1,
+      stroked: true,
+      getLineColor: [255, 255, 255, 100],
+      lineWidthMinPixels: 1,
+      pickable: true,
+    }),
+  ];
+}
+
+// keyboard: false keeps arrow keys for the year stepper — the map itself never pans on
+// key presses, only on pointer drag and scroll zoom.
+const deckgl = new deck.Deck({
+  parent: document.getElementById("map"),
+  views: [new deck.MapView({repeat: true})],
+  initialViewState: {longitude: 60, latitude: 22, zoom: 1.3, minZoom: 0.8, maxZoom: 15, pitch: 0, bearing: 0},
+  controller: {keyboard: false},
+  getTooltip: tooltip,
+  layers: [],
+});
+
+function render() {
+  document.getElementById("title").textContent = currentRun().title;
+  document.getElementById("provenance").textContent = currentRun().provenance;
+  document.getElementById("year-label").textContent = currentYear();
+  deckgl.setProps({layers: buildLayers()});
+}
+
+function syncYears() {
+  const slider = document.getElementById("year-slider");
+  const years = currentRun().years;
+  const current = years[+slider.value];
+  slider.min = 0;
+  slider.max = years.length - 1;
+  slider.value = years.includes(current) ? years.indexOf(current) : years.length - 1;
+}
+
+function stepYear(delta) {
+  const slider = document.getElementById("year-slider");
+  slider.value = Math.min(Math.max(+slider.value + delta, 0), currentRun().years.length - 1);
+  render();
+}
+
+function el(tag, attrs = {}, children = []) {
+  const node = document.createElement(tag);
+  Object.entries(attrs).forEach(([k, v]) => {
+    if (k === "text") node.textContent = v;
+    else if (k === "class") node.className = v;
+    else node.setAttribute(k, v);
+  });
+  children.forEach(c => node.appendChild(c));
+  return node;
+}
+
+function swatch(colour, round) {
+  const s = el("span", {class: round ? "swatch round" : "swatch"});
+  s.style.background = `rgb(${colour.slice(0, 3).join(",")})`;
+  return s;
+}
+
+function setCommodity(commodity, on) {
+  on ? selected.add(commodity) : selected.delete(commodity);
+  commodityCbs.get(commodity).checked = on;
+}
+
+/* Dropdown-toggle summary and the chips row of selected commodities, as the
+   geography filter shows its selection. */
+function syncCommodities() {
+  document.getElementById("commodity-toggle").textContent =
+    `${selected.size} of ${commodities.length} commodities ▾`;
+  const chips = document.getElementById("commodity-chips");
+  chips.innerHTML = "";
+  if (selected.size === commodities.length || !selected.size) {
+    chips.appendChild(el("span", {class: "geo-chip-note",
+      text: selected.size ? "all commodities selected" : "no commodities selected"}));
+    return;
+  }
+  commodities.filter(c => selected.has(c)).forEach(c => {
+    const x = el("button", {text: "×", title: "Remove"});
+    x.addEventListener("click", () => { setCommodity(c, false); syncCommodities(); render(); });
+    chips.appendChild(el("span", {class: "geo-chip"},
+      [swatch(colourOf(c)), document.createTextNode(c), x]));
+  });
+}
+
+/* Commodities as a geography-style dropdown with selection chips on the row under the
+   geography filter; the Locations ticks on the row below show or hide each node
+   category on their own. */
+function buildBannerPanels() {
+  const boxes = el("div", {id: "commodity-boxes", class: "box-panel"});
+  commodities.forEach(c => {
+    const cb = el("input", {type: "checkbox"});
+    cb.checked = selected.has(c);
+    cb.addEventListener("change", () => { setCommodity(c, cb.checked); syncCommodities(); render(); });
+    boxes.appendChild(el("label", {}, [cb, swatch(colourOf(c)), document.createTextNode(" " + c)]));
+    commodityCbs.set(c, cb);
+  });
+  const toggle = el("button", {id: "commodity-toggle"});
+  const allBtn = el("button", {class: "small-btn", text: "All"});
+  const noneBtn = el("button", {class: "small-btn", text: "None"});
+  const setAll = on => {
+    commodities.forEach(c => setCommodity(c, on));
+    syncCommodities();
+    render();
+  };
+  allBtn.addEventListener("click", () => setAll(true));
+  noneBtn.addEventListener("click", () => setAll(false));
+  const dropdown = el("div", {class: "box-dropdown", id: "commodity-dropdown"}, [toggle, boxes]);
+  document.getElementById("commodity-row").appendChild(el("div", {id: "commodity-panel"}, [
+    el("label", {}, [document.createTextNode("Commodities"), allBtn, noneBtn]),
+    dropdown,
+    el("span", {id: "commodity-chips"})]));
+  toggle.addEventListener("click", () => boxes.classList.toggle("open"));
+  document.addEventListener("click", e => {
+    if (!dropdown.contains(e.target)) boxes.classList.remove("open");
+  });
+  syncCommodities();
+
+  const placeBoxes = el("div", {id: "place-boxes"});
+  const placeCbs = new Map();
+  Object.entries(NODE_COLOURS).forEach(([kind, colour]) => {
+    const cb = el("input", {type: "checkbox"});
+    cb.checked = true;
+    cb.addEventListener("change", () => {
+      cb.checked ? shownKinds.add(kind) : shownKinds.delete(kind);
+      render();
+    });
+    placeBoxes.appendChild(el("label", {class: "inline"},
+      [cb, swatch(colour.base, true), document.createTextNode(" " + colour.label)]));
+    placeCbs.set(kind, cb);
+  });
+  const placeAll = el("button", {class: "small-btn", text: "All"});
+  const placeNone = el("button", {class: "small-btn", text: "None"});
+  const setAllPlaces = on => {
+    placeCbs.forEach((cb, kind) => {
+      cb.checked = on;
+      on ? shownKinds.add(kind) : shownKinds.delete(kind);
+    });
+    render();
+  };
+  placeAll.addEventListener("click", () => setAllPlaces(true));
+  placeNone.addEventListener("click", () => setAllPlaces(false));
+  document.getElementById("place-row").appendChild(el("div", {id: "place-panel"}, [
+    el("label", {}, [document.createTextNode("Locations"), placeAll, placeNone]),
+    placeBoxes,
+    el("div", {class: "geo-chip-note", id: "place-note",
+               text: "only locations with at least one allocation in the shown year appear — idle plants and " +
+                     "unused mines are absent; the commodity and geography filters never hide a dot"})]));
+}
+
+function initControls() {
+  const slider = document.getElementById("year-slider");
+  slider.addEventListener("input", render);
+  document.getElementById("year-prev").addEventListener("click", () => stepYear(-1));
+  document.getElementById("year-next").addEventListener("click", () => stepYear(1));
+  document.addEventListener("keydown", e => {
+    if (document.activeElement === slider) return;
+    if (e.key === "ArrowLeft") stepYear(-1);
+    if (e.key === "ArrowRight") stepYear(1);
+  });
+  // The control panel floats over the canvas: swallow every gesture it receives so
+  // interacting with it can never pan or zoom the map underneath.
+  const panel = document.getElementById("controls");
+  ["pointerdown", "pointermove", "pointerup", "mousedown", "touchstart", "wheel", "dblclick"]
+    .forEach(type => panel.addEventListener(type, e => e.stopPropagation()));
+  // The shared geography filter, as in the other viewers: countries, sub-national
+  // units, trade blocs and regions, with removable chips.
+  Interactive.init({
+    geoKeys: Object.values(DATA).flatMap(d => d.endpoints.map(e => e[1]).filter(Boolean)),
+    onChange: () => { syncYears(); render(); },
+  });
+  buildBannerPanels();
+  syncYears();
+}
+
+initControls();
+render();
+</script>
+</body>
+</html>
