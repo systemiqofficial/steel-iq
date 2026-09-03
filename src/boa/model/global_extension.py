@@ -36,6 +36,19 @@ from boa.model.logic import (
     top_up_quality_threshold,
 )
 from boa.model import design_cache
+from boa.model.bisection import (
+    STATUS_OK,
+    CostCoefficients,
+    PixelFrontier,
+    SearchParams,
+    build_pixel_frontier,
+)
+from boa.model.frontier_cache import (
+    build_frontier_meta,
+    frontier_cache_path,
+    stack_pixel_frontiers,
+    write_frontier_cache,
+)
 from boa.inputs.profiles import detect_weather_year, open_regional_dataset
 
 _ZERO_RESULT = {
@@ -537,6 +550,150 @@ def build_design_cache_for_region(
     rel = written.relative_to(path_config.design_cache_dir)
     logging.info(
         f"Wrote design cache for {region}: {rel} ({npts} pts, {designs_flat.shape[0]} surviving designs total)."
+    )
+    return written
+
+
+def _frontier_tile(
+    tile_indices: np.ndarray,
+    solar_arr: np.ndarray,
+    wind_arr: np.ndarray,
+    coverage: float,
+    params: SearchParams,
+    anchors: list[CostCoefficients],
+) -> tuple[float, list[PixelFrontier]]:
+    """
+    Build-phase worker for the grid-bisection search: one frontier per point in the tile.
+
+    Counterpart to `_precompute_tile`, which does the same job for the Monte Carlo sampler.
+    The degenerate case is handled inside `build_pixel_frontier` rather than screened here,
+    so every point produces a frontier and the tile output lines up with `tile_indices`
+    positionally — no empty-array sentinels to reassemble.
+
+    TODO: carry a `b_min` hint from one pixel to the next within a tile. The kernels accept
+    one and it reaches only the patch bisections, so it can change cost but not results.
+    Deferred because it needs a decision about *which* of a frontier's many `b_min` values to
+    carry, and a wrong choice is a slower warm start rather than a wrong answer.
+    """
+    t0 = time.time()
+    frontiers = [build_pixel_frontier(solar_arr[k], wind_arr[k], coverage, params, anchors) for k in tile_indices]
+    return time.time() - t0, frontiers
+
+
+def build_frontier_cache_for_region(
+    region: str,
+    coverage: float,
+    profile: xr.Dataset,
+    anchors: list[CostCoefficients],
+    path_config: PathConfig,
+    n_workers: int,
+    params: SearchParams | None = None,
+    force: bool = False,
+) -> Path:
+    """
+    Build the schema v3 frontier cache for one region and persist it.
+
+    Idempotent: an existing store matching the parameter tuple is returned untouched unless
+    `force`. One store serves every baseload, every cost year and every cost scenario — it
+    holds dispatch physics and nothing else.
+
+    Three differences from `build_design_cache_for_region`, all of them deliberate:
+
+    - **No capacity ceiling is read or stored.** The search never uses one, so the store
+      depends on no land-availability assumption and every layer set built on the same
+      weather shares it. The query reads the ceiling separately, and that read must raise
+      rather than fall back, because it is now the only thing keeping a stale ceiling out.
+    - **The cache directory keys on the weather year**, not the input set, for the same
+      reason.
+    - **`anchors` is an input, not derived here.** Anchors decide where the dense patches
+      go and must cover the cost keys as well as the years (`boa.model.anchors`), but
+      deriving them here would tie the store to the canonical iso3 grid, which is precisely
+      what the build has always avoided.
+    """
+    params = SearchParams() if params is None else params
+    if not anchors:
+        # Fail before the land-point scan and the profile extraction. `build_pixel_frontier`
+        # would raise per pixel, but only after a region's worth of setup had been paid for.
+        raise ValueError("build_frontier_cache_for_region needs at least one anchor")
+    weather_year = detect_weather_year(path_config)
+    cache_dir = path_config.frontier_cache_dir(weather_year)
+    cache_file = frontier_cache_path(cache_dir, region, coverage, params, weather_year, ERA5_DATA_RESOLUTION)
+    if cache_file.exists() and not force:
+        logging.info(
+            f"Frontier cache for {region} already exists at {cache_file.relative_to(cache_dir)}; "
+            f"skipping build (use --force to rebuild)."
+        )
+        return cache_file
+
+    logging.info(
+        f"Building frontier cache for {region} at {cache_file.relative_to(cache_dir)} ({len(anchors)} anchors)."
+    )
+
+    land_points, all_lats, all_lons = choose_land_points_in_cutout(profile, path_config.lsm_path)
+    npts = len(land_points)
+    pt_lats = land_points[:, 0]
+    pt_lons = land_points[:, 1]
+    lat_to_iy = {v: i for i, v in enumerate(all_lats)}
+    lon_to_ix = {v: i for i, v in enumerate(all_lons)}
+    iy = np.array([lat_to_iy[la] for la in pt_lats], dtype=np.int32)
+    ix = np.array([lon_to_ix[lo] for lo in pt_lons], dtype=np.int32)
+
+    t_extract = time.time()
+    # Indexers passed directly rather than through a dict: the sampler's build shares one `sel`
+    # between the profiles and the capacity ceiling, and there is no ceiling lookup here.
+    prof_pts = profile[["solar", "wind"]].sel(
+        y=xr.DataArray(pt_lats, dims="point"),
+        x=xr.DataArray(pt_lons, dims="point"),
+        method="nearest",
+    )
+    solar_arr = np.ascontiguousarray(prof_pts["solar"].transpose("point", "time").values, dtype=np.float64)
+    wind_arr = np.ascontiguousarray(prof_pts["wind"].transpose("point", "time").values, dtype=np.float64)
+    logging.info(f"[timing] profile extraction: {time.time() - t_extract:.1f}s ({npts} points)")
+
+    # Strided tile assignment, kept from the sampler and worth *more* here. The sampler's cost
+    # was near-fixed per pixel; a bisection's tracks how hard the site is, so expensive points
+    # cluster geographically and contiguous tiles would leave workers idle.
+    n_tiles = _adaptive_n_tiles(npts, n_workers)
+    order = np.arange(npts)
+    tiles = [t for t in (order[i::n_tiles] for i in range(n_tiles)) if len(t)]
+    logging.info(f"[timing] frontier tile partition: {len(tiles)} tiles, ~{npts / len(tiles):.0f} pts/tile")
+
+    t_compute = time.time()
+    with ThreadPoolExecutor(max_workers=n_workers) as ex:
+        tile_results = list(ex.map(lambda t: _frontier_tile(t, solar_arr, wind_arr, coverage, params, anchors), tiles))
+
+    tile_times = np.array([tr[0] for tr in tile_results])
+    wall = time.time() - t_compute
+    logging.info(
+        f"[timing] frontier build ({len(tiles)} tiles, n_workers={n_workers}): {wall:.1f}s | "
+        f"tile compute min/mean/max {tile_times.min():.1f}/{tile_times.mean():.1f}/{tile_times.max():.1f}s "
+        f"(max/mean={tile_times.max() / tile_times.mean():.2f}), "
+        f"parallel efficiency ~{tile_times.sum() / (wall * n_workers):.0%}"
+    )
+
+    per_point: list[PixelFrontier | None] = [None] * npts
+    for tile_indices, (_, tile_frontiers) in zip(tiles, tile_results):
+        for j, k in enumerate(tile_indices):
+            per_point[int(k)] = tile_frontiers[j]
+    if any(f is None for f in per_point):
+        raise RuntimeError(f"{sum(f is None for f in per_point)} of {npts} points produced no frontier")
+
+    cache = stack_pixel_frontiers(
+        [f for f in per_point if f is not None],
+        region=region,
+        all_lats=np.asarray(all_lats),
+        all_lons=np.asarray(all_lons),
+        lats=pt_lats,
+        lons=pt_lons,
+        iy=iy,
+        ix=ix,
+        meta=build_frontier_meta(region, npts, coverage, params, weather_year, ERA5_DATA_RESOLUTION),
+    )
+    written = write_frontier_cache(cache, cache_file)
+    solved = int(np.sum(cache.status == STATUS_OK))
+    logging.info(
+        f"Wrote frontier cache for {region}: {written.relative_to(cache_dir)} "
+        f"({npts} pts, {solved} solved, {_store_size_mb(written):.1f} MB)."
     )
     return written
 
