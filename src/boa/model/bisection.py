@@ -20,6 +20,7 @@ baseload-hours. Nothing in this module reads a cost, a year, or a capacity ceili
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from json import dumps
@@ -185,6 +186,78 @@ def anchor_years(start: int, end: int, interval: int) -> list[int]:
     if not years or years[-1] != end:
         years.append(end)
     return years
+
+
+def cost_ratio_simplex(coeffs: CostCoefficients) -> tuple[float, float, float]:
+    """
+    `(a_s, a_w, a_b)` normalised to sum to 1 -- everything about a year's prices that can
+    move the argmin, and nothing that cannot.
+
+    `d0` is dropped and the scale divided out because neither reorders designs: LCOE is
+    `(a_s*s + a_w*w + a_b*b**GAMMA) / (d0 * sf)`, so multiplying all four coefficients by a
+    constant rescales every design's LCOE identically. Two years that differ only in level
+    -- which is what a uniform capex decline produces -- therefore rank designs the same way
+    and are the same anchor.
+
+    Living on the simplex also makes an absolute tolerance meaningful: each component is a
+    share in `[0, 1]`, so `0.02` means two percentage points of mix, independent of currency,
+    units or baseload.
+    """
+    total = coeffs.a_s + coeffs.a_w + coeffs.a_b
+    if not total > 0.0:
+        raise ValueError(f"cost coefficients must sum to a positive value, got {total!r}")
+    return (coeffs.a_s / total, coeffs.a_w / total, coeffs.a_b / total)
+
+
+def distinct_anchor_years(
+    years: Sequence[int],
+    coefficients_for: Callable[[int], CostCoefficients],
+    tol: float = 1e-9,
+) -> list[int]:
+    """
+    Keep only the candidate years whose cost *ratios* have moved since the last year kept.
+
+    An anchor exists to place patch seeds, and seed placement depends on the cost ratios
+    alone. A candidate that prices designs the same way as the anchor before it therefore
+    buys nothing and costs a full build: with the real cost workbook, capex is flat from
+    2050 to 2100, so `anchor_years(2025, 2060, 10)` proposes 2055 and 2060 that are
+    identical to each other and to 2050 -- two of five anchors doing no work.
+
+    **Compare ratios, not capex.** A guard on the raw coefficients would keep every one of
+    those years, because a uniform decline changes the level while leaving the mix untouched.
+    It would also miss the converse case, where capex holds still but WACC moves the mix
+    through the per-technology discount weights.
+
+    Comparison is against the last *kept* year rather than the previous candidate, which is
+    what makes slow drift accumulate rather than being repeatedly dismissed as small. That
+    gives the function a second use for free: at a tiny `tol` it is a duplicate filter over a
+    pre-spaced list, and at a `tol` set to a meaningful step of drift it *is* the spacing
+    rule, placing anchors at equal steps of mix change over a full range of years. The real
+    trajectory is front-loaded -- the solar:wind ratio falls further in its first five years
+    than in the following fifteen -- so equal steps of drift and equal steps of time are not
+    the same thing, and the former is what an anchor is for.
+
+    The first year is always kept: it is the reference everything else is measured against.
+
+    `coefficients_for` describes one cost trajectory, but a frontier serves a whole region and
+    a region spans many cost keys, whose mixes differ: the capex *multiplier* is the same
+    everywhere, yet capex levels vary by region and WACC by country, so the simplex position
+    and its drift are cost-key specific. Measured on the real workbook, per-country sets agree
+    on their first three anchors and diverge in the slow tail. A caller wanting one set for a
+    region must therefore feed the *worst case* -- the largest movement across the keys it
+    covers -- so the tolerance holds for every key rather than the one that happened to be
+    sampled.
+    """
+    if tol < 0.0:
+        raise ValueError(f"tol must be non-negative, got {tol}")
+    kept: list[int] = []
+    reference: tuple[float, float, float] | None = None
+    for year in years:
+        ratios = cost_ratio_simplex(coefficients_for(year))
+        if reference is None or max(abs(a - b) for a, b in zip(ratios, reference)) > tol:
+            kept.append(year)
+            reference = ratios
+    return kept
 
 
 def nearest_anchor(query_year: int, anchors: list[int]) -> int:
