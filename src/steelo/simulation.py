@@ -1393,6 +1393,8 @@ class SimulationRunner:
         flush_capacity_policy_outputs(self.config.policy_output_dir)
         # Global motions: all countries, every run
         flush_global_motions(self.config.output_dir / "data")
+        # Per-year status snapshots of greenfield (GEO-origin) furnace groups
+        data_collector.write_greenfield_status_csv(self.config.output_dir / "data")
 
         # Postprocessing
         output_path = extract_and_process_stored_dataCollection(
