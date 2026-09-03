@@ -97,3 +97,109 @@ def test_the_build_reads_no_capacity_ceiling():
 
     signature = set(inspect.signature(build_frontier_cache_for_region).parameters)
     assert not signature & {"costs", "n", "seed", "baseload_demand"}
+
+
+# --------------------------------------------------------------------------
+# Query worker
+# --------------------------------------------------------------------------
+
+
+def _region_cache(profiles, dead_profiles, anchor_costs, tmp_path):
+    """A two-point region store: one live pixel, one with no resource."""
+    from boa.model.bisection import build_pixel_frontier
+    from boa.model.frontier_cache import build_frontier_meta, stack_pixel_frontiers
+
+    frontiers = [
+        build_pixel_frontier(profiles["solar"], profiles["wind"], COVERAGE, PARAMS, anchor_costs),
+        build_pixel_frontier(dead_profiles["solar"], dead_profiles["wind"], COVERAGE, PARAMS, anchor_costs),
+    ]
+    return stack_pixel_frontiers(
+        frontiers,
+        region="TESTREGION",
+        all_lats=np.array([10.0, 10.25], dtype=np.float32),
+        all_lons=np.array([20.0, 20.25], dtype=np.float32),
+        lats=np.array([10.0, 10.25], dtype=np.float32),
+        lons=np.array([20.0, 20.0], dtype=np.float32),
+        iy=np.array([0, 1], dtype=np.int32),
+        ix=np.array([0, 0], dtype=np.int32),
+        meta=build_frontier_meta("TESTREGION", 2, COVERAGE, PARAMS, 2024, 0.25),
+    )
+
+
+@pytest.fixture
+def query_inputs():
+    capex = {t: np.full((2, 26), v) for t, v in (("solar", 9e5), ("wind", 1.4e6), ("battery", 3e5))}
+    opex = {t: np.full(2, v) for t, v in (("solar", 0.01), ("wind", 0.02), ("battery", 0.02))}
+    return capex, opex, np.full(2, 0.08), np.array(["DEU", "DEU"])
+
+
+def test_query_prices_a_live_pixel_and_passes_through_a_dead_one(
+    profiles, dead_profiles, anchor_costs, tmp_path, query_inputs
+):
+    """
+    A pixel whose build found no optimum must not be priced. Its status travels from the
+    store to the output untouched, because status is year-invariant by construction and the
+    query has no business revising it.
+    """
+    from boa.model.global_extension import _query_frontier_tile
+
+    cache = _region_cache(profiles, dead_profiles, anchor_costs, tmp_path)
+    capex, opex, coc, keys = query_inputs
+    _, results, counters = _query_frontier_tile(np.arange(2), cache, capex, opex, coc, keys, 500.0, 25)
+
+    assert results[0]["status"] == STATUS_OK
+    assert results[0]["lcoe"] > 0.0
+    assert results[1]["status"] == STATUS_ZERO_POTENTIAL
+    assert results[1]["lcoe"] == 0.0
+    assert counters["zero_potential"] == 1
+
+
+def test_ranking_and_reporting_use_the_same_lcoe(profiles, dead_profiles, anchor_costs, tmp_path, query_inputs):
+    """
+    The inconsistency this rewrite exists to remove: the sampler ranked on a
+    coverage-divided LCOE and reported a served-fraction-divided one, so the winner was not
+    the cheapest by the number printed beside it. Here `lcoe_coverage_based` is a derived
+    reference, not a second ranking.
+    """
+    from boa.model.global_extension import _query_frontier_tile
+
+    cache = _region_cache(profiles, dead_profiles, anchor_costs, tmp_path)
+    capex, opex, coc, keys = query_inputs
+    _, results, _ = _query_frontier_tile(np.array([0]), cache, capex, opex, coc, keys, 500.0, 25)
+    r = results[0]
+
+    assert r["lcoe_coverage_based"] == pytest.approx(r["lcoe"] * r["served_fraction"])
+    assert r["lcoe_coverage_based"] <= r["lcoe"], "serving every hour cannot cost more"
+
+
+def test_query_output_is_baseload_invariant_in_lcoe_but_not_in_cost(
+    profiles, dead_profiles, anchor_costs, tmp_path, query_inputs
+):
+    """
+    LCOE is exactly baseload-invariant and the design is dimensionless, so both must be
+    identical at any baseload. The installation cost is not -- it is what the baseload buys.
+    """
+    from boa.model.global_extension import _query_frontier_tile
+
+    cache = _region_cache(profiles, dead_profiles, anchor_costs, tmp_path)
+    capex, opex, coc, keys = query_inputs
+    _, small, _ = _query_frontier_tile(np.array([0]), cache, capex, opex, coc, keys, 100.0, 25)
+    _, large, _ = _query_frontier_tile(np.array([0]), cache, capex, opex, coc, keys, 1000.0, 25)
+
+    assert small[0]["lcoe"] == pytest.approx(large[0]["lcoe"], rel=1e-12)
+    assert small[0]["design"] == large[0]["design"]
+    assert large[0]["installation_cost"] == pytest.approx(10.0 * small[0]["installation_cost"], rel=1e-9)
+
+
+def test_the_query_reads_no_capacity_ceiling():
+    """
+    Pins the M3-to-M4 window rather than hiding it: the ceiling is deliberately not applied
+    yet, so this asserts the worker takes no capacity argument. When Grid 2 lands the
+    constrained search arrives through a sidecar, not by growing a parameter here.
+    """
+    import inspect
+
+    from boa.model.global_extension import _query_frontier_tile
+
+    params = set(inspect.signature(_query_frontier_tile).parameters)
+    assert not params & {"pv_max", "wind_max", "limit", "max_cap"}

@@ -364,6 +364,45 @@ def calculate_lcoe_of_re_installation_vectorised(
     return lcoes, installation_costs, install_solar, install_wind, install_battery
 
 
+def installation_cost_breakdown(
+    solar: float,
+    wind: float,
+    battery: float,
+    baseload_demand: float,
+    capex: dict,
+) -> tuple[float, float, float, float]:
+    """
+    Year-0 installation cost of one dimensionless design, as `(total, solar, wind, battery)`.
+
+    `solar`/`wind` are overscale factors and `battery` is in baseload-hours, so each is
+    multiplied by `baseload_demand` to reach installed MW and MWh.
+
+    Split out because the grid-bisection query already knows its winner's LCOE and needs only
+    the cost breakdown, where `calculate_lcoe_of_re_installation_vectorised` would reprice a
+    one-element population to get there. The battery still goes through the modular CAPEX
+    correction directly rather than the closed form, which prices the LCOE numerator only --
+    the same reason the vectorised pricer keeps a separate path for it.
+    """
+    installed_solar = solar * baseload_demand
+    installed_wind = wind * baseload_demand
+    installed_battery = battery * baseload_demand
+
+    # A zero battery installs nothing, so it contributes nothing; guarding here avoids raising
+    # zero to a negative exponent to compute a factor that is then multiplied by zero.
+    ratio = installed_battery / (baseload_demand * AVERAGE_IMPLIED_STORAGE) if installed_battery > 0 else 1.0
+    corrected_capex0 = capex["battery"][0] * ratio**BATTERY_UNIT_CAPEX_SCALING_FACTOR
+
+    install_solar = installed_solar * capex["solar"][0]
+    install_wind = installed_wind * capex["wind"][0]
+    install_battery = installed_battery * corrected_capex0
+    return (
+        float(install_solar + install_wind + install_battery),
+        float(install_solar),
+        float(install_wind),
+        float(install_battery),
+    )
+
+
 def calculate_lcoe_of_single_re_tech(
     generated_electricity: list,
     fixed_opex_percentage: float,
