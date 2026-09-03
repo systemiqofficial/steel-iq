@@ -412,3 +412,97 @@ def test_lattice_refinement_below_one_is_rejected():
     s_c, w_c = _coarse_axes()
     with pytest.raises(ValueError, match="lattice_refinement"):
         patch_lattice(s_c, w_c, 6, 6, SearchParams(lattice_refinement=0))
+
+
+# --------------------------------------------------------------------------
+# Seed union across anchors
+# --------------------------------------------------------------------------
+#
+# Re-anchoring stores no anchor axis. The patch *values* are pure dispatch, so one set
+# serves every anchor; only the seed *placement* is anchor-dependent, so the build unions
+# the boxes each anchor proposes. These tests pin that the union is a union -- neither
+# silently one anchor's answer nor a per-anchor duplicate.
+
+import dataclasses  # noqa: E402
+
+from boa.model.bisection import CostCoefficients  # noqa: E402
+
+_CHEAP_SOLAR = CostCoefficients(a_s=0.1e6, a_w=5.0e6, a_b=0.30e6, d0=8.76e6)
+_CHEAP_WIND = CostCoefficients(a_s=5.0e6, a_w=0.1e6, a_b=0.30e6, d0=8.76e6)
+
+
+def _boxes(frontier):
+    return {tuple(int(x) for x in frontier.patch_bounds[s]) for s in range(frontier.n_patches)}
+
+
+def test_one_anchor_and_a_one_element_list_build_the_same_frontier(profiles, anchor_costs):
+    """A single anchor is the degenerate union, so it must not take a different path."""
+    single = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, anchor_costs)
+    listed = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, [anchor_costs])
+
+    assert single.n_patches == listed.n_patches
+    np.testing.assert_array_equal(single.patch_bounds, listed.patch_bounds)
+    np.testing.assert_array_equal(single.b_patch, listed.b_patch)
+
+
+def test_repeating_one_anchor_adds_no_patches(profiles, anchor_costs):
+    """
+    The dedupe is on the snapped box, not the seed cell. Anchors that agree -- which the
+    real cost anchors do on 77.5% of pixels -- must collapse to one patch set, otherwise
+    re-anchoring would pay per anchor for identical numbers.
+    """
+    one = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, [anchor_costs])
+    thrice = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, [anchor_costs] * 3)
+
+    assert thrice.n_patches == one.n_patches
+    assert _boxes(thrice) == _boxes(one)
+
+
+def test_disagreeing_anchors_union_their_boxes(profiles):
+    """
+    The case re-anchoring exists for. Priced with solar nearly free the optimum sits
+    solar-heavy; with wind nearly free it sits wind-heavy. The union must hold both, so a
+    query in either cost regime finds a densely searched patch around its own optimum.
+    """
+    solarish = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, _CHEAP_SOLAR)
+    windish = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, _CHEAP_WIND)
+    assert _boxes(solarish) != _boxes(windish), "fixture no longer separates the two regimes"
+
+    union = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, [_CHEAP_SOLAR, _CHEAP_WIND])
+    assert _boxes(union) == _boxes(solarish) | _boxes(windish)
+    assert union.n_patches > max(solarish.n_patches, windish.n_patches)
+
+
+def test_the_union_is_capped_at_max_patch_slots(profiles):
+    """
+    Overflow truncates rather than overrunning the allocation, and drops the boxes no anchor
+    scored well. It is not silently wrong: a dropped basin is exactly what the containment
+    certificate detects, so the answer degrades to uncertified.
+    """
+    params = dataclasses.replace(PARAMS, max_patch_slots=1)
+    union = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, params, [_CHEAP_SOLAR, _CHEAP_WIND])
+
+    assert union.n_patches == 1
+    assert union.b_patch.shape[0] == 1
+    singles = [
+        _boxes(build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, params, a))
+        for a in (_CHEAP_SOLAR, _CHEAP_WIND)
+    ]
+    assert any(_boxes(union) <= s for s in singles)
+
+
+def test_patch_depth_follows_max_patch_slots_not_max_seeds(profiles, anchor_costs):
+    """
+    Two caps with two meanings: `max_seeds` bounds what one anchor may propose, while
+    `max_patch_slots` bounds the union and therefore the stored depth. Conflating them
+    would size the cache off the wrong one.
+    """
+    params = dataclasses.replace(PARAMS, max_seeds=2, max_patch_slots=5)
+    frontier = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, params, anchor_costs)
+    assert frontier.b_patch.shape[0] == 5
+    assert frontier.n_patches <= 2  # one anchor, so at most `max_seeds` boxes
+
+
+def test_an_empty_anchor_list_raises(profiles):
+    with pytest.raises(ValueError, match="at least one anchor"):
+        build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, [])
