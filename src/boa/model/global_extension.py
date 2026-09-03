@@ -51,6 +51,7 @@ from boa.model.frontier_cache import (
     build_frontier_meta,
     frontier_at,
     frontier_cache_path,
+    read_frontier_cache,
     stack_pixel_frontiers,
     write_frontier_cache,
 )
@@ -790,6 +791,288 @@ def build_frontier_cache_for_region(
         f"({npts} pts, {solved} solved, {_store_size_mb(written):.1f} MB)."
     )
     return written
+
+
+def query_frontier_cache_for_region(
+    year: int,
+    region: str,
+    baseload_demand: float,
+    coverage: float,
+    costs: xr.Dataset,
+    investment_horizon: int,
+    path_config: PathConfig,
+    n_workers: int,
+    params: SearchParams | None = None,
+    force: bool = False,
+) -> xr.Dataset:
+    """
+    Price one region's cached frontiers for one investment year and write the NetCDF.
+
+    No profile dataset: the sampler needed one at query time to re-run dispatch on its winner,
+    and the frontier store already holds every dispatch result the pricing needs. That is the
+    property the cache exists for — a 36-year sweep simulates the physics once and prices it
+    36 times, and the pricing is arithmetic.
+
+    **The capacity ceiling is not applied.** Grid 2 lands in M4; until then this reports the
+    unconstrained optimum, and the warning below says so at every call. Delete the warning with
+    the note in `_query_frontier_tile` when the constrained search arrives.
+    """
+    params = SearchParams() if params is None else params
+    weather_year = detect_weather_year(path_config)
+    cache_dir = path_config.frontier_cache_dir(weather_year)
+    cache_file = frontier_cache_path(cache_dir, region, coverage, params, weather_year, ERA5_DATA_RESOLUTION)
+    out_path = path_config.optimal_sol_path(baseload_demand, coverage, region, year)
+    if out_path.exists() and not force:
+        logging.info(f"{out_path.name} already exists; skipping (use --force to re-derive).")
+        return xr.open_dataset(out_path)
+
+    logging.warning(
+        "[UNCONSTRAINED] The capacity ceiling is not applied yet (Grid 2 arrives in M4), so "
+        "these LCOEs are the unconstrained optimum. With the availability layers on the ceiling "
+        "binds nearly everywhere, so the results will be optimistic and plausible-looking. Do "
+        "not promote them."
+    )
+
+    cache = read_frontier_cache(cache_file, params, coverage, weather_year)
+    npts = cache.n_points
+    logging.info(f"Querying frontier cache for {region} y{year}: {npts} points, {len(cache.all_lats)} lat rows.")
+
+    usable = cache.status == STATUS_OK
+    cost_keys, capex_per_tech, opex_per_tech, coc_arr = _derive_cost_arrays(
+        cache.lats, cache.lons, usable, costs, path_config
+    )
+
+    n_tiles = _adaptive_n_tiles(npts, n_workers)
+    order = np.arange(npts)
+    tiles = [t for t in (order[i::n_tiles] for i in range(n_tiles)) if len(t)]
+
+    t_lcoe = time.time()
+    with ThreadPoolExecutor(max_workers=n_workers) as ex:
+        raw = list(
+            ex.map(
+                lambda t: _query_frontier_tile(
+                    t,
+                    cache,
+                    capex_per_tech,
+                    opex_per_tech,
+                    coc_arr,
+                    cost_keys,
+                    baseload_demand,
+                    investment_horizon,
+                ),
+                tiles,
+            )
+        )
+    logging.info(f"[timing] LCOE parallel ({len(tiles)} tiles, n_workers={n_workers}): {time.time() - t_lcoe:.1f}s")
+
+    counters = {key: sum(r[2][key] for r in raw) for key in ("certified", "truncated", "no_optimum", "zero_potential")}
+    solved = npts - counters["no_optimum"] - counters["zero_potential"]
+    if solved > 0:
+        # Certificate telemetry. A low certified rate is a symptom of the coarse tier's
+        # deliberate looseness, not of a wrong answer; truncation is the sharper signal,
+        # since it says this particular winner sat against an edge the patch imposed.
+        logging.info(
+            f"[certificate] {region} y{year}: {100 * counters['certified'] / solved:.1f}% of "
+            f"{solved} solved pixels provably contained, {100 * counters['truncated'] / solved:.1f}% "
+            f"truncated against a patch edge."
+        )
+
+    attrs = {
+        "investment_year": year,
+        "investment_horizon_years": investment_horizon,
+        "baseload_demand_mw": baseload_demand,
+        "coverage_fraction": coverage,
+        "region": region,
+        "era5_weather_year": weather_year,
+        "era5_resolution_deg": ERA5_DATA_RESOLUTION,
+        "search_params_hash": params.identity_hash(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "source": "Baseload Optimisation Atlas (BOA)",
+        "frontier_cache_path": str(cache_file.relative_to(cache_dir)),
+        "capacity_ceiling_applied": 0,
+    }
+    optimal_sol = _assemble_optimal_sol(
+        tiles,
+        [r[1] for r in raw],
+        npts,
+        cache.all_lats,
+        cache.all_lons,
+        cache.iy,
+        cache.ix,
+        attrs,
+        out_path,
+    )
+    logging.info(f"Wrote {out_path.name} ({solved}/{npts} pixels solved).")
+    return optimal_sol
+
+
+def _derive_cost_arrays(
+    lats: np.ndarray,
+    lons: np.ndarray,
+    usable: np.ndarray,
+    costs: xr.Dataset,
+    path_config: PathConfig,
+) -> tuple[np.ndarray, dict, dict, np.ndarray]:
+    """
+    Per-point cost keys and the capex/opex/WACC arrays they resolve to.
+
+    Geocoding happens at query time, not build time, so the frontier cache stays independent
+    of the canonical iso3 grid — the same reason it holds no capacity ceiling. `usable` marks
+    the points worth a lookup; a point with no optimum is never priced, so paying for its
+    geocode would be waste.
+
+    Per-pixel fallback logging is suppressed and tallied instead: at ~30k points per region a
+    line each would bury everything else, while the totals are what actually signal an
+    authoring gap in the cost sheet.
+    """
+    npts = len(lats)
+    grid_iso3 = _preload_iso3_from_grid(lats, lons, path_config.iso3_grid_path)
+    iso3_to_subregions, full_cost_key_set = build_cost_lookup_indices(costs)
+    fallback_counts: dict[str, int] = {}
+    national_counts: dict[str, int] = {}
+
+    class _FallbackCounter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            msg = str(record.getMessage())
+            if msg.startswith("[FALLBACK]"):
+                if "global" in msg.lower():
+                    key = msg.split("Cost key", 1)[-1].split("(", 1)[0].strip() or "UNKNOWN"
+                    fallback_counts[key] = fallback_counts.get(key, 0) + 1
+                elif "using national" in msg:
+                    iso3 = msg.rsplit("using national", 1)[-1].strip(" .") or "UNKNOWN"
+                    national_counts[iso3] = national_counts.get(iso3, 0) + 1
+                return False
+            return True
+
+    _filt = _FallbackCounter()
+    logging.getLogger().addFilter(_filt)
+    cost_keys = np.full(npts, "", dtype="<U32")
+    try:
+        for i in range(npts):
+            if not usable[i]:
+                continue
+            cost_keys[i] = cost_key_for_point(
+                float(lats[i]),
+                float(lons[i]),
+                iso3_to_subregions,
+                full_cost_key_set,
+                country_code=grid_iso3[i],
+            )
+    finally:
+        logging.getLogger().removeFilter(_filt)
+
+    if fallback_counts:
+        top = ", ".join(f"{k}={v}" for k, v in sorted(fallback_counts.items(), key=lambda kv: -kv[1])[:10])
+        logging.info(f"[FALLBACK] {sum(fallback_counts.values())} pixels used GLOBAL_AVG costs (top iso3s: {top})")
+    if national_counts:
+        top = ", ".join(f"{k}={v}" for k, v in sorted(national_counts.items(), key=lambda kv: -kv[1]))
+        logging.info(
+            f"[FALLBACK] {sum(national_counts.values())} pixels used national CAPEX "
+            f"(province not authored in the cost sheet): {top}"
+        )
+
+    unique_keys = set(str(k) for k in cost_keys.tolist()) - {""}
+    key_to_costs = {k: costs_for_key(k, costs) for k in unique_keys}
+    n_years = costs["Capex solar"].sizes["year"]
+    capex_per_tech = {tech: np.zeros((npts, n_years)) for tech in ("solar", "wind", "battery")}
+    opex_per_tech = {tech: np.zeros(npts) for tech in ("solar", "wind", "battery")}
+    coc_arr = np.zeros(npts)
+    for i in range(npts):
+        key_i = str(cost_keys[i])
+        if not key_i:
+            continue
+        capex_i, opex_i, coc_i = key_to_costs[key_i]
+        for tech in ("solar", "wind", "battery"):
+            capex_per_tech[tech][i] = capex_i[tech]
+            opex_per_tech[tech][i] = opex_i[tech]
+        coc_arr[i] = coc_i
+    logging.info(f"[timing] cost_key derive + lookup: {npts} points, {len(unique_keys)} distinct keys")
+    return cost_keys, capex_per_tech, opex_per_tech, coc_arr
+
+
+def _assemble_optimal_sol(
+    tiles: list[np.ndarray],
+    tile_results: list[list[dict]],
+    npts: int,
+    all_lats: np.ndarray,
+    all_lons: np.ndarray,
+    iy: np.ndarray,
+    ix: np.ndarray,
+    attrs: dict,
+    out_path: Path,
+) -> xr.Dataset:
+    """
+    Scatter per-point results onto the region grid, write the NetCDF, return the dataset.
+
+    `status` is written for every point including the ones with no optimum -- recording why a
+    pixel produced nothing is the whole purpose of the code. Everything else stays zero there,
+    which is what the output has always meant by "not modelled".
+    """
+    fields = {
+        name: np.zeros(npts)
+        for name in (
+            "lcoe",
+            "lcoe_coverage_based",
+            "installation_cost",
+            "installation_cost_solar",
+            "installation_cost_wind",
+            "installation_cost_battery",
+            "solar_factor",
+            "wind_factor",
+            "battery_factor",
+            "coverage",
+            "served_fraction",
+            "cost_of_capital",
+        )
+    }
+    cost_key_flat = np.full(npts, "", dtype=object)
+    status_flat = np.zeros(npts, dtype=np.int8)
+
+    for tile_indices, res in zip(tiles, tile_results):
+        for j, k in enumerate(tile_indices):
+            r = res[j]
+            k_int = int(k)
+            status_flat[k_int] = r["status"]
+            cost_key_flat[k_int] = r.get("cost_key", "")
+            if np.isnan(r["lcoe"]):
+                continue
+            breakdown = r["installation_cost_breakdown"]
+            design = r["design"]
+            fields["lcoe"][k_int] = r["lcoe"]
+            fields["lcoe_coverage_based"][k_int] = r["lcoe_coverage_based"]
+            fields["installation_cost"][k_int] = r["installation_cost"]
+            fields["installation_cost_solar"][k_int] = breakdown["solar"]
+            fields["installation_cost_wind"][k_int] = breakdown["wind"]
+            fields["installation_cost_battery"][k_int] = breakdown["battery"]
+            fields["solar_factor"][k_int] = design["solar"]
+            fields["wind_factor"][k_int] = design["wind"]
+            fields["battery_factor"][k_int] = design["battery"]
+            fields["coverage"][k_int] = r["coverage"]
+            fields["served_fraction"][k_int] = r["served_fraction"]
+            fields["cost_of_capital"][k_int] = r["cost_of_capital"]
+
+    shape = (len(all_lats), len(all_lons))
+
+    def _to_grid(flat: np.ndarray, dtype=float) -> np.ndarray:
+        grid = np.zeros(shape, dtype=dtype)
+        grid[iy, ix] = flat
+        return grid
+
+    cost_key_grid = np.full(shape, "", dtype=object)
+    cost_key_grid[iy, ix] = cost_key_flat
+
+    optimal_sol = xr.Dataset(
+        coords={"lat": all_lats, "lon": all_lons},
+        data_vars={
+            **{name: (("lat", "lon"), _to_grid(flat)) for name, flat in fields.items()},
+            "cost_key": (("lat", "lon"), cost_key_grid),
+            "status": (("lat", "lon"), _to_grid(status_flat, np.int8)),
+        },
+    )
+    optimal_sol.attrs.update(attrs)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    optimal_sol.to_netcdf(out_path, mode="w", format="NETCDF4", encoding=_float32_output_encoding(optimal_sol))
+    return optimal_sol
 
 
 def _topup_tile(

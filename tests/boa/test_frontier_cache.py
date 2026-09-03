@@ -104,6 +104,20 @@ def test_every_search_param_changes_the_path():
         assert frontier_cache_path("/c", "R", COVERAGE, altered, WEATHER_YEAR, ERA5_RES) != base, name
 
 
+def test_the_path_moves_when_the_overscale_constant_moves(monkeypatch):
+    """
+    `OVERSCALE_SAMPLING_K` sets `mu = k / CF`, which sets the search box, which changes every
+    value in the store -- but it is not a `SearchParams` field, so a digest over the dataclass
+    alone would not move with it and a changed constant would silently reuse an incompatible
+    store. That is the defect v2 had, and it is why this hash delegates to `identity_hash`.
+    """
+    import boa.model.bisection as bisection
+
+    before = frontier_cache_path("/c", "R", COVERAGE, PARAMS, WEATHER_YEAR, ERA5_RES)
+    monkeypatch.setattr(bisection, "OVERSCALE_SAMPLING_K", {**bisection.OVERSCALE_SAMPLING_K, "solar": 99.0})
+    assert frontier_cache_path("/c", "R", COVERAGE, PARAMS, WEATHER_YEAR, ERA5_RES) != before
+
+
 def test_params_hash_is_stable_across_processes():
     """
     Python's `hash()` is salted per interpreter run, so a store keyed on it would land at a
