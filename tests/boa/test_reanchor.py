@@ -9,16 +9,18 @@ covered here. This file only holds the two small, pure functions that decide the
 schedule and the routing, independent of how they eventually get used.
 """
 
+import numpy as np
 import pytest
 
 from _gate import require
 
-require("boa.model.bisection", "anchor_years", "nearest_anchor", "distinct_anchor_years")
+require("boa.model.bisection", "anchor_years", "nearest_anchor", "distinct_anchor_years", "covering_anchors")
 
 from boa.model.bisection import (  # noqa: E402
     CostCoefficients,
     anchor_years,
     cost_ratio_simplex,
+    covering_anchors,
     distinct_anchor_years,
     nearest_anchor,
 )
@@ -183,3 +185,80 @@ def test_degenerate_coefficients_raise():
         cost_ratio_simplex(_coeffs(0.0, 0.0, 0.0))
     with pytest.raises(ValueError, match="tol"):
         distinct_anchor_years([2025], lambda y: _coeffs(1.0, 1.0, 1.0), tol=-1.0)
+
+
+# --------------------------------------------------------------------------
+# Covering a set of cost mixes that has no natural order
+# --------------------------------------------------------------------------
+
+
+def test_every_candidate_ends_up_within_tol_of_some_anchor():
+    """
+    The guarantee sequential dedupe cannot give. Anchors have to cover cost keys as well as
+    years, and cost keys have no order -- measured on the real workbook the cross-key spread
+    at one year (0.157) is larger than the drift across the whole horizon (0.088), so a key
+    at the edge of that spread must not be left to an anchor built for the middle.
+    """
+    grid = [(a, b) for a in range(0, 11) for b in range(0, 11 - a)]
+
+    def coefficients_for(key):
+        a, b = key
+        return _coeffs(1.0 + a, 1.0 + b, 1.0)
+
+    tol = 0.05
+    anchors = covering_anchors(grid, coefficients_for, tol=tol)
+    kept = [np.asarray(cost_ratio_simplex(coefficients_for(k))) for k in anchors]
+    for key in grid:
+        r = np.asarray(cost_ratio_simplex(coefficients_for(key)))
+        assert min(float(np.max(np.abs(r - k))) for k in kept) <= tol + 1e-12, key
+
+
+def test_covering_ignores_input_order():
+    """
+    Sequential dedupe would give a different answer for a shuffled list. A covering must
+    not, because the set it covers is unordered by nature.
+    """
+    grid = [(a, b) for a in range(0, 8) for b in range(0, 8 - a)]
+
+    def coefficients_for(key):
+        a, b = key
+        return _coeffs(1.0 + a, 1.0 + b, 1.0)
+
+    forward = covering_anchors(grid, coefficients_for, tol=0.08)
+    reverse = covering_anchors(list(reversed(grid)), coefficients_for, tol=0.08)
+    assert len(forward) == len(reverse)
+
+
+def test_a_flat_trajectory_still_collapses():
+    """Covering subsumes the dedupe: a duplicate sits at distance zero and is never chosen."""
+    flat = {y: _coeffs(1.0, 2.0, 3.0) for y in range(2050, 2061)}
+    assert covering_anchors(list(flat), lambda y: flat[y], tol=1e-9) == [2050]
+
+
+def test_candidates_come_back_in_their_original_order():
+    years = [2025, 2030, 2035, 2040]
+
+    def coefficients_for(year):
+        return _coeffs(1.0 + (year - 2025) * 0.5, 1.0, 1.0)
+
+    anchors = covering_anchors(years, coefficients_for, tol=0.02)
+    assert anchors == sorted(anchors)
+    assert anchors[0] == 2025
+
+
+def test_max_anchors_bounds_the_build():
+    grid = [(a, b) for a in range(0, 12) for b in range(0, 12 - a)]
+
+    def coefficients_for(key):
+        a, b = key
+        return _coeffs(1.0 + a, 1.0 + b, 1.0)
+
+    assert len(covering_anchors(grid, coefficients_for, tol=1e-6, max_anchors=5)) == 5
+
+
+def test_covering_rejects_nonsense_arguments():
+    with pytest.raises(ValueError, match="tol"):
+        covering_anchors([1], lambda k: _coeffs(1.0, 1.0, 1.0), tol=-0.1)
+    with pytest.raises(ValueError, match="max_anchors"):
+        covering_anchors([1], lambda k: _coeffs(1.0, 1.0, 1.0), tol=0.1, max_anchors=0)
+    assert covering_anchors([], lambda k: _coeffs(1.0, 1.0, 1.0), tol=0.1) == []
