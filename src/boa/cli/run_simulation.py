@@ -524,6 +524,7 @@ def main_build_cache(argv: list[str]) -> int:
         description="Build the frontier caches (all regions) without producing optimal-solution NetCDFs.",
         formatter_class=_HelpFormatter,
     )
+    add_temporal_args(parser)
     add_scenario_args(parser)
     add_workers_arg(parser)
     parser.add_argument("--force", action="store_true", help="Rebuild each frontier cache even if it already exists.")
