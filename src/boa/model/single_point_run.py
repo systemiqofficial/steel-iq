@@ -375,6 +375,12 @@ def execute_single_point_baseload_power_simulation(
     _progress(92, "Computing optimal design...")
     coeffs = lcoe_coefficients(investment_horizon, capex, opex_pct, cost_of_capital, baseload_demand)
     optimum = argmin_lcoe(frontier, coeffs)
+    logging.warning(
+        "[UNCONSTRAINED] The capacity ceiling is not applied yet (Grid 2 arrives in M4), so "
+        "this LCOE is the unconstrained optimum. With the availability layers on the ceiling "
+        "binds nearly everywhere, so the result will be optimistic and plausible-looking. Do "
+        "not promote it."
+    )
     optimal_design = {"solar": optimum.solar, "wind": optimum.wind, "battery": optimum.battery}
     optimal_lcoe = optimum.lcoe
     optimal_cost, ic_solar, ic_wind, ic_battery = installation_cost_breakdown(
