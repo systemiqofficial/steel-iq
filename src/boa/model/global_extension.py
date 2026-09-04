@@ -665,9 +665,6 @@ def combine_regional_datasets_into_global_dataset(
                     global_ds[var] = xr.full_like(ds[var], fill_value=np.nan)
                 global_ds[var] = xr.where(global_ds[var].isnull(), ds[var], global_ds[var])
 
-        # Remove zero values
-        global_ds = global_ds.where(global_ds != 0)
-
         # Merge cost_key onto the global grid via per-region exact reindex.
         if any("cost_key" in ds.data_vars for ds in regional_datasets.values()):
             ck_grid = np.full((len(lat_global), len(lon_global)), "", dtype=object)
