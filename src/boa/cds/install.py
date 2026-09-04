@@ -54,8 +54,8 @@ def _validate_max_cap(ds: xr.Dataset, path: Path) -> None:
 
     The signature is required rather than optional because it is what a later run
     compares to decide whether a store can be reused. A store without one cannot be
-    checked at all, and the ceilings it holds get baked into the design cache where
-    nothing downstream can notice they came from different parameters.
+    checked at all, and since the frontier cache carries no ceiling data of its own (D4),
+    this is the only place a reused-but-mismatched ceiling would ever be caught.
 
     The value check exists because an availability layer is one sign away from
     catastrophe: a mask inverted the wrong way produces negative ceilings, which would

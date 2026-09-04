@@ -964,7 +964,7 @@ def build_pixel_frontier(
     hint: float = -1.0,
 ) -> PixelFrontier:
     """
-    Everything one pixel contributes to the design cache.
+    Everything one pixel contributes to the frontier cache.
 
     Degenerate check, coarse sweep, seed selection, box widening, then a dense patch per
     seed. Deterministic: no RNG survives the rewrite, so two builds of the same pixel are

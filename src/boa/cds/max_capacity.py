@@ -14,9 +14,9 @@ store name, reproducing the shipped stores bit-for-bit. A layered build belongs 
 a different input set, since the ceiling it produces is not interchangeable.
 
 Every store carries an `availability_signature` over the layer set and the
-densities. It is what makes a stale store detectable: the ceilings are baked into
-the design cache, so reusing one built from different parameters is wrong with no
-downstream symptom.
+densities. It is what makes a stale store detectable: the frontier cache holds no
+ceiling data of its own (D4), so this store's signature is the only place a stale
+reuse could ever be caught -- there is no downstream symptom otherwise.
 
 Output is a NetCDF (for inspection and the legacy local_nc backend) plus a
 Zarr twin, which is what `boa_cds install` promotes to the live dir.
