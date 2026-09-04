@@ -293,10 +293,11 @@ def availability_tag(names: list[str]) -> str:
     """
     Short token naming a layer set, for the input-set directory (`cds-2024-lulc+excl`).
 
-    The input set separates `zarr_dir` and, through it, `design_cache_dir`, so putting the
-    layer set in the name is what stops a design cache built against one ceiling from
-    being reused by a run with another. The signature catches a mismatch; the tag stops
-    it arising.
+    The input set separates `zarr_dir`, so putting the layer set in the name is what keeps
+    two ceilings in two max-capacity stores. It deliberately no longer separates the
+    frontier cache: that store holds no availability assumption, so layer sets share it and
+    an A/B of two ceilings reads the same physics. What stops a stale ceiling being reused
+    is the signature, carried in the capacity-box sidecar's own filename.
     """
     tags = [LAYER_TAGS[name] for name in LAYER_ORDER if name in names]
     return "+".join(tags) if tags else NO_LAYERS_TAG

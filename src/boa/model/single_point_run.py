@@ -6,9 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
 
-from boa.conversions import coverage_to_percentile
 from boa.config.paths import PathConfig
-from boa.config.settings import RANDOM_SEED
 from boa.geo.iso3_finder import (
     derive_subregion,
     iso3_at,
@@ -18,23 +16,21 @@ from boa.geo.iso3_finder import (
 )
 from boa.inputs.costs import process_global_baseload_simulation_costs
 from boa.inputs.profiles import open_regional_dataset
-from boa.model.diagnostics import plot_time_series, plot_design_distributions, plot_state_of_charge, plot_cost_scatter
+from boa.model.diagnostics import plot_time_series, plot_state_of_charge
 from boa.geo.geospatial import build_region_selection, select_region, wrap_lon_to_grid
+from boa.model.bisection import (
+    GAMMA,
+    STATUS_OK,
+    SearchParams,
+    argmin_lcoe,
+    build_pixel_frontier,
+)
+from boa.model.cost_calculations import installation_cost_breakdown, lcoe_coefficients
 from boa.model.logic import (
-    min_survivors_required,
-    optimize_point,
-    overscale_mus_from_cf,
     return_global_average_costs,
     calculate_net_energy_production,
     state_of_charge,
 )
-
-
-def _resolve_min_survivors(n: int, min_survivor_fraction: float | None) -> int:
-    """Survivor threshold for `n` samples; `None` uses the model default (MIN_SURVIVOR_FRACTION)."""
-    if min_survivor_fraction is None:
-        return min_survivors_required(n)
-    return min_survivors_required(n, min_survivor_fraction)
 
 
 @lru_cache(maxsize=4)
@@ -180,6 +176,36 @@ def costs_for_key(cost_key: str, costs: xr.Dataset) -> tuple[dict, dict, float]:
     return capex, opex_pct, cost_of_capital
 
 
+def _patch_nodes_payload(frontier, coeffs) -> dict:
+    """
+    Every densely searched design and its LCOE, as columnar lists.
+
+    Replaces the sampled population the Monte Carlo path exposed. Padding is masked out via
+    `patch_points`, and infeasible nodes are dropped -- an unmasked zero would read as a free
+    design, which is the trap the padded storage carries everywhere it is consumed.
+    """
+    solar: list[float] = []
+    wind: list[float] = []
+    battery: list[float] = []
+    lcoe: list[float] = []
+    for slot in range(frontier.n_patches):
+        n_s, n_w = (int(x) for x in frontier.patch_points[slot])
+        for i in range(n_s):
+            for j in range(n_w):
+                for r in range(frontier.b_patch.shape[-1]):
+                    b = float(frontier.b_patch[slot, i, j, r])
+                    sf = float(frontier.energy_served_frac[slot, i, j, r])
+                    if not np.isfinite(b) or sf <= 0.0:
+                        continue
+                    s = float(frontier.s_patch[slot, i])
+                    w = float(frontier.w_patch[slot, j])
+                    solar.append(s)
+                    wind.append(w)
+                    battery.append(b)
+                    lcoe.append((coeffs.a_s * s + coeffs.a_w * w + coeffs.a_b * b**GAMMA) / (coeffs.d0 * sf))
+    return {"solar": solar, "wind": wind, "battery": battery, "lcoe": lcoe}
+
+
 def execute_single_point_baseload_power_simulation(
     path_config: PathConfig,
     year: int,
@@ -187,8 +213,6 @@ def execute_single_point_baseload_power_simulation(
     lon: float,
     baseload_demand: float,
     coverage: float,
-    n: int,
-    min_survivor_fraction: float | None = None,
     generate_plots: bool = True,
     include_plot_data: bool = False,
     progress_callback: Optional[Callable[[int, str], None]] = None,
@@ -213,10 +237,6 @@ def execute_single_point_baseload_power_simulation(
         lon: Longitude of the point
         baseload_demand: Baseload demand in MW
         coverage: Fraction of hours in which demand must be fully met
-        n: Number of random samples to generate
-        min_survivor_fraction: Minimum share of the n samples that must clear the coverage
-            filter before an optimum is returned; None uses the model default
-            (boa.config.settings.MIN_SURVIVOR_FRACTION)
         progress_callback: Optional callable(percent: int, message: str) invoked
             at each stage so callers (e.g. the Celery task driving an API job)
             can report fine-grained progress to a UI.
@@ -321,54 +341,23 @@ def execute_single_point_baseload_power_simulation(
         lat, lon, projected_cost_per_country, country_code
     )
 
-    # Sample + filter + price in one vectorised pass (matches the GLOBAL path).
-    # `return_intermediates=True` exposes the full design space so we can plot it and / or
-    # build the API's plot-data payload without re-running the optimisation.
-    _progress(60, f"Sampling {n:,} feasible designs + filtering by coverage...")
-    logging.info(f"Sampling {n} feasible designs and computing optimum...")
-    min_survivors = _resolve_min_survivors(n, min_survivor_fraction)
-    mus = overscale_mus_from_cf(float(profile["solar"].mean()), float(profile["wind"].mean()))
-    optimum, intermediates = optimize_point(
-        profile,
-        coverage_to_percentile(coverage),
-        baseload_demand,
-        capex,
-        opex_pct,
-        cost_of_capital,
-        investment_horizon,
-        n,
-        limit=overbuild_limit,
-        seed=RANDOM_SEED,
-        mus=mus,
-        return_intermediates=True,
-        min_survivors=min_survivors,
+    # Build this point's frontier, then price it. A single point has exactly one
+    # (cost key, year) combination, so its own coefficients are the anchor -- no covering
+    # is needed, and seeds land under the prices the query will actually use.
+    _progress(60, "Building the design frontier...")
+    logging.info("Building the frontier and pricing it...")
+    params = SearchParams()
+    dimensionless_anchor = lcoe_coefficients(investment_horizon, capex, opex_pct, cost_of_capital, 1.0)
+    frontier = build_pixel_frontier(
+        np.ascontiguousarray(profile["solar"], dtype=np.float64),
+        np.ascontiguousarray(profile["wind"], dtype=np.float64),
+        coverage,
+        params,
+        dimensionless_anchor,
     )
 
-    # Intermediates have length n, or n + n top-up draws when the top-up re-searched a starved pixel.
-    feasible = intermediates["feasible_designs"]  # {"solar": (m,), "wind": (m,), "battery": (m,)}
-    accepted_mask = intermediates["accepted_mask"]  # (m,)
-    all_lcoes = intermediates["lcoes"]  # (m,)
-    all_install_costs = intermediates["installation_costs"]  # (m,)
-
-    # Plot 2: Feasible design distributions
-    if generate_plots:
-        logging.info("Plotting feasible design distributions...")
-        feasible_list = [
-            {
-                "solar": float(feasible["solar"][i]),
-                "wind": float(feasible["wind"][i]),
-                "battery": float(feasible["battery"][i]),
-            }
-            for i in range(len(feasible["solar"]))
-        ]
-        plot_design_distributions(feasible_list, output_path=output_dir / f"{filename_prefix}_feasible_designs.png")
-
-    if optimum is None:
-        n_accepted = int(accepted_mask.sum())
-        logging.warning(
-            f"No usable optimum for ({lat}, {lon}): {n_accepted} of {n} designs met the "
-            f"coverage threshold (minimum {min_survivors})."
-        )
+    if frontier.status != STATUS_OK:
+        logging.warning(f"No usable optimum for ({lat}, {lon}): frontier status {frontier.status}.")
         return {
             "design": {"solar": 0, "wind": 0, "battery": 0},
             "lcoe": 0,
@@ -379,57 +368,35 @@ def execute_single_point_baseload_power_simulation(
             "served_fraction": 0,
             "cost_of_capital": 0,
             "cost_key": cost_key,
-            "status": 4 if n_accepted else 2,
+            "status": frontier.status,
             "region_selection": region_selection,
         }
 
-    # Materialise the accepted design list once — both plot calls below need it (cheap at n~2000,
-    # ~1 ms), and computing it here makes the type-narrowed value available everywhere.
-    accepted_idx = np.where(accepted_mask)[0]
-    accepted_list = [
-        {
-            "solar": float(feasible["solar"][i]),
-            "wind": float(feasible["wind"][i]),
-            "battery": float(feasible["battery"][i]),
-        }
-        for i in accepted_idx
-    ]
-
-    # Plot 3: Accepted design distributions
-    if generate_plots:
-        logging.info("Plotting accepted design distributions...")
-        plot_design_distributions(accepted_list, output_path=output_dir / f"{filename_prefix}_accepted_designs.png")
-
     _progress(92, "Computing optimal design...")
-    optimal_design = optimum["design"]
-    optimal_lcoe = optimum["lcoe"]
-    optimal_cost = optimum["installation_cost"]
+    coeffs = lcoe_coefficients(investment_horizon, capex, opex_pct, cost_of_capital, baseload_demand)
+    optimum = argmin_lcoe(frontier, coeffs)
+    optimal_design = {"solar": optimum.solar, "wind": optimum.wind, "battery": optimum.battery}
+    optimal_lcoe = optimum.lcoe
+    optimal_cost, ic_solar, ic_wind, ic_battery = installation_cost_breakdown(
+        optimum.solar, optimum.wind, optimum.battery, baseload_demand, capex
+    )
+    if optimum.argmin_truncated:
+        logging.warning(
+            f"The optimum for ({lat}, {lon}) sits against a patch edge, so a cheaper design may "
+            f"lie just outside the densely searched region."
+        )
 
-    # Calculate state of charge and net energy for the OPTIMUM design (used for the SoC plot
-    # and plot_data time series).
+    # State of charge for the OPTIMUM design, for the SoC plot and the plot-data time series.
     opt_net_nrg = None
     opt_soc = None
     if generate_plots or include_plot_data:
-        if generate_plots:
-            logging.info("Generating state of charge plot...")
         opt_net_nrg = calculate_net_energy_production(
             optimal_design["solar"], profile["solar"], optimal_design["wind"], profile["wind"]
         )
         opt_soc = state_of_charge(opt_net_nrg, optimal_design["battery"])
-
         if generate_plots:
+            logging.info("Generating state of charge plot...")
             plot_state_of_charge(opt_soc, output_path=output_dir / f"{filename_prefix}_state_of_charge.png")
-
-    # Plot 5: Cost scatter plots
-    if generate_plots:
-        logging.info("Generating cost scatter plots...")
-        plot_cost_scatter(
-            all_lcoes[accepted_mask],
-            accepted_list,
-            optimal_design,
-            installation_costs=all_install_costs[accepted_mask],
-            output_path=output_dir / f"{filename_prefix}_costs.png",
-        )
 
     # Log results
     logging.info(f"Optimization complete for ({lat}, {lon})")
@@ -447,11 +414,11 @@ def execute_single_point_baseload_power_simulation(
     result = {
         "design": optimal_design,
         "lcoe": optimal_lcoe,
-        "lcoe_coverage_based": optimum["lcoe_coverage_based"],
+        "lcoe_coverage_based": optimal_lcoe * optimum.served_fraction,
         "installation_cost": optimal_cost,
-        "installation_cost_breakdown": optimum["installation_cost_breakdown"],
-        "coverage": optimum["coverage"],
-        "served_fraction": optimum["served_fraction"],
+        "installation_cost_breakdown": {"solar": ic_solar, "wind": ic_wind, "battery": ic_battery},
+        "coverage": optimum.hours_covered,
+        "served_fraction": optimum.served_fraction,
         "cost_of_capital": cost_of_capital,
         "cost_key": cost_key,
         "status": 1,
@@ -488,22 +455,10 @@ def execute_single_point_baseload_power_simulation(
                 "unmet_demand_mw": unmet_series,
                 "curtailed_mw": curtailed_series,
             },
-            "design_space": {
-                "feasible_designs": {
-                    "solar": feasible["solar"].tolist(),
-                    "wind": feasible["wind"].tolist(),
-                    "battery": feasible["battery"].tolist(),
-                },
-                "accepted_designs": {
-                    "solar": feasible["solar"][accepted_mask].tolist(),
-                    "wind": feasible["wind"][accepted_mask].tolist(),
-                    "battery": feasible["battery"][accepted_mask].tolist(),
-                },
-            },
-            "accepted_designs_costs": {
-                "lcoe": all_lcoes[accepted_mask].tolist(),
-                "installation_cost": all_install_costs[accepted_mask].tolist(),
-            },
+            # The searched grid itself, not a random sample of it. Every node is feasible by
+            # construction -- rungs sit at or above `b_min` -- so the old feasible/accepted
+            # split has nothing left to distinguish and the nodes are reported once.
+            "design_space": _patch_nodes_payload(frontier, coeffs),
         }
 
     return result

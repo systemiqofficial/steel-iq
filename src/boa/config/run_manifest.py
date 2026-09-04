@@ -71,8 +71,6 @@ def provenance(path_config: PathConfig) -> dict[str, Any]:
         "availability_signature": _availability_signature(path_config),
         "boa_version": boa.__version__,
         "settings": {
-            "random_seed": settings.RANDOM_SEED,
-            "min_survivor_fraction": settings.MIN_SURVIVOR_FRACTION,
             "overscale_sampling_k": settings.OVERSCALE_SAMPLING_K,
             "lifetimes": settings.LIFETIMES,
             "era5_data_year": weather_year,

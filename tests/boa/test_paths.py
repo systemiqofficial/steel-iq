@@ -23,7 +23,6 @@ def test_layout_splits_by_provenance(tmp_path):
     assert cfg.zarr_dir == tmp_path / "inputs" / "cds-2024" / "cds-zarr"
     assert cfg.cds_dir == tmp_path / "data" / "cds"
     assert cfg.cds_staging_dir == tmp_path / "inputs" / "cds-2024" / "staging"
-    assert cfg.design_cache_dir == tmp_path / "inputs" / "cds-2024" / "cache_designs"
     assert cfg.input_data_path == tmp_path / "costs" / "xlsx-rev3" / "boa_cost_data.xlsx"
     assert cfg.cost_cache_dir == tmp_path / "costs" / "xlsx-rev3" / "cache_costs"
     assert cfg.run_manifest_path == tmp_path / "runs" / "cds-2024__xlsx-rev3" / "run.json"

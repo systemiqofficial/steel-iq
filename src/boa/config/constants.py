@@ -25,5 +25,8 @@ STATUS_CODES = {
     1: "Optimum found",
     2: "Simulated, no usable optimum",
     3: "Zero solar and wind potential",
-    4: "Fragile optimum rejected by minimum-survivor cut",
+    # 4 was the Monte Carlo minimum-survivor cut, retired with the sampler. Never reused --
+    # a promoted file could carry either meaning depending on when it was built.
+    4: "Retired (was: fragile optimum rejected by minimum-survivor cut)",
+    # 6 is reserved for the capacity-box corner screen (Grid 2, M4); 5 stays unallocated.
 }

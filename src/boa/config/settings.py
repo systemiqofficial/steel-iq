@@ -17,42 +17,12 @@ LEARNING_RATES = {
 # several units being installed at once being cheaper than many single units
 BATTERY_UNIT_CAPEX_SCALING_FACTOR = -0.15
 
-# Deterioration rate the energy systems over their lifetime
-YEARLY_DETERIORATION_RATES = {
-    "solar": 0.005,  # 0.5%/year
-    "wind": 0.01,  # 1%/year
-    "battery": 0.015,  # 1.5%/year; batteries degrade faster (NREL, see README.md)
-    # NOTE: currently unused in the model - modify LCOE calculation to include battery deterioration explicitly
-}
-
-# Annual maintenance downtime per technology, used when computing generated electricity (reduces availability by downtime/DAYS_IN_YEAR)
-# NOTE: currently only applied by the scalar reference LCOE path (cost_calculations.calculate_lcoe_of_re_installation)
-# the vectorised production pricer does not model downtime.
-MAINTENANCE_DOWNTIME_DAYS = 10  # days/year
-
-# Random seed for reproducibility
-RANDOM_SEED = 42
-
-# Scale of the Monte Carlo design proposal, as a multiple of 1/CF: overscale draws come
-# from Exp(mean=mu) with mu = OVERSCALE_SAMPLING_K[tech] / CF_tech (per-pixel time-mean
-# capacity factor), so the search tracks the site's resource. The capacity ceiling is
-# applied downstream as a query-time mask, never inside the sampler. Search-tuning knob,
-# not a physical parameter; validated for baseloads up to 20,000 MW.
+# Scale of the grid-bisection search box, as a multiple of 1/CF: `search_box` (bisection.py)
+# sets `mu = OVERSCALE_SAMPLING_K[tech] / CF_tech` (per-pixel time-mean capacity factor) and
+# spans the box to `box_multiple * mu`, so the search tracks the site's resource. The
+# capacity ceiling is applied downstream, never inside the search box. Search-tuning knob,
+# not a physical parameter.
 OVERSCALE_SAMPLING_K = {"wind": 0.75, "solar": 0.75}
-
-# Minimum share of the n sampled designs that must clear the coverage filter before a
-# pixel's LCOE argmin is trusted (threshold = ceil(fraction * n); n=2000 -> 20 designs).
-# With a single survivor the "optimum" is one Monte Carlo draw, not a reproducible
-# optimum, so such pixels are reported as infeasible (status 4) instead. Like
-# OVERSCALE_SAMPLING_K this is a search-quality knob, not a physical parameter;
-# 0.0 disables the cut, restoring the "at least one surviving design" behaviour.
-MIN_SURVIVOR_FRACTION = 0.01
-
-# Quality trigger for the query-time top-up: a pixel whose masked survivor count falls
-# below this fraction of n is re-sampled from the box-truncated proposal (the adequacy
-# trigger, MIN_SURVIVOR_FRACTION, always applies on top). Raising it trades query time
-# for a thinner pessimistic LCOE tail on sparsely-covered pixels.
-TOPUP_QUALITY_FRACTION = 0.25
 
 # Default spacing (years) for re-anchoring a pixel's frontier against updated costs
 # across a multi-decade horizon, rather than one frontier built once serving every query
@@ -111,7 +81,7 @@ LULC_CODES = {
         151: 1.0,
         152: 1.0,
         153: 1.0,  # sparse vegetation
-        190: 0.20,  # urban -- ground-mount siting only, not rooftop
+        190: 0.20,  # urban -- rooftop proxy
         200: 1.0,
         201: 1.0,
         202: 1.0,  # bare areas
