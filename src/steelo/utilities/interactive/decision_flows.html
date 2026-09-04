@@ -4,6 +4,25 @@
 <meta charset="utf-8">
 <title>Furnace-group decision flows</title>
 <style>__COMMON_CSS__</style>
+<style>
+/* Dual-handle year slider: two overlapping range inputs over one drawn track; only
+   the thumbs take pointer events, so either end of the window can be dragged. */
+#year-row { padding-top: 2px; }
+#year-note { color: #0b0b0b; margin-left: 6px; }
+.dual-range { position: relative; width: 230px; height: 18px; }
+.dual-range .track, .dual-range .fill { position: absolute; top: 7px; height: 4px; border-radius: 2px; }
+.dual-range .track { left: 0; right: 0; background: #d8d6d0; }
+.dual-range .fill { background: rgb(80, 120, 200); }
+.dual-range input { position: absolute; top: 0; left: 0; width: 100%; height: 18px; margin: 0;
+                    -webkit-appearance: none; appearance: none; background: none; pointer-events: none; }
+.dual-range input::-webkit-slider-runnable-track { height: 18px; background: none; }
+.dual-range input::-moz-range-track { background: none; }
+.dual-range input::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; pointer-events: auto;
+    margin-top: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff;
+    border: 2px solid rgb(80, 120, 200); box-sizing: border-box; cursor: pointer; }
+.dual-range input::-moz-range-thumb { pointer-events: auto; width: 14px; height: 14px; border-radius: 50%;
+    background: #fff; border: 2px solid rgb(80, 120, 200); box-sizing: border-box; cursor: pointer; }
+</style>
 </head>
 <body>
 <div id="err"></div>
@@ -15,6 +34,16 @@ window.addEventListener("error", function(e) {
 }, true);
 </script>
 <div class="toolbar" id="shared-filters"></div>
+<div class="toolbar" id="year-row">
+  <div id="year-panel">
+    <label>Years<span id="year-note"></span></label>
+    <div class="dual-range">
+      <div class="track"></div><div class="fill" id="year-fill"></div>
+      <input type="range" id="year-lo" step="1">
+      <input type="range" id="year-hi" step="1">
+    </div>
+  </div>
+</div>
 <div id="summary"></div>
 <div id="chart"></div>
 <script>__PLOTLYJS__</script>
@@ -44,6 +73,41 @@ const ZOOM_BUTTONS = [
   {name: "sankey-zoom-reset", title: "Fit to window", icon: Plotly.Icons.home,
    click: () => { zoomLevel = 1; render(); }},
 ];
+
+/* Year window over the motions: each handle clamps at the other, and the lower
+   handle moves on top in the upper half of the track so overlapping thumbs stay
+   grabbable at both extremes. */
+const yearLo = document.getElementById("year-lo"), yearHi = document.getElementById("year-hi");
+
+function yearWindow() { return [+yearLo.value, +yearHi.value]; }
+
+function syncYearUi() {
+  const [lo, hi] = yearWindow();
+  const pct = v => (v - +yearLo.min) / Math.max(1, +yearLo.max - +yearLo.min) * 100;
+  const fill = document.getElementById("year-fill");
+  fill.style.left = pct(lo) + "%";
+  fill.style.right = (100 - pct(hi)) + "%";
+  yearLo.style.zIndex = lo > (+yearLo.min + +yearLo.max) / 2 ? 2 : 1;
+  document.getElementById("year-note").textContent = lo === hi ? String(lo) : lo + "–" + hi;
+}
+
+function initYearSlider() {
+  const years = Object.values(DATA).flatMap(d => d.motions.map(m => m.year));
+  if (!years.length) { document.getElementById("year-panel").style.display = "none"; return; }
+  const min = Math.min(...years), max = Math.max(...years);
+  [yearLo, yearHi].forEach(s => { s.min = min; s.max = max; });
+  yearLo.value = min;
+  yearHi.value = max;
+  yearLo.addEventListener("input", () => {
+    if (+yearLo.value > +yearHi.value) yearLo.value = yearHi.value;
+    syncYearUi(); render();
+  });
+  yearHi.addEventListener("input", () => {
+    if (+yearHi.value < +yearLo.value) yearHi.value = yearLo.value;
+    syncYearUi(); render();
+  });
+  syncYearUi();
+}
 
 function techColour(tech) { return tech === "NEW" ? CONFIG.newColour : CONFIG.techColours[tech]; }
 
@@ -172,7 +236,8 @@ function render() {
   const run = DATA[Interactive.run()];
   const selected = Interactive.selectedGeos();
   const all = run.motions;
-  const motions = all.filter(m => selected.has(m.geo));
+  const [yLo, yHi] = yearWindow();
+  const motions = all.filter(m => selected.has(m.geo) && m.year >= yLo && m.year <= yHi);
   const gd = document.getElementById("chart");
 
   const links = buildLinks(motions);
@@ -231,8 +296,9 @@ function render() {
     });
   });
 
-  const years = all.map(m => m.year);
-  const yearRange = Math.min(...years) + "–" + Math.max(...years);
+  const years = motions.map(m => m.year);
+  const y0 = Math.min(...years), y1 = Math.max(...years);
+  const yearRange = y0 === y1 ? String(y0) : y0 + "–" + y1;
   Plotly.react(gd, [{
     type: "sankey",
     arrangement: "fixed",
@@ -272,6 +338,7 @@ function render() {
     `${run.provenance}`);
 }
 
+initYearSlider();
 Interactive.init({geoKeys: Object.values(DATA).flatMap(d => d.motions.map(m => m.geo)), onChange: render});
 Interactive.onResize(render);
 render();
