@@ -120,10 +120,7 @@ def test_dry_run_accepts_short_flags(tmp_path, monkeypatch):
     _make_store_dirs(config, 2024)
     config.input_data_path.parent.mkdir(parents=True)
     config.input_data_path.touch()
-    assert (
-        main_run(["--dry-run", "-d", "800", "-c", "0.9", "-n", "500", "-s", "2030", "-e", "2035", "-f", "5", "-w", "2"])
-        == 0
-    )
+    assert main_run(["--dry-run", "-d", "800", "-c", "0.9", "-s", "2030", "-e", "2035", "-f", "5", "-w", "2"]) == 0
 
 
 def test_dry_run_fails_cleanly_on_missing_inputs(tmp_path, monkeypatch):

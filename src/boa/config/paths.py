@@ -42,12 +42,11 @@ class PathConfig:
         ├── data/                          single slot: shapefiles, lsm, iso3 grid, cds/ raw NetCDFs,
         │                                  lulc/ land-cover raster
         ├── inputs/<input_set>/            profile + max-capacity stores (cds-zarr/, atlite/)
-        │   ├── staging/                   freshly built stores (transient; emptied by boa_cds install)
-        │   └── cache_designs/             year-independent designs; depends only on the stores
+        │   └── staging/                   freshly built stores (transient; emptied by boa_cds install)
         ├── inputs/cds-<year>/cache_frontiers/
-        │                                  schema v3 frontier stores, keyed on the weather year
-        │                                  alone: they hold no availability assumption, so every
-        │                                  layer set built on the same weather shares one cache
+        │                                  schema v3 frontier stores, keyed on the weather year alone:
+        │                                  they hold no availability assumption, so every layer set
+        │                                  built on the same weather shares one cache
         ├── costs/<cost_set>/boa_cost_data.xlsx
         │   └── cache_costs/               per-year costs; depends only on the xlsx
         ├── runs/<run>/                    one (input_set, cost_set) pairing
@@ -85,7 +84,6 @@ class PathConfig:
     costs_dir: Path
     run_dir: Path
     outputs_dir: Path
-    design_cache_dir: Path
     cost_cache_dir: Path
 
     @property
@@ -225,7 +223,6 @@ class PathConfig:
             run_dir=run_dir,
             outputs_dir=run_dir / "outputs",
             # Design cache follows the profile stores it was built from.
-            design_cache_dir=inputs_dir / "cache_designs",
             # Cost cache follows the xlsx it was preprocessed from.
             cost_cache_dir=costs_dir / "cache_costs",
         )

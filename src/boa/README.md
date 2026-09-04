@@ -18,18 +18,18 @@ boa-data-prepare
 boa-cds-prepare --weather_year 2024
 
 # 3. Sanity-check the pairing, then run at production settings
-boa-run --demand 1000 --coverage 0.95 --samples 2000 --dry-run
-boa-run --demand 1000 --coverage 0.95 --samples 2000 --promote-lcoe
+boa-run --demand 1000 --coverage 0.95 --dry-run
+boa-run --demand 1000 --coverage 0.95 --promote-lcoe
 ```
 
 Steps 1 and 2 are idempotent and independent — rerun either at any time; existing
 artefacts are reused (both can also run inline via `boa-run --cds-prepare 2024
 --data-prepare wb.xlsx rev2`). The run defaults (`--start-year 2025 --end-year 2060
 --frequency 1`, `--weather-input cds-2024`, `--workers fast`) suit a production sweep;
-drop to `--samples 1000` and a single year (`--start-year 2030 --end-year 2030`) for a
-faster exploratory run. To change only cost assumptions afterwards, skip the rebuild
+drop to a single year (`--start-year 2030 --end-year 2030`) for a faster exploratory
+run. To change only cost assumptions afterwards, skip the rebuild
 entirely: `boa-data-prepare --input-file edited.xlsx --scenario rev2` then
-`boa-run query --cost-input rev2 ...` reuses the design caches and re-derives the
+`boa-run query --cost-input rev2 ...` reuses the frontier caches and re-derives the
 NetCDFs in minutes per year.
 
 ## Preparing input data
@@ -75,8 +75,10 @@ data/
 └── cds/                              raw CDS NetCDFs (+ global_zarr/ build cache)
 inputs/<set>/                         e.g. cds-2024, tagged by weather year
 ├── cds-zarr/                         live profile + max-capacity stores the model reads
-├── staging/                          freshly built stores (transient; emptied on install)
-└── cache_designs/                    design cache, built by boa-run
+└── staging/                          freshly built stores (transient; emptied on install)
+inputs/cds-<year>/cache_frontiers/    frontier cache, built by boa-run; keyed on the
+                                       weather year alone, shared across every land-
+                                       availability layer set built on that weather
 costs/<scenario>/
 ├── boa_cost_data.xlsx    the four extracted sheets (RES CAPEX projections, RES OPEX,
 │                         Cost of capital, Country mapping)
@@ -130,36 +132,29 @@ already exists, so partial reuse works too.
 
 ```bash
 boa-run --demand 1000 --coverage 0.95            # full run: build caches if missing, query every year
-boa-run build-cache --samples 2000               # year- and baseload-independent design caches only
-boa-run build-topup --demand 1000                # per-baseload top-up supplements against existing caches
+boa-run build-cache                              # year- and baseload-independent frontier caches only
 boa-run query --start-year 2030 --end-year 2030  # NetCDFs from pre-built caches (--force to re-derive)
 boa-run point --lat 52.5 --lon 13.4              # single point; region auto-derived
 boa-run --weather-input cds-2023 --cost-input rev3 --dry-run  # resolve paths + preflight, run nothing
 boa-run --cds-prepare 2024 --data-prepare wb.xlsx rev2        # prepare both sides inline, then run
 ```
 
-`--weather-input` alone identifies the weather side (stores + design cache; the weather
+`--weather-input` alone identifies the weather side (stores + frontier cache; the weather
 year is read off the store filenames, never passed; default `cds-2024`), `--cost-input`
 the cost side (xlsx + per-year cost cache), and `--run` names the output pairing (default
 `<weather-input>__<cost-input>`). A preflight
 check fails fast with the exact `boa-cds-prepare` / `boa-data-prepare` command when the
-selected sets are incomplete. The full run never rebuilds an existing design cache; use
-`build-cache --force` or `query --force` for targeted rebuilds. Design caches are
-baseload-independent: one cache per (coverage, samples, weather year) serves every
-`--demand`, with the capacity ceiling applied as a query-time mask; pixels the mask
-starves or leaves sparsely sampled are re-searched by a query-time top-up (supported
-baseload: up to 20,000 MW). Expect hours
-for a full multi-year GLOBAL run at production settings (`--samples 2000`); a `query`
-against warm caches is minutes per year.
+selected sets are incomplete. The full run never rebuilds an existing frontier cache; use
+`build-cache --force` or `query --force` for targeted rebuilds. Frontier caches are
+baseload-independent and year-independent: one cache per (coverage, weather year, search
+parameters) serves every `--demand` and every investment year, and is shared across every
+land-availability layer set built on the same weather. A `query` against a warm cache is
+arithmetic per pixel and takes minutes per year.
 
-The top-up itself is cached per baseload: the first query at a given `--demand`
-computes it and persists a top-up supplement beside each region's design cache
-(`<cache-stem>__topup_<demand>MW.zarr`); every later query at that demand replays the
-supplement bit-identically, so multi-year sweeps and cost-scenario re-queries skip the
-top-up compute (~8 min per global pass at `--samples 1000`, ~16 at 2000).
-`boa-run build-topup --demand <MW>` prebuilds the supplements without producing
-NetCDFs, e.g. for shipping bundles. Rebuilding a design cache invalidates its
-supplements; the next query refuses the stale sidecar and rebuilds it automatically.
+**The capacity ceiling is not yet applied at query time** (tracked as M4,
+`BOA_BISECTION_PLAN.md`): every query currently reports the *unconstrained* optimum for
+its coverage target, regardless of `--demand`, and logs a warning saying so. Do not
+promote results from a run in this window.
 
 ## Handing LCOE to the steel simulation
 

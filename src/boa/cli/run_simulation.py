@@ -200,13 +200,6 @@ def add_scenario_args(parser: argparse.ArgumentParser) -> None:
         default=0.85,
         help="Required demand coverage fraction (0-1). E.g., 0.85 means RE must cover demand 85%% of the time",
     )
-    group.add_argument(
-        "-n",
-        "--samples",
-        type=int,
-        default=1000,
-        help="Number of random designs to sample. Higher values increase accuracy but also runtime",
-    )
 
 
 def add_temporal_args(parser: argparse.ArgumentParser) -> None:
@@ -253,8 +246,6 @@ def validate_scenario_args(args: argparse.Namespace) -> None:
         raise ValueError(f"Coverage must be between 0 and 1, got {args.coverage}")
     if args.demand <= 0:
         raise ValueError(f"Baseload demand must be positive, got {args.demand}")
-    if args.samples <= 0:
-        raise ValueError(f"Number of samples must be a positive integer, got {args.samples}")
 
 
 def validate_temporal_args(args: argparse.Namespace) -> None:
@@ -290,7 +281,6 @@ def resolved_parameters(args: argparse.Namespace, years: List[int] | None = None
     params: dict = {
         "demand_mw": args.demand,
         "coverage": args.coverage,
-        "samples": args.samples,
     }
     if years is not None:
         params["years"] = years
@@ -607,9 +597,7 @@ def main_query(argv: list[str]) -> int:
     logging.info("BOA: query (design-cache → NetCDF)")
     logging.info("=" * 60)
     logging.info(f"Years: {years}")
-    logging.info(
-        f"Baseload: {args.demand} MW; coverage {args.coverage:g}; samples={args.samples}; workers={args.workers}"
-    )
+    logging.info(f"Baseload: {args.demand} MW; coverage {args.coverage:g}; workers={args.workers}")
 
     resolve_data_sets(args)
     if (rc := run_prepare_flags(args)) != 0:
@@ -672,7 +660,7 @@ def main_point(argv: list[str]) -> int:
     logging.info("BOA: single-point simulation")
     logging.info("=" * 60)
     logging.info(f"Location: Lat={args.lat}, Lon={args.lon} (region auto-derived)")
-    logging.info(f"Years: {years}; baseload: {args.demand} MW; coverage {args.coverage:g}; samples={args.samples}")
+    logging.info(f"Years: {years}; baseload: {args.demand} MW; coverage {args.coverage:g}")
 
     resolve_data_sets(args)
     if (rc := run_prepare_flags(args)) != 0:
@@ -696,7 +684,6 @@ def main_point(argv: list[str]) -> int:
                 lon=args.lon,
                 baseload_demand=args.demand,
                 coverage=args.coverage,
-                n=args.samples,
             )
         except Exception as e:
             logging.error(f"Failed to run simulation for year {year}: {e}")
