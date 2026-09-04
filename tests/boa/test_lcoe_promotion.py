@@ -37,11 +37,7 @@ def _write_year(config, year, lcoe_offset=0.0, cost_keys=None, status=None, **at
             "investment_horizon_years": 25,
             "baseload_demand_mw": DEMAND,
             "coverage_fraction": 0.85,
-            "p_percentile": round((1 - COVERAGE) * 100),
-            "n_samples": 1000,
-            "random_seed": 42,
-            "min_survivor_fraction": 0.01,
-            "min_survivors": 10,
+            "search_params_hash": "deadbeef",
             "era5_weather_year": 2024,
             "era5_resolution_deg": 0.25,
             "region": "GLOBAL",
@@ -131,9 +127,8 @@ def test_provenance_attrs_identify_the_run(tmp_config):
     with xr.open_dataset(promote_lcoe(tmp_config, DEMAND, COVERAGE)) as out:
         assert out.attrs["run"] == "cds-2024__test"
         assert out.attrs["baseload_demand_mw"] == DEMAND
-        assert out.attrs["p_percentile"] == round((1 - COVERAGE) * 100)
         assert out.attrs["coverage_fraction"] == 0.85
-        assert out.attrs["n_samples"] == 1000
+        assert out.attrs["search_params_hash"] == "deadbeef"
         assert out.attrs["era5_weather_year"] == 2024
         assert list(out.attrs["promoted_years"]) == list(YEARS)
         assert out.attrs["promoted_at"]
@@ -164,7 +159,7 @@ def test_varying_status_is_rejected(tmp_config):
 
 def test_varying_scenario_settings_are_rejected(tmp_config):
     _write_run(tmp_config)
-    _write_year(tmp_config, YEARS[1], n_samples=2000)
+    _write_year(tmp_config, YEARS[1], search_params_hash="different")
     with pytest.raises(ValueError, match="different settings"):
         promote_lcoe(tmp_config, DEMAND, COVERAGE)
 

@@ -33,11 +33,7 @@ CARRIED_ATTRS = (
     "investment_horizon_years",
     "baseload_demand_mw",
     "coverage_fraction",
-    "p_percentile",
-    "n_samples",
-    "random_seed",
-    "min_survivor_fraction",
-    "min_survivors",
+    "search_params_hash",
     "era5_weather_year",
     "era5_resolution_deg",
 )
@@ -141,7 +137,9 @@ def promote_lcoe(path_config: PathConfig, baseload_demand: float, coverage: floa
                 raise ValueError(f"cost_key differs between {files[years[0]].name} and {files[year].name}.")
             if i and not np.array_equal(np.asarray(ds["status"].values).astype(np.int8), status):
                 raise ValueError(f"status differs between {files[years[0]].name} and {files[year].name}.")
-            differing = {k: (attrs[k], ds.attrs[k]) for k in CARRIED_ATTRS if k in attrs and ds.attrs[k] != attrs[k]}
+            differing = {
+                k: (attrs[k], ds.attrs.get(k)) for k in CARRIED_ATTRS if k in attrs and ds.attrs.get(k) != attrs[k]
+            }
             if differing:
                 raise ValueError(f"{files[year].name} was produced with different settings: {differing}.")
             lcoe[i] = ds["lcoe"].values.astype(np.float32)
