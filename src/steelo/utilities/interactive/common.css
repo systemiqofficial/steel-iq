@@ -10,9 +10,9 @@ select { font-size: 13px; padding: 3px 6px; }
 #geo-panel { flex: 1; min-width: 480px; }
 #tech-panel { display: flex; align-items: center; gap: 4px 14px; flex-wrap: wrap; padding: 2px 40px 0; }
 #tech-panel > label { font-size: 12px; color: #52514e; margin: 0; }
-#tech-boxes { display: inline-flex; flex-wrap: wrap; gap: 2px 14px; }
-#tech-boxes label { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: #0b0b0b;
-                    margin: 0; cursor: pointer; white-space: nowrap; }
+.box-ticks { display: inline-flex; flex-wrap: wrap; gap: 2px 14px; }
+.box-ticks label { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: #0b0b0b;
+                   margin: 0; cursor: pointer; white-space: nowrap; }
 .box-dropdown { position: relative; display: inline-block; margin-right: 8px; }
 .box-dropdown > button { font-size: 12px; padding: 3px 10px; cursor: pointer; }
 .box-panel { display: none; position: absolute; z-index: 10; top: 100%; left: 0; margin-top: 2px;
@@ -23,8 +23,8 @@ select { font-size: 13px; padding: 3px 6px; }
                    color: #0b0b0b; margin: 0; padding: 1px 0; cursor: pointer; white-space: nowrap; }
 .box-panel .muted { color: #52514e; }
 .small-btn { font-size: 11px; padding: 1px 8px; margin-left: 8px; cursor: pointer; }
-#geo-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 10px; max-width: 760px;
-             vertical-align: top; }
+#geo-chips, .tick-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 10px; max-width: 760px;
+                          vertical-align: top; }
 .geo-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: #0b0b0b;
             background: #eceae4; border-radius: 10px; padding: 1px 8px; }
 .geo-chip button { border: none; background: none; font-size: 11px; cursor: pointer; padding: 0;

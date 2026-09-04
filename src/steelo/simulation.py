@@ -1578,6 +1578,9 @@ class SimulationRunner:
                 primary_feedstocks_json=fixtures_dir / "primary_feedstocks.json" if fixtures_dir else None,
                 suppliers_json=fixtures_dir / "suppliers.json" if fixtures_dir else None,
             )
+            interactive.plot_greenfield_status(
+                greenfield_status_csv=self.config.output_dir / "data" / "greenfield_status_timeseries.csv",
+            )
 
         # Aggregate per-year LCOE/LCOH statistics into stacked CSVs
         aggregate_lcoe_lcoh_statistics(self.config.output_dir, start_year, end_year)

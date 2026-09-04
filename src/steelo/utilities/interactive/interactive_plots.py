@@ -30,6 +30,7 @@ from . import (
     cost_curves,
     decision_flows,
     emissions,
+    greenfield_status,
     metallic_charge_use,
     reductant_use,
     supply_demand,
@@ -123,6 +124,7 @@ class InteractivePlotter:
         >>> interactive.plot_trade_allocations(tm_dir)
         >>> interactive.plot_reductant_use(post_processed_csv, primary_feedstocks_json)
         >>> interactive.plot_metallic_charge_use(post_processed_csv, primary_feedstocks_json, suppliers_json)
+        >>> interactive.plot_greenfield_status(greenfield_status_csv)
     """
 
     SUBDIR = "interactive"
@@ -655,6 +657,46 @@ class InteractivePlotter:
             len(aggregated),
             len(supply),
         )
+        return path
+
+    def plot_greenfield_status(self, greenfield_status_csv: Path) -> Optional[Path]:
+        """Write the greenfield status viewer (``greenfield_status.html``).
+
+        The viewer is the static ``greenfield/<product>_greenfield_status.png``
+        charts made interactive: greenfield (GEO-origin) furnace groups per year
+        stacked by lifecycle status or by technology, as plant count, capacity
+        or production, showing either the stock in each status or the flow
+        entering it.
+
+        Args:
+            greenfield_status_csv: The run's ``data/greenfield_status_timeseries.csv``.
+
+        Returns:
+            The written path, or None when the CSV is missing (a run may create no
+            greenfield groups) or lacks a required column (logged as warnings so
+            the plot stage never fails).
+        """
+        if not greenfield_status_csv.is_file():
+            logger.warning(
+                "No greenfield status timeseries at %s — skipping the greenfield status viewer",
+                greenfield_status_csv,
+            )
+            return None
+        try:
+            aggregated = greenfield_status.aggregate_status(pd.read_csv(greenfield_status_csv))
+        except ValueError as exc:
+            logger.warning("%s — skipping the greenfield status viewer", exc)
+            return None
+        data = {
+            self.run_title: {
+                "title": self.run_title,
+                "provenance": f"Per-year greenfield furnace-group snapshots from data/{greenfield_status_csv.name}.",
+                "rows": greenfield_status.pack_rows(aggregated),
+            },
+        }
+        config = self._config("Greenfield status", statusColours=greenfield_status.STATUS_COLOURS)
+        path = self._write("greenfield_status.html", config, data)
+        logger.info("Wrote greenfield status viewer %s (%d aggregated rows)", path, len(aggregated))
         return path
 
     def _config(self, chart_title: str, **chart_config: Any) -> dict[str, Any]:
