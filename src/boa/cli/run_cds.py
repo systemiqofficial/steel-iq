@@ -164,10 +164,11 @@ def default_input_set(year: int, layer_names: list[str]) -> str:
     """
     The input-set name a prepare defaults to.
 
-    The layer set is part of the input-set identity. Different ceilings then land in
-    different zarr_dirs and, through them, different design-cache dirs, so a cache built
-    against one ceiling cannot be reused by a run with another. Geometry-only keeps the
-    bare `cds-<year>` name it has always had, which is correct rather than merely
+    The layer set is part of the input-set identity, so different ceilings land in
+    different `zarr_dirs` and cannot be silently mixed. The frontier cache is unaffected --
+    it is keyed on the weather year alone and shared across layer sets (D4,
+    `PathConfig.frontier_cache_dir`), since it holds no capacity-ceiling data. Geometry-only
+    keeps the bare `cds-<year>` name it has always had, which is correct rather than merely
     convenient: geometry-only is what every existing store already holds.
     """
     if not layer_names:
@@ -178,9 +179,10 @@ def default_input_set(year: int, layer_names: list[str]) -> str:
 def _max_cap_rebuild_reason(live: Path, region: str, year: int, signature: str) -> str | None:
     """Why this region's ceiling store cannot be reused, or None if it can.
 
-    Presence alone is not enough. The ceilings are baked into the design cache, so a store
-    built from a different layer set or different densities is silently wrong rather than
-    merely stale -- which is exactly the defect the signature exists to catch.
+    Presence alone is not enough. The frontier cache carries no ceiling data (D4), so this
+    store is the *only* place a stale or mismatched ceiling would be caught -- a store built
+    from a different layer set or different densities is silently wrong rather than merely
+    stale, which is exactly the defect the signature exists to catch.
     """
     store = live / (max_cap_store_stem(region, year) + ".zarr")
     if not store.exists():

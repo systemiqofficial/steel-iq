@@ -276,8 +276,9 @@ def availability_signature(specs: list[LayerSpec], densities: dict[str, float]) 
 
     Stored on the store and compared before reuse. Without it the rebuild check is
     presence-only, so a changed layer set or a changed `--pv-density` silently reuses
-    ceilings built against the old values -- and because the ceilings are baked into the
-    design cache, nothing downstream can notice either.
+    ceilings built against the old values -- and because the frontier cache carries no
+    ceiling data of its own (D4), this store's own signature is the only place that could
+    ever catch it.
 
     Stability matters as much as sensitivity: an unstable hash would rebuild every store
     on every run, so keys are sorted and the encoding is fixed.

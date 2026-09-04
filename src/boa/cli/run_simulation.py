@@ -119,8 +119,10 @@ def add_data_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument(
         "--weather-input",
         default=None,
-        help="Input set under <root>/inputs/ (profile + max-capacity stores, design cache). "
-        f"Default: {DEFAULT_WEATHER_INPUT}, or cds-<year> when --cds-prepare is given.",
+        help="Input set under <root>/inputs/ (profile + max-capacity stores). The frontier "
+        "cache lives alongside it but is keyed on the weather year alone, not the full input "
+        f"set, so layer sets on the same weather share it. Default: {DEFAULT_WEATHER_INPUT}, "
+        "or cds-<year> when --cds-prepare is given.",
     )
     group.add_argument(
         "--cost-input",
@@ -184,7 +186,11 @@ def run_prepare_flags(args: argparse.Namespace) -> int:
 
 
 def add_scenario_args(parser: argparse.ArgumentParser) -> None:
-    """Scenario parameters; together with the input set they identify the design cache."""
+    """
+    Scenario parameters. ``--coverage`` is part of the frontier cache's key (with the input
+    set and ``SearchParams``); ``--demand`` is not -- the frontier is baseload-invariant and
+    only the per-year query output is named after it.
+    """
     group = parser.add_argument_group("Scenario Parameters")
     group.add_argument(
         "-d",
@@ -509,18 +515,18 @@ def main_run(argv: list[str]) -> int:
 
 def main_build_cache(argv: list[str]) -> int:
     """
-    `build-cache` subcommand: build the year-independent design caches for all regions.
+    `build-cache` subcommand: build the year-independent frontier caches for all regions.
     No NetCDF output; only the per-region Zarr stores are written. Idempotent —
     existing caches at the parameterised path are skipped.
     """
     parser = argparse.ArgumentParser(
         prog="boa-run build-cache",
-        description="Build the design caches (all regions) without producing optimal-solution NetCDFs.",
+        description="Build the frontier caches (all regions) without producing optimal-solution NetCDFs.",
         formatter_class=_HelpFormatter,
     )
     add_scenario_args(parser)
     add_workers_arg(parser)
-    parser.add_argument("--force", action="store_true", help="Rebuild each design cache even if it already exists.")
+    parser.add_argument("--force", action="store_true", help="Rebuild each frontier cache even if it already exists.")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
     add_data_args(parser)
     args = parser.parse_args(argv)
@@ -561,12 +567,12 @@ def main_build_cache(argv: list[str]) -> int:
 
 def main_query(argv: list[str]) -> int:
     """
-    `query` subcommand: re-derive optimal-solution NetCDFs from pre-built design
+    `query` subcommand: re-derive optimal-solution NetCDFs from pre-built frontier
     caches for the requested years. Requires the caches to exist; will not build.
     """
     parser = argparse.ArgumentParser(
         prog="boa-run query",
-        description="Run the LCOE-only query against pre-built design caches (all regions).",
+        description="Run the LCOE-only query against pre-built frontier caches (all regions).",
         formatter_class=_HelpFormatter,
     )
     add_temporal_args(parser)
