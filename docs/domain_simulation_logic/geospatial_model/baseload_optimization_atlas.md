@@ -4,19 +4,16 @@ It is computed in two steps:
 1) Simulating renewable energy supply (using weather data and Atlite)
 2) Finding the optimum overbuilding factors for solar, wind, and battery. 
 
-Due to long runtimes (>6h per simulation year with parallelization on a powerful computer) this module runs as a standalone script (not as part of the main pipeline) and its precomputed outputs are read by the main model (steelo). However, we do provide the option to re-run step 2 of this module in case the user wants to change some of the input data or assumptions (e.g., cost of capital, solar PV CAPEX). For this, the output data from step 1 are required and are not provided in the default data package due to its large size (70 GB). Please, reach out to Steel-IQ@systemiq.earth to obtain these data. 
+Due to long runtimes this module runs as a standalone package (`src/boa`, its own pipeline of
+CLI commands) rather than as part of the main model run, and its precomputed outputs are read
+by the main model (steelo). The full pipeline — cost data, weather stores, then the search
+itself — is documented in `src/boa/README.md`; this page covers the search methodology.
 
-### 1. Prerequisites
-Ensure all required data files are in place:
-- Download and save the outputs from step 1 to the `data/atlite/` folder:
-    - Renewable energy profiles to `data/atlite/output/`
-    - Maximum capacity constraints to `data/atlite/cav/`
-- Add the Renewable Energy Input Data Excel file at `data/Renewable_Energy_Input_Data.xlsx`
-- Master input Excel file - is generated automatically when running the main pipeline, but can also be added manually
+### 1. Prerequisites and running the simulation
 
-### 2. Running the simulation
-The simulation is run with the `boa-run` command (after installing with `uv sync`). Runs
-are always GLOBAL (all 9 regions); the one exception is the single-point mode:
+See `src/boa/README.md`'s "End-to-end pipeline" section for the full command sequence
+(`boa-data-prepare` for costs, `boa-cds-prepare` for weather stores, then `boa-run`). Once
+both sides are prepared:
 
 ```bash
 # Full run with default parameters (2025-2060, 1000 MW demand, cds-2024 weather)
@@ -28,8 +25,8 @@ boa-run --demand 800 --coverage 0.95
 # Prepare the weather stores and cost set inline, then run
 boa-run --cds-prepare 2024 --data-prepare master.xlsx test_scenario
 
-# Build only the year-independent design caches
-boa-run build-cache --samples 2000
+# Build only the year- and baseload-independent frontier caches
+boa-run build-cache
 
 # Re-derive optimal-solution NetCDFs from pre-built caches
 boa-run query --start-year 2030 --end-year 2030
@@ -41,7 +38,9 @@ boa-run point --lat 52.5 --lon 13.4
 boa-run --help
 ```
 
-### 3. Available parameters
+### 2. Available parameters
+
+Full reference: `boa-run --help` (options differ slightly per subcommand). Summary:
 
 **Temporal Parameters** (full run, `query`, `point`):
 - `-s`/`--start-year`: Starting investment year (default: 2025)
@@ -49,13 +48,17 @@ boa-run --help
 - `-f`/`--frequency`: Years between simulations (default: 1)
 
 **Scenario Parameters:**
-- `-d`/`--demand`: Baseload demand in MW (default: 1000.0, typical range: 150-1000)
-- `-c`/`--coverage`: Required demand coverage fraction, e.g., 0.85 means 85% coverage (default: 0.85)
-- `-n`/`--samples`: Number of design samples per grid point (default: 1000)
+- `-d`/`--demand`: Baseload demand in MW (default: 1000.0, typical range: 150-1000). Not part
+  of the frontier cache's key — the search is baseload-invariant, so this only names the
+  per-year query output.
+- `-c`/`--coverage`: Required demand coverage fraction, e.g., 0.85 means 85% coverage
+  (default: 0.85). Part of the frontier cache's key.
 
 **Data Selection:**
-- `--weather-input`: Input set under the data root's `inputs/` (profile + max-capacity stores and
-  design cache; the weather year is read off the store filenames; default: `cds-2024`)
+- `--weather-input`: Input set under the data root's `inputs/` (profile + max-capacity
+  stores; the weather year is read off the store filenames; default: `cds-2024`). The
+  frontier cache lives alongside it but is keyed on the weather year alone, not the full
+  input set, so every land-availability layer set built on the same weather shares it.
 - `--cost-input`: Cost set under `costs/` (workbook + per-year cost cache; default: `default`)
 - `--run`: Run name for outputs (default: `<weather-input>__<cost-input>`)
 - `--cds-prepare YEAR`: Run `boa-cds-prepare` for YEAR first, building the weather-input
@@ -72,13 +75,17 @@ boa-run --help
 - `--promote-lcoe` (full run and `query`): Combine the per-year GLOBAL NetCDFs into the single
   LCOE file the steel simulation reads (same as running `boa-promote-lcoe` afterwards)
 
-### 4. Output
+**The capacity ceiling is not yet applied at query time.** Every query currently reports the
+*unconstrained* optimum for its coverage target, regardless of `--demand`, and logs a warning
+saying so. Do not promote results from a run in this state.
+
+### 3. Output
 The simulation will:
 - Run the baseload power simulation for the selected years
 - Process all regions in parallel
 - Generate optimal renewable energy system designs for each grid point
-- Save results as NetCDF files in `outputs/GEO/baseload_power_simulation/p{X}/`
-- With `--plots`, create visualization plots in `outputs/plots/geo_layers/baseload_power_simulation/`
+- Save results as one NetCDF per region-year under `runs/<run>/outputs/<demand>MW/cov<coverage>/nc/<REGION>/`
+- With `--plots`, create visualization plots under `runs/<run>/outputs/<demand>MW/cov<coverage>/plots/<REGION>/`
 
 Results include:
 - LCOE (Levelized Cost of Energy) in USD/MWh
@@ -87,7 +94,7 @@ Results include:
 - Battery overscale factor (relative to baseload demand)
 - Total installation cost in USD
 
-### 5. Handing the LCOE to the steel simulation
+### 4. Handing the LCOE to the steel simulation
 
 The steel simulation reads exactly one variable off a BOA run — `lcoe` — so a finished run
 is promoted into a single combined file before it is used. Promotion stacks every year into
@@ -98,7 +105,8 @@ which turns 5.49 GB of per-year files (36 years) into about 26 MB:
 boa-promote-lcoe --run cds-2024__china_test    # or: boa-run ... --promote-lcoe
 ```
 
-The result lands in `<boa data root>/lcoe-for-steel-iq/<run>/optimal_lcoe_<bl>MW_p<p>_<first>_<last>.nc`
+The result lands in
+`<boa data root>/lcoe-for-steel-iq/<run>/optimal_lcoe_<bl>MW_cov<c>_<first>_<last>.nc`
 and carries its own provenance (run name, input/cost sets, workbook hash, versions, scenario
 settings), so the file alone identifies what produced it.
 
@@ -136,9 +144,12 @@ and `--baseload-power-sim-dir` still points at a directory of them.
     - Use the Atlite package to simulate solar PV panels and onshore wind turbines at each location.
 
 3. Determine the installation limits for solar and wind at each grid point
-    - Capacity limits are based on physical constraints only (such as the area per grid cell at a certain latitude and the minimum spacing between turbines
-    and panels).
-    - Land use/cover is not considered.
+    - A pure-geometry ceiling: area per grid cell at a given latitude x an areal power density
+    (accounting for turbine/panel spacing) is available by default.
+    - A layered land-availability ceiling is also available: the geometric ceiling further
+    scaled by an ESA-CCI land-cover suitability fraction and a CDS-derived exclusion mask
+    (protected areas, slope, elevation, distance to shore). See `src/boa/README.md` for how to
+    build it. Not yet enforced as a search constraint — see "Available parameters" above.
 
 4. Identify grid points eligible for renewable system deployment
     - Filter out water bodies (oceans and seas).
@@ -146,41 +157,29 @@ and `--baseload-power-sim-dir` still points at a directory of them.
     - Exclude grid points with zero potential for both solar and wind.
     - Note: this is BOA's own eligibility filter, separate from the steelo siting feasibility mask (which additionally allows land at or below sea level).
 
-5. For each eligible grid point
-    - Sample many system design candidates
-        - Use stochastic sampling (exponential or homogeneous distributions) to generate potential ratios of capacity vs. demand for solar and wind. This
-        method does not provide the globally optimal solution, but is very close to the optimum and runs orders of magnitude faster than full optimization.
-        - Ensure overscale factors do not exceed physical limits.
-        - For each design, calculate net hourly energy production assuming a constant demand.
-    - Estimate the required battery capacity for each sampled design
-        - For each hour in the year, calculate the net generated energy as the installed solar and wind capacity multiplied by their respective capacity factor
-        at that time minus the baseload demand (no batteries included yet).
-        - Compute the q-th percentile (e.g., 5th) of the net generated energy to measure the magnitude of the typical deficit (without batteries).
-        - Estimate how long such deficits last by analysing contiguous deficit durations.
-        - Approximate the required battery size as the deficit magnitude multiplied by the typical duration.
-    - Correct the battery CAPEX for modular installation
-        - The cost of installing a battery module with several units at once is cheaper than installing many single units.
-        - Use the overscale factor to reduce the unit price of the battery installation.
-    - Simulate the operation of the battery for each design over one year
-        - Track the hourly state of charge assuming ideal efficiency. Batteries are assumed to start empty at the start of the year.
-        - Discard energy exceeding battery capacity and track demand shortfalls.
-    - Filter designs based on demand coverage
-        - Calculate the average hourly coverage of demand by the full system (solar, wind, battery).
-        - Accept designs only if demand is met at least x% of the time (e.g., 95%; user configurable).
-    - Calculate installation cost and Levelized Cost of Energy (LCOE) for accepted designs
-        - Use technology-specific CAPEX, OPEX, and cost of capital for the investment year and country.
-        - The Levelized Cost of Electricity (LCOE) quantifies the average cost of generating one unit of electricity (USD/MWh) over the investment horizon of
-        a renewable energy system. It divides the total discounted costs—including initial capital investment (CAPEX), fixed annual operating expenses (OPEX),
-        and a correction for the remaining value of the system after the investment horizon—by the total discounted electricity generated over that same period.
-        - Electricity generation is calculated from hourly solar and wind profiles and is adjusted for technical degradation and downtime over time.
-        - All cash flows and electricity outputs are discounted using a country-specific cost of capital to reflect investment risk.
-        - The model optionally accounts for curtailment by excluding unused energy from the output.
-        - Key assumptions include immediate system installation (generation starts in year one), no grid connection, and no taxation. With a fixed baseload
-        demand, the cost estimate is purely supply-driven.
-    - Select the optimal system design
-        - Choose the design with the lowest LCOE (with curtailment) among accepted candidates.
-        - Record its solar, wind, and battery overscale factors, LCOE, and total cost.
+5. For each eligible grid point, search deterministically rather than sample
+    - The search runs in solar/wind **overscale** units (installed capacity relative to
+    baseload demand), which is what makes the result reusable across every baseload demand
+    and, together with a closed-form LCOE (below), across every investment year.
+    - A coarse grid ranks basins across the whole feasible box, then one or more dense
+    patches refine around the best basin(s) — grid-bisection, not stochastic sampling. At
+    every node, the smallest battery meeting the hourly coverage target is found by
+    bisection on the battery's state-of-charge simulation (ideal efficiency, empty at year
+    start), plus a handful of larger "rungs" above that minimum, because dividing LCOE by
+    the energy actually delivered means the cheapest battery does not always sit exactly at
+    the coverage minimum.
+    - Battery CAPEX is corrected for modular installation (larger batteries are cheaper per
+    unit of storage), folded algebraically into a single power-law term rather than applied
+    as a separate correction pass.
+    - What the search caches per grid point is pure dispatch physics — no cost, no
+    investment year. LCOE for one (country, year) is then a closed-form combination of
+    four scalar coefficients (from that year's CAPEX, OPEX and cost of capital) against the
+    cached physics, with no re-simulation — the same cached search result reprices instantly
+    for every requested investment year and cost scenario.
+    - The reported design is the cheapest cached node/rung meeting the coverage target,
+    ranked and reported on the same LCOE (energy-delivered, curtailment-aware).
 
 6. Extrapolate in time and space
-    - Repeat the above steps for each grid point and year until 2050.
+    - Repeat the above for each eligible grid point and each requested investment year (2025
+    to 2060 by default, see "Available parameters" above).
     - Combine all optimal designs and LCOEs into a set of global maps.
