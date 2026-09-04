@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Greenfield buildout map</title>
+<style>__COMMON_CSS__</style>
+<style>
+/* The map fills the viewport below the shared toolbar. Page colours come from the
+   theme variables (dark default, body.light overrides), so the theme toggle re-skins
+   the chrome; the deck layers and tooltips follow via the MAP_THEMES table. */
+body {
+  --bg: #0b0d12; --ink: #e0e0e0; --label: #9aa0ab;
+  --chrome: rgba(22, 24, 31, 0.97); --chrome-border: #262a34;
+  --control-bg: #262a34; --control-border: #3a3f4d; --panel-bg: #1c1f27;
+  --chip-bg: #2c3140; --float-bg: rgba(24, 26, 32, 0.92); --shadow: rgba(0, 0, 0, 0.5);
+  --handle-bg: #16181f; --handle-hover: #1d2029; --separator: #3a3f4d; --hr: #555;
+  --future: #8a8f99;
+}
+body.light {
+  --bg: #ccdbe8; --ink: #0b0b0b; --label: #52514e;
+  --chrome: rgba(250, 249, 246, 0.97); --chrome-border: #d9d6cf;
+  --control-bg: #fff; --control-border: #b5b3ae; --panel-bg: #fff;
+  --chip-bg: #eceae4; --float-bg: rgba(252, 252, 251, 0.95); --shadow: rgba(0, 0, 0, 0.25);
+  --handle-bg: #f0eee9; --handle-hover: #e7e4dd; --separator: #d9d6cf; --hr: #ccc;
+  --future: #8a8f99;
+}
+body { display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+       background: var(--bg); color: var(--ink);
+       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+#topbar { flex: none; background: var(--chrome); border-bottom: 1px solid var(--chrome-border); overflow-y: auto; }
+#topbar-resize { flex: none; height: 12px; background: var(--handle-bg);
+                 border-bottom: 1px solid var(--chrome-border);
+                 cursor: ns-resize; display: flex; align-items: center; justify-content: center;
+                 user-select: none; touch-action: none; }
+#topbar-resize:hover { background: var(--handle-hover); }
+#topbar-resize span { font-size: 9px; color: var(--label); line-height: 1; pointer-events: none; }
+#topbar .toolbar { padding: 10px 16px 8px; }
+#topbar .facet-row { padding: 0 16px 6px; }
+#topbar .toolbar label, #topbar #tech-panel > label { color: var(--label); }
+#topbar select, #topbar .box-dropdown > button, #topbar .small-btn {
+  background: var(--control-bg); color: var(--ink); border: 1px solid var(--control-border); border-radius: 3px; }
+#topbar .box-panel { background: var(--panel-bg); border-color: var(--control-border); }
+#topbar .box-panel label, #topbar .box-ticks label { color: var(--ink); }
+#topbar .box-panel .muted { color: var(--label); }
+#topbar .geo-chip { background: var(--chip-bg); color: var(--ink); }
+#topbar .geo-chip button { color: var(--label); }
+#topbar .geo-chip-note { color: var(--label); }
+#topbar #geo-panel { flex: 1; }
+#topbar #tech-panel { padding: 0 16px 8px; }
+#explain { padding: 0 16px 8px; font-size: 11px; color: var(--label); line-height: 1.5; }
+.facet { display: inline-flex; align-items: flex-start; gap: 8px; }
+.facet > label { font-size: 12px; color: var(--label); margin: 0; padding-top: 5px; white-space: nowrap; }
+.swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; display: inline-block; }
+#map { position: relative; flex: 1; }
+.panel { position: absolute; z-index: 1; background: var(--float-bg); border-radius: 6px;
+         box-shadow: 0 2px 8px var(--shadow); padding: 12px 15px; font-size: 13px; }
+#controls { top: 10px; left: 10px; max-width: 440px; }
+#title { font-weight: 600; font-size: 14px; margin-bottom: 8px; }
+#year-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+#year-row button { background: rgba(80, 120, 200, 0.8); color: #fff; border: none; border-radius: 3px;
+                   font-size: 13px; padding: 2px 9px; cursor: pointer; }
+#year-row button:hover { background: rgba(100, 140, 220, 0.9); }
+#year-slider { flex: 1; accent-color: rgb(80, 120, 200); }
+#year-label { font-weight: 600; font-size: 15px; min-width: 42px; text-align: right; }
+#stats { font-size: 11px; color: var(--label); line-height: 1.5; }
+#legend { display: flex; flex-wrap: wrap; gap: 3px 10px; margin: 6px 0 4px; font-size: 11px; }
+#legend span { display: inline-flex; align-items: center; gap: 4px; }
+#sidebar { top: 10px; right: 10px; bottom: 10px; width: 340px; overflow-y: auto; display: none; }
+#sidebar-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+#sidebar-title { font-weight: 600; font-size: 14px; }
+#sidebar-close { background: none; border: none; color: var(--label); font-size: 16px; line-height: 1;
+                 cursor: pointer; padding: 0; }
+#sidebar-close:hover { color: var(--ink); }
+#sidebar-sub { font-size: 11px; color: var(--label); margin: 2px 0 8px; }
+.sidebar-block { border-top: 1px solid var(--separator); padding: 8px 0; font-size: 12px; line-height: 1.45; }
+.sidebar-block:first-of-type { border-top: none; padding-top: 0; }
+</style>
+</head>
+<body>
+<div id="err"></div>
+<script>
+window.addEventListener("error", function(e) {
+  const el = document.getElementById("err");
+  el.style.display = "block";
+  el.textContent = "Load error: " + (e.message || e.type) + (e.filename ? " @ " + e.lineno : "");
+}, true);
+</script>
+<div id="topbar">
+  <div class="toolbar" id="mode-row">
+    <div>
+      <label for="product-select">Product</label>
+      <select id="product-select">
+        <option value="both">Steel and iron</option>
+        <option value="steel">Steel</option>
+        <option value="iron">Iron</option>
+      </select>
+    </div>
+    <div>
+      <label for="colour-select">Colour by</label>
+      <select id="colour-select">
+        <option value="status">Status</option>
+        <option value="technology">Technology</option>
+        <option value="reductant">Reductant</option>
+      </select>
+    </div>
+    <div>
+      <label for="theme-select">Theme</label>
+      <select id="theme-select">
+        <option value="dark">Dark</option>
+        <option value="light">Light</option>
+      </select>
+    </div>
+  </div>
+  <div class="toolbar facet-row">
+    <div class="facet" id="status-panel">
+      <label>Statuses
+        <button id="status-all" class="small-btn">All</button>
+        <button id="status-none" class="small-btn">None</button>
+      </label>
+      <div class="box-dropdown">
+        <button id="status-toggle"></button>
+        <div id="status-boxes" class="box-panel"></div>
+      </div>
+      <div id="status-chips" class="tick-chips"></div>
+    </div>
+  </div>
+  <div class="toolbar facet-row">
+    <div class="facet" id="reductant-panel">
+      <label>Reductants
+        <button id="reductant-all" class="small-btn">All</button>
+        <button id="reductant-none" class="small-btn">None</button>
+      </label>
+      <div class="box-dropdown">
+        <button id="reductant-toggle"></button>
+        <div id="reductant-boxes" class="box-panel"></div>
+      </div>
+      <div id="reductant-chips" class="tick-chips"></div>
+    </div>
+  </div>
+  <div class="toolbar facet-row">
+    <div class="facet" id="charge-panel">
+      <label>Metallic charge
+        <button id="charge-all" class="small-btn">All</button>
+        <button id="charge-none" class="small-btn">None</button>
+      </label>
+      <div class="box-dropdown">
+        <button id="charge-toggle"></button>
+        <div id="charge-boxes" class="box-panel"></div>
+      </div>
+      <div id="charge-chips" class="tick-chips"></div>
+    </div>
+  </div>
+  <div class="toolbar" id="shared-filters"></div>
+  <div id="explain">
+    <div>Dot area = the site's capacity; a dot can hold several furnace groups — hover for a summary,
+      click a dot for a scrollable panel listing each group's status, technology and reductant history.</div>
+    <div id="provenance"></div>
+  </div>
+</div>
+<div id="topbar-resize" title="Drag to resize the filter bar · click to collapse or expand">
+  <span id="topbar-chevron">▴</span>
+</div>
+<div id="map">
+  <div id="controls" class="panel">
+    <div id="title"></div>
+    <div id="year-row">
+      <button id="year-prev" title="Previous year">‹</button>
+      <input type="range" id="year-slider">
+      <button id="year-next" title="Next year">›</button>
+      <span id="year-label"></span>
+    </div>
+    <div id="stats"></div>
+    <div id="legend"></div>
+  </div>
+  <div id="sidebar" class="panel">
+    <div id="sidebar-head">
+      <div id="sidebar-title"></div>
+      <button id="sidebar-close" title="Close">✕</button>
+    </div>
+    <div id="sidebar-sub"></div>
+    <div id="sidebar-body"></div>
+  </div>
+</div>
+<script>__DECKGL__</script>
+<script>
+const CONFIG = __CONFIG__;
+const DATA = __DATA__;
+const WORLD = __WORLD__;
+const PROVINCES = __PROVINCES__;
+</script>
+<script>__COMMON_JS__</script>
+<script>
+const TOOLTIP_STYLE = {
+  fontSize: "12px", lineHeight: "1.4", padding: "8px 12px", borderRadius: "4px", maxWidth: "460px",
+  fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+};
+/* Deck layer and tooltip colours per theme; the page chrome follows via the CSS
+   variables toggled through body.light. */
+const MAP_THEMES = {
+  dark: {land: [30, 33, 42], provinces: [58, 64, 79], borders: [80, 86, 102],
+         dotStroke: [255, 255, 255], dotStrokeAlpha: [90, 190],
+         tooltip: {backgroundColor: "rgba(40, 40, 40, 0.95)", color: "#e0e0e0"}},
+  light: {land: [241, 238, 231], provinces: [176, 181, 190], borders: [136, 142, 155],
+          dotStroke: [40, 40, 40], dotStrokeAlpha: [110, 200],
+          tooltip: {backgroundColor: "rgba(255, 255, 255, 0.97)", color: "#0b0b0b"}},
+};
+function mapTheme() { return MAP_THEMES[document.getElementById("theme-select").value]; }
+/* Site colour follows its most advanced group: what physically stands there outranks
+   what is merely planned, and dead groups rank last. */
+const STATUS_PRIORITY = ["operating", "operating switching technology", "operating pre-retirement",
+  "construction switching technology", "construction", "announced", "considered", "closed", "discarded"];
+const NO_ALLOCATION = "no allocation";
+const BASE_CAPACITY_MT = 2.5;  // reference dot: one standard 2.5 Mt furnace group
+
+function currentRun() { return DATA[Interactive.run()]; }
+function currentYear() { return currentRun().years[+document.getElementById("year-slider").value]; }
+function rgb(hex) { return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]; }
+function priorityOf(status) {
+  const index = STATUS_PRIORITY.indexOf(status);
+  return index < 0 ? STATUS_PRIORITY.length : index;
+}
+
+/* The value of a run-length encoded history at one year: the last segment starting
+   on or before it. */
+function valueAt(segments, year) {
+  let value = segments[0][1];
+  for (const [start, v] of segments) {
+    if (start > year) break;
+    value = v;
+  }
+  return value;
+}
+
+/* Fixed hex colour tables per run and colour mode (house colours + stable fallbacks). */
+const colourTables = {};
+function coloursFor(run, mode) {
+  const key = `${Interactive.run()}|${mode}`;
+  if (!(key in colourTables)) {
+    colourTables[key] =
+      mode === "status" ? Interactive.colourTable(CONFIG.statusColours, run.statuses) :
+      mode === "technology" ? Interactive.colourTable(CONFIG.techColours, run.techs) :
+      Interactive.colourTable(CONFIG.reductantColours, run.reductants);
+  }
+  return colourTables[key];
+}
+
+/* ---- facet filters: statuses, reductants and metallic charges, offered from the
+   groups passing the product and geography filters; unticked choices are
+   remembered while an option is absent. ---- */
+function facetFilter(id, noun) {
+  const cbs = new Map();
+  const unticked = new Set();
+  function sync(options, colours) {
+    if (options.join("|") !== [...cbs.keys()].join("|")) {
+      const boxes = document.getElementById(id + "-boxes");
+      boxes.innerHTML = "";
+      cbs.clear();
+      options.forEach(name => {
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = !unticked.has(name);
+        cb.addEventListener("change", () => { unticked[cb.checked ? "delete" : "add"](name); render(); });
+        const swatch = document.createElement("span");
+        swatch.className = "swatch";
+        swatch.style.background = colours[name] || "#6b7180";
+        const label = document.createElement("label");
+        label.appendChild(cb);
+        label.appendChild(swatch);
+        label.appendChild(document.createTextNode(" " + name));
+        boxes.appendChild(label);
+        cbs.set(name, cb);
+      });
+      Interactive.tickMode(id, options.length);
+    }
+    const selected = [...cbs].filter(([, cb]) => cb.checked).map(([name]) => name);
+    document.getElementById(id + "-toggle").textContent = `${selected.length} of ${cbs.size} ${noun} ▾`;
+    Interactive.updateChips(id, selected, cbs.size, noun,
+      name => { cbs.get(name).checked = false; unticked.add(name); render(); });
+    return new Set(selected);
+  }
+  function setAll(on) {
+    cbs.forEach((cb, name) => { cb.checked = on; unticked[on ? "delete" : "add"](name); });
+    render();
+  }
+  return {sync, setAll};
+}
+const statusFilter = facetFilter("status", "statuses");
+const reductantFilter = facetFilter("reductant", "reductants");
+const chargeFilter = facetFilter("charge", "charges");
+
+let siteList = [];  // the shown year's sites, rebuilt by render(); layer accessors index into it
+let selectedSiteKey = null;  // "lat|lon" of the clicked site whose detail sidebar is open
+
+function siteKey(site) { return `${site.lat}|${site.lon}`; }
+
+function buildSites() {
+  const run = currentRun(), year = currentYear();
+  const product = document.getElementById("product-select").value;
+  const geos = Interactive.selectedGeos();
+  const base = run.groups.filter(g => (product === "both" || g.p === product) && geos.has(g.g));
+
+  // Filter options come from the whole run under product + geography, so the tick
+  // rows stay put while the year slider moves; the ticks then apply to each
+  // group's state in the shown year.
+  const statusSet = new Set(), reductantSet = new Set(), chargeSet = new Set(), techSet = new Set();
+  base.forEach(g => {
+    g.s.forEach(([, i]) => statusSet.add(run.statuses[i]));
+    g.r.forEach(([, i]) => reductantSet.add(run.reductants[i]));
+    g.t.forEach(([, i]) => techSet.add(run.techs[i]));
+    Object.values(g.c || {}).forEach(entries => entries.forEach(([i]) => chargeSet.add(run.charges[i])));
+  });
+  const selectedStatuses = statusFilter.sync(run.statuses.filter(s => statusSet.has(s)), coloursFor(run, "status"));
+  const selectedReductants = reductantFilter.sync(
+    run.reductants.filter(r => reductantSet.has(r)), coloursFor(run, "reductant"));
+  const chargeColours = Interactive.colourTable(CONFIG.chargeColours, run.charges.concat(NO_ALLOCATION));
+  const selectedCharges = chargeFilter.sync(
+    run.charges.filter(c => chargeSet.has(c)).concat(NO_ALLOCATION), chargeColours);
+  Interactive.setVisibleTechs(techSet);
+  const selectedTechs = Interactive.selectedTechs();
+
+  const sites = new Map();
+  let groupCount = 0;
+  for (const g of base) {
+    if (g.s[0][0] > year || year > g.y1) continue;
+    const si = valueAt(g.s, year), ti = valueAt(g.t, year), ri = valueAt(g.r, year);
+    if (!selectedStatuses.has(run.statuses[si])) continue;
+    if (!selectedTechs.has(run.techs[ti])) continue;
+    if (!selectedReductants.has(run.reductants[ri])) continue;
+    const charges = (g.c || {})[year] || [];
+    if (charges.length ? !charges.some(([ci]) => selectedCharges.has(run.charges[ci]))
+                       : !selectedCharges.has(NO_ALLOCATION)) continue;
+    groupCount += 1;
+    const key = `${g.la}|${g.lo}`;
+    if (!sites.has(key)) sites.set(key, {lat: g.la, lon: g.lo, entries: []});
+    sites.get(key).entries.push({g, si, ti, ri, charges});
+  }
+  sites.forEach(site => {
+    site.entries.sort((a, b) =>
+      priorityOf(run.statuses[a.si]) - priorityOf(run.statuses[b.si]) || (a.g.id < b.g.id ? -1 : 1));
+    site.capacity = site.entries.reduce((sum, e) => sum + e.g.cap, 0);
+  });
+  return {sites: [...sites.values()], groupCount};
+}
+
+/* ---- tooltips: every group at the picked site, most advanced first ---- */
+function locationOf(geo) {
+  const country = Interactive.countryName(Interactive.isoOf(geo)) || Interactive.isoOf(geo);
+  if (!geo.includes(Interactive.GEO_SEP)) return country;
+  return `${Interactive.unitName(geo) || geo.split(Interactive.GEO_SEP)[1]}, ${country}`;
+}
+
+function switchHistory(segments, names) {
+  return segments.map(([year, i], k) => k ? `→ ${names[i]} (${year})` : names[i]).join(" ");
+}
+
+function statusTimeline(g, run, year) {
+  let current = -1;
+  g.s.forEach(([start], k) => { if (start <= year) current = k; });
+  return g.s.map(([start, i], k) => {
+    const label = `${run.statuses[i]} ${start}`;
+    if (k === current) return `<b>${label}</b>`;
+    return k > current ? `<span style="color:var(--future)">${label}</span>` : label;
+  }).join(" → ");
+}
+
+function groupBlock(run, year, entry) {
+  const g = entry.g;
+  const lines = [`<b>${g.id}</b> · ${g.p} · ${g.cap.toFixed(1)} Mt capacity`];
+  lines.push(`Technology: ${switchHistory(g.t, run.techs)}`);
+  const reductants = switchHistory(g.r, run.reductants);
+  if (reductants !== "none") lines.push(`Reductant: ${reductants}`);
+  lines.push(`Status: ${statusTimeline(g, run, year)}`);
+  const production = valueAt(g.pr, year);
+  if (production > 0) {
+    lines.push(`Production ${year}: ${production.toFixed(2)} Mt (${Math.round(production / g.cap * 100)}% of capacity)`);
+  }
+  if (entry.charges.length) {
+    lines.push(`Charge ${year}: ` +
+      entry.charges.map(([ci, mt]) => `${run.charges[ci]} ${mt.toFixed(2)} Mt`).join(", "));
+  }
+  return lines.join("<br>");
+}
+
+function tooltip(info) {
+  if (!info.layer || info.index < 0 || info.layer.id !== "sites") return null;
+  const run = currentRun(), year = currentYear();
+  const site = siteList[info.index];
+  const count = site.entries.length > 1 ? ` · ${site.entries.length} furnace groups at this site` : "";
+  const head = `<div style="margin-bottom:6px"><b>${locationOf(site.entries[0].g.g)}</b>${count}</div>`;
+  const blocks = site.entries.map(entry => groupBlock(run, year, entry));
+  return {html: head + blocks.join('<hr style="border:none;border-top:1px solid var(--hr);margin:6px 0">'),
+          style: {...TOOLTIP_STYLE, ...mapTheme().tooltip}};
+}
+
+/* The clicked site's detail panel: the tooltip's content, scrollable and pinned while
+   the year slider or filters move (the blocks re-read the shown year). */
+function updateSidebar() {
+  const panel = document.getElementById("sidebar");
+  if (!selectedSiteKey) {
+    panel.style.display = "none";
+    return;
+  }
+  panel.style.display = "block";
+  const run = currentRun(), year = currentYear();
+  const site = siteList.find(s => siteKey(s) === selectedSiteKey);
+  const body = document.getElementById("sidebar-body");
+  if (!site) {
+    document.getElementById("sidebar-title").textContent = "Site";
+    document.getElementById("sidebar-sub").textContent = "";
+    body.innerHTML = '<div style="font-size:12px;color:var(--label)">No furnace groups at this site under the ' +
+                     "current year and filters.</div>";
+    return;
+  }
+  document.getElementById("sidebar-title").textContent = locationOf(site.entries[0].g.g);
+  document.getElementById("sidebar-sub").textContent =
+    `${site.entries.length} furnace group${site.entries.length > 1 ? "s" : ""} · ` +
+    `${site.capacity.toFixed(1)} Mt capacity · ${year}`;
+  body.innerHTML = site.entries.map(entry => `<div class="sidebar-block">${groupBlock(run, year, entry)}</div>`)
+    .join("");
+}
+
+function buildLayers() {
+  const run = currentRun(), year = currentYear();
+  const mode = document.getElementById("colour-select").value;
+  const colours = coloursFor(run, mode);
+  const {sites, groupCount} = buildSites();
+  siteList = sites;
+  const keyOf = e => mode === "status" ? run.statuses[e.si] : mode === "technology" ? run.techs[e.ti]
+                                                                                    : run.reductants[e.ri];
+
+  const capacity = siteList.reduce((sum, s) => sum + s.capacity, 0);
+  const operating = siteList.reduce((sum, s) => sum + s.entries.reduce(
+    (t, e) => t + (run.statuses[e.si].startsWith("operating") ? e.g.cap : 0), 0), 0);
+  document.getElementById("stats").textContent =
+    `${groupCount} furnace groups at ${siteList.length} sites · ` +
+    `${capacity.toFixed(1)} Mt capacity, ${operating.toFixed(1)} Mt operating`;
+
+  // Legend: the colour-by values present in the shown year, with group counts.
+  const counts = new Map();
+  siteList.forEach(s => s.entries.forEach(e => counts.set(keyOf(e), (counts.get(keyOf(e)) || 0) + 1)));
+  const order = mode === "status" ? run.statuses : mode === "technology" ? run.techs : run.reductants;
+  const legend = document.getElementById("legend");
+  legend.innerHTML = "";
+  order.filter(name => counts.has(name)).forEach(name => {
+    const swatch = document.createElement("span");
+    swatch.className = "swatch";
+    swatch.style.background = colours[name];
+    const item = document.createElement("span");
+    item.appendChild(swatch);
+    item.appendChild(document.createTextNode(`${name} (${counts.get(name)})`));
+    legend.appendChild(item);
+  });
+
+  const mt = mapTheme();
+  return [
+    new deck.GeoJsonLayer({id: "land", data: WORLD.land, filled: true, stroked: false,
+                           getFillColor: mt.land, updateTriggers: {getFillColor: mt.land}}),
+    // Chinese province borders, dimmer than the country borders drawn over them.
+    new deck.GeoJsonLayer({id: "provinces", data: PROVINCES, filled: false, stroked: true,
+                           getLineColor: mt.provinces, lineWidthMinPixels: 0.4,
+                           updateTriggers: {getLineColor: mt.provinces}}),
+    new deck.GeoJsonLayer({id: "borders", data: WORLD.borders, filled: false, stroked: true,
+                           getLineColor: mt.borders, lineWidthMinPixels: 0.5,
+                           updateTriggers: {getLineColor: mt.borders}}),
+    new deck.ScatterplotLayer({
+      id: "sites",
+      data: {length: siteList.length},
+      getPosition: (_, {index}) => [siteList[index].lon, siteList[index].lat],
+      // Colour = the site's most advanced group (entries are priority-sorted).
+      getFillColor: (_, {index}) => rgb(colours[keyOf(siteList[index].entries[0])]).concat(215),
+      getRadius: (_, {index}) => 18000 * Math.sqrt(siteList[index].capacity / BASE_CAPACITY_MT),
+      radiusMinPixels: 2.5,
+      radiusMaxPixels: 60,
+      stroked: true,
+      getLineColor: (_, {index}) =>
+        mt.dotStroke.concat(mt.dotStrokeAlpha[siteList[index].entries.length > 1 ? 1 : 0]),
+      lineWidthMinPixels: 1,
+      pickable: true,
+      autoHighlight: true,
+      updateTriggers: {getFillColor: [Interactive.run(), mode], getLineColor: [Interactive.run(), mt.dotStroke]},
+    }),
+  ];
+}
+
+// keyboard: false keeps arrow keys for the year stepper — the map itself never pans on
+// key presses, only on pointer drag and scroll zoom.
+const deckgl = new deck.Deck({
+  parent: document.getElementById("map"),
+  views: [new deck.MapView({repeat: true})],
+  initialViewState: {longitude: 60, latitude: 22, zoom: 1.3, minZoom: 0.8, maxZoom: 15, pitch: 0, bearing: 0},
+  controller: {keyboard: false},
+  getTooltip: tooltip,
+  // A click on a dot opens (or repoints) the detail sidebar; a click on empty map closes it.
+  onClick: info => {
+    selectedSiteKey = info.layer && info.layer.id === "sites" && info.index >= 0
+      ? siteKey(siteList[info.index]) : null;
+    updateSidebar();
+  },
+  layers: [],
+});
+
+function render() {
+  document.getElementById("title").textContent = currentRun().title;
+  document.getElementById("provenance").textContent = currentRun().provenance;
+  document.getElementById("year-label").textContent = currentYear();
+  deckgl.setProps({layers: buildLayers()});
+  updateSidebar();
+}
+
+function syncYears() {
+  const slider = document.getElementById("year-slider");
+  const years = currentRun().years;
+  const current = years[+slider.value];
+  slider.min = 0;
+  slider.max = years.length - 1;
+  slider.value = years.includes(current) ? years.indexOf(current) : years.length - 1;
+}
+
+function stepYear(delta) {
+  const slider = document.getElementById("year-slider");
+  slider.value = Math.min(Math.max(+slider.value + delta, 0), currentRun().years.length - 1);
+  render();
+}
+
+function initControls() {
+  const slider = document.getElementById("year-slider");
+  slider.addEventListener("input", render);
+  document.getElementById("year-prev").addEventListener("click", () => stepYear(-1));
+  document.getElementById("year-next").addEventListener("click", () => stepYear(1));
+  document.addEventListener("keydown", e => {
+    if (document.activeElement === slider) return;
+    if (e.key === "ArrowLeft") stepYear(-1);
+    if (e.key === "ArrowRight") stepYear(1);
+  });
+  ["product-select", "colour-select"].forEach(id =>
+    document.getElementById(id).addEventListener("change", render));
+  const themeSelect = document.getElementById("theme-select");
+  themeSelect.addEventListener("change", () => {
+    document.body.classList.toggle("light", themeSelect.value === "light");
+    render();
+  });
+  // Drag the handle under the toolbar to resize it (it scrolls internally when
+  // constrained); a plain click collapses or restores it. The map pane re-fits on its own.
+  const topbar = document.getElementById("topbar");
+  const handle = document.getElementById("topbar-resize");
+  const chevron = document.getElementById("topbar-chevron");
+  let dragged = false;
+  const setTopbarHeight = px => {
+    topbar.style.maxHeight = px === null || px >= topbar.scrollHeight ? "" : `${Math.max(px, 0)}px`;
+    chevron.textContent = topbar.style.maxHeight === "0px" ? "▾" : "▴";
+  };
+  handle.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    dragged = false;
+    const startY = e.clientY, startHeight = topbar.getBoundingClientRect().height;
+    const move = ev => {
+      if (Math.abs(ev.clientY - startY) > 3) dragged = true;
+      if (dragged) setTopbarHeight(startHeight + ev.clientY - startY);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  });
+  handle.addEventListener("click", () => {
+    if (!dragged) setTopbarHeight(topbar.style.maxHeight === "0px" ? null : 0);
+  });
+  [["status", statusFilter], ["reductant", reductantFilter], ["charge", chargeFilter]].forEach(([id, filter]) => {
+    document.getElementById(id + "-all").addEventListener("click", () => filter.setAll(true));
+    document.getElementById(id + "-none").addEventListener("click", () => filter.setAll(false));
+  });
+  // A run with no post-processed charge data offers no charge filter.
+  if (!Object.values(DATA).some(d => d.charges.length)) {
+    document.getElementById("charge-panel").style.display = "none";
+  }
+  // The control and sidebar panels float over the canvas: swallow every gesture they
+  // receive so interacting with them (including sidebar scrolling) can never pan or
+  // zoom the map underneath.
+  ["controls", "sidebar"].forEach(id => {
+    const panel = document.getElementById(id);
+    ["pointerdown", "pointermove", "pointerup", "mousedown", "touchstart", "wheel", "dblclick"]
+      .forEach(type => panel.addEventListener(type, e => e.stopPropagation()));
+  });
+  document.getElementById("sidebar-close").addEventListener("click", () => {
+    selectedSiteKey = null;
+    updateSidebar();
+  });
+  // The shared shell: run selector, geography filter and the technology row.
+  Interactive.init({
+    geoKeys: Object.values(DATA).flatMap(d => d.groups.map(g => g.g)),
+    techs: Object.values(DATA).flatMap(d => d.techs),
+    onChange: () => { syncYears(); render(); },
+  });
+  syncYears();
+}
+
+initControls();
+render();
+</script>
+</body>
+</html>
