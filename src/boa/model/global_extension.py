@@ -693,11 +693,12 @@ def combine_regional_datasets_into_global_dataset(
                 status_grid[mask] = arr[mask]
             global_ds["status"] = (("lat", "lon"), status_grid)
 
-        # A region re-queried under a changed threshold must not silently combine with
-        # stale neighbours — the GLOBAL attrs below claim a single fraction for the lot.
-        fractions = {ds.attrs.get("min_survivor_fraction") for ds in regional_datasets.values()}
-        assert len(fractions) == 1, (
-            f"regional files disagree on min_survivor_fraction: {sorted(map(str, fractions))}. "
+        # A region built under a different SearchParams (or re-queried after a frontier
+        # rebuild) must not silently combine with stale neighbours — the GLOBAL attrs below
+        # claim a single hash for the lot.
+        hashes = {ds.attrs.get("search_params_hash") for ds in regional_datasets.values()}
+        assert len(hashes) == 1, (
+            f"regional files disagree on search_params_hash: {sorted(map(str, hashes))}. "
             "Re-query the stale regions before combining."
         )
 
