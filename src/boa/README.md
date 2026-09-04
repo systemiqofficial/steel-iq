@@ -200,6 +200,9 @@ References behind the numeric assumptions in `config/settings.py`.
 
 ### Deterioration rates (`YEARLY_DETERIORATION_RATES`)
 
+Not read anywhere in the LCOE calculation today — kept as a sourced input for if/when a
+deterioration term is wired in.
+
 - **Battery, 1.5 %/year** — NREL, *Battery Lifespan*.
   https://www2.nrel.gov/transportation/battery-lifespan
 

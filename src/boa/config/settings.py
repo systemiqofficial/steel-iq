@@ -17,6 +17,16 @@ LEARNING_RATES = {
 # several units being installed at once being cheaper than many single units
 BATTERY_UNIT_CAPEX_SCALING_FACTOR = -0.15
 
+# Deterioration rate of the energy systems over their lifetime. Not read anywhere in the LCOE
+# calculation today -- lcoe_coefficients and calculate_lcoe_of_re_installation_vectorised
+# (cost_calculations.py) have no deterioration term, live or dead. Kept as a sourced input
+# for if/when that term gets wired in, rather than re-deriving the numbers from scratch.
+YEARLY_DETERIORATION_RATES = {
+    "solar": 0.005,  # 0.5%/year
+    "wind": 0.01,  # 1%/year
+    "battery": 0.015,  # 1.5%/year; batteries degrade faster (NREL, see README.md)
+}
+
 # Scale of the grid-bisection search box, as a multiple of 1/CF: `search_box` (bisection.py)
 # sets `mu = OVERSCALE_SAMPLING_K[tech] / CF_tech` (per-pixel time-mean capacity factor) and
 # spans the box to `box_multiple * mu`, so the search tracks the site's resource. The
