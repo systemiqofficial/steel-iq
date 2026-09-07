@@ -56,8 +56,8 @@ def test_store_stem_parity_with_profiles(tmp_config):
     assert dataset_path("profile", "DE", tmp_config, ERA5_DATA_YEAR).name == (
         profile_store_stem("DE", ERA5_DATA_YEAR) + ".zarr"
     )
-    assert dataset_path("max_cap", "EU", tmp_config, ERA5_DATA_YEAR).name == (
-        max_cap_store_stem("EU", ERA5_DATA_YEAR) + ".zarr"
+    assert dataset_path("max_cap", "EUROPE", tmp_config, ERA5_DATA_YEAR).name == (
+        max_cap_store_stem("EUROPE", ERA5_DATA_YEAR) + ".zarr"
     )
 
 
@@ -177,21 +177,21 @@ def test_pixel_area_spot_values():
 
 def test_geometry_default_is_pure_geometry_and_installable(tmp_path, tmp_config):
     """Default build has no land-use term, writes plain names, and passes install validation."""
-    out = cds_max_capacity.build_region("EU", tmp_path, tmp_config)
+    out = cds_max_capacity.build_region("EUROPE", tmp_path, tmp_config)
     ds = xr.open_dataset(out)
     expected = cds_max_capacity.pixel_area(ds.y.values)[:, None] * CAPACITY_DENSITY_MW_PER_KM2["pv"]
     np.testing.assert_array_equal(ds["pv"].values, np.broadcast_to(expected, ds["pv"].shape))
     assert ds.attrs["lulc_source"] == "none"
-    assert out.name == max_cap_store_stem("EU", ERA5_DATA_YEAR) + ".nc"
+    assert out.name == max_cap_store_stem("EUROPE", ERA5_DATA_YEAR) + ".nc"
     ds.close()
 
-    zarr_twin = tmp_path / (max_cap_store_stem("EU", ERA5_DATA_YEAR) + ".zarr")
+    zarr_twin = tmp_path / (max_cap_store_stem("EUROPE", ERA5_DATA_YEAR) + ".zarr")
     assert zarr_twin.exists()
     cds_install.validate_store(zarr_twin, "max-cap")  # must not raise
 
 
 def test_density_overrides_propagate(tmp_path, tmp_config):
-    out = cds_max_capacity.build_region("EU", tmp_path, tmp_config, pv_density=100.0, wind_density=10.42)
+    out = cds_max_capacity.build_region("EUROPE", tmp_path, tmp_config, pv_density=100.0, wind_density=10.42)
     ds = xr.open_dataset(out)
     ratio = ds["wind"].values / ds["pv"].values
     np.testing.assert_allclose(ratio, 10.42 / 100.0, rtol=1e-12)
@@ -267,7 +267,7 @@ def test_validate_store_requires_an_availability_signature(tmp_path):
     """
     staging = tmp_path / "staging"
     staging.mkdir()
-    path = staging / (max_cap_store_stem("EU", ERA5_DATA_YEAR) + ".zarr")
+    path = staging / (max_cap_store_stem("EUROPE", ERA5_DATA_YEAR) + ".zarr")
     xr.Dataset(
         {"pv": (("y", "x"), np.ones((2, 2))), "wind": (("y", "x"), np.ones((2, 2)))},
         coords={"y": [0.0, 0.25], "x": [0.0, 0.25]},
@@ -285,7 +285,7 @@ def test_validate_store_rejects_negative_ceilings(tmp_path):
     """
     staging = tmp_path / "staging"
     staging.mkdir()
-    path = staging / (max_cap_store_stem("EU", ERA5_DATA_YEAR) + ".zarr")
+    path = staging / (max_cap_store_stem("EUROPE", ERA5_DATA_YEAR) + ".zarr")
     ds = xr.Dataset(
         {"pv": (("y", "x"), -np.ones((2, 2))), "wind": (("y", "x"), np.ones((2, 2)))},
         coords={"y": [0.0, 0.25], "x": [0.0, 0.25]},
@@ -305,49 +305,49 @@ def test_store_carrying_a_different_signature_is_rebuilt_not_reused(tmp_path):
     """
     live = tmp_path / "live"
     live.mkdir()
-    _stage_stores(live, "EU", ERA5_DATA_YEAR)
+    _stage_stores(live, "EUROPE", ERA5_DATA_YEAR)
     built_with = cds_availability.availability_signature([], CAPACITY_DENSITY_MW_PER_KM2)
 
-    assert run_cds._max_cap_rebuild_reason(live, "EU", ERA5_DATA_YEAR, built_with) is None
+    assert run_cds._max_cap_rebuild_reason(live, "EUROPE", ERA5_DATA_YEAR, built_with) is None
 
     denser = cds_availability.availability_signature([], {"pv": 200.0, "wind": 10})
-    reason = run_cds._max_cap_rebuild_reason(live, "EU", ERA5_DATA_YEAR, denser)
+    reason = run_cds._max_cap_rebuild_reason(live, "EUROPE", ERA5_DATA_YEAR, denser)
     assert reason is not None and "availability changed" in reason
     assert run_cds._max_cap_rebuild_reason(live, "AFRICA", ERA5_DATA_YEAR, built_with) == "missing"
 
 
 def test_install_moves_both_kinds(tmp_path):
     staging, live = tmp_path / "staging", tmp_path / "live"
-    _stage_stores(staging, "EU", ERA5_DATA_YEAR)
-    installed = cds_install.install_regions(["EU"], ERA5_DATA_YEAR, ["profile", "max-cap"], staging, live)
+    _stage_stores(staging, "EUROPE", ERA5_DATA_YEAR)
+    installed = cds_install.install_regions(["EUROPE"], ERA5_DATA_YEAR, ["profile", "max-cap"], staging, live)
     assert len(installed) == 2
-    assert (live / (profile_store_stem("EU", ERA5_DATA_YEAR) + ".zarr")).exists()
-    assert (live / (max_cap_store_stem("EU", ERA5_DATA_YEAR) + ".zarr")).exists()
+    assert (live / (profile_store_stem("EUROPE", ERA5_DATA_YEAR) + ".zarr")).exists()
+    assert (live / (max_cap_store_stem("EUROPE", ERA5_DATA_YEAR) + ".zarr")).exists()
     assert not list(staging.glob("*.zarr"))  # moved, not copied
 
 
 def test_install_refuses_existing_without_force(tmp_path):
     staging, live = tmp_path / "staging", tmp_path / "live"
-    _stage_stores(staging, "EU", ERA5_DATA_YEAR)
-    cds_install.install_regions(["EU"], ERA5_DATA_YEAR, ["profile", "max-cap"], staging, live)
-    _stage_stores(staging, "EU", ERA5_DATA_YEAR)
+    _stage_stores(staging, "EUROPE", ERA5_DATA_YEAR)
+    cds_install.install_regions(["EUROPE"], ERA5_DATA_YEAR, ["profile", "max-cap"], staging, live)
+    _stage_stores(staging, "EUROPE", ERA5_DATA_YEAR)
     with pytest.raises(FileExistsError, match="--force"):
-        cds_install.install_regions(["EU"], ERA5_DATA_YEAR, ["profile", "max-cap"], staging, live)
-    cds_install.install_regions(["EU"], ERA5_DATA_YEAR, ["profile", "max-cap"], staging, live, force=True)
+        cds_install.install_regions(["EUROPE"], ERA5_DATA_YEAR, ["profile", "max-cap"], staging, live)
+    cds_install.install_regions(["EUROPE"], ERA5_DATA_YEAR, ["profile", "max-cap"], staging, live, force=True)
 
 
 def test_install_dry_run_touches_nothing(tmp_path):
     staging, live = tmp_path / "staging", tmp_path / "live"
-    _stage_stores(staging, "EU", ERA5_DATA_YEAR)
-    cds_install.install_regions(["EU"], ERA5_DATA_YEAR, ["profile", "max-cap"], staging, live, dry_run=True)
+    _stage_stores(staging, "EUROPE", ERA5_DATA_YEAR)
+    cds_install.install_regions(["EUROPE"], ERA5_DATA_YEAR, ["profile", "max-cap"], staging, live, dry_run=True)
     assert not live.exists()
     assert len(list(staging.glob("*.zarr"))) == 2
 
 
 def test_install_keep_staged_copies(tmp_path):
     staging, live = tmp_path / "staging", tmp_path / "live"
-    _stage_stores(staging, "EU", ERA5_DATA_YEAR)
-    cds_install.install_regions(["EU"], ERA5_DATA_YEAR, ["profile", "max-cap"], staging, live, keep_staged=True)
+    _stage_stores(staging, "EUROPE", ERA5_DATA_YEAR)
+    cds_install.install_regions(["EUROPE"], ERA5_DATA_YEAR, ["profile", "max-cap"], staging, live, keep_staged=True)
     assert len(list(staging.glob("*.zarr"))) == 2
     assert len(list(live.glob("*.zarr"))) == 2
 
@@ -356,27 +356,29 @@ def test_install_rejects_wrong_variables(tmp_path):
     staging = tmp_path / "staging"
     staging.mkdir()
     bad = xr.Dataset({"foo": (("y", "x"), np.ones((2, 2)))}, coords={"y": [0, 1], "x": [0, 1]})
-    bad.to_zarr(staging / (profile_store_stem("EU", ERA5_DATA_YEAR) + ".zarr"), consolidated=True)
+    bad.to_zarr(staging / (profile_store_stem("EUROPE", ERA5_DATA_YEAR) + ".zarr"), consolidated=True)
     with pytest.raises(ValueError, match="data vars"):
-        cds_install.install_regions(["EU"], ERA5_DATA_YEAR, ["profile"], staging, tmp_path / "live", kind_explicit=True)
+        cds_install.install_regions(
+            ["EUROPE"], ERA5_DATA_YEAR, ["profile"], staging, tmp_path / "live", kind_explicit=True
+        )
 
 
 def test_install_refuses_half_region_pair(tmp_path):
     staging = tmp_path / "staging"
-    _stage_stores(staging, "EU", ERA5_DATA_YEAR)
+    _stage_stores(staging, "EUROPE", ERA5_DATA_YEAR)
     import shutil
 
-    shutil.rmtree(staging / (max_cap_store_stem("EU", ERA5_DATA_YEAR) + ".zarr"))
+    shutil.rmtree(staging / (max_cap_store_stem("EUROPE", ERA5_DATA_YEAR) + ".zarr"))
     with pytest.raises(FileNotFoundError, match="pair"):
-        cds_install.install_regions(["EU"], ERA5_DATA_YEAR, ["profile", "max-cap"], staging, tmp_path / "live")
+        cds_install.install_regions(["EUROPE"], ERA5_DATA_YEAR, ["profile", "max-cap"], staging, tmp_path / "live")
 
 
 def test_install_warns_on_non_default_year(tmp_path, caplog):
     staging, live = tmp_path / "staging", tmp_path / "live"
     year = ERA5_DATA_YEAR + 1
-    _stage_stores(staging, "EU", year)
+    _stage_stores(staging, "EUROPE", year)
     with caplog.at_level("WARNING"):
-        cds_install.install_regions(["EU"], year, ["profile", "max-cap"], staging, live)
+        cds_install.install_regions(["EUROPE"], year, ["profile", "max-cap"], staging, live)
     assert any("ERA5_DATA_YEAR" in message for message in caplog.messages)
 
 
@@ -385,7 +387,7 @@ def test_missing_live_store_raises_actionable_error(tmp_config, monkeypatch):
     from boa.inputs.profiles import open_regional_dataset
 
     with pytest.raises(FileNotFoundError, match="boa-cds-prepare"):
-        open_regional_dataset("profile", "EU", tmp_config)
+        open_regional_dataset("profile", "EUROPE", tmp_config)
 
 
 # ---- download (skip logic only; network calls live upstream) -----------------
