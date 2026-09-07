@@ -18,8 +18,8 @@ boa-data-prepare
 boa-cds-prepare --weather_year 2024
 
 # 3. Sanity-check the pairing, then run at production settings
-boa-run --demand 1000 --coverage 0.95 --dry-run
-boa-run --demand 1000 --coverage 0.95 --promote-lcoe
+boa-run --load-density 1.0 --coverage 0.95 --dry-run
+boa-run --load-density 1.0 --coverage 0.95 --promote-lcoe
 ```
 
 Steps 1 and 2 are idempotent and independent — rerun either at any time; existing
@@ -133,7 +133,7 @@ already exists, so partial reuse works too.
 `boa-run` is always GLOBAL (all 9 regions); the one exception is the single-point mode:
 
 ```bash
-boa-run --demand 1000 --coverage 0.95            # full run: build caches if missing, query every year
+boa-run --load-density 1.0 --coverage 0.95       # full run: build caches if missing, query every year
 boa-run build-cache                              # year- and baseload-independent frontier caches only
 boa-run query --start-year 2030 --end-year 2030  # NetCDFs from pre-built caches (--force to re-derive)
 boa-run point --lat 52.5 --lon 13.4              # single point; region auto-derived
@@ -149,9 +149,12 @@ check fails fast with the exact `boa-cds-prepare` / `boa-data-prepare` command w
 selected sets are incomplete. The full run never rebuilds an existing frontier cache; use
 `build-cache --force` or `query --force` for targeted rebuilds. Frontier caches are
 baseload-independent and year-independent: one cache per (coverage, weather year, search
-parameters) serves every `--demand` and every investment year, and is shared across every
-land-availability layer set built on the same weather. A `query` against a warm cache is
-arithmetic per pixel and takes minutes per year.
+parameters) serves every `--load-density` and every investment year, and is shared across
+every land-availability layer set built on the same weather. `--load-density` is MW/km2, not
+an absolute demand (D1, `BOA_BISECTION_PLAN.md`): each pixel's own demand is
+`load_density * pixel_area(lat)`, so results are latitude-correct rather than one flat MW
+figure applied everywhere. A `query` against a warm cache is arithmetic per pixel and takes
+minutes per year.
 
 Map PNGs (`lcoe`, `solar_factor`, `wind_factor`, `battery_factor`, per region and GLOBAL) are
 **off by default** — pass `--plots` to `boa-run` or `boa-run query` to generate them. The
@@ -161,7 +164,7 @@ finishes is the GLOBAL-NetCDF assembly step, not plot generation; it prints whet
 
 **The capacity ceiling is not yet applied at query time** (tracked as M4,
 `BOA_BISECTION_PLAN.md`): every query currently reports the *unconstrained* optimum for
-its coverage target, regardless of `--demand`, and logs a warning saying so. Do not
+its coverage target, regardless of `--load-density`, and logs a warning saying so. Do not
 promote results from a run in this window.
 
 ## Handing LCOE to the steel simulation
@@ -173,11 +176,11 @@ year-invariant, and promotion refuses to run if they are not), which turned 5.49
 per-year files into 25.7 MB on a 36-year GLOBAL run:
 
 ```bash
-boa-promote-lcoe --run cds-2024__china_test   # every scenario in a finished run
-boa-run --demand 1000 --coverage 0.95 --promote-lcoe   # or inline, right after the query
+boa-promote-lcoe --run cds-2024__china_test        # every scenario in a finished run
+boa-run --load-density 1.0 --coverage 0.95 --promote-lcoe   # or inline, right after the query
 ```
 
-Output: `lcoe-for-steel-iq/<run>/optimal_lcoe_<bl>MW_p<p>_<first>_<last>.nc`, chunked one
+Output: `lcoe-for-steel-iq/<run>/optimal_lcoe_<rho>MWkm2_cov<c>_<first>_<last>.nc`, chunked one
 year at a time so a single-year read stays cheap. The file carries its own provenance — run
 name, input/cost sets, workbook sha256, boa version, git sha, and the scenario settings —
 so it identifies what produced it without the run directory. Cost keys travel as int16 ids
@@ -186,11 +189,12 @@ plus a `cost_key_legend` attribute; `status` keeps the `STATUS_CODES` values, le
 
 The per-year NetCDFs stay put: they hold the overbuild factors and the cost breakdown, and
 remain the artefacts for crash recovery, plots and forensics. The steel side opts into a local
-run with `run_simulation --boa-run <run>` (add `--boa-demand` only when a run holds several
-demands); without `--boa-run` it reads the per-year files shipped with the geo data as before.
-Which percentile it reads is not a flag — it follows steelo's `GeoConfig.included_power_mix`,
-so an 85% baseload mix takes the p15 file and a 95% one the p5 file. A run missing that
-percentile stops the simulation before any data preparation and lists what is available.
+run with `run_simulation --boa-run <run>` (add `--boa-load-density` only when a run holds
+several densities); without `--boa-run` it reads the per-year files shipped with the geo data
+as before. Which coverage it reads is not a flag — it follows steelo's
+`GeoConfig.included_power_mix` via `get_baseload_coverage`, so an 85% baseload mix reads the
+`cov0.85` file. A run missing that coverage stops the simulation before any data preparation
+and lists what is available.
 
 ## Sources for model assumptions
 

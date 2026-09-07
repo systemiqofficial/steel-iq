@@ -39,7 +39,7 @@ def _available_boa_runs(promotion_root: Path) -> str:
     return "\n".join(lines)
 
 
-def resolve_boa_lcoe_file(console: Console, run: str | None, demand: float | None) -> Path | None:
+def resolve_boa_lcoe_file(console: Console, run: str | None, load_density: float | None) -> Path | None:
     """
     Locate the promoted BOA LCOE file for ``run`` at the percentile the power mix implies.
 
@@ -57,8 +57,8 @@ def resolve_boa_lcoe_file(console: Console, run: str | None, demand: float | Non
     from ..adapters.geospatial.geospatial_calculations import get_baseload_coverage
 
     if run is None:
-        if demand is not None:
-            console.print("[red]--boa-demand only applies together with --boa-run[/red]")
+        if load_density is not None:
+            console.print("[red]--boa-load-density only applies together with --boa-run[/red]")
             sys.exit(1)
         return None
 
@@ -80,13 +80,13 @@ def resolve_boa_lcoe_file(console: Console, run: str | None, demand: float | Non
         sys.exit(1)
         return None
 
-    demand_pattern = f"{demand:g}MW" if demand is not None else "*MW"
-    matches = sorted(run_dir.glob(f"optimal_lcoe_{demand_pattern}_cov{coverage:g}_*.nc"))
+    density_pattern = f"{load_density:g}MWkm2" if load_density is not None else "*MWkm2"
+    matches = sorted(run_dir.glob(f"optimal_lcoe_{density_pattern}_cov{coverage:g}_*.nc"))
     if not matches:
         console.print(
             f"[red]BOA run '{run}' has no promoted LCOE file at coverage {coverage:g}, which the configured power mix "
             f"'{power_mix}' requires"
-            + (f" (--boa-demand {demand:g})" if demand is not None else "")
+            + (f" (--boa-load-density {load_density:g})" if load_density is not None else "")
             + f", in {run_dir}[/red]"
         )
         console.print(_available_boa_runs(promotion_root))
@@ -94,8 +94,8 @@ def resolve_boa_lcoe_file(console: Console, run: str | None, demand: float | Non
         return None
     if len(matches) > 1:
         console.print(
-            f"[red]BOA run '{run}' holds several baseload demands at coverage {coverage:g}: "
-            f"{', '.join(f.name for f in matches)}. Pick one with --boa-demand.[/red]"
+            f"[red]BOA run '{run}' holds several load densities at coverage {coverage:g}: "
+            f"{', '.join(f.name for f in matches)}. Pick one with --boa-load-density.[/red]"
         )
         sys.exit(1)
         return None
@@ -203,10 +203,10 @@ def run_full_simulation() -> str:
         "configured power mix implies (default: none, i.e. the per-year files shipped with the geo data)",
     )
     parser.add_argument(
-        "--boa-demand",
+        "--boa-load-density",
         type=float,
         default=None,
-        help="Baseload demand in MW, needed only when the BOA run holds more than one. Requires --boa-run",
+        help="Load density in MW/km2, needed only when the BOA run holds more than one. Requires --boa-run",
     )
     parser.add_argument(
         "--enable-clustering",
@@ -243,7 +243,7 @@ def run_full_simulation() -> str:
         args = parser.parse_args()
 
         # Resolve the BOA LCOE file first: a named run that is missing must stop us before any data prep.
-        boa_lcoe_file = resolve_boa_lcoe_file(console, args.boa_run, args.boa_demand)
+        boa_lcoe_file = resolve_boa_lcoe_file(console, args.boa_run, args.boa_load_density)
 
         # Setup directories
         steelo_home = Path(args.steelo_home)

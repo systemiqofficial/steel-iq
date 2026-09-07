@@ -49,7 +49,7 @@ def test_no_boa_run_selects_the_bundled_per_year_files(promotion_root, console_o
     assert resolve_boa_lcoe_file(console_output, None, None) is None
 
 
-def test_boa_demand_without_a_run_is_rejected(promotion_root, console_output):
+def test_boa_load_density_without_a_run_is_rejected(promotion_root, console_output):
     with pytest.raises(SystemExit):
         resolve_boa_lcoe_file(console_output, None, 1230.0)
 
@@ -117,7 +117,7 @@ def test_no_promoted_runs_names_the_promote_command(promotion_root, console_outp
     assert "boa-promote-lcoe" in console_output.file.getvalue()
 
 
-def test_several_demands_require_boa_demand(promotion_root, console_output, power_mix):
+def test_several_densities_require_boa_load_density(promotion_root, console_output, power_mix):
     power_mix("85% baseload + 15% grid")
     _write(promotion_root, RUN, "optimal_lcoe_1230MW_p15_2025_2060.nc")
     _write(promotion_root, RUN, "optimal_lcoe_1000MW_p15_2025_2060.nc")
@@ -125,10 +125,10 @@ def test_several_demands_require_boa_demand(promotion_root, console_output, powe
     with pytest.raises(SystemExit):
         resolve_boa_lcoe_file(console_output, RUN, None)
 
-    assert "--boa-demand" in console_output.file.getvalue()
+    assert "--boa-load-density" in console_output.file.getvalue()
 
 
-def test_boa_demand_disambiguates(promotion_root, console_output, power_mix):
+def test_boa_load_density_disambiguates(promotion_root, console_output, power_mix):
     power_mix("85% baseload + 15% grid")
     _write(promotion_root, RUN, "optimal_lcoe_1230MW_p15_2025_2060.nc")
     expected = _write(promotion_root, RUN, "optimal_lcoe_1000MW_p15_2025_2060.nc")

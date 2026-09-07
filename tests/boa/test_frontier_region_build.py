@@ -145,7 +145,7 @@ def test_query_prices_a_live_pixel_and_passes_through_a_dead_one(
 
     cache = _region_cache(profiles, dead_profiles, anchor_costs, tmp_path)
     capex, opex, coc, keys = query_inputs
-    _, results, counters = _query_frontier_tile(np.arange(2), cache, capex, opex, coc, keys, 500.0, 25)
+    _, results, counters = _query_frontier_tile(np.arange(2), cache, capex, opex, coc, keys, np.full(2, 500.0), 25)
 
     assert results[0]["status"] == STATUS_OK
     assert results[0]["lcoe"] > 0.0
@@ -165,7 +165,7 @@ def test_ranking_and_reporting_use_the_same_lcoe(profiles, dead_profiles, anchor
 
     cache = _region_cache(profiles, dead_profiles, anchor_costs, tmp_path)
     capex, opex, coc, keys = query_inputs
-    _, results, _ = _query_frontier_tile(np.array([0]), cache, capex, opex, coc, keys, 500.0, 25)
+    _, results, _ = _query_frontier_tile(np.array([0]), cache, capex, opex, coc, keys, np.full(2, 500.0), 25)
     r = results[0]
 
     assert r["lcoe_coverage_based"] == pytest.approx(r["lcoe"] * r["served_fraction"])
@@ -183,8 +183,8 @@ def test_query_output_is_baseload_invariant_in_lcoe_but_not_in_cost(
 
     cache = _region_cache(profiles, dead_profiles, anchor_costs, tmp_path)
     capex, opex, coc, keys = query_inputs
-    _, small, _ = _query_frontier_tile(np.array([0]), cache, capex, opex, coc, keys, 100.0, 25)
-    _, large, _ = _query_frontier_tile(np.array([0]), cache, capex, opex, coc, keys, 1000.0, 25)
+    _, small, _ = _query_frontier_tile(np.array([0]), cache, capex, opex, coc, keys, np.full(2, 100.0), 25)
+    _, large, _ = _query_frontier_tile(np.array([0]), cache, capex, opex, coc, keys, np.full(2, 1000.0), 25)
 
     assert small[0]["lcoe"] == pytest.approx(large[0]["lcoe"], rel=1e-12)
     assert small[0]["design"] == large[0]["design"]
