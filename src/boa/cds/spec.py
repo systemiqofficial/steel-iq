@@ -3,7 +3,7 @@ CDS dataset mechanics: dataset ids, variable names, and file-naming helpers.
 
 Single source of truth shared by the downloader and the converter, so the
 folder names one writes and the other reads can never drift apart. Model
-parameters (densities, LULC fractions) live in boa.config.settings instead.
+parameters (densities, LULC fractions) live in boa.config.physical_parameters instead.
 """
 
 CDS_DATASET = "sis-energy-global-reanalysis"

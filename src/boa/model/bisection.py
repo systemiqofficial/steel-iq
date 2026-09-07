@@ -21,7 +21,7 @@ baseload-hours. Nothing in this module reads a cost, a year, or a capacity ceili
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from json import dumps
 from typing import TypeVar
@@ -29,7 +29,7 @@ from typing import TypeVar
 import numba
 import numpy as np
 
-from boa.config.settings import BATTERY_UNIT_CAPEX_SCALING_FACTOR, OVERSCALE_SAMPLING_K
+from boa.config.physical_parameters import BATTERY_UNIT_CAPEX_SCALING_FACTOR
 
 # Exponent on battery size in the total-cost numerator. The battery is priced as
 # `installed_MWh x capex x (hours/AVERAGE_IMPLIED_STORAGE)**kappa` with kappa negative
@@ -92,6 +92,21 @@ class SearchParams:
     box_min: float = 2.0  # floor, so an excellent resource still gets a usable box
     box_abs_max: float = 200.0  # ceiling, catching the ~7.5e8 mu a zero-CF tech produces
     max_box_widenings: int = 2  # doublings allowed when a seed lands on the outer ring
+    # `mu = overscale_sampling_k[tech] / CF_tech` (per-pixel time-mean capacity factor);
+    # `search_box` spans the box to `box_multiple * mu`, so it tracks the site's own
+    # resource. A search-tuning knob, not a physical parameter -- contrast
+    # `boa.config.physical_parameters`, which holds only cited-or-flagged real-world inputs.
+    overscale_sampling_k: dict[str, float] = field(default_factory=lambda: {"wind": 0.75, "solar": 0.75})
+
+    # -- Anchor coverage: how `anchor_cost_coefficients` (anchors.py) selects the anchor
+    #    set a build's seeds are placed under. Governs *where* the build looks, never what
+    #    it finds there, so a bad value costs search quality, not correctness. -----------
+    anchor_tol: float = 0.02  # simplex distance two anchors may sit apart before both are
+    #                           kept. TODO: settle against the re-anchoring benchmark,
+    #                           measuring how much cost-mix movement it takes to move a seed.
+    max_anchors: int = 32  # bounds the build if `anchor_tol` is pathologically small;
+    #                         exceeding it leaves some cost keys uncovered, which costs
+    #                         uncertified queries rather than wrong ones.
 
     # -- Coarse tier: ranks basins and bounds the containment proof. Deliberately cheap;
     #    its output is a lower bound on b_min, never an answer. -------------------------
@@ -152,10 +167,10 @@ class SearchParams:
         return asdict(self)
 
     def identity_hash(self) -> str:
-        """Stable 8-hex digest. Stable matters: it gates cache reuse, so an unstable
-        hash would rebuild every store on every run."""
-        payload = {"search": self.as_dict(), "overscale_sampling_k": dict(sorted(OVERSCALE_SAMPLING_K.items()))}
-        return sha256(dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:8]
+        """Stable 8-hex digest over every field, including `overscale_sampling_k` (an
+        ordinary dict-valued field like any other). Stable matters: it gates cache reuse,
+        so an unstable hash would rebuild every store on every run."""
+        return sha256(dumps(self.as_dict(), sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:8]
 
 
 @dataclass(frozen=True)
@@ -669,7 +684,7 @@ def search_box(solar: np.ndarray, wind: np.ndarray, params: SearchParams) -> tup
     """
     from boa.model.logic import overscale_mus_from_cf
 
-    mus = overscale_mus_from_cf(float(np.mean(solar)), float(np.mean(wind)))
+    mus = overscale_mus_from_cf(float(np.mean(solar)), float(np.mean(wind)), params.overscale_sampling_k)
     s_max = float(np.clip(params.box_multiple * mus["solar"], params.box_min, params.box_abs_max))
     w_max = float(np.clip(params.box_multiple * mus["wind"], params.box_min, params.box_abs_max))
     return s_max, w_max

@@ -50,7 +50,7 @@ from boa.cds import max_capacity as cds_max_capacity
 from boa.cds.spec import CDS_VARS, LULC_DATASET, TECHS, lulc_nc_name, masks_extract_dir_name
 from boa.cli import reconfigure_streams_utf8
 from boa.config.paths import DEFAULT_SET, PathConfig
-from boa.config.settings import CAPACITY_DENSITY_MW_PER_KM2, ERA5_DATA_YEAR, REGION_COORDS
+from boa.config.physical_parameters import CAPACITY_DENSITY_MW_PER_KM2, ERA5_DATA_YEAR, REGION_COORDS
 from boa.store_schema import max_cap_store_stem, profile_store_stem
 
 

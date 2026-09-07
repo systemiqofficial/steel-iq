@@ -1,6 +1,6 @@
 import numpy as np
 import logging
-from boa.config.settings import LIFETIMES, BATTERY_UNIT_CAPEX_SCALING_FACTOR
+from boa.config.physical_parameters import LIFETIMES, BATTERY_UNIT_CAPEX_SCALING_FACTOR
 from boa.config.constants import HOURS_IN_YEAR, AVERAGE_IMPLIED_STORAGE
 from boa.model.bisection import GAMMA, CostCoefficients
 

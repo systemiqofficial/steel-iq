@@ -36,7 +36,7 @@ import xarray as xr
 
 from boa.cds.spec import CDS_DATASET, CDS_TECH_SPEC, CDS_VARS, cf_extract_dir_name
 from boa.config.paths import PathConfig
-from boa.config.settings import ERA5_DATA_RESOLUTION, ERA5_DATA_YEAR, REGION_COORDS
+from boa.config.physical_parameters import ERA5_DATA_RESOLUTION, ERA5_DATA_YEAR, REGION_COORDS
 from boa.conversions import convert_resolution_to_string
 from boa.store_schema import PROFILE_CHUNKS, ZARR_FORMAT, profile_store_stem
 

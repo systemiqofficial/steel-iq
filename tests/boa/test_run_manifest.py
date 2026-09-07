@@ -3,7 +3,8 @@ import json
 import pytest
 
 from boa.config.paths import PathConfig
-from boa.config import run_manifest, settings
+from boa.config import run_manifest
+from boa.model.bisection import SearchParams
 
 
 def _cfg(tmp_path, **kw):
@@ -32,7 +33,7 @@ def test_records_resolved_parameters(tmp_path):
 def test_provenance_records_overscale_sampling_k(tmp_path):
     cfg = _cfg(tmp_path, input_set="cds", cost_set="c1")
     m = run_manifest.record_invocation(cfg, "run", [])
-    assert m["provenance"]["settings"]["overscale_sampling_k"] == settings.OVERSCALE_SAMPLING_K
+    assert m["provenance"]["settings"]["overscale_sampling_k"] == SearchParams().overscale_sampling_k
     assert "overscale_sampling_means" not in m["provenance"]["settings"]
 
 

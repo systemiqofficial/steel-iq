@@ -1,20 +1,20 @@
 import numba
 import numpy as np
 import xarray as xr
-from boa.config.settings import OVERSCALE_SAMPLING_K
 
 
-def overscale_mus_from_cf(cf_solar: float, cf_wind: float) -> dict[str, float]:
+def overscale_mus_from_cf(cf_solar: float, cf_wind: float, k: dict[str, float]) -> dict[str, float]:
     """
-    mu = k / CF from the time-mean capacity factors (see OVERSCALE_SAMPLING_K). Sets the
-    grid-bisection search box (`search_box`, `bisection.py`) to `box_multiple * mu`, clamped.
-    The 1e-9 is a division guard only, not a behavioural floor: a zero-CF technology gets an
-    astronomically large mu, `box_abs_max` catches it, and the pixel comes back
-    STATUS_ZERO_POTENTIAL or STATUS_NO_OPTIMUM rather than an unresolvable box.
+    mu = k / CF from the time-mean capacity factors (`k`, e.g. `SearchParams.
+    overscale_sampling_k`). Sets the grid-bisection search box (`search_box`, `bisection.py`)
+    to `box_multiple * mu`, clamped. The 1e-9 is a division guard only, not a behavioural
+    floor: a zero-CF technology gets an astronomically large mu, `box_abs_max` catches it, and
+    the pixel comes back STATUS_ZERO_POTENTIAL or STATUS_NO_OPTIMUM rather than an unresolvable
+    box.
     """
     return {
-        "solar": OVERSCALE_SAMPLING_K["solar"] / max(cf_solar, 1e-9),
-        "wind": OVERSCALE_SAMPLING_K["wind"] / max(cf_wind, 1e-9),
+        "solar": k["solar"] / max(cf_solar, 1e-9),
+        "wind": k["wind"] / max(cf_wind, 1e-9),
     }
 
 

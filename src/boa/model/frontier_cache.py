@@ -79,11 +79,8 @@ def params_hash(params: SearchParams) -> str:
     """
     Stable 8-hex digest identifying everything that determines a store's contents.
 
-    Delegates to `SearchParams.identity_hash` rather than hashing the dataclass alone. That
-    distinction is load-bearing: `identity_hash` also folds in `OVERSCALE_SAMPLING_K`, which
-    sets `mu = k / CF` and therefore the search box, and therefore every value in the store.
-    A digest over the dataclass by itself would not move when `k` did, so a changed constant
-    would silently reuse an incompatible store -- the exact defect v2 had.
+    Delegates to `SearchParams.identity_hash` rather than reimplementing it here, so there is
+    exactly one place that turns a `SearchParams` into a digest.
 
     Stable across processes, so `hash()` is not usable: it is salted per interpreter run and
     would send the same parameters to a different path every time.

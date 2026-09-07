@@ -1,3 +1,14 @@
+"""
+Exogenous, real-world inputs: technology lifetimes, degradation and cost-scaling factors,
+land-cover densities, weather/geography constants. Every value here is either cited to a
+source or explicitly flagged as a team ballpark -- none of it is a search-tuning knob.
+
+Tunable algorithm parameters (search box sizing, grid resolution, battery rungs, anchor
+tolerance) live in `boa.model.bisection.SearchParams` instead, not here -- that dataclass is
+hashed into the frontier cache path, so it is the single place a change there is guaranteed
+to force a rebuild rather than silently reuse an incompatible store.
+"""
+
 # ===== Baseload power simulation parameters =====
 # Lifetime of technologies in years (note: years must be a positive integer)
 LIFETIMES = {
@@ -26,13 +37,6 @@ YEARLY_DETERIORATION_RATES = {
     "wind": 0.01,  # 1%/year
     "battery": 0.015,  # 1.5%/year; batteries degrade faster (NREL, see README.md)
 }
-
-# Scale of the grid-bisection search box, as a multiple of 1/CF: `search_box` (bisection.py)
-# sets `mu = OVERSCALE_SAMPLING_K[tech] / CF_tech` (per-pixel time-mean capacity factor) and
-# spans the box to `box_multiple * mu`, so the search tracks the site's resource. The
-# capacity ceiling is applied downstream, never inside the search box. Search-tuning knob,
-# not a physical parameter.
-OVERSCALE_SAMPLING_K = {"wind": 0.75, "solar": 0.75}
 
 # ===== Max-capacity ceiling parameters (boa_cds max-capacity) =====
 # Applied density = theoretical density (stage 1) x packing factor (stage 2) x land-

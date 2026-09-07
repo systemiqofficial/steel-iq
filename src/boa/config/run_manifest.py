@@ -13,8 +13,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 import boa
-from boa.config import settings
+from boa.config import physical_parameters
 from boa.config.paths import PathConfig
+from boa.model.bisection import SearchParams
 
 SCHEMA_VERSION = 2
 
@@ -71,8 +72,8 @@ def provenance(path_config: PathConfig) -> dict[str, Any]:
         "availability_signature": _availability_signature(path_config),
         "boa_version": boa.__version__,
         "settings": {
-            "overscale_sampling_k": settings.OVERSCALE_SAMPLING_K,
-            "lifetimes": settings.LIFETIMES,
+            "overscale_sampling_k": SearchParams().overscale_sampling_k,
+            "lifetimes": physical_parameters.LIFETIMES,
             "era5_data_year": weather_year,
         },
     }

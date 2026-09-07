@@ -16,7 +16,7 @@ import numpy as np
 import xarray as xr
 
 from boa.cds.max_capacity import SIGNATURE_ATTR
-from boa.config.settings import ERA5_DATA_YEAR
+from boa.config.physical_parameters import ERA5_DATA_YEAR
 from boa.store_schema import max_cap_store_stem, profile_store_stem
 
 log = logging.getLogger(__name__)
@@ -126,7 +126,7 @@ def install_regions(
     if year != ERA5_DATA_YEAR:
         log.warning(
             f"Installing {year} stores, but the model reads {ERA5_DATA_YEAR} until "
-            f"ERA5_DATA_YEAR in src/boa/config/settings.py is changed."
+            f"ERA5_DATA_YEAR in src/boa/config/physical_parameters.py is changed."
         )
 
     plan: list[tuple[str, Path]] = []

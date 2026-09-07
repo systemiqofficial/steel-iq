@@ -25,7 +25,7 @@ directory. Both exist because a max-capacity store records what it was built fro
 else, so a changed layer set or density would otherwise be reused in silence.
 
 The layers are only as good as their parameters, and those are not settled: see the
-warning on `settings.LULC_CODES`, whose fractions and the densities beside them set how
+warning on `physical_parameters.LULC_CODES`, whose fractions and the densities beside them set how
 much of a cell is usable and currently leave most European land unable to host a 500 MW
 baseload at all.
 """
@@ -45,7 +45,7 @@ import xarray as xr
 
 from boa.cds.spec import EXCLUSION_MASK_FILES, EXCLUSION_MASK_VARS
 from boa.config.constants import ESA_CCI_CELLS_PER_DEG
-from boa.config.settings import ERA5_DATA_RESOLUTION, LULC_CODES
+from boa.config.physical_parameters import ERA5_DATA_RESOLUTION, LULC_CODES
 
 # Side of the ESA-CCI block that tiles one model cell: 0.25 deg x 360 cells/deg.
 BLOCK = int(ERA5_DATA_RESOLUTION * ESA_CCI_CELLS_PER_DEG)

@@ -6,7 +6,7 @@ writers (boa.cds, scripts/convert_profiles_to_zarr.py) and the reader
 (boa.inputs.profiles) can never drift apart.
 """
 
-from boa.config.settings import ERA5_DATA_RESOLUTION
+from boa.config.physical_parameters import ERA5_DATA_RESOLUTION
 from boa.conversions import convert_resolution_to_string
 
 # Spatial chunking: full time series per chunk, 12x12 grid cells per spatial

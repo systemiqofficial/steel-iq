@@ -9,7 +9,7 @@ from pathlib import Path
 from boa.geo.iso3_finder import iso3_at_batch
 from boa.geo.geospatial import choose_land_points_in_cutout
 from boa.config.paths import PathConfig
-from boa.config.settings import REGION_COORDS, ERA5_DATA_RESOLUTION
+from boa.config.physical_parameters import REGION_COORDS, ERA5_DATA_RESOLUTION
 from boa.model.single_point_run import (
     build_cost_lookup_indices,
     cost_key_for_point,

@@ -42,7 +42,7 @@ import xarray as xr
 
 from boa.cli import reconfigure_streams_utf8
 from boa.config.paths import DEFAULT_SET, PathConfig
-from boa.config.settings import REGION_COORDS
+from boa.config.physical_parameters import REGION_COORDS
 from boa.model.anchors import anchor_cost_coefficients
 from boa.model.global_extension import (
     build_frontier_cache_for_region,

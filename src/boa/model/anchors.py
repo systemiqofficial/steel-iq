@@ -29,28 +29,15 @@ from collections.abc import Callable, Sequence
 
 import xarray as xr
 
-from boa.model.bisection import CostCoefficients, covering_anchors
+from boa.model.bisection import CostCoefficients, SearchParams, covering_anchors
 from boa.model.cost_calculations import lcoe_coefficients
 from boa.model.single_point_run import costs_for_key
-
-# Simplex distance two anchors may sit apart before both are kept. Expressed in shares of the
-# cost mix, so it is independent of currency, units and baseload. TODO: settle against the
-# re-anchoring benchmark, which should measure how much mix movement it takes to move a seed --
-# the total available drift is only ~0.088, so this is a meaningful fraction of it.
-DEFAULT_ANCHOR_TOL = 0.02
-
-# Anchors are searched under, and each one costs seed selection plus whatever distinct patch
-# boxes it adds. This bounds the build if `tol` is set pathologically small; exceeding it leaves
-# some cost keys further than `tol` from any anchor, which costs uncertified queries rather than
-# wrong ones.
-DEFAULT_MAX_ANCHORS = 32
 
 
 def anchor_cost_coefficients(
     years: Sequence[int],
     costs_for_year: Callable[[int], tuple[xr.Dataset, int]],
-    tol: float = DEFAULT_ANCHOR_TOL,
-    max_anchors: int = DEFAULT_MAX_ANCHORS,
+    params: SearchParams | None = None,
 ) -> list[CostCoefficients]:
     """
     The anchor set covering every `(cost key, investment year)` this cost set can produce.
@@ -62,7 +49,14 @@ def anchor_cost_coefficients(
 
     Coefficients are built at baseload 1.0. Baseload scales all four linearly and so cancels
     out of the mix entirely, which is the same reason LCOE is exactly baseload-invariant.
+
+    `params.anchor_tol`/`params.max_anchors` govern the selection (see `SearchParams` --
+    folded in there rather than kept as this module's own constants, so the same value that
+    shaped a build's anchors is part of what the frontier cache's identity hash covers).
     """
+    params = SearchParams() if params is None else params
+    tol, max_anchors = params.anchor_tol, params.max_anchors
+
     per_year: dict[int, tuple[xr.Dataset, int]] = {}
     candidates: list[tuple[int, str]] = []
     for year in years:
