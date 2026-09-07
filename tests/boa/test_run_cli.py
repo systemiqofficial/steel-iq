@@ -128,6 +128,17 @@ def test_dry_run_fails_cleanly_on_missing_inputs(tmp_path, monkeypatch):
     assert main_run(["--dry-run"]) == 1
 
 
+def test_dry_run_accepts_several_weather_inputs(tmp_path, monkeypatch):
+    """Two --weather-input years in one invocation, each addressed without error."""
+    monkeypatch.setenv("BOA_DATA_ROOT", str(tmp_path))
+    for year in (2023, 2024):
+        config = PathConfig.from_root(tmp_path, input_set=f"cds-{year}")
+        _make_store_dirs(config, year)
+        config.input_data_path.parent.mkdir(parents=True, exist_ok=True)
+        config.input_data_path.touch()
+    assert main_run(["--dry-run", "--weather-input", "cds-2023", "cds-2024"]) == 0
+
+
 # ---- data-set resolution -----------------------------------------------------
 
 
@@ -143,7 +154,7 @@ def test_resolve_data_sets_defaults():
 
     args = _namespace()
     resolve_data_sets(args)
-    assert args.weather_input == "cds-2024"
+    assert args.weather_input == ["cds-2024"]
     assert args.cost_input == "default"
 
 
@@ -152,14 +163,23 @@ def test_resolve_data_sets_follows_prepare_flags():
 
     args = _namespace(cds_prepare=2023, data_prepare=["master.xlsx", "test_scenario"])
     resolve_data_sets(args)
-    assert args.weather_input == "cds-2023"
+    assert args.weather_input == ["cds-2023"]
     assert args.cost_input == "test_scenario"
 
 
 def test_resolve_data_sets_keeps_explicit_choices():
+    """argparse's nargs="+" always hands back a list, even for one value."""
     from boa.cli.run_simulation import resolve_data_sets
 
-    args = _namespace(weather_input="my-set", cost_input="my-costs", cds_prepare=2023, data_prepare=["m.xlsx", "s"])
+    args = _namespace(weather_input=["my-set"], cost_input="my-costs", cds_prepare=2023, data_prepare=["m.xlsx", "s"])
     resolve_data_sets(args)
-    assert args.weather_input == "my-set"
+    assert args.weather_input == ["my-set"]
     assert args.cost_input == "my-costs"
+
+
+def test_resolve_data_sets_accepts_several_weather_inputs():
+    from boa.cli.run_simulation import resolve_data_sets
+
+    args = _namespace(weather_input=["cds-2023", "cds-2024"])
+    resolve_data_sets(args)
+    assert args.weather_input == ["cds-2023", "cds-2024"]

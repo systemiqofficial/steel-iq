@@ -26,6 +26,7 @@ Examples:
     boa-run --load-density 1.0 --coverage 0.95
     boa-run --load-density 1.0 --coverage 0.95 --promote-lcoe
     boa-run --weather-input cds-2023 --cost-input xlsx-rev3 --dry-run
+    boa-run --weather-input cds-2022 cds-2023 cds-2024   # sweep several weather years in one run
     boa-run --cds-prepare 2024 --data-prepare master.xlsx test_scenario
     boa-run build-cache --workers fast
     boa-run query --start-year 2030 --end-year 2030 --force
@@ -41,9 +42,10 @@ from typing import List
 import xarray as xr
 
 from boa.cli import reconfigure_streams_utf8
-from boa.config.paths import DEFAULT_SET, PathConfig
+from boa.config.paths import DEFAULT_SET, PathConfig, make_run_dirname, weather_set_name
 from boa.config.physical_parameters import REGION_COORDS
 from boa.model.anchors import anchor_cost_coefficients
+from boa.model.bisection import SearchParams
 from boa.model.global_extension import (
     build_frontier_cache_for_region,
     combine_regional_datasets_into_global_dataset,
@@ -118,11 +120,14 @@ def add_data_args(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("Data Selection")
     group.add_argument(
         "--weather-input",
+        nargs="+",
         default=None,
-        help="Input set under <root>/inputs/ (profile + max-capacity stores). The frontier "
-        "cache lives alongside it but is keyed on the weather year alone, not the full input "
-        f"set, so layer sets on the same weather share it. Default: {DEFAULT_WEATHER_INPUT}, "
-        "or cds-<year> when --cds-prepare is given.",
+        help="One or more input sets under <root>/inputs/ (profile + max-capacity stores). Each "
+        "gets its own outputs/wy<year>/ subtree under the same run, so a sweep across weather "
+        "years doesn't overwrite itself. The frontier cache lives alongside each input set but "
+        "is keyed on the weather year alone, not the full input set, so layer sets on the same "
+        f"weather share it. Default: {DEFAULT_WEATHER_INPUT}, or cds-<year> when --cds-prepare "
+        "is given.",
     )
     group.add_argument(
         "--cost-input",
@@ -131,7 +136,13 @@ def add_data_args(parser: argparse.ArgumentParser) -> None:
         f"Default: {DEFAULT_SET}, or the scenario given to --data-prepare.",
     )
     group.add_argument(
-        "--run", default=None, help="Run name under <root>/runs/ for outputs. Default: <weather-input>__<cost-input>."
+        "--run",
+        default=None,
+        help="Run label under <root>/runs/ for outputs. Default: <cost-input> (a run can span "
+        "several --weather-input sets, so it is no longer tied to one of them). The on-disk "
+        "directory is always <run>_<hash>, where <hash> forks automatically whenever the "
+        "physical/search parameters change -- reusing the same label with the same parameters "
+        "always resolves to the same directory.",
     )
     group.add_argument(
         "--cds-prepare",
@@ -150,19 +161,30 @@ def add_data_args(parser: argparse.ArgumentParser) -> None:
 
 
 def resolve_data_sets(args: argparse.Namespace) -> None:
-    """Fill in data-set names left unset on the command line, honouring the inline prepare flags."""
+    """Fill in data-set names left unset on the command line, honouring the inline prepare flags.
+
+    ``args.weather_input`` is always a list after this: ``--weather-input`` takes ``nargs="+"``,
+    so argparse already returns one when the flag is given; the ``None`` default (flag omitted)
+    is normalised to a single-element list here too.
+    """
     if args.weather_input is None:
-        args.weather_input = f"cds-{args.cds_prepare}" if args.cds_prepare is not None else DEFAULT_WEATHER_INPUT
+        args.weather_input = [f"cds-{args.cds_prepare}" if args.cds_prepare is not None else DEFAULT_WEATHER_INPUT]
     if args.cost_input is None:
         args.cost_input = args.data_prepare[1] if args.data_prepare is not None else DEFAULT_SET
 
 
 def run_prepare_flags(args: argparse.Namespace) -> int:
-    """Run the inline --cds-prepare / --data-prepare steps ahead of the simulation."""
+    """Run the inline --cds-prepare / --data-prepare steps ahead of the simulation.
+
+    ``--cds-prepare`` only ever prepares the one weather year it names, via
+    ``weather_set_name`` rather than ``args.weather_input`` -- decoupled deliberately, since
+    ``--weather-input`` can now list several sets and only one of them is the one being
+    prepared here.
+    """
     if args.cds_prepare is not None:
         from boa.cli.run_cds import main_prepare
 
-        rc = main_prepare(["--weather_year", str(args.cds_prepare), "--inputs", args.weather_input])
+        rc = main_prepare(["--weather_year", str(args.cds_prepare), "--inputs", weather_set_name(args.cds_prepare)])
         if rc:
             return rc
     if args.data_prepare is not None:
@@ -299,9 +321,25 @@ def resolved_parameters(args: argparse.Namespace, years: List[int] | None = None
     return params
 
 
-def build_path_config(args: argparse.Namespace) -> PathConfig:
-    """Resolve the PathConfig for the selected sets and log where everything lives."""
-    path_config = PathConfig.from_auto_detect(input_set=args.weather_input, cost_set=args.cost_input, run=args.run)
+def resolve_run_id(args: argparse.Namespace, search_params: SearchParams = SearchParams()) -> str:
+    """
+    Compose the on-disk run directory name once per invocation, shared across every
+    ``--weather-input`` the loop iterates over -- a run can now span several weather years,
+    so it is no longer resolved per weather input the way ``input_set`` is.
+
+    ``<run>_<hash>``: the hash forks automatically whenever the physical/search parameters
+    change, so reusing the same ``--run`` label with the same parameters always resolves to
+    the same directory and a changed parameter always resolves to a different one, with no
+    manifest scan needed (see ``run_manifest.non_scenario_params_hash``).
+    """
+    base_run = args.run or args.cost_input
+    return make_run_dirname(base_run, run_manifest.non_scenario_params_hash(search_params))
+
+
+def build_path_config(args: argparse.Namespace, weather_input: str, run: str) -> PathConfig:
+    """Resolve the PathConfig for one weather input under the shared run id, and log where
+    everything lives."""
+    path_config = PathConfig.from_auto_detect(input_set=weather_input, cost_set=args.cost_input, run=run)
     logging.info(f"Data root: {path_config.root}")
     logging.info(f"Inputs: {path_config.input_set}; costs: {path_config.cost_set}; run: {path_config.run}")
     return path_config
@@ -488,32 +526,37 @@ def main_run(argv: list[str]) -> int:
     resolve_data_sets(args)
     if (rc := run_prepare_flags(args)) != 0:
         return rc
-    path_config = build_path_config(args)
-    try:
-        weather_year = preflight(path_config)
-    except (FileNotFoundError, ValueError) as e:
-        logging.error(str(e))
-        return 1
+    run = resolve_run_id(args)
+    for weather_input in args.weather_input:
+        path_config = build_path_config(args, weather_input, run)
+        try:
+            weather_year = preflight(path_config)
+        except (FileNotFoundError, ValueError) as e:
+            logging.error(str(e))
+            return 1
+
+        if args.dry_run:
+            logging.info(f"Frontier caches: {path_config.frontier_cache_dir(weather_year)}")
+            logging.info(f"Outputs: {path_config.outputs_dir}")
+            continue
+
+        run_manifest.record_invocation(path_config, "run", list(argv), parameters=resolved_parameters(args, years))
+        build_all_caches(path_config, args.coverage, years, args.workers)
+        query_all_years(
+            path_config,
+            years,
+            args.load_density,
+            args.coverage,
+            args.workers,
+            weather_year,
+            generate_plots=args.plots,
+        )
+        if args.promote_lcoe and run_promotion(path_config, weather_year, args.load_density, args.coverage) != 0:
+            return 1
 
     if args.dry_run:
-        logging.info(f"Frontier caches: {path_config.frontier_cache_dir(weather_year)}")
-        logging.info(f"Outputs: {path_config.outputs_dir}")
         logging.info("Dry run - exiting without running simulation")
         return 0
-
-    run_manifest.record_invocation(path_config, "run", list(argv), parameters=resolved_parameters(args, years))
-    build_all_caches(path_config, args.coverage, years, args.workers)
-    query_all_years(
-        path_config,
-        years,
-        args.load_density,
-        args.coverage,
-        args.workers,
-        weather_year,
-        generate_plots=args.plots,
-    )
-    if args.promote_lcoe and run_promotion(path_config, weather_year, args.load_density, args.coverage) != 0:
-        return 1
     logging.info("\nAll simulations completed successfully!")
     return 0
 
@@ -553,20 +596,22 @@ def main_build_cache(argv: list[str]) -> int:
     resolve_data_sets(args)
     if (rc := run_prepare_flags(args)) != 0:
         return rc
-    path_config = build_path_config(args)
-    try:
-        preflight(path_config)
-    except (FileNotFoundError, ValueError) as e:
-        logging.error(str(e))
-        return 1
-    run_manifest.record_invocation(path_config, "build-cache", list(argv), parameters=resolved_parameters(args))
-    build_all_caches(
-        path_config,
-        args.coverage,
-        get_simulation_years(args.start_year, args.end_year, args.frequency),
-        args.workers,
-        force=args.force,
-    )
+    run = resolve_run_id(args)
+    for weather_input in args.weather_input:
+        path_config = build_path_config(args, weather_input, run)
+        try:
+            preflight(path_config)
+        except (FileNotFoundError, ValueError) as e:
+            logging.error(str(e))
+            return 1
+        run_manifest.record_invocation(path_config, "build-cache", list(argv), parameters=resolved_parameters(args))
+        build_all_caches(
+            path_config,
+            args.coverage,
+            get_simulation_years(args.start_year, args.end_year, args.frequency),
+            args.workers,
+            force=args.force,
+        )
     logging.info("\nbuild-cache: all regions complete.")
     return 0
 
@@ -614,25 +659,27 @@ def main_query(argv: list[str]) -> int:
     resolve_data_sets(args)
     if (rc := run_prepare_flags(args)) != 0:
         return rc
-    path_config = build_path_config(args)
-    try:
-        weather_year = preflight(path_config)
-    except (FileNotFoundError, ValueError) as e:
-        logging.error(str(e))
-        return 1
-    run_manifest.record_invocation(path_config, "query", list(argv), parameters=resolved_parameters(args, years))
-    query_all_years(
-        path_config,
-        years,
-        args.load_density,
-        args.coverage,
-        args.workers,
-        weather_year,
-        force=args.force,
-        generate_plots=args.plots,
-    )
-    if args.promote_lcoe and run_promotion(path_config, weather_year, args.load_density, args.coverage) != 0:
-        return 1
+    run = resolve_run_id(args)
+    for weather_input in args.weather_input:
+        path_config = build_path_config(args, weather_input, run)
+        try:
+            weather_year = preflight(path_config)
+        except (FileNotFoundError, ValueError) as e:
+            logging.error(str(e))
+            return 1
+        run_manifest.record_invocation(path_config, "query", list(argv), parameters=resolved_parameters(args, years))
+        query_all_years(
+            path_config,
+            years,
+            args.load_density,
+            args.coverage,
+            args.workers,
+            weather_year,
+            force=args.force,
+            generate_plots=args.plots,
+        )
+        if args.promote_lcoe and run_promotion(path_config, weather_year, args.load_density, args.coverage) != 0:
+            return 1
     logging.info("\nquery: all (region, year) pairs complete.")
     return 0
 
@@ -678,31 +725,33 @@ def main_point(argv: list[str]) -> int:
     resolve_data_sets(args)
     if (rc := run_prepare_flags(args)) != 0:
         return rc
-    path_config = build_path_config(args)
-    try:
-        # The point's region is derived downstream, so only the year + cost set are preflighted.
-        preflight(path_config, require_all_stores=False)
-    except (FileNotFoundError, ValueError) as e:
-        logging.error(str(e))
-        return 1
-    run_manifest.record_invocation(path_config, "point", list(argv), parameters=resolved_parameters(args, years))
-
-    for year in years:
-        logging.info(f"\nRunning single-point simulation for year {year}")
+    run = resolve_run_id(args)
+    for weather_input in args.weather_input:
+        path_config = build_path_config(args, weather_input, run)
         try:
-            execute_single_point_baseload_power_simulation(
-                path_config=path_config,
-                year=year,
-                lat=args.lat,
-                lon=args.lon,
-                load_density=args.load_density,
-                coverage=args.coverage,
-            )
-        except Exception as e:
-            logging.error(f"Failed to run simulation for year {year}: {e}")
-            if args.verbose:
-                logging.exception("Detailed error:")
+            # The point's region is derived downstream, so only the year + cost set are preflighted.
+            preflight(path_config, require_all_stores=False)
+        except (FileNotFoundError, ValueError) as e:
+            logging.error(str(e))
             return 1
+        run_manifest.record_invocation(path_config, "point", list(argv), parameters=resolved_parameters(args, years))
+
+        for year in years:
+            logging.info(f"\nRunning single-point simulation for year {year}")
+            try:
+                execute_single_point_baseload_power_simulation(
+                    path_config=path_config,
+                    year=year,
+                    lat=args.lat,
+                    lon=args.lon,
+                    load_density=args.load_density,
+                    coverage=args.coverage,
+                )
+            except Exception as e:
+                logging.error(f"Failed to run simulation for year {year}: {e}")
+                if args.verbose:
+                    logging.exception("Detailed error:")
+                return 1
     logging.info("\npoint: all years complete.")
     return 0
 

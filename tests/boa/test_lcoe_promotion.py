@@ -6,7 +6,9 @@ import xarray as xr
 
 from boa.cli.promote_lcoe import main as promote_main
 from boa.cli.run_simulation import main_query
-from boa.config.paths import PathConfig
+from boa.config import run_manifest
+from boa.config.paths import PathConfig, make_run_dirname
+from boa.model.bisection import SearchParams
 from boa.model.lcoe_promotion import discover_scenarios, promote_lcoe, year_files
 
 LOAD_DENSITY = 1.23
@@ -201,7 +203,11 @@ def test_promote_cli_reports_an_empty_run(tmp_config, monkeypatch):
 
 def test_boa_run_query_promote_lcoe_flag(tmp_config, monkeypatch):
     """--promote-lcoe promotes the scenario the query just produced."""
-    _write_run(tmp_config)
+    # main_query always appends a params hash to --run (see paths.make_run_dirname), so the
+    # fixture data must land under the same hashed directory the CLI will actually resolve.
+    hashed_run = make_run_dirname(tmp_config.run, run_manifest.non_scenario_params_hash(SearchParams()))
+    actual_config = PathConfig.from_root(tmp_config.root, run=hashed_run)
+    _write_run(actual_config)
     monkeypatch.setenv("BOA_DATA_ROOT", str(tmp_config.root))
     monkeypatch.setattr("boa.cli.run_simulation.preflight", lambda *a, **k: 2024)
     monkeypatch.setattr("boa.cli.run_simulation.run_manifest.record_invocation", lambda *a, **k: {})
@@ -209,4 +215,4 @@ def test_boa_run_query_promote_lcoe_flag(tmp_config, monkeypatch):
 
     argv = ["--load-density", str(LOAD_DENSITY), "--coverage", "0.85", "--run", tmp_config.run, "--promote-lcoe"]
     assert main_query(argv) == 0
-    assert (tmp_config.lcoe_promotion_dir / "optimal_lcoe_wy2024_01p23MWkm2_cov0p85_2025_2035.nc").exists()
+    assert (actual_config.lcoe_promotion_dir / "optimal_lcoe_wy2024_01p23MWkm2_cov0p85_2025_2035.nc").exists()
