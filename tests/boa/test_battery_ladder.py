@@ -152,10 +152,17 @@ def test_rungs_cluster_just_above_b_min():
     `b_min`, so evenly spaced rungs step over it and adding more at the top only lands them
     past the crossing where the objective is already rising. The first step must therefore
     be a small fraction of the span, not `1/(R-1)` of it.
+
+    Checked against a locally-built `SearchParams`, not the module-level `PARAMS`: clustering
+    is a property of `rung_spans`' quadratic formula, not of whatever `ladder_rungs` the
+    production default happens to be -- and with only 2 rungs (the current default) there is
+    exactly one step, which trivially equals the "even" step, so the property has nothing to
+    show against at that count.
     """
-    spans = rung_spans(PARAMS)
+    params = SearchParams(ladder_rungs=4, ladder_max_span=1.35)
+    spans = rung_spans(params)
     first_step = spans[1] - 1.0
-    even_step = (PARAMS.ladder_max_span - 1.0) / (PARAMS.ladder_rungs - 1)
+    even_step = (params.ladder_max_span - 1.0) / (params.ladder_rungs - 1)
     assert first_step < even_step / 2, "rungs are not clustered near b_min"
     assert np.all(np.diff(np.diff(spans)) > 0), "gaps must widen with distance from b_min"
 

@@ -146,13 +146,16 @@ class SearchParams:
     #    with no cost in it, so it is valid for every year and every cost scenario. It is
     #    also strictly more accurate than choosing at build time, because the pick then
     #    uses the query year's real prices instead of a frozen anchor's.
-    #    Rungs are spaced quadratically, so they cluster just above b_min. The span is set
-    #    by how far the optimum can travel: a cheaper battery moves it outward, so 1.35x
-    #    covers the battery costs a multi-decade horizon reaches while staying far short of
-    #    where coverage saturates. TODO: settle the count and the span in the
-    #    grid-configuration sweep -- both are tuned against one cost trajectory.
-    ladder_rungs: int = 4  # battery sizes stored per node; rung 0 is b_min itself
-    ladder_max_span: float = 1.35  # top rung, as a multiple of b_min
+    #    Rungs are spaced quadratically, so they cluster just above b_min -- with 2 rungs
+    #    that collapses to two endpoints, 1.0 and ladder_max_span. Tuned against a real
+    #    global run (GLOBAL_RUN_FINDINGS.md, Finding 11): at the R=4/1.35x defaults, rungs
+    #    2-3 were picked 0 times across ~49,000 pixel-years in two regions spanning a mild
+    #    and an extreme case, and rung 1 usage was already small (0.89-1.65% in the mild
+    #    region, 0% in the extreme one). 2 rungs at a 5% span keeps the one rung that
+    #    measurably mattered and drops the two that never did. Re-check if a future sweep
+    #    covers more of the globe or a cost trajectory where batteries are much cheaper.
+    ladder_rungs: int = 2  # battery sizes stored per node; rung 0 is b_min itself
+    ladder_max_span: float = 1.05  # top rung, as a multiple of b_min
 
     # -- Bisection tolerances. `tol_rel_patch` sets how many dispatch passes each patch
     #    node spends on the battery, so it is the other build-cost driver. gamma = 0.85
