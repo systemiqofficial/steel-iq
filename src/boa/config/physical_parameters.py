@@ -40,8 +40,7 @@ YEARLY_DETERIORATION_RATES = {
 
 # ===== Max-capacity ceiling parameters (boa_cds max-capacity) =====
 # Applied density = theoretical density (stage 1) x packing factor (stage 2) x land-
-# availability fraction (stage 3, LULC_CODES below). Full source trail, the min-vs-multiply
-# reasoning, and per-class rationale: BOA_BISECTION_PLAN.md, "LULC_CODES rewrite".
+# availability fraction (stage 3, LULC_CODES below).
 
 # Stage 1: zero-spacing areal power density. Scholz (2012) REMix PhD thesis, Tab. 4.1.3 (pv)
 # / 4.3.1 (wind) -- https://elib.dlr.de/77976/1/REMix_Thesis_YS.pdf

@@ -3,8 +3,8 @@
 Baseload Optimisation Atlas (BOA) simulation runner: the `boa-run` console script.
 
 Finds optimal renewable energy configurations (solar, wind, battery) to meet a
-fixed baseload demand while minimising LCOE. Runs are always GLOBAL (all 9
-regions); the one exception is the single-point mode.
+fixed baseload demand while minimising LCOE. Runs are always GLOBAL (every region
+in REGION_COORDS); the one exception is the single-point mode.
 
 Subcommands:
     boa-run                  full simulation: build frontier caches if missing, then query every year
@@ -219,9 +219,9 @@ def add_scenario_args(parser: argparse.ArgumentParser) -> None:
         "--load-density",
         type=float,
         default=1.0,
-        help="Load density in MW/km2 of served cell area (D1 in BOA_BISECTION_PLAN.md). Each "
-        "pixel's absolute demand is load_density * pixel_area(lat), so results are latitude-"
-        "correct rather than one flat MW figure applied everywhere.",
+        help="Load density in MW/km2 of served cell area (D1). Each pixel's absolute demand is "
+        "load_density * pixel_area(lat), so results are latitude-correct rather than one flat "
+        "MW figure applied everywhere.",
     )
     group.add_argument(
         "-c",

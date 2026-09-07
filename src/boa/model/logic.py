@@ -37,10 +37,8 @@ def state_of_charge(
         normalised units as gen_nrg (multiply by baseload_MW to get absolute MWh).
     """
     soc = np.zeros(len(gen_nrg))
-    # First hour has special treatment - starting from empty battery
-    soc[0] = min(max(gen_nrg[0], 0), battery_capacity)
-    # Loop through the rest of the hours
-    for t in range(len(gen_nrg)):
+    soc[0] = min(max(gen_nrg[0], 0), battery_capacity)  # battery starts empty
+    for t in range(1, len(gen_nrg)):
         soc[t] = min(max(soc[t - 1] + gen_nrg[t], 0), battery_capacity)
     return soc
 

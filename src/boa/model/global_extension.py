@@ -587,7 +587,7 @@ def _assemble_optimal_sol(
             # every pixel in the region regardless of whether a design was found, unlike the
             # search-derived fields below.
             fields["load_mw"][k_int] = r["load_mw"]
-            if np.isnan(r["lcoe"]):
+            if r["status"] != STATUS_OK:
                 continue
             breakdown = r["installation_cost_breakdown"]
             design = r["design"]
@@ -637,8 +637,10 @@ def combine_regional_datasets_into_global_dataset(
     force: bool = False,
 ) -> xr.Dataset | None:
     """
-    Combine all regional datasets into a single global dataset. The datasets are interpolated onto the same grid and merged.
-    If any region is missing, the function will return None.
+    Combine every region's optimal-solution NetCDF (all of `REGION_COORDS`, not just the
+    original 9 -- boxes were split/added since) into one global dataset on a shared
+    0.25 deg grid. Returns None, without writing anything, if any region's file is missing --
+    a partial GLOBAL combine would silently look complete.
     """
     regions = list(REGION_COORDS.keys())
     regional_datasets = {}
