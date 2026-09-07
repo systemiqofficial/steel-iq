@@ -20,9 +20,11 @@ require(
     "b_min_at",
     "build_pixel_frontier",
     "coarse_b_min_grid",
+    "corner_cut_mask",
     "patch_box",
     "search_box",
     "select_seeds",
+    "_seed_on_boundary",
 )
 
 from boa.model.bisection import (  # noqa: E402
@@ -30,9 +32,11 @@ from boa.model.bisection import (  # noqa: E402
     STATUS_OK,
     STATUS_ZERO_POTENTIAL,
     SearchParams,
+    _seed_on_boundary,
     b_min_at,
     build_pixel_frontier,
     coarse_b_min_grid,
+    corner_cut_mask,
     patch_box,
     search_box,
     select_seeds,
@@ -80,6 +84,95 @@ def test_box_respects_the_lower_clamp(profiles):
     s_max, w_max = search_box(profiles["solar"], profiles["wind"], PARAMS)
     assert s_max >= PARAMS.box_min
     assert w_max >= PARAMS.box_min
+
+
+# --------------------------------------------------------------------------
+# Corner cut
+# --------------------------------------------------------------------------
+
+
+def test_corner_cut_mask_excludes_only_the_far_corner():
+    """
+    `s/s_max + w/w_max > threshold` must clip the corner where both axes are built out
+    at once, and nothing else -- in particular, neither pure axis (s=0 or w=0) is ever
+    part of the cut for a threshold > 1, since a single point there scores at most 1.
+    """
+    s_coarse = np.linspace(0.0, 10.0, 11)  # fractions 0, .1, .2, ..., 1.0
+    w_coarse = np.linspace(0.0, 10.0, 11)
+    mask = corner_cut_mask(s_coarse, w_coarse, 10.0, 10.0, threshold=1.2)
+
+    assert not mask[:, 0].any(), "the w=0 axis must never be cut"
+    assert not mask[0, :].any(), "the s=0 axis must never be cut"
+    assert mask[-1, -1], "the far corner (s_max, w_max), fraction sum 2, must be cut"
+    assert not mask[5, 6], "fraction sum .5+.6=1.1 <= 1.2 must survive"
+    assert mask[6, 7], "fraction sum .6+.7=1.3 > 1.2 must be cut"
+
+
+@pytest.mark.parametrize("threshold", [0.0, 0.5, 0.999, 2.001, 3.0])
+def test_corner_cut_threshold_out_of_range_is_rejected(threshold):
+    """
+    Below 1 the cut would start clipping a pure single-tech axis -- `box_multiple` is the
+    parameter for shrinking the box overall, not this one. Above 2 the cut removes nothing
+    (`s/s_max + w/w_max` maxes out at 2, at the far corner), so it is a no-op that would
+    only be silently misleading to configure.
+    """
+    import dataclasses
+
+    with pytest.raises(ValueError, match="corner_cut_threshold"):
+        dataclasses.replace(PARAMS, corner_cut_threshold=threshold)
+
+
+@pytest.mark.parametrize("threshold", [1.0, 1.2, 2.0, None])
+def test_corner_cut_threshold_boundary_and_none_are_accepted(threshold):
+    """The boundary values and the opt-out (`None`) must not raise."""
+    import dataclasses
+
+    dataclasses.replace(PARAMS, corner_cut_threshold=threshold)
+
+
+def test_corner_cut_is_applied_to_the_stored_coarse_grid(profiles, anchor_costs):
+    """
+    A tight cutoff must remove the far corner of the stored `b_coarse` (relative to a
+    build with the cut disabled) while leaving the two pure axes identical -- the cut is a
+    coarse-tier ranking/certificate detail, not a change to what the axes themselves span.
+    """
+    import dataclasses
+
+    cut_params = dataclasses.replace(PARAMS, corner_cut_threshold=1.0)
+    uncut = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, PARAMS, anchor_costs)
+    cut = build_pixel_frontier(profiles["solar"], profiles["wind"], 0.85, cut_params, anchor_costs)
+
+    np.testing.assert_allclose(cut.s_coarse, uncut.s_coarse)
+    np.testing.assert_allclose(cut.w_coarse, uncut.w_coarse)
+    assert np.isfinite(cut.b_coarse[0, :]).sum() == np.isfinite(uncut.b_coarse[0, :]).sum(), "s=0 axis must survive"
+    assert np.isfinite(cut.b_coarse[:, 0]).sum() == np.isfinite(uncut.b_coarse[:, 0]).sum(), "w=0 axis must survive"
+    assert not np.isfinite(cut.b_coarse[-1, -1]), "the far corner must be masked out"
+
+
+def test_seed_on_cut_boundary_triggers_widening_like_the_outer_ring():
+    """
+    `_seed_on_boundary` is what lets the cut share `max_box_widenings` as its recovery
+    mechanism: a seed against the moving diagonal must be treated the same as one against
+    the rectangle's own outer ring.
+    """
+    gc = 5
+    s_coarse = np.linspace(0.0, 10.0, gc)
+    w_coarse = np.linspace(0.0, 10.0, gc)
+
+    # Rectangle edge, no cut active: unchanged from the historical `i == gc-1 or j == gc-1`.
+    assert _seed_on_boundary(gc - 1, 2, gc, s_coarse, w_coarse, 10.0, 10.0, None)
+    assert not _seed_on_boundary(2, 2, gc, s_coarse, w_coarse, 10.0, 10.0, None)
+
+    # Seed one step below the threshold=1.2 diagonal: the *next* coarse step in either
+    # direction would cross it, so this must trigger a widen even though it is nowhere
+    # near the rectangle's own edge (i=3, j=3 -> fractions .75+.75=1.5 already over 1.2,
+    # so use a seed just inside instead).
+    assert _seed_on_boundary(2, 3, gc, s_coarse, w_coarse, 10.0, 10.0, 1.2), (
+        "stepping to i=3 gives fractions .75+.75=1.5 > 1.2, so (2,3) must be flagged"
+    )
+    assert not _seed_on_boundary(0, 0, gc, s_coarse, w_coarse, 10.0, 10.0, 1.2), (
+        "far from both the ring and the diagonal, this must not trigger a widen"
+    )
 
 
 # --------------------------------------------------------------------------
