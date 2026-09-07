@@ -130,7 +130,7 @@ already exists, so partial reuse works too.
 
 ## Running the model
 
-`boa-run` is always GLOBAL (all 9 regions); the one exception is the single-point mode:
+`boa-run` is always GLOBAL (all regions in `REGION_COORDS`); the one exception is the single-point mode:
 
 ```bash
 boa-run --load-density 1.0 --coverage 0.95       # full run: build caches if missing, query every year
@@ -143,15 +143,17 @@ boa-run --cds-prepare 2024 --data-prepare wb.xlsx rev2        # prepare both sid
 
 `--weather-input` alone identifies the weather side (stores + frontier cache; the weather
 year is read off the store filenames, never passed; default `cds-2024`), `--cost-input`
-the cost side (xlsx + per-year cost cache), and `--run` names the output pairing (default
-`<weather-input>__<cost-input>`). A preflight
+the cost side (xlsx + per-year cost cache), and `--run` labels the output (default
+`<cost-input>`; the on-disk directory is always `<label>_<hash>`, forking automatically
+whenever a physical or search-tuning parameter changes -- `boa-promote-lcoe --run <label>`
+resolves the label back to it). A preflight
 check fails fast with the exact `boa-cds-prepare` / `boa-data-prepare` command when the
 selected sets are incomplete. The full run never rebuilds an existing frontier cache; use
 `build-cache --force` or `query --force` for targeted rebuilds. Frontier caches are
 baseload-independent and year-independent: one cache per (coverage, weather year, search
 parameters) serves every `--load-density` and every investment year, and is shared across
 every land-availability layer set built on the same weather. `--load-density` is MW/km2, not
-an absolute demand (D1, `BOA_BISECTION_PLAN.md`): each pixel's own demand is
+an absolute demand (D1): each pixel's own demand is
 `load_density * pixel_area(lat)`, so results are latitude-correct rather than one flat MW
 figure applied everywhere. A `query` against a warm cache is arithmetic per pixel and takes
 minutes per year.
@@ -163,7 +165,7 @@ finishes is the GLOBAL-NetCDF assembly step, not plot generation; it prints whet
 `--plots` was given.
 
 **The capacity ceiling is not yet applied at query time** (tracked as M4,
-`BOA_BISECTION_PLAN.md`): every query currently reports the *unconstrained* optimum for
+follow-up "Grid 2" work): every query currently reports the *unconstrained* optimum for
 its coverage target, regardless of `--load-density`, and logs a warning saying so. Do not
 promote results from a run in this window.
 

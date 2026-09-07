@@ -97,8 +97,8 @@ class SearchParams:
     # resource. A search-tuning knob, not a physical parameter -- contrast
     # `boa.config.physical_parameters`, which holds only cited-or-flagged real-world inputs.
     # Checked against a real cross-region sample (9 regions, 2025/2040/2060 costs, ~590K
-    # solved pixel-years excluding box_abs_max-capped points, BOA_SEARCH_GRID_PLOT_HANDOVER.md
-    # follow-up): the query-time winner exceeded 4x mu on either axis in 0.034% of
+    # solved pixel-years excluding box_abs_max-capped points): the query-time winner
+    # exceeded 4x mu on either axis in 0.034% of
     # pixel-years (worst region, NORTH_ASIA, 0.20%), and `max_box_widenings` recovers the
     # rest -- the observed maximum ratio (8.5x) sits comfortably inside the 4 -> 8 -> 16 two
     # widenings already allow.
@@ -163,7 +163,7 @@ class SearchParams:
     #    uses the query year's real prices instead of a frozen anchor's.
     #    Rungs are spaced quadratically, so they cluster just above b_min -- with 2 rungs
     #    that collapses to two endpoints, 1.0 and ladder_max_span. Tuned against a real
-    #    global run (GLOBAL_RUN_FINDINGS.md, Finding 11): at the R=4/1.35x defaults, rungs
+    #    global run: at the R=4/1.35x defaults, rungs
     #    2-3 were picked 0 times across ~49,000 pixel-years in two regions spanning a mild
     #    and an extreme case, and rung 1 usage was already small (0.89-1.65% in the mild
     #    region, 0% in the extreme one). 2 rungs at a 5% span keeps the one rung that
@@ -225,16 +225,16 @@ def anchor_years(start: int, end: int, interval: int) -> list[int]:
 
     Re-anchoring rebuilds a pixel's frontier periodically against updated costs, rather
     than one frontier serving a whole multi-decade horizon off a single build-time
-    anchor. `BOA_BISECTION_PLAN.md`'s re-anchoring benchmark found the excess-LCOE tail
-    from an out-of-date anchor is flat and small for most of a 25-year horizon, then
-    jumps sharply only in the final stretch -- so always anchoring the horizon's own
-    end year matters more than evenly spacing every interval, and this guarantees it
-    regardless of whether `end - start` divides evenly by `interval`.
+    anchor. A re-anchoring benchmark found the excess-LCOE tail from an out-of-date
+    anchor is flat and small for most of a 25-year horizon, then jumps sharply only in
+    the final stretch -- so always anchoring the horizon's own end year matters more
+    than evenly spacing every interval, and this guarantees it regardless of whether
+    `end - start` divides evenly by `interval`.
 
     Only computes *which years* get their own anchor -- building a frontier per anchor
     year, storing more than one per pixel, and routing a query year to the right one are
-    a cache-layout and build-orchestration concern (BOA_BISECTION_PLAN.md's M2, "cache
-    schema v3"), deliberately out of scope here.
+    a cache-layout and build-orchestration concern (schema v3), deliberately out of
+    scope here.
     """
     if interval <= 0:
         raise ValueError(f"interval must be positive, got {interval}")
