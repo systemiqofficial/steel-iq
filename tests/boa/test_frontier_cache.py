@@ -14,23 +14,8 @@ import dataclasses
 import numpy as np
 import pytest
 
-from _gate import require
-
-require(
-    "boa.model.frontier_cache",
-    "RegionFrontierCache",
-    "build_frontier_meta",
-    "fraction_to_uint16_floor",
-    "frontier_at",
-    "frontier_cache_path",
-    "params_hash",
-    "read_frontier_cache",
-    "stack_pixel_frontiers",
-    "write_frontier_cache",
-)
-
-from boa.model.bisection import SearchParams, argmin_lcoe, build_pixel_frontier  # noqa: E402
-from boa.model.frontier_cache import (  # noqa: E402
+from boa.model.bisection import SearchParams, argmin_lcoe, build_pixel_frontier
+from boa.model.frontier_cache import (
     FRONTIER_SCHEMA_VERSION,
     POINT_CHUNK,
     build_frontier_meta,

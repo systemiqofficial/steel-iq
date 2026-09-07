@@ -7,19 +7,15 @@ smallest feasible one.
 
 The build stores the candidates and the query chooses among them. That split is what
 keeps the cache pure dispatch: choosing needs prices, and a battery chosen at build time
-would carry the build's frozen costs into a value every later year has to replay. See
-BOA_BISECTION_PLAN.md, "battery rungs", for why the two designs that preceded this one --
-a certified ladder, then a build-time local search -- were each dropped.
+would carry the build's frozen costs into a value every later year has to replay. Two
+designs preceded this one -- a certified ladder, then a build-time local search -- and
+were each dropped in favour of it.
 """
 
 import numpy as np
 import pytest
 
-from _gate import require
-
-require("boa.model.bisection", "SearchParams", "b_min_at", "battery_rungs", "rung_spans", "dispatch_metrics")
-
-from boa.model.bisection import (  # noqa: E402
+from boa.model.bisection import (
     GAMMA,
     CostCoefficients,
     SearchParams,

@@ -16,12 +16,8 @@ silently wrong cache.
 import numpy as np
 import pytest
 
-from _gate import require
-
-require("boa.model.global_extension", "_frontier_tile", "build_frontier_cache_for_region")
-
-from boa.model.bisection import STATUS_OK, STATUS_ZERO_POTENTIAL, SearchParams  # noqa: E402
-from boa.model.global_extension import _frontier_tile  # noqa: E402
+from boa.model.bisection import STATUS_OK, STATUS_ZERO_POTENTIAL, SearchParams
+from boa.model.global_extension import _frontier_tile
 
 PARAMS = SearchParams()
 COVERAGE = 0.85

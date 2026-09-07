@@ -4,19 +4,15 @@ anchor a query year routes to.
 
 Deliberately narrow. Building a frontier per anchor year, storing more than one per
 pixel, and wiring a query year's cost lookup to the right anchor are a cache-layout and
-build-orchestration concern (BOA_BISECTION_PLAN.md's M2, "cache schema v3") -- not
-covered here. This file only holds the two small, pure functions that decide the
-schedule and the routing, independent of how they eventually get used.
+build-orchestration concern (schema v3) -- not covered here. This file only holds the
+two small, pure functions that decide the schedule and the routing, independent of how
+they eventually get used.
 """
 
 import numpy as np
 import pytest
 
-from _gate import require
-
-require("boa.model.bisection", "anchor_years", "nearest_anchor", "distinct_anchor_years", "covering_anchors")
-
-from boa.model.bisection import (  # noqa: E402
+from boa.model.bisection import (
     CostCoefficients,
     anchor_years,
     cost_ratio_simplex,
