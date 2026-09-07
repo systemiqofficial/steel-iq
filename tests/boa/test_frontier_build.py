@@ -12,22 +12,7 @@ or a bound would not fail loudly anywhere else.
 import numpy as np
 import pytest
 
-from _gate import require
-
-require(
-    "boa.model.bisection",
-    "SearchParams",
-    "b_min_at",
-    "build_pixel_frontier",
-    "coarse_b_min_grid",
-    "corner_cut_mask",
-    "patch_box",
-    "search_box",
-    "select_seeds",
-    "_seed_on_boundary",
-)
-
-from boa.model.bisection import (  # noqa: E402
+from boa.model.bisection import (
     STATUS_NO_OPTIMUM,
     STATUS_OK,
     STATUS_ZERO_POTENTIAL,

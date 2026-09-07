@@ -19,22 +19,8 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from _gate import require
-
-require(
-    "boa.cds.availability",
-    "LAYER_FUNCS",
-    "availability_factor",
-    "availability_signature",
-    "availability_tag",
-    "cds_exclusion_factor",
-    "layer_specs",
-    "lulc_fraction",
-    "read_lulc_codes",
-)
-
-from boa.cds import availability  # noqa: E402
-from boa.config.physical_parameters import CAPACITY_DENSITY_MW_PER_KM2, LULC_CODES  # noqa: E402
+from boa.cds import availability
+from boa.config.physical_parameters import CAPACITY_DENSITY_MW_PER_KM2, LULC_CODES
 
 CELL_LAT = np.array([89.875])
 CELL_LONS = np.array([-179.875, -179.625])

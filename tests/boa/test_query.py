@@ -14,20 +14,8 @@ import inspect
 import numpy as np
 import pytest
 
-from _gate import require
-
-require(
-    "boa.model.bisection",
-    "CostCoefficients",
-    "SearchParams",
-    "argmin_lcoe",
-    "build_pixel_frontier",
-    "check_repair_budget",
-)
-require("boa.model.cost_calculations", "lcoe_coefficients")
-
-from boa.config.constants import AVERAGE_IMPLIED_STORAGE, HOURS_IN_YEAR  # noqa: E402
-from boa.model.bisection import (  # noqa: E402
+from boa.config.constants import AVERAGE_IMPLIED_STORAGE, HOURS_IN_YEAR
+from boa.model.bisection import (
     GAMMA,
     CostCoefficients,
     SearchParams,
@@ -37,7 +25,7 @@ from boa.model.bisection import (  # noqa: E402
     check_repair_budget,
     dispatch_metrics,
 )
-from boa.model.cost_calculations import (  # noqa: E402
+from boa.model.cost_calculations import (
     calculate_lcoe_of_re_installation_vectorised,
     lcoe_coefficients,
 )
@@ -344,8 +332,7 @@ def test_certificate_passes_when_the_outside_region_is_provably_infeasible():
     early-stopped bisection steps, propagated by domination), and a finite propagated
     bound does not mean a cell is actually feasible -- a dominated cell can be truly
     infeasible while still inheriting a finite (just very loose) lower bound from a
-    feasible dominating neighbour. See BOA_BISECTION_PLAN.md, "containment certificate
-    finding" -- accepted as designed, not treated as a bug.
+    feasible dominating neighbour -- accepted as designed, not treated as a bug.
     """
     from boa.model.bisection import PixelFrontier, STATUS_OK
 

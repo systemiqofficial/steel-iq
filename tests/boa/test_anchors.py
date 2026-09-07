@@ -11,12 +11,8 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from _gate import require
-
-require("boa.model.anchors", "anchor_cost_coefficients")
-
-from boa.model.anchors import anchor_cost_coefficients  # noqa: E402
-from boa.model.bisection import SearchParams, cost_ratio_simplex  # noqa: E402
+from boa.model.anchors import anchor_cost_coefficients
+from boa.model.bisection import SearchParams, cost_ratio_simplex
 
 HORIZON = 25
 N_YEARS = HORIZON + 1
