@@ -58,6 +58,34 @@ def make_run_dirname(run: str, params_hash: str) -> str:
     return f"{run}_{params_hash}"
 
 
+def resolve_run_dir(root: Path, run: str) -> Path:
+    """
+    Resolve a run label to its on-disk directory under ``<root>/runs/``.
+
+    ``boa-run`` always names a run's directory ``<label>_<hash>`` (``make_run_dirname``), so a
+    caller that only knows the label a user typed -- ``boa-promote-lcoe --run <label>``, for
+    instance -- cannot find it with a literal path join. This globs ``<label>_*`` for that case,
+    while still accepting the full hashed name unchanged so a caller that already has it (e.g.
+    from a manifest or a previous listing) is not forced to guess the label back out of it.
+
+    Raises if the label resolves to zero or more than one directory, naming what was found
+    either way rather than silently picking one.
+    """
+    runs_dir = root / "runs"
+    exact = runs_dir / run
+    if exact.is_dir():
+        return exact
+    matches = sorted(p for p in runs_dir.glob(f"{run}_*") if p.is_dir()) if runs_dir.is_dir() else []
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise FileNotFoundError(f"No run directory matches '{run}' under {runs_dir}.")
+    raise ValueError(
+        f"Run label '{run}' matches multiple directories under {runs_dir}: "
+        f"{[p.name for p in matches]}; pass the full directory name to disambiguate."
+    )
+
+
 def default_root() -> Path:
     """Resolve the BOA data root: ``$BOA_DATA_ROOT``, else ``$STEELO_HOME/boa``, else ``~/.steelo/boa``.
 
@@ -165,7 +193,7 @@ class PathConfig:
         load-density sweep, matching how ``frontier_cache_dir`` keys on weather year ahead of
         everything else.
 
-        Keyed on load density (MW/km2, D1 in ``BOA_BISECTION_PLAN.md``), not absolute demand:
+        Keyed on load density (MW/km2, D1), not absolute demand:
         LCOE is exactly baseload-invariant, so an absolute MW figure baked into the path was
         never a real key, only a display value that also happened to vary with latitude once a
         per-pixel demand is derived from it (``load_mw = load_density * pixel_area(lat)``).

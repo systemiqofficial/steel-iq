@@ -16,10 +16,12 @@ import logging
 import sys
 
 from boa.cli import reconfigure_streams_utf8
-from boa.config.paths import PathConfig
+from boa.config.paths import DEFAULT_SET, PathConfig, default_root, resolve_run_dir
 from boa.model.lcoe_promotion import promote_all
 
-DEFAULT_RUN = "cds-2024__default"
+# Matches boa-run's own bare default (`--run` omitted -> `<cost-input>`, i.e. just the cost
+# set); resolve_run_dir finds whichever `<hash>` that label actually forked to on disk.
+DEFAULT_RUN = DEFAULT_SET
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -28,7 +30,9 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--run", default=DEFAULT_RUN, help=f"Run to promote (default: {DEFAULT_RUN}).")
+    parser.add_argument(
+        "--run", default=DEFAULT_RUN, help=f"Run label to promote, as passed to boa-run (default: {DEFAULT_RUN})."
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
     args = parser.parse_args(argv)
 
@@ -38,8 +42,9 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
 
-    path_config = PathConfig.from_auto_detect(run=args.run)
     try:
+        run_dir = resolve_run_dir(default_root(), args.run)
+        path_config = PathConfig.from_auto_detect(run=run_dir.name)
         promote_all(path_config)
     except (FileNotFoundError, ValueError) as e:
         logging.error(str(e))

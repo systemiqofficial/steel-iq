@@ -61,7 +61,9 @@ Full reference: `boa-run --help` (options differ slightly per subcommand). Summa
   frontier cache lives alongside it but is keyed on the weather year alone, not the full
   input set, so every land-availability layer set built on the same weather shares it.
 - `--cost-input`: Cost set under `costs/` (workbook + per-year cost cache; default: `default`)
-- `--run`: Run name for outputs (default: `<weather-input>__<cost-input>`)
+- `--run`: Run label for outputs (default: `<cost-input>`). The on-disk directory is always
+  `<label>_<hash>`, where `<hash>` forks automatically whenever a physical or search-tuning
+  parameter changes; `boa-promote-lcoe --run <label>` resolves the label back to that directory.
 - `--cds-prepare YEAR`: Run `boa-cds-prepare` for YEAR first, building the weather-input
   set's missing stores (the weather-input default then becomes `cds-<YEAR>`)
 - `--data-prepare XLSX SCENARIO`: Run `boa-data-prepare` first, extracting the cost workbook

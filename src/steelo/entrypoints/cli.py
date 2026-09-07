@@ -52,7 +52,7 @@ def resolve_boa_lcoe_file(console: Console, run: str | None, load_density: float
     simulation itself prices power at, so a local run can only ever be read at the coverage it was
     actually asked for.
     """
-    from boa.config.paths import default_root
+    from boa.config.paths import default_root, format_scenario_number
 
     from ..adapters.geospatial.geospatial_calculations import get_baseload_coverage
 
@@ -80,8 +80,13 @@ def resolve_boa_lcoe_file(console: Console, run: str | None, load_density: float
         sys.exit(1)
         return None
 
-    density_pattern = f"{load_density:g}MWkm2" if load_density is not None else "*MWkm2"
-    matches = sorted(run_dir.glob(f"optimal_lcoe_{density_pattern}_cov{coverage:g}_*.nc"))
+    # Real promoted filenames are `optimal_lcoe_wy<weather_year>_<rho>MWkm2_cov<c>_<first>_<last>.nc`
+    # (PathConfig.promoted_lcoe_filename): dot-free rho/coverage tokens, weather year always
+    # first. `wy*` covers a run that swept several weather years.
+    density_pattern = (
+        f"{format_scenario_number(load_density, pad_int_digits=2)}MWkm2" if load_density is not None else "*MWkm2"
+    )
+    matches = sorted(run_dir.glob(f"optimal_lcoe_wy*_{density_pattern}_cov{format_scenario_number(coverage)}_*.nc"))
     if not matches:
         console.print(
             f"[red]BOA run '{run}' has no promoted LCOE file at coverage {coverage:g}, which the configured power mix "
