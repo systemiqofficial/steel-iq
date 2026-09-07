@@ -366,7 +366,7 @@ def query_frontier_cache_for_region(
     weather_year = detect_weather_year(path_config)
     cache_dir = path_config.frontier_cache_dir(weather_year)
     cache_file = frontier_cache_path(cache_dir, region, coverage, params, weather_year, ERA5_DATA_RESOLUTION)
-    out_path = path_config.optimal_sol_path(load_density, coverage, region, year)
+    out_path = path_config.optimal_sol_path(weather_year, load_density, coverage, region, year)
     if out_path.exists() and not force:
         logging.info(f"{out_path.name} already exists; skipping (use --force to re-derive).")
         return xr.open_dataset(out_path)
@@ -633,6 +633,7 @@ def combine_regional_datasets_into_global_dataset(
     coverage: float,
     load_density: float,
     path_config: PathConfig,
+    weather_year: int,
     force: bool = False,
 ) -> xr.Dataset | None:
     """
@@ -643,7 +644,7 @@ def combine_regional_datasets_into_global_dataset(
     regional_datasets = {}
 
     # Check if the global dataset already exists
-    global_output_path = path_config.optimal_sol_path(load_density, coverage, "GLOBAL", year)
+    global_output_path = path_config.optimal_sol_path(weather_year, load_density, coverage, "GLOBAL", year)
     if global_output_path.exists() and not force:
         logging.info(f"Global optimal solution already exists at {global_output_path}. (use --force to re-derive)")
         return xr.open_dataset(global_output_path)
@@ -651,7 +652,7 @@ def combine_regional_datasets_into_global_dataset(
         logging.info(f"Combining regional datasets into global dataset for {year}.")
         # Load all regional datasets
         for region in regions:
-            optimal_sol_path = path_config.optimal_sol_path(load_density, coverage, region, year)
+            optimal_sol_path = path_config.optimal_sol_path(weather_year, load_density, coverage, region, year)
             if not optimal_sol_path.exists():
                 logging.warning(f"Optimal solution for {region} not found. Please check processing.")
                 return None

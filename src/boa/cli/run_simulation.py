@@ -238,10 +238,10 @@ def add_promote_lcoe_arg(parser: argparse._ActionsContainer) -> None:
     )
 
 
-def run_promotion(path_config: PathConfig, load_density: float, coverage: float) -> int:
+def run_promotion(path_config: PathConfig, weather_year: int, load_density: float, coverage: float) -> int:
     """Promote this scenario's LCOE, reporting a failure without discarding the completed query."""
     try:
-        promote_lcoe(path_config, load_density, coverage)
+        promote_lcoe(path_config, weather_year, load_density, coverage)
     except (FileNotFoundError, ValueError) as e:
         logging.error(f"LCOE promotion failed: {e}")
         return 1
@@ -389,6 +389,7 @@ def query_all_years(
     load_density: float,
     coverage: float,
     n_workers: int,
+    weather_year: int,
     force: bool = False,
     generate_plots: bool = True,
 ) -> None:
@@ -415,17 +416,20 @@ def query_all_years(
                 force=force,
             )
             if generate_plots:
-                plot_regional_optimum_baseload_power_simulation_map(year, region, coverage, load_density, path_config)
+                plot_regional_optimum_baseload_power_simulation_map(
+                    year, region, coverage, load_density, path_config, weather_year
+                )
         global_optimal_sol = combine_regional_datasets_into_global_dataset(
             year,
             coverage,
             load_density,
             path_config,
+            weather_year,
             force=force,
         )
         if generate_plots and global_optimal_sol is not None:
             plot_global_optimum_baseload_power_simulation_map(
-                global_optimal_sol, year, coverage, load_density, path_config
+                global_optimal_sol, year, coverage, load_density, path_config, weather_year
             )
 
 
@@ -486,13 +490,13 @@ def main_run(argv: list[str]) -> int:
         return rc
     path_config = build_path_config(args)
     try:
-        preflight(path_config)
+        weather_year = preflight(path_config)
     except (FileNotFoundError, ValueError) as e:
         logging.error(str(e))
         return 1
 
     if args.dry_run:
-        logging.info(f"Frontier caches: {path_config.frontier_cache_dir(detect_weather_year(path_config))}")
+        logging.info(f"Frontier caches: {path_config.frontier_cache_dir(weather_year)}")
         logging.info(f"Outputs: {path_config.outputs_dir}")
         logging.info("Dry run - exiting without running simulation")
         return 0
@@ -505,9 +509,10 @@ def main_run(argv: list[str]) -> int:
         args.load_density,
         args.coverage,
         args.workers,
+        weather_year,
         generate_plots=args.plots,
     )
-    if args.promote_lcoe and run_promotion(path_config, args.load_density, args.coverage) != 0:
+    if args.promote_lcoe and run_promotion(path_config, weather_year, args.load_density, args.coverage) != 0:
         return 1
     logging.info("\nAll simulations completed successfully!")
     return 0
@@ -611,7 +616,7 @@ def main_query(argv: list[str]) -> int:
         return rc
     path_config = build_path_config(args)
     try:
-        preflight(path_config)
+        weather_year = preflight(path_config)
     except (FileNotFoundError, ValueError) as e:
         logging.error(str(e))
         return 1
@@ -622,10 +627,11 @@ def main_query(argv: list[str]) -> int:
         args.load_density,
         args.coverage,
         args.workers,
+        weather_year,
         force=args.force,
         generate_plots=args.plots,
     )
-    if args.promote_lcoe and run_promotion(path_config, args.load_density, args.coverage) != 0:
+    if args.promote_lcoe and run_promotion(path_config, weather_year, args.load_density, args.coverage) != 0:
         return 1
     logging.info("\nquery: all (region, year) pairs complete.")
     return 0

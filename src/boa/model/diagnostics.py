@@ -188,15 +188,15 @@ def plot_cost_scatter(
 
 
 def plot_regional_optimum_baseload_power_simulation_map(
-    year: int, region: str, coverage: float, load_density: float, path_config: PathConfig
+    year: int, region: str, coverage: float, load_density: float, path_config: PathConfig, weather_year: int
 ):
     """
     Plot the results of the baseload power simulation for a single region: LCOE and optimal design.
     """
 
-    plots_path = path_config.map_plots_dir(load_density, coverage, region)
+    plots_path = path_config.map_plots_dir(weather_year, load_density, coverage, region)
     plots_path.mkdir(parents=True, exist_ok=True)
-    optimal_sol = xr.open_dataset(path_config.optimal_sol_path(load_density, coverage, region, year))
+    optimal_sol = xr.open_dataset(path_config.optimal_sol_path(weather_year, load_density, coverage, region, year))
     optimal_sol = optimal_sol.where(optimal_sol != 0)
 
     # Load country boundaries
@@ -218,13 +218,18 @@ def plot_regional_optimum_baseload_power_simulation_map(
 
 
 def plot_global_optimum_baseload_power_simulation_map(
-    optimal_sol: xr.Dataset, year: int, coverage: float, load_density: float, path_config: PathConfig
+    optimal_sol: xr.Dataset,
+    year: int,
+    coverage: float,
+    load_density: float,
+    path_config: PathConfig,
+    weather_year: int,
 ):
     """
     Plot the global results of the baseload power simulation: LCOE and optimal design.
     """
 
-    plots_path = path_config.map_plots_dir(load_density, coverage, "GLOBAL")
+    plots_path = path_config.map_plots_dir(weather_year, load_density, coverage, "GLOBAL")
     plots_path.mkdir(parents=True, exist_ok=True)
     optimal_sol = optimal_sol.where(optimal_sol != 0)
 
