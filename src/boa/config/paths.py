@@ -19,6 +19,45 @@ def weather_set_name(weather_year: int) -> str:
     return f"{WEATHER_SET_PREFIX}{int(weather_year)}"
 
 
+def format_scenario_number(value: float, *, pad_int_digits: int = 1) -> str:
+    """
+    Format a coverage/load_density float for a path/filename component: dot-free (``.`` ->
+    ``p``, e.g. ``0.85`` -> ``"0p85"``, ``1.0`` -> ``"1"``) and with the integer part
+    zero-padded to at least ``pad_int_digits``.
+
+    Dot-free keeps a literal ``.`` out of a directory/filename component that naive
+    ``Path.stem``/``.suffix`` code could later misparse as an extension. Zero-padding
+    (``load_density`` uses ``pad_int_digits=2``) keeps a plain ``ls``/glob lexical sort in
+    true numeric order for multi-digit values (``02MWkm2`` before ``10MWkm2``). Both
+    properties are lossless and collision-free, unlike a percent-rounding scheme (``0.995``
+    and ``1.0`` would otherwise both round to the same token).
+
+    The inverse is ``parse_scenario_number``.
+    """
+    text = f"{value:g}"
+    sign, text = ("-", text[1:]) if text.startswith("-") else ("", text)
+    int_part, _, frac_part = text.partition(".")
+    int_part = int_part.zfill(pad_int_digits)
+    return f"{sign}{int_part}p{frac_part}" if frac_part else f"{sign}{int_part}"
+
+
+def parse_scenario_number(token: str) -> float:
+    """Inverse of ``format_scenario_number``: a ``p``-separated, possibly zero-padded token
+    back into a float. Leading zeros in the integer part are handled by ``float`` itself."""
+    return float(token.replace("p", ".", 1))
+
+
+def make_run_dirname(run: str, params_hash: str) -> str:
+    """``<run>_<params_hash>`` — the on-disk run directory name.
+
+    The hash (see ``run_manifest.non_scenario_params_hash``) makes the fork decision
+    automatic: the same ``run`` label with the same non-scenario parameters always
+    resolves to the same directory, and a change to those parameters always resolves to a
+    different one -- no manifest scan or description-matching needed.
+    """
+    return f"{run}_{params_hash}"
+
+
 def default_root() -> Path:
     """Resolve the BOA data root: ``$BOA_DATA_ROOT``, else ``$STEELO_HOME/boa``, else ``~/.steelo/boa``.
 
@@ -49,10 +88,15 @@ class PathConfig:
         │                                  built on the same weather shares one cache
         ├── costs/<cost_set>/boa_cost_data.xlsx
         │   └── cache_costs/               per-year costs; depends only on the xlsx
-        ├── runs/<run>/                    one (input_set, cost_set) pairing
-        │   ├── run.json                   provenance
-        │   └── outputs/<rho>MWkm2/cov<c>/nc/<REGION>/optimal_sol_<rho>MWkm2_cov<c>_<REGION>_<year>.nc
-        └── lcoe-for-steel-iq/<run>/       combined per-run LCOE files the steel simulation reads
+        ├── runs/<run>_<hash>/             <hash> = non_scenario_params_hash(search_params);
+        │   ├── run.json                   same run label + same params -> same directory
+        │   └── outputs/wy<year>/<rho>MWkm2/cov<c>/nc/<REGION>/
+        │             optimal_sol_wy<year>_<rho>MWkm2_cov<c>_<REGION>_<inv_year>.nc
+        └── lcoe-for-steel-iq/<run>_<hash>/  combined per-run LCOE files the steel sim reads
+
+    ``<rho>``/``<c>`` are dot-free, formatted via ``format_scenario_number`` (e.g.
+    ``rho=2.5`` -> ``"02p5MWkm2"``, ``coverage=0.95`` -> ``"cov0p95"``); ``<year>`` is the
+    weather year (``wy<year>``), ``<inv_year>`` the investment year.
 
     Build paths through the helpers rather than inline so a layout change touches one place.
     """
@@ -112,9 +156,14 @@ class PathConfig:
         """
         return self.root / "inputs" / weather_set_name(weather_year) / "cache_frontiers"
 
-    def scenario_dir(self, load_density: float, coverage: float) -> Path:
+    def scenario_dir(self, weather_year: int, load_density: float, coverage: float) -> Path:
         """
-        ``outputs/<rho>MWkm2/cov<coverage>`` — root for one scenario's artifacts.
+        ``outputs/wy<weather_year>/<rho>MWkm2/cov<coverage>`` — root for one scenario's artifacts.
+
+        Nested outermost on weather year so one run can hold a full weather-year sweep (each
+        year's outputs live in their own subtree) the same way it already holds a coverage/
+        load-density sweep, matching how ``frontier_cache_dir`` keys on weather year ahead of
+        everything else.
 
         Keyed on load density (MW/km2, D1 in ``BOA_BISECTION_PLAN.md``), not absolute demand:
         LCOE is exactly baseload-invariant, so an absolute MW figure baked into the path was
@@ -124,45 +173,73 @@ class PathConfig:
         The coverage token is the coverage fraction the run was asked for, formatted like the
         density beside it. It was previously the *uncovered* percentile (``p15`` for 85%
         coverage), which every reader had to invert and which collided under rounding:
-        ``--coverage 0.995`` and ``--coverage 1.0`` both produced ``p0``.
+        ``--coverage 0.995`` and ``--coverage 1.0`` both produced ``p0`` -- ``format_scenario_number``
+        avoids that same failure mode for the current dot-free encoding too.
         """
-        return self.outputs_dir / f"{load_density:g}MWkm2" / f"cov{coverage:g}"
-
-    def maps_dir(self, load_density: float, coverage: float, region: str | None = None) -> Path:
-        """Native NetCDF dir for the scenario; per-region when ``region`` given."""
-        d = self.scenario_dir(load_density, coverage) / "nc"
-        return d / region if region else d
-
-    def optimal_sol_filename(self, load_density: float, coverage: float, region: str, year: int) -> str:
-        """Self-describing NetCDF filename: ``optimal_sol_<rho>MWkm2_cov<c>_<REGION>_<year>.nc``."""
-        return f"optimal_sol_{load_density:g}MWkm2_cov{coverage:g}_{region}_{int(year)}.nc"
-
-    def optimal_sol_path(self, load_density: float, coverage: float, region: str, year: int) -> Path:
-        """Canonical path of one region-year optimal-solution NetCDF."""
-        return self.maps_dir(load_density, coverage, region) / self.optimal_sol_filename(
-            load_density, coverage, region, year
+        return (
+            self.outputs_dir
+            / f"wy{int(weather_year)}"
+            / f"{format_scenario_number(load_density, pad_int_digits=2)}MWkm2"
+            / f"cov{format_scenario_number(coverage)}"
         )
 
-    def optimal_sol_year_glob(self, load_density: float, coverage: float, region: str) -> str:
+    def maps_dir(self, weather_year: int, load_density: float, coverage: float, region: str | None = None) -> Path:
+        """Native NetCDF dir for the scenario; per-region when ``region`` given."""
+        d = self.scenario_dir(weather_year, load_density, coverage) / "nc"
+        return d / region if region else d
+
+    def optimal_sol_filename(
+        self, weather_year: int, load_density: float, coverage: float, region: str, year: int
+    ) -> str:
+        """Self-describing NetCDF filename:
+        ``optimal_sol_wy<weather_year>_<rho>MWkm2_cov<c>_<REGION>_<year>.nc``."""
+        return (
+            f"optimal_sol_wy{int(weather_year)}_"
+            f"{format_scenario_number(load_density, pad_int_digits=2)}MWkm2_"
+            f"cov{format_scenario_number(coverage)}_{region}_{int(year)}.nc"
+        )
+
+    def optimal_sol_path(self, weather_year: int, load_density: float, coverage: float, region: str, year: int) -> Path:
+        """Canonical path of one region-year optimal-solution NetCDF."""
+        return self.maps_dir(weather_year, load_density, coverage, region) / self.optimal_sol_filename(
+            weather_year, load_density, coverage, region, year
+        )
+
+    def optimal_sol_year_glob(self, weather_year: int, load_density: float, coverage: float, region: str) -> str:
         """Glob matching every year of one region's optimal-solution NetCDFs."""
-        return f"optimal_sol_{load_density:g}MWkm2_cov{coverage:g}_{region}_*.nc"
+        return (
+            f"optimal_sol_wy{int(weather_year)}_"
+            f"{format_scenario_number(load_density, pad_int_digits=2)}MWkm2_"
+            f"cov{format_scenario_number(coverage)}_{region}_*.nc"
+        )
 
     @property
     def lcoe_promotion_dir(self) -> Path:
         """``lcoe-for-steel-iq/<run>`` — combined LCOE files handed to the steel simulation."""
         return self.root / "lcoe-for-steel-iq" / self.run
 
-    def promoted_lcoe_filename(self, load_density: float, coverage: float, year_start: int, year_end: int) -> str:
-        """Self-describing combined-LCOE filename: ``optimal_lcoe_<rho>MWkm2_cov<c>_<first>_<last>.nc``."""
-        return f"optimal_lcoe_{load_density:g}MWkm2_cov{coverage:g}_{int(year_start)}_{int(year_end)}.nc"
+    def promoted_lcoe_filename(
+        self, weather_year: int, load_density: float, coverage: float, year_start: int, year_end: int
+    ) -> str:
+        """Self-describing combined-LCOE filename:
+        ``optimal_lcoe_wy<weather_year>_<rho>MWkm2_cov<c>_<first>_<last>.nc``."""
+        return (
+            f"optimal_lcoe_wy{int(weather_year)}_"
+            f"{format_scenario_number(load_density, pad_int_digits=2)}MWkm2_"
+            f"cov{format_scenario_number(coverage)}_{int(year_start)}_{int(year_end)}.nc"
+        )
 
-    def promoted_lcoe_path(self, load_density: float, coverage: float, year_start: int, year_end: int) -> Path:
+    def promoted_lcoe_path(
+        self, weather_year: int, load_density: float, coverage: float, year_start: int, year_end: int
+    ) -> Path:
         """Canonical path of one scenario's combined-LCOE file."""
-        return self.lcoe_promotion_dir / self.promoted_lcoe_filename(load_density, coverage, year_start, year_end)
+        return self.lcoe_promotion_dir / self.promoted_lcoe_filename(
+            weather_year, load_density, coverage, year_start, year_end
+        )
 
-    def map_plots_dir(self, load_density: float, coverage: float, region: str) -> Path:
+    def map_plots_dir(self, weather_year: int, load_density: float, coverage: float, region: str) -> Path:
         """Per-region diagnostic-plot dir for the scenario."""
-        return self.scenario_dir(load_density, coverage) / "plots" / region
+        return self.scenario_dir(weather_year, load_density, coverage) / "plots" / region
 
     @property
     def plots_dir(self) -> Path:

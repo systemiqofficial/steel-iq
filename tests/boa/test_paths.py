@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from boa.config.paths import PathConfig, default_root
 
 
@@ -26,17 +28,40 @@ def test_layout_splits_by_provenance(tmp_path):
     assert cfg.input_data_path == tmp_path / "costs" / "xlsx-rev3" / "boa_cost_data.xlsx"
     assert cfg.cost_cache_dir == tmp_path / "costs" / "xlsx-rev3" / "cache_costs"
     assert cfg.run_manifest_path == tmp_path / "runs" / "cds-2024__xlsx-rev3" / "run.json"
-    assert cfg.optimal_sol_path(2.5, 0.95, "GLOBAL", 2030) == (
+    assert cfg.optimal_sol_path(2024, 2.5, 0.95, "GLOBAL", 2030) == (
         tmp_path
         / "runs"
         / "cds-2024__xlsx-rev3"
         / "outputs"
-        / "2.5MWkm2"
-        / "cov0.95"
+        / "wy2024"
+        / "02p5MWkm2"
+        / "cov0p95"
         / "nc"
         / "GLOBAL"
-        / "optimal_sol_2.5MWkm2_cov0.95_GLOBAL_2030.nc"
+        / "optimal_sol_wy2024_02p5MWkm2_cov0p95_GLOBAL_2030.nc"
     )
+
+
+def test_format_scenario_number_round_trips():
+    from boa.config.paths import format_scenario_number, parse_scenario_number
+
+    cases = [
+        (0.85, 1, "0p85"),
+        (0.995, 1, "0p995"),
+        (1.0, 1, "1"),
+        (2.5, 2, "02p5"),
+        (1230.0, 2, "1230"),
+    ]
+    for value, pad, expected in cases:
+        token = format_scenario_number(value, pad_int_digits=pad)
+        assert token == expected
+        assert parse_scenario_number(token) == pytest.approx(value)
+
+
+def test_make_run_dirname_composes_run_and_hash():
+    from boa.config.paths import make_run_dirname
+
+    assert make_run_dirname("baseline", "a3f9") == "baseline_a3f9"
 
 
 def test_explicit_run_name_and_defaults(tmp_path):

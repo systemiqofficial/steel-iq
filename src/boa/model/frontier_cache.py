@@ -54,6 +54,7 @@ from pathlib import Path
 import numpy as np
 import zarr
 
+from boa.config.paths import format_scenario_number
 from boa.model.bisection import PixelFrontier, SearchParams, max_patch_points
 
 
@@ -108,7 +109,7 @@ def frontier_cache_path(
     """
     grids = f"g{params.coarse_grid}p{params.patch_grid}r{params.ladder_rungs}"
     rest = f"gbs_{grids}_{params_hash(params)}_y{int(weather_year)}_r{round(era5_resolution_deg * 100):03d}"
-    return Path(cache_dir) / f"cov{coverage:g}" / region / f"{rest}.zarr"
+    return Path(cache_dir) / f"cov{format_scenario_number(coverage)}" / region / f"{rest}.zarr"
 
 
 def frontier_cache_exists(

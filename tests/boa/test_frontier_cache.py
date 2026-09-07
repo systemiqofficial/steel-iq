@@ -86,7 +86,7 @@ def test_path_is_deterministic_and_carries_no_baseload(tmp_path):
     assert first == second
     # The store is baseload-independent, so no <baseload>MW level may appear in the path.
     assert "MW" not in str(first)
-    assert first.parts[-3] == f"cov{COVERAGE:g}"
+    assert first.parts[-3] == "cov0p85"
     assert first.parts[-2] == "EUROPE"
 
 
