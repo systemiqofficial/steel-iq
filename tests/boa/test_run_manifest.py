@@ -3,7 +3,7 @@ import json
 import pytest
 
 from boa.config.paths import PathConfig
-from boa.config import run_manifest
+from boa.config import physical_parameters, run_manifest
 from boa.model.bisection import SearchParams
 
 
@@ -30,11 +30,32 @@ def test_records_resolved_parameters(tmp_path):
     assert m["invocations"][-1]["parameters"] == params
 
 
-def test_provenance_records_overscale_sampling_k(tmp_path):
+def test_provenance_records_full_search_params(tmp_path):
     cfg = _cfg(tmp_path, input_set="cds", cost_set="c1")
     m = run_manifest.record_invocation(cfg, "run", [])
-    assert m["provenance"]["settings"]["overscale_sampling_k"] == SearchParams().overscale_sampling_k
-    assert "overscale_sampling_means" not in m["provenance"]["settings"]
+    assert m["provenance"]["search_params"] == SearchParams().as_dict()
+    assert m["provenance"]["lifetimes"] == physical_parameters.LIFETIMES
+
+
+def test_non_scenario_params_hash_is_stable_and_forks_on_change(tmp_path):
+    import dataclasses
+
+    base = run_manifest.non_scenario_params_hash(SearchParams())
+    assert base == run_manifest.non_scenario_params_hash(SearchParams())
+    assert len(base) == 4
+
+    changed = dataclasses.replace(SearchParams(), ladder_rungs=SearchParams().ladder_rungs + 1)
+    assert run_manifest.non_scenario_params_hash(changed) != base
+
+
+def test_record_invocation_stores_description_hash_only_at_creation(tmp_path):
+    cfg = _cfg(tmp_path, input_set="cds", cost_set="c1")
+    m1 = run_manifest.record_invocation(cfg, "run", [])
+    expected_hash = run_manifest.non_scenario_params_hash(SearchParams())
+    assert m1["non_scenario_params_hash"] == expected_hash
+
+    m2 = run_manifest.record_invocation(cfg, "query", [])
+    assert m2["non_scenario_params_hash"] == expected_hash
 
 
 def test_refuses_mixed_provenance(tmp_path):
