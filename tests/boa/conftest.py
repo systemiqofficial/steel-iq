@@ -75,36 +75,6 @@ def anchor_costs():
 
 
 # --------------------------------------------------------------------------
-# Capacity box
-# --------------------------------------------------------------------------
-#
-# The box is `L = max_capacity / baseload` in overscale units. Which regime a
-# pixel is in drives almost every behavioural difference in the query, so the
-# three regimes get named fixtures rather than magic numbers at each callsite.
-#
-# Values are the real ones from the plan's worked example at 45 deg N, a 546 km2
-# cell, at --demand 500.
-
-
-@pytest.fixture
-def roomy_limits() -> dict[str, float]:
-    """Geometry-only ceilings: the box is so wide it never binds."""
-    return {"solar": 108.2, "wind": 7.73}
-
-
-@pytest.fixture
-def tight_limits() -> dict[str, float]:
-    """LULC-on cropland at 500 MW: binds on both axes but stays feasible."""
-    return {"solar": 3.06, "wind": 1.64}
-
-
-@pytest.fixture
-def infeasible_limits() -> dict[str, float]:
-    """A box so small the corner design cannot meet coverage at any battery size."""
-    return {"solar": 0.05, "wind": 0.02}
-
-
-# --------------------------------------------------------------------------
 # Availability layers
 # --------------------------------------------------------------------------
 
