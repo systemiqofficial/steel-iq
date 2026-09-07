@@ -268,3 +268,7 @@ def boa_data_prepare(argv: list[str] | None = None):
 def main() -> None:
     """Console-script entry: swallow the status string so success exits 0 (sys.exit(str) would exit 1)."""
     boa_data_prepare()
+
+
+if __name__ == "__main__":
+    main()
