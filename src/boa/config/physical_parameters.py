@@ -127,19 +127,37 @@ LULC_CODES = {
     },
 }
 
-# ===== Atlite simulation parameters =====
+# ===== Copernicus data parameters =====
 # ERA5 weather data constants
 ERA5_DATA_RESOLUTION = 0.25  # degrees
 ERA5_DATA_YEAR = 2024
 # Coordinates; [max_lat, min_lon, min_lat, max_lon] = [north, west, south, east]
+#
+# Deliberately excludes Antarctica (lat < -60) and the high Arctic (lat > 72, the ceiling
+# every region caps out at) -- no plant siting candidate there. Adjacent boxes are offset by
+# one grid cell (ERA5_DATA_RESOLUTION) rather than touching exactly, so no land cell is
+# double-built/double-queried. HAWAII, GALAPAGOS, MASCARENE and KERGUELEN are small dedicated
+# boxes for inhabited islands that fall in the longitude gap between two continental boxes --
+# cheaper than stretching a continental box across an ocean to reach them. The four largest
+# boxes are each split into a point-balanced west/east pair on a real geographic line, since
+# build-cache only persists a region once every one of its points has finished (no incremental
+# write within a region) -- a smaller box bounds how much work a mid-build crash can lose.
 REGION_COORDS = {
     "INDO_AUS": [5.0, 93.0, -50.0, 180.0],
-    "AFRICA": [3.0, 7.0, -37.0, 52.0],
-    "ALASKA": [72.0, -170.0, 42.0, -50.0],
-    "NORTH_AMERICA": [42.0, -128.0, 8.0, -50.0],
-    "SOUTH_AMERICA": [14.0, -85.0, -58.0, -33.0],
-    "MENA": [38.0, -20.0, 3.0, 62.0],
-    "EU": [72.0, -25.0, 35.0, 62.0],
-    "NORTH_ASIA": [72.0, 62.0, 50.0, 180.0],
-    "SOUTH_ASIA": [50.0, 62.0, 5.0, 148.0],
+    "SUB_SAHARAN_AFRICA": [3.0, 7.0, -37.0, 52.0],
+    "ALASKA": [72.0, -170.0, 42.0, -110.25],
+    "CANADA": [72.0, -110.0, 42.0, -50.0],
+    "NORTH_AMERICA": [41.75, -128.0, 8.0, -50.0],
+    "SOUTH_AMERICA": [7.75, -85.0, -58.0, -33.0],
+    "NORTH_AFRICA": [34.75, -20.0, 3.25, 19.75],
+    "MIDDLE_EAST": [34.75, 20.0, 3.25, 62.0],
+    "EUROPE": [72.0, -25.0, 35.0, 62.0],
+    "NORTH_ASIA_WEST": [72.0, 62.25, 50.0, 109.75],
+    "NORTH_ASIA_EAST": [72.0, 110.0, 50.0, 180.0],
+    "SOUTH_ASIA": [49.75, 62.25, 5.25, 94.75],
+    "EAST_ASIA": [49.75, 95.0, 5.25, 151.0],
+    "HAWAII": [22.5, -160.0, 18.75, -154.5],
+    "GALAPAGOS": [0.25, -92.0, -1.5, -89.5],
+    "MASCARENE": [-19.75, 55.0, -21.75, 58.25],
+    "KERGUELEN": [-48.75, 68.5, -50.0, 70.75],
 }
