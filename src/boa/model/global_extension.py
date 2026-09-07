@@ -636,7 +636,7 @@ def combine_regional_datasets_into_global_dataset(
                 return None
             regional_datasets[region] = xr.open_dataset(optimal_sol_path)
 
-        logging.info("Generating global maps from regional datasets.")
+        logging.info("Regridding regional datasets onto the global grid.")
 
         # Define global grid
         lat_global = np.arange(-90, 90.1, 0.25)  # Adjust resolution if needed

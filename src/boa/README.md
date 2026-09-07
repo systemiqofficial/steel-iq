@@ -153,6 +153,12 @@ parameters) serves every `--demand` and every investment year, and is shared acr
 land-availability layer set built on the same weather. A `query` against a warm cache is
 arithmetic per pixel and takes minutes per year.
 
+Map PNGs (`lcoe`, `solar_factor`, `wind_factor`, `battery_factor`, per region and GLOBAL) are
+**off by default** — pass `--plots` to `boa-run` or `boa-run query` to generate them. The
+"Regridding regional datasets onto the global grid" log line that prints right before a query
+finishes is the GLOBAL-NetCDF assembly step, not plot generation; it prints whether or not
+`--plots` was given.
+
 **The capacity ceiling is not yet applied at query time** (tracked as M4,
 `BOA_BISECTION_PLAN.md`): every query currently reports the *unconstrained* optimum for
 its coverage target, regardless of `--demand`, and logs a warning saying so. Do not
