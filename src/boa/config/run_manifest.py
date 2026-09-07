@@ -17,7 +17,7 @@ from boa.config import physical_parameters
 from boa.config.paths import PathConfig
 from boa.model.bisection import SearchParams
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _sha256(path) -> str | None:
@@ -57,7 +57,23 @@ def _availability_signature(path_config: PathConfig) -> str | None:
     return found.pop() if len(found) == 1 else "mixed:" + ",".join(sorted(found))
 
 
-def provenance(path_config: PathConfig) -> dict[str, Any]:
+def non_scenario_params_hash(search_params: SearchParams) -> str:
+    """
+    Stable 4-hex digest over everything a run folder name must fork on: physical constants
+    plus the full search-quality dial set. Baked directly into the run directory name (see
+    ``paths.make_run_dirname``), so the fork decision is automatic -- the same run label with
+    the same non-scenario parameters always resolves to the same directory, and a changed
+    parameter always resolves to a different one, with no manifest scan needed.
+
+    Narrower in scope than `provenance()`: `input_set`/`cost_set`/the xlsx hash are allowed
+    to evolve within a run and are separately guarded by `record_invocation`'s field-by-field
+    diff, not folded into this hash.
+    """
+    payload = {"lifetimes": physical_parameters.LIFETIMES, "search_params": search_params.as_dict()}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:4]
+
+
+def provenance(path_config: PathConfig, search_params: SearchParams = SearchParams()) -> dict[str, Any]:
     """Everything that must stay fixed within a run."""
     from boa.inputs.profiles import detect_weather_year  # lazy: config must stay importable without the inputs package
 
@@ -71,11 +87,9 @@ def provenance(path_config: PathConfig) -> dict[str, Any]:
         "input_data_sha256": _sha256(path_config.input_data_path),
         "availability_signature": _availability_signature(path_config),
         "boa_version": boa.__version__,
-        "settings": {
-            "overscale_sampling_k": SearchParams().overscale_sampling_k,
-            "lifetimes": physical_parameters.LIFETIMES,
-            "era5_data_year": weather_year,
-        },
+        "search_params": search_params.as_dict(),
+        "lifetimes": physical_parameters.LIFETIMES,
+        "era5_data_year": weather_year,
     }
 
 
@@ -85,7 +99,11 @@ def load(path_config: PathConfig) -> dict[str, Any] | None:
 
 
 def record_invocation(
-    path_config: PathConfig, command: str, argv: list[str], parameters: dict[str, Any] | None = None
+    path_config: PathConfig,
+    command: str,
+    argv: list[str],
+    parameters: dict[str, Any] | None = None,
+    search_params: SearchParams = SearchParams(),
 ) -> dict[str, Any]:
     """Create the manifest on first use, verify provenance on later ones, append this invocation.
 
@@ -93,25 +111,28 @@ def record_invocation(
     ``boa-run`` is reconstructible from the manifest even though its argv is empty.
     """
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    current = provenance(path_config)
+    current = provenance(path_config, search_params)
     manifest = load(path_config)
 
     if manifest is None:
         manifest = {
             "schema_version": SCHEMA_VERSION,
             "run": path_config.run,
+            "non_scenario_params_hash": non_scenario_params_hash(search_params),
             "created_at": now,
             "provenance": current,
             "invocations": [],
         }
     elif manifest.get("schema_version") != SCHEMA_VERSION:
-        # A v1 manifest predates `availability_signature`, so every field-by-field
-        # comparison against it would report a spurious difference. Refuse rather than
-        # guess which of the two provenances the outputs in this dir actually came from.
+        # An older-schema manifest predates fields the current provenance always carries
+        # (e.g. v1 -> v2 added `availability_signature`, v2 -> v3 flattened `settings` into
+        # the full `search_params`), so every field-by-field comparison against it would
+        # report a spurious difference. Refuse rather than guess which provenance the
+        # outputs in this dir actually came from.
         raise RuntimeError(
             f"Run '{path_config.run}' has a schema-{manifest.get('schema_version')} manifest, "
-            f"but this build writes schema {SCHEMA_VERSION}. Its outputs predate the "
-            f"availability signature and cannot be verified against it -- use a new --run."
+            f"but this build writes schema {SCHEMA_VERSION}. Its provenance predates the full "
+            f"SearchParams record and cannot be verified against it -- use a new --run."
         )
     else:
         diffs = {
