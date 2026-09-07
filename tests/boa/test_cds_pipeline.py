@@ -28,7 +28,7 @@ from boa.cds.spec import CDS_VARS, cf_extract_dir_name, cf_zip_name
 from boa.cli import run_cds
 from boa.config.constants import EARTH_RADIUS_KM
 from boa.config.paths import PathConfig
-from boa.config.settings import (
+from boa.config.physical_parameters import (
     CAPACITY_DENSITY_MW_PER_KM2,
     ERA5_DATA_RESOLUTION,
     ERA5_DATA_YEAR,

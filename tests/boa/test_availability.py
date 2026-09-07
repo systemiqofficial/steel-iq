@@ -34,7 +34,7 @@ require(
 )
 
 from boa.cds import availability  # noqa: E402
-from boa.config.settings import CAPACITY_DENSITY_MW_PER_KM2, LULC_CODES  # noqa: E402
+from boa.config.physical_parameters import CAPACITY_DENSITY_MW_PER_KM2, LULC_CODES  # noqa: E402
 
 CELL_LAT = np.array([89.875])
 CELL_LONS = np.array([-179.875, -179.625])

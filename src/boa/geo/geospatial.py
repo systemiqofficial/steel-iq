@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass
 
 from boa.config.constants import EARTH_RADIUS_KM
-from boa.config.settings import ERA5_DATA_RESOLUTION, REGION_COORDS
+from boa.config.physical_parameters import ERA5_DATA_RESOLUTION, REGION_COORDS
 
 
 @dataclass

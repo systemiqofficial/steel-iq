@@ -3,7 +3,7 @@ import numpy as np
 import xarray as xr
 import logging
 from pathlib import Path
-from boa.config.settings import LIFETIMES
+from boa.config.physical_parameters import LIFETIMES
 from boa.config.constants import KILO_TO_MEGA
 from boa.geo.geospatial import CountryMappings
 

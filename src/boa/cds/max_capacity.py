@@ -35,7 +35,7 @@ import xarray as xr
 from boa.cds.availability import LayerSpec, availability_factor, availability_signature
 from boa.config.constants import EARTH_RADIUS_KM
 from boa.config.paths import PathConfig
-from boa.config.settings import (
+from boa.config.physical_parameters import (
     CAPACITY_DENSITY_MW_PER_KM2,
     ERA5_DATA_RESOLUTION,
     ERA5_DATA_YEAR,

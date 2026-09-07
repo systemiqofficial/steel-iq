@@ -16,7 +16,7 @@ from _gate import require
 require("boa.model.anchors", "anchor_cost_coefficients")
 
 from boa.model.anchors import anchor_cost_coefficients  # noqa: E402
-from boa.model.bisection import cost_ratio_simplex  # noqa: E402
+from boa.model.bisection import SearchParams, cost_ratio_simplex  # noqa: E402
 
 HORIZON = 25
 N_YEARS = HORIZON + 1
@@ -85,7 +85,7 @@ def test_every_key_ends_up_within_tol_of_some_anchor():
     }
     costs = _costs(keys)
     tol = 0.05
-    anchors = anchor_cost_coefficients([2025], _one_year(costs), tol=tol)
+    anchors = anchor_cost_coefficients([2025], _one_year(costs), params=SearchParams(anchor_tol=tol))
     kept = [np.asarray(cost_ratio_simplex(a)) for a in anchors]
 
     from boa.model.cost_calculations import lcoe_coefficients
@@ -121,7 +121,8 @@ def test_max_anchors_bounds_the_build_and_warns(caplog):
     }
     costs = _costs(keys)
     with caplog.at_level("WARNING"):
-        anchors = anchor_cost_coefficients([2025], _one_year(costs), tol=1e-6, max_anchors=3)
+        params = SearchParams(anchor_tol=1e-6, max_anchors=3)
+        anchors = anchor_cost_coefficients([2025], _one_year(costs), params=params)
     assert len(anchors) == 3
     assert "max_anchors" in caplog.text
 

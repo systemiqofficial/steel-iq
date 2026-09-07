@@ -194,7 +194,10 @@ percentile stops the simulation before any data preparation and lists what is av
 
 ## Sources for model assumptions
 
-References behind the numeric assumptions in `config/settings.py`.
+References behind the numeric assumptions in `config/physical_parameters.py`. Tunable search
+parameters (grid resolution, battery rungs, anchor tolerance) are a separate thing — see
+`model/bisection.py`'s `SearchParams`, hashed into the frontier cache path so a changed value
+forces a rebuild rather than silently reusing an incompatible store.
 
 ### Technology lifetimes (`LIFETIMES`)
 

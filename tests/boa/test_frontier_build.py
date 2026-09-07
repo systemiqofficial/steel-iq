@@ -25,7 +25,6 @@ require(
     "select_seeds",
 )
 
-from boa.config.settings import OVERSCALE_SAMPLING_K  # noqa: E402
 from boa.model.bisection import (  # noqa: E402
     STATUS_NO_OPTIMUM,
     STATUS_OK,
@@ -61,7 +60,7 @@ def test_box_scales_with_capacity_factor(profiles, poor_profiles):
 
     # The box tracks k/CF, the same scaling the deleted sampler used for its proposal.
     cf_solar = profiles["solar"].mean()
-    expected = PARAMS.box_multiple * OVERSCALE_SAMPLING_K["solar"] / cf_solar
+    expected = PARAMS.box_multiple * PARAMS.overscale_sampling_k["solar"] / cf_solar
     assert good_s == pytest.approx(np.clip(expected, PARAMS.box_min, PARAMS.box_abs_max))
 
 

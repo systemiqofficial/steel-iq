@@ -4,7 +4,7 @@ import pytest
 
 from boa.cli.run_simulation import main_point, main_run, preflight
 from boa.config.paths import PathConfig
-from boa.config.settings import REGION_COORDS
+from boa.config.physical_parameters import REGION_COORDS
 from boa.inputs.profiles import detect_weather_year
 from boa.store_schema import max_cap_store_stem, profile_store_stem
 

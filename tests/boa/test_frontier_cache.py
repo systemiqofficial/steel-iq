@@ -94,28 +94,21 @@ def test_every_search_param_changes_the_path():
     """
     A field that does not reach the hash is a field that can change while a stale store is
     silently reused -- the exact v2 defect. Cheaper to assert here than to discover later.
+
+    Covers `overscale_sampling_k` too, an ordinary dict-valued field like any other -- moving
+    one of its values is the dict equivalent of the `+ 0.5`/`+ 1` bump every scalar field gets.
     """
     base = frontier_cache_path("/c", "R", COVERAGE, PARAMS, WEATHER_YEAR, ERA5_RES)
     for name in (f.name for f in dataclasses.fields(PARAMS)):
         current = getattr(PARAMS, name)
-        moved = current + (1 if isinstance(current, int) else 0.5)
+        if isinstance(current, dict):
+            key = next(iter(current))
+            moved = {**current, key: current[key] + 0.5}
+        else:
+            moved = current + (1 if isinstance(current, int) else 0.5)
         altered = dataclasses.replace(PARAMS, **{name: moved})
         assert frontier_cache_path("/c", "R", COVERAGE, PARAMS, WEATHER_YEAR, ERA5_RES) == base
         assert frontier_cache_path("/c", "R", COVERAGE, altered, WEATHER_YEAR, ERA5_RES) != base, name
-
-
-def test_the_path_moves_when_the_overscale_constant_moves(monkeypatch):
-    """
-    `OVERSCALE_SAMPLING_K` sets `mu = k / CF`, which sets the search box, which changes every
-    value in the store -- but it is not a `SearchParams` field, so a digest over the dataclass
-    alone would not move with it and a changed constant would silently reuse an incompatible
-    store. That is the defect v2 had, and it is why this hash delegates to `identity_hash`.
-    """
-    import boa.model.bisection as bisection
-
-    before = frontier_cache_path("/c", "R", COVERAGE, PARAMS, WEATHER_YEAR, ERA5_RES)
-    monkeypatch.setattr(bisection, "OVERSCALE_SAMPLING_K", {**bisection.OVERSCALE_SAMPLING_K, "solar": 99.0})
-    assert frontier_cache_path("/c", "R", COVERAGE, PARAMS, WEATHER_YEAR, ERA5_RES) != before
 
 
 def test_params_hash_is_stable_across_processes():
