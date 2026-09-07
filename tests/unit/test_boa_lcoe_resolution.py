@@ -5,10 +5,20 @@ import io
 import pytest
 from rich.console import Console
 
+from boa.config.paths import PathConfig
 from steelo.entrypoints.cli import resolve_boa_lcoe_file
 from steelo.simulation import GeoConfig
 
 RUN = "cds-2024__china_test"
+
+# Real filenames come from PathConfig.promoted_lcoe_filename -- deriving them here too
+# means a naming-convention change breaks this file loudly instead of leaving a fixture
+# that silently stops matching what resolve_boa_lcoe_file actually globs for.
+_PATHS = PathConfig.from_root("unused", run=RUN)
+
+
+def _promoted_filename(load_density: float, coverage: float) -> str:
+    return _PATHS.promoted_lcoe_filename(2024, load_density, coverage, 2025, 2060)
 
 
 @pytest.fixture
@@ -44,7 +54,7 @@ def _write(promotion_root, run, filename):
 
 def test_no_boa_run_selects_the_bundled_per_year_files(promotion_root, console_output):
     """Without --boa-run there is no local BOA run to read; None keeps the legacy path."""
-    _write(promotion_root, RUN, "optimal_lcoe_1230MW_p15_2025_2060.nc")
+    _write(promotion_root, RUN, _promoted_filename(1230.0, 0.85))
 
     assert resolve_boa_lcoe_file(console_output, None, None) is None
 
@@ -58,16 +68,16 @@ def test_boa_load_density_without_a_run_is_rejected(promotion_root, console_outp
 
 def test_percentile_follows_the_configured_power_mix(promotion_root, console_output, power_mix):
     power_mix("85% baseload + 15% grid")
-    expected = _write(promotion_root, RUN, "optimal_lcoe_1230MW_p15_2025_2060.nc")
-    _write(promotion_root, RUN, "optimal_lcoe_1230MW_p5_2025_2060.nc")
+    expected = _write(promotion_root, RUN, _promoted_filename(1230.0, 0.85))
+    _write(promotion_root, RUN, _promoted_filename(1230.0, 0.95))
 
     assert resolve_boa_lcoe_file(console_output, RUN, None) == expected
 
 
 def test_a_changed_power_mix_reads_a_different_percentile(promotion_root, console_output, power_mix):
     power_mix("95% baseload + 5% grid")
-    _write(promotion_root, RUN, "optimal_lcoe_1230MW_p15_2025_2060.nc")
-    expected = _write(promotion_root, RUN, "optimal_lcoe_1230MW_p5_2025_2060.nc")
+    _write(promotion_root, RUN, _promoted_filename(1230.0, 0.85))
+    expected = _write(promotion_root, RUN, _promoted_filename(1230.0, 0.95))
 
     assert resolve_boa_lcoe_file(console_output, RUN, None) == expected
 
@@ -76,7 +86,7 @@ def test_a_changed_power_mix_reads_a_different_percentile(promotion_root, consol
 def test_a_power_mix_without_baseload_rejects_a_boa_run(promotion_root, console_output, power_mix, mix):
     """No baseload component means the file would never be read; say so instead of resolving one."""
     power_mix(mix)
-    _write(promotion_root, RUN, "optimal_lcoe_1230MW_p15_2025_2060.nc")
+    _write(promotion_root, RUN, _promoted_filename(1230.0, 0.85))
 
     with pytest.raises(SystemExit):
         resolve_boa_lcoe_file(console_output, RUN, None)
@@ -86,26 +96,26 @@ def test_a_power_mix_without_baseload_rejects_a_boa_run(promotion_root, console_
 
 def test_unknown_run_lists_what_is_available(promotion_root, console_output, power_mix):
     power_mix("85% baseload + 15% grid")
-    _write(promotion_root, RUN, "optimal_lcoe_1230MW_p15_2025_2060.nc")
+    _write(promotion_root, RUN, _promoted_filename(1230.0, 0.85))
 
     with pytest.raises(SystemExit):
         resolve_boa_lcoe_file(console_output, "cds-2024__typo", None)
 
     printed = console_output.file.getvalue()
     assert "cds-2024__typo" in printed
-    assert RUN in printed and "optimal_lcoe_1230MW_p15_2025_2060.nc" in printed
+    assert RUN in printed and _promoted_filename(1230.0, 0.85) in printed
 
 
 def test_missing_percentile_names_the_power_mix_that_requires_it(promotion_root, console_output, power_mix):
     power_mix("95% baseload + 5% grid")
-    _write(promotion_root, RUN, "optimal_lcoe_1230MW_p15_2025_2060.nc")
+    _write(promotion_root, RUN, _promoted_filename(1230.0, 0.85))
 
     with pytest.raises(SystemExit):
         resolve_boa_lcoe_file(console_output, RUN, None)
 
     printed = console_output.file.getvalue()
-    assert "p5" in printed and "95% baseload + 5% grid" in printed
-    assert "optimal_lcoe_1230MW_p15_2025_2060.nc" in printed
+    assert "coverage 0.95" in printed and "95% baseload + 5% grid" in printed
+    assert _promoted_filename(1230.0, 0.85) in printed
 
 
 def test_no_promoted_runs_names_the_promote_command(promotion_root, console_output, power_mix):
@@ -119,8 +129,8 @@ def test_no_promoted_runs_names_the_promote_command(promotion_root, console_outp
 
 def test_several_densities_require_boa_load_density(promotion_root, console_output, power_mix):
     power_mix("85% baseload + 15% grid")
-    _write(promotion_root, RUN, "optimal_lcoe_1230MW_p15_2025_2060.nc")
-    _write(promotion_root, RUN, "optimal_lcoe_1000MW_p15_2025_2060.nc")
+    _write(promotion_root, RUN, _promoted_filename(1230.0, 0.85))
+    _write(promotion_root, RUN, _promoted_filename(1000.0, 0.85))
 
     with pytest.raises(SystemExit):
         resolve_boa_lcoe_file(console_output, RUN, None)
@@ -130,7 +140,7 @@ def test_several_densities_require_boa_load_density(promotion_root, console_outp
 
 def test_boa_load_density_disambiguates(promotion_root, console_output, power_mix):
     power_mix("85% baseload + 15% grid")
-    _write(promotion_root, RUN, "optimal_lcoe_1230MW_p15_2025_2060.nc")
-    expected = _write(promotion_root, RUN, "optimal_lcoe_1000MW_p15_2025_2060.nc")
+    _write(promotion_root, RUN, _promoted_filename(1230.0, 0.85))
+    expected = _write(promotion_root, RUN, _promoted_filename(1000.0, 0.85))
 
     assert resolve_boa_lcoe_file(console_output, RUN, 1000.0) == expected

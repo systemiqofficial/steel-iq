@@ -898,9 +898,12 @@ def combined_lcoe_file(tmp_path, sample_dataset):
             "cost_key_id": (("lat", "lon"), np.zeros(shape, dtype="int16")),
             "status": (("lat", "lon"), np.ones(shape, dtype="int8")),
         },
-        attrs={"run": "cds-2024__test", "p_percentile": 15, "cost_key_legend": "DEU"},
+        # coverage_fraction 0.85 == p15 in the caller's percentile terms ((1-0.85)*100).
+        attrs={"run": "cds-2024__test", "coverage_fraction": 0.85, "cost_key_legend": "DEU"},
     )
-    path = tmp_path / "optimal_lcoe_1230MW_p15_2045_2050.nc"
+    # Real promoted filenames (PathConfig.promoted_lcoe_filename): dot-free rho/coverage
+    # tokens, weather year first -- the shape resolve_boa_lcoe_file's glob expects.
+    path = tmp_path / "optimal_lcoe_wy2024_01MWkm2_cov0p85_2045_2050.nc"
     ds.to_netcdf(path)
     return path
 
