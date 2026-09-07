@@ -88,7 +88,7 @@ class SearchParams:
     """
 
     # -- The search box: how far out in overscale the search looks at all. --------------
-    box_multiple: float = 6.0  # box = this x mu, where mu = k / capacity_factor
+    box_multiple: float = 4.0  # box = this x mu, where mu = k / capacity_factor
     box_min: float = 2.0  # floor, so an excellent resource still gets a usable box
     box_abs_max: float = 200.0  # ceiling, catching the ~7.5e8 mu a zero-CF tech produces
     max_box_widenings: int = 2  # doublings allowed when a seed lands on the outer ring
@@ -96,7 +96,22 @@ class SearchParams:
     # `search_box` spans the box to `box_multiple * mu`, so it tracks the site's own
     # resource. A search-tuning knob, not a physical parameter -- contrast
     # `boa.config.physical_parameters`, which holds only cited-or-flagged real-world inputs.
+    # Checked against a real cross-region sample (9 regions, 2025/2040/2060 costs, ~590K
+    # solved pixel-years excluding box_abs_max-capped points, BOA_SEARCH_GRID_PLOT_HANDOVER.md
+    # follow-up): the query-time winner exceeded 4x mu on either axis in 0.034% of
+    # pixel-years (worst region, NORTH_ASIA, 0.20%), and `max_box_widenings` recovers the
+    # rest -- the observed maximum ratio (8.5x) sits comfortably inside the 4 -> 8 -> 16 two
+    # widenings already allow.
     overscale_sampling_k: dict[str, float] = field(default_factory=lambda: {"wind": 0.75, "solar": 0.75})
+
+    # Far-corner cutoff: coarse cells where `s/s_max + w/w_max` exceeds this are masked to
+    # `inf`, i.e. simultaneously built out toward both axes' own resource-implied limit. Of
+    # the same ~590K pixel-years above, only 0.018% had a query-time winner inside this
+    # region at `box_multiple=4` and threshold 1.2 -- comparable to the margin already
+    # accepted elsewhere in this class (e.g. `ladder_rungs`). `None` disables the cut. Must
+    # stay > 1: the pure `s=0` and `w=0` axes are never touched by it, so -- like every
+    # other field here -- a wrong value costs precision, never feasibility.
+    corner_cut_threshold: float | None = 1.2
 
     # -- Anchor coverage: how `anchor_cost_coefficients` (anchors.py) selects the anchor
     #    set a build's seeds are placed under. Governs *where* the build looks, never what
@@ -165,6 +180,16 @@ class SearchParams:
     tol_rel_patch: float = 1e-2
     repair_rate_cap: float = 0.02  # share of pixels the containment certificate may
     #                                send back for repair before the run is suspect
+
+    def __post_init__(self) -> None:
+        if self.corner_cut_threshold is not None and not 1.0 <= self.corner_cut_threshold <= 2.0:
+            raise ValueError(
+                f"corner_cut_threshold must be in [1, 2] or None, got {self.corner_cut_threshold!r}. "
+                "Above 2 the cut removes nothing (s/s_max + w/w_max maxes out at 2, at the far "
+                "corner, so nothing is ever beyond threshold). Below 1 it starts clipping a pure "
+                "single-tech axis instead of just the far corner -- lower box_multiple to shrink "
+                "the box overall, and keep corner_cut_threshold at 1.0."
+            )
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -693,6 +718,29 @@ def search_box(solar: np.ndarray, wind: np.ndarray, params: SearchParams) -> tup
     return s_max, w_max
 
 
+def corner_cut_mask(
+    s_coarse: np.ndarray, w_coarse: np.ndarray, s_max: float, w_max: float, threshold: float
+) -> np.ndarray:
+    """
+    `(Gc, Gc)` boolean, True where a coarse cell sits beyond the far-corner cutoff
+    `s/s_max + w/w_max > threshold` (`SearchParams.corner_cut_threshold`).
+
+    Applied to `b_coarse` as an `inf` mask in `build_pixel_frontier`, after
+    `coarse_b_min_grid` returns -- never inside it. The suffix-max monotonicity fill there
+    only ever needs to run once over the true bounds; masking cells to `inf` afterward can
+    only raise a cell's own value, never invalidate a smaller-`(s, w)` cell's already-computed
+    bound, so the two compose safely.
+
+    `threshold` is checked against `s_max`/`w_max` -- the box's current, possibly-widened
+    extent -- rather than against the pixel's `mu` directly, so a widening pass that doubles
+    the box automatically pushes the cut line outward with it. That is what lets the cut
+    share `max_box_widenings` as its recovery mechanism instead of needing one of its own;
+    see `build_pixel_frontier`'s `on_edge` check, which treats the cut boundary the same way
+    as the box's own outer ring.
+    """
+    return (s_coarse / s_max)[:, None] + (w_coarse / w_max)[None, :] > threshold
+
+
 def _sub_lattice(n: int, stride: int) -> np.ndarray:
     """Indices `0, stride, 2*stride, ...` always including `n-1`, so every node has a
     dominating lattice node to inherit from."""
@@ -973,6 +1021,37 @@ def _to_float16_toward_zero(values: np.ndarray) -> np.ndarray:
     return out
 
 
+def _seed_on_boundary(
+    i: int,
+    j: int,
+    gc: int,
+    s_coarse: np.ndarray,
+    w_coarse: np.ndarray,
+    s_max: float,
+    w_max: float,
+    cut_threshold: float | None,
+) -> bool:
+    """
+    True if seed `(i, j)` sits against the outer coarse-grid ring, or -- when a corner cut
+    (`SearchParams.corner_cut_threshold`) is active -- against the cut's own boundary one
+    coarse step further out.
+
+    Either case means the optimum may lie beyond what was actually searched, so both must
+    trigger the same widening as the rectangle's own edge (`build_pixel_frontier`'s
+    `on_edge`). `i + 1`/`j + 1` are safe to index once the ring check has passed, since that
+    check already caught `i == gc - 1` or `j == gc - 1`.
+    """
+    if i == gc - 1 or j == gc - 1:
+        return True
+    if cut_threshold is None:
+        return False
+    s_next_frac = s_coarse[i + 1] / s_max
+    w_next_frac = w_coarse[j + 1] / w_max
+    s_frac = s_coarse[i] / s_max
+    w_frac = w_coarse[j] / w_max
+    return bool((s_next_frac + w_frac > cut_threshold) or (s_frac + w_next_frac > cut_threshold))
+
+
 def build_pixel_frontier(
     solar: np.ndarray,
     wind: np.ndarray,
@@ -1054,6 +1133,10 @@ def build_pixel_frontier(
         s_coarse = np.linspace(0.0, s_max, gc)
         w_coarse = np.linspace(0.0, w_max, gc)
         b_coarse = coarse_b_min_grid(solar, wind, s_coarse, w_coarse, coverage, params)
+        if params.corner_cut_threshold is not None:
+            b_coarse = np.where(
+                corner_cut_mask(s_coarse, w_coarse, s_max, w_max, params.corner_cut_threshold), np.inf, b_coarse
+            )
 
         # Rank on the sub-lattice only, never on the filled grid. A filled node inherits
         # its bound from a *dominating* node at higher (s, w), so cells just inside the
@@ -1088,10 +1171,13 @@ def build_pixel_frontier(
         if not seeds:
             break
 
-        # A seed on the outer ring means the optimum may lie beyond the box. Widen and
-        # redo rather than report a truncated answer -- and record it, so a pixel that ran
-        # out of widenings is visible in the cache instead of silently wrong.
-        on_edge = any(i == gc - 1 or j == gc - 1 for i, j in seeds)
+        # A seed on the outer ring -- or, with a corner cut active, against the cut's own
+        # boundary -- means the optimum may lie beyond what was searched. Widen and redo
+        # rather than report a truncated answer -- and record it, so a pixel that ran out of
+        # widenings is visible in the cache instead of silently wrong.
+        on_edge = any(
+            _seed_on_boundary(i, j, gc, s_coarse, w_coarse, s_max, w_max, params.corner_cut_threshold) for i, j in seeds
+        )
         at_abs_max = s_max >= params.box_abs_max and w_max >= params.box_abs_max
         if on_edge and widenings < params.max_box_widenings and not at_abs_max:
             s_max = min(2.0 * s_max, params.box_abs_max)
