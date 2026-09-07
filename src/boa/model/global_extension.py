@@ -652,7 +652,6 @@ def combine_regional_datasets_into_global_dataset(
         return xr.open_dataset(global_output_path)
     else:
         logging.info(f"Combining regional datasets into global dataset for {year}.")
-        # Load all regional datasets
         for region in regions:
             optimal_sol_path = path_config.optimal_sol_path(weather_year, load_density, coverage, region, year)
             if not optimal_sol_path.exists():
@@ -662,8 +661,7 @@ def combine_regional_datasets_into_global_dataset(
 
         logging.info("Regridding regional datasets onto the global grid.")
 
-        # Define global grid
-        lat_global = np.arange(-90, 90.1, 0.25)  # Adjust resolution if needed
+        lat_global = np.arange(-90, 90.1, 0.25)
         lon_global = np.arange(-180, 180.1, 0.25)
 
         # Strip the string-typed cost_key and the int8 status from the numeric flow; both are
@@ -679,10 +677,8 @@ def combine_regional_datasets_into_global_dataset(
             for region, ds in numeric_datasets.items()
         }
 
-        # Initialize global dataset with NaN values
         global_ds = xr.full_like(next(iter(interpolated_datasets.values())), fill_value=np.nan)
 
-        # Merge interpolated datasets into the global dataset
         for region, ds in interpolated_datasets.items():
             for var in ds.data_vars:
                 if var not in global_ds:
@@ -718,10 +714,11 @@ def combine_regional_datasets_into_global_dataset(
         # rebuild) must not silently combine with stale neighbours — the GLOBAL attrs below
         # claim a single hash for the lot.
         hashes = {ds.attrs.get("search_params_hash") for ds in regional_datasets.values()}
-        assert len(hashes) == 1, (
-            f"regional files disagree on search_params_hash: {sorted(map(str, hashes))}. "
-            "Re-query the stale regions before combining."
-        )
+        if len(hashes) != 1:
+            raise ValueError(
+                f"regional files disagree on search_params_hash: {sorted(map(str, hashes))}. "
+                "Re-query the stale regions before combining."
+            )
 
         # Carry run/provenance metadata from regional files; override region and refresh timestamp
         global_ds.attrs.update(next(iter(regional_datasets.values())).attrs)

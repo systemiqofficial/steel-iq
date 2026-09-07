@@ -14,13 +14,7 @@ from boa.config.paths import PathConfig
 
 
 def plot_time_series(profile: dict[str, np.ndarray], output_path: Optional[Path] = None) -> None:
-    """
-    Plot time series of solar and wind profiles.
-
-    Args:
-        profile: Dictionary with 'solar' and 'wind' arrays
-        output_path: Optional path to save the plot. If None, plot is shown.
-    """
+    """Time series of `profile`'s solar and wind arrays. Saved to `output_path` if given, else shown."""
     fig, axes = plt.subplots(2, 1, figsize=(20, 6))
 
     axes[0].plot(profile["solar"])
@@ -46,13 +40,8 @@ def plot_time_series(profile: dict[str, np.ndarray], output_path: Optional[Path]
 
 
 def plot_design_distributions(designs: list[dict[str, float]], output_path: Optional[Path] = None) -> None:
-    """
-    Plot histograms for feasible design parameters.
-
-    Args:
-        designs: List of design dictionaries with solar, wind, battery factors
-        output_path: Optional path to save the plot. If None, plot is shown.
-    """
+    """Histograms of solar/wind/battery overscale factors across `designs`. Saved to `output_path`
+    if given, else shown."""
     fig, axes = plt.subplots(1, 3, figsize=(12, 4))
     design_keys = ["wind", "solar", "battery"]
 
@@ -76,13 +65,8 @@ def plot_state_of_charge(
     opt_soc: np.ndarray,
     output_path: Optional[Path] = None,
 ) -> None:
-    """
-    Plot state of charge histogram for the optimal design.
-
-    Args:
-        opt_soc: Pre-computed state of charge array for the optimal design
-        output_path: Optional path to save the plot. If None, plot is shown.
-    """
+    """Histogram of `opt_soc`, the optimal design's state of charge. Saved to `output_path` if
+    given, else shown."""
     fig, ax = plt.subplots(figsize=(8, 5))
 
     ax.hist(opt_soc, bins=30, edgecolor="black", alpha=0.7)
@@ -109,14 +93,9 @@ def plot_cost_scatter(
     output_path: Optional[Path] = None,
 ) -> None:
     """
-    Plot cost scatter plots comparing all accepted designs. The optimal design is marked in red.
-
-    Args:
-        lcoe_costs: List of LCOE costs for each design
-        designs: List of design dictionaries with solar, wind, battery factors
-        opt_design: Optimal design dictionary
-        installation_costs: Optional list of installation costs for each design
-        output_path: Optional path to save the plot. If None, plot is shown.
+    Scatter plots comparing all accepted designs by LCOE, and by installation cost if
+    `installation_costs` is given. `opt_design` is marked in red. Saved to `output_path` if
+    given, else shown.
     """
     # Determine number of subplots based on whether installation_costs is provided
     n_plots = 2 if installation_costs is not None else 1
