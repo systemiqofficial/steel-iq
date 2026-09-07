@@ -16,11 +16,11 @@ See `src/boa/README.md`'s "End-to-end pipeline" section for the full command seq
 both sides are prepared:
 
 ```bash
-# Full run with default parameters (2025-2060, 1000 MW demand, cds-2024 weather)
+# Full run with default parameters (2025-2060, 1.0 MW/km2 load density, cds-2024 weather)
 boa-run
 
 # Full run with custom parameters
-boa-run --demand 800 --coverage 0.95
+boa-run --load-density 0.8 --coverage 0.95
 
 # Prepare the weather stores and cost set inline, then run
 boa-run --cds-prepare 2024 --data-prepare master.xlsx test_scenario
@@ -48,9 +48,10 @@ Full reference: `boa-run --help` (options differ slightly per subcommand). Summa
 - `-f`/`--frequency`: Years between simulations (default: 1)
 
 **Scenario Parameters:**
-- `-d`/`--demand`: Baseload demand in MW (default: 1000.0, typical range: 150-1000). Not part
-  of the frontier cache's key — the search is baseload-invariant, so this only names the
-  per-year query output.
+- `-r`/`--load-density`: Load density in MW/km2 of served cell area (default: 1.0). Not part
+  of the frontier cache's key — the search is baseload-invariant, so this only sets the
+  per-pixel absolute demand (`load_density * pixel_area(lat)`) that scales the per-year query
+  output.
 - `-c`/`--coverage`: Required demand coverage fraction, e.g., 0.85 means 85% coverage
   (default: 0.85). Part of the frontier cache's key.
 
@@ -76,16 +77,16 @@ Full reference: `boa-run --help` (options differ slightly per subcommand). Summa
   LCOE file the steel simulation reads (same as running `boa-promote-lcoe` afterwards)
 
 **The capacity ceiling is not yet applied at query time.** Every query currently reports the
-*unconstrained* optimum for its coverage target, regardless of `--demand`, and logs a warning
-saying so. Do not promote results from a run in this state.
+*unconstrained* optimum for its coverage target, regardless of `--load-density`, and logs a
+warning saying so. Do not promote results from a run in this state.
 
 ### 3. Output
 The simulation will:
 - Run the baseload power simulation for the selected years
 - Process all regions in parallel
 - Generate optimal renewable energy system designs for each grid point
-- Save results as one NetCDF per region-year under `runs/<run>/outputs/<demand>MW/cov<coverage>/nc/<REGION>/`
-- With `--plots`, create visualization plots under `runs/<run>/outputs/<demand>MW/cov<coverage>/plots/<REGION>/`
+- Save results as one NetCDF per region-year under `runs/<run>/outputs/<rho>MWkm2/cov<coverage>/nc/<REGION>/`
+- With `--plots`, create visualization plots under `runs/<run>/outputs/<rho>MWkm2/cov<coverage>/plots/<REGION>/`
 
 Results include:
 - LCOE (Levelized Cost of Energy) in USD/MWh
@@ -93,6 +94,8 @@ Results include:
 - Wind overscale factor (relative to baseload demand)
 - Battery overscale factor (relative to baseload demand)
 - Total installation cost in USD
+- `load_mw`: this pixel's absolute demand (`load_density * pixel_area(lat)`), the term that
+  turns the overscale factors above into installed MW
 
 ### 4. Handing the LCOE to the steel simulation
 
@@ -106,7 +109,7 @@ boa-promote-lcoe --run cds-2024__china_test    # or: boa-run ... --promote-lcoe
 ```
 
 The result lands in
-`<boa data root>/lcoe-for-steel-iq/<run>/optimal_lcoe_<bl>MW_cov<c>_<first>_<last>.nc`
+`<boa data root>/lcoe-for-steel-iq/<run>/optimal_lcoe_<rho>MWkm2_cov<c>_<first>_<last>.nc`
 and carries its own provenance (run name, input/cost sets, workbook hash, versions, scenario
 settings), so the file alone identifies what produced it.
 
@@ -118,15 +121,16 @@ run_simulation --boa-run cds-2024__china_test
 
 - `--boa-run`: local BOA run to price baseload power from. Omitted — the default — the
   simulation reads the per-year files shipped with the geo data, exactly as before
-- `--boa-demand`: baseload demand in MW, needed only when the run holds more than one; requires `--boa-run`
+- `--boa-load-density`: load density in MW/km2, needed only when the run holds more than one;
+  requires `--boa-run`
 
 The coverage is not a flag: it follows `GeoConfig.included_power_mix` (`simulation.py`), the
-setting the simulation prices power at. `85% baseload + 15% grid` reads the run's p15 file,
-`95% baseload + 5% grid` its p5 file — change the setting and the matching file is used. If
-the run has no file at that percentile, the simulation stops before any data preparation and
-names the mix that required it, rather than quietly pricing power off whatever sits in the
-data directory. A grid-only mix has no baseload component at all, so pairing it with
-`--boa-run` is rejected instead of resolving a file that would never be read.
+setting the simulation prices power at. `85% baseload + 15% grid` reads the run's `cov0.85`
+file, `95% baseload + 5% grid` its `cov0.95` file — change the setting and the matching file
+is used. If the run has no file at that coverage, the simulation stops before any data
+preparation and names the mix that required it, rather than quietly pricing power off
+whatever sits in the data directory. A grid-only mix has no baseload component at all, so
+pairing it with `--boa-run` is rejected instead of resolving a file that would never be read.
 
 The per-year files stay in place — they carry the overbuild factors and the cost breakdown —
 and `--baseload-power-sim-dir` still points at a directory of them.

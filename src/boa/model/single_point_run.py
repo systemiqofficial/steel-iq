@@ -6,6 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
 
+from boa.cds.max_capacity import pixel_area
 from boa.config.paths import PathConfig
 from boa.geo.iso3_finder import (
     derive_subregion,
@@ -211,7 +212,7 @@ def execute_single_point_baseload_power_simulation(
     year: int,
     lat: float,
     lon: float,
-    baseload_demand: float,
+    load_density: float,
     coverage: float,
     generate_plots: bool = True,
     include_plot_data: bool = False,
@@ -235,7 +236,9 @@ def execute_single_point_baseload_power_simulation(
         year: Investment year for the simulation
         lat: Latitude of the point
         lon: Longitude of the point
-        baseload_demand: Baseload demand in MW
+        load_density: Load density in MW/km2 (D1). This point's absolute baseload demand is
+            derived from it as load_density * pixel_area(lat) -- LCOE is baseload-invariant, so
+            this only sets the absolute MW/MWh scale of the reported design, not its LCOE.
         coverage: Fraction of hours in which demand must be fully met
         progress_callback: Optional callable(percent: int, message: str) invoked
             at each stage so callers (e.g. the Celery task driving an API job)
@@ -314,6 +317,11 @@ def execute_single_point_baseload_power_simulation(
     # than one ERA5 cell away.
     region_selection = build_region_selection(lon, lat, float(profile_ds.x.values), float(profile_ds.y.values), choice)
 
+    # This point's absolute demand (D1): load_density is latitude-free, so the snapped grid
+    # cell's own area is what turns it into MW. LCOE never depends on this value -- it only
+    # sets the scale of the reported design and installation cost.
+    baseload_demand = load_density * float(pixel_area(np.array([profile_ds.y.values]))[0])
+
     # Extract profile as dict for processing
     profile = {
         "solar": profile_ds["solar"].values.flatten(),
@@ -370,6 +378,7 @@ def execute_single_point_baseload_power_simulation(
             "cost_key": cost_key,
             "status": frontier.status,
             "region_selection": region_selection,
+            "load_mw": baseload_demand,
         }
 
     _progress(92, "Computing optimal design...")
@@ -429,6 +438,7 @@ def execute_single_point_baseload_power_simulation(
         "cost_key": cost_key,
         "status": 1,
         "region_selection": region_selection,
+        "load_mw": baseload_demand,
     }
 
     # Include plot data if requested

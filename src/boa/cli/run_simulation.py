@@ -23,8 +23,8 @@ preflight check points at the right command when something is missing. Both can
 also be run inline via `--cds-prepare <year>` / `--data-prepare <xlsx> <scenario>`.
 
 Examples:
-    boa-run --demand 1000 --coverage 0.95
-    boa-run --demand 1000 --coverage 0.95 --promote-lcoe
+    boa-run --load-density 1.0 --coverage 0.95
+    boa-run --load-density 1.0 --coverage 0.95 --promote-lcoe
     boa-run --weather-input cds-2023 --cost-input xlsx-rev3 --dry-run
     boa-run --cds-prepare 2024 --data-prepare master.xlsx test_scenario
     boa-run build-cache --workers fast
@@ -188,16 +188,18 @@ def run_prepare_flags(args: argparse.Namespace) -> int:
 def add_scenario_args(parser: argparse.ArgumentParser) -> None:
     """
     Scenario parameters. ``--coverage`` is part of the frontier cache's key (with the input
-    set and ``SearchParams``); ``--demand`` is not -- the frontier is baseload-invariant and
-    only the per-year query output is named after it.
+    set and ``SearchParams``); ``--load-density`` is not -- the frontier is baseload-invariant
+    and only the per-year query output is named after it.
     """
     group = parser.add_argument_group("Scenario Parameters")
     group.add_argument(
-        "-d",
-        "--demand",
+        "-r",
+        "--load-density",
         type=float,
-        default=1000.0,
-        help="Baseload demand in MW. Typical range: 150-1000 MW",
+        default=1.0,
+        help="Load density in MW/km2 of served cell area (D1 in BOA_BISECTION_PLAN.md). Each "
+        "pixel's absolute demand is load_density * pixel_area(lat), so results are latitude-"
+        "correct rather than one flat MW figure applied everywhere.",
     )
     group.add_argument(
         "-c",
@@ -236,10 +238,10 @@ def add_promote_lcoe_arg(parser: argparse._ActionsContainer) -> None:
     )
 
 
-def run_promotion(path_config: PathConfig, baseload_demand: float, coverage: float) -> int:
+def run_promotion(path_config: PathConfig, load_density: float, coverage: float) -> int:
     """Promote this scenario's LCOE, reporting a failure without discarding the completed query."""
     try:
-        promote_lcoe(path_config, baseload_demand, coverage)
+        promote_lcoe(path_config, load_density, coverage)
     except (FileNotFoundError, ValueError) as e:
         logging.error(f"LCOE promotion failed: {e}")
         return 1
@@ -250,8 +252,8 @@ def validate_scenario_args(args: argparse.Namespace) -> None:
     """Raise ValueError on logically inconsistent parameters."""
     if not 0 < args.coverage <= 1:
         raise ValueError(f"Coverage must be between 0 and 1, got {args.coverage}")
-    if args.demand <= 0:
-        raise ValueError(f"Baseload demand must be positive, got {args.demand}")
+    if args.load_density <= 0:
+        raise ValueError(f"Load density must be positive, got {args.load_density}")
 
 
 def validate_temporal_args(args: argparse.Namespace) -> None:
@@ -285,7 +287,7 @@ def get_simulation_years(start_year: int, end_year: int, frequency: int) -> List
 def resolved_parameters(args: argparse.Namespace, years: List[int] | None = None) -> dict:
     """Fully resolved scenario settings for the run manifest, so defaults are recorded too."""
     params: dict = {
-        "demand_mw": args.demand,
+        "load_density_mw_km2": args.load_density,
         "coverage": args.coverage,
     }
     if years is not None:
@@ -384,7 +386,7 @@ def build_all_caches(
 def query_all_years(
     path_config: PathConfig,
     years: List[int],
-    baseload_demand: float,
+    load_density: float,
     coverage: float,
     n_workers: int,
     force: bool = False,
@@ -404,7 +406,7 @@ def query_all_years(
             query_frontier_cache_for_region(
                 year=year,
                 region=region,
-                baseload_demand=baseload_demand,
+                load_density=load_density,
                 coverage=coverage,
                 costs=costs,
                 investment_horizon=horizon,
@@ -413,19 +415,17 @@ def query_all_years(
                 force=force,
             )
             if generate_plots:
-                plot_regional_optimum_baseload_power_simulation_map(
-                    year, region, coverage, baseload_demand, path_config
-                )
+                plot_regional_optimum_baseload_power_simulation_map(year, region, coverage, load_density, path_config)
         global_optimal_sol = combine_regional_datasets_into_global_dataset(
             year,
             coverage,
-            baseload_demand,
+            load_density,
             path_config,
             force=force,
         )
         if generate_plots and global_optimal_sol is not None:
             plot_global_optimum_baseload_power_simulation_map(
-                global_optimal_sol, year, coverage, baseload_demand, path_config
+                global_optimal_sol, year, coverage, load_density, path_config
             )
 
 
@@ -475,7 +475,7 @@ def main_run(argv: list[str]) -> int:
     logging.info("BOA: full GLOBAL simulation")
     logging.info("=" * 60)
     logging.info(f"Years to simulate: {years}")
-    logging.info(f"Baseload demand: {args.demand} MW")
+    logging.info(f"Load density: {args.load_density} MW/km2")
     logging.info(f"Coverage requirement: {args.coverage * 100:.1f}%")
     logging.info(f"Worker threads: {args.workers}")
     logging.info(f"Generate plots: {args.plots}")
@@ -502,12 +502,12 @@ def main_run(argv: list[str]) -> int:
     query_all_years(
         path_config,
         years,
-        args.demand,
+        args.load_density,
         args.coverage,
         args.workers,
         generate_plots=args.plots,
     )
-    if args.promote_lcoe and run_promotion(path_config, args.demand, args.coverage) != 0:
+    if args.promote_lcoe and run_promotion(path_config, args.load_density, args.coverage) != 0:
         return 1
     logging.info("\nAll simulations completed successfully!")
     return 0
@@ -604,7 +604,7 @@ def main_query(argv: list[str]) -> int:
     logging.info("BOA: query (design-cache → NetCDF)")
     logging.info("=" * 60)
     logging.info(f"Years: {years}")
-    logging.info(f"Baseload: {args.demand} MW; coverage {args.coverage:g}; workers={args.workers}")
+    logging.info(f"Load density: {args.load_density} MW/km2; coverage {args.coverage:g}; workers={args.workers}")
 
     resolve_data_sets(args)
     if (rc := run_prepare_flags(args)) != 0:
@@ -619,13 +619,13 @@ def main_query(argv: list[str]) -> int:
     query_all_years(
         path_config,
         years,
-        args.demand,
+        args.load_density,
         args.coverage,
         args.workers,
         force=args.force,
         generate_plots=args.plots,
     )
-    if args.promote_lcoe and run_promotion(path_config, args.demand, args.coverage) != 0:
+    if args.promote_lcoe and run_promotion(path_config, args.load_density, args.coverage) != 0:
         return 1
     logging.info("\nquery: all (region, year) pairs complete.")
     return 0
@@ -667,7 +667,7 @@ def main_point(argv: list[str]) -> int:
     logging.info("BOA: single-point simulation")
     logging.info("=" * 60)
     logging.info(f"Location: Lat={args.lat}, Lon={args.lon} (region auto-derived)")
-    logging.info(f"Years: {years}; baseload: {args.demand} MW; coverage {args.coverage:g}")
+    logging.info(f"Years: {years}; load density: {args.load_density} MW/km2; coverage {args.coverage:g}")
 
     resolve_data_sets(args)
     if (rc := run_prepare_flags(args)) != 0:
@@ -689,7 +689,7 @@ def main_point(argv: list[str]) -> int:
                 year=year,
                 lat=args.lat,
                 lon=args.lon,
-                baseload_demand=args.demand,
+                load_density=args.load_density,
                 coverage=args.coverage,
             )
         except Exception as e:

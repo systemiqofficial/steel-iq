@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from boa.cds.max_capacity import pixel_area
 from boa.geo.iso3_finder import iso3_at_batch
 from boa.geo.geospatial import choose_land_points_in_cutout
 from boa.config.paths import PathConfig
@@ -93,7 +94,7 @@ def _query_frontier_tile(
     opex_per_tech: dict,
     coc_arr: np.ndarray,
     cost_keys: np.ndarray,
-    baseload_demand: float,
+    load_mw: np.ndarray,
     investment_horizon: int,
 ) -> tuple[float, list[dict], dict[str, int]]:
     """
@@ -113,6 +114,10 @@ def _query_frontier_tile(
     ceiling belongs to Grid 2 -- so between M3 and M4 this reports the *unconstrained* optimum.
     The caller warns about it. Delete that warning together with this note when Grid 2 lands.
 
+    `load_mw` is this region's per-pixel absolute demand (D1: `load_density * pixel_area(lat)`),
+    precomputed once by the caller. It only sets the MW/MWh scale of the reported design --
+    LCOE is exactly baseload-invariant, so it never changes which design wins.
+
     Counters carry the certificate telemetry: how often the patches provably held the optimum,
     and how often the winner sat against a patch edge.
     """
@@ -122,6 +127,7 @@ def _query_frontier_tile(
 
     for k in tile_indices:
         cost_key = str(cost_keys[k]) if cost_keys[k] else ""
+        load_k = float(load_mw[k])
         status = int(cache.status[k])
         if status != STATUS_OK:
             counters["zero_potential" if status == STATUS_ZERO_POTENTIAL else "no_optimum"] += 1
@@ -140,16 +146,17 @@ def _query_frontier_tile(
                     "cost_of_capital": 0.0,
                     "cost_key": cost_key,
                     "status": status,
+                    "load_mw": load_k,
                 }
             )
             continue
 
         capex_k = {tech: capex_per_tech[tech][k] for tech in ("solar", "wind", "battery")}
         opex_k = {tech: float(opex_per_tech[tech][k]) for tech in ("solar", "wind", "battery")}
-        coeffs = lcoe_coefficients(investment_horizon, capex_k, opex_k, float(coc_arr[k]), baseload_demand)
+        coeffs = lcoe_coefficients(investment_horizon, capex_k, opex_k, float(coc_arr[k]), load_k)
         optimum = argmin_lcoe(frontier_at(cache, int(k)), coeffs)
         total, ic_s, ic_w, ic_b = installation_cost_breakdown(
-            optimum.solar, optimum.wind, optimum.battery, baseload_demand, capex_k
+            optimum.solar, optimum.wind, optimum.battery, load_k, capex_k
         )
         counters["certified"] += int(optimum.patch_certified)
         counters["truncated"] += int(optimum.argmin_truncated)
@@ -169,6 +176,7 @@ def _query_frontier_tile(
                 "cost_of_capital": float(coc_arr[k]),
                 "cost_key": cost_key,
                 "status": STATUS_OK,
+                "load_mw": load_k,
             }
         )
 
@@ -328,7 +336,7 @@ def build_frontier_cache_for_region(
 def query_frontier_cache_for_region(
     year: int,
     region: str,
-    baseload_demand: float,
+    load_density: float,
     coverage: float,
     costs: xr.Dataset,
     investment_horizon: int,
@@ -345,6 +353,11 @@ def query_frontier_cache_for_region(
     property the cache exists for — a 36-year sweep simulates the physics once and prices it
     36 times, and the pricing is arithmetic.
 
+    `load_density` is MW/km2 (D1), not an absolute demand: LCOE is exactly baseload-invariant,
+    so a single flat MW figure applied to every pixel was never a real input, only a display
+    value. Each pixel's own `load_mw = load_density * pixel_area(lat)` is what actually scales
+    its reported design.
+
     **The capacity ceiling is not applied.** Grid 2 lands in M4; until then this reports the
     unconstrained optimum, and the warning below says so at every call. Delete the warning with
     the note in `_query_frontier_tile` when the constrained search arrives.
@@ -353,7 +366,7 @@ def query_frontier_cache_for_region(
     weather_year = detect_weather_year(path_config)
     cache_dir = path_config.frontier_cache_dir(weather_year)
     cache_file = frontier_cache_path(cache_dir, region, coverage, params, weather_year, ERA5_DATA_RESOLUTION)
-    out_path = path_config.optimal_sol_path(baseload_demand, coverage, region, year)
+    out_path = path_config.optimal_sol_path(load_density, coverage, region, year)
     if out_path.exists() and not force:
         logging.info(f"{out_path.name} already exists; skipping (use --force to re-derive).")
         return xr.open_dataset(out_path)
@@ -373,6 +386,9 @@ def query_frontier_cache_for_region(
     cost_keys, capex_per_tech, opex_per_tech, coc_arr = _derive_cost_arrays(
         cache.lats, cache.lons, usable, costs, path_config
     )
+    # D1: latitude-free density -> per-pixel absolute demand. Computed once for the whole
+    # region rather than per pixel inside the tile worker.
+    load_mw = load_density * pixel_area(cache.lats)
 
     n_tiles = _adaptive_n_tiles(npts, n_workers)
     order = np.arange(npts)
@@ -389,7 +405,7 @@ def query_frontier_cache_for_region(
                     opex_per_tech,
                     coc_arr,
                     cost_keys,
-                    baseload_demand,
+                    load_mw,
                     investment_horizon,
                 ),
                 tiles,
@@ -412,7 +428,7 @@ def query_frontier_cache_for_region(
     attrs = {
         "investment_year": year,
         "investment_horizon_years": investment_horizon,
-        "baseload_demand_mw": baseload_demand,
+        "load_density_mw_km2": load_density,
         "coverage_fraction": coverage,
         "region": region,
         "era5_weather_year": weather_year,
@@ -555,6 +571,7 @@ def _assemble_optimal_sol(
             "coverage",
             "served_fraction",
             "cost_of_capital",
+            "load_mw",
         )
     }
     cost_key_flat = np.full(npts, "", dtype=object)
@@ -566,6 +583,10 @@ def _assemble_optimal_sol(
             k_int = int(k)
             status_flat[k_int] = r["status"]
             cost_key_flat[k_int] = r.get("cost_key", "")
+            # load_mw is a closed form of latitude and the run's load density -- real for
+            # every pixel in the region regardless of whether a design was found, unlike the
+            # search-derived fields below.
+            fields["load_mw"][k_int] = r["load_mw"]
             if np.isnan(r["lcoe"]):
                 continue
             breakdown = r["installation_cost_breakdown"]
@@ -610,7 +631,7 @@ def _assemble_optimal_sol(
 def combine_regional_datasets_into_global_dataset(
     year: int,
     coverage: float,
-    baseload_demand: float,
+    load_density: float,
     path_config: PathConfig,
     force: bool = False,
 ) -> xr.Dataset | None:
@@ -622,7 +643,7 @@ def combine_regional_datasets_into_global_dataset(
     regional_datasets = {}
 
     # Check if the global dataset already exists
-    global_output_path = path_config.optimal_sol_path(baseload_demand, coverage, "GLOBAL", year)
+    global_output_path = path_config.optimal_sol_path(load_density, coverage, "GLOBAL", year)
     if global_output_path.exists() and not force:
         logging.info(f"Global optimal solution already exists at {global_output_path}. (use --force to re-derive)")
         return xr.open_dataset(global_output_path)
@@ -630,7 +651,7 @@ def combine_regional_datasets_into_global_dataset(
         logging.info(f"Combining regional datasets into global dataset for {year}.")
         # Load all regional datasets
         for region in regions:
-            optimal_sol_path = path_config.optimal_sol_path(baseload_demand, coverage, region, year)
+            optimal_sol_path = path_config.optimal_sol_path(load_density, coverage, region, year)
             if not optimal_sol_path.exists():
                 logging.warning(f"Optimal solution for {region} not found. Please check processing.")
                 return None
