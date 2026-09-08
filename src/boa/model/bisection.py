@@ -131,8 +131,21 @@ class SearchParams:
 
     # -- Patch tier: resolves the actual optimum, and drives build cost. ---------------
     patch_grid: int = 15  # nodes per axis, per patch; cost scales with the square
-    patch_halfwidth: float = 0.45  # patch spans seed x (1 +/- this), floored at one
-    #                                lattice step, since that is the seed's own resolution
+    patch_halfwidth: float = 0.20  # patch spans seed x (1 +/- this), floored at one
+    #                                lattice step, since that is the seed's own resolution.
+    #                                A lone patch does not need to independently survive
+    #                                re-anchoring drift -- build_pixel_frontier unions
+    #                                several anchors' patches, and that union is what
+    #                                absorbs the movement. Measured on 100-1000 real EUROPE
+    #                                pixels under 4 build anchors + a held-out query anchor:
+    #                                shrinking from 0.45 to 0.20 alone (coarse_grid held
+    #                                fixed) moved LCOE by a median of 0%, p95 0.02-0.03%,
+    #                                max 0.08-0.19%, with zero status/feasibility flips and
+    #                                a ~1.3x build speedup. Below ~0.125 for this
+    #                                `coarse_grid`/`coarse_stride` it stops changing anything
+    #                                at all -- the `coarse_stride`-based floor above already
+    #                                dominates every seed -- so there is no benefit to going
+    #                                lower.
     lattice_refinement: int = 2  # `patch_lattice` only: lattice points per coarse cell.
     #                              Must be an integer so lattice points land on coarse-cell
     #                              boundaries, which is what makes two patches on one pixel
@@ -161,16 +174,22 @@ class SearchParams:
     #    with no cost in it, so it is valid for every year and every cost scenario. It is
     #    also strictly more accurate than choosing at build time, because the pick then
     #    uses the query year's real prices instead of a frozen anchor's.
-    #    Rungs are spaced quadratically, so they cluster just above b_min -- with 2 rungs
-    #    that collapses to two endpoints, 1.0 and ladder_max_span. Tuned against a real
-    #    global run: at the R=4/1.35x defaults, rungs
-    #    2-3 were picked 0 times across ~49,000 pixel-years in two regions spanning a mild
-    #    and an extreme case, and rung 1 usage was already small (0.89-1.65% in the mild
-    #    region, 0% in the extreme one). 2 rungs at a 5% span keeps the one rung that
-    #    measurably mattered and drops the two that never did. Re-check if a future sweep
-    #    covers more of the globe or a cost trajectory where batteries are much cheaper.
-    ladder_rungs: int = 2  # battery sizes stored per node; rung 0 is b_min itself
-    ladder_max_span: float = 1.05  # top rung, as a multiple of b_min
+    #    Rungs are spaced quadratically, so they cluster just above b_min. Tuned against a
+    #    real global run: at an earlier R=4/1.35x setting, rungs 2-3 were picked 0 times
+    #    across ~49,000 pixel-years in two regions spanning a mild and an extreme case, and
+    #    rung 1 usage was already small (0.89-1.65% of pixel-years in the mild region, 0% in
+    #    the extreme one) -- which is what motivated dropping to 2 rungs. Set to 1 rung
+    #    (b_min only, no dispatch beyond what `_b_min_jit` already does) for the further
+    #    build-time saving: rung 0 costs no extra dispatch (`_rung_metrics_jit`), so every
+    #    rung above it is one full dispatch pass per patch node, and this removes the last
+    #    one. Accepts the residual: the ~1% of pixel-years (mild region; 0% in the extreme
+    #    one, in that same measurement) where a battery above b_min was cheaper are no
+    #    longer captured -- `ladder_max_span` below is inert at `ladder_rungs=1`
+    #    (`rung_spans` returns the single point 1.0 regardless of it). Re-check both if a
+    #    future sweep covers more of the globe or a cost trajectory where batteries are much
+    #    cheaper, since either could raise the rung-1 usage rate above what was measured here.
+    ladder_rungs: int = 1  # battery sizes stored per node; rung 0 is b_min itself
+    ladder_max_span: float = 1.05  # top rung, as a multiple of b_min; inert at ladder_rungs=1
 
     # -- Bisection tolerances. `tol_rel_patch` sets how many dispatch passes each patch
     #    node spends on the battery, so it is the other build-cost driver. gamma = 0.85

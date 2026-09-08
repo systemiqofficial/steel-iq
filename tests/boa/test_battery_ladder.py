@@ -101,14 +101,20 @@ def test_a_higher_rung_can_beat_b_min_on_lcoe(profiles):
     at some `(s, w)` a rung above `b_min` should price below `b_min` itself. If this
     never fired, S3's benchmark would have found `b_true == b_min` everywhere, and it
     did not.
+
+    Checked against a locally-built multi-rung `SearchParams`, not the module-level
+    `PARAMS`: the production default is `ladder_rungs=1` (b_min only, no rungs above it
+    to beat it with), so this test needs its own params with rungs to exercise, same as
+    `test_rungs_cluster_just_above_b_min` below.
     """
     solar, wind = profiles["solar"], profiles["wind"]
+    params = SearchParams(ladder_rungs=2, ladder_max_span=1.05)
     beaten = False
     for s, w in [(2.0, 1.5), (3.0, 2.0), (4.0, 3.0), (2.5, 3.5), (5.0, 1.0)]:
-        b_min, cov0, sf0 = b_min_at(solar, wind, s, w, 0.85, PARAMS)
+        b_min, cov0, sf0 = b_min_at(solar, wind, s, w, 0.85, params)
         if not np.isfinite(b_min) or b_min <= 0.0:
             continue
-        b, _, sf = battery_rungs(solar, wind, s, w, b_min, cov0, sf0, PARAMS)
+        b, _, sf = battery_rungs(solar, wind, s, w, b_min, cov0, sf0, params)
         base = _lcoe(s, w, float(b[0]), float(sf[0]))
         if any(_lcoe(s, w, float(b[r]), float(sf[r])) < base - 1e-9 for r in range(1, len(b))):
             beaten = True
@@ -135,11 +141,18 @@ def test_a_zero_b_min_node_collapses_every_rung_to_zero(profiles):
 
 def test_rung_spans_start_at_one_and_end_at_the_configured_span():
     """The spans are multiples of `b_min`, so the first must be exactly 1.0 -- rung 0 is
-    `b_min` itself, and anything else would silently move it."""
-    spans = rung_spans(PARAMS)
-    assert len(spans) == PARAMS.ladder_rungs
+    `b_min` itself, and anything else would silently move it.
+
+    Checked against a locally-built multi-rung `SearchParams`, not the module-level
+    `PARAMS`: at the production default (`ladder_rungs=1`) first and last are the same
+    single point, which `test_a_single_rung_degenerates_to_b_min_only` below already
+    covers explicitly.
+    """
+    params = SearchParams(ladder_rungs=2, ladder_max_span=1.05)
+    spans = rung_spans(params)
+    assert len(spans) == params.ladder_rungs
     assert spans[0] == pytest.approx(1.0)
-    assert spans[-1] == pytest.approx(PARAMS.ladder_max_span)
+    assert spans[-1] == pytest.approx(params.ladder_max_span)
 
 
 def test_rungs_cluster_just_above_b_min():
