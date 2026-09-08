@@ -1,7 +1,7 @@
 # Baseload Optimisation Atlas (BOA)
-This module calculates global optimal Levelized Cost of Energy (LCOE) at pixel level (high resolution: 0.25 degrees, i.e., 50 km or better). 
+This module calculates global optimal Levelized Cost of Energy (LCOE) at pixel level (high resolution: 0.25 degrees, about 28 km at the equator). 
 It is computed in two steps: 
-1) Simulating renewable energy supply (using weather data and Atlite)
+1) Obtaining renewable energy supply (solar and wind capacity factors sourced from Copernicus CDS reanalysis data)
 2) Finding the optimum overbuilding factors for solar, wind, and battery. 
 
 Due to long runtimes this module runs as a standalone package (`src/boa`, its own pipeline of
@@ -138,16 +138,19 @@ The per-year files stay in place — they carry the overbuild factors and the co
 and `--baseload-power-sim-dir` still points at a directory of them.
 
 ## Methodology:
-1. Project investment costs for solar and wind technologies for each country and year
-    - Use SSP-RCP projected renewable buildouts until 2100 from IAASA (SSP1-2.6 (Sustainability), SSP2-4.5 (Middle of the Road), and SSP3-Baseline
-    (Business-as-usual)).
-    - Correct those projections with historical installed capacity data from IRENA.
-    - Apply technology-specific learning curves to project CAPEX across time and space for solar and wind technologies.
+1. Project investment costs for solar, wind, and battery technologies for each country and year
+    - CAPEX is read directly from a pre-built regional time series (2024-2050, per technology) in the
+    cost workbook's "RES CAPEX projections" sheet, and mapped to countries via IRENA regions. No
+    learning curve is applied.
+    - OPEX is a world-wide percentage of CAPEX, applied uniformly to every country.
+    - Cost of capital is a country-level WACC, with missing values filled with the global maximum.
 
-2. Simulate hourly solar PV and onshore wind generation potential
-    - Use high spatial resolution (30 km or higher) based on reanalysis weather data (ERA5 from Copernicus), including variables like radiation, temperature,
-    and wind speed.
-    - Use the Atlite package to simulate solar PV panels and onshore wind turbines at each location.
+2. Obtain hourly solar PV and onshore wind capacity factors
+    - Source per-unit capacity factors directly from the CDS "C3S Energy" reanalysis-derived product
+    (`sis-energy-global-reanalysis`, ERA5-based), at 0.25 degree resolution.
+    - Atlite is not part of the current pipeline. A legacy Atlite-based NetCDF input path still exists
+    for older stores (`PROFILE_DATA_SOURCE=local_nc`), but the default and documented pipeline
+    (`boa-cds-prepare`) reads CDS capacity factors directly — no weather simulation step is run.
 
 3. Determine the installation limits for solar and wind at each grid point
     - A pure-geometry ceiling: area per grid cell at a given latitude x an areal power density
