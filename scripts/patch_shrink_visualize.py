@@ -158,9 +158,10 @@ def main() -> int:
                 f"box_widenings={frontier.box_widenings}"
             )
 
-            # Repurpose plot_search_grid's "year" axis: one slot per build anchor showing
-            # where THAT anchor alone would have seeded (triangles), plus one "query" slot
-            # showing the held-out-coefficient winner (the actual query-time answer).
+            # Repurpose plot_search_grid's "year" axis for scenarios instead of real years:
+            # one slot per build anchor showing where THAT anchor alone would have seeded
+            # (triangles), plus one "query" slot showing the held-out-coefficient winner
+            # (the actual query-time answer). tick_labels below gives each slot its real name.
             winners: dict[int, Optimum | None] = {}
             anchors: dict[int, list[tuple[float, float]]] = {}
             for i, name in enumerate(BUILD_ANCHOR_NAMES):
@@ -170,6 +171,9 @@ def main() -> int:
             winners[query_slot] = argmin_lcoe(frontier, query_coeffs) if frontier.n_patches > 0 else None
             anchors[query_slot] = []
 
+            tick_labels = {i: name for i, name in enumerate(BUILD_ANCHOR_NAMES)}
+            tick_labels[query_slot] = f"{QUERY_ANCHOR_NAME} (query)"
+
             out_path = OUT_DIR / f"{label}_{config_name}.png"
             plot_search_grid(
                 frontier,
@@ -178,11 +182,17 @@ def main() -> int:
                 lat,
                 lon,
                 COVERAGE,
-                baseload=1000.0,
+                baseload=None,  # make_coeffs never applies a baseload multiplier (implicit
+                # baseload=1, matching bisection.py's "demand normalised to 1" convention);
+                # LCOE/argmin are exactly baseload-invariant regardless, so there is no real
+                # MW figure behind these coefficients to show.
                 years=list(range(query_slot + 1)),
                 winners=winners,
                 anchors=anchors,
                 output_path=out_path,
+                colorbar_label="scenario",
+                tick_labels=tick_labels,
+                anchor_legend_label="anchor's own seed placement",
             )
             print(f"    wrote {out_path}")
 
