@@ -41,13 +41,14 @@ def test_geo_data_paths_creation():
 
 
 def test_simulation_config_geo_paths(tmp_path):
-    """Test that SimulationConfig properly initializes output paths."""
+    """Test that SimulationConfig properly initializes output paths (GEO plots opt-in via plot_geo)."""
     config = SimulationConfig(
         start_year=2025,
         end_year=2030,
         master_excel_path=tmp_path / "master.xlsx",
         output_dir=tmp_path / "output",
         technology_settings=get_default_technology_settings(),
+        plot_geo=True,
     )
 
     # Check that output paths are properly set
@@ -63,6 +64,20 @@ def test_simulation_config_geo_paths(tmp_path):
     assert config.geo_plots_dir.exists()
     assert config.pam_plots_dir.exists()
     assert config.tm_output_dir.exists()
+
+
+def test_simulation_config_geo_plots_off_by_default(tmp_path):
+    """Without plot_geo the GEO plot directory is neither set nor created."""
+    config = SimulationConfig(
+        start_year=2025,
+        end_year=2030,
+        master_excel_path=tmp_path / "master.xlsx",
+        output_dir=tmp_path / "output",
+        technology_settings=get_default_technology_settings(),
+    )
+
+    assert config.geo_plots_dir is None
+    assert not (tmp_path / "output" / "plots" / "GEO").exists()
 
 
 def test_custom_geo_paths_in_config(tmp_path):

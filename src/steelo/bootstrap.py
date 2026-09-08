@@ -428,14 +428,16 @@ def bootstrap_simulation(
 
         plots_dir = config.output_dir / "plots"
         pam_plots_dir = plots_dir / "PAM"
-        geo_plots_dir = plots_dir / "GEO"
-        tm_plots_dir = plots_dir / "TM"
+        geo_plots_dir = plots_dir / "GEO" if config.plot_geo else None
+        tm_plots_dir = plots_dir / "TM" if config.plot_tm else None
 
         # Create the directories
         plots_dir.mkdir(parents=True, exist_ok=True)
         pam_plots_dir.mkdir(parents=True, exist_ok=True)
-        geo_plots_dir.mkdir(parents=True, exist_ok=True)
-        tm_plots_dir.mkdir(parents=True, exist_ok=True)
+        if geo_plots_dir is not None:
+            geo_plots_dir.mkdir(parents=True, exist_ok=True)
+        if tm_plots_dir is not None:
+            tm_plots_dir.mkdir(parents=True, exist_ok=True)
 
         env.plot_paths = PlotPaths(
             plots_dir=plots_dir,
@@ -464,9 +466,13 @@ def bootstrap_simulation(
         env.geo_paths = GeoDataPaths(
             data_dir=config.data_dir,
             atlite_dir=config.data_dir / "atlite",
-            geo_plots_dir=config.output_dir / "plots" / "GEO"
-            if config.output_dir
-            else config.data_dir / "output" / "plots" / "GEO",
+            geo_plots_dir=(
+                config.output_dir / "plots" / "GEO"
+                if config.output_dir
+                else config.data_dir / "output" / "plots" / "GEO"
+            )
+            if config.plot_geo
+            else None,
             terrain_nc_path=terrain_path,
             rail_distance_nc_path=rail_distance_path,
             railway_capex_csv_path=config.data_dir / "railway_capex.csv",

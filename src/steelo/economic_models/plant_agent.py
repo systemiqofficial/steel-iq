@@ -520,11 +520,7 @@ class AllocationModel:
         if output_dir is None:
             raise ValueError("output_dir must be set on bus.env")
 
-        if non_empty_allocations:
-            # # pickle the allocations for debugging purposes TODO: remove
-            # with open(output_dir / f"steel_trade_allocations_{bus.env.year}.pkl", "wb") as f:
-            #     pickle.dump(non_empty_allocations, f)
-
+        if non_empty_allocations and bus.env.plot_paths is not None and bus.env.plot_paths.tm_plots_dir is not None:
             # Create detailed trade map (existing pydeck visualization)
             plot_detailed_trade_map(
                 allocations_by_commodity=non_empty_allocations, chosen_year=bus.env.year, plot_paths=bus.env.plot_paths
