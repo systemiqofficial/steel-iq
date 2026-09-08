@@ -923,6 +923,7 @@ def adapt_allocation_costs_for_carbon_border_mechanisms(
           Destination countries with no domestic producers of the commodity are skipped —
           there is nothing to protect or rebate against.
     """
+    logger = logging.getLogger(f"{__name__}.adapt_allocation_costs_for_carbon_border_mechanisms")
     # Track which arcs have already been adjusted to prevent double-counting across mechanisms
     adjusted_arcs = set()
     adjustments_made = 0
@@ -936,6 +937,13 @@ def adapt_allocation_costs_for_carbon_border_mechanisms(
 
         # Get countries in the applying region
         applying_countries = mechanism.get_applying_region_countries(country_mappings)
+        if not applying_countries:
+            logger.warning(
+                f"Mechanism {mechanism.mechanism_name}: no countries match region column "
+                f"'{mechanism.applying_region_column}' — it adjusts nothing"
+            )
+            continue
+        logger.debug(f"Mechanism {mechanism.mechanism_name}: {len(applying_countries)} applying countries")
 
         for from_pc, to_pc, comm in trade_lp.legal_allocations:
             from_iso3 = from_pc.location.iso3
@@ -979,6 +987,11 @@ def adapt_allocation_costs_for_carbon_border_mechanisms(
                     trade_lp.lp_model.allocation_costs[arc_key] += differential
                     adjusted_arcs.add(arc_key)
                     adjustments_made += 1
+
+    logger.info(
+        f"Carbon border adjustments in {year}: {adjustments_made} arcs adjusted, "
+        f"{skipped_duplicates} skipped as already adjusted"
+    )
 
 
 def set_up_steel_trade_lp(
