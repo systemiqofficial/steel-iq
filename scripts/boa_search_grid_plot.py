@@ -95,12 +95,23 @@ def plot_search_grid(
     lat: float,
     lon: float,
     coverage: float,
-    baseload: float,
+    baseload: float | None,
     years: list[int],
     winners: dict[int, Optimum | None],
     anchors: dict[int, list[tuple[float, float]]],
     output_path: Path | None = None,
+    colorbar_label: str = "investment year",
+    tick_labels: dict[int, str] | None = None,
+    anchor_legend_label: str = "year's own anchor seed",
 ) -> None:
+    """
+    `colorbar_label`/`tick_labels` let a caller repurpose the `years` axis for a discrete
+    set of labelled scenarios instead of real investment years -- e.g. one slot per
+    build-time anchor plus a held-out query -- without changing the default behaviour real
+    CLI usage (`main`, real years) relies on. `tick_labels` maps a `years` entry to its
+    display name; annotation text and the colorbar ticks use it when given, otherwise the
+    raw year number is shown as before.
+    """
     fig, ax = plt.subplots(figsize=(9, 7))
 
     s_c = frontier.s_coarse.astype(np.float64)
@@ -196,8 +207,9 @@ def plot_search_grid(
         edge = "red" if opt.argmin_truncated else "black"
         lw = 2.2 if opt.argmin_truncated else 0.8
         ax.scatter(opt.solar, opt.wind, s=size, color=cmap(norm(y)), edgecolors=edge, linewidths=lw, zorder=7)
+        label = tick_labels[y] if tick_labels else str(y)
         ax.annotate(
-            f"{y}  b={opt.battery:.2f}",
+            f"{label}  b={opt.battery:.2f}",
             (opt.solar, opt.wind),
             textcoords="offset points",
             xytext=(6, 6),
@@ -206,7 +218,11 @@ def plot_search_grid(
 
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
-    fig.colorbar(sm, ax=ax, label="investment year", pad=0.08)
+    cbar = fig.colorbar(sm, ax=ax, label=colorbar_label, pad=0.08)
+    if tick_labels:
+        ticks = sorted(tick_labels)
+        cbar.set_ticks(ticks)
+        cbar.set_ticklabels([tick_labels[t] for t in ticks])
 
     legend_elems = [
         Line2D(
@@ -238,7 +254,7 @@ def plot_search_grid(
             markerfacecolor="none",
             markeredgecolor="grey",
             markersize=9,
-            label="year's own anchor seed",
+            label=anchor_legend_label,
         ),
         Rectangle((0, 0), 1, 1, fill=False, edgecolor="black", linestyle="--", label="patch box"),
         Line2D(
@@ -260,9 +276,16 @@ def plot_search_grid(
     ax.set_xlabel("solar overscale (s)")
     ax.set_ylabel("wind overscale (w)")
     status = STATUS_CODES.get(int(frontier.status), "unknown")
+    # LCOE and the argmin design are exactly baseload-invariant (every CostCoefficients
+    # entry scales linearly with it and it cancels in the LCOE ratio -- see
+    # cost_calculations.lcoe_coefficients), so it is display-only even when given: it says
+    # what physical scale the caller's coeffs were built at, nothing the search itself used.
+    # `None` (e.g. coeffs built baseload=1-normalised, with no real MW figure behind them)
+    # omits it rather than showing a number that would imply otherwise.
+    baseload_part = f"  baseload={baseload:g} MW" if baseload is not None else ""
     ax.set_title(
         f"{region} pixel k={k}  (lat={lat:.3f}, lon={lon:.3f})\n"
-        f"coverage={coverage:g}  baseload={baseload:g} MW  status={status}  n_patches={frontier.n_patches}"
+        f"coverage={coverage:g}{baseload_part}  status={status}  n_patches={frontier.n_patches}"
     )
     ax.grid(True, alpha=0.2)
     plt.tight_layout()
