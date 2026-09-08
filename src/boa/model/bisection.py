@@ -949,17 +949,32 @@ def max_patch_points(params: SearchParams) -> int:
     """
     Widest lattice patch these parameters can produce, in points per axis.
 
-    Exact rather than a cap or a guess, because `patch_bounds_for_seed` is scale-invariant:
-    the half-width is `max(patch_halfwidth * s_coarse[i], coarse_stride * ds)` and
-    `s_coarse[i] = i * ds`, so the span in coarse cells depends only on the seed's index,
-    never on the axis extent. Evaluating every index therefore gives the true maximum over
-    all pixels, which is what the padded arrays must be sized to.
+    `patch_bounds_for_seed` is scale-invariant in exact arithmetic: the half-width is
+    `max(patch_halfwidth * s_coarse[i], coarse_stride * ds)` and `s_coarse[i] = i * ds`, so
+    the span in coarse cells depends only on the seed's index, never on the axis extent.
+    Evaluated here on an exact-integer axis (`ds = 1`), which gives the true span in that
+    arithmetic.
+
+    The real `s_coarse`/`w_coarse` passed to `patch_bounds_for_seed` at build time are a
+    `np.linspace` over the pixel's own `(s_max, w_max)`, not integers, and its
+    `np.searchsorted` boundary lookup runs against that float axis. When the true boundary
+    sits exactly on a grid line -- the common case at round `patch_halfwidth` values against
+    `coarse_stride` -- float rounding in the axis or in `s_coarse[i] +/- half_s` can land a
+    hair on either side of it, shifting that one `searchsorted` result by a single grid
+    index. Both bounds on one axis can shift this way independently (one narrowing, one
+    widening), so the true span can exceed this function's exact-arithmetic value by up to 2
+    coarse cells; `+2` below covers that, and a single relative-error perturbation cannot
+    skip a boundary by more than the nearest grid index, so a larger margin is not needed.
+    Confirmed against `SearchParams(patch_halfwidth=0.20, coarse_grid=17)`, which without
+    this margin undersizes the padded patch arrays and crashes the build with a numpy
+    broadcast error.
     """
     axis = np.arange(params.coarse_grid, dtype=np.float64)
     span = 0
     for i in range(params.coarse_grid):
         i0, i1, _, _ = patch_bounds_for_seed(axis, axis, i, i, params)
         span = max(span, i1 - i0)
+    span = min(span + 2, params.coarse_grid - 1)
     return span * params.lattice_refinement + 1
 
 
