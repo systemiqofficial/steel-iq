@@ -3064,9 +3064,9 @@ class CarbonBorderMechanismJsonRepository:
         self._mechanisms_to_write.extend(mechanisms)
 
     def _write_models(self, models: List[CarbonBorderMechanismInDb]) -> None:
-        """Write models to the JSON file."""
+        """Write models to the JSON file, preserving CBAM sheet column order (first mechanism wins per arc)."""
         try:
-            mechanisms_list = CarbonBorderMechanismListInDb(root=sorted(models, key=lambda x: x.mechanism_name))
+            mechanisms_list = CarbonBorderMechanismListInDb(root=models)
             with self.path.open("w", encoding="utf-8") as f:
                 f.write(mechanisms_list.model_dump_json(indent=2))
         except Exception as e:
