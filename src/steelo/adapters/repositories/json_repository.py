@@ -3090,11 +3090,14 @@ class CarbonBorderMechanismJsonRepository:
 
 
 class CapacityPoolProvinceInDb(BaseModel):
+    """Database model for a `Capacity pool - CHN provinces` row (RegionRow)."""
+
     geo_key: str
     region_name: Optional[str]
     type: Optional[str]
 
     def to_domain(self) -> RegionRow:
+        """Convert to domain model."""
         return RegionRow(
             geo_key=self.geo_key,
             region_name=self.region_name,
@@ -3103,6 +3106,7 @@ class CapacityPoolProvinceInDb(BaseModel):
 
     @classmethod
     def from_domain(cls, obj: RegionRow) -> "CapacityPoolProvinceInDb":
+        """Create from domain model."""
         return cls(
             geo_key=obj.geo_key,
             region_name=obj.region_name,
@@ -3111,6 +3115,8 @@ class CapacityPoolProvinceInDb(BaseModel):
 
 
 class CapacityPoolTechnologyInDb(BaseModel):
+    """Database model for a `Capacity pool - technologies` row (TechnologyRow)."""
+
     technology: str
     product: Optional[str]
     reductant: Optional[str]
@@ -3119,6 +3125,7 @@ class CapacityPoolTechnologyInDb(BaseModel):
     swap_ratio: Optional[float]
 
     def to_domain(self) -> TechnologyRow:
+        """Convert to domain model."""
         return TechnologyRow(
             technology=self.technology,
             product=self.product,
@@ -3130,6 +3137,7 @@ class CapacityPoolTechnologyInDb(BaseModel):
 
     @classmethod
     def from_domain(cls, obj: TechnologyRow) -> "CapacityPoolTechnologyInDb":
+        """Create from domain model."""
         return cls(
             technology=obj.technology,
             product=obj.product,
@@ -3141,6 +3149,8 @@ class CapacityPoolTechnologyInDb(BaseModel):
 
 
 class CapacityPoolOpeningCreditInDb(BaseModel):
+    """Database model for a `Capacity pool - opening credits` row (OpeningCreditRow)."""
+
     vintage_year: int
     capacity_mt: float
     geo_key: str
@@ -3149,6 +3159,7 @@ class CapacityPoolOpeningCreditInDb(BaseModel):
     plant_group_id: Optional[str]
 
     def to_domain(self) -> OpeningCreditRow:
+        """Convert to domain model."""
         return OpeningCreditRow(
             vintage_year=self.vintage_year,
             capacity_mt=self.capacity_mt,
@@ -3160,6 +3171,7 @@ class CapacityPoolOpeningCreditInDb(BaseModel):
 
     @classmethod
     def from_domain(cls, obj: OpeningCreditRow) -> "CapacityPoolOpeningCreditInDb":
+        """Create from domain model."""
         return cls(
             vintage_year=obj.vintage_year,
             capacity_mt=obj.capacity_mt,
@@ -3183,17 +3195,20 @@ class CapacityPoolProvinceJsonRepository:
         self._rows: Optional[List[RegionRow]] = None
 
     def _fetch_all(self) -> List[RegionRow]:
+        """Read the JSON file as domain rows; empty when there is no file."""
         if self.path is None or not self.path.exists():
             return []
         data = json.loads(self.path.read_text(encoding="utf-8"))
         return [CapacityPoolProvinceInDb(**item).to_domain() for item in data]
 
     def list(self) -> List[RegionRow]:
+        """Lazy-load and return all rows in sheet order."""
         if self._rows is None:
             self._rows = self._fetch_all()
         return list(self._rows)
 
     def add_list(self, rows: List[RegionRow]) -> None:
+        """Replace the file\'s content with these rows."""
         if self.path is None:
             raise ValueError("Cannot write capacity pool provinces: repository has no path")
         db_rows = [CapacityPoolProvinceInDb.from_domain(row) for row in rows]
@@ -3214,17 +3229,20 @@ class CapacityPoolTechnologyJsonRepository:
         self._rows: Optional[List[TechnologyRow]] = None
 
     def _fetch_all(self) -> List[TechnologyRow]:
+        """Read the JSON file as domain rows; empty when there is no file."""
         if self.path is None or not self.path.exists():
             return []
         data = json.loads(self.path.read_text(encoding="utf-8"))
         return [CapacityPoolTechnologyInDb(**item).to_domain() for item in data]
 
     def list(self) -> List[TechnologyRow]:
+        """Lazy-load and return all rows in sheet order."""
         if self._rows is None:
             self._rows = self._fetch_all()
         return list(self._rows)
 
     def add_list(self, rows: List[TechnologyRow]) -> None:
+        """Replace the file\'s content with these rows."""
         if self.path is None:
             raise ValueError("Cannot write capacity pool technologies: repository has no path")
         db_rows = [CapacityPoolTechnologyInDb.from_domain(row) for row in rows]
@@ -3247,17 +3265,20 @@ class CapacityPoolOpeningCreditJsonRepository:
         self._rows: Optional[List[OpeningCreditRow]] = None
 
     def _fetch_all(self) -> List[OpeningCreditRow]:
+        """Read the JSON file as domain rows; empty when there is no file."""
         if self.path is None or not self.path.exists():
             return []
         data = json.loads(self.path.read_text(encoding="utf-8"))
         return [CapacityPoolOpeningCreditInDb(**item).to_domain() for item in data]
 
     def list(self) -> List[OpeningCreditRow]:
+        """Lazy-load and return all rows in sheet order."""
         if self._rows is None:
             self._rows = self._fetch_all()
         return list(self._rows)
 
     def add_list(self, rows: List[OpeningCreditRow]) -> None:
+        """Replace the file\'s content with these rows."""
         if self.path is None:
             raise ValueError("Cannot write capacity pool opening credits: repository has no path")
         db_rows = [CapacityPoolOpeningCreditInDb.from_domain(row) for row in rows]

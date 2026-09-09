@@ -55,9 +55,9 @@ class CapacityPolicyConfig:
             regardless of the announcement probability.
         renovation_counts_as_replace: Whether a same-technology renovation is
             a full REPLACE, paying the replacement ratio like any switch — the
-            default, per Decision 36: the tree's ② branch draws no
+            default, because the tree's ② branch draws no
             same-technology exemption. ``False`` exempts a renovation from the
-            ratio alone; the utilisation gate applies either way (Decision 34).
+            ratio alone; the utilisation gate applies either way.
 
     Raises:
         ValueError: On an unknown ``banked_credit_rule``, a non-positive ratio,

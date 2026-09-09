@@ -8,7 +8,7 @@ from steelo.simulation import SimulationConfig
 
 
 def test_defaults_are_dormant():
-    """The default config is disabled with the spec's parameter defaults."""
+    """The default config is disabled, with the documented parameter defaults."""
     config = CapacityPolicyConfig()
     assert config.enabled is False
     assert config.replacement_ratio == 1.5

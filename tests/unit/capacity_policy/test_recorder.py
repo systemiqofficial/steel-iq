@@ -391,8 +391,8 @@ class TestReconciliation:
         assert excluded > 0
 
     def test_expired_rows_are_readable_per_region_tag(self, written):
-        """Decision 27's paired accounting: expired-unused capacity by key region and
-        nationally, both groupings of the same rows."""
+        """Expired-unused capacity is readable by key region and nationally, both
+        groupings of the same rows."""
         ledger = read_rows(written / LEDGER_FILE)
         expired = [row for row in ledger if row["operation"] == "expired"]
 

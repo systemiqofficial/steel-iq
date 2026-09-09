@@ -324,7 +324,7 @@ class TestTechChangedDeposit:
 
     @pytest.mark.parametrize("old_capacity, capacity", [(2.0, 2.0), (2.0, 3.0)])
     def test_non_positive_delta_deposits_nothing(self, bound: CapacityPool, old_capacity, capacity):
-        """No shrink (the norm until D7a) or growth must not reach pool.deposit."""
+        """A zero delta (a 1:1 transition) or growth must not reach pool.deposit."""
         cp_handlers.deposit_on_furnace_group_tech_changed(
             tech_changed_event(old_capacity, capacity),
             uow=make_uow(),  # type: ignore[arg-type]
@@ -475,7 +475,7 @@ class TestEndOfLifeDeposit:
 
 
 class TestMembershipOwner:
-    """D-F: every credit and every motion names the plant's group by membership.
+    """Every credit and every motion names the plant's group by membership.
 
     The events stamp ``ultimate_plant_group``, which keeps reporting
     ``indi_<iso3>`` for a credit-funded plant this package moved into its funding
@@ -548,7 +548,7 @@ class TestMembershipOwner:
 
 class TestReplaceCapacityHook:
     def test_unbound_accessor_returns_none(self):
-        """Unbound — every real run until D8 — the decision path receives None."""
+        """Unbound — every policy-OFF run — the decision path receives None."""
         assert cp_handlers.replace_capacity_hook() is None
 
     def test_bound_accessor_returns_a_callable(self, bound: CapacityPool):
@@ -593,7 +593,7 @@ class TestReplaceCapacityHook:
         assert permitted is None
 
     def test_an_intense_renovation_shrinks_under_the_default_flag(self, bound: CapacityPool):
-        """Decision 36: a BF→BF renovation of an intense group is a full REPLACE and
+        """A BF→BF renovation of an intense group is a full REPLACE and
         derives 1.5:1 from the flags."""
         hook = cp_handlers.replace_capacity_hook()
         assert hook is not None
@@ -652,7 +652,7 @@ class TestReplaceCapacityHook:
         assert permitted == 3.0
 
     def test_a_ratio_exempt_renovation_is_still_gated(self, pool: CapacityPool):
-        """Decision 34: the flag is the ratio question alone — the gate applies regardless."""
+        """The flag is the ratio question alone — the gate applies regardless."""
         evaluator = TreeEvaluator(REGIONS, TECHNOLOGIES, CapacityPolicyConfig(renovation_counts_as_replace=False))
         cp_handlers.bind_capacity_policy(evaluator, pool, CapacityPolicyRecorder())
         hook = cp_handlers.replace_capacity_hook()
@@ -733,7 +733,7 @@ class TestIncreaseSizingHook:
 
 class TestExpansionCapacityHook:
     def test_unbound_accessor_returns_none(self):
-        """Unbound — every real run until D8 — the decision path receives None."""
+        """Unbound — every policy-OFF run — the decision path receives None."""
         assert cp_handlers.expansion_capacity_hook() is None
 
     def test_bound_accessor_returns_a_callable(self, bound: CapacityPool):
@@ -791,7 +791,7 @@ def greenfield_hook_call(hook, **overrides):
 
 class TestGreenfieldCapacityHook:
     def test_unbound_accessor_returns_none(self):
-        """Unbound — every real run until D8 — the decision path receives None."""
+        """Unbound — every policy-OFF run — the decision path receives None."""
         assert cp_handlers.greenfield_capacity_hook() is None
 
     def test_bound_accessor_returns_a_callable(self, bound: CapacityPool):

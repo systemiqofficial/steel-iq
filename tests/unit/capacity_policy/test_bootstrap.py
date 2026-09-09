@@ -342,7 +342,7 @@ def test_bootstrap_simulation_disabled_unbinds_stale_binding(tmp_path):
 
 
 def test_enabled_with_missing_fixtures_raises_naming_them(tmp_path):
-    """Criterion 17: enabled=True with no capacity pool fixtures refuses, naming each one."""
+    """enabled=True with no capacity pool fixtures refuses, naming each one."""
     with pytest.raises(ValueError) as excinfo:
         configure_capacity_policy(
             CapacityPolicyConfig(enabled=True), fake_repository_json(tmp_path, write=()), start_year=2025
@@ -427,7 +427,7 @@ def test_enabled_with_injected_repository_raises():
 
 
 def test_bootstrap_simulation_enabled_without_pool_fixtures_raises(tmp_path):
-    """Criterion 17 through the real entry point: a prepared dataset without the
+    """Through the real entry point: a prepared dataset without the
     optional pool sheets must refuse an enabled run at bootstrap."""
     from steelo.bootstrap import bootstrap_simulation
 

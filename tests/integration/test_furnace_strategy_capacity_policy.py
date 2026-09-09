@@ -395,7 +395,7 @@ class TestBoundReplacePath:
 
     def test_utilisation_gated_group_loses_every_candidate_but_keeps_running(self, mocker):
         """The gate empties the replace menu — the incumbent included, under the default
-        flag (Decision 34) — and a live group with nothing to decide simply continues."""
+        flag — and a live group with nothing to decide simply continues."""
         bind_policy()
         plant, plant_group = make_plant_and_group()
         fg = plant.furnace_groups[0]
@@ -436,7 +436,7 @@ class TestBoundReplacePath:
 
 
 class TestCandidatePickClassification:
-    """Decision 30: the new side is classified by the candidate's own operating-start pick."""
+    """The new side is classified by the candidate's own operating-start pick."""
 
     def test_the_pick_classifies_where_the_fleet_modal_would_have_penalised(self, mocker, caplog):
         """DRI+Hydrogen is deep-abating and replaces 1:1; DRI+Coal, the fleet modal here,
@@ -523,7 +523,7 @@ class TestRenovationRuling:
         assert isinstance(command, CloseFurnaceGroup)
 
     def test_ratio_exempt_gate_blocked_expired_group_falls_through_to_close(self, mocker):
-        """Decision 34: the gate reaches a ratio-exempt renovation too, so a
+        """The gate reaches a ratio-exempt renovation too, so a
         low-utilisation expired group loses the incumbent option and closes."""
         bind_policy(renovation_counts_as_replace=False)
         plant, plant_group = make_plant_and_group(expired=True)

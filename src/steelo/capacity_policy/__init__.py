@@ -12,6 +12,8 @@ None and behaviour is byte-identical to a build without the package.
 here: both reach into the service layer, which itself imports this package's
 ``inputs`` while initialising, so a package-level re-export would be a
 circular import.
+
+Narrative documentation: ``docs/domain_simulation_logic/capacity_replacement_policy.md``.
 """
 
 from .config import CapacityPolicyConfig

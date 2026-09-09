@@ -84,10 +84,12 @@ class PolicyArtefacts:
 
     @property
     def products(self) -> list[str]:
+        """Products with a pool state, sorted."""
         return sorted({row["product"] for row in self.state})
 
     @property
     def clusters(self) -> list[str]:
+        """Key-region cluster tags seen in the pool state, sorted."""
         return sorted({row["region_tag"] for row in self.state if row["region_tag"]})
 
 
@@ -148,6 +150,7 @@ def _per_year(
 
 
 def _ordered(series: dict[str, list[float]], order: list[str]) -> dict[str, list[float]]:
+    """Reorder ``series`` by ``order``, dropping names it does not contain."""
     return {name: series[name] for name in order if name in series}
 
 

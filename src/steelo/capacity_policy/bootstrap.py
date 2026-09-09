@@ -1,4 +1,4 @@
-"""Run-level activation for the China capacity policy (D8).
+"""Run-level activation for the China capacity policy.
 
 :func:`configure_capacity_policy` is called once per ``bootstrap_simulation``
 and owns the binding lifecycle: it always unbinds first, so no evaluator or

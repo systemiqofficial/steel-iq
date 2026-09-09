@@ -2,7 +2,7 @@
 
 The event handlers are registered on ``EVENT_HANDLERS`` unconditionally but
 the deposit handlers stay inert until :func:`bind_capacity_policy` installs an
-evaluator and pool (bootstrapping, D8): until then — and whenever
+evaluator and pool at bootstrap: until then — and whenever
 ``config.capacity_policy.enabled`` is False, since nothing binds a disabled
 policy — they return immediately and pool behaviour is byte-identical. Once
 bound, only Chinese events deposit. The motion handlers also write into the
@@ -33,7 +33,7 @@ Credit and motion ownership is **group membership** throughout: every handler
 resolves ``uow.plant_groups.get_by_plant_id(...)`` rather than reading the
 events' own ``owner_id``, which carries ``Plant.ultimate_plant_group`` and
 therefore still reports ``indi_<iso3>`` for a plant this package attributed to
-its funding company. A plant with no registered group raises, the D6 discipline.
+its funding company. A plant with no registered group raises rather than being skipped.
 """
 
 import logging
@@ -55,6 +55,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class _BoundPolicy:
+    """The evaluator, pool and recorder of the run's bound policy, installed by :func:`bind_capacity_policy`."""
+
     evaluator: TreeEvaluator
     pool: CapacityPool
     recorder: CapacityPolicyRecorder
@@ -148,7 +150,7 @@ def replace_capacity_hook() -> Callable[..., float | None] | None:
 
     The plant agent threads this value into
     ``Plant.evaluate_furnace_group_strategy`` on every evaluation, so binding
-    at bootstrap (D8) activates the gate without reopening the domain module
+    at bootstrap activates the gate without reopening the domain module
     or the plant agent. Unbound — the default, and always the case while
     ``config.capacity_policy.enabled`` is False — the decision path receives
     None and behaves byte-identically.
@@ -179,11 +181,11 @@ def replace_capacity_hook() -> Callable[..., float | None] | None:
         the evaluator. A same-technology candidate — the renovation option —
         is a full REPLACE under ``renovation_counts_as_replace``, the shipped
         default, so the utilisation gate and the ratio both apply; with the
-        flag off it faces the gate alone (Decision 34). None means the gate
+        flag off it faces the gate alone. None means the gate
         blocks the decision.
 
-        ``new_reductant`` is the candidate's operating-start pick (Decision
-        30), not the fleet's modal reductant. A reductant-split technology —
+        ``new_reductant`` is the candidate's operating-start pick, not the
+        fleet's modal reductant. A reductant-split technology —
         today the DRI family — re-optimises annually and may later run a
         different reductant than it was classified under; fixed-reductant
         routes cannot drift. The divergence is deliberate and bounded, since
@@ -258,7 +260,7 @@ def expansion_capacity_hook() -> Callable[..., float | None] | None:
     """Return the live ③ INCREASE expansion gate callable, or None while unbound.
 
     The plant agent threads this value into ``PlantGroup.evaluate_expansion``
-    on every evaluation, so binding at bootstrap (D8) activates the gate
+    on every evaluation, so binding at bootstrap activates the gate
     without reopening the domain module or the plant agent. Unbound — the
     default, and always the case while ``config.capacity_policy.enabled`` is
     False — the decision path receives None and behaves byte-identically.
@@ -461,7 +463,7 @@ def greenfield_capacity_hook() -> Callable[..., tuple[float, str | None, bool, t
 
     The plant agent threads this value through
     ``PlantGroup.update_status_of_business_opportunities`` into
-    ``FurnaceGroup.track_business_opportunities``, so binding at bootstrap (D8)
+    ``FurnaceGroup.track_business_opportunities``, so binding at bootstrap
     activates the gate without reopening the domain module or the plant agent.
     Unbound — the default, and always the case while
     ``config.capacity_policy.enabled`` is False — the decision path receives
@@ -486,7 +488,7 @@ def greenfield_capacity_hook() -> Callable[..., tuple[float, str | None, bool, t
         Called when the announcement draw succeeds, so consumption coincides
         with the considered→announced commitment; capacities flow in model
         tonnes end-to-end. The whole withdrawal is served from a single credit
-        holder — the spec's uniform-across-the-run greenfield rule — so a build
+        holder — the greenfield rule, uniform across the run — so a build
         can be refused with an ample pool when no one holder covers it, which
         the block log states distinctly. A non-Chinese opportunity passes
         through untouched without reaching the evaluator or the pool. The
@@ -635,8 +637,8 @@ def deposit_on_furnace_group_tech_changed(
     """Branch ② REPLACE: bank the capacity the replacement shrank away.
 
     The deposit is ``old_capacity − capacity``, banked only when positive —
-    zero means no shrink happened, which is every tech change until the
-    pre-NPV hook (D7a) starts shrinking penalised replacements.
+    zero means the pre-NPV hook resolved the transition 1:1 and nothing was
+    shrunk away.
     """
     policy = _policy
     if policy is None:
@@ -748,8 +750,9 @@ def deposit_on_end_of_life_closure(
 
     Called from ``finalise_iteration`` immediately after it closes an expired
     group with a bare status flip. That path raises no ``FurnaceGroupClosed``,
-    so the deposit handler never sees it — yet Decision 28 credits every
-    retirement, whoever decided it. The deposit is made pool-scoped rather than
+    so the deposit handler never sees it — yet the policy credits every
+    retirement, whoever decided it (a modelling decision: no eligibility filter
+    on retired capacity). The deposit is made pool-scoped rather than
     by emitting the event, which would also wake the shared closed-handlers the
     direct path deliberately bypasses.
 

@@ -4286,8 +4286,8 @@ class Plant:
                 if tech == furnace_group.technology.name:
                     candidate_reductant: str | None = furnace_group.chosen_reductant
                 else:
-                    # The new side is classified by the candidate's own operating-start pick
-                    # (Decision 30), on the series and year anchor the P2 gate already uses
+                    # The new side is classified by the candidate's own operating-start pick,
+                    # on the series and year anchor the P2 CO2 gate already uses
                     if tech not in gate_pick_by_tech:
                         started = time.perf_counter()
                         gate_series = score_series_for_tech(tech, {}, Year(lookup_year), Year(lookup_year + 1))

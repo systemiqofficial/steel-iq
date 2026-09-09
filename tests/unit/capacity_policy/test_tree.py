@@ -203,7 +203,7 @@ class TestUtilizationGate:
         assert permitted(make_evaluator(), historical_utilization=history) is None
 
     def test_low_utilization_window_blocks(self):
-        """The spec's [0.20, 0.22] case blocks the replacement."""
+        """A fully recorded low window ([0.20, 0.22]) blocks the replacement."""
         history = {2028: 0.20, 2029: 0.22}
         assert permitted(make_evaluator(), historical_utilization=history) is None
 
@@ -271,14 +271,14 @@ def renovation(
 
 
 class TestPermittedRenovation:
-    """The gate-only ② path: a renovation is blocked or untouched, never shrunk (Decision 34)."""
+    """The gate-only ② path: a renovation is blocked or untouched, never shrunk."""
 
     def test_a_healthy_group_renovates_at_its_own_capacity(self):
         assert renovation(make_evaluator(), historical_utilization={2029: 0.9, 2030: 0.9}) == pytest.approx(3.0)
 
     @pytest.mark.parametrize("history", [None, {}, {2030: 0.1}])
     def test_insufficient_history_never_blocks(self, history):
-        """The D5 letter, unchanged: only a fully recorded low window binds."""
+        """Only a fully recorded low window binds; insufficient history never blocks."""
         assert renovation(make_evaluator(), historical_utilization=history) == pytest.approx(3.0)
 
     def test_a_low_window_blocks(self):

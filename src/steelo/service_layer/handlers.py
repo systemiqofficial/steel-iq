@@ -304,6 +304,13 @@ def update_future_cost_curve(_event: events.Event, uow: UnitOfWork, env: Environ
 
 
 def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, uow: UnitOfWork, env: Environment):
+    """Push the solved trade allocations back onto the active furnace groups.
+
+    Propagates costs through the TM-PAM connector, updates each group's
+    utilisation rate and records it under the current year (the per-year
+    history the capacity policy's utilisation gate reads), then refreshes the
+    bills of materials.
+    """
     trade_allocations = event.trade_allocations
     if env.config is None:
         raise ValueError("SimulationConfig is required for update_furnace_utilization_rates")

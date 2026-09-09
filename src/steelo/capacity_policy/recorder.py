@@ -205,7 +205,7 @@ class CapacityPolicyRecorder:
         """Append one row per credit a boundary purge removed.
 
         One row per credit rather than an aggregate: expired-unused capacity has
-        to be readable per key region and nationally (Decision 27), and the
+        to be readable per key region and nationally, and the
         per-credit rows are what make both groupings — and the reconciliation
         subtraction — fall out of the same file.
 

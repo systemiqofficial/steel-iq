@@ -492,7 +492,7 @@ class TestPreDrawFeasibilityProbe:
 
 
 class TestRetryCap:
-    """D-I: an opportunity the capacity gate keeps refusing is eventually discarded.
+    """An opportunity the capacity gate keeps refusing is eventually discarded.
 
     Counting is structural — the CO2 gate and the announcement draw return from
     their own branches and never reach the counter.

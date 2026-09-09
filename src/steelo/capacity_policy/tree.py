@@ -269,13 +269,13 @@ class TreeEvaluator:
     ) -> float | None:
         """Resolve whether a same-technology renovation is allowed at all — the gate alone.
 
-        Decision 34: the utilisation gate applies to renovations whatever
+        The utilisation gate applies to renovations whatever
         ``renovation_counts_as_replace`` says; that flag decides only whether
         a renovation also pays the replacement ratio. A ratio-exempt
         renovation therefore has nothing to classify and nothing to shrink —
         it either proceeds untouched or is blocked outright.
 
-        The D5 letter is untouched: the predicate blocks only on a fully
+        The gate's rule is unchanged: it blocks only on a fully
         recorded window at or below the floor, so insufficient history never
         blocks and none is pre-populated.
 
