@@ -8,17 +8,18 @@ This guide explains how to run the steel model simulation during local developme
 After installing the Steel Model package, run a simulation from the command line:
 
 ```bash
-run_simulation --start-year 2025 --end-year 2030 --output-dir ./simulation_outputs
+run_simulation --start-year 2025 --end-year 2030
 ```
 
 Common options:
 - `--start-year` / `--end-year`: define the scenario horizon.
-- `--config-file`: load a saved configuration.
+- `--master-excel`: the master input workbook to prepare and run against (default: the packaged one, downloaded if needed).
 - `--log-level`: control verbosity (`INFO`, `DEBUG`, etc.).
 - `--demand-scenario` / `--scrap-scenario`: pick the `Scenario` rows of the master Excel "Demand and scrap availability" sheet used for steel demand and for scrap availability (both default to `BAU`; `--scrap-scenario` falls back to the demand scenario). Applied when the data is prepared, so each scenario pair gets its own preparation cache entry.
 - `--run-name`: human-readable run name shown in the interactive viewer titles (default: the `sim_<timestamp>` output directory name). The viewers themselves are described in [Outputs and postprocessing](../domain_simulation_logic/outputs_and_postprocessing.md).
+- `--enable-capacity-policy`: switch on China's capacity-replacement policy, which gates Chinese replacements and new builds on a national pool of retirement credits (off by default; needs the three `Capacity pool - …` sheets in the master Excel). `--credit-validity-years N` caps how long a banked credit stays spendable (default: no expiry). Policy runs additionally write `data/policy/` CSVs and `plots/capacity_pool/` charts, described in [Outputs and postprocessing](../domain_simulation_logic/outputs_and_postprocessing.md).
 
-The CLI writes metrics, logs, and artefacts to the chosen output directory. Review the [Configuration](configuration.md) guide for a comprehensive list of parameters and environment variables.
+Each run writes its plots, CSVs and logs to a fresh `$STEELO_HOME/output/sim_<timestamp>/` directory, also linked as `$STEELO_HOME/output_latest`; `--output-dir` is accepted but currently not used. Review the [Configuration](configuration.md) guide for a comprehensive list of parameters and environment variables.
 
 ## Custom Data Overview
 
@@ -30,11 +31,10 @@ To experiment with bespoke datasets:
    ```bash
    run_simulation \
      --plants-json ./my_data/plants.json \
-     --demand-excel ./my_data/demand.xlsx \
-     --output-dir ./custom_run
+     --demand-excel ./my_data/demand.xlsx
    ```
 
-3. Inspect the generated reports (`metrics.json`, plots, logs) under your output directory.
+3. Inspect the generated outputs (plots, CSVs, logs) under the run's `sim_<timestamp>` directory.
 
 For notebook or service integrations, see the [Command-Line Entrypoints](commandline_entrypoints.md) reference.
 :::
@@ -212,8 +212,8 @@ steelo-cache list
 # Clear all cached data
 steelo-cache clear
 
-# Clear old caches but keep recent ones
-run_simulation --cache-clear --keep-recent 3
+# Clear old caches but keep the 3 most recent preparations
+steelo-cache clear --keep-recent 3
 
 # Force fresh preparation (bypass cache)
 run_simulation --force-refresh
@@ -347,34 +347,52 @@ Once data preparation is complete, start the simulation:
 # Run simulation with default settings
 run_simulation
 
-# Run with custom output directory
-run_simulation --output-dir ./my_simulation_outputs
+# Run against a specific master input workbook
+run_simulation --master-excel ./master_input/my_master.xlsx
 
 # Run with custom parameters and redirect log
-run_simulation --start-year 2025 --end-year 2035 --output-dir ./outputs > /tmp/simulation.log 2>&1
+run_simulation --start-year 2025 --end-year 2035 > /tmp/simulation.log 2>&1
 ```
 
 #### CLI Options
 
+The full list is the `run_simulation -h` dump in [CLI Commands](cli_commands.md). The commonly used options:
+
 **Simulation Parameters:**
 - `--start-year`: Starting year for simulation (default: 2025)
-- `--end-year`: Ending year for simulation (default: 2050)
-- `--output-dir`: Base output directory for results (default: $STEELO_HOME/output)
+- `--end-year`: Ending year for simulation (default: 2060)
+- `--master-excel`: Master input workbook to prepare and run against (default: the packaged one, downloaded if needed)
+- `--steelo-home`: STEELO_HOME directory holding caches and outputs (default: `~/.steelo` or `$STEELO_HOME`)
 - `--log-level`: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL; default: WARNING)
 - `--plot-tm` / `--plot-geo`: Also write the per-year trade maps (`plots/TM/`) and the geospatial PNGs (`plots/GEO/`); both are off by default, and the interactive viewers under `plots/interactive/` replace the trade maps
+- `--run-name`: Human-readable run name shown in the interactive viewer titles (default: the `sim_<timestamp>` directory name)
+- `--random-seed`: Seed for the run-time RNGs shared by the plant agent, geospatial and trade LP modules (default: 42)
+- `--resume-from-year`: Resume the simulation from a checkpoint at the given year
+
+Outputs always go to a fresh `$STEELO_HOME/output/sim_<timestamp>/` directory; `--output-dir` is accepted but currently not used.
+
+**Scenario Selection:**
+- `--demand-scenario` / `--scrap-scenario`: `Scenario` rows of the "Demand and scrap availability" sheet used for steel demand and for scrap availability (default: BAU; scrap falls back to the demand scenario)
+- `--grid-emissions-scenario`: Grid emissivity projection applied at run time, named as in the "Power grid emissivity" sheet without its `projection_` prefix (default: Business As Usual)
+- `--peg-iron-to-steel-price` / `--iron-to-steel-price-ratio`: Floor the iron price at a share of the steel price (default ratio: 0.8)
+- `--enable-clustering` / `--clustering-scope`: Cluster hot-metal-affected furnace groups to reduce trade-LP size (scope `iso3`, `plant_group` or `plant`)
 
 **Data Files (usually handled automatically via caching):**
 - `--plants-json`: Path to plants JSON file
-- `--demand-excel`: Path to demand Excel file  
+- `--demand-excel` / `--demand-sheet`: Path to, and sheet of, the demand Excel file
 - `--location-csv`: Path to location CSV file
 - `--cost-of-x-csv`: Path to cost of x JSON file
+- `--baseload-power-sim-dir`: BOA-generated baseload power simulation output directory
 
 **Caching Options:**
 - `--cache-stats`: Show cache statistics and exit
-- `--cache-list`: List all cached preparations and exit
-- `--cache-clear`: Clear cache (use with --keep-recent N to keep some)
+- `--clear-cache`: Clear the preparation cache and exit (use `steelo-cache list` and `steelo-cache clear --keep-recent N` for finer control)
 - `--force-refresh`: Force fresh data preparation (bypass cache)
 - `--no-cache`: Disable caching for this run
+
+**Capacity Policy:**
+- `--enable-capacity-policy`: Enable China's capacity-replacement policy (default: disabled)
+- `--credit-validity-years N`: Years a capacity-pool credit may sit banked before it expires; requires `--enable-capacity-policy` (default: no expiry)
 
 ### Step 3: Monitor Progress
 
@@ -542,6 +560,9 @@ Both methods generate output files in the `outputs/` directory:
   - Capacity development
   - Trade flows
   - Geographic distributions
+  - Greenfield plant status charts, maps and per-plant CSV (`outputs/plots/greenfield/`)
+  - Capacity pool charts on policy-ON runs (`outputs/plots/capacity_pool/`)
+- **Fleet motions**: `outputs/data/pam_motions.csv` on every run, plus the `outputs/data/policy/` CSVs on policy-ON runs
 
 ## Troubleshooting
 
