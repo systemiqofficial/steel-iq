@@ -143,6 +143,18 @@ def test_technologies_override_row_constraints():
     assert any("'EAF' -> 'BF' needs a positive swap_ratio, got -1.0" in m for m in messages)
 
 
+def test_technologies_reductant_restriction_needs_a_reductant_split_technology():
+    """An override may restrict a reductant only where the old side is classified per reductant."""
+    rows = [
+        tech("BF", product=None, reductant="Coal", switching_to="EAF", swap_ratio=1.0),
+        tech("DRI", reductant="Coal", is_emission_intense=True),
+        tech("DRI", product=None, reductant="Coal", switching_to="EAF", swap_ratio=1.0),
+    ]
+    messages = errors(validate_technologies(rows, technology_roster=ROSTER, reductant_vocabulary=VOCABULARY))
+    assert any("'BF' -> 'EAF' restricts reductant 'Coal'" in m for m in messages)
+    assert not any("'DRI' -> 'EAF' restricts" in m for m in messages)
+
+
 def test_technologies_equal_specificity_collision():
     """`BF -> *` and `* -> EAF` are equally specific for BF -> EAF, so together they error."""
     rows = [

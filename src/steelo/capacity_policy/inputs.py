@@ -9,6 +9,8 @@ diagnostic and the tree evaluator share one precedence implementation.
 
 from dataclasses import dataclass
 
+from steelo.utilities.utils import normalize_name
+
 WILDCARD = "*"
 
 
@@ -121,9 +123,10 @@ def resolve_swap_ratio(
 
     Override precedence, most specific first: (1) technology + reductant +
     ``switching_to``; (2) technology + ``switching_to``; (3) one side ``"*"``;
-    (4) both sides ``"*"``; (5) no match — derive from the flag. Validation
-    has already refused equal-specificity collisions, so each level holds at
-    most one match.
+    (4) both sides ``"*"``; (5) no match — derive from the flag. A row naming
+    a reductant matches only that old-side reductant at every level.
+    Validation has already refused equal-specificity collisions, so each level
+    holds at most one match.
 
     Args:
         old: Classification row of the route being replaced.
@@ -135,15 +138,24 @@ def resolve_swap_ratio(
         The ratio, or None when a needed flag is unauthored and no override
         decides the transition.
     """
+
+    def reductant_matches(row: TechnologyRow) -> bool:
+        if row.reductant is None:
+            return True
+        return old.reductant is not None and normalize_name(row.reductant) == normalize_name(old.reductant)
+
     levels = (
         lambda r: r.reductant is not None
-        and r.reductant == old.reductant
+        and reductant_matches(r)
         and r.technology == old.technology
         and r.switching_to == new.technology,
         lambda r: r.reductant is None and r.technology == old.technology and r.switching_to == new.technology,
-        lambda r: (r.technology == WILDCARD and r.switching_to == new.technology)
-        or (r.technology == old.technology and r.switching_to == WILDCARD),
-        lambda r: r.technology == WILDCARD and r.switching_to == WILDCARD,
+        lambda r: reductant_matches(r)
+        and (
+            (r.technology == WILDCARD and r.switching_to == new.technology)
+            or (r.technology == old.technology and r.switching_to == WILDCARD)
+        ),
+        lambda r: reductant_matches(r) and r.technology == WILDCARD and r.switching_to == WILDCARD,
     )
     for matches in levels:
         hits = [r for r in overrides if matches(r)]

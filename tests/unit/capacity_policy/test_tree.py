@@ -169,6 +169,17 @@ class TestPermittedCapacityRatio:
         evaluator = make_evaluator(technologies=rows)
         assert permitted(evaluator, new_technology="EAF") == pytest.approx(3.0)
 
+    def test_reductant_restricted_wildcard_override_matches_only_that_reductant(self):
+        """A ``DRI|Coal -> *`` override pins coal-DRI transitions and leaves hydrogen-DRI to derivation."""
+        rows = TECHNOLOGIES + [override("DRI", "*", 1.2, reductant="Coal")]
+        evaluator = make_evaluator(technologies=rows)
+        assert permitted(evaluator, old_technology="DRI", old_reductant="Coal", new_technology="BOF") == pytest.approx(
+            3.0 / 1.2
+        )
+        assert permitted(
+            evaluator, old_technology="DRI", old_reductant="Hydrogen", new_technology="BOF"
+        ) == pytest.approx(3.0)
+
     def test_reductant_specific_classification_resolves(self):
         """The reductant decides the classification of a reductant-split technology."""
         evaluator = make_evaluator()

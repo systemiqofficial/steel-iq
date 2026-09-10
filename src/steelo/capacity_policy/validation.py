@@ -158,6 +158,11 @@ def validate_technologies(
                 error(f"unknown technology {name!r} on {label} — names must match the model roster exactly")
         if row.reductant is not None and normalize_name(row.reductant) not in known_reductants:
             error(f"unknown reductant {row.reductant!r} on {label}")
+        if row.reductant is not None and row.technology != WILDCARD and row.technology not in split:
+            error(
+                f"{label} restricts reductant {row.reductant!r}, but {row.technology!r} is not classified "
+                "per reductant, so the row can never match"
+            )
         if row.is_emission_intense is not None:
             error(f"{label} must not carry classification flags")
         if row.swap_ratio is None or row.swap_ratio <= 0:
