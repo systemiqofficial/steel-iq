@@ -2054,6 +2054,9 @@ def plot_screenshot(
     plot_paths: Optional["PlotPaths"] = None,
     show=False,
 ):
+    # Skip entirely when a save is requested but geo plotting is disabled (no geo_plots_dir)
+    if save_name and (plot_paths is None or plot_paths.geo_plots_dir is None):
+        return
     # Select variable to plot
     if var:
         data_to_plot = data[var]
@@ -2153,6 +2156,8 @@ def plot_screenshot(
 
 
 def plot_landtype(data, plot_paths: "PlotPaths", var=None, title=None, save_name=None):
+    if save_name and (plot_paths is None or plot_paths.geo_plots_dir is None):
+        return
     # Initialize plot
     lat_lon_ratio = len(data.lat) / len(data.lon)
     fig = plt.figure(figsize=(10, 10 * lat_lon_ratio))
@@ -2235,6 +2240,8 @@ def plot_bubble_map(
     """
     Plots a bubble map where the size of each bubble corresponds to the weight at that location.
     """
+    if save_name and (plot_paths is None or plot_paths.geo_plots_dir is None):
+        return
     # Initialize plot
     fig = plt.figure(figsize=(10, 6))
     ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
@@ -2290,6 +2297,8 @@ def plot_value_histogram(
     - subtitle (str, optional): Smaller grey caption rendered below the title.
     - xlabel (str, optional): Custom x-axis label; defaults to ``"Values of '{var_name}'"``.
     """
+    if plot_paths is None or plot_paths.geo_plots_dir is None:
+        return
     if var_name is None:
         var_name = list(ds.data_vars)[0]
 
@@ -2347,6 +2356,8 @@ def plot_value_histogram(
 
 
 def plot_global_grid_with_iso3(grid, plot_paths: "PlotPaths") -> None:
+    if plot_paths is None or plot_paths.geo_plots_dir is None:
+        return
     # Visualize the global grid with ISO3 codes
     plt.figure(figsize=(10, 5))
     ax = plt.axes(projection=ccrs.PlateCarree())  # type: ignore[call-arg]

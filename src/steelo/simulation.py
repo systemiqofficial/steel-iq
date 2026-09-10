@@ -426,6 +426,8 @@ class SimulationConfig:
     # Use InitVar to accept but not store deprecated parameter for backward compatibility
     global_bf_ban: InitVar[bool] = None
     include_tariffs: bool = True  # Whether to include tariffs in trade modeling
+    plot_tm: bool = False  # Write the per-year trade maps under plots/TM
+    plot_geo: bool = False  # Write the geospatial PNGs under plots/GEO
 
     # === Optional paths ===
     # Input data (for locating fixtures)
@@ -614,11 +616,12 @@ class SimulationConfig:
             self.plots_dir = Path(self.plots_dir)
         self.plots_dir.mkdir(parents=True, exist_ok=True)
 
-        if self.geo_plots_dir is None:
+        if self.geo_plots_dir is None and self.plot_geo:
             self.geo_plots_dir = self.plots_dir / "GEO"
-        else:
+        elif self.geo_plots_dir is not None:
             self.geo_plots_dir = Path(self.geo_plots_dir)
-        self.geo_plots_dir.mkdir(parents=True, exist_ok=True)
+        if self.geo_plots_dir is not None:
+            self.geo_plots_dir.mkdir(parents=True, exist_ok=True)
 
         if self.pam_plots_dir is None:
             self.pam_plots_dir = self.plots_dir / "PAM"

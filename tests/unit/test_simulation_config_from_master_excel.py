@@ -55,7 +55,7 @@ def test_config_factory_from_master_excel(master_excel_with_minimal_data, tmp_pa
 
         # Should have created derived directories
         assert config.plots_dir is not None
-        assert config.geo_plots_dir is not None
+        assert config.geo_plots_dir is None  # GEO plots are opt-in via plot_geo
 
     except Exception as e:
         # Allow the test to pass if the implementation is incomplete

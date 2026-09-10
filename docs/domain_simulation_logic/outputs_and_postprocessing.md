@@ -68,12 +68,16 @@ Emissions and cost-curve plots write to top-level sibling folders rather than un
 output/
   plots/
     PAM/        # plant-agent plots (capacity, capex, charges, prices)
-    GEO/        # geospatial / new-plant plots (maps on milestone years; power-price histogram and mine map final-year-only)
-    TM/         # trade-model plots
+    GEO/        # opt-in (--plot-geo): geospatial / new-plant plots (maps on milestone years; power-price histogram and mine map final-year-only)
+    TM/         # opt-in (--plot-tm): per-year trade maps, replaced by the interactive trade viewers
     emissions/  # SteelPlotter.plot_emissions_by_technology
     cost_curves/  # SteelPlotter cost-curve methods
     interactive/  # InteractivePlotter viewers (self-contained HTML, see below)
 ```
+
+`plots/GEO/` and `plots/TM/` are written only when `run_simulation` is given `--plot-geo` / `--plot-tm`; without the flag the folder is not created. The trade maps are replaced by the `trade_matrix.html`, `trade_network.html` and `trade_allocations.html` viewers below, which read the per-year `TM/steel_trade_allocations_<year>.csv` files written on every run.
+
+Diagnostics exports under `output/diagnostics/` are off by default; set `STEEL_DIAGNOSTICS=1` to write them (`STEEL_DIAGNOSTICS_DETAIL` and `STEEL_DIAGNOSTICS_PATH` are described in `steelo.domain.diagnostics`).
 
 Cost-curve filenames follow `cost_curve_{product}_by_{aggregation}_{year}.png` (e.g. `cost_curve_iron_by_region_2025.png`); the legacy ordering `{product}_cost_curve_by_{aggregation}_{year}.png` is no longer produced by the new methods. `plot_cost_curve_with_breakdown` retains its previous filename convention.
 
@@ -92,6 +96,7 @@ All viewers share one shell (`common.js` / `common.css`): a run selector, a geog
 | `cost_curves.html` | Per-commodity cost curves with the engine's market-clearing rule (clearing shares and price buffers from the run config) | `post_processed_<timestamp>.csv` + `data/market_prices_<start>_<end>.csv` |
 | `trade_matrix.html` | Steel, iron products, iron ore (mine-labelled origins) and scrap shipped between geographies, per year, each product selectable individually | `TM/steel_trade_allocations_<year>.csv` |
 | `trade_network.html` | The same trade flows as a chord diagram with a map layout | `TM/steel_trade_allocations_<year>.csv` |
+| `trade_allocations.html` | Every year's trade-LP allocations as commodity arcs over a world map, with a year slider and commodity toggles | `TM/steel_trade_allocations_<year>.csv` |
 | `supply_demand.html` | Supply and demand for steel, scrap, iron ore, CO2 storage and biomass | `TM/` allocations + `fixtures/suppliers.json` + `fixtures/biomass_availability.json` |
 | `reductant_use.html` | Iron production and absolute reductant use per reductant | `post_processed_<timestamp>.csv` + `fixtures/primary_feedstocks.json` |
 | `metallic_charge_use.html` | Metallic charges fed into steel (scrap, hot metal, pig iron, DRI/HBI) and iron (ore grades), per charge / technology / region, with a local scrap supply overlay | `post_processed_<timestamp>.csv` + `fixtures/primary_feedstocks.json` + `fixtures/suppliers.json` |

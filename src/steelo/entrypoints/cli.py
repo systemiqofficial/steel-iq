@@ -146,6 +146,16 @@ def run_full_simulation() -> str:
         action="store_true",
         help="Enable furnace group clustering to reduce LP complexity",
     )
+    parser.add_argument(
+        "--plot-tm",
+        action="store_true",
+        help="Write the per-year trade maps under plots/TM (off by default; the interactive trade viewers replace them)",
+    )
+    parser.add_argument(
+        "--plot-geo",
+        action="store_true",
+        help="Write the geospatial PNGs under plots/GEO (off by default)",
+    )
 
     parser.add_argument(
         "--clustering-scope",
@@ -300,6 +310,8 @@ def run_full_simulation() -> str:
                 "run_name": args.run_name,
                 "log_level": log_level,
                 "random_seed": args.random_seed,
+                "plot_tm": args.plot_tm,
+                "plot_geo": args.plot_geo,
             }
 
             # Add custom baseload_power_sim_dir if provided
@@ -387,6 +399,8 @@ def run_full_simulation() -> str:
                     "run_name": args.run_name,
                     "log_level": log_level,
                     "random_seed": args.random_seed,
+                    "plot_tm": args.plot_tm,
+                    "plot_geo": args.plot_geo,
                 }
 
                 # Add custom baseload_power_sim_dir if provided
@@ -754,12 +768,13 @@ def show_geo_plots() -> None:
 
     args = parser.parse_args()
 
-    # Create SimulationConfig from data directory
+    # Create SimulationConfig from data directory; this command exists to make the GEO plots
     config = SimulationConfig.from_data_directory(
         data_dir=args.data_dir,
         output_dir=args.output_dir,
         start_year=args.year,
         end_year=args.year,
+        plot_geo=True,
     )
 
     # Create PlotPaths object
