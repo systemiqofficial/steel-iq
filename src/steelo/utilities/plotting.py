@@ -2650,7 +2650,7 @@ def plot_year_on_year_technology_development(
         raise ValueError("plot_paths with pam_plots_dir must be provided when saving plots")
     pam_plots_dir = plot_paths.pam_plots_dir
     pam_plots_dir.mkdir(parents=True, exist_ok=True)
-    fig.savefig(pam_plots_dir / "capacity_development_by_technology.png", dpi=300)
+    fig.savefig(pam_plots_dir / "Capacity_development_by_technology.png", dpi=300)
     plt.close()
 
 
