@@ -41,6 +41,7 @@ def read_rows(path: Path) -> list[dict[str, str]]:
 
 def test_unbound_flush_writes_nothing(tmp_path: Path):
     """No binding, no artefact — not even an empty file."""
+    motions.unbind_global_motions()  # an earlier bootstrap in the session may have left a binding
     motions.flush_global_motions(tmp_path)
     assert list(tmp_path.iterdir()) == []
 
