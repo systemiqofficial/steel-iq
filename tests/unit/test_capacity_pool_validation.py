@@ -178,6 +178,16 @@ def test_technologies_duplicate_rows_error():
     assert any("duplicate override rows for 'DRI' -> 'EAF'" in m for m in messages)
 
 
+def test_technologies_duplicate_rows_detected_up_to_reductant_normalisation():
+    """Two spellings of one reductant are one classification key, so they are a duplicate."""
+    rows = [
+        tech("DRI", reductant="Natural gas", is_emission_intense=False),
+        tech("DRI", reductant="natural_gas", is_emission_intense=True),
+    ]
+    messages = errors(validate_technologies(rows, technology_roster=ROSTER, reductant_vocabulary={"Natural gas"}))
+    assert any("duplicate classification rows for technology 'DRI'" in m for m in messages)
+
+
 def test_technologies_unauthored_flags_warn_not_error():
     """A missing flag warns (fixtures still build); delegation rows and covered techs do not."""
     rows = [

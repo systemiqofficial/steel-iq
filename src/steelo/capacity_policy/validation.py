@@ -145,8 +145,12 @@ def validate_technologies(
         if row.swap_ratio is not None:
             error(f"swap_ratio is only valid on override rows ({label})")
 
+    # Keyed as the evaluator keys its lookup, so two spellings of one reductant cannot both pass
     for (technology, reductant), count in sorted(
-        Counter((row.technology, row.reductant) for row in classifications).items(), key=str
+        Counter(
+            (row.technology, normalize_name(row.reductant) if row.reductant else None) for row in classifications
+        ).items(),
+        key=str,
     ):
         if count > 1:
             error(f"duplicate classification rows for technology {technology!r} reductant {reductant!r}")
