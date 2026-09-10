@@ -9397,7 +9397,8 @@ class Environment:
             - Sets self.avg_boms with the computed average BOMs.
             - Sets self.avg_utilization with average utilization rates per technology.
             - Adds hardcoded fallback BOMs for technologies in
-              get_available_fallback_technologies() that have no data.
+              get_available_fallback_technologies() that have no data, marked
+              cost_basis="per_output" (fallback costs are authored USD/t of product).
 
         Raises:
             ValueError: If no average BOMs can be generated (no active furnaces found).
@@ -9552,18 +9553,21 @@ class Environment:
                 # Check if the technology has a default metallic charge defined
                 if tech in self.default_metallic_charge_per_technology:
                     metallic_charge = self.default_metallic_charge_per_technology[tech]
+                    # Fallback costs are authored USD/t of product; mark the basis for get_bom_from_avg_boms.
                     if iso3 is None:
                         # Use average across all regions
                         avg_cost = self.get_average_fallback_material_cost(technology=tech)
                         if avg_cost is not None:
                             bom[metallic_charge]["unit_cost"] = avg_cost
                             bom[metallic_charge]["input_share_pct"] = 1.0
+                            bom[metallic_charge]["cost_basis"] = "per_output"
                     else:
                         # Use region-specific cost (Note: get_available_fallback_technologies doesn't take iso3/tech params)
                         specific_cost = self.get_fallback_material_cost(iso3, tech)
                         if specific_cost is not None:
                             bom[metallic_charge]["unit_cost"] = specific_cost
                             bom[metallic_charge]["input_share_pct"] = 1.0
+                            bom[metallic_charge]["cost_basis"] = "per_output"
                 else:
                     logger.warning(f"Technology {tech} not found in default_metallic_charge_per_technology mapping")
                 self.avg_boms[tech] = bom
@@ -9715,6 +9719,8 @@ class Environment:
             - Assumes avg_boms already populated (call generate_average_boms() first).
             - Material demand shares from avg_boms should sum to 1.0 per technology.
             - Process efficiencies are tons_input/ton_output (>1 for losses, <1 for enrichment).
+            - Fleet unit costs are per tonne of input; entries marked
+              cost_basis="per_output" are charged on output volume instead.
         """
         logger = logging.getLogger(f"{__name__}.get_bom_from_avg_boms")
 
@@ -9888,6 +9894,7 @@ class Environment:
                 "input_share_pct": float(input_share_pct),
                 "eff": eff,
                 "unit_cost": float(unit_cost),
+                "cost_basis": share_data.get("cost_basis", "per_input"),
             }
             logger.debug(
                 "[AVG_BOM_DIAG] pf_match: tech=%s mc=%s pf=%s eff=%.4f input_share=%.4f",
@@ -9958,7 +9965,11 @@ class Environment:
                 # Materials — input_share_pct is a share of fleet *input* tonnes, which
                 # already embed eff; scale by output share so eff is applied exactly once
                 material_demand = o_share * capacity * eff
-                material_cost = unit_cost_val * material_demand
+                if data["cost_basis"] == "per_output":
+                    # Authored USD/t of product (USD/t HM) — charge on output volume.
+                    material_cost = unit_cost_val * o_share * capacity
+                else:
+                    material_cost = unit_cost_val * material_demand
 
                 bom_dict["materials"][feedstock] = {
                     "demand": material_demand,
