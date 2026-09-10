@@ -1,14 +1,9 @@
-"""Global fleet-motion recording: ``pam_motions.csv``, all countries, every run.
+"""Global fleet-motion recording: ``data/pam_motions.csv``, all countries, every run.
 
-The capacity-policy call sites in :mod:`steelo.capacity_policy.handlers` observe
-every runtime fleet mutation — closes, switches, renovations, builds and the
-pipeline construction→operating flips — but their own recorder is China-only and
-exists only when ``--enable-capacity-policy`` binds the policy. This module holds
-a second, always-bound :class:`~steelo.capacity_policy.recorder.CapacityPolicyRecorder`
-those same call sites dual-write into, so every run leaves a complete global
-motions file beside the run's other data outputs. Binding mirrors the
-``handlers._policy`` pattern: module-level state, bound fresh at bootstrap so no
-rows survive successive runs in one process.
+The capacity-policy motion call sites dual-write into this always-bound
+:class:`~steelo.capacity_policy.recorder.CapacityPolicyRecorder`, bound fresh
+at every bootstrap. Columns and conventions:
+docs/domain_simulation_logic/outputs_and_postprocessing.md#fleet-motions-and-capacity-policy-artefacts.
 """
 
 import csv

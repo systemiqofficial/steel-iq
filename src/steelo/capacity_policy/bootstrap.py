@@ -1,19 +1,9 @@
 """Run-level activation for the China capacity policy.
 
-:func:`configure_capacity_policy` is called once per ``bootstrap_simulation``
-and owns the binding lifecycle: it always unbinds first, so no evaluator or
-pool state can survive from a previous simulation in the same process
-(steeloweb, test suites), and a disabled run is guaranteed dormant even after
-an enabled one. With ``enabled=True`` it refuses to run without the
-classification fixtures — never silent dormancy — while an empty opening-credits
-fixture is a legitimate zero-pool start, re-runs the cross-row sheet validation with
-warnings promoted to errors, builds a fresh evaluator, pool and observability
-recorder from the fixtures and config, seeds the pool (converting the sheet's
-Mt into the model tonnes every runtime capacity flows in) and opens the ledger
-with those seed rows, purges any seeded vintage already past its shelf life at
-the start year, and makes the single ``bind_capacity_policy`` call that
-activates the deposit handlers, all three decision gates and the CSV emission
-together.
+:func:`configure_capacity_policy` owns the binding lifecycle: it always
+unbinds first, refuses an enabled run without complete fixtures, and binds a
+fresh evaluator, pool and recorder seeded from the opening credits.
+See docs/domain_simulation_logic/capacity_replacement_policy_reference.md#binding-lifecycle.
 """
 
 from __future__ import annotations
@@ -49,29 +39,22 @@ def configure_capacity_policy(
 ) -> None:
     """Bind the capacity policy for this run, or make sure it is unbound.
 
-    Always unbinds first: binding is module-level state and simulations can run
-    successively in one process, so a disabled bootstrap must actively clear
-    any binding a previous enabled run left behind. An enabled bootstrap then
-    builds a fresh evaluator and pool — pool state never survives into the
-    next simulation.
+    Always unbinds first: binding is module-level state and simulations run
+    successively in one process.
 
     Args:
         config: The run's ``capacity_policy`` scenario levers.
         repository_json: The run's fixture repositories, or None when a
             repository was injected directly (test runs without fixtures).
         start_year: First simulation year. Seeded vintages after it are
-            clamped down to it with a warning (the opening pool is state at
-            t=0, and a future vintage would quietly bend FIFO), and seeded
-            credits already past their shelf life at t=0 are purged — the
-            run must not open with dead credit in it.
+            clamped down to it with a warning, and seeded credits already past
+            their shelf life at the start are purged.
 
     Raises:
-        ValueError: With ``enabled=True``, when any capacity pool fixture is
-            missing, when either classification fixture is empty (named in the
-            message), or when the promoted cross-row validation finds any issue
-            — unauthored classification flags only warn at data preparation,
-            but block a policy run. An empty opening-credits fixture does not
-            raise: it is a zero-pool start.
+        ValueError: With ``enabled=True``, when the run has no fixture
+            repositories, when any capacity pool fixture is missing, when a
+            classification fixture is empty, or when the promoted cross-row
+            validation finds any issue, warnings included.
     """
     unbind_capacity_policy()
     if not config.enabled:
@@ -145,7 +128,7 @@ def configure_capacity_policy(
         # and quietly bend FIFO; the opening pool is state at t=0, so clamp it there
         logger.warning(
             "[CAPACITY POOL] %d opening credit row(s) carry a vintage_year after the start year %d "
-            "(%s): scaling them down to the start year",
+            "(%s): clamping them to the start year",
             sum(1 for row in credit_rows if row.vintage_year > start_year),
             start_year,
             ", ".join(str(v) for v in future_vintages),
@@ -187,16 +170,11 @@ def configure_capacity_policy(
 
 
 def _warn_when_geo_unit_data_unavailable() -> None:
-    """Warn loudly when province derivation would silently degrade to country level.
+    """Warn when province derivation would silently degrade to country level.
 
-    ``derive_geo_unit_for_site`` returns None for every site when the admin-1
-    layer or geo_hierarchy is absent, and ``compose_geo_key("CHN", None)`` is
-    the bare country key the evaluator treats as non-key — so an enabled run
-    without the reference data would apply the whole greenfield side of the
-    policy region-blind (untagged deposits, unrestricted withdrawals, no
-    exemption) without a word. Not a refusal: existing plants carry their own
-    fixture-tagged geo_units and are unaffected, so the run may still be
-    meaningful — but never silently.
+    Without the admin-1 layer and geo hierarchy every greenfield site resolves
+    to the bare ``CHN`` key and the greenfield side runs region-blind. Not a
+    refusal: existing plants carry their own fixture-tagged geo units.
     """
     from steelo.adapters.geospatial.geo_unit_lookup import geo_unit_reference_data_available
 
@@ -213,14 +191,9 @@ def _warn_when_geo_unit_data_unavailable() -> None:
 def _warn_on_unknown_seed_owners(credit_rows: list[OpeningCreditRow], repository_json: "JsonRepository") -> None:
     """Warn when a seeded owner id matches no plant group in the plants fixture.
 
-    Post-cutoff, an ordinary withdrawal may only spend the withdrawer's own
-    credits — credits owned by an id no company carries can then never be spent
-    through the expansion path, which is indistinguishable from the policy
-    binding unless it is said out loud. (The greenfield single-owner path can
-    still select them; attribution falls back to ``indi_<iso3>``.) The owner
-    universe is the plants fixture's ``parent_gem_id`` values, read from the
-    raw rows without domain conversion; an absent or empty plants fixture
-    (injected test repositories) skips the check.
+    From the cutoff such credits can never be spent through the expansion
+    path. An absent or empty plants fixture (injected test repositories)
+    skips the check.
     """
     plants_repo = getattr(repository_json, "plants", None)
     if plants_repo is None:
@@ -245,12 +218,7 @@ def _warn_on_unknown_seed_owners(credit_rows: list[OpeningCreditRow], repository
 
 
 def _validate_promoted(issues: list[ValidationIssue]) -> None:
-    """Raise on any validation issue, warnings included.
-
-    Warnings are content gaps that data preparation tolerates so fixtures can
-    still be built from a workbook with ``TO AUTHOR`` cells; a run with the
-    policy enabled demands a complete authoring, so they are promoted here.
-    """
+    """Raise on any validation issue, warnings included: an enabled run demands a complete authoring."""
     if not issues:
         return
     detail = "\n".join(f"[{issue.severity}] {issue.sheet}: {issue.message}" for issue in issues)

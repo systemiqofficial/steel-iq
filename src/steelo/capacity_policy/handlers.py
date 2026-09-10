@@ -1,39 +1,15 @@
-"""Deposit handlers and decision-path hook for the capacity pool.
+"""Deposit handlers, hook accessors and motion handlers for the capacity pool.
 
-The event handlers are registered on ``EVENT_HANDLERS`` unconditionally but
-the deposit handlers stay inert until :func:`bind_capacity_policy` installs an
-evaluator and pool at bootstrap: until then — and whenever
-``config.capacity_policy.enabled`` is False, since nothing binds a disabled
-policy — they return immediately and pool behaviour is byte-identical. Once
-bound, only Chinese events deposit. The motion handlers also write into the
-global recorder of :mod:`steelo.motions`, which bootstrap binds on every run,
-so they act for all countries regardless of the policy binding. The same
-binding drives the decision-path gates the plant agent threads on every
-evaluation: :func:`replace_capacity_hook`,
-the pre-NPV ② REPLACE gate on ``Plant.evaluate_furnace_group_strategy``;
-:func:`increase_sizing_hook`, the non-consuming ③ INCREASE sizing query every
-pre-NPV valuation of a new build runs through; :func:`expansion_capacity_hook`,
-the ③ INCREASE withdrawal gate on
-``PlantGroup.evaluate_expansion``; and :func:`greenfield_capacity_hook`, the
-③ INCREASE withdrawal gate at considered→announced in
-``FurnaceGroup.track_business_opportunities``, whose single-owner grant
-:func:`attribute_greenfield_on_furnace_group_added` later turns into the plant
-joining the funding company at construction start.
-
-Each deposit logs the furnace group's ``chosen_reductant`` so, paired with the
-evaluation-side log in :mod:`.tree`, reductant drift between approval and
-operation is measurable from any run. The same call sites feed the run's
-:class:`~steelo.capacity_policy.recorder.CapacityPolicyRecorder`, whose CSVs
-:func:`flush_capacity_policy_outputs` writes at the end of a bound run. The
-motion call sites additionally dual-write every country's rows into the
-always-bound global recorder of :mod:`steelo.motions`, so the policy binding
-gates the pool and the China file only — the global motions record on every run.
-
-Credit and motion ownership is **group membership** throughout: every handler
-resolves ``uow.plant_groups.get_by_plant_id(...)`` rather than reading the
-events' own ``owner_id``, which carries ``Plant.ultimate_plant_group`` and
-therefore still reports ``indi_<iso3>`` for a plant this package attributed to
-its funding company. A plant with no registered group raises rather than being skipped.
+The event handlers are registered unconditionally and stay inert until
+:func:`bind_capacity_policy` installs an evaluator, pool and recorder; the
+hook accessors return None while unbound, so the decision paths behave
+byte-identically. Applicability (China only) is decided here, never in the
+domain. The motion handlers also feed the always-bound global recorder of
+:mod:`steelo.motions`, for every country on every run. Ownership is group
+membership: handlers resolve ``uow.plant_groups.get_by_plant_id(...)``, not
+the events' ``owner_id``, which still reports ``indi_<iso3>`` for an
+attributed greenfield plant; a plant with no registered group raises.
+See docs/domain_simulation_logic/capacity_replacement_policy_reference.md#binding-lifecycle.
 """
 
 import logging
@@ -67,30 +43,22 @@ _warned_bare_chn_contexts: set[str] = set()
 
 
 def bind_capacity_policy(evaluator: TreeEvaluator, pool: CapacityPool, recorder: CapacityPolicyRecorder) -> None:
-    """Activate the deposit handlers for this run.
-
-    The recorder is required rather than optional: a bound policy that records
-    nothing would be a half-bound state whose artefacts silently disagree with
-    its logs.
-    """
+    """Activate the handlers and hooks for this run; the recorder is required so the artefacts never disagree with the logs."""
     global _policy
     _policy = _BoundPolicy(evaluator=evaluator, pool=pool, recorder=recorder)
     _warned_bare_chn_contexts.clear()
 
 
 def unbind_capacity_policy() -> None:
-    """Deactivate the deposit handlers; they become no-ops again."""
+    """Deactivate the handlers and hooks; they become no-ops again."""
     global _policy
     _policy = None
 
 
 def _motion_recorders(iso3: str) -> list[CapacityPolicyRecorder]:
-    """The recorders a motion at this location feeds, global-first.
+    """The recorders a motion at this location feeds: the global one first, the policy's for China while bound.
 
-    The global recorder (bound on every real run) takes every country's rows;
-    the policy recorder additionally takes Chinese rows while the policy is
-    bound. Global-first ordering matters to the end-of-life source rule, which
-    asks the first recorder for the broadest in-run renovation history.
+    Global-first matters to the end-of-life source rule, which asks the first recorder for renovation history.
     """
     recorders: list[CapacityPolicyRecorder] = []
     global_recorder = global_motions_recorder()
@@ -102,14 +70,10 @@ def _motion_recorders(iso3: str) -> list[CapacityPolicyRecorder]:
 
 
 def _policy_geo_key(iso3: str, geo_unit: str | None, *, context: str) -> str:
-    """Compose the policy geo key, loudly when a Chinese location is untagged.
+    """Compose the policy geo key, warning once per context when a Chinese location has no geo unit.
 
-    ``compose_geo_key("CHN", None)`` yields the bare country key, which the
-    evaluator treats as non-key: untagged deposits, unrestricted withdrawals,
-    never the exempt-province 1:1. That is the most permissive treatment the
-    policy has, so it must never happen silently — it means the plant row or
-    site missed province derivation (admin-1 layer absent, point-in-polygon
-    rejected, or an untagged fleet row).
+    The bare ``CHN`` key is treated as non-key, the policy's most permissive
+    treatment, so it must never happen silently.
     """
     if iso3 == "CHN" and not geo_unit:
         message = (
@@ -146,15 +110,7 @@ def flush_capacity_policy_outputs(output_dir: Path) -> None:
 
 
 def replace_capacity_hook() -> Callable[..., float | None] | None:
-    """Return the live ② REPLACE pre-NPV callable, or None while unbound.
-
-    The plant agent threads this value into
-    ``Plant.evaluate_furnace_group_strategy`` on every evaluation, so binding
-    at bootstrap activates the gate without reopening the domain module
-    or the plant agent. Unbound — the default, and always the case while
-    ``config.capacity_policy.enabled`` is False — the decision path receives
-    None and behaves byte-identically.
-    """
+    """Return the live ② REPLACE pre-NPV callable, or None while unbound."""
     policy = _policy
     if policy is None:
         return None
@@ -173,25 +129,14 @@ def replace_capacity_hook() -> Callable[..., float | None] | None:
         year: int,
         furnace_group_id: str | None = None,
     ) -> float | None:
-        """Resolve one candidate transition's permitted capacity — branch ② REPLACE.
+        """Resolve one candidate transition's permitted capacity (branch ② REPLACE).
 
-        Adapts the decision path's plain values onto the evaluator; all policy
-        applicability lives here rather than in the domain module. A
-        non-Chinese plant passes through at its own capacity without reaching
-        the evaluator. A same-technology candidate — the renovation option —
-        is a full REPLACE under ``renovation_counts_as_replace``, the shipped
-        default, so the utilisation gate and the ratio both apply; with the
-        flag off it faces the gate alone. None means the gate
-        blocks the decision.
-
-        ``new_reductant`` is the candidate's operating-start pick, not the
-        fleet's modal reductant. A reductant-split technology —
-        today the DRI family — re-optimises annually and may later run a
-        different reductant than it was classified under; fixed-reductant
-        routes cannot drift. The divergence is deliberate and bounded, since
-        the NPV that commits the pick priced the later years too, carbon cost
-        included, and it is measurable from any run by joining the
-        gate-decisions ``new_reductant`` against the motions ``reductant``.
+        A non-Chinese plant passes through at its own capacity. A
+        same-technology candidate is a full REPLACE under
+        ``renovation_counts_as_replace``, else it faces the utilisation gate
+        alone. ``new_reductant`` is the candidate's operating-start pick, so
+        reductant drift is measurable by joining the gate decisions against
+        the motions. None means the gate blocks the candidate.
         """
         if iso3 != "CHN":
             return capacity
@@ -225,26 +170,15 @@ def replace_capacity_hook() -> Callable[..., float | None] | None:
 def increase_sizing_hook() -> Callable[..., float] | None:
     """Return the live ③ INCREASE sizing query, or None while unbound.
 
-    The non-consuming half of the ③ split: it answers what a build would be
-    allowed to build, so the agent values the capacity the policy permits
-    rather than the one it planned. Pool availability is deliberately not part
-    of the answer — a build blocked for want of credits is blocked whatever it
-    was worth, and probing the pool per candidate would make valuation depend
-    on the order plants are evaluated in. The consuming withdrawal stays at the
-    point of commitment, in the gates below.
+    Pool availability is deliberately not part of the answer: probing the
+    pool per candidate would make valuation depend on evaluation order.
     """
     policy = _policy
     if policy is None:
         return None
 
     def increase_sizing_query(*, iso3: str, technology: str, reductant: str | None, capacity: float) -> float:
-        """Size one INCREASE candidate for its NPV — branch ③ INCREASE, no pool state.
-
-        Runs per candidate per plant per year, so it neither logs nor records;
-        the consuming gate that follows a winning candidate carries the
-        observability. A non-Chinese build passes through at its planned
-        capacity without reaching the evaluator.
-        """
+        """Size one INCREASE candidate for its NPV; no pool state, and no logging since it runs per candidate."""
         if iso3 != "CHN":
             return capacity
         return policy.evaluator.increase_build_capacity(
@@ -257,14 +191,7 @@ def increase_sizing_hook() -> Callable[..., float] | None:
 
 
 def expansion_capacity_hook() -> Callable[..., float | None] | None:
-    """Return the live ③ INCREASE expansion gate callable, or None while unbound.
-
-    The plant agent threads this value into ``PlantGroup.evaluate_expansion``
-    on every evaluation, so binding at bootstrap activates the gate
-    without reopening the domain module or the plant agent. Unbound — the
-    default, and always the case while ``config.capacity_policy.enabled`` is
-    False — the decision path receives None and behaves byte-identically.
-    """
+    """Return the live ③ INCREASE expansion gate callable, or None while unbound."""
     policy = _policy
     if policy is None:
         return None
@@ -280,18 +207,12 @@ def expansion_capacity_hook() -> Callable[..., float | None] | None:
         owner_id: str,
         year: int,
     ) -> float | None:
-        """Withdraw retirement credits for one approved expansion — branch ③ INCREASE.
+        """Withdraw retirement credits for one approved expansion (branch ③ INCREASE).
 
-        Called at the point of commitment, after every other expansion check
-        has passed; capacities flow in model tonnes end-to-end (the pool's
-        ``amount_mt`` naming is a sheet-side convention). A non-Chinese
-        expansion passes through at its planned capacity without reaching the
-        evaluator or the pool. The owner partition lives in the pool — this
-        adapter only passes the withdrawing group and the year. The credit is
-        consumed at the decision, all-or-nothing: an expansion that later
-        fails to materialise has still spent it (accepted leak; the grant log
-        carries every consumed credit so the leak is quantifiable from a run).
-        None means the pool blocks the expansion this year.
+        Called at the point of commitment. The credit is consumed at the
+        decision, all or nothing; an expansion that later fails to materialise
+        has still spent it (accepted, quantifiable from the grant log). None
+        means the pool blocks the expansion this year.
         """
         if iso3 != "CHN":
             return capacity
@@ -366,11 +287,7 @@ def expansion_capacity_hook() -> Callable[..., float | None] | None:
 
 
 def greenfield_retry_cap() -> int | None:
-    """Return the years the greenfield gate may block before discarding, or None while unbound.
-
-    The plant agent threads this beside the gate itself, so an unbound run
-    hands the decision path None and the retry counter can never fire.
-    """
+    """Return the years the greenfield gate may block before discarding, or None while unbound."""
     policy = _policy
     if policy is None:
         return None
@@ -380,16 +297,9 @@ def greenfield_retry_cap() -> int | None:
 def greenfield_feasibility_hook() -> Callable[..., str | None] | None:
     """Return the live pre-draw greenfield feasibility probe, or None while unbound.
 
-    The non-consuming half of the greenfield gate: called once per considered
-    Chinese opportunity per year, before the announcement draw, it answers
-    whether the single-owner withdrawal would be granted at the current pool
-    state — via :meth:`CapacityPool.can_withdraw`, the exact rules of the
-    consuming withdrawal, nothing consumed. A blocked answer is what the retry
-    cap counts (per blocked *year*, not per blocked draw) and records the same
-    ``blocked_greenfield`` ledger row the consuming gate would, so the
-    policy-bite series covers every blocked year including those the draw
-    never ran. A fundable answer records nothing — the consuming gate carries
-    the observability of the withdrawal itself.
+    Non-consuming: the retry cap counts blocked years from this probe (not
+    blocked draws), and a blocked answer records the same ``blocked_greenfield``
+    ledger row the consuming gate would; a fundable answer records nothing.
     """
     policy = _policy
     if policy is None:
@@ -459,16 +369,7 @@ def greenfield_feasibility_hook() -> Callable[..., str | None] | None:
 
 
 def greenfield_capacity_hook() -> Callable[..., tuple[float, str | None, bool, tuple[Credit, ...]] | None] | None:
-    """Return the live ③ INCREASE greenfield gate callable, or None while unbound.
-
-    The plant agent threads this value through
-    ``PlantGroup.update_status_of_business_opportunities`` into
-    ``FurnaceGroup.track_business_opportunities``, so binding at bootstrap
-    activates the gate without reopening the domain module or the plant agent.
-    Unbound — the default, and always the case while
-    ``config.capacity_policy.enabled`` is False — the decision path receives
-    None and behaves byte-identically.
-    """
+    """Return the live ③ INCREASE greenfield gate callable, or None while unbound."""
     policy = _policy
     if policy is None:
         return None
@@ -483,24 +384,16 @@ def greenfield_capacity_hook() -> Callable[..., tuple[float, str | None, bool, t
         product: str,
         year: int,
     ) -> tuple[float, str | None, bool, tuple[Credit, ...]] | None:
-        """Withdraw retirement credits for one announced greenfield — branch ③ INCREASE.
+        """Withdraw retirement credits for one announced greenfield (branch ③ INCREASE).
 
-        Called when the announcement draw succeeds, so consumption coincides
-        with the considered→announced commitment; capacities flow in model
-        tonnes end-to-end. The whole withdrawal is served from a single credit
-        holder — the greenfield rule, uniform across the run — so a build
-        can be refused with an ample pool when no one holder covers it, which
-        the block log states distinctly. A non-Chinese opportunity passes
-        through untouched without reaching the evaluator or the pool. The
-        credit is consumed at announcement and handed back at the two
-        post-announcement discard paths, so the consumed slices travel with the
-        opportunity.
+        Served from a single credit holder, so a build can be refused with an
+        ample pool. The consumed slices travel with the opportunity and are
+        refunded on a later discard.
 
         Returns:
             ``(build_capacity, attributed_owner_id, withdrew, credits_consumed)``
-            on a grant — the unowned pot attributes to None, and the slices are
-            what a discard refunds — or None when blocked, which leaves the
-            opportunity considered to retry next year.
+            on a grant (the unowned pot attributes to None), or None when
+            blocked, which leaves the opportunity considered to retry next year.
         """
         if iso3 != "CHN":
             return (capacity, None, False, ())
@@ -576,10 +469,10 @@ def greenfield_capacity_hook() -> Callable[..., tuple[float, str | None, bool, t
 
 
 def _get_plant_and_furnace_group(uow: UnitOfWork, furnace_group_id: str) -> tuple[Plant, FurnaceGroup]:
-    """Fetch a furnace group and its plant by id; the events carry no plant id, so scan.
+    """Fetch a furnace group and its plant by id.
 
-    Closed groups stay on their plant with status ``"closed"``, so the lookup
-    holds for every lifecycle event.
+    The events carry no plant id, and the plant repository's furnace-group
+    index only covers groups present at registration, so scan.
     """
     for plant in uow.plants.list():
         for fg in plant.furnace_groups:
@@ -634,12 +527,7 @@ def deposit_on_furnace_group_closed(event: events.FurnaceGroupClosed, uow: UnitO
 def deposit_on_furnace_group_tech_changed(
     event: events.FurnaceGroupTechChanged, uow: UnitOfWork, env: Environment
 ) -> None:
-    """Branch ② REPLACE: bank the capacity the replacement shrank away.
-
-    The deposit is ``old_capacity − capacity``, banked only when positive —
-    zero means the pre-NPV hook resolved the transition 1:1 and nothing was
-    shrunk away.
-    """
+    """Branch ② REPLACE: bank the capacity the replacement shrank away (``old_capacity − capacity``, if positive)."""
     policy = _policy
     if policy is None:
         return
@@ -687,17 +575,7 @@ def deposit_on_furnace_group_tech_changed(
 
 
 def deposit_on_furnace_group_renovated(event: events.FurnaceGroupRenovated, uow: UnitOfWork, env: Environment) -> None:
-    """Branch ② REPLACE via renovation: bank capacity a renovation shrank away.
-
-    A renovation shrinks when the pre-NPV hook treats it as a replacement
-    (``renovation_counts_as_replace``, the shipped default): a qualifying
-    emission-intense renovation carries ``old_capacity > capacity`` and banks
-    the delta. A 1:1 renovation — a non-intense derivation, an exempt
-    province, or the flag off — carries ``old_capacity == capacity`` and this
-    handler stays silent, exactly like an unshrunk tech change. The
-    utilisation gate is a separate question the hook answers under both flags,
-    and a group it blocks raises no renovation event to begin with.
-    """
+    """Branch ② REPLACE via renovation: bank the capacity a renovation shrank away, if any."""
     policy = _policy
     if policy is None:
         return
@@ -748,25 +626,10 @@ def deposit_on_end_of_life_closure(
 ) -> None:
     """Branch ① RETIRE at end of life: bank the full freed capacity, and record the motion.
 
-    Called from ``finalise_iteration`` immediately after it closes an expired
-    group with a bare status flip. That path raises no ``FurnaceGroupClosed``,
-    so the deposit handler never sees it — yet the policy credits every
-    retirement, whoever decided it (a modelling decision: no eligibility filter
-    on retired capacity). The deposit is made pool-scoped rather than
-    by emitting the event, which would also wake the shared closed-handlers the
-    direct path deliberately bypasses.
-
-    The vintage is the *post-increment* year: ``finalise_iteration`` advances
-    ``env.year`` before closing anything, so these credits belong to the next
-    yearly snapshot, exactly like the scheduled switches at the same boundary.
-    The ledger names the mechanism (``deposit_close_end_of_life``) because an
-    end-of-life retirement is not an agent decision and the two must be
-    separable in the artefacts.
-
-    Runs inside ``finalise_iteration``'s own unit-of-work context and only
-    reads, so it opens none of its own. The deposit side is policy-scoped and
-    Chinese; the motion side records every country through the run's motion
-    recorders.
+    Called from ``finalise_iteration``, which closes an expired group with a
+    bare status flip and raises no event. The vintage is the post-increment
+    year, so these credits belong to the next yearly snapshot. Reads only, so
+    it opens no unit-of-work context of its own.
     """
     policy = _policy
     recorders = _motion_recorders(plant.location.iso3)
@@ -834,24 +697,12 @@ def deposit_on_end_of_life_closure(
 def attribute_greenfield_on_furnace_group_added(event: events.FurnaceGroupAdded, uow: UnitOfWork) -> None:
     """Move a credit-funded greenfield plant into the funding company at construction start.
 
-    The greenfield gate stashes the withdrawal's ``attributed_owner_id`` on the
-    opportunity furnace group at announcement; the plant itself must stay in
-    ``indi_<iso3>`` until announced→construction because the opportunity
-    pipeline walks only the indi groups. This event fires at exactly that
-    transition, when the pipeline is done with the plant, so the move is safe:
-    the construction→operating flip and the P&L sweep are group-independent.
-
-    Only the group membership moves — ``parent_gem_id`` stays ``indi_<iso3>``,
-    keeping the site's own pixel energy prices (a physical fact of the site,
-    not an ownership fact) flowing through the existing GEO-plant paths. The
-    P&L sweep and expansion candidacy follow ``PlantGroup.plants``, so the
-    receiving company gains the asset through existing mechanics.
-
-    A dormant or unknown owner sends the plant nowhere — it stays in
-    ``indi_<iso3>``, exactly as a wholly-unowned draw (no stash) does. The
-    capex is a named capital injection, not a treasury debit: ``deduct_equity``
-    is untouched and the injection is logged so the treasury story is
-    auditable.
+    The plant must stay in ``indi_<iso3>`` until announced→construction
+    because the opportunity pipeline walks only the indi groups. Only group
+    membership moves: ``parent_gem_id`` stays ``indi_<iso3>`` so the site's
+    own energy prices keep flowing, and the capex is a logged capital
+    injection, not a treasury debit. A dormant or unknown owner leaves the
+    plant where it is.
     """
     policy = _policy
     if policy is None:
@@ -905,19 +756,11 @@ def attribute_greenfield_on_furnace_group_added(event: events.FurnaceGroupAdded,
 
 
 def refund_greenfield_on_discard(furnace_group: FurnaceGroup, iso3: str, geo_unit: str | None, year: int) -> None:
-    """Return a discarded announced greenfield's credits to the pool.
+    """Return a discarded announced greenfield's credits to the pool at their original vintages.
 
-    Called from the announced→discarded branch of the status handler, which
-    both post-announcement discard paths route through. The withdrawal stash is
-    only ever set by a live greenfield gate, so this is inert by construction on
-    unbound runs.
-
-    Each consumed slice is refunded under its original vintage, so it resumes
-    its FIFO position and its shelf life keeps running from the retirement that
-    minted it: a slice handed back already past validity survives to the next
-    boundary purge and no further. The ``greenfield_discard`` row records the
-    discard itself and stays outside the reconciliation sum; the ``refunded``
-    rows are the flow.
+    Inert by construction on unbound runs: the withdrawal stash is only ever
+    set by a live greenfield gate. The ``greenfield_discard`` row stays
+    outside the reconciliation sum; the ``refunded`` rows are the flow.
     """
     if furnace_group.capacity_pool_granted_withdraw_mt is None:
         return
@@ -963,10 +806,8 @@ def refund_greenfield_on_discard(furnace_group: FurnaceGroup, iso3: str, geo_uni
 def snapshot_pool_state(_event: events.IterationOver, env: Environment) -> None:
     """Record the pool's credits for the year that is ending.
 
-    Registered ahead of ``finalise_iteration``, which increments the year
-    *before* executing scheduled switches and end-of-life closures: those
-    transactions therefore stamp Y+1 and belong to the next snapshot, which is
-    what makes state(Y) equal seed plus every ledger flow stamped up to Y.
+    Registered ahead of ``finalise_iteration``, whose boundary transactions
+    stamp Y+1 and belong to the next snapshot.
     """
     policy = _policy
     if policy is None:
@@ -975,17 +816,10 @@ def snapshot_pool_state(_event: events.IterationOver, env: Environment) -> None:
 
 
 def purge_expired_credits(_event: events.IterationOver, env: Environment) -> None:
-    """Sweep dead credits at the year boundary: shelf-life expiry and, on
-    entering the swap cutoff, the unowned opening credits.
+    """Sweep dead credits on entering a year: shelf-life expiry and, at the swap cutoff, the unowned credits.
 
-    Registered *after* ``finalise_iteration``, which is what makes the yearly
-    state honest at both ends: the year-Y snapshot is taken before the
-    increment, so a credit still usable through Y legitimately appears in it,
-    and the purge then runs on Y+1 — after the increment, before any Y+1
-    decision or snapshot — so no yearly state ever shows a dead credit. The
-    end-of-life closures at the same boundary deposit at vintage Y+1 and can
-    never be purge-eligible at birth. The final boundary increments by zero and
-    re-purges the same year, which removes nothing.
+    Registered after ``finalise_iteration``, so the year-Y snapshot still
+    shows a credit usable through Y and no snapshot shows a dead one.
     """
     policy = _policy
     if policy is None:
@@ -996,11 +830,7 @@ def purge_expired_credits(_event: events.IterationOver, env: Environment) -> Non
 
 
 def record_motion_on_furnace_group_closed(event: events.FurnaceGroupClosed, uow: UnitOfWork, env: Environment) -> None:
-    """Record a decided closure as a motion — the deposit's fleet-side counterpart.
-
-    Every country records globally; a Chinese closure additionally feeds the
-    bound policy's own recorder, identical rows in both.
-    """
+    """Record a decided closure as a motion, in every country."""
     recorders = _motion_recorders(event.iso3)
     if not recorders:
         return
@@ -1026,13 +856,7 @@ def record_motion_on_furnace_group_closed(event: events.FurnaceGroupClosed, uow:
 def record_motion_on_furnace_group_tech_changed(
     event: events.FurnaceGroupTechChanged, uow: UnitOfWork, env: Environment
 ) -> None:
-    """Record a technology switch as a motion, shrunk or not, in every country.
-
-    An unshrunk switch deposits nothing but still moves the fleet, so the row
-    is written before any of the deposit handler's early returns would apply.
-    The reductant is the group's post-switch re-pick, which is exactly what
-    pairs with the gate decision the switch was approved under.
-    """
+    """Record a technology switch as a motion, shrunk or not; the reductant is the post-switch re-pick."""
     recorders = _motion_recorders(event.iso3)
     if not recorders:
         return
@@ -1086,17 +910,11 @@ def record_motion_on_furnace_group_renovated(
 
 
 def record_motion_on_furnace_group_added(event: events.FurnaceGroupAdded, uow: UnitOfWork, env: Environment) -> None:
-    """Record a build as a motion — an expansion or a greenfield, in every country.
+    """Record a build as a motion: an expansion or a greenfield, in every country.
 
-    The event carries no location, so the plant lookup precedes the recorder
-    resolution; that costs one repository read per build. Registered after the
-    greenfield attribution so a credit-funded plant is already sitting in its
-    funding company, and the owner is read from group membership rather than
-    ``ultimate_plant_group``, which still reports ``indi_<iso3>`` for an
-    attributed plant.
-
-    Expansion rows stamp the decision year; a greenfield row stamps
-    construction start, one transition after the withdrawal that funded it.
+    Registered after the greenfield attribution, so a credit-funded plant is
+    recorded under its funding company. Expansion rows stamp the decision
+    year; greenfield rows stamp construction start.
     """
     if global_motions_recorder() is None and _policy is None:
         return
@@ -1130,31 +948,11 @@ def record_motion_on_pipeline_group_operating(
 ) -> None:
     """Record an input-data pipeline group entering the operating fleet.
 
-    Groups the input data delivers already announced or under construction
-    reach operating through the year-start status flip in the simulation loop,
-    which raises no event — without this call the fleet would gain capacity
-    with no motion row.
-
-    The same flip also completes the model-built constructions: expansions and
-    greenfields sit in plain ``"construction"`` until their start year, were
-    recorded as motions at their decision, and are stamped ``created_by_PAM``
-    at creation. Technology switches never arrive here: every PAM switch is
-    scheduled, the old technology operating through the construction window
-    (``"operating switching technology"``), an end-of-life inside that window
-    parking the group in the ``"construction switching technology"`` status
-    this flip excludes, and the execution at the switch year setting
-    ``"operating"`` itself. That makes ``created_by_PAM`` the exact
-    discriminator at this flip — the input sheet only holds operating (incl.
-    pre-retirement), announced and construction groups, never an in-flight
-    model state — so every unflagged group here is data-born pipeline
-    capacity, and recording a flagged one would double-count its build.
-
-    A pipeline row stamps the first operating year — the only point the run
-    observes for capacity whose build was decided before the data was cut.
-    Called directly rather than via an event, like
-    :func:`deposit_on_end_of_life_closure`; it only reads, so it opens no
-    unit-of-work context of its own. Records every country globally, plus the
-    policy's China file while bound.
+    The year-start status flip in the simulation loop raises no event.
+    ``created_by_PAM`` is the exact discriminator here: model-built
+    expansions and greenfields complete through the same flip but were
+    recorded at their decision, and switches never reach it. Reads only, so
+    it opens no unit-of-work context of its own.
     """
     if global_motions_recorder() is None and _policy is None:
         return
