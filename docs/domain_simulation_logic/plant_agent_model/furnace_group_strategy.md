@@ -349,6 +349,7 @@ threshold in Stage 2 runs unconditionally.
 **Purpose**: Narrow down technology options based on what's allowed in the current year
 - **Process**: Intersect `allowed_techs[current_year]` with `allowed_furnace_transitions[current_tech]`, then apply the **P2 CO2 storage gate** to drop CCS candidates the country cannot physically support.
 - **P2 gate**: For each surviving CCS tech, the gate computes the plant's annual `get_co2_need(tech, capacity, env-wide reductant)` and compares against `get_co2_headroom(iso3, current_year + construction_time)`. If `need > headroom` the tech is dropped so the NPV race in Stage 5 picks the next-best non-CCS alternative naturally. CCU techs have `co2_stored = 0` in BOM and are never dropped.
+- **China capacity-replacement gate** (policy-enabled runs, Chinese plants only): for each surviving candidate — the incumbent's renovation option included — the policy's REPLACE hook resolves the capacity the candidate may build *before* its NPV runs. A utilisation gate comes first: a group at or below the utilisation floor for the whole recorded window loses every candidate. Otherwise the permitted capacity is `current / ratio`, 1.5:1 when both the old and the new route are emission-intense, 1:1 otherwise and always in the exempt provinces. A blocked candidate drops off the menu; a permitted one is valued at its permitted capacity in Stage 5. See [China Capacity-Replacement Policy](../capacity_replacement_policy.md).
 - **Example**:
   - Current tech: BF-BOF
   - All possible transitions: [BF-BOF, EAF, DRI-EAF, H2-DRI-EAF, BF+CCS]
@@ -428,6 +429,8 @@ threshold in Stage 2 runs unconditionally.
 - Renovation cost: $160 × 5,000,000 × 0.30 = $240,000,000
 - Plant group balance: $300,000,000 → **Affordable, renovate**
 
+**Capacity policy note**: with China's capacity-replacement policy enabled, a Chinese renovation is a replacement. It runs at the permitted capacity resolved in Stage 4 (an emission-intense renovation shrinks to `capacity / 1.5`), the `RenovateFurnaceGroup` command carries that capacity, and the freed difference is deposited into the retirement-credit pool when the renovation executes.
+
 ### Stage 10: Handle Technology Switch Scenario
 **Condition**: Best technology ≠ current technology
 
@@ -448,6 +451,8 @@ threshold in Stage 2 runs unconditionally.
 - Equity share: 30%
 - Switch cost: $650 × 5,000,000 × 0.30 = $975,000,000
 - Plant group balance: $1,200,000,000 → **Affordable, proceed**
+
+**Capacity policy note**: with the policy enabled, a Chinese switch is likewise sized at the permitted capacity from Stage 4. The group shrinks when the scheduled switch executes and the freed difference is deposited into the retirement-credit pool.
 
 ### Stage 11: Probabilistic Adoption Decision
 **Purpose**: Model real-world hesitation in technology adoption (financing risk, permit delays, market uncertainty)
