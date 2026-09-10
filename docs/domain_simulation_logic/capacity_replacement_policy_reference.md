@@ -64,31 +64,17 @@ Consequences: a credit deposited at a year boundary is spendable from the next y
 
 ## The input sheets
 
-Three optional sheets in the master Excel, prefixed `Capacity pool - `. Absence means no fixture is written (a *missing* fixture stays distinguishable from an *empty* one, and only the opening credits may be empty on an enabled run). Data preparation writes them to `fixtures/capacity_pool_provinces.json`, `fixtures/capacity_pool_technologies.json` and `fixtures/capacity_pool_opening_credits.json`, plus a generated diagnostic `fixtures/capacity_pool_ratio_grid.csv`.
+Three optional sheets in the master Excel, prefixed `Capacity pool - `. Column by column — the allowed values, what the model does with each, the rules enforced on them and the parameters that interact — they are documented in the [Master Input Reference](../user_guide/master_input_reference.md#china-capacity-replacement-policy-sheets). This section covers the pipeline behind them.
 
-Two layers check a present sheet:
+**Fixtures.** Absence means no fixture is written (a *missing* fixture stays distinguishable from an *empty* one, and only the opening credits may be empty on an enabled run). Data preparation writes `fixtures/capacity_pool_provinces.json`, `fixtures/capacity_pool_technologies.json` and `fixtures/capacity_pool_opening_credits.json`, plus the generated diagnostic `fixtures/capacity_pool_ratio_grid.csv`. The fixtures are recreated on every preparation whether or not a run will enable the policy, so authoring errors fail every preparation; unauthored flags only matter to an enabled run.
 
-- **The reader** checks structure: a present sheet missing a required column is an error, fully blank rows are dropped, and any extra column is ignored, so free-text provenance columns (`notes`, `source`) and authoring helpers (a `province_name` column, say) never reach the fixtures.
-- **Cross-row validation** checks meaning. Errors are authoring mistakes and fail preparation, listing every error found; warnings are content gaps, printed as such while the fixtures still build. Bootstrap re-runs the same checks with warnings promoted to errors, so a run with the policy enabled refuses on any of them.
+**Two layers check a present sheet.** The reader checks structure: a present sheet missing a required column is an error, fully blank rows are dropped, and any extra column is ignored, so free-text provenance columns and authoring helpers never reach the fixtures. Cross-row validation checks meaning: errors are authoring mistakes and fail preparation, listing every error found; warnings are content gaps, printed as such while the fixtures still build. Bootstrap re-runs the same checks with warnings promoted to errors, so a run with the policy enabled refuses on any of them. Names are checked against the model's vocabularies: technologies against the `Technology` column of `Techno-economic details`, reductants against the `Reductant` column of `Bill of Materials` (matched up to name normalisation), and geo keys against the model's Chinese first-order units. The master-Excel validator additionally runs its standard geo-key check over the `geo_key` columns of the provinces and opening-credits sheets.
 
-Names must match the model's vocabulary exactly, never retyped: technologies against the `Technology` column of `Techno-economic details`, reductants against the `Reductant` column of `Bill of Materials` (matched up to name normalisation, so `Natural gas` in the sheet and `natural_gas` at run time are the same key), and geo keys against the model's Chinese first-order units. The master-Excel validator additionally runs its standard geo-key check over the `geo_key` columns of the provinces and opening-credits sheets.
+**The effective ratio grid** (`capacity_pool_ratio_grid.csv`) is written beside the technologies fixture. Its axes are the classification keys as authored (`BF`, or `DRI|Coal` for a reductant-specific row), old routes on the rows and new routes on the columns; each cell holds the resolved ratio or `unauthored`. It is generated from the same precedence and derivation the evaluator uses, so it cannot disagree with the rules, and it is the at-a-glance view to check after editing the sheet.
 
-### Capacity pool - CHN provinces
+### Worked examples from the authored master
 
-One row per Chinese first-order unit. Geo keys take the combined form `CHN:<ISO 3166-2 code>`, for example `CHN:CN-HE` for Hebei.
-
-| Column | Required | Values | Meaning |
-|---|---|---|---|
-| `geo_key` | yes | `CHN:CN-XX` | The unit. Every Chinese unit the model resolves must appear exactly once. |
-| `region_name` | on `key` rows | text | The cluster name, shared by the cluster's member provinces; it becomes the credit tag. Read only on `key` rows. |
-| `type` | no | `key`, `exempt` or blank | `key`: closures deposit credits tagged with the cluster, builds may spend only that cluster's credits. `exempt`: replacement is always 1:1, whatever the technologies. Blank: a non-key province, whose closures deposit untagged credits and whose builds may spend any credit, tagged or not. |
-| `notes` | no | text | Provenance; ignored by the model. |
-
-The asymmetry between key and non-key provinces is the mechanism: capacity bleeds out of the key regions and never back in.
-
-Validation: `type` outside the vocabulary, a `key` row without `region_name`, a `geo_key` appearing twice (a province cannot sit in two clusters), a unit missing from the sheet (non-key status must be a recorded decision, not an omission) and an unknown `geo_key` are all errors.
-
-The authored sheet lists all 31 units: eleven key provinces in three clusters, two exempt provinces and eighteen non-key ones.
+**Provinces.** The authored sheet lists all 31 units: eleven key provinces in three clusters, two exempt provinces and eighteen non-key ones. The key-region definition is the policy's city-cluster list projected onto provinces: any listed city promotes its whole province, and no province has cities in two clusters, so one cluster per province is a property of the source rather than a constraint the model imposes.
 
 | Type | Cluster | Provinces |
 |---|---|---|
@@ -98,59 +84,9 @@ The authored sheet lists all 31 units: eleven key provinces in three clusters, t
 | `exempt` | — | Qinghai, Tibet |
 | blank | — | Chongqing, Fujian, Gansu, Guangdong, Guangxi, Guizhou, Hainan, Heilongjiang, Hubei, Hunan, Inner Mongolia, Jiangxi, Jilin, Liaoning, Ningxia, Sichuan, Xinjiang, Yunnan |
 
-The key-region definition is the policy's city-cluster list projected onto provinces: any listed city promotes its whole province. No province has cities in two clusters, so one cluster per province is a property of the source, not a constraint the model imposes.
+**Technologies.** 31 classification rows, no override rows. Six routes are emission-intense: `BF`, `BF_CHARCOAL`, `BOF`, `SR`, `DRI` on coal and `DRI+ESF` on coal. Every capture variant (`+CCS`, `+CCU`) and every non-coal DRI variant is `FALSE`, as are `EAF`, `MOE` and `E-WIN`. The DRI family is classified per reductant (`Coal`, `Natural gas`, `Hydrogen`); everything else as a whole.
 
-### Capacity pool - technologies
-
-Two row types share the sheet, told apart by `switching_to`.
-
-| Column | Classification row (`switching_to` blank) | Override row (`switching_to` set) |
-|---|---|---|
-| `technology` | Model technology name, exactly as in `Techno-economic details` | Old technology, or `*` for any |
-| `product` | `iron` or `steel` (required) | ignored |
-| `reductant` | Blank for "any reductant", or one reductant to classify that variant on its own | Optional; narrows the override to one old-side reductant |
-| `is_emission_intense` | `TRUE`/`FALSE` (also `1`/`0`). **Blank means unauthored, not `FALSE`.** | must be blank |
-| `switching_to` | blank | New technology, or `*` for any |
-| `swap_ratio` | must be blank | The pinned ratio, positive |
-| `notes` | Provenance; ignored | Provenance; ignored |
-
-**Classification rows** carry the single authored fact the tree needs: whether a route is emission-intense. A route that is not emission-intense is deep abatement by definition (the policy's threshold is at least a 60 % emission reduction against the BF-BOF route). Routes are keyed on `(technology, reductant)` because the policy's vocabulary does not map onto technology names alone. A technology may be classified as a whole (one row, blank reductant) or per reductant (one row per reductant). A blank-reductant row with no flag on a technology that also has reductant-specific rows is a *delegation row*: it classifies nothing and raises no warning; it merely points at the reductant rows.
-
-**Override rows** pin the ratio of one transition and are expected to be rare; a sheet with none is the normal state. Precedence, most specific first, and each level admits at most one match:
-
-1. `technology` + `reductant` + `switching_to`
-2. `technology` + `switching_to`
-3. one side `*` (`BF → *` or `* → EAF`)
-4. both sides `*`
-5. no match: derive from the flags
-
-Level 3 is where two rows can be equally specific: `BF → *` and `* → EAF` both match the pair `BF → EAF`, and validation refuses that collision rather than picking one.
-
-**Derivation**: with no override, the ratio is `replacement_ratio` (1.5 by default) when the old route **and** the new route are emission-intense, and 1:1 otherwise. Exempt provinces are applied by the evaluator on top: there every replacement is 1:1. If either side's flag is unauthored and no override decides the pair, the transition is undecided and the policy refuses to run rather than guess, because a silent 1:1 would exempt the pair.
-
-Validation: on classification rows, `*` as the technology, an unknown technology or reductant, a product outside `iron`/`steel`, a `swap_ratio`, and duplicate `(technology, reductant)` keys are errors; on override rows, an unknown technology on either side, an unknown reductant, a classification flag, a missing or non-positive `swap_ratio`, duplicate rows and the level-3 collision are errors. An unauthored flag on a classification row (other than a delegation row) and a roster technology with no classification row are warnings.
-
-**The effective ratio grid** (`capacity_pool_ratio_grid.csv`) is written beside the fixture at preparation. Its axes are the classification keys as authored (`BF`, or `DRI|Coal` for a reductant-specific row), old routes on the rows and new routes on the columns; each cell holds the resolved ratio or `unauthored`. It is generated from the same precedence and derivation the evaluator uses, so it cannot disagree with the rules, and it is the at-a-glance view to check after editing the sheet.
-
-Worked example, the authored sheet as it stands: 31 classification rows, no override rows. Six routes are emission-intense: `BF`, `BF_CHARCOAL`, `BOF`, `SR`, `DRI` on coal and `DRI+ESF` on coal. Every capture variant (`+CCS`, `+CCU`) and every non-coal DRI variant is `FALSE`, as are `EAF`, `MOE` and `E-WIN`. The DRI family is classified per reductant (`Coal`, `Natural gas`, `Hydrogen`); everything else as a whole.
-
-### Capacity pool - opening credits
-
-The pool as it stands at the simulation start: capacity retired in the past and **not yet spent**. Deliberately not a list of historical retirements, because the regime predates any simulation window and raw retirements would count already-spent credit as unspent.
-
-| Column | Required | Values | Meaning |
-|---|---|---|---|
-| `vintage_year` | yes | integer | Retirement year. Sets FIFO order and whether the credit is banked before the swap cutoff. |
-| `capacity_mt` | yes | positive number | Freed capacity in Mt (converted to tonnes at seeding). |
-| `geo_key` | yes | `CHN:CN-XX` | The retiring province. The credit's region tag is derived from it at seeding, never authored. |
-| `product` | yes | `iron` or `steel` | Which stock the credit belongs to. |
-| `technology` | no | roster name | Provenance only; the pool never filters on it. |
-| `plant_group_id` | no | plant group id | The owning company. Blank means an unowned credit: freely drawable before the cutoff, swept at it (except under the `persist` banked-credit rule). |
-| `source` | no | text | Provenance; ignored by the model. |
-
-Validation: a non-positive `capacity_mt`, a product outside `iron`/`steel`, a `technology` not on the roster and an unknown `geo_key` are errors. An empty sheet is valid and means a zero-pool start.
-
-At seeding, vintages after the start year are clamped down to it, credits already past their shelf life are purged, and every `plant_group_id` that matches no plant group is reported, because such a credit can never be spent by its "owner" from the cutoff on. A sheet with no owners at all (a plausible authoring, since retirement statistics rarely name the company) yields a pool that is fully drawable until the cutoff and empty from it, unless the `persist` rule is chosen.
+**Opening credits.** The sheet holds the pool's opening *state*, not its history: the regime predates any simulation window, and raw retirements would count already-spent credit as unspent. A sheet with no owners named (a plausible authoring, since retirement statistics rarely name the company) yields a pool that is fully drawable until the cutoff and empty from it, unless the `persist` rule is chosen.
 
 ## Classification at run time
 

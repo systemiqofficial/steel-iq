@@ -13,6 +13,7 @@ user_guide/overview_user_guide
 user_guide/installation_guide
 user_guide/running_simulations_locally
 user_guide/configuration
+user_guide/master_input_reference
 user_guide/cli_commands
 user_guide/commandline_entrypoints
 user_guide/LOGGING_GUIDE
