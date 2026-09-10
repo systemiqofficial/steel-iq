@@ -23,7 +23,7 @@ Outside the package, the feature uses the standard data pipeline (the sheet read
 
 1. `bootstrap_simulation` calls `configure_capacity_policy(config.capacity_policy, repository_json, start_year=…)` once per run. It **always unbinds first**: the binding is module-level state, and a disabled run must clear whatever an earlier enabled run in the same process left behind (web app, test suites).
 2. With `enabled=False` it returns. Every hook accessor keeps returning `None`, every handler keeps returning immediately, and the run is byte-identical to a build without the package.
-3. With `enabled=True` it refuses, naming the culprit, when any of the three fixtures is missing, when the provinces or technologies fixture is empty, or when the cross-row validation finds any issue, warnings included. An empty opening-credits fixture is accepted as a zero-pool start.
+3. With `enabled=True` it refuses, naming the culprit, when the run has no fixture repositories (a repository injected directly), when any of the three fixtures is missing, when the provinces or technologies fixture is empty, or when the cross-row validation finds any issue, warnings included. An empty opening-credits fixture is accepted as a zero-pool start.
 4. It warns when the geo-unit reference data (admin-1 shapefile and geo hierarchy) is absent, since greenfield sites would then resolve to the bare `CHN` key and the whole greenfield side would run region-blind, and it warns for every opening-credit `plant_group_id` that matches no plant group.
 5. It builds a fresh recorder, evaluator and pool, seeds the pool from the opening credits (vintages after the start year are clamped down to it with a warning), writes one `seed` ledger row per entry, purges credits already past their shelf life and, when the start year is at or past the swap cutoff, the unowned ones, then binds.
 6. The global motions recorder is bound on every run, enabled or not.
@@ -97,7 +97,7 @@ Three optional sheets in the master Excel, prefixed `Capacity pool - `. Column b
 
 Since the sizing query runs on every Chinese candidate at valuation time, a classification gap that used to be latent surfaces on the first Chinese plant that considers the route. Every technology China may build therefore needs an authored row before an enabled run.
 
-For the ② REPLACE gate, the new side is classified by the candidate's own operating-start reductant pick, the same series the CO2 gate builds at the same year anchor, and the incumbent by the group's current reductant. The utilisation gate runs first: it blocks when the most recent window of `utilization_window_years` consecutive recorded years, anchored at the latest recorded year at or before the decision year, is fully recorded and every year sits at or below `min_utilization_for_renovation`. Missing, short or gappy history never blocks.
+For the ② REPLACE gate, the new side is classified by the candidate's own operating-start reductant pick, the same series the CO2 gate builds at the same year anchor, and the incumbent by the group's current reductant; in an exempt province the gate resolves 1:1 without classifying either route. The utilisation gate runs first: it blocks when the most recent window of `utilization_window_years` consecutive recorded years, anchored at the latest recorded year at or before the decision year, is fully recorded and every year sits at or below `min_utilization_for_renovation`. Missing, short or gappy history never blocks.
 
 ## Pool arithmetic and units
 
