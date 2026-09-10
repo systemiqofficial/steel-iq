@@ -1,10 +1,8 @@
-"""Row types for the three ``Capacity pool - …`` master-excel sheets.
+"""Row types for the three ``Capacity pool - …`` master-excel sheets, and the swap-ratio precedence.
 
-The rows mirror the sheets minus the free-text provenance columns
-(``notes``/``source``, which stay in the workbook only); the loader
-maps opening-credit rows onto :class:`~steelo.capacity_policy.pool.SeedEntry`
-at seed time. Swap-ratio derivation lives here too, so the data-prep ratio-grid
-diagnostic and the tree evaluator share one precedence implementation.
+Swap-ratio derivation lives here so the data-prep ratio grid and the tree
+evaluator share one implementation. Columns and rules:
+docs/user_guide/master_input_reference.md#china-capacity-replacement-policy-sheets.
 """
 
 from dataclasses import dataclass
@@ -35,22 +33,14 @@ class RegionRow:
 class TechnologyRow:
     """One row of ``Capacity pool - technologies``.
 
-    Two row types share the sheet, discriminated by ``switching_to``:
-    classification rows (``switching_to`` blank) carry the emission-intense
+    Classification rows (``switching_to`` blank) carry the emission-intense
     flag for one ``(technology, reductant)``; override rows (``switching_to``
-    set) pin one transition's swap ratio and carry no flag. A blank flag is
-    unauthored, not False.
-
-    Classification is bipartite: ``is_emission_intense`` is the negation of the
-    policy's deep-abatement threshold — a ≥60% emission reduction against
-    BF-BOF — so a route that is not emission-intense qualifies as deep
-    abatement by definition.
+    set) pin one transition's ratio. A blank flag is unauthored, not False.
 
     Attributes:
         technology: Model technology name; ``"*"`` only on override rows.
         product: ``"iron"`` or ``"steel"`` on classification rows.
-        reductant: Reductant the classification is specific to, or None for
-            any reductant.
+        reductant: Reductant the row is specific to, or None for any.
         is_emission_intense: Whether the route falls short of the
             deep-abatement threshold; None when unauthored.
         switching_to: Target technology of an override row (``"*"`` allowed),
@@ -81,9 +71,7 @@ class OpeningCreditRow:
         geo_key: Combined ``iso3:code`` key of the retiring province.
         product: ``"iron"`` or ``"steel"``.
         technology: Retired technology — provenance only, never a filter.
-        plant_group_id: Owning company (maps to ``SeedEntry.owner_id``), or
-            None for an unowned credit — freely drawable before the swap
-            cutoff, purged at it.
+        plant_group_id: Owning company, or None for an unowned credit.
     """
 
     vintage_year: int
@@ -121,18 +109,16 @@ def resolve_swap_ratio(
 ) -> float | None:
     """Resolve the effective ratio for one transition between classification rows.
 
-    Override precedence, most specific first: (1) technology + reductant +
-    ``switching_to``; (2) technology + ``switching_to``; (3) one side ``"*"``;
-    (4) both sides ``"*"``; (5) no match — derive from the flag. A row naming
-    a reductant matches only that old-side reductant at every level.
-    Validation has already refused equal-specificity collisions, so each level
-    holds at most one match.
+    Override precedence, most specific first: technology + reductant + target;
+    technology + target; one side ``"*"``; both sides ``"*"``; else derive
+    from the flags. A row naming a reductant matches only that old-side
+    reductant at every level.
 
     Args:
         old: Classification row of the route being replaced.
         new: Classification row of the route being built.
         overrides: The sheet's override rows.
-        default_ratio: The penalised replacement ratio (config default 1.5).
+        default_ratio: The penalised replacement ratio.
 
     Returns:
         The ratio, or None when a needed flag is unauthored and no override
@@ -167,21 +153,15 @@ def resolve_swap_ratio(
 
 
 def effective_ratio_grid(rows: list[TechnologyRow], default_ratio: float) -> tuple[list[str], list[list[str]]]:
-    """Derive the effective transition-ratio grid from the flag and overrides.
-
-    The axes are the classification keys as authored — the bare technology, or
-    ``technology|reductant`` where the classification is reductant-specific.
-    Cells hold the resolved ratio, or ``"unauthored"`` where a missing flag
-    leaves the transition undecided. Always generated, never authored, so it
-    cannot disagree with the rules that produce it.
+    """Derive the old-route × new-route ratio grid the sheet implies.
 
     Args:
         rows: All rows of the technologies sheet.
-        default_ratio: The penalised replacement ratio (config default 1.5).
+        default_ratio: The penalised replacement ratio.
 
     Returns:
-        The axis labels and the row-major grid of cell strings, old routes on
-        the rows and new routes on the columns.
+        The axis labels (``technology`` or ``technology|reductant``) and the
+        row-major grid of cells, each a ratio or ``"unauthored"``.
     """
     overrides = [row for row in rows if row.is_override]
     split = technologies_with_reductant_rows(rows)

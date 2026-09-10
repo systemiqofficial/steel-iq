@@ -1,9 +1,8 @@
 """National retirement-credit pool for China's capacity-replacement policy.
 
-Retirements and penalised replacements deposit freed-capacity credits; new builds
-must withdraw a matching amount before they are allowed. Net national capacity is
-unchanged — it is reallocated: a penalised replacement surrenders capacity that a
-cleaner project can then claim, which is the swap regime doing its job.
+Capacities flow in model tonnes at run time; the ``amount_mt`` names are a
+sheet-side convention. Filter rules, purges and units:
+docs/domain_simulation_logic/capacity_replacement_policy_reference.md#pool-arithmetic-and-units.
 """
 
 import bisect
@@ -24,16 +23,12 @@ class Credit:
     """A retirement credit: freed capacity that can fund a later build.
 
     Attributes:
-        amount_mt: Freed capacity in Mt.
-        vintage_year: Year the capacity was retired; the pool consumes oldest first.
-        region_tag: Cluster name of the key region (e.g. ``"Jing-Jin-Ji"``) when
-            the retirement happened in one — member provinces share the tag, so
-            a Hebei build can spend a Tianjin credit — else None (untagged).
-        owner_id: Depositing PlantGroup.plant_group_id, or None for seeded
-            historical retirements that name no company. Unowned credits are
-            freely drawable before the swap cutoff and purged at it (kept only
-            under the ``persist`` banked-credit rule).
-        product: ``"iron"`` or ``"steel"`` — iron and steel are separate stocks.
+        amount_mt: Freed capacity (model tonnes at run time).
+        vintage_year: Year the capacity was retired; consumed oldest first.
+        region_tag: Cluster name of the key region the retirement happened in,
+            else None (untagged).
+        owner_id: Depositing plant group id, or None for an unowned opening credit.
+        product: ``"iron"`` or ``"steel"``; separate stocks.
     """
 
     amount_mt: float
@@ -45,12 +40,7 @@ class Credit:
 
 @dataclass(frozen=True)
 class SeedEntry:
-    """A historical retirement used to seed the pool at t=0.
-
-    The region tag is derived at load time (``geo_key in key_regions``), never
-    authored in the seed data, so re-tagging follows the key-region config.
-    ``owner_id`` is None where the source names no company.
-    """
+    """An opening credit before seeding; its region tag is derived from ``geo_key`` at seed time."""
 
     amount_mt: float
     vintage_year: int
@@ -65,16 +55,13 @@ class WithdrawResult:
 
     Attributes:
         granted: Whether the withdrawal was allowed and consumed.
-        credits_consumed: FIFO-ordered consumed portions; a partially-consumed
+        credits_consumed: FIFO-ordered consumed portions; a partially consumed
             credit appears with just the consumed share.
-        attributed_owner_id: The holder drawn from, for ``single_owner``
-            withdrawals — None when that holder is the unowned pot. Always None
-            for ordinary withdrawals, which have no attribution consumer.
-        blocked_reason: None when granted. ``"insufficient_applicable_pool"``
-            when the applicable credits sum below the requirement;
-            ``"no_single_owner_with_sufficient_credits"`` when the pool is ample
-            but no one holder covers the amount — the gate must log this case
-            distinctly or it reads as a phantom block.
+        attributed_owner_id: The holder drawn from on a ``single_owner``
+            withdrawal (None for the unowned pot); always None otherwise.
+        blocked_reason: None when granted, else
+            ``"insufficient_applicable_pool"`` or
+            ``"no_single_owner_with_sufficient_credits"``.
     """
 
     granted: bool
@@ -86,17 +73,9 @@ class WithdrawResult:
 class CapacityPool:
     """Age-ordered queue of retirement credits with filtered FIFO withdrawal.
 
-    Withdrawals see only the "applicable pool": credits passing the region and
-    product filters plus the owner rules. Ordinary (expansion) withdrawals draw
-    plain FIFO across all applicable credits; from the cutoff year they are
-    restricted to the withdrawer's own credits, with pre-cutoff vintages treated
-    per the banked-credit rule. Greenfield withdrawals (``single_owner=True``)
-    are instead served from exactly one holder's credits, uniformly across the
-    run. Grants are all-or-nothing. A partially-consumed credit splits and the
-    remainder keeps its original vintage — restamping would send it to the back
-    of the queue and break FIFO. Credits may also carry a shelf life, swept at
-    the year boundary by :meth:`purge_expired`; unowned credits are swept at
-    the cutoff boundary by :meth:`purge_unowned`.
+    Withdrawals see only the applicable pool (region, product and owner
+    filters) and are all-or-nothing. A partially consumed credit splits and
+    the remainder keeps its vintage, so it holds its place in the queue.
     """
 
     def __init__(
@@ -111,12 +90,9 @@ class CapacityPool:
             inter_company_swap_cutoff_year: First year a company may only spend
                 credits it deposited. None disables the partition.
             banked_credit_rule: Treatment of pre-cutoff credits from the cutoff
-                year on: ``"reassign"`` keeps them with their depositor (the
-                owner filter applies), ``"persist"`` leaves them freely
-                spendable, ``"expire"`` makes them unusable. Unowned credits
-                have no depositor to fall back to, so only ``"persist"`` keeps
-                them usable from the cutoff. Not an age rule — see
-                ``credit_validity_years``.
+                on: ``"reassign"`` (owner filter applies), ``"persist"``
+                (freely spendable) or ``"expire"`` (unusable). A withdrawal-time
+                rule, not an age rule.
             credit_validity_years: Years a credit may sit banked before it is
                 purged. None never expires.
 
@@ -133,10 +109,7 @@ class CapacityPool:
         self._credits: list[Credit] = []
 
     def deposit(self, credit: Credit) -> None:
-        """Append a credit to the queue.
-
-        Deposits arrive in simulation-year order, which keeps the queue
-        age-ordered without sorting.
+        """Append a credit; deposits arrive in year order, so the queue stays age-ordered.
 
         Args:
             credit: The retirement credit to bank.
@@ -151,16 +124,12 @@ class CapacityPool:
     def refund(self, credit: Credit) -> None:
         """Hand back a consumed slice whose build never happened.
 
-        Inserted after every credit of the same or older vintage rather than
-        appended, so the queue stays age-ordered and the slice resumes the FIFO
-        position it left; appending would park it behind younger credits and
-        quietly reorder later spends.
+        Inserted after every credit of the same or older vintage, not appended,
+        so the slice resumes the FIFO position it left.
 
         Args:
-            credit: The consumed portion being returned, original vintage
-                intact — its shelf life runs from the retirement it came from,
-                not from the refund, so a slice handed back past its validity
-                survives only until the next purge.
+            credit: The consumed portion, original vintage intact; its shelf
+                life keeps running from that vintage.
 
         Raises:
             ValueError: If the credit amount is not positive.
@@ -173,21 +142,15 @@ class CapacityPool:
     def purge_expired(self, year: int) -> list[Credit]:
         """Remove every credit whose shelf life has run out on entering ``year``.
 
-        A vintage ``V`` credit is usable through ``V + validity − 1`` and gone
-        from ``V + validity``. Deliberately not the same mechanism as
-        ``banked_credit_rule="expire"``, which is an applicability predicate
-        applied at withdrawal over the *ownership* cutoff and leaves the credits
-        it disallows sitting in ``snapshot()`` and ``total()``. This is a real
-        sweep, so the pool's own totals stay honest. Expiry applies to unowned
-        seeded credits too — the shelf life is an age rule and owner rules have
-        no say in it.
+        A vintage ``V`` credit is usable through ``V + validity − 1``. Unlike
+        ``banked_credit_rule="expire"`` this is a real sweep, so ``total()`` and
+        ``snapshot()`` stay honest; it applies to unowned credits too.
 
         Args:
             year: The year being entered.
 
         Returns:
-            The removed credits, so the caller can account for them; empty when
-            no shelf life is configured.
+            The removed credits; empty when no shelf life is configured.
         """
         validity = self.credit_validity_years
         if validity is None:
@@ -208,19 +171,16 @@ class CapacityPool:
     def purge_unowned(self, year: int) -> list[Credit]:
         """Remove every unowned credit once ``year`` has reached the swap cutoff.
 
-        From the cutoff a company may only spend credits it deposited, and an
-        unowned credit has no depositor — nobody can ever spend it again, so it
-        is swept rather than left inflating ``snapshot()`` and ``total()``.
-        Under ``banked_credit_rule="persist"`` pre-cutoff vintages stay freely
-        spendable, unowned included, so nothing is purged. Idempotent after the
-        first boundary: runtime deposits always carry an owner.
+        Nobody can spend an unowned credit from the cutoff (no depositor to
+        keep it), except under ``"persist"``, so it is swept rather than left
+        inflating the totals.
 
         Args:
             year: The year being entered.
 
         Returns:
-            The removed credits, so the caller can account for them; empty
-            before the cutoff, with no cutoff configured, or under persist.
+            The removed credits; empty before the cutoff, with no cutoff
+            configured, or under persist.
         """
         cutoff = self.inter_company_swap_cutoff_year
         if cutoff is None or year < cutoff or self.banked_credit_rule == "persist":
@@ -248,13 +208,7 @@ class CapacityPool:
         year: int,
         single_owner: bool = False,
     ) -> str | None:
-        """Non-consuming feasibility check: would :meth:`try_withdraw` grant this?
-
-        Applies exactly the rules of :meth:`try_withdraw` — the applicable-pool
-        filters, the sufficiency sum, and the single-holder selection — without
-        consuming anything, so a gate can probe fundability before committing
-        (the greenfield pre-draw probe) or a diagnostic can ask without
-        touching state.
+        """Non-consuming check: would :meth:`try_withdraw` grant this?
 
         Args:
             Same as :meth:`try_withdraw`.
@@ -283,40 +237,24 @@ class CapacityPool:
         year: int,
         single_owner: bool = False,
     ) -> WithdrawResult:
-        """Attempt to consume ``amount_mt`` from the applicable pool, FIFO.
+        """Consume ``amount_mt`` from the applicable pool, oldest first, all or nothing.
 
-        The applicable pool is the subset of credits passing every filter:
-            - region: ``region_tag`` set ⇒ only credits carrying exactly that
-              tag (a key-region build spends only its own region's credits);
-              None ⇒ any credit, tagged or untagged.
-            - product: exact match — an iron credit cannot fund a steel build.
-            - owner: from the cutoff year an ordinary withdrawal may spend only
-              the withdrawer's own credits, with pre-cutoff vintages treated per
-              the banked-credit rule; unowned credits are drawable before the
-              cutoff and refused from it (except under ``persist``).
-
-        ``single_owner=True`` (greenfield) replaces the owner filter: the whole
-        withdrawal is served from one holder's credits — the holder whose oldest
-        applicable credit sits earliest in the queue, among those holding
-        enough. The unowned pot counts as one such holder; mixing holders is not
-        allowed. A greenfield build can therefore fail with an ample pool when
-        no single holder covers it, which ``blocked_reason`` distinguishes from
-        a short pool.
+        With ``single_owner=True`` (greenfield) the whole withdrawal is served
+        by one holder: the one whose oldest applicable credit sits earliest in
+        the queue among those holding enough, the unowned pot counting as a
+        holder.
 
         Args:
-            amount_mt: Capacity to withdraw, in Mt. Any emission-intense
-                penalty is applied by the caller before this point — the pool
-                consumes exactly what it is asked for.
+            amount_mt: Capacity to withdraw; any emission-intense penalty is
+                applied by the caller, the pool consumes exactly what it is asked.
             region_tag: Required credit tag, or None for an unrestricted build.
             product: ``"iron"`` or ``"steel"``.
-            owner_id: Withdrawing PlantGroup.plant_group_id.
+            owner_id: Withdrawing plant group id.
             year: Decision year; activates the owner filter from the cutoff.
-            single_owner: Serve the withdrawal from exactly one holder
-                (greenfield rule, uniform across the run).
+            single_owner: Serve the withdrawal from exactly one holder.
 
         Returns:
-            WithdrawResult. Grants are all-or-nothing: nothing is consumed
-            unless the full amount is available under the rules above.
+            The result; nothing is consumed unless the full amount is available.
         """
 
         def applicable(credit: Credit) -> bool:
@@ -351,14 +289,11 @@ class CapacityPool:
         )
 
     def seed_from(self, entries: Iterable[SeedEntry], key_regions: Mapping[str, str]) -> None:
-        """Bulk-deposit historical retirements, deriving region tags at load time.
+        """Bulk-deposit opening credits in vintage order, deriving region tags from ``key_regions``.
 
         Args:
-            entries: Historical retirements; deposited in vintage order so the
-                queue stays age-ordered regardless of input order.
-            key_regions: geo_key → cluster name for the key provinces; an entry
-                whose geo_key is a key province deposits a credit tagged with
-                its cluster name, otherwise untagged.
+            entries: Opening credits; deposited in vintage order regardless of input order.
+            key_regions: geo_key → cluster name for the key provinces.
         """
         ordered = sorted(entries, key=lambda e: e.vintage_year)
         for entry in ordered:
@@ -391,11 +326,11 @@ class CapacityPool:
         return tuple(self._credits)
 
     def total(self) -> float:
-        """Return the total banked capacity in Mt."""
+        """Return the total banked capacity."""
         return sum(c.amount_mt for c in self._credits)
 
     def total_by_tag(self) -> dict[str | None, float]:
-        """Return banked capacity in Mt keyed by region tag (None = untagged)."""
+        """Return banked capacity keyed by region tag (None = untagged)."""
         totals: dict[str | None, float] = {}
         for c in self._credits:
             totals[c.region_tag] = totals.get(c.region_tag, 0.0) + c.amount_mt
@@ -433,11 +368,7 @@ class CapacityPool:
         return credit.owner_id == owner_id
 
     def _consume(self, amount_mt: float, wanted: Callable[[Credit], bool]) -> list[Credit]:
-        """Consume ``amount_mt`` FIFO from credits matching ``wanted``.
-
-        Callers have already established sufficiency; the queue is rebuilt so a
-        partially-consumed credit keeps its original vintage, tag and owner.
-        """
+        """Consume ``amount_mt`` FIFO from credits matching ``wanted``; callers established sufficiency."""
         consumed: list[Credit] = []
         remaining = amount_mt
         kept: list[Credit] = []
@@ -459,10 +390,9 @@ class CapacityPool:
     def _select_single_holder(applicable_credits: list[Credit], amount_mt: float) -> tuple[bool, str | None]:
         """Pick the holder to serve a single-owner withdrawal.
 
-        Among holders whose applicable credits cover ``amount_mt``, choose the
-        one whose oldest applicable credit sits earliest in the queue —
-        ``applicable_credits`` is queue-ordered, so first appearance is oldest.
-        The unowned pot (owner None) is a holder like any other.
+        ``applicable_credits`` is queue-ordered, so the first holder seen with
+        enough is the one whose oldest credit comes first; owner None is the
+        unowned pot.
 
         Returns:
             ``(True, holder)`` when a holder qualifies, else ``(False, None)``.

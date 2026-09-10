@@ -1,13 +1,12 @@
 """Decision-tree evaluator for China's capacity-replacement policy.
 
-Pure logic over the fixture rows and :class:`CapacityPolicyConfig` — no bus, no
-environment, no domain-model imports — so the module stays deletable and
-testable against hand-built rows. The methods transcribe the policy tree's
-branches: ① RETIRE (:meth:`TreeEvaluator.on_close`), ② REPLACE
-(:meth:`TreeEvaluator.permitted_capacity` for a switch,
-:meth:`TreeEvaluator.permitted_renovation` for the ratio-exempt renovation),
-③ INCREASE (:meth:`TreeEvaluator.on_increase`). Ratio precedence and
-derivation are consumed from :mod:`.inputs`, never reimplemented.
+Pure logic over the fixture rows and :class:`CapacityPolicyConfig`: no bus,
+no environment, no domain imports. Branch ① RETIRE is
+:meth:`TreeEvaluator.on_close`, ② REPLACE :meth:`TreeEvaluator.permitted_capacity`
+and :meth:`TreeEvaluator.permitted_renovation`, ③ INCREASE
+:meth:`TreeEvaluator.on_increase`. Capacities are model tonnes at run time;
+the ``_mt`` names are a sheet-side convention.
+See docs/domain_simulation_logic/capacity_replacement_policy.md#the-decision-tree.
 """
 
 import logging
@@ -40,15 +39,11 @@ class WithdrawSpec:
     """What an INCREASE build must withdraw from the pool, and may then build.
 
     Attributes:
-        withdraw_mt: Credit to consume — always the originally planned
-            capacity, even when the build itself is penalised.
-        build_mt: Capacity actually allowed to be built; the planned amount
-            divided by the emission-intense penalty divisor when the new route
-            is emission-intense, else the planned amount unchanged.
-        region_tag: Cluster tag the credits must carry — a build in a key
-            province may spend only its own cluster's credits; None means any
-            credit, tagged or untagged.
-        product: ``"iron"`` or ``"steel"``, passed through to the withdrawal.
+        withdraw_mt: Credit to consume; always the planned capacity.
+        build_mt: Capacity allowed to be built; the planned amount divided by
+            the penalty divisor when the new route is emission-intense.
+        region_tag: Cluster tag the credits must carry, or None for any credit.
+        product: ``"iron"`` or ``"steel"``.
     """
 
     withdraw_mt: float
@@ -60,15 +55,9 @@ class WithdrawSpec:
 class TreeEvaluator:
     """Evaluate the capacity-replacement decision tree for one Chinese plant action.
 
-    Constructed once from the fixture row-lists and the policy config; methods
-    take plain values so callers (event handlers now, decision gates later)
-    adapt at their own call sites.
-
     Attributes:
-        key_regions: geo_key → cluster name for the key provinces; also the
-            mapping :meth:`CapacityPool.seed_from` needs at bootstrap.
-        config: The policy's scenario levers, as constructed with; read by the
-            decision-path adapter for switches the tree itself does not consult.
+        key_regions: geo_key → cluster name for the key provinces.
+        config: The policy's scenario levers.
     """
 
     def __init__(
@@ -109,15 +98,12 @@ class TreeEvaluator:
         self._conservative_rows: dict[str, TechnologyRow] = {}
 
     def on_close(self, *, geo_key: str, capacity_mt: float, owner_id: str | None, product: str, year: int) -> Credit:
-        """Build the retirement credit for freed capacity — branch ① RETIRE.
-
-        A closure in a key province yields a credit tagged with the cluster
-        name; anywhere else — non-key, exempt, or a bare country key — the
-        credit is untagged. Technology is provenance only and is not carried.
+        """Build the retirement credit for freed capacity (branch ① RETIRE).
 
         Args:
-            geo_key: Combined geo key of the freeing plant, e.g. ``"CHN:CN-HE"``.
-            capacity_mt: Freed capacity in Mt.
+            geo_key: Combined geo key of the freeing plant, e.g. ``"CHN:CN-HE"``;
+                a key province yields a tagged credit, anywhere else untagged.
+            capacity_mt: Freed capacity.
             owner_id: Plant group the freeing plant belongs to, by membership.
             product: ``"iron"`` or ``"steel"``.
             year: Deposit year; becomes the credit's vintage.
@@ -147,40 +133,30 @@ class TreeEvaluator:
         year: int,
         furnace_group_id: str | None = None,
     ) -> float | None:
-        """Resolve the capacity a replacement is allowed to build — branch ② REPLACE.
+        """Resolve the capacity a replacement may build (branch ② REPLACE).
 
-        Evaluated before the NPV so the agent values the switch it is actually
-        allowed. The utilisation gate is checked first: a group whose recorded
-        utilisation sat at or below the configured floor for the whole window
-        of most recent consecutive recorded years is not eligible for
-        renovation at all. Otherwise the permitted capacity is
-        ``capacity_mt / ratio``, the ratio resolved per the override precedence
-        and flag derivation in :func:`resolve_swap_ratio` — except in an
-        exempt province, where replacement is always 1:1 regardless of
-        technology.
+        The utilisation gate is checked first; otherwise the permitted capacity
+        is ``capacity_mt / ratio``, 1:1 in an exempt province and else per
+        :func:`resolve_swap_ratio`.
 
         Args:
             old_technology: Technology being replaced.
             old_reductant: Its current reductant, or None when unset.
             new_technology: Candidate technology.
             new_reductant: The reductant the candidate is evaluated with.
-            capacity_mt: The group's current capacity in Mt.
+            capacity_mt: The group's current capacity.
             geo_key: Combined geo key of the plant.
             product: ``"iron"`` or ``"steel"``, recorded with the decision.
-            historical_utilization: Per-year recorded utilisation of the
-                group, or None when no history exists yet.
+            historical_utilization: Per-year recorded utilisation of the group, or None.
             year: Decision year.
-            furnace_group_id: The group under evaluation, for the log line and
-                the recorded row; None when the caller has no group in hand.
+            furnace_group_id: The group under evaluation, for the log and the record.
 
         Returns:
-            The permitted new capacity in Mt, or None when the utilisation
-            gate blocks the replacement.
+            The permitted new capacity, or None when the utilisation gate blocks.
 
         Raises:
             ValueError: If a route has no classification row, or its flag is
-                unauthored and no override decides the transition — the policy
-                refuses to guess where a silent 1:1 would exempt the pair.
+                unauthored and no override decides the transition.
         """
         if self._utilization_blocks(historical_utilization, year):
             logger.info(
@@ -267,29 +243,20 @@ class TreeEvaluator:
         year: int,
         furnace_group_id: str | None = None,
     ) -> float | None:
-        """Resolve whether a same-technology renovation is allowed at all — the gate alone.
+        """Apply the utilisation gate alone to a same-technology renovation.
 
-        The utilisation gate applies to renovations whatever
-        ``renovation_counts_as_replace`` says; that flag decides only whether
-        a renovation also pays the replacement ratio. A ratio-exempt
-        renovation therefore has nothing to classify and nothing to shrink —
-        it either proceeds untouched or is blocked outright.
-
-        The gate's rule is unchanged: it blocks only on a fully
-        recorded window at or below the floor, so insufficient history never
-        blocks and none is pre-populated.
+        Used when ``renovation_counts_as_replace`` is off: nothing to classify
+        or shrink, so the renovation either proceeds untouched or is blocked.
 
         Args:
-            technology: The incumbent technology, on both sides of the decision.
+            technology: The incumbent technology.
             reductant: Its current reductant, or None when unset.
-            capacity_mt: The group's current capacity in Mt.
+            capacity_mt: The group's current capacity.
             geo_key: Combined geo key of the plant.
             product: ``"iron"`` or ``"steel"``, recorded with the decision.
-            historical_utilization: Per-year recorded utilisation of the group,
-                or None when no history exists yet.
+            historical_utilization: Per-year recorded utilisation of the group, or None.
             year: Decision year.
-            furnace_group_id: The group under evaluation, for the log line and
-                the recorded row.
+            furnace_group_id: The group under evaluation, for the log and the record.
 
         Returns:
             ``capacity_mt`` unchanged when the renovation may proceed, or None
@@ -322,25 +289,22 @@ class TreeEvaluator:
         return None
 
     def increase_build_capacity(self, *, capacity_mt: float, technology: str, reductant: str | None) -> float:
-        """Resolve the capacity an INCREASE build may actually build — branch ③ INCREASE, sizing only.
+        """Resolve the capacity an INCREASE build may build (branch ③, sizing only).
 
-        Pure arithmetic over the classification rows: no pool state is read, so
-        the answer serves both the pre-NPV sizing query — which must know the
-        permitted capacity before the agent values the build — and the
-        consuming gate, by construction identically.
+        Reads no pool state, so the pre-NPV sizing query and the consuming
+        gate get the same answer by construction.
 
         Args:
-            capacity_mt: Planned new capacity in Mt.
+            capacity_mt: Planned new capacity.
             technology: Technology being built.
             reductant: The reductant the build is evaluated with.
 
         Returns:
-            The planned capacity divided by the penalty divisor when the route
-            is emission-intense, else the planned capacity unchanged.
+            The planned capacity, divided by the penalty divisor when the
+            route is emission-intense.
 
         Raises:
-            ValueError: If the route has no classification row or its
-                emission-intense flag is unauthored.
+            ValueError: If the route has no classification row or its flag is unauthored.
         """
         row = self._classification(technology, reductant)
         if row.is_emission_intense is None:
@@ -359,18 +323,13 @@ class TreeEvaluator:
         technology: str,
         reductant: str | None,
     ) -> WithdrawSpec:
-        """Resolve what a new build must withdraw and may build — branch ③ INCREASE.
-
-        A build in a key province may spend only that cluster's credits;
-        elsewhere any credit applies. An emission-intense build still
-        withdraws the full planned amount but may only build the planned
-        amount divided by the penalty divisor — the originally planned freed
-        capacity is removed.
+        """Resolve what a new build must withdraw and may build (branch ③ INCREASE).
 
         Args:
-            geo_key: Combined geo key of the build location.
+            geo_key: Combined geo key of the build location; a key province
+                restricts the withdrawal to its cluster's credits.
             product: ``"iron"`` or ``"steel"``.
-            capacity_mt: Planned new capacity in Mt.
+            capacity_mt: Planned new capacity; withdrawn in full.
             technology: Technology being built.
             reductant: The reductant the build is evaluated with.
 
@@ -378,8 +337,7 @@ class TreeEvaluator:
             The withdrawal specification for the pool gate.
 
         Raises:
-            ValueError: If the route has no classification row or its
-                emission-intense flag is unauthored.
+            ValueError: If the route has no classification row or its flag is unauthored.
         """
         return WithdrawSpec(
             withdraw_mt=capacity_mt,
@@ -406,10 +364,8 @@ class TreeEvaluator:
     ) -> None:
         """Record one evaluation, 1:1 with the line just logged.
 
-        The conservative fallback is carried as a flag on each side rather than
-        as its own row: the synthesis is cached once per technology, so a
-        separate row could never be joined back to the evaluations that rested
-        on it.
+        The conservative fallback is a flag per side, not its own row: the
+        synthesis is cached once per technology and could not be joined back.
         """
         if self.recorder is None:
             return
@@ -431,12 +387,7 @@ class TreeEvaluator:
         )
 
     def _uses_conservative_fallback(self, technology: str, reductant: str | None) -> bool:
-        """Whether classifying this route lands on the worst-case synthesis.
-
-        Mirrors the resolution order in :meth:`_classification` without
-        touching it: only a reductant-split technology asked about with no
-        reductant, and with no blank-reductant row of its own, gets there.
-        """
+        """Whether classifying this route lands on the worst-case synthesis (mirrors :meth:`_classification`)."""
         if _lookup_reductant(reductant) is not None:
             return False
         return technology in self._reductant_split and (technology, None) not in self._classifications
@@ -444,20 +395,9 @@ class TreeEvaluator:
     def _classification(self, technology: str, reductant: str | None) -> TechnologyRow:
         """Return the classification row for a route, most specific first.
 
-        A reductant-specific row wins over the technology's blank-reductant
-        row; delegation rows classify nothing and were excluded at
-        construction. Reductants are matched up to :func:`normalize_name`, the
-        runtime's canonical key form.
-
-        A reductant-split technology asked about with **no** reductant — a
-        route the model has no reductant hypothesis for yet, such as a switch
-        candidate no fleet precedent exists for — resolves to the conservative
-        worst case over its authored reductant rows: emission-intense if any
-        variant is — equivalently, deep-abating only if every variant is. That
-        never grants the favourable 1:1 to an unresolved route, never blocks it
-        either, and self-corrects once the route resolves to a real reductant.
-        A *named* reductant with no row still refuses — that is a sheet gap,
-        not a runtime unknown.
+        A reductant-split technology asked about with no reductant resolves to
+        the worst case over its reductant rows; a named reductant with no row
+        is a sheet gap and refuses.
 
         Raises:
             ValueError: If no classification row covers the route, or the
