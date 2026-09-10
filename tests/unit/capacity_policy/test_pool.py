@@ -602,6 +602,20 @@ def test_float_dust_does_not_block_an_exactly_fundable_withdrawal():
     assert pool.total() == pytest.approx(0.0, abs=1e-9)
 
 
+def test_float_dust_left_after_a_full_slice_does_not_consume_a_sliver_of_the_next_credit():
+    """Summing slices can leave a residual below the tolerance; it must not open a third slice."""
+    pool = CapacityPool()
+    pool.deposit(make_credit(amount_mt=0.1, vintage_year=2018))
+    pool.deposit(make_credit(amount_mt=0.7, vintage_year=2019))
+    pool.deposit(make_credit(amount_mt=5.0, vintage_year=2020))
+
+    result = pool.try_withdraw(0.8, region_tag=None, product="steel", owner_id="owner-a", year=PRE_CUTOFF_YEAR)
+
+    assert result.granted is True
+    assert [credit.vintage_year for credit in result.credits_consumed] == [2018, 2019]
+    assert pool.snapshot() == (make_credit(amount_mt=5.0, vintage_year=2020),)
+
+
 def test_partial_split_absorbs_dust_instead_of_keeping_a_sliver():
     """A remainder below the relative tolerance is consumed with the slice, so no
     near-zero credit lingers in the queue or the state snapshots."""

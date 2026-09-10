@@ -442,7 +442,7 @@ class CapacityPool:
         remaining = amount_mt
         kept: list[Credit] = []
         for credit in self._credits:
-            if remaining > 0 and wanted(credit):
+            if remaining > amount_mt * _REL_TOL and wanted(credit):
                 take = min(credit.amount_mt, remaining)
                 if credit.amount_mt - take <= credit.amount_mt * _REL_TOL:
                     take = credit.amount_mt
