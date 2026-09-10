@@ -1,19 +1,9 @@
-"""Chinese capacity-replacement policy plugin.
-
-Fully threaded — deposit handlers, the REPLACE pre-NPV hook, the INCREASE
-sizing query and both INCREASE withdrawal gates — and activated per run by
-bootstrapping:
-:func:`steelo.capacity_policy.bootstrap.configure_capacity_policy` binds a
-fresh evaluator and pool when ``config.capacity_policy.enabled`` is True, and
-guarantees the module is unbound otherwise. Unbound, every accessor returns
-None and behaviour is byte-identical to a build without the package.
+"""China's capacity-replacement policy plugin, dormant unless bootstrapped with ``enabled=True``.
 
 ``bootstrap`` and ``handlers`` are imported as submodules, not re-exported
-here: both reach into the service layer, which itself imports this package's
-``inputs`` while initialising, so a package-level re-export would be a
-circular import.
-
-Narrative documentation: ``docs/domain_simulation_logic/capacity_replacement_policy.md``.
+here: both reach into the service layer, which imports this package's
+``inputs`` while initialising, so a package-level re-export would be circular.
+Narrative: docs/domain_simulation_logic/capacity_replacement_policy.md.
 """
 
 from .config import CapacityPolicyConfig

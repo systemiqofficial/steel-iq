@@ -1,20 +1,11 @@
 """Capacity-pool charts in the Steel-IQ house style, drawn at the end of a run.
 
-The chart set is the one kept from the capacity-pool experiments: the drawable
-pool by build location, the pool by region tag as a stacked area, the capacity
-the policy refused and the pool's annual deposits and withdrawals — each drawn
-per product, because iron and steel are separate stocks — plus the technology
-mix of what was built, split by the motion that built it.
-
-Numbers come from the four CSVs :mod:`steelo.capacity_policy.recorder` flushes
-to ``<output>/data/policy``. A policy-OFF run writes no artefacts, so
-:meth:`CapacityPoolPlotter.plot_all` draws nothing. An unrecognised ledger
-operation or gate decision raises rather than being dropped from a sum silently.
-
-Region tags, refusal reasons, flow labels and motion kinds have no house colour
-mapping — they are capacity-policy concepts — so they take a stable slice of the
-house region palette in first-seen order, which keeps the assignment
-reproducible across runs.
+Numbers come from the four CSVs the recorder flushes to ``<output>/data/policy``;
+a policy-OFF run writes none, so :meth:`CapacityPoolPlotter.plot_all` draws
+nothing. Unknown ledger vocabulary raises rather than being dropped from a sum.
+Capacity-policy concepts have no house colour, so they take a stable slice of
+the house region palette in first-seen order. Chart set:
+docs/domain_simulation_logic/outputs_and_postprocessing.md#fleet-motions-and-capacity-policy-artefacts.
 """
 
 import csv
@@ -97,18 +88,16 @@ def load_artefacts(policy_dir: Optional[Path]) -> Optional[PolicyArtefacts]:
     """Read a run's policy artefacts, rejecting any vocabulary this module cannot sum.
 
     Args:
-        policy_dir: ``SimulationConfig.policy_output_dir`` — where the recorder
-            flushed the four CSVs. None, or a directory without them, means the
-            policy was off for the run.
+        policy_dir: Where the recorder flushed the four CSVs. None, or a
+            directory without them, means the policy was off for the run.
 
     Returns:
-        The four tables plus the state file's year range — the canonical axis for
-        every chart (the ledger's own range starts at the seed vintages) — or
-        None when there is nothing to plot.
+        The four tables plus the state file's year range, the axis for every
+        chart, or None when there is nothing to plot.
 
     Raises:
-        ValueError: On a ledger operation or gate decision added to the code
-            since this module was written.
+        ValueError: On a ledger operation, gate decision or blocked reason this
+            module does not know.
     """
     if policy_dir is None:
         return None

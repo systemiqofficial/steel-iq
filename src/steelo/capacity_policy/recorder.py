@@ -1,38 +1,12 @@
 """Run artefacts for the capacity policy: four CSVs written when the policy is bound.
 
-The policy's effect is largely *what it prevented*, which no simulation output
-records — reconstructing the pool arithmetic meant grepping logs. This recorder
-collects the same facts the ``[CAPACITY POOL]`` INFO lines carry, at the same
-call sites, and writes them at the end of a run.
-
-Pure stdlib and free of domain imports: it holds row dicts and knows the CSV
-schemas, nothing else. Emission is conditional on the binding, not on a config
-switch — a disabled run never constructs a recorder, so it writes no files at
-all rather than empty ones.
-
-**Reconciliation invariant.** The ledger and the state snapshots are two views
-of one arithmetic, and they agree exactly:
-
-    state(Y) = seed + Σ deposits − Σ consumed − Σ expired + Σ refunded, all ≤ Y
-
-per ``(region_tag, owner_id, product)`` and in aggregate, where "deposits" means
-every ``deposit_*`` operation and "expired" every ``expired*`` one — the
-mechanism is part of the fact, not a separate stock. It holds because the
-yearly snapshot is taken *before* ``finalise_iteration`` increments the year, so
-the transactions that boundary triggers (scheduled switches, end-of-life
-closures) stamp Y+1 and land in the next snapshot; the boundary purge runs
-after the increment and stamps Y+1 for the same reason; the final boundary
-increments by zero, which is why the flush re-snapshots the pool under the last
-recorded year label. ``blocked_*`` rows record refusals and ``greenfield_discard``
-annotates a withdrawal already accounted for — as a debit, and again as
-``refunded`` rows where the discard handed the slices back — so both stay
-outside the sum.
-
-All amounts are model tonnes, suffixed ``_t``: the pool's ``amount_mt`` naming
-is an internal convention from the sheet side and must not leak into an
-artefact. Blank cells mean not-applicable for that operation, except
-``region_tag`` (untagged) and ``owner_id``/``attributed_owner_id`` (the unowned
-pot), where blank is a real value.
+The recorder collects the same facts the ``[CAPACITY POOL]`` log lines carry,
+at the same call sites, and writes them at the end of a run; a disabled run
+never constructs one, so it writes no files rather than empty ones. All
+amounts are model tonnes, suffixed ``_t``. Blank cells mean not-applicable,
+except ``region_tag`` (untagged) and the owner columns (the unowned pot).
+Vocabularies, columns and the reconciliation invariant:
+docs/domain_simulation_logic/capacity_replacement_policy_reference.md#artefacts-and-the-reconciliation-contract.
 """
 
 import csv
@@ -121,12 +95,7 @@ MOTION_SOURCES = ("pam", "input_data")
 
 
 class CapacityPolicyRecorder:
-    """Collect the policy's run facts in memory and write them as four CSVs.
-
-    One recorder lives on the binding for the length of a run. Rows are
-    appended beside the log lines that already state the same facts, so the
-    files and the log can be cross-checked line for line.
-    """
+    """Collect the policy's run facts in memory and write them as four CSVs, one recorder per bound run."""
 
     def __init__(self) -> None:
         self._ledger: list[dict[str, Any]] = []
@@ -150,12 +119,11 @@ class CapacityPolicyRecorder:
         geo_key: str | None = None,
         furnace_group_id: str | None = None,
     ) -> None:
-        """Append one pool transaction — including the ones that did not happen.
+        """Append one pool transaction, including the ones that did not happen.
 
         Args:
             year: Year the transaction (or refusal) happened in; on ``seed``
-                rows the vintage itself, which keeps every seed inside the
-                reconciliation window.
+                rows the vintage itself.
             operation: One of :data:`LEDGER_OPERATIONS`.
             amount_t: Deposited, withdrawn, expired, refunded, refused or
                 discarded capacity.
@@ -164,20 +132,14 @@ class CapacityPolicyRecorder:
                 refunded credits, withdrawer on expansions, ``indi_<iso3>`` on
                 greenfield attempts.
             product: ``"iron"`` or ``"steel"``.
-            vintage_year: Credit vintage on deposit, seed, expired and refunded
-                rows — a refund keeps the vintage it was withdrawn under.
-            credits_consumed: The consumed portions of a granted withdrawal;
-                serialised as ``[owner_id, vintage_year, region_tag, amount_t]``
-                tuples. The tag belongs in the tuple — a build may spend a
-                tagged credit, so the request's own tag cannot reconstruct
-                per-tag flows — which also makes the ledger a complete event
-                log the pool's credit-level state replays from.
+            vintage_year: Credit vintage on deposit, seed, expired and refunded rows.
+            credits_consumed: The consumed portions of a granted withdrawal,
+                serialised as ``[owner_id, vintage_year, region_tag, amount_t]``.
             blocked_reason: The pool's reason on ``blocked_*`` rows.
             attributed_owner_id: Funding holder of a granted greenfield; blank
                 is the unowned pot.
             geo_key: Combined geo key of the plant or build location.
-            furnace_group_id: The group the transaction belongs to, where the
-                call site knows it — the withdrawal gates do not.
+            furnace_group_id: The group the transaction belongs to, where known.
 
         Raises:
             ValueError: On an unknown ``operation``.
@@ -202,19 +164,13 @@ class CapacityPolicyRecorder:
         )
 
     def record_expired(self, year: int, credits: Sequence[Credit], operation: str = "expired") -> None:
-        """Append one row per credit a boundary purge removed.
-
-        One row per credit rather than an aggregate: expired-unused capacity has
-        to be readable per key region and nationally, and the
-        per-credit rows are what make both groupings — and the reconciliation
-        subtraction — fall out of the same file.
+        """Append one row per credit a boundary purge removed, so expiry is readable per region.
 
         Args:
             year: The year being entered when the purge ran.
             credits: The credits the purge removed.
             operation: ``"expired"`` for the shelf-life sweep,
-                ``"expired_unowned"`` for the swap-cutoff sweep of unowned
-                opening credits.
+                ``"expired_unowned"`` for the swap-cutoff sweep.
         """
         for credit in credits:
             self.record_ledger(
@@ -244,39 +200,24 @@ class CapacityPolicyRecorder:
         product: str | None = None,
         reductant: str | None = None,
     ) -> None:
-        """Append one Chinese furnace-group lifecycle event.
-
-        Motions are recorded whether or not the pool moved: an unshrunk switch
-        deposits nothing but is still a motion, and the fleet's technology mix
-        is only readable from the complete set.
+        """Append one furnace-group lifecycle event, whether or not the pool moved.
 
         Args:
-            year: Event year. Expansion rows stamp the decision year, since the
-                command executes in-year; greenfield rows stamp construction
-                start, one announced→construction transition later; pipeline
-                rows stamp the year the group starts operating, the only point
-                the run observes for capacity the input data already had in
-                flight.
+            year: Year the motion took effect (per-kind convention on the reference page).
             kind: One of :data:`MOTION_KINDS`.
-            source: One of :data:`MOTION_SOURCES` — what set the motion in
-                motion: a model decision (``"pam"``), or the input dataset's
-                own schedule (``"input_data"``: pipeline arrivals, and age-outs
-                of groups the data delivered with their retirement already on
-                the clock).
+            source: One of :data:`MOTION_SOURCES`: ``"pam"`` for a model
+                decision, ``"input_data"`` for the input dataset's own schedule.
             plant_id: Plant the group sits on.
             furnace_group_id: The group itself.
             geo_key: Combined geo key of the plant.
-            old_technology: Technology before the motion; on ``close`` rows the
-                technology being closed.
+            old_technology: Technology before the motion (the closed one on ``close``).
             new_technology: Technology after it, on the build and switch kinds.
-            old_capacity_t: Capacity before the motion; on ``close`` rows the
-                capacity being closed.
+            old_capacity_t: Capacity before the motion.
             new_capacity_t: Capacity after it, on the build and switch kinds.
             owner_id: Owning plant group, by membership.
             product: ``"iron"`` or ``"steel"``.
             reductant: The group's chosen reductant at the moment of the event
-                — post-switch on a switch, which is what makes drift against
-                the gate decisions measurable.
+                (post-switch on a switch).
 
         Raises:
             ValueError: On an unknown ``kind`` or ``source``.
@@ -311,9 +252,8 @@ class CapacityPolicyRecorder:
     def has_renovation(self, furnace_group_id: str) -> bool:
         """True when an in-run renovation motion was recorded for this group.
 
-        The end-of-life source rule needs it: a renovation resets the lifetime
-        clock without stamping ``created_by_PAM``, so a later age-out runs out
-        a model-set schedule even on a data-born group.
+        A renovation resets the lifetime clock without stamping ``created_by_PAM``,
+        so the end-of-life source rule asks here.
         """
         return any(row["kind"] == "renovate" and row["furnace_group_id"] == furnace_group_id for row in self._motions)
 
@@ -335,14 +275,13 @@ class CapacityPolicyRecorder:
         old_used_conservative_fallback: bool = False,
         new_used_conservative_fallback: bool = False,
     ) -> None:
-        """Append one ② REPLACE evaluation — the reductant-drift evidence base.
+        """Append one ② REPLACE evaluation.
 
         Args:
             year: Decision year.
-            furnace_group_id: The group being evaluated, threaded from the
-                decision path; None on evaluations made outside it.
+            furnace_group_id: The group being evaluated; None outside the decision path.
             geo_key: Combined geo key of the plant.
-            product: ``"iron"`` or ``"steel"`` — the evaluated group's product.
+            product: ``"iron"`` or ``"steel"``.
             old_technology: Technology being replaced.
             old_reductant: Its reductant, as the decision path knows it.
             new_technology: Candidate technology.
@@ -352,8 +291,7 @@ class CapacityPolicyRecorder:
             ratio: Resolved swap ratio; blank when the utilisation gate blocked.
             permitted_t: Capacity the candidate may build; blank when blocked.
             old_used_conservative_fallback: Whether the old route was
-                classified by the worst-case synthesis over its reductant rows
-                rather than by an authored row.
+                classified by the worst-case synthesis rather than an authored row.
             new_used_conservative_fallback: The same for the candidate route.
         """
         self._gate_decisions.append(
@@ -383,10 +321,7 @@ class CapacityPolicyRecorder:
         """Re-snapshot the last recorded year at flush time.
 
         The final boundary increments the year by zero, so its end-of-life
-        closures deposit *after* that year's snapshot was taken. Refreshing
-        keeps the reconciliation invariant true for the last year too. A run
-        that finished no year has no label to file the pool under and is left
-        alone.
+        deposits landed after that year's snapshot.
         """
         if not self._state:
             return
@@ -419,11 +354,8 @@ class CapacityPolicyRecorder:
     def _state_rows(self) -> list[dict[str, Any]]:
         """Aggregate each year's credits to one row per (tag, owner, product).
 
-        Carries the pool's own caveat: under ``banked_credit_rule="expire"``
-        the remaining capacity overstates what is usable, because that rule is
-        an applicability predicate at withdrawal, not a purge of the queue. The
-        shelf life (``credit_validity_years``) is the other concept and does
-        sweep, so it leaves these rows honest.
+        Under ``banked_credit_rule="expire"`` the remaining capacity overstates
+        what is usable: that rule filters at withdrawal and does not sweep.
         """
         rows: list[dict[str, Any]] = []
         for year in sorted(self._state):
