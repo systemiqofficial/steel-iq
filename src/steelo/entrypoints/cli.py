@@ -210,6 +210,8 @@ def run_full_simulation() -> str:
 
         if args.credit_validity_years is not None and args.credit_validity_years <= 0:
             parser.error("--credit-validity-years must be a positive number of years")
+        if args.credit_validity_years is not None and not args.enable_capacity_policy:
+            parser.error("--credit-validity-years requires --enable-capacity-policy")
 
         # Setup directories
         steelo_home = Path(args.steelo_home)

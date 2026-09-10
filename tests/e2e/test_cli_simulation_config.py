@@ -258,6 +258,23 @@ def test_cli_capacity_policy_flag_drives_the_nested_config(
 
 
 @pytest.mark.parametrize(
+    "argv_tail, message",
+    [
+        (["--enable-capacity-policy", "--credit-validity-years", "0"], "must be a positive number of years"),
+        (["--credit-validity-years", "3"], "requires --enable-capacity-policy"),
+    ],
+)
+def test_cli_credit_validity_years_is_refused_at_parse_time(argv_tail, message, capsys):
+    """A non-positive shelf life, or one given without the policy flag, stops the run before any setup."""
+    with patch.object(sys, "argv", ["run_simulation", *argv_tail]):
+        with pytest.raises(SystemExit) as raised:
+            run_full_simulation()
+
+    assert raised.value.code == 2
+    assert message in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
     "flag_argv, expected",
     [(["--enable-capacity-policy"], None), (["--enable-capacity-policy", "--credit-validity-years", "2"], 2)],
 )
