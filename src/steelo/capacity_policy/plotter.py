@@ -127,6 +127,9 @@ def load_artefacts(policy_dir: Optional[Path]) -> Optional[PolicyArtefacts]:
     unknown_decisions = {row["decision"] for row in gates} - GATE_DECISIONS
     if unknown_decisions:
         raise ValueError(f"Unrecognised gate decisions {sorted(unknown_decisions)}")
+    unknown_reasons = {row["blocked_reason"] for row in ledger if row["operation"] in BLOCKED} - set(BLOCKED_REASONS)
+    if unknown_reasons:
+        raise ValueError(f"Unrecognised blocked reasons {sorted(unknown_reasons)}")
 
     years = sorted({int(row["year"]) for row in state})
     if not years:

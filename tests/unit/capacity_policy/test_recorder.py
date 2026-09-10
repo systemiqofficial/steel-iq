@@ -72,6 +72,7 @@ class TestSchema:
             "withdraw_expansion",
             "withdraw_greenfield",
             "expired",
+            "expired_unowned",
             "refunded",
             "blocked_expansion",
             "blocked_greenfield",

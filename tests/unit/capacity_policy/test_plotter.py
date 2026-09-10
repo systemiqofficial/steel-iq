@@ -155,6 +155,17 @@ def test_load_artefacts_rejects_unknown_ledger_operation(policy_dir: Path) -> No
         plotter.load_artefacts(policy_dir)
 
 
+def test_load_artefacts_rejects_unknown_blocked_reason(policy_dir: Path) -> None:
+    """A refusal reason the charts cannot label is refused at load, like an unknown operation."""
+    with (policy_dir / LEDGER_FILE).open("a", newline="") as handle:
+        csv.DictWriter(handle, fieldnames=LEDGER_COLUMNS).writerow(
+            {"year": 2026, "operation": "blocked_expansion", "amount_t": 1 * MT, "blocked_reason": "eclipse"}
+        )
+
+    with pytest.raises(ValueError, match="eclipse"):
+        plotter.load_artefacts(policy_dir)
+
+
 def test_pool_by_tag_partitions_credit_per_product(policy_dir: Path) -> None:
     art = plotter.load_artefacts(policy_dir)
     assert art is not None
