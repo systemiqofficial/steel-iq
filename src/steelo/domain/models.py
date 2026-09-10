@@ -1163,15 +1163,11 @@ class FurnaceGroup:
         self.future_switch_cmd: Optional[commands.ChangeFurnaceGroupTechnology] = None
         self.future_switch_year: Optional[int] = None
 
-        # China capacity-policy stash, set at announcement when a live greenfield gate
-        # withdraws for this opportunity: the withdrawn amount quantifies a later
-        # discard, the owner carries attribution to construction, and the consumed
-        # slices are what a discard refunds to the pool at their original vintages
+        # Capacity-policy stash set by a live greenfield gate at announcement; a discard refunds the slices
         self.capacity_pool_granted_withdraw_mt: float | None = None
         self.capacity_pool_attributed_owner_id: str | None = None
         self.capacity_pool_consumed_credits: tuple["Credit", ...] | None = None
-        # Years the capacity gate has blocked this opportunity; at the configured cap
-        # it is discarded, never having withdrawn
+        # Years the capacity gate has blocked this opportunity; discarded at the configured cap
         self.capacity_pool_blocked_years: int = 0
 
         # Economic variables
@@ -3287,9 +3283,8 @@ class FurnaceGroup:
                         )
                     return None  # stay considered
 
-                # Pre-draw feasibility probe (non-consuming): an unfundable year counts
-                # toward the retry cap whether or not the draw would have run, so the cap
-                # measures years, not draws; the probe records the blocked ledger row itself
+                # Non-consuming pre-draw probe: a blocked year counts towards the retry cap
+                # whether or not the draw would have run, so the cap measures years, not draws
                 if greenfield_feasibility_probe is not None:
                     probe_blocked_reason = greenfield_feasibility_probe(
                         iso3=location.iso3,
@@ -3305,12 +3300,8 @@ class FurnaceGroup:
 
                 announcement_draw = random.random()
                 if announcement_draw < probability_of_announcement:
-                    # China capacity-policy gate (③ INCREASE): announcement is the commitment
-                    # point, so a threaded gate must withdraw matching retirement credits
-                    # (model tonnes) here or the opportunity stays considered and retries
-                    # next year, exactly as the CO2 gate above. With the probe threaded this
-                    # blocked branch is defensive — probe and withdrawal read the same state
-                    # within one call — but it keeps the counter honest without the probe
+                    # Capacity-policy gate (③ INCREASE): announcement is the commitment point, so the
+                    # gate withdraws here or the opportunity stays considered, like the CO2 gate above
                     if permitted_greenfield_capacity is not None:
                         grant = permitted_greenfield_capacity(
                             iso3=location.iso3,
@@ -4273,9 +4264,8 @@ class Plant:
                 f"dropped_count={len(dropped_ccs_techs)}"
             )
 
-        # ② REPLACE capacity policy: resolve each candidate's permitted capacity before the
-        # NPV, so the agent values the switch it is actually allowed to build. None removes
-        # the candidate from the menu — the gate blocks the replacement decision itself
+        # ② REPLACE capacity policy: each candidate's permitted capacity is resolved before its
+        # NPV; None drops the candidate from the menu
         candidate_capacities: dict[str, float] | None = None
         if permitted_replace_capacity is not None:
             candidate_capacities = {}
@@ -6268,10 +6258,8 @@ class PlantGroup:
         product = tech_to_product[tech]
 
         # ========== STAGE 11.5: CHINA CAPACITY-POOL GATE ==========
-        # A threaded gate must withdraw matching retirement credits (model tonnes) at the
-        # point of commitment or the expansion is off this year. The withdrawal is always
-        # of the planned capacity; what it grants to build is the sizing query's answer,
-        # which the NPV already used, so the two must agree exactly
+        # Withdraws the planned capacity at commitment; the granted build capacity must equal
+        # the sizing query's answer the NPV was taken at
         if permitted_expansion_capacity is not None:
             granted_capacity = permitted_expansion_capacity(
                 iso3=plant.location.iso3,

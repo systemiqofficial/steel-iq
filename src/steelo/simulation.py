@@ -1294,9 +1294,7 @@ class SimulationRunner:
                     ):
                         if fg.status.lower() != "construction switching technology":
                             fg.status = "operating"
-                            # Self-filtering: records only data-born pipeline groups; expansions
-                            # and greenfields completing here carry created_by_PAM and were
-                            # recorded at their decision, switches never reach this branch
+                            # Records only data-born pipeline groups; model builds carry created_by_PAM
                             record_motion_on_pipeline_group_operating(plant, fg, bus.uow, bus.env)
                             logging.info(
                                 f"Transitioned furnace group {fg.furnace_group_id} from construction to operating"
