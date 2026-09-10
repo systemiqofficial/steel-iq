@@ -60,9 +60,9 @@ class CapacityPolicyConfig:
             ratio alone; the utilisation gate applies either way.
 
     Raises:
-        ValueError: On an unknown ``banked_credit_rule``, a non-positive ratio,
-            window, validity or retry cap, or a utilisation floor outside
-            [0, 1].
+        ValueError: On an unknown ``banked_credit_rule``, a ratio or divisor
+            below 1, a non-positive window, validity or retry cap, or a
+            utilisation floor outside [0, 1].
     """
 
     enabled: bool = False
@@ -81,11 +81,12 @@ class CapacityPolicyConfig:
             raise ValueError(
                 f"Unknown banked_credit_rule {self.banked_credit_rule!r}; expected one of {BANKED_CREDIT_RULES}"
             )
-        if self.replacement_ratio <= 0:
-            raise ValueError(f"replacement_ratio must be positive, got {self.replacement_ratio}")
-        if self.emission_intense_penalty_divisor <= 0:
+        # Below one, a replacement would grow the group and an intense build would exceed its withdrawal
+        if self.replacement_ratio < 1:
+            raise ValueError(f"replacement_ratio must be at least 1, got {self.replacement_ratio}")
+        if self.emission_intense_penalty_divisor < 1:
             raise ValueError(
-                f"emission_intense_penalty_divisor must be positive, got {self.emission_intense_penalty_divisor}"
+                f"emission_intense_penalty_divisor must be at least 1, got {self.emission_intense_penalty_divisor}"
             )
         if self.utilization_window_years <= 0:
             raise ValueError(f"utilization_window_years must be positive, got {self.utilization_window_years}")

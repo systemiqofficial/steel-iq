@@ -28,14 +28,15 @@ def test_unknown_banked_credit_rule_raises():
         CapacityPolicyConfig(banked_credit_rule="vanish")
 
 
-def test_non_positive_ratios_and_window_raise():
-    """Ratios and the utilisation window must be positive."""
-    with pytest.raises(ValueError, match="replacement_ratio must be positive"):
-        CapacityPolicyConfig(replacement_ratio=0.0)
-    with pytest.raises(ValueError, match="emission_intense_penalty_divisor must be positive"):
+def test_ratios_below_one_and_non_positive_window_raise():
+    """A ratio or divisor below 1 would create capacity; the utilisation window must be positive."""
+    with pytest.raises(ValueError, match="replacement_ratio must be at least 1"):
+        CapacityPolicyConfig(replacement_ratio=0.5)
+    with pytest.raises(ValueError, match="emission_intense_penalty_divisor must be at least 1"):
         CapacityPolicyConfig(emission_intense_penalty_divisor=-1.5)
     with pytest.raises(ValueError, match="utilization_window_years must be positive"):
         CapacityPolicyConfig(utilization_window_years=0)
+    assert CapacityPolicyConfig(replacement_ratio=1.0, emission_intense_penalty_divisor=1.0).replacement_ratio == 1.0
 
 
 def test_non_positive_validity_and_retry_cap_raise():
