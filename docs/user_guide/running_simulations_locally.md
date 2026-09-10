@@ -361,6 +361,7 @@ run_simulation --start-year 2025 --end-year 2035 --output-dir ./outputs > /tmp/s
 - `--end-year`: Ending year for simulation (default: 2050)
 - `--output-dir`: Base output directory for results (default: $STEELO_HOME/output)
 - `--log-level`: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL; default: WARNING)
+- `--plot-tm` / `--plot-geo`: Also write the per-year trade maps (`plots/TM/`) and the geospatial PNGs (`plots/GEO/`); both are off by default, and the interactive viewers under `plots/interactive/` replace the trade maps
 
 **Data Files (usually handled automatically via caching):**
 - `--plants-json`: Path to plants JSON file

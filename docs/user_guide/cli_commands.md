@@ -23,6 +23,10 @@ options:
                         Base output directory (default: $STEELO_HOME/output)
   --log-level LOG_LEVEL
                         Logging level (default: WARNING)
+  --plot-tm             Write the per-year trade maps under plots/TM (off by
+                        default; the interactive trade viewers replace them)
+  --plot-geo            Write the geospatial PNGs under plots/GEO (off by
+                        default)
 
 price configuration:
   --peg-iron-to-steel-price

@@ -149,7 +149,7 @@ def run_full_simulation() -> str:
     parser.add_argument(
         "--plot-tm",
         action="store_true",
-        help="Write the per-year trade maps under plots/TM (off by default)",
+        help="Write the per-year trade maps under plots/TM (off by default; the interactive trade viewers replace them)",
     )
     parser.add_argument(
         "--plot-geo",
