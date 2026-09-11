@@ -3915,8 +3915,16 @@ def disaggregate_allocations(
     if clustered_allocations.allocation_costs is not None:
         for (c_from, c_to, c_comm), c_cost in clustered_allocations.allocation_costs.items():
             cluster_costs_by_name[(c_from.name, c_to.name, c_comm.name.lower())] = c_cost
+    # Carbon border charges are per-tonne like the LP costs, so every member flow of a charged
+    # cluster pair carries the cluster's charge unchanged.
+    cluster_charges_by_name: dict[tuple[str, str, str], float] = {}
+    if clustered_allocations.carbon_border_charges is not None:
+        for (c_from, c_to, c_comm), c_charge in clustered_allocations.carbon_border_charges.items():
+            cluster_charges_by_name[(c_from.name, c_to.name, c_comm.name.lower())] = c_charge
 
     disaggregated_costs: dict = {}
+    disaggregated_charges: dict = {}
+    matched_charge_keys: set[tuple[str, str, str]] = set()
     matched_count = 0
     unmatched_examples: list[tuple] = []
     for from_pc, to_pc, comm in disaggregated_allocs:
@@ -3934,21 +3942,32 @@ def disaggregate_allocations(
         if not found and len(unmatched_examples) < 10:
             unmatched_examples.append((from_pc.name, to_pc.name, comm.name, from_key, to_key))
         disaggregated_costs[(from_pc, to_pc, comm)] = matched
+        for comm_name in _commodity_equivalent_names(comm):
+            charge_key = (from_key, to_key, comm_name)
+            if charge_key in cluster_charges_by_name:
+                disaggregated_charges[(from_pc, to_pc, comm)] = cluster_charges_by_name[charge_key]
+                matched_charge_keys.add(charge_key)
+                break
     logger.info(
         f"[DISAGGREGATION] Cost lookup: matched {matched_count}/{len(disaggregated_allocs)} flows "
-        f"(cluster cost map size: {len(cluster_costs_by_name)})"
+        f"(cluster cost map size: {len(cluster_costs_by_name)}); carbon border charges: "
+        f"{len(matched_charge_keys)}/{len(cluster_charges_by_name)} charged cluster arcs mapped onto "
+        f"{len(disaggregated_charges)} flows"
     )
     for ex in unmatched_examples:
         logger.info(
             f"[DISAGGREGATION] Unmatched: from_pc={ex[0]}, to_pc={ex[1]}, comm={ex[2]}, "
             f"resolved cluster keys: from={ex[3]}, to={ex[4]}"
         )
+    for charge_key in sorted(set(cluster_charges_by_name) - matched_charge_keys)[:10]:
+        logger.debug(f"[DISAGGREGATION] Charged cluster arc {charge_key} matched no disaggregated flow")
 
     # Create new Allocations object
     result = Allocations(
         allocations=disaggregated_allocs,
         allocation_costs=disaggregated_costs if disaggregated_costs else None,
         tariff_taxes=clustered_allocations.tariff_taxes,
+        carbon_border_charges=disaggregated_charges if disaggregated_charges else None,
     )
 
     logger.info(f"[DISAGGREGATION] Output allocations: {len(result.allocations)} flows")

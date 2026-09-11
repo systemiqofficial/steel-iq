@@ -265,6 +265,8 @@ class Allocations:
         allocation_costs: Optional dict mapping (from, to, commodity) → total cost
         tariff_taxes: Optional dict mapping (from_iso3, to_iso3, commodity) → tariff cost per unit.
             Passed through to TM_PAM_connector so tariffs can be propagated into BOM material costs.
+        carbon_border_charges: Optional dict mapping (from, to, commodity) → carbon border adjustment in
+            USD/t for the arcs that carry one (negative = export rebate); booked like tariffs downstream.
     """
 
     def __init__(
@@ -272,10 +274,12 @@ class Allocations:
         allocations: dict[Tuple[ProcessCenter, ProcessCenter, Commodity], float],
         allocation_costs: dict[Tuple[ProcessCenter, ProcessCenter, Commodity], float] | None = None,
         tariff_taxes: dict[tuple[str, str, str], float] | None = None,
+        carbon_border_charges: dict[Tuple[ProcessCenter, ProcessCenter, Commodity], float] | None = None,
     ):
         self.allocations = allocations
         self.allocation_costs = allocation_costs
         self.tariff_taxes = tariff_taxes
+        self.carbon_border_charges = carbon_border_charges
 
     def get_allocation(
         self, from_processcenter: ProcessCenter, to_processcenter: ProcessCenter, commodity: Commodity

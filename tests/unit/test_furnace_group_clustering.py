@@ -1035,3 +1035,72 @@ def test_disaggregate_allocations_preserves_tariff_taxes():
 
     assert len(result.allocations) == 2
     assert result.tariff_taxes == tariff_taxes
+
+
+def test_disaggregate_allocations_maps_carbon_border_charges_to_member_flows():
+    """A per-tonne charge on a cluster arc is copied onto every member furnace group's flow on that arc."""
+    from steelo.domain.trade_modelling.furnace_group_clustering import disaggregate_allocations
+    from steelo.domain.trade_modelling.trade_lp_modelling import (
+        Allocations,
+        Commodity,
+        Process,
+        ProcessCenter,
+        ProcessType,
+    )
+
+    fg_ids = ["plant1_fg0", "plant2_fg0"]
+    meta_fg = MetaFurnaceGroup(
+        cluster_key=ClusterKey("BF", "CHN", "coke:io_low"),
+        meta_furnace_group_id="cluster_BF_coke_CHN",
+        constituent_fg_ids=fg_ids,
+        technology_name="BF",
+        chosen_reductant="coke",
+        location=Location(lat=35.0, lon=110.0, iso3="CHN", country="China", region="Asia"),
+        total_capacity=Volumes(4000.0),
+        weighted_avg_carbon_cost=85.0,
+        dynamic_business_case=None,
+        capacity_shares={fg_ids[0]: 0.25, fg_ids[1]: 0.75},
+        constituent_locations={
+            fg_ids[0]: Location(lat=34.0, lon=109.0, iso3="CHN", country="China", region="Asia"),
+            fg_ids[1]: Location(lat=36.0, lon=111.0, iso3="CHN", country="China", region="Asia"),
+        },
+    )
+    meta_fg_pc = ProcessCenter(
+        name="cluster_BF_coke_CHN",
+        process=Process(name="BF", type=ProcessType.PRODUCTION, bill_of_materials=[]),
+        capacity=4000.0,
+        location=meta_fg.location,
+        production_cost=85.0,
+    )
+    charged_demand_pc = ProcessCenter(
+        name="demand_deu",
+        process=Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[]),
+        capacity=5000.0,
+        location=Location(lat=50.0, lon=10.0, iso3="DEU", country="Germany", region="Europe"),
+    )
+    free_demand_pc = ProcessCenter(
+        name="demand_ind",
+        process=Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[]),
+        capacity=5000.0,
+        location=Location(lat=20.0, lon=78.0, iso3="IND", country="India", region="Asia"),
+    )
+    iron = Commodity("iron")
+    clustered_allocs = Allocations(
+        allocations={(meta_fg_pc, charged_demand_pc, iron): 2000.0, (meta_fg_pc, free_demand_pc, iron): 1000.0},
+        carbon_border_charges={(meta_fg_pc, charged_demand_pc, iron): 32.0},
+    )
+    config = MockConfig(active_statuses=["operating"], hot_metal_radius=100.0)
+
+    result = disaggregate_allocations(
+        clustered_allocations=clustered_allocs,
+        meta_furnace_groups=[meta_fg],
+        plants_repo=None,
+        config=config,
+    )
+
+    flows_into_deu = {key for key in result.allocations if key[1].name == "demand_deu"}
+    assert flows_into_deu
+    assert all(key[0].name in fg_ids for key in flows_into_deu)
+    # Every member flow on the charged cluster arc carries the charge; the uncharged arc carries none.
+    # The keys are the disaggregated flow keys themselves, so the connector's object lookup finds them.
+    assert result.carbon_border_charges == {key: 32.0 for key in flows_into_deu}

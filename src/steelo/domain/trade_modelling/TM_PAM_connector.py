@@ -226,6 +226,19 @@ class TM_PAM_connector:
             total += self.tariff_taxes.get(key, 0.0)
         return total
 
+    def get_carbon_border_cost(self, from_pc, to_pc, commodity) -> float:
+        """Carbon border adjustment on one arc in USD/t; an arc without a recorded charge carries none.
+
+        Args:
+            from_pc: Source process centre of the arc.
+            to_pc: Destination process centre of the arc.
+            commodity: Commodity shipped on the arc.
+
+        Returns:
+            The recorded adjustment (negative for an export rebate), or 0.0 when the arc has none.
+        """
+        return self.carbon_border_charges.get((from_pc, to_pc, commodity), 0.0)
+
     def create_graph(self, solved_trade_allocations):
         """
         Build a directed multigraph of all process centers, with parallel edges, by key
@@ -265,6 +278,8 @@ class TM_PAM_connector:
         # Store tariff taxes for edge attribute lookup
         self.tariff_taxes: dict[tuple[str, str, str], float] = solved_trade_allocations.tariff_taxes or {}
         logger.debug("[TARIFF] Loaded %d tariff entries", len(self.tariff_taxes))
+        self.carbon_border_charges: dict = solved_trade_allocations.carbon_border_charges or {}
+        logger.debug("[CBAM] Loaded %d charged arcs", len(self.carbon_border_charges))
 
         # Initialize an empty directed multigraph
         self.G = nx.MultiDiGraph()
@@ -307,6 +322,8 @@ class TM_PAM_connector:
                 "transport_cost": self.get_transport_cost(from_pc.location.iso3, to_pc.location.iso3, commodity),
                 # 3. Tariff cost from LP tariff taxes (import/export duties)
                 "tariff_cost": self.get_tariff_cost(from_pc.location.iso3, to_pc.location.iso3, commodity),
+                # 3b. Carbon border adjustment recorded by the LP on this arc, keyed by the same objects
+                "carbon_border_cost": self.get_carbon_border_cost(from_pc, to_pc, comm),
                 # 4. Processing energy cost, if defined for this destination
                 "processing_energy_cost": total_energy_cost,
                 "processing_energy_breakdown": energy_breakdown,
@@ -503,7 +520,10 @@ class TM_PAM_connector:
                 # We want to track the material cost EXCLUDING the current step's energy
                 volume = edata.get(volume_attr, 0.0)
                 material_tariff_transportation_cost = (
-                    per_unit_base + edata.get(transport_attr, 0.0) + edata.get("tariff_cost", 0.0)
+                    per_unit_base
+                    + edata.get(transport_attr, 0.0)
+                    + edata.get("tariff_cost", 0.0)
+                    + edata.get("carbon_border_cost", 0.0)
                 ) * volume
                 current_step_energy_cost = edata.get(process_attr, 0.0) * volume
                 edge_cost = material_tariff_transportation_cost + current_step_energy_cost
