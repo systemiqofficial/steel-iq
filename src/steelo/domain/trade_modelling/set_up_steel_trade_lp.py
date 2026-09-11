@@ -180,25 +180,20 @@ def create_process_from_furnace_group(
                     f"Feedstock {primary_feedstock.name} has primary outputs: {primary_commodities} "
                     f"(from total outputs: {list(primary_feedstock.outputs.keys())})"
                 )
-            dependent_commodities = {}
-            for sec_feedstock in primary_feedstock.secondary_feedstock:
-                dependent_commodities[tlp.Commodity(name=sec_feedstock)] = primary_feedstock.secondary_feedstock[
-                    sec_feedstock
-                ]
-            for en_req in primary_feedstock.energy_requirements:
-                dependent_commodities[tlp.Commodity(name=en_req)] = primary_feedstock.energy_requirements[en_req]
             if primary_feedstock.required_quantity_per_ton_of_product is None:
                 raise ValueError(
                     f"Required quantity per ton of product is None for feedstock {primary_feedstock.name}. It's outputs are: {primary_feedstock.outputs.keys()}"
                 )
-            # Bridge carbon outputs (e.g. co2_stored) into dependent_commodities so that
-            # regional availability constraints can be enforced by the LP. carbon_outputs
-            # values are in tCO2/t-product-output; dividing by required_quantity converts
-            # to tCO2/t-primary-input, which is the unit the LP dependent-commodity ratio
-            # expects. If no supply process exists for a given carbon output (i.e. no
-            # constraint is configured), set_legal_allocations will simply find no allocation
-            # variable and the equality constraint is skipped harmlessly.
             req_qty = primary_feedstock.required_quantity_per_ton_of_product
+            # The sheet states secondary feedstocks, energy and carbon outputs per tonne of PRODUCT; the LP's
+            # dependent-commodity constraint multiplies the ratio by the primary INPUT flow, so divide by req_qty
+            dependent_commodities = {}
+            for sec_feedstock, amount in primary_feedstock.secondary_feedstock.items():
+                dependent_commodities[tlp.Commodity(name=sec_feedstock)] = amount / req_qty
+            for en_req, amount in primary_feedstock.energy_requirements.items():
+                dependent_commodities[tlp.Commodity(name=en_req)] = amount / req_qty
+            # A carbon output without a supply process (no constraint configured) gets no allocation
+            # variable, so its equality constraint is skipped harmlessly
             for co_key, co_amount in (primary_feedstock.carbon_outputs or {}).items():
                 if co_amount:  # skip zero-valued outputs — no LP effect and avoids noisy warnings
                     dependent_commodities[tlp.Commodity(name=co_key)] = co_amount / req_qty
@@ -307,25 +302,23 @@ def create_process_from_meta_furnace_group(
                     f"(from total outputs: {list(primary_feedstock.outputs.keys())})"
                 )
 
-            # Build dependent commodities (secondary feedstocks)
-            dependent_commodities = {}
-            for sec_feedstock in primary_feedstock.secondary_feedstock:
-                dependent_commodities[tlp.Commodity(name=sec_feedstock)] = primary_feedstock.secondary_feedstock[
-                    sec_feedstock
-                ]
-            for en_req in primary_feedstock.energy_requirements:
-                dependent_commodities[tlp.Commodity(name=en_req)] = primary_feedstock.energy_requirements[en_req]
-
             if primary_feedstock.required_quantity_per_ton_of_product is None:
                 raise ValueError(
                     f"Required quantity per ton of product is None for feedstock {primary_feedstock.name}. "
                     f"Its outputs are: {primary_feedstock.outputs.keys()}"
                 )
-
-            # Bridge carbon outputs into dependent_commodities
             req_qty = primary_feedstock.required_quantity_per_ton_of_product
+            # The sheet states secondary feedstocks, energy and carbon outputs per tonne of PRODUCT; the LP's
+            # dependent-commodity constraint multiplies the ratio by the primary INPUT flow, so divide by req_qty
+            dependent_commodities = {}
+            for sec_feedstock, amount in primary_feedstock.secondary_feedstock.items():
+                dependent_commodities[tlp.Commodity(name=sec_feedstock)] = amount / req_qty
+            for en_req, amount in primary_feedstock.energy_requirements.items():
+                dependent_commodities[tlp.Commodity(name=en_req)] = amount / req_qty
+            # A carbon output without a supply process (no constraint configured) gets no allocation
+            # variable, so its equality constraint is skipped harmlessly
             for co_key, co_amount in (primary_feedstock.carbon_outputs or {}).items():
-                if co_amount:  # skip zero-valued outputs
+                if co_amount:  # skip zero-valued outputs — no LP effect and avoids noisy warnings
                     dependent_commodities[tlp.Commodity(name=co_key)] = co_amount / req_qty
 
             output_commodities = [tlp.Commodity(name=oc) for oc in primary_commodities]

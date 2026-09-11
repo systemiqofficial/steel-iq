@@ -569,6 +569,55 @@ def test_create_process_from_furnace_group_carbon_outputs_bridged_to_dependent_c
     assert dep_by_name["co2_slip"] == pytest.approx(0.13 / required_quantity)
 
 
+def _per_product_feedstock():
+    """Feedstock authored per tonne of product: 1.4565 t input, 0.45 t bio-PCI and 0.45 MWh per tonne of product."""
+    return DummyFeedstock(
+        name="BF_IO_LOW",
+        metallic_charge="io_low",
+        required_quantity=1.4565,
+        maximum_share=1.0,
+        minimum_share=0.0,
+        secondary_feedstock={"bio_pci": 0.45},
+        outputs={"steel": 1},
+        energy_requirements={"electricity": 0.45},
+    )
+
+
+def test_create_process_from_furnace_group_books_energy_and_secondary_feedstock_per_tonne_of_input():
+    """Secondary feedstock and energy ratios are divided by the required input quantity like carbon outputs."""
+    tech = DummyTechnology(name="BF", dynamic_business_case=[_per_product_feedstock()])
+    furnace_group = DummyFurnaceGroup(
+        furnace_group_id="plant_bf_fg1", technology=tech, status="operating", capacity=100
+    )
+
+    process = create_process_from_furnace_group(furnace_group, DummyTradeLPModel(), create_mock_config())
+
+    dep_by_name = {c.name: v for c, v in process.bill_of_materials[0].dependent_commodities.items()}
+    assert dep_by_name["bio_pci"] == pytest.approx(0.45 / 1.4565)
+    assert dep_by_name["electricity"] == pytest.approx(0.45 / 1.4565)
+
+
+def test_create_process_from_meta_furnace_group_books_energy_and_secondary_feedstock_per_tonne_of_input():
+    """The meta-furnace-group builder applies the same per-input conversion."""
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import create_process_from_meta_furnace_group
+
+    meta_fg = DummyMetaFurnaceGroup(
+        meta_furnace_group_id="cluster_BF_CHN",
+        technology_name="BF",
+        chosen_reductant="",
+        location="plant_location",
+        total_capacity=Volumes(100.0),
+        weighted_avg_carbon_cost=0.0,
+        dynamic_business_case=[_per_product_feedstock()],
+    )
+
+    process = create_process_from_meta_furnace_group(meta_fg, DummyTradeLPModel(), create_mock_config())
+
+    dep_by_name = {c.name: v for c, v in process.bill_of_materials[0].dependent_commodities.items()}
+    assert dep_by_name["bio_pci"] == pytest.approx(0.45 / 1.4565)
+    assert dep_by_name["electricity"] == pytest.approx(0.45 / 1.4565)
+
+
 def test_create_process_from_furnace_group_zero_carbon_output_excluded():
     """Zero-valued carbon outputs are excluded from dependent_commodities (no LP effect, avoids noise)."""
     feedstock = DummyFeedstock(
