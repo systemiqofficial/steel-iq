@@ -375,6 +375,37 @@ def test_cli_capacity_policy_flag_drives_the_nested_config(
         assert config.capacity_policy.enabled is expected
 
 
+@pytest.mark.parametrize("flag_argv, expected", [([], False), (["--cbam-rebate"], True)])
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_cbam_rebate_flag_lands_on_the_config(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    flag_argv,
+    expected,
+):
+    """``--cbam-rebate`` switches on carbon border export rebates; absent, they stay off."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cli_temp_base = Path(tmpdir)
+        stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+
+        argv = ["run_simulation", "--start-year", "2026", "--end-year", "2027", *flag_argv]
+        with patch.object(sys, "argv", argv):
+            with patch("sys.exit"):
+                run_full_simulation()
+
+        config = mock_create_runner.call_args[0][0]
+        assert config.carbon_border_export_rebates is expected
+
+
 @pytest.mark.parametrize(
     "argv_tail, message",
     [

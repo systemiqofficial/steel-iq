@@ -227,6 +227,11 @@ def run_full_simulation() -> None:
             "--enable-capacity-policy (default: no expiry)"
         ),
     )
+    parser.add_argument(
+        "--cbam-rebate",
+        action="store_true",
+        help="Rebate the carbon already paid on exports leaving a carbon border region (default: disabled)",
+    )
 
     # Parse the command-line arguments
     try:
@@ -399,6 +404,9 @@ def run_full_simulation() -> None:
                 config.geo_config.intraregional_trade_allowed = args.intraregional_trade
                 state = "enabled" if args.intraregional_trade else "disabled"
                 console.print(f"[green]Intraregional hydrogen trade {state}[/green]")
+            if args.cbam_rebate:
+                config.carbon_border_export_rebates = True
+                console.print("[green]Carbon border export rebates enabled[/green]")
 
             # Save config and metadata
             config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
@@ -506,6 +514,9 @@ def run_full_simulation() -> None:
                     config.geo_config.intraregional_trade_allowed = args.intraregional_trade
                     state = "enabled" if args.intraregional_trade else "disabled"
                     console.print(f"[green]Intraregional hydrogen trade {state}[/green]")
+                if args.cbam_rebate:
+                    config.carbon_border_export_rebates = True
+                    console.print("[green]Carbon border export rebates enabled[/green]")
 
                 # Save config and metadata
                 config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
