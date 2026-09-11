@@ -1104,3 +1104,84 @@ def test_disaggregate_allocations_maps_carbon_border_charges_to_member_flows():
     # Every member flow on the charged cluster arc carries the charge; the uncharged arc carries none.
     # The keys are the disaggregated flow keys themselves, so the connector's object lookup finds them.
     assert result.carbon_border_charges == {key: 32.0 for key in flows_into_deu}
+
+
+def test_cluster_weighted_embedded_carbon_fields():
+    """The three embedded-carbon fields are capacity-weighted means of the members' values."""
+    plant = create_test_plant("plant1", create_test_location(lat=35.0, lon=110.0, iso3="CHN"))
+    fg1 = create_test_furnace_group("fg1", "BF", capacity=1000.0)
+    fg2 = create_test_furnace_group("fg2", "BF", capacity=3000.0)
+    fg1.trade_emission_intensity, fg2.trade_emission_intensity = 1.0, 2.0
+    fg1.upstream_emission_intensity, fg2.upstream_emission_intensity = 0.5, 1.5
+    fg1.upstream_carbon_cost_paid, fg2.upstream_carbon_cost_paid = 10.0, 30.0
+    plant.furnace_groups = [fg1, fg2]
+
+    meta_fgs, _ = cluster_furnace_groups([plant], MockConfig(active_statuses=["operating"]))
+
+    meta_fg = meta_fgs[0]
+    assert meta_fg.weighted_avg_emission_intensity == pytest.approx((1.0 * 1000 + 2.0 * 3000) / 4000)
+    assert meta_fg.weighted_avg_upstream_emission_intensity == pytest.approx((0.5 * 1000 + 1.5 * 3000) / 4000)
+    assert meta_fg.weighted_avg_upstream_carbon_cost_paid == pytest.approx((10.0 * 1000 + 30.0 * 3000) / 4000)
+
+
+def test_disaggregate_allocations_copies_embedded_fields_onto_member_process_centers():
+    """The per-furnace process centres built by disaggregation carry the cluster's embedded-carbon values."""
+    from steelo.domain.trade_modelling.furnace_group_clustering import disaggregate_allocations
+    from steelo.domain.trade_modelling.trade_lp_modelling import (
+        Allocations,
+        Commodity,
+        Process,
+        ProcessCenter,
+        ProcessType,
+    )
+
+    fg_ids = ["plant1_fg0", "plant2_fg0"]
+    meta_fg = MetaFurnaceGroup(
+        cluster_key=ClusterKey("BF", "CHN", "coke:io_low"),
+        meta_furnace_group_id="cluster_BF_coke_CHN",
+        constituent_fg_ids=fg_ids,
+        technology_name="BF",
+        chosen_reductant="coke",
+        location=Location(lat=35.0, lon=110.0, iso3="CHN", country="China", region="Asia"),
+        total_capacity=Volumes(4000.0),
+        weighted_avg_carbon_cost=85.0,
+        dynamic_business_case=None,
+        capacity_shares={fg_ids[0]: 0.25, fg_ids[1]: 0.75},
+        constituent_locations={
+            fg_ids[0]: Location(lat=34.0, lon=109.0, iso3="CHN", country="China", region="Asia"),
+            fg_ids[1]: Location(lat=36.0, lon=111.0, iso3="CHN", country="China", region="Asia"),
+        },
+        weighted_avg_emission_intensity=1.75,
+        weighted_avg_upstream_emission_intensity=1.25,
+        weighted_avg_upstream_carbon_cost_paid=25.0,
+    )
+    meta_fg_pc = ProcessCenter(
+        name="cluster_BF_coke_CHN",
+        process=Process(name="BF", type=ProcessType.PRODUCTION, bill_of_materials=[]),
+        capacity=4000.0,
+        location=meta_fg.location,
+        production_cost=85.0,
+    )
+    demand_pc = ProcessCenter(
+        name="demand_center_1",
+        process=Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[]),
+        capacity=5000.0,
+        location=Location(lat=35.5, lon=110.5, iso3="CHN", country="China", region="Asia"),
+    )
+    clustered_allocs = Allocations(allocations={(meta_fg_pc, demand_pc, Commodity("iron")): 2000.0})
+
+    result = disaggregate_allocations(
+        clustered_allocations=clustered_allocs,
+        meta_furnace_groups=[meta_fg],
+        plants_repo=None,
+        config=MockConfig(active_statuses=["operating"], hot_metal_radius=100.0),
+    )
+
+    member_pcs = {from_pc.name: from_pc for from_pc, _, _ in result.allocations}
+    assert set(member_pcs) == set(fg_ids)
+    for pc in member_pcs.values():
+        assert (pc.emission_intensity, pc.upstream_emission_intensity, pc.upstream_carbon_cost_paid) == (
+            1.75,
+            1.25,
+            25.0,
+        )

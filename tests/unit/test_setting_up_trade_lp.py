@@ -57,8 +57,14 @@ class DummyProcessCenter:
         production_cost=0.1,
         soft_minimum_capacity=0.0,
         energy_costs_per_input=None,
+        emission_intensity=0.0,
+        upstream_emission_intensity=0.0,
+        upstream_carbon_cost_paid=0.0,
     ):
         self.production_cost = production_cost
+        self.emission_intensity = emission_intensity
+        self.upstream_emission_intensity = upstream_emission_intensity
+        self.upstream_carbon_cost_paid = upstream_carbon_cost_paid
         self.name = name
         self.process = process
         self.capacity = capacity
@@ -298,6 +304,9 @@ class DummyFurnaceGroup:
         self.energy_vopex_by_input = {}
         self.chosen_reductant = chosen_reductant
         self.trade_carbon_cost_per_unit = trade_carbon_cost_per_unit
+        self.trade_emission_intensity = 0.0
+        self.upstream_emission_intensity = 0.0
+        self.upstream_carbon_cost_paid = 0.0
 
     @property
     def effective_primary_feedstocks(self):
@@ -609,6 +618,42 @@ def test_add_furnace_groups_as_process_centers_uses_trade_carbon_cost():
     add_furnace_groups_as_process_centers(repo, lp_model, create_mock_config())
 
     assert lp_model.process_centers[0].production_cost == 42.5
+
+
+def test_add_furnace_groups_as_process_centers_passes_embedded_carbon_fields():
+    """Own intensity and last year's upstream intensity and carbon paid reach the process centre on both paths."""
+    tech = DummyTechnology(name="EAF", dynamic_business_case=[])
+    furnace_group = DummyFurnaceGroup(furnace_group_id="plant2_fg1", technology=tech, status="operating", capacity=50)
+    furnace_group.trade_emission_intensity = 1.8
+    furnace_group.upstream_emission_intensity = 0.4
+    furnace_group.upstream_carbon_cost_paid = 12.0
+    plant = DummyPlant(plant_id="plant2", furnace_groups=[furnace_group])
+    repo = DummyRepository()
+    repo.plants.items = [plant]
+    repo.plants.data = {"plant2": plant}
+    lp_model = DummyTradeLPModel()
+    add_furnace_groups_as_process_centers(repo, lp_model, create_mock_config())
+    pc = lp_model.process_centers[0]
+    assert (pc.emission_intensity, pc.upstream_emission_intensity, pc.upstream_carbon_cost_paid) == (1.8, 0.4, 12.0)
+
+    meta_fg = DummyMetaFurnaceGroup(
+        meta_furnace_group_id="cluster_EAF_CHN",
+        technology_name="EAF",
+        chosen_reductant="",
+        location="plant_location",
+        total_capacity=Volumes(100.0),
+        weighted_avg_carbon_cost=30.0,
+        dynamic_business_case=[],
+        weighted_avg_emission_intensity=0.2,
+        weighted_avg_upstream_emission_intensity=1.5,
+        weighted_avg_upstream_carbon_cost_paid=45.0,
+    )
+    lp_model = DummyTradeLPModel()
+    add_furnace_groups_as_process_centers(
+        DummyRepository(), lp_model, create_mock_config(), furnace_groups_override=[meta_fg]
+    )
+    pc = lp_model.process_centers[0]
+    assert (pc.emission_intensity, pc.upstream_emission_intensity, pc.upstream_carbon_cost_paid) == (0.2, 1.5, 45.0)
 
 
 def test_add_furnace_groups_as_process_centers_energy_costs_are_facility_specific():
@@ -2027,7 +2072,13 @@ class DummyMetaFurnaceGroup:
         weighted_avg_energy_costs=None,
         capacity_shares=None,
         constituent_locations=None,
+        weighted_avg_emission_intensity=0.0,
+        weighted_avg_upstream_emission_intensity=0.0,
+        weighted_avg_upstream_carbon_cost_paid=0.0,
     ):
+        self.weighted_avg_emission_intensity = weighted_avg_emission_intensity
+        self.weighted_avg_upstream_emission_intensity = weighted_avg_upstream_emission_intensity
+        self.weighted_avg_upstream_carbon_cost_paid = weighted_avg_upstream_carbon_cost_paid
         self.meta_furnace_group_id = meta_furnace_group_id
         self.technology_name = technology_name
         self.chosen_reductant = chosen_reductant

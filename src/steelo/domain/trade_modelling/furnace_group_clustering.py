@@ -423,6 +423,11 @@ class MetaFurnaceGroup:
         constituent_locations: Original locations of constituent FGs (for disaggregation)
         weighted_avg_energy_costs: Capacity-weighted average energy costs by metallic charge input
             (e.g., {"hot_metal": 25.5, "pig_iron": 30.2} in USD per tonne of output)
+        weighted_avg_emission_intensity: Capacity-weighted own-stage direct tCO2 per tonne of product
+        weighted_avg_upstream_emission_intensity: Capacity-weighted tCO2 per tonne embedded in last
+            year's inputs
+        weighted_avg_upstream_carbon_cost_paid: Capacity-weighted USD per tonne already paid on last
+            year's inputs
 
     Example:
         >>> # Three BF furnaces in China using coke, with total capacity 10,000 t
@@ -457,6 +462,9 @@ class MetaFurnaceGroup:
     capacity_shares: dict[str, float] = field(default_factory=dict)
     constituent_locations: dict[str, Location] = field(default_factory=dict)
     weighted_avg_energy_costs: dict[str, float] = field(default_factory=dict)
+    weighted_avg_emission_intensity: float = 0.0
+    weighted_avg_upstream_emission_intensity: float = 0.0
+    weighted_avg_upstream_carbon_cost_paid: float = 0.0
     # Set when the cluster was keyed by plant_group or plant (hot-metal-affected tech with
     # geographical_clustering_scope = "plant_group" or "plant"). Used by the LP to restrict hot
     # commodity flows to within a plant_group/plant. None for iso3-keyed clusters.
@@ -784,6 +792,15 @@ def cluster_furnace_groups(
         weighted_avg_carbon_cost = _capacity_weighted_mean(
             cluster_fgs, effective_caps, total_eff_cap, "trade_carbon_cost_per_unit"
         )
+        weighted_avg_emission_intensity = _capacity_weighted_mean(
+            cluster_fgs, effective_caps, total_eff_cap, "trade_emission_intensity"
+        )
+        weighted_avg_upstream_emission_intensity = _capacity_weighted_mean(
+            cluster_fgs, effective_caps, total_eff_cap, "upstream_emission_intensity"
+        )
+        weighted_avg_upstream_carbon_cost_paid = _capacity_weighted_mean(
+            cluster_fgs, effective_caps, total_eff_cap, "upstream_carbon_cost_paid"
+        )
 
         # Store constituent locations for disaggregation
         constituent_locations = {fg.furnace_group_id: plant.location for fg, plant in cluster_fgs}
@@ -871,6 +888,9 @@ def cluster_furnace_groups(
             capacity_shares=capacity_shares,
             constituent_locations=constituent_locations,
             weighted_avg_energy_costs=weighted_avg_energy_costs,
+            weighted_avg_emission_intensity=weighted_avg_emission_intensity,
+            weighted_avg_upstream_emission_intensity=weighted_avg_upstream_emission_intensity,
+            weighted_avg_upstream_carbon_cost_paid=weighted_avg_upstream_carbon_cost_paid,
             plant_group_id=plant_group_id,
         )
 
@@ -3113,6 +3133,9 @@ def disaggregate_allocations(
             location=meta_fg.constituent_locations[fg_id],
             production_cost=meta_fg.weighted_avg_carbon_cost,
             soft_minimum_capacity=None,
+            emission_intensity=meta_fg.weighted_avg_emission_intensity,
+            upstream_emission_intensity=meta_fg.weighted_avg_upstream_emission_intensity,
+            upstream_carbon_cost_paid=meta_fg.weighted_avg_upstream_carbon_cost_paid,
         )
 
     # PASS 1: Group allocations by type for batching

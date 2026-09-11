@@ -336,6 +336,7 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
         for fg in fgs:
             fg.record_utilization(int(env.year))
         bom_issue_count_materials, bom_issue_count_energy = tmpc.update_bill_of_materials(fgs)
+        tmpc.update_furnace_group_embedded_carbon(fgs)
         logger.info(
             f"BOM Update Summary (year {env.year}):\n"
             f"  - {bom_issue_count_materials} furnace groups retained existing material entries\n"

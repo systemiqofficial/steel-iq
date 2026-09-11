@@ -1190,6 +1190,10 @@ class FurnaceGroup:
         # prices on it; both independent of utilisation (see direct_emission_intensity)
         self.trade_emission_intensity: float = 0.0
         self.trade_carbon_cost_per_unit: float = 0.0
+        # Direct emissions embedded in, and carbon already paid on, last year's inputs, per tonne of
+        # product; set by the TM-PAM connector after each solve and read at the next LP set-up
+        self.upstream_emission_intensity: float = 0.0
+        self.upstream_carbon_cost_paid: float = 0.0
 
         # Initialize _carbon_cost from carbon_costs_for_emissions if provided
         if carbon_costs_for_emissions is not None and carbon_costs_for_emissions > 0:

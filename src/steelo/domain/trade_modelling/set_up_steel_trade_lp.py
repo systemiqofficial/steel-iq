@@ -423,6 +423,9 @@ def add_furnace_groups_as_process_centers(
                 production_cost=meta_fg.weighted_avg_carbon_cost,
                 soft_minimum_capacity=config.soft_minimum_capacity_share,
                 energy_costs_per_input=build_energy_costs_per_input_for_meta_fg(meta_fg),
+                emission_intensity=meta_fg.weighted_avg_emission_intensity,
+                upstream_emission_intensity=meta_fg.weighted_avg_upstream_emission_intensity,
+                upstream_carbon_cost_paid=meta_fg.weighted_avg_upstream_carbon_cost_paid,
             )
             logger.info(
                 f"Created ProcessCenter {process_center.name} with capacity {process_center.capacity} and {len(process.bill_of_materials)} BOMs"
@@ -452,6 +455,9 @@ def add_furnace_groups_as_process_centers(
                     production_cost=furnace_group.trade_carbon_cost_per_unit,
                     soft_minimum_capacity=config.soft_minimum_capacity_share,
                     energy_costs_per_input=build_energy_costs_per_input(furnace_group),
+                    emission_intensity=furnace_group.trade_emission_intensity,
+                    upstream_emission_intensity=furnace_group.upstream_emission_intensity,
+                    upstream_carbon_cost_paid=furnace_group.upstream_carbon_cost_paid,
                 )
                 process_centers.append(process_center)
 

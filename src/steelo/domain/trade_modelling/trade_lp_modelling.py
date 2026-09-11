@@ -202,7 +202,13 @@ class ProcessCenter:
         process: Process definition specifying technology and bill of materials
         capacity: Maximum throughput (tons/year)
         location: Geographic location (for distance calculations)
-        production_cost: Cost per ton to operate this facility (e.g., carbon cost)
+        production_cost: Cost per ton to operate this facility; for producers the own-stage carbon
+            cost in USD/t, for suppliers the raw-material price
+        emission_intensity: Own-stage direct emissions in tCO2 per tonne of product (producers only)
+        upstream_emission_intensity: Direct emissions embedded in last year's inputs, tCO2 per tonne
+            of product
+        upstream_carbon_cost_paid: Carbon cost already paid on last year's inputs, USD per tonne of
+            product
         soft_minimum_capacity: Optional target minimum utilization (fraction, e.g., 0.5 for 50%)
         optimal_production: Set after solving, the optimal production quantity
     """
@@ -216,12 +222,18 @@ class ProcessCenter:
         production_cost: float = 0.0,
         soft_minimum_capacity: float | None = None,
         energy_costs_per_input: dict[str, float] | None = None,
+        emission_intensity: float = 0.0,
+        upstream_emission_intensity: float = 0.0,
+        upstream_carbon_cost_paid: float = 0.0,
     ):
         self.name = name
         self.process = process
         self.capacity = capacity
         self.location = location
         self.production_cost = production_cost
+        self.emission_intensity = emission_intensity
+        self.upstream_emission_intensity = upstream_emission_intensity
+        self.upstream_carbon_cost_paid = upstream_carbon_cost_paid
         self.soft_minimum_capacity = soft_minimum_capacity
         self.optimal_production: float | None = None
         # Facility-specific energy cost per ton of input, keyed by commodity name. Overrides

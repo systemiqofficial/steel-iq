@@ -360,6 +360,7 @@ class TM_PAM_connector:
                     product_cost={},
                     unit_cost={},
                     own_unit_cost=float(from_pc.production_cost or 0.0),
+                    own_emission_intensity=float(from_pc.emission_intensity),
                 )
 
             # Add the destination node, initializing its attrs with same cost logic
@@ -470,6 +471,20 @@ class TM_PAM_connector:
                 # Accumulate export volumes by commodity
                 for src, v, comm, edata in G.out_edges(u, keys=True, data=True):
                     G.nodes[u][export_attr][comm] = G.nodes[u][export_attr].get(comm, 0) + edata.get(volume_attr, 0)
+            # Upstream embedded emissions and carbon paid per tonne of this node's product: the inbound
+            # totals spread over everything it ships (multi-output nodes normalise by total export)
+            inbound = G.nodes[u].get(allocation_attr, {})
+            total_export = sum(G.nodes[u].get(export_attr, {}).values())
+            if G.in_degree(u) > 0 and total_export > 0:
+                up_e = sum(alloc["EmbeddedEmissions"] for alloc in inbound.values()) / total_export
+                up_c = sum(alloc["CarbonPaid"] for alloc in inbound.values()) / total_export
+            else:
+                up_e, up_c = 0.0, 0.0
+            G.nodes[u]["upstream_emission_intensity"] = up_e
+            G.nodes[u]["upstream_carbon_cost_paid"] = up_c
+            # Suppliers carry neither attribute and contribute nothing of their own
+            own_e = float(G.nodes[u].get("own_emission_intensity", 0.0))
+            own_c = float(G.nodes[u].get("own_unit_cost", 0.0))
             # If G[u] is also a to-node
             # For each outgoing edge (u → v) carrying commodity `comm`
             for _, v, comm, edata in G.out_edges(u, keys=True, data=True):
@@ -583,10 +598,17 @@ class TM_PAM_connector:
                 # MaterialCost includes upstream material + ALL upstream costs
                 # (including upstream energy) + current transport + tariffs
                 # EXCLUDES the current step's processing energy
-                prev = G.nodes[v][allocation_attr].get(comm, {"Cost": 0.0, "MaterialCost": 0.0, "Volume": 0.0})
+                prev = G.nodes[v][allocation_attr].get(
+                    comm,
+                    {"Cost": 0.0, "MaterialCost": 0.0, "Volume": 0.0, "EmbeddedEmissions": 0.0, "CarbonPaid": 0.0},
+                )
                 prev["Cost"] += edge_cost  # Total cost including current step's energy
                 prev["MaterialCost"] += material_tariff_transportation_cost  # Excludes current step's energy only
                 prev["Volume"] += volume
+                # tCO2 and USD carried into v on this edge: the source's own stage plus everything upstream
+                # of it, and the border charge paid on the edge itself
+                prev["EmbeddedEmissions"] += (own_e + up_e) * volume
+                prev["CarbonPaid"] += (own_c + up_c + edata.get("carbon_border_cost", 0.0)) * volume
                 G.nodes[v][allocation_attr][comm] = prev
 
             G.nodes[u][unit_cost_attr].update(unit_cost)
@@ -720,6 +742,36 @@ class TM_PAM_connector:
                 # raise Warning(f"Furnace group capacity is 0 for {fg.furnace_group_id}")
                 logger.debug(
                     f"Furnace group capacity is 0 for {fg.furnace_group_id} \n and allocation is {fg.allocated_volumes}"
+                )
+
+    def update_furnace_group_embedded_carbon(self, furnace_groups: list[FurnaceGroup]) -> None:
+        """Copy the propagated upstream emission intensity and carbon paid onto each furnace group.
+
+        Args:
+            furnace_groups: Furnace groups to update from their graph nodes.
+
+        Notes:
+            Both values are per tonne of the furnace group's product and describe what arrived on its
+            inbound flows this year; the next LP set-up reads them as last year's realised state. A
+            furnace group absent from the graph, without inbound edges, or idle carries 0.0 for both.
+        """
+        logger = logging.getLogger(f"{__name__}.update_furnace_group_embedded_carbon")
+        graph = self.G
+        for fg in furnace_groups:
+            node_id = fg.furnace_group_id
+            if graph is None or node_id not in graph.nodes or graph.in_degree(node_id) == 0 or fg.utilization_rate <= 0:
+                fg.upstream_emission_intensity = 0.0
+                fg.upstream_carbon_cost_paid = 0.0
+                continue
+            node = graph.nodes[node_id]
+            fg.upstream_emission_intensity = node["upstream_emission_intensity"]
+            fg.upstream_carbon_cost_paid = node["upstream_carbon_cost_paid"]
+            if fg.upstream_emission_intensity or fg.upstream_carbon_cost_paid:
+                logger.debug(
+                    "fg=%s upstream_emission_intensity=%.4f upstream_carbon_cost_paid=%.2f",
+                    node_id,
+                    fg.upstream_emission_intensity,
+                    fg.upstream_carbon_cost_paid,
                 )
 
     def update_bill_of_materials(self, furnace_groups: list[FurnaceGroup]):
