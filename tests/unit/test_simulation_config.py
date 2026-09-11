@@ -49,6 +49,7 @@ def test_simulation_config_has_default_parameters():
     assert config.capacity_limit_iron == 100 * MT_TO_T
     assert config.capacity_limit_steel == 100 * MT_TO_T
     assert config.new_capacity_share_from_new_plants == 0.4
+    assert config.carbon_border_export_rebates is False
 
 
 def test_simulation_config_can_override_defaults():

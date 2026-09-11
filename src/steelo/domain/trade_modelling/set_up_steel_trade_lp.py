@@ -21,7 +21,7 @@ from steelo.service_layer.message_bus import MessageBus
 
 if TYPE_CHECKING:
     from steelo.simulation import SimulationConfig
-from collections import defaultdict
+from collections import Counter, defaultdict
 import pyomo.environ as pyo
 from steelo.domain.constants import LP_TOLERANCE, T_TO_KT
 
@@ -867,81 +867,60 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
     return trade_lp
 
 
-def build_reference_producer_carbon_costs(
-    process_centers: list["tlp.ProcessCenter"],
-) -> dict[tuple[str, str], float]:
-    """Build production-weighted average carbon cost of active producers, per (iso3, commodity).
+def resolve_destination_carbon_prices(
+    env, mechanisms: list, country_mappings: dict[str, CountryMapping], year: int
+) -> dict[str, float]:
+    """Carbon price each destination country's border is priced at.
 
-    Demand centres carry no production_cost of their own (it defaults to 0.0), so carbon
-    border adjustments on flows into a demand centre need a stand-in for "the carbon cost a
-    domestic producer of this commodity would have incurred". This aggregates that reference
-    cost from PRODUCTION process centres, weighted by capacity, per country and commodity.
+    Args:
+        env: Environment carrying the national carbon-price series.
+        mechanisms: Active carbon border mechanisms (unused until bloc prices apply).
+        country_mappings: ISO3 -> CountryMapping (unused until bloc prices apply).
+        year: Simulation year.
 
-    Excludes idle producers (production_cost == 0.0) to avoid downward bias from zero-cost
-    idle capacity outweighing active producers.
+    Returns:
+        ISO3 -> price for every country with a carbon-price series; a country without one has no
+        carbon policy and is absent.
     """
-    weighted_cost_sum: dict[tuple[str, str], float] = defaultdict(float)
-    capacity_sum: dict[tuple[str, str], float] = defaultdict(float)
-
-    for pc in process_centers:
-        if pc.process.type != tlp.ProcessType.PRODUCTION:
-            continue
-        if pc.production_cost == 0.0:
-            continue
-        iso3 = pc.location.iso3
-        for commodity in pc.process.products:
-            key = (iso3, commodity.name)
-            weighted_cost_sum[key] += pc.production_cost * pc.capacity
-            capacity_sum[key] += pc.capacity
-
-    return {key: weighted_cost_sum[key] / capacity_sum[key] for key in capacity_sum if capacity_sum[key] > 0}
+    return {iso3: env.carbon_price_for_year(iso3, Year(year)) for iso3 in env.carbon_costs}
 
 
 def adapt_allocation_costs_for_carbon_border_mechanisms(
-    trade_lp: tlp.TradeLPModel, carbon_border_mechanisms: list, country_mappings: dict[str, CountryMapping], year: int
-):
-    """Apply carbon border adjustment mechanisms to allocation costs.
+    trade_lp: tlp.TradeLPModel,
+    carbon_border_mechanisms: list,
+    country_mappings: dict[str, CountryMapping],
+    year: int,
+    destination_prices: dict[str, float],
+    export_rebates: bool = False,
+) -> None:
+    """Charge imports into carbon-border regions on embedded emissions at the destination carbon price.
 
-    Adjusts allocation costs for cross-border flows based on carbon cost differentials
-    between trading partners. Works with any carbon border mechanism (EU CBAM, OECD, etc.).
-    Prevents double-counting when countries belong to multiple regions.
+    For each legal arc from a PRODUCTION centre the adjustment is ``max(0, E_s * P_d - C_s)`` when the
+    destination sits in an active mechanism's applying set, where ``E_s`` is the source's own plus
+    upstream direct emission intensity, ``C_s`` the carbon already paid on it and ``P_d`` the
+    destination's price. With ``export_rebates`` the mirror ``min(0, E_s * P_d - C_s)`` is added when
+    the source sits in an applying set. Both terms are evaluated on every arc and summed, so the result
+    is independent of mechanism order.
 
     Args:
-        trade_lp: The trade LP model to modify
-        carbon_border_mechanisms: List of CarbonBorderMechanism objects with:
-            - applying_region: Region code where mechanism applies
-            - is_active(year): Method to check if mechanism is active
-            - get_applying_region_countries(mappings): Method to get country list
-        country_mappings: Dictionary mapping ISO3 codes to CountryMapping objects
-        year: Current simulation year
+        trade_lp: The trade LP model whose allocation costs are adjusted in place.
+        carbon_border_mechanisms: CarbonBorderMechanism objects; inactive ones are ignored.
+        country_mappings: ISO3 -> CountryMapping, used to resolve each mechanism's applying set.
+        year: Simulation year.
+        destination_prices: ISO3 -> price the border is priced at, from resolve_destination_carbon_prices.
+        export_rebates: Also rebate exports leaving an applying set; off by default.
 
     Notes:
-        - Export rebates: applying_region → other flows get cost increase if carbon cost is higher
-        - Import adjustments: other → applying_region flows get cost increase if carbon cost is higher
-        - Only first mechanism applied to each flow (tracked via adjusted_flows set)
-        - Only applies to legal allocations (defined process connectors)
-        - Skips supplier sources: their production_cost is raw-material price, not carbon cost.
-          CBAM does not apply to scrap feedstock anyway.
-        - Skips flows involving None process centers or locations
-        - Demand-centre destinations have no production_cost of their own, so their carbon
-          cost is stood in for by the capacity-weighted average of domestic PRODUCTION
-          process centres for that commodity (see build_reference_producer_carbon_costs).
-          Destination countries with no domestic producers of the commodity are skipped —
-          there is nothing to protect or rebate against.
+        Two countries inside one applying set never adjust each other's flows, whatever other mechanisms
+        cover either of them. Supplier sources are skipped: their production cost is a raw-material price.
+        A destination without a price series has no policy and charges nothing. Non-zero adjustments are
+        recorded in ``trade_lp.lp_model.carbon_border_charge`` for extraction onto Allocations.
     """
     logger = logging.getLogger(f"{__name__}.adapt_allocation_costs_for_carbon_border_mechanisms")
-    # Track which arcs have already been adjusted to prevent double-counting across mechanisms
-    adjusted_arcs = set()
-    adjustments_made = 0
-    skipped_duplicates = 0
-
-    reference_carbon_cost = build_reference_producer_carbon_costs(trade_lp.process_centers)
-
+    applying_sets: list[set[str]] = []
     for mechanism in carbon_border_mechanisms:
         if not mechanism.is_active(year):
             continue
-
-        # Get countries in the applying region
         applying_countries = mechanism.get_applying_region_countries(country_mappings)
         if not applying_countries:
             logger.warning(
@@ -949,54 +928,93 @@ def adapt_allocation_costs_for_carbon_border_mechanisms(
                 f"'{mechanism.applying_region_column}' — it adjusts nothing"
             )
             continue
-        logger.debug(f"Mechanism {mechanism.mechanism_name}: {len(applying_countries)} applying countries")
+        applying_sets.append(applying_countries)
+    covered_countries: set[str] = set().union(*applying_sets) if applying_sets else set()
 
-        for from_pc, to_pc, comm in trade_lp.legal_allocations:
-            from_iso3 = from_pc.location.iso3
-            to_iso3 = to_pc.location.iso3
+    charges: list[tuple[float, tuple[str, str, str], float, float, float]] = []
+    rebates: list[tuple[float, tuple[str, str, str], float, float, float]] = []
+    charged_per_destination: Counter[str] = Counter()
+    unpriced_destinations: set[str] = set()
+    for from_pc, to_pc, comm in trade_lp.legal_allocations:
+        if from_pc.process.type == tlp.ProcessType.SUPPLY:
+            continue
+        from_iso3 = from_pc.location.iso3
+        to_iso3 = to_pc.location.iso3
+        if from_iso3 == to_iso3 or any(from_iso3 in members and to_iso3 in members for members in applying_sets):
+            continue
+        if to_iso3 in covered_countries and to_iso3 not in destination_prices:
+            unpriced_destinations.add(to_iso3)
+        # A destination without a price series has no carbon policy
+        price = destination_prices.get(to_iso3, 0.0)
+        embedded = from_pc.emission_intensity + from_pc.upstream_emission_intensity
+        paid = from_pc.production_cost + from_pc.upstream_carbon_cost_paid
+        diff = embedded * price - paid
+        adjustment = 0.0
+        if to_iso3 in covered_countries:
+            adjustment += max(0.0, diff)
+        if export_rebates and from_iso3 in covered_countries:
+            adjustment += min(0.0, diff)
+        if adjustment == 0.0:
+            continue
+        key = (from_pc.name, to_pc.name, comm.name)
+        trade_lp.lp_model.allocation_costs[key] += adjustment
+        trade_lp.lp_model.carbon_border_charge[key] = adjustment
+        if adjustment > 0:
+            charges.append((adjustment, key, embedded, paid, price))
+            charged_per_destination[to_iso3] += 1
+        else:
+            rebates.append((adjustment, key, embedded, paid, price))
 
-            # Skip supplier sources: their production_cost is raw-material price, not carbon cost.
-            if from_pc.process.type == tlp.ProcessType.SUPPLY:
-                continue
-
-            # Create a unique identifier for this arc
-            arc_key = (from_pc.name, to_pc.name, comm.name)
-
-            # Skip if we've already adjusted this arc under an earlier mechanism
-            if arc_key in adjusted_arcs:
-                skipped_duplicates += 1
-                continue
-
-            from_carbon_cost = from_pc.production_cost
-            if to_pc.process.type == tlp.ProcessType.DEMAND:
-                to_carbon_cost = reference_carbon_cost.get((to_iso3, comm.name))
-                if to_carbon_cost is None:
-                    # No domestic producers of this commodity in the destination country —
-                    # nothing to protect (import case) or rebate against (export case).
-                    continue
-            else:
-                to_carbon_cost = to_pc.production_cost
-            differential = to_carbon_cost - from_carbon_cost
-
-            # Case 1: Exporting from applying region to non-applying region (export rebates)
-            if from_iso3 in applying_countries and to_iso3 not in applying_countries:
-                # Apply the minimum of the carbon costs due to export rebates
-                if from_carbon_cost > to_carbon_cost:
-                    trade_lp.lp_model.allocation_costs[arc_key] += differential
-                    adjusted_arcs.add(arc_key)
-                    adjustments_made += 1
-
-            # Case 2: Importing into applying region from non-applying region (border adjustment)
-            elif from_iso3 not in applying_countries and to_iso3 in applying_countries:
-                # Apply the maximum of the carbon costs (border adjustment)
-                if from_carbon_cost < to_carbon_cost:
-                    trade_lp.lp_model.allocation_costs[arc_key] += differential
-                    adjusted_arcs.add(arc_key)
-                    adjustments_made += 1
-
+    for iso3 in sorted(unpriced_destinations):
+        logger.warning(
+            f"Destination {iso3} is inside a carbon border mechanism but has no carbon price series; imports are not charged"
+        )
+    for label, sample in (("charge", sorted(charges, reverse=True)[:20]), ("rebate", sorted(rebates)[:20])):
+        for adjustment, key, embedded, paid, price in sample:
+            logger.debug(
+                f"{label} from={key[0]} to={key[1]} comm={key[2]} E={embedded:.3f} paid={paid:.2f} P_d={price:.2f} adjustment={adjustment:.2f}"
+            )
+    if charged_per_destination:
+        logger.debug(f"charged arcs per destination: {dict(charged_per_destination.most_common())}")
+    charge_values = [charge for charge, *_ in charges]
     logger.info(
-        f"Carbon border adjustments in {year}: {adjustments_made} arcs adjusted, "
-        f"{skipped_duplicates} skipped as already adjusted"
+        f"operation=carbon_border_adjustment year={year} mechanisms={len(applying_sets)} arcs_charged={len(charges)} "
+        f"mean_charge_usd_t={(sum(charge_values) / len(charge_values)) if charge_values else 0.0:.2f} "
+        f"max_charge_usd_t={max(charge_values) if charge_values else 0.0:.2f} arcs_rebated={len(rebates)} "
+        f"export_rebates={export_rebates}"
+    )
+
+
+def log_carbon_border_outcomes(allocations: "tlp.Allocations", year: int) -> None:
+    """Summarise the carbon border charges the solved allocations actually carry.
+
+    Args:
+        allocations: Solved LP-level allocations with ``carbon_border_charges``; imports into demand
+            centres are therefore counted.
+        year: Simulation year.
+    """
+    logger = logging.getLogger(f"{__name__}.log_carbon_border_outcomes")
+    charges = allocations.carbon_border_charges or {}
+    charged_arcs = rebated_arcs = 0
+    charged_kt = charges_musd = rebates_musd = 0.0
+    per_destination: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
+    for key, charge in charges.items():
+        volume = allocations.allocations[key]
+        money_musd = charge * volume / 1e6
+        if charge > 0:
+            charged_arcs += 1
+            charged_kt += volume * T_TO_KT
+            charges_musd += money_musd
+            per_destination[key[1].location.iso3][0] += volume * T_TO_KT
+            per_destination[key[1].location.iso3][1] += money_musd
+        else:
+            rebated_arcs += 1
+            rebates_musd += money_musd
+    top = sorted(per_destination.items(), key=lambda item: -item[1][1])[:5]
+    logger.info(
+        f"[CBAM] year={year} charged_arcs={charged_arcs} charged_kt={charged_kt:.1f} charges_musd={charges_musd:.2f} "
+        f"rebated_arcs={rebated_arcs} rebates_musd={rebates_musd:.2f} top_destinations="
+        + ",".join(f"{iso3}:{kt:.1f}kt/{musd:.2f}musd" for iso3, (kt, musd) in top)
     )
 
 
@@ -1256,6 +1274,7 @@ def set_up_steel_trade_lp(
     # Prepare carbon border mechanism parameters
     carbon_border_mechanisms = None
     country_mappings_dict = None
+    destination_prices = None
     if (
         hasattr(message_bus.env, "carbon_border_mechanisms")
         and message_bus.env.carbon_border_mechanisms
@@ -1267,6 +1286,9 @@ def set_up_steel_trade_lp(
             country_mappings_dict = {
                 mapping.iso3: mapping for mapping in message_bus.env.country_mappings._mappings.values()
             }
+            destination_prices = resolve_destination_carbon_prices(
+                message_bus.env, active_mechanisms, country_mappings_dict, year
+            )
             logger.info(
                 f"Will apply carbon border adjustments for {len(active_mechanisms)} active mechanisms in year {year}"
             )
@@ -1280,6 +1302,8 @@ def set_up_steel_trade_lp(
         carbon_border_mechanisms=carbon_border_mechanisms,
         country_mappings=country_mappings_dict,
         year=year,
+        destination_prices=destination_prices,
+        carbon_border_export_rebates=config.carbon_border_export_rebates,
     )
     lp_model = fix_to_zero_allocations_where_distance_doesnt_match_commodity(
         trade_lp=lp_model, config=config, env=message_bus.env if hasattr(message_bus, "env") else None

@@ -31,9 +31,11 @@ from steelo.domain.calculate_costs import collect_subsidies_for_geo
 from steelo.domain.constants import T_TO_KT, Volumes
 from steelo.domain.events import SteelAllocationsCalculated
 from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
+    log_carbon_border_outcomes,
     set_up_steel_trade_lp,
     solve_steel_trade_lp_and_return_commodity_allocations,
 )
+from steelo.domain.trade_modelling.trade_lp_modelling import Allocations
 from steelo.service_layer.message_bus import MessageBus
 from steelo.utilities.file_output import export_commodity_allocations_to_csv
 from steelo.utilities.memory_profiling import MemoryTracker
@@ -471,6 +473,9 @@ class AllocationModel:
 
         # Extract allocations before cleanup (needed for event publishing later)
         trade_lp_allocations = trade_lp.allocations if hasattr(trade_lp, "allocations") else None
+        # Tests stub the solved LP with plain dicts; only a real Allocations carries charges to summarise
+        if isinstance(trade_lp_allocations, Allocations):
+            log_carbon_border_outcomes(trade_lp_allocations, int(bus.env.year))
 
         # Disaggregation: Convert clustered allocations back to individual furnace groups
         # Use explicit True check to avoid MagicMock truthy values in tests

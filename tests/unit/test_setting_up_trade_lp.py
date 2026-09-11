@@ -1,3 +1,6 @@
+import logging
+from contextlib import contextmanager
+
 import pytest
 import pyomo.environ as pyo
 
@@ -142,6 +145,7 @@ class DummyConstraintCollection:
 class DummyLPModel:
     def __init__(self):
         self.allocation_variables = DummyAllocationVariables()
+        self.carbon_border_charge = {}
         self.secondary_feedstock_constraints = DummyConstraintCollection()
         self.max_secondary_feedstock_allocation = {}
         self.secondary_feedstock_index_set = set()
@@ -192,7 +196,13 @@ class DummyTradeLPModel:
         self.connectors.extend(connectors)
 
     def build_lp_model(
-        self, willingness_to_pay_list=None, carbon_border_mechanisms=None, country_mappings=None, year=None
+        self,
+        willingness_to_pay_list=None,
+        carbon_border_mechanisms=None,
+        country_mappings=None,
+        year=None,
+        destination_prices=None,
+        carbon_border_export_rebates=False,
     ):
         pass
 
@@ -390,6 +400,14 @@ class DummyEnvironment:
         self.year = 2025  # Default year for testing
         self.legal_process_connectors = []
         self.dynamic_feedstocks = {}  # Empty feedstocks for testing
+        self.carbon_costs = {}
+
+    def carbon_price_for_year(self, iso3, year):
+        """Mirror Environment.carbon_price_for_year: clamp to the last covered year, 0.0 without a series."""
+        series = self.carbon_costs.get(iso3)
+        if not series:
+            return 0.0
+        return series[min(year, max(series))]
 
 
 class DummyMessageBus:
@@ -473,6 +491,7 @@ def create_mock_config():
         random_seed: int = 42
         start_year: Year = Year(2025)
         end_year: Year = Year(2060)
+        carbon_border_export_rebates: bool = False
 
     return MockConfig()
 
@@ -1230,11 +1249,10 @@ def test_fix_allocations_pig_iron_long_distance():
 
 
 class DummyCountryMapping:
-    def __init__(self, iso3, EU=False, OECD=False, NAFTA=False):
+    def __init__(self, iso3, **bloc_flags):
         self.iso3 = iso3
-        self.EU = EU
-        self.OECD = OECD
-        self.NAFTA = NAFTA
+        for column, member in bloc_flags.items():
+            setattr(self, column, member)
 
 
 class DummyCarbonBorderMechanism:
@@ -1252,389 +1270,320 @@ class DummyCarbonBorderMechanism:
         return True
 
     def get_applying_region_countries(self, country_mappings):
-        countries = set()
-        for iso3, mapping in country_mappings.items():
-            if hasattr(mapping, self.applying_region_column):
-                attr_value = getattr(mapping, self.applying_region_column, False)
-                if attr_value:
-                    countries.add(iso3)
-        return countries
+        return {
+            iso3 for iso3, mapping in country_mappings.items() if getattr(mapping, self.applying_region_column, False)
+        }
 
 
-def test_adapt_allocation_costs_cbam_export_from_eu():
-    """Test CBAM export rebates from EU to non-EU."""
+BORDER_COUNTRY_MAPPINGS = {
+    "DEU": DummyCountryMapping("DEU", EFTA_EUCU=True),
+    "FRA": DummyCountryMapping("FRA", EFTA_EUCU=True),
+    "NOR": DummyCountryMapping("NOR", EFTA_EUCU=True),
+    "CHE": DummyCountryMapping("CHE", EFTA_EUCU=True, Switzerland=True),
+    "CHN": DummyCountryMapping("CHN", China=True),
+    "KOR": DummyCountryMapping("KOR"),
+    "IND": DummyCountryMapping("IND"),
+    "USA": DummyCountryMapping("USA"),
+}
+BORDER_PRICES = {"DEU": 50.0, "FRA": 50.0, "NOR": 50.0, "CHE": 50.0, "CHN": 13.9, "KOR": 7.6}
+EFTA_EUCU = DummyCarbonBorderMechanism("EFTA/EUCU", "EFTA_EUCU", start_year=2026)
+CHINA = DummyCarbonBorderMechanism("China", "China", start_year=2025)
+SWITZERLAND = DummyCarbonBorderMechanism("Switzerland", "Switzerland", start_year=2025)
+
+
+def _border_producer(name, iso3, own_intensity=1.5, upstream_intensity=0.5, own_paid=20.0, upstream_paid=5.0):
+    """Production centre with E = 2.0 tCO2/t and 25 USD/t already paid by default."""
+    return DummyProcessCenter(
+        name,
+        DummyProcess(f"process_{name}", DummyProcessType.PRODUCTION, []),
+        100,
+        DummyLocation(iso3),
+        production_cost=own_paid,
+        emission_intensity=own_intensity,
+        upstream_emission_intensity=upstream_intensity,
+        upstream_carbon_cost_paid=upstream_paid,
+    )
+
+
+def _border_demand(name, iso3):
+    return DummyProcessCenter(
+        name, DummyProcess(f"process_{name}", DummyProcessType.DEMAND, []), 100, DummyLocation(iso3)
+    )
+
+
+@contextmanager
+def _collect_logs(logger_name, level):
+    """Handler on the function logger itself: caplog relies on propagation, which the project
+    logging config (installed by other tests) can disable."""
+    records: list[logging.LogRecord] = []
+
+    class _Collector(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    logger = logging.getLogger(logger_name)
+    collector = _Collector(level=level)
+    previous_level = logger.level
+    logger.setLevel(level)
+    logger.addHandler(collector)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(collector)
+        logger.setLevel(previous_level)
+
+
+ADJUST_LOGGER = (
+    "steelo.domain.trade_modelling.set_up_steel_trade_lp.adapt_allocation_costs_for_carbon_border_mechanisms"
+)
+OUTCOMES_LOGGER = "steelo.domain.trade_modelling.set_up_steel_trade_lp.log_carbon_border_outcomes"
+
+
+def _border_lp(arcs):
+    """Dummy trade LP with the given (from, to, commodity) arcs, every allocation cost starting at 10.0."""
+    lp_model = DummyTradeLPModel()
+    lp_model.legal_allocations = list(arcs)
+    lp_model.lp_model.allocation_costs = {(f.name, t.name, c.name): 10.0 for f, t, c in arcs}
+    return lp_model
+
+
+def _adjust(lp_model, mechanisms, year=2026, export_rebates=False, prices=None):
     from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
         adapt_allocation_costs_for_carbon_border_mechanisms,
     )
 
-    lp_model = DummyTradeLPModel()
-
-    # Create process centers with different carbon costs
-    eu_location = DummyLocation("DEU")
-    non_eu_location = DummyLocation("USA")
-
-    from_pc = DummyProcessCenter(
-        "eu_pc", DummyProcess("p1", DummyProcessType.PRODUCTION, []), 100, eu_location, production_cost=100.0
-    )
-    to_pc = DummyProcessCenter(
-        "us_pc", DummyProcess("p2", DummyProcessType.PRODUCTION, []), 100, non_eu_location, production_cost=50.0
-    )
-
-    commodity = DummyCommodity("steel")
-    lp_model.legal_allocations = [(from_pc, to_pc, commodity)]
-    lp_model.lp_model.allocation_costs = {("eu_pc", "us_pc", "steel"): 10.0}
-
-    # Create carbon border mechanism
-    cbam = DummyCarbonBorderMechanism(mechanism_name="CBAM", applying_region_column="EU", start_year=2025)
-
-    # Create country mappings
-    country_mappings = {
-        "DEU": DummyCountryMapping("DEU", EU=True),
-        "USA": DummyCountryMapping("USA", EU=False),
-    }
-
     adapt_allocation_costs_for_carbon_border_mechanisms(
-        trade_lp=lp_model, carbon_border_mechanisms=[cbam], country_mappings=country_mappings, year=2026
+        trade_lp=lp_model,
+        carbon_border_mechanisms=mechanisms,
+        country_mappings=BORDER_COUNTRY_MAPPINGS,
+        year=year,
+        destination_prices=BORDER_PRICES if prices is None else prices,
+        export_rebates=export_rebates,
     )
 
-    # Export from EU (high cost) to non-EU (low cost) should add differential (50-100=-50)
-    assert lp_model.lp_model.allocation_costs[("eu_pc", "us_pc", "steel")] == 10.0 - 50.0
 
-
-def test_adapt_allocation_costs_cbam_import_to_eu():
-    """Test CBAM import adjustments from non-EU to EU."""
-    from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
-        adapt_allocation_costs_for_carbon_border_mechanisms,
-    )
-
-    lp_model = DummyTradeLPModel()
-
-    eu_location = DummyLocation("DEU")
-    non_eu_location = DummyLocation("USA")
-
-    from_pc = DummyProcessCenter(
-        "us_pc", DummyProcess("p1", DummyProcessType.PRODUCTION, []), 100, non_eu_location, production_cost=50.0
-    )
-    to_pc = DummyProcessCenter(
-        "eu_pc", DummyProcess("p2", DummyProcessType.PRODUCTION, []), 100, eu_location, production_cost=100.0
-    )
-
-    commodity = DummyCommodity("steel")
-    lp_model.legal_allocations = [(from_pc, to_pc, commodity)]
-    lp_model.lp_model.allocation_costs = {("us_pc", "eu_pc", "steel"): 10.0}
-
-    cbam = DummyCarbonBorderMechanism(mechanism_name="CBAM", applying_region_column="EU", start_year=2025)
-    country_mappings = {
-        "DEU": DummyCountryMapping("DEU", EU=True),
-        "USA": DummyCountryMapping("USA", EU=False),
-    }
-
-    adapt_allocation_costs_for_carbon_border_mechanisms(
-        trade_lp=lp_model, carbon_border_mechanisms=[cbam], country_mappings=country_mappings, year=2026
-    )
-
-    # Import to EU (high cost) from non-EU (low cost) should add differential (100-50=+50)
-    assert lp_model.lp_model.allocation_costs[("us_pc", "eu_pc", "steel")] == 10.0 + 50.0
-
-
-def test_adapt_allocation_costs_cbam_inactive_year():
-    """Test that inactive CBAM doesn't adjust costs."""
-    from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
-        adapt_allocation_costs_for_carbon_border_mechanisms,
-    )
-
-    lp_model = DummyTradeLPModel()
-
-    eu_location = DummyLocation("DEU")
-    non_eu_location = DummyLocation("USA")
-
-    from_pc = DummyProcessCenter(
-        "us_pc", DummyProcess("p1", DummyProcessType.PRODUCTION, []), 100, non_eu_location, production_cost=50.0
-    )
-    to_pc = DummyProcessCenter(
-        "eu_pc", DummyProcess("p2", DummyProcessType.PRODUCTION, []), 100, eu_location, production_cost=100.0
-    )
-
-    commodity = DummyCommodity("steel")
-    lp_model.legal_allocations = [(from_pc, to_pc, commodity)]
-    lp_model.lp_model.allocation_costs = {("us_pc", "eu_pc", "steel"): 10.0}
-
-    # CBAM starts in 2030, test year is 2026
-    cbam = DummyCarbonBorderMechanism(mechanism_name="CBAM", applying_region_column="EU", start_year=2030)
-    country_mappings = {
-        "DEU": DummyCountryMapping("DEU", EU=True),
-        "USA": DummyCountryMapping("USA", EU=False),
-    }
-
-    adapt_allocation_costs_for_carbon_border_mechanisms(
-        trade_lp=lp_model, carbon_border_mechanisms=[cbam], country_mappings=country_mappings, year=2026
-    )
-
-    # Cost should remain unchanged
-    assert lp_model.lp_model.allocation_costs[("us_pc", "eu_pc", "steel")] == 10.0
-
-
-def test_adapt_allocation_costs_cbam_no_double_counting():
-    """Test that same trade flow isn't adjusted multiple times."""
-    from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
-        adapt_allocation_costs_for_carbon_border_mechanisms,
-    )
-
-    lp_model = DummyTradeLPModel()
-
-    eu_location = DummyLocation("DEU")
-    non_eu_location = DummyLocation("USA")
-
-    from_pc = DummyProcessCenter(
-        "us_pc", DummyProcess("p1", DummyProcessType.PRODUCTION, []), 100, non_eu_location, production_cost=50.0
-    )
-    to_pc = DummyProcessCenter(
-        "eu_pc", DummyProcess("p2", DummyProcessType.PRODUCTION, []), 100, eu_location, production_cost=100.0
-    )
-
-    commodity = DummyCommodity("steel")
-    lp_model.legal_allocations = [(from_pc, to_pc, commodity)]
-    lp_model.lp_model.allocation_costs = {("us_pc", "eu_pc", "steel"): 10.0}
-
-    # Two mechanisms that both apply to EU
-    cbam1 = DummyCarbonBorderMechanism(mechanism_name="CBAM", applying_region_column="EU", start_year=2025)
-    cbam2 = DummyCarbonBorderMechanism(mechanism_name="OECD", applying_region_column="OECD", start_year=2025)
-
-    country_mappings = {
-        "DEU": DummyCountryMapping("DEU", EU=True, OECD=True),
-        "USA": DummyCountryMapping("USA", EU=False, OECD=False),
-    }
-
-    adapt_allocation_costs_for_carbon_border_mechanisms(
-        trade_lp=lp_model, carbon_border_mechanisms=[cbam1, cbam2], country_mappings=country_mappings, year=2026
-    )
-
-    # Should only adjust once (first mechanism processes it)
-    assert lp_model.lp_model.allocation_costs[("us_pc", "eu_pc", "steel")] == 10.0 + 50.0
-
-
-def test_adapt_allocation_costs_cbam_adjusts_all_arcs_on_same_route():
-    """Two exporter PCs in the same country trading with the same importer PC must both be
-    adjusted — the dedup guard must key on the arc, not the country pair."""
-    from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
-        adapt_allocation_costs_for_carbon_border_mechanisms,
-    )
-
-    lp_model = DummyTradeLPModel()
-
-    eu_location = DummyLocation("DEU")
-    non_eu_location = DummyLocation("USA")
-
-    # Two distinct US process centers exporting to the same EU process center
-    from_pc_1 = DummyProcessCenter(
-        "us_pc_1", DummyProcess("p1", DummyProcessType.PRODUCTION, []), 100, non_eu_location, production_cost=50.0
-    )
-    from_pc_2 = DummyProcessCenter(
-        "us_pc_2", DummyProcess("p2", DummyProcessType.PRODUCTION, []), 100, non_eu_location, production_cost=60.0
-    )
-    to_pc = DummyProcessCenter(
-        "eu_pc", DummyProcess("p3", DummyProcessType.PRODUCTION, []), 100, eu_location, production_cost=100.0
-    )
-
-    commodity = DummyCommodity("steel")
-    lp_model.legal_allocations = [
-        (from_pc_1, to_pc, commodity),
-        (from_pc_2, to_pc, commodity),
-    ]
-    lp_model.lp_model.allocation_costs = {
-        ("us_pc_1", "eu_pc", "steel"): 10.0,
-        ("us_pc_2", "eu_pc", "steel"): 20.0,
-    }
-
-    cbam = DummyCarbonBorderMechanism(mechanism_name="CBAM", applying_region_column="EU", start_year=2025)
-    country_mappings = {
-        "DEU": DummyCountryMapping("DEU", EU=True),
-        "USA": DummyCountryMapping("USA", EU=False),
-    }
-
-    adapt_allocation_costs_for_carbon_border_mechanisms(
-        trade_lp=lp_model, carbon_border_mechanisms=[cbam], country_mappings=country_mappings, year=2026
-    )
-
-    # Both arcs share the same country pair (USA -> DEU) but must each be adjusted independently
-    assert lp_model.lp_model.allocation_costs[("us_pc_1", "eu_pc", "steel")] == 10.0 + 50.0
-    assert lp_model.lp_model.allocation_costs[("us_pc_2", "eu_pc", "steel")] == 20.0 + 40.0
-
-
-def test_build_reference_producer_carbon_costs_capacity_weighted():
-    from steelo.domain.trade_modelling.set_up_steel_trade_lp import build_reference_producer_carbon_costs
-    import steelo.domain.trade_modelling.trade_lp_modelling as tlp
-
+def test_carbon_border_import_charge_on_embedded_emissions_net_of_carbon_paid():
+    """Charge = (E_own + E_up) x P_d - (paid_own + paid_up) = 2.0 x 50 - 25 = 75 on the arc into the bloc."""
     steel = DummyCommodity("steel")
-    eu_location = DummyLocation("DEU")
+    arc = (_border_producer("chn_bof", "CHN"), _border_producer("deu_bof", "DEU"), steel)
+    lp_model = _border_lp([arc])
 
-    producer_1 = DummyProcessCenter(
-        "eu_prod_1",
-        DummyProcess("p1", tlp.ProcessType.PRODUCTION, [], products=[steel]),
-        capacity=100,
-        location=eu_location,
-        production_cost=100.0,
-    )
-    producer_2 = DummyProcessCenter(
-        "eu_prod_2",
-        DummyProcess("p2", tlp.ProcessType.PRODUCTION, [], products=[steel]),
-        capacity=300,
-        location=eu_location,
-        production_cost=60.0,
-    )
-    # Non-production PC producing the same commodity/location must not contribute
-    demand_center = DummyProcessCenter(
-        "eu_demand",
-        DummyProcess("d1", tlp.ProcessType.DEMAND, [], products=[steel]),
-        capacity=1000,
-        location=eu_location,
-        production_cost=0.0,
-    )
+    _adjust(lp_model, [EFTA_EUCU])
 
-    reference_costs = build_reference_producer_carbon_costs([producer_1, producer_2, demand_center])
-
-    # Weighted average: (100*100 + 300*60) / 400 = 70.0
-    assert reference_costs[("DEU", "steel")] == pytest.approx(70.0)
+    assert lp_model.lp_model.allocation_costs[("chn_bof", "deu_bof", "steel")] == pytest.approx(10.0 + 75.0)
+    assert lp_model.lp_model.carbon_border_charge == {("chn_bof", "deu_bof", "steel"): pytest.approx(75.0)}
 
 
-def test_build_reference_producer_carbon_costs_excludes_idle_plants():
-    """Idle producers (production_cost == 0.0) should not dilute the reference carbon cost.
-
-    An idle plant with large capacity should not outweigh a small running plant.
-    This prevents import adjustments from being artificially weakened by idle capacity.
-    """
-    from steelo.domain.trade_modelling.set_up_steel_trade_lp import build_reference_producer_carbon_costs
-    import steelo.domain.trade_modelling.trade_lp_modelling as tlp
-
+def test_carbon_border_charge_floors_at_zero_and_no_rebate_by_default():
+    """Carbon paid above the destination's price gives no charge, and no rebate unless enabled."""
     steel = DummyCommodity("steel")
-    eu_location = DummyLocation("DEU")
+    # DEU exporter paid 25 USD/t; KOR prices 2.0 x 7.6 = 15.2, so the difference is negative
+    into_kor = (_border_producer("deu_bof", "DEU"), _border_producer("kor_bof", "KOR"), steel)
+    into_ind = (_border_producer("deu_bof2", "DEU"), _border_producer("ind_bof", "IND"), steel)
+    lp_model = _border_lp([into_kor, into_ind])
 
-    # Active producer: small capacity, high carbon cost
-    active_producer = DummyProcessCenter(
-        "eu_active",
-        DummyProcess("p1", tlp.ProcessType.PRODUCTION, [], products=[steel]),
-        capacity=100,
-        location=eu_location,
-        production_cost=100.0,
+    _adjust(lp_model, [EFTA_EUCU])
+
+    assert lp_model.lp_model.allocation_costs[("deu_bof", "kor_bof", "steel")] == 10.0
+    assert lp_model.lp_model.allocation_costs[("deu_bof2", "ind_bof", "steel")] == 10.0
+    assert lp_model.lp_model.carbon_border_charge == {}
+
+
+def test_carbon_border_export_rebate_when_enabled():
+    """With the toggle on, an export from the bloc to an unpriced country is rebated the carbon paid (-25)."""
+    steel = DummyCommodity("steel")
+    arc = (_border_producer("deu_bof", "DEU"), _border_producer("ind_bof", "IND"), steel)
+    lp_model = _border_lp([arc])
+
+    _adjust(lp_model, [EFTA_EUCU], export_rebates=True)
+
+    assert lp_model.lp_model.allocation_costs[("deu_bof", "ind_bof", "steel")] == pytest.approx(10.0 - 25.0)
+    assert lp_model.lp_model.carbon_border_charge[("deu_bof", "ind_bof", "steel")] == pytest.approx(-25.0)
+
+
+def test_carbon_border_charge_applies_into_demand_centres():
+    """Finished-steel imports into a demand centre inside the bloc are charged like plant imports."""
+    steel = DummyCommodity("steel")
+    arc = (_border_producer("chn_bof", "CHN"), _border_demand("deu_demand", "DEU"), steel)
+    lp_model = _border_lp([arc])
+
+    _adjust(lp_model, [EFTA_EUCU])
+
+    assert lp_model.lp_model.allocation_costs[("chn_bof", "deu_demand", "steel")] == pytest.approx(10.0 + 75.0)
+
+
+def test_carbon_border_skips_supplier_sources():
+    """A supplier's production cost is a raw-material price, so supply arcs are never adjusted."""
+    scrap = DummyCommodity("scrap")
+    supplier = DummyProcessCenter(
+        "chn_scrap",
+        DummyProcess("scrap_supply", DummyProcessType.SUPPLY, []),
+        100,
+        DummyLocation("CHN"),
+        production_cost=300.0,
     )
+    lp_model = _border_lp([(supplier, _border_producer("deu_eaf", "DEU"), scrap)])
 
-    # Idle producer: large capacity, zero carbon cost
-    # (This represents a furnace with utilization_rate == 0)
-    idle_producer = DummyProcessCenter(
-        "eu_idle",
-        DummyProcess("p2", tlp.ProcessType.PRODUCTION, [], products=[steel]),
-        capacity=1000,
-        location=eu_location,
-        production_cost=0.0,
-    )
+    _adjust(lp_model, [EFTA_EUCU])
 
-    reference_costs = build_reference_producer_carbon_costs([active_producer, idle_producer])
-
-    # Should only use active producer: 100*100 / 100 = 100.0
-    # Without the fix, would be: (100*100 + 1000*0) / 1100 = 9.09
-    assert reference_costs[("DEU", "steel")] == pytest.approx(100.0)
+    assert lp_model.lp_model.allocation_costs[("chn_scrap", "deu_eaf", "scrap")] == 10.0
+    assert lp_model.lp_model.carbon_border_charge == {}
 
 
-def test_adapt_allocation_costs_cbam_import_to_eu_demand_center():
-    """Finished-steel imports into an EU demand centre are the primary real-world CBAM
-    channel — they must be adjusted against the domestic reference producer carbon cost,
-    since demand centres carry no production_cost of their own."""
-    from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
-        adapt_allocation_costs_for_carbon_border_mechanisms,
-    )
-    import steelo.domain.trade_modelling.trade_lp_modelling as tlp
+def test_carbon_border_intra_bloc_arcs_unchanged():
+    """DEU -> FRA sit in one applying set and never adjust each other, toggle on or off."""
+    steel = DummyCommodity("steel")
+    for export_rebates in (False, True):
+        lp_model = _border_lp(
+            [
+                (
+                    _border_producer("deu_bof", "DEU", own_paid=0.0, upstream_paid=0.0),
+                    _border_producer("fra_bof", "FRA"),
+                    steel,
+                )
+            ]
+        )
+        _adjust(lp_model, [EFTA_EUCU], export_rebates=export_rebates)
+        assert lp_model.lp_model.allocation_costs[("deu_bof", "fra_bof", "steel")] == 10.0
 
-    lp_model = DummyTradeLPModel()
 
-    eu_location = DummyLocation("DEU")
-    non_eu_location = DummyLocation("USA")
+def test_carbon_border_shared_set_rule_beats_destination_single_country_mechanism():
+    """NOR -> CHE stays unadjusted although CHE is also its own mechanism, toggle on or off."""
+    steel = DummyCommodity("steel")
+    for export_rebates in (False, True):
+        lp_model = _border_lp(
+            [
+                (
+                    _border_producer("nor_bof", "NOR", own_paid=0.0, upstream_paid=0.0),
+                    _border_producer("che_bof", "CHE"),
+                    steel,
+                )
+            ]
+        )
+        _adjust(lp_model, [EFTA_EUCU, SWITZERLAND], export_rebates=export_rebates)
+        assert lp_model.lp_model.allocation_costs[("nor_bof", "che_bof", "steel")] == 10.0
+        assert lp_model.lp_model.carbon_border_charge == {}
+
+
+def test_carbon_border_adjustment_is_independent_of_mechanism_order():
+    """EFTA/EUCU and China in either order give the same costs, toggle on or off."""
     steel = DummyCommodity("steel")
 
-    eu_producer = DummyProcessCenter(
-        "eu_producer",
-        DummyProcess("p1", tlp.ProcessType.PRODUCTION, [], products=[steel]),
-        capacity=100,
-        location=eu_location,
-        production_cost=100.0,
-    )
-    eu_demand = DummyProcessCenter(
-        "eu_demand",
-        DummyProcess("d1", tlp.ProcessType.DEMAND, [], products=[steel]),
-        capacity=200,
-        location=eu_location,
-        production_cost=0.0,
-    )
-    us_exporter = DummyProcessCenter(
-        "us_exporter",
-        DummyProcess("p2", tlp.ProcessType.PRODUCTION, [], products=[steel]),
-        capacity=100,
-        location=non_eu_location,
-        production_cost=50.0,
-    )
+    def arcs():
+        return [
+            (_border_producer("chn_bof", "CHN"), _border_producer("deu_bof", "DEU"), steel),
+            (_border_producer("deu_bof2", "DEU"), _border_producer("chn_bof2", "CHN"), steel),
+            (_border_producer("kor_bof", "KOR"), _border_producer("chn_bof3", "CHN"), steel),
+            (_border_producer("chn_bof4", "CHN"), _border_producer("ind_bof", "IND"), steel),
+        ]
 
-    lp_model.process_centers = [eu_producer, eu_demand, us_exporter]
-    lp_model.legal_allocations = [(us_exporter, eu_demand, steel)]
-    lp_model.lp_model.allocation_costs = {("us_exporter", "eu_demand", "steel"): 10.0}
-
-    cbam = DummyCarbonBorderMechanism(mechanism_name="CBAM", applying_region_column="EU", start_year=2025)
-    country_mappings = {
-        "DEU": DummyCountryMapping("DEU", EU=True),
-        "USA": DummyCountryMapping("USA", EU=False),
-    }
-
-    adapt_allocation_costs_for_carbon_border_mechanisms(
-        trade_lp=lp_model, carbon_border_mechanisms=[cbam], country_mappings=country_mappings, year=2026
-    )
-
-    # Import into EU demand (reference cost 100) from US exporter (cost 50): differential = +50
-    assert lp_model.lp_model.allocation_costs[("us_exporter", "eu_demand", "steel")] == 10.0 + 50.0
+    for export_rebates in (False, True):
+        results = []
+        for mechanisms in ([EFTA_EUCU, CHINA], [CHINA, EFTA_EUCU]):
+            lp_model = _border_lp(arcs())
+            _adjust(lp_model, mechanisms, export_rebates=export_rebates)
+            results.append(dict(lp_model.lp_model.allocation_costs))
+        assert results[0] == results[1]
+        # CHN -> DEU: 2.0 x 50 - 25 = 75; KOR -> CHN: 2.0 x 13.9 - 25 = 2.8; DEU -> CHN: 27.8 - 25 = 2.8
+        assert results[0][("chn_bof", "deu_bof", "steel")] == pytest.approx(85.0)
+        assert results[0][("kor_bof", "chn_bof3", "steel")] == pytest.approx(12.8)
+        assert results[0][("deu_bof2", "chn_bof2", "steel")] == pytest.approx(12.8)
+        # CHN -> IND: no charge; with rebates the exporter gets back the 25 USD/t paid
+        assert results[0][("chn_bof4", "ind_bof", "steel")] == pytest.approx(10.0 - 25.0 if export_rebates else 10.0)
 
 
-def test_adapt_allocation_costs_cbam_skips_demand_center_without_domestic_producers():
-    """A destination country with no domestic producers of the commodity has nothing to
-    protect, so the flow into its demand centre must be left unadjusted."""
-    from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
-        adapt_allocation_costs_for_carbon_border_mechanisms,
-    )
-    import steelo.domain.trade_modelling.trade_lp_modelling as tlp
-
-    lp_model = DummyTradeLPModel()
-
-    eu_location = DummyLocation("DEU")
-    non_eu_location = DummyLocation("USA")
+def test_carbon_border_inactive_year_unchanged():
+    """A mechanism that has not started leaves every arc as it was."""
     steel = DummyCommodity("steel")
+    lp_model = _border_lp([(_border_producer("chn_bof", "CHN"), _border_producer("deu_bof", "DEU"), steel)])
 
-    # No EU producer of steel exists — only a demand center
-    eu_demand = DummyProcessCenter(
-        "eu_demand",
-        DummyProcess("d1", tlp.ProcessType.DEMAND, [], products=[steel]),
-        capacity=200,
-        location=eu_location,
-        production_cost=0.0,
-    )
-    us_exporter = DummyProcessCenter(
-        "us_exporter",
-        DummyProcess("p2", tlp.ProcessType.PRODUCTION, [], products=[steel]),
-        capacity=100,
-        location=non_eu_location,
-        production_cost=50.0,
-    )
+    _adjust(lp_model, [EFTA_EUCU], year=2025)
 
-    lp_model.process_centers = [eu_demand, us_exporter]
-    lp_model.legal_allocations = [(us_exporter, eu_demand, steel)]
-    lp_model.lp_model.allocation_costs = {("us_exporter", "eu_demand", "steel"): 10.0}
+    assert lp_model.lp_model.allocation_costs[("chn_bof", "deu_bof", "steel")] == 10.0
 
-    cbam = DummyCarbonBorderMechanism(mechanism_name="CBAM", applying_region_column="EU", start_year=2025)
-    country_mappings = {
-        "DEU": DummyCountryMapping("DEU", EU=True),
-        "USA": DummyCountryMapping("USA", EU=False),
+
+def test_carbon_border_destination_without_price_series_warns_and_charges_nothing():
+    """A covered destination with no carbon price series has no policy: one warning, no charge."""
+    steel = DummyCommodity("steel")
+    lp_model = _border_lp([(_border_producer("chn_bof", "CHN"), _border_producer("deu_bof", "DEU"), steel)])
+
+    with _collect_logs(ADJUST_LOGGER, logging.WARNING) as records:
+        _adjust(lp_model, [EFTA_EUCU], prices={"CHN": 13.9})
+
+    assert lp_model.lp_model.allocation_costs[("chn_bof", "deu_bof", "steel")] == 10.0
+    messages = [record.getMessage() for record in records]
+    assert sum("DEU" in message and "no carbon price series" in message for message in messages) == 1
+
+
+def test_carbon_border_memberless_mechanism_warns():
+    """A mechanism whose region column matches no country is dropped with a warning."""
+    steel = DummyCommodity("steel")
+    lp_model = _border_lp([(_border_producer("chn_bof", "CHN"), _border_producer("deu_bof", "DEU"), steel)])
+
+    with _collect_logs(ADJUST_LOGGER, logging.WARNING) as records:
+        _adjust(lp_model, [DummyCarbonBorderMechanism("Nowhere", "NOWHERE", start_year=2025)])
+
+    assert lp_model.lp_model.allocation_costs[("chn_bof", "deu_bof", "steel")] == 10.0
+    assert any("no countries match region column 'NOWHERE'" in record.getMessage() for record in records)
+
+
+def test_set_up_steel_trade_lp_passes_destination_prices_and_rebate_flag(monkeypatch):
+    """Set-up resolves the destination prices and hands them and the config toggle to build_lp_model."""
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import set_up_steel_trade_lp
+
+    captured = {}
+
+    def capture_build(self, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(DummyTradeLPModel, "build_lp_model", capture_build)
+
+    repo = DummyRepository()
+    message_bus = DummyMessageBus(repo)
+    message_bus.env.carbon_border_mechanisms = [EFTA_EUCU]
+    message_bus.env.country_mappings = type("Service", (), {"_mappings": BORDER_COUNTRY_MAPPINGS})()
+    message_bus.env.carbon_costs = {"DEU": {2025: 40.0, 2026: 50.0}, "CHN": {2025: 12.0, 2026: 13.9}}
+    config = create_mock_config()
+    config.carbon_border_export_rebates = True
+
+    set_up_steel_trade_lp(message_bus=message_bus, year=2026, config=config, legal_process_connectors=[])
+
+    assert captured["destination_prices"] == {"DEU": 50.0, "CHN": 13.9}
+    assert captured["carbon_border_export_rebates"] is True
+    assert captured["carbon_border_mechanisms"] == [EFTA_EUCU]
+
+
+def test_resolve_destination_carbon_prices_returns_national_prices():
+    """Every country with a series is priced at its national price for the year, clamped to the last year."""
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import resolve_destination_carbon_prices
+
+    env = DummyEnvironment()
+    env.carbon_costs = {"DEU": {2025: 40.0, 2026: 50.0}, "CHN": {2025: 12.0}}
+
+    assert resolve_destination_carbon_prices(env, [EFTA_EUCU], BORDER_COUNTRY_MAPPINGS, 2026) == {
+        "DEU": 50.0,
+        "CHN": 12.0,
     }
 
-    adapt_allocation_costs_for_carbon_border_mechanisms(
-        trade_lp=lp_model, carbon_border_mechanisms=[cbam], country_mappings=country_mappings, year=2026
-    )
 
-    assert lp_model.lp_model.allocation_costs[("us_exporter", "eu_demand", "steel")] == 10.0
+def test_log_carbon_border_outcomes_summarises_charged_flows():
+    """The [CBAM] line reports charged and rebated arcs, tonnage, money and the top destinations."""
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import log_carbon_border_outcomes
+
+    steel = DummyCommodity("steel")
+    chn_to_deu = (_border_producer("chn_bof", "CHN"), _border_demand("deu_demand", "DEU"), steel)
+    chn_to_fra = (_border_producer("chn_bof2", "CHN"), _border_demand("fra_demand", "FRA"), steel)
+    deu_to_ind = (_border_producer("deu_bof", "DEU"), _border_demand("ind_demand", "IND"), steel)
+    allocations = DummyAllocations()
+    allocations.allocations = {chn_to_deu: 2_000_000.0, chn_to_fra: 500_000.0, deu_to_ind: 100_000.0}
+    allocations.carbon_border_charges = {chn_to_deu: 75.0, chn_to_fra: 75.0, deu_to_ind: -25.0}
+
+    with _collect_logs(OUTCOMES_LOGGER, logging.INFO) as records:
+        log_carbon_border_outcomes(allocations, 2026)
+
+    summary = next(record.getMessage() for record in records if record.getMessage().startswith("[CBAM]"))
+    assert "year=2026 charged_arcs=2 charged_kt=2500.0 charges_musd=187.50 rebated_arcs=1 rebates_musd=-2.50" in summary
+    assert "top_destinations=DEU:2000.0kt/150.00musd,FRA:500.0kt/37.50musd" in summary
 
 
 # --- Tests for identify_bottlenecks ---

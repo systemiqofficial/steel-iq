@@ -1025,6 +1025,7 @@ class TradeLPModel:
         """Add the allocation costs as parameters to the LP model. Needed for the objective function."""
         logger = logging.getLogger(f"{__name__}.add_allocation_costs_as_parameters_to_lp")
         self.lp_model.allocation_costs = {}
+        self.lp_model.carbon_border_charge = {}
         for from_pc, to_pc, commodity in self.legal_allocations:
             # Get location-specific transportation cost
             transportation_cost = self.get_transportation_cost(
@@ -1707,7 +1708,13 @@ class TradeLPModel:
             self.lp_model.process_center_type[pc.name] = pc.process.type.value
 
     def build_lp_model(
-        self, willingness_to_pay_list=None, carbon_border_mechanisms=None, country_mappings=None, year=None
+        self,
+        willingness_to_pay_list=None,
+        carbon_border_mechanisms=None,
+        country_mappings=None,
+        year=None,
+        destination_prices=None,
+        carbon_border_export_rebates=False,
     ):
         """Build the complete Pyomo LP model with all variables, parameters, and constraints.
 
@@ -1720,6 +1727,8 @@ class TradeLPModel:
             carbon_border_mechanisms: List of CarbonBorderMechanism objects (optional, defaults to None)
             country_mappings: Dictionary mapping ISO3 codes to CountryMapping objects (optional, defaults to None)
             year: Current simulation year for mechanism activation check (optional, defaults to None)
+            destination_prices: ISO3 -> carbon price each border is priced at (optional, defaults to None)
+            carbon_border_export_rebates: Also rebate exports leaving a carbon-border region (defaults to False)
 
         Steps:
             1. Determine legal allocations (valid flows based on process connectors)
@@ -1779,6 +1788,8 @@ class TradeLPModel:
                 carbon_border_mechanisms=carbon_border_mechanisms,
                 country_mappings=country_mappings,
                 year=year,
+                destination_prices=destination_prices if destination_prices is not None else {},
+                export_rebates=carbon_border_export_rebates,
             )
         # Add objective function:
         self.add_objective_function_to_lp()
@@ -1912,6 +1923,7 @@ class TradeLPModel:
 
         allocations = {}
         allocation_costs = {}
+        carbon_border_charges = {}
         for (from_pc_name, to_pc_name, commodity_name), var in self.lp_model.allocation_variables.items():
             volume = pyo.value(var)
             if volume >= self.lp_epsilon:
@@ -1922,11 +1934,15 @@ class TradeLPModel:
                 allocation_costs[(from_pc, to_pc, comm)] = self.lp_model.allocation_costs[
                     from_pc_name, to_pc_name, commodity_name
                 ]
+                name_key = (from_pc_name, to_pc_name, commodity_name)
+                if name_key in self.lp_model.carbon_border_charge:
+                    carbon_border_charges[(from_pc, to_pc, comm)] = self.lp_model.carbon_border_charge[name_key]
 
         self.allocations = Allocations(
             allocations=allocations,
             allocation_costs=allocation_costs,
             tariff_taxes=dict(self.tariff_taxes_by_iso3) if self.tariff_taxes_by_iso3 else None,
+            carbon_border_charges=carbon_border_charges or None,
         )
         # self.allocations.validate_allocations()
 
