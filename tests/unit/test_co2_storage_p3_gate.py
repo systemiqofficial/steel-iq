@@ -112,7 +112,7 @@ def _call_evaluate(
     co2_storage_diagnostics,
     environment_most_common_reductant: dict[str, str] | None = None,
     reductant_score_series=None,
-) -> dict[str, tuple[float | None, str, float, str]]:
+) -> dict[str, tuple[float | None, str, float, str, Volumes]]:
     """Shared invocation: stubs NPV path via get_bom_from_avg_boms=None.
 
     All callables required by ``evaluate_expansion_options`` are passed as

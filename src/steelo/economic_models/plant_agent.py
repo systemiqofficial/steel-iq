@@ -13,6 +13,14 @@ from steelo.adapters.geospatial.geospatial_statistics import (
     export_overbuild_factor_statistics_by_country,
 )
 from steelo.adapters.repositories.in_memory_repository import InMemoryRepository
+from steelo.capacity_policy.handlers import (
+    expansion_capacity_hook,
+    greenfield_capacity_hook,
+    greenfield_feasibility_hook,
+    greenfield_retry_cap,
+    increase_sizing_hook,
+    replace_capacity_hook,
+)
 from steelo.domain import Year
 from steelo.domain.commands import (
     AddFurnaceGroup,
@@ -253,6 +261,10 @@ class GeospatialModel:
                     get_co2_need=bus.env.get_co2_need,
                     co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
                     reserved_discount_factor=bus.env.config.co2_storage_reserved_discount_factor,
+                    permitted_greenfield_capacity=greenfield_capacity_hook(),
+                    capacity_pool_max_retry_years=greenfield_retry_cap(),
+                    increase_sizing_query=increase_sizing_hook(),
+                    greenfield_feasibility_probe=greenfield_feasibility_hook(),
                 )
             )
         if status_commands:
@@ -310,6 +322,7 @@ class GeospatialModel:
                 co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
                 derive_geo_unit=derive_geo_unit_for_site,
                 probabilistic_agents=bus.env.config.probabilistic_agents,
+                increase_sizing_query=increase_sizing_hook(),
             )
         )
         step_time = time.time() - step_start
@@ -887,6 +900,7 @@ class PlantAgentsModel:
                             get_co2_headroom=bus.env.get_co2_headroom,
                             get_co2_need_by_name=bus.env.get_co2_need_by_name,
                             co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
+                            permitted_replace_capacity=replace_capacity_hook(),
                         )
                     ) is not None:
                         logger.info(f"[PAM] FG {fg.furnace_group_id} strategy returned command: {type(cmd).__name__}")
@@ -972,6 +986,8 @@ class PlantAgentsModel:
                     get_co2_headroom=bus.env.get_co2_headroom,
                     get_co2_need_by_name=bus.env.get_co2_need_by_name,
                     co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
+                    permitted_expansion_capacity=expansion_capacity_hook(),
+                    increase_sizing_query=increase_sizing_hook(),
                 )
             ) is not None:
                 logger.info(f"[PAM] Plant group {pg.plant_group_id} expansion returned: {type(cmd).__name__}")

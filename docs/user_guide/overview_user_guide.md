@@ -49,6 +49,12 @@ Comprehensive guide to configuring the Steel Model simulation:
 - **Geographic constraints**: Land use, infrastructure, and renewable energy
 - **Environment variables**: System-wide configuration options
 
+### [Master Input Reference](master_input_reference.md)
+What the master input workbook's columns may contain and what the model does with them:
+- **Per sheet**: allowed values, effect in the model, rules enforced at data preparation
+- **Parameters that interact**: the simulation levers that change how a sheet is used
+- Being built up sheet by sheet, starting with the China capacity-replacement policy sheets
+
 ### [Logging Guide](LOGGING_GUIDE.md)
 Understanding and controlling simulation logging:
 - **Log levels**: DEBUG, INFO, WARNING, ERROR, CRITICAL

@@ -173,9 +173,8 @@ def test_clearing_share_drops_boundary_and_above_at_default_share(three_furnace_
 def test_legacy_share_one_keeps_full_curve(three_furnace_outlier_curve):
     """At share=1.0 the truncation is a no-op, the full curve is kept including the outlier."""
     # No truncation. demand=260 > total=241 ⇒ shortage band ⇒ last entry (18420) + buffer (200).
-    # The previous test asserted 410.0 here, which was a plot-only band-aid from the old outlier
-    # heuristic. The spec deliberately removes that, so the displayed price now matches what the
-    # engine returns at share=1.0 (legacy mode).
+    # No plot-side outlier clamp any more, so the displayed price matches what the engine
+    # returns at share=1.0 (legacy mode).
     clearing_cost, demand_line_x, total_capacity = _compute_market_clearing(
         three_furnace_outlier_curve, demand=260.0, clearing_share=1.0, price_buffer=200.0
     )

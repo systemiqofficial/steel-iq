@@ -166,6 +166,7 @@ def test_commands_column_included_in_output():
                 "plant_002_fg_001": RenovateFurnaceGroup(
                     plant_id="plant_002",
                     furnace_group_id="plant_002_fg_001",
+                    capacity=1000,
                     capex=1000000,
                     capex_no_subsidy=1000000,
                     cost_of_debt=0.04,

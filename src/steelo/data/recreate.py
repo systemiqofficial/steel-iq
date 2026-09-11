@@ -41,6 +41,9 @@ from .recreation_functions import (
     recreate_fopex_data,
     recreate_fallback_material_costs,
     recreate_willingness_to_pay_data,
+    recreate_capacity_pool_provinces_data,
+    recreate_capacity_pool_technologies_data,
+    recreate_capacity_pool_opening_credits_data,
 )
 
 
@@ -499,6 +502,9 @@ class DataRecreator:
             "recreate_carbon_border_mechanisms_data": recreate_carbon_border_mechanisms_data,
             "recreate_fallback_material_costs": recreate_fallback_material_costs,
             "recreate_willingness_to_pay_data": recreate_willingness_to_pay_data,
+            "recreate_capacity_pool_provinces_data": recreate_capacity_pool_provinces_data,
+            "recreate_capacity_pool_technologies_data": recreate_capacity_pool_technologies_data,
+            "recreate_capacity_pool_opening_credits_data": recreate_capacity_pool_opening_credits_data,
         }
 
         if isinstance(spec.recreate_function, str):
@@ -651,6 +657,24 @@ class DataRecreator:
                     excel_path=master_excel_path,
                     country_mappings=country_mappings,
                     willingness_to_pay_sheet_name=spec.master_excel_sheet or "Willingness to pay",
+                )
+            elif spec.recreate_function == "recreate_capacity_pool_provinces_data":
+                func(
+                    json_path=output_path,
+                    excel_path=master_excel_path,
+                    sheet_name=spec.master_excel_sheet or "Capacity pool - CHN provinces",
+                )
+            elif spec.recreate_function == "recreate_capacity_pool_technologies_data":
+                func(
+                    json_path=output_path,
+                    excel_path=master_excel_path,
+                    sheet_name=spec.master_excel_sheet or "Capacity pool - technologies",
+                )
+            elif spec.recreate_function == "recreate_capacity_pool_opening_credits_data":
+                func(
+                    json_path=output_path,
+                    excel_path=master_excel_path,
+                    sheet_name=spec.master_excel_sheet or "Capacity pool - opening credits",
                 )
             elif spec.recreate_function == "recreate_plants_data":
                 # Special handling for plants - read directly from master Excel
