@@ -1,3 +1,4 @@
+from collections import Counter
 from enum import Enum
 from steelo.domain.models import Location
 import pyomo.environ as pyo
@@ -503,7 +504,12 @@ class TradeLPModel:
 
     def add_processes(self, processes: list[Process]):
         logger = logging.getLogger(f"{__name__}.add_processes")
+        registered_names = {proc.name for proc in self.processes}
         for proc in processes:
+            # A process registered twice duplicates every legal allocation built from it.
+            if proc.name in registered_names:
+                raise ValueError(f"Process '{proc.name}' is already registered in the trade LP model")
+            registered_names.add(proc.name)
             if not proc.products == []:
                 for product in proc.products:
                     if product not in self.commodities and product is not None:
@@ -512,6 +518,12 @@ class TradeLPModel:
         self.processes = self.processes + processes
 
     def add_process_centers(self, process_centers: list[ProcessCenter]):
+        registered_names = {pc.name for pc in self.process_centers}
+        for pc in process_centers:
+            # A centre registered twice doubles its capacity and every constraint sum over its arcs.
+            if pc.name in registered_names:
+                raise ValueError(f"Process centre '{pc.name}' is already registered in the trade LP model")
+            registered_names.add(pc.name)
         self.process_centers = self.process_centers + process_centers
         self._pc_by_name = None  # Invalidate lookup cache
 
@@ -673,6 +685,14 @@ class TradeLPModel:
                 for commodity in from_pc.process.products:
                     if commodity is not None and commodity in dep_commodities:
                         legal_allocations.append((from_pc, to_pc, commodity))
+
+        # A repeated arc key is counted twice by every list-based constraint sum (caps, quotas).
+        arc_key_counts = Counter(
+            (from_pc.name, to_pc.name, commodity.name) for from_pc, to_pc, commodity in legal_allocations
+        )
+        duplicates = sorted(key for key, count in arc_key_counts.items() if count > 1)
+        if duplicates:
+            raise ValueError(f"Duplicate legal allocation keys in the trade LP model: {duplicates[:10]}")
 
         self.legal_allocations = legal_allocations
 

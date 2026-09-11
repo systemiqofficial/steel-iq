@@ -1840,16 +1840,15 @@ def test_set_up_steel_trade_lp_with_secondary_feedstock_constraints(monkeypatch)
         secondary_feedstock_constraints=secondary_feedstock_constraints,
     )
 
-    # Verify dummy hydrogen_supply process was created
+    # The synthetic hydrogen_supply process and centre are registered exactly once, via the supplier path
     hydrogen_processes = [p for p in processes_added if p.name == "hydrogen_supply"]
-    assert len(hydrogen_processes) > 0
+    assert len(hydrogen_processes) == 1
     assert hydrogen_processes[0].type == DummyProcessType.SUPPLY
 
-    # Verify dummy process center was created
     hydrogen_centers = [c for c in centers_added if c.name == "hydrogen_supply_process_center"]
-    assert len(hydrogen_centers) > 0
-    # Ensure we created the dummy process center with +1 headroom
-    assert any(center.capacity == 3001.0 for center in hydrogen_centers)
+    assert len(hydrogen_centers) == 1
+    # Centre capacity is the summed regional cap; the regional caps themselves bind in the LP
+    assert hydrogen_centers[0].capacity == 3000.0
 
 
 def test_secondary_feedstock_supplier_capacity_updated_each_year(monkeypatch):

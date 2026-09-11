@@ -555,7 +555,6 @@ def add_suppliers_as_process_centers(repository, lp_model: tlp.TradeLPModel, yea
         supplier_process: tlp.Process | None = lp_model.get_process(f"{commodity_name}_supply")
         if supplier_process is None:
             continue
-        lp_model.add_processes([supplier_process])
         capacity = supplier.capacity_by_year.get(year)
         if capacity is None:
             logger.warning(
@@ -1076,7 +1075,6 @@ def set_up_steel_trade_lp(
         repository=repository, lp_model=lp_model, config=config, furnace_groups_override=furnace_groups_override
     )
     add_demand_centers_as_process_centers(repository=repository, lp_model=lp_model, year=year)
-    secondary_supply_locations: dict[str, tlp.Location] = {}
     if secondary_feedstock_constraints:
         for commodity in secondary_feedstock_constraints:
             total_capacity = sum(
@@ -1090,7 +1088,6 @@ def set_up_steel_trade_lp(
                 iso3="XXX",
                 region="dummy region",
             )
-            secondary_supply_locations[commodity] = location
             _ensure_secondary_feedstock_supplier(
                 repository,
                 supplier_id=f"{commodity}_supply_process_center",
@@ -1186,54 +1183,24 @@ def set_up_steel_trade_lp(
             if not to_processes:
                 logger.debug(f"Debug: Process '{connector.to_technology_name}' not found in LP model")
 
-    # add dummy processes AND PROCESSCENTERS! for the secondary feedstock constraints:
+    # The synthetic supply process and centre for each constrained secondary feedstock were registered
+    # once via the repository supplier; only the connectors are missing because the Legal Process
+    # connectors sheet carries no rows for synthetic suppliers.
     if secondary_feedstock_constraints:
+        connector_counts: dict[str, int] = {}
         for commodity in secondary_feedstock_constraints:
-            # Calculate total capacity across all regions for this commodity
-            total_capacity = sum(
-                secondary_feedstock_constraints[commodity][iso_3_tuple]
-                for iso_3_tuple in secondary_feedstock_constraints[commodity]
-            )
-
-            commodity_supply_com_bom_element = tlp.BOMElement(
-                name=f"{commodity}_supply",
-                commodity=tlp.Commodity(name=commodity),
-                parameters={},
-                output_commodities=[tlp.Commodity(name=commodity)],
-            )
-            # Create a dummy process for the secondary feedstock
-            commodity_supply_process = tlp.Process(
-                name=f"{commodity}_supply",
-                type=tlp.ProcessType.SUPPLY,
-                bill_of_materials=[commodity_supply_com_bom_element],
-            )
-            lp_model.add_processes([commodity_supply_process])
-
-            location = secondary_supply_locations.get(
-                commodity,
-                tlp.Location(
-                    lat=52.22,
-                    lon=-4.53,
-                    country="dummy country",
-                    iso3="XXX",
-                    region="dummy region",
-                ),
-            )
-            commodity_supply_process_center = tlp.ProcessCenter(
-                name=f"{commodity}_supply_process_center",
-                process=commodity_supply_process,
-                capacity=total_capacity + 1,  # Set a non-limiting capacity limit
-                location=location,
-            )
-            lp_model.add_process_centers([commodity_supply_process_center])
-
-            # Create a process connector from the dummy process to all production processes
+            supply_process = lp_model.get_process(f"{commodity}_supply")
+            if supply_process is None:
+                raise ValueError(f"Synthetic supply process '{commodity}_supply' was not registered in the LP model")
+            connector_counts[f"{commodity}_supply_process_center"] = 0
             for process in lp_model.processes:
                 if process.type == tlp.ProcessType.PRODUCTION:
-                    commodity_supply_process_to_process = tlp.ProcessConnector(
-                        from_process=commodity_supply_process, to_process=process
-                    )
-                    all_process_connectors.append(commodity_supply_process_to_process)
+                    all_process_connectors.append(tlp.ProcessConnector(from_process=supply_process, to_process=process))
+                    connector_counts[f"{commodity}_supply_process_center"] += 1
+        logger.info(
+            "Synthetic secondary-feedstock supply centres registered once: "
+            + ", ".join(f"{name} ({count} production connectors)" for name, count in connector_counts.items())
+        )
 
     # Validate process network connectivity before building LP model
     logger.info("🔍 Starting process network validation...")
