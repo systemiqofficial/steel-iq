@@ -201,6 +201,7 @@ Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASE
 - Every arc evaluates every mechanism and sums the result, so the outcome does not depend on mechanism order.
 - Supplier sources are skipped (their production cost is a raw-material price); a destination without a carbon price series is not charged and is warned about once.
 - Export rebates are off by default. With `SimulationConfig.carbon_border_export_rebates = True` the mirror term `min(0, E × P_d − C)` is added on arcs leaving a covered country, so every cross-border arc then carries exactly `E × P_d`.
+- `P_d` comes from `resolve_destination_carbon_prices()`: a country covered by a mechanism whose CBAM sheet row "Common carbon cost across the bloc?" is 1 is priced at that bloc's row of the Carbon cost sheet (kept under the normalised bloc name, e.g. `EFTA_EUCU`), otherwise at its national series; a country under several mechanisms takes the highest. Plant costs always use the national series.
 
 **Outputs:** Non-zero adjustments are recorded per arc on `Allocations.carbon_border_charges` and booked into the importer's material cost like tariffs; `log_carbon_border_outcomes()` summarises the charges the solved flows actually carry each year.
 
@@ -214,6 +215,7 @@ Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASE
 - `lp_epsilon`: Solver tolerance (1e-3) - how close to constraints is acceptable
 - `capacity_limit`: Production safety factor (0.95) - models realistic availability
 - `active_statuses`: Which furnace states to include (e.g., ["operating", "mothballed"])
+- `carbon_border_export_rebates`: Also rebate exports leaving a carbon-border region (default False)
 
 **Physical constraints:**
 - `hot_metal_radius`: Maximum transport distance for hot commodities (~5 km by default). Enforced in several layers:

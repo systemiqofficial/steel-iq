@@ -129,9 +129,17 @@ Propagates costs forward through the graph using breadth-first search:
 
 #### Producer carbon propagation
 
-Each producing furnace's carbon — `ProcessCenter.production_cost`, equal to the furnace group's `carbon_cost_per_unit` — is stamped onto the graph node as `own_unit_cost` during `create_graph()`. During BFS, when an edge leaves a producing node, `own_unit_cost` is added to `per_unit_base` so it embeds onto outgoing flows. The addition is guarded by `G.in_degree(u) > 0` so root supplier nodes are skipped — their cost already enters via `base_cost` and would otherwise double-count.
+Each producing furnace's carbon — `ProcessCenter.production_cost`, equal to the furnace group's utilisation-independent `trade_carbon_cost_per_unit` — is stamped onto the graph node as `own_unit_cost` during `create_graph()`. When an edge leaves a producing node, `own_unit_cost` is added to `per_unit_base` so it embeds onto outgoing flows. Supplier nodes never carry `own_unit_cost`; their price enters via `base_cost`.
 
 **Invariant: own carbon flows out, never inward.** The producer's BOM is built from its incoming allocations only, so it never picks up its own self-carbon. Carbon enters the producer's own economics later via `unit_production_cost = unit_total_opex + carbon_cost_per_unit`; embedding it on incoming edges as well would double-count.
+
+#### Carbon border charge propagation
+
+The per-arc carbon border charges the LP recorded on `Allocations.carbon_border_charges` (USD/t, keyed by the same process-centre and commodity objects as the flows, negative for an export rebate) are stamped on each edge as `carbon_border_cost` and added to `material_tariff_transportation_cost` beside transport and tariff, so the importer's material cost carries the charge exactly like a tariff. An arc without a recorded charge carries none.
+
+#### Embedded emissions and carbon paid
+
+Alongside cost, every edge carries `EmbeddedEmissions` (tCO2) and `CarbonPaid` (USD): the source's own-stage intensity and carbon cost plus everything upstream of it, times the shipped volume, plus the border charge paid on the edge itself. A node's inbound totals spread over its total export become its `upstream_emission_intensity` and `upstream_carbon_cost_paid` (per tonne of product; multi-output furnaces normalise by total export). `update_furnace_group_embedded_carbon()` copies both onto the furnace groups after the BOM update; furnace groups absent from the graph, without inbound flows, or idle get zero. Next year's LP set-up reads them as the upstream part of each exporter's embedded emissions, so a change of suppliers reaches the border charge with a one-year lag.
 
 #### Tariff propagation
 

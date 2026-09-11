@@ -327,7 +327,7 @@ min_share × total_input ≤ sum(matching commodities) ≤ max_share × total_in
 **Components:**
 1. **Allocation costs:** (flow × distance × transport_cost_per_km) OR (flow × location_specific_cost)
 2. **Energy costs:** flow × bom_element.energy_cost
-3. **Production costs:** flow × production_cost (carbon cost)
+3. **Production costs:** flow × production_cost (the producer's utilisation-independent trade carbon cost per tonne: direct emission intensity from the emission factors and BOM shares × this year's carbon price)
 4. **Tariff taxes:** flow × tax_rate for cross-border flows
 5. **Demand slack penalty:** unmet_demand × 10,000,000
 6. **Capacity slack penalty:** underutilization × 100,000
@@ -520,10 +520,12 @@ LP setup uses `Environment.build_distance_function_for_trade_lp(process_centers)
 
 ### Carbon Border Adjustments
 
-**Applied outside TradeLPModel** (in setup workflow):
-- Increases costs for high-carbon → low-carbon flows (export rebate)
-- Increases costs for low-carbon → high-carbon flows (import adjustment)
-- Prevents double-counting with adjusted_flows set
+**Applied during `build_lp_model()`, before the objective** (see `adapt_allocation_costs_for_carbon_border_mechanisms()` in the setup page):
+- Every legal arc from a production centre into a country covered by an active mechanism pays `max(0, E × P_d − C)` per tonne: embedded direct emissions of the product (own stage plus last year's upstream) at the destination's carbon price, net of carbon already paid
+- The destination price is the country's national series, or the bloc's common series where the CBAM sheet flags one; a country under several mechanisms takes the highest
+- Two members of one mechanism never adjust each other's flows; supplier arcs are never adjusted
+- Export rebates are off by default (`SimulationConfig.carbon_border_export_rebates`)
+- The per-arc charge is recorded on `Allocations.carbon_border_charges` and booked into the importer's material cost like a tariff
 
 ---
 
