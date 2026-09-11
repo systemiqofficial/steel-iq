@@ -3931,6 +3931,7 @@ def disaggregate_allocations(
     result = Allocations(
         allocations=disaggregated_allocs,
         allocation_costs=disaggregated_costs if disaggregated_costs else None,
+        tariff_taxes=clustered_allocations.tariff_taxes,
     )
 
     logger.info(f"[DISAGGREGATION] Output allocations: {len(result.allocations)} flows")

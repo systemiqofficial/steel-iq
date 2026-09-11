@@ -976,3 +976,62 @@ class TestTransportationProblem:
         assert abs(to_totals["dest_X"] - 300.0) < 1e-6
         assert abs(to_totals["dest_Y"] - 400.0) < 1e-6
         assert abs(to_totals["dest_Z"] - 300.0) < 1e-6
+
+
+def test_disaggregate_allocations_preserves_tariff_taxes():
+    """Tariff taxes on the clustered allocations are carried onto the disaggregated allocations unchanged."""
+    from steelo.domain.trade_modelling.furnace_group_clustering import disaggregate_allocations
+    from steelo.domain.trade_modelling.trade_lp_modelling import (
+        Allocations,
+        Commodity,
+        Process,
+        ProcessCenter,
+        ProcessType,
+    )
+
+    fg_ids = ["plant1_fg0", "plant2_fg0"]
+    meta_fg = MetaFurnaceGroup(
+        cluster_key=ClusterKey("BF", "CHN", "coke:io_low"),
+        meta_furnace_group_id="cluster_BF_coke_CHN",
+        constituent_fg_ids=fg_ids,
+        technology_name="BF",
+        chosen_reductant="coke",
+        location=Location(lat=35.0, lon=110.0, iso3="CHN", country="China", region="Asia"),
+        total_capacity=Volumes(4000.0),
+        weighted_avg_carbon_cost=85.0,
+        dynamic_business_case=None,
+        capacity_shares={fg_ids[0]: 0.25, fg_ids[1]: 0.75},
+        constituent_locations={
+            fg_ids[0]: Location(lat=34.0, lon=109.0, iso3="CHN", country="China", region="Asia"),
+            fg_ids[1]: Location(lat=36.0, lon=111.0, iso3="CHN", country="China", region="Asia"),
+        },
+    )
+    meta_fg_pc = ProcessCenter(
+        name="cluster_BF_coke_CHN",
+        process=Process(name="BF", type=ProcessType.PRODUCTION, bill_of_materials=[]),
+        capacity=4000.0,
+        location=meta_fg.location,
+        production_cost=85.0,
+    )
+    demand_pc = ProcessCenter(
+        name="demand_center_1",
+        process=Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[]),
+        capacity=5000.0,
+        location=Location(lat=50.0, lon=10.0, iso3="DEU", country="Germany", region="Europe"),
+    )
+    tariff_taxes = {("CHN", "DEU", "iron"): 12.5}
+    clustered_allocs = Allocations(
+        allocations={(meta_fg_pc, demand_pc, Commodity("iron")): 2000.0},
+        tariff_taxes=tariff_taxes,
+    )
+    config = MockConfig(active_statuses=["operating"], hot_metal_radius=100.0)
+
+    result = disaggregate_allocations(
+        clustered_allocations=clustered_allocs,
+        meta_furnace_groups=[meta_fg],
+        plants_repo=None,
+        config=config,
+    )
+
+    assert len(result.allocations) == 2
+    assert result.tariff_taxes == tariff_taxes
