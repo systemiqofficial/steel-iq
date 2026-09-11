@@ -417,7 +417,7 @@ class MetaFurnaceGroup:
         chosen_reductant: Reductant choice of all constituent furnace groups
         location: Capacity-weighted center of gravity of all constituent FGs
         total_capacity: Sum of capacities of all constituent furnace groups
-        weighted_avg_carbon_cost: Capacity-weighted average carbon cost per unit
+        weighted_avg_carbon_cost: Capacity-weighted average trade carbon cost per unit (utilisation-independent)
         dynamic_business_case: List of primary feedstock options (should be identical across cluster)
         capacity_shares: Mapping from fg_id to its share of total cluster capacity (0-1)
         constituent_locations: Original locations of constituent FGs (for disaggregation)
@@ -468,6 +468,28 @@ class MetaFurnaceGroup:
             f"n_constituents={len(self.constituent_fg_ids)}, "
             f"capacity={float(self.total_capacity) * T_TO_KT:.1f} kt)"
         )
+
+
+def _capacity_weighted_mean(
+    cluster_fgs: list[tuple[FurnaceGroup, Plant]],
+    effective_caps: dict[str, float],
+    total_eff_cap: float,
+    attr: str,
+) -> float:
+    """Effective-capacity-weighted mean of a furnace-group attribute across a cluster.
+
+    Args:
+        cluster_fgs: The cluster's (furnace group, plant) pairs.
+        effective_caps: Effective capacity per furnace group id.
+        total_eff_cap: Sum of the effective capacities.
+        attr: Name of the numeric furnace-group attribute to average.
+
+    Returns:
+        The weighted mean, or the simple mean when the cluster has no effective capacity.
+    """
+    if total_eff_cap > 0:
+        return sum(getattr(fg, attr) * effective_caps[fg.furnace_group_id] for fg, _ in cluster_fgs) / total_eff_cap
+    return sum(getattr(fg, attr) for fg, _ in cluster_fgs) / len(cluster_fgs)
 
 
 def calculate_center_of_gravity(furnace_groups_with_plants: list[tuple[FurnaceGroup, Plant]]) -> Location:
@@ -758,15 +780,10 @@ def cluster_furnace_groups(
             # Equal shares if all effective capacities are zero
             capacity_shares = {fg.furnace_group_id: 1.0 / len(cluster_fgs) for fg, _ in cluster_fgs}
 
-        # Calculate weighted average carbon cost (weighted by effective capacity)
-        if total_eff_cap > 0:
-            weighted_avg_carbon_cost = (
-                sum(fg.carbon_cost_per_unit * effective_caps[fg.furnace_group_id] for fg, _ in cluster_fgs)
-                / total_eff_cap
-            )
-        else:
-            # Simple average if all have zero effective capacity
-            weighted_avg_carbon_cost = sum(fg.carbon_cost_per_unit for fg, _ in cluster_fgs) / len(cluster_fgs)
+        # The LP prices clusters on the utilisation-independent trade carbon cost, not the realised one
+        weighted_avg_carbon_cost = _capacity_weighted_mean(
+            cluster_fgs, effective_caps, total_eff_cap, "trade_carbon_cost_per_unit"
+        )
 
         # Store constituent locations for disaggregation
         constituent_locations = {fg.furnace_group_id: plant.location for fg, plant in cluster_fgs}

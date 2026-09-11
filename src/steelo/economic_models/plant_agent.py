@@ -385,6 +385,7 @@ class AllocationModel:
             plant.update_furnace_group_carbon_costs(
                 current_year, bus.env.config.chosen_emissions_boundary_for_carbon_costs
             )
+        bus.env.update_trade_carbon_costs_of_furnace_groups(world_plants=bus.uow.plants.list())
 
         # Clustering: Reduce LP complexity by aggregating furnace groups
         meta_furnace_groups = None

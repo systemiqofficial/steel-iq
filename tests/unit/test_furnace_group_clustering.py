@@ -115,6 +115,7 @@ def create_test_furnace_group(
         allocated_volumes=capacity,  # Needed for carbon_cost_per_unit calculation
         carbon_costs_for_emissions=carbon_cost * capacity,  # carbon_cost_per_unit = this / allocated_volumes
     )
+    fg.trade_carbon_cost_per_unit = carbon_cost
 
     return fg
 
@@ -742,6 +743,9 @@ class TestClusterFurnaceGroups:
 
         fg1 = create_test_furnace_group("fg1", "BF", capacity=1000.0, carbon_cost=50.0)
         fg2 = create_test_furnace_group("fg2", "BF", capacity=3000.0, carbon_cost=70.0)
+        # The cluster is priced on the trade carbon cost, not the realised carbon_cost_per_unit
+        fg1.trade_carbon_cost_per_unit = 40.0
+        fg2.trade_carbon_cost_per_unit = 60.0
 
         plant.furnace_groups = [fg1, fg2]
 
@@ -749,11 +753,7 @@ class TestClusterFurnaceGroups:
         meta_fgs, mapping = cluster_furnace_groups([plant], config)
 
         meta_fg = meta_fgs[0]
-        # The clustering function calculates weighted average using fg.carbon_cost_per_unit
-        # which is a derived property. Let's just verify it calculated something reasonable
-        assert meta_fg.weighted_avg_carbon_cost > 0.0
-        # Should be weighted more toward fg2 (which has 3x the capacity of fg1)
-        assert meta_fg.weighted_avg_carbon_cost > fg1.carbon_cost_per_unit
+        assert meta_fg.weighted_avg_carbon_cost == pytest.approx((40.0 * 1000.0 + 60.0 * 3000.0) / 4000.0)
 
     def test_cluster_preserves_constituent_locations(self):
         """Test that original locations are preserved for disaggregation."""

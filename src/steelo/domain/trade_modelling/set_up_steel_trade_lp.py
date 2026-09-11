@@ -390,7 +390,8 @@ def add_furnace_groups_as_process_centers(
         - Only includes furnace groups with status in config.active_statuses (when using repository)
         - Reuses Process objects across furnace groups with the same technology
         - Capacity is scaled by config.capacity_limit (e.g., 0.95 for 95% availability)
-        - Production cost is set to furnace_group.carbon_cost_per_unit or weighted_avg_carbon_cost
+        - Production cost is the utilisation-independent trade carbon cost per tonne:
+          furnace_group.trade_carbon_cost_per_unit or meta_fg.weighted_avg_carbon_cost
         - Creates new processes on-the-fly using create_process_from_furnace_group()
         - MetaFurnaceGroup objects use capacity-weighted centroid locations
     """
@@ -448,7 +449,7 @@ def add_furnace_groups_as_process_centers(
                     process=process,
                     capacity=config.capacity_limit * furnace_group.capacity,
                     location=plant.location,
-                    production_cost=furnace_group.carbon_cost_per_unit,
+                    production_cost=furnace_group.trade_carbon_cost_per_unit,
                     soft_minimum_capacity=config.soft_minimum_capacity_share,
                     energy_costs_per_input=build_energy_costs_per_input(furnace_group),
                 )

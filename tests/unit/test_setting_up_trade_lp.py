@@ -280,7 +280,16 @@ class DummyPlant:
 
 
 class DummyFurnaceGroup:
-    def __init__(self, furnace_group_id, technology, status, capacity, unit_fopex=1, chosen_reductant=""):
+    def __init__(
+        self,
+        furnace_group_id,
+        technology,
+        status,
+        capacity,
+        unit_fopex=1,
+        chosen_reductant="",
+        trade_carbon_cost_per_unit=0.0,
+    ):
         self.furnace_group_id = furnace_group_id
         self.technology = technology
         self.status = status
@@ -288,6 +297,7 @@ class DummyFurnaceGroup:
         self.unit_fopex = unit_fopex
         self.energy_vopex_by_input = {}
         self.chosen_reductant = chosen_reductant
+        self.trade_carbon_cost_per_unit = trade_carbon_cost_per_unit
 
     @property
     def effective_primary_feedstocks(self):
@@ -297,11 +307,6 @@ class DummyFurnaceGroup:
         if not self.chosen_reductant:
             return self.technology.dynamic_business_case
         return [fs for fs in self.technology.dynamic_business_case if fs.reductant == self.chosen_reductant]
-
-    @property
-    def carbon_cost_per_unit(self):
-        """Mock carbon cost per unit for testing."""
-        return 0.0
 
 
 class DummyTechnology:
@@ -583,6 +588,27 @@ def test_add_furnace_groups_as_process_centers():
     assert pc.capacity == expected_capacity
     # Also check that the process is now in the lp_model processes
     assert "EAF" in lp_model._processes
+
+
+def test_add_furnace_groups_as_process_centers_uses_trade_carbon_cost():
+    """The process centre's production cost is the furnace group's utilisation-independent trade carbon cost."""
+    tech = DummyTechnology(name="EAF", dynamic_business_case=[])
+    furnace_group = DummyFurnaceGroup(
+        furnace_group_id="plant2_fg1",
+        technology=tech,
+        status="operating",
+        capacity=50,
+        trade_carbon_cost_per_unit=42.5,
+    )
+    plant = DummyPlant(plant_id="plant2", furnace_groups=[furnace_group])
+    repo = DummyRepository()
+    repo.plants.items = [plant]
+    repo.plants.data = {"plant2": plant}
+    lp_model = DummyTradeLPModel()
+
+    add_furnace_groups_as_process_centers(repo, lp_model, create_mock_config())
+
+    assert lp_model.process_centers[0].production_cost == 42.5
 
 
 def test_add_furnace_groups_as_process_centers_energy_costs_are_facility_specific():
