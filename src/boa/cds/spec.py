@@ -3,7 +3,7 @@ CDS dataset mechanics: dataset ids, variable names, and file-naming helpers.
 
 Single source of truth shared by the downloader and the converter, so the
 folder names one writes and the other reads can never drift apart. Model
-parameters (densities, LULC fractions) live in boa.config.settings instead.
+parameters (densities, LULC fractions) live in boa.config.physical_parameters instead.
 """
 
 CDS_DATASET = "sis-energy-global-reanalysis"
@@ -28,6 +28,16 @@ MASK_VARIABLES = [
     "wind_power_exclusion_mask",
     "wind_power_land_mask",
 ]
+
+# Combined exclusion masks, per technology: delivered filename and the variable inside
+# it. Both were read off the delivered files rather than the documentation, which names
+# the wind variable `m_rest`; the shipped file uses `wp_mask`. Values are binary with
+# 1 = excluded, so an availability factor is `1 - mask`.
+EXCLUSION_MASK_FILES = {
+    "pv": "ANCI_SPVM-mask_C3S2LOT1_025d_v1.00.nc",
+    "wind": "ANCI_WPM-mask_C3S2LOT1_025d_v1.00.nc",
+}
+EXCLUSION_MASK_VARS = {"pv": "PVmask", "wind": "wp_mask"}
 
 CDS_TECH_SPEC = "ic6hh135"
 CDS_RESOLUTION = "0_25_degree"
@@ -57,6 +67,11 @@ def cf_extract_dir_name(
 
 def masks_zip_name(tech_spec: str = CDS_TECH_SPEC, resolution: str = CDS_RESOLUTION) -> str:
     return f"cds_masks_{tech_spec}_{resolution}.zip"
+
+
+def masks_extract_dir_name(tech_spec: str = CDS_TECH_SPEC, resolution: str = CDS_RESOLUTION) -> str:
+    """Directory the mask bundle is extracted to (the exclusion masks live here)."""
+    return masks_zip_name(tech_spec, resolution)[: -len(".zip")]
 
 
 def lulc_nc_name(year: int = LULC_YEAR, version: str = LULC_VERSION) -> str:

@@ -18,18 +18,18 @@ boa-data-prepare
 boa-cds-prepare --weather_year 2024
 
 # 3. Sanity-check the pairing, then run at production settings
-boa-run --demand 1000 --coverage 0.95 --samples 2000 --dry-run
-boa-run --demand 1000 --coverage 0.95 --samples 2000 --promote-lcoe
+boa-run --load-density 1.0 --coverage 0.95 --dry-run
+boa-run --load-density 1.0 --coverage 0.95 --promote-lcoe
 ```
 
 Steps 1 and 2 are idempotent and independent — rerun either at any time; existing
 artefacts are reused (both can also run inline via `boa-run --cds-prepare 2024
 --data-prepare wb.xlsx rev2`). The run defaults (`--start-year 2025 --end-year 2060
 --frequency 1`, `--weather-input cds-2024`, `--workers fast`) suit a production sweep;
-drop to `--samples 1000` and a single year (`--start-year 2030 --end-year 2030`) for a
-faster exploratory run. To change only cost assumptions afterwards, skip the rebuild
+drop to a single year (`--start-year 2030 --end-year 2030`) for a faster exploratory
+run. To change only cost assumptions afterwards, skip the rebuild
 entirely: `boa-data-prepare --input-file edited.xlsx --scenario rev2` then
-`boa-run query --cost-input rev2 ...` reuses the design caches and re-derives the
+`boa-run query --cost-input rev2 ...` reuses the frontier caches and re-derives the
 NetCDFs in minutes per year.
 
 ## Preparing input data
@@ -75,8 +75,10 @@ data/
 └── cds/                              raw CDS NetCDFs (+ global_zarr/ build cache)
 inputs/<set>/                         e.g. cds-2024, tagged by weather year
 ├── cds-zarr/                         live profile + max-capacity stores the model reads
-├── staging/                          freshly built stores (transient; emptied on install)
-└── cache_designs/                    design cache, built by boa-run
+└── staging/                          freshly built stores (transient; emptied on install)
+inputs/cds-<year>/cache_frontiers/    frontier cache, built by boa-run; keyed on the
+                                       weather year alone, shared across every land-
+                                       availability layer set built on that weather
 costs/<scenario>/
 ├── boa_cost_data.xlsx    the four extracted sheets (RES CAPEX projections, RES OPEX,
 │                         Cost of capital, Country mapping)
@@ -105,8 +107,10 @@ and names the `boa-cds-download` command to run (which needs a CDS account, `~/.
 with the dataset licence accepted, and `uv sync --extra cds` for the client). Raw files land
 in `data/cds/` (~6 GB per year); the convert stage builds a shared global intermediate at
 `data/cds/global_zarr/` (~12 GB per year, deletable — it rebuilds in about a minute), after
-which each region converts in seconds. Max-capacity stores are geometry-only (pixel area x
-density; no land-use term for now).
+which each region converts in seconds. Max-capacity stores default to geometry-only (pixel
+area x density); pass `--layers lulc,cds_exclusion` to `boa-cds-prepare` for the layered
+land-availability ceiling instead — it lands in its own input set (e.g.
+`cds-2024-lulc+excl`) rather than overwriting the geometry-only stores.
 
 Already have the raw data (from another machine or an earlier checkout)? Drop the
 *extracted* per-year directories — 12 monthly NetCDFs each — into `data/cds/` under the
@@ -126,40 +130,44 @@ already exists, so partial reuse works too.
 
 ## Running the model
 
-`boa-run` is always GLOBAL (all 9 regions); the one exception is the single-point mode:
+`boa-run` is always GLOBAL (all regions in `REGION_COORDS`); the one exception is the single-point mode:
 
 ```bash
-boa-run --demand 1000 --coverage 0.95            # full run: build caches if missing, query every year
-boa-run build-cache --samples 2000               # year- and baseload-independent design caches only
-boa-run build-topup --demand 1000                # per-baseload top-up supplements against existing caches
+boa-run --load-density 1.0 --coverage 0.95       # full run: build caches if missing, query every year
+boa-run build-cache                              # year- and baseload-independent frontier caches only
 boa-run query --start-year 2030 --end-year 2030  # NetCDFs from pre-built caches (--force to re-derive)
 boa-run point --lat 52.5 --lon 13.4              # single point; region auto-derived
 boa-run --weather-input cds-2023 --cost-input rev3 --dry-run  # resolve paths + preflight, run nothing
 boa-run --cds-prepare 2024 --data-prepare wb.xlsx rev2        # prepare both sides inline, then run
 ```
 
-`--weather-input` alone identifies the weather side (stores + design cache; the weather
+`--weather-input` alone identifies the weather side (stores + frontier cache; the weather
 year is read off the store filenames, never passed; default `cds-2024`), `--cost-input`
-the cost side (xlsx + per-year cost cache), and `--run` names the output pairing (default
-`<weather-input>__<cost-input>`). A preflight
+the cost side (xlsx + per-year cost cache), and `--run` labels the output (default
+`<cost-input>`; the on-disk directory is always `<label>_<hash>`, forking automatically
+whenever a physical or search-tuning parameter changes -- `boa-promote-lcoe --run <label>`
+resolves the label back to it). A preflight
 check fails fast with the exact `boa-cds-prepare` / `boa-data-prepare` command when the
-selected sets are incomplete. The full run never rebuilds an existing design cache; use
-`build-cache --force` or `query --force` for targeted rebuilds. Design caches are
-baseload-independent: one cache per (coverage, samples, weather year) serves every
-`--demand`, with the capacity ceiling applied as a query-time mask; pixels the mask
-starves or leaves sparsely sampled are re-searched by a query-time top-up (supported
-baseload: up to 20,000 MW). Expect hours
-for a full multi-year GLOBAL run at production settings (`--samples 2000`); a `query`
-against warm caches is minutes per year.
+selected sets are incomplete. The full run never rebuilds an existing frontier cache; use
+`build-cache --force` or `query --force` for targeted rebuilds. Frontier caches are
+baseload-independent and year-independent: one cache per (coverage, weather year, search
+parameters) serves every `--load-density` and every investment year, and is shared across
+every land-availability layer set built on the same weather. `--load-density` is MW/km2, not
+an absolute demand (D1): each pixel's own demand is
+`load_density * pixel_area(lat)`, so results are latitude-correct rather than one flat MW
+figure applied everywhere. A `query` against a warm cache is arithmetic per pixel and takes
+minutes per year.
 
-The top-up itself is cached per baseload: the first query at a given `--demand`
-computes it and persists a top-up supplement beside each region's design cache
-(`<cache-stem>__topup_<demand>MW.zarr`); every later query at that demand replays the
-supplement bit-identically, so multi-year sweeps and cost-scenario re-queries skip the
-top-up compute (~8 min per global pass at `--samples 1000`, ~16 at 2000).
-`boa-run build-topup --demand <MW>` prebuilds the supplements without producing
-NetCDFs, e.g. for shipping bundles. Rebuilding a design cache invalidates its
-supplements; the next query refuses the stale sidecar and rebuilds it automatically.
+Map PNGs (`lcoe`, `solar_factor`, `wind_factor`, `battery_factor`, per region and GLOBAL) are
+**off by default** — pass `--plots` to `boa-run` or `boa-run query` to generate them. The
+"Regridding regional datasets onto the global grid" log line that prints right before a query
+finishes is the GLOBAL-NetCDF assembly step, not plot generation; it prints whether or not
+`--plots` was given.
+
+**The capacity ceiling is not yet applied at query time** (tracked as M4,
+follow-up "Grid 2" work): every query currently reports the *unconstrained* optimum for
+its coverage target, regardless of `--load-density`, and logs a warning saying so. Do not
+promote results from a run in this window.
 
 ## Handing LCOE to the steel simulation
 
@@ -170,11 +178,11 @@ year-invariant, and promotion refuses to run if they are not), which turned 5.49
 per-year files into 25.7 MB on a 36-year GLOBAL run:
 
 ```bash
-boa-promote-lcoe --run cds-2024__china_test   # every scenario in a finished run
-boa-run --demand 1000 --coverage 0.95 --promote-lcoe   # or inline, right after the query
+boa-promote-lcoe --run cds-2024__china_test        # every scenario in a finished run
+boa-run --load-density 1.0 --coverage 0.95 --promote-lcoe   # or inline, right after the query
 ```
 
-Output: `lcoe-for-steel-iq/<run>/optimal_lcoe_<bl>MW_p<p>_<first>_<last>.nc`, chunked one
+Output: `lcoe-for-steel-iq/<run>/optimal_lcoe_<rho>MWkm2_cov<c>_<first>_<last>.nc`, chunked one
 year at a time so a single-year read stays cheap. The file carries its own provenance — run
 name, input/cost sets, workbook sha256, boa version, git sha, and the scenario settings —
 so it identifies what produced it without the run directory. Cost keys travel as int16 ids
@@ -183,15 +191,19 @@ plus a `cost_key_legend` attribute; `status` keeps the `STATUS_CODES` values, le
 
 The per-year NetCDFs stay put: they hold the overbuild factors and the cost breakdown, and
 remain the artefacts for crash recovery, plots and forensics. The steel side opts into a local
-run with `run_simulation --boa-run <run>` (add `--boa-demand` only when a run holds several
-demands); without `--boa-run` it reads the per-year files shipped with the geo data as before.
-Which percentile it reads is not a flag — it follows steelo's `GeoConfig.included_power_mix`,
-so an 85% baseload mix takes the p15 file and a 95% one the p5 file. A run missing that
-percentile stops the simulation before any data preparation and lists what is available.
+run with `run_simulation --boa-run <run>` (add `--boa-load-density` only when a run holds
+several densities); without `--boa-run` it reads the per-year files shipped with the geo data
+as before. Which coverage it reads is not a flag — it follows steelo's
+`GeoConfig.included_power_mix` via `get_baseload_coverage`, so an 85% baseload mix reads the
+`cov0.85` file. A run missing that coverage stops the simulation before any data preparation
+and lists what is available.
 
 ## Sources for model assumptions
 
-References behind the numeric assumptions in `config/settings.py`.
+References behind the numeric assumptions in `config/physical_parameters.py`. Tunable search
+parameters (grid resolution, battery rungs, anchor tolerance) are a separate thing — see
+`model/bisection.py`'s `SearchParams`, hashed into the frontier cache path so a changed value
+forces a rebuild rather than silently reusing an incompatible store.
 
 ### Technology lifetimes (`LIFETIMES`)
 
@@ -202,6 +214,9 @@ References behind the numeric assumptions in `config/settings.py`.
 - **Battery, 25 years** — aligned with solar/wind so no technology is reinstalled within the investment horizon.
 
 ### Deterioration rates (`YEARLY_DETERIORATION_RATES`)
+
+Not read anywhere in the LCOE calculation today — kept as a sourced input for if/when a
+deterioration term is wired in.
 
 - **Battery, 1.5 %/year** — NREL, *Battery Lifespan*.
   https://www2.nrel.gov/transportation/battery-lifespan

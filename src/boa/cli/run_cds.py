@@ -42,14 +42,15 @@ from rich.progress import (
     track,
 )
 
+from boa.cds import availability as cds_availability
 from boa.cds import convert as cds_convert
 from boa.cds import download as cds_download
 from boa.cds import install as cds_install
 from boa.cds import max_capacity as cds_max_capacity
-from boa.cds.spec import CDS_VARS, TECHS
+from boa.cds.spec import CDS_VARS, LULC_DATASET, TECHS, lulc_nc_name, masks_extract_dir_name
 from boa.cli import reconfigure_streams_utf8
 from boa.config.paths import DEFAULT_SET, PathConfig
-from boa.config.settings import CAPACITY_DENSITY_MW_PER_KM2, ERA5_DATA_YEAR, REGION_COORDS
+from boa.config.physical_parameters import CAPACITY_DENSITY_MW_PER_KM2, ERA5_DATA_YEAR, REGION_COORDS
 from boa.store_schema import max_cap_store_stem, profile_store_stem
 
 
@@ -117,8 +118,7 @@ def _add_density_args(parser: argparse.ArgumentParser) -> None:
         "--wind-density",
         type=float,
         default=CAPACITY_DENSITY_MW_PER_KM2["wind"],
-        help=f"Wind density in MW/km^2 (default: {CAPACITY_DENSITY_MW_PER_KM2['wind']}; "
-        "20.5 vs 10.42 is an open team decision)",
+        help=f"Wind density in MW/km^2 (default: {CAPACITY_DENSITY_MW_PER_KM2['wind']})",
     )
 
 
@@ -133,6 +133,68 @@ def _missing_raw_techs(cds_dir: Path, year: int) -> list[str]:
     return missing
 
 
+def _add_layer_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--layers",
+        default="",
+        help=(
+            "Comma-separated availability layers applied to the capacity ceiling "
+            f"(known: {','.join(cds_availability.LAYER_ORDER)}; default: none, pure geometry). "
+            "A layer set is part of the input-set identity, so a layered build lands in its "
+            "own input set rather than overwriting the geometry-only stores."
+        ),
+    )
+    parser.add_argument("--lulc-path", type=Path, help="ESA-CCI land-cover NetCDF (default: under the lulc dir)")
+    parser.add_argument("--masks-dir", type=Path, help="CDS exclusion mask directory (default: under the raw CDS dir)")
+
+
+def _resolve_layers(args: argparse.Namespace, path_config: PathConfig) -> list[cds_availability.LayerSpec]:
+    """Turn `--layers` into configured specs, defaulting each layer's source path."""
+    names = [name.strip() for name in args.layers.split(",") if name.strip()]
+    if not names:
+        return []
+    return cds_availability.layer_specs(
+        names,
+        lulc_path=args.lulc_path or (path_config.lulc_dir / lulc_nc_name()),
+        masks_dir=args.masks_dir or (path_config.cds_dir / masks_extract_dir_name()),
+    )
+
+
+def default_input_set(year: int, layer_names: list[str]) -> str:
+    """
+    The input-set name a prepare defaults to.
+
+    The layer set is part of the input-set identity, so different ceilings land in
+    different `zarr_dirs` and cannot be silently mixed. The frontier cache is unaffected --
+    it is keyed on the weather year alone and shared across layer sets (D4,
+    `PathConfig.frontier_cache_dir`), since it holds no capacity-ceiling data. Geometry-only
+    keeps the bare `cds-<year>` name it has always had, which is correct rather than merely
+    convenient: geometry-only is what every existing store already holds.
+    """
+    if not layer_names:
+        return f"cds-{year}"
+    return f"cds-{year}-{cds_availability.availability_tag(layer_names)}"
+
+
+def _max_cap_rebuild_reason(live: Path, region: str, year: int, signature: str) -> str | None:
+    """Why this region's ceiling store cannot be reused, or None if it can.
+
+    Presence alone is not enough. The frontier cache carries no ceiling data (D4), so this
+    store is the *only* place a stale or mismatched ceiling would be caught -- a store built
+    from a different layer set or different densities is silently wrong rather than merely
+    stale, which is exactly the defect the signature exists to catch.
+    """
+    store = live / (max_cap_store_stem(region, year) + ".zarr")
+    if not store.exists():
+        return "missing"
+    stored = cds_install.stored_signature(store)
+    if stored is None:
+        return "no availability signature (built before layers existed)"
+    if stored != signature:
+        return f"availability changed: {stored} -> {signature}"
+    return None
+
+
 def main_prepare(argv: list[str]) -> int:
     parser = _parser(
         "prepare",
@@ -145,6 +207,7 @@ def main_prepare(argv: list[str]) -> int:
         "--region", action="append", help="Region to prepare (repeatable; default: all production regions)"
     )
     _add_density_args(parser)
+    _add_layer_args(parser)
     parser.add_argument(
         "--force", action="store_true", help="Rebuild and reinstall every region store even if it already exists"
     )
@@ -159,8 +222,12 @@ def main_prepare(argv: list[str]) -> int:
     regions = args.region or list(REGION_COORDS)
     year = args.weather_year
 
-    input_set = args.inputs or f"cds-{year}"
+    layer_names = [name.strip() for name in args.layers.split(",") if name.strip()]
+    input_set = args.inputs or default_input_set(year, layer_names)
     path_config = PathConfig.from_auto_detect(input_set=input_set)
+    layers = _resolve_layers(args, path_config)
+    densities = {"pv": args.pv_density, "wind": args.wind_density}
+    signature = cds_availability.availability_signature(layers, densities)
     live = path_config.zarr_dir
     staging = path_config.cds_staging_dir
     console.print(
@@ -170,8 +237,16 @@ def main_prepare(argv: list[str]) -> int:
     console.print(f"  staging     [dim]{staging}[/dim]")
     console.print(f"  live stores [dim]{live}[/dim]")
 
+    console.print(
+        f"  availability [cyan]{','.join(layer_names) or 'none (pure geometry)'}[/cyan] [dim]{signature}[/dim]"
+    )
+
     need_profile = [r for r in regions if args.force or not (live / (profile_store_stem(r, year) + ".zarr")).exists()]
-    need_max_cap = [r for r in regions if args.force or not (live / (max_cap_store_stem(r, year) + ".zarr")).exists()]
+    rebuild_reasons = {r: _max_cap_rebuild_reason(live, r, year, signature) for r in regions}
+    need_max_cap = [r for r in regions if args.force or rebuild_reasons[r] is not None]
+    for region in need_max_cap:
+        if not args.force and rebuild_reasons[region] != "missing":
+            console.print(f"  [yellow]rebuilding {region} max-capacity: {rebuild_reasons[region]}[/yellow]")
     complete = [r for r in regions if r not in need_profile and r not in need_max_cap]
     if complete:
         console.print(
@@ -222,7 +297,13 @@ def main_prepare(argv: list[str]) -> int:
     if need_max_cap:
         for region in track(need_max_cap, description="Building max-capacity...", console=console):
             cds_max_capacity.build_region(
-                region, staging, path_config, pv_density=args.pv_density, wind_density=args.wind_density, year=year
+                region,
+                staging,
+                path_config,
+                layers=layers,
+                pv_density=args.pv_density,
+                wind_density=args.wind_density,
+                year=year,
             )
         console.print(f"[green]✓ Built {len(need_max_cap)} max-capacity store(s).[/green]")
 
@@ -259,22 +340,48 @@ def main_download(argv: list[str]) -> int:
     )
     parser.add_argument("--month", action="append", help="Month to download, e.g. 01 (repeatable; default: all 12)")
     parser.add_argument("--out-dir", type=Path, help="Output directory (default: data/cds/)")
+    parser.add_argument(
+        "--masks",
+        action="store_true",
+        help="Also fetch the static mask bundle, which carries the per-technology exclusion masks "
+        "the cds_exclusion availability layer reads (small; one request)",
+    )
+    parser.add_argument(
+        "--lulc",
+        action="store_true",
+        help=f"Also fetch the ESA-CCI land-cover raster the lulc availability layer reads "
+        f"(~2.35 GB, {LULC_DATASET}). Its licence must be accepted once on the CDS account by hand.",
+    )
+    parser.add_argument(
+        "--skip-capacity-factors",
+        action="store_true",
+        help="Fetch only what --masks/--lulc ask for, leaving the capacity factors alone",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print requests without downloading")
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)
 
+    if args.skip_capacity_factors and not (args.masks or args.lulc):
+        logging.error("--skip-capacity-factors leaves nothing to do; add --masks and/or --lulc")
+        return 1
     if not args.dry_run and not cds_download.cdsapi_available():
         logging.error(cds_download.CDSAPI_INSTALL_HINT)
         return 1
 
     path_config = PathConfig.from_auto_detect(input_set=DEFAULT_SET)  # raw dir is input-set-independent
-    cds_download.download_capacity_factors(
-        out_dir=args.out_dir or path_config.cds_dir,
-        techs=args.tech or list(TECHS),
-        years=args.year or [str(ERA5_DATA_YEAR)],
-        months=args.month,
-        dry_run=args.dry_run,
-    )
+    if not args.skip_capacity_factors or args.masks:
+        cds_download.download_capacity_factors(
+            out_dir=args.out_dir or path_config.cds_dir,
+            techs=[] if args.skip_capacity_factors else (args.tech or list(TECHS)),
+            years=args.year or [str(ERA5_DATA_YEAR)],
+            months=args.month,
+            masks=args.masks,
+            dry_run=args.dry_run,
+        )
+    if args.lulc:
+        # Not under the input set: the raster is provider data, identical for every set,
+        # and re-fetching 2.35 GB per set is why this was never wired up before.
+        cds_download.download_lulc(out_dir=path_config.lulc_dir, dry_run=args.dry_run)
     return 0
 
 

@@ -376,10 +376,13 @@ def _lcoe_from_combined_file(lcoe_file: Path, p: int, target_year: int, logger: 
     per-year path does; in-span years that BOA did not run are interpolated linearly.
     """
     ds = xr.open_dataset(lcoe_file)
-    file_p = ds.attrs.get("p_percentile")
-    if file_p is not None and int(file_p) != p:
+    # Promoted files carry `coverage_fraction` (e.g. 0.85), not a percentile -- convert to the
+    # same p<N> the caller already speaks in so the two are directly comparable.
+    file_coverage = ds.attrs.get("coverage_fraction")
+    file_p = int(round((1 - float(file_coverage)) * 100)) if file_coverage is not None else None
+    if file_p is not None and file_p != p:
         logger.warning(
-            f"[GEO LAYERS] Baseload LCOE file {lcoe_file.name} was run at p{int(file_p)}, but this simulation's "
+            f"[GEO LAYERS] Baseload LCOE file {lcoe_file.name} was run at p{file_p}, but this simulation's "
             f"power mix implies p{p}. Power is being priced at the file's coverage."
         )
     logger.info(f"[GEO LAYERS] Pricing baseload power from {lcoe_file} (run '{ds.attrs.get('run', 'unknown')}').")

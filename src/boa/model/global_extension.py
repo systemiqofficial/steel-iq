@@ -6,51 +6,36 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from boa.cds.max_capacity import pixel_area
 from boa.geo.iso3_finder import iso3_at_batch
 from boa.geo.geospatial import choose_land_points_in_cutout
 from boa.config.paths import PathConfig
-from boa.config.settings import (
-    REGION_COORDS,
-    ERA5_DATA_RESOLUTION,
-    MIN_SURVIVOR_FRACTION,
-    RANDOM_SEED,
-    OVERSCALE_SAMPLING_K,
-    TOPUP_QUALITY_FRACTION,
-)
+from boa.config.physical_parameters import REGION_COORDS, ERA5_DATA_RESOLUTION
 from boa.model.single_point_run import (
     build_cost_lookup_indices,
     cost_key_for_point,
     costs_for_key,
 )
-from boa.model.logic import (
-    PointDesignState,
-    calculate_served_fraction,
-    compute_lcoe_from_state,
-    corner_design_feasible,
-    min_survivors_required,
-    overscale_mus_from_cf,
-    precompute_point_state,
-    state_of_charge,
-    top_up_point_state,
-    top_up_quality_threshold,
+from boa.model.bisection import (
+    STATUS_OK,
+    STATUS_ZERO_POTENTIAL,
+    CostCoefficients,
+    PixelFrontier,
+    SearchParams,
+    argmin_lcoe,
+    build_pixel_frontier,
 )
-from boa.model import design_cache
-from boa.inputs.profiles import detect_weather_year, open_regional_dataset
-
-_ZERO_RESULT = {
-    "design": {"solar": 0.0, "wind": 0.0, "battery": 0.0},
-    "lcoe": 0.0,
-    "lcoe_coverage_based": 0.0,
-    "installation_cost": 0.0,
-    "installation_cost_breakdown": {"solar": 0.0, "wind": 0.0, "battery": 0.0},
-    "coverage": 0.0,
-    "served_fraction": 0.0,
-    "cost_of_capital": 0.0,
-    "cost_key": "",
-    # Per-pixel feasibility status (see boa.config.constants.STATUS_CODES); always overwritten
-    # per point, so the template default is the "never written" code.
-    "status": 0,
-}
+from boa.model.cost_calculations import installation_cost_breakdown, lcoe_coefficients
+from boa.model.frontier_cache import (
+    RegionFrontierCache,
+    build_frontier_meta,
+    frontier_at,
+    frontier_cache_path,
+    read_frontier_cache,
+    stack_pixel_frontiers,
+    write_frontier_cache,
+)
+from boa.inputs.profiles import detect_weather_year
 
 
 def _preload_iso3_from_grid(
@@ -102,287 +87,100 @@ def _float32_output_encoding(ds: xr.Dataset) -> dict[str, dict[str, str]]:
     return {name: {"dtype": "float32"} for name, v in ds.data_vars.items() if v.dtype.kind == "f"}
 
 
-def _precompute_tile(
+def _query_frontier_tile(
     tile_indices: np.ndarray,
-    solar_arr: np.ndarray,
-    wind_arr: np.ndarray,
-    p: int,
-    n: int,
-    seed: int,
-) -> tuple[float, list[tuple[np.ndarray, np.ndarray]]]:
-    """
-    Build-phase worker. Runs the year-independent compute (Monte Carlo + coverage
-    filter + battery sizing) for every point in `tile_indices`, returning each
-    point's accepted designs as a CSR-ready (designs, coverage) pair. Zero-potential
-    points and points where no design passed the filter both emit empty arrays.
-    The proposal is baseload-independent (mu = k / time-mean CF; the capacity
-    ceiling is applied at query time), so one build serves every baseload.
-    """
-    t0 = time.time()
-    empty_d = np.empty((0, 3), dtype=np.float64)
-    empty_c = np.empty(0, dtype=np.float64)
-    out: list[tuple[np.ndarray, np.ndarray]] = []
-    for k in tile_indices:
-        solar = solar_arr[k]
-        wind = wind_arr[k]
-        if solar.sum() == 0 and wind.sum() == 0:
-            out.append((empty_d, empty_c))
-            continue
-        mus = overscale_mus_from_cf(float(solar.mean()), float(wind.mean()))
-        state = precompute_point_state(solar, wind, p, n, seed, mus=mus)
-        accepted = state.accepted_mask
-        if accepted is None or not accepted.any():
-            out.append((empty_d, empty_c))
-            continue
-        out.append(
-            (
-                np.ascontiguousarray(state.designs[accepted], dtype=np.float64),
-                np.ascontiguousarray(state.coverage[accepted], dtype=np.float64),
-            )
-        )
-    return time.time() - t0, out
-
-
-_EMPTY_TOPUP_D = np.empty((0, 3), dtype=np.float64)
-_EMPTY_TOPUP_C = np.empty(0, dtype=np.float64)
-
-
-def _topup_point(
-    solar_profile: np.ndarray,
-    wind_profile: np.ndarray,
-    p: int,
-    n: int,
-    seed: int,
-    limit: dict[str, float],
-    starved: bool,
-) -> tuple[int, np.ndarray, np.ndarray]:
-    """
-    Compute the top-up for one trigger-band pixel: corner screen when starved
-    (any masked survivor implies a feasible corner by monotonicity, so merely
-    sparse pixels skip it), then the box-truncated re-sample. Returns (verdict,
-    designs, coverage): verdict 1 = topped up (rows are the accepted designs,
-    float64), 2 = corner-screen proved the box infeasible (no rows).
-    Deterministic per (profiles, limit, p, n, seed), which is what makes the
-    result persistable per (cache, baseload) and replayable bit-identically.
-    """
-    if starved and not corner_design_feasible(solar_profile, wind_profile, p, limit):
-        return 2, _EMPTY_TOPUP_D, _EMPTY_TOPUP_C
-    mus = overscale_mus_from_cf(float(solar_profile.mean()), float(wind_profile.mean()))
-    top_up = top_up_point_state(solar_profile, wind_profile, p, n, seed, mus, limit).filter_to_accepted()
-    return 1, top_up.designs, top_up.coverage
-
-
-def _query_lcoe_tile(
-    tile_indices: np.ndarray,
-    designs_flat: np.ndarray,
-    design_offsets: np.ndarray,
-    coverage_flat: np.ndarray,
-    pv_max: np.ndarray,
-    wind_max: np.ndarray,
+    cache: RegionFrontierCache,
     capex_per_tech: dict,
     opex_per_tech: dict,
     coc_arr: np.ndarray,
     cost_keys: np.ndarray,
-    solar_profiles: np.ndarray,
-    wind_profiles: np.ndarray,
-    baseload_demand: float,
+    load_mw: np.ndarray,
     investment_horizon: int,
-    p: int,
-    n: int,
-    seed: int,
-    min_survivors: int = 1,
-    supplement: design_cache.TopupSupplement | None = None,
-) -> tuple[float, list[dict], dict[str, int], list[tuple[int, np.ndarray, np.ndarray]] | None]:
+) -> tuple[float, list[dict], dict[str, int]]:
     """
-    Query-phase worker. Per point in `tile_indices`: look up cached surviving
-    designs, mask them to this baseload's capacity box (L = max_capacity /
-    baseload, `<=` so a design exactly at the ceiling stays in), run closed-form
-    LCOE on the survivors, pick the minimum, then re-run a single-design SoC
-    dispatch on the picked optimum to swap the LCOE denominator from binary
-    coverage to served_fraction. A point whose masked survivor count is below
-    `min_survivors` is corner-screened (an infeasible corner proves the whole box
-    infeasible by coverage monotonicity) and otherwise re-searched via the
-    box-truncated top-up; a sparse point (fewer masked survivors than
-    `top_up_quality_threshold(n)`) is topped up without the screen. The argmin
-    runs over the union of masked cache survivors and top-up survivors. Points
-    with no usable optimum emit a
-    _ZERO_RESULT (with their cost_key); every result carries a `status` code
-    (see STATUS_CODES).
+    Query-phase worker for the grid-bisection search: price one tile's frontiers.
 
-    With a valid `supplement`, trigger-band pixels replay its stored verdicts and
-    rows instead of running the corner screen and top-up (bit-identical results);
-    without one, the per-pixel (verdict, designs, coverage) triples are computed
-    and returned so the caller can persist them. Returns (elapsed, results,
-    top-up counters, topup_out) — topup_out is None when a supplement was used.
+    Far less work than `_query_lcoe_tile`, and the reductions are the point of the rewrite
+    rather than a simplification of it. There is no capacity mask, no corner screen and no
+    top-up, because the search already resolved the optimum densely. There is no second
+    dispatch either: the sampler had to re-run state-of-charge on its winner to swap the LCOE
+    denominator from binary coverage to served fraction, whereas here the served fraction was
+    stored at build time, so ranking and reporting use the same number by construction.
+
+    What remains is arithmetic: four cost scalars against cached physics, an argmin, and the
+    installation-cost breakdown.
+
+    **The capacity ceiling is not applied.** `argmin_lcoe` takes no capacity parameter -- the
+    ceiling belongs to Grid 2 -- so between M3 and M4 this reports the *unconstrained* optimum.
+    The caller warns about it. Delete that warning together with this note when Grid 2 lands.
+
+    `load_mw` is this region's per-pixel absolute demand (D1: `load_density * pixel_area(lat)`),
+    precomputed once by the caller. It only sets the MW/MWh scale of the reported design --
+    LCOE is exactly baseload-invariant, so it never changes which design wins.
+
+    Counters carry the certificate telemetry: how often the patches provably held the optimum,
+    and how often the winner sat against a patch edge.
     """
     t0 = time.time()
     results: list[dict] = []
-    counters = {"starved": 0, "corner_infeasible": 0, "topped_up": 0, "resolved": 0, "quality": 0, "from_supplement": 0}
-    quality_min = top_up_quality_threshold(n)
-    topup_out: list[tuple[int, np.ndarray, np.ndarray]] | None = None if supplement is not None else []
-
-    def _zero_result(cost_key: str, status: int) -> dict:
-        zero = dict(_ZERO_RESULT)
-        zero["installation_cost_breakdown"] = dict(_ZERO_RESULT["installation_cost_breakdown"])
-        zero["cost_key"] = cost_key
-        zero["status"] = status
-        return zero
+    counters = {"certified": 0, "truncated": 0, "no_optimum": 0, "zero_potential": 0}
 
     for k in tile_indices:
         cost_key = str(cost_keys[k]) if cost_keys[k] else ""
-        lo, hi = int(design_offsets[k]), int(design_offsets[k + 1])
-        if solar_profiles[k].sum() == 0 and wind_profiles[k].sum() == 0:
-            if topup_out is not None:
-                topup_out.append((0, _EMPTY_TOPUP_D, _EMPTY_TOPUP_C))
-            results.append(_zero_result(cost_key, 3))
+        load_k = float(load_mw[k])
+        status = int(cache.status[k])
+        if status != STATUS_OK:
+            counters["zero_potential" if status == STATUS_ZERO_POTENTIAL else "no_optimum"] += 1
+            # Built explicitly rather than copied from `_ZERO_RESULT`: the template's nested
+            # breakdown has to be copied separately or every zero result shares one dict, and
+            # spelling the zeros out removes that trap along with the aliasing it guards.
+            results.append(
+                {
+                    "design": {"solar": 0.0, "wind": 0.0, "battery": 0.0},
+                    "lcoe": 0.0,
+                    "lcoe_coverage_based": 0.0,
+                    "installation_cost": 0.0,
+                    "installation_cost_breakdown": {"solar": 0.0, "wind": 0.0, "battery": 0.0},
+                    "coverage": 0.0,
+                    "served_fraction": 0.0,
+                    "cost_of_capital": 0.0,
+                    "cost_key": cost_key,
+                    "status": status,
+                    "load_mw": load_k,
+                }
+            )
             continue
-        limit = {
-            "solar": float(pv_max[k]) / baseload_demand,
-            "wind": float(wind_max[k]) / baseload_demand,
-        }
-        d = designs_flat[lo:hi]
-        c = coverage_flat[lo:hi]
-        inbox = (d[:, 0] <= limit["solar"]) & (d[:, 1] <= limit["wind"])
-        designs_k = d[inbox]
-        coverage_k = c[inbox]
-        if designs_k.shape[0] >= max(min_survivors, quality_min):
-            if topup_out is not None:
-                topup_out.append((0, _EMPTY_TOPUP_D, _EMPTY_TOPUP_C))
-        else:
-            starved = designs_k.shape[0] < min_survivors
-            if supplement is None:
-                verdict, top_d, top_c = _topup_point(solar_profiles[k], wind_profiles[k], p, n, seed, limit, starved)
-                assert topup_out is not None
-                topup_out.append((verdict, top_d, top_c))
-            else:
-                verdict = int(supplement.verdict[k])
-                assert verdict in (1, 2), f"supplement verdict {verdict} for in-band point {k}; stale supplement?"
-                top_d, top_c = supplement.rows_for_point(k)
-                counters["from_supplement"] += 1
-            if starved:
-                counters["starved"] += 1
-                counters["corner_infeasible" if verdict == 2 else "topped_up"] += 1
-            else:
-                counters["quality"] += 1
-            if verdict == 1:
-                designs_k = np.concatenate([np.asarray(designs_k, dtype=np.float64), top_d])
-                coverage_k = np.concatenate([np.asarray(coverage_k, dtype=np.float64), top_c])
-            if designs_k.shape[0] < min_survivors:
-                # Status keeps its pre-mask meaning: 2 = nothing cached met coverage, 4 = too few usable.
-                results.append(_zero_result(cost_key, 2 if lo == hi else 4))
-                continue
-            if starved:
-                counters["resolved"] += 1
-        state = PointDesignState(
-            designs=designs_k,
-            coverage=coverage_k,
-            accepted_mask=None,
-        )
+
         capex_k = {tech: capex_per_tech[tech][k] for tech in ("solar", "wind", "battery")}
         opex_k = {tech: float(opex_per_tech[tech][k]) for tech in ("solar", "wind", "battery")}
-        coc_k = float(coc_arr[k])
-        lcoe = compute_lcoe_from_state(
-            state,
-            baseload_demand,
-            capex_k,
-            opex_k,
-            coc_k,
-            investment_horizon,
+        coeffs = lcoe_coefficients(investment_horizon, capex_k, opex_k, float(coc_arr[k]), load_k)
+        optimum = argmin_lcoe(frontier_at(cache, int(k)), coeffs)
+        total, ic_s, ic_w, ic_b = installation_cost_breakdown(
+            optimum.solar, optimum.wind, optimum.battery, load_k, capex_k
         )
-        lcoes = lcoe["lcoes"]
-        j = int(np.argmin(lcoes))
-
-        # Refine the picked optimum's LCOE with served_fraction.
-        coverage_pick = float(state.coverage[j])
-        lcoe_coverage_based = float(lcoes[j])
-        net_nrg_pick = state.designs[j, 0] * solar_profiles[k] + state.designs[j, 1] * wind_profiles[k] - 1.0
-        soc_pick = state_of_charge(net_nrg_pick, float(state.designs[j, 2]))
-        served_fraction_pick = calculate_served_fraction(soc_pick, net_nrg_pick)
-        lcoe_refined = lcoe_coverage_based * coverage_pick / served_fraction_pick
+        counters["certified"] += int(optimum.patch_certified)
+        counters["truncated"] += int(optimum.argmin_truncated)
 
         results.append(
             {
-                "design": {
-                    "solar": float(state.designs[j, 0]),
-                    "wind": float(state.designs[j, 1]),
-                    "battery": float(state.designs[j, 2]),
-                },
-                "lcoe": float(lcoe_refined),
-                "lcoe_coverage_based": lcoe_coverage_based,
-                "installation_cost": float(lcoe["installation_costs"][j]),
-                "installation_cost_breakdown": {
-                    "solar": float(lcoe["ic_solar"][j]),
-                    "wind": float(lcoe["ic_wind"][j]),
-                    "battery": float(lcoe["ic_battery"][j]),
-                },
-                "coverage": coverage_pick,
-                "served_fraction": float(served_fraction_pick),
-                "cost_of_capital": coc_k,
+                "design": {"solar": optimum.solar, "wind": optimum.wind, "battery": optimum.battery},
+                "lcoe": optimum.lcoe,
+                # Redefined, not dropped: it used to be the ranking value that disagreed with
+                # the reported one. Ranking and reporting now agree, so the variable becomes
+                # "LCOE if every hour were served", which is the curtailment-free reference.
+                "lcoe_coverage_based": optimum.lcoe * optimum.served_fraction,
+                "installation_cost": total,
+                "installation_cost_breakdown": {"solar": ic_s, "wind": ic_w, "battery": ic_b},
+                "coverage": optimum.hours_covered,
+                "served_fraction": optimum.served_fraction,
+                "cost_of_capital": float(coc_arr[k]),
                 "cost_key": cost_key,
-                # A zero served_fraction makes the refined LCOE NaN; the assembly loop drops
-                # such points, so they are "no usable optimum" rather than a found optimum.
-                "status": 1 if np.isfinite(lcoe_refined) else 2,
+                "status": STATUS_OK,
+                "load_mw": load_k,
             }
         )
-    return time.time() - t0, results, counters, topup_out
 
-
-def _load_topup_supplement(
-    topup_file: Path,
-    parent_meta: dict,
-    baseload_demand: float,
-) -> design_cache.TopupSupplement | None:
-    """Load a valid top-up supplement, or None (logging why) so the caller computes fresh and persists."""
-    try:
-        supplement = design_cache.read_topup_supplement(
-            topup_file, parent_meta, baseload_demand, TOPUP_QUALITY_FRACTION, MIN_SURVIVOR_FRACTION
-        )
-    except FileNotFoundError:
-        logging.info(f"[top-up] no supplement at {topup_file.name}; the top-up will compute fresh.")
-        return None
-    except ValueError as e:
-        logging.info(f"[top-up] supplement refused ({e}); the top-up will compute fresh.")
-        return None
-    logging.info(
-        f"[top-up] supplement loaded: {topup_file.name} ({int((supplement.verdict != 0).sum())} trigger-band pixels)."
-    )
-    return supplement
-
-
-def _pack_topup_supplement(
-    npts: int,
-    tiles: list[np.ndarray],
-    per_tile_out: list[list[tuple[int, np.ndarray, np.ndarray]]],
-    parent_meta: dict,
-    baseload_demand: float,
-) -> design_cache.TopupSupplement:
-    """Scatter per-tile top-up outputs back to point order and pack them CSR-style (float64)."""
-    verdict = np.zeros(npts, dtype=np.int8)
-    per_point_designs: list[np.ndarray] = [_EMPTY_TOPUP_D] * npts
-    per_point_coverage: list[np.ndarray] = [_EMPTY_TOPUP_C] * npts
-    for tile_indices, out in zip(tiles, per_tile_out):
-        for j, k in enumerate(tile_indices):
-            v, top_d, top_c = out[j]
-            verdict[int(k)] = v
-            per_point_designs[int(k)] = top_d
-            per_point_coverage[int(k)] = top_c
-    designs_flat, row_offsets, coverage_flat = design_cache.pack_csr(
-        per_point_designs, per_point_coverage, dtype=np.float64
-    )
-    return design_cache.TopupSupplement(
-        verdict=verdict,
-        designs_flat=designs_flat,
-        row_offsets=row_offsets,
-        coverage_flat=coverage_flat,
-        meta=design_cache.build_topup_meta(
-            parent_meta,
-            baseload_demand,
-            TOPUP_QUALITY_FRACTION,
-            MIN_SURVIVOR_FRACTION,
-            npts,
-            designs_flat.shape[0],
-        ),
-    )
+    return time.time() - t0, results, counters
 
 
 def _store_size_mb(path: Path) -> float:
@@ -390,50 +188,82 @@ def _store_size_mb(path: Path) -> float:
     return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file()) / 1e6
 
 
-def build_design_cache_for_region(
+def _frontier_tile(
+    tile_indices: np.ndarray,
+    solar_arr: np.ndarray,
+    wind_arr: np.ndarray,
+    coverage: float,
+    params: SearchParams,
+    anchors: list[CostCoefficients],
+) -> tuple[float, list[PixelFrontier]]:
+    """
+    Build-phase worker for the grid-bisection search: one frontier per point in the tile.
+
+    Counterpart to `_precompute_tile`, which does the same job for the Monte Carlo sampler.
+    The degenerate case is handled inside `build_pixel_frontier` rather than screened here,
+    so every point produces a frontier and the tile output lines up with `tile_indices`
+    positionally — no empty-array sentinels to reassemble.
+
+    TODO: carry a `b_min` hint from one pixel to the next within a tile. The kernels accept
+    one and it reaches only the patch bisections, so it can change cost but not results.
+    Deferred because it needs a decision about *which* of a frontier's many `b_min` values to
+    carry, and a wrong choice is a slower warm start rather than a wrong answer.
+    """
+    t0 = time.time()
+    frontiers = [build_pixel_frontier(solar_arr[k], wind_arr[k], coverage, params, anchors) for k in tile_indices]
+    return time.time() - t0, frontiers
+
+
+def build_frontier_cache_for_region(
     region: str,
-    p: int,
-    n: int,
+    coverage: float,
     profile: xr.Dataset,
-    costs: xr.Dataset,
+    anchors: list[CostCoefficients],
     path_config: PathConfig,
     n_workers: int,
+    params: SearchParams | None = None,
     force: bool = False,
 ) -> Path:
     """
-    Build the year-independent, baseload-independent design cache for one region and
-    persist it under `path_config.design_cache_dir`. Idempotent: if a cache matching
-    the parameter tuple already exists, returns its path without rebuilding. One
-    cache per (region, p, n, seed, weather year) serves every baseload — the
-    capacity ceiling is applied as a mask at query time.
+    Build the schema v3 frontier cache for one region and persist it.
 
-    The build phase no longer touches the iso3 grid or the costs dataset —
-    cost_keys are derived fresh per query (see ``query_design_cache_for_region``)
-    so the cache stays canonical-iso3-grid-agnostic. ``costs`` is accepted only
-    for API parity and is unused here.
+    Idempotent: an existing store matching the parameter tuple is returned untouched unless
+    `force`. One store serves every baseload, every cost year and every cost scenario — it
+    holds dispatch physics and nothing else.
+
+    Three properties worth stating, because the Monte Carlo build it replaces had none of
+    them and each is load-bearing:
+
+    - **No capacity ceiling is read or stored.** The search never uses one, so the store
+      depends on no land-availability assumption and every layer set built on the same
+      weather shares it. The query reads the ceiling separately, and that read must raise
+      rather than fall back, because it is now the only thing keeping a stale ceiling out.
+    - **The cache directory keys on the weather year**, not the input set, for the same
+      reason.
+    - **`anchors` is an input, not derived here.** Anchors decide where the dense patches
+      go and must cover the cost keys as well as the years (`boa.model.anchors`), but
+      deriving them here would tie the store to the canonical iso3 grid, which is precisely
+      what the build has always avoided.
     """
-    # Auto-migrate any pre-v1.2 caches (flat layout) sitting at the top of the
-    # cache dir into the current nested layout. Idempotent: fast no-op once done.
-    design_cache.migrate_legacy_cache_filenames(path_config.design_cache_dir)
-
+    params = SearchParams() if params is None else params
+    if not anchors:
+        # Fail before the land-point scan and the profile extraction. `build_pixel_frontier`
+        # would raise per pixel, but only after a region's worth of setup had been paid for.
+        raise ValueError("build_frontier_cache_for_region needs at least one anchor")
     weather_year = detect_weather_year(path_config)
-    cache_file = design_cache.cache_path(
-        path_config.design_cache_dir,
-        region,
-        p,
-        n,
-        RANDOM_SEED,
-        weather_year,
-        ERA5_DATA_RESOLUTION,
-    )
+    cache_dir = path_config.frontier_cache_dir(weather_year)
+    cache_file = frontier_cache_path(cache_dir, region, coverage, params, weather_year, ERA5_DATA_RESOLUTION)
     if cache_file.exists() and not force:
-        rel = cache_file.relative_to(path_config.design_cache_dir)
-        logging.info(f"Design cache for {region} already exists at {rel}; skipping build (use --force to rebuild).")
+        logging.info(
+            f"Frontier cache for {region} already exists at {cache_file.relative_to(cache_dir)}; "
+            f"skipping build (use --force to rebuild)."
+        )
         return cache_file
 
-    logging.info(f"Building design cache for {region} at {cache_file.relative_to(path_config.design_cache_dir)}.")
+    logging.info(
+        f"Building frontier cache for {region} at {cache_file.relative_to(cache_dir)} ({len(anchors)} anchors)."
+    )
 
-    # Choose land points + map to output-grid indices.
     land_points, all_lats, all_lons = choose_land_points_in_cutout(profile, path_config.lsm_path)
     npts = len(land_points)
     pt_lats = land_points[:, 0]
@@ -443,292 +273,208 @@ def build_design_cache_for_region(
     iy = np.array([lat_to_iy[la] for la in pt_lats], dtype=np.int32)
     ix = np.array([lon_to_ix[lo] for lo in pt_lons], dtype=np.int32)
 
-    # Compact (npts, T) extraction shared across threads via views.
-    max_cap = open_regional_dataset("max_cap", region, path_config)
-    DTYPE = np.float64
     t_extract = time.time()
-    sel = dict(y=xr.DataArray(pt_lats, dims="point"), x=xr.DataArray(pt_lons, dims="point"))
-    prof_pts = profile[["solar", "wind"]].sel(**sel, method="nearest")
-    solar_arr = np.ascontiguousarray(prof_pts["solar"].transpose("point", "time").values, dtype=DTYPE)
-    wind_arr = np.ascontiguousarray(prof_pts["wind"].transpose("point", "time").values, dtype=DTYPE)
-    mc_pts = max_cap[["pv", "wind"]].sel(**sel, method="nearest")
-    pv_max = np.asarray(mc_pts["pv"].values, dtype=np.float64)
-    wind_max = np.asarray(mc_pts["wind"].values, dtype=np.float64)
+    # Indexers passed directly rather than through a dict: the sampler's build shares one `sel`
+    # between the profiles and the capacity ceiling, and there is no ceiling lookup here.
+    prof_pts = profile[["solar", "wind"]].sel(
+        y=xr.DataArray(pt_lats, dims="point"),
+        x=xr.DataArray(pt_lons, dims="point"),
+        method="nearest",
+    )
+    solar_arr = np.ascontiguousarray(prof_pts["solar"].transpose("point", "time").values, dtype=np.float64)
+    wind_arr = np.ascontiguousarray(prof_pts["wind"].transpose("point", "time").values, dtype=np.float64)
     logging.info(f"[timing] profile extraction: {time.time() - t_extract:.1f}s ({npts} points)")
 
-    # Strided tile assignment + adaptive tile count (load balance for
-    # geographically-clustered expensive points; see OPTIMIZATION_NOTES.md).
+    # Strided tile assignment, kept from the sampler and worth *more* here. The sampler's cost
+    # was near-fixed per pixel; a bisection's tracks how hard the site is, so expensive points
+    # cluster geographically and contiguous tiles would leave workers idle.
     n_tiles = _adaptive_n_tiles(npts, n_workers)
     order = np.arange(npts)
-    tiles = [order[i::n_tiles] for i in range(n_tiles)]
-    tiles = [t for t in tiles if len(t)]
-    logging.info(f"[timing] precompute tile partition: {len(tiles)} tiles, ~{npts / len(tiles):.0f} pts/tile")
+    tiles = [t for t in (order[i::n_tiles] for i in range(n_tiles)) if len(t)]
+    logging.info(f"[timing] frontier tile partition: {len(tiles)} tiles, ~{npts / len(tiles):.0f} pts/tile")
+
     t_compute = time.time()
     with ThreadPoolExecutor(max_workers=n_workers) as ex:
-        tile_results = list(
-            ex.map(
-                lambda t: _precompute_tile(
-                    t,
-                    solar_arr,
-                    wind_arr,
-                    p,
-                    n,
-                    RANDOM_SEED,
-                ),
-                tiles,
-            )
-        )
+        tile_results = list(ex.map(lambda t: _frontier_tile(t, solar_arr, wind_arr, coverage, params, anchors), tiles))
 
     tile_times = np.array([tr[0] for tr in tile_results])
     wall = time.time() - t_compute
     logging.info(
-        f"[timing] precompute parallel ({len(tiles)} tiles, n_workers={n_workers}): {wall:.1f}s | "
+        f"[timing] frontier build ({len(tiles)} tiles, n_workers={n_workers}): {wall:.1f}s | "
         f"tile compute min/mean/max {tile_times.min():.1f}/{tile_times.mean():.1f}/{tile_times.max():.1f}s "
         f"(max/mean={tile_times.max() / tile_times.mean():.2f}), "
         f"parallel efficiency ~{tile_times.sum() / (wall * n_workers):.0%}"
     )
 
-    # Reassemble per-point order (tiles are strided index lists).
-    empty_d = np.empty((0, 3), dtype=np.float64)
-    empty_c = np.empty(0, dtype=np.float64)
-    per_point_designs: list[np.ndarray] = [empty_d] * npts
-    per_point_coverage: list[np.ndarray] = [empty_c] * npts
-    for tile_indices, (_, tile_out) in zip(tiles, tile_results):
+    per_point: list[PixelFrontier | None] = [None] * npts
+    for tile_indices, (_, tile_frontiers) in zip(tiles, tile_results):
         for j, k in enumerate(tile_indices):
-            per_point_designs[int(k)] = tile_out[j][0]
-            per_point_coverage[int(k)] = tile_out[j][1]
+            per_point[int(k)] = tile_frontiers[j]
+    if any(f is None for f in per_point):
+        raise RuntimeError(f"{sum(f is None for f in per_point)} of {npts} points produced no frontier")
 
-    designs_flat, design_offsets, coverage_flat = design_cache.pack_csr(
-        per_point_designs,
-        per_point_coverage,
-    )
-
-    cache = design_cache.RegionDesignCache(
+    cache = stack_pixel_frontiers(
+        [f for f in per_point if f is not None],
         region=region,
-        all_lats=np.asarray(all_lats, dtype=np.float64),
-        all_lons=np.asarray(all_lons, dtype=np.float64),
-        lats=pt_lats.astype(np.float64),
-        lons=pt_lons.astype(np.float64),
+        all_lats=np.asarray(all_lats),
+        all_lons=np.asarray(all_lons),
+        lats=pt_lats,
+        lons=pt_lons,
         iy=iy,
         ix=ix,
-        pv_max=pv_max,
-        wind_max=wind_max,
-        designs_flat=designs_flat,
-        design_offsets=design_offsets,
-        coverage_flat=coverage_flat,
-        meta=design_cache.build_cache_meta(
-            region,
-            npts,
-            designs_flat.shape[0],
-            p,
-            n,
-            RANDOM_SEED,
-            weather_year,
-            ERA5_DATA_RESOLUTION,
-            OVERSCALE_SAMPLING_K,
-        ),
+        meta=build_frontier_meta(region, npts, coverage, params, weather_year, ERA5_DATA_RESOLUTION),
     )
-    written = design_cache.write_cache(cache, cache_file)
-    rel = written.relative_to(path_config.design_cache_dir)
+    written = write_frontier_cache(cache, cache_file)
+    solved = int(np.sum(cache.status == STATUS_OK))
     logging.info(
-        f"Wrote design cache for {region}: {rel} ({npts} pts, {designs_flat.shape[0]} surviving designs total)."
+        f"Wrote frontier cache for {region}: {written.relative_to(cache_dir)} "
+        f"({npts} pts, {solved} solved, {_store_size_mb(written):.1f} MB)."
     )
     return written
 
 
-def _topup_tile(
-    tile_indices: np.ndarray,
-    designs_flat: np.ndarray,
-    design_offsets: np.ndarray,
-    pv_max: np.ndarray,
-    wind_max: np.ndarray,
-    solar_profiles: np.ndarray,
-    wind_profiles: np.ndarray,
-    baseload_demand: float,
-    p: int,
-    n: int,
-    seed: int,
-    min_survivors: int,
-) -> tuple[float, list[tuple[int, np.ndarray, np.ndarray]], dict[str, int]]:
-    """
-    Prebuild worker: only the trigger-band decision + top-up per point (no LCOE),
-    producing the same per-pixel (verdict, designs, coverage) triples the query
-    path returns, so an explicitly prebuilt supplement is bit-identical to one
-    persisted as a query side effect.
-    """
-    t0 = time.time()
-    quality_min = top_up_quality_threshold(n)
-    out: list[tuple[int, np.ndarray, np.ndarray]] = []
-    counters = {"starved": 0, "corner_infeasible": 0, "topped_up": 0, "quality": 0}
-    for k in tile_indices:
-        if solar_profiles[k].sum() == 0 and wind_profiles[k].sum() == 0:
-            out.append((0, _EMPTY_TOPUP_D, _EMPTY_TOPUP_C))
-            continue
-        limit = {
-            "solar": float(pv_max[k]) / baseload_demand,
-            "wind": float(wind_max[k]) / baseload_demand,
-        }
-        lo, hi = int(design_offsets[k]), int(design_offsets[k + 1])
-        d = designs_flat[lo:hi]
-        n_masked = int(((d[:, 0] <= limit["solar"]) & (d[:, 1] <= limit["wind"])).sum())
-        if n_masked >= max(min_survivors, quality_min):
-            out.append((0, _EMPTY_TOPUP_D, _EMPTY_TOPUP_C))
-            continue
-        starved = n_masked < min_survivors
-        verdict, top_d, top_c = _topup_point(solar_profiles[k], wind_profiles[k], p, n, seed, limit, starved)
-        if starved:
-            counters["starved"] += 1
-            counters["corner_infeasible" if verdict == 2 else "topped_up"] += 1
-        else:
-            counters["quality"] += 1
-        out.append((verdict, top_d, top_c))
-    return time.time() - t0, out, counters
-
-
-def build_topup_supplement_for_region(
+def query_frontier_cache_for_region(
+    year: int,
     region: str,
-    baseload_demand: float,
-    p: int,
-    n: int,
-    profile: xr.Dataset,
+    load_density: float,
+    coverage: float,
+    costs: xr.Dataset,
+    investment_horizon: int,
     path_config: PathConfig,
     n_workers: int,
+    params: SearchParams | None = None,
     force: bool = False,
-) -> Path:
+) -> xr.Dataset:
     """
-    Build the per-baseload top-up supplement for one region against its existing
-    design cache (raises FileNotFoundError if the cache is missing), without
-    producing NetCDFs. Idempotent: a valid supplement at the target path is kept
-    unless `force`. The query path persists the same supplement as a side effect;
-    this exists to pre-pay the top-up for shipped bundles.
-    """
-    weather_year = detect_weather_year(path_config)
-    cache_file = design_cache.cache_path(
-        path_config.design_cache_dir,
-        region,
-        p,
-        n,
-        RANDOM_SEED,
-        weather_year,
-        ERA5_DATA_RESOLUTION,
-    )
-    cache = design_cache.read_cache(cache_file)
-    topup_file = design_cache.topup_supplement_path(cache_file, baseload_demand)
-    if not force and _load_topup_supplement(topup_file, cache.meta, baseload_demand) is not None:
-        logging.info(f"[top-up] valid supplement already exists for {region}; skipping (use --force to rebuild).")
-        return topup_file
+    Price one region's cached frontiers for one investment year and write the NetCDF.
 
-    npts = cache.n_points
-    t_prof = time.time()
-    prof_pts = (
-        profile[["solar", "wind"]]
-        .sel(
-            x=xr.DataArray(cache.lons, dims="point"),
-            y=xr.DataArray(cache.lats, dims="point"),
-            method="nearest",
-        )
-        .transpose("point", "time")
+    No profile dataset: the sampler needed one at query time to re-run dispatch on its winner,
+    and the frontier store already holds every dispatch result the pricing needs. That is the
+    property the cache exists for — a 36-year sweep simulates the physics once and prices it
+    36 times, and the pricing is arithmetic.
+
+    `load_density` is MW/km2 (D1), not an absolute demand: LCOE is exactly baseload-invariant,
+    so a single flat MW figure applied to every pixel was never a real input, only a display
+    value. Each pixel's own `load_mw = load_density * pixel_area(lat)` is what actually scales
+    its reported design.
+
+    **The capacity ceiling is not applied.** Grid 2 lands in M4; until then this reports the
+    unconstrained optimum, and the warning below says so at every call. Delete the warning with
+    the note in `_query_frontier_tile` when the constrained search arrives.
+    """
+    params = SearchParams() if params is None else params
+    weather_year = detect_weather_year(path_config)
+    cache_dir = path_config.frontier_cache_dir(weather_year)
+    cache_file = frontier_cache_path(cache_dir, region, coverage, params, weather_year, ERA5_DATA_RESOLUTION)
+    out_path = path_config.optimal_sol_path(weather_year, load_density, coverage, region, year)
+    if out_path.exists() and not force:
+        logging.info(f"{out_path.name} already exists; skipping (use --force to re-derive).")
+        return xr.open_dataset(out_path)
+
+    logging.warning(
+        "[UNCONSTRAINED] The capacity ceiling is not applied yet (Grid 2 arrives in M4), so "
+        "these LCOEs are the unconstrained optimum. With the availability layers on the ceiling "
+        "binds nearly everywhere, so the results will be optimistic and plausible-looking. Do "
+        "not promote them."
     )
-    solar_profiles = prof_pts["solar"].values
-    wind_profiles = prof_pts["wind"].values
-    logging.info(f"[timing] profile extraction for top-up build: {time.time() - t_prof:.1f}s ({npts} points)")
+
+    cache = read_frontier_cache(cache_file, params, coverage, weather_year)
+    npts = cache.n_points
+    logging.info(f"Querying frontier cache for {region} y{year}: {npts} points, {len(cache.all_lats)} lat rows.")
+
+    usable = cache.status == STATUS_OK
+    cost_keys, capex_per_tech, opex_per_tech, coc_arr = _derive_cost_arrays(
+        cache.lats, cache.lons, usable, costs, path_config
+    )
+    # D1: latitude-free density -> per-pixel absolute demand. Computed once for the whole
+    # region rather than per pixel inside the tile worker.
+    load_mw = load_density * pixel_area(cache.lats)
 
     n_tiles = _adaptive_n_tiles(npts, n_workers)
     order = np.arange(npts)
-    tiles = [order[i::n_tiles] for i in range(n_tiles)]
-    tiles = [t for t in tiles if len(t)]
-    min_survivors = min_survivors_required(n)
-    t_topup = time.time()
+    tiles = [t for t in (order[i::n_tiles] for i in range(n_tiles)) if len(t)]
+
+    t_lcoe = time.time()
     with ThreadPoolExecutor(max_workers=n_workers) as ex:
-        tile_results = list(
+        raw = list(
             ex.map(
-                lambda t: _topup_tile(
+                lambda t: _query_frontier_tile(
                     t,
-                    cache.designs_flat,
-                    cache.design_offsets,
-                    cache.pv_max,
-                    cache.wind_max,
-                    solar_profiles,
-                    wind_profiles,
-                    baseload_demand,
-                    p,
-                    n,
-                    RANDOM_SEED,
-                    min_survivors,
+                    cache,
+                    capex_per_tech,
+                    opex_per_tech,
+                    coc_arr,
+                    cost_keys,
+                    load_mw,
+                    investment_horizon,
                 ),
                 tiles,
             )
         )
-    counters = {
-        key: sum(tr[2][key] for tr in tile_results) for key in ("starved", "corner_infeasible", "topped_up", "quality")
-    }
-    written = design_cache.write_topup_supplement(
-        _pack_topup_supplement(npts, tiles, [tr[1] for tr in tile_results], cache.meta, baseload_demand),
-        topup_file,
-    )
-    logging.info(
-        f"[top-up] supplement built for {region}: {written.name} in {time.time() - t_topup:.1f}s "
-        f"({counters['topped_up'] + counters['quality']} pixels re-sampled, "
-        f"{counters['corner_infeasible']} proven infeasible by the corner screen; {_store_size_mb(written):.1f} MB)."
-    )
-    return written
+    logging.info(f"[timing] LCOE parallel ({len(tiles)} tiles, n_workers={n_workers}): {time.time() - t_lcoe:.1f}s")
 
-
-def query_design_cache_for_region(
-    year: int,
-    region: str,
-    baseload_demand: float,
-    p: int,
-    profile: xr.Dataset,
-    costs: xr.Dataset,
-    investment_horizon: int,
-    n: int,
-    path_config: PathConfig,
-    n_workers: int,
-    force: bool = False,
-) -> xr.Dataset:
-    """
-    LCOE-only re-derivation from a pre-built design cache. Loads the per-region
-    cache, derives cost_keys fresh from ``data/iso3_grid.nc`` (so canonical-iso3
-    grid changes flow through without rebuilding the cache), looks up year-specific
-    costs via a once-per-query ``{cost_key: (capex, opex, coc)}`` table, computes
-    LCOE for every surviving design, picks the minimum per point, and assembles +
-    writes the NetCDF.
-    """
-    optimal_sol_path = path_config.optimal_sol_path(baseload_demand, p, region, year)
-    if optimal_sol_path.exists() and not force:
+    counters = {key: sum(r[2][key] for r in raw) for key in ("certified", "truncated", "no_optimum", "zero_potential")}
+    solved = npts - counters["no_optimum"] - counters["zero_potential"]
+    if solved > 0:
+        # Certificate telemetry. A low certified rate is a symptom of the coarse tier's
+        # deliberate looseness, not of a wrong answer; truncation is the sharper signal,
+        # since it says this particular winner sat against an edge the patch imposed.
         logging.info(
-            f"Optimal solution for {region} y{year} already exists; loading from disk (use --force to re-derive)."
+            f"[certificate] {region} y{year}: {100 * counters['certified'] / solved:.1f}% of "
+            f"{solved} solved pixels provably contained, {100 * counters['truncated'] / solved:.1f}% "
+            f"truncated against a patch edge."
         )
-        return xr.open_dataset(optimal_sol_path)
 
-    design_cache.migrate_legacy_cache_filenames(path_config.design_cache_dir)
-    weather_year = detect_weather_year(path_config)
-    cache_file = design_cache.cache_path(
-        path_config.design_cache_dir,
-        region,
-        p,
-        n,
-        RANDOM_SEED,
-        weather_year,
-        ERA5_DATA_RESOLUTION,
+    attrs = {
+        "investment_year": year,
+        "investment_horizon_years": investment_horizon,
+        "load_density_mw_km2": load_density,
+        "coverage_fraction": coverage,
+        "region": region,
+        "era5_weather_year": weather_year,
+        "era5_resolution_deg": ERA5_DATA_RESOLUTION,
+        "search_params_hash": params.identity_hash(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "source": "Baseload Optimisation Atlas (BOA)",
+        "frontier_cache_path": str(cache_file.relative_to(cache_dir)),
+        "capacity_ceiling_applied": 0,
+    }
+    optimal_sol = _assemble_optimal_sol(
+        tiles,
+        [r[1] for r in raw],
+        npts,
+        cache.all_lats,
+        cache.all_lons,
+        cache.iy,
+        cache.ix,
+        attrs,
+        out_path,
     )
-    cache = design_cache.read_cache(cache_file)
-    npts = cache.n_points
-    logging.info(f"Loaded design cache for {region}: {npts} pts, {cache.n_designs_total} surviving designs.")
+    logging.info(f"Wrote {out_path.name} ({solved}/{npts} pixels solved).")
+    return optimal_sol
 
-    # Per-baseload top-up supplement: replay if valid, else compute fresh in the tiles and persist below.
-    topup_file = design_cache.topup_supplement_path(cache_file, baseload_demand)
-    supplement = _load_topup_supplement(topup_file, cache.meta, baseload_demand)
 
-    # Derive cost_keys fresh from the canonical iso3 grid + subregion polygons.
-    # Empty cached cost_keys are skipped (zero-potential pixels — no LCOE to compute).
-    # Hot-path optimisation: pre-compute the (iso3_to_subregions, full_cost_key_set) indices
-    # once, then resolve each pixel's cost_key string without xarray .sel() calls. After the
-    # per-point pass we build a {cost_key: (capex, opex, coc)} table covering only the
-    # distinct keys actually seen (~250 vs ~30k pixels) and reuse it across all points.
-    t_costs = time.time()
-    grid_iso3 = _preload_iso3_from_grid(cache.lats, cache.lons, path_config.iso3_grid_path)
+def _derive_cost_arrays(
+    lats: np.ndarray,
+    lons: np.ndarray,
+    usable: np.ndarray,
+    costs: xr.Dataset,
+    path_config: PathConfig,
+) -> tuple[np.ndarray, dict, dict, np.ndarray]:
+    """
+    Per-point cost keys and the capex/opex/WACC arrays they resolve to.
+
+    Geocoding happens at query time, not build time, so the frontier cache stays independent
+    of the canonical iso3 grid — the same reason it holds no capacity ceiling. `usable` marks
+    the points worth a lookup; a point with no optimum is never priced, so paying for its
+    geocode would be waste.
+
+    Per-pixel fallback logging is suppressed and tallied instead: at ~30k points per region a
+    line each would bury everything else, while the totals are what actually signal an
+    authoring gap in the cost sheet.
+    """
+    npts = len(lats)
+    grid_iso3 = _preload_iso3_from_grid(lats, lons, path_config.iso3_grid_path)
     iso3_to_subregions, full_cost_key_set = build_cost_lookup_indices(costs)
     fallback_counts: dict[str, int] = {}
     national_counts: dict[str, int] = {}
@@ -737,9 +483,6 @@ def query_design_cache_for_region(
         def filter(self, record: logging.LogRecord) -> bool:
             msg = str(record.getMessage())
             if msg.startswith("[FALLBACK]"):
-                # Suppress all per-pixel fallback spam; tally global-average fallbacks
-                # and province→national ones (the latter resolve to a real cost row,
-                # but a large share signals an authoring gap worth surfacing).
                 if "global" in msg.lower():
                     key = msg.split("Cost key", 1)[-1].split("(", 1)[0].strip() or "UNKNOWN"
                     fallback_counts[key] = fallback_counts.get(key, 0) + 1
@@ -752,32 +495,30 @@ def query_design_cache_for_region(
     _filt = _FallbackCounter()
     logging.getLogger().addFilter(_filt)
     cost_keys = np.full(npts, "", dtype="<U32")
-    has_design = cache.design_offsets[1:] > cache.design_offsets[:-1]
     try:
         for i in range(npts):
-            if not has_design[i]:
-                continue  # zero-potential point; LCOE won't run.
+            if not usable[i]:
+                continue
             cost_keys[i] = cost_key_for_point(
-                float(cache.lats[i]),
-                float(cache.lons[i]),
+                float(lats[i]),
+                float(lons[i]),
                 iso3_to_subregions,
                 full_cost_key_set,
                 country_code=grid_iso3[i],
             )
     finally:
         logging.getLogger().removeFilter(_filt)
+
     if fallback_counts:
-        summary = ", ".join(f"{k}={v}" for k, v in sorted(fallback_counts.items(), key=lambda kv: -kv[1])[:10])
-        total = sum(fallback_counts.values())
-        logging.info(f"[FALLBACK] {total} pixels used GLOBAL_AVG costs (top iso3s: {summary})")
+        top = ", ".join(f"{k}={v}" for k, v in sorted(fallback_counts.items(), key=lambda kv: -kv[1])[:10])
+        logging.info(f"[FALLBACK] {sum(fallback_counts.values())} pixels used GLOBAL_AVG costs (top iso3s: {top})")
     if national_counts:
-        summary = ", ".join(f"{k}={v}" for k, v in sorted(national_counts.items(), key=lambda kv: -kv[1]))
+        top = ", ".join(f"{k}={v}" for k, v in sorted(national_counts.items(), key=lambda kv: -kv[1]))
         logging.info(
             f"[FALLBACK] {sum(national_counts.values())} pixels used national CAPEX "
-            f"(province not authored in the cost sheet): {summary}"
+            f"(province not authored in the cost sheet): {top}"
         )
 
-    # Build {cost_key: (capex, opex, coc)} once for the distinct keys, then scatter to per-point.
     unique_keys = set(str(k) for k in cost_keys.tolist()) - {""}
     key_to_costs = {k: costs_for_key(k, costs) for k in unique_keys}
     n_years = costs["Capex solar"].sizes["year"]
@@ -793,170 +534,84 @@ def query_design_cache_for_region(
             capex_per_tech[tech][i] = capex_i[tech]
             opex_per_tech[tech][i] = opex_i[tech]
         coc_arr[i] = coc_i
-    logging.info(
-        f"[timing] cost_key derive + lookup: {time.time() - t_costs:.1f}s "
-        f"({npts} points, {len(unique_keys)} distinct keys)"
-    )
+    logging.info(f"[timing] cost_key derive + lookup: {npts} points, {len(unique_keys)} distinct keys")
+    return cost_keys, capex_per_tech, opex_per_tech, coc_arr
 
-    # Per-point hourly profiles for the served-fraction refinement.
-    t_prof = time.time()
-    prof_pts = (
-        profile[["solar", "wind"]]
-        .sel(
-            x=xr.DataArray(cache.lons, dims="point"),
-            y=xr.DataArray(cache.lats, dims="point"),
-            method="nearest",
-        )
-        .transpose("point", "time")
-    )  # enforce (npts, T) so solar_profiles[k] is per-point
-    solar_profiles = prof_pts["solar"].values  # (npts, T)
-    wind_profiles = prof_pts["wind"].values  # (npts, T)
-    logging.info(f"[timing] profile extraction for refinement: {time.time() - t_prof:.1f}s")
 
-    # Parallel LCOE — cheap (~5 ms / point), so threading is mostly for code parity
-    # with the build phase rather than a meaningful wall-time win.
-    n_tiles = _adaptive_n_tiles(npts, n_workers)
-    order = np.arange(npts)
-    tiles = [order[i::n_tiles] for i in range(n_tiles)]
-    tiles = [t for t in tiles if len(t)]
-    min_survivors = min_survivors_required(n)
-    t_lcoe = time.time()
-    with ThreadPoolExecutor(max_workers=n_workers) as ex:
-        tile_results = list(
-            ex.map(
-                lambda t: _query_lcoe_tile(
-                    t,
-                    cache.designs_flat,
-                    cache.design_offsets,
-                    cache.coverage_flat,
-                    cache.pv_max,
-                    cache.wind_max,
-                    capex_per_tech,
-                    opex_per_tech,
-                    coc_arr,
-                    cost_keys,
-                    solar_profiles,
-                    wind_profiles,
-                    baseload_demand,
-                    investment_horizon,
-                    p,
-                    n,
-                    RANDOM_SEED,
-                    min_survivors,
-                    supplement,
-                ),
-                tiles,
-            )
-        )
-    wall = time.time() - t_lcoe
-    tile_times = np.array([tr[0] for tr in tile_results])
-    logging.info(
-        f"[timing] LCOE parallel ({len(tiles)} tiles, n_workers={n_workers}): {wall:.1f}s | "
-        f"tile compute min/mean/max {tile_times.min():.2f}/{tile_times.mean():.2f}/{tile_times.max():.2f}s"
-    )
-    topup = {
-        key: sum(tr[2][key] for tr in tile_results)
-        for key in ("starved", "corner_infeasible", "topped_up", "resolved", "quality", "from_supplement")
-    }
-    if topup["starved"] > 0 or topup["quality"] > 0:
-        served = f" ({topup['from_supplement']} pixels served from the supplement)" if supplement is not None else ""
-        logging.info(
-            f"[top-up] {topup['starved']} pixels starved by the capacity mask in {region}: "
-            f"{topup['corner_infeasible']} proven infeasible by the corner screen, "
-            f"{topup['topped_up']} re-sampled ({topup['resolved']} resolved to a usable optimum); "
-            f"{topup['quality']} sparse pixels re-sampled by the quality trigger.{served}"
-        )
-    if supplement is None:
-        t_topup = time.time()
-        written = design_cache.write_topup_supplement(
-            _pack_topup_supplement(npts, tiles, [tr[3] for tr in tile_results], cache.meta, baseload_demand),
-            topup_file,
-        )
-        logging.info(
-            f"[top-up] supplement written: {written.name} "
-            f"({_store_size_mb(written):.1f} MB, {time.time() - t_topup:.1f}s); "
-            f"later queries at {baseload_demand:g} MW skip the top-up compute."
-        )
-    tile_results = [tr[1] for tr in tile_results]
+def _assemble_optimal_sol(
+    tiles: list[np.ndarray],
+    tile_results: list[list[dict]],
+    npts: int,
+    all_lats: np.ndarray,
+    all_lons: np.ndarray,
+    iy: np.ndarray,
+    ix: np.ndarray,
+    attrs: dict,
+    out_path: Path,
+) -> xr.Dataset:
+    """
+    Scatter per-point results onto the region grid, write the NetCDF, return the dataset.
 
-    # Assemble per-field flat arrays then vectorised assignment into the output grid.
-    t_assemble = time.time()
+    `status` is written for every point including the ones with no optimum -- recording why a
+    pixel produced nothing is the whole purpose of the code. Everything else stays zero there,
+    which is what the output has always meant by "not modelled".
+    """
     fields = {
-        "lcoe": np.zeros(npts),
-        "lcoe_coverage_based": np.zeros(npts),
-        "installation_cost": np.zeros(npts),
-        "installation_cost_solar": np.zeros(npts),
-        "installation_cost_wind": np.zeros(npts),
-        "installation_cost_battery": np.zeros(npts),
-        "solar_factor": np.zeros(npts),
-        "wind_factor": np.zeros(npts),
-        "battery_factor": np.zeros(npts),
-        "coverage": np.zeros(npts),
-        "served_fraction": np.zeros(npts),
-        "cost_of_capital": np.zeros(npts),
+        name: np.zeros(npts)
+        for name in (
+            "lcoe",
+            "lcoe_coverage_based",
+            "installation_cost",
+            "installation_cost_solar",
+            "installation_cost_wind",
+            "installation_cost_battery",
+            "solar_factor",
+            "wind_factor",
+            "battery_factor",
+            "coverage",
+            "served_fraction",
+            "cost_of_capital",
+            "load_mw",
+        )
     }
     cost_key_flat = np.full(npts, "", dtype=object)
     status_flat = np.zeros(npts, dtype=np.int8)
+
     for tile_indices, res in zip(tiles, tile_results):
         for j, k in enumerate(tile_indices):
             r = res[j]
-            # Status is recorded even for the dropped points — that is the whole point of it.
-            status_flat[int(k)] = r["status"]
-            if np.isnan(r["lcoe"]):
-                continue
             k_int = int(k)
+            status_flat[k_int] = r["status"]
+            cost_key_flat[k_int] = r.get("cost_key", "")
+            # load_mw is a closed form of latitude and the run's load density -- real for
+            # every pixel in the region regardless of whether a design was found, unlike the
+            # search-derived fields below.
+            fields["load_mw"][k_int] = r["load_mw"]
+            if r["status"] != STATUS_OK:
+                continue
+            breakdown = r["installation_cost_breakdown"]
+            design = r["design"]
             fields["lcoe"][k_int] = r["lcoe"]
             fields["lcoe_coverage_based"][k_int] = r["lcoe_coverage_based"]
             fields["installation_cost"][k_int] = r["installation_cost"]
-            fields["installation_cost_solar"][k_int] = r["installation_cost_breakdown"]["solar"]
-            fields["installation_cost_wind"][k_int] = r["installation_cost_breakdown"]["wind"]
-            fields["installation_cost_battery"][k_int] = r["installation_cost_breakdown"]["battery"]
-            fields["solar_factor"][k_int] = r["design"]["solar"]
-            fields["wind_factor"][k_int] = r["design"]["wind"]
-            fields["battery_factor"][k_int] = r["design"]["battery"]
+            fields["installation_cost_solar"][k_int] = breakdown["solar"]
+            fields["installation_cost_wind"][k_int] = breakdown["wind"]
+            fields["installation_cost_battery"][k_int] = breakdown["battery"]
+            fields["solar_factor"][k_int] = design["solar"]
+            fields["wind_factor"][k_int] = design["wind"]
+            fields["battery_factor"][k_int] = design["battery"]
             fields["coverage"][k_int] = r["coverage"]
             fields["served_fraction"][k_int] = r["served_fraction"]
             fields["cost_of_capital"][k_int] = r["cost_of_capital"]
-            cost_key_flat[k_int] = r.get("cost_key", "")
 
-    n_rejected = int((status_flat == 4).sum())
-    if n_rejected > 0:
-        logging.info(
-            f"{n_rejected} pixels rejected by minimum-survivor cut "
-            f"(<{min_survivors} of n={n} designs surviving) in {region}."
-        )
+    shape = (len(all_lats), len(all_lons))
 
-    # Fallback summary (cost_keys carry the :GLOBAL_AVG marker for pixels whose
-    # iso3 has no cost-data row — mostly Antarctica plus a handful of micro-states).
-    valid = fields["lcoe"] > 0
-    is_fallback = np.array([isinstance(ck, str) and ck.endswith(":GLOBAL_AVG") for ck in cost_keys])
-    fallback_mask = valid & is_fallback
-    n_fallback = int(fallback_mask.sum())
-    if n_fallback > 0:
-        n_valid = int(valid.sum())
-        global_mean_wacc = float(costs["Cost of capital"].mean(dim="iso3").values)
-        logging.warning(
-            f"[FALLBACK] {n_fallback}/{n_valid} valid gridpoints "
-            f"({100 * n_fallback / max(n_valid, 1):.1f}%) in {region} used global-average "
-            f"costs (WACC={global_mean_wacc:.4f})."
-        )
-
-    all_lats = cache.all_lats
-    all_lons = cache.all_lons
-    iy = cache.iy
-    ix = cache.ix
-
-    def _to_grid(flat: np.ndarray) -> np.ndarray:
-        grid = np.zeros((len(all_lats), len(all_lons)))
+    def _to_grid(flat: np.ndarray, dtype=float) -> np.ndarray:
+        grid = np.zeros(shape, dtype=dtype)
         grid[iy, ix] = flat
         return grid
 
-    def _to_grid_int8(flat: np.ndarray) -> np.ndarray:
-        grid = np.zeros((len(all_lats), len(all_lons)), dtype=np.int8)
-        grid[iy, ix] = flat
-        return grid
-
-    cost_key_grid = np.full((len(all_lats), len(all_lons)), "", dtype=object)
+    cost_key_grid = np.full(shape, "", dtype=object)
     cost_key_grid[iy, ix] = cost_key_flat
 
     optimal_sol = xr.Dataset(
@@ -964,67 +619,49 @@ def query_design_cache_for_region(
         data_vars={
             **{name: (("lat", "lon"), _to_grid(flat)) for name, flat in fields.items()},
             "cost_key": (("lat", "lon"), cost_key_grid),
-            "status": (("lat", "lon"), _to_grid_int8(status_flat)),
+            "status": (("lat", "lon"), _to_grid(status_flat, np.int8)),
         },
     )
-    logging.info(f"[timing] result assembly: {time.time() - t_assemble:.1f}s")
-    optimal_sol.attrs.update(
-        {
-            "investment_year": year,
-            "investment_horizon_years": investment_horizon,
-            "baseload_demand_mw": baseload_demand,
-            "coverage_fraction": 1 - p / 100,
-            "p_percentile": p,
-            "n_samples": n,
-            "random_seed": RANDOM_SEED,
-            "min_survivor_fraction": MIN_SURVIVOR_FRACTION,
-            "min_survivors": min_survivors,
-            "region": region,
-            "era5_weather_year": weather_year,
-            "era5_resolution_deg": ERA5_DATA_RESOLUTION,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "source": "Baseload Optimisation Atlas (BOA)",
-            "design_cache_path": str(cache_file.relative_to(path_config.design_cache_dir)),
-        }
-    )
-    optimal_sol_path.parent.mkdir(parents=True, exist_ok=True)
-    optimal_sol.to_netcdf(optimal_sol_path, mode="w", format="NETCDF4", encoding=_float32_output_encoding(optimal_sol))
+    optimal_sol.attrs.update(attrs)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    optimal_sol.to_netcdf(out_path, mode="w", format="NETCDF4", encoding=_float32_output_encoding(optimal_sol))
     return optimal_sol
 
 
 def combine_regional_datasets_into_global_dataset(
     year: int,
-    p: int,
-    baseload_demand: float,
+    coverage: float,
+    load_density: float,
     path_config: PathConfig,
+    weather_year: int,
     force: bool = False,
 ) -> xr.Dataset | None:
     """
-    Combine all regional datasets into a single global dataset. The datasets are interpolated onto the same grid and merged.
-    If any region is missing, the function will return None.
+    Combine every region's optimal-solution NetCDF (all of `REGION_COORDS`, not just the
+    original 9 -- boxes were split/added since) into one global dataset on a shared
+    0.25 deg grid. Returns None, without writing anything, if any region's file is missing --
+    a partial GLOBAL combine would silently look complete.
     """
     regions = list(REGION_COORDS.keys())
     regional_datasets = {}
 
     # Check if the global dataset already exists
-    global_output_path = path_config.optimal_sol_path(baseload_demand, p, "GLOBAL", year)
+    global_output_path = path_config.optimal_sol_path(weather_year, load_density, coverage, "GLOBAL", year)
     if global_output_path.exists() and not force:
         logging.info(f"Global optimal solution already exists at {global_output_path}. (use --force to re-derive)")
         return xr.open_dataset(global_output_path)
     else:
         logging.info(f"Combining regional datasets into global dataset for {year}.")
-        # Load all regional datasets
         for region in regions:
-            optimal_sol_path = path_config.optimal_sol_path(baseload_demand, p, region, year)
+            optimal_sol_path = path_config.optimal_sol_path(weather_year, load_density, coverage, region, year)
             if not optimal_sol_path.exists():
                 logging.warning(f"Optimal solution for {region} not found. Please check processing.")
                 return None
             regional_datasets[region] = xr.open_dataset(optimal_sol_path)
 
-        logging.info("Generating global maps from regional datasets.")
+        logging.info("Regridding regional datasets onto the global grid.")
 
-        # Define global grid
-        lat_global = np.arange(-90, 90.1, 0.25)  # Adjust resolution if needed
+        lat_global = np.arange(-90, 90.1, 0.25)
         lon_global = np.arange(-180, 180.1, 0.25)
 
         # Strip the string-typed cost_key and the int8 status from the numeric flow; both are
@@ -1040,18 +677,13 @@ def combine_regional_datasets_into_global_dataset(
             for region, ds in numeric_datasets.items()
         }
 
-        # Initialize global dataset with NaN values
         global_ds = xr.full_like(next(iter(interpolated_datasets.values())), fill_value=np.nan)
 
-        # Merge interpolated datasets into the global dataset
         for region, ds in interpolated_datasets.items():
             for var in ds.data_vars:
                 if var not in global_ds:
                     global_ds[var] = xr.full_like(ds[var], fill_value=np.nan)
                 global_ds[var] = xr.where(global_ds[var].isnull(), ds[var], global_ds[var])
-
-        # Remove zero values
-        global_ds = global_ds.where(global_ds != 0)
 
         # Merge cost_key onto the global grid via per-region exact reindex.
         if any("cost_key" in ds.data_vars for ds in regional_datasets.values()):
@@ -1078,13 +710,15 @@ def combine_regional_datasets_into_global_dataset(
                 status_grid[mask] = arr[mask]
             global_ds["status"] = (("lat", "lon"), status_grid)
 
-        # A region re-queried under a changed threshold must not silently combine with
-        # stale neighbours — the GLOBAL attrs below claim a single fraction for the lot.
-        fractions = {ds.attrs.get("min_survivor_fraction") for ds in regional_datasets.values()}
-        assert len(fractions) == 1, (
-            f"regional files disagree on min_survivor_fraction: {sorted(map(str, fractions))}. "
-            "Re-query the stale regions before combining."
-        )
+        # A region built under a different SearchParams (or re-queried after a frontier
+        # rebuild) must not silently combine with stale neighbours — the GLOBAL attrs below
+        # claim a single hash for the lot.
+        hashes = {ds.attrs.get("search_params_hash") for ds in regional_datasets.values()}
+        if len(hashes) != 1:
+            raise ValueError(
+                f"regional files disagree on search_params_hash: {sorted(map(str, hashes))}. "
+                "Re-query the stale regions before combining."
+            )
 
         # Carry run/provenance metadata from regional files; override region and refresh timestamp
         global_ds.attrs.update(next(iter(regional_datasets.values())).attrs)
