@@ -149,7 +149,7 @@ def resolve_swap_ratio(
             return hits[0].swap_ratio
     if old.is_emission_intense is None or new.is_emission_intense is None:
         return None
-    return default_ratio if old.is_emission_intense and new.is_emission_intense else 1.0
+    return default_ratio if new.is_emission_intense else 1.0
 
 
 def effective_ratio_grid(rows: list[TechnologyRow], default_ratio: float) -> tuple[list[str], list[list[str]]]:

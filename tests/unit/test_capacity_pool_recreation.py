@@ -125,7 +125,8 @@ def test_recreate_technologies_roundtrip_with_unauthored_warnings(tmp_path, capl
     grid_path = tmp_path / "capacity_pool_ratio_grid.csv"
     assert grid_path.exists()
     grid = pd.read_csv(grid_path, index_col=0, dtype=str)
-    assert grid.loc["BF", "DRI|Coal"] == "1.5"  # both sides intense
+    assert grid.loc["BF", "DRI|Coal"] == "1.5"  # new side intense
+    assert grid.loc["DRI|Hydrogen", "DRI|Coal"] == "1.5"  # the old side's flag does not matter
     assert grid.loc["BF", "DRI|Hydrogen"] == "1"  # new side not intense
     assert grid.loc["BF", "EAF"] == "unauthored"  # the TO AUTHOR cell propagates
 

@@ -16,9 +16,11 @@ Three branches, evaluated per plant action:
 
 **② REPLACE.** A switch or renovation of an existing furnace group is a replacement, and the ratio of old to new capacity depends on the transition:
 
-- old route not emission-intense, or new route not emission-intense ⇒ **1:1**;
-- both emission-intense, in an **exempt province** (Qinghai, Tibet) ⇒ **1:1**;
-- both emission-intense, anywhere else ⇒ **1.5:1** by default.
+- new route not emission-intense ⇒ **1:1**;
+- new route emission-intense, in an **exempt province** (Qinghai, Tibet) ⇒ **1:1**;
+- new route emission-intense, anywhere else ⇒ **1.5:1** by default, whatever the old route is.
+
+Only the new route's classification sets the ratio. This is stricter than the source flowchart, which first asks whether the *old* route is emission-intense, and is a deliberate modelling decision: a clean route replaced by a dirty one surrenders capacity like any other dirty replacement.
 
 The ratio **shrinks the furnace group**: replacing capacity `C_old` yields `C_new = C_old / ratio`, and `C_old − C_new` is deposited into the pool as freed capacity, tagged by the key-region rule. Net national capacity is not created or destroyed, it is reallocated: a dirty replacement surrenders capacity that a cleaner project can then claim. Before any of this, a **utilisation gate** applies: a group that sat at or below the utilisation floor for the whole of the most recent window of recorded years is not eligible for replacement or renovation at all.
 

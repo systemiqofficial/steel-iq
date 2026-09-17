@@ -3,7 +3,7 @@
 import pytest
 
 from steelo.capacity_policy import CapacityPolicyConfig, CapacityPolicyRecorder, TreeEvaluator
-from steelo.capacity_policy.inputs import RegionRow, TechnologyRow
+from steelo.capacity_policy.inputs import RegionRow, TechnologyRow, resolve_swap_ratio
 
 
 def region(geo_key: str, region_name: str | None = None, type: str | None = None) -> RegionRow:
@@ -138,9 +138,16 @@ class TestPermittedCapacityRatio:
         """Replacing an emission-intense route with another shrinks by the default ratio."""
         assert permitted(make_evaluator(), new_technology="BOF") == pytest.approx(2.0)
 
-    def test_non_intense_old_route_is_one_to_one(self):
-        """Replacing a route that is not emission-intense is 1:1."""
-        assert permitted(make_evaluator(), old_technology="EAF", new_technology="BOF") == pytest.approx(3.0)
+    def test_non_intense_old_route_to_intense_target_is_penalised(self):
+        """An emission-intense target pays the default ratio whatever the old route is."""
+        assert permitted(make_evaluator(), old_technology="EAF", new_technology="BOF") == pytest.approx(2.0)
+
+    def test_derived_ratio_follows_the_new_reductant_row_only(self):
+        """Between reductant rows of one technology, only the new row's flag sets the derived ratio."""
+        coal = classification("DRI", reductant="Coal", is_emission_intense=True)
+        hydrogen = classification("DRI", reductant="Hydrogen", is_emission_intense=False)
+        assert resolve_swap_ratio(hydrogen, coal, [], 1.5) == 1.5
+        assert resolve_swap_ratio(coal, hydrogen, [], 1.5) == 1.0
 
     def test_non_intense_target_is_one_to_one(self):
         """A target that is not emission-intense is 1:1 even from an emission-intense route."""
@@ -178,7 +185,7 @@ class TestPermittedCapacityRatio:
         )
         assert permitted(
             evaluator, old_technology="DRI", old_reductant="Hydrogen", new_technology="BOF"
-        ) == pytest.approx(3.0)
+        ) == pytest.approx(2.0)
 
     def test_reductant_specific_classification_resolves(self):
         """The reductant decides the classification of a reductant-split technology."""
