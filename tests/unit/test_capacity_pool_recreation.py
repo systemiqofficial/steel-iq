@@ -55,7 +55,7 @@ def _write_workbook(path, capacity_sheets: dict[str, pd.DataFrame]) -> None:
         pd.DataFrame({"Technology": ["BF", "EAF", "DRI"]}).to_excel(
             writer, sheet_name="Techno-economic details", index=False
         )
-        pd.DataFrame({"Reductant": ["Coal", "Hydrogen"], "Technology": ["DRI", "DRI"]}).to_excel(
+        pd.DataFrame({"Reductant": ["Coal", "Hydrogen", "Natural gas"], "Technology": ["DRI", "DRI", "DRI"]}).to_excel(
             writer, sheet_name="Bill of Materials", index=False
         )
         for sheet_name, df in capacity_sheets.items():
@@ -129,6 +129,62 @@ def test_recreate_technologies_roundtrip_with_unauthored_warnings(tmp_path, capl
     assert grid.loc["DRI|Hydrogen", "DRI|Coal"] == "1.5"  # the old side's flag does not matter
     assert grid.loc["BF", "DRI|Hydrogen"] == "1"  # new side not intense
     assert grid.loc["BF", "EAF"] == "unauthored"  # the TO AUTHOR cell propagates
+
+
+def test_recreate_technologies_new_side_reductant_override_moves_one_grid_column(tmp_path):
+    """``* -> DRI|Coal = 2`` survives the fixture round trip and changes only the ``DRI|Coal`` grid column."""
+    excel_path = tmp_path / "master.xlsx"
+    json_path = tmp_path / "capacity_pool_technologies.json"
+    grid_path = tmp_path / "capacity_pool_ratio_grid.csv"
+    classifications = pd.concat(
+        [
+            TECHNOLOGIES,
+            pd.DataFrame(
+                {
+                    "technology": ["DRI"],
+                    "product": ["iron"],
+                    "reductant": ["Natural gas"],
+                    "is_emission_intense": [False],
+                }
+            ),
+        ],
+        ignore_index=True,
+    )
+    _write_workbook(excel_path, {TECHNOLOGIES_SHEET: classifications})
+    recreate_capacity_pool_technologies_data(json_path, excel_path)
+    baseline = pd.read_csv(grid_path, index_col=0, dtype=str)
+
+    override = pd.DataFrame(
+        {"technology": ["*"], "switching_to": ["DRI"], "switching_to_reductant": ["Coal"], "swap_ratio": [2.0]}
+    )
+    _write_workbook(excel_path, {TECHNOLOGIES_SHEET: pd.concat([classifications, override], ignore_index=True)})
+    recreate_capacity_pool_technologies_data(json_path, excel_path)
+
+    rows = CapacityPoolTechnologyJsonRepository(json_path).list()
+    assert rows[-1].switching_to == "DRI" and rows[-1].switching_to_reductant == "Coal"
+    grid = pd.read_csv(grid_path, index_col=0, dtype=str)
+    assert {"DRI|Coal", "DRI|Hydrogen", "DRI|Natural gas"} <= set(grid.columns)
+    assert (grid["DRI|Coal"] == "2").all()
+    pd.testing.assert_frame_equal(grid.drop(columns="DRI|Coal"), baseline.drop(columns="DRI|Coal"))
+
+
+def test_technologies_fixture_without_the_new_side_reductant_key_still_loads(tmp_path):
+    """A fixture prepared before the column existed reads with None for it."""
+    json_path = tmp_path / "capacity_pool_technologies.json"
+    legacy_row = {
+        "technology": "BF",
+        "product": None,
+        "reductant": None,
+        "is_emission_intense": None,
+        "switching_to": "EAF",
+        "swap_ratio": 1.0,
+    }
+    json_path.write_text(json.dumps([legacy_row]), encoding="utf-8")
+
+    (row,) = CapacityPoolTechnologyJsonRepository(json_path).list()
+
+    assert row.switching_to == "EAF" and row.swap_ratio == 1.0
+    assert row.switching_to_reductant is None
 
 
 def test_recreate_technologies_unknown_technology_raises(tmp_path):

@@ -28,7 +28,13 @@ def classification(
     )
 
 
-def override(technology: str, switching_to: str, swap_ratio: float, reductant: str | None = None) -> TechnologyRow:
+def override(
+    technology: str,
+    switching_to: str,
+    swap_ratio: float,
+    reductant: str | None = None,
+    switching_to_reductant: str | None = None,
+) -> TechnologyRow:
     """Build an override row (flag blank, ratio set)."""
     return TechnologyRow(
         technology=technology,
@@ -37,6 +43,7 @@ def override(technology: str, switching_to: str, swap_ratio: float, reductant: s
         is_emission_intense=None,
         switching_to=switching_to,
         swap_ratio=swap_ratio,
+        switching_to_reductant=switching_to_reductant,
     )
 
 
@@ -186,6 +193,13 @@ class TestPermittedCapacityRatio:
         assert permitted(
             evaluator, old_technology="DRI", old_reductant="Hydrogen", new_technology="BOF"
         ) == pytest.approx(2.0)
+
+    def test_new_side_reductant_override_matches_only_that_reductant(self):
+        """A ``* -> DRI|Coal`` override pins coal DRI and leaves hydrogen DRI to derivation."""
+        rows = TECHNOLOGIES + [override("*", "DRI", 2.0, switching_to_reductant="Coal")]
+        evaluator = make_evaluator(technologies=rows)
+        assert permitted(evaluator, new_technology="DRI", new_reductant="Coal") == pytest.approx(1.5)
+        assert permitted(evaluator, new_technology="DRI", new_reductant="Hydrogen") == pytest.approx(3.0)
 
     def test_reductant_specific_classification_resolves(self):
         """The reductant decides the classification of a reductant-split technology."""
@@ -444,6 +458,12 @@ class TestConservativeFallback:
     def test_replace_target_with_no_hypothesis_is_penalised(self):
         """DRI spans intense-coal and non-intense-hydrogen rows; unresolved, it is intense: 1.5:1."""
         assert permitted(make_evaluator(), new_technology="DRI", new_reductant=None) == pytest.approx(2.0)
+
+    def test_reductant_pinned_override_does_not_apply_without_a_hypothesis(self):
+        """No reductant hypothesis means no reductant-specific exception: the worst case still derives."""
+        rows = TECHNOLOGIES + [override("*", "DRI", 1.0, switching_to_reductant="Hydrogen")]
+        evaluator = make_evaluator(technologies=rows)
+        assert permitted(evaluator, new_technology="DRI", new_reductant=None) == pytest.approx(2.0)
 
     def test_increase_with_no_hypothesis_is_penalised(self):
         """Worst case is emission-intense (any variant is), so the build is divided."""

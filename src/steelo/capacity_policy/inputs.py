@@ -46,6 +46,8 @@ class TechnologyRow:
         switching_to: Target technology of an override row (``"*"`` allowed),
             None on classification rows.
         swap_ratio: The overridden ratio; only on override rows.
+        switching_to_reductant: New-side reductant an override row is specific
+            to, or None for any; always None on classification rows.
     """
 
     technology: str
@@ -54,6 +56,7 @@ class TechnologyRow:
     is_emission_intense: bool | None
     switching_to: str | None
     swap_ratio: float | None
+    switching_to_reductant: str | None = None
 
     @property
     def is_override(self) -> bool:
@@ -101,6 +104,17 @@ def is_delegation_row(row: TechnologyRow, reductant_split_technologies: set[str]
     )
 
 
+def override_specificity(row: TechnologyRow) -> tuple[int, int]:
+    """Rank an override row: concrete technologies named first, then reductants named.
+
+    Validation rejects two rows of equal rank that can match one transition,
+    so the most specific match is unique.
+    """
+    technologies = (row.technology != WILDCARD) + (row.switching_to != WILDCARD)
+    reductants = (row.reductant is not None) + (row.switching_to_reductant is not None)
+    return technologies, reductants
+
+
 def resolve_swap_ratio(
     old: TechnologyRow,
     new: TechnologyRow,
@@ -109,10 +123,11 @@ def resolve_swap_ratio(
 ) -> float | None:
     """Resolve the effective ratio for one transition between classification rows.
 
-    Override precedence, most specific first: technology + reductant + target;
-    technology + target; one side ``"*"``; both sides ``"*"``; else derive
-    from the flags. A row naming a reductant matches only that old-side
-    reductant at every level.
+    Override precedence, most specific first: technology + target; one side
+    ``"*"``; both sides ``"*"``; within a level the row naming more reductants
+    (both, one, none); else derive from the flags. A row naming a reductant on
+    either side matches only a route carrying that reductant, so never one
+    classified without a reductant.
 
     Args:
         old: Classification row of the route being replaced.
@@ -125,28 +140,21 @@ def resolve_swap_ratio(
         decides the transition.
     """
 
-    def reductant_matches(row: TechnologyRow) -> bool:
-        if row.reductant is None:
+    def reductant_matches(named: str | None, route: TechnologyRow) -> bool:
+        if named is None:
             return True
-        return old.reductant is not None and normalize_name(row.reductant) == normalize_name(old.reductant)
+        return route.reductant is not None and normalize_name(named) == normalize_name(route.reductant)
 
-    levels = (
-        lambda r: r.reductant is not None
-        and reductant_matches(r)
-        and r.technology == old.technology
-        and r.switching_to == new.technology,
-        lambda r: r.reductant is None and r.technology == old.technology and r.switching_to == new.technology,
-        lambda r: reductant_matches(r)
-        and (
-            (r.technology == WILDCARD and r.switching_to == new.technology)
-            or (r.technology == old.technology and r.switching_to == WILDCARD)
-        ),
-        lambda r: reductant_matches(r) and r.technology == WILDCARD and r.switching_to == WILDCARD,
-    )
-    for matches in levels:
-        hits = [r for r in overrides if matches(r)]
-        if hits:
-            return hits[0].swap_ratio
+    hits = [
+        row
+        for row in overrides
+        if row.technology in (old.technology, WILDCARD)
+        and row.switching_to in (new.technology, WILDCARD)
+        and reductant_matches(row.reductant, old)
+        and reductant_matches(row.switching_to_reductant, new)
+    ]
+    if hits:
+        return max(hits, key=override_specificity).swap_ratio
     if old.is_emission_intense is None or new.is_emission_intense is None:
         return None
     return default_ratio if new.is_emission_intense else 1.0

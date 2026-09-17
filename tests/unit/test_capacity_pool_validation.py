@@ -34,6 +34,7 @@ def tech(
     is_emission_intense=None,
     switching_to=None,
     swap_ratio=None,
+    switching_to_reductant=None,
 ):
     return TechnologyRow(
         technology=technology,
@@ -42,6 +43,7 @@ def tech(
         is_emission_intense=is_emission_intense,
         switching_to=switching_to,
         swap_ratio=swap_ratio,
+        switching_to_reductant=switching_to_reductant,
     )
 
 
@@ -163,6 +165,102 @@ def test_technologies_equal_specificity_collision():
     ]
     messages = errors(validate_technologies(rows, technology_roster=ROSTER, reductant_vocabulary=VOCABULARY))
     assert any("collide at equal specificity" in m and "'BF' -> 'EAF'" in m for m in messages)
+
+
+def test_technologies_new_side_reductant_override_passes():
+    """Overrides pinning the new side's reductant pass, on a split target and on ``*`` alike."""
+    rows = [
+        tech("BF", is_emission_intense=True),
+        tech("EAF", product="steel", is_emission_intense=False),
+        tech("DRI", reductant="Coal", is_emission_intense=True),
+        tech("DRI", reductant="Hydrogen", is_emission_intense=False),
+        tech("DRI"),  # delegation row
+        tech("*", product=None, switching_to="DRI", swap_ratio=2.0, switching_to_reductant="Coal"),
+        tech("BF", product=None, switching_to="DRI", swap_ratio=1.0, switching_to_reductant="Hydrogen"),
+        tech("EAF", product=None, switching_to="*", swap_ratio=1.2, switching_to_reductant="Hydrogen"),
+    ]
+    assert validate_technologies(rows, technology_roster=ROSTER, reductant_vocabulary=VOCABULARY) == []
+
+
+def test_technologies_unknown_new_side_reductant_errors():
+    """``switching_to_reductant`` is checked against the reductant vocabulary like ``reductant``."""
+    rows = [
+        tech("DRI", reductant="Coal", is_emission_intense=True),
+        tech("*", product=None, switching_to="DRI", swap_ratio=2.0, switching_to_reductant="Charcoal"),
+    ]
+    messages = errors(validate_technologies(rows, technology_roster=ROSTER, reductant_vocabulary=VOCABULARY))
+    assert any("unknown switching_to_reductant 'Charcoal'" in m for m in messages)
+
+
+def test_technologies_new_side_reductant_needs_a_reductant_split_target():
+    """A new-side reductant on a target not classified per reductant can never match; ``*`` may carry one."""
+    rows = [
+        tech("DRI", reductant="Coal", is_emission_intense=True),
+        tech("BF", product=None, switching_to="EAF", swap_ratio=1.0, switching_to_reductant="Coal"),
+        tech("BF", product=None, switching_to="DRI", swap_ratio=1.0, switching_to_reductant="Coal"),
+        tech("EAF", product=None, switching_to="*", swap_ratio=1.0, switching_to_reductant="Coal"),
+    ]
+    messages = errors(validate_technologies(rows, technology_roster=ROSTER, reductant_vocabulary=VOCABULARY))
+    assert any("'BF' -> 'EAF' restricts switching_to_reductant 'Coal'" in m for m in messages)
+    assert len([m for m in messages if "restricts switching_to_reductant" in m]) == 1
+
+
+def test_technologies_new_side_reductant_is_blank_on_classification_rows():
+    """``switching_to_reductant`` on a classification row is an error, like ``swap_ratio`` there."""
+    rows = [tech("BF", is_emission_intense=True, switching_to_reductant="Coal")]
+    messages = errors(validate_technologies(rows, technology_roster=ROSTER, reductant_vocabulary=VOCABULARY))
+    assert any("switching_to_reductant is only valid on override rows" in m for m in messages)
+
+
+def test_technologies_duplicate_override_key_includes_the_new_side_reductant():
+    """Two spellings of one new-side reductant are one override key; two reductants are two keys."""
+    rows = [
+        tech("DRI", reductant="Natural gas", is_emission_intense=False),
+        tech("DRI", reductant="Coal", is_emission_intense=True),
+        tech("*", product=None, switching_to="DRI", swap_ratio=1.0, switching_to_reductant="Natural gas"),
+        tech("*", product=None, switching_to="DRI", swap_ratio=1.2, switching_to_reductant="natural_gas"),
+        tech("*", product=None, switching_to="DRI", swap_ratio=2.0, switching_to_reductant="Coal"),
+    ]
+    messages = errors(
+        validate_technologies(rows, technology_roster=ROSTER, reductant_vocabulary={"Natural gas", "Coal"})
+    )
+    assert len(messages) == 1
+    assert "duplicate override rows for '*' -> 'DRI'" in messages[0]
+
+
+def test_technologies_equal_reductant_count_collision():
+    """``DRI|Coal -> DRI`` and ``DRI -> DRI|Coal`` tie for DRI|Coal -> DRI|Coal, so together they error."""
+    rows = [
+        tech("DRI", reductant="Coal", is_emission_intense=True),
+        tech("DRI", product=None, reductant="Coal", switching_to="DRI", swap_ratio=1.0),
+        tech("DRI", product=None, switching_to="DRI", swap_ratio=1.2, switching_to_reductant="Coal"),
+    ]
+    messages = errors(validate_technologies(rows, technology_roster=ROSTER, reductant_vocabulary=VOCABULARY))
+    assert any("collide at equal specificity" in m and "'DRI|Coal' -> 'DRI|Coal'" in m for m in messages)
+
+
+def test_technologies_rows_decided_by_the_reductant_count_do_not_collide():
+    """Rows at one technology level naming different numbers of reductants are decided by precedence."""
+    rows = [
+        tech("DRI", reductant="Coal", is_emission_intense=True),
+        tech("DRI", reductant="Hydrogen", is_emission_intense=False),
+        tech("DRI", product=None, switching_to="DRI", swap_ratio=1.1),
+        tech("DRI", product=None, reductant="Coal", switching_to="DRI", swap_ratio=1.2),
+        tech("DRI", product=None, reductant="Hydrogen", switching_to="DRI", swap_ratio=1.3),
+        tech("DRI", product=None, reductant="Coal", switching_to="*", swap_ratio=1.4),
+        tech("*", product=None, switching_to="EAF", swap_ratio=1.0),
+    ]
+    assert errors(validate_technologies(rows, technology_roster=ROSTER, reductant_vocabulary=VOCABULARY)) == []
+
+
+def test_technologies_equally_specific_rows_sharing_no_transition_do_not_collide():
+    """No BF route carries a coal reductant and no EAF route a hydrogen one, so these rows never meet."""
+    rows = [
+        tech("DRI", reductant="Coal", is_emission_intense=True),
+        tech("BF", product=None, switching_to="*", swap_ratio=1.0, switching_to_reductant="Hydrogen"),
+        tech("*", product=None, reductant="Coal", switching_to="EAF", swap_ratio=1.0),
+    ]
+    assert errors(validate_technologies(rows, technology_roster=ROSTER, reductant_vocabulary=VOCABULARY)) == []
 
 
 def test_technologies_duplicate_rows_error():

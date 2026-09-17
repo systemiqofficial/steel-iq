@@ -3125,6 +3125,10 @@ def read_capacity_pool_technologies(
         One TechnologyRow per sheet row (classification and override rows
         alike), in sheet order; empty when the optional sheet is absent.
 
+    Notes:
+        ``switching_to_reductant`` is an optional column: a sheet without it
+        reads as if every cell were blank.
+
     Raises:
         ValueError: On structural problems within a present sheet (missing
             columns, blank technology, unparseable flag or ratio). Semantic
@@ -3164,6 +3168,7 @@ def read_capacity_pool_technologies(
                 swap_ratio=None
                 if pd.isna(swap_ratio_raw)
                 else _capacity_pool_number(swap_ratio_raw, sheet_name, row_num, "swap_ratio"),
+                switching_to_reductant=_capacity_pool_str(row.get("switching_to_reductant")),
             )
         )
     logger.info(f"Successfully read {len(rows)} capacity pool technology rows from '{sheet_name}'")

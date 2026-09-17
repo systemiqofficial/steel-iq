@@ -99,6 +99,33 @@ def test_read_technologies_happy_path(tmp_path):
     assert rows[2].is_emission_intense is None
 
 
+def test_read_technologies_with_new_side_reductant_column(tmp_path):
+    """``switching_to_reductant`` is read where filled, and a blank cell is None."""
+    path = tmp_path / "master.xlsx"
+    df = _technologies_df(
+        switching_to=[None, None, "DRI"],
+        switching_to_reductant=[None, None, " Coal "],
+    )
+    _write_workbook(path, {TECHNOLOGIES_SHEET: df})
+
+    rows = read_capacity_pool_technologies(path)
+
+    assert [row.switching_to_reductant for row in rows] == [None, None, "Coal"]
+
+
+def test_read_technologies_without_new_side_reductant_column(tmp_path):
+    """The column is optional: a sheet without it still reads, with None on every row."""
+    path = tmp_path / "master.xlsx"
+    df = _technologies_df()
+    assert "switching_to_reductant" not in df.columns
+    _write_workbook(path, {TECHNOLOGIES_SHEET: df})
+
+    rows = read_capacity_pool_technologies(path)
+
+    assert len(rows) == 3
+    assert [row.switching_to_reductant for row in rows] == [None, None, None]
+
+
 def test_read_opening_credits_happy_path(tmp_path):
     """Rows parse with vintage as int and blank owner/technology as None."""
     path = tmp_path / "master.xlsx"

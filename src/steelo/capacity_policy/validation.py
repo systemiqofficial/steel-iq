@@ -9,6 +9,7 @@ are injected so both callers and the tests control them.
 
 from collections import Counter
 from dataclasses import dataclass
+from itertools import combinations
 from typing import Literal
 
 from steelo.utilities.utils import normalize_name
@@ -19,6 +20,7 @@ from .inputs import (
     RegionRow,
     TechnologyRow,
     is_delegation_row,
+    override_specificity,
     technologies_with_reductant_rows,
 )
 
@@ -144,6 +146,8 @@ def validate_technologies(
             error(f"product must be one of {PRODUCTS} on classification rows, got {row.product!r} ({label})")
         if row.swap_ratio is not None:
             error(f"swap_ratio is only valid on override rows ({label})")
+        if row.switching_to_reductant is not None:
+            error(f"switching_to_reductant is only valid on override rows ({label})")
 
     # Keyed as the evaluator keys its lookup, so two spellings of one reductant cannot both pass
     for (technology, reductant), count in sorted(
@@ -167,22 +171,48 @@ def validate_technologies(
                 f"{label} restricts reductant {row.reductant!r}, but {row.technology!r} is not classified "
                 "per reductant, so the row can never match"
             )
+        if row.switching_to_reductant is not None:
+            if normalize_name(row.switching_to_reductant) not in known_reductants:
+                error(f"unknown switching_to_reductant {row.switching_to_reductant!r} on {label}")
+            if row.switching_to != WILDCARD and row.switching_to not in split:
+                error(
+                    f"{label} restricts switching_to_reductant {row.switching_to_reductant!r}, but "
+                    f"{row.switching_to!r} is not classified per reductant, so the row can never match"
+                )
         if row.is_emission_intense is not None:
             error(f"{label} must not carry classification flags")
         if row.swap_ratio is None or row.swap_ratio <= 0:
             error(f"{label} needs a positive swap_ratio, got {row.swap_ratio!r}")
 
-    for (technology, reductant, switching_to), count in sorted(
-        Counter((row.technology, row.reductant, row.switching_to) for row in overrides).items(), key=str
+    def override_key(row: TechnologyRow) -> tuple[str, str | None, str | None, str | None]:
+        return (
+            row.technology,
+            normalize_name(row.reductant) if row.reductant else None,
+            row.switching_to,
+            normalize_name(row.switching_to_reductant) if row.switching_to_reductant else None,
+        )
+
+    for (technology, reductant, switching_to, switching_to_reductant), count in sorted(
+        Counter(override_key(row) for row in overrides).items(), key=str
     ):
         if count > 1:
-            error(f"duplicate override rows for {technology!r} -> {switching_to!r} (reductant {reductant!r})")
-    for to_wildcard in (row for row in overrides if row.switching_to == WILDCARD and row.technology != WILDCARD):
-        for from_wildcard in (row for row in overrides if row.technology == WILDCARD and row.switching_to != WILDCARD):
             error(
-                f"override rows collide at equal specificity: {to_wildcard.technology!r} -> '*' and "
-                f"'*' -> {from_wildcard.switching_to!r} both match "
-                f"{to_wildcard.technology!r} -> {from_wildcard.switching_to!r}"
+                f"duplicate override rows for {technology!r} -> {switching_to!r} "
+                f"(reductant {reductant!r}, switching_to_reductant {switching_to_reductant!r})"
+            )
+    # Precedence ranks rows by override_specificity alone, so two equally ranked rows
+    # that can match one transition would be decided by sheet order
+    for first, second in combinations(overrides, 2):
+        if override_key(first) == override_key(second) or override_specificity(first) != override_specificity(second):
+            continue
+        old_route = _shared_route(first.technology, first.reductant, second.technology, second.reductant, split)
+        new_route = _shared_route(
+            first.switching_to, first.switching_to_reductant, second.switching_to, second.switching_to_reductant, split
+        )
+        if old_route is not None and new_route is not None:
+            error(
+                f"override rows collide at equal specificity: {_override_label(first)} and "
+                f"{_override_label(second)} both match {old_route!r} -> {new_route!r}"
             )
 
     for row in classifications:
@@ -194,6 +224,54 @@ def validate_technologies(
     for technology in sorted(technology_roster - {row.technology for row in classifications}):
         issues.append(ValidationIssue("warning", sheet, f"technology {technology!r} has no classification row"))
     return issues
+
+
+def _route_label(technology: str | None, reductant: str | None) -> str:
+    """Name one side of a transition as the ratio grid does: ``technology`` or ``technology|reductant``."""
+    return str(technology) if reductant is None else f"{technology}|{reductant}"
+
+
+def _override_label(row: TechnologyRow) -> str:
+    """Name an override row by its two sides, e.g. ``'*' -> 'DRI|Coal'``."""
+    old_side = _route_label(row.technology, row.reductant)
+    new_side = _route_label(row.switching_to, row.switching_to_reductant)
+    return f"{old_side!r} -> {new_side!r}"
+
+
+def _shared_route(
+    first_technology: str | None,
+    first_reductant: str | None,
+    second_technology: str | None,
+    second_reductant: str | None,
+    split: set[str],
+) -> str | None:
+    """Return the most general route two override rows both match on one side, or None.
+
+    Args:
+        first_technology: The side's technology on the first row (``"*"`` = any).
+        first_reductant: The side's reductant on the first row (None = any).
+        second_technology: The side's technology on the second row.
+        second_reductant: The side's reductant on the second row.
+        split: Technologies classified per reductant; only their routes carry one.
+
+    Returns:
+        The shared route's label, or None when the rows name different
+        technologies or reductants, or a reductant no route of the shared
+        technology carries.
+    """
+    if WILDCARD not in (first_technology, second_technology) and first_technology != second_technology:
+        return None
+    if (
+        first_reductant is not None
+        and second_reductant is not None
+        and normalize_name(first_reductant) != normalize_name(second_reductant)
+    ):
+        return None
+    technology = second_technology if first_technology == WILDCARD else first_technology
+    reductant = first_reductant if first_reductant is not None else second_reductant
+    if reductant is not None and technology != WILDCARD and technology not in split:
+        return None
+    return _route_label(technology, reductant)
 
 
 def validate_opening_credits(

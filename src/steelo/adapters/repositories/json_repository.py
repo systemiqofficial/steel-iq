@@ -3123,6 +3123,7 @@ class CapacityPoolTechnologyInDb(BaseModel):
     is_emission_intense: Optional[bool]
     switching_to: Optional[str]
     swap_ratio: Optional[float]
+    switching_to_reductant: Optional[str] = None
 
     def to_domain(self) -> TechnologyRow:
         """Convert to domain model."""
@@ -3133,6 +3134,7 @@ class CapacityPoolTechnologyInDb(BaseModel):
             is_emission_intense=self.is_emission_intense,
             switching_to=self.switching_to,
             swap_ratio=self.swap_ratio,
+            switching_to_reductant=self.switching_to_reductant,
         )
 
     @classmethod
@@ -3145,6 +3147,7 @@ class CapacityPoolTechnologyInDb(BaseModel):
             is_emission_intense=obj.is_emission_intense,
             switching_to=obj.switching_to,
             swap_ratio=obj.swap_ratio,
+            switching_to_reductant=obj.switching_to_reductant,
         )
 
 
