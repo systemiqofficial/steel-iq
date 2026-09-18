@@ -118,11 +118,11 @@ const PRODUCTS = {
   scrap: {name: "scrap", ticks: "Scrap", note: "origins = per-country scrap suppliers; destinations = furnace groups",
           supplierOrigins: true},
 };
-// What a diagonal cell means under each grouping, singular and plural.
+// What staying put means under each grouping, singular and plural; a bloc's axis is countries.
 const SAME = {
   country: ["country", "countries"],
   region: ["region", "regions"],
-  bloc: ["member country (or the rest of the world)", "members and the rest of the world"],
+  bloc: ["country", "countries"],
 };
 const allRows = Object.values(DATA).flatMap(d => d.rows);
 const countryRows = allRows.filter(r => !PRODUCTS[r.p].labelledOrigins && !PRODUCTS[r.p].supplierOrigins);
@@ -163,6 +163,12 @@ function grouper(groupBy, bloc) {
   return iso3 => iso3;
 }
 
+/* Whether a flow stays within one country (one region under the region grouping),
+   judged on its own endpoints: "Rest of world" holds many, so an axis label cannot tell. */
+function staysPut(r, groupBy) {
+  return groupBy === "region" ? Interactive.regionOf(r.o) === Interactive.regionOf(r.d) : r.o === r.d;
+}
+
 function labelName(label, groupBy) {
   if (label === REST || groupBy === "region") return label;
   const name = Interactive.countryName(label);
@@ -191,8 +197,9 @@ function folder(ranked, topN) {
    of each cell. Square matrices share one label set on both axes (so the diagonal is
    domestic), ordered by descending traffic with "Rest of world" last; with labelled
    origins the rows are every origin label by descending outbound volume and only the
-   destination axis is grouped and folded. */
-function buildMatrix(rows, originOf, destOf, topN, square) {
+   destination axis is grouped and folded. `away` is the part of each diagonal cell
+   that did not stay put: the trade among the geographies folded into "Rest of world". */
+function buildMatrix(rows, originOf, destOf, topN, square, staysPut) {
   const outbound = new Map(), inbound = new Map();
   rows.forEach(r => {
     outbound.set(originOf(r.o), (outbound.get(originOf(r.o)) || 0) + r.v);
@@ -216,12 +223,14 @@ function buildMatrix(rows, originOf, destOf, topN, square) {
   }
   const ri = new Map(rowLabels.map((l, i) => [l, i])), ci = new Map(colLabels.map((l, i) => [l, i]));
   const parts = rowLabels.map(() => colLabels.map(() => new Map()));
+  const away = rowLabels.map(() => 0);
   rows.forEach(r => {
-    const cell = parts[ri.get(foldRow(originOf(r.o)))][ci.get(foldCol(destOf(r.d)))];
-    cell.set(r.c, (cell.get(r.c) || 0) + r.v);
+    const i = ri.get(foldRow(originOf(r.o))), j = ci.get(foldCol(destOf(r.d)));
+    parts[i][j].set(r.c, (parts[i][j].get(r.c) || 0) + r.v);
+    if (square && i === j && !staysPut(r)) away[i] += r.v;
   });
   const mt = parts.map(row => row.map(cell => [...cell.values()].reduce((s, v) => s + v, 0)));
-  return {rowLabels, colLabels, mt, parts};
+  return {rowLabels, colLabels, mt, parts, away};
 }
 
 function syncYears() {
@@ -317,28 +326,34 @@ function render() {
   const group = grouper(groupBy, bloc);
   const destOf = iso3 => selectedGeo.has(iso3) ? group(iso3) : REST;
   const originOf = square ? destOf : (label => label);
-  const {rowLabels, colLabels, mt, parts} = buildMatrix(rows, originOf, destOf, show === "all" ? Infinity : +show, square);
+  const {rowLabels, colLabels, mt, parts, away} = buildMatrix(rows, originOf, destOf, show === "all" ? Infinity : +show, square,
+                                                              r => staysPut(r, groupBy));
   const nRows = rowLabels.length, nCols = colLabels.length;
   const rowTotals = mt.map(r => r.reduce((s, v) => s + v, 0));
   const colTotals = colLabels.map((_, j) => mt.reduce((s, r) => s + r[j], 0));
   const breakdown = selectedCommodity.size > 1;
+  const [same, plural] = SAME[groupBy];
 
   const z = [], hover = [], text = [];
   rowLabels.forEach((o, i) => {
     z.push([]); hover.push([]); text.push([]);
     colLabels.forEach((d, j) => {
-      const v = mt[i][j];
+      const diagonal = square && i === j;
+      // Hiding domestic leaves a diagonal cell only its trade among folded geographies.
+      const v = hideDomestic && diagonal ? away[i] : mt[i][j];
       const shareO = rowTotals[i] > 0 ? 100 * v / rowTotals[i] : 0;
       const shareD = colTotals[j] > 0 ? 100 * v / colTotals[j] : 0;
-      const diagonal = square && i === j;
-      const shown = v > 0 && !(hideDomestic && diagonal);
-      z[i].push(shown ? (valueMode === "origin" ? shareO : valueMode === "destination" ? shareD : v) : null);
-      const route = diagonal ? `Stayed in ${labelName(o, groupBy)}` : `${labelName(o, groupBy)} → ${labelName(d, groupBy)}`;
+      z[i].push(v > 0 ? (valueMode === "origin" ? shareO : valueMode === "destination" ? shareD : v) : null);
+      const mixed = diagonal && away[i] > 0;
+      const route = mixed ? `Within ${labelName(o, groupBy)}` + (hideDomestic ? `, between ${plural}` : "")
+        : diagonal ? `Stayed in ${labelName(o, groupBy)}` : `${labelName(o, groupBy)} → ${labelName(d, groupBy)}`;
+      const mixedNote = mixed && !hideDomestic
+        ? `<br>${fmtMt(v - away[i])} Mt stayed within the same ${same} · ${fmtMt(away[i])} Mt moved between ${plural}` : "";
       const partsNote = breakdown && parts[i][j].size
         ? "<br>" + [...parts[i][j]].sort((a, b) => b[1] - a[1]).map(([c, pv]) => `${commodityName(c)} ${fmtMt(pv)}`).join(" · ")
         : "";
       hover[i].push(`<b>${route}</b><br>${fmtMt(v)} Mt · ${shareO.toFixed(0)}% of origin's production · ` +
-                    `${shareD.toFixed(0)}% of destination's consumption${partsNote}`);
+                    `${shareD.toFixed(0)}% of destination's consumption${mixedNote}${partsNote}`);
       text[i].push(cellLabel(z[i][j], UNITS[valueMode]));
     });
   });
@@ -363,7 +378,6 @@ function render() {
 
   const groupLabel = groupBy === "bloc" ? `trade bloc ${bloc}` : groupBy;
   const runGeos = new Set(run.rows.flatMap(r => PRODUCTS[r.p].labelledOrigins ? [r.d] : [r.o, r.d]));
-  const [same, plural] = SAME[groupBy];
   const runNote = `${run.title} · ${Interactive.geoNote(runGeos)}`;
   const readingNote = `${spec.note} · rows = origin (producer), columns = destination (consumer)` +
     (square ? `, diagonal = stayed within the same ${same}` : "");
@@ -397,7 +411,7 @@ function render() {
     `${total.toFixed(0)} Mt ${spec.name}${productNote} allocated in ${year}`,
   ];
   if (square) {
-    const domestic = rowLabels.reduce((s, _, i) => s + mt[i][i], 0);
+    const domestic = rowLabels.reduce((s, _, i) => s + mt[i][i] - away[i], 0);
     lines.push(`${domestic.toFixed(0)} Mt (${(100 * domestic / total).toFixed(0)}%) stayed within the same ${same} · ` +
                `${(total - domestic).toFixed(0)} Mt moved between ${plural}`);
   }

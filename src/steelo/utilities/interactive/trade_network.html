@@ -118,11 +118,11 @@ const PRODUCTS = {
   scrap: {name: "scrap", ticks: "Scrap", note: "origins = per-country scrap suppliers; destinations = furnace groups",
           supplierOrigins: true},
 };
-// What staying put means under each grouping, singular and plural.
+// What staying put means under each grouping, singular and plural; a bloc's nodes are countries.
 const SAME = {
   country: ["country", "countries"],
   region: ["region", "regions"],
-  bloc: ["member country (or the rest of the world)", "members and the rest of the world"],
+  bloc: ["country", "countries"],
 };
 // Origin-label nodes (mine regions) carry a key prefix so a label can never merge with
 // a country or region node of the same name.
@@ -157,6 +157,12 @@ function grouper(groupBy, bloc) {
     return iso3 => members.has(iso3) ? iso3 : REST;
   }
   return iso3 => iso3;
+}
+
+/* Whether a flow stays within one country (one region under the region grouping),
+   judged on its own endpoints: "Rest of world" holds many, so a node id cannot tell. */
+function staysPut(r, groupBy) {
+  return groupBy === "region" ? Interactive.regionOf(r.o) === Interactive.regionOf(r.d) : r.o === r.d;
 }
 
 function labelName(label, groupBy) {
@@ -317,10 +323,12 @@ function render() {
   const originOf = square ? (iso3 => destOf(iso3)) : (label => SRC + label);
 
   // Per-node totals over every flow (so hover and sizing stay true regardless of the
-  // top-N cut) and gross flows between distinct nodes, with per-commodity parts.
+  // top-N cut) and gross flows between distinct nodes, with per-commodity parts. A flow
+  // with both ends in one node has no chord: it is domestic if it stays put, otherwise
+  // trade among the geographies folded into "Rest of world" (`within`).
   const stats = new Map(), members = new Map();
   const stat = id => {
-    if (!stats.has(id)) stats.set(id, {out: 0, in: 0, dom: 0});
+    if (!stats.has(id)) stats.set(id, {out: 0, in: 0, dom: 0, within: 0});
     return stats.get(id);
   };
   const member = (id, raw, v) => {  // raw flow endpoints per node, weighting its map position
@@ -332,7 +340,7 @@ function render() {
     const o = originOf(r.o), d = destOf(r.d);
     member(o, r.o, r.v);
     member(d, r.d, r.v);
-    if (square && o === d) { stat(o).dom += r.v; return; }
+    if (square && o === d) { stat(o)[staysPut(r, groupBy) ? "dom" : "within"] += r.v; return; }
     stat(o).out += r.v;
     stat(d).in += r.v;
     const key = o + "|" + d;
@@ -367,7 +375,8 @@ function render() {
     kept = edges.slice(0, show === "all" ? Infinity : +show);
   }
 
-  const interTotal = [...gross.values()].reduce((s, f) => s + f.v, 0);
+  const withinTotal = [...stats.values()].reduce((s, n) => s + n.within, 0);
+  const interTotal = [...gross.values()].reduce((s, f) => s + f.v, 0) + withinTotal;
   const domesticTotal = [...stats.values()].reduce((s, n) => s + n.dom, 0);
   const total = interTotal + domesticTotal;
   const flowWord = net ? "net flows" : "flows";
@@ -378,6 +387,9 @@ function render() {
       lines.push(`${trading} trading ${plural} · ${total.toFixed(0)} Mt ${spec.name} allocated in ${year}: ` +
                  `${domesticTotal.toFixed(0)} Mt (${total > 0 ? (100 * domesticTotal / total).toFixed(0) : 0}%) ` +
                  `stayed within the same ${same}, ${interTotal.toFixed(0)} Mt moved between ${plural}`);
+      if (withinTotal > 0) {
+        lines.push(`${withinTotal.toFixed(0)} Mt of that moved among the ${plural} folded into ${REST} and has no chord`);
+      }
     } else {
       const sources = [...stats.keys()].filter(id => id.startsWith(SRC)).length;
       lines.push(`${sources} origin labels → ${stats.size - sources} destination ${plural} · ` +
@@ -509,6 +521,7 @@ function render() {
     const lines = [`<b>${displayName(id, groupBy)}</b>`,
                    `exports ${fmtMt(s.out)} Mt · imports ${fmtMt(s.in)} Mt`];
     if (s.dom > 0) lines.push(`${fmtMt(s.dom)} Mt stayed within the same ${same}`);
+    if (s.within > 0) lines.push(`${fmtMt(s.within)} Mt moved between its ${plural} (no chord)`);
     return lines.join("<br>");
   };
   traces.push({type: "scatter", mode: "markers+text", meta: "node",
