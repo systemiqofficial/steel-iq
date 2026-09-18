@@ -268,6 +268,49 @@ def test_cli_hydrogen_trade_flags_land_on_the_geo_config(
 
 
 @pytest.mark.parametrize(
+    "flag_argv, expected_enabled, expected_scope",
+    [
+        ([], True, "plant"),
+        (["--clustering"], True, "plant"),
+        (["--no-clustering"], False, "plant"),
+        (["--enable-clustering", "--clustering-scope", "plant"], True, "plant"),
+        (["--clustering-scope", "iso3"], True, "iso3"),
+        (["--clustering-scope", "plant_group"], True, "plant_group"),
+    ],
+)
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_clustering_flags_land_on_the_config(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    flag_argv,
+    expected_enabled,
+    expected_scope,
+):
+    """Clustering by plant is the default; ``--[no-]clustering`` and ``--clustering-scope`` override it."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cli_temp_base = Path(tmpdir)
+        stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+
+        argv = ["run_simulation", "--start-year", "2026", "--end-year", "2027", *flag_argv]
+        with patch.object(sys, "argv", argv):
+            with patch("sys.exit"):
+                run_full_simulation()
+
+        config = mock_create_runner.call_args[0][0]
+        assert config.enable_furnace_group_clustering is expected_enabled
+        assert config.geographical_clustering_scope == expected_scope
+
+
+@pytest.mark.parametrize(
     "flag_argv, expected",
     [([], None), (["--run-name", "china BAU"], "china BAU")],
 )

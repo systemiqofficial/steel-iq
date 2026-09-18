@@ -25,7 +25,8 @@ usage: run_simulation [-h] [--start-year START_YEAR] [--end-year END_YEAR]
                       [--force-refresh] [--steelo-home STEELO_HOME]
                       [--cache-stats] [--clear-cache]
                       [--baseload-power-sim-dir BASELOAD_POWER_SIM_DIR]
-                      [--enable-clustering] [--plot-tm] [--plot-geo]
+                      [--clustering | --no-clustering] [--plot-tm]
+                      [--plot-geo]
                       [--clustering-scope {iso3,plant_group,plant}]
                       [--peg-iron-to-steel-price]
                       [--iron-to-steel-price-ratio IRON_TO_STEEL_PRICE_RATIO]
@@ -99,19 +100,20 @@ options:
   --baseload-power-sim-dir BASELOAD_POWER_SIM_DIR
                         Path to BOA-generated baseload power simulation output
                         directory (overrides default)
-  --enable-clustering   Enable furnace group clustering to reduce LP
-                        complexity
+  --clustering, --no-clustering
+                        Cluster furnace groups to reduce LP complexity
+                        (default: on)
   --plot-tm             Write the per-year trade maps under plots/TM (off by
                         default; the interactive trade viewers replace them)
   --plot-geo            Write the geospatial PNGs under plots/GEO (off by
                         default)
   --clustering-scope {iso3,plant_group,plant}
                         When clustering is enabled, geographical scope for
-                        clustering hot-metal-affected techs. 'iso3' (default):
-                        cluster by country. 'plant_group': cluster by
-                        corporate group. 'plant': cluster by individual plant.
-                        Only affects FGs with hot_metal/dri_*/liquid_iron
-                        feedstocks or outputs.
+                        clustering hot-metal-affected techs. 'plant'
+                        (default): cluster by individual plant. 'plant_group':
+                        cluster by corporate group. 'iso3': cluster by
+                        country. Only affects FGs with
+                        hot_metal/dri_*/liquid_iron feedstocks or outputs.
   --peg-iron-to-steel-price
                         Enable iron price pegging to steel price (default:
                         disabled)
