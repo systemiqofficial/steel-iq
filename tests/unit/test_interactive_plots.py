@@ -607,8 +607,9 @@ def test_plot_metallic_charge_use_writes_self_contained_viewer(tmp_path) -> None
     for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
         assert placeholder not in html
     assert "const Interactive" in html
-    assert '{"y": 2025, "g": "CHN:CN-HE", "t": "BF", "p": "iron", "c": "io_low", "n": 1, "v": 3.0}' in html
-    assert '{"y": 2025, "g": "DEU", "t": "EAF", "p": "steel", "c": "scrap", "n": 1, "v": 1.1}' in html
+    assert '{"y": 2025, "g": "CHN:CN-HE", "t": "BF", "p": "iron", "c": "io_low", "v": 3.0}' in html
+    assert '{"y": 2025, "g": "DEU", "t": "EAF", "p": "steel", "c": "scrap", "v": 1.1}' in html
+    assert '{"y": 2025, "g": "DEU", "t": "EAF", "p": "steel", "cs": ["scrap"], "n": 1}' in html
     assert '"supply": [{"y": 2025, "g": "DEU", "v": 2.0}]' in html
     assert '"chargeColours"' in html and '"chargeOrder"' in html
 

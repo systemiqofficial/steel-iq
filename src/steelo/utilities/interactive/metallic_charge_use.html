@@ -134,18 +134,22 @@ function render() {
   const selectedGeo = Interactive.selectedGeos(), selectedTech = Interactive.selectedTechs();
   const gd = document.getElementById("chart");
 
-  // The supply overlay needs supply data and the absolute display (a same-axis line
-  // cannot ride a percent-normalised stack).
-  const supply = run.supply || [];
-  document.getElementById("supply-panel").style.display = supply.length ? "" : "none";
-  const supplyToggle = document.getElementById("supply-toggle");
-  supplyToggle.disabled = share;
-  document.getElementById("supply-label").title = share ? "Only available on the absolute display" : "";
-  const showSupply = supply.length && supplyToggle.checked && !share;
-
   const relevant = relevantCharges(run, product);
   syncChargeBoxes(relevant);
   const selectedCharge = selectedCharges();
+
+  // The supply overlay needs supply data, scrap among the charges on show (the line is
+  // read against scrap use) and the absolute display (a same-axis line cannot ride a
+  // percent-normalised stack).
+  const supply = run.supply || [];
+  document.getElementById("supply-panel").style.display = supply.length ? "" : "none";
+  const supplyBlocked = !relevant.includes("scrap") ? `Scrap is not charged into ${product}`
+    : !selectedCharge.has("scrap") ? "Tick the scrap charge to compare it with the local supply"
+    : share ? "Only available on the absolute display" : "";
+  const supplyToggle = document.getElementById("supply-toggle");
+  supplyToggle.disabled = Boolean(supplyBlocked);
+  document.getElementById("supply-label").title = supplyBlocked;
+  const showSupply = supply.length && supplyToggle.checked && !supplyBlocked;
 
   const years = [...new Set(run.rows.map(r => r.y))].sort((a, b) => a - b);
   const yearIdx = new Map(years.map((y, i) => [y, i]));
@@ -234,7 +238,9 @@ function render() {
   Plotly.react(gd, traces, layout, {displaylogo: false, responsive: false});
 
   const last = years.length - 1;
-  const fgs = rows.filter(r => r.y === years[last]).reduce((s, r) => s + r.n, 0);
+  // A furnace group counts once however many of its charges are ticked.
+  const fgs = run.groups.filter(g => g.y === years[last] && g.p === product && selectedGeo.has(g.g) &&
+    selectedTech.has(g.t) && g.cs.some(c => selectedCharge.has(c))).reduce((s, g) => s + g.n, 0);
   const nCountries = new Set(Interactive.geoKeys().map(Interactive.isoOf)).size;
   const selCountries = new Set([...selectedGeo].map(Interactive.isoOf)).size;
   const productTechs = [...new Set(run.rows.filter(r => r.p === product).map(r => r.t))];

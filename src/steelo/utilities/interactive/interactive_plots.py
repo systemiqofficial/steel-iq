@@ -742,10 +742,11 @@ class InteractivePlotter:
             return None
         feedstocks = PrimaryFeedstockJsonRepository(primary_feedstocks_json).list()
         try:
-            aggregated = metallic_charge_use.aggregate_charge_use(table, feedstocks)
+            charges = metallic_charge_use.charge_rows(table, feedstocks)
         except ValueError as exc:
             logger.warning("%s — skipping the metallic-charge viewer", exc)
             return None
+        aggregated = metallic_charge_use.aggregate_charge_use(charges)
 
         suppliers = []
         if suppliers_json is not None and suppliers_json.is_file():
@@ -762,6 +763,7 @@ class InteractivePlotter:
                 "identified by the Bill of Materials (fixtures/primary_feedstocks.json); local scrap "
                 "supply from fixtures/suppliers.json.",
                 "rows": metallic_charge_use.pack_rows(aggregated),
+                "groups": metallic_charge_use.pack_charge_sets(metallic_charge_use.count_charge_sets(charges)),
                 "supply": metallic_charge_use.pack_supply(supply),
             },
         }
