@@ -458,19 +458,24 @@ class DataCollector:
             its ``future_switch_cmd`` after the switch executes and can switch again.
             The decision fields (NPVs, capacities, plant group, old technology) are
             captured on first sighting; ``construction_start_year`` and ``executed``
-            are refreshed on later sightings. ``selection_probabilities`` stays blank
-            for deterministic agents, which take the max NPV without a draw.
+            are refreshed on later sightings for every pending record of the group,
+            not only the current command's: the PAM runs before the collector, so a
+            group re-decided in its switch year already carries the next command.
+            ``selection_probabilities`` stays blank for deterministic agents, which
+            take the max NPV without a draw. A command without ``competing_npvs``
+            leaves the NPV columns blank instead of stopping the run over a
+            diagnostics column.
         """
         cmd = fg.future_switch_cmd
         if cmd is None or fg.future_switch_year is None:
             raise ValueError(f"Furnace group {fg.furnace_group_id} has no complete scheduled switch to record")
         key = (fg.furnace_group_id, int(fg.future_switch_year))
         if key not in self.switch_decisions:
-            if cmd.competing_npvs is None:
-                raise ValueError(f"Switch command of furnace group {fg.furnace_group_id} carries no competing NPVs")
-            npvs = {tech: float(npv) for tech, npv in cmd.competing_npvs.items()}
+            npvs = None
+            if cmd.competing_npvs is not None:
+                npvs = {tech: float(npv) for tech, npv in cmd.competing_npvs.items()}
             probabilities = None
-            if self.env.config.probabilistic_agents:
+            if npvs is not None and self.env.config.probabilistic_agents:
                 total_weight = sum(max(npv, 0.0) for npv in npvs.values())
                 probabilities = {tech: max(npv, 0.0) / total_weight for tech, npv in npvs.items()}
             self.switch_decisions[key] = {
@@ -491,22 +496,29 @@ class DataCollector:
                 "reductant": cmd.chosen_reductant,
                 "winning_npv": float(cmd.npv),
                 "cosa": float(cmd.cosa),
-                "incumbent_npv": npvs.get(cmd.old_technology_name),
-                "competing_npvs": json.dumps(npvs, allow_nan=False),
+                "incumbent_npv": None if npvs is None else npvs.get(cmd.old_technology_name),
+                "competing_npvs": None if npvs is None else json.dumps(npvs, allow_nan=False),
                 "selection_probabilities": (
                     None if probabilities is None else json.dumps(probabilities, allow_nan=False)
                 ),
             }
-        record = self.switch_decisions[key]
         status = fg.status.lower()
-        if record["construction_start_year"] is None and status == "construction switching technology":
-            record["construction_start_year"] = int(year)
-        if (
-            year >= record["switch_year"]
-            and fg.technology.name == record["new_technology"]
-            and "switching technology" not in status
-        ):
-            record["executed"] = True
+        pending = [
+            record
+            for (group_id, _), record in self.switch_decisions.items()
+            if group_id == fg.furnace_group_id and not record["executed"]
+        ]
+        for record in pending:
+            if (
+                record["construction_start_year"] is None
+                and status == "construction switching technology"
+                and year < record["switch_year"]
+            ):
+                record["construction_start_year"] = int(year)
+            # a switching status belongs to the current command, so it only holds back that command's record
+            awaiting_switch = record is self.switch_decisions[key] and "switching technology" in status
+            if year >= record["switch_year"] and fg.technology.name == record["new_technology"] and not awaiting_switch:
+                record["executed"] = True
 
     def write_switch_decisions_csv(self, output_dir: Path) -> Path:
         """

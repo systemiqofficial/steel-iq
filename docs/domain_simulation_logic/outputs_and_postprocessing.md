@@ -168,7 +168,7 @@ A furnace group that decides to switch technology keeps operating its old techno
 | `decision_year` | Year the PAM decided the switch (the first year the collector sees it scheduled) |
 | `switch_year` | Year the new technology starts: `decision_year` + `construction_time` |
 | `construction_start_year` | First year the group was observed in `construction switching technology`; blank if never (the old lifetime outlasted the construction period) |
-| `executed` | `True` once the group is observed at or after `switch_year` running `new_technology` outside a switching status; decisions whose `switch_year` lies beyond the horizon stay `False` |
+| `executed` | `True` once the group is observed at or after `switch_year` running `new_technology`, outside a switching status unless that status already belongs to the group's next decision (the PAM can re-decide a group in its switch year, before the collector looks); decisions whose `switch_year` lies beyond the horizon stay `False` |
 | `origin` | `greenfield` when the plant's `parent_gem_id` starts with `indi_`, else `brownfield` |
 | `plant_id`, `furnace_group_id`, `plant_group_id`, `geo_key`, `product` | The deciding furnace group, the plant group owning its plant at decision time, its location key and product |
 | `old_technology`, `new_technology` | Technology before and after the switch |
@@ -176,7 +176,7 @@ A furnace group that decides to switch technology keeps operating its old techno
 | `reductant` | Reductant chosen for the new technology |
 | `winning_npv`, `cosa` | NPV of the selected technology and the cost of stranded assets of the evaluation |
 | `incumbent_npv` | NPV of keeping the old technology; blank when the incumbent did not take part (renovation not an allowed transition) |
-| `competing_npvs` | JSON object `{technology: npv}` of the finite NPVs the selection ran over (challengers COSA-adjusted) |
+| `competing_npvs` | JSON object `{technology: npv}` of the finite NPVs the selection ran over (challengers COSA-adjusted); blank, with `incumbent_npv` and `selection_probabilities`, when the command carries none — the row is kept |
 | `selection_probabilities` | JSON object `{technology: max(npv, 0) / sum of those weights}` over the same technologies — the technology draw only, not the acceptance draw that follows it; blank when `probabilistic_agents` is off, because the maximum NPV is then taken without a draw |
 
 ### `data/policy/` (policy-ON runs only)

@@ -699,8 +699,8 @@ def test_collect_switch_decisions_probabilities_blank_for_deterministic_agents(t
     assert json.loads(record["competing_npvs"]) == {"BF": 100.0, "DRI": 300.0}
 
 
-def test_collect_switch_decisions_rejects_command_without_competing_npvs(tmp_path, mock_tech_switches_file):
-    """Fail loudly when a scheduled switch command carries no competing NPVs."""
+def test_collect_switch_decisions_keeps_the_row_of_a_command_without_competing_npvs(tmp_path, mock_tech_switches_file):
+    """A command built without competing NPVs leaves the NPV columns blank instead of stopping the run."""
     data_collector = _switch_decisions_collector(tmp_path, mock_tech_switches_file)
     cmd = _switch_command("plant_brownfield", "brownfield_fg", "BF", "DRI", {"DRI": 300.0})
     cmd.competing_npvs = None
@@ -710,8 +710,51 @@ def test_collect_switch_decisions_rejects_command_without_competing_npvs(tmp_pat
         cmd=cmd,
     )
 
-    with pytest.raises(ValueError, match="carries no competing NPVs"):
-        data_collector.collect_switch_decisions(Year(2025))
+    data_collector.collect_switch_decisions(Year(2025))
+
+    record = data_collector.switch_decisions[("brownfield_fg", 2029)]
+    assert (record["new_technology"], record["winning_npv"]) == ("DRI", 300.0)
+    assert record["incumbent_npv"] is None
+    assert record["competing_npvs"] is None
+    assert record["selection_probabilities"] is None
+
+
+def test_collect_switch_decisions_marks_a_switch_executed_when_the_group_is_re_decided_in_its_switch_year(
+    tmp_path, mock_tech_switches_file
+):
+    """The PAM runs before the collector, so in the switch year the group can already carry its next command."""
+    from steelo.domain.models import Technology
+
+    data_collector = _switch_decisions_collector(tmp_path, mock_tech_switches_file)
+    plant = data_collector.plant_groups[0].plants[0]
+    fg = plant.furnace_groups[0]
+    plant.change_furnace_group_status_to_switching_technology(
+        furnace_group_id="brownfield_fg",
+        year_of_switch=2029,
+        cmd=_switch_command("plant_brownfield", "brownfield_fg", "BF", "DRI", {"DRI": 300.0}),
+    )
+    data_collector.collect_switch_decisions(Year(2025))
+    fg.status = "construction switching technology"
+    data_collector.collect_switch_decisions(Year(2028))
+
+    # 2029: the switch executes, then the PAM schedules the next one before the collector looks
+    fg.technology = Technology(name="DRI", product="iron")
+    plant.change_furnace_group_status_to_switching_technology(
+        furnace_group_id="brownfield_fg",
+        year_of_switch=2033,
+        cmd=_switch_command("plant_brownfield", "brownfield_fg", "DRI", "ESF", {"DRI": 10.0, "ESF": 90.0}),
+    )
+    data_collector.collect_switch_decisions(Year(2029))
+
+    first, second = data_collector.switch_decisions.values()
+    assert (first["switch_year"], first["construction_start_year"], first["executed"]) == (2029, 2028, True)
+    assert (second["switch_year"], second["construction_start_year"], second["executed"]) == (2033, None, False)
+
+    # the second rebuild's construction years never leak into the first record
+    fg.status = "construction switching technology"
+    data_collector.collect_switch_decisions(Year(2031))
+    assert first["construction_start_year"] == 2028
+    assert second["construction_start_year"] == 2031
 
 
 def test_write_switch_decisions_csv_round_trips_rows(tmp_path, mock_tech_switches_file):
