@@ -332,3 +332,59 @@ def test_collect_capacity(furnace_group_factory, mock_cost_of_x_file, mock_tech_
 #             "Coal": 0.0,
 #         }
 #     )
+
+
+def test_collect_new_plant_data_selects_by_origin_not_owner(mock_tech_switches_file):
+    """
+    Collect a GEO-origin plant even when it sits in a company plant group.
+
+    Under the capacity policy a credit-funded greenfield is moved out of its
+    indi_<iso3> group into the funding company's group while keeping
+    parent_gem_id = "indi_<iso3>", so it must still be counted in
+    status_counts and, once operating in the given year, appear in
+    new_plant_locations. A brownfield plant in the same company group
+    (company parent_gem_id) must not be collected.
+    """
+    year = Year(2025)
+
+    geo_plant = get_plant(
+        plant_id="plant_geo_chn",
+        furnace_groups=[
+            get_furnace_group(
+                fg_id="geo_fg",
+                lifetime=PointInTime(
+                    current=year,
+                    time_frame=TimeFrame(start=year, end=Year(2045)),
+                    plant_lifetime=20,
+                ),
+            ),
+        ],
+        location=Location(iso3="CHN", country="", region="", lat=30.0, lon=110.0),
+    )
+    geo_plant.parent_gem_id = "indi_CHN"
+
+    brownfield_plant = get_plant(
+        plant_id="plant_brownfield",
+        furnace_groups=[get_furnace_group(fg_id="brownfield_fg")],
+        location=Location(iso3="CHN", country="", region="", lat=31.0, lon=111.0),
+    )
+
+    company_group = PlantGroup(plant_group_id="E100000000123", plants=[geo_plant, brownfield_plant])
+
+    config = SimulationConfig(
+        start_year=Year(2025),
+        end_year=Year(2060),
+        master_excel_path=Path(tempfile.gettempdir()) / "master.xlsx",
+        output_dir=Path(tempfile.gettempdir()),
+        technology_settings=get_default_technology_settings(),
+    )
+    env = Environment(config=config, tech_switches_csv=mock_tech_switches_file)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        data_collector = DataCollector([company_group], env, output_dir=Path(temp_dir))
+        data_collector.collect_new_plant_data(year)
+
+    # Only the indi-origin plant's furnace group is counted, despite the company group id.
+    assert data_collector.status_counts["steel"][year]["EAF"]["operating"] == 1
+    # It started operating this year, so its location is on the map; the brownfield one is not.
+    assert data_collector.new_plant_locations["steel"][year] == [{"lat": 30.0, "lon": 110.0}]

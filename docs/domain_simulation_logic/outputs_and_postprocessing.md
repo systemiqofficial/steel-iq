@@ -22,6 +22,9 @@ For where individual costs and emissions originate, see [Cost Calculation Functi
 | `trace_iron_ore` | `{year: {quality: tonnes}}` | Iron-ore allocations |
 | `trace_metallic_charges` | `{year: {charge_type: tonnes}}` | Iron-bearing inputs to steelmaking |
 | `trace_international_iron_trade` | `{year: {iron_product: tonnes}}` | Cross-ISO3 flows of `IRON_PRODUCTS` from `Allocations.allocations` |
+| `status_counts` | `{product: {year: {tech: {status: count}}}}` | Greenfield (GEO-origin) FGs, every status, every year |
+| `new_plant_locations` | `{product: {year: [{lat, lon}, …]}}` | Greenfield FGs in the year they start operating |
+| `greenfield_plants` | `{fg_id: record}` | One record per greenfield FG: identity and location on first sighting, plus the first year each status was observed and the initial versus final technology, reductant and capacity, refreshed yearly |
 
 ### Emissions reshape and overcounting fix
 
@@ -59,19 +62,32 @@ For where individual costs and emissions originate, see [Cost Calculation Functi
 | `plot_international_iron_trade` | `trace_international_iron_trade` | `pam_plots_dir` |
 | `plot_steel_cost_curve` / `plot_cost_curve_per_region` / `plot_cost_curve_for_commodity` / `plot_cost_curve_with_breakdown` / `plot_cost_curve_step` | `Environment.cost_curve` | `COST_CURVES_SUBDIR` (`plots/cost_curves`) |
 | `plot_capacity_development_by_technology` / `plot_area_chart_by_region_or_technology` | `trace_capacity` | `pam_plots_dir` |
+| `plot_greenfield_plants_by_status` | `status_counts` | `GREENFIELD_SUBDIR` (`plots/greenfield`) |
+| `plot_greenfield_plants_map` | `new_plant_locations` | `GREENFIELD_SUBDIR` (`plots/greenfield`) |
+| `export_greenfield_plants_csv` | `greenfield_plants` | `GREENFIELD_SUBDIR` (`plots/greenfield/greenfield_plants.csv`) |
+
+### Greenfield outputs
+
+Plants that originate in the geospatial model (greenfield, GEO-origin) get their own outputs under `plots/greenfield/`, drawn by `SteelPlotter` at the end of the run:
+
+- `<product>_greenfield_status.png` — yearly counts of greenfield plants by status, one stacked bar chart per product.
+- `<product>_greenfield_map.png` — world map of newly operating greenfield plants coloured by 5-year operational-start class, plus one map per decade (`<product>_greenfield_map_<y0>-<y1>.png`) coloured by exact year.
+- `greenfield_plants.csv` — one row per greenfield furnace group that was actually built: the year it entered each lifecycle status (blank where unobserved), the scheduled lifetime end, current status, location (region, geo key, lat/lon), identity, and initial versus final technology, reductant and capacity. Candidates that never reached construction are excluded. For plants still under construction at the end of the run, `year_operating` holds the scheduled operating year; such rows have `status == "construction"`.
 
 ### Plot folder layout
 
-Emissions and cost-curve plots write to top-level sibling folders rather than under `plots/PAM/…`:
+Emissions, cost-curve, greenfield and capacity-pool plots write to top-level sibling folders rather than under `plots/PAM/…`:
 
 ```
 output/
   plots/
     PAM/        # plant-agent plots (capacity, capex, charges, prices)
-    GEO/        # opt-in (--plot-geo): geospatial / new-plant plots (maps on milestone years; power-price histogram and mine map final-year-only)
+    GEO/        # opt-in (--plot-geo): geospatial plots (priority maps on milestone years; power-price histogram and mine map final-year-only)
     TM/         # opt-in (--plot-tm): per-year trade maps, replaced by the interactive trade viewers
     emissions/  # SteelPlotter.plot_emissions_by_technology
     cost_curves/  # SteelPlotter cost-curve methods
+    greenfield/   # SteelPlotter greenfield status charts, maps and greenfield_plants.csv (see above)
+    capacity_pool/  # CapacityPoolPlotter charts, policy-ON runs only (see below)
     interactive/  # InteractivePlotter viewers (self-contained HTML, see below)
 ```
 
@@ -100,8 +116,40 @@ All viewers share one shell (`common.js` / `common.css`): a run selector, a geog
 | `supply_demand.html` | Supply and demand for steel, scrap, iron ore, CO2 storage and biomass | `TM/` allocations + `fixtures/suppliers.json` + `fixtures/biomass_availability.json` |
 | `reductant_use.html` | Iron production and absolute reductant use per reductant | `post_processed_<timestamp>.csv` + `fixtures/primary_feedstocks.json` |
 | `metallic_charge_use.html` | Metallic charges fed into steel (scrap, hot metal, pig iron, DRI/HBI) and iron (ore grades), per charge / technology / region, with a local scrap supply overlay | `post_processed_<timestamp>.csv` + `fixtures/primary_feedstocks.json` + `fixtures/suppliers.json` |
+| `decision_flows.html` | Furnace-group decision flows as a Sankey: each group's state when it first acts (its technology, or NEW for capacity that does not exist yet) flowing through decision rounds grouped into Renovate / Switch / Retire / Pipeline / Expand / Greenfield bands with technology sub-nodes; link width is the capacity entering the decision, in Mt; a year-range slider narrows the flows to the decision years of interest | `data/pam_motions.csv` |
 
 A missing input file skips that viewer with a warning instead of failing the plot stage.
+
+---
+
+## Fleet motions and capacity-policy artefacts
+
+### `data/pam_motions.csv` (every run)
+
+`steelo.motions` records every fleet mutation of the run — closures, renovations, technology switches, expansions, greenfield builds and pipeline arrivals (announced or under-construction units from the input data starting operation) — for all countries, and writes them to `output/data/pam_motions.csv` at the end of the run (header only when nothing moved).
+
+| Column | Meaning |
+|--------|---------|
+| `year` | Year the motion took effect |
+| `kind` | `close`, `renovate`, `switch`, `expansion`, `greenfield` or `pipeline` |
+| `source` | `pam` for a model decision; `input_data` for capacity the input data scheduled — pipeline arrivals, and end-of-life closures whose lifetime no model action had reset |
+| `plant_id`, `furnace_group_id`, `geo_key`, `owner_id`, `product` | The furnace group that moved, its location key and its owning plant group |
+| `old_technology`, `new_technology`, `old_capacity_t`, `new_capacity_t`, `reductant` | Technology and capacity (tonnes) before and after the motion, and the reductant in use |
+
+This file feeds the `decision_flows.html` viewer above.
+
+### `data/policy/` (policy-ON runs only)
+
+When China's capacity-replacement policy is enabled (`run_simulation --enable-capacity-policy`), `CapacityPolicyRecorder` additionally writes four CSVs to `output/data/policy/`. A policy-OFF run creates no `data/policy/` directory.
+
+| File | One row per | Columns |
+|------|-------------|---------|
+| `capacity_pool_ledger.csv` | Pool operation: `seed`, `deposit_close`, `deposit_close_end_of_life`, `deposit_replace`, `withdraw_expansion`, `withdraw_greenfield`, `expired`, `expired_unowned`, `refunded`, `blocked_expansion`, `blocked_greenfield`, `greenfield_discard` | `year`, `operation`, `amount_t`, `region_tag`, `owner_id`, `product`, `vintage_year`, `credits_consumed`, `blocked_reason`, `attributed_owner_id`, `geo_key`, `furnace_group_id` |
+| `capacity_pool_state.csv` | Year-end pool balance per `(region_tag, owner_id, product)` | `year`, `region_tag`, `owner_id`, `product`, `remaining_t`, `oldest_vintage` |
+| `capacity_pool_gate_decisions.csv` | Replacement-gate evaluation of a switch or renovation candidate | `year`, `furnace_group_id`, `geo_key`, `product`, `old_technology`, `old_reductant`, `new_technology`, `new_reductant`, `decision` (`ratio` or `blocked_utilization`), `ratio`, `capacity_t`, `permitted_t`, `old_used_conservative_fallback`, `new_used_conservative_fallback` |
+| `pam_motions_china.csv` | Chinese fleet motion — the `CHN` slice of `data/pam_motions.csv` | Same as `pam_motions.csv` |
+
+The `plots/capacity_pool/` charts (`CapacityPoolPlotter`) are drawn from these files. Per product: the drawable pool by build location, the whole pool as a band and each cluster's pot as a line (`<product>_pool_nested.png`); the pool by region tag as a stacked area (`<product>_pool_area.png`); the capacity the policy refused, stacked by reason (`<product>_capacity_refused.png`); and the pool's yearly deposits and withdrawals (`<product>_capacity_flows.png`). Across products, `technology_mix.png` shows the capacity moved into each technology, stacked by the motion that moved it. Each chart has a sibling CSV.
 
 ---
 

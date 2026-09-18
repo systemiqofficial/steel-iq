@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Furnace-group decision flows</title>
+<style>__COMMON_CSS__</style>
+<style>
+/* Dual-handle year slider: two overlapping range inputs over one drawn track; only
+   the thumbs take pointer events, so either end of the window can be dragged. */
+#year-row { padding-top: 2px; }
+#year-note { color: #0b0b0b; margin-left: 6px; }
+.dual-range { position: relative; width: 230px; height: 18px; }
+.dual-range .track, .dual-range .fill { position: absolute; top: 7px; height: 4px; border-radius: 2px; }
+.dual-range .track { left: 0; right: 0; background: #d8d6d0; }
+.dual-range .fill { background: rgb(80, 120, 200); }
+.dual-range input { position: absolute; top: 0; left: 0; width: 100%; height: 18px; margin: 0;
+                    -webkit-appearance: none; appearance: none; background: none; pointer-events: none; }
+.dual-range input::-webkit-slider-runnable-track { height: 18px; background: none; }
+.dual-range input::-moz-range-track { background: none; }
+.dual-range input::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; pointer-events: auto;
+    margin-top: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff;
+    border: 2px solid rgb(80, 120, 200); box-sizing: border-box; cursor: pointer; }
+.dual-range input::-moz-range-thumb { pointer-events: auto; width: 14px; height: 14px; border-radius: 50%;
+    background: #fff; border: 2px solid rgb(80, 120, 200); box-sizing: border-box; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="err"></div>
+<script>
+window.addEventListener("error", function(e) {
+  const el = document.getElementById("err");
+  el.style.display = "block";
+  el.textContent = "Load error: " + (e.message || e.type) + (e.filename ? " @ " + e.lineno : "");
+}, true);
+</script>
+<div class="toolbar" id="shared-filters"></div>
+<div class="toolbar" id="year-row">
+  <div id="year-panel">
+    <label>Years<span id="year-note"></span></label>
+    <div class="dual-range">
+      <div class="track"></div><div class="fill" id="year-fill"></div>
+      <input type="range" id="year-lo" step="1">
+      <input type="range" id="year-hi" step="1">
+    </div>
+  </div>
+</div>
+<div id="summary"></div>
+<div id="chart"></div>
+<script>__PLOTLYJS__</script>
+<script>
+const CONFIG = __CONFIG__;
+const DATA = __DATA__;
+</script>
+<script>__COMMON_JS__</script>
+<script>
+const MAX_WIDTH = 1280, MAX_HEIGHT = 920;
+let WIDTH = MAX_WIDTH, HEIGHT = MAX_HEIGHT;  // refreshed per render; nodePositions reads HEIGHT
+const MARGIN = {l: 30, r: 30, t: 112, b: 30};
+const GAP_WITHIN = 3, HEAD_ROOM = 30, BAND_GAP_MIN = 28, BAND_GAP_MAX = 52;
+const TINY_NODE_MT = 10.0;
+const T = Interactive.theme;
+const NEW_BUILD = new Set(CONFIG.newBuildKinds);
+
+/* The sankey trace has no native zoom or box select, so the modebar's zoom buttons
+   re-render the whole diagram at a larger size instead (the page scrolls). */
+const ZOOM_STEP = 1.25, ZOOM_MAX = 4;
+let zoomLevel = 1;
+const ZOOM_BUTTONS = [
+  {name: "sankey-zoom-in", title: "Zoom in (renders the diagram larger)", icon: Plotly.Icons.zoom_plus,
+   click: () => { zoomLevel = Math.min(zoomLevel * ZOOM_STEP, ZOOM_MAX); render(); }},
+  {name: "sankey-zoom-out", title: "Zoom out", icon: Plotly.Icons.zoom_minus,
+   click: () => { zoomLevel = Math.max(zoomLevel / ZOOM_STEP, 1); render(); }},
+  {name: "sankey-zoom-reset", title: "Fit to window", icon: Plotly.Icons.home,
+   click: () => { zoomLevel = 1; render(); }},
+];
+
+/* Year window over the motions: each handle clamps at the other, and the lower
+   handle moves on top in the upper half of the track so overlapping thumbs stay
+   grabbable at both extremes. */
+const yearLo = document.getElementById("year-lo"), yearHi = document.getElementById("year-hi");
+
+function yearWindow() { return [+yearLo.value, +yearHi.value]; }
+
+function syncYearUi() {
+  const [lo, hi] = yearWindow();
+  const pct = v => (v - +yearLo.min) / Math.max(1, +yearLo.max - +yearLo.min) * 100;
+  const fill = document.getElementById("year-fill");
+  fill.style.left = pct(lo) + "%";
+  fill.style.right = (100 - pct(hi)) + "%";
+  yearLo.style.zIndex = lo > (+yearLo.min + +yearLo.max) / 2 ? 2 : 1;
+  document.getElementById("year-note").textContent = lo === hi ? String(lo) : lo + "–" + hi;
+}
+
+function initYearSlider() {
+  const years = Object.values(DATA).flatMap(d => d.motions.map(m => m.year));
+  if (!years.length) { document.getElementById("year-panel").style.display = "none"; return; }
+  const min = Math.min(...years), max = Math.max(...years);
+  [yearLo, yearHi].forEach(s => { s.min = min; s.max = max; });
+  yearLo.value = min;
+  yearHi.value = max;
+  yearLo.addEventListener("input", () => {
+    if (+yearLo.value > +yearHi.value) yearLo.value = yearHi.value;
+    syncYearUi(); render();
+  });
+  yearHi.addEventListener("input", () => {
+    if (+yearHi.value < +yearLo.value) yearHi.value = yearLo.value;
+    syncYearUi(); render();
+  });
+  syncYearUi();
+}
+
+function techColour(tech) { return tech === "NEW" ? CONFIG.newColour : CONFIG.techColours[tech]; }
+
+function splitNode(id) {
+  const [l, band, tech] = id.split("|");
+  return [parseInt(l.slice(1)), band, tech];
+}
+
+function nodeName(id) {
+  const [layer, band, tech] = splitNode(id);
+  return layer === 1 ? tech : band + " · " + tech;
+}
+
+function sortKey(id) {
+  const [layer, band, tech] = splitNode(id);
+  const g = CONFIG.groupOrder.indexOf(band), t = CONFIG.techOrder.indexOf(tech);
+  return [layer, g < 0 ? CONFIG.groupOrder.length : g, t < 0 ? CONFIG.techOrder.length : t, tech];
+}
+
+function cmpKeys(a, b) {
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] < b[i]) return -1;
+    if (a[i] > b[i]) return 1;
+  }
+  return 0;
+}
+
+/* One link row per motion, chained per furnace group. */
+function buildLinks(motions) {
+  const byFg = new Map();
+  motions.forEach((m, idx) => {
+    if (!byFg.has(m.fg)) byFg.set(m.fg, []);
+    byFg.get(m.fg).push({...m, idx});
+  });
+  const links = [];
+  for (const rows of byFg.values()) {
+    rows.sort((a, b) => a.year - b.year || a.idx - b.idx);
+    const first = rows[0];
+    const state = NEW_BUILD.has(first.kind) ? "NEW" : first.ot;
+    let prev = "L1|State|" + state;
+    rows.forEach((m, k) => {
+      const band = CONFIG.kindToGroup[m.kind];
+      const tech = m.kind === "close" ? m.ot : m.nt;
+      const node = "L" + (k + 2) + "|" + band + "|" + tech;
+      links.push({source: prev, target: node, year: m.year, mt: NEW_BUILD.has(m.kind) ? m.nm : m.om});
+      prev = node;
+    });
+  }
+  return links;
+}
+
+function yearlyRows(rows) {
+  const byYear = new Map();
+  rows.forEach(r => {
+    if (!byYear.has(r.year)) byYear.set(r.year, {mt: 0, n: 0});
+    const e = byYear.get(r.year); e.mt += r.mt; e.n += 1;
+  });
+  return [...byYear.keys()].sort((a, b) => a - b)
+    .map(y => `${y} · ${byYear.get(y).n} FG · ${byYear.get(y).mt.toFixed(1)} Mt`).join("<br>");
+}
+
+/* Replicates plotly's height scale (sinks count in the last depth column),
+   then finds the smallest pad whose scale leaves room for gaps and headings. */
+function nodePositions(nodeIds, totals, nLayers, sources) {
+  const domain = HEIGHT - MARGIN.t - MARGIN.b;
+  const layerX = k => 0.02 + (k - 1) * 0.96 / (nLayers - 1);
+  const columns = new Map(), depthGroups = new Map();
+  nodeIds.forEach((id, i) => {
+    const layer = splitNode(id)[0];
+    if (!columns.has(layer)) columns.set(layer, []);
+    columns.get(layer).push(i);
+    const depth = sources.has(id) ? layer - 1 : nLayers - 1;
+    if (!depthGroups.has(depth)) depthGroups.set(depth, []);
+    depthGroups.get(depth).push(i);
+  });
+  const sum = ids => ids.reduce((s, i) => s + totals[i], 0);
+  const ky = pad => Math.min(...[...depthGroups.values()].map(ids => (domain - pad * (ids.length - 1)) / sum(ids)));
+  const fits = (ids, scale, bandGapMin) => {
+    const bands = ids.map(i => splitNode(nodeIds[i])[1]);
+    let bandGaps = 0;
+    for (let j = 1; j < bands.length; j++) if (bands[j] !== bands[j - 1]) bandGaps++;
+    const within = ids.length - 1 - bandGaps;
+    return scale * sum(ids) + GAP_WITHIN * within + bandGapMin * bandGaps + HEAD_ROOM <= domain;
+  };
+  let pad = 4, scale = 0;
+  outer:
+  for (const bandGapMin of [BAND_GAP_MIN, 12, 6]) {
+    for (pad = 4; pad < 200; pad++) {
+      scale = ky(pad);
+      if (scale > 0 && [...columns.values()].every(ids => fits(ids, scale, bandGapMin))) break outer;
+    }
+  }
+  const xs = new Array(nodeIds.length), ys = new Array(nodeIds.length), headings = [];
+  for (const [layer, ids] of columns) {
+    const bands = ids.map(i => splitNode(nodeIds[i])[1]);
+    let bandGaps = 0;
+    for (let j = 1; j < bands.length; j++) if (bands[j] !== bands[j - 1]) bandGaps++;
+    const within = ids.length - 1 - bandGaps;
+    const leftover = domain - scale * sum(ids) - GAP_WITHIN * within;
+    let bandGap = 0, top;
+    if (bandGaps) {
+      bandGap = Math.min(BAND_GAP_MAX, (leftover - HEAD_ROOM) / bandGaps);
+      top = Math.min(HEAD_ROOM, leftover - bandGap * bandGaps);
+    } else {
+      top = Math.min(HEAD_ROOM, leftover);
+    }
+    let cursor = top;
+    ids.forEach((i, pos) => {
+      if (pos > 0) cursor += bands[pos] !== bands[pos - 1] ? bandGap : GAP_WITHIN;
+      if ((pos === 0 || bands[pos] !== bands[pos - 1]) && bands[pos] !== "State") {
+        headings.push({x: layerX(layer), y: cursor / domain, text: bands[pos], layer});
+      }
+      const h = totals[i] * scale;
+      xs[i] = layerX(layer);
+      ys[i] = (cursor + h / 2) / domain;
+      cursor += h;
+    });
+  }
+  return {xs, ys, headings, pad};
+}
+
+function render() {
+  ({width: WIDTH, height: HEIGHT} = Interactive.plotSize(MAX_WIDTH, MAX_HEIGHT));
+  WIDTH = Math.round(WIDTH * zoomLevel);
+  HEIGHT = Math.round(HEIGHT * zoomLevel);
+  const run = DATA[Interactive.run()];
+  const selected = Interactive.selectedGeos();
+  const all = run.motions;
+  const [yLo, yHi] = yearWindow();
+  const motions = all.filter(m => selected.has(m.geo) && m.year >= yLo && m.year <= yHi);
+  const gd = document.getElementById("chart");
+
+  const links = buildLinks(motions);
+  if (!links.length) {
+    Interactive.showEmpty(gd, "No motions for this selection", WIDTH, HEIGHT);
+    Interactive.summary("0 furnace groups");
+    return;
+  }
+
+  const flows = new Map();
+  links.forEach(l => {
+    const key = l.source + "→" + l.target;
+    if (!flows.has(key)) flows.set(key, {source: l.source, target: l.target, mt: 0, n: 0, rows: []});
+    const f = flows.get(key); f.mt += l.mt; f.n += 1; f.rows.push(l);
+  });
+  const flowList = [...flows.values()];
+
+  const nodeIds = [...new Set(flowList.flatMap(f => [f.source, f.target]))];
+  nodeIds.sort((a, b) => cmpKeys(sortKey(a), sortKey(b)));
+  const index = new Map(nodeIds.map((id, i) => [id, i]));
+  const nLayers = Math.max(...nodeIds.map(id => splitNode(id)[0]));
+
+  const inflow = new Map(), outflow = new Map();
+  flowList.forEach(f => {
+    inflow.set(f.target, (inflow.get(f.target) || 0) + f.mt);
+    outflow.set(f.source, (outflow.get(f.source) || 0) + f.mt);
+  });
+  const totals = nodeIds.map(id => Math.max(inflow.get(id) || 0, outflow.get(id) || 0));
+  const labels = nodeIds.map((id, i) =>
+    totals[i] < TINY_NODE_MT ? "" : splitNode(id)[2] + "  " + Math.round(totals[i]) + " Mt");
+  const nodeHover = nodeIds.map((id, i) => {
+    const own = splitNode(id)[0] === 1 ? links.filter(l => l.source === id) : links.filter(l => l.target === id);
+    return `<b>${nodeName(id)}</b> · ${totals[i].toFixed(1)} Mt · ${own.length} FG<br>` + yearlyRows(own);
+  });
+  const colours = nodeIds.map(id => techColour(splitNode(id)[2]));
+  const sources = new Set(flowList.map(f => f.source));
+  const {xs, ys, headings, pad} = nodePositions(nodeIds, totals, nLayers, sources);
+
+  const linkHover = flowList.map(f =>
+    `<b>${nodeName(f.source)} → ${nodeName(f.target)}</b> · ${f.mt.toFixed(1)} Mt · ${f.n} FG<br>` + yearlyRows(f.rows));
+
+  const annotations = headings.map(h => ({
+    x: h.x, y: 1 - h.y, xref: "paper", yref: "paper",
+    text: "<b>" + h.text.toUpperCase() + "</b>", showarrow: false,
+    font: {size: 10, color: T.inkSecondary}, bgcolor: "#eceae4", borderpad: 3,
+    xanchor: h.layer === nLayers ? "right" : "left", yanchor: "bottom", yshift: 3,
+  }));
+  const captions = ["Initial state"];
+  for (let k = 1; k < nLayers; k++) captions.push("Decision " + k);
+  captions.forEach((text, i) => {
+    const k = i + 1;
+    annotations.push({
+      x: 0.02 + (k - 1) * 0.96 / (nLayers - 1), y: 1.015, xref: "paper", yref: "paper",
+      text: "<b>" + text + "</b>", showarrow: false, font: {size: 12, color: T.ink},
+      xanchor: k === 1 ? "left" : (k === nLayers ? "right" : "center"), yanchor: "bottom",
+    });
+  });
+
+  const years = motions.map(m => m.year);
+  const y0 = Math.min(...years), y1 = Math.max(...years);
+  const yearRange = y0 === y1 ? String(y0) : y0 + "–" + y1;
+  Plotly.react(gd, [{
+    type: "sankey",
+    arrangement: "fixed",
+    node: {
+      label: labels, color: colours, x: xs, y: ys, customdata: nodeHover,
+      pad, thickness: 16, line: {width: 0},
+      hovertemplate: "%{customdata}<extra></extra>",
+    },
+    link: {
+      source: flowList.map(f => index.get(f.source)),
+      target: flowList.map(f => index.get(f.target)),
+      value: flowList.map(f => f.mt),
+      color: flowList.map(f => Interactive.hexToRgba(techColour(splitNode(f.source)[2]), 0.35)),
+      customdata: linkHover,
+      hovertemplate: "%{customdata}<extra></extra>",
+    },
+    valueformat: ".1f",
+    valuesuffix: " Mt",
+  }], {
+    title: {
+      text: `${CONFIG.chartTitle}<br><sup>${run.title} · ` +
+        `${Interactive.geoNote(new Set(all.map(m => m.geo)))} · ${yearRange}</sup>`,
+      font: {color: T.ink, size: 17}, x: 0.05,
+    },
+    annotations,
+    font: {family: "Helvetica Neue, Helvetica, Arial", color: T.inkSecondary, size: 11},
+    hoverlabel: {align: "left", font: {size: 11}},
+    paper_bgcolor: T.surface,
+    width: WIDTH, height: HEIGHT, margin: MARGIN,
+  }, {displaylogo: false, modeBarButtonsToAdd: ZOOM_BUTTONS});
+
+  const fgs = new Set(motions.map(m => m.fg)).size;
+  Interactive.summary(
+    `${fgs} furnace groups · ${motions.length} motions · ${links.filter(l => l.source.startsWith("L1|")).reduce((s, l) => s + l.mt, 0).toFixed(0)} Mt entering first decisions\n` +
+    `Technology at first decision, then each decision round grouped by activity · node width = capacity entering ` +
+    `the decision (Mt) · only furnace groups that made at least one decision or were created during the simulation are shown\n` +
+    `${run.provenance}`);
+}
+
+initYearSlider();
+Interactive.init({geoKeys: Object.values(DATA).flatMap(d => d.motions.map(m => m.geo)), onChange: render});
+Interactive.onResize(render);
+render();
+</script>
+</body>
+</html>

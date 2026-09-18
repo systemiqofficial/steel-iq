@@ -4,6 +4,8 @@ This module provides a centralized, class-based approach to creating plots with
 consistent styling, footers, legends, and color schemes across all Steel-IQ visualizations.
 """
 
+import cartopy.crs as ccrs  # type: ignore
+import cartopy.feature as cfeature  # type: ignore
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
@@ -11,6 +13,8 @@ import matplotlib.patheffects as path_effects
 import pandas as pd
 import numpy as np
 import logging
+import textwrap
+from collections import defaultdict
 from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
 from matplotlib.container import BarContainer
@@ -141,6 +145,7 @@ class SteelPlotter:
 
     EMISSIONS_SUBDIR = "emissions"
     COST_CURVES_SUBDIR = "cost_curves"
+    GREENFIELD_SUBDIR = "greenfield"
 
     def __init__(self, config: Optional[PlotConfig] = None, plot_paths: Optional["PlotPaths"] = None):
         """Initialize the SteelIQ plotter.
@@ -312,13 +317,16 @@ class SteelPlotter:
             self.logger.info(f"Assigned color {color} to metallic charge '{charge_type}'")
         return self.config.metallic_charge_colors[charge_lower]
 
-    def _save_chart_data_to_csv(self, df: pd.DataFrame, filename: str, subdir: str = "pam_plots_dir") -> Optional[Path]:
+    def _save_chart_data_to_csv(
+        self, df: pd.DataFrame, filename: str, subdir: str = "pam_plots_dir", index: bool = True
+    ) -> Optional[Path]:
         """Save chart data to CSV file.
 
         Args:
             df: DataFrame containing the chart data
             filename: Output filename (will replace .png with .csv)
             subdir: Subdirectory attribute name from PlotPaths
+            index: Whether to write the DataFrame index as the first column
 
         Returns:
             Path where CSV was saved, or None if plot_paths not set
@@ -338,7 +346,7 @@ class SteelPlotter:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            df.to_csv(output_path, index=True)
+            df.to_csv(output_path, index=index)
             self.logger.info(f"Saved chart data to {output_path}")
             return output_path
         except Exception as e:
@@ -470,6 +478,358 @@ class SteelPlotter:
             self._save_chart_data_to_csv(capex_by_year_tech, filename)
 
         return self._save_figure(fig, filename)
+
+    def plot_greenfield_plants_by_status(
+        self,
+        status_counts: dict[str, dict[int, dict[str, dict[str, int]]]],
+        export_csv: bool = True,
+    ) -> list[Path]:
+        """Plot yearly counts of greenfield (GEO-origin) plants by status, one stacked bar chart per product.
+
+        Charts are saved as ``greenfield/<product>_greenfield_status.png`` under ``plots_dir``.
+
+        Args:
+            status_counts: Nested dict {product: {year: {technology: {status: count}}}}.
+            export_csv: If True, also export each chart's data to CSV (default: True).
+
+        Returns:
+            List of paths to the saved plots (empty if there was nothing to plot).
+        """
+        if not status_counts:
+            self.logger.warning("No status counts data available for greenfield plants")
+            return []
+
+        # Lifecycle order doubles as the stacking order (bottom to top)
+        status_colors = {
+            "considered": "#a6cee3",
+            "announced": "#1f78b4",
+            "construction": "#f1dc1e",
+            "construction switching technology": "#c9a227",
+            "operating": "#24851b",
+            "operating switching technology": "#74c476",
+            "operating pre-retirement": "#084302",
+            "discarded": "#e31a1c",
+            "closed": "#882626",
+        }
+
+        saved: list[Path] = []
+        for product, status_per_year in status_counts.items():
+            records = []
+            for year, statuses_per_tech in status_per_year.items():
+                status_totals: dict[str, int] = defaultdict(int)
+                for statuses in statuses_per_tech.values():
+                    for status, count in statuses.items():
+                        status_totals[status] += count
+                records.append({"year": year, **status_totals})
+            if not records:
+                self.logger.info(f"No greenfield {product} plants found in any year - skipping status chart")
+                continue
+
+            status_df = pd.DataFrame(records).set_index("year").fillna(0).astype(int).sort_index()
+            ordered = [s for s in status_colors if s in status_df.columns]
+            ordered += [s for s in status_df.columns if s not in ordered]
+            status_df = status_df[ordered]
+
+            fig, ax = plt.subplots(figsize=self.config.default_figsize_wide)
+            status_df.plot(
+                kind="bar",
+                stacked=True,
+                ax=ax,
+                color=[status_colors.get(s, "#cccccc") for s in status_df.columns],
+                width=0.8,
+            )
+
+            ax.set_title(f"New Greenfield {product.capitalize()} Plants by Status", fontsize=14, fontweight="bold")
+            ax.set_xlabel("Year", fontsize=12)
+            ax.set_ylabel("Number of Plants", fontsize=12)
+            ax.set_xticklabels([str(year) for year in status_df.index], rotation=45, ha="right")
+            legend_statuses = self._legend_order_for_stack(status_df)
+            # Wrap long status names ("operating switching technology") to keep the legend narrow
+            wrapped_labels = [textwrap.fill(s, width=16) for s in legend_statuses]
+            status_handles = [
+                Patch(facecolor=status_colors.get(s, "#cccccc"), label=label)
+                for s, label in zip(legend_statuses, wrapped_labels)
+            ]
+            self._style_legend(ax, title="Status", handles=status_handles, labels=wrapped_labels)
+            ax.grid(axis="y", alpha=self.config.grid_alpha, linestyle=self.config.grid_linestyle)
+            self._ensure_y_axis_starts_at_zero(ax)
+            fig.tight_layout()
+
+            filename = f"{self.GREENFIELD_SUBDIR}/{product}_greenfield_status.png"
+            if export_csv:
+                self._save_chart_data_to_csv(status_df, filename, subdir="plots_dir")
+            saved.append(self._save_figure(fig, filename, subdir="plots_dir"))
+        return saved
+
+    def plot_greenfield_plants_map(
+        self,
+        new_plant_locations: dict[str, dict[int, list[dict[str, float]]]],
+    ) -> list[Path]:
+        """Plot world maps of newly operating greenfield (GEO-origin) plants.
+
+        Per product this writes one overall map with locations coloured by 5-year
+        operational-start classes (``<product>_greenfield_map.png``) plus one map per
+        decade (``<product>_greenfield_map_<y0>-<y1>.png``), all under
+        ``plots_dir/greenfield``. Colours come from a sequential per-product ramp
+        (blue = steel, brown = iron; light = early, dark = late): the overall map uses
+        discrete class chips with plant counts, while decade maps colour by exact year
+        with a continuous colourbar spanning the decade. A stub final bin (e.g. a lone
+        2060) is merged into the previous one, giving e.g. a 2055-2060 class.
+
+        Args:
+            new_plant_locations: Nested dict {product: {year: [{"lat": .., "lon": ..}, ...]}}.
+
+        Returns:
+            List of paths to the saved plots (empty if there was nothing to plot).
+        """
+        if not new_plant_locations:
+            self.logger.warning("No new plant location data available - skipping greenfield maps")
+            return []
+
+        saved: list[Path] = []
+        for product, locations_per_year in new_plant_locations.items():
+            total_locations = sum(len(locs) for locs in locations_per_year.values())
+            if total_locations == 0:
+                self.logger.info(f"No new greenfield {product} plants operating in any year - skipping map")
+                continue
+
+            # Deduplicate repeat coordinates, keeping the earliest year
+            points: list[tuple[float, float, int]] = []  # (lon, lat, year)
+            plotted_locations: set[tuple[float, float]] = set()
+            for year in sorted(locations_per_year.keys()):
+                for loc in locations_per_year[year]:
+                    key = (loc["lat"], loc["lon"])
+                    if key in plotted_locations:
+                        continue
+                    plotted_locations.add(key)
+                    points.append((loc["lon"], loc["lat"], year))
+
+            years = [p[2] for p in points]
+            class_bins = self._year_bins(min(years), max(years), step=5)
+            base_cmap = cm.get_cmap({"steel": "Blues", "iron": "YlOrBr"}.get(product, "Greys"))
+            class_colours = [base_cmap(x) for x in np.linspace(0.3, 0.98, len(class_bins))]
+
+            filename = f"{self.GREENFIELD_SUBDIR}/{product}_greenfield_map.png"
+            saved.append(self._render_greenfield_map(product, points, class_bins, class_colours, None, filename))
+
+            for decade in self._year_bins(min(years), max(years), step=10):
+                selection = [p for p in points if decade[0] <= p[2] <= decade[1]]
+                if not selection:
+                    continue
+                filename = f"{self.GREENFIELD_SUBDIR}/{product}_greenfield_map_{decade[0]}-{decade[1]}.png"
+                saved.append(
+                    self._render_greenfield_map(product, selection, class_bins, class_colours, decade, filename)
+                )
+        return saved
+
+    @staticmethod
+    def _year_bins(lo: int, hi: int, step: int) -> list[tuple[int, int]]:
+        """Calendar-aligned [lo, hi] year bins of ``step`` years, clamped to the data range.
+
+        A stub final bin covering fewer than 3 years is merged into the previous one, so
+        e.g. a lone 2060 extends the 2055-2059 bin to 2055-2060.
+        """
+        bins: list[list[int]] = []
+        edge = lo - lo % step
+        while edge <= hi:
+            bins.append([max(edge, lo), min(edge + step - 1, hi)])
+            edge += step
+        if len(bins) > 1 and bins[-1][1] - bins[-1][0] + 1 < 3:
+            bins[-2][1] = bins[-1][1]
+            bins.pop()
+        return [(b[0], b[1]) for b in bins]
+
+    def _render_greenfield_map(
+        self,
+        product: str,
+        points: list[tuple[float, float, int]],
+        class_bins: list[tuple[int, int]],
+        class_colours: list,
+        decade: Optional[tuple[int, int]],
+        filename: str,
+    ) -> Path:
+        """Render one greenfield map (overall or a single decade) and save it.
+
+        The overall map (``decade is None``) uses the discrete 5-year classes with a
+        chip legend; a decade map colours points by exact year on the same ramp with a
+        continuous colourbar spanning the decade.
+
+        Args:
+            product: "steel" or "iron"; used in the title.
+            points: (lon, lat, operational start year) per plant.
+            class_bins: 5-year classes shared across the product's maps.
+            class_colours: One colour per class, shared across the product's maps.
+            decade: (y0, y1) when rendering a decade subset, None for the overall map.
+            filename: Output path relative to ``plots_dir``.
+
+        Returns:
+            Path to the saved figure.
+        """
+        width = self.config.default_figsize_wide[0]
+        side_margin = 0.01  # fraction of figure width kept clear at each side
+        map_height = (width * (1 - 2 * side_margin)) / (360 / 145)
+        title_space, footer_space = 0.65, 0.25
+        fig_height = map_height + title_space + footer_space
+        map_bottom = footer_space / fig_height
+        map_frac = map_height / fig_height
+        fig = plt.figure(figsize=(width, max(fig_height, self.config.default_figsize_wide[1])))
+        ax = fig.add_axes(
+            (side_margin, map_bottom, 1 - 2 * side_margin, map_frac),
+            projection=ccrs.PlateCarree(),
+        )
+        ax.set_extent([-180, 180, -60, 85], crs=ccrs.PlateCarree())  # type: ignore[attr-defined]
+
+        ax.add_feature(cfeature.LAND, facecolor="#efefef", edgecolor="none")  # type: ignore[attr-defined]
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.6, edgecolor="#808080")  # type: ignore[attr-defined]
+        ax.add_feature(cfeature.BORDERS, linewidth=0.5, edgecolor="#9a9a9a")  # type: ignore[attr-defined]
+        ax.spines["geo"].set_visible(False)
+
+        title = f"Locations of New Greenfield {product.capitalize()} Plants"
+
+        if decade is None:
+            # Overall map: discrete 5-year classes with a chip legend incl. plant counts
+            legend_handles = []
+            for (y0, y1), colour in zip(class_bins, class_colours):
+                selection = [p for p in points if y0 <= p[2] <= y1]
+                if not selection:
+                    continue
+                ax.scatter(
+                    [p[0] for p in selection],
+                    [p[1] for p in selection],
+                    color=colour,
+                    s=30,
+                    alpha=0.85,
+                    edgecolors="white",
+                    linewidths=0.5,
+                    transform=ccrs.PlateCarree(),
+                    zorder=3,
+                )
+                legend_handles.append(Patch(facecolor=colour, label=f"{y0}–{y1}  ({len(selection)})"))
+
+            legend = ax.legend(
+                handles=legend_handles,
+                title="Operational start",
+                loc="lower left",
+                frameon=True,
+                framealpha=0.9,
+                fontsize=self.config.legend_fontsize,
+            )
+            legend.get_title().set_fontweight("bold")
+        else:
+            # Decade map: exact-year colouring on the same ramp, continuous colourbar
+            base_cmap = cm.get_cmap({"steel": "Blues", "iron": "YlOrBr"}.get(product, "Greys"))
+            year_cmap = mcolors.LinearSegmentedColormap.from_list(
+                "greenfield_years", base_cmap(np.linspace(0.3, 0.98, 256))
+            )
+            norm = mcolors.Normalize(vmin=decade[0], vmax=max(decade[1], decade[0] + 1))
+            ax.scatter(
+                [p[0] for p in points],
+                [p[1] for p in points],
+                c=[p[2] for p in points],
+                cmap=year_cmap,
+                norm=norm,
+                s=30,
+                alpha=0.85,
+                edgecolors="white",
+                linewidths=0.5,
+                transform=ccrs.PlateCarree(),
+                zorder=3,
+            )
+            cax = fig.add_axes((0.035, map_bottom + 0.03 * map_frac, 0.012, 0.42 * map_frac))
+            colorbar = fig.colorbar(
+                cm.ScalarMappable(norm=norm, cmap=year_cmap),
+                cax=cax,
+                orientation="vertical",
+            )
+            colorbar.ax.invert_yaxis()
+            colorbar.ax.set_title("Operational\nstart", fontsize=10, fontweight="bold", loc="left", pad=10)
+            colorbar.ax.tick_params(labelsize=9)
+            colorbar.locator = MaxNLocator(integer=True, nbins=6)
+            colorbar.update_ticks()
+            colorbar.outline.set_visible(False)  # type: ignore[operator]
+            title += f" — {decade[0]}–{decade[1]}"
+
+        ax.set_title(title, fontsize=14, fontweight="bold", pad=14)
+        return self._save_figure(fig, filename, subdir="plots_dir")
+
+    def export_greenfield_plants_csv(
+        self,
+        greenfield_plants: dict[str, dict[str, Any]],
+    ) -> Optional[Path]:
+        """Write one CSV row per built greenfield furnace group with its key attributes.
+
+        Saved as ``greenfield/greenfield_plants.csv`` under ``plots_dir``. Only plants
+        that were actually built are exported: records that never reached construction
+        (still-considered/announced candidates and discarded ones) are skipped, so the
+        CSV is the breakdown of what exists at any point in time. Column order:
+        lifecycle years (considered/announced/construction/operating/closed, always
+        present, blank where unobserved; any other observed ``year_<status>`` follows)
+        and scheduled lifetime end, then status, then location (region, geo_key,
+        lat/lon), then identity and initial vs final technology/reductant/capacity.
+        For plants still under construction at the end of the run, ``year_operating``
+        holds the scheduled operating year (construction start + construction time)
+        rather than an observed one; such rows are identifiable by
+        ``status == "construction"``.
+
+        Args:
+            greenfield_plants: {furnace_group_id: record} as collected by
+                ``DataCollector.collect_new_plant_data``.
+
+        Returns:
+            Path to the saved CSV, or None if there is nothing to export.
+        """
+        built_records = [
+            record
+            for record in greenfield_plants.values()
+            if any(
+                status in ("construction", "closed") or status.startswith("operating")
+                for status in record.get("status_years", {})
+            )
+        ]
+        if not built_records:
+            self.logger.warning("No built greenfield plant records to export")
+            return None
+
+        rows = []
+        for record in built_records:
+            row = {key: value for key, value in record.items() if key != "status_years"}
+            for status, year in record.get("status_years", {}).items():
+                row[f"year_{status.replace(' ', '_').replace('-', '_')}"] = year
+            # Still under construction at the end of the run: estimate operating year from scheduled lifetime start
+            if "year_operating" not in row and "lifetime_start" in record:
+                row["year_operating"] = record["lifetime_start"]
+            rows.append(row)
+
+        df = pd.DataFrame(rows)
+        lifecycle_years = ["year_considered", "year_announced", "year_construction", "year_operating", "year_closed"]
+        extra_years = sorted(
+            column for column in df.columns if column.startswith("year_") and column not in lifecycle_years
+        )
+        ordered_columns = [
+            *lifecycle_years,
+            *extra_years,
+            "lifetime_end",
+            "status",
+            "region",
+            "geo_key",
+            "lat",
+            "lon",
+            "parent_gem_id",
+            "plant_group_id",
+            "plant_id",
+            "furnace_group_id",
+            "product",
+            "technology_initial",
+            "reductant_initial",
+            "capacity_initial",
+            "technology_final",
+            "reductant_final",
+            "capacity_final",
+        ]
+        df = df.reindex(columns=ordered_columns)
+        return self._save_chart_data_to_csv(
+            df, f"{self.GREENFIELD_SUBDIR}/greenfield_plants.csv", subdir="plots_dir", index=False
+        )
 
     def plot_emissions_by_technology(
         self,

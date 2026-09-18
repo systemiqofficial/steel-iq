@@ -7,6 +7,7 @@ import copy
 import math
 import logging
 import random
+import time
 import uuid
 from geopy.distance import geodesic  # type: ignore
 from typing import TYPE_CHECKING, TypeVar, ClassVar, FrozenSet, Dict, Tuple, Union, Any, Callable, Optional
@@ -52,6 +53,7 @@ from steelo.domain.constants import (
 )
 
 if TYPE_CHECKING:
+    from steelo.capacity_policy.pool import Credit
     from steelo.simulation import SimulationConfig
 
 
@@ -1117,6 +1119,7 @@ class FurnaceGroup:
         emissions: dict[str, dict[str, float]] | None = {},
         emissions_factor: dict[str, dict[str, float]] | None = None,
         historical_npv_business_opportunities: Optional[dict[int, float]] = None,
+        historical_utilization: Optional[dict[int, float]] = None,
         bill_of_materials: dict[str, dict[str, dict[str, float]]] | None = None,
         energy_cost_dict: dict = {},
         chosen_reductant: str = "",
@@ -1160,6 +1163,13 @@ class FurnaceGroup:
         self.future_switch_cmd: Optional[commands.ChangeFurnaceGroupTechnology] = None
         self.future_switch_year: Optional[int] = None
 
+        # Capacity-policy stash set by a live greenfield gate at announcement; a discard refunds the slices
+        self.capacity_pool_granted_withdraw_mt: float | None = None
+        self.capacity_pool_attributed_owner_id: str | None = None
+        self.capacity_pool_consumed_credits: tuple["Credit", ...] | None = None
+        # Years the capacity gate has blocked this opportunity; discarded at the configured cap
+        self.capacity_pool_blocked_years: int = 0
+
         # Economic variables
         self.equity_share = equity_share
         self.cost_of_debt = cost_of_debt
@@ -1167,6 +1177,7 @@ class FurnaceGroup:
         self.balance = balance  # furnaces are initiated with a balance of 0
         self.historic_balance = historic_balance
         self.historical_npv_business_opportunities = historical_npv_business_opportunities
+        self.historical_utilization = historical_utilization
         self.railway_cost = railway_cost
         self.legacy_debt_schedule = legacy_debt_schedule or []  # Track debt from previous tech when switching
         self.has_hot_metal_access = False
@@ -1321,6 +1332,24 @@ class FurnaceGroup:
         self.cost_of_debt = cost_of_debt
         # Set baseline interest rate without subsidies
         self.cost_of_debt_no_subsidy = cost_of_debt_no_subsidy
+
+    def record_utilization(self, year: int) -> None:
+        """
+        Record the current utilisation rate under the given simulation year.
+
+        The scalar utilization_rate is overwritten every year by the trade-module
+        allocation; this keeps the per-year history that survives the overwrite.
+
+        Args:
+            year: Simulation year the current utilization_rate belongs to.
+
+        Notes:
+            Re-recording the same year overwrites its entry, so replaying a year
+            is idempotent.
+        """
+        if self.historical_utilization is None:
+            self.historical_utilization = {}
+        self.historical_utilization[year] = self.utilization_rate
 
     def report_bill_of_materials(self):
         return {
@@ -2285,6 +2314,7 @@ class FurnaceGroup:
         tech_debt_subsidies: dict[str, list[Subsidy]] = {},
         tech_energy_subsidies: dict[str, dict[str, list[Subsidy]]] = {},
         most_common_reductant_by_tech: dict[str, str] = {},
+        candidate_capacities: dict[str, float] | None = None,
     ) -> tuple[
         dict[str, float],
         dict[str, float],
@@ -2343,6 +2373,10 @@ class FurnaceGroup:
                 Candidate technologies are priced from unsubsidised carrier prices with these
                 applied for the candidate's operating start year, so the incumbent's energy
                 subsidies do not leak into candidate costings.
+            candidate_capacities (dict[str, float] | None): Capacity each candidate technology
+                may be built at, resolved by the capacity policy before this call. When set it
+                covers every candidate on the menu and the candidate's BOM and NPV are evaluated
+                at its entry; None (default) evaluates everything at the group's own capacity.
 
         Returns:
             tuple: (npv_dict, npv_capex_dict, cosa, bom_dict) where:
@@ -2515,6 +2549,10 @@ class FurnaceGroup:
                 logger.info("[OPTIMAL TECH] SKIPPING BOF - Plant has no smelter furnace (required for BOF)")
                 continue
 
+            # The capacity policy may have shrunk this candidate; everything downstream —
+            # BOM, NPV, and ultimately the command — is evaluated at the permitted capacity
+            tech_capacity = self.capacity if candidate_capacities is None else Volumes(candidate_capacities[tech])
+
             # current tech renovates in place and keeps producing, so its NPV carries no construction lag
             tech_construction_time = 0 if tech == self.technology.name else construction_time
 
@@ -2605,7 +2643,7 @@ class FurnaceGroup:
 
                 # Fetch average BOM for the new technology from historical data
                 chosen_reductant = most_common_reductant_by_tech.get(tech)
-                bom_result = get_bom_from_avg_boms(candidate_energy_costs, tech, self.capacity, chosen_reductant)
+                bom_result = get_bom_from_avg_boms(candidate_energy_costs, tech, tech_capacity, chosen_reductant)
                 bill_of_materials_opt, util_rate, reductant, output_shares = bom_result
 
                 # Skip if BOM retrieval failed
@@ -2642,7 +2680,7 @@ class FurnaceGroup:
                     # Commit the BOM the start-year pick implies (materials are reductant-
                     # invariant; only the energy rows follow the pick)
                     rebuilt_bom, util_rate, reductant, output_shares = get_bom_from_avg_boms(
-                        candidate_energy_costs, tech, self.capacity, committed_reductant
+                        candidate_energy_costs, tech, tech_capacity, committed_reductant
                     )
                     if rebuilt_bom is None:
                         raise ValueError(
@@ -2712,7 +2750,7 @@ class FurnaceGroup:
                 # by-product terms are already inside the per-year opex list)
                 npv_dict[tech] = calculate_npv_full(
                     capex=capex,
-                    capacity=self.capacity,
+                    capacity=tech_capacity,
                     unit_total_opex_list=unit_total_opex_list,
                     expected_utilisation_rate=util_rate,
                     price_series=product_price_series,
@@ -2740,7 +2778,7 @@ class FurnaceGroup:
                 logger.debug(
                     f"[OPTIMAL TECH]   - Total opex per tonne: {unit_total_opex_list} (base before score: ${unit_base_opex:,.2f})"
                 )
-                logger.debug(f"[OPTIMAL TECH]   - Capacity: {self.capacity:.2f} t")
+                logger.debug(f"[OPTIMAL TECH]   - Capacity: {tech_capacity:.2f} t")
                 logger.debug(f"[OPTIMAL TECH]   - Utilization rate: {util_rate:.2%}")
                 logger.debug(f"[OPTIMAL TECH]   - Price series ($/t): {product_price_series}")
                 logger.debug(f"[OPTIMAL TECH]   - Lifetime: {self.lifetime.plant_lifetime} years")
@@ -2974,6 +3012,11 @@ class FurnaceGroup:
         get_co2_headroom: Callable[[str, int, float], float] | None = None,
         get_co2_need: Callable[["Technology", float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
+        permitted_greenfield_capacity: Callable[..., tuple[float, str | None, bool, tuple["Credit", ...]] | None]
+        | None = None,
+        capacity_pool_max_retry_years: int | None = None,
+        increase_sizing_query: Callable[..., float] | None = None,
+        greenfield_feasibility_probe: Callable[..., str | None] | None = None,
     ) -> commands.Command | None:
         """
         Tracks whether an identified business opportunity remains interesting over time to avoid making
@@ -3010,6 +3053,33 @@ class FurnaceGroup:
             all_opex_subsidies: List of available OPEX subsidies
             reductant_score_series: ``(location, tech, output_shares, start, end, *, overrides,
                 override_reference_year) -> ReductantScoreSeries`` (``Environment.reductant_score_series``)
+            permitted_greenfield_capacity: China capacity-policy withdrawal gate, called once
+                when the announcement draw succeeds (capacities in model tonnes end-to-end).
+                Returns ``(build_capacity, attributed_owner_id, withdrew, credits_consumed)``
+                on a grant — the capacity actually allowed, the single credit holder funding
+                it (None for the unowned pot or when no withdrawal ran), whether the pool was
+                drawn on, and the consumed credit slices a later discard refunds — or None
+                when the withdrawal is blocked, in which case the opportunity stays considered
+                and retries next year exactly like the CO2 gate. None (the default) leaves the
+                decision path untouched.
+            capacity_pool_max_retry_years: Cumulative years the capacity gate may block this
+                opportunity before it is discarded rather than retried. Counts capacity blocks
+                only — CO2 blocks sit in another branch and never reach the counter. With the
+                feasibility probe threaded a blocked year counts whether or not the
+                announcement draw ran; without it, only a blocked successful draw counts.
+                None (the default) retries forever.
+            increase_sizing_query: China capacity-policy sizing query, applied to each yearly
+                re-valuation so the announcement decision rests on the capacity the policy
+                permits. Non-consuming and never mutates ``self.capacity``, which stays the
+                planned amount the gate withdraws against. None (the default) re-values at the
+                planned capacity.
+            greenfield_feasibility_probe: China capacity-policy pre-draw probe: would the
+                single-owner withdrawal be granted at the current pool state? Non-consuming;
+                called before the announcement draw so an unfundable year counts toward the
+                retry cap regardless of the draw, and the blocked ledger row covers every
+                blocked year. A blocked probe skips the draw entirely (one fewer RNG call
+                than the pre-probe behaviour — enabled runs only). None (the default) leaves
+                the block accounting to the consuming gate alone.
 
         Returns:
             Command to update the status of the FurnaceGroup, or None if no status change.
@@ -3098,9 +3168,22 @@ class FurnaceGroup:
 
             # Calculate updated NPV (carbon and by-products live inside the score)
             years_to_construction_start = int(earliest_operation_start_year) - construction_time - int(year)
+            # The capacity the policy would permit, known before the NPV that decides announcement
+            npv_capacity = (
+                self.capacity
+                if increase_sizing_query is None
+                else Volumes(
+                    increase_sizing_query(
+                        iso3=location.iso3,
+                        technology=self.technology.name,
+                        reductant=self.chosen_reductant,
+                        capacity=float(self.capacity),
+                    )
+                )
+            )
             npv_value = calculate_npv_full(
                 capex=self.technology.capex,
-                capacity=self.capacity,
+                capacity=npv_capacity,
                 unit_total_opex_list=unit_total_opex_list,
                 expected_utilisation_rate=self.utilization_rate,
                 price_series=market_price[self.technology.product][years_to_construction_start:],
@@ -3169,8 +3252,77 @@ class FurnaceGroup:
                                 status_stats["co2_storage_blocked"] += 1
                             return None  # stay considered
 
+                def register_capacity_block() -> commands.Command | None:
+                    """Count one blocked year; at the retry cap, discard the opportunity.
+
+                    Shared by the pre-draw probe and the consuming gate's blocked branch, so
+                    the counter has exactly one semantics wherever the block is detected. A
+                    cap discard never withdrew, so there is nothing to refund; the
+                    announced-only guard in the status handler keeps the CO2 release out of
+                    it too.
+                    """
+                    self.capacity_pool_blocked_years += 1
+                    if status_stats is not None:
+                        status_stats["capacity_pool_blocked"] += 1
+                    if (
+                        capacity_pool_max_retry_years is not None
+                        and self.capacity_pool_blocked_years >= capacity_pool_max_retry_years
+                    ):
+                        logger.info(
+                            f"[CAPACITY POOL] gate=greenfield decision=discarded_retry_cap "
+                            f"fg={self.furnace_group_id} iso3={location.iso3} "
+                            f"tech={self.technology.name} blocked_years={self.capacity_pool_blocked_years} "
+                            f"cap={capacity_pool_max_retry_years} year={int(year)}"
+                        )
+                        if status_stats is not None:
+                            status_stats["capacity_pool_retry_cap_discarded"] += 1
+                        return commands.UpdateFurnaceGroupStatus(
+                            fg_id=self.furnace_group_id,
+                            plant_id=self.get_furnace_plant_id(),
+                            new_status="discarded",
+                        )
+                    return None  # stay considered
+
+                # Non-consuming pre-draw probe: a blocked year counts towards the retry cap
+                # whether or not the draw would have run, so the cap measures years, not draws
+                if greenfield_feasibility_probe is not None:
+                    probe_blocked_reason = greenfield_feasibility_probe(
+                        iso3=location.iso3,
+                        geo_unit=location.geo_unit,
+                        technology=self.technology.name,
+                        reductant=self.chosen_reductant,
+                        capacity=float(self.capacity),
+                        product=self.technology.product,
+                        year=int(year),
+                    )
+                    if probe_blocked_reason is not None:
+                        return register_capacity_block()
+
                 announcement_draw = random.random()
                 if announcement_draw < probability_of_announcement:
+                    # Capacity-policy gate (③ INCREASE): announcement is the commitment point, so the
+                    # gate withdraws here or the opportunity stays considered, like the CO2 gate above
+                    if permitted_greenfield_capacity is not None:
+                        grant = permitted_greenfield_capacity(
+                            iso3=location.iso3,
+                            geo_unit=location.geo_unit,
+                            technology=self.technology.name,
+                            reductant=self.chosen_reductant,
+                            capacity=float(self.capacity),
+                            product=self.technology.product,
+                            year=int(year),
+                        )
+                        if grant is None:
+                            return register_capacity_block()
+                        build_capacity, attributed_owner_id, withdrew, credits_consumed = grant
+                        if withdrew:
+                            self.capacity_pool_granted_withdraw_mt = float(self.capacity)
+                            self.capacity_pool_attributed_owner_id = attributed_owner_id
+                            self.capacity_pool_consumed_credits = credits_consumed
+                            if build_capacity != self.capacity:
+                                # Emission-intense grant: the pool withdrew the planned
+                                # amount but the build itself is penalised
+                                self.capacity = Volumes(build_capacity)
                     if status_stats is not None:
                         status_stats["announced"] += 1
                     logger.debug(
@@ -3570,12 +3722,22 @@ class Plant:
             existing_removed = self.removed_capacity_by_product.get(product_name, 0.0)
             self.removed_capacity_by_product[product_name] = existing_removed + float(furnace_group.capacity)
         furnace_group.status = "closed"
-        self.events.append(events.FurnaceGroupClosed(furnace_group_id=furnace_group_id))
+        self.events.append(
+            events.FurnaceGroupClosed(
+                furnace_group_id=furnace_group_id,
+                capacity=furnace_group.capacity,
+                iso3=self.location.iso3,
+                geo_unit=self.location.geo_unit,
+                owner_id=self.ultimate_plant_group,
+                product=furnace_group.technology.product,
+            )
+        )
 
     def renovate_furnace_group(
         self,
         furnace_group_id: str,
         plant_lifetime: int,
+        capacity: float,
         capex: float,
         capex_no_subsidy: float,
         cost_of_debt: float,
@@ -3591,13 +3753,17 @@ class Plant:
         2. Set the last renovation date to January 1st of the current year.
         3. Reset the furnace group's lifetime to start from the current year with the new plant_lifetime duration.
         4. Change the technology CAPEX type to "brownfield" to reflect renovation economics.
-        5. Update the CAPEX and cost of debt values (both subsidized and unsubsidized versions).
+        5. Apply the renovated capacity and update the CAPEX and cost of debt values (both subsidized and
+           unsubsidized versions).
         6. Apply any provided CAPEX and debt subsidies to the furnace group's subsidy tracking.
-        7. Log a FurnaceGroupRenovated event to the event stream.
+        7. Log a FurnaceGroupRenovated event carrying the pre-renovation capacity as ``old_capacity``.
 
         Args:
             furnace_group_id (str): Unique identifier of the furnace group to renovate.
             plant_lifetime (int): New lifetime in years for the renovated furnace group.
+            capacity (float): Capacity the renovated group carries forward. Equal to the current
+                capacity except when the capacity-policy hook shrank the renovation, in which
+                case the freed difference is deposited by the policy's event handler.
             capex (float): Subsidized capital expenditure for the renovation.
             capex_no_subsidy (float): Unsubsidized capital expenditure for the renovation.
             cost_of_debt (float): Subsidized cost of debt financing for the renovation.
@@ -3621,6 +3787,7 @@ class Plant:
         """
         furnace_group = self.get_furnace_group(furnace_group_id)
         current_year = furnace_group.lifetime.current
+        old_capacity = furnace_group.capacity
 
         # Mark the renovation date
         furnace_group.last_renovation_date = date(current_year, 1, 1)
@@ -3635,6 +3802,9 @@ class Plant:
         # Switch to brownfield CAPEX (renovation costs are different from greenfield construction)
         furnace_group.technology.capex_type = "brownfield"
 
+        # Apply the renovated capacity; a no-op unless the capacity policy shrank the renovation
+        furnace_group.capacity = Volumes(capacity)
+
         # Update financial parameters with both subsidized and unsubsidized values
         furnace_group.technology.capex = capex
         furnace_group.technology.capex_no_subsidy = capex_no_subsidy
@@ -3646,7 +3816,20 @@ class Plant:
         furnace_group.applied_subsidies["debt"] = debt_subsidies
 
         # Log the renovation event for audit trail and event sourcing
-        self.events.append(events.FurnaceGroupRenovated(furnace_group_id=furnace_group_id))
+        # A renovation keeps the technology, so old and new names coincide
+        self.events.append(
+            events.FurnaceGroupRenovated(
+                furnace_group_id=furnace_group_id,
+                capacity=furnace_group.capacity,
+                iso3=self.location.iso3,
+                geo_unit=self.location.geo_unit,
+                old_technology_name=furnace_group.technology.name,
+                new_technology_name=furnace_group.technology.name,
+                old_capacity=old_capacity,
+                owner_id=self.ultimate_plant_group,
+                product=furnace_group.technology.product,
+            )
+        )
 
     def change_furnace_group_status_to_switching_technology(
         self,
@@ -3686,6 +3869,7 @@ class Plant:
         technology_name: str,
         plant_lifetime: int,
         lag: int,
+        capacity: float,
         capex: float,
         capex_no_subsidy: float,
         cost_of_debt: float,
@@ -3719,6 +3903,9 @@ class Plant:
             technology_name (str): Name of the new technology to switch to.
             plant_lifetime (int): Lifetime of the new plant in years.
             lag (int): Construction lag in years before the plant becomes operational.
+            capacity (float): Capacity the new technology is built at. Equal to the current
+                capacity except when the capacity-policy hook shrank the replacement, in which
+                case the freed difference is deposited by the policy's event handler.
             capex (float): Capital expenditure for the new technology (after subsidies).
             capex_no_subsidy (float): Capital expenditure without subsidies applied.
             cost_of_debt (float): Cost of debt percentage for the new technology (after subsidies).
@@ -3753,6 +3940,8 @@ class Plant:
             - See debt_repayment_per_year property for full details on debt accumulation logic.
         """
         furnace_group = self.get_furnace_group(furnace_group_id)
+        old_technology_name = furnace_group.technology.name
+        old_capacity = furnace_group.capacity
 
         # Capture the current technology's remaining debt tail before switching.
         years_remaining = legacy_years if legacy_years is not None else furnace_group.lifetime.remaining_number_of_years
@@ -3793,8 +3982,11 @@ class Plant:
         furnace_group.cost_of_debt = cost_of_debt
         furnace_group.cost_of_debt_no_subsidy = cost_of_debt_no_subsidy
 
-        # Apply new technology and reset operational state
+        # Apply new technology and reset operational state. The capacity lands after the
+        # legacy-debt capture above, which must price the outgoing technology's remaining
+        # debt on the old capacity; a shrink materialises only from here on
         furnace_group.technology = technology
+        furnace_group.capacity = Volumes(capacity)
         if bom is not None:
             furnace_group.bill_of_materials = bom
         furnace_group.utilization_rate = 0.0
@@ -3828,6 +4020,12 @@ class Plant:
                 furnace_group_id=furnace_group_id,
                 technology_name=technology_name,
                 capacity=furnace_group.capacity,
+                iso3=self.location.iso3,
+                geo_unit=self.location.geo_unit,
+                old_technology_name=old_technology_name,
+                old_capacity=old_capacity,
+                owner_id=self.ultimate_plant_group,
+                product=furnace_group.technology.product,
             )
         )
 
@@ -3868,6 +4066,7 @@ class Plant:
         get_co2_headroom: Callable[[str, int, float], float] | None = None,
         get_co2_need_by_name: Callable[[str, float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
+        permitted_replace_capacity: Callable[..., float | None] | None = None,
     ) -> commands.Command | None:
         """
         Evaluate the economic strategy for a furnace group using NPV-based decision making.
@@ -3928,6 +4127,13 @@ class Plant:
             tech_energy_subsidies: Energy carrier subsidies {carrier: {tech_name: [Subsidy]}},
                 already collected for the plant's geography; forwarded to
                 optimal_technology_name for candidate-technology energy pricing
+            permitted_replace_capacity: Optional capacity-policy gate for replacement decisions.
+                Called once per candidate technology with keyword arguments (iso3, geo_unit,
+                old_technology, old_reductant, new_technology, new_reductant, capacity,
+                historical_utilization, year); returns the capacity the candidate may be built
+                at — everything downstream (NPV, capex, debt, BOM, the command) is evaluated
+                there — or None to remove the candidate from the menu entirely. None (default)
+                leaves the decision path untouched.
 
         Returns:
             Command object (ChangeFurnaceGroupTechnology for switches, RenovateFurnaceGroup for renovations,
@@ -4058,6 +4264,62 @@ class Plant:
                 f"dropped_count={len(dropped_ccs_techs)}"
             )
 
+        # ② REPLACE capacity policy: each candidate's permitted capacity is resolved before its
+        # NPV; None drops the candidate from the menu
+        candidate_capacities: dict[str, float] | None = None
+        if permitted_replace_capacity is not None:
+            candidate_capacities = {}
+            permitted_candidates: list[str] = []
+            gate_picks_computed = 0
+            gate_picks_elapsed = 0.0
+            for tech in filtered_allowed_furnace_transitions.get(furnace_group.technology.name, []):
+                if tech == furnace_group.technology.name:
+                    candidate_reductant: str | None = furnace_group.chosen_reductant
+                else:
+                    # The new side is classified by the candidate's own operating-start pick,
+                    # on the series and year anchor the P2 CO2 gate already uses
+                    if tech not in gate_pick_by_tech:
+                        started = time.perf_counter()
+                        gate_series = score_series_for_tech(tech, {}, Year(lookup_year), Year(lookup_year + 1))
+                        gate_picks_elapsed += time.perf_counter() - started
+                        gate_picks_computed += 1
+                        gate_pick_by_tech[tech] = gate_series.picks[0] if gate_series.picks else ""
+                    candidate_reductant = gate_pick_by_tech[tech]
+                permitted = permitted_replace_capacity(
+                    iso3=self.location.iso3,
+                    geo_unit=self.location.geo_unit,
+                    product=furnace_group.technology.product,
+                    old_technology=furnace_group.technology.name,
+                    old_reductant=furnace_group.chosen_reductant,
+                    new_technology=tech,
+                    new_reductant=candidate_reductant,
+                    capacity=float(furnace_group.capacity),
+                    historical_utilization=furnace_group.historical_utilization,
+                    year=int(current_year),
+                    furnace_group_id=furnace_group_id,
+                )
+                if permitted is None:
+                    continue
+                candidate_capacities[tech] = permitted
+                permitted_candidates.append(tech)
+            filtered_allowed_furnace_transitions[furnace_group.technology.name] = permitted_candidates
+            if gate_picks_computed:
+                # The picks are computed worldwide but read only for China (the adapter owns
+                # applicability); this is the evidence base for a CHN guard, should one be wanted
+                logger.debug(
+                    "[CAPACITY POOL] gate picks computed=%d elapsed_ms=%.1f iso3=%s fg=%s",
+                    gate_picks_computed,
+                    gate_picks_elapsed * 1e3,
+                    self.location.iso3,
+                    furnace_group_id,
+                )
+
+        def permitted_capacity_for(tech_name: str) -> Volumes:
+            """The capacity this candidate was evaluated at; the group's own when no policy ran."""
+            if candidate_capacities is None:
+                return furnace_group.capacity
+            return Volumes(candidate_capacities[tech_name])
+
         logger.debug(
             f"[FG STRATEGY] Allowed transitions from {furnace_group.technology.name}: "
             f"{filtered_allowed_furnace_transitions.get(furnace_group.technology.name)}"
@@ -4091,6 +4353,7 @@ class Plant:
             tech_energy_subsidies=tech_energy_subsidies,
             risk_free_rate=risk_free_rate,
             most_common_reductant_by_tech=most_common_reductant_by_tech,
+            candidate_capacities=candidate_capacities,
         )
 
         # Log NPV calculation results
@@ -4142,7 +4405,8 @@ class Plant:
                 risk_free_rate=risk_free_rate,
             )
 
-            renovate_cost = renovation_capex_per_tonne * furnace_group.capacity * furnace_group.equity_share
+            renovation_capacity = permitted_capacity_for(incumbent)
+            renovate_cost = renovation_capex_per_tonne * renovation_capacity * furnace_group.equity_share
             logger.info(
                 f"[FG STRATEGY] plant_id={self.plant_id} plant_group_id={plant_group.plant_group_id} "
                 f"renovate_cost=${renovate_cost:,.2f} balance=${plant_group.balance:,.2f} "
@@ -4169,6 +4433,7 @@ class Plant:
             return commands.RenovateFurnaceGroup(
                 plant_id=self.plant_id,
                 furnace_group_id=furnace_group.furnace_group_id,
+                capacity=renovation_capacity,
                 capex=renovation_capex_per_tonne,
                 capex_no_subsidy=incumbent_capex_no_subsidy * renovation_share,
                 cost_of_debt=incumbent_cost_of_debt_with_subs,
@@ -4311,12 +4576,13 @@ class Plant:
             raise ValueError(f"CAPEX (greenfield) for technology {best_tech} not found in NPV CAPEX dict")
         capex_per_tonne: float = capex_per_tonne_opt
 
-        # Calculate switching cost (equity portion only)
-        switch_cost = capex_per_tonne * furnace_group.capacity * furnace_group.equity_share
+        # Calculate switching cost (equity portion only) at the permitted capacity
+        switch_capacity = permitted_capacity_for(best_tech)
+        switch_cost = capex_per_tonne * switch_capacity * furnace_group.equity_share
 
         logger.debug("[FG STRATEGY] Switch cost calculation:")
         logger.debug(f"[FG STRATEGY]   - Subsidized CAPEX: ${capex_per_tonne:,.2f}/t")
-        logger.debug(f"[FG STRATEGY]   - Capacity: {furnace_group.capacity * T_TO_KT:,.0f} kt")
+        logger.debug(f"[FG STRATEGY]   - Capacity: {switch_capacity * T_TO_KT:,.0f} kt")
         logger.debug(f"[FG STRATEGY]   - Equity share: {furnace_group.equity_share:.1%}")
         logger.debug(f"[FG STRATEGY]   - Total cost: ${switch_cost:,.2f}")
         logger.info(
@@ -4384,16 +4650,16 @@ class Plant:
                 logger.debug(
                     f"[FG STRATEGY]   - Expansions/switches so far: {expansion_and_switch_capacity * T_TO_KT:,.0f} kt"
                 )
-                logger.debug(f"[FG STRATEGY]   - To add (switch): {furnace_group.capacity * T_TO_KT:,.0f} kt")
+                logger.debug(f"[FG STRATEGY]   - To add (switch): {switch_capacity * T_TO_KT:,.0f} kt")
                 logger.debug(
-                    f"[FG STRATEGY]   - Total after: {(expansion_and_switch_capacity + furnace_group.capacity) * T_TO_KT:,.0f} kt"
+                    f"[FG STRATEGY]   - Total after: {(expansion_and_switch_capacity + switch_capacity) * T_TO_KT:,.0f} kt"
                 )
                 logger.debug(f"[FG STRATEGY]   - Expansion/switch limit: {expansion_limit * T_TO_KT:,.0f} kt")
 
-                if expansion_and_switch_capacity + furnace_group.capacity > expansion_limit:
+                if expansion_and_switch_capacity + switch_capacity > expansion_limit:
                     logger.warning(
                         f"[FG STRATEGY] BLOCKED - Expansion/switch capacity limit reached for {tech_product}: "
-                        f"{expansion_and_switch_capacity * T_TO_KT:,.0f} kt + {furnace_group.capacity * T_TO_KT:,.0f} kt > "
+                        f"{expansion_and_switch_capacity * T_TO_KT:,.0f} kt + {switch_capacity * T_TO_KT:,.0f} kt > "
                         f"{expansion_limit * T_TO_KT:,.0f} kt"
                     )
                     if furnace_group.lifetime.expired:
@@ -4449,7 +4715,7 @@ class Plant:
                 utilisation=furnace_group.utilization_rate,
                 capex=capex_per_tonne,
                 capex_no_subsidy=original_capex_per_tonne,
-                capacity=furnace_group.capacity,
+                capacity=switch_capacity,
                 bom=bom,
                 chosen_reductant=reductant_dict[best_tech],
                 remaining_lifetime=furnace_group.lifetime.remaining_number_of_years,
@@ -4998,6 +5264,21 @@ class PlantGroup:
                                 fg.has_hot_metal_access = True
                                 plant.has_hot_metal_access = True
 
+    @property
+    def is_dormant(self) -> bool:
+        """
+        Whether the group has no operating furnace groups across its plants.
+
+        Deliberately a derived property, not a stored flag — a flag would have
+        to be maintained and would drift from the plant list. Deliberately not
+        ``is_bankrupt`` either: insolvency is a balance condition and
+        ``balance`` exists, while a group can hold a healthy balance with every
+        asset closed — which is exactly the case this detects (the greenfield
+        attribution fallback sends such a company's plant to ``indi_<iso3>``).
+        """
+        operating_statuses = ("operating", "operating pre-retirement", "operating switching technology")
+        return not any(fg.status.lower() in operating_statuses for plant in self.plants for fg in plant.furnace_groups)
+
     def deduct_equity(self, amount: float, reason: str) -> None:
         """
         Debit equity against the group treasury.
@@ -5249,7 +5530,8 @@ class PlantGroup:
         get_co2_headroom: Callable[[str, int, float], float] | None = None,
         get_co2_need_by_name: Callable[[str, float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
-    ) -> dict[str, tuple[float | None, str, float, str]]:
+        increase_sizing_query: Callable[..., float] | None = None,
+    ) -> dict[str, tuple[float | None, str, float, str, Volumes]]:
         """
         Calculate NPV and optimal technology choice for all plants in the group considering allowed technologies and
         subsidies.
@@ -5295,10 +5577,17 @@ class PlantGroup:
                 subsidies (carrier -> geo_key -> technology -> subsidies). Collected per plant
                 geography inside the loop; candidate technologies are priced from unsubsidised
                 carrier prices with these applied for the candidate's operating start year
+            increase_sizing_query (Callable | None): China capacity-policy sizing query, called
+                per candidate with plain values (capacities in model tonnes) to resolve the
+                capacity the policy permits that technology to build. Non-consuming — it reads
+                no pool state — so the NPV values the build that would actually be allowed.
+                None (the default) values every candidate at its planned capacity.
 
         Returns:
-            dict[str, tuple[float | None, str, float]]: Dictionary mapping plant IDs to tuples of (NPV, best_technology,
-                subsidized_capex) for the optimal expansion option. Returns empty dict if no viable options exist.
+            dict[str, tuple[float | None, str, float, str, Volumes]]: Dictionary mapping plant IDs
+                to tuples of (NPV, best_technology, subsidized_capex, committed_reductant,
+                build_capacity) for the optimal expansion option, where build_capacity is the
+                capacity the NPV was taken at. Returns empty dict if no viable options exist.
         """
         from steelo.domain import calculate_costs as cc
 
@@ -5366,6 +5655,7 @@ class PlantGroup:
                     if carrier in base_energy_costs
                 }
             reductant_by_tech: dict[str, str] = {}
+            npv_capacity_by_tech: dict[str, Volumes] = {}
 
             # Evaluate each allowed technology for this plant
             for tech in allowed_techs_in_year:
@@ -5486,6 +5776,20 @@ class PlantGroup:
                         )
                     bill_of_materials = rebuilt_bom
                 reductant_by_tech[tech] = committed_reductant
+                # The capacity the policy would permit this route, known before its NPV
+                npv_capacity = (
+                    capacity
+                    if increase_sizing_query is None
+                    else Volumes(
+                        increase_sizing_query(
+                            iso3=plant.location.iso3,
+                            technology=tech,
+                            reductant=committed_reductant,
+                            capacity=float(capacity),
+                        )
+                    )
+                )
+                npv_capacity_by_tech[tech] = npv_capacity
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
                         "[REDUCTANT NPV] plant %s: tech=%s committed=%r picks=%s",
@@ -5561,7 +5865,7 @@ class PlantGroup:
                 # Carbon and by-product terms are already inside the per-year opex list
                 NPV[tech] = cc.calculate_npv_full(
                     capex=capex,
-                    capacity=capacity,
+                    capacity=npv_capacity,
                     unit_total_opex_list=unit_total_opex_list,
                     cost_of_debt=cost_of_debt,
                     cost_of_equity=cost_of_equity,
@@ -5595,7 +5899,13 @@ class PlantGroup:
                 best_capex_subsidies = filter_subsidies_for_year(all_best_capex_subsidies, current_year)
                 best_capex = cc.calculate_capex_with_subsidies(greenfield_capex[best_tech], best_capex_subsidies)
 
-                NPV_p[plant.plant_id] = NPV.get(best_tech), best_tech, best_capex, reductant_by_tech[best_tech]
+                NPV_p[plant.plant_id] = (
+                    NPV.get(best_tech),
+                    best_tech,
+                    best_capex,
+                    reductant_by_tech[best_tech],
+                    npv_capacity_by_tech[best_tech],
+                )
 
         logger.info(
             "[PG EXPANSION OPTIONS] plant_group_id=%s num_pairs_evaluated=%d "
@@ -5644,6 +5954,8 @@ class PlantGroup:
         get_co2_headroom: Callable[[str, int, float], float] | None = None,
         get_co2_need_by_name: Callable[[str, float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
+        permitted_expansion_capacity: Callable[..., float | None] | None = None,
+        increase_sizing_query: Callable[..., float] | None = None,
     ) -> commands.Command | None:
         """
         Evaluate and execute the most profitable furnace expansion across all plants in the plant group.
@@ -5662,7 +5974,10 @@ class PlantGroup:
         8. Check capacity limits (separate limits for iron vs steel, PAM share vs new plants)
         9. Validate plant exists and has location data
         10. Apply subsidies (CAPEX, debt) and calculate subsidized costs
-        11. Create and return AddFurnaceGroup command with all parameters
+        11. Withdraw from the China capacity pool when the policy gate is threaded
+            (blocked means no expansion this year; the grant must match the capacity
+            the sizing query already valued the winner at)
+        12. Create and return AddFurnaceGroup command with all parameters
 
         Args:
             price_series (dict[str, list[float]]): Product price forecasts by product type
@@ -5692,6 +6007,15 @@ class PlantGroup:
             capex_subsidies (dict[str, dict[str, list[Subsidy]]]): CAPEX subsidies by ISO3, technology, and subsidy
             opex_subsidies (dict[str, dict[str, list[Subsidy]]]): OPEX subsidies by ISO3, technology, and subsidy
             debt_subsidies (dict[str, dict[str, list[Subsidy]]]): Debt subsidies by ISO3, technology, and subsidy
+            permitted_expansion_capacity (Callable | None): China capacity-policy withdrawal gate,
+                called once at the point of commitment with the winning option's plain values
+                (capacities in model tonnes end-to-end). Returns the capacity the pool allows to
+                be built, or None when the withdrawal is blocked and no expansion happens this
+                year. None (the default) leaves the decision path untouched.
+            increase_sizing_query (Callable | None): China capacity-policy sizing query, forwarded
+                to ``evaluate_expansion_options`` so every candidate is valued at the capacity the
+                policy permits. Bound in production from the same holder as the gate above, so a
+                gate threaded without it diverges at Stage 11.5 and raises.
 
         Returns:
             commands.Command | None: AddFurnaceGroup command if expansion is approved, None otherwise.
@@ -5747,6 +6071,7 @@ class PlantGroup:
             get_co2_headroom=get_co2_headroom,
             get_co2_need_by_name=get_co2_need_by_name,
             co2_storage_diagnostics=co2_storage_diagnostics,
+            increase_sizing_query=increase_sizing_query,
         )
 
         # ========== STAGE 3: CHECK IF ANY EXPANSION OPTIONS EXIST ==========
@@ -5756,13 +6081,13 @@ class PlantGroup:
 
         # Log all expansion options found
         logger.debug(f"[PG EXPANSION] Found {len(expansion_options)} options:")
-        for pid, (npv, tech, capex, _reductant) in expansion_options.items():
+        for pid, (npv, tech, capex, _reductant, _build_capacity) in expansion_options.items():
             npv_str = "None" if npv is None else f"${npv:,.0f}"
             logger.debug(f"[PG EXPANSION]   {pid}: {tech} NPV={npv_str} CAPEX=${capex:.2f}/t")
 
         # ========== STAGE 4: SELECT HIGHEST NPV OPTION ==========
         highest_plant_and_tech = max(expansion_options.items(), key=lambda item: item[1][0] or float("-inf"))
-        plant_id, (npv, tech, capex, chosen_reductant) = highest_plant_and_tech
+        plant_id, (npv, tech, capex, chosen_reductant, build_capacity) = highest_plant_and_tech
 
         npv_str = "None" if npv is None else f"{npv:,.0f}"
         logger.debug(f"[PG EXPANSION] Best: {plant_id} {tech} NPV=${npv_str} CAPEX=${capex:,.2f}/t")
@@ -5775,8 +6100,8 @@ class PlantGroup:
             return None
 
         # ========== STAGE 6: CHECK BALANCE SUFFICIENCY ==========
-        # Equity = capex × capacity × equity_share
-        investment = capacity * capex
+        # Equity = capex × capacity × equity_share, on the capacity the policy permits
+        investment = build_capacity * capex
         equity_needed = investment * equity_share
 
         if self.balance < equity_needed:
@@ -5839,15 +6164,15 @@ class PlantGroup:
                 raise ValueError(f"Unknown product type: '{expansion_product}' for technology: '{tech}'")
 
             # Check if expansion would exceed limit
-            if expansion_and_switch_capacity + capacity > expansion_limit:
+            if expansion_and_switch_capacity + build_capacity > expansion_limit:
                 logger.warning("[PG EXPANSION] === Stage 8: Capacity limit EXCEEDED ===")
                 logger.warning(f"[PG EXPANSION]   - Product: {expansion_product}")
                 logger.warning(
                     f"[PG EXPANSION]   - Current expansion/switch capacity: {expansion_and_switch_capacity * T_TO_KT:,.0f} kt"
                 )
-                logger.warning(f"[PG EXPANSION]   - New expansion capacity: {capacity * T_TO_KT:,.0f} kt")
+                logger.warning(f"[PG EXPANSION]   - New expansion capacity: {build_capacity * T_TO_KT:,.0f} kt")
                 logger.warning(
-                    f"[PG EXPANSION]   - Total after expansion: {(expansion_and_switch_capacity + capacity) * T_TO_KT:,.0f} kt"
+                    f"[PG EXPANSION]   - Total after expansion: {(expansion_and_switch_capacity + build_capacity) * T_TO_KT:,.0f} kt"
                 )
                 logger.warning(f"[PG EXPANSION]   - Limit: {expansion_limit * T_TO_KT:,.0f} kt")
                 logger.warning("[PG EXPANSION]   - DECISION - No expansion (capacity limit reached)")
@@ -5932,6 +6257,29 @@ class PlantGroup:
             return None
         product = tech_to_product[tech]
 
+        # ========== STAGE 11.5: CHINA CAPACITY-POOL GATE ==========
+        # Withdraws the planned capacity at commitment; the granted build capacity must equal
+        # the sizing query's answer the NPV was taken at
+        if permitted_expansion_capacity is not None:
+            granted_capacity = permitted_expansion_capacity(
+                iso3=plant.location.iso3,
+                geo_unit=plant.location.geo_unit,
+                technology=tech,
+                reductant=chosen_reductant,
+                capacity=float(capacity),
+                product=product,
+                owner_id=self.plant_group_id,
+                year=int(current_year),
+            )
+            if granted_capacity is None:
+                logger.info("[PG EXPANSION] DECISION - No expansion (capacity pool blocked)")
+                return None
+            if granted_capacity != float(build_capacity):
+                raise ValueError(
+                    f"Capacity pool granted {granted_capacity} for {tech} at plant {plant_id} but the NPV was "
+                    f"taken at {float(build_capacity)}: the sizing query and the gate must agree"
+                )
+
         # Log subsidy details being passed to command
         subsidy_details = []
         if selected_capex_subsidies:
@@ -5955,7 +6303,7 @@ class PlantGroup:
 
         logger.info("[PG EXPANSION] ✓ SUCCESS - Expansion approved")
         logger.info(f"[PG EXPANSION]   - Plant: {plant_id}, Technology: {tech}, Product: {product}")
-        logger.info(f"[PG EXPANSION]   - Capacity: {capacity * T_TO_KT:,.0f} kt, NPV: ${npv:,.0f}")
+        logger.info(f"[PG EXPANSION]   - Capacity: {build_capacity * T_TO_KT:,.0f} kt, NPV: ${npv:,.0f}")
         logger.info(f"[PG EXPANSION]   - Investment: ${investment:,.0f} (equity to debit: ${equity_needed:,.0f})")
         logger.info(f"[PG EXPANSION]   - CAPEX: ${base_capex:.2f}/t → ${capex:.2f}/t (with subsidies)")
         logger.info(
@@ -5971,7 +6319,7 @@ class PlantGroup:
             furnace_group_id=furnace_group_id,
             plant_id=plant_id,
             technology_name=tech,
-            capacity=capacity,
+            capacity=build_capacity,
             product=product,
             chosen_reductant=chosen_reductant,
             equity_share=equity_share,
@@ -6029,6 +6377,7 @@ class PlantGroup:
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
         derive_geo_unit: Callable[[float, float, str], str | None] | None = None,
         probabilistic_agents: bool = True,
+        increase_sizing_query: Callable[..., float] | None = None,
     ) -> commands.Command:
         """
         Identifies new business opportunities for plants at given locations with specific technologies.
@@ -6095,6 +6444,10 @@ class PlantGroup:
                 calculate_npv_sites_share is forced to 1.0 by SimulationConfig.__post_init__ so
                 step 2 evaluates every candidate location instead of a random sample — see
                 docs/domain_simulation_logic/geospatial_model/new_plant_opening.md.
+            increase_sizing_query: China capacity-policy sizing query, threaded into step 4 so
+                each candidate's NPV rests on the capacity the policy permits it to build. The
+                opportunity itself is still created at nameplate — what the policy shrinks is the
+                build, not the plan. None (the default) values every candidate at nameplate.
 
         Returns:
             Command to add new Plant and FurnaceGroup objects for the identified business opportunities
@@ -6207,6 +6560,7 @@ class PlantGroup:
             plant_lifetime=plant_lifetime,
             construction_time=construction_time,
             equity_share=equity_share,
+            increase_sizing_query=increase_sizing_query,
         )
         # G1 CO2 storage gate: drop CCS techs per (iso3, tech) when annual need exceeds
         # country headroom at the opportunity's operating-start lookup year.
@@ -6542,6 +6896,11 @@ class PlantGroup:
         get_co2_need: Callable[["Technology", float, str], float] | None = None,
         co2_storage_diagnostics: Callable[[str, int], tuple[float, float, float]] | None = None,
         reserved_discount_factor: float = 0.9,
+        permitted_greenfield_capacity: Callable[..., tuple[float, str | None, bool, tuple["Credit", ...]] | None]
+        | None = None,
+        capacity_pool_max_retry_years: int | None = None,
+        increase_sizing_query: Callable[..., float] | None = None,
+        greenfield_feasibility_probe: Callable[..., str | None] | None = None,
     ) -> list[commands.Command]:
         """
         Recalculate the NPV and update the status of all considered and announced business opportunities.
@@ -6568,6 +6927,16 @@ class PlantGroup:
             reductant_score_series: ``Environment.reductant_score_series``, threaded to the
                 per-opportunity re-check
             opex_subsidies: Dictionary mapping iso3 -> tech -> list of opex subsidies
+            permitted_greenfield_capacity: China capacity-policy withdrawal gate, threaded to
+                the considered→announced transition; None (the default) leaves it untouched
+            capacity_pool_max_retry_years: Retry cap for opportunities that gate blocks,
+                threaded alongside it; None (the default) retries forever
+            increase_sizing_query: China capacity-policy sizing query, threaded to the yearly
+                re-valuation so it values the capacity the policy permits; None (the default)
+                leaves it untouched
+            greenfield_feasibility_probe: China capacity-policy pre-draw feasibility probe,
+                threaded to the considered→announced transition so blocked years count
+                toward the retry cap draw-independently; None (the default) leaves it out
 
         Returns:
             List of commands to update the status of furnace groups.
@@ -6657,6 +7026,10 @@ class PlantGroup:
                         get_co2_headroom=get_co2_headroom,
                         get_co2_need=get_co2_need,
                         co2_storage_diagnostics=co2_storage_diagnostics,
+                        permitted_greenfield_capacity=permitted_greenfield_capacity,
+                        capacity_pool_max_retry_years=capacity_pool_max_retry_years,
+                        increase_sizing_query=increase_sizing_query,
+                        greenfield_feasibility_probe=greenfield_feasibility_probe,
                     )
                     if update_status_cmd:
                         status_change_cmds.append(update_status_cmd)

@@ -14,6 +14,7 @@ from .interface import (
     SupplierRepository,
 )
 from .metadata_loader import MetadataProvider, JsonMetadata
+from ...capacity_policy.inputs import OpeningCreditRow, RegionRow, TechnologyRow
 from ...domain import (
     BiomassAvailability,
     Plant,
@@ -3088,6 +3089,204 @@ class CarbonBorderMechanismJsonRepository:
             raise
 
 
+class CapacityPoolProvinceInDb(BaseModel):
+    """Database model for a `Capacity pool - CHN provinces` row (RegionRow)."""
+
+    geo_key: str
+    region_name: Optional[str]
+    type: Optional[str]
+
+    def to_domain(self) -> RegionRow:
+        """Convert to domain model."""
+        return RegionRow(
+            geo_key=self.geo_key,
+            region_name=self.region_name,
+            type=self.type,
+        )
+
+    @classmethod
+    def from_domain(cls, obj: RegionRow) -> "CapacityPoolProvinceInDb":
+        """Create from domain model."""
+        return cls(
+            geo_key=obj.geo_key,
+            region_name=obj.region_name,
+            type=obj.type,
+        )
+
+
+class CapacityPoolTechnologyInDb(BaseModel):
+    """Database model for a `Capacity pool - technologies` row (TechnologyRow)."""
+
+    technology: str
+    product: Optional[str]
+    reductant: Optional[str]
+    is_emission_intense: Optional[bool]
+    switching_to: Optional[str]
+    swap_ratio: Optional[float]
+
+    def to_domain(self) -> TechnologyRow:
+        """Convert to domain model."""
+        return TechnologyRow(
+            technology=self.technology,
+            product=self.product,
+            reductant=self.reductant,
+            is_emission_intense=self.is_emission_intense,
+            switching_to=self.switching_to,
+            swap_ratio=self.swap_ratio,
+        )
+
+    @classmethod
+    def from_domain(cls, obj: TechnologyRow) -> "CapacityPoolTechnologyInDb":
+        """Create from domain model."""
+        return cls(
+            technology=obj.technology,
+            product=obj.product,
+            reductant=obj.reductant,
+            is_emission_intense=obj.is_emission_intense,
+            switching_to=obj.switching_to,
+            swap_ratio=obj.swap_ratio,
+        )
+
+
+class CapacityPoolOpeningCreditInDb(BaseModel):
+    """Database model for a `Capacity pool - opening credits` row (OpeningCreditRow)."""
+
+    vintage_year: int
+    capacity_mt: float
+    geo_key: str
+    product: str
+    technology: Optional[str]
+    plant_group_id: Optional[str]
+
+    def to_domain(self) -> OpeningCreditRow:
+        """Convert to domain model."""
+        return OpeningCreditRow(
+            vintage_year=self.vintage_year,
+            capacity_mt=self.capacity_mt,
+            geo_key=self.geo_key,
+            product=self.product,
+            technology=self.technology,
+            plant_group_id=self.plant_group_id,
+        )
+
+    @classmethod
+    def from_domain(cls, obj: OpeningCreditRow) -> "CapacityPoolOpeningCreditInDb":
+        """Create from domain model."""
+        return cls(
+            vintage_year=obj.vintage_year,
+            capacity_mt=obj.capacity_mt,
+            geo_key=obj.geo_key,
+            product=obj.product,
+            technology=obj.technology,
+            plant_group_id=obj.plant_group_id,
+        )
+
+
+class CapacityPoolProvinceJsonRepository:
+    """Repository for the capacity pool provinces fixture.
+
+    Rows are stored in sheet order; ``add_list`` replaces the content. A
+    missing file, or no path at all, reads as empty — which is how a workbook
+    without the optional capacity pool sheets presents.
+    """
+
+    def __init__(self, path: Optional[Path]) -> None:
+        self.path = path
+        self._rows: Optional[List[RegionRow]] = None
+
+    def _fetch_all(self) -> List[RegionRow]:
+        """Read the JSON file as domain rows; empty when there is no file."""
+        if self.path is None or not self.path.exists():
+            return []
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        return [CapacityPoolProvinceInDb(**item).to_domain() for item in data]
+
+    def list(self) -> List[RegionRow]:
+        """Lazy-load and return all rows in sheet order."""
+        if self._rows is None:
+            self._rows = self._fetch_all()
+        return list(self._rows)
+
+    def add_list(self, rows: List[RegionRow]) -> None:
+        """Replace the file\'s content with these rows."""
+        if self.path is None:
+            raise ValueError("Cannot write capacity pool provinces: repository has no path")
+        db_rows = [CapacityPoolProvinceInDb.from_domain(row) for row in rows]
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps([row.model_dump() for row in db_rows], indent=2), encoding="utf-8")
+        self._rows = None
+
+
+class CapacityPoolTechnologyJsonRepository:
+    """Repository for the capacity pool technologies fixture.
+
+    Rows are stored in sheet order without a natural key; ``add_list``
+    replaces the content. A missing file, or no path at all, reads as empty.
+    """
+
+    def __init__(self, path: Optional[Path]) -> None:
+        self.path = path
+        self._rows: Optional[List[TechnologyRow]] = None
+
+    def _fetch_all(self) -> List[TechnologyRow]:
+        """Read the JSON file as domain rows; empty when there is no file."""
+        if self.path is None or not self.path.exists():
+            return []
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        return [CapacityPoolTechnologyInDb(**item).to_domain() for item in data]
+
+    def list(self) -> List[TechnologyRow]:
+        """Lazy-load and return all rows in sheet order."""
+        if self._rows is None:
+            self._rows = self._fetch_all()
+        return list(self._rows)
+
+    def add_list(self, rows: List[TechnologyRow]) -> None:
+        """Replace the file\'s content with these rows."""
+        if self.path is None:
+            raise ValueError("Cannot write capacity pool technologies: repository has no path")
+        db_rows = [CapacityPoolTechnologyInDb.from_domain(row) for row in rows]
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps([row.model_dump() for row in db_rows], indent=2), encoding="utf-8")
+        self._rows = None
+
+
+class CapacityPoolOpeningCreditJsonRepository:
+    """Repository for the capacity pool opening-credits fixture.
+
+    Rows are stored in sheet order without a natural key — a keyed store would
+    silently merge legitimately duplicate rows (two identical unowned credits,
+    say). ``add_list`` replaces the content. A missing file, or no path at
+    all, reads as empty.
+    """
+
+    def __init__(self, path: Optional[Path]) -> None:
+        self.path = path
+        self._rows: Optional[List[OpeningCreditRow]] = None
+
+    def _fetch_all(self) -> List[OpeningCreditRow]:
+        """Read the JSON file as domain rows; empty when there is no file."""
+        if self.path is None or not self.path.exists():
+            return []
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        return [CapacityPoolOpeningCreditInDb(**item).to_domain() for item in data]
+
+    def list(self) -> List[OpeningCreditRow]:
+        """Lazy-load and return all rows in sheet order."""
+        if self._rows is None:
+            self._rows = self._fetch_all()
+        return list(self._rows)
+
+    def add_list(self, rows: List[OpeningCreditRow]) -> None:
+        """Replace the file\'s content with these rows."""
+        if self.path is None:
+            raise ValueError("Cannot write capacity pool opening credits: repository has no path")
+        db_rows = [CapacityPoolOpeningCreditInDb.from_domain(row) for row in rows]
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps([row.model_dump() for row in db_rows], indent=2), encoding="utf-8")
+        self._rows = None
+
+
 class JsonRepository:
     plants: PlantRepository
     furnace_groups: FurnaceGroupRepository
@@ -3114,6 +3313,9 @@ class JsonRepository:
     carbon_border_mechanisms: CarbonBorderMechanismJsonRepository
     fallback_material_costs: "FallbackMaterialCostJsonRepository"
     willingness_to_pay: WillingnessToPayJsonRepository
+    capacity_pool_provinces: CapacityPoolProvinceJsonRepository
+    capacity_pool_technologies: CapacityPoolTechnologyJsonRepository
+    capacity_pool_opening_credits: CapacityPoolOpeningCreditJsonRepository
 
     def __init__(
         self,
@@ -3144,6 +3346,9 @@ class JsonRepository:
         carbon_border_mechanisms_path: Optional[Path] = None,
         fallback_material_costs_path: Optional[Path] = None,
         willingness_to_pay_path: Optional[Path] = None,
+        capacity_pool_provinces_path: Optional[Path] = None,
+        capacity_pool_technologies_path: Optional[Path] = None,
+        capacity_pool_opening_credits_path: Optional[Path] = None,
         current_simulation_year: Optional[int] = None,
     ) -> None:
         self.plants = PlantJsonRepository(
@@ -3252,6 +3457,11 @@ class JsonRepository:
             temp_file.write('{"root": []}')  # Empty JSON object with root array
             temp_file.close()
             self.willingness_to_pay = WillingnessToPayJsonRepository(Path(temp_file.name))
+
+        # The capacity pool repositories read a missing path/file as empty
+        self.capacity_pool_provinces = CapacityPoolProvinceJsonRepository(capacity_pool_provinces_path)
+        self.capacity_pool_technologies = CapacityPoolTechnologyJsonRepository(capacity_pool_technologies_path)
+        self.capacity_pool_opening_credits = CapacityPoolOpeningCreditJsonRepository(capacity_pool_opening_credits_path)
 
 
 @dataclass

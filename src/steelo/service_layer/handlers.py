@@ -12,6 +12,7 @@ from steelo.domain.constants import Commodities, T_TO_KT  # Keep enum as constan
 from steelo.domain.trade_modelling.TM_PAM_connector import TM_PAM_connector
 from steelo.domain.calculate_costs import collect_subsidies_for_geo, filter_subsidies_for_year
 from steelo.domain import diagnostics as diag
+from steelo.capacity_policy import handlers as capacity_policy_handlers
 import logging
 
 if TYPE_CHECKING:
@@ -51,6 +52,7 @@ def renovate_furnace_group(cmd: commands.RenovateFurnaceGroup, uow: UnitOfWork, 
         plant.renovate_furnace_group(
             cmd.furnace_group_id,
             env.config.plant_lifetime,
+            capacity=cmd.capacity,
             capex=cmd.capex,
             capex_no_subsidy=cmd.capex_no_subsidy,
             cost_of_debt=cmd.cost_of_debt,
@@ -158,6 +160,7 @@ def change_furnace_group_technology(cmd: commands.ChangeFurnaceGroupTechnology, 
             bom=cmd.bom,
             chosen_reductant=cmd.chosen_reductant,
             lag=0,
+            capacity=cmd.capacity,
             capex=cmd.capex,
             capex_no_subsidy=cmd.capex_no_subsidy,
             cost_of_debt=cmd.cost_of_debt,
@@ -301,6 +304,13 @@ def update_future_cost_curve(_event: events.Event, uow: UnitOfWork, env: Environ
 
 
 def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, uow: UnitOfWork, env: Environment):
+    """Push the solved trade allocations back onto the active furnace groups.
+
+    Propagates costs through the TM-PAM connector, updates each group's
+    utilisation rate and records it under the current year (the per-year
+    history the capacity policy's utilisation gate reads), then refreshes the
+    bills of materials.
+    """
     trade_allocations = event.trade_allocations
     if env.config is None:
         raise ValueError("SimulationConfig is required for update_furnace_utilization_rates")
@@ -323,6 +333,8 @@ def update_furnace_utilization_rates(event: events.SteelAllocationsCalculated, u
         tmpc.diagnostics_active_bof_count = active_bof_count
         tmpc.set_up_network_and_propagate_costs(solved_trade_allocations=trade_allocations)
         tmpc.update_furnace_group_utilisation(fgs)
+        for fg in fgs:
+            fg.record_utilization(int(env.year))
         bom_issue_count_materials, bom_issue_count_energy = tmpc.update_bill_of_materials(fgs)
         logger.info(
             f"BOM Update Summary (year {env.year}):\n"
@@ -412,6 +424,7 @@ def execute_scheduled_technology_switch(cmd: commands.Command, uow: UnitOfWork, 
         bom=cmd.bom,
         chosen_reductant=cmd.chosen_reductant,
         lag=0,
+        capacity=cmd.capacity,
         capex=cmd.capex,
         capex_no_subsidy=cmd.capex_no_subsidy,
         cost_of_debt=cmd.cost_of_debt,
@@ -528,6 +541,7 @@ def finalise_iteration(
                             f"was '{fg.status}')"
                         )
                         fg.status = "closed"
+                        capacity_policy_handlers.deposit_on_end_of_life_closure(plant, fg, uow, env)
                     else:
                         # Technology switch scenario: transition to construction phase of new technology
                         fg.status = "construction switching technology"
@@ -742,6 +756,7 @@ def update_status_of_furnace_group(cmd: commands.UpdateFurnaceGroupStatus, uow: 
                     need = env.get_co2_need(fg.technology, fg.capacity, fg.chosen_reductant)
                     if need > 0.0:
                         env.co2_storage_reserved[iso3] = env.co2_storage_reserved.get(iso3, 0.0) - d * need
+                    capacity_policy_handlers.refund_greenfield_on_discard(fg, iso3, plant.location.geo_unit, int(year))
         uow.commit()
 
 
@@ -802,13 +817,38 @@ def load_checkpoint_handler(
 
 
 EVENT_HANDLERS: dict[type[events.Event], list[Callable]] = {
-    events.FurnaceGroupClosed: [update_cost_curve],
-    events.FurnaceGroupTechChanged: [update_cost_curve],
-    events.FurnaceGroupRenovated: [update_cost_curve],
-    events.FurnaceGroupAdded: [update_future_cost_curve, update_capacity_buildout],
+    events.FurnaceGroupClosed: [
+        update_cost_curve,
+        capacity_policy_handlers.deposit_on_furnace_group_closed,
+        capacity_policy_handlers.record_motion_on_furnace_group_closed,
+    ],
+    events.FurnaceGroupTechChanged: [
+        update_cost_curve,
+        capacity_policy_handlers.deposit_on_furnace_group_tech_changed,
+        capacity_policy_handlers.record_motion_on_furnace_group_tech_changed,
+    ],
+    events.FurnaceGroupRenovated: [
+        update_cost_curve,
+        capacity_policy_handlers.deposit_on_furnace_group_renovated,
+        capacity_policy_handlers.record_motion_on_furnace_group_renovated,
+    ],
+    events.FurnaceGroupAdded: [
+        update_future_cost_curve,
+        update_capacity_buildout,
+        capacity_policy_handlers.attribute_greenfield_on_furnace_group_added,
+        # After the attribution, so a credit-funded greenfield records its new owner
+        capacity_policy_handlers.record_motion_on_furnace_group_added,
+    ],
     events.SinteringCapacityAdded: [update_future_cost_curve],
     events.SteelAllocationsCalculated: [update_furnace_utilization_rates, update_cost_curve, update_future_cost_curve],
-    events.IterationOver: [finalise_iteration, update_cost_curve],
+    events.IterationOver: [
+        capacity_policy_handlers.snapshot_pool_state,
+        finalise_iteration,
+        # After the year increment, so credits still usable through the year just
+        # snapshotted are purged on entering the next one, before any decision
+        capacity_policy_handlers.purge_expired_credits,
+        update_cost_curve,
+    ],
     events.SaveCheckpoint: [save_checkpoint_handler],
     events.LoadCheckpoint: [load_checkpoint_handler],
 }
