@@ -48,12 +48,24 @@ def test_pack_groups_run_length_encodes_histories() -> None:
     assert p1["g"] == "CHN:CN-NM"
     assert p1["p"] == "iron"
     assert (p1["la"], p1["lo"]) == (40.0, 110.0)
-    assert p1["cap"] == pytest.approx(2.5)
+    assert p1["cap"] == [[2025, 2.5]]
     assert p1["y1"] == 2028
     assert p1["s"] == [[2025, 0], [2026, 1], [2027, 2]]
     assert p1["t"] == [[2025, 0], [2028, 2]]  # BF, then the switch to SR in 2028
     assert p1["r"] == [[2025, 0], [2028, 1]]  # coke+pci, then pci with the switch
     assert p1["pr"] == [[2025, 0.0], [2027, 1.5], [2028, 2.0]]
+
+
+def test_pack_groups_tracks_capacity_per_year() -> None:
+    """A policy-shrunk group carries its reduced capacity from the year it shrinks, not its first snapshot."""
+    timeseries = sample_status_timeseries()
+    shrunk = (timeseries["furnace_group_id"] == "P1") & (timeseries["year"] >= 2027)
+    timeseries.loc[shrunk, "capacity"] = 2_500_000.0 * 2 / 3
+
+    payload = greenfield_map.pack_groups(timeseries)
+
+    p1 = next(group for group in payload["groups"] if group["id"] == "P1")
+    assert p1["cap"] == [[2025, 2.5], [2027, 1.6667]]
 
 
 def test_pack_groups_labels_missing_reductant_none() -> None:
