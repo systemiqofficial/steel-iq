@@ -111,6 +111,7 @@ def test_energy_reconstruction_multi_mc_output_shares():
     """Two MCs with different effectivenesses → verify output-share-weighted energy.
 
     EAF with 80% scrap (eff=1.09) / 20% pig_iron (eff=1.1351) input shares.
+    Matches the worked example in the spec (§3.3).
     """
     env = _make_env(
         dynamic_feedstocks={

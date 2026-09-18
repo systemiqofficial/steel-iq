@@ -20,15 +20,10 @@ class CloseFurnaceGroup(Command):
 
 @dataclass
 class RenovateFurnaceGroup(Command):
-    """Renovate a furnace group.
-
-    ``capacity`` is the post-renovation capacity: the group's own, unless the
-    capacity policy shrank the renovation as a penalised replacement.
-    """
+    """Renovate a furnace group."""
 
     plant_id: str
     furnace_group_id: str
-    capacity: float
     capex: float
     capex_no_subsidy: float
     cost_of_debt: float
