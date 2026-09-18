@@ -158,24 +158,30 @@ function render() {
   }));
 
   // Demand centres carry no sub-national geography, so the overlay counts a country's
-  // demand once any of its geo units is selected; "met" compares the chart's own
-  // production total against that demand.
-  let demandLast = null, metLast = null;
+  // demand once any of its geo units is selected. The production ÷ demand ratio is a
+  // self-sufficiency share (trade decides whether demand is served), so its label names
+  // a technology filter and a whole-country denominator under a part-country selection.
+  const productTechs = [...new Set(run.rows.filter(r => r.p === product).map(r => r.t))];
+  const selTechs = productTechs.filter(t => selectedTech.has(t)).length;
+  let demandLast = null, demandNote = "";
   if (showDemand) {
     const selCountries = new Set([...selectedGeo].map(Interactive.isoOf));
+    const partCountry = Interactive.geoKeys().some(g => !selectedGeo.has(g) && selCountries.has(Interactive.isoOf(g)));
     const byYear = new Map(years.map(y => [y, null]));
     demand.forEach(s => {
       if (!selCountries.has(s.g) || !byYear.has(s.y)) return;
       byYear.set(s.y, (byYear.get(s.y) || 0) + s.v);
     });
     const values = years.map(y => byYear.get(y));
-    const met = values.map((v, i) => v > 0 ? Math.round(100 * totals.pr[i] / v) : null);
+    const producer = selTechs < productTechs.length ? "selected technologies" : "production";
+    const demandName = partCountry ? "whole-country demand" : "demand";
+    const notes = values.map((v, i) => v > 0 ? ` (${producer} = ${Math.round(100 * totals.pr[i] / v)}% of ${demandName})` : "");
     demandLast = values[values.length - 1];
-    metLast = met[met.length - 1];
+    demandNote = notes[notes.length - 1];
     traces.push({
-      type: "scatter", mode: "lines", x: years, y: values, customdata: met,
+      type: "scatter", mode: "lines", x: years, y: values, customdata: notes,
       name: "Steel demand", line: {width: 2, color: T.ink, dash: "dash"}, fill: "none",
-      legendrank: 2000, hovertemplate: "%{y:.1f} Mt (%{customdata}% met)",
+      legendrank: 2000, hovertemplate: "%{y:.1f} Mt%{customdata}",
     });
   }
 
@@ -208,13 +214,11 @@ function render() {
   const fgs = rows.filter(r => r.y === years[last]).reduce((s, r) => s + r.n, 0);
   const nCountries = new Set(Interactive.geoKeys().map(Interactive.isoOf)).size;
   const selCountries = new Set([...selectedGeo].map(Interactive.isoOf)).size;
-  const productTechs = [...new Set(run.rows.filter(r => r.p === product).map(r => r.t))];
-  const selTechs = productTechs.filter(t => selectedTech.has(t)).length;
   Interactive.summary(
     `${selCountries} of ${nCountries} countries · ${selTechs} of ${productTechs.length} ${product} technologies · ` +
     `${fgs} furnace groups, ${totals.pr[last].toFixed(0)} Mt produced on ${totals.cap[last].toFixed(0)} Mt capacity ` +
     `(${utilisation[last].toFixed(0)}%) in ${years[last]}` +
-    (demandLast !== null ? ` · ${demandLast.toFixed(0)} Mt steel demand${metLast !== null ? ` (${metLast}% met)` : ""}` : "") +
+    (demandLast !== null ? ` · ${demandLast.toFixed(0)} Mt steel demand${demandNote}` : "") +
     `\n${run.provenance}`);
 }
 
