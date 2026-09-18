@@ -488,3 +488,307 @@ def test_write_greenfield_status_csv_without_rows_writes_nothing(tmp_path, mock_
 
     assert data_collector.write_greenfield_status_csv(tmp_path / "data") is None
     assert not (tmp_path / "data").exists()
+
+
+def _switch_command(plant_id, fg_id, old_tech, new_tech, competing_npvs, capacity=80000.0):
+    """Build a ChangeFurnaceGroupTechnology command as evaluate_furnace_group_strategy returns it."""
+    from steelo.domain import commands
+
+    return commands.ChangeFurnaceGroupTechnology(
+        plant_id=plant_id,
+        furnace_group_id=fg_id,
+        technology_name=new_tech,
+        old_technology_name=old_tech,
+        npv=competing_npvs[new_tech],
+        cosa=50.0,
+        utilisation=0.7,
+        capex=100.0,
+        capex_no_subsidy=100.0,
+        capacity=capacity,
+        remaining_lifetime=5,
+        bom={},
+        chosen_reductant="hydrogen",
+        cost_of_debt=0.05,
+        cost_of_debt_no_subsidy=0.05,
+        capex_subsidies=[],
+        debt_subsidies=[],
+        competing_npvs=competing_npvs,
+    )
+
+
+def _switch_decisions_collector(tmp_dir, mock_tech_switches_file, probabilistic_agents=True):
+    """Build a DataCollector over one brownfield BF plant and one indi-origin BF plant, each in its own group."""
+    from steelo.domain.models import Volumes
+
+    brownfield_plant = get_plant(
+        plant_id="plant_brownfield",
+        furnace_groups=[get_furnace_group(fg_id="brownfield_fg", tech_name="BF", capacity=Volumes(100000))],
+        location=Location(iso3="CHN", country="", region="China", lat=31.0, lon=111.0),
+    )
+    geo_plant = get_plant(
+        plant_id="plant_geo_chn",
+        furnace_groups=[get_furnace_group(fg_id="geo_fg", tech_name="BF", capacity=Volumes(200000))],
+        location=Location(iso3="CHN", country="", region="China", lat=30.0, lon=110.0),
+    )
+    geo_plant.parent_gem_id = "indi_CHN"
+    plant_groups = [
+        PlantGroup(plant_group_id="E100000000123", plants=[brownfield_plant]),
+        PlantGroup(plant_group_id="indi_CHN", plants=[geo_plant]),
+    ]
+
+    config = SimulationConfig(
+        start_year=Year(2025),
+        end_year=Year(2060),
+        master_excel_path=Path(tempfile.gettempdir()) / "master.xlsx",
+        output_dir=Path(tempfile.gettempdir()),
+        technology_settings=get_default_technology_settings(),
+        probabilistic_agents=probabilistic_agents,
+    )
+    env = Environment(config=config, tech_switches_csv=mock_tech_switches_file)
+    return DataCollector(plant_groups, env, output_dir=tmp_dir)
+
+
+def test_collect_switch_decisions_records_a_decision_once(tmp_path, mock_tech_switches_file):
+    """
+    Record a scheduled switch once, in its decision year, with the decision-time fields.
+
+    Origin follows parent_gem_id, old capacity is the group's own and new capacity the
+    command's, and later sightings of the same pending switch add no further rows.
+    """
+    data_collector = _switch_decisions_collector(tmp_path, mock_tech_switches_file)
+    brownfield_plant = data_collector.plant_groups[0].plants[0]
+    geo_plant = data_collector.plant_groups[1].plants[0]
+    npvs = {"BF": 100.0, "DRI": 300.0, "ESF": -50.0}
+    brownfield_plant.change_furnace_group_status_to_switching_technology(
+        furnace_group_id="brownfield_fg",
+        year_of_switch=2029,
+        cmd=_switch_command("plant_brownfield", "brownfield_fg", "BF", "DRI", npvs),
+    )
+    geo_plant.change_furnace_group_status_to_switching_technology(
+        furnace_group_id="geo_fg",
+        year_of_switch=2029,
+        cmd=_switch_command("plant_geo_chn", "geo_fg", "BF", "DRI", {"DRI": 300.0}),
+    )
+
+    data_collector.collect_switch_decisions(Year(2025))
+    data_collector.collect_switch_decisions(Year(2026))
+
+    assert list(data_collector.switch_decisions) == [("brownfield_fg", 2029), ("geo_fg", 2029)]
+    assert data_collector.switch_decisions[("brownfield_fg", 2029)] == {
+        "decision_year": 2025,
+        "switch_year": 2029,
+        "construction_start_year": None,
+        "executed": False,
+        "origin": "brownfield",
+        "plant_id": "plant_brownfield",
+        "furnace_group_id": "brownfield_fg",
+        "plant_group_id": "E100000000123",
+        "geo_key": "CHN",
+        "product": "iron",
+        "old_technology": "BF",
+        "new_technology": "DRI",
+        "old_capacity_t": 100000.0,
+        "new_capacity_t": 80000.0,
+        "reductant": "hydrogen",
+        "winning_npv": 300.0,
+        "cosa": 50.0,
+        "incumbent_npv": 100.0,
+        "competing_npvs": json.dumps(npvs),
+        "selection_probabilities": json.dumps({"BF": 0.25, "DRI": 0.75, "ESF": 0.0}),
+    }
+    geo_record = data_collector.switch_decisions[("geo_fg", 2029)]
+    assert geo_record["origin"] == "greenfield"
+    assert geo_record["plant_group_id"] == "indi_CHN"
+    # The incumbent did not take part in the draw.
+    assert geo_record["incumbent_npv"] is None
+
+
+def test_collect_switch_decisions_fills_construction_start_and_executed(tmp_path, mock_tech_switches_file):
+    """Fill construction_start_year when the rebuild is first observed and executed once the new technology runs."""
+    from steelo.domain.models import Technology
+
+    data_collector = _switch_decisions_collector(tmp_path, mock_tech_switches_file)
+    plant = data_collector.plant_groups[0].plants[0]
+    fg = plant.furnace_groups[0]
+    plant.change_furnace_group_status_to_switching_technology(
+        furnace_group_id="brownfield_fg",
+        year_of_switch=2029,
+        cmd=_switch_command("plant_brownfield", "brownfield_fg", "BF", "DRI", {"BF": 100.0, "DRI": 300.0}),
+    )
+    record_key = ("brownfield_fg", 2029)
+
+    data_collector.collect_switch_decisions(Year(2025))
+    assert data_collector.switch_decisions[record_key]["construction_start_year"] is None
+
+    fg.status = "construction switching technology"
+    data_collector.collect_switch_decisions(Year(2027))
+    data_collector.collect_switch_decisions(Year(2028))
+    assert data_collector.switch_decisions[record_key]["construction_start_year"] == 2027
+    assert data_collector.switch_decisions[record_key]["executed"] is False
+
+    fg.technology = Technology(name="DRI", product="iron")
+    fg.status = "operating"
+    data_collector.collect_switch_decisions(Year(2029))
+    assert data_collector.switch_decisions[record_key]["construction_start_year"] == 2027
+    assert data_collector.switch_decisions[record_key]["executed"] is True
+
+
+def test_collect_switch_decisions_second_switch_makes_second_row(tmp_path, mock_tech_switches_file):
+    """Key decisions on (furnace_group_id, switch_year): a group that switches again gets a second row."""
+    from steelo.domain.models import Technology
+
+    data_collector = _switch_decisions_collector(tmp_path, mock_tech_switches_file)
+    plant = data_collector.plant_groups[0].plants[0]
+    fg = plant.furnace_groups[0]
+    plant.change_furnace_group_status_to_switching_technology(
+        furnace_group_id="brownfield_fg",
+        year_of_switch=2029,
+        cmd=_switch_command("plant_brownfield", "brownfield_fg", "BF", "DRI", {"DRI": 300.0}),
+    )
+    data_collector.collect_switch_decisions(Year(2025))
+    fg.technology = Technology(name="DRI", product="iron")
+    fg.status = "operating"
+    data_collector.collect_switch_decisions(Year(2029))
+
+    plant.change_furnace_group_status_to_switching_technology(
+        furnace_group_id="brownfield_fg",
+        year_of_switch=2044,
+        cmd=_switch_command("plant_brownfield", "brownfield_fg", "DRI", "ESF", {"DRI": 10.0, "ESF": 90.0}),
+    )
+    data_collector.collect_switch_decisions(Year(2040))
+
+    first, second = data_collector.switch_decisions.values()
+    assert (first["decision_year"], first["switch_year"], first["new_technology"]) == (2025, 2029, "DRI")
+    assert first["executed"] is True
+    assert (second["decision_year"], second["switch_year"], second["new_technology"]) == (2040, 2044, "ESF")
+    assert second["old_technology"] == "DRI"
+    assert second["executed"] is False
+
+
+def test_collect_switch_decisions_probabilities_sum_to_one(tmp_path, mock_tech_switches_file):
+    """Weight each technology by max(npv, 0) so the selection probabilities sum to 1."""
+    data_collector = _switch_decisions_collector(tmp_path, mock_tech_switches_file)
+    data_collector.plant_groups[0].plants[0].change_furnace_group_status_to_switching_technology(
+        furnace_group_id="brownfield_fg",
+        year_of_switch=2029,
+        cmd=_switch_command(
+            "plant_brownfield", "brownfield_fg", "BF", "DRI", {"BF": 123.4, "DRI": 567.8, "ESF": -9.0, "MOE": 0.1}
+        ),
+    )
+    data_collector.collect_switch_decisions(Year(2025))
+
+    record = data_collector.switch_decisions[("brownfield_fg", 2029)]
+    probabilities = json.loads(record["selection_probabilities"])
+    assert set(probabilities) == {"BF", "DRI", "ESF", "MOE"}
+    assert probabilities["ESF"] == 0.0
+    assert sum(probabilities.values()) == pytest.approx(1.0)
+
+
+def test_collect_switch_decisions_probabilities_blank_for_deterministic_agents(tmp_path, mock_tech_switches_file):
+    """Leave selection_probabilities blank when agents are deterministic, because nothing is drawn then."""
+    data_collector = _switch_decisions_collector(tmp_path, mock_tech_switches_file, probabilistic_agents=False)
+    data_collector.plant_groups[0].plants[0].change_furnace_group_status_to_switching_technology(
+        furnace_group_id="brownfield_fg",
+        year_of_switch=2029,
+        cmd=_switch_command("plant_brownfield", "brownfield_fg", "BF", "DRI", {"BF": 100.0, "DRI": 300.0}),
+    )
+    data_collector.collect_switch_decisions(Year(2025))
+
+    record = data_collector.switch_decisions[("brownfield_fg", 2029)]
+    assert record["selection_probabilities"] is None
+    assert json.loads(record["competing_npvs"]) == {"BF": 100.0, "DRI": 300.0}
+
+
+def test_collect_switch_decisions_keeps_the_row_of_a_command_without_competing_npvs(tmp_path, mock_tech_switches_file):
+    """A command built without competing NPVs leaves the NPV columns blank instead of stopping the run."""
+    data_collector = _switch_decisions_collector(tmp_path, mock_tech_switches_file)
+    cmd = _switch_command("plant_brownfield", "brownfield_fg", "BF", "DRI", {"DRI": 300.0})
+    cmd.competing_npvs = None
+    data_collector.plant_groups[0].plants[0].change_furnace_group_status_to_switching_technology(
+        furnace_group_id="brownfield_fg",
+        year_of_switch=2029,
+        cmd=cmd,
+    )
+
+    data_collector.collect_switch_decisions(Year(2025))
+
+    record = data_collector.switch_decisions[("brownfield_fg", 2029)]
+    assert (record["new_technology"], record["winning_npv"]) == ("DRI", 300.0)
+    assert record["incumbent_npv"] is None
+    assert record["competing_npvs"] is None
+    assert record["selection_probabilities"] is None
+
+
+def test_collect_switch_decisions_marks_a_switch_executed_when_the_group_is_re_decided_in_its_switch_year(
+    tmp_path, mock_tech_switches_file
+):
+    """The PAM runs before the collector, so in the switch year the group can already carry its next command."""
+    from steelo.domain.models import Technology
+
+    data_collector = _switch_decisions_collector(tmp_path, mock_tech_switches_file)
+    plant = data_collector.plant_groups[0].plants[0]
+    fg = plant.furnace_groups[0]
+    plant.change_furnace_group_status_to_switching_technology(
+        furnace_group_id="brownfield_fg",
+        year_of_switch=2029,
+        cmd=_switch_command("plant_brownfield", "brownfield_fg", "BF", "DRI", {"DRI": 300.0}),
+    )
+    data_collector.collect_switch_decisions(Year(2025))
+    fg.status = "construction switching technology"
+    data_collector.collect_switch_decisions(Year(2028))
+
+    # 2029: the switch executes, then the PAM schedules the next one before the collector looks
+    fg.technology = Technology(name="DRI", product="iron")
+    plant.change_furnace_group_status_to_switching_technology(
+        furnace_group_id="brownfield_fg",
+        year_of_switch=2033,
+        cmd=_switch_command("plant_brownfield", "brownfield_fg", "DRI", "ESF", {"DRI": 10.0, "ESF": 90.0}),
+    )
+    data_collector.collect_switch_decisions(Year(2029))
+
+    first, second = data_collector.switch_decisions.values()
+    assert (first["switch_year"], first["construction_start_year"], first["executed"]) == (2029, 2028, True)
+    assert (second["switch_year"], second["construction_start_year"], second["executed"]) == (2033, None, False)
+
+    # the second rebuild's construction years never leak into the first record
+    fg.status = "construction switching technology"
+    data_collector.collect_switch_decisions(Year(2031))
+    assert first["construction_start_year"] == 2028
+    assert second["construction_start_year"] == 2031
+
+
+def test_write_switch_decisions_csv_round_trips_rows(tmp_path, mock_tech_switches_file):
+    """Write the recorded decisions to data/pam_switch_decisions.csv with blanks for unset fields."""
+    import csv
+
+    data_collector = _switch_decisions_collector(tmp_path, mock_tech_switches_file, probabilistic_agents=False)
+    data_collector.plant_groups[0].plants[0].change_furnace_group_status_to_switching_technology(
+        furnace_group_id="brownfield_fg",
+        year_of_switch=2029,
+        cmd=_switch_command("plant_brownfield", "brownfield_fg", "BF", "DRI", {"DRI": 300.0}),
+    )
+    data_collector.collect_switch_decisions(Year(2025))
+
+    path = data_collector.write_switch_decisions_csv(tmp_path / "data")
+    assert path == tmp_path / "data" / "pam_switch_decisions.csv"
+
+    with path.open() as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 1
+    assert rows[0]["decision_year"] == "2025"
+    assert rows[0]["executed"] == "False"
+    assert rows[0]["construction_start_year"] == ""
+    assert rows[0]["incumbent_npv"] == ""
+    assert rows[0]["selection_probabilities"] == ""
+    assert json.loads(rows[0]["competing_npvs"]) == {"DRI": 300.0}
+
+
+def test_write_switch_decisions_csv_without_decisions_writes_header(tmp_path, mock_tech_switches_file):
+    """Write the header alone when no switch was decided."""
+    from steelo.domain import datacollector
+
+    data_collector = _switch_decisions_collector(tmp_path, mock_tech_switches_file)
+
+    path = data_collector.write_switch_decisions_csv(tmp_path / "data")
+
+    assert path.read_text().splitlines() == [",".join(datacollector.SWITCH_DECISION_COLUMNS)]

@@ -4137,7 +4137,8 @@ class Plant:
 
         Returns:
             Command object (ChangeFurnaceGroupTechnology for switches, RenovateFurnaceGroup for renovations,
-            CloseFurnaceGroup for closures) or None if no action is profitable/feasible
+            CloseFurnaceGroup for closures) or None if no action is profitable/feasible. A switch command
+            carries the finite NPVs the selection draw ran over as ``competing_npvs``.
 
         Side Effects:
             Debits ``plant_group.balance`` via ``plant_group.deduct_equity`` when a
@@ -4723,6 +4724,7 @@ class Plant:
                 cost_of_debt_no_subsidy=cost_of_debt,
                 capex_subsidies=capex_subs,
                 debt_subsidies=debt_subs,
+                competing_npvs=dict(valid_techs),
             )
         else:
             # Probabilistic rejection or CCS/CCU equipped furnace
@@ -7720,6 +7722,9 @@ class Environment:
         self.fallback_material_costs: list[FallbackMaterialCost] = []
         # Initialize default metallic charge mapping as empty dict
         self.default_metallic_charge_per_technology: dict[str, str] = {}
+        # Plant names and input data sources of the master's Furnace units sheet, for the capacity world map
+        self.plant_names: dict[str, str] = {}
+        self.input_sources: list[str] = []
         self.transport_kpis: list[TransportKPI] = []  # Alias for transport_emissions for compatibility
         self.trade_allocations: Any = None  # For storing trade allocations from LP solution
         # Plot paths

@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Iron and steel capacity by technology</title>
+<style>__COMMON_CSS__</style>
+<style>
+/* The shared shell (common.css) supplies the toolbar, dropdown and chip chrome; the
+   map, side panel and tooltip are local. Technology colours come from the plotter. */
+:root { --surface: #fcfcfb; --panel: #ffffff; --line: #e3e1db; --ink: #0b0b0b; --ink2: #52514e; --ink3: #8a8884;
+        --sea: #e8f1f8; --land: #ffffff; --ctry: #ecebe6; --ctry-hover: #dcdad2; --ctry-sel: #d3ddea; --border: #ffffff; }
+* { box-sizing: border-box; }
+body { height: 100vh; display: flex; flex-direction: column; overflow: hidden; font-size: 13px; }
+#topbar { flex: none; border-bottom: 1px solid var(--line); background: var(--panel); }
+#topbar h1 { font-size: 15px; font-weight: 600; margin: 0; padding: 12px 40px 0; }
+#topbar h1 small { font-weight: 400; color: var(--ink2); margin-left: 10px; font-size: 12px; }
+#topbar .toolbar { padding: 8px 40px 0; gap: 8px 30px; }
+#topbar .toolbar:last-child { padding-bottom: 8px; }
+#year-row { display: flex; align-items: center; gap: 6px; }
+#year-row button { font-size: 13px; padding: 1px 8px; cursor: pointer; }
+#year-slider { width: 220px; }
+#year-label { font-weight: 600; font-size: 15px; min-width: 40px; }
+#year-title { font-weight: 600; color: var(--ink2); }
+.site.opened path, .site.opened circle { stroke: #1b7f3b; stroke-width: 2.5; }
+.site.switched path, .site.switched circle { stroke: #b8860b; stroke-width: 2.5; }
+.site.closed circle { fill: none; stroke: #8a8884; stroke-width: 1.5; stroke-dasharray: 3 2; }
+.boxes { display: inline-flex; flex-wrap: wrap; gap: 2px 12px; }
+.boxes label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; font-size: 12px;
+               color: var(--ink); margin: 0; }
+.swatch { width: 11px; height: 11px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.box-panel { max-height: 60vh; overflow-y: auto; min-width: 260px; padding-top: 0; }
+.box-panel .search { position: sticky; top: 0; background: #fff; padding: 6px 0 4px; z-index: 1; }
+.box-panel .search input { width: 100%; font-size: 12px; padding: 3px 6px; }
+.box-panel .none { font-size: 12px; color: var(--ink2); padding: 4px 0; display: none; }
+.box-panel label.region { font-size: 11px; color: var(--ink2); margin: 6px 0 2px; font-weight: 600; }
+.box-panel label.ctry-row { padding-left: 18px; }
+.box-panel label[hidden] { display: none; }
+.cname { color: var(--ink2); }
+#ctry-table td:first-child { max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
+.box-panel label .muted { margin-left: auto; padding-left: 12px; font-variant-numeric: tabular-nums; }
+#geo-chips { margin-left: 0; margin-top: 4px; display: flex; max-width: 420px; }
+#main { flex: 1; display: flex; min-height: 0; }
+#map { flex: 1; position: relative; }
+#svg { width: 100%; height: 100%; display: block; cursor: grab; background: var(--sea); }
+#svg.dragging { cursor: grabbing; }
+.land { fill: var(--land); stroke: #e3e1db; stroke-width: 0.5; vector-effect: non-scaling-stroke; }
+.ctry { fill: var(--ctry); stroke: var(--border); stroke-width: 0.6; vector-effect: non-scaling-stroke; cursor: pointer; }
+.ctry:hover { fill: var(--ctry-hover); }
+.ctry.sel { fill: var(--ctry-sel); }
+.ctry.dim { fill: #f4f3ef; }
+.pline { fill: none; stroke: #ffffff; stroke-width: 0.5; vector-effect: non-scaling-stroke; pointer-events: none; }
+.badge { font-weight: 600; fill: #fff; text-anchor: middle; pointer-events: none;
+         paint-order: stroke; stroke: rgba(0,0,0,0.55); }
+.clabel { fill: var(--ink3); pointer-events: none; text-anchor: middle; }
+.site { cursor: pointer; }
+.site path, .site circle { stroke: #fff; stroke-width: 0.8; vector-effect: non-scaling-stroke; }
+.site:hover path, .site:hover circle { stroke: var(--ink); }
+#legend { position: absolute; left: 12px; bottom: 12px; background: rgba(255,255,255,0.92); border: 1px solid var(--line);
+          border-radius: 5px; padding: 8px 12px; font-size: 11px; color: var(--ink2); }
+#legend .row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+#legend svg { display: block; margin-top: 4px; }
+#hint { position: absolute; right: 12px; bottom: 12px; font-size: 11px; color: var(--ink3); text-align: right; }
+#side-toggle { position: absolute; right: 12px; top: 12px; font-size: 12px; padding: 3px 10px; cursor: pointer; background: rgba(255,255,255,0.92);
+               border: 1px solid #b5b3ae; border-radius: 4px; color: var(--ink); }
+#side-toggle:hover { background: #fff; }
+#main.side-hidden #side { display: none; }
+#hint .source { display: block; color: var(--ink2); margin-bottom: 2px; }
+#side { width: 380px; flex: none; border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; padding: 12px 14px; }
+#side h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--ink2); margin: 10px 0 6px; font-weight: 600; }
+#totals { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.tile { border: 1px solid var(--line); border-radius: 5px; padding: 6px 10px; }
+.tile .v { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tile .l { font-size: 11px; color: var(--ink2); }
+table { border-collapse: collapse; width: 100%; font-size: 12px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 3px 4px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { font-weight: 600; color: var(--ink2); font-size: 11px; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: #f4f3ef; }
+tbody tr.sel { background: var(--ctry-sel); }
+td.bar { padding: 3px 0 3px 6px; width: 70px; }
+td.bar div { height: 8px; border-radius: 2px; }
+td.stack { padding: 3px 0 3px 8px; width: 130px; }
+td.stack > div { display: flex; height: 8px; border-radius: 2px; overflow: hidden; }
+#tooltip { position: fixed; display: none; z-index: 20; pointer-events: none; background: rgba(255,255,255,0.97);
+           border: 1px solid #b5b3ae; box-shadow: 0 2px 8px rgba(0,0,0,0.18); border-radius: 4px; padding: 8px 10px;
+           font-size: 12px; max-width: 360px; }
+#tooltip b { display: block; margin-bottom: 3px; }
+#tooltip .sub { color: var(--ink2); margin-bottom: 4px; }
+#tooltip table { width: auto; }
+#tooltip td, #tooltip th { padding: 1px 6px 1px 0; border: none; }
+#tooltip td.st { color: var(--ink2); max-width: 200px; }
+#tooltip td.nm { max-width: 250px; }
+#tooltip td.nm, #tooltip td.st { overflow: hidden; text-overflow: ellipsis; }
+</style>
+</head>
+<body>
+<div id="topbar">
+  <h1><span id="chart-title"></span> <span id="year-title"></span> <small id="subtitle"></small></h1>
+  <div class="toolbar">
+    <div class="group"><label class="head">Technology</label><div class="boxes" id="tech-boxes"></div></div>
+  </div>
+  <div class="toolbar">
+    <div class="group"><label class="head">Status</label><div class="boxes" id="status-boxes"></div></div>
+    <div class="group"><label class="head">Plants</label><div class="boxes" id="origin-boxes"></div></div>
+    <div class="group" id="year-group"><label class="head">Year</label>
+      <div id="year-row"><button id="year-prev" title="Previous year">‹</button><input type="range" id="year-slider">
+        <button id="year-next" title="Next year">›</button><span id="year-label"></span>
+        <label style="font-size:12px;cursor:pointer;margin:0 0 0 14px;display:inline-flex;align-items:center;gap:5px;color:var(--ink)"><input type="checkbox" id="changes"> Highlight changes vs previous year</label></div>
+    </div>
+  </div>
+  <div class="toolbar">
+    <div class="group"><label class="head">Geography</label>
+      <select id="region-select"></select>
+      <span class="box-dropdown">
+        <button id="ctry-btn">Countries ▾</button>
+        <div class="box-panel" id="ctry-panel"></div>
+      </span>
+      <button class="small-btn" id="ctry-clear">Clear</button>
+      <button class="small-btn" id="zoom-fit" title="Zoom the map to the selected countries">Zoom to selection</button>
+      <label id="by-prov-label" style="font-size:12px;margin-left:12px;cursor:pointer;display:inline-flex;align-items:center;gap:5px;color:var(--ink)" title="Split China into its provinces in the map, the country list and the tables"><input type="checkbox" id="by-prov"> Show by province</label>
+      <div id="geo-chips"></div>
+    </div>
+    <div class="group"><label class="head">Bubble scale</label>
+      <input type="range" id="scale" min="0.2" max="2.5" step="0.05" value="0.5" style="width:120px;vertical-align:middle">
+      <label style="font-size:12px;margin-left:10px;cursor:pointer"><input type="checkbox" id="cluster" checked> Merge overlapping bubbles</label>
+      <label style="font-size:12px;margin-left:10px;cursor:pointer"><input type="checkbox" id="labels"> Names on the map</label>
+    </div>
+    <div class="group"><label class="head">Export</label>
+      <button id="download">Download PNG</button>
+      <div id="download-note" style="font-size:11px;color:var(--ink2);margin-top:3px">Current view, landscape, 9600 × 6000 px</div>
+    </div>
+  </div>
+</div>
+<div id="summary"></div>
+<div id="main">
+  <div id="map">
+    <svg id="svg"></svg>
+    <button id="side-toggle"></button>
+    <div id="legend"></div>
+    <div id="hint"><span class="source" id="source"></span>Scroll to zoom · drag to pan · double-click to reset · click a country to filter · hover a bubble for units</div>
+  </div>
+  <div id="side">
+    <div id="totals"></div>
+    <h2>Capacity by technology</h2>
+    <table id="tech-table"></table>
+    <h2>Capacity by region <span style="font-weight:400;text-transform:none">(Mt/yr, click to filter)</span></h2>
+    <table id="region-table"></table>
+    <h2><span id="ctry-heading">Capacity by country</span> <span style="font-weight:400;text-transform:none">(Mt/yr, click to filter)</span></h2>
+    <table id="ctry-table"></table>
+  </div>
+</div>
+<div id="tooltip"></div>
+<script>
+const CONFIG = __CONFIG__;
+const DATA = __DATA__;
+const WORLD = __WORLD__;
+const RUN = DATA[CONFIG.defaultRun];
+const TECHS = RUN.techs, STATUSES = RUN.statuses, SITES = RUN.sites, YEARS = RUN.years;
+// a one-country map (the China map): {iso3, groups, types}; null for the world
+const FOCUS = CONFIG.focus, OTHER = "Other provinces";
+const ORIGINS = ["existing fleet", "greenfield"];
+const originOf = (s) => ORIGINS[+s.greenfield];
+// Geography units: countries keyed by ISO3, provinces by their geo key ("CHN:CN-HE") with a parent country.
+// Both come from the plants; a unit without a polygon works everywhere but has no shape to click.
+const COUNTRIES = {}, PROVINCES = {};
+for (const s of SITES) {
+  // an ISO3 missing from the Country mapping keeps its code, as in the shared shell
+  const info = CONFIG.geoInfo[s.iso] || {};
+  COUNTRIES[s.iso] ||= {code: s.iso, name: info.country || s.iso, region: info.region || "Unknown region", geometry: WORLD.countries[s.iso]};
+  if (!s.geo) continue;
+  const code = s.geo.split(":")[1];
+  PROVINCES[s.geo] ||= {code, parent: s.iso, name: CONFIG.geoUnitNames[s.geo] || code, region: COUNTRIES[s.iso].region, geometry: WORLD.units[s.geo]};
+  // policy-ON focus maps group the provinces by the capacity pool's regions
+  if (FOCUS && Object.keys(FOCUS.groups).length) Object.assign(PROVINCES[s.geo], {group: FOCUS.groups[s.geo], type: FOCUS.types[s.geo], region: FOCUS.groups[s.geo] || OTHER});
+}
+const CTRY = {...COUNTRIES, ...PROVINCES};
+const PARENTS = new Set(Object.values(PROVINCES).map(p => p.parent));
+// technologies without a house colour take the shared shell's fallback colours
+const FALLBACK_COLOURS = ["#a52a2a", "#6b6b6b", "#b8860b", "#556b2f", "#708090", "#8b008b"];
+const UNCOLOURED = TECHS.filter(t => !CONFIG.techColours[t]);
+const COLOR = Object.fromEntries(TECHS.map(t => [t, CONFIG.techColours[t] || FALLBACK_COLOURS[UNCOLOURED.indexOf(t) % FALLBACK_COLOURS.length]]));
+const IRON = new Set(RUN.ironTechs);
+const DEFAULT_ON = new Set(STATUSES);
+const unitsAt = (s, year) => { const seg = s.segs.find(g => g[0] <= year && year <= g[1]); return seg ? seg[2] : []; };
+const techSet = (units) => new Set(units.map(u => u[0]));
+const sameTechs = (a, b) => a.size === b.size && [...a].every(t => b.has(t));
+// a focus map lists its provinces' regions only: the parent country is never selectable there
+const REGIONS = [...new Set(Object.values(FOCUS && PARENTS.size ? PROVINCES : CTRY).map(c => c.region))].sort((a, b) => (a === OTHER) - (b === OTHER) || (a < b ? -1 : a > b ? 1 : 0));
+const state = {techs: new Set(TECHS), statuses: new Set(STATUSES.filter(s => DEFAULT_ON.has(s))), origins: new Set(ORIGINS), ctrys: new Set(), byProv: false, scale: 0.5, cluster: true, year: YEARS[0], changes: false};
+// "Show by province" swaps a parent country for its provinces in every list, filter and table
+const isActive = (k) => CTRY[k].parent ? state.byProv : !(state.byProv && PARENTS.has(k));
+const unitOf = (s) => state.byProv && s.geo ? s.geo : s.iso;
+const unitNoun = () => FOCUS ? "provinces" : state.byProv ? "countries and provinces" : "countries";
+const unitHead = () => FOCUS ? "Province" : state.byProv ? "Country / province" : "Country";
+const tipUnit = (s) => FOCUS ? unitOf(s) : s.iso;
+const inRegion = (r) => Object.keys(CTRY).filter(c => CTRY[c].region === r && isActive(c));
+document.getElementById("subtitle").textContent = RUN.title;
+document.getElementById("source").textContent = RUN.source;
+document.getElementById("source").title = RUN.provenance;
+document.title = CONFIG.chartTitle;
+document.getElementById("chart-title").textContent = CONFIG.chartTitle;
+if (FOCUS || !PARENTS.size) document.getElementById("by-prov-label").style.display = "none";
+const ctryLabel = (c) => `${CTRY[c].code} <span class="cname">${CTRY[c].name}</span>`;
+const fmt = (ttpa) => (ttpa / 1000).toLocaleString("en-GB", {maximumFractionDigits: 1, minimumFractionDigits: 1});
+
+// ---- projection: Web Mercator like the deck.gl viewers, so shapes stay true at any zoom;
+// a focus map is equirectangular with its mid-latitude cosine, fitted to the country
+const polysOf = (geom) => geom.type === "Polygon" ? [geom.coordinates] : geom.coordinates;
+const W = 1000;
+let H, proj;
+if (FOCUS) {
+  const pts = polysOf(WORLD.countries[FOCUS.iso3]).flat(2), lons = pts.map(p => p[0]), lats = pts.map(p => p[1]);
+  const lat0 = Math.min(...lats), lat1 = Math.max(...lats), COS = Math.cos((lat0 + lat1) / 2 * Math.PI / 180);
+  const PAD = 20, x0 = Math.min(...lons) * COS, K = (W - 2 * PAD) / (Math.max(...lons) * COS - x0);
+  H = (lat1 - lat0) * K + 2 * PAD;
+  proj = (lon, lat) => [(lon * COS - x0) * K + PAD, (lat1 - lat) * K + PAD];
+} else {
+  const LAT_MAX = 84, LAT_MIN = -58;
+  const merc = (lat) => Math.log(Math.tan(Math.PI / 4 + Math.max(Math.min(lat, 89), -89) * Math.PI / 360)) * 180 / Math.PI;
+  const K = W / 360, TOP = merc(LAT_MAX);
+  H = (TOP - merc(LAT_MIN)) * K;
+  proj = (lon, lat) => [(lon + 180) * K, (TOP - merc(lat)) * K];
+}
+const pathOf = (geom) => polysOf(geom).map(poly => poly.map(ring => "M" + ring.map(([lon, lat]) => proj(lon, lat).map(v => v.toFixed(2)).join(",")).join("L") + "Z").join("")).join("");
+const labelSpotOf = (geom) => {
+  // area-weighted centroid and width of the largest ring, good enough for a label
+  let best = null, bestA = 0;
+  for (const poly of polysOf(geom)) {
+    const ring = poly[0]; let a = 0, cx = 0, cy = 0, x0min = Infinity, x0max = -Infinity;
+    for (let i = 0; i < ring.length - 1; i++) {
+      const [x0, y0] = proj(...ring[i]), [x1, y1] = proj(...ring[i + 1]);
+      const f = x0 * y1 - x1 * y0; a += f; cx += (x0 + x1) * f; cy += (y0 + y1) * f;
+      x0min = Math.min(x0min, x0); x0max = Math.max(x0max, x0);
+    }
+    if (Math.abs(a) > bestA) { bestA = Math.abs(a); best = {x: cx / (3 * a), y: cy / (3 * a), w: x0max - x0min}; }
+  }
+  return best;
+};
+const boundsOf = (codes) => {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const s of SITES) if (codes.has(unitOf(s))) { const [x, y] = proj(s.lon, s.lat); x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+  return {x0, y0, x1, y1};
+};
+
+// ---- svg scaffolding
+const NS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById("svg");
+const el = (tag, attrs = {}, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+const gWorld = el("g", {}, svg), gCtry = el("g", {}, svg), gProv = el("g", {}, svg), gLines = el("g", {}, svg), gLabels = el("g", {}, svg), gSites = el("g", {}, svg);
+gLabels.style.display = "none";
+for (const [iso, geom] of Object.entries(WORLD.countries)) if (!COUNTRIES[iso]) el("path", {d: pathOf(geom), class: "land"}, gWorld);
+// in country mode the province outlines stay visible as thin lines
+for (const geom of Object.values(WORLD.units)) el("path", {d: pathOf(geom), class: "pline"}, gLines);
+const ctryEls = {}, labels = [];
+for (const [code, c] of Object.entries(CTRY)) {
+  if (!c.geometry) continue;
+  const path = el("path", {d: pathOf(c.geometry), class: "ctry"}, c.parent ? gProv : gCtry);
+  path.addEventListener("click", () => { if (!moved) toggleCtry(code); });
+  path.addEventListener("mousemove", (e) => showCtryTip(e, code));
+  path.addEventListener("mouseleave", hideTip);
+  ctryEls[code] = path;
+  const spot = labelSpotOf(c.geometry);
+  const t = el("text", {x: spot.x.toFixed(2), y: spot.y.toFixed(2), class: "clabel"}, gLabels);
+  t.textContent = c.name;
+  labels.push({t, w: spot.w, chars: c.name.length, code});
+}
+// a parent country stays drawn under its provinces (it fills the ones without plants) but stops reacting
+function applyGeoMode() {
+  gProv.style.display = state.byProv ? "" : "none";
+  gLines.style.display = state.byProv ? "none" : "";
+  for (const k of PARENTS) if (ctryEls[k]) ctryEls[k].style.pointerEvents = state.byProv ? "none" : "";
+}
+const HOME = {x: 0, y: 0, w: W, h: H};
+let view = {...HOME};
+const pxPerUnit = () => { const r = svg.getBoundingClientRect(); return Math.min(r.width / view.w, r.height / view.h); };
+let drawQueued = false;
+function applyView() {
+  svg.setAttribute("viewBox", `${view.x} ${view.y} ${view.w} ${view.h}`);
+  const z = W / view.w, s = pxPerUnit();
+  // sizes are inline styles in map units so text stays the same size on screen at any zoom
+  gLabels.style.fontSize = (10 / z) + "px";
+  // a country or province is named once its outline is wide enough on screen to carry the name
+  for (const l of labels) l.t.style.display = isActive(l.code) && l.w * s > l.chars * 6 + 6 ? "" : "none";
+  if (!drawQueued) { drawQueued = true; requestAnimationFrame(() => { drawQueued = false; drawSites(); }); }
+}
+svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+svg.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const f = Math.exp(e.deltaY * 0.0015);
+  const r = svg.getBoundingClientRect();
+  const s = pxPerUnit();
+  const ox = view.x + (view.w - r.width / s) / 2, oy = view.y + (view.h - r.height / s) / 2;
+  const mx = ox + (e.clientX - r.left) / s, my = oy + (e.clientY - r.top) / s;
+  const nw = Math.min(Math.max(view.w * f, W / 400), W * 1.5), nf = nw / view.w;
+  view = {x: mx - (mx - view.x) * nf, y: my - (my - view.y) * nf, w: nw, h: view.h * nf};
+  applyView();
+}, {passive: false});
+let drag = null, moved = false;
+svg.addEventListener("mousedown", (e) => { drag = {x: e.clientX, y: e.clientY, vx: view.x, vy: view.y}; moved = false; svg.classList.add("dragging"); });
+window.addEventListener("mousemove", (e) => {
+  if (!drag) return;
+  if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 3) moved = true;
+  const s = pxPerUnit();
+  view.x = drag.vx - (e.clientX - drag.x) / s; view.y = drag.vy - (e.clientY - drag.y) / s;
+  svg.setAttribute("viewBox", `${view.x} ${view.y} ${view.w} ${view.h}`);
+});
+window.addEventListener("mouseup", () => { drag = null; svg.classList.remove("dragging"); });
+svg.addEventListener("dblclick", () => { view = {...HOME}; applyView(); });
+window.addEventListener("resize", applyView);
+function zoomTo(codes) {
+  if (!codes.size) { view = {...HOME}; applyView(); return; }
+  const b = boundsOf(codes), pad = 12;
+  const w = Math.max(b.x1 - b.x0 + 2 * pad, (b.y1 - b.y0 + 2 * pad) * W / H, W / 40);
+  view = {x: (b.x0 + b.x1) / 2 - w / 2, y: (b.y0 + b.y1) / 2 - w * H / W / 2, w, h: w * H / W};
+  applyView();
+}
+
+// ---- filters
+const techBoxes = document.getElementById("tech-boxes"), statusBoxes = document.getElementById("status-boxes");
+for (const t of TECHS) {
+  const l = document.createElement("label");
+  l.innerHTML = `<input type="checkbox" checked><span class="swatch" style="background:${COLOR[t]}"></span>${t}<span style="color:var(--ink3)">${IRON.has(t) ? "iron" : "steel"}</span>`;
+  l.querySelector("input").addEventListener("change", (e) => { e.target.checked ? state.techs.add(t) : state.techs.delete(t); refresh(); });
+  techBoxes.appendChild(l);
+}
+for (const s of STATUSES) {
+  const l = document.createElement("label");
+  l.innerHTML = `<input type="checkbox" ${DEFAULT_ON.has(s) ? "checked" : ""}>${s}`;
+  l.querySelector("input").addEventListener("change", (e) => { e.target.checked ? state.statuses.add(s) : state.statuses.delete(s); refresh(); });
+  statusBoxes.appendChild(l);
+}
+for (const o of ORIGINS) {
+  const l = document.createElement("label");
+  l.innerHTML = `<input type="checkbox" checked>${o}`;
+  l.querySelector("input").addEventListener("change", (e) => { e.target.checked ? state.origins.add(o) : state.origins.delete(o); refresh(); });
+  document.getElementById("origin-boxes").appendChild(l);
+}
+const originNote = () => state.origins.size === ORIGINS.length ? "" : ` · ${state.origins.size ? [...state.origins][0] + " only" : "no plants"}`;
+const regionSel = document.getElementById("region-select");
+regionSel.innerHTML = `<option value="">${FOCUS ? CTRY[FOCUS.iso3].name : "World"}</option>` + REGIONS.map(r => `<option value="${r}">${r}</option>`).join("");
+function setRegion(r) {
+  state.ctrys = new Set(r ? inRegion(r) : []);
+  refresh();
+}
+regionSel.addEventListener("change", () => setRegion(regionSel.value));
+const ctryPanel = document.getElementById("ctry-panel"), ctryBoxes = {}, regionBoxes = {};
+ctryPanel.innerHTML = `<div class="search"><input type="search" id="ctry-search" placeholder="Search countries, provinces or regions…" autocomplete="off"></div><div class="none">No match</div>`;
+function buildCtryPanel() {
+ for (const l of ctryPanel.querySelectorAll("label")) l.remove();
+ for (const k in ctryBoxes) delete ctryBoxes[k];
+ document.getElementById("ctry-btn").textContent = FOCUS ? "Provinces ▾" : state.byProv ? "Countries and provinces ▾" : "Countries ▾";
+ for (const r of REGIONS) {
+  const h = document.createElement("label"); h.className = "region"; h.dataset.region = r;
+  h.innerHTML = `<input type="checkbox" title="Select or clear every country in ${r}">${r}<span class="muted" data-rcap="${r}"></span>`;
+  h.querySelector("input").addEventListener("change", (e) => { for (const c of inRegion(r)) e.target.checked ? state.ctrys.add(c) : state.ctrys.delete(c); refresh(); });
+  regionBoxes[r] = h.querySelector("input");
+  ctryPanel.appendChild(h);
+  for (const code of inRegion(r).sort()) {
+    const l = document.createElement("label"); l.className = "ctry-row"; l.dataset.code = code;
+    l.innerHTML = `<input type="checkbox">${ctryLabel(code)}<span class="muted" data-cap="${code}"></span>`;
+    l.querySelector("input").addEventListener("change", (e) => { e.target.checked ? state.ctrys.add(code) : state.ctrys.delete(code); refresh(); });
+    ctryBoxes[code] = l.querySelector("input");
+    ctryPanel.appendChild(l);
+  }
+ }
+}
+buildCtryPanel();
+// search matches a country's name or ISO3 code; a region's name shows the whole region
+const ctrySearch = document.getElementById("ctry-search");
+function filterCtryPanel() {
+  const q = ctrySearch.value.trim().toLowerCase();
+  let shown = 0;
+  for (const h of ctryPanel.querySelectorAll("label.region")) {
+    const r = h.dataset.region, whole = r.toLowerCase().includes(q);
+    let any = false;
+    for (const code of inRegion(r)) {
+      const hit = whole || CTRY[code].name.toLowerCase().includes(q) || CTRY[code].code.toLowerCase().startsWith(q);
+      ctryBoxes[code].parentElement.hidden = !hit;
+      any ||= hit;
+    }
+    h.hidden = !any;
+    shown += any;
+  }
+  ctryPanel.querySelector(".none").style.display = shown ? "none" : "block";
+}
+ctrySearch.addEventListener("input", filterCtryPanel);
+ctrySearch.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") ctryPanel.classList.remove("open");
+  if (e.key !== "Enter") return;
+  const rows = [...ctryPanel.querySelectorAll("label.ctry-row:not([hidden])")];
+  if (rows.length === 1) toggleCtry(rows[0].dataset.code);
+});
+document.getElementById("ctry-btn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (ctryPanel.classList.toggle("open")) { ctrySearch.value = ""; filterCtryPanel(); ctrySearch.focus(); }
+});
+ctryPanel.addEventListener("click", (e) => e.stopPropagation());
+document.addEventListener("click", () => ctryPanel.classList.remove("open"));
+document.getElementById("ctry-clear").addEventListener("click", () => setRegion(""));
+// switching mode keeps the selection: a selected parent becomes all its provinces, any selected province its parent
+function setByProv(on) {
+  state.byProv = on;
+  document.getElementById("by-prov").checked = on;
+  for (const k of [...state.ctrys]) {
+    if (on && PARENTS.has(k)) { state.ctrys.delete(k); for (const p in PROVINCES) if (PROVINCES[p].parent === k) state.ctrys.add(p); }
+    if (!on && CTRY[k].parent) { state.ctrys.delete(k); state.ctrys.add(CTRY[k].parent); }
+  }
+  document.getElementById("ctry-heading").textContent = `Capacity by ${unitHead().toLowerCase().replace(" / ", " and ")}`;
+  applyGeoMode(); buildCtryPanel(); filterCtryPanel(); refresh(); applyView();
+}
+document.getElementById("by-prov").addEventListener("change", (e) => setByProv(e.target.checked));
+document.getElementById("zoom-fit").addEventListener("click", () => zoomTo(state.ctrys));
+document.getElementById("scale").addEventListener("input", (e) => { state.scale = +e.target.value; drawSites(); });
+const slider = document.getElementById("year-slider");
+slider.min = YEARS[0]; slider.max = YEARS[YEARS.length - 1]; slider.value = state.year;
+function setYear(y) {
+  state.year = Math.min(Math.max(y, YEARS[0]), YEARS[YEARS.length - 1]);
+  slider.value = state.year;
+  document.getElementById("year-label").textContent = state.year;
+  document.getElementById("year-title").textContent = state.year;
+  refresh();
+}
+slider.addEventListener("input", () => setYear(+slider.value));
+document.getElementById("year-prev").addEventListener("click", () => setYear(state.year - 1));
+document.getElementById("year-next").addEventListener("click", () => setYear(state.year + 1));
+document.addEventListener("keydown", (e) => {
+  if (document.activeElement === slider || e.target.tagName === "INPUT") return;
+  if (e.key === "ArrowLeft") setYear(state.year - 1);
+  if (e.key === "ArrowRight") setYear(state.year + 1);
+});
+document.getElementById("changes").addEventListener("change", (e) => { state.changes = e.target.checked; refresh(); });
+document.getElementById("cluster").addEventListener("change", (e) => { state.cluster = e.target.checked; drawSites(); });
+document.getElementById("labels").addEventListener("change", (e) => { gLabels.style.display = e.target.checked ? "" : "none"; });
+const sideToggle = document.getElementById("side-toggle");
+function setSide(shown) {
+  document.getElementById("main").classList.toggle("side-hidden", !shown);
+  sideToggle.textContent = shown ? "Hide statistics ›" : "‹ Show statistics";
+  applyView();
+}
+sideToggle.addEventListener("click", () => setSide(document.getElementById("main").classList.contains("side-hidden")));
+// the region dropdown, the region ticks and the country ticks all follow the selected country set
+function syncGeoControls() {
+  for (const c in ctryBoxes) ctryBoxes[c].checked = state.ctrys.has(c);
+  let exact = "";
+  for (const r of REGIONS) {
+    const codes = inRegion(r), n = codes.filter(c => state.ctrys.has(c)).length;
+    regionBoxes[r].checked = n === codes.length;
+    regionBoxes[r].indeterminate = n > 0 && n < codes.length;
+    if (n === codes.length && n === state.ctrys.size) exact = r;
+  }
+  regionSel.value = exact;
+}
+// the selection as whole regions plus the countries left over, for chips and captions
+function geoSelection() {
+  const regions = REGIONS.filter(r => inRegion(r).every(c => state.ctrys.has(c)));
+  const covered = new Set(regions.flatMap(inRegion));
+  const countries = [...state.ctrys].filter(c => !covered.has(c)).sort();
+  return {regions, countries};
+}
+function geoLabel() {
+  if (!state.ctrys.size) return `all ${unitNoun()}`;
+  const {regions, countries} = geoSelection(), parts = [...regions, ...countries.map(c => CTRY[c].code)];
+  return parts.length <= 8 ? parts.join(", ") : `${state.ctrys.size} of ${Object.keys(CTRY).filter(isActive).length} ${unitNoun()}`;
+}
+function toggleCtry(code) { state.ctrys.has(code) ? state.ctrys.delete(code) : state.ctrys.add(code); refresh(); }
+function toggleRegion(r) {
+  setRegion(regionSel.value === r ? "" : r);
+}
+
+// ---- filtering + aggregation
+let filtered = [], closed = [], stats = null;
+function refresh() {
+  const geoAll = state.ctrys.size === 0;
+  syncGeoControls();
+  filtered = []; closed = [];
+  const keep = u => state.techs.has(u[0]) && state.statuses.has(u[1]);
+  for (const s of SITES) {
+    if (!state.origins.has(originOf(s))) continue;
+    if (!geoAll && !state.ctrys.has(unitOf(s))) continue;
+    const byTech = {};
+    const units = unitsAt(s, state.year).filter(keep);
+    for (const u of units) byTech[u[0]] = (byTech[u[0]] || 0) + u[2];
+    const total = Object.values(byTech).reduce((a, b) => a + b, 0);
+    // opened, closed and switched are judged on the plant's whole timeline, so an unticked status or
+    // technology never turns a rebuild into a closure; the filters only decide what is drawn
+    let change = "", prev = [];
+    if (state.changes && state.year > YEARS[0]) {
+      const now = unitsAt(s, state.year), before = unitsAt(s, state.year - 1);
+      prev = before.filter(keep);
+      if (now.length && !before.length) change = "opened";
+      else if (!now.length && before.length) change = "closed";
+      else if (now.length && !sameTechs(techSet(now), techSet(before))) change = "switched";
+    }
+    if (total > 0) filtered.push({...s, byTech, total, units, change});
+    else if (change === "closed" && prev.length) closed.push({...s, total: prev.reduce((a, u) => a + u[2], 0), units: prev});
+  }
+  for (const c in ctryEls) ctryEls[c].classList.toggle("sel", state.ctrys.has(c)), ctryEls[c].classList.toggle("dim", !geoAll && !state.ctrys.has(c));
+  const chips = document.getElementById("geo-chips");
+  chips.innerHTML = geoAll ? `<span class="geo-chip-note">all ${unitNoun()}</span>` : "";
+  const {regions: fullRegions, countries: loose} = geoSelection();
+  const addChip = (text, remove, title = "") => {
+    const chip = document.createElement("span"); chip.className = "geo-chip"; chip.title = title;
+    chip.innerHTML = `${text} <button title="remove">✕</button>`;
+    chip.querySelector("button").addEventListener("click", remove);
+    chips.appendChild(chip);
+  };
+  for (const r of fullRegions) addChip(`${r} (${inRegion(r).length})`, () => { for (const c of inRegion(r)) state.ctrys.delete(c); refresh(); });
+  for (const c of loose) addChip(CTRY[c].code, () => toggleCtry(c), CTRY[c].name);
+  // country capacities in the dropdown ignore the geo filter so the reader can see what they'd add
+  const perCtryAll = {};
+  for (const s of SITES) if (state.origins.has(originOf(s))) for (const u of unitsAt(s, state.year)) if (keep(u)) perCtryAll[unitOf(s)] = (perCtryAll[unitOf(s)] || 0) + u[2];
+  for (const e of ctryPanel.querySelectorAll("[data-cap]")) e.textContent = fmt(perCtryAll[e.dataset.cap] || 0) + " Mt";
+  for (const e of ctryPanel.querySelectorAll("[data-rcap]")) e.textContent = fmt(inRegion(e.dataset.rcap).reduce((a, c) => a + (perCtryAll[c] || 0), 0)) + " Mt";
+  stats = aggregate();
+  drawSites(); drawSide();
+}
+function aggregate() {
+  const byTech = {}, byCtry = {}, byRegion = {}, unitsByTech = {};
+  let units = 0;
+  const add = (o, k, t, c) => { (o[k] ||= {total: 0, iron: 0, steel: 0, plants: 0})[t] = (o[k][t] || 0) + c; o[k].total += c; o[k][IRON.has(t) ? "iron" : "steel"] += c; };
+  for (const s of filtered) {
+    units += s.units.length;
+    for (const u of s.units) unitsByTech[u[0]] = (unitsByTech[u[0]] || 0) + 1;
+    for (const [t, c] of Object.entries(s.byTech)) {
+      byTech[t] = (byTech[t] || 0) + c;
+      add(byCtry, unitOf(s), t, c); add(byRegion, CTRY[unitOf(s)].region, t, c);
+    }
+    byCtry[unitOf(s)].plants++; byRegion[CTRY[unitOf(s)].region].plants++;
+  }
+  const iron = TECHS.filter(t => IRON.has(t)).reduce((a, t) => a + (byTech[t] || 0), 0);
+  const steel = TECHS.filter(t => !IRON.has(t)).reduce((a, t) => a + (byTech[t] || 0), 0);
+  const sorted = (o) => Object.entries(o).sort((a, b) => b[1].total - a[1].total);
+  return {byTech, unitsByTech, units, iron, steel, ctryRows: sorted(byCtry), regionRows: sorted(byRegion), byCtry};
+}
+function radiusPx(cap) { return 3.2 * state.scale * Math.sqrt(cap / 1000); }
+function wedge(cx, cy, r, a0, a1) {
+  if (a1 - a0 >= 2 * Math.PI - 1e-6) return null;
+  const x0 = cx + r * Math.sin(a0), y0 = cy - r * Math.cos(a0), x1 = cx + r * Math.sin(a1), y1 = cy - r * Math.cos(a1);
+  return `M${cx.toFixed(3)},${cy.toFixed(3)}L${x0.toFixed(3)},${y0.toFixed(3)}A${r},${r} 0 ${a1 - a0 > Math.PI ? 1 : 0} 1 ${x1.toFixed(3)},${y1.toFixed(3)}Z`;
+}
+/* Bubbles that overlap at the current zoom are merged into one pie so a dense
+   cluster reads as one mark until the reader zooms in. Greedy, largest first; a
+   cluster stays anchored on its largest plant and captures only what overlaps that
+   plant's own bubble, so a merged pie never widens its reach as it grows. Anchors
+   are bucketed on a grid of the largest radius so each plant only tests its neighbours. */
+function clusterSites(z) {
+  const items = [...filtered].sort((a, b) => b.total - a.total).map(s => {
+    const [x, y] = proj(s.lon, s.lat);
+    const r = radiusPx(s.total) / z;
+    return {x, y, r, r0: r, total: s.total, byTech: {...s.byTech}, members: [s], units: s.units.slice(), change: s.change};
+  });
+  if (!state.cluster || !items.length) return items;
+  const cell = 2 * items[0].r, grid = new Map(), out = [];
+  for (const it of items) {
+    const i = Math.floor(it.x / cell), j = Math.floor(it.y / cell);
+    let hit = null;
+    for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++)
+      for (const c of grid.get(`${i + di}:${j + dj}`) || [])
+        if (Math.hypot(c.x - it.x, c.y - it.y) < c.r0 + it.r && (!hit || c.rank < hit.rank)) hit = c;
+    if (!hit) {
+      it.rank = out.length; out.push(it);
+      if (!grid.has(`${i}:${j}`)) grid.set(`${i}:${j}`, []);
+      grid.get(`${i}:${j}`).push(it);
+      continue;
+    }
+    hit.total += it.total; hit.r = radiusPx(hit.total) / z;
+    for (const [t, c] of Object.entries(it.byTech)) hit.byTech[t] = (hit.byTech[t] || 0) + c;
+    hit.members.push(...it.members); hit.units.push(...it.units);
+    if (!hit.change) hit.change = it.change;
+  }
+  return out.sort((a, b) => b.total - a.total);  // small marks drawn last, on top
+}
+function drawSites() {
+  gSites.innerHTML = "";
+  const z = W / view.w;
+  for (const c of clusterSites(z)) {
+    const g = el("g", {class: "site" + (c.change ? " " + c.change : "")}, gSites);
+    let a = 0;
+    for (const t of TECHS) {
+      if (!c.byTech[t]) continue;
+      const a1 = a + 2 * Math.PI * c.byTech[t] / c.total;
+      const d = wedge(c.x, c.y, c.r, a, a1);
+      if (d) el("path", {d, fill: COLOR[t], "fill-opacity": 0.85}, g);
+      else el("circle", {cx: c.x, cy: c.y, r: c.r, fill: COLOR[t], "fill-opacity": 0.85}, g);
+      a = a1;
+    }
+    if (c.members.length > 1 && c.r * z > 7) {
+      const b = el("text", {x: c.x.toFixed(3), y: (c.y + 3 / z).toFixed(3), class: "badge", style: `font-size:${9 / z}px;stroke-width:${2 / z}px`}, g);
+      b.textContent = c.members.length;
+    }
+    g.addEventListener("mousemove", (e) => c.members.length > 1 ? showClusterTip(e, c) : showSiteTip(e, c.members[0]));
+    g.addEventListener("mouseleave", hideTip);
+  }
+  for (const s of closed) {
+    const [cx, cy] = proj(s.lon, s.lat);
+    const g = el("g", {class: "site closed"}, gSites);
+    el("circle", {cx, cy, r: radiusPx(s.total) / z}, g);
+    g.addEventListener("mousemove", (e) => showSiteTip(e, {...s, byTech: {}, closedNote: true}));
+    g.addEventListener("mouseleave", hideTip);
+  }
+  drawLegend();
+}
+const SIZE_REF = [1000, 10000, 50000];
+function drawLegend() {
+  // size reference: three circles side by side, labels beneath
+  const rmax = radiusPx(SIZE_REF[2]);
+  let x = 4, svgs = "", w = 0;
+  for (const c of SIZE_REF) {
+    const r = radiusPx(c), cx = x + Math.max(r, 14);
+    svgs += `<circle cx="${cx}" cy="${rmax + 2}" r="${r}" fill="none" stroke="#8a8884"/>`;
+    svgs += `<text x="${cx}" y="${rmax * 2 + 16}" font-size="10" fill="#52514e" text-anchor="middle">${c / 1000} Mt</text>`;
+    x = cx + Math.max(r, 14) + 10; w = x;
+  }
+  document.getElementById("legend").innerHTML =
+    TECHS.map(t => `<div class="row"><span class="swatch" style="background:${COLOR[t]}"></span>${t} (${IRON.has(t) ? "iron" : "steel"})</div>`).join("") +
+    (state.changes ? `<div class="row" style="margin-top:6px"><span class="swatch" style="background:none;border:2.5px solid #1b7f3b"></span>opened this year</div>` +
+      `<div class="row"><span class="swatch" style="background:none;border:2.5px solid #b8860b"></span>technology switched</div>` +
+      `<div class="row"><span class="swatch" style="background:none;border:1.5px dashed #8a8884"></span>closed this year</div>` : "") +
+    `<div class="row" style="margin-top:6px">Bubble area = capacity</div><div class="row">Number = plants merged</div><svg width="${w}" height="${rmax * 2 + 20}">${svgs}</svg>`;
+}
+const stackOf = (v, max) => `<div style="width:${100 * v.total / max}%">` +
+  TECHS.filter(t => v[t]).map(t => `<span style="flex:${v[t]};background:${COLOR[t]}"></span>`).join("") + `</div>`;
+function geoTable(id, head, rows, nameOf, isSel) {
+  const max = Math.max(1, ...rows.map(r => r[1].total));
+  document.getElementById(id).innerHTML = `<thead><tr><th>${head}</th><th>Plants</th><th>Iron</th><th>Steel</th><th></th></tr></thead><tbody>` +
+    rows.map(([k, v]) => `<tr data-key="${k}" class="${isSel(k) ? "sel" : ""}"><td>${nameOf(k)}</td><td>${v.plants}</td>` +
+      `<td>${v.iron ? fmt(v.iron) : "–"}</td><td>${v.steel ? fmt(v.steel) : "–"}</td><td class="stack">${stackOf(v, max)}</td></tr>`).join("") + "</tbody>";
+}
+function drawSide() {
+  const {byTech, unitsByTech, units, iron, steel, ctryRows, regionRows} = stats;
+  document.getElementById("summary").textContent =
+    `${state.year}: ${fmt(iron)} Mt/yr iron and ${fmt(steel)} Mt/yr steel capacity at ${filtered.length} plants (${units} furnace groups) in ${ctryRows.length} ${unitNoun()} · ` +
+    `${state.techs.size === TECHS.length ? "all technologies" : [...state.techs].join(", ") || "no technology"} · ${[...state.statuses].join(" + ") || "no status"}${originNote()} · ` +
+    geoLabel();
+  document.getElementById("totals").innerHTML =
+    `<div class="tile"><div class="v">${fmt(iron)}</div><div class="l">Mt/yr iron capacity</div></div>` +
+    `<div class="tile"><div class="v">${fmt(steel)}</div><div class="l">Mt/yr steel capacity</div></div>` +
+    `<div class="tile"><div class="v">${filtered.length.toLocaleString("en-GB")}</div><div class="l">plants shown</div></div>` +
+    `<div class="tile"><div class="v">${units.toLocaleString("en-GB")}</div><div class="l">furnace groups</div></div>`;
+  const max = Math.max(1, ...TECHS.map(t => byTech[t] || 0));
+  document.getElementById("tech-table").innerHTML = `<thead><tr><th>Technology</th><th>Mt/yr</th><th>Groups</th><th></th></tr></thead><tbody>` +
+    TECHS.map(t => `<tr style="cursor:default"><td><span class="swatch" style="background:${COLOR[t]};vertical-align:-1px"></span> ${t}</td><td>${fmt(byTech[t] || 0)}</td>` +
+      `<td>${unitsByTech[t] || 0}</td>` +
+      `<td class="bar"><div style="width:${100 * (byTech[t] || 0) / max}%;background:${COLOR[t]}"></div></td></tr>`).join("") + "</tbody>";
+  geoTable("region-table", "Region", regionRows, r => r, r => regionSel.value === r);
+  geoTable("ctry-table", unitHead(), ctryRows, ctryLabel, c => state.ctrys.has(c));
+  for (const tr of document.querySelectorAll("#region-table tbody tr")) tr.addEventListener("click", () => toggleRegion(tr.dataset.key));
+  for (const tr of document.querySelectorAll("#ctry-table tbody tr")) {
+    tr.addEventListener("click", () => toggleCtry(tr.dataset.key));
+    tr.addEventListener("mousemove", (e) => showCtryTip(e, tr.dataset.key));
+    tr.addEventListener("mouseleave", hideTip);
+  }
+}
+
+// ---- tooltips
+const tip = document.getElementById("tooltip");
+function placeTip(e) {
+  tip.style.display = "block";
+  const r = tip.getBoundingClientRect();
+  tip.style.left = Math.max(8, Math.min(e.clientX + 14, window.innerWidth - r.width - 8)) + "px";
+  tip.style.top = Math.min(e.clientY + 14, window.innerHeight - r.height - 8) + "px";
+}
+const techRows = (byTech) => TECHS.filter(t => byTech[t]).map(t => `<tr><td><span class="swatch" style="background:${COLOR[t]};vertical-align:-1px"></span> ${t}</td><td><b>${fmt(byTech[t])} Mt</b></td></tr>`).join("");
+function showSiteTip(e, s) {
+  const c = CTRY[s.iso];
+  const units = [...s.units].sort((a, b) => TECHS.indexOf(a[0]) - TECHS.indexOf(b[0]) || b[2] - a[2]);
+  const active = s.segs.filter(g => g[2].length);
+  const first = active.length ? active[0][0] : null, last = active.length ? active[active.length - 1][1] : null;
+  const history = active.length ? `${first === YEARS[0] ? `in the ${YEARS[0]} fleet` : "first appears " + first}` +
+    `${last < YEARS[YEARS.length - 1] ? ", closes " + (last + 1) : ""}` : "";
+  const capLabel = s.closedNote ? `closed in ${state.year} · ${fmt(s.total)} Mt/yr in ${state.year - 1}` : `${fmt(s.total)} Mt/yr in ${state.year}`;
+  const shown = {};
+  for (const u of units) shown[u[0]] = (shown[u[0]] || 0) + u[2];
+  const switching = s.switches.filter(w => w[0] <= state.year && state.year <= w[1])
+    .map(w => `<div class="sub" style="margin:4px 0 0">switching ${w[2]} → ${w[3]} · decided ${w[0]} · new technology from ${w[1]}</div>`).join("");
+  tip.innerHTML = `<b>${esc(s.name)}</b><div class="sub">${s.iso} ${c.name}${s.geo ? ` · ${CTRY[s.geo].code} ${CTRY[s.geo].name}` : ""} · ${(s.geo && CTRY[s.geo].group) || c.region} · ${capLabel}` +
+    `${history ? " · " + history : ""}</div>` +
+    `<table>${TECHS.filter(t => shown[t]).map(t => `<tr><td><span class="swatch" style="background:${COLOR[t]};vertical-align:-1px"></span> ${t}</td><td><b>${fmt(shown[t])} Mt</b></td><td></td></tr>` +
+      units.filter(u => u[0] === t).map(u => `<tr><td></td><td>${fmt(u[2])}</td><td class="st">${u[3] ? `${u[1]} · ${u[3]}` : u[1]} · ${u[4]}</td></tr>`).join("")).join("")}</table>${switching}`;
+  placeTip(e);
+}
+function showClusterTip(e, c) {
+  const names = [...new Set(c.members.map(s => `${CTRY[tipUnit(s)].code} ${CTRY[tipUnit(s)].name}`))].sort();
+  const where = names.length > 4 ? `${names.length} ${FOCUS ? "provinces" : "countries"}` : names.join(", ");
+  const top = c.members.slice(0, 5).map(s => `<tr><td class="nm">${esc(s.name)}</td><td>${fmt(s.total)} Mt</td></tr>`).join("");
+  tip.innerHTML = `<b>${c.members.length} plants (merged at this zoom)</b><div class="sub">${where} · ${fmt(c.total)} Mt/yr shown · zoom in to separate</div>` +
+    `<table>${techRows(c.byTech)}</table><div class="sub" style="margin-top:5px">Largest:</div><table>${top}</table>`;
+  placeTip(e);
+}
+function showCtryTip(e, code) {
+  if (drag) return;
+  const c = CTRY[code], v = stats.byCtry[code];
+  tip.innerHTML = `<b>${c.code} ${c.name}</b><div class="sub">${c.parent ? CTRY[c.parent].name + (c.group ? ` · ${c.group}` : "") + (c.type ? ` (${c.type} province)` : "") : c.region} · ${v ? `${v.plants} plants · ${fmt(v.iron)} Mt/yr iron · ${fmt(v.steel)} Mt/yr steel` : "nothing shown under the current filters"}</div>` +
+    `<table>${v ? techRows(v) : ""}</table>`;
+  placeTip(e);
+}
+function hideTip() { tip.style.display = "none"; }
+
+// ---- PNG export: the current map view plus the side statistics, composed as one
+// SVG and rasterised through a canvas, so the file needs no external assets.
+const EXPORT_CSS = `
+  .land { fill: #ffffff; stroke: #e3e1db; stroke-width: 0.5; vector-effect: non-scaling-stroke; }
+  .ctry { fill: #ecebe6; stroke: #ffffff; stroke-width: 0.6; vector-effect: non-scaling-stroke; }
+  .ctry.sel { fill: #d3ddea; } .ctry.dim { fill: #f4f3ef; }
+  .pline { fill: none; stroke: #ffffff; stroke-width: 0.5; vector-effect: non-scaling-stroke; }
+  .clabel { fill: #8a8884; text-anchor: middle; }
+  .site path, .site circle { stroke: #fff; stroke-width: 0.8; vector-effect: non-scaling-stroke; }
+  .site.opened path, .site.opened circle { stroke: #1b7f3b; stroke-width: 2.5; }
+  .site.switched path, .site.switched circle { stroke: #b8860b; stroke-width: 2.5; }
+  .site.closed circle { fill: none; stroke: #8a8884; stroke-width: 1.5; stroke-dasharray: 3 2; }
+  .badge { font-weight: 600; fill: #fff; text-anchor: middle; paint-order: stroke; stroke: rgba(0,0,0,0.55); }
+  text { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }`;
+const esc = (v) => String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+function exportSvg() {
+  const EW = 1600, EH = 1000, M = 44, SIDE = 400, MAP_Y = 118, MAP_H = EH - MAP_Y - 70;
+  const mapW = EW - 2 * M - SIDE - 30, sideX = EW - M - SIDE;
+  const {byTech, unitsByTech, units, iron, steel, ctryRows} = stats;
+  const filterLine = `${esc(RUN.title)} · ${state.techs.size === TECHS.length ? "all technologies" : esc([...state.techs].join(", "))} · ${[...state.statuses].join(", ")}${originNote()} · ${esc(geoLabel())}`;
+  const today = new Date().toISOString().slice(0, 10);
+  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${EW}" height="${EH}" viewBox="0 0 ${EW} ${EH}"><style>${EXPORT_CSS}</style>`;
+  out += `<rect width="${EW}" height="${EH}" fill="#fcfcfb"/>`;
+  out += `<text x="${M}" y="${M + 22}" font-size="28" font-weight="600" fill="#0b0b0b">${esc(CONFIG.chartTitle)}, ${state.year}</text>`;
+  out += `<text x="${M}" y="${M + 48}" font-size="13" fill="#52514e">${filterLine}</text>`;
+  // map: the live groups inside a nested svg at the current view
+  const clipId = "map-clip";
+  out += `<defs><clipPath id="${clipId}"><rect x="${M}" y="${MAP_Y}" width="${mapW}" height="${MAP_H}" rx="6"/></clipPath></defs>`;
+  out += `<rect x="${M}" y="${MAP_Y}" width="${mapW}" height="${MAP_H}" rx="6" fill="#e8f1f8" stroke="#e3e1db"/>`;
+  const layers = [gWorld, gCtry, gProv, gLines, gLabels, gSites].map(g => g.outerHTML).join("");
+  out += `<g clip-path="url(#${clipId})"><svg x="${M}" y="${MAP_Y}" width="${mapW}" height="${MAP_H}" viewBox="${view.x} ${view.y} ${view.w} ${view.h}" preserveAspectRatio="xMidYMid slice">${layers}</svg></g>`;
+  // legend over the map, bottom left
+  const rmax = radiusPx(SIZE_REF[2]);
+  const lx = M + 14, lh = TECHS.length * 18 + 34 + rmax * 2 + 26, ly = MAP_Y + MAP_H - lh - 14, lw = Math.max(170, rmax * 6 + 40);
+  out += `<rect x="${lx}" y="${ly}" width="${lw}" height="${lh}" rx="5" fill="rgba(255,255,255,0.94)" stroke="#e3e1db"/>`;
+  TECHS.forEach((t, i) => {
+    out += `<circle cx="${lx + 16}" cy="${ly + 18 + i * 18}" r="5.5" fill="${COLOR[t]}"/>`;
+    out += `<text x="${lx + 28}" y="${ly + 22 + i * 18}" font-size="14" fill="#52514e">${esc(t)} (${IRON.has(t) ? "iron" : "steel"})</text>`;
+  });
+  let yy = ly + 22 + TECHS.length * 18 + 4;
+  out += `<text x="${lx + 10}" y="${yy}" font-size="13" fill="#52514e">Bubble area = capacity</text>`;
+  let cxx = lx + 10;
+  for (const c of SIZE_REF) {
+    const r = radiusPx(c), cx = cxx + Math.max(r, 16);
+    out += `<circle cx="${cx}" cy="${yy + 10 + rmax}" r="${r}" fill="none" stroke="#8a8884"/>`;
+    out += `<text x="${cx}" y="${yy + rmax * 2 + 24}" font-size="12" fill="#52514e" text-anchor="middle">${c / 1000} Mt</text>`;
+    cxx = cx + Math.max(r, 16) + 10;
+  }
+  // side panel: tiles, technology table, top countries
+  const tile = (x, y, v, l) => `<rect x="${x}" y="${y}" width="${(SIDE - 12) / 2}" height="58" rx="5" fill="#fff" stroke="#e3e1db"/>` +
+    `<text x="${x + 12}" y="${y + 30}" font-size="26" font-weight="600" fill="#0b0b0b">${v}</text><text x="${x + 12}" y="${y + 48}" font-size="13" fill="#52514e">${l}</text>`;
+  out += tile(sideX, MAP_Y, fmt(iron), "Mt/yr iron capacity") + tile(sideX + SIDE / 2 + 6, MAP_Y, fmt(steel), "Mt/yr steel capacity");
+  out += tile(sideX, MAP_Y + 66, filtered.length.toLocaleString("en-GB"), "plants shown") + tile(sideX + SIDE / 2 + 6, MAP_Y + 66, units.toLocaleString("en-GB"), "furnace groups");
+  let y = MAP_Y + 158;
+  const head = (label) => { out += `<text x="${sideX}" y="${y}" font-size="14" font-weight="600" fill="#52514e" letter-spacing="0.4">${label}</text>`; y += 14; };
+  head("CAPACITY BY TECHNOLOGY");
+  const shownTechs = TECHS.filter(t => byTech[t]), rowH = shownTechs.length > 8 ? 19 : 24;
+  const tmax = Math.max(1, ...TECHS.map(t => byTech[t] || 0));
+  out += `<text x="${sideX + 210}" y="${y + 6}" font-size="13" fill="#52514e" text-anchor="end">Mt/yr</text><text x="${sideX + 260}" y="${y + 6}" font-size="13" fill="#52514e" text-anchor="end">Groups</text>`;
+  y += 20;
+  for (const t of shownTechs) {
+    out += `<line x1="${sideX}" y1="${y + rowH - 6}" x2="${sideX + SIDE}" y2="${y + rowH - 6}" stroke="#e3e1db"/>`;
+    out += `<circle cx="${sideX + 7}" cy="${y + 7}" r="5" fill="${COLOR[t]}"/><text x="${sideX + 18}" y="${y + 11}" font-size="14" fill="#0b0b0b">${esc(t)}</text>`;
+    out += `<text x="${sideX + 210}" y="${y + 11}" font-size="14" fill="#0b0b0b" text-anchor="end">${fmt(byTech[t])}</text>`;
+    out += `<text x="${sideX + 260}" y="${y + 11}" font-size="14" fill="#0b0b0b" text-anchor="end">${unitsByTech[t] || 0}</text>`;
+    out += `<rect x="${sideX + 280}" y="${y + 2}" width="${(SIDE - 280) * byTech[t] / tmax}" height="10" rx="2" fill="${COLOR[t]}"/>`;
+    y += rowH;
+  }
+  y += 22;
+  const n = Math.min(15, ctryRows.length);
+  head(`TOP ${n} ${unitNoun().toUpperCase()}${state.byProv ? "" : " BY CAPACITY"} (Mt/yr)`);
+  const cRow = Math.min(24, Math.floor((EH - 70 - y - 50) / 15)), cFont = cRow >= 22 ? 15 : 12;
+  // svg text has no ellipsis of its own: cut names to what fits before the iron column
+  const nameChars = Math.floor(165 / (cFont * 0.52)) - 4;
+  const short = (name) => name.length > nameChars ? name.slice(0, nameChars - 1).trimEnd() + "…" : name;
+  const ironX = sideX + 225, steelX = sideX + 290, barX = steelX + 12;
+  out += `<text x="${sideX}" y="${y + 6}" font-size="13" fill="#52514e">${unitHead()}</text>`;
+  out += `<text x="${ironX}" y="${y + 6}" font-size="13" fill="#52514e" text-anchor="end">Iron</text><text x="${steelX}" y="${y + 6}" font-size="13" fill="#52514e" text-anchor="end">Steel</text>`;
+  y += 20;
+  const cmax = Math.max(1, ...ctryRows.slice(0, n).map(r => r[1].total));
+  for (const [c, v] of ctryRows.slice(0, n)) {
+    out += `<line x1="${sideX}" y1="${y + cRow - 6}" x2="${sideX + SIDE}" y2="${y + cRow - 6}" stroke="#e3e1db"/>`;
+    out += `<text x="${sideX}" y="${y + 11}" font-size="${cFont}" fill="#0b0b0b">${CTRY[c].code} <tspan fill="#52514e">${esc(short(CTRY[c].name))}</tspan></text>`;
+    out += `<text x="${ironX}" y="${y + 11}" font-size="${cFont - 1}" fill="#0b0b0b" text-anchor="end">${v.iron ? fmt(v.iron) : "–"}</text>`;
+    out += `<text x="${steelX}" y="${y + 11}" font-size="${cFont - 1}" fill="#0b0b0b" text-anchor="end">${v.steel ? fmt(v.steel) : "–"}</text>`;
+    let bx = barX;
+    for (const t of TECHS) if (v[t]) { const bw = (sideX + SIDE - barX) * v[t] / cmax; out += `<rect x="${bx}" y="${y + 3}" width="${bw}" height="9" fill="${COLOR[t]}"/>`; bx += bw; }
+    y += cRow;
+  }
+  if (ctryRows.length > n) {
+    const rest = ctryRows.slice(n).reduce((a, r) => ({iron: a.iron + r[1].iron, steel: a.steel + r[1].steel}), {iron: 0, steel: 0});
+    out += `<text x="${sideX}" y="${y + 11}" font-size="13" fill="#52514e">${ctryRows.length - n} further ${unitNoun()}: ${fmt(rest.iron)} Mt/yr iron, ${fmt(rest.steel)} Mt/yr steel</text>`;
+  }
+  // footer
+  out += `<line x1="${M}" y1="${EH - 46}" x2="${EW - M}" y2="${EH - 46}" stroke="#e3e1db"/>`;
+  out += `<text x="${M}" y="${EH - 24}" font-size="14" fill="#52514e">${esc(RUN.source)}</text>`;
+  out += `<text x="${EW - M}" y="${EH - 24}" font-size="13" fill="#8a8884" text-anchor="end">${today}</text>`;
+  return out + "</svg>";
+}
+function exportPng(scale, done) {
+  const svgText = exportSvg();
+  const img = new Image();
+  const url = URL.createObjectURL(new Blob([svgText], {type: "image/svg+xml;charset=utf-8"}));
+  img.onload = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1600 * scale; canvas.height = 1000 * scale;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fcfcfb"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    URL.revokeObjectURL(url);
+    canvas.toBlob(done, "image/png");  // null when the browser cannot allocate the canvas
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); done(null); };
+  img.src = url;
+}
+document.getElementById("download").addEventListener("click", () => {
+  const note = document.getElementById("download-note");
+  note.textContent = "Rendering…";
+  exportPng(6, (blob) => {
+    if (!blob) { note.textContent = "Export failed: this browser could not render the 9600 × 6000 px image"; return; }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${CONFIG.fileStem}_${state.year}.png`;
+    a.click();
+    note.textContent = `Saved ${(blob.size / 1e6).toFixed(1)} MB · current view, landscape, 9600 × 6000 px`;
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  });
+});
+
+const query = new URLSearchParams(location.search);
+if (query.get("changes")) { state.changes = true; document.getElementById("changes").checked = true; }
+if (FOCUS || query.has("provinces")) { state.byProv = true; document.getElementById("by-prov").checked = true; document.getElementById("ctry-heading").textContent = `Capacity by ${unitHead().toLowerCase().replace(" / ", " and ")}`; buildCtryPanel(); }
+if (FOCUS) {
+  // the prototype's China defaults: names on, larger bubbles
+  document.getElementById("labels").click();
+  state.scale = 0.75; document.getElementById("scale").value = 0.75;
+  document.getElementById("hint").lastChild.textContent = document.getElementById("hint").lastChild.textContent.replace("click a country", "click a province");
+}
+// a single region (a focus map without policy groups) needs no region controls
+if (REGIONS.length < 2) { regionSel.style.display = "none"; for (const e of [document.getElementById("region-table"), document.getElementById("region-table").previousElementSibling]) e.style.display = "none"; }
+applyGeoMode();
+if (query.get("region")) state.ctrys = new Set(inRegion(query.get("region")));
+setYear(query.get("year") ? +query.get("year") : YEARS[0]);
+setSide(!query.has("hide-side"));
+if (state.ctrys.size) zoomTo(state.ctrys);
+if (query.has("export-check")) {
+  // headless verification hook: report the export size in the summary line
+  exportPng(6, (blob) => {
+    document.getElementById("summary").textContent = `EXPORT_BYTES=${blob ? blob.size : 0}`;
+  });
+}
+</script>
+</body>
+</html>

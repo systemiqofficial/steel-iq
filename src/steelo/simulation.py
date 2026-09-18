@@ -1393,6 +1393,8 @@ class SimulationRunner:
         flush_global_motions(self.config.output_dir / "data")
         # Per-year status snapshots of greenfield (GEO-origin) furnace groups
         data_collector.write_greenfield_status_csv(self.config.output_dir / "data")
+        # One row per technology-switch decision, brownfield and greenfield
+        data_collector.write_switch_decisions_csv(self.config.output_dir / "data")
 
         # Postprocessing
         output_path = extract_and_process_stored_dataCollection(
@@ -1583,6 +1585,30 @@ class SimulationRunner:
                 greenfield_status_csv=self.config.output_dir / "data" / "greenfield_status_timeseries.csv",
                 post_processed_csv=Path(output_path),
                 primary_feedstocks_json=fixtures_dir / "primary_feedstocks.json" if fixtures_dir else None,
+            )
+            capacity_map_inputs: dict[str, Any] = dict(
+                post_processed_csv=Path(output_path),
+                greenfield_status_csv=self.config.output_dir / "data" / "greenfield_status_timeseries.csv",
+                switch_decisions_csv=self.config.output_dir / "data" / "pam_switch_decisions.csv",
+                motions_csv=self.config.output_dir / "data" / "pam_motions.csv",
+                plants={
+                    p.plant_id: {
+                        "lat": p.location.lat,
+                        "lon": p.location.lon,
+                        "greenfield": p.parent_gem_id.lower().startswith("indi_"),
+                    }
+                    for p in bus.uow.plants.list()
+                },
+                plant_names=bus.env.plant_names,
+                input_sources=bus.env.input_sources,
+            )
+            interactive.plot_capacity_world_map(**capacity_map_inputs)
+            # the China map groups provinces by the capacity pool's regions on policy-ON runs only
+            interactive.plot_capacity_china_map(
+                **capacity_map_inputs,
+                capacity_pool_provinces_json=fixtures_dir / "capacity_pool_provinces.json"
+                if fixtures_dir and self.config.capacity_policy.enabled
+                else None,
             )
 
         # Aggregate per-year LCOE/LCOH statistics into stacked CSVs

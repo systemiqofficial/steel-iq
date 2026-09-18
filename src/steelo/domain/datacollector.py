@@ -3,6 +3,7 @@ from .models import Environment, FurnaceGroup, PlantGroup, Plant
 # Global variables moved to Environment/Config
 from steelo.domain.constants import Commodities  # Keep enum as constant
 import csv
+import json
 import pickle
 from collections import defaultdict
 from typing import Any, cast
@@ -10,6 +11,30 @@ from pathlib import Path
 import os
 from .constants import Year
 import logging
+
+# Column order of pam_switch_decisions.csv; also gives the header of a run without switches
+SWITCH_DECISION_COLUMNS = [
+    "decision_year",
+    "switch_year",
+    "construction_start_year",
+    "executed",
+    "origin",
+    "plant_id",
+    "furnace_group_id",
+    "plant_group_id",
+    "geo_key",
+    "product",
+    "old_technology",
+    "new_technology",
+    "old_capacity_t",
+    "new_capacity_t",
+    "reductant",
+    "winning_npv",
+    "cosa",
+    "incumbent_npv",
+    "competing_npvs",
+    "selection_probabilities",
+]
 
 
 class DataCollector:
@@ -41,6 +66,8 @@ class DataCollector:
         self.greenfield_plants: dict[str, dict[str, Any]] = {}
         # One flat snapshot row per (year, greenfield furnace group); see _record_greenfield_status_row
         self.greenfield_status_rows: list[dict[str, Any]] = []
+        # {(furnace_group_id, switch_year): row}, one per technology-switch decision; see _record_switch_decision
+        self.switch_decisions: dict[tuple[str, int], dict[str, Any]] = {}
         self.trace_capex: dict[int, dict[str, dict[str, float]]] = defaultdict(
             lambda: defaultdict(lambda: defaultdict(float))
         )  # {year: {technology: {iso3: total_capex}}}
@@ -397,6 +424,123 @@ class DataCollector:
         logger.info("Wrote %s rows=%d", path, len(self.greenfield_status_rows))
         return path
 
+    def collect_switch_decisions(self, year: Year) -> None:
+        """
+        Record every scheduled technology switch, brownfield and greenfield, for the given year.
+
+        Args:
+            year: Current simulation year.
+
+        Notes:
+            The PAM decides before the collector runs in the same year, so the first
+            year a furnace group carries a new ``future_switch_cmd`` is the decision year.
+        """
+        for plant_group in self.plant_groups:
+            for plant in plant_group.plants:
+                if plant is None:
+                    continue
+                for fg in plant.furnace_groups:
+                    if fg.future_switch_cmd is not None:
+                        self._record_switch_decision(plant_group, plant, fg, year)
+
+    def _record_switch_decision(self, plant_group: PlantGroup, plant: Plant, fg: FurnaceGroup, year: Year) -> None:
+        """
+        Track one technology-switch decision for the end-of-run ``pam_switch_decisions.csv``.
+
+        Args:
+            plant_group: Group the plant currently belongs to.
+            plant: Plant owning the furnace group.
+            fg: Furnace group carrying a scheduled switch.
+            year: Current simulation year.
+
+        Notes:
+            Records are keyed on (furnace_group_id, switch_year) because a group keeps
+            its ``future_switch_cmd`` after the switch executes and can switch again.
+            The decision fields (NPVs, capacities, plant group, old technology) are
+            captured on first sighting; ``construction_start_year`` and ``executed``
+            are refreshed on later sightings for every pending record of the group,
+            not only the current command's: the PAM runs before the collector, so a
+            group re-decided in its switch year already carries the next command.
+            ``selection_probabilities`` stays blank for deterministic agents, which
+            take the max NPV without a draw. A command without ``competing_npvs``
+            leaves the NPV columns blank instead of stopping the run over a
+            diagnostics column.
+        """
+        cmd = fg.future_switch_cmd
+        if cmd is None or fg.future_switch_year is None:
+            raise ValueError(f"Furnace group {fg.furnace_group_id} has no complete scheduled switch to record")
+        key = (fg.furnace_group_id, int(fg.future_switch_year))
+        if key not in self.switch_decisions:
+            npvs = None
+            if cmd.competing_npvs is not None:
+                npvs = {tech: float(npv) for tech, npv in cmd.competing_npvs.items()}
+            probabilities = None
+            if npvs is not None and self.env.config.probabilistic_agents:
+                total_weight = sum(max(npv, 0.0) for npv in npvs.values())
+                probabilities = {tech: max(npv, 0.0) / total_weight for tech, npv in npvs.items()}
+            self.switch_decisions[key] = {
+                "decision_year": int(year),
+                "switch_year": int(fg.future_switch_year),
+                "construction_start_year": None,
+                "executed": False,
+                "origin": "greenfield" if plant.parent_gem_id.lower().startswith("indi_") else "brownfield",
+                "plant_id": plant.plant_id,
+                "furnace_group_id": fg.furnace_group_id,
+                "plant_group_id": plant_group.plant_group_id,
+                "geo_key": plant.location.geo_key,
+                "product": fg.technology.product,
+                "old_technology": cmd.old_technology_name,
+                "new_technology": cmd.technology_name,
+                "old_capacity_t": float(fg.capacity),
+                "new_capacity_t": float(cmd.capacity),
+                "reductant": cmd.chosen_reductant,
+                "winning_npv": float(cmd.npv),
+                "cosa": float(cmd.cosa),
+                "incumbent_npv": None if npvs is None else npvs.get(cmd.old_technology_name),
+                "competing_npvs": None if npvs is None else json.dumps(npvs, allow_nan=False),
+                "selection_probabilities": (
+                    None if probabilities is None else json.dumps(probabilities, allow_nan=False)
+                ),
+            }
+        status = fg.status.lower()
+        pending = [
+            record
+            for (group_id, _), record in self.switch_decisions.items()
+            if group_id == fg.furnace_group_id and not record["executed"]
+        ]
+        for record in pending:
+            if (
+                record["construction_start_year"] is None
+                and status == "construction switching technology"
+                and year < record["switch_year"]
+            ):
+                record["construction_start_year"] = int(year)
+            # a switching status belongs to the current command, so it only holds back that command's record
+            awaiting_switch = record is self.switch_decisions[key] and "switching technology" in status
+            if year >= record["switch_year"] and fg.technology.name == record["new_technology"] and not awaiting_switch:
+                record["executed"] = True
+
+    def write_switch_decisions_csv(self, output_dir: Path) -> Path:
+        """
+        Write the recorded technology-switch decisions to ``pam_switch_decisions.csv``.
+
+        Args:
+            output_dir: Directory to write into (``<output>/data`` on a real run);
+                created if it does not exist.
+
+        Returns:
+            Path to the written CSV. The header is written even when no switch was decided.
+        """
+        logger = logging.getLogger(f"{__name__}.write_switch_decisions_csv")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / "pam_switch_decisions.csv"
+        with path.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=SWITCH_DECISION_COLUMNS)
+            writer.writeheader()
+            writer.writerows(self.switch_decisions.values())
+        logger.info("Wrote %s rows=%d", path, len(self.switch_decisions))
+        return path
+
     def collect_capex_investments(self, year: Year):
         """
         Collect CAPEX investments by technology and location for newly operating plants.
@@ -746,6 +890,7 @@ class DataCollector:
         self.capacity_by_technology_and_PAM_status[self.step] = self.collect_capacity_by_technology_and_PAM_status()
         self.plant_emissions[self.step] = self.collect_emissions_by_plants().copy()
         self.collect_new_plant_data(self.env.year)
+        self.collect_switch_decisions(self.env.year)
         self.collect_capex_investments(self.env.year)
         self.collect_emissions_by_technology(self.env.year)
         self.collect_iron_ore_by_quality(self.env.year)

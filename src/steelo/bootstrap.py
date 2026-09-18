@@ -405,6 +405,12 @@ def bootstrap_simulation(
             config_master_excel_path=config.master_excel_path,
             fixtures_dir=fixtures_dir,
         )
+        # only the capacity map viewers read these, so a run without plots skips the workbook read
+        if config.plots_dir is not None:
+            env.plant_names, env.input_sources = _load_plant_names_and_sources(
+                config_master_excel_path=config.master_excel_path,
+                fixtures_dir=fixtures_dir,
+            )
         env.initiate_hydrogen_efficiency(repository_json.hydrogen_efficiency.list())
         env.initiate_hydrogen_capex_opex(repository_json.hydrogen_capex_opex.list())
         env.initiate_capped_hydrogen_costs_by_year()
@@ -621,3 +627,56 @@ def _load_default_metallic_charge_per_technology(
 
     logger.info("Loaded default metallic charge mapping entries: %d", len(mapping))
     return mapping
+
+
+def _load_plant_names_and_sources(
+    *,
+    config_master_excel_path: Path | str | None,
+    fixtures_dir: Path | None,
+) -> tuple[dict[str, str], list[str]]:
+    """Load plant names and the input data sources from the master's Furnace units sheet.
+
+    Args:
+        config_master_excel_path: The configured master Excel path, if any.
+        fixtures_dir: The prepared fixtures directory, used to discover the workbook
+            when no configured path exists.
+
+    Returns:
+        ``(plant_names, input_sources)``: ``{plant_id: plant_name}`` and the distinct
+        values of the sheet's ``source`` column, most rows first. ``({}, [])`` (with
+        a warning) when the workbook, the sheet or one of the columns is missing.
+
+    Notes:
+        Only the capacity map viewers use these, for their plant labels and source
+        line, so a missing sheet must not stop the run. The workbook is resolved at
+        start-up, so it can differ from the one a cached data preparation was built
+        from; that affects labels only, never the model.
+    """
+    master_excel_path = _resolve_fallback_bom_excel_path(
+        config_master_excel_path=config_master_excel_path,
+        fixtures_dir=fixtures_dir,
+    )
+    if master_excel_path is None:
+        logger.warning("No master workbook to read plant names from. The capacity maps will label plants by id.")
+        return {}, []
+
+    import pandas as pd
+
+    try:
+        units = pd.read_excel(
+            master_excel_path, sheet_name="Furnace units", usecols=["plant_id", "plant_name", "source"]
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not load plant names from the Furnace units sheet of %s: %s. "
+            "The capacity maps will label plants by id.",
+            master_excel_path,
+            exc,
+        )
+        return {}, []
+
+    named = units.dropna(subset=["plant_name"])
+    plant_names = {str(plant_id): str(name) for plant_id, name in zip(named["plant_id"], named["plant_name"])}
+    input_sources = [str(source) for source in units["source"].value_counts().index]
+    logger.info("Loaded %d plant names and input sources %s", len(plant_names), input_sources)
+    return plant_names, input_sources

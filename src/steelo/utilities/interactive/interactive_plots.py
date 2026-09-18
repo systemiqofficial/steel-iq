@@ -27,6 +27,7 @@ from steelo.utilities.plotting import region2colours, tech2colours
 
 from . import (
     capacity_production,
+    capacity_world_map,
     cost_curves,
     decision_flows,
     emissions,
@@ -127,6 +128,14 @@ class InteractivePlotter:
         >>> interactive.plot_metallic_charge_use(post_processed_csv, primary_feedstocks_json, suppliers_json)
         >>> interactive.plot_greenfield_status(greenfield_status_csv)
         >>> interactive.plot_greenfield_map(greenfield_status_csv, post_processed_csv, primary_feedstocks_json)
+        >>> interactive.plot_capacity_world_map(
+        ...     post_processed_csv, greenfield_status_csv, switch_decisions_csv, motions_csv, plants, plant_names,
+        ...     input_sources,
+        ... )
+        >>> interactive.plot_capacity_china_map(
+        ...     post_processed_csv, greenfield_status_csv, switch_decisions_csv, motions_csv, plants, plant_names,
+        ...     input_sources,
+        ... )
     """
 
     SUBDIR = "interactive"
@@ -782,6 +791,165 @@ class InteractivePlotter:
         )
         path = greenfield_map.write_viewer(config, data, self.output_dir / "greenfield_map.html")
         logger.info("Wrote greenfield map viewer %s (%d groups)", path, len(payload["groups"]))
+        return path
+
+    def plot_capacity_world_map(
+        self,
+        post_processed_csv: Path,
+        greenfield_status_csv: Path,
+        switch_decisions_csv: Path,
+        motions_csv: Path,
+        plants: dict[str, dict[str, Any]],
+        plant_names: dict[str, str],
+        input_sources: list[str],
+    ) -> Optional[Path]:
+        """Write the capacity world map viewer (``capacity_world_map.html``).
+
+        The map draws one pie per plant (area = capacity, wedges = technology) with
+        a year slider, filters for technology, status, plant origin and geography, a
+        statistics side panel and a PNG export.
+
+        Args:
+            post_processed_csv: The run's ``post_processed_<timestamp>.csv``, giving the
+                operating furnace groups per year.
+            greenfield_status_csv: The run's ``data/greenfield_status_timeseries.csv``,
+                for new builds under construction. A missing file omits them with a warning.
+            switch_decisions_csv: The run's ``data/pam_switch_decisions.csv``, for groups
+                being rebuilt for a technology switch. A missing or empty file (older
+                runs) omits the rebuilds with a warning.
+            motions_csv: The run's ``data/pam_motions.csv``, whose ``expansion`` rows give
+                the expansions at existing plants while they are built. A missing file
+                omits them with a warning.
+            plants: ``{plant_id: {"lat", "lon", "greenfield"}}`` of the run's live plants.
+            plant_names: ``{plant_id: plant_name}`` from the master's Furnace units sheet.
+            input_sources: The distinct ``source`` values of that sheet, for the source line.
+
+        Returns:
+            The written path, or None when the table is missing, a table lacks a required
+            column, a plant has no coordinates or anything else goes wrong (logged as
+            warnings so the plot stage never fails).
+        """
+        return self._plot_capacity_map(
+            "capacity_world_map",
+            "World iron and steel capacity by technology",
+            None,
+            post_processed_csv,
+            greenfield_status_csv,
+            switch_decisions_csv,
+            motions_csv,
+            plants,
+            plant_names,
+            input_sources,
+        )
+
+    def plot_capacity_china_map(
+        self,
+        post_processed_csv: Path,
+        greenfield_status_csv: Path,
+        switch_decisions_csv: Path,
+        motions_csv: Path,
+        plants: dict[str, dict[str, Any]],
+        plant_names: dict[str, str],
+        input_sources: list[str],
+        capacity_pool_provinces_json: Optional[Path] = None,
+    ) -> Optional[Path]:
+        """Write the capacity China map viewer (``capacity_china_map.html``).
+
+        The capacity world map focused on China: only Chinese plants, provinces as
+        the geography unit and an equirectangular view fitted to the country.
+
+        Args:
+            post_processed_csv: As for :meth:`plot_capacity_world_map`.
+            greenfield_status_csv: As for :meth:`plot_capacity_world_map`.
+            switch_decisions_csv: As for :meth:`plot_capacity_world_map`.
+            motions_csv: As for :meth:`plot_capacity_world_map`.
+            plants: As for :meth:`plot_capacity_world_map`.
+            plant_names: As for :meth:`plot_capacity_world_map`.
+            input_sources: As for :meth:`plot_capacity_world_map`.
+            capacity_pool_provinces_json: The prepared ``fixtures/capacity_pool_provinces.json``,
+                passed on policy-ON runs: its province groups (Jing-Jin-Ji, …) become the
+                map's regions. None (or a missing file) leaves the map without groups.
+
+        Returns:
+            The written path, or None as for :meth:`plot_capacity_world_map` and when the
+            run has no Chinese plants (logged as warnings so the plot stage never fails).
+        """
+        from steelo.adapters.repositories.json_repository import CapacityPoolProvinceJsonRepository
+
+        region_rows = CapacityPoolProvinceJsonRepository(capacity_pool_provinces_json).list()
+        return self._plot_capacity_map(
+            "capacity_china_map",
+            "China iron and steel capacity by technology",
+            capacity_world_map.focus_config("CHN", region_rows),
+            post_processed_csv,
+            greenfield_status_csv,
+            switch_decisions_csv,
+            motions_csv,
+            plants,
+            plant_names,
+            input_sources,
+        )
+
+    def _plot_capacity_map(
+        self,
+        file_stem: str,
+        chart_title: str,
+        focus: Optional[dict[str, Any]],
+        post_processed_csv: Path,
+        greenfield_status_csv: Path,
+        switch_decisions_csv: Path,
+        motions_csv: Path,
+        plants: dict[str, dict[str, Any]],
+        plant_names: dict[str, str],
+        input_sources: list[str],
+    ) -> Optional[Path]:
+        """Write one capacity map viewer; ``focus`` (:func:`.capacity_world_map.focus_config`) narrows it to a country.
+
+        Notes:
+            The maps run last in a multi-hour run, so every failure here — a truncated CSV,
+            an unexpected value — is logged and skips the viewer instead of propagating.
+        """
+        viewer = file_stem.replace("_", " ")
+        table = self._read_post_processed(post_processed_csv, viewer)
+        if table is None:
+            return None
+        try:
+            optional: dict[str, Optional[pd.DataFrame]] = {}
+            for name, csv_path, layer in (
+                ("greenfield", greenfield_status_csv, "new builds under construction"),
+                ("decisions", switch_decisions_csv, "rebuilds"),
+                ("motions", motions_csv, "expansions under construction"),
+            ):
+                frame = pd.read_csv(csv_path) if csv_path.is_file() else None
+                if frame is None or frame.empty:
+                    logger.warning("No rows at %s — %s omitted from the %s viewer", csv_path, layer, viewer)
+                optional[name] = frame
+            payload = capacity_world_map.pack_sites(
+                table,
+                optional["greenfield"],
+                optional["decisions"],
+                optional["motions"],
+                plants,
+                plant_names,
+                focus["iso3"] if focus else None,
+            )
+            data = {
+                self.run_title: {
+                    "title": self.run_title,
+                    "provenance": f"Operating furnace groups from {post_processed_csv.name}; new builds under "
+                    f"construction from data/{greenfield_status_csv.name}; rebuilds from "
+                    f"data/{switch_decisions_csv.name}; expansions from data/{motions_csv.name}.",
+                    "source": capacity_world_map.source_line(input_sources),
+                    **payload,
+                },
+            }
+            config = self._config(chart_title, focus=focus, fileStem=file_stem)
+            path = capacity_world_map.write_viewer(config, data, self.output_dir / f"{file_stem}.html")
+        except Exception as exc:
+            # a ValueError is an expected input problem; anything else gets its traceback
+            logger.warning("%s — skipping the %s viewer", exc, viewer, exc_info=not isinstance(exc, ValueError))
+            return None
+        logger.info("Wrote %s viewer %s (%d plants)", viewer, path, len(payload["sites"]))
         return path
 
     def _config(self, chart_title: str, **chart_config: Any) -> dict[str, Any]:
