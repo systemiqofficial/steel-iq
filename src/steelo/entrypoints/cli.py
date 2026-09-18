@@ -25,10 +25,14 @@ from ..bootstrap import bootstrap_simulation
 from ..utils.symlink_manager import update_data_symlink, update_output_symlink, setup_legacy_symlinks
 
 
-def run_full_simulation() -> str:
+def run_full_simulation() -> None:
     """
     Run a full simulation from start to end year with the
     configuration provided via command line arguments.
+
+    Notes:
+        The console script passes the return value to sys.exit(), so a successful run
+        returns None (exit code 0); failures call sys.exit() with a non-zero code.
     """
     console = Console()
 
@@ -242,12 +246,12 @@ def run_full_simulation() -> str:
             console.print("[blue]Cache Statistics:[/blue]")
             for key, value in stats.items():
                 console.print(f"  {key}: {value}")
-            return "Cache stats displayed"
+            return
 
         if args.clear_cache:
             removed = cache_manager.clear_cache()
             console.print(f"[green]Cleared {removed} cached preparations[/green]")
-            return "Cache cleared"
+            return
 
         # Prepare output directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -573,8 +577,6 @@ def run_full_simulation() -> str:
         console.print("[green]Simulation completed![/green]")
         console.print(f"[green]Results in:[/green] {output_dir}")
         console.print(f"[green]Latest symlink:[/green] {latest_link}")
-
-        return f"Simulation completed! Results in: {output_dir}"
 
     except argparse.ArgumentError as e:
         console.print(f"[red]Argument parsing error: {e}[/red]")
