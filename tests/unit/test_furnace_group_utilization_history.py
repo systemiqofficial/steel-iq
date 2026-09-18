@@ -46,3 +46,14 @@ def test_record_utilization_overwrites_replayed_year():
     fg.record_utilization(2026)
 
     assert fg.historical_utilization == {2026: 0.9}
+
+
+def test_record_utilization_keeps_the_capacity_the_allocation_used():
+    """The capacity seen at recording time survives a later shrink of the group within the same year."""
+    fg = make_furnace_group()
+    assert fg.capacity_at_allocation is None
+
+    fg.record_utilization(2026)
+    fg.capacity = 0.5
+
+    assert fg.capacity_at_allocation == 1.0

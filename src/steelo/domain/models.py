@@ -1178,6 +1178,7 @@ class FurnaceGroup:
         self.historic_balance = historic_balance
         self.historical_npv_business_opportunities = historical_npv_business_opportunities
         self.historical_utilization = historical_utilization
+        self.capacity_at_allocation: Volumes | None = None
         self.railway_cost = railway_cost
         self.legacy_debt_schedule = legacy_debt_schedule or []  # Track debt from previous tech when switching
         self.has_hot_metal_access = False
@@ -1345,11 +1346,15 @@ class FurnaceGroup:
 
         Notes:
             Re-recording the same year overwrites its entry, so replaying a year
-            is idempotent.
+            is idempotent. The capacity the rate refers to is kept in
+            ``capacity_at_allocation``: a renovation can shrink the group later in
+            the same year, and reporting needs the capacity its production was
+            allocated on.
         """
         if self.historical_utilization is None:
             self.historical_utilization = {}
         self.historical_utilization[year] = self.utilization_rate
+        self.capacity_at_allocation = self.capacity
 
     def report_bill_of_materials(self):
         return {
