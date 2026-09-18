@@ -11,12 +11,11 @@ Per plant and year the map shows the furnace groups the simulation ran (the
 post-processed table, which has a row exactly in the years a group's status is
 active), new builds under construction (``data/greenfield_status_timeseries.csv``)
 groups being rebuilt for a technology switch (``data/pam_switch_decisions.csv``),
-drawn in the new technology, and the existing fleet's groups that are not operating
-yet (``data/pipeline_status_timeseries.csv``): the units the input data lists as
-announced or under construction, which the simulation treats as under construction
-from its first year, and the expansions the PAM builds. Runs without that table
-fall back to the expansions' decision years in ``data/pam_motions.csv`` and do not
-show the input data's units before they operate. Coordinates and origin come from the run's
+drawn in the new technology, and expansions at existing plants between their
+decision and their first operating year (``data/pam_motions.csv``). Units the
+master already lists as announced or under construction are NOT shown while they
+are built: their motion is dated the year they start operating, so no output
+records their construction years, and they appear as opened in that year. Coordinates and origin come from the run's
 live plants; plant names and the source line from the master's Furnace units sheet.
 Timelines are run-length encoded per plant.
 
@@ -65,17 +64,6 @@ MOTION_COLUMNS = [
     "product",
     "new_technology",
     "new_capacity_t",
-]
-PIPELINE_COLUMNS = [
-    "year",
-    "plant_id",
-    "furnace_group_id",
-    "geo_key",
-    "product",
-    "technology",
-    "status",
-    "capacity",
-    "created_by_pam",
 ]
 CONSTRUCTION_COLUMNS = [*GREENFIELD_COLUMNS[:-1], "note"]
 STATUSES = ["operating", "construction"]
@@ -130,21 +118,6 @@ def _rebuild_rows(switch_decisions: pd.DataFrame, last_year: int) -> pd.DataFram
     return pd.DataFrame(rows, columns=CONSTRUCTION_COLUMNS)
 
 
-def _pipeline_rows(pipeline_status: pd.DataFrame) -> pd.DataFrame:
-    """Construction rows of the existing fleet's groups that are not operating yet.
-
-    Args:
-        pipeline_status: The pipeline status timeseries.
-
-    Returns:
-        Its ``construction`` rows, with ``note`` set to ``expansion`` for the groups the
-        PAM built and ``input data`` for the units the input data brought along.
-    """
-    rows = pipeline_status.loc[pipeline_status["status"] == "construction", PIPELINE_COLUMNS]
-    notes = rows["created_by_pam"].astype(bool).map({True: "expansion", False: "input data"})
-    return rows.assign(note=notes)[CONSTRUCTION_COLUMNS]
-
-
 def _expansion_rows(motions: pd.DataFrame, operating: pd.DataFrame, last_year: int) -> pd.DataFrame:
     """Construction rows of the expansions at existing plants.
 
@@ -184,7 +157,6 @@ def pack_sites(
     greenfield_status: Optional[pd.DataFrame],
     switch_decisions: Optional[pd.DataFrame],
     motions: Optional[pd.DataFrame],
-    pipeline_status: Optional[pd.DataFrame],
     plants: dict[str, dict[str, Any]],
     plant_names: dict[str, str],
     iso3: Optional[str] = None,
@@ -201,11 +173,6 @@ def pack_sites(
             None omits the rebuilds and the switch lines.
         motions: The PAM motions (``data/pam_motions.csv``), whose ``expansion`` rows
             are the expansions at existing plants; None omits them while they are built.
-            Only a fallback for runs without ``pipeline_status``.
-        pipeline_status: The pipeline status timeseries
-            (``data/pipeline_status_timeseries.csv``), whose ``construction`` rows are the
-            existing fleet's groups that are not operating yet; None (older runs) omits
-            the input data's units before they operate.
         plants: ``{plant_id: {"lat", "lon", "greenfield"}}`` of the run's plants.
         plant_names: ``{plant_id: plant_name}``; plants without an entry are named by
             their id (``New plant <id>`` for greenfield plants).
@@ -219,7 +186,7 @@ def pack_sites(
         ``segs`` and ``switches``. ``segs`` are ``[first_year, last_year, units]``
         runs of identical years, a unit being ``[technology, status, capacity in
         ttpa, construction note or None, furnace_group_id]``, the note being ``rebuild from
-        <old technology>``, ``expansion`` or ``input data``. ``switches``
+        <old technology>`` or ``expansion``. ``switches``
         are ``[decision_year, switch_year, old_technology, new_technology]``.
 
     Raises:
@@ -249,9 +216,6 @@ def pack_sites(
     if switch_decisions is not None:
         _require(switch_decisions, DECISION_COLUMNS, "switch decisions table")
         layers.append(_rebuild_rows(switch_decisions, years[-1]).assign(status="construction"))
-    if pipeline_status is not None:
-        _require(pipeline_status, PIPELINE_COLUMNS, "pipeline status timeseries")
-        layers.append(_pipeline_rows(pipeline_status).assign(status="construction"))
     if motions is not None:
         _require(motions, MOTION_COLUMNS, "motions table")
         layers.append(_expansion_rows(motions, operating, years[-1]).assign(status="construction"))

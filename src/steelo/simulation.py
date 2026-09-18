@@ -20,7 +20,7 @@ from steelo.simulation_types import TechSettingsMap, get_default_technology_sett
 from steelo.utilities.memory_profiling import MemoryTracker
 
 from .capacity_policy.config import CapacityPolicyConfig
-from .domain import Year, Plant, PlantGroup
+from .domain import Year, PlantGroup
 from .domain.constants import CONSTRUCTION_TIME_DEFAULT, RANDOM_SEED_DEFAULT
 from .service_layer.message_bus import MessageBus
 from .economic_models import EconomicModel, PlantAgentsModel, AllocationModel, GeospatialModel
@@ -969,34 +969,6 @@ class Progress:
     current_year: Year | None = None
 
 
-def _mark_announced_input_units_as_construction(plants: list[Plant]) -> int:
-    """Turn the input data's announced furnace groups into groups under construction.
-
-    Args:
-        plants: The run's plants at the start of the simulation.
-
-    Returns:
-        The number of furnace groups renamed.
-
-    Notes:
-        An announced unit of the input data starts operating in its start year with
-        certainty, unlike an announced greenfield opportunity, which can still be
-        discarded. As a group under construction it is booked as a firm CO2 storage
-        commitment and reads as committed capacity in every output. The status is
-        assigned directly: the status-change command would reset the start year and
-        count the capacity against the year's new-build limit.
-    """
-    renamed = 0
-    for plant in plants:
-        if plant.parent_gem_id.lower().startswith("indi_"):
-            continue
-        for fg in plant.furnace_groups:
-            if fg.status.lower() == "announced" and not fg.created_by_PAM:
-                fg.status = "construction"
-                renamed += 1
-    return renamed
-
-
 def _seed_opening_balances(
     plant_groups: list,
     env: Any,
@@ -1161,9 +1133,6 @@ class SimulationRunner:
             logger.info("operation=simulation_start")
         _log_memory_usage("memory_snapshot", stage="simulation_start")
         memory_tracker.checkpoint("simulation_start")
-
-        renamed = _mark_announced_input_units_as_construction(bus.uow.plants.list())
-        logger.info("Marked %d announced furnace groups of the input data as under construction", renamed)
 
         plant_groups = {}
         for plant in bus.uow.plants.list():
@@ -1426,8 +1395,6 @@ class SimulationRunner:
         data_collector.write_greenfield_status_csv(self.config.output_dir / "data")
         # One row per technology-switch decision, brownfield and greenfield
         data_collector.write_switch_decisions_csv(self.config.output_dir / "data")
-        # One row per year and not-yet-operating furnace group of the existing fleet
-        data_collector.write_pipeline_status_csv(self.config.output_dir / "data")
 
         # Postprocessing
         output_path = extract_and_process_stored_dataCollection(
@@ -1624,7 +1591,6 @@ class SimulationRunner:
                 greenfield_status_csv=self.config.output_dir / "data" / "greenfield_status_timeseries.csv",
                 switch_decisions_csv=self.config.output_dir / "data" / "pam_switch_decisions.csv",
                 motions_csv=self.config.output_dir / "data" / "pam_motions.csv",
-                pipeline_status_csv=self.config.output_dir / "data" / "pipeline_status_timeseries.csv",
                 plants={
                     p.plant_id: {
                         "lat": p.location.lat,

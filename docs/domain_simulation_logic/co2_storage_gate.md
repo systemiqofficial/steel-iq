@@ -11,7 +11,7 @@ Every country has an annual CO2 storage budget, loaded per-country per-year from
 The Environment owns two per-country counters:
 
 - **Firm** — tCO2/yr locked in by operating plants, under-construction plants, and plants committed via an in-flight tech switch.
-- **Reserved** — tCO2/yr pledged by announced plants that haven't started building, scaled by a discount factor (default 0.9) reflecting that not all announcements become construction starts. Only greenfield opportunities can be announced during a run: the input data's announced units are turned into under-construction units at the start of the simulation, because they start operating with certainty, and so count as firm.
+- **Reserved** — tCO2/yr pledged by announced plants that haven't started building, scaled by a discount factor (default 0.9) reflecting that not all announcements become construction starts.
 
 Counters are rebuilt from scratch at the start of each year by walking every FurnaceGroup, so cancelled or closed plants automatically free their slot. Intra-year handler hooks keep counters up-to-date as plants transition between statuses during the year, so gates fired later in the year see earlier commitments.
 
