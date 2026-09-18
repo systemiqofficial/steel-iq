@@ -113,9 +113,9 @@ def pack_groups(status_timeseries: pd.DataFrame, charges: Optional[pd.DataFrame]
         ``statuses`` (lifecycle order), ``techs`` (alphabetical), ``reductants``
         and ``charges`` (house order); and ``groups`` — one record per furnace
         group with ``id``, ``g`` geo key, ``la``/``lo`` coordinates (4 decimals),
-        ``p`` product, ``cap`` capacity (Mt), ``y1`` last snapshot year, the
-        run-length encoded histories ``s``/``t``/``r``/``pr`` (``[year, value]``
-        segments: status/technology/reductant table indices and production in Mt,
+        ``p`` product, ``y1`` last snapshot year, the run-length encoded
+        histories ``s``/``t``/``r``/``cap``/``pr`` (``[year, value]`` segments:
+        status/technology/reductant table indices, capacity and production in Mt,
         each starting a run that lasts until the next segment) and, where
         allocations exist, ``c`` — ``{year: [[charge index, Mt], ...]}``.
 
@@ -158,11 +158,11 @@ def pack_groups(status_timeseries: pd.DataFrame, charges: Optional[pd.DataFrame]
             "la": round(float(first["lat"]), 4),
             "lo": round(float(first["lon"]), 4),
             "p": first["product"],
-            "cap": round(float(first["capacity"]) / 1e6, 4),
             "y1": years[-1],
             "s": rle(zip(years, (status_idx[s] for s in rows["status"]))),
             "t": rle(zip(years, (tech_idx[t] for t in rows["technology"]))),
             "r": rle(zip(years, (reductant_idx[r] for r in rows["reductant"]))),
+            "cap": rle(zip(years, (round(float(c) / 1e6, 4) for c in rows["capacity"]))),
             "pr": rle(zip(years, (round(float(p) / 1e6, 4) for p in rows["production"]))),
         }
         if group_id in charges_by_group:

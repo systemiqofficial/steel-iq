@@ -67,9 +67,12 @@ def sample_post_processed() -> pd.DataFrame:
 
 def sample_motions() -> pd.DataFrame:
     """One pipeline arrival, as the motion recorder writes it."""
-    columns = ["year", "kind", "furnace_group_id", "geo_key", "old_technology", "new_technology"]
+    columns = ["year", "kind", "source", "furnace_group_id", "geo_key", "old_technology", "new_technology"]
     columns += ["old_capacity_t", "new_capacity_t"]
-    return pd.DataFrame([[2025, "pipeline", "P1_0", "BGD", None, "DRI", None, 2_200_000.0]], columns=columns)
+    return pd.DataFrame(
+        [[2025, "pipeline", "input_data", "P1_0", "BGD", None, "DRI", None, 2_200_000.0]],
+        columns=columns,
+    )
 
 
 def test_trade_bloc_members_from_boolean_attributes() -> None:
@@ -322,7 +325,7 @@ def test_plot_supply_chain_writes_self_contained_viewer(tmp_path) -> None:
 
 
 def test_plot_embedded_emissions_map_writes_self_contained_viewer(tmp_path) -> None:
-    """The map embeds the emitter-by-consumer matrix, polygons and provenance; a missing input → no viewer."""
+    """The map embeds the matrices, polygons and provenance but no ore-mine coordinates; a missing input → no viewer."""
     tm_dir = tmp_path / "TM"
     tm_dir.mkdir()
     header = "commodity,source_type,source_id,source_location,capacity_at_source,source_tech,destination_type,"
@@ -333,7 +336,9 @@ def test_plot_embedded_emissions_map_writes_self_contained_viewer(tmp_path) -> N
         "Location(lat=1.0, lon=2.0, country='{0}', region='R', iso3='{0}', distance_to_other_iso3=None, geo_unit=None)"
     )
     row = f'steel,Plant-FurnaceGroup,P1_0,"{loc.format("CHN")}",1e6,BOF,DemandCenter,India,"{loc.format("IND")}",2e6,0,2e6,N/A'
-    (tm_dir / "steel_trade_allocations_2025.csv").write_text(f"{header}\n{row}\n")
+    mine = loc.format("AUS").replace("country='AUS'", "country='Pilbara'")
+    ore = f'io_high,Supplier,sup_a,"{mine}",N/A,N/A,Plant-FurnaceGroup,P1_0,"{loc.format("CHN")}",3e6,0,N/A,3e6'
+    (tm_dir / "steel_trade_allocations_2025.csv").write_text(f"{header}\n{row}\n{ore}\n")
     post_processed_csv = tmp_path / "post_processed.csv"
     pd.DataFrame(
         {
@@ -353,9 +358,15 @@ def test_plot_embedded_emissions_map_writes_self_contained_viewer(tmp_path) -> N
         assert placeholder not in html
     assert '"chartTitle": "Emissions embedded in steel trade"' in html
     assert '"countries":["CHN","IND"]' in html
-    assert '"m":{"2025":{"direct":{"s":[0],"d":[1],"t":[3000]},"indirect":{"s":[0],"d":[1],"t":[1000]}}}' in html
+    assert '"boundaries":["rs-inspired"],"boundary":"rs-inspired"' in html
+    assert (
+        '"m":{"2025":{"rs-inspired|direct_ghg":{"s":[0],"d":[1],"t":[3000]},'
+        '"rs-inspired|indirect_ghg":{"s":[0],"d":[1],"t":[1000]}}}'
+    ) in html
+    assert '"coords":{"CHN":[1.0,2.0],"IND":[1.0,2.0]}' in html
+    assert "Pilbara" not in html
     assert '"steel":{"2025":{"s":[0],"d":[1],"t":[2000]}}' in html
-    assert "rs-inspired boundary" in html
+    assert "the run's chosen boundary is rs-inspired" in html
     assert plotter.plot_embedded_emissions_map(post_processed_csv, tmp_path / "absent", "rs-inspired") is None
     assert plotter.plot_embedded_emissions_map(tmp_path / "absent.csv", tm_dir, "rs-inspired") is None
     assert plotter.plot_embedded_emissions_map(post_processed_csv, tm_dir, "no-such-boundary") is None
@@ -425,12 +436,12 @@ def test_tiam_regions_members_by_label() -> None:
     }
 
 
-def test_read_usage_groups_use_and_steel_demand_by_country(tmp_path) -> None:
-    """Steel counts at the demand centre (demand once per centre), scrap/ore at the source, bio at the consumer."""
+def test_read_usage_groups_use_by_country(tmp_path) -> None:
+    """Steel counts at the demand centre, scrap/ore at the source, bio at the consumer."""
     write_supply_demand_allocations(tmp_path / "TM")
     resolve = supply_demand.geo_resolver(supply_demand_country_mappings())
 
-    used, steel_demand = supply_demand.read_usage({2030: tmp_path / "TM" / "steel_trade_allocations_2030.csv"}, resolve)
+    used = supply_demand.read_usage({2030: tmp_path / "TM" / "steel_trade_allocations_2030.csv"}, resolve)
 
     used_rows = {(r.year, r.group, r.geo, r.grade): r.volume_mt for r in used.itertuples()}
     assert used_rows == {
@@ -439,7 +450,6 @@ def test_read_usage_groups_use_and_steel_demand_by_country(tmp_path) -> None:
         (2030, "ore", "BIH", "io_mid"): 0.2,  # ore keeps its grade for the viewer's grade ticks
         (2030, "bio", "CHN", ""): 0.1,
     }
-    assert [(r.year, r.geo, r.volume_mt) for r in steel_demand.itertuples()] == [(2030, "CHN", 2.0)]
 
 
 def test_availability_rows_from_suppliers_and_constraints() -> None:
@@ -479,6 +489,14 @@ def test_plot_supply_demand_writes_self_contained_viewer(tmp_path) -> None:
     write_supply_demand_allocations(tmp_path / "TM")
     fixtures = tmp_path / "fixtures"
     fixtures.mkdir()
+    china = Location(lat=1.0, lon=2.0, country="China", region="R", iso3="CHN")
+    uruguay = Location(lat=1.0, lon=2.0, country="Uruguay", region="R", iso3="URY")
+    DemandCenterJsonRepository(fixtures / "demand_centers.json").add_list(
+        [
+            DemandCenter("China_2", china, {Year(2030): Volumes(2_000_000), Year(2100): Volumes(9e9)}),
+            DemandCenter("Uruguay", uruguay, {Year(2030): Volumes(600_000)}),
+        ]
+    )
     scrap_location = Location(lat=1.0, lon=2.0, country="Germany", region="R", iso3="DEU")
     SupplierJsonRepository(fixtures / "suppliers.json").add_list(
         [Supplier("Germany_scrap", scrap_location, "scrap", {Year(2030): Volumes(1_000_000)}, {})]
@@ -492,6 +510,7 @@ def test_plot_supply_demand_writes_self_contained_viewer(tmp_path) -> None:
         tmp_path / "TM",
         suppliers_json=fixtures / "suppliers.json",
         biomass_availability_json=fixtures / "biomass_availability.json",
+        demand_centers_json=fixtures / "demand_centers.json",
     )
 
     assert written == tmp_path / "plots" / "interactive" / "supply_demand.html"
@@ -501,13 +520,15 @@ def test_plot_supply_demand_writes_self_contained_viewer(tmp_path) -> None:
     assert "const Interactive" in html
     assert '{"y": 2030, "c": "scrap", "g": "DEU", "v": 0.3}' in html
     assert '{"y": 2030, "c": "steel", "g": "CHN", "v": 2.0}' in html  # the demand centre's demand
+    assert '{"y": 2030, "c": "steel", "g": "URY", "v": 0.6}' in html  # a centre no plant delivered to
     assert '{"y": 2030, "c": "bio", "g": "region:CHI", "v": 3.0}' in html
     assert '"regionBudgets": {"region:CHI": ["CHN"]}' in html
 
-    # Missing fixtures still produce the viewer, with usage and steel demand only.
+    # Missing fixtures still produce the viewer, with usage only.
     assert plotter.plot_supply_demand(tmp_path / "TM") == written
     html = written.read_text()
     assert '{"y": 2030, "c": "ore", "g": "BIH", "v": 0.2, "s": "io_mid"}' in html
+    assert '{"y": 2030, "c": "steel", "g": "CHN", "v": 2.0}' not in html
     assert '"c": "bio", "g": "region:CHI"' not in html
     assert plotter.plot_supply_demand(tmp_path / "absent") is None
 
@@ -586,8 +607,9 @@ def test_plot_metallic_charge_use_writes_self_contained_viewer(tmp_path) -> None
     for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
         assert placeholder not in html
     assert "const Interactive" in html
-    assert '{"y": 2025, "g": "CHN:CN-HE", "t": "BF", "p": "iron", "c": "io_low", "n": 1, "v": 3.0}' in html
-    assert '{"y": 2025, "g": "DEU", "t": "EAF", "p": "steel", "c": "scrap", "n": 1, "v": 1.1}' in html
+    assert '{"y": 2025, "g": "CHN:CN-HE", "t": "BF", "p": "iron", "c": "io_low", "v": 3.0}' in html
+    assert '{"y": 2025, "g": "DEU", "t": "EAF", "p": "steel", "c": "scrap", "v": 1.1}' in html
+    assert '{"y": 2025, "g": "DEU", "t": "EAF", "p": "steel", "cs": ["scrap"], "n": 1}' in html
     assert '"supply": [{"y": 2025, "g": "DEU", "v": 2.0}]' in html
     assert '"chargeColours"' in html and '"chargeOrder"' in html
 

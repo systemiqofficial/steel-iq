@@ -507,17 +507,19 @@ class InteractivePlotter:
     def plot_embedded_emissions_map(self, post_processed_csv: Path, tm_dir: Path, boundary: str) -> Optional[Path]:
         """Write the embedded emissions map (``embedded_emissions_map.html``).
 
-        A choropleth of the emissions embedded in steel trade: every furnace group's direct
-        and indirect emissions are carried along the realised allocations to the country
-        that consumed the steel (:mod:`embedded_emissions_map`), giving production-based
-        and consumption-based emissions per country and year, the emissions embedded in
-        imports and exports, and the partners behind them.
+        A choropleth of the emissions embedded in steel trade: every furnace group's
+        emissions are carried along the realised allocations to the country that consumed
+        the steel (:mod:`embedded_emissions_map`), giving production-based and
+        consumption-based emissions per country and year, the emissions embedded in
+        imports and exports, and the partners behind them — for every emissions boundary
+        of the table and the direct, direct incl. biogenic and indirect scopes.
 
         Args:
             post_processed_csv: The run's post-processed table (furnace-group emissions).
             tm_dir: The run's ``TM`` output directory holding ``steel_trade_allocations_<year>.csv``.
             boundary: The run's chosen emissions boundary
-                (``chosen_emissions_boundary_for_carbon_costs``), e.g. ``rs-inspired``.
+                (``chosen_emissions_boundary_for_carbon_costs``), e.g. ``rs-inspired`` — the
+                one the viewer opens on.
 
         Returns:
             The written path, or None when an input is missing or cannot be read (logged
@@ -533,12 +535,18 @@ class InteractivePlotter:
             return None
         try:
             payload = embedded_emissions_map.pack_years(post_processed, files, boundary)
-            coords = trade_matrix.read_coords(files)
+            # Dots for the countries without a polygon; read_coords also returns the ore mines' labels.
+            coords = {
+                key: position
+                for key, position in trade_matrix.read_coords(files).items()
+                if key in payload["countries"]
+            }
         except ValueError as exc:
             logger.warning("%s — skipping the %s", exc, viewer)
             return None
         provenance = (
-            f"Furnace-group direct and indirect emissions ({boundary} boundary, the run's chosen boundary) from "
+            f"Furnace-group emissions of the selected boundary and scope (the run's chosen boundary is {boundary}; "
+            'direct excludes biogenic CO2 unless "incl. biogenic" is ticked) from '
             f"{post_processed_csv.name}, carried along the trade module's realised allocations "
             "(TM/steel_trade_allocations_<year>.csv) pro rata to volume: iron furnace group → steel furnace "
             "group → demand centre. Ore and scrap carry no emissions inside the model."
@@ -555,17 +563,21 @@ class InteractivePlotter:
         tm_dir: Path,
         suppliers_json: Optional[Path] = None,
         biomass_availability_json: Optional[Path] = None,
+        demand_centers_json: Optional[Path] = None,
     ) -> Optional[Path]:
         """Write the supply and demand viewer (``supply_demand.html``).
 
         Args:
             tm_dir: The run's ``TM`` output directory holding ``steel_trade_allocations_<year>.csv``,
-                which gives every commodity's use (and the steel demand).
+                which gives every commodity's use.
             suppliers_json: The prepared ``fixtures/suppliers.json``, for scrap and ore
                 availability. None (or a missing file) omits those availabilities with a warning.
             biomass_availability_json: The prepared ``fixtures/biomass_availability.json``,
                 for the CO2 storage limits and biomass budgets. None (or a missing file)
                 omits them with a warning.
+            demand_centers_json: The prepared ``fixtures/demand_centers.json``, for the steel
+                demand — the demand the trade LP is asked to serve, including centres it
+                leaves fully unserved. None (or a missing file) omits it with a warning.
 
         Returns:
             The written path, or None when no allocation file exists or one cannot be read
@@ -573,6 +585,7 @@ class InteractivePlotter:
         """
         from steelo.adapters.repositories.json_repository import (
             BiomassAvailabilityJsonRepository,
+            DemandCenterJsonRepository,
             SupplierJsonRepository,
         )
 
@@ -582,7 +595,7 @@ class InteractivePlotter:
             return None
         resolve = supply_demand.geo_resolver(self.country_mappings)
         try:
-            used, steel_demand = supply_demand.read_usage(files, resolve)
+            used = supply_demand.read_usage(files, resolve)
         except ValueError as exc:
             logger.warning("%s — skipping the supply-demand viewer", exc)
             return None
@@ -603,14 +616,19 @@ class InteractivePlotter:
         avail, region_budgets = supply_demand.availability_rows(
             suppliers, biomass_items, self.country_mappings, set(files)
         )
-        avail = pd.concat([avail, steel_demand.assign(group="steel", grade="")], ignore_index=True)
+        if demand_centers_json is not None and demand_centers_json.is_file():
+            centres = DemandCenterJsonRepository(demand_centers_json).list()
+            steel_demand = capacity_production.steel_demand_rows(centres, set(files))
+            avail = pd.concat([avail, steel_demand.assign(group="steel", grade="")], ignore_index=True)
+        else:
+            logger.warning("No demand centres fixture at %s — steel demand omitted", demand_centers_json)
 
         data = {
             self.run_title: {
                 "title": self.run_title,
-                "provenance": "Use and steel demand from TM/steel_trade_allocations_<year>.csv; scrap and ore "
-                "availability from fixtures/suppliers.json; CO2 storage and biomass limits from "
-                "fixtures/biomass_availability.json.",
+                "provenance": "Use from TM/steel_trade_allocations_<year>.csv; steel demand from "
+                "fixtures/demand_centers.json; scrap and ore availability from fixtures/suppliers.json; "
+                "CO2 storage and biomass limits from fixtures/biomass_availability.json.",
                 "years": list(files),
                 "rows": supply_demand.pack_rows(used),
                 "avail": supply_demand.pack_rows(avail),
@@ -724,10 +742,11 @@ class InteractivePlotter:
             return None
         feedstocks = PrimaryFeedstockJsonRepository(primary_feedstocks_json).list()
         try:
-            aggregated = metallic_charge_use.aggregate_charge_use(table, feedstocks)
+            charges = metallic_charge_use.charge_rows(table, feedstocks)
         except ValueError as exc:
             logger.warning("%s — skipping the metallic-charge viewer", exc)
             return None
+        aggregated = metallic_charge_use.aggregate_charge_use(charges)
 
         suppliers = []
         if suppliers_json is not None and suppliers_json.is_file():
@@ -744,6 +763,7 @@ class InteractivePlotter:
                 "identified by the Bill of Materials (fixtures/primary_feedstocks.json); local scrap "
                 "supply from fixtures/suppliers.json.",
                 "rows": metallic_charge_use.pack_rows(aggregated),
+                "groups": metallic_charge_use.pack_charge_sets(metallic_charge_use.count_charge_sets(charges)),
                 "supply": metallic_charge_use.pack_supply(supply),
             },
         }

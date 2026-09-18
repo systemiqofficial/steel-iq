@@ -485,7 +485,8 @@ def finalise_iteration(
 
     Note:
         - Technology switches scheduled via 'operating switching technology' status are executed when
-          the current year matches the future_switch_year.
+          the current year matches the future_switch_year, and only while the furnace group still holds a
+          switching status: the end year is finalised twice (time_step_increment=0) and must not replay them.
         - Furnace groups in 'operating switching technology' status transition to 'construction switching technology'
           at end-of-life, allowing them to continue to the new technology construction phase.
     """
@@ -525,8 +526,13 @@ def finalise_iteration(
                 # Step 3a: Update current year in lifetime tracking
                 fg.lifetime.current = env.year
 
-                # Step 3b: Execute scheduled technology switches if the future_switch_year matches current year
-                if fg.future_switch_year == env.year and fg.future_switch_cmd is not None:
+                # Step 3b: Execute scheduled technology switches if the future_switch_year matches current year.
+                # The command outlives its execution (the collector reads it), so the status gates a replay
+                if (
+                    fg.future_switch_year == env.year
+                    and fg.future_switch_cmd is not None
+                    and "switching technology" in fg.status.lower()
+                ):
                     execute_scheduled_technology_switch(fg.future_switch_cmd, uow=uow, env=env)
 
                 # Step 3c: Handle end-of-life transitions

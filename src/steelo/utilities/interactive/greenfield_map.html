@@ -335,12 +335,12 @@ function buildSites() {
     groupCount += 1;
     const key = `${g.la}|${g.lo}`;
     if (!sites.has(key)) sites.set(key, {lat: g.la, lon: g.lo, entries: []});
-    sites.get(key).entries.push({g, si, ti, ri, charges});
+    sites.get(key).entries.push({g, si, ti, ri, cap: valueAt(g.cap, year), charges});
   }
   sites.forEach(site => {
     site.entries.sort((a, b) =>
       priorityOf(run.statuses[a.si]) - priorityOf(run.statuses[b.si]) || (a.g.id < b.g.id ? -1 : 1));
-    site.capacity = site.entries.reduce((sum, e) => sum + e.g.cap, 0);
+    site.capacity = site.entries.reduce((sum, e) => sum + e.cap, 0);
   });
   return {sites: [...sites.values()], groupCount};
 }
@@ -368,14 +368,14 @@ function statusTimeline(g, run, year) {
 
 function groupBlock(run, year, entry) {
   const g = entry.g;
-  const lines = [`<b>${g.id}</b> · ${g.p} · ${g.cap.toFixed(1)} Mt capacity`];
+  const lines = [`<b>${g.id}</b> · ${g.p} · ${entry.cap.toFixed(1)} Mt capacity`];
   lines.push(`Technology: ${switchHistory(g.t, run.techs)}`);
   const reductants = switchHistory(g.r, run.reductants);
   if (reductants !== "none") lines.push(`Reductant: ${reductants}`);
   lines.push(`Status: ${statusTimeline(g, run, year)}`);
   const production = valueAt(g.pr, year);
   if (production > 0) {
-    lines.push(`Production ${year}: ${production.toFixed(2)} Mt (${Math.round(production / g.cap * 100)}% of capacity)`);
+    lines.push(`Production ${year}: ${production.toFixed(2)} Mt (${Math.round(production / entry.cap * 100)}% of capacity)`);
   }
   if (entry.charges.length) {
     lines.push(`Charge ${year}: ` +
@@ -433,7 +433,7 @@ function buildLayers() {
 
   const capacity = siteList.reduce((sum, s) => sum + s.capacity, 0);
   const operating = siteList.reduce((sum, s) => sum + s.entries.reduce(
-    (t, e) => t + (run.statuses[e.si].startsWith("operating") ? e.g.cap : 0), 0), 0);
+    (t, e) => t + (run.statuses[e.si].startsWith("operating") ? e.cap : 0), 0), 0);
   document.getElementById("stats").textContent =
     `${groupCount} furnace groups at ${siteList.length} sites · ` +
     `${capacity.toFixed(1)} Mt capacity, ${operating.toFixed(1)} Mt operating`;

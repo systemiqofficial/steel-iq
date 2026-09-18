@@ -32,6 +32,7 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 #legend-title { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
 #legend-bar { height: 12px; border-radius: 3px; border: 1px solid #d6d4ce; }
 #legend-ticks { display: flex; justify-content: space-between; font-size: 11px; color: #52514e; margin-top: 3px; }
+#legend-scope { font-size: 11px; color: #52514e; margin: -3px 0 6px; }
 #legend-note { font-size: 11px; color: #52514e; margin-top: 6px; line-height: 1.4; }
 #provenance { position: absolute; z-index: 1; right: 10px; bottom: 6px; max-width: 520px; font-size: 10px;
               color: #7a786f; text-align: right; line-height: 1.35; }
@@ -64,10 +65,15 @@ window.addEventListener("error", function(e) {
     <label for="metric-select">Map colour</label>
     <select id="metric-select"></select>
   </div>
+  <div>
+    <label for="boundary-select">Emissions boundary</label>
+    <select id="boundary-select"></select>
+  </div>
   <div class="ticks">
     <label>Emissions scope</label>
     <label class="inline"><input type="checkbox" id="scope-direct" checked>Direct</label>
     <label class="inline"><input type="checkbox" id="scope-indirect">Indirect</label>
+    <label class="inline"><input type="checkbox" id="scope-biogenic">incl. biogenic</label>
   </div>
   <div id="focus-holder"></div>
 </div>
@@ -84,6 +90,7 @@ window.addEventListener("error", function(e) {
     </div>
     <div id="legend" class="panel">
       <div id="legend-title"></div>
+      <div id="legend-scope"></div>
       <div id="legend-bar"></div>
       <div id="legend-ticks"></div>
       <div id="legend-note"></div>
@@ -153,8 +160,20 @@ const domainCache = {};
 
 function run() { return DATA[Interactive.run()]; }
 function year() { return run().years[+document.getElementById("year-slider").value]; }
+function boundary() { return document.getElementById("boundary-select").value; }
+/* Direct (excl. biogenic) and direct (incl. biogenic) are alternative accountings of the
+   same emissions and are never summed — "incl. biogenic" swaps the direct part. */
 function scopes() {
-  return run().scopes.filter(s => document.getElementById("scope-" + s).checked);
+  const ticked = id => document.getElementById(id).checked, out = [];
+  if (ticked("scope-direct")) out.push(ticked("scope-biogenic") ? "direct_with_biomass_ghg" : "direct_ghg");
+  if (ticked("scope-indirect")) out.push("indirect_ghg");
+  return out;
+}
+function scopeLabel() {
+  const sc = scopes(), parts = [];
+  if (sc[0] !== "indirect_ghg") parts.push(`Direct (${sc[0] === "direct_ghg" ? "excl." : "incl."} biogenic)`);
+  if (sc.includes("indirect_ghg")) parts.push(parts.length ? "indirect" : "Indirect");
+  return `${parts.join(" + ")} emissions, ${boundary().replace(/_/g, " ")} boundary`;
 }
 function metric() { return METRICS[document.getElementById("metric-select").value]; }
 function name(iso3) { return Interactive.countryName(iso3) || iso3; }
@@ -169,7 +188,7 @@ const fmtSigned = v => (v > 0 ? "+" : "") + fmt1(v);
    outside G and consumed inside, exports X = emitted inside and consumed outside; steel likewise. */
 function entries(yr, sc) {
   const R = run(), out = [];
-  sc.forEach(scope => { const M = R.m[yr][scope]; if (M) out.push(M); });
+  sc.forEach(scope => { const M = R.m[yr][boundary() + "|" + scope]; if (M) out.push(M); });
   return out;
 }
 
@@ -212,11 +231,11 @@ function groupStats(yr, sc, G) {
   return out;
 }
 
-/* Fixed colour domain over the whole run for the current metric and scopes, so the year
+/* Fixed colour domain over the whole run for the current metric, boundary and scopes, so the year
    slider compares like with like. The bound is the 97th percentile of |value| over every
    (year, country); the legend marks the ends as "≥". */
 function domain(m, sc) {
-  const key = `${Interactive.run()}|${document.getElementById("metric-select").value}|${sc.join()}`;
+  const key = `${Interactive.run()}|${document.getElementById("metric-select").value}|${boundary()}|${sc.join()}`;
   if (domainCache[key]) return domainCache[key];
   const R = run(), values = [];
   R.years.forEach(yr => {
@@ -331,6 +350,7 @@ const deckgl = new deck.Deck({
 function renderLegend() {
   const m = frame.metric, b = frame.dom.bound;
   document.getElementById("legend-title").textContent = `${m.label} (${m.unit}), ${frame.year}`;
+  document.getElementById("legend-scope").textContent = scopeLabel();
   document.getElementById("legend-bar").style.background = cssGradient(m);
   const ticks = m.kind === "diverging"
     ? [`≤ −${fmtTick(b)}`, `−${fmtTick(b / 2)}`, "0", fmtTick(b / 2), `≥ +${fmtTick(b)}`]
@@ -361,7 +381,7 @@ function renderSide() {
   const R = run(), sc = scopes(), yr = frame.year;
   const {G, title, sub} = focusGroup();
   document.getElementById("focus-title").textContent = title;
-  document.getElementById("focus-sub").textContent = sub;
+  document.getElementById("focus-sub").textContent = `${sub} · ${scopeLabel()}`;
   const g = groupStats(yr, sc, G);
   const net = (g.C - g.P) / 1e3, share = g.P > 0 ? `<small>${fmtSigned((g.C - g.P) / g.P * 100)} % of production-based</small>` : "";
   document.getElementById("stats").innerHTML =
@@ -425,7 +445,7 @@ function render() {
   const values = R.countries.map((c, i) => m.value(at(stats, i)));
   frame = {
     year: yr, stats, values, metric: m, dom, metricKey: document.getElementById("metric-select").value,
-    scopeKey: sc.join(), selected: Interactive.selectedGeos(),
+    scopeKey: boundary() + "|" + sc.join(), selected: Interactive.selectedGeos(),
     index: new Map(R.countries.map((c, i) => [c, i])),
   };
   frame.selKey = [...frame.selected].sort().join();
@@ -465,6 +485,16 @@ function syncYears() {
   slider.min = 0; slider.max = years.length - 1;
   slider.value = years.includes(current) ? years.indexOf(current) : years.indexOf(2030) >= 0 ? years.indexOf(2030) : 0;
 }
+function syncBoundaries() {
+  const select = document.getElementById("boundary-select"), R = run(), current = select.value;
+  select.innerHTML = "";
+  R.boundaries.forEach(b => {
+    const o = document.createElement("option");
+    o.value = b; o.textContent = b.replace(/_/g, " ") + (b === R.boundary ? " (the run's boundary)" : "");
+    select.appendChild(o);
+  });
+  select.value = R.boundaries.includes(current) ? current : R.boundary;
+}
 function stepYear(delta) {
   const slider = document.getElementById("year-slider");
   slider.value = Math.min(Math.max(+slider.value + delta, 0), run().years.length - 1);
@@ -479,8 +509,10 @@ function init() {
   select.addEventListener("change", render);
   ["scope-direct", "scope-indirect"].forEach(id => document.getElementById(id).addEventListener("change", () => {
     if (!scopes().length) document.getElementById(id).checked = true;
+    document.getElementById("scope-biogenic").disabled = !document.getElementById("scope-direct").checked;
     render();
   }));
+  ["boundary-select", "scope-biogenic"].forEach(id => document.getElementById(id).addEventListener("change", render));
   document.getElementById("partners-select").addEventListener("change", renderSide);
   const slider = document.getElementById("year-slider");
   slider.addEventListener("input", render);
@@ -496,7 +528,7 @@ function init() {
     ["controls", "legend", "side-toggle"].forEach(id => document.getElementById(id).addEventListener(type, e => e.stopPropagation())));
   Interactive.init({
     geoKeys: Object.values(DATA).flatMap(d => d.countries),
-    onChange: () => { syncYears(); render(); },
+    onChange: () => { syncBoundaries(); syncYears(); render(); },
   });
   document.getElementById("side-toggle").addEventListener("click", () =>
     setSide(document.getElementById("main").classList.contains("side-hidden")));
@@ -505,6 +537,7 @@ function init() {
   if (query.get("metric")) select.value = query.get("metric");
   if (query.get("indirect")) document.getElementById("scope-indirect").checked = true;
   if (query.get("focus")) focus = query.get("focus");
+  syncBoundaries();
   syncYears();
   if (query.get("year")) slider.value = run().years.indexOf(+query.get("year"));
   render();

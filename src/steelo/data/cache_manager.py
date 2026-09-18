@@ -58,7 +58,7 @@ class CacheMetadata:
 class DataPreparationCache:
     """Manages cached data preparations based on content hashing."""
 
-    CACHE_VERSION = "1.10"  # Bump to invalidate all caches (capacity pool fixtures added to prepare)
+    CACHE_VERSION = "1.11"  # Bump to invalidate all caches (every iron ore mine carries its country ISO3)
 
     def __init__(self, cache_root: Optional[Path] = None):
         """Initialize cache manager.

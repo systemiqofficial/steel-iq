@@ -72,8 +72,8 @@ def technology_charges(primary_feedstocks: Iterable[PrimaryFeedstock]) -> pd.Dat
     return pd.DataFrame(sorted(pairs), columns=["technology", "feedstock"])
 
 
-def aggregate_charge_use(post_processed: pd.DataFrame, primary_feedstocks: list[PrimaryFeedstock]) -> pd.DataFrame:
-    """Metallic charge use per year, geography, technology, product and charge.
+def charge_rows(post_processed: pd.DataFrame, primary_feedstocks: list[PrimaryFeedstock]) -> pd.DataFrame:
+    """The table's metallic-charge rows, one per furnace group, year and charge.
 
     Args:
         post_processed: The post-processed furnace-group table.
@@ -81,12 +81,8 @@ def aggregate_charge_use(post_processed: pd.DataFrame, primary_feedstocks: list[
             fields identify which feedstock rows are charges.
 
     Returns:
-        Columns ``year, geo, technology, product, charge, n, use_mt``: the allocated
-        tonnage of each charge (Mt) and the number of furnace groups charging it.
-        Each furnace group's rows already split its demand across its charges, so a
-        group running several charges at different shares contributes each share to
-        its own charge — no per-group deduplication beyond the (furnace group, year,
-        feedstock) grain.
+        Columns ``geo, year, furnace_group_id, technology, product, charge, demand``
+        (demand in tonnes), deduplicated to the (furnace group, year, feedstock) grain.
 
     Raises:
         ValueError: If a required column is missing, or the Bill of Materials names
@@ -128,11 +124,48 @@ def aggregate_charge_use(post_processed: pd.DataFrame, primary_feedstocks: list[
             names,
         )
 
-    matched = matched.drop(columns="_merge").rename(columns={"feedstock": "charge"})
-    grouped = matched.groupby(AGGREGATION_KEYS, dropna=False)
-    aggregated = (grouped["demand"].sum() / 1e6).to_frame("use_mt")
-    aggregated["n"] = grouped["furnace_group_id"].nunique()
-    return aggregated.reset_index()
+    return matched.drop(columns="_merge").rename(columns={"feedstock": "charge"})
+
+
+def aggregate_charge_use(charges: pd.DataFrame) -> pd.DataFrame:
+    """Metallic charge use per year, geography, technology, product and charge.
+
+    Args:
+        charges: Output of :func:`charge_rows`.
+
+    Returns:
+        Columns ``year, geo, technology, product, charge, use_mt``: the allocated
+        tonnage of each charge (Mt). Each furnace group's rows already split its
+        demand across its charges, so a group running several charges at different
+        shares contributes each share to its own charge.
+    """
+    return (charges.groupby(AGGREGATION_KEYS, dropna=False)["demand"].sum() / 1e6).rename("use_mt").reset_index()
+
+
+def count_charge_sets(charges: pd.DataFrame) -> pd.DataFrame:
+    """Furnace groups per year, geography, technology, product and set of charges run.
+
+    Args:
+        charges: Output of :func:`charge_rows`.
+
+    Returns:
+        Columns ``year, geo, technology, product, charges, n``: the number of furnace
+        groups running exactly the charges in ``charges`` (a sorted tuple).
+
+    Notes:
+        Per-charge counts cannot be added up — a group running several charges would
+        count once per charge. Counting per charge set lets the viewer count each
+        group once under any charge selection: a set counts when it holds a ticked
+        charge.
+    """
+    group_keys = [key for key in AGGREGATION_KEYS if key != "charge"]
+    sets = (
+        charges.groupby([*group_keys, "furnace_group_id"], dropna=False)["charge"]
+        .agg(lambda names: tuple(sorted(names)))
+        .rename("charges")
+        .reset_index()
+    )
+    return sets.groupby([*group_keys, "charges"], dropna=False).size().rename("n").reset_index()
 
 
 def scrap_supply_rows(
@@ -171,8 +204,7 @@ def pack_rows(aggregated: pd.DataFrame) -> list[dict[str, Any]]:
 
     Returns:
         One short-keyed record per row: ``y`` year, ``g`` geo, ``t`` technology,
-        ``p`` product, ``c`` charge, ``n`` furnace groups and ``v`` use (Mt, four
-        decimals).
+        ``p`` product, ``c`` charge and ``v`` use (Mt, four decimals).
     """
     return [
         {
@@ -181,10 +213,32 @@ def pack_rows(aggregated: pd.DataFrame) -> list[dict[str, Any]]:
             "t": row["technology"],
             "p": row["product"],
             "c": row["charge"],
-            "n": int(row["n"]),
             "v": round(float(row["use_mt"]), 4),
         }
         for row in aggregated.to_dict("records")
+    ]
+
+
+def pack_charge_sets(charge_sets: pd.DataFrame) -> list[dict[str, Any]]:
+    """Compact furnace-group counts for embedding in the viewer.
+
+    Args:
+        charge_sets: Output of :func:`count_charge_sets`.
+
+    Returns:
+        One short-keyed record per row: ``y`` year, ``g`` geo, ``t`` technology,
+        ``p`` product, ``cs`` the charges run and ``n`` furnace groups.
+    """
+    return [
+        {
+            "y": int(row["year"]),
+            "g": row["geo"],
+            "t": row["technology"],
+            "p": row["product"],
+            "cs": list(row["charges"]),
+            "n": int(row["n"]),
+        }
+        for row in charge_sets.to_dict("records")
     ]
 
 

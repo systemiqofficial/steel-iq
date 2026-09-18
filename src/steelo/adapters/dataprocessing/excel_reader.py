@@ -82,11 +82,8 @@ translate_country_names = {
 }
 
 translate_mine_regions_to_iso3 = {  # for tariffs - improve logic
-    "North America": "USA",
     "South Africa": "ZAF",
-    "Ukraine-Balkans Corridor": "UKR",
     "Canada": "CAN",
-    "Other South America": "COL",
     "Brazil": "BRA",
     "Australia": "AUS",
     "Russia": "RUS",
@@ -94,8 +91,19 @@ translate_mine_regions_to_iso3 = {  # for tariffs - improve logic
     "China": "CHN",
     "India": "IND",
     "Kazakhstan": "KAZ",
-    "Atlantic West Africa": "GHA",
-    "Scandinavia": "SWE",
+    "Bosnia & Herzegovina": "BIH",
+    "Guinea": "GIN",
+    "Iran": "IRN",
+    "Liberia": "LBR",
+    "Mauritania": "MRT",
+    "Mexico": "MEX",
+    "Norway": "NOR",
+    "Peru": "PER",
+    "Sierra Leone": "SLE",
+    "Sweden": "SWE",
+    "USA": "USA",
+    "Ukraine": "UKR",
+    "Venezuela": "VEN",
 }
 
 translate_country_names_to_iso3 = {
@@ -684,6 +692,10 @@ def _convert_units(value: float, unit: str, metric_type: str) -> float:
 def read_mines_as_suppliers(mine_data_excel_path: str, mine_data_sheet_name: str, location_csv: str) -> list[Supplier]:
     """
     Read mine supply data from Excel and return a list of Supplier domain objects for mines.
+
+    Raises:
+        ValueError: When a mine with capacity sits in a region that ``translate_mine_regions_to_iso3``
+            does not map, or when the suppliers fail validation against the sheet.
     """
     import json
     import unicodedata
@@ -806,13 +818,21 @@ def read_mines_as_suppliers(mine_data_excel_path: str, mine_data_sheet_name: str
             skipped_rows += 1
             continue
 
+        # The trade LP keys transport costs and tariffs on iso3, so an unmapped region would ship for free.
+        try:
+            mine_iso3 = translate_mine_regions_to_iso3[row["Region"]]
+        except KeyError:
+            raise ValueError(
+                f"Iron ore mine region {row['Region']!r} has no ISO3 in translate_mine_regions_to_iso3"
+            ) from None
+
         # Create a unique location for each mine (not reused)
         mine_location = Location(
             lat=row["lat"],
             lon=row["lon"],
             country=row["Region"],  # FIXME just to be able to create a valid Location 2025-05-22 Jochen
             region=row["Region"],
-            iso3=translate_mine_regions_to_iso3.get(row["Region"], ""),
+            iso3=mine_iso3,
         )
         product = row["Products"]
 

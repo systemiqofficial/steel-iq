@@ -540,14 +540,21 @@ function render() {
 
   const kept = edges.slice(0, show === "all" ? Infinity : +show);
 
-  const shipped = tier => [...stats].filter(([id]) => tierOf(id) === tier).reduce((s, [, n]) => s + n.out, 0);
+  const shipped = (of, tier) => of.filter(r => r.oTier === tier).reduce((s, r) => s + r.v, 0).toFixed(0);
+  // The headline states the whole chain, so it reads the unfiltered trace; the filters
+  // get their own line.
   const summaryLines = () => {
-    const steel = shipped("steel");
-    const domestic = rows.filter(r => r.dTier === "demand" && target.members.has(r.o)).reduce((s, r) => s + r.v, 0);
-    const mines = [...stats.keys()].filter(id => tierOf(id) === "ore").length;
-    const lines = [`${targetName} steel demand in ${year}: ${steel.toFixed(0)} Mt steel ` +
-                   `(${pct(domestic, steel)}% made ${target.within}) ← ${shipped("iron").toFixed(0)} Mt iron products + ` +
-                   `${shipped("scrap").toFixed(0)} Mt scrap ← ${shipped("ore").toFixed(0)} Mt ore from ${mines} mine regions`];
+    const steel = yearRows.filter(r => r.dTier === "demand");
+    const total = steel.reduce((s, r) => s + r.v, 0);
+    const domestic = steel.filter(r => target.members.has(r.o)).reduce((s, r) => s + r.v, 0);
+    const mines = new Set(yearRows.filter(r => r.oTier === "ore").map(r => r.o)).size;
+    const lines = [`${targetName} steel demand in ${year}: ${total.toFixed(0)} Mt steel ` +
+                   `(${pct(domestic, total)}% made ${target.within}) ← ${shipped(yearRows, "iron")} Mt iron products + ` +
+                   `${shipped(yearRows, "scrap")} Mt scrap ← ${shipped(yearRows, "ore")} Mt ore from ${mines} mine regions`];
+    if (rows.length < yearRows.length) {
+      lines.push(`Commodity and technology filters leave on show: ${shipped(rows, "steel")} Mt steel, ` +
+                 `${shipped(rows, "iron")} Mt iron products, ${shipped(rows, "scrap")} Mt scrap, ${shipped(rows, "ore")} Mt ore`);
+    }
     if (kept.length < edges.length) {
       const base = edges.reduce((s, f) => s + f.v, 0);
       const shown = kept.reduce((s, f) => s + f.v, 0);

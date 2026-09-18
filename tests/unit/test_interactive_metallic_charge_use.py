@@ -52,17 +52,38 @@ def sample_country_mappings() -> list[CountryMapping]:
     ]
 
 
+def sample_charge_rows() -> pd.DataFrame:
+    """The sample table's metallic-charge rows."""
+    return metallic_charge_use.charge_rows(sample_post_processed(), sample_bom())
+
+
 def test_aggregate_sums_each_charge_separately() -> None:
     """A furnace group's charges keep their own shares; procurement rows drop out silently."""
-    aggregated = metallic_charge_use.aggregate_charge_use(sample_post_processed(), sample_bom())
+    aggregated = metallic_charge_use.aggregate_charge_use(sample_charge_rows())
 
-    rows = {(r.technology, r.charge): (r.product, r.use_mt, r.n) for r in aggregated.itertuples()}
+    rows = {(r.technology, r.charge): (r.product, r.use_mt) for r in aggregated.itertuples()}
     assert rows == {
-        ("BF", "io_low"): ("iron", 1.5, 1),
-        ("BF", "io_high"): ("iron", 0.7, 1),
-        ("EAF", "scrap"): ("steel", 0.6, 1),
-        ("EAF", "pig_iron"): ("steel", 0.5, 1),
-        ("BOF", "hot_metal"): ("steel", 1.0, 1),
+        ("BF", "io_low"): ("iron", 1.5),
+        ("BF", "io_high"): ("iron", 0.7),
+        ("EAF", "scrap"): ("steel", 0.6),
+        ("EAF", "pig_iron"): ("steel", 0.5),
+        ("BOF", "hot_metal"): ("steel", 1.0),
+    }
+
+
+def test_count_charge_sets_counts_a_multi_charge_group_once() -> None:
+    """A furnace group running several charges is one group under its charge set, not one per charge."""
+    table = sample_post_processed()
+    table.loc[len(table)] = [2025, "DEU", "P5_0", "EAF", "steel", "scrap", 300_000.0]
+
+    counts = metallic_charge_use.count_charge_sets(metallic_charge_use.charge_rows(table, sample_bom()))
+
+    rows = {(r.geo, r.technology, r.product, r.charges): r.n for r in counts.itertuples()}
+    assert rows == {
+        ("CHN:CN-HE", "BF", "iron", ("io_high", "io_low")): 1,
+        ("DEU", "EAF", "steel", ("pig_iron", "scrap")): 1,
+        ("DEU", "EAF", "steel", ("scrap",)): 1,
+        ("DEU", "BOF", "steel", ("hot_metal",)): 1,
     }
 
 
@@ -71,43 +92,42 @@ def test_aggregate_counts_duplicate_feedstock_rows_once() -> None:
     table = sample_post_processed()
     table = pd.concat([table, table.iloc[[0]]], ignore_index=True)
 
-    aggregated = metallic_charge_use.aggregate_charge_use(table, sample_bom())
+    aggregated = metallic_charge_use.aggregate_charge_use(metallic_charge_use.charge_rows(table, sample_bom()))
 
     io_low = aggregated[aggregated["charge"] == "io_low"].iloc[0]
     assert io_low["use_mt"] == pytest.approx(1.5)
-    assert io_low["n"] == 1
 
 
-def test_aggregate_warns_on_charge_of_another_technology(caplog) -> None:
+def test_charge_rows_warns_on_charge_of_another_technology(caplog) -> None:
     """A feedstock that is a charge elsewhere but not for its own technology is warned about and omitted."""
     table = sample_post_processed()
     table.loc[len(table)] = [2025, "DEU", "P4_0", "BF", "iron", "scrap", 400_000.0]
 
     with caplog.at_level("WARNING", logger="steelo.utilities.interactive.metallic_charge_use"):
-        aggregated = metallic_charge_use.aggregate_charge_use(table, sample_bom())
+        charges = metallic_charge_use.charge_rows(table, sample_bom())
 
     assert "BF_scrap" in caplog.text
-    assert not ((aggregated["technology"] == "BF") & (aggregated["charge"] == "scrap")).any()
+    assert not ((charges["technology"] == "BF") & (charges["charge"] == "scrap")).any()
 
 
-def test_aggregate_rejects_table_without_required_columns() -> None:
+def test_charge_rows_rejects_table_without_required_columns() -> None:
     """A table missing the feedstock column fails loudly rather than producing an empty chart."""
     with pytest.raises(ValueError, match="feedstock"):
-        metallic_charge_use.aggregate_charge_use(sample_post_processed().drop(columns=["feedstock"]), sample_bom())
+        metallic_charge_use.charge_rows(sample_post_processed().drop(columns=["feedstock"]), sample_bom())
 
 
-def test_aggregate_rejects_bom_without_metallic_charges() -> None:
+def test_charge_rows_rejects_bom_without_metallic_charges() -> None:
     """A Bill of Materials naming no metallic charge cannot identify any row."""
     with pytest.raises(ValueError, match="no metallic charge"):
-        metallic_charge_use.aggregate_charge_use(sample_post_processed(), [])
+        metallic_charge_use.charge_rows(sample_post_processed(), [])
 
 
-def test_aggregate_falls_back_to_iso3_without_geo_key() -> None:
+def test_charge_rows_falls_back_to_iso3_without_geo_key() -> None:
     """Tables from runs that predate the geo_key column are keyed by country."""
     table = sample_post_processed().rename(columns={"geo_key": "iso3"})
-    aggregated = metallic_charge_use.aggregate_charge_use(table, sample_bom())
+    charges = metallic_charge_use.charge_rows(table, sample_bom())
 
-    assert set(aggregated["geo"]) == {"CHN:CN-HE", "DEU"}
+    assert set(charges["geo"]) == {"CHN:CN-HE", "DEU"}
 
 
 def test_scrap_supply_rows_sums_scrap_by_country_within_years() -> None:
@@ -127,7 +147,7 @@ def test_scrap_supply_rows_sums_scrap_by_country_within_years() -> None:
 
 def test_pack_rows_compacts_aggregates() -> None:
     """Rows carry short keys with the charge tonnage to four decimals."""
-    aggregated = metallic_charge_use.aggregate_charge_use(sample_post_processed(), sample_bom())
+    aggregated = metallic_charge_use.aggregate_charge_use(sample_charge_rows())
     packed = metallic_charge_use.pack_rows(aggregated)
 
     assert {
@@ -136,8 +156,22 @@ def test_pack_rows_compacts_aggregates() -> None:
         "t": "BF",
         "p": "iron",
         "c": "io_low",
-        "n": 1,
         "v": 1.5,
+    } in packed
+
+
+def test_pack_charge_sets_lists_the_charges_run() -> None:
+    """Furnace-group counts carry short keys with the charge set as a list."""
+    counts = metallic_charge_use.count_charge_sets(sample_charge_rows())
+    packed = metallic_charge_use.pack_charge_sets(counts)
+
+    assert {
+        "y": 2025,
+        "g": "DEU",
+        "t": "EAF",
+        "p": "steel",
+        "cs": ["pig_iron", "scrap"],
+        "n": 1,
     } in packed
 
 

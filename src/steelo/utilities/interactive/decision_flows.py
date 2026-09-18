@@ -6,11 +6,13 @@ furnace group's state when it first acts — its technology, or NEW for capacity
 that does not exist yet — and every further column is one decision round,
 grouped into bands (Renovate, Switch, Retire, Pipeline, Expand, Greenfield)
 with technology sub-nodes. Link width is the capacity entering the decision,
-in Mt.
+in Mt. Years are the motions table's own: the year each motion took effect.
 
 Pipeline motions are capacity that opens during the simulation but was decided
 by input data rather than the PAM; like greenfield and expansion they enter
-from the NEW state node, into their own band.
+from the NEW state node, into their own band. Closures the input data scheduled
+(a group reaching its delivered end of life untouched by the model) stay in the
+Retire band; the packed ``src`` lets the viewer state their share.
 """
 
 from typing import Any, Optional
@@ -69,6 +71,7 @@ def pack_motions(motions: pd.DataFrame) -> list[dict[str, Any]]:
             "fg": row["furnace_group_id"],
             "year": int(row["year"]),
             "kind": row["kind"],
+            "src": row["source"],
             "ot": None if pd.isna(row["old_technology"]) else row["old_technology"],
             "nt": None if pd.isna(row["new_technology"]) else row["new_technology"],
             "om": mt(row["old_capacity_t"]),

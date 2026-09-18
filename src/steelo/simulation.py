@@ -1607,6 +1607,7 @@ class SimulationRunner:
                 tm_dir=self.config.output_dir / "TM",
                 suppliers_json=fixtures_dir / "suppliers.json" if fixtures_dir else None,
                 biomass_availability_json=fixtures_dir / "biomass_availability.json" if fixtures_dir else None,
+                demand_centers_json=fixtures_dir / "demand_centers.json" if fixtures_dir else None,
             )
             interactive.plot_reductant_use(
                 post_processed_csv=Path(output_path),
