@@ -22,6 +22,7 @@ body { height: 100vh; display: flex; flex-direction: column; overflow: hidden; f
 #year-label { font-weight: 600; font-size: 15px; min-width: 40px; }
 #year-title { font-weight: 600; color: var(--ink2); }
 .site.opened path, .site.opened circle { stroke: #1b7f3b; stroke-width: 2.5; }
+.site.started path, .site.started circle { stroke: #2f6fb0; stroke-width: 2.5; }
 .site.switched path, .site.switched circle { stroke: #b8860b; stroke-width: 2.5; }
 .site.closed circle { fill: none; stroke: #8a8884; stroke-width: 1.5; stroke-dasharray: 3 2; }
 .boxes { display: inline-flex; flex-wrap: wrap; gap: 2px 12px; }
@@ -181,8 +182,13 @@ const FALLBACK_COLOURS = ["#a52a2a", "#6b6b6b", "#b8860b", "#556b2f", "#708090",
 const UNCOLOURED = TECHS.filter(t => !CONFIG.techColours[t]);
 const COLOR = Object.fromEntries(TECHS.map(t => [t, CONFIG.techColours[t] || FALLBACK_COLOURS[UNCOLOURED.indexOf(t) % FALLBACK_COLOURS.length]]));
 const IRON = new Set(RUN.ironTechs);
-const DEFAULT_ON = new Set(STATUSES);
+const DEFAULT_ON = new Set(["operating"]);
 const unitsAt = (s, year) => { const seg = s.segs.find(g => g[0] <= year && year <= g[1]); return seg ? seg[2] : []; };
+// the first year a plant has any unit and the first year one of them operates, for the change rings
+for (const s of SITES) {
+  s.firstYear = (s.segs.find(g => g[2].length) || [])[0];
+  s.firstOpYear = (s.segs.find(g => g[2].some(u => u[1] === "operating")) || [])[0];
+}
 const techSet = (units) => new Set(units.map(u => u[0]));
 const sameTechs = (a, b) => a.size === b.size && [...a].every(t => b.has(t));
 // a focus map lists its provinces' regions only: the parent country is never selectable there
@@ -336,6 +342,7 @@ for (const o of ORIGINS) {
   l.querySelector("input").addEventListener("change", (e) => { e.target.checked ? state.origins.add(o) : state.origins.delete(o); refresh(); });
   document.getElementById("origin-boxes").appendChild(l);
 }
+const statusNote = () => [...state.statuses].join(" + ") || "no status";
 const originNote = () => state.origins.size === ORIGINS.length ? "" : ` · ${state.origins.size ? [...state.origins][0] + " only" : "no plants"}`;
 const regionSel = document.getElementById("region-select");
 regionSel.innerHTML = `<option value="">${FOCUS ? CTRY[FOCUS.iso3].name : "World"}</option>` + REGIONS.map(r => `<option value="${r}">${r}</option>`).join("");
@@ -482,13 +489,14 @@ function refresh() {
     const units = unitsAt(s, state.year).filter(keep);
     for (const u of units) byTech[u[0]] = (byTech[u[0]] || 0) + u[2];
     const total = Object.values(byTech).reduce((a, b) => a + b, 0);
-    // opened, closed and switched are judged on the plant's whole timeline, so an unticked status or
-    // technology never turns a rebuild into a closure; the filters only decide what is drawn
+    // the changes are judged on the plant's whole timeline, so an unticked status or technology never
+    // turns a rebuild into a closure; the filters only decide what is drawn
     let change = "", prev = [];
     if (state.changes && state.year > YEARS[0]) {
       const now = unitsAt(s, state.year), before = unitsAt(s, state.year - 1);
       prev = before.filter(keep);
-      if (now.length && !before.length) change = "opened";
+      if (s.firstOpYear === state.year) change = "opened";
+      else if (s.firstYear === state.year) change = "started";
       else if (!now.length && before.length) change = "closed";
       else if (now.length && !sameTechs(techSet(now), techSet(before))) change = "switched";
     }
@@ -533,7 +541,9 @@ function aggregate() {
   const sorted = (o) => Object.entries(o).sort((a, b) => b[1].total - a[1].total);
   return {byTech, unitsByTech, units, iron, steel, ctryRows: sorted(byCtry), regionRows: sorted(byRegion), byCtry};
 }
+// a bubble's radius on a map drawn 1000 px wide; the legend scales it to the map as drawn
 function radiusPx(cap) { return 3.2 * state.scale * Math.sqrt(cap / 1000); }
+const screenScale = () => pxPerUnit() * view.w / W;
 function wedge(cx, cy, r, a0, a1) {
   if (a1 - a0 >= 2 * Math.PI - 1e-6) return null;
   const x0 = cx + r * Math.sin(a0), y0 = cy - r * Math.cos(a0), x1 = cx + r * Math.sin(a1), y1 = cy - r * Math.cos(a1);
@@ -604,10 +614,10 @@ function drawSites() {
 const SIZE_REF = [1000, 10000, 50000];
 function drawLegend() {
   // size reference: three circles side by side, labels beneath
-  const rmax = radiusPx(SIZE_REF[2]);
+  const k = screenScale(), rmax = radiusPx(SIZE_REF[2]) * k;
   let x = 4, svgs = "", w = 0;
   for (const c of SIZE_REF) {
-    const r = radiusPx(c), cx = x + Math.max(r, 14);
+    const r = radiusPx(c) * k, cx = x + Math.max(r, 14);
     svgs += `<circle cx="${cx}" cy="${rmax + 2}" r="${r}" fill="none" stroke="#8a8884"/>`;
     svgs += `<text x="${cx}" y="${rmax * 2 + 16}" font-size="10" fill="#52514e" text-anchor="middle">${c / 1000} Mt</text>`;
     x = cx + Math.max(r, 14) + 10; w = x;
@@ -615,9 +625,10 @@ function drawLegend() {
   document.getElementById("legend").innerHTML =
     TECHS.map(t => `<div class="row"><span class="swatch" style="background:${COLOR[t]}"></span>${t} (${IRON.has(t) ? "iron" : "steel"})</div>`).join("") +
     (state.changes ? `<div class="row" style="margin-top:6px"><span class="swatch" style="background:none;border:2.5px solid #1b7f3b"></span>opened this year</div>` +
-      `<div class="row"><span class="swatch" style="background:none;border:2.5px solid #b8860b"></span>technology switched</div>` +
+      `<div class="row"><span class="swatch" style="background:none;border:2.5px solid #2f6fb0"></span>construction started</div>` +
+      `<div class="row"><span class="swatch" style="background:none;border:2.5px solid #b8860b"></span>technology mix changed</div>` +
       `<div class="row"><span class="swatch" style="background:none;border:1.5px dashed #8a8884"></span>closed this year</div>` : "") +
-    `<div class="row" style="margin-top:6px">Bubble area = capacity</div><div class="row">Number = plants merged</div><svg width="${w}" height="${rmax * 2 + 20}">${svgs}</svg>`;
+    `<div class="row" style="margin-top:6px">Area = iron + steel capacity</div><div class="row">Number = plants merged</div><svg width="${w}" height="${rmax * 2 + 20}">${svgs}</svg>`;
 }
 const stackOf = (v, max) => `<div style="width:${100 * v.total / max}%">` +
   TECHS.filter(t => v[t]).map(t => `<span style="flex:${v[t]};background:${COLOR[t]}"></span>`).join("") + `</div>`;
@@ -631,11 +642,11 @@ function drawSide() {
   const {byTech, unitsByTech, units, iron, steel, ctryRows, regionRows} = stats;
   document.getElementById("summary").textContent =
     `${state.year}: ${fmt(iron)} Mt/yr iron and ${fmt(steel)} Mt/yr steel capacity at ${filtered.length} plants (${units} furnace groups) in ${ctryRows.length} ${unitNoun()} · ` +
-    `${state.techs.size === TECHS.length ? "all technologies" : [...state.techs].join(", ") || "no technology"} · ${[...state.statuses].join(" + ") || "no status"}${originNote()} · ` +
+    `${state.techs.size === TECHS.length ? "all technologies" : [...state.techs].join(", ") || "no technology"} · ${statusNote()}${originNote()} · ` +
     geoLabel();
   document.getElementById("totals").innerHTML =
-    `<div class="tile"><div class="v">${fmt(iron)}</div><div class="l">Mt/yr iron capacity</div></div>` +
-    `<div class="tile"><div class="v">${fmt(steel)}</div><div class="l">Mt/yr steel capacity</div></div>` +
+    `<div class="tile"><div class="v">${fmt(iron)}</div><div class="l">Mt/yr iron capacity</div><div class="l">${statusNote()}</div></div>` +
+    `<div class="tile"><div class="v">${fmt(steel)}</div><div class="l">Mt/yr steel capacity</div><div class="l">${statusNote()}</div></div>` +
     `<div class="tile"><div class="v">${filtered.length.toLocaleString("en-GB")}</div><div class="l">plants shown</div></div>` +
     `<div class="tile"><div class="v">${units.toLocaleString("en-GB")}</div><div class="l">furnace groups</div></div>`;
   const max = Math.max(1, ...TECHS.map(t => byTech[t] || 0));
@@ -661,6 +672,12 @@ function placeTip(e) {
   tip.style.left = Math.max(8, Math.min(e.clientX + 14, window.innerWidth - r.width - 8)) + "px";
   tip.style.top = Math.min(e.clientY + 14, window.innerHeight - r.height - 8) + "px";
 }
+// a bubble sums both products: name the parts where it holds iron and steel capacity
+const splitOf = (byTech) => {
+  const iron = TECHS.filter(t => IRON.has(t)).reduce((a, t) => a + (byTech[t] || 0), 0);
+  const steel = TECHS.filter(t => !IRON.has(t)).reduce((a, t) => a + (byTech[t] || 0), 0);
+  return iron && steel ? ` (${fmt(iron)} iron + ${fmt(steel)} steel)` : "";
+};
 const techRows = (byTech) => TECHS.filter(t => byTech[t]).map(t => `<tr><td><span class="swatch" style="background:${COLOR[t]};vertical-align:-1px"></span> ${t}</td><td><b>${fmt(byTech[t])} Mt</b></td></tr>`).join("");
 function showSiteTip(e, s) {
   const c = CTRY[s.iso];
@@ -669,9 +686,9 @@ function showSiteTip(e, s) {
   const first = active.length ? active[0][0] : null, last = active.length ? active[active.length - 1][1] : null;
   const history = active.length ? `${first === YEARS[0] ? `in the ${YEARS[0]} fleet` : "first appears " + first}` +
     `${last < YEARS[YEARS.length - 1] ? ", closes " + (last + 1) : ""}` : "";
-  const capLabel = s.closedNote ? `closed in ${state.year} · ${fmt(s.total)} Mt/yr in ${state.year - 1}` : `${fmt(s.total)} Mt/yr in ${state.year}`;
   const shown = {};
   for (const u of units) shown[u[0]] = (shown[u[0]] || 0) + u[2];
+  const capLabel = s.closedNote ? `closed in ${state.year} · ${fmt(s.total)} Mt/yr${splitOf(shown)} in ${state.year - 1}` : `${fmt(s.total)} Mt/yr${splitOf(shown)} in ${state.year}`;
   const switching = s.switches.filter(w => w[0] <= state.year && state.year <= w[1])
     .map(w => `<div class="sub" style="margin:4px 0 0">switching ${w[2]} → ${w[3]} · decided ${w[0]} · new technology from ${w[1]}</div>`).join("");
   tip.innerHTML = `<b>${esc(s.name)}</b><div class="sub">${s.iso} ${c.name}${s.geo ? ` · ${CTRY[s.geo].code} ${CTRY[s.geo].name}` : ""} · ${(s.geo && CTRY[s.geo].group) || c.region} · ${capLabel}` +
@@ -684,7 +701,7 @@ function showClusterTip(e, c) {
   const names = [...new Set(c.members.map(s => `${CTRY[tipUnit(s)].code} ${CTRY[tipUnit(s)].name}`))].sort();
   const where = names.length > 4 ? `${names.length} ${FOCUS ? "provinces" : "countries"}` : names.join(", ");
   const top = c.members.slice(0, 5).map(s => `<tr><td class="nm">${esc(s.name)}</td><td>${fmt(s.total)} Mt</td></tr>`).join("");
-  tip.innerHTML = `<b>${c.members.length} plants (merged at this zoom)</b><div class="sub">${where} · ${fmt(c.total)} Mt/yr shown · zoom in to separate</div>` +
+  tip.innerHTML = `<b>${c.members.length} plants (merged at this zoom)</b><div class="sub">${where} · ${fmt(c.total)} Mt/yr${splitOf(c.byTech)} shown · zoom in to separate</div>` +
     `<table>${techRows(c.byTech)}</table><div class="sub" style="margin-top:5px">Largest:</div><table>${top}</table>`;
   placeTip(e);
 }
@@ -707,6 +724,7 @@ const EXPORT_CSS = `
   .clabel { fill: #8a8884; text-anchor: middle; }
   .site path, .site circle { stroke: #fff; stroke-width: 0.8; vector-effect: non-scaling-stroke; }
   .site.opened path, .site.opened circle { stroke: #1b7f3b; stroke-width: 2.5; }
+  .site.started path, .site.started circle { stroke: #2f6fb0; stroke-width: 2.5; }
   .site.switched path, .site.switched circle { stroke: #b8860b; stroke-width: 2.5; }
   .site.closed circle { fill: none; stroke: #8a8884; stroke-width: 1.5; stroke-dasharray: 3 2; }
   .badge { font-weight: 600; fill: #fff; text-anchor: middle; paint-order: stroke; stroke: rgba(0,0,0,0.55); }
@@ -716,7 +734,7 @@ function exportSvg() {
   const EW = 1600, EH = 1000, M = 44, SIDE = 400, MAP_Y = 118, MAP_H = EH - MAP_Y - 70;
   const mapW = EW - 2 * M - SIDE - 30, sideX = EW - M - SIDE;
   const {byTech, unitsByTech, units, iron, steel, ctryRows} = stats;
-  const filterLine = `${esc(RUN.title)} · ${state.techs.size === TECHS.length ? "all technologies" : esc([...state.techs].join(", "))} · ${[...state.statuses].join(", ")}${originNote()} · ${esc(geoLabel())}`;
+  const filterLine = `${esc(RUN.title)} · ${state.techs.size === TECHS.length ? "all technologies" : esc([...state.techs].join(", "))} · ${statusNote()}${originNote()} · ${esc(geoLabel())}`;
   const today = new Date().toISOString().slice(0, 10);
   let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${EW}" height="${EH}" viewBox="0 0 ${EW} ${EH}"><style>${EXPORT_CSS}</style>`;
   out += `<rect width="${EW}" height="${EH}" fill="#fcfcfb"/>`;
@@ -729,28 +747,30 @@ function exportSvg() {
   const layers = [gWorld, gCtry, gProv, gLines, gLabels, gSites].map(g => g.outerHTML).join("");
   out += `<g clip-path="url(#${clipId})"><svg x="${M}" y="${MAP_Y}" width="${mapW}" height="${MAP_H}" viewBox="${view.x} ${view.y} ${view.w} ${view.h}" preserveAspectRatio="xMidYMid slice">${layers}</svg></g>`;
   // legend over the map, bottom left
-  const rmax = radiusPx(SIZE_REF[2]);
-  const lx = M + 14, lh = TECHS.length * 18 + 34 + rmax * 2 + 26, ly = MAP_Y + MAP_H - lh - 14, lw = Math.max(170, rmax * 6 + 40);
+  const k = Math.max(mapW / view.w, MAP_H / view.h) * view.w / W, rmax = radiusPx(SIZE_REF[2]) * k;
+  const lx = M + 14, lh = TECHS.length * 18 + 34 + rmax * 2 + 26, ly = MAP_Y + MAP_H - lh - 14, lw = Math.max(200, rmax * 6 + 40);
   out += `<rect x="${lx}" y="${ly}" width="${lw}" height="${lh}" rx="5" fill="rgba(255,255,255,0.94)" stroke="#e3e1db"/>`;
   TECHS.forEach((t, i) => {
     out += `<circle cx="${lx + 16}" cy="${ly + 18 + i * 18}" r="5.5" fill="${COLOR[t]}"/>`;
     out += `<text x="${lx + 28}" y="${ly + 22 + i * 18}" font-size="14" fill="#52514e">${esc(t)} (${IRON.has(t) ? "iron" : "steel"})</text>`;
   });
   let yy = ly + 22 + TECHS.length * 18 + 4;
-  out += `<text x="${lx + 10}" y="${yy}" font-size="13" fill="#52514e">Bubble area = capacity</text>`;
+  out += `<text x="${lx + 10}" y="${yy}" font-size="13" fill="#52514e">Area = iron + steel capacity</text>`;
   let cxx = lx + 10;
   for (const c of SIZE_REF) {
-    const r = radiusPx(c), cx = cxx + Math.max(r, 16);
+    const r = radiusPx(c) * k, cx = cxx + Math.max(r, 16);
     out += `<circle cx="${cx}" cy="${yy + 10 + rmax}" r="${r}" fill="none" stroke="#8a8884"/>`;
     out += `<text x="${cx}" y="${yy + rmax * 2 + 24}" font-size="12" fill="#52514e" text-anchor="middle">${c / 1000} Mt</text>`;
     cxx = cx + Math.max(r, 16) + 10;
   }
   // side panel: tiles, technology table, top countries
-  const tile = (x, y, v, l) => `<rect x="${x}" y="${y}" width="${(SIDE - 12) / 2}" height="58" rx="5" fill="#fff" stroke="#e3e1db"/>` +
-    `<text x="${x + 12}" y="${y + 30}" font-size="26" font-weight="600" fill="#0b0b0b">${v}</text><text x="${x + 12}" y="${y + 48}" font-size="13" fill="#52514e">${l}</text>`;
-  out += tile(sideX, MAP_Y, fmt(iron), "Mt/yr iron capacity") + tile(sideX + SIDE / 2 + 6, MAP_Y, fmt(steel), "Mt/yr steel capacity");
-  out += tile(sideX, MAP_Y + 66, filtered.length.toLocaleString("en-GB"), "plants shown") + tile(sideX + SIDE / 2 + 6, MAP_Y + 66, units.toLocaleString("en-GB"), "furnace groups");
-  let y = MAP_Y + 158;
+  // the capacity tiles carry a second label line naming the statuses they count
+  const tile = (x, y, v, l, note) => `<rect x="${x}" y="${y}" width="${(SIDE - 12) / 2}" height="${note ? 74 : 58}" rx="5" fill="#fff" stroke="#e3e1db"/>` +
+    `<text x="${x + 12}" y="${y + 30}" font-size="26" font-weight="600" fill="#0b0b0b">${v}</text><text x="${x + 12}" y="${y + 48}" font-size="13" fill="#52514e">${l}</text>` +
+    (note ? `<text x="${x + 12}" y="${y + 64}" font-size="11" fill="#52514e">${note}</text>` : "");
+  out += tile(sideX, MAP_Y, fmt(iron), "Mt/yr iron capacity", statusNote()) + tile(sideX + SIDE / 2 + 6, MAP_Y, fmt(steel), "Mt/yr steel capacity", statusNote());
+  out += tile(sideX, MAP_Y + 82, filtered.length.toLocaleString("en-GB"), "plants shown") + tile(sideX + SIDE / 2 + 6, MAP_Y + 82, units.toLocaleString("en-GB"), "furnace groups");
+  let y = MAP_Y + 174;
   const head = (label) => { out += `<text x="${sideX}" y="${y}" font-size="14" font-weight="600" fill="#52514e" letter-spacing="0.4">${label}</text>`; y += 14; };
   head("CAPACITY BY TECHNOLOGY");
   const shownTechs = TECHS.filter(t => byTech[t]), rowH = shownTechs.length > 8 ? 19 : 24;
