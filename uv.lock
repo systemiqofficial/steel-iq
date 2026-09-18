@@ -201,6 +201,27 @@ wheels = [
 ]
 
 [[package]]
+name = "baseload-optimisation-atlas"
+version = "1.8.0"
+source = { git = "https://github.com/systemiqofficial/baseload-optimisation-atlas.git?tag=v1.8.0#51f8c12b74a9b235b5dc03e4fd1e23f4608fcf2a" }
+dependencies = [
+    { name = "dask", extra = ["array"] },
+    { name = "geopandas" },
+    { name = "matplotlib" },
+    { name = "netcdf4" },
+    { name = "numba" },
+    { name = "numpy" },
+    { name = "openpyxl" },
+    { name = "pandas" },
+    { name = "pycountry" },
+    { name = "reverse-geocoder" },
+    { name = "rich" },
+    { name = "shapely" },
+    { name = "xarray" },
+    { name = "zarr" },
+]
+
+[[package]]
 name = "beautifulsoup4"
 version = "4.14.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3762,6 +3783,7 @@ name = "steel-model"
 version = "2.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "baseload-optimisation-atlas" },
     { name = "black" },
     { name = "cartopy" },
     { name = "dash" },
@@ -3802,7 +3824,6 @@ dependencies = [
     { name = "sentry-sdk" },
     { name = "tqdm" },
     { name = "whitenoise" },
-    { name = "zarr" },
 ]
 
 [package.optional-dependencies]
@@ -3838,6 +3859,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "baseload-optimisation-atlas", git = "https://github.com/systemiqofficial/baseload-optimisation-atlas.git?tag=v1.8.0" },
     { name = "black" },
     { name = "cartopy" },
     { name = "cdsapi", marker = "extra == 'cds'", specifier = ">=0.7.4" },
@@ -3879,7 +3901,6 @@ requires-dist = [
     { name = "sentry-sdk" },
     { name = "tqdm" },
     { name = "whitenoise" },
-    { name = "zarr", specifier = ">=3.0.0" },
 ]
 provides-extras = ["cds"]
 

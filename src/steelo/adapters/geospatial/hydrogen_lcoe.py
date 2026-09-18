@@ -153,16 +153,17 @@ def neighbour_fill_sources(
     return sources
 
 
-def _year_loader(geo_paths: "GeoDataPaths", p: int) -> Callable[[int], xr.DataArray]:
+def _year_loader(geo_paths: "GeoDataPaths", coverage: float, p: int) -> Callable[[int], xr.DataArray]:
     """Per-year LCOE (USD/MWh) reader: the combined BOA file when configured, else the per-year files."""
     logger = logging.getLogger(f"{__name__}.baseload_lcoe_by_geo_key_series")
     if geo_paths.baseload_lcoe_file is not None:
         ds = xr.open_dataset(geo_paths.baseload_lcoe_file)
-        file_p = ds.attrs.get("p_percentile")
-        if file_p is not None and int(file_p) != p:
+        # Promoted files carry `coverage_fraction` (e.g. 0.85), not a percentile.
+        file_coverage = ds.attrs.get("coverage_fraction")
+        if file_coverage is not None and not np.isclose(float(file_coverage), coverage):
             raise ValueError(
-                f"Baseload LCOE file {geo_paths.baseload_lcoe_file.name} was run at p{int(file_p)}, but the hydrogen "
-                f"power mix implies p{p}"
+                f"Baseload LCOE file {geo_paths.baseload_lcoe_file.name} was run at coverage "
+                f"{float(file_coverage):g}, but the hydrogen power mix implies {coverage:g}"
             )
         logger.info("[H2 PRICE] Baseload LCOE from %s (run '%s').", geo_paths.baseload_lcoe_file, ds.attrs.get("run"))
         available = [int(y) for y in ds["year"].values]
@@ -194,16 +195,16 @@ def baseload_lcoe_by_geo_key_series(
     mean when it has no pixel. Every requested geo_key is priced for every year, or a ValueError
     is raised — a missing price must never fall back to the grid silently.
     """
-    from boa.conversions import coverage_to_percentile
-
     logger = logging.getLogger(f"{__name__}.baseload_lcoe_by_geo_key_series")
     if not 0 <= percentile <= 100:
         raise ValueError(f"hydrogen_lcoe_percentile must be within 0..100, got {percentile}")
     geo_keys, years = list(geo_keys), list(years)
-    p = coverage_to_percentile(coverage)
+    # The legacy per-year-file layout keys its directories off the uncovered percentile
+    # (see geospatial_layers.py's identical `p = int((1 - baseload_coverage) * 100)`).
+    p = int((1 - coverage) * 100)
     grid = build_geo_key_grid(geo_paths)
     keys_flat = grid.values.ravel()
-    load = _year_loader(geo_paths, p)
+    load = _year_loader(geo_paths, coverage, p)
 
     series: dict[Year, dict[str, float]] = {}
     fill_sources: dict[str, np.ndarray] | None = None
