@@ -322,7 +322,7 @@ def test_plot_supply_chain_writes_self_contained_viewer(tmp_path) -> None:
 
 
 def test_plot_embedded_emissions_map_writes_self_contained_viewer(tmp_path) -> None:
-    """The map embeds the emitter-by-consumer matrix, polygons and provenance; a missing input → no viewer."""
+    """The map embeds the matrices, polygons and provenance but no ore-mine coordinates; a missing input → no viewer."""
     tm_dir = tmp_path / "TM"
     tm_dir.mkdir()
     header = "commodity,source_type,source_id,source_location,capacity_at_source,source_tech,destination_type,"
@@ -333,7 +333,9 @@ def test_plot_embedded_emissions_map_writes_self_contained_viewer(tmp_path) -> N
         "Location(lat=1.0, lon=2.0, country='{0}', region='R', iso3='{0}', distance_to_other_iso3=None, geo_unit=None)"
     )
     row = f'steel,Plant-FurnaceGroup,P1_0,"{loc.format("CHN")}",1e6,BOF,DemandCenter,India,"{loc.format("IND")}",2e6,0,2e6,N/A'
-    (tm_dir / "steel_trade_allocations_2025.csv").write_text(f"{header}\n{row}\n")
+    mine = loc.format("AUS").replace("country='AUS'", "country='Pilbara'")
+    ore = f'io_high,Supplier,sup_a,"{mine}",N/A,N/A,Plant-FurnaceGroup,P1_0,"{loc.format("CHN")}",3e6,0,N/A,3e6'
+    (tm_dir / "steel_trade_allocations_2025.csv").write_text(f"{header}\n{row}\n{ore}\n")
     post_processed_csv = tmp_path / "post_processed.csv"
     pd.DataFrame(
         {
@@ -353,9 +355,15 @@ def test_plot_embedded_emissions_map_writes_self_contained_viewer(tmp_path) -> N
         assert placeholder not in html
     assert '"chartTitle": "Emissions embedded in steel trade"' in html
     assert '"countries":["CHN","IND"]' in html
-    assert '"m":{"2025":{"direct":{"s":[0],"d":[1],"t":[3000]},"indirect":{"s":[0],"d":[1],"t":[1000]}}}' in html
+    assert '"boundaries":["rs-inspired"],"boundary":"rs-inspired"' in html
+    assert (
+        '"m":{"2025":{"rs-inspired|direct_ghg":{"s":[0],"d":[1],"t":[3000]},'
+        '"rs-inspired|indirect_ghg":{"s":[0],"d":[1],"t":[1000]}}}'
+    ) in html
+    assert '"coords":{"CHN":[1.0,2.0],"IND":[1.0,2.0]}' in html
+    assert "Pilbara" not in html
     assert '"steel":{"2025":{"s":[0],"d":[1],"t":[2000]}}' in html
-    assert "rs-inspired boundary" in html
+    assert "the run's chosen boundary is rs-inspired" in html
     assert plotter.plot_embedded_emissions_map(post_processed_csv, tmp_path / "absent", "rs-inspired") is None
     assert plotter.plot_embedded_emissions_map(tmp_path / "absent.csv", tm_dir, "rs-inspired") is None
     assert plotter.plot_embedded_emissions_map(post_processed_csv, tm_dir, "no-such-boundary") is None

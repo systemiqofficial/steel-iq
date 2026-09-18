@@ -1,13 +1,14 @@
 """Emissions embedded in steel trade, for the embedded emissions map (``embedded_emissions_map.html``).
 
-Every furnace group's direct and indirect emissions of the year (post-processed table,
-one row per furnace group after dropping the per-feedstock repeats) are spread over the
-tonnes it shipped in the realised allocations and carried down the trade graph — iron
-furnace group → steel furnace group → demand centre — pro rata to volume. Ore mines and
-scrap suppliers carry no emissions inside the model. The result is, per year and scope,
-a matrix of tCO2 by emitting country and consuming country: its row sums are the
-production-based (territorial) emissions, its column sums the consumption-based ones,
-and its total is the furnace-group total.
+Every furnace group's emissions of the year (post-processed table, one row per furnace
+group after dropping the per-feedstock repeats) are spread over the tonnes it shipped in
+the realised allocations and carried down the trade graph — iron furnace group → steel
+furnace group → demand centre — pro rata to volume. Ore mines and scrap suppliers carry
+no emissions inside the model. The result is, per year and per emissions boundary and
+scope of the table (direct, direct incl. biogenic, indirect), a matrix of tCO2 by
+emitting country and consuming country: its row sums are the production-based
+(territorial) emissions, its column sums the consumption-based ones, and its total is
+the furnace-group total.
 """
 
 import json
@@ -15,13 +16,14 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 from plotly.offline import get_plotlyjs
 
+from .emissions import EMISSIONS_PREFIX, SCOPES, emission_boundaries
 from .trade_allocations import ASSETS_DIR, DECKGL_JS
 from .trade_matrix import iso3_of
 
-SCOPES = ("direct", "indirect")
 FURNACE_GROUP = "Plant-FurnaceGroup"
 DEMAND_CENTRE = "DemandCenter"
 COLUMNS = [
@@ -40,29 +42,35 @@ POLYGON_ISO3 = {"SDS": "SSD"}
 Matrix = dict[tuple[str, str], float]
 
 
-def furnace_group_emissions(post_processed: pd.DataFrame, boundary: str) -> dict[int, pd.DataFrame]:
-    """One row per furnace group and year with its emissions per scope.
+def furnace_group_emissions(post_processed: pd.DataFrame) -> dict[int, pd.DataFrame]:
+    """One row per furnace group and year with its emissions per boundary and scope.
 
     Args:
         post_processed: The run's post-processed table, which repeats a furnace group once
             per feedstock with identical emissions.
-        boundary: The emissions boundary to read, e.g. ``rs-inspired`` — the
-            ``emissions_<boundary>_<scope>_ghg`` columns.
 
     Returns:
-        ``{year: table}`` indexed by ``furnace_group_id`` with a column per scope of
-        :data:`SCOPES` in tCO2 (missing values as zero).
+        ``{year: table}`` indexed by ``furnace_group_id`` with one column per
+        ``emissions_<boundary>_<scope>`` column of the table, named ``"<boundary>|<scope>"``
+        (scopes of :data:`~.emissions.SCOPES`), in tCO2 with missing values as zero.
 
     Raises:
-        ValueError: If the table lacks the boundary's emissions columns.
+        ValueError: If the table carries no emissions columns.
     """
-    columns = {f"emissions_{boundary}_{scope}_ghg": scope for scope in SCOPES}
-    missing = [column for column in columns if column not in post_processed.columns]
-    if missing:
-        raise ValueError(f"The post-processed table lacks the emissions columns {missing}")
+    columns = {
+        f"{EMISSIONS_PREFIX}{boundary}_{scope}": f"{boundary}|{scope}"
+        for boundary in emission_boundaries(list(post_processed.columns))
+        for scope in SCOPES
+        if f"{EMISSIONS_PREFIX}{boundary}_{scope}" in post_processed.columns
+    }
+    if not columns:
+        raise ValueError("The post-processed table has no emissions_<boundary>_<scope> columns")
     table = post_processed[["year", "furnace_group_id", *columns]].drop_duplicates(["year", "furnace_group_id"])
-    table = table.rename(columns=columns).fillna(dict.fromkeys(SCOPES, 0.0))
-    return {int(year): table[table["year"] == year].set_index("furnace_group_id") for year in table["year"].unique()}
+    table = table.rename(columns=columns).fillna(dict.fromkeys(columns.values(), 0.0))
+    return {
+        int(year): table[table["year"] == year].set_index("furnace_group_id").drop(columns="year")
+        for year in table["year"].unique()
+    }
 
 
 def _shipping_order(out_volume: pd.Series, successors: dict[str, list[tuple[str, float]]]) -> list[str]:
@@ -90,7 +98,8 @@ def embedded_matrix(allocations: pd.DataFrame, emissions: pd.DataFrame) -> dict[
         emissions: That year's table of :func:`furnace_group_emissions`.
 
     Returns:
-        ``{scope: {(emitter_iso3, consumer_iso3): tCO2}}``.
+        ``{key: {(emitter_iso3, consumer_iso3): tCO2}}`` for every ``"<boundary>|<scope>"``
+        column of ``emissions``, zero entries left out.
 
     Raises:
         ValueError: If a location carries no ISO3, or the furnace-group graph is not
@@ -100,6 +109,8 @@ def embedded_matrix(allocations: pd.DataFrame, emissions: pd.DataFrame) -> dict[
         - A furnace group's emissions, its own plus those received with its iron, are
           split over its outbound tonnes; every furnace group ships all it produces, so
           nothing is left behind and the matrix total equals the furnace-group total.
+        - The boundaries and scopes travel together as one vector per furnace group and
+          emitting country, so the graph is walked once.
     """
     shipped = allocations[(allocations["source_type"] == FURNACE_GROUP) & (allocations["allocated_volume"] > 0)]
     out_volume = shipped.groupby("source_id")["allocated_volume"].sum()
@@ -115,23 +126,23 @@ def embedded_matrix(allocations: pd.DataFrame, emissions: pd.DataFrame) -> dict[
         successors[source].append((destination, float(volume) / float(out_volume[source])))
     order = _shipping_order(out_volume, successors)
 
-    result: dict[str, Matrix] = {}
-    for scope in SCOPES:
-        own = emissions[scope].reindex(out_volume.index).fillna(0.0)
-        carried: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
-        for fg in order:
-            if own[fg]:
-                carried[fg][emitter[fg]] += float(own[fg])
-            for destination, share in successors.get(fg, []):
-                for iso3, tonnes in carried[fg].items():
-                    carried[destination][iso3] += tonnes * share
-        matrix: Matrix = defaultdict(float)
-        for source, volume, iso3 in zip(to_demand["source_id"], to_demand["allocated_volume"], consumer):
-            share = float(volume) / float(out_volume[source])
-            for emitter_iso3, tonnes in carried[source].items():
-                matrix[emitter_iso3, iso3] += tonnes * share
-        result[scope] = dict(matrix)
-    return result
+    keys = list(emissions.columns)
+    own = emissions.reindex(out_volume.index).fillna(0.0)
+    carried: dict[str, dict[str, np.ndarray]] = defaultdict(lambda: defaultdict(lambda: np.zeros(len(keys))))
+    for fg in order:
+        if own.loc[fg].any():
+            carried[fg][emitter[fg]] += own.loc[fg].to_numpy()
+        for destination, share in successors.get(fg, []):
+            for iso3, tonnes in carried[fg].items():
+                carried[destination][iso3] += tonnes * share
+    delivered: dict[tuple[str, str], np.ndarray] = defaultdict(lambda: np.zeros(len(keys)))
+    for source, volume, iso3 in zip(to_demand["source_id"], to_demand["allocated_volume"], consumer):
+        share = float(volume) / float(out_volume[source])
+        for emitter_iso3, tonnes in carried[source].items():
+            delivered[emitter_iso3, iso3] += tonnes * share
+    return {
+        key: {pair: float(tonnes[k]) for pair, tonnes in delivered.items() if tonnes[k]} for k, key in enumerate(keys)
+    }
 
 
 def steel_flows(allocations: pd.DataFrame) -> Matrix:
@@ -158,19 +169,23 @@ def pack_years(post_processed: pd.DataFrame, files: dict[int, Path], boundary: s
     Args:
         post_processed: The run's post-processed table.
         files: ``{year: path}`` as :func:`trade_matrix.allocation_files` returns.
-        boundary: The emissions boundary to read (see :func:`furnace_group_emissions`).
+        boundary: The run's chosen emissions boundary, e.g. ``rs-inspired`` — the one the
+            viewer opens on.
 
     Returns:
-        ``years``, the ``countries`` label table, ``scopes``, ``m[year][scope]`` and
-        ``steel[year]`` as parallel lists ``s`` (emitter or producer index), ``d``
-        (consumer index) and ``t`` (kt, entries under 0.5 kt dropped). Years without a
-        post-processed row are left out.
+        ``years``, the ``countries`` label table, the ``boundaries`` of the table, the
+        chosen ``boundary``, ``m[year]["<boundary>|<scope>"]`` and ``steel[year]`` as
+        parallel lists ``s`` (emitter or producer index), ``d`` (consumer index) and ``t``
+        (kt, entries under 0.5 kt dropped). Years without a post-processed row are left out.
 
     Raises:
-        ValueError: As :func:`furnace_group_emissions` and :func:`embedded_matrix`, or when
-        a file lacks the allocation columns.
+        ValueError: As :func:`furnace_group_emissions` and :func:`embedded_matrix`, when the
+        table lacks the chosen boundary, or when a file lacks the allocation columns.
     """
-    by_year = furnace_group_emissions(post_processed, boundary)
+    by_year = furnace_group_emissions(post_processed)
+    boundaries = emission_boundaries(list(post_processed.columns))
+    if boundary not in boundaries:
+        raise ValueError(f"The post-processed table has no emissions columns of the {boundary} boundary")
     countries: dict[str, int] = {}
 
     def pack(matrix: Matrix) -> dict[str, list[int]]:
@@ -183,14 +198,14 @@ def pack_years(post_processed: pd.DataFrame, files: dict[int, Path], boundary: s
                 packed["t"].append(kilotonnes)
         return packed
 
-    payload: dict[str, Any] = {"years": [], "scopes": list(SCOPES), "m": {}, "steel": {}}
+    payload: dict[str, Any] = {"years": [], "boundaries": boundaries, "boundary": boundary, "m": {}, "steel": {}}
     for year, path in files.items():
         if year not in by_year:
             continue
         allocations = pd.read_csv(path, usecols=COLUMNS, keep_default_na=False)
         emissions = by_year[year]
         payload["years"].append(year)
-        payload["m"][year] = {scope: pack(matrix) for scope, matrix in embedded_matrix(allocations, emissions).items()}
+        payload["m"][year] = {key: pack(matrix) for key, matrix in embedded_matrix(allocations, emissions).items()}
         payload["steel"][year] = pack(steel_flows(allocations))
     payload["countries"] = list(countries)
     return payload

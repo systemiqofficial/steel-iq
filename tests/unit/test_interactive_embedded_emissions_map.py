@@ -11,7 +11,10 @@ from test_interactive_supply_chain import DC, FG, SUPPLIER, edge
 from test_interactive_trade_matrix import HEADER, location, mine_location, write_allocations
 
 BOUNDARY = "rs-inspired"
-DIRECT, INDIRECT = f"emissions_{BOUNDARY}_direct_ghg", f"emissions_{BOUNDARY}_indirect_ghg"
+OTHER_BOUNDARY = "worldsteel_opt_credits"
+DIRECT, INDIRECT = f"{BOUNDARY}|direct_ghg", f"{BOUNDARY}|indirect_ghg"
+WITH_BIOMASS = f"{BOUNDARY}|direct_with_biomass_ghg"
+OTHER_DIRECT = f"{OTHER_BOUNDARY}|direct_ghg"
 
 
 def chain_rows() -> list[list]:
@@ -30,12 +33,18 @@ def chain_rows() -> list[list]:
 def post_processed_table() -> pd.DataFrame:
     """2025 emissions of the chain's furnace groups; the BF is repeated per feedstock as the real table does."""
     rows = [
-        (2025, "P1_0", "io_high", 2e6, 2e5),
-        (2025, "P1_0", "io_mid", 2e6, 2e5),
-        (2025, "P1_1", "hot_metal", 0.0, 1e5),
-        (2025, "P2_0", "pig_iron", 4e4, None),
+        (2025, "P1_0", "io_high", 2e6, 3e6, 2e5, 1e6),
+        (2025, "P1_0", "io_mid", 2e6, 3e6, 2e5, 1e6),
+        (2025, "P1_1", "hot_metal", 0.0, 0.0, 1e5, 0.0),
+        (2025, "P2_0", "pig_iron", 4e4, 4e4, None, 0.0),
     ]
-    return pd.DataFrame(rows, columns=["year", "furnace_group_id", "feedstock", DIRECT, INDIRECT])
+    columns = [
+        f"emissions_{BOUNDARY}_direct_ghg",
+        f"emissions_{BOUNDARY}_direct_with_biomass_ghg",
+        f"emissions_{BOUNDARY}_indirect_ghg",
+        f"emissions_{OTHER_BOUNDARY}_direct_ghg",
+    ]
+    return pd.DataFrame(rows, columns=["year", "furnace_group_id", "feedstock", *columns])
 
 
 def allocations_table(rows: list[list]) -> pd.DataFrame:
@@ -44,43 +53,47 @@ def allocations_table(rows: list[list]) -> pd.DataFrame:
 
 
 def test_furnace_group_emissions_keeps_one_row_per_furnace_group() -> None:
-    """The per-feedstock repeats collapse to one row, the boundary picks the columns and gaps count as zero."""
-    by_year = embedded_emissions_map.furnace_group_emissions(post_processed_table(), BOUNDARY)
+    """The per-feedstock repeats collapse to one row, every boundary and scope is a column and gaps count as zero."""
+    by_year = embedded_emissions_map.furnace_group_emissions(post_processed_table())
 
     assert list(by_year) == [2025]
     table = by_year[2025]
     assert list(table.index) == ["P1_0", "P1_1", "P2_0"]
-    assert table.loc["P1_0", "direct"] == 2e6
-    assert table.loc["P2_0", "indirect"] == 0.0
+    assert list(table.columns) == [WITH_BIOMASS, DIRECT, INDIRECT, OTHER_DIRECT]
+    assert table.loc["P1_0", DIRECT] == 2e6
+    assert table.loc["P1_0", WITH_BIOMASS] == 3e6
+    assert table.loc["P2_0", INDIRECT] == 0.0
 
 
-def test_furnace_group_emissions_rejects_a_boundary_without_columns() -> None:
-    """A boundary the table does not carry is an error naming the missing columns."""
-    with pytest.raises(ValueError, match="emissions_worldsteel_direct_ghg"):
-        embedded_emissions_map.furnace_group_emissions(post_processed_table(), "worldsteel")
+def test_furnace_group_emissions_rejects_a_table_without_emissions_columns() -> None:
+    """A table carrying no emissions columns is an error."""
+    with pytest.raises(ValueError, match="no emissions_<boundary>_<scope> columns"):
+        embedded_emissions_map.furnace_group_emissions(post_processed_table()[["year", "furnace_group_id"]])
 
 
 def test_embedded_matrix_carries_iron_emissions_to_the_consuming_country() -> None:
     """The BF's emissions follow its iron into both steel plants and on to the demand centres, pro rata."""
-    emissions = embedded_emissions_map.furnace_group_emissions(post_processed_table(), BOUNDARY)[2025]
+    emissions = embedded_emissions_map.furnace_group_emissions(post_processed_table())[2025]
 
     matrices = embedded_emissions_map.embedded_matrix(allocations_table(chain_rows()), emissions)
 
-    assert matrices["direct"] == {
+    assert matrices[DIRECT] == {
         ("CHN", "IND"): 750_000.0,
         ("CHN", "CHN"): 750_000.0,
         ("CHN", "DEU"): 500_000.0,
         ("DEU", "DEU"): 40_000.0,
     }
-    assert matrices["indirect"] == {("CHN", "IND"): 125_000.0, ("CHN", "CHN"): 125_000.0, ("CHN", "DEU"): 50_000.0}
-    for scope in embedded_emissions_map.SCOPES:
-        assert sum(matrices[scope].values()) == pytest.approx(emissions[scope].sum())
+    assert matrices[INDIRECT] == {("CHN", "IND"): 125_000.0, ("CHN", "CHN"): 125_000.0, ("CHN", "DEU"): 50_000.0}
+    assert matrices[OTHER_DIRECT] == {("CHN", "IND"): 375_000.0, ("CHN", "CHN"): 375_000.0, ("CHN", "DEU"): 250_000.0}
+    assert list(matrices) == list(emissions.columns)
+    for key in emissions.columns:
+        assert sum(matrices[key].values()) == pytest.approx(emissions[key].sum())
 
 
 def test_embedded_matrix_rejects_a_cycle_between_furnace_groups() -> None:
     """Two furnace groups shipping to each other cannot be ordered, so the matrix is refused."""
     rows = chain_rows() + [edge("pig_iron", FG, "P1_1", location("CHN"), "BOF", FG, "P1_0", location("CHN"), 1e5)]
-    emissions = embedded_emissions_map.furnace_group_emissions(post_processed_table(), BOUNDARY)[2025]
+    emissions = embedded_emissions_map.furnace_group_emissions(post_processed_table())[2025]
 
     with pytest.raises(ValueError, match="cycle"):
         embedded_emissions_map.embedded_matrix(allocations_table(rows), emissions)
@@ -109,10 +122,13 @@ def test_pack_years_packs_kilotonnes_against_one_country_table(tmp_path: Path) -
     )
 
     assert payload["years"] == [2025]
-    assert payload["scopes"] == ["direct", "indirect"]
+    assert payload["boundaries"] == [BOUNDARY, OTHER_BOUNDARY]
+    assert payload["boundary"] == BOUNDARY
     assert payload["countries"] == ["CHN", "DEU", "IND", "BRA"]
-    assert payload["m"][2025]["direct"] == {"s": [0, 0, 0, 1], "d": [0, 1, 2, 1], "t": [750, 500, 750, 40]}
-    assert payload["m"][2025]["indirect"] == {"s": [0, 0, 0], "d": [0, 1, 2], "t": [125, 50, 125]}
+    assert list(payload["m"][2025]) == [WITH_BIOMASS, DIRECT, INDIRECT, OTHER_DIRECT]
+    assert payload["m"][2025][WITH_BIOMASS] == {"s": [0, 0, 0, 1], "d": [0, 1, 2, 1], "t": [1125, 750, 1125, 40]}
+    assert payload["m"][2025][DIRECT] == {"s": [0, 0, 0, 1], "d": [0, 1, 2, 1], "t": [750, 500, 750, 40]}
+    assert payload["m"][2025][INDIRECT] == {"s": [0, 0, 0], "d": [0, 1, 2], "t": [125, 50, 125]}
     assert payload["steel"][2025] == {"s": [3, 0, 0, 1], "d": [3, 0, 2, 1], "t": [500, 2000, 2000, 1000]}
 
 
@@ -122,3 +138,12 @@ def test_country_features_key_polygons_by_the_model_iso3() -> None:
 
     assert {"CHN", "IND", "SSD"} <= codes
     assert "SDS" not in codes
+
+
+def test_pack_years_rejects_a_chosen_boundary_the_table_lacks(tmp_path: Path) -> None:
+    """The viewer opens on the run's boundary, so a table without it is refused."""
+    tm_dir = tmp_path / "TM"
+    write_allocations(tm_dir, 2025, chain_rows())
+
+    with pytest.raises(ValueError, match="no emissions columns of the worldsteel boundary"):
+        embedded_emissions_map.pack_years(post_processed_table(), trade_matrix.allocation_files(tm_dir), "worldsteel")

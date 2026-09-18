@@ -507,17 +507,19 @@ class InteractivePlotter:
     def plot_embedded_emissions_map(self, post_processed_csv: Path, tm_dir: Path, boundary: str) -> Optional[Path]:
         """Write the embedded emissions map (``embedded_emissions_map.html``).
 
-        A choropleth of the emissions embedded in steel trade: every furnace group's direct
-        and indirect emissions are carried along the realised allocations to the country
-        that consumed the steel (:mod:`embedded_emissions_map`), giving production-based
-        and consumption-based emissions per country and year, the emissions embedded in
-        imports and exports, and the partners behind them.
+        A choropleth of the emissions embedded in steel trade: every furnace group's
+        emissions are carried along the realised allocations to the country that consumed
+        the steel (:mod:`embedded_emissions_map`), giving production-based and
+        consumption-based emissions per country and year, the emissions embedded in
+        imports and exports, and the partners behind them — for every emissions boundary
+        of the table and the direct, direct incl. biogenic and indirect scopes.
 
         Args:
             post_processed_csv: The run's post-processed table (furnace-group emissions).
             tm_dir: The run's ``TM`` output directory holding ``steel_trade_allocations_<year>.csv``.
             boundary: The run's chosen emissions boundary
-                (``chosen_emissions_boundary_for_carbon_costs``), e.g. ``rs-inspired``.
+                (``chosen_emissions_boundary_for_carbon_costs``), e.g. ``rs-inspired`` — the
+                one the viewer opens on.
 
         Returns:
             The written path, or None when an input is missing or cannot be read (logged
@@ -533,12 +535,18 @@ class InteractivePlotter:
             return None
         try:
             payload = embedded_emissions_map.pack_years(post_processed, files, boundary)
-            coords = trade_matrix.read_coords(files)
+            # Dots for the countries without a polygon; read_coords also returns the ore mines' labels.
+            coords = {
+                key: position
+                for key, position in trade_matrix.read_coords(files).items()
+                if key in payload["countries"]
+            }
         except ValueError as exc:
             logger.warning("%s — skipping the %s", exc, viewer)
             return None
         provenance = (
-            f"Furnace-group direct and indirect emissions ({boundary} boundary, the run's chosen boundary) from "
+            f"Furnace-group emissions of the selected boundary and scope (the run's chosen boundary is {boundary}; "
+            'direct excludes biogenic CO2 unless "incl. biogenic" is ticked) from '
             f"{post_processed_csv.name}, carried along the trade module's realised allocations "
             "(TM/steel_trade_allocations_<year>.csv) pro rata to volume: iron furnace group → steel furnace "
             "group → demand centre. Ore and scrap carry no emissions inside the model."
