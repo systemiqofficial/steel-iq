@@ -157,9 +157,14 @@ def run_full_simulation() -> str:
         help="Path to BOA-generated baseload power simulation output directory (overrides default)",
     )
     parser.add_argument(
-        "--enable-clustering",
-        action="store_true",
-        help="Enable furnace group clustering to reduce LP complexity",
+        "--clustering",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Cluster furnace groups to reduce LP complexity (default: on)",
+    )
+    # Former spelling of --clustering, kept so existing launch scripts still parse
+    parser.add_argument(
+        "--enable-clustering", dest="clustering", action="store_true", default=None, help=argparse.SUPPRESS
     )
     parser.add_argument(
         "--plot-tm",
@@ -176,11 +181,11 @@ def run_full_simulation() -> str:
         "--clustering-scope",
         type=str,
         choices=["iso3", "plant_group", "plant"],
-        default="iso3",
+        default=None,
         help=(
             "When clustering is enabled, geographical scope for clustering hot-metal-affected techs. "
-            "'iso3' (default): cluster by country. 'plant_group': cluster by corporate group. "
-            "'plant': cluster by individual plant. "
+            "'plant' (default): cluster by individual plant. 'plant_group': cluster by corporate group. "
+            "'iso3': cluster by country. "
             "Only affects FGs with hot_metal/dri_*/liquid_iron feedstocks or outputs."
         ),
     )
@@ -360,10 +365,11 @@ def run_full_simulation() -> str:
             config = SimulationConfig.from_data_directory(**config_kwargs)
 
             # Override clustering setting from command line
-            if args.enable_clustering:
-                config.enable_furnace_group_clustering = True
-                console.print("[green]Furnace group clustering enabled[/green]")
-            if args.clustering_scope != "iso3":
+            if args.clustering is not None:
+                config.enable_furnace_group_clustering = args.clustering
+                state = "enabled" if args.clustering else "disabled"
+                console.print(f"[green]Furnace group clustering {state}[/green]")
+            if args.clustering_scope is not None:
                 config.geographical_clustering_scope = args.clustering_scope
                 console.print(f"[green]Hot-metal-affected techs will cluster by {args.clustering_scope}[/green]")
 
@@ -466,10 +472,11 @@ def run_full_simulation() -> str:
                 config = SimulationConfig.from_data_directory(**config_kwargs)
 
                 # Override clustering setting from command line
-                if args.enable_clustering:
-                    config.enable_furnace_group_clustering = True
-                    console.print("[green]Furnace group clustering enabled[/green]")
-                if args.clustering_scope != "iso3":
+                if args.clustering is not None:
+                    config.enable_furnace_group_clustering = args.clustering
+                    state = "enabled" if args.clustering else "disabled"
+                    console.print(f"[green]Furnace group clustering {state}[/green]")
+                if args.clustering_scope is not None:
                     config.geographical_clustering_scope = args.clustering_scope
                     console.print(f"[green]Hot-metal-affected techs will cluster by {args.clustering_scope}[/green]")
 

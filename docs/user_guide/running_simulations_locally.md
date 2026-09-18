@@ -375,7 +375,8 @@ Outputs always go to a fresh `$STEELO_HOME/output/sim_<timestamp>/` directory; `
 - `--demand-scenario` / `--scrap-scenario`: `Scenario` rows of the "Demand and scrap availability" sheet used for steel demand and for scrap availability (default: BAU; scrap falls back to the demand scenario)
 - `--grid-emissions-scenario`: Grid emissivity projection applied at run time, named as in the "Power grid emissivity" sheet without its `projection_` prefix (default: Business As Usual)
 - `--peg-iron-to-steel-price` / `--iron-to-steel-price-ratio`: Floor the iron price at a share of the steel price (default ratio: 0.8)
-- `--enable-clustering` / `--clustering-scope`: Cluster hot-metal-affected furnace groups to reduce trade-LP size (scope `iso3`, `plant_group` or `plant`)
+- `--clustering` / `--no-clustering`: Cluster furnace groups to reduce trade-LP size (default: on; the former `--enable-clustering` is still accepted)
+- `--clustering-scope`: How finely furnace groups that use or make hot metal, DRI or liquid iron are clustered: `plant` (default), `plant_group` or `iso3`. See [Trade Model Setup](../domain_simulation_logic/trade_model/trade_model_setup.md)
 - `--hydrogen-ceiling-percentile`: Percentile of a region's LCOH used as the regional hydrogen price cap (default: 100, which disables the cap). See [Hydrogen Costs](../domain_simulation_logic/geospatial_model/priority_location_selection.md#hydrogen-costs)
 - `--intraregional-trade` / `--no-intraregional-trade`: Allow or disallow hydrogen imports between linked regions (default: off)
 

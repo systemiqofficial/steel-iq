@@ -327,11 +327,11 @@ class SimulationConfig:
     )
 
     # === Clustering Configuration ===
-    enable_furnace_group_clustering: bool = False  # Feature flag for LP complexity reduction via clustering
+    enable_furnace_group_clustering: bool = True  # LP complexity reduction via clustering
     # Geographical scope for clustering FGs that consume/produce closely-allocated commodities.
     # Options: 'iso3' (country-level), 'plant_group' (corporate group), 'plant' (individual plant).
     # This determines the granularity of clustering while keeping cold/hot commodity substitution local.
-    geographical_clustering_scope: str = "iso3"
+    geographical_clustering_scope: str = "plant"
 
     # === Plant Agent Module Parameters ===
     probabilistic_agents: bool = True  # Probabilitstic (mimick human decision-making) vs deterministic approach

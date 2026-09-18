@@ -80,8 +80,8 @@ function resetPolicySettings() {
     // Reset policy settings
     document.getElementById('id_use_iron_ore_premiums').checked = true;
     document.getElementById('id_include_tariffs').checked = true;
-    document.getElementById('id_enable_furnace_group_clustering').checked = false;
-    document.getElementById('id_cluster_hot_metal_techs_by_plant_group').checked = false;
+    document.getElementById('id_enable_furnace_group_clustering').checked = true;
+    document.getElementById('id_geographical_clustering_scope').value = 'plant';
     const gridScenario = document.getElementById('id_chosen_grid_emissions_scenario');
     if (gridScenario && !gridScenario.disabled) {
         gridScenario.value = 'Business As Usual';
@@ -306,20 +306,19 @@ document.addEventListener('DOMContentLoaded', function() {
     pegCheckbox.addEventListener('change', updateRatioField);
 });
 
-// Toggle cluster_hot_metal_techs_by_plant_group based on enable_furnace_group_clustering
-// (the second flag is a no-op unless the first is on)
+// Toggle geographical_clustering_scope based on enable_furnace_group_clustering
+// (the scope is a no-op unless clustering is on)
 document.addEventListener('DOMContentLoaded', function() {
     var parentCheckbox = document.getElementById('id_enable_furnace_group_clustering');
-    var childRow = document.getElementById('cluster_hot_metal_techs_by_plant_group_row');
-    var childCheckbox = document.getElementById('id_cluster_hot_metal_techs_by_plant_group');
+    var childRow = document.getElementById('geographical_clustering_scope_row');
+    var childSelect = document.getElementById('id_geographical_clustering_scope');
 
     function updateChildField() {
         if (parentCheckbox.checked) {
-            childCheckbox.disabled = false;
+            childSelect.disabled = false;
             childRow.style.opacity = '1';
         } else {
-            childCheckbox.disabled = true;
-            childCheckbox.checked = false;
+            childSelect.disabled = true;
             childRow.style.opacity = '0.5';
         }
     }
@@ -1184,18 +1183,14 @@ document.head.appendChild(style);
                                     </div>
                                 </div>
 
-                                <div class="mb-3 row" id="cluster_hot_metal_techs_by_plant_group_row">
-                                    <label for="{{ form.cluster_hot_metal_techs_by_plant_group.id_for_label }}" class="col-sm-3 col-form-label">{{ form.cluster_hot_metal_techs_by_plant_group.label }}:</label>
+                                <div class="mb-3 row" id="geographical_clustering_scope_row">
+                                    <label for="{{ form.geographical_clustering_scope.id_for_label }}" class="col-sm-3 col-form-label">{{ form.geographical_clustering_scope.label }}:</label>
                                     <div class="col-sm-9">
-                                        <div class="form-check">
-                                            {{ form.cluster_hot_metal_techs_by_plant_group }}
-                                            <label class="form-check-label" for="{{ form.cluster_hot_metal_techs_by_plant_group.id_for_label }}">
-                                                {{ form.cluster_hot_metal_techs_by_plant_group.help_text }}
-                                            </label>
-                                        </div>
-                                        {% if form.cluster_hot_metal_techs_by_plant_group.errors %}
+                                        {{ form.geographical_clustering_scope }}
+                                        <small class="form-text text-muted">{{ form.geographical_clustering_scope.help_text }}</small>
+                                        {% if form.geographical_clustering_scope.errors %}
                                         <div class="invalid-feedback d-block">
-                                            {{ form.cluster_hot_metal_techs_by_plant_group.errors }}
+                                            {{ form.geographical_clustering_scope.errors }}
                                         </div>
                                         {% endif %}
                                     </div>

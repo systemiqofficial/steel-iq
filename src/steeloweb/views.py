@@ -765,8 +765,8 @@ def create_modelrun(request):
                 "use_iron_ore_premiums": form.cleaned_data.get("use_iron_ore_premiums", True),
                 "green_steel_emissions_limit": 0.4,  # Hardcoded - no longer user-configurable
                 "include_tariffs": form.cleaned_data.get("include_tariffs", True),
-                "enable_furnace_group_clustering": form.cleaned_data.get("enable_furnace_group_clustering", False),
-                "geographical_clustering_scope": form.cleaned_data.get("geographical_clustering_scope", "iso3"),
+                "enable_furnace_group_clustering": form.cleaned_data.get("enable_furnace_group_clustering", True),
+                "geographical_clustering_scope": form.cleaned_data.get("geographical_clustering_scope") or "plant",
                 "output_file": output_file,
                 # Add new demand and circularity fields
                 "total_steel_demand_scenario": form.cleaned_data.get(

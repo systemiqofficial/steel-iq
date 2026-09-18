@@ -467,9 +467,12 @@ class ModelRunCreateForm(forms.ModelForm):
 
     enable_furnace_group_clustering = forms.BooleanField(
         label="Enable furnace group clustering",
-        initial=False,
+        initial=True,
         required=False,
-        help_text="Speed up trade calculations by grouping similar furnace groups (same technology, reductant, and country) into clusters",
+        help_text=(
+            "Speed up trade calculations by grouping similar furnace groups (same technology, reductant, and country) "
+            "into clusters. Switching this off radically increases the runtime."
+        ),
         widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
     )
 
@@ -480,7 +483,7 @@ class ModelRunCreateForm(forms.ModelForm):
             ("plant_group", "Plant group (corporate)"),
             ("plant", "Individual plant"),
         ],
-        initial="iso3",
+        initial="plant",
         required=False,
         help_text=(
             "Geographical scope for clustering furnace groups consuming/producing closely-allocated commodities. "

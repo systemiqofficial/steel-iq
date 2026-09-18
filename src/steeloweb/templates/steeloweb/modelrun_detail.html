@@ -240,8 +240,8 @@
                             <dt class="col-sm-4">Furnace group clustering:</dt>
                             <dd class="col-sm-8">{{ modelrun.config.enable_furnace_group_clustering|yesno:"Enabled,Disabled,—" }}</dd>
 
-                            <dt class="col-sm-4">Hot metal cluster by plant group:</dt>
-                            <dd class="col-sm-8">{{ modelrun.config.cluster_hot_metal_techs_by_plant_group|yesno:"Enabled,Disabled,—" }}</dd>
+                            <dt class="col-sm-4">Clustering scope:</dt>
+                            <dd class="col-sm-8">{{ modelrun.config.geographical_clustering_scope|default:"—" }}</dd>
 
                             <dt class="col-sm-4">Plant agents:</dt>
                             <dd class="col-sm-8">{{ modelrun.config.probabilistic_agents|yesno:"Probabilistic,Deterministic,—" }}</dd>
