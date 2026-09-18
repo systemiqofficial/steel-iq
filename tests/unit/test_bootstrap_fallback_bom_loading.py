@@ -213,11 +213,15 @@ def test_load_plant_names_and_sources_warns_on_a_missing_sheet(
     assert "Could not load plant names from the Furnace units sheet" in caplog.text
 
 
-def test_load_plant_names_and_sources_returns_empty_when_the_workbook_is_missing(tmp_path: Path) -> None:
-    """No workbook to resolve gives empty results."""
+def test_load_plant_names_and_sources_returns_empty_when_the_workbook_is_missing(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No workbook to resolve gives empty results and says what the maps lose."""
+    caplog.set_level("WARNING")
     result = bootstrap._load_plant_names_and_sources(
         config_master_excel_path=tmp_path / "does_not_exist.xlsx",
         fixtures_dir=None,
     )
 
     assert result == ({}, [])
+    assert "The capacity maps will label plants by id" in caplog.text

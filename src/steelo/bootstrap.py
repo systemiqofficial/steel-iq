@@ -405,10 +405,12 @@ def bootstrap_simulation(
             config_master_excel_path=config.master_excel_path,
             fixtures_dir=fixtures_dir,
         )
-        env.plant_names, env.input_sources = _load_plant_names_and_sources(
-            config_master_excel_path=config.master_excel_path,
-            fixtures_dir=fixtures_dir,
-        )
+        # only the capacity map viewers read these, so a run without plots skips the workbook read
+        if config.plots_dir is not None:
+            env.plant_names, env.input_sources = _load_plant_names_and_sources(
+                config_master_excel_path=config.master_excel_path,
+                fixtures_dir=fixtures_dir,
+            )
         env.initiate_hydrogen_efficiency(repository_json.hydrogen_efficiency.list())
         env.initiate_hydrogen_capex_opex(repository_json.hydrogen_capex_opex.list())
         env.initiate_capped_hydrogen_costs_by_year()
@@ -645,14 +647,17 @@ def _load_plant_names_and_sources(
         a warning) when the workbook, the sheet or one of the columns is missing.
 
     Notes:
-        Only the capacity world map viewer uses these, for its plant labels and
-        source line, so a missing sheet must not stop the run.
+        Only the capacity map viewers use these, for their plant labels and source
+        line, so a missing sheet must not stop the run. The workbook is resolved at
+        start-up, so it can differ from the one a cached data preparation was built
+        from; that affects labels only, never the model.
     """
     master_excel_path = _resolve_fallback_bom_excel_path(
         config_master_excel_path=config_master_excel_path,
         fixtures_dir=fixtures_dir,
     )
     if master_excel_path is None:
+        logger.warning("No master workbook to read plant names from. The capacity maps will label plants by id.")
         return {}, []
 
     import pandas as pd
@@ -664,7 +669,7 @@ def _load_plant_names_and_sources(
     except Exception as exc:
         logger.warning(
             "Could not load plant names from the Furnace units sheet of %s: %s. "
-            "The capacity world map will label plants by id.",
+            "The capacity maps will label plants by id.",
             master_excel_path,
             exc,
         )
