@@ -315,7 +315,7 @@ def test_hydrogen_ceiling_percentile_default_value(db):
     """Test that hydrogen_ceiling_percentile has correct default value."""
     form = ModelRunCreateForm()
     field = form.fields.get("hydrogen_ceiling_percentile")
-    assert field.initial == 20.0
+    assert field.initial == 100.0
 
 
 def test_included_power_mix_default_value(db):
@@ -329,7 +329,7 @@ def test_intraregional_trade_allowed_default_value(db):
     """Test that intraregional_trade_allowed has correct default value."""
     form = ModelRunCreateForm()
     field = form.fields.get("intraregional_trade_allowed")
-    assert field.initial is True
+    assert field.initial is False
 
 
 def test_long_dist_pipeline_transport_cost_default_value(db):
@@ -638,9 +638,9 @@ def test_default_values_propagation(db, base_form_data):
     form_data = base_form_data.copy()
     form_data.update(
         {
-            "hydrogen_ceiling_percentile": 20.0,
+            "hydrogen_ceiling_percentile": 100.0,
             "included_power_mix": "85% baseload + 15% grid",
-            "intraregional_trade_allowed": True,
+            "intraregional_trade_allowed": False,
             "long_dist_pipeline_transport_cost": 1.0,
             "iron_mine_to_plant": 0.013,
             "iron_to_steel_plant": 0.015,
@@ -662,9 +662,9 @@ def test_default_values_propagation(db, base_form_data):
 
     # Check that default values are present
     expected_defaults = {
-        "hydrogen_ceiling_percentile": 20.0,
+        "hydrogen_ceiling_percentile": 100.0,
         "included_power_mix": "85% baseload + 15% grid",
-        "intraregional_trade_allowed": True,
+        "intraregional_trade_allowed": False,
         "long_dist_pipeline_transport_cost": 1.0,
         "include_infrastructure_cost": True,
         "include_transport_cost": True,

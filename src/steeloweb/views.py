@@ -756,8 +756,8 @@ def create_modelrun(request):
                     if form.cleaned_data.get("new_capacity_share_from_new_plants") is not None
                     else 0.4
                 ),
-                "hydrogen_ceiling_percentile": float(form.cleaned_data.get("hydrogen_ceiling_percentile") or 20.0),
-                "intraregional_trade_allowed": form.cleaned_data.get("intraregional_trade_allowed", True),
+                "hydrogen_ceiling_percentile": float(form.cleaned_data.get("hydrogen_ceiling_percentile") or 100.0),
+                "intraregional_trade_allowed": form.cleaned_data.get("intraregional_trade_allowed", False),
                 "long_dist_pipeline_transport_cost": float(
                     form.cleaned_data.get("long_dist_pipeline_transport_cost") or 1.0
                 ),

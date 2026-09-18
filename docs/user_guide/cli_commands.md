@@ -14,7 +14,10 @@ usage: run_simulation [-h] [--start-year START_YEAR] [--end-year END_YEAR]
                       [--demand-scenario DEMAND_SCENARIO]
                       [--scrap-scenario SCRAP_SCENARIO]
                       [--grid-emissions-scenario GRID_EMISSIONS_SCENARIO]
-                      [--run-name RUN_NAME] [--location-csv LOCATION_CSV]
+                      [--run-name RUN_NAME]
+                      [--hydrogen-ceiling-percentile HYDROGEN_CEILING_PERCENTILE]
+                      [--intraregional-trade | --no-intraregional-trade]
+                      [--location-csv LOCATION_CSV]
                       [--cost-of-x-csv COST_OF_X_CSV]
                       [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
                       [--resume-from-year RESUME_FROM_YEAR]
@@ -65,6 +68,13 @@ options:
                         alternative: 'Net Zero')
   --run-name RUN_NAME   Human-readable run name shown in the interactive plot
                         titles (default: the sim_<timestamp> dir name)
+  --hydrogen-ceiling-percentile HYDROGEN_CEILING_PERCENTILE
+                        Percentile of a region's LCOH used as the regional
+                        hydrogen price cap (default: the GeoConfig value, 100,
+                        which disables the cap)
+  --intraregional-trade, --no-intraregional-trade
+                        Allow hydrogen imports between linked regions
+                        (default: the GeoConfig value, off)
   --location-csv LOCATION_CSV
                         Path to the location CSV file (default:
                         ./data/fixtures/countries.csv)
@@ -152,6 +162,9 @@ run_simulation --force-refresh
 
 # Run with China's capacity-replacement policy enabled, credits expiring after 5 years
 run_simulation --enable-capacity-policy --credit-validity-years 5
+
+# Cap regional hydrogen prices at the 20th LCOH percentile and allow hydrogen imports between linked regions
+run_simulation --hydrogen-ceiling-percentile 20 --intraregional-trade
 ```
 
 ### Features:

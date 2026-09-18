@@ -948,7 +948,7 @@ class ModelRun(models.Model):
                     elif k == "max_slope":
                         val = float(_pick(filtered_config, k, 2.0))
                     elif k == "hydrogen_ceiling_percentile":
-                        val = float(_pick(filtered_config, k, 20.0))
+                        val = float(_pick(filtered_config, k, 100.0))
                     elif k == "long_dist_pipeline_transport_cost":
                         val = float(_pick(filtered_config, k, 1.0))
                     elif k == "pick_priority_sites_share":
@@ -1012,7 +1012,7 @@ class ModelRun(models.Model):
                     elif k == "max_slope":
                         val = float(_pick(filtered_config, k, 2.0))
                     elif k == "hydrogen_ceiling_percentile":
-                        val = float(_pick(filtered_config, k, 20.0))
+                        val = float(_pick(filtered_config, k, 100.0))
                     elif k == "long_dist_pipeline_transport_cost":
                         val = float(_pick(filtered_config, k, 1.0))
                     elif k == "pick_priority_sites_share":

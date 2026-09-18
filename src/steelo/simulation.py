@@ -166,10 +166,8 @@ class GeoConfig:
 
     # === Power and Hydrogen ===
     included_power_mix: str = "85% baseload + 15% grid"  # Options: "85% baseload + 15% grid", "95% baseload + 5% grid", "Not included", "Grid only"
-    hydrogen_ceiling_percentile: float = 20.0  # Hydrogen price cap percentage to engage in interregional trade (e.g., within the EU). Set to 100 to inhibit interregional trade.
-    intraregional_trade_allowed: bool = (
-        True  # Whether trade among linked regions is allowed (e.g., Soviet Union and EU)
-    )
+    hydrogen_ceiling_percentile: float = 100.0  # Percentile of a region's LCOH capping its hydrogen price; 100 = no cap
+    intraregional_trade_allowed: bool = False  # Whether linked regions (e.g., Africa and Western Europe) trade hydrogen
     long_dist_pipeline_transport_cost: float = 1.0  # USD/kgH2
     # Which regions trade with which ones? (to[from])
     intraregional_trade_matrix: dict[str, Optional[list[str]]] = field(

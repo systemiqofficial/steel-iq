@@ -586,19 +586,19 @@ class ModelRunCreateForm(forms.ModelForm):
 
     hydrogen_ceiling_percentile = forms.DecimalField(
         label="Hydrogen ceiling percentile",
-        initial=20.0,
+        initial=100.0,
         min_value=0.0,
         max_value=100.0,
         max_digits=5,
         decimal_places=1,
         required=False,
-        help_text="Hydrogen price cap percentage for interregional trade. Set to 100 to inhibit interregional trade.",
+        help_text="Percentile of a region's hydrogen cost used as its price cap. 100 means no cap.",
         widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.1"}),
     )
 
     intraregional_trade_allowed = forms.BooleanField(
         label="Intraregional trade allowed",
-        initial=True,
+        initial=False,
         required=False,
         help_text="Allow hydrogen trade between linked regions (e.g., trade between Africa and Western Europe)",
         widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),

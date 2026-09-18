@@ -48,7 +48,7 @@ Electricity costs vary by location and depend on the user-configured power mix. 
 - **Not included**: Sets power price to zero. This is only valid for the selection of best locations. New plant energy costs are set to the grid power price in this case since they cannot be zero.
 
 ### Hydrogen Costs
-The levelized cost of hydrogen (LCOH) is calculated from the power prices set above based on country-specific electrolyzer efficiency and electricity consumption. To prevent unrealistically high costs in regions with poor renewable resources, a regional ceiling is applied.
+The levelized cost of hydrogen (LCOH) is calculated from the power prices set above based on country-specific electrolyzer efficiency and electricity consumption. To prevent unrealistically high costs in regions with poor renewable resources, a regional ceiling can be applied: a percentile of the region's LCOH below 100. By default the ceiling sits at the 100th percentile and intraregional trade is off, so each location pays its own LCOH.
 
 **Intraregional Hydrogen Trade:**
 Optionally, regions can import hydrogen from connected regions. When enabled, the capped LCOH accounts for the possibility of importing hydrogen via pipeline from neighboring regions at their regional ceiling price plus long-distance transport costs. The hydrogen trade network is the following (to ↔ from):
@@ -76,8 +76,8 @@ Optionally, regions can import hydrogen from connected regions. When enabled, th
    - And `pipeline_cost` is the long-distance hydrogen pipeline transport cost per kg
 
 **Configuration:**
-- `hydrogen_ceiling_percentile`: Percentile for regional cap (default: 20th percentile)
-- `intraregional_trade_allowed`: Enable/disable hydrogen imports between regions (default: True)
+- `hydrogen_ceiling_percentile`: Percentile for regional cap (default: 100, which leaves hydrogen prices uncapped); `run_simulation --hydrogen-ceiling-percentile`
+- `intraregional_trade_allowed`: Enable/disable hydrogen imports between regions (default: False); `run_simulation --intraregional-trade` switches it on
 - `long_dist_pipeline_transport_cost`: Pipeline transport cost in USD/kg (default: 1 USD/kg H2)
 
 ### CAPEX Proxy
@@ -268,8 +268,8 @@ Key parameters affecting priority location selection:
 | `max_slope` | 2 | Maximum slope (degrees) for feasibility |
 | `max_latitude` | 65 | Maximum latitude (degrees) for feasibility |
 | `iron_ore_steel_ratio` | 1.6 | Amount of iron ore needed to produce one unit of steel |
-| `hydrogen_ceiling_percentile` | 20 | Regional hydrogen cost cap (percentile) |
-| `intraregional_trade_allowed` | True | Enable hydrogen imports between regions |
+| `hydrogen_ceiling_percentile` | 100 | Regional hydrogen cost cap (percentile); 100 = no cap; CLI `--hydrogen-ceiling-percentile` |
+| `intraregional_trade_allowed` | False | Enable hydrogen imports between regions; CLI `--intraregional-trade` |
 | `long_dist_pipeline_transport_cost` | 1.0 | Pipeline transport cost (USD/kg H2) |
 | `excluded_greenfield_technologies` | `["BOF"]` | Technologies never considered for new greenfield plants (see [New Plant Opening](new_plant_opening.md)); brownfield switching is unaffected |
 

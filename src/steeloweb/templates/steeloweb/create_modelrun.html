@@ -125,8 +125,8 @@ function resetTechnologySettings() {
 
 function resetGeospatialSettings() {
     // Power and Hydrogen settings
-    resetField('id_hydrogen_ceiling_percentile') || (document.getElementById('id_hydrogen_ceiling_percentile').value = '20.0');
-    document.getElementById('id_intraregional_trade_allowed').checked = true;
+    resetField('id_hydrogen_ceiling_percentile') || (document.getElementById('id_hydrogen_ceiling_percentile').value = '100.0');
+    document.getElementById('id_intraregional_trade_allowed').checked = false;
     resetField('id_long_dist_pipeline_transport_cost') || (document.getElementById('id_long_dist_pipeline_transport_cost').value = '1.0');
     document.getElementById('id_included_power_mix').value = '85% baseload + 15% grid';
 

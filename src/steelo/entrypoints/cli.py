@@ -96,6 +96,21 @@ def run_full_simulation() -> str:
         help="Human-readable run name shown in the interactive plot titles (default: the sim_<timestamp> dir name)",
     )
     parser.add_argument(
+        "--hydrogen-ceiling-percentile",
+        type=float,
+        default=None,
+        help=(
+            "Percentile of a region's LCOH used as the regional hydrogen price cap "
+            "(default: the GeoConfig value, 100, which disables the cap)"
+        ),
+    )
+    parser.add_argument(
+        "--intraregional-trade",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Allow hydrogen imports between linked regions (default: the GeoConfig value, off)",
+    )
+    parser.add_argument(
         "--location-csv",
         type=str,
         default=None,
@@ -365,6 +380,15 @@ def run_full_simulation() -> str:
                 console.print("[green]China capacity-replacement policy enabled[/green]")
             if args.credit_validity_years is not None:
                 config.capacity_policy.credit_validity_years = args.credit_validity_years
+            if args.hydrogen_ceiling_percentile is not None:
+                config.geo_config.hydrogen_ceiling_percentile = args.hydrogen_ceiling_percentile
+                console.print(
+                    f"[green]Hydrogen ceiling at the {args.hydrogen_ceiling_percentile:g}th LCOH percentile[/green]"
+                )
+            if args.intraregional_trade is not None:
+                config.geo_config.intraregional_trade_allowed = args.intraregional_trade
+                state = "enabled" if args.intraregional_trade else "disabled"
+                console.print(f"[green]Intraregional hydrogen trade {state}[/green]")
 
             # Save config and metadata
             config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
@@ -462,6 +486,15 @@ def run_full_simulation() -> str:
                     console.print("[green]China capacity-replacement policy enabled[/green]")
                 if args.credit_validity_years is not None:
                     config.capacity_policy.credit_validity_years = args.credit_validity_years
+                if args.hydrogen_ceiling_percentile is not None:
+                    config.geo_config.hydrogen_ceiling_percentile = args.hydrogen_ceiling_percentile
+                    console.print(
+                        f"[green]Hydrogen ceiling at the {args.hydrogen_ceiling_percentile:g}th LCOH percentile[/green]"
+                    )
+                if args.intraregional_trade is not None:
+                    config.geo_config.intraregional_trade_allowed = args.intraregional_trade
+                    state = "enabled" if args.intraregional_trade else "disabled"
+                    console.print(f"[green]Intraregional hydrogen trade {state}[/green]")
 
                 # Save config and metadata
                 config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
