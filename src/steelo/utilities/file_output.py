@@ -1,5 +1,7 @@
 import csv
+import os
 from steelo.domain.models import CommodityAllocations
+from steelo.domain.trade_modelling.trade_lp_modelling import Allocations
 import logging
 
 
@@ -73,6 +75,86 @@ def export_commodity_allocations_to_csv(
                         "supply_at_source": supply_at_source,
                     }
                     writer.writerow(row)
+
+
+CARBON_BORDER_CHARGE_COLUMNS = [
+    "year",
+    "kind",
+    "from_name",
+    "from_iso3",
+    "from_technology",
+    "to_name",
+    "to_iso3",
+    "to_type",
+    "commodity",
+    "volume_t",
+    "own_E_tco2_t",
+    "upstream_E_tco2_t",
+    "E_tco2_t",
+    "own_paid_usd_t",
+    "upstream_paid_usd_t",
+    "paid_usd_t",
+    "implied_P_d_usd_tco2",
+    "adjustment_usd_t",
+    "adjustment_musd",
+]
+
+
+def export_carbon_border_charges_to_csv(allocations: Allocations, year: int, filename: str) -> None:
+    """Append one row per realised carbon border charge or rebate carried by the solved allocations.
+
+    Args:
+        allocations: Solved trade allocations with ``carbon_border_charges`` (USD per tonne per arc).
+        year: Simulation year, written on every row.
+        filename: Path of the run's CSV, shared by all years; parent directories are created.
+
+    Returns:
+        None. The first call writes the header, so a run without charges yields a header-only file.
+
+    Notes:
+        - Arcs with no allocated volume or a zero adjustment are skipped.
+        - With clustering on, the allocations are disaggregated, so rows are per furnace group and
+          carry their cluster's capacity-weighted emission intensity and carbon paid.
+        - A non-zero adjustment equals E * P_d - paid, so ``implied_P_d_usd_tco2`` recovers the
+          destination carbon price the border used.
+    """
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    is_new_file = not os.path.exists(filename)
+
+    with open(filename, mode="a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=CARBON_BORDER_CHARGE_COLUMNS)
+        if is_new_file:
+            writer.writeheader()
+
+        for (source, destination, commodity), adjustment in (allocations.carbon_border_charges or {}).items():
+            volume = allocations.allocations.get((source, destination, commodity), 0.0)
+            if volume <= 0 or adjustment == 0:
+                continue
+            emissions = source.emission_intensity + source.upstream_emission_intensity
+            paid = source.production_cost + source.upstream_carbon_cost_paid
+            writer.writerow(
+                {
+                    "year": year,
+                    "kind": "charge" if adjustment > 0 else "rebate",
+                    "from_name": source.name,
+                    "from_iso3": source.location.iso3,
+                    "from_technology": source.process.technology,
+                    "to_name": destination.name,
+                    "to_iso3": destination.location.iso3,
+                    "to_type": destination.process.type.name,
+                    "commodity": commodity.name,
+                    "volume_t": round(volume, 1),
+                    "own_E_tco2_t": round(source.emission_intensity, 4),
+                    "upstream_E_tco2_t": round(source.upstream_emission_intensity, 4),
+                    "E_tco2_t": round(emissions, 4),
+                    "own_paid_usd_t": round(source.production_cost, 2),
+                    "upstream_paid_usd_t": round(source.upstream_carbon_cost_paid, 2),
+                    "paid_usd_t": round(paid, 2),
+                    "implied_P_d_usd_tco2": round((adjustment + paid) / emissions, 2) if emissions > 0 else "",
+                    "adjustment_usd_t": round(adjustment, 2),
+                    "adjustment_musd": round(adjustment * volume / 1e6, 3),
+                }
+            )
 
 
 def extract_source_info(source, year):

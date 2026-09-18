@@ -37,7 +37,7 @@ from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
 )
 from steelo.domain.trade_modelling.trade_lp_modelling import Allocations
 from steelo.service_layer.message_bus import MessageBus
-from steelo.utilities.file_output import export_commodity_allocations_to_csv
+from steelo.utilities.file_output import export_carbon_border_charges_to_csv, export_commodity_allocations_to_csv
 from steelo.utilities.memory_profiling import MemoryTracker
 from steelo.utilities.plotting import (
     plot_detailed_trade_map,
@@ -618,6 +618,13 @@ class AllocationModel:
             tm_dir.mkdir(parents=True, exist_ok=True)
             with open(tm_dir / f"steel_trade_allocations_{bus.env.year}.pkl", "wb") as f:
                 pickle.dump(trade_lp_allocations, f)
+            # Tests stub the solved LP with plain dicts; only a real Allocations carries charges to export
+            if isinstance(trade_lp_allocations, Allocations):
+                export_carbon_border_charges_to_csv(
+                    allocations=trade_lp_allocations,
+                    year=int(bus.env.year),
+                    filename=str(tm_dir / "carbon_border_charges.csv"),
+                )
             if (event := SteelAllocationsCalculated(trade_allocations=trade_lp_allocations)) is not None:
                 bus.handle(event)
 
