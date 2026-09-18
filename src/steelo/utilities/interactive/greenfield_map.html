@@ -153,7 +153,8 @@ window.addEventListener("error", function(e) {
   <div class="toolbar" id="shared-filters"></div>
   <div id="explain">
     <div>Dot area = the site's capacity; a dot can hold several furnace groups — hover for a summary,
-      click a dot for a scrollable panel listing each group's status, technology and reductant history.</div>
+      click a dot for a scrollable panel listing each group's status, technology and reductant history.
+      Considered, closed and discarded groups start unticked.</div>
     <div id="provenance"></div>
   </div>
 </div>
@@ -246,10 +247,11 @@ function coloursFor(run, mode) {
 
 /* ---- facet filters: statuses, reductants and metallic charges, offered from the
    groups passing the product and geography filters; unticked choices are
-   remembered while an option is absent. ---- */
-function facetFilter(id, noun) {
+   remembered while an option is absent, and startOff names the ones a viewer
+   opens with unticked. ---- */
+function facetFilter(id, noun, startOff = []) {
   const cbs = new Map();
-  const unticked = new Set();
+  const unticked = new Set(startOff);
   function sync(options, colours) {
     if (options.join("|") !== [...cbs.keys()].join("|")) {
       const boxes = document.getElementById(id + "-boxes");
@@ -284,7 +286,8 @@ function facetFilter(id, noun) {
   }
   return {sync, setAll};
 }
-const statusFilter = facetFilter("status", "statuses");
+// The map opens on plants that are coming or running; candidates and exits are one tick away.
+const statusFilter = facetFilter("status", "statuses", ["considered", "closed", "discarded"]);
 const reductantFilter = facetFilter("reductant", "reductants");
 const chargeFilter = facetFilter("charge", "charges");
 
