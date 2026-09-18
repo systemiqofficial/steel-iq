@@ -86,8 +86,8 @@ Plants that originate in the geospatial model (greenfield, GEO-origin) get their
 | `product`, `technology`, `reductant` | As of the snapshot year, so technology and reductant switches show up as changes between rows |
 | `status` | Lifecycle status in the snapshot year |
 | `geo_key`, `region`, `lat`, `lon` | Location |
-| `capacity` | Capacity in tonnes |
-| `production`, `utilization_rate` | Zero unless the status is operating: closing a furnace group leaves its last utilisation rate behind, which would otherwise book production for closed groups |
+| `capacity` | Capacity in tonnes; in a year the group produced, the capacity that year's allocation used |
+| `production`, `utilization_rate` | Zero unless the group produced that year: closing a furnace group leaves its last utilisation rate behind, which would otherwise book production for groups closed in earlier years. A group the plant agents close reads `closed` with its final production in its closing year (see [Which furnace groups get a row](#which-furnace-groups-get-a-row)) |
 | `opportunity_npv` | The business-opportunity NPV evaluated that year while the group is a considered candidate; blank afterwards |
 
 This file feeds the `greenfield_status.html` and `greenfield_map.html` viewers below.
@@ -216,6 +216,14 @@ The `plots/capacity_pool/` charts (`CapacityPoolPlotter`) are drawn from these f
 ## Post-processed CSV columns
 
 `extract_and_process_stored_dataCollection()` in `src/steelo/adapters/dataprocessing/postprocessing/post_process_datacollection.py` assembles a per-FG-per-year DataFrame from the stored pickle data. The column set is no longer hardcoded — keys come from runtime arguments computed once at simulation start.
+
+### Which furnace groups get a row
+
+Data collection runs at the end of each simulated year, after the trade allocation, the plant agents and the geospatial model. A furnace group gets a row for a year when it is in an active status (`operating`, `operating pre-retirement`, `operating switching technology`) at that point, or when the plant agents closed it during that year. A closing group is recognised by this year's entry in its utilisation history, which the allocation writes for exactly the groups it sets production for; its status or production cannot serve, as closing leaves the last utilisation rate, bill of materials and emissions behind. Its row carries the year's production (equal to its allocated outflow), bill of materials, emissions and costs, and its capacity.
+
+Capacity in a year therefore reads as the capacity that year's allocation could draw on, and production as the tonnes it allocated. A renovation that shrinks a group under the capacity policy is decided after the allocation, so the row of the renovation year keeps the pre-shrink capacity and the full production; the shrunk capacity shows from the next year, when the allocation first uses it. Both kinds of closure behave alike: a group that reaches its end of life, or that the plant agents close, in year Y has its last row in Y and none from Y+1. A group that sat idle in the year it was closed has a row with zero production, like any idle active group. The same rule governs the emissions, production-by-product, iron ore and metallic charge traces behind the static plots.
+
+Before this rule, a group closed by the plant agents had no row in its closing year although it had produced and shipped: up to about 2% of yearly production and capacity and about 4% of yearly emissions were missing, from the second simulated year on. A group shrunk by a renovation reported the shrunk capacity, and two thirds of its production at a 1.5 replacement ratio, in the renovation year already (capacity policy runs only, about 0.3% of yearly production). Reported production, emissions, capacity and production-weighted cost averages are not comparable between runs from before and after the change; the simulation's decisions are unaffected.
 
 ### Header columns (deterministic order)
 

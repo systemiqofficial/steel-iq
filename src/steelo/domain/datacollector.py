@@ -213,14 +213,78 @@ class DataCollector:
                 emissions[plant.plant_id] = plant.emissions
         return emissions
 
+    def is_reported_this_year(self, fg: FurnaceGroup) -> bool:
+        """
+        Whether a furnace group belongs in this year's production-side records.
+
+        Args:
+            fg: The furnace group to test.
+
+        Returns:
+            True for a group in an active status, and for a closed group that was still
+            part of this year's trade allocation.
+
+        Notes:
+            Collection runs after the plant agents, so a group they close this year is
+            already ``closed`` although it produced and shipped this year. The status
+            alone cannot tell it from older closures, and neither can its production:
+            closing leaves the last utilisation rate, bill of materials and emissions
+            behind. The allocation records the utilisation of exactly the groups it
+            sets production for, so this year's entry in ``historical_utilization``
+            marks the closing group.
+        """
+        status = fg.status.lower()
+        if status in self.env.config.active_statuses:
+            return True
+        return status == "closed" and self._in_this_years_allocation(fg)
+
+    def _in_this_years_allocation(self, fg: FurnaceGroup) -> bool:
+        """Whether this year's trade allocation set the furnace group's production (it then recorded its utilisation)."""
+        return fg.historical_utilization is not None and int(self.env.year) in fg.historical_utilization
+
+    def allocated_capacity(self, fg: FurnaceGroup) -> float:
+        """
+        Capacity to report for a furnace group this year.
+
+        Args:
+            fg: The furnace group to report.
+
+        Returns:
+            The capacity this year's allocation used for a group that was part of it,
+            otherwise the group's current capacity.
+
+        Notes:
+            Collection runs after the plant agents, and a renovation can shrink a group
+            (capacity policy) once its production for the year is allocated. The shrunk
+            capacity counts from the next allocation on.
+        """
+        if not self._in_this_years_allocation(fg):
+            return fg.capacity
+        if fg.capacity_at_allocation is None:
+            raise ValueError(f"Furnace group {fg.furnace_group_id} was allocated this year without a recorded capacity")
+        return fg.capacity_at_allocation
+
+    def production_this_year(self, fg: FurnaceGroup) -> float:
+        """
+        Production to report for a furnace group this year (tonnes).
+
+        Args:
+            fg: The furnace group to report.
+
+        Returns:
+            Utilisation rate times ``allocated_capacity``, which equals the allocated
+            tonnes also for a group shrunk after the allocation.
+        """
+        return fg.utilization_rate * self.allocated_capacity(fg)
+
     def collect_utilisation_rates(self):
-        """collect furnace_group utilisisation_rates"""
+        """Collect the utilisation rate of every furnace group reported this year (see ``is_reported_this_year``)."""
         return {
             fg.furnace_group_id: fg.utilization_rate
             for plant_group in self.plant_groups
             for plant in plant_group.plants
             for fg in plant.furnace_groups
-            if fg.status.lower() in self.env.config.active_statuses
+            if self.is_reported_this_year(fg)
         }
 
     def collect_capacity_deltas(self):
@@ -231,7 +295,8 @@ class DataCollector:
 
     def collect_global_steel_production(self):
         """
-        Collect the production by each operating steel furnace group and return the global total.
+        Collect the production by technology of the iron and steel furnace groups reported this
+        year (see ``is_reported_this_year``).
         """
         total_production = {}
 
@@ -239,17 +304,18 @@ class DataCollector:
             for fg in plant.furnace_groups:
                 tech = fg.technology.name
 
-                if (fg.status.lower() in self.env.config.active_statuses) and (
+                if self.is_reported_this_year(fg) and (
                     fg.technology.product.lower() in [Commodities.STEEL.value, Commodities.IRON.value]
                 ):
                     if tech not in total_production:
                         total_production[tech] = 0
-                    total_production[tech] += fg.production
+                    total_production[tech] += self.production_this_year(fg)
         return total_production
 
     def collect_capacity_by_technology_and_PAM_status(self):
         """
-        Collect the capacity by technology and PAM status
+        Collect the capacity by technology and PAM status of the furnace groups reported this year
+        (see ``is_reported_this_year``): the capacity this year's allocation could draw on.
         """
         capacity = {}
         for tech in [  # TODO: @Marcus, remove hardcoded technologies
@@ -257,20 +323,16 @@ class DataCollector:
             "BOF",
         ]:
             cap_tech_pre_existing = [
-                fg.capacity
+                self.allocated_capacity(fg)
                 for plant in self.plants
                 for fg in plant.furnace_groups
-                if fg.technology.name == tech
-                and fg.status.lower() in self.env.config.active_statuses
-                and not fg.created_by_PAM
+                if fg.technology.name == tech and self.is_reported_this_year(fg) and not fg.created_by_PAM
             ]
             cap_tech_created = [
-                fg.capacity
+                self.allocated_capacity(fg)
                 for plant in self.plants
                 for fg in plant.furnace_groups
-                if fg.technology.name == tech
-                and fg.status.lower() in self.env.config.active_statuses
-                and fg.created_by_PAM
+                if fg.technology.name == tech and self.is_reported_this_year(fg) and fg.created_by_PAM
             ]
             capacity[tech] = {"pre_existing": sum(cap_tech_pre_existing), "created": sum(cap_tech_created)}
         return capacity
@@ -389,14 +451,16 @@ class DataCollector:
         Notes:
             Rows accumulate in ``greenfield_status_rows`` and are written out at
             the end of the run by ``write_greenfield_status_csv``. Production and
-            utilisation are zeroed for non-operating statuses: closing a furnace
-            group does not reset its ``utilization_rate``, so the stale value
-            would otherwise book production against closed plants.
+            utilisation are zeroed unless the group produced this year (see
+            ``is_reported_this_year``): closing a furnace group does not reset
+            its ``utilization_rate``, so the stale value would otherwise book
+            production against plants closed in earlier years. A group the plant
+            agents close this year reads ``closed`` with its final production.
             ``opportunity_npv`` is the NPV the opportunity was (re-)valued at this
             year while considered (the announce/discard decision input); it is
             blank for years after the group left the considered status.
         """
-        operating = fg.status.startswith("operating")
+        produced = self.is_reported_this_year(fg)
         npv_history = fg.historical_npv_business_opportunities or {}
         self.greenfield_status_rows.append(
             {
@@ -412,9 +476,9 @@ class DataCollector:
                 "region": plant.location.region,
                 "lat": plant.location.lat,
                 "lon": plant.location.lon,
-                "capacity": float(fg.capacity),
-                "production": float(fg.production) if operating else 0.0,
-                "utilization_rate": fg.utilization_rate if operating else 0.0,
+                "capacity": float(self.allocated_capacity(fg)),
+                "production": float(self.production_this_year(fg)) if produced else 0.0,
+                "utilization_rate": fg.utilization_rate if produced else 0.0,
                 "opportunity_npv": npv_history.get(year),
             }
         )
@@ -678,7 +742,8 @@ class DataCollector:
         """
         Collect emissions by boundary, technology and scope, plus production by product, for the given year.
 
-        Aggregates emissions from all operating furnace groups by technology type, keeping
+        Aggregates emissions from all furnace groups reported this year (see
+        ``is_reported_this_year``) by technology type, keeping
         the three scopes (``direct_ghg``, ``direct_with_biomass_ghg``, ``indirect_ghg``)
         separate so downstream charts can present each view (or sums of compatible views)
         without double-counting. ``direct_ghg`` and ``direct_with_biomass_ghg`` are
@@ -706,12 +771,12 @@ class DataCollector:
         for pg in self.plant_groups:
             for plant in pg.plants:
                 for fg in plant.furnace_groups:
-                    if fg.status.lower() not in self.env.config.active_statuses:
+                    if not self.is_reported_this_year(fg):
                         continue
 
                     product = (fg.technology.product or "").lower() if fg.technology.product else ""
-                    if product in ("iron", "steel") and fg.production:
-                        production_by_product[product] += fg.production
+                    if product in ("iron", "steel"):
+                        production_by_product[product] += self.production_this_year(fg)
 
                     if not fg.emissions:
                         continue
@@ -751,7 +816,8 @@ class DataCollector:
         """
         Collect iron ore consumption by quality for the given year.
 
-        Aggregates iron ore/pellets consumption from all operating furnace groups by quality type.
+        Aggregates iron ore/pellets consumption from all furnace groups reported this year
+        (see ``is_reported_this_year``) by quality type.
         Tracks pellets_high, pellets_mid, pellets_low, and other iron ore materials.
 
         Args:
@@ -772,8 +838,7 @@ class DataCollector:
         for pg in self.plant_groups:
             for plant in pg.plants:
                 for fg in plant.furnace_groups:
-                    # Only collect from operating furnace groups
-                    if fg.status.lower() not in self.env.config.active_statuses:
+                    if not self.is_reported_this_year(fg):
                         continue
 
                     # Check bill of materials for iron ore/pellets
@@ -816,7 +881,8 @@ class DataCollector:
         """
         Collect metallic charge consumption for the given year.
 
-        Aggregates consumption of all metallic charges from operating furnace groups.
+        Aggregates consumption of all metallic charges from the furnace groups reported this
+        year (see ``is_reported_this_year``).
         Uses the metallic_charge field from each technology's primary feedstocks to
         dynamically identify what materials are metallic charges.
 
@@ -832,8 +898,7 @@ class DataCollector:
         for pg in self.plant_groups:
             for plant in pg.plants:
                 for fg in plant.furnace_groups:
-                    # Only collect from operating furnace groups
-                    if fg.status.lower() not in self.env.config.active_statuses:
+                    if not self.is_reported_this_year(fg):
                         continue
 
                     # Get the metallic charges from this furnace group's primary feedstocks
@@ -963,7 +1028,21 @@ class DataCollector:
 
     def collect(self, world_plant_list: list[Plant], world_plant_groups: list[PlantGroup], year):
         """
-        Execute the data collection process
+        Execute the data collection process for the current year.
+
+        Args:
+            world_plant_list: All plants; one record per plant goes into the stored file.
+            world_plant_groups: All plant groups, the source of each plant's owner and balance.
+            year: Year used in the stored file's name.
+
+        Notes:
+            Writes ``TM/datacollection_post_allocation_<year>.pkl``, the source of the
+            post-processed table. A furnace group gets a record when
+            ``is_reported_this_year`` holds, so a group the plant agents closed this year
+            keeps its final production year. Capacity and production are those of this
+            year's allocation (``allocated_capacity``, ``production_this_year``), also for
+            a group a renovation shrank afterwards. Runs after the plant agents: profit
+            and loss, balances and this year's decisions are final.
         """
         # Update our own attributes:
         self.plant_groups = world_plant_groups
@@ -1005,12 +1084,11 @@ class DataCollector:
                     Commodities.PIG_IRON.value,
                     Commodities.LIQUID_STEEL.value,
                 ]
-                if (
-                    fg.status.lower() not in self.env.config.active_statuses
-                    or fg.technology.product.lower() not in iron_steel_products
-                ):
+                if not self.is_reported_this_year(fg) or fg.technology.product.lower() not in iron_steel_products:
                     continue
 
+                production = self.production_this_year(fg)
+                capacity = self.allocated_capacity(fg)
                 bill_of_materials = fg.bill_of_materials
                 materials: dict[str, dict[str, Any]] | None = None
                 energy: dict[str, dict[str, Any]] = {}
@@ -1023,8 +1101,8 @@ class DataCollector:
                     "furnace_group_id": fg.furnace_group_id,
                     "technology": fg.technology.name,
                     "chosen_reductant": fg.chosen_reductant,
-                    "production": fg.production,
-                    "capacity": fg.capacity,
+                    "production": production,
+                    "capacity": capacity,
                     "product": fg.technology.product,
                     "unit_fopex": fg.unit_fopex,
                     "unit_debt_repayment": fg.unit_current_debt_repayment,
@@ -1034,7 +1112,7 @@ class DataCollector:
                     "furnace_group_profit_and_loss": fg.historic_balance,
                 }
 
-                if fg.production and fg.production > 0 and has_materials:
+                if production > 0 and has_materials:
                     assert materials is not None
                     for feed_key in set(materials.keys()) & set(energy.keys()):
                         mat_entry = materials[feed_key]
@@ -1113,8 +1191,8 @@ class DataCollector:
                         for carrier, price_before in fg.energy_costs_no_subsidy.items():
                             price_after = fg.energy_costs.get(carrier, 0) if fg.energy_costs else 0
                             carrier_data = energy.get(carrier, {}) if energy else {}
-                            if carrier_data.get("unit_cost", 0) > 0 and fg.production > 0:
-                                per_t = carrier_data.get("demand", 0) / fg.production
+                            if carrier_data.get("unit_cost", 0) > 0 and production > 0:
+                                per_t = carrier_data.get("demand", 0) / production
                                 unit_subsidies[carrier] = (price_before - price_after) * per_t
 
                     for key, value in unit_subsidies.items():
@@ -1126,8 +1204,8 @@ class DataCollector:
                         "furnace_group_id": fg.furnace_group_id,
                         "technology": fg.technology.name,
                         "chosen_reductant": fg.chosen_reductant,
-                        "production": fg.production,
-                        "capacity": fg.capacity,
+                        "production": production,
+                        "capacity": capacity,
                         "product": fg.technology.product,
                         "bill_of_materials": None,
                         "materials": None,

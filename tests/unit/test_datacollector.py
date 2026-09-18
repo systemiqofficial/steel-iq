@@ -884,3 +884,142 @@ def test_mark_announced_input_units_as_construction_leaves_model_built_and_green
     assert statuses["brownfield_fg"] == "operating"
     assert geo_plant.furnace_groups[0].status == "announced"  # a greenfield opportunity can still be discarded
     assert brownfield_plant.furnace_groups[2].lifetime.time_frame.start == 2028
+
+
+def _closure_collector(tmp_dir, mock_tech_switches_file):
+    """Build a DataCollector in 2030 over an operating group, one closed in 2030 and one closed in 2029."""
+    from steelo.domain.models import Volumes
+
+    active_fg = get_furnace_group(fg_id="fg_active", capacity=Volumes(100000), utilization_rate=0.5)
+    active_fg.record_utilization(2029)
+    active_fg.record_utilization(2030)
+    closed_this_year_fg = get_furnace_group(fg_id="fg_closed_this_year", capacity=Volumes(200000), utilization_rate=0.8)
+    closed_this_year_fg.record_utilization(2029)
+    closed_this_year_fg.record_utilization(2030)
+    closed_this_year_fg.status = "closed"
+    # closing a group leaves its last utilisation rate, bill of materials and emissions behind
+    closed_earlier_fg = get_furnace_group(fg_id="fg_closed_earlier", capacity=Volumes(300000), utilization_rate=0.9)
+    closed_earlier_fg.record_utilization(2029)
+    closed_earlier_fg.status = "closed"
+    furnace_groups = [active_fg, closed_this_year_fg, closed_earlier_fg]
+    for fg in furnace_groups:
+        fg.emissions = {"worldsteel": {"direct_ghg": float(fg.production)}}
+        fg.bill_of_materials = {"materials": {"io_high": {"demand": float(fg.production)}}, "energy": {}}
+
+    plant = get_plant(
+        plant_id="plant_closures",
+        furnace_groups=furnace_groups,
+        location=Location(iso3="CHN", country="", region="China", lat=30.0, lon=110.0),
+    )
+    plant_group = PlantGroup(plant_group_id="E100000000123", plants=[plant])
+    config = SimulationConfig(
+        start_year=Year(2025),
+        end_year=Year(2060),
+        master_excel_path=Path(tempfile.gettempdir()) / "master.xlsx",
+        output_dir=Path(tempfile.gettempdir()),
+        technology_settings=get_default_technology_settings(),
+    )
+    env = Environment(config=config, tech_switches_csv=mock_tech_switches_file)
+    env.year = Year(2030)
+    return DataCollector([plant_group], env, output_dir=tmp_dir)
+
+
+def test_is_reported_this_year_covers_active_groups_and_groups_closed_after_this_years_allocation(
+    tmp_path, mock_tech_switches_file
+):
+    """A group closed by the plant agents after producing this year is reported; one closed earlier is not."""
+    data_collector = _closure_collector(tmp_path, mock_tech_switches_file)
+    active_fg, closed_this_year_fg, closed_earlier_fg = data_collector.plant_groups[0].plants[0].furnace_groups
+
+    assert data_collector.is_reported_this_year(active_fg)
+    assert data_collector.is_reported_this_year(closed_this_year_fg)
+    assert not data_collector.is_reported_this_year(closed_earlier_fg)
+
+    # a group that is not operating yet was never in an allocation
+    active_fg.status = "construction"
+    active_fg.historical_utilization = None
+    assert not data_collector.is_reported_this_year(active_fg)
+
+
+def test_collect_keeps_the_final_production_year_of_a_group_the_plant_agents_closed(tmp_path, mock_tech_switches_file):
+    """The stored plant records hold the group closed this year with its production, not the one closed earlier."""
+    import pickle
+
+    data_collector = _closure_collector(tmp_path, mock_tech_switches_file)
+    plant_groups = data_collector.plant_groups
+
+    data_collector.collect(world_plant_list=plant_groups[0].plants, world_plant_groups=plant_groups, year=Year(2030))
+
+    with open(tmp_path / "TM" / "datacollection_post_allocation_2030.pkl", "rb") as f:
+        records = pickle.load(f)["plant_closures"]["furnace_groups"]
+    production = {record["furnace_group_id"]: record["production"] for record in records}
+    assert production == {"fg_active": 50000.0, "fg_closed_this_year": 160000.0}
+
+
+def test_trace_collectors_count_a_group_closed_this_year_but_not_one_closed_earlier(tmp_path, mock_tech_switches_file):
+    """Emissions, production by product and iron ore include the 2030 closure and skip the stale 2029 closure."""
+    data_collector = _closure_collector(tmp_path, mock_tech_switches_file)
+
+    emissions = data_collector.collect_emissions_by_technology(Year(2030))
+    iron_ore = data_collector.collect_iron_ore_by_quality(Year(2030))
+
+    assert emissions == {"worldsteel": {"EAF": {"direct_ghg": 210000.0}}}
+    assert data_collector.trace_production_by_product[Year(2030)] == {"steel": 210000.0}
+    assert iron_ore == {"io_high": 210000.0}
+
+
+def test_greenfield_status_row_keeps_the_production_of_a_group_closed_this_year(tmp_path, mock_tech_switches_file):
+    """A greenfield group closed after this year's allocation reads closed with its production; an older closure reads zero."""
+    data_collector = _closure_collector(tmp_path, mock_tech_switches_file)
+    data_collector.plant_groups[0].plants[0].parent_gem_id = "indi_CHN"
+
+    data_collector.collect_new_plant_data(Year(2030))
+
+    rows = {row["furnace_group_id"]: row for row in data_collector.greenfield_status_rows}
+    assert (rows["fg_closed_this_year"]["status"], rows["fg_closed_this_year"]["production"]) == ("closed", 160000.0)
+    assert rows["fg_closed_this_year"]["utilization_rate"] == 0.8
+    assert (rows["fg_closed_earlier"]["production"], rows["fg_closed_earlier"]["utilization_rate"]) == (0.0, 0.0)
+
+
+def _shrunk_renovation_collector(tmp_dir, mock_tech_switches_file):
+    """Build the closure collector with its operating group renovated to two thirds of its capacity after the 2030 allocation."""
+    from steelo.domain.models import Volumes
+
+    data_collector = _closure_collector(tmp_dir, mock_tech_switches_file)
+    data_collector.plant_groups[0].plants[0].furnace_groups[0].capacity = Volumes(100000 / 1.5)
+    return data_collector
+
+
+def test_collect_reports_the_capacity_and_production_of_the_allocation_for_a_group_shrunk_this_year(
+    tmp_path, mock_tech_switches_file
+):
+    """A renovation that shrinks a group after the allocation leaves this year's capacity and production untouched."""
+    import pickle
+
+    data_collector = _shrunk_renovation_collector(tmp_path, mock_tech_switches_file)
+    plant_groups = data_collector.plant_groups
+
+    data_collector.collect(world_plant_list=plant_groups[0].plants, world_plant_groups=plant_groups, year=Year(2030))
+
+    with open(tmp_path / "TM" / "datacollection_post_allocation_2030.pkl", "rb") as f:
+        records = pickle.load(f)["plant_closures"]["furnace_groups"]
+    reported = {record["furnace_group_id"]: (record["capacity"], record["production"]) for record in records}
+    assert reported["fg_active"] == (100000.0, 50000.0)
+
+    # from the next allocation on the shrunk capacity is the reported one
+    data_collector.env.year = Year(2031)
+    plant_groups[0].plants[0].furnace_groups[0].record_utilization(2031)
+    assert data_collector.allocated_capacity(plant_groups[0].plants[0].furnace_groups[0]) == pytest.approx(100000 / 1.5)
+
+
+def test_production_by_product_and_greenfield_row_use_the_capacity_of_the_allocation(tmp_path, mock_tech_switches_file):
+    """The production trace and the greenfield status row of a group shrunk this year keep the allocation's tonnes."""
+    data_collector = _shrunk_renovation_collector(tmp_path, mock_tech_switches_file)
+    data_collector.plant_groups[0].plants[0].parent_gem_id = "indi_CHN"
+
+    data_collector.collect_emissions_by_technology(Year(2030))
+    data_collector.collect_new_plant_data(Year(2030))
+
+    assert data_collector.trace_production_by_product[Year(2030)] == {"steel": 210000.0}
+    rows = {row["furnace_group_id"]: row for row in data_collector.greenfield_status_rows}
+    assert (rows["fg_active"]["capacity"], rows["fg_active"]["production"]) == (100000.0, 50000.0)
