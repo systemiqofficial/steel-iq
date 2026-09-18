@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Supply chain</title>
+<style>__COMMON_CSS__</style>
+<style>
+#summary { font-size: 13px; color: #0b0b0b; padding-bottom: 14px; }
+/* The commodity dropdown sits on its own row between the top controls and the
+   technologies row; its pills carry the chord colours, so they double as the legend. */
+#commodity-panel { display: flex; align-items: center; gap: 4px 14px; flex-wrap: wrap; padding: 8px 40px 0; }
+#commodity-label { font-size: 12px; color: #52514e; margin: 0; }
+#commodity-chips { margin-left: 0; max-width: none; }
+#commodity-panel .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; flex: none; }
+/* The country picker is a shell-style dropdown with a search field pinned at the top;
+   the rows look like the geography boxes but pick one country. */
+#target-dropdown { margin: 0; }
+#target-panel { padding: 0 0 6px; }
+#target-search { position: sticky; top: 0; width: 100%; box-sizing: border-box; font-size: 12px; padding: 5px 10px;
+                 border: none; border-bottom: 1px solid #b5b3ae; outline: none; background: #fff; margin-bottom: 4px; }
+#target-rows label { padding: 2px 10px; }
+#target-rows label.current { font-weight: 600; background: #eceae4; }
+#target-rows label:hover { background: #f3f2ee; }
+#target-rows .head { font-size: 12px; font-weight: 700; color: #0b0b0b; padding: 6px 10px 2px; }
+#target-rows .head.ruled { border-top: 1px solid #b5b3ae; margin-top: 4px; }
+#target-rows .none { font-size: 12px; color: #52514e; padding: 2px 10px; }
+/* The year row sits under the geography row, next to the chart it drives: step
+   buttons, the slider and a year dropdown that follows it. */
+#year-toolbar { padding-top: 4px; }
+#year-panel { flex: 1; min-width: 260px; max-width: 720px; }
+#year-row { display: flex; align-items: center; gap: 8px; }
+#year-row button { background: rgba(80, 120, 200, 0.8); color: #fff; border: none; border-radius: 3px;
+                   width: 22px; height: 22px; font-size: 14px; line-height: 1; cursor: pointer; }
+#year-row button:hover { background: rgba(100, 140, 220, 0.9); }
+#year-slider { flex: 1; accent-color: rgb(80, 120, 200); margin: 0; }
+#year-select { font-weight: 600; }
+</style>
+</head>
+<body>
+<div id="err"></div>
+<script>
+window.addEventListener("error", function(e) {
+  const el = document.getElementById("err");
+  el.style.display = "block";
+  el.textContent = "Load error: " + (e.message || e.type) + (e.filename ? " @ " + e.lineno : "");
+}, true);
+</script>
+<div class="toolbar">
+  <div>
+    <label for="target-toggle">Steel demand of</label>
+    <div id="target-dropdown" class="box-dropdown">
+      <button id="target-toggle"></button>
+      <div id="target-panel" class="box-panel">
+        <input id="target-search" placeholder="Search regions and countries…" autocomplete="off">
+        <div id="target-rows"></div>
+      </div>
+    </div>
+  </div>
+  <div>
+    <label for="group-select">Group by</label>
+    <select id="group-select">
+      <option value="country">Country</option>
+      <option value="region" selected>Region</option>
+      <option value="bloc">Trade bloc</option>
+    </select>
+  </div>
+  <div id="bloc-panel">
+    <label for="bloc-select">Trade bloc</label>
+    <select id="bloc-select"></select>
+  </div>
+  <div>
+    <label for="layout-select">Layout</label>
+    <select id="layout-select">
+      <option value="tiers" selected>Tiers</option>
+      <option value="circle">Circle</option>
+      <option value="map">Map</option>
+    </select>
+  </div>
+  <div>
+    <label for="show-select">Show</label>
+    <select id="show-select">
+      <option value="10">Top 10 flows</option>
+      <option value="20" selected>Top 20 flows</option>
+      <option value="40">Top 40 flows</option>
+      <option value="all">All flows</option>
+    </select>
+  </div>
+</div>
+<div id="commodity-panel">
+  <label id="commodity-label">Commodities<button id="commodity-all" class="small-btn">All</button><button id="commodity-none" class="small-btn">None</button></label>
+  <div id="commodity-dropdown" class="box-dropdown">
+    <button id="commodity-toggle"></button>
+    <div id="commodity-boxes" class="box-panel"></div>
+  </div>
+  <div id="commodity-chips" class="tick-chips"></div>
+</div>
+<div class="toolbar" id="shared-filters"></div>
+<div class="toolbar" id="year-toolbar">
+  <div id="year-panel">
+    <label for="year-slider">Year</label>
+    <div id="year-row">
+      <button id="year-prev" title="Previous year">‹</button>
+      <input type="range" id="year-slider">
+      <button id="year-next" title="Next year">›</button>
+      <select id="year-select" title="Jump to a year"></select>
+    </div>
+  </div>
+</div>
+<div id="summary"></div>
+<div id="chart"></div>
+<script>__PLOTLYJS__</script>
+<script>
+const CONFIG = __CONFIG__;
+const DATA = __DATA__;
+</script>
+<script>__COMMON_JS__</script>
+<script>
+const REST = "Rest of world";
+const WIDTH_CAP = 1240, HEIGHT_RATIO = 0.74;
+const MARGIN = {l: 20, r: 20, t: 165, b: 20};  // t fits the two-line subtitle
+const NODE_MIN = 10, NODE_MAX = 44, EDGE_MIN = 1.2, EDGE_MAX = 13;
+// Chords are quadratic beziers sampled densely enough that hovering anywhere along a
+// chord hits a point; the arrowhead sits past the midpoint. Parallel chords between one
+// pair of nodes (one per commodity) take separate lanes offset perpendicular to the
+// chord, in layout units.
+const CURVE_POINTS = 24, ARROW_T = 0.62, CHORD_PULL = 0.4;
+const LANE = {map: 1.6, circle: 0.1, tiers: 0.08};
+const NODE_R = 1, RANGE = 1.45;
+// Tiered layout: one column per tier, rows of at least this many pixels.
+const TIER_ROW_PX = 26, TIER_X_PAD = 0.7;
+// Map layout: lon/lat axes with padded ranges; flows bow left of travel and
+// overlapping nodes (a country's tiers share one coordinate) are pushed apart.
+const MAP_BOW = 0.18, MAP_PAD = 12, RELAX_PASSES = 40;
+const GREY = "#7a7874";
+const T = Interactive.theme;
+const COMMODITY_NAMES = {steel: "steel", scrap: "scrap", pig_iron: "pig iron", hbi_high: "HBI high grade",
+                         hbi_mid: "HBI mid grade", hbi_low: "HBI low grade", dri_high: "DRI high grade",
+                         dri_mid: "DRI mid grade", dri_low: "DRI low grade", hot_metal: "hot metal",
+                         liquid_iron: "liquid iron", electrolytic_iron: "electrolytic iron",
+                         io_high: "high-grade ore", io_mid: "mid-grade ore", io_low: "low-grade ore"};
+const IRON = new Set(["pig_iron", "hbi_high", "hbi_mid", "hbi_low", "dri_high", "dri_mid", "dri_low",
+                      "hot_metal", "liquid_iron", "electrolytic_iron"]);
+const ORE = new Set(["io_high", "io_mid", "io_low"]);
+// Tiers: column in the tiered layout (scrap suppliers share the iron column), the
+// node-label suffix and the column heading.
+const TIERS = {
+  ore: {col: 0, name: "ore", head: "Iron ore mines"},
+  iron: {col: 1, name: "iron", head: "Iron plants & scrap suppliers"},
+  scrap: {col: 1, name: "scrap", head: "Iron plants & scrap suppliers"},
+  steel: {col: 2, name: "steel", head: "Steel plants"},
+  demand: {col: 3, name: "demand", head: "Steel demand"},
+};
+const SAME = {
+  country: ["country", "countries"],
+  region: ["region", "regions"],
+  bloc: ["member country (or the rest of the world)", "members and the rest of the world"],
+};
+// Mine nodes carry a key prefix so a mine label can never merge with a country or
+// region node of the same name.
+const SRC = "src:";
+const RUNS = Object.values(DATA);
+const kindIndex = (run, kind) => run.chain.kinds.indexOf(kind);
+// Countries of the chain: every endpoint but the mines.
+const ALL_GEOS = [...new Set(RUNS.flatMap(run => {
+  const mine = kindIndex(run, "mine");
+  return run.chain.endpoints.filter(e => e[0] !== mine).map(e => e[1]);
+}))].sort();
+const ALL_REGIONS = [...new Set(ALL_GEOS.map(Interactive.regionOf))].sort();
+const REGION_COLOURS = Interactive.colourTable(CONFIG.regionColours, ALL_REGIONS);
+const commodityCbs = new Map();
+// The picker's rows in three titled sections: the regions, the ten demand-centre countries
+// largest by steel allocated in the run's final year, then the rest by ISO3. The target
+// is one row: its name and the demand-centre countries behind it (one, or a region's).
+const TARGET_ROWS = [], TOP_TARGETS = 10;
+let target = null;
+
+function commodityName(c) { return COMMODITY_NAMES[c] || c; }
+function commodityColour(c) { return CONFIG.commodityColours[c] || GREY; }
+function blocs() { return Object.keys(CONFIG.tradeBlocs).sort(); }
+function fmtMt(v) { return v >= 10 ? v.toFixed(0) : v.toFixed(1); }
+function pct(v, of) { return of > 0 ? (100 * v / of).toFixed(0) : "0"; }
+/* Node ids are "<tier>|<geo>", geo being a grouped country (or the rest of the world) or a prefixed mine label. */
+function tierOf(id) { return id.slice(0, id.indexOf("|")); }
+function geoOf(id) { return id.slice(id.indexOf("|") + 1); }
+
+function allCommodities() {
+  const present = new Set(RUNS.flatMap(run => run.chain.commodities));
+  const known = Object.keys(COMMODITY_NAMES).filter(c => present.has(c));
+  return known.concat([...present].filter(c => !COMMODITY_NAMES[c]).sort());
+}
+
+function targets() {
+  return [...new Set(RUNS.flatMap(run => {
+    const dc = kindIndex(run, "demand_centre");
+    return run.chain.endpoints.filter(e => e[0] === dc).map(e => e[1]);
+  }))].sort();
+}
+
+/* Geography label of a country under the chosen grouping. Trade blocs overlap, so a
+   bloc is not a partition: its members appear individually and everyone else folds
+   into "Rest of world". */
+function grouper(groupBy, bloc) {
+  if (groupBy === "region") return Interactive.regionOf;
+  if (groupBy === "bloc") {
+    const members = new Set(CONFIG.tradeBlocs[bloc] || []);
+    return iso3 => members.has(iso3) ? iso3 : REST;
+  }
+  return iso3 => iso3;
+}
+
+function labelName(label, groupBy) {
+  if (label === REST || groupBy === "region") return label;
+  const name = Interactive.countryName(label);
+  return name ? `${label} ${name}` : label;
+}
+
+function displayName(id, groupBy) {
+  const geo = geoOf(id);
+  return `${geo.startsWith(SRC) ? geo.slice(SRC.length) : labelName(geo, groupBy)} · ${TIERS[tierOf(id)].name}`;
+}
+
+function shortLabel(id) {
+  const geo = geoOf(id);
+  return `${geo.startsWith(SRC) ? geo.slice(SRC.length) : geo} ${TIERS[tierOf(id)].name}`;
+}
+
+function nodeColour(id, groupBy) {
+  const geo = geoOf(id);
+  if (geo.startsWith(SRC) || geo === REST) return GREY;
+  const region = groupBy === "region" ? geo : Interactive.regionOf(geo);
+  return REGION_COLOURS[region] || GREY;
+}
+
+function currentYear() { return DATA[Interactive.run()].years[+document.getElementById("year-slider").value]; }
+
+/* Fit the slider and the year dropdown to the chosen run's years, keeping the year where the run has it. */
+function syncYears() {
+  const slider = document.getElementById("year-slider"), select = document.getElementById("year-select");
+  const years = DATA[Interactive.run()].years;
+  const current = +select.value;
+  select.replaceChildren(...years.map(y => new Option(y, y)));
+  slider.min = 0;
+  slider.max = years.length - 1;
+  slider.value = years.includes(current) ? years.indexOf(current) : years.length - 1;
+}
+
+function stepYear(delta) {
+  const slider = document.getElementById("year-slider");
+  slider.value = Math.min(Math.max(+slider.value + delta, 0), DATA[Interactive.run()].years.length - 1);
+  render();
+}
+
+function targetName(iso3) { return Interactive.countryName(iso3) || iso3; }
+
+/* Steel allocated to each country's demand centre in the run's final year, in tonnes. */
+function finalYearDemand(run) {
+  const ch = run.chain, year = run.years[run.years.length - 1], E = ch.edges[year];
+  const demand = new Map();
+  if (!E) return demand;
+  const DC = kindIndex(run, "demand_centre"), ep = ch.endpoints;
+  for (let i = 0; i < E.v.length; i++) {
+    if (ch.commodities[E.c[i]] !== "steel" || ep[E.d[i]][0] !== DC) continue;
+    demand.set(ep[E.d[i]][1], (demand.get(ep[E.d[i]][1]) || 0) + E.v[i]);
+  }
+  return demand;
+}
+
+/* The picker: a search field over the rows; typing narrows them by name or ISO3, Enter
+   takes the first match, a click takes that row. Choosing closes the panel. */
+function buildTargetPicker(all) {
+  const rows = document.getElementById("target-rows"), search = document.getElementById("target-search");
+  const panel = document.getElementById("target-panel"), toggle = document.getElementById("target-toggle");
+  const demand = finalYearDemand(RUNS[0]);
+  const top = [...all].sort((a, b) => (demand.get(b) || 0) - (demand.get(a) || 0)).slice(0, TOP_TARGETS)
+    .filter(iso3 => demand.get(iso3) > 0);
+  const rest = all.filter(iso3 => !top.includes(iso3)).sort();
+  const regions = [...new Set(all.map(Interactive.regionOf))].sort();
+  const heads = [];
+  const addRow = (section, code, note, row) => {
+    const label = document.createElement("label");
+    label.appendChild(document.createTextNode(code));
+    const muted = document.createElement("span");
+    muted.className = "muted";
+    muted.textContent = note;
+    label.appendChild(muted);
+    Object.assign(row, {label, section, search: `${code} ${row.name}`.toLowerCase()});
+    label.addEventListener("click", () => choose(row));
+    rows.appendChild(label);
+    TARGET_ROWS.push(row);
+  };
+  const addHead = text => {
+    const head = document.createElement("div");
+    head.className = "head";
+    head.textContent = text;
+    rows.appendChild(head);
+    heads.push(head);
+  };
+  const addCountry = section => iso3 => addRow(section, iso3, targetName(iso3) === iso3 ? "" : targetName(iso3),
+    {key: iso3, name: labelName(iso3, "country"), members: new Set([iso3]), within: "domestically"});
+  addHead("Regions");
+  regions.forEach(region => {
+    const members = all.filter(iso3 => Interactive.regionOf(iso3) === region);
+    addRow(0, region, String(members.length),
+           {key: "region:" + region, name: region, members: new Set(members), within: "within the region"});
+  });
+  addHead("Countries: top demand");
+  top.forEach(addCountry(1));
+  addHead("Countries: rest of the world");
+  rest.forEach(addCountry(2));
+  const none = document.createElement("div");
+  none.className = "none";
+  none.textContent = "No region or country matches";
+  rows.appendChild(none);
+  // A title shows while its section has visible rows, ruled off when an earlier section has some too.
+  const filter = () => {
+    const typed = search.value.trim().toLowerCase();
+    const visible = [0, 0, 0];
+    TARGET_ROWS.forEach(row => {
+      const hit = !typed || row.search.includes(typed);
+      row.label.style.display = hit ? "" : "none";
+      visible[row.section] += hit;
+    });
+    heads.forEach((head, i) => {
+      head.style.display = visible[i] ? "" : "none";
+      head.classList.toggle("ruled", visible.slice(0, i).some(Boolean));
+    });
+    none.style.display = visible.some(Boolean) ? "none" : "";
+  };
+  const choose = row => {
+    target = row;
+    TARGET_ROWS.forEach(other => other.label.classList.toggle("current", other === row));
+    toggle.textContent = `${row.name} ▾`;
+    panel.classList.remove("open");
+    render();
+  };
+  search.addEventListener("input", filter);
+  search.addEventListener("keydown", e => {
+    if (e.key === "Enter") {
+      const first = TARGET_ROWS.find(row => row.label.style.display !== "none");
+      if (first) choose(first);
+    } else if (e.key === "Escape") {
+      panel.classList.remove("open");
+    }
+  });
+  // The shell toggles the panel on the button; opening also clears and focuses the search.
+  toggle.addEventListener("click", () => {
+    if (!panel.classList.contains("open")) return;
+    search.value = "";
+    filter();
+    search.focus();
+    // Only a country deep in the alphabetical list is scrolled to; otherwise the panel opens on the regions.
+    if (target.section === 2) target.label.scrollIntoView({block: "center"});
+    else panel.scrollTop = 0;
+  });
+  choose(TARGET_ROWS.find(row => row.key === "IND") || TARGET_ROWS.find(row => row.section > 0));
+}
+
+function selectedCommodities() {
+  return new Set([...commodityCbs].filter(([, cb]) => cb.checked).map(([c]) => c));
+}
+
+function swatch(c) {
+  const node = document.createElement("span");
+  node.className = "swatch";
+  node.style.background = commodityColour(c);
+  return node;
+}
+
+/* The toggle's count and one removable pill per selected commodity. The pills stay
+   when everything is selected, as they are the only legend of the chord colours. */
+function updateCommodityUi() {
+  const selected = selectedCommodities();
+  document.getElementById("commodity-toggle").textContent = `${selected.size} of ${commodityCbs.size} commodities ▾`;
+  const chips = document.getElementById("commodity-chips");
+  chips.innerHTML = "";
+  if (!selected.size) {
+    const note = document.createElement("span");
+    note.className = "geo-chip-note";
+    note.textContent = "no commodities selected";
+    chips.appendChild(note);
+    return;
+  }
+  selected.forEach(c => {
+    const x = document.createElement("button");
+    x.textContent = "×";
+    x.title = "Remove";
+    x.addEventListener("click", () => { commodityCbs.get(c).checked = false; updateCommodityUi(); render(); });
+    const chip = document.createElement("span");
+    chip.className = "geo-chip";
+    chip.append(swatch(c), commodityName(c), x);
+    chips.appendChild(chip);
+  });
+}
+
+/* The supply chain of the steel demand of `members` (the target's countries) in one
+   year, traced over the furnace-group-level edges: the steel furnace groups serving
+   their demand centres, the iron products and scrap those furnace groups took in, and the ore the
+   iron-making furnace groups took in. Each upstream edge is attributed pro rata to
+   the share of its destination's output (steel, or iron products) that went down the
+   chain, so a plant sending 5% of its steel to the target contributes 5% of its
+   inputs. Rows carry raw geographies (ISO3, or the mine label for ore), the source
+   furnace group's technology and id (null for suppliers and mines) and Mt. */
+function chainRows(run, year, members) {
+  const ch = run.chain, E = ch.edges[year];
+  if (!E) return [];
+  const ep = ch.endpoints, FG = kindIndex(run, "furnace_group"), DC = kindIndex(run, "demand_centre");
+  const commodity = i => ch.commodities[E.c[i]];
+  const n = E.v.length;
+  const outTotal = new Map();  // furnace group -> its steel (steel makers) or iron products (iron makers) out
+  for (let i = 0; i < n; i++) {
+    if (commodity(i) === "steel" || IRON.has(commodity(i))) outTotal.set(E.s[i], (outTotal.get(E.s[i]) || 0) + E.v[i]);
+  }
+  const rows = [];
+  const row = (i, oTier, dTier, v) => {
+    const s = ep[E.s[i]], d = ep[E.d[i]];
+    rows.push({c: commodity(i), o: s[1], d: d[1], oTier, dTier, t: s[0] === FG ? ch.techs[E.t[i]] : null,
+               name: s[0] === FG ? s[2] : null, v: v / 1e6});
+  };
+  const steelShare = new Map();
+  for (let i = 0; i < n; i++) {
+    if (commodity(i) !== "steel" || ep[E.d[i]][0] !== DC || !members.has(ep[E.d[i]][1])) continue;
+    steelShare.set(E.s[i], (steelShare.get(E.s[i]) || 0) + E.v[i]);
+    row(i, "steel", "demand", E.v[i]);
+  }
+  steelShare.forEach((v, s) => steelShare.set(s, v / outTotal.get(s)));
+  const ironShare = new Map();
+  for (let i = 0; i < n; i++) {
+    if (!steelShare.has(E.d[i]) || !(IRON.has(commodity(i)) || commodity(i) === "scrap")) continue;
+    const attributed = E.v[i] * steelShare.get(E.d[i]);
+    const fromPlant = ep[E.s[i]][0] === FG;
+    row(i, fromPlant ? "iron" : "scrap", "steel", attributed);
+    if (fromPlant) ironShare.set(E.s[i], (ironShare.get(E.s[i]) || 0) + attributed);
+  }
+  ironShare.forEach((v, s) => ironShare.set(s, v / outTotal.get(s)));
+  for (let i = 0; i < n; i++) {
+    if (!ironShare.has(E.d[i]) || !ORE.has(commodity(i))) continue;
+    row(i, "ore", "iron", E.v[i] * ironShare.get(E.d[i]));
+  }
+  return rows;
+}
+
+/* Text sits away from the circle's centre so labels never cross the chords. */
+function textPosition(angle) {
+  const x = Math.cos(angle), y = Math.sin(angle);
+  if (x > 0.35) return "middle right";
+  if (x < -0.35) return "middle left";
+  return y > 0 ? "top center" : "bottom center";
+}
+
+/* Map layout: nudge overlapping nodes apart with symmetric passes, keeping the geography recognisable. */
+function relaxOverlaps(ids, pos, sizeOf, width, height) {
+  const xs = ids.map(id => pos.get(id).x), ys = ids.map(id => pos.get(id).y);
+  const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), 10);
+  const pxPerUnit = Math.min(width - MARGIN.l - MARGIN.r, height - MARGIN.t - MARGIN.b) / (span * 1.15);
+  for (let pass = 0; pass < RELAX_PASSES; pass++) {
+    let moved = false;
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const a = pos.get(ids[i]), b = pos.get(ids[j]);
+        const minDist = (sizeOf(ids[i]) + sizeOf(ids[j])) / 2 / pxPerUnit + 4 / pxPerUnit;
+        let dx = b.x - a.x, dy = b.y - a.y, dist = Math.hypot(dx, dy);
+        if (dist >= minDist) continue;
+        if (dist < 1e-6) { dx = 1; dy = 0; dist = 1; }
+        const push = (minDist - dist) / 2 / dist;
+        a.x -= dx * push; a.y -= dy * push;
+        b.x += dx * push; b.y += dy * push;
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+}
+
+function render() {
+  const run = DATA[Interactive.run()];
+  const year = currentYear();
+  document.getElementById("year-select").value = year;
+  const groupBy = document.getElementById("group-select").value;
+  const bloc = document.getElementById("bloc-select").value;
+  const layoutMode = document.getElementById("layout-select").value;
+  const show = document.getElementById("show-select").value;
+  const mapMode = layoutMode === "map" && Boolean(run.coords);
+  const tiersMode = layoutMode === "tiers";
+  document.getElementById("bloc-panel").style.display = groupBy === "bloc" ? "" : "none";
+  const selectedGeo = Interactive.selectedGeos(), selectedTech = Interactive.selectedTechs();
+  const selectedCommodity = selectedCommodities();
+  const gd = document.getElementById("chart");
+  const width = Interactive.fitWidth(WIDTH_CAP);
+  let height = Math.round(width * HEIGHT_RATIO);
+  const [same, plural] = SAME[groupBy];
+  const targetName = target.name;
+
+  // Filters apply to the display only: the trace itself always runs over every edge,
+  // so unticking hot metal hides those chords without breaking the ore behind them.
+  const yearRows = chainRows(run, year, target.members);
+  const rows = yearRows.filter(r => selectedCommodity.has(r.c) && (!r.t || selectedTech.has(r.t)));
+  if (!yearRows.length || !rows.length || !selectedGeo.size) {
+    const why = !yearRows.length ? (run.chain.edges[year] ? `No steel allocated to ${targetName} in ${year}`
+                                                          : `No allocations for ${year}`)
+      : !rows.length ? "No commodities or technologies selected" : "No countries selected";
+    Interactive.showEmpty(gd, why, width, height / 2);
+    Interactive.summary(run.provenance);
+    return;
+  }
+
+  // Countries outside the geography filter fold into "Rest of world" rather than
+  // vanishing; mines are labels, not countries, and stay as they are.
+  const group = grouper(groupBy, bloc);
+  const geoId = iso3 => selectedGeo.has(iso3) ? group(iso3) : REST;
+  const nodeId = (tier, raw) => tier === "ore" ? `ore|${SRC}${raw}` : `${tier}|${geoId(raw)}`;
+
+  // Per-node totals over every flow (so hover and sizing stay true regardless of the
+  // top-N cut), the plants behind each node for its hover's count, and one flow per
+  // commodity between each pair of nodes.
+  const stats = new Map(), members = new Map(), plants = new Map();
+  const stat = id => {
+    if (!stats.has(id)) stats.set(id, {out: 0, in: 0});
+    return stats.get(id);
+  };
+  const member = (id, raw, v) => {  // raw endpoints per node, weighting its map position
+    if (!members.has(id)) members.set(id, new Map());
+    members.get(id).set(raw, (members.get(id).get(raw) || 0) + v);
+  };
+  const flows = new Map();
+  rows.forEach(r => {
+    const o = nodeId(r.oTier, r.o), d = nodeId(r.dTier, r.d);
+    member(o, r.o, r.v);
+    member(d, r.d, r.v);
+    if (r.name) {
+      if (!plants.has(o)) plants.set(o, new Set());
+      plants.get(o).add(r.name.replace(/_\d+$/, ""));
+    }
+    stat(o).out += r.v;
+    stat(d).in += r.v;
+    const key = o + "|" + d + "|" + r.c;
+    if (!flows.has(key)) flows.set(key, {o, d, c: r.c, v: 0});
+    flows.get(key).v += r.v;
+  });
+  const edges = [...flows.values()].sort((x, y) => y.v - x.v);
+
+  const kept = edges.slice(0, show === "all" ? Infinity : +show);
+
+  const shipped = tier => [...stats].filter(([id]) => tierOf(id) === tier).reduce((s, [, n]) => s + n.out, 0);
+  const summaryLines = () => {
+    const steel = shipped("steel");
+    const domestic = rows.filter(r => r.dTier === "demand" && target.members.has(r.o)).reduce((s, r) => s + r.v, 0);
+    const mines = [...stats.keys()].filter(id => tierOf(id) === "ore").length;
+    const lines = [`${targetName} steel demand in ${year}: ${steel.toFixed(0)} Mt steel ` +
+                   `(${pct(domestic, steel)}% made ${target.within}) ← ${shipped("iron").toFixed(0)} Mt iron products + ` +
+                   `${shipped("scrap").toFixed(0)} Mt scrap ← ${shipped("ore").toFixed(0)} Mt ore from ${mines} mine regions`];
+    if (kept.length < edges.length) {
+      const base = edges.reduce((s, f) => s + f.v, 0);
+      const shown = kept.reduce((s, f) => s + f.v, 0);
+      lines.push(`Showing the top ${kept.length} of ${edges.length} flows between ${plural} ` +
+                 `(${pct(shown, base)}% of that volume)`);
+    }
+    if (kept.length) {
+      const top = kept[0];
+      lines.push(`Largest flow: ${displayName(top.o, groupBy)} → ${displayName(top.d, groupBy)} ` +
+                 `${commodityName(top.c)} ${fmtMt(top.v)} Mt`);
+    }
+    lines.push(run.provenance);
+    return lines.join("\n");
+  };
+
+  if (!kept.length) {
+    Interactive.showEmpty(gd, `No flows between ${plural} to draw`, width, height / 2);
+    Interactive.summary(summaryLines());
+    return;
+  }
+
+  const shown = new Set(kept.flatMap(f => [f.o, f.d]));
+  const traffic = id => stats.get(id).out + stats.get(id).in;
+  const byTraffic = (a, b) => traffic(b) - traffic(a);
+  const maxTraffic = Math.max(...[...shown].map(traffic), 1e-9);
+  const sizeOf = id => NODE_MIN + (NODE_MAX - NODE_MIN) * Math.sqrt(traffic(id) / maxTraffic);
+  const pos = new Map();
+  const place = (id, angle) => pos.set(id, {x: NODE_R * Math.cos(angle), y: NODE_R * Math.sin(angle), angle});
+  // Tiered layout: nodes in their tier's column, busiest at the top; the chart grows
+  // with the tallest column so nodes never overlap. The circle runs tier by tier
+  // (demand, steel, iron and scrap, ore), then by region and traffic. The map puts
+  // every node at the volume-weighted centre of its members.
+  const columns = new Map();
+  if (tiersMode) {
+    shown.forEach(id => {
+      const col = TIERS[tierOf(id)].col;
+      if (!columns.has(col)) columns.set(col, []);
+      columns.get(col).push(id);
+    });
+    const tallest = Math.max(...[...columns.values()].map(list => list.length));
+    height = Math.max(height, tallest * TIER_ROW_PX + MARGIN.t + MARGIN.b);
+  }
+  const tierHalf = Math.max(1, ...[...columns.values()].map(list => list.length)) / 2;
+  if (tiersMode) {
+    columns.forEach((list, col) => {
+      list.sort(byTraffic);
+      list.forEach((id, i) => pos.set(id, {x: col, y: tierHalf - (i + 0.5) * 2 * tierHalf / list.length, angle: 0}));
+    });
+  } else if (mapMode) {
+    shown.forEach(id => {
+      let wlat = 0, wlon = 0, w = 0;
+      (members.get(id) || new Map()).forEach((v, raw) => {
+        const c = run.coords[raw];
+        if (c) { wlat += c[0] * v; wlon += c[1] * v; w += v; }
+      });
+      pos.set(id, w > 0 ? {x: wlon / w, y: wlat / w} : {x: 0, y: 0});
+    });
+    relaxOverlaps([...shown], pos, sizeOf, width, height);
+  } else {
+    const ordered = [...shown].sort((a, b) => {
+      const cmp = TIERS[tierOf(b)].col - TIERS[tierOf(a)].col;
+      if (cmp) return cmp;
+      if (groupBy === "country") {
+        const region = Interactive.regionOf(geoOf(a)).localeCompare(Interactive.regionOf(geoOf(b)));
+        if (region) return region;
+      }
+      return byTraffic(a, b);
+    });
+    ordered.forEach((id, i) => place(id, Math.PI / 2 - 2 * Math.PI * i / ordered.length));
+  }
+  // Lane of each kept chord among those joining the same pair of nodes.
+  const lanes = new Map();
+  kept.forEach(f => {
+    const pair = f.o + "|" + f.d;
+    if (!lanes.has(pair)) lanes.set(pair, []);
+    lanes.get(pair).push(f);
+  });
+  const laneOf = f => { const list = lanes.get(f.o + "|" + f.d); return list.indexOf(f) - (list.length - 1) / 2; };
+
+  const maxKept = kept[0].v;
+  const traces = [];
+  const arrows = {x: [], y: [], angle: [], size: [], color: [], text: []};
+  kept.forEach(f => {
+    const p0 = pos.get(f.o), p1 = pos.get(f.d);
+    let cx, cy;
+    if (tiersMode) {
+      cx = (p0.x + p1.x) / 2;
+      cy = (p0.y + p1.y) / 2;
+    } else if (mapMode) {
+      cx = (p0.x + p1.x) / 2 - (p1.y - p0.y) * MAP_BOW;
+      cy = (p0.y + p1.y) / 2 + (p1.x - p0.x) * MAP_BOW;
+    } else {
+      cx = (p0.x + p1.x) / 2 * CHORD_PULL;
+      cy = (p0.y + p1.y) / 2 * CHORD_PULL;
+    }
+    const lane = laneOf(f);
+    if (lane !== 0) {
+      const len = Math.hypot(p1.x - p0.x, p1.y - p0.y) || 1;
+      const step = LANE[tiersMode ? "tiers" : mapMode ? "map" : "circle"];
+      cx -= (p1.y - p0.y) / len * lane * step;
+      cy += (p1.x - p0.x) / len * lane * step;
+    }
+    const xs = [], ys = [];
+    for (let i = 0; i <= CURVE_POINTS; i++) {
+      const t = i / CURVE_POINTS, u = 1 - t;
+      xs.push(u * u * p0.x + 2 * u * t * cx + t * t * p1.x);
+      ys.push(u * u * p0.y + 2 * u * t * cy + t * t * p1.y);
+    }
+    // Short lines keep the tooltip narrow, so it covers little of the chart.
+    const hover = `<b>${shortLabel(f.o)} → ${shortLabel(f.d)}</b><br>${commodityName(f.c)} ${fmtMt(f.v)} Mt<br>` +
+      `${pct(f.v, stats.get(f.o).out)}% of origin's supply<br>${pct(f.v, stats.get(f.d).in)}% of destination's inputs`;
+    const widthPx = EDGE_MIN + (EDGE_MAX - EDGE_MIN) * Math.sqrt(f.v / maxKept);
+    const colour = commodityColour(f.c);
+    traces.push({type: "scatter", mode: "lines", x: xs, y: ys,
+      line: {width: widthPx, color: Interactive.hexToRgba(colour, 0.45)},
+      hoverinfo: "text", hovertext: hover, showlegend: false});
+    const t = ARROW_T, u = 1 - t;
+    const dx = 2 * u * (cx - p0.x) + 2 * t * (p1.x - cx), dy = 2 * u * (cy - p0.y) + 2 * t * (p1.y - cy);
+    arrows.x.push(u * u * p0.x + 2 * u * t * cx + t * t * p1.x);
+    arrows.y.push(u * u * p0.y + 2 * u * t * cy + t * t * p1.y);
+    arrows.angle.push(Math.atan2(dx, dy) * 180 / Math.PI);
+    arrows.size.push(Math.max(7, widthPx * 1.7));
+    arrows.color.push(Interactive.hexToRgba(colour, 0.8));
+    arrows.text.push(hover);
+  });
+  traces.push({type: "scatter", mode: "markers", x: arrows.x, y: arrows.y,
+    marker: {symbol: "triangle-up", angle: arrows.angle, size: arrows.size, color: arrows.color},
+    hoverinfo: "text", hovertext: arrows.text, showlegend: false});
+
+  const ids = [...shown];
+  const nodeHover = id => {
+    const s = stats.get(id);
+    const lines = [`<b>${displayName(id, groupBy)}</b>`];
+    if (s.in > 0) lines.push(`${fmtMt(s.in)} Mt received`);
+    if (s.out > 0) lines.push(`${fmtMt(s.out)} Mt shipped down the chain`);
+    const n = (plants.get(id) || new Set()).size;
+    if (n) lines.push(`${n} plant${n > 1 ? "s" : ""}`);
+    return lines.join("<br>");
+  };
+  traces.push({type: "scatter", mode: "markers+text",
+    x: ids.map(id => pos.get(id).x), y: ids.map(id => pos.get(id).y),
+    text: ids.map(shortLabel),
+    textposition: ids.map(id => tiersMode ? ["middle left", "top center", "top center", "middle right"][pos.get(id).x]
+                              : mapMode ? "top center" : textPosition(pos.get(id).angle)),
+    textfont: {size: 11, color: T.ink},
+    marker: {size: ids.map(sizeOf),
+             color: ids.map(id => nodeColour(id, groupBy)),
+             line: {width: 1.5, color: "#ffffff"}},
+    hoverinfo: "text", hovertext: ids.map(nodeHover), showlegend: false});
+
+  const groupLabel = groupBy === "bloc" ? `trade bloc ${bloc}` : groupBy;
+  const runNote = `${run.title} · ${Interactive.geoNote(new Set(ALL_GEOS))}`;
+  const readingNote = "steel plants serving that demand ← iron products and scrap they took in ← ore behind " +
+    "that iron; upstream volumes attributed pro rata to the share of each plant's output that went down the chain · " +
+    `chords = flows between ${plural}, colour = commodity, arrows point to the destination · node size = volume, ` +
+    "colour = region" +
+    (mapMode ? " · nodes at the volume-weighted centre of their members, nudged apart where crowded" : "");
+  let xRange = [-RANGE, RANGE], yRange = [-RANGE, RANGE];
+  const annotations = [];
+  if (tiersMode) {
+    xRange = [-TIER_X_PAD, 3 + TIER_X_PAD];
+    yRange = [-tierHalf - 0.4, tierHalf + 0.6];
+    columns.forEach((list, col) => annotations.push({
+      x: col, y: tierHalf + 0.35, text: `<b>${TIERS[tierOf(list[0])].head}</b>`, showarrow: false,
+      font: {size: 12, color: T.inkSecondary}, xanchor: "center"}));
+  } else if (mapMode) {
+    const xs = ids.map(id => pos.get(id).x), ys = ids.map(id => pos.get(id).y);
+    xRange = [Math.min(...xs) - MAP_PAD, Math.max(...xs) + MAP_PAD];
+    yRange = [Math.min(...ys) - MAP_PAD * 0.7, Math.max(...ys) + MAP_PAD * 0.7];
+  }
+  const layout = {
+    title: {text: `Supply chain of ${targetName} steel demand by ${groupLabel}, ${year}` +
+              `<br><sup>${runNote}</sup><br><sup>${readingNote}</sup>`,
+            font: {color: T.ink, size: 17}, x: 0.02, y: 0.985, yanchor: "top"},
+    xaxis: {visible: false, range: xRange, constrain: "domain"},
+    // Columns fill the width whatever the tallest column's height; the circle and map keep an equal aspect.
+    yaxis: tiersMode ? {visible: false, range: yRange}
+                     : {visible: false, range: yRange, scaleanchor: "x", scaleratio: 1, constrain: "domain"},
+    hoverlabel: {align: "left", font: {size: 11}, bgcolor: "#fff"},
+    font: {family: "Helvetica Neue, Helvetica, Arial", color: T.inkSecondary, size: 11},
+    paper_bgcolor: T.surface, plot_bgcolor: T.surface,
+    width, height, margin: MARGIN, showlegend: false, annotations,
+  };
+  Plotly.react(gd, traces, layout, {displaylogo: false, responsive: false});
+  Interactive.summary(summaryLines());
+}
+
+function initControls() {
+  document.getElementById("year-slider").addEventListener("input", render);
+  document.getElementById("year-select").addEventListener("change", e => {
+    document.getElementById("year-slider").value = DATA[Interactive.run()].years.indexOf(+e.target.value);
+    render();
+  });
+  document.getElementById("year-prev").addEventListener("click", () => stepYear(-1));
+  document.getElementById("year-next").addEventListener("click", () => stepYear(1));
+  const blocSelect = document.getElementById("bloc-select");
+  blocs().forEach(b => blocSelect.appendChild(new Option(b, b)));
+  if (!blocs().length) document.querySelector('#group-select option[value="bloc"]').remove();
+  ["group-select", "bloc-select", "layout-select", "show-select"]
+    .forEach(id => document.getElementById(id).addEventListener("change", render));
+  const boxes = document.getElementById("commodity-boxes");
+  allCommodities().forEach(c => {
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = true;
+    cb.addEventListener("change", () => { updateCommodityUi(); render(); });
+    const label = document.createElement("label");
+    label.append(cb, swatch(c), commodityName(c));
+    boxes.appendChild(label);
+    commodityCbs.set(c, cb);
+  });
+  updateCommodityUi();
+  const setAllCommodities = checked => {
+    commodityCbs.forEach(cb => cb.checked = checked);
+    updateCommodityUi();
+    render();
+  };
+  document.getElementById("commodity-all").addEventListener("click", () => setAllCommodities(true));
+  document.getElementById("commodity-none").addEventListener("click", () => setAllCommodities(false));
+  if (!RUNS.some(run => run.coords && Object.keys(run.coords).length)) {
+    document.querySelector('#layout-select option[value="map"]').disabled = true;
+  }
+  // Suppliers and mines write the literal technology "N/A"; only furnace groups feed the filter.
+  const techs = [...new Set(RUNS.flatMap(run => run.chain.techs))].filter(t => t !== "N/A");
+  Interactive.init({geoKeys: ALL_GEOS, techs, onChange: () => { syncYears(); render(); }});
+  syncYears();
+  buildTargetPicker(targets());  // renders once through its initial choice
+}
+
+initControls();
+Interactive.onResize(render);
+</script>
+</body>
+</html>

@@ -109,7 +109,7 @@ output/
     interactive/  # InteractivePlotter viewers (self-contained HTML, see below)
 ```
 
-`plots/GEO/` and `plots/TM/` are written only when `run_simulation` is given `--plot-geo` / `--plot-tm`; without the flag the folder is not created. The trade maps are replaced by the `trade_matrix.html`, `trade_network.html` and `trade_allocations.html` viewers below, which read the per-year `TM/steel_trade_allocations_<year>.csv` files written on every run.
+`plots/GEO/` and `plots/TM/` are written only when `run_simulation` is given `--plot-geo` / `--plot-tm`; without the flag the folder is not created. The trade maps are replaced by the `trade_matrix.html`, `trade_network.html`, `supply_chain.html` and `trade_allocations.html` viewers below, which read the per-year `TM/steel_trade_allocations_<year>.csv` files written on every run.
 
 Diagnostics exports under `output/diagnostics/` are off by default; set `STEEL_DIAGNOSTICS=1` to write them (`STEEL_DIAGNOSTICS_DETAIL` and `STEEL_DIAGNOSTICS_PATH` are described in `steelo.domain.diagnostics`).
 
@@ -130,6 +130,7 @@ All viewers except the two capacity maps share one shell (`common.js` / `common.
 | `cost_curves.html` | Per-commodity cost curves with the engine's market-clearing rule (clearing shares and price buffers from the run config) | `post_processed_<timestamp>.csv` + `data/market_prices_<start>_<end>.csv` |
 | `trade_matrix.html` | Steel, iron products, iron ore (mine-labelled origins) and scrap shipped between geographies, per year, each product selectable individually | `TM/steel_trade_allocations_<year>.csv` |
 | `trade_network.html` | The same trade flows as a chord diagram with a map layout | `TM/steel_trade_allocations_<year>.csv` |
+| `supply_chain.html` | The whole chain behind the steel demand of one country or region, per year: the steel plants serving it, the iron products and scrap those plants took in, and the ore behind that iron, as tiers, a circle or a map. Upstream volumes are attributed pro rata to the share of each furnace group's output that went down the chain | `TM/steel_trade_allocations_<year>.csv` |
 | `trade_allocations.html` | Every year's trade-LP allocations as commodity arcs over a world map, with a year slider and commodity toggles | `TM/steel_trade_allocations_<year>.csv` |
 | `supply_demand.html` | Supply and demand for steel, scrap, iron ore, CO2 storage and biomass | `TM/` allocations + `fixtures/suppliers.json` + `fixtures/biomass_availability.json` |
 | `reductant_use.html` | Iron production and absolute reductant use per reductant | `post_processed_<timestamp>.csv` + `fixtures/primary_feedstocks.json` |

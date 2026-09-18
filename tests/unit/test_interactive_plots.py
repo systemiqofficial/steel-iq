@@ -290,6 +290,37 @@ def test_plot_trade_network_writes_self_contained_viewer(tmp_path) -> None:
     assert plotter.plot_trade_network(tmp_path / "absent") is None
 
 
+def test_plot_supply_chain_writes_self_contained_viewer(tmp_path) -> None:
+    """The supply-chain viewer embeds the furnace-group edges, coords and commodity colours; no files → no viewer."""
+    tm_dir = tmp_path / "TM"
+    tm_dir.mkdir()
+    header = "commodity,source_type,source_id,source_location,capacity_at_source,source_tech,destination_type,"
+    header += (
+        "destination_id,destination_location,allocated_volume,allocation_cost,demand_at_destination,supply_at_source"
+    )
+    loc = (
+        "Location(lat=1.0, lon=2.0, country='{0}', region='R', iso3='{0}', distance_to_other_iso3=None, geo_unit=None)"
+    )
+    row = f'steel,Plant-FurnaceGroup,P1_0,"{loc.format("CHN")}",1e6,BOF,DemandCenter,India,"{loc.format("IND")}",2e6,0,2e6,N/A'
+    (tm_dir / "steel_trade_allocations_2025.csv").write_text(f"{header}\n{row}\n")
+    (tm_dir / "steel_trade_allocations_2026.csv").write_text(f"{header}\n")
+    plotter = InteractivePlotter(tmp_path / "plots", sample_country_mappings(), run_title="sim_test")
+
+    written = plotter.plot_supply_chain(tm_dir)
+
+    assert written == tmp_path / "plots" / "interactive" / "supply_chain.html"
+    html = written.read_text()
+    for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
+        assert placeholder not in html
+    assert '"chartTitle": "Supply chain"' in html
+    assert '"commodityColours": {"steel": "#0064ff"' in html
+    assert '"years": [2025, 2026]' in html
+    assert '"endpoints": [[0, "CHN", "P1_0"], [1, "IND", "India"]]' in html
+    assert '"edges": {"2025": {"c": [0], "s": [0], "d": [1], "t": [0], "v": [2000000]}}' in html
+    assert '"coords": {"CHN": [1.0, 2.0], "IND": [1.0, 2.0]}' in html
+    assert plotter.plot_supply_chain(tmp_path / "absent") is None
+
+
 def supply_demand_country_mappings() -> list[CountryMapping]:
     """Three countries with TIAM-UCL regions, one of them commonly labelled with an ampersand."""
     common = {"irena_name": "", "ssp_region": ""}

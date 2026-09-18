@@ -1596,6 +1596,7 @@ class SimulationRunner:
             interactive.plot_decision_flows(motions_csv=self.config.output_dir / "data" / "pam_motions.csv")
             interactive.plot_trade_matrix(tm_dir=self.config.output_dir / "TM")
             interactive.plot_trade_network(tm_dir=self.config.output_dir / "TM")
+            interactive.plot_supply_chain(tm_dir=self.config.output_dir / "TM")
             interactive.plot_trade_allocations(tm_dir=self.config.output_dir / "TM")
             interactive.plot_supply_demand(
                 tm_dir=self.config.output_dir / "TM",
