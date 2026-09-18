@@ -49,9 +49,31 @@ def test_simulation_service_with_multiple_plant_furnaces(bus, multi_furnace_grou
 
         # When events are sent through the bus
         bus.handle(
-            events.FurnaceGroupTechChanged(furnace_group_id="fg_group_2", technology_name="DRI-EAF", capacity=100)
+            events.FurnaceGroupTechChanged(
+                furnace_group_id="fg_group_2",
+                technology_name="DRI-EAF",
+                capacity=100,
+                iso3="DEU",
+                geo_unit=None,
+                old_technology_name="BF",
+                old_capacity=100,
+                owner_id="test_group",
+                product="steel",
+            )
         )
-        bus.handle(events.FurnaceGroupRenovated(furnace_group_id="fg_group_3"))
+        bus.handle(
+            events.FurnaceGroupRenovated(
+                furnace_group_id="fg_group_3",
+                capacity=100,
+                old_capacity=100,
+                iso3="DEU",
+                geo_unit=None,
+                old_technology_name="EAF",
+                new_technology_name="EAF",
+                owner_id="test_group",
+                product="steel",
+            )
+        )
 
         # Then the DataCollector should have logged these events
         assert len(data_collector.logged_events) == 2
@@ -70,7 +92,16 @@ def test_simulation_service_with_multiple_plant_furnaces(bus, multi_furnace_grou
         }
 
         # When we send another event for the next time step
-        bus.handle(events.FurnaceGroupClosed(furnace_group_id="fg_group_1"))
+        bus.handle(
+            events.FurnaceGroupClosed(
+                furnace_group_id="fg_group_1",
+                capacity=100,
+                iso3="DEU",
+                geo_unit=None,
+                owner_id="test_group",
+                product="steel",
+            )
+        )
 
         # Then it should be logged
         assert len(data_collector.logged_events) == 1

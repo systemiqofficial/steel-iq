@@ -61,6 +61,26 @@ def _load_valid_geo_unit_codes(geo_hierarchy_path: str) -> frozenset[str] | None
     return frozenset(row["geo_unit"] for row in json.loads(path.read_text()))
 
 
+def geo_unit_reference_data_available() -> tuple[bool, str]:
+    """Whether the reference data geo_unit derivation needs is on disk.
+
+    Cheap path checks only — nothing is loaded. Lets callers that depend on
+    province resolution (the China capacity policy above all) distinguish
+    "derivation will work" from the silent country-level degrade documented on
+    this module.
+
+    Returns:
+        ``(True, "")`` when both files exist, else ``(False, detail)`` naming
+        what is missing.
+    """
+    missing = [
+        str(path) for path in (_default_admin1_shapefile_path(), _default_geo_hierarchy_path()) if not path.exists()
+    ]
+    if missing:
+        return False, "missing: " + ", ".join(missing)
+    return True, ""
+
+
 def derive_geo_unit_for_site(
     lat: float,
     lon: float,

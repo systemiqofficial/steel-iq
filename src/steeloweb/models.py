@@ -1417,9 +1417,10 @@ class ResultImages(models.Model):
             else:
                 raise ValueError("ModelRun must have an output path set")
 
-        # Directory names for PAM and GEO plots
+        # Directory names for PAM, GEO, and greenfield plots
         pam_plots_dir = plots_dir / "PAM"
         geo_plots_dir = plots_dir / "GEO"
+        greenfield_plots_dir = plots_dir / "greenfield"
 
         # Mapping of field names to potential plot files
         # Note: Using glob patterns to match files with any priority percentage (e.g., top5, top20, etc.)
@@ -1456,21 +1457,24 @@ class ResultImages(models.Model):
                 pam_plots_dir / "steel_priority_locations.png",
             ],
             "new_plants_iron_construction": [
-                geo_plots_dir / "new_iron_plants_map.png",  # New filename (operating plants)
-                geo_plots_dir / "new_iron_plants_under_construction_map.png",  # Old filename for backward compatibility
+                greenfield_plots_dir / "iron_greenfield_map.png",  # New filename (operating plants)
+                geo_plots_dir / "new_iron_plants_map.png",  # Old filenames for backward compatibility
+                geo_plots_dir / "new_iron_plants_under_construction_map.png",
                 pam_plots_dir / "iron_plants_construction.png",
             ],
             "new_plants_steel_construction": [
-                geo_plots_dir / "new_steel_plants_map.png",  # New filename (operating plants)
-                geo_plots_dir
-                / "new_steel_plants_under_construction_map.png",  # Old filename for backward compatibility
+                greenfield_plots_dir / "steel_greenfield_map.png",  # New filename (operating plants)
+                geo_plots_dir / "new_steel_plants_map.png",  # Old filenames for backward compatibility
+                geo_plots_dir / "new_steel_plants_under_construction_map.png",
                 pam_plots_dir / "steel_plants_construction.png",
             ],
             "new_plants_iron_status": [
+                greenfield_plots_dir / "iron_greenfield_status.png",
                 geo_plots_dir / "new_iron_plants_by_status.png",
                 pam_plots_dir / "iron_plants_status.png",
             ],
             "new_plants_steel_status": [
+                greenfield_plots_dir / "steel_greenfield_status.png",
                 geo_plots_dir / "new_steel_plants_by_status.png",
                 pam_plots_dir / "steel_plants_status.png",
             ],

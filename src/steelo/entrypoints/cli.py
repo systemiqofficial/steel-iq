@@ -189,10 +189,29 @@ def run_full_simulation() -> str:
             "(default: %(default)s); data preparation keeps its own fixed seed"
         ),
     )
+    parser.add_argument(
+        "--enable-capacity-policy",
+        action="store_true",
+        help="Enable China's capacity-replacement policy (default: disabled)",
+    )
+    parser.add_argument(
+        "--credit-validity-years",
+        type=int,
+        default=None,
+        help=(
+            "Years a capacity-pool credit may sit banked before it expires; requires "
+            "--enable-capacity-policy (default: no expiry)"
+        ),
+    )
 
     # Parse the command-line arguments
     try:
         args = parser.parse_args()
+
+        if args.credit_validity_years is not None and args.credit_validity_years <= 0:
+            parser.error("--credit-validity-years must be a positive number of years")
+        if args.credit_validity_years is not None and not args.enable_capacity_policy:
+            parser.error("--credit-validity-years requires --enable-capacity-policy")
 
         # Setup directories
         steelo_home = Path(args.steelo_home)
@@ -341,6 +360,12 @@ def run_full_simulation() -> str:
                     f"[green]Iron price pegging enabled at {args.iron_to_steel_price_ratio:.0%} of steel price[/green]"
                 )
 
+            if args.enable_capacity_policy:
+                config.capacity_policy.enabled = True
+                console.print("[green]China capacity-replacement policy enabled[/green]")
+            if args.credit_validity_years is not None:
+                config.capacity_policy.credit_validity_years = args.credit_validity_years
+
             # Save config and metadata
             config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
             config_path = output_dir / "simulation_config.json"
@@ -431,6 +456,12 @@ def run_full_simulation() -> str:
                     console.print(
                         f"[green]Iron price pegging enabled at {args.iron_to_steel_price_ratio:.0%} of steel price[/green]"
                     )
+
+                if args.enable_capacity_policy:
+                    config.capacity_policy.enabled = True
+                    console.print("[green]China capacity-replacement policy enabled[/green]")
+                if args.credit_validity_years is not None:
+                    config.capacity_policy.credit_validity_years = args.credit_validity_years
 
                 # Save config and metadata
                 config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}

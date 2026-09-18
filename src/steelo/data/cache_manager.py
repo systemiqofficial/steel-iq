@@ -58,7 +58,7 @@ class CacheMetadata:
 class DataPreparationCache:
     """Manages cached data preparations based on content hashing."""
 
-    CACHE_VERSION = "1.9"  # Bump to invalidate all caches (demand/scrap scenario in the cache key)
+    CACHE_VERSION = "1.10"  # Bump to invalidate all caches (capacity pool fixtures added to prepare)
 
     def __init__(self, cache_root: Optional[Path] = None):
         """Initialize cache manager.

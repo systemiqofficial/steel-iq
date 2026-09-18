@@ -59,6 +59,7 @@ graph TD
   - Call `evaluate_expansion_options()` to get NPV for each plant-technology combination
   - **Per-(plant, tech) affordability pre-filter**: For each combination, check that the group treasury can cover `capex × capacity × equity_share` before computing NPV. Combinations the group cannot afford are skipped so max-NPV selection picks from affordable candidates only.
   - **P3 CO2 storage gate (pre-NPV)**: For each CCS candidate, the gate computes `get_co2_need_by_name(tech, capacity, reductant)` and compares against `get_co2_headroom(iso3, current_year + construction_time)`. If `need > headroom` the tech is dropped before NPV is computed, so the per-plant NPV race naturally picks the next-best non-CCS alternative (or yields no expansion for that plant). Reductant lookup is two-level (PlantGroup-local first, env fallback) to stay aligned with the downstream `get_bom_from_avg_boms` call — gate and NPV see the same reductant.
+  - **China capacity-replacement sizing query (pre-NPV, policy-enabled runs only)**: For each Chinese candidate, the policy's sizing query returns the capacity the route may actually build — the planned capacity, or ÷ 1.5 for an emission-intense route — and the NPV, the equity check and the capacity-limit check all run at that capacity. Pool availability is deliberately not consulted here: a build that lacks credits is refused at commitment (Stage 11), whatever it was worth. See [China Capacity-Replacement Policy](../capacity_replacement_policy.md).
   - Consider regional CAPEX, subsidies, dynamic feedstocks
   - Pass all subsidy information for proper NPV calculation
 - **Decision**: Which technologies can be built at which plants?
@@ -159,6 +160,8 @@ graph TD
   - Basic: furnace_group_id, plant_id, technology, capacity, product
   - Financial: equity_needed, npv, capex (with/without subsidy), cost_of_debt (with/without subsidy)
   - Subsidies: capex_subsidies, debt_subsidies lists
+
+**Capacity policy gate (policy-enabled runs, Chinese plant groups only)**: after every check above has passed and before the command is created, the policy's expansion gate withdraws the planned capacity from the retirement-credit pool, oldest credits first, within the credits applicable to the group (its own region's tag in a key province, and only its own credits from the 2028 company cutoff). If the applicable pool cannot cover the withdrawal, the expansion is refused for this year and the method returns `None`. The granted build capacity must equal the sizing query's answer the NPV was taken at; a mismatch raises.
 
 ## Dependencies
 - Regional data: CAPEX, FOPEX, subsidies

@@ -28,6 +28,7 @@ from steelo.utilities.plotting import region2colours, tech2colours
 from . import (
     capacity_production,
     cost_curves,
+    decision_flows,
     emissions,
     metallic_charge_use,
     reductant_use,
@@ -116,6 +117,7 @@ class InteractivePlotter:
         >>> interactive.plot_emissions(post_processed_csv)
         >>> interactive.plot_capacity_and_production(post_processed_csv, demand_centers_json)
         >>> interactive.plot_cost_curves(post_processed_csv, market_prices_csv, clearing)
+        >>> interactive.plot_decision_flows(motions_csv)
         >>> interactive.plot_trade_matrix(tm_dir)
         >>> interactive.plot_trade_network(tm_dir)
         >>> interactive.plot_trade_allocations(tm_dir)
@@ -278,6 +280,33 @@ class InteractivePlotter:
         }
         path = self._write("cost_curves.html", self._config("Cost curves", clearing=clearing), data)
         logger.info("Wrote cost-curve viewer %s (%d furnace-group rows)", path, len(fgs))
+        return path
+
+    def plot_decision_flows(self, motions_csv: Path) -> Optional[Path]:
+        """Write the decision-flow Sankey viewer (``decision_flows.html``) from the run's PAM motions.
+
+        Args:
+            motions_csv: The run's global motions file (``data/pam_motions.csv``).
+
+        Returns:
+            The written path, or None when the motions file does not exist. A file with
+            zero motions still produces a viewer (it shows an empty-state note), so an
+            unexpectedly quiet run stays visible rather than silent.
+        """
+        if not motions_csv.is_file():
+            logger.warning("No motions file at %s — skipping the decision-flow viewer", motions_csv)
+            return None
+        motions = pd.read_csv(motions_csv)
+        data = {
+            self.run_title: {
+                "title": self.run_title,
+                "provenance": "Motions from the PAM motion recorder (data/pam_motions.csv).",
+                "motions": decision_flows.pack_motions(motions),
+            },
+        }
+        config = self._config("Furnace-group decision flows", **decision_flows.CHART_CONFIG)
+        path = self._write("decision_flows.html", config, data)
+        logger.info("Wrote decision-flow viewer %s (%d motions)", path, len(motions))
         return path
 
     TRADE_PROVENANCE = (
