@@ -26,6 +26,7 @@ For where individual costs and emissions originate, see [Cost Calculation Functi
 | `new_plant_locations` | `{product: {year: [{lat, lon}, …]}}` | Greenfield FGs in the year they start operating |
 | `greenfield_plants` | `{fg_id: record}` | One record per greenfield FG: identity and location on first sighting, plus the first year each status was observed and the initial versus final technology, reductant and capacity, refreshed yearly |
 | `greenfield_status_rows` | `[{year, furnace_group_id, …}]` | One flat row per year and greenfield FG, written to `data/greenfield_status_timeseries.csv` (see below) |
+| `switch_decisions` | `{(fg_id, switch_year): row}` | One row per technology-switch decision, brownfield and greenfield, written to `data/pam_switch_decisions.csv` (see below) |
 
 ### Emissions reshape and overcounting fix
 
@@ -155,6 +156,26 @@ A missing input file skips that viewer with a warning instead of failing the plo
 | `old_technology`, `new_technology`, `old_capacity_t`, `new_capacity_t`, `reductant` | Technology and capacity (tonnes) before and after the motion, and the reductant in use |
 
 This file feeds the `decision_flows.html` viewer above.
+
+### `data/pam_switch_decisions.csv` (every run)
+
+A furnace group that decides to switch technology keeps operating its old technology, may then sit in `construction switching technology` (no post-processed row, as that status is not active) and surfaces in `pam_motions.csv` only in the year the new technology starts. `DataCollector` therefore records each switch decision once, with its timing and the NPV evaluation behind it, and writes `output/data/pam_switch_decisions.csv` at the end of the run (header only when no switch was decided). Rows cover all switches, brownfield and greenfield, and are keyed on (`furnace_group_id`, `switch_year`), so a group that switches twice has two rows.
+
+| Column | Meaning |
+|--------|---------|
+| `decision_year` | Year the PAM decided the switch (the first year the collector sees it scheduled) |
+| `switch_year` | Year the new technology starts: `decision_year` + `construction_time` |
+| `construction_start_year` | First year the group was observed in `construction switching technology`; blank if never (the old lifetime outlasted the construction period) |
+| `executed` | `True` once the group is observed at or after `switch_year` running `new_technology` outside a switching status; decisions whose `switch_year` lies beyond the horizon stay `False` |
+| `origin` | `greenfield` when the plant's `parent_gem_id` starts with `indi_`, else `brownfield` |
+| `plant_id`, `furnace_group_id`, `plant_group_id`, `geo_key`, `product` | The deciding furnace group, the plant group owning its plant at decision time, its location key and product |
+| `old_technology`, `new_technology` | Technology before and after the switch |
+| `old_capacity_t`, `new_capacity_t` | The group's capacity at decision time and the capacity the new technology is built at (smaller when the capacity policy shrank the replacement), in tonnes |
+| `reductant` | Reductant chosen for the new technology |
+| `winning_npv`, `cosa` | NPV of the selected technology and the cost of stranded assets of the evaluation |
+| `incumbent_npv` | NPV of keeping the old technology; blank when the incumbent did not take part (renovation not an allowed transition) |
+| `competing_npvs` | JSON object `{technology: npv}` of the finite NPVs the selection ran over (challengers COSA-adjusted) |
+| `selection_probabilities` | JSON object `{technology: max(npv, 0) / sum of those weights}` over the same technologies — the technology draw only, not the acceptance draw that follows it; blank when `probabilistic_agents` is off, because the maximum NPV is then taken without a draw |
 
 ### `data/policy/` (policy-ON runs only)
 
