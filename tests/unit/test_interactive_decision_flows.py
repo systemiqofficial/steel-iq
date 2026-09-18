@@ -47,7 +47,7 @@ def sample_motions() -> pd.DataFrame:
 
 
 def test_pack_motions_compacts_rows() -> None:
-    """Rows keep year, kind and geo_key; capacities become Mt with three decimals."""
+    """Rows keep year, kind, source and geo_key; capacities become Mt with three decimals."""
     packed = decision_flows.pack_motions(sample_motions())
 
     assert [row["kind"] for row in packed] == ["pipeline", "close", "expansion"]
@@ -55,6 +55,7 @@ def test_pack_motions_compacts_rows() -> None:
         "fg": "P1_0",
         "year": 2025,
         "kind": "pipeline",
+        "src": "input_data",
         "ot": None,
         "nt": "DRI",
         "om": None,

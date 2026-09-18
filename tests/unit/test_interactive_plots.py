@@ -67,9 +67,12 @@ def sample_post_processed() -> pd.DataFrame:
 
 def sample_motions() -> pd.DataFrame:
     """One pipeline arrival, as the motion recorder writes it."""
-    columns = ["year", "kind", "furnace_group_id", "geo_key", "old_technology", "new_technology"]
+    columns = ["year", "kind", "source", "furnace_group_id", "geo_key", "old_technology", "new_technology"]
     columns += ["old_capacity_t", "new_capacity_t"]
-    return pd.DataFrame([[2025, "pipeline", "P1_0", "BGD", None, "DRI", None, 2_200_000.0]], columns=columns)
+    return pd.DataFrame(
+        [[2025, "pipeline", "input_data", "P1_0", "BGD", None, "DRI", None, 2_200_000.0]],
+        columns=columns,
+    )
 
 
 def test_trade_bloc_members_from_boolean_attributes() -> None:

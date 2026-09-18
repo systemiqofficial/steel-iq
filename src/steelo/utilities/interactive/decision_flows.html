@@ -36,7 +36,7 @@ window.addEventListener("error", function(e) {
 <div class="toolbar" id="shared-filters"></div>
 <div class="toolbar" id="year-row">
   <div id="year-panel">
-    <label>Years<span id="year-note"></span></label>
+    <label>Years the change took effect<span id="year-note"></span></label>
     <div class="dual-range">
       <div class="track"></div><div class="fill" id="year-fill"></div>
       <input type="range" id="year-lo" step="1">
@@ -152,7 +152,8 @@ function buildLinks(motions) {
       const band = CONFIG.kindToGroup[m.kind];
       const tech = m.kind === "close" ? m.ot : m.nt;
       const node = "L" + (k + 2) + "|" + band + "|" + tech;
-      links.push({source: prev, target: node, year: m.year, mt: NEW_BUILD.has(m.kind) ? m.nm : m.om});
+      links.push({source: prev, target: node, year: m.year, mt: NEW_BUILD.has(m.kind) ? m.nm : m.om,
+                  scheduled: m.kind === "close" && m.src === "input_data"});
       prev = node;
     });
   }
@@ -167,6 +168,15 @@ function yearlyRows(rows) {
   });
   return [...byYear.keys()].sort((a, b) => a - b)
     .map(y => `${y} · ${byYear.get(y).n} FG · ${byYear.get(y).mt.toFixed(1)} Mt`).join("<br>");
+}
+
+/* Closures the input data scheduled: the group reached its delivered end of life
+   with no build, switch or renovation by the model. */
+function scheduledMt(rows) { return rows.filter(r => r.scheduled).reduce((s, r) => s + r.mt, 0); }
+
+function scheduledNote(rows) {
+  const n = rows.filter(r => r.scheduled).length;
+  return n ? `of which scheduled by input data · ${n} FG · ${scheduledMt(rows).toFixed(1)} Mt<br>` : "";
 }
 
 /* Replicates plotly's height scale (sinks count in the last depth column),
@@ -270,14 +280,15 @@ function render() {
     totals[i] < TINY_NODE_MT ? "" : splitNode(id)[2] + "  " + Math.round(totals[i]) + " Mt");
   const nodeHover = nodeIds.map((id, i) => {
     const own = splitNode(id)[0] === 1 ? links.filter(l => l.source === id) : links.filter(l => l.target === id);
-    return `<b>${nodeName(id)}</b> · ${totals[i].toFixed(1)} Mt · ${own.length} FG<br>` + yearlyRows(own);
+    return `<b>${nodeName(id)}</b> · ${totals[i].toFixed(1)} Mt · ${own.length} FG<br>` + scheduledNote(own) + yearlyRows(own);
   });
   const colours = nodeIds.map(id => techColour(splitNode(id)[2]));
   const sources = new Set(flowList.map(f => f.source));
   const {xs, ys, headings, pad} = nodePositions(nodeIds, totals, nLayers, sources);
 
   const linkHover = flowList.map(f =>
-    `<b>${nodeName(f.source)} → ${nodeName(f.target)}</b> · ${f.mt.toFixed(1)} Mt · ${f.n} FG<br>` + yearlyRows(f.rows));
+    `<b>${nodeName(f.source)} → ${nodeName(f.target)}</b> · ${f.mt.toFixed(1)} Mt · ${f.n} FG<br>` +
+    scheduledNote(f.rows) + yearlyRows(f.rows));
 
   const annotations = headings.map(h => ({
     x: h.x, y: 1 - h.y, xref: "paper", yref: "paper",
@@ -331,10 +342,19 @@ function render() {
   }, {displaylogo: false, modeBarButtonsToAdd: ZOOM_BUTTONS});
 
   const fgs = new Set(motions.map(m => m.fg)).size;
+  const retired = links.filter(l => splitNode(l.target)[1] === "Retire");
+  const retireLine = retired.length
+    ? `Retire: ${retired.reduce((s, l) => s + l.mt, 0).toFixed(1)} Mt closed, of which ${scheduledMt(retired).toFixed(1)} Mt ` +
+      `scheduled by the input data (end of life reached with no build, switch or renovation by the model)\n`
+    : "";
   Interactive.summary(
     `${fgs} furnace groups · ${motions.length} motions · ${links.filter(l => l.source.startsWith("L1|")).reduce((s, l) => s + l.mt, 0).toFixed(0)} Mt entering first decisions\n` +
+    retireLine +
     `Technology at first decision, then each decision round grouped by activity · node width = capacity entering ` +
     `the decision (Mt) · only furnace groups that made at least one decision or were created during the simulation are shown\n` +
+    `Years are when each change took effect: closures the year the group closed, renovations and expansions the year ` +
+    `they were decided, switches the year the switch executed (decided a construction period earlier), greenfields at construction start, ` +
+    `pipeline at the first operating year\n` +
     `${run.provenance}`);
 }
 
