@@ -193,6 +193,48 @@ def test_cli_random_seed_lands_on_the_config_and_geo_config(
 
 
 @pytest.mark.parametrize(
+    "flag_argv, expected_percentile, expected_trade",
+    [
+        ([], 100.0, False),
+        (["--hydrogen-ceiling-percentile", "20"], 20.0, False),
+        (["--intraregional-trade"], 100.0, True),
+        (["--no-intraregional-trade"], 100.0, False),
+        (["--hydrogen-ceiling-percentile", "20", "--intraregional-trade"], 20.0, True),
+    ],
+)
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_hydrogen_trade_flags_land_on_the_geo_config(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    flag_argv,
+    expected_percentile,
+    expected_trade,
+):
+    """``--hydrogen-ceiling-percentile`` and ``--[no-]intraregional-trade`` override the GeoConfig defaults."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cli_temp_base = Path(tmpdir)
+        stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+
+        argv = ["run_simulation", "--start-year", "2026", "--end-year", "2027", *flag_argv]
+        with patch.object(sys, "argv", argv):
+            with patch("sys.exit"):
+                run_full_simulation()
+
+        config = mock_create_runner.call_args[0][0]
+        assert config.geo_config.hydrogen_ceiling_percentile == expected_percentile
+        assert config.geo_config.intraregional_trade_allowed is expected_trade
+
+
+@pytest.mark.parametrize(
     "flag_argv, expected",
     [([], None), (["--run-name", "china BAU"], "china BAU")],
 )
