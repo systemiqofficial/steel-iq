@@ -7722,6 +7722,9 @@ class Environment:
         self.fallback_material_costs: list[FallbackMaterialCost] = []
         # Initialize default metallic charge mapping as empty dict
         self.default_metallic_charge_per_technology: dict[str, str] = {}
+        # Plant names and input data sources of the master's Furnace units sheet, for the capacity world map
+        self.plant_names: dict[str, str] = {}
+        self.input_sources: list[str] = []
         self.transport_kpis: list[TransportKPI] = []  # Alias for transport_emissions for compatibility
         self.trade_allocations: Any = None  # For storing trade allocations from LP solution
         # Plot paths

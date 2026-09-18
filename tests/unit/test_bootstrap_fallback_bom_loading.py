@@ -173,3 +173,51 @@ def test_load_fallback_bom_returns_empty_when_no_source(caplog: pytest.LogCaptur
     )
     assert mapping == {}
     assert "Default metallic charges will remain empty" in caplog.text
+
+
+def test_load_plant_names_and_sources_reads_the_furnace_units_sheet(tmp_path: Path) -> None:
+    """Names are keyed by plant id; sources are distinct and ordered by row count, most rows first."""
+    import pandas as pd
+
+    master_excel = tmp_path / "master_input.xlsx"
+    pd.DataFrame(
+        {
+            "plant_id": ["P1", "P1", "P2", "P3"],
+            "plant_name": ["Taranto steel plant", "Taranto steel plant", "Duisburg works", None],
+            "source": ["gem_unit", "gem_unit", "external", "gem_unit"],
+        },
+    ).to_excel(master_excel, sheet_name="Furnace units", index=False)
+
+    plant_names, input_sources = bootstrap._load_plant_names_and_sources(
+        config_master_excel_path=master_excel,
+        fixtures_dir=None,
+    )
+
+    assert plant_names == {"P1": "Taranto steel plant", "P2": "Duisburg works"}
+    assert input_sources == ["gem_unit", "external"]
+
+
+def test_load_plant_names_and_sources_warns_on_a_missing_sheet(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A workbook without the Furnace units sheet gives empty results instead of stopping the run."""
+    import pandas as pd
+
+    master_excel = tmp_path / "master_input.xlsx"
+    pd.DataFrame({"a": [1]}).to_excel(master_excel, sheet_name="Other", index=False)
+
+    caplog.set_level("WARNING")
+    result = bootstrap._load_plant_names_and_sources(config_master_excel_path=master_excel, fixtures_dir=None)
+
+    assert result == ({}, [])
+    assert "Could not load plant names from the Furnace units sheet" in caplog.text
+
+
+def test_load_plant_names_and_sources_returns_empty_when_the_workbook_is_missing(tmp_path: Path) -> None:
+    """No workbook to resolve gives empty results."""
+    result = bootstrap._load_plant_names_and_sources(
+        config_master_excel_path=tmp_path / "does_not_exist.xlsx",
+        fixtures_dir=None,
+    )
+
+    assert result == ({}, [])
