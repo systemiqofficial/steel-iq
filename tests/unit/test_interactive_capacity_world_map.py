@@ -3,6 +3,7 @@
 import pandas as pd
 import pytest
 
+from steelo.capacity_policy.inputs import RegionRow
 from steelo.utilities.interactive import capacity_world_map
 
 PLANTS = {
@@ -105,7 +106,7 @@ def test_pack_sites_raises_on_a_plant_without_coordinates() -> None:
     """A plant on the map that the run's plants do not cover fails loudly."""
     plants = {plant_id: plant for plant_id, plant in PLANTS.items() if plant_id != "P2"}
 
-    with pytest.raises(ValueError, match="1 plants on the capacity world map have no coordinates"):
+    with pytest.raises(ValueError, match="1 plants on the capacity map have no coordinates"):
         capacity_world_map.pack_sites(sample_table(), None, None, plants, {})
 
 
@@ -113,6 +114,37 @@ def test_pack_sites_raises_on_a_missing_column() -> None:
     """A table without a required column is reported by name."""
     with pytest.raises(ValueError, match="post-processed table has no plant_id"):
         capacity_world_map.pack_sites(sample_table().drop(columns=["plant_id"]), None, None, PLANTS, {})
+
+
+def test_pack_sites_keeps_one_country_for_a_focus_map() -> None:
+    """With iso3 only that country's plants stay, over all simulated years; a country without plants raises."""
+    payload = capacity_world_map.pack_sites(sample_table(), sample_greenfield_status(), None, PLANTS, {}, iso3="CHN")
+
+    assert [s["id"] for s in payload["sites"]] == ["P1"]
+    assert payload["years"] == list(range(2025, 2031))
+    assert payload["techs"] == ["BF"]
+    # plants elsewhere need no coordinates
+    china_only = {"P1": PLANTS["P1"]}
+    assert len(capacity_world_map.pack_sites(sample_table(), None, None, china_only, {}, iso3="CHN")["sites"]) == 1
+    with pytest.raises(ValueError, match="The run has no plants in JPN"):
+        capacity_world_map.pack_sites(sample_table(), None, None, PLANTS, {}, iso3="JPN")
+
+
+def test_focus_config_groups_provinces_that_share_a_region_name() -> None:
+    """A region name held by one province is no group; types carry key and exempt; no rows give no groups."""
+    rows = [
+        RegionRow(geo_key="CHN:CN-HE", region_name="Jing-Jin-Ji", type="key"),
+        RegionRow(geo_key="CHN:CN-BJ", region_name="Jing-Jin-Ji", type="key"),
+        RegionRow(geo_key="CHN:CN-XJ", region_name="Xinjiang", type=None),
+        RegionRow(geo_key="CHN:CN-XZ", region_name=None, type="exempt"),
+    ]
+
+    assert capacity_world_map.focus_config("CHN", rows) == {
+        "iso3": "CHN",
+        "groups": {"CHN:CN-HE": "Jing-Jin-Ji", "CHN:CN-BJ": "Jing-Jin-Ji"},
+        "types": {"CHN:CN-HE": "key", "CHN:CN-BJ": "key", "CHN:CN-XZ": "exempt"},
+    }
+    assert capacity_world_map.focus_config("CHN", []) == {"iso3": "CHN", "groups": {}, "types": {}}
 
 
 def test_source_line_names_the_input_data_sets() -> None:

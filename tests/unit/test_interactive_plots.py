@@ -591,7 +591,7 @@ def test_plot_capacity_world_map_degrades_on_missing_inputs(tmp_path, caplog) ->
     assert "skipping the capacity world map viewer" in caplog.text
     without_p2 = {plant_id: plant for plant_id, plant in plants.items() if plant_id != "P2"}
     assert plotter.plot_capacity_world_map(csv_path, greenfield_csv, decisions_csv, without_p2, {}, []) is None
-    assert "1 plants on the capacity world map have no coordinates" in caplog.text
+    assert "1 plants on the capacity map have no coordinates" in caplog.text
 
     caplog.clear()
     written = plotter.plot_capacity_world_map(
@@ -603,3 +603,43 @@ def test_plot_capacity_world_map_degrades_on_missing_inputs(tmp_path, caplog) ->
     html = written.read_text()
     assert '"switches":[]' in html and "indi_1" not in html
     assert "Source: Steel-IQ model (with GEM input data)" in html
+
+
+def test_plot_capacity_china_map_focuses_the_shared_viewer_on_china(tmp_path, caplog) -> None:
+    """Only Chinese plants are packed; the pool fixture gives the province groups; no Chinese plants skips it."""
+    from steelo.adapters.repositories.json_repository import CapacityPoolProvinceJsonRepository
+    from steelo.capacity_policy.inputs import RegionRow
+
+    csv_path, greenfield_csv, decisions_csv, plants = capacity_world_map_inputs(tmp_path)
+    pool_json = tmp_path / "capacity_pool_provinces.json"
+    CapacityPoolProvinceJsonRepository(pool_json).add_list(
+        [
+            RegionRow(geo_key="CHN:CN-HE", region_name="Jing-Jin-Ji", type="key"),
+            RegionRow(geo_key="CHN:CN-BJ", region_name="Jing-Jin-Ji", type="key"),
+        ],
+    )
+    plotter = InteractivePlotter(tmp_path / "plots", sample_country_mappings(), run_title="sim_test")
+
+    written = plotter.plot_capacity_china_map(csv_path, greenfield_csv, decisions_csv, plants, {}, [], pool_json)
+
+    assert written == tmp_path / "plots" / "interactive" / "capacity_china_map.html"
+    html = written.read_text()
+    assert '"chartTitle": "China iron and steel capacity by technology"' in html
+    assert '"focus": {"iso3": "CHN", "groups": {"CHN:CN-HE": "Jing-Jin-Ji", "CHN:CN-BJ": "Jing-Jin-Ji"}' in html
+    assert '"fileStem": "capacity_china_map"' in html
+    assert '"id":"P1"' in html and '"id":"P2"' not in html and "indi_1" not in html
+
+    # a policy-OFF run passes no fixture: same map, no groups
+    plotter.plot_capacity_china_map(csv_path, greenfield_csv, decisions_csv, plants, {}, [])
+    assert '"focus": {"iso3": "CHN", "groups": {}, "types": {}}' in written.read_text()
+    assert (
+        '"focus": null'
+        in plotter.plot_capacity_world_map(csv_path, greenfield_csv, decisions_csv, plants, {}, []).read_text()
+    )
+
+    table = pd.read_csv(csv_path)
+    german_csv = tmp_path / "post_processed_german.csv"
+    table[table["iso3"] == "DEU"].to_csv(german_csv, index=False)
+    caplog.set_level("WARNING")
+    assert plotter.plot_capacity_china_map(german_csv, tmp_path / "absent.csv", decisions_csv, plants, {}, []) is None
+    assert "The run has no plants in CHN — skipping the capacity china map viewer" in caplog.text

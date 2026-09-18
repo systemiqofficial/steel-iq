@@ -131,6 +131,9 @@ class InteractivePlotter:
         >>> interactive.plot_capacity_world_map(
         ...     post_processed_csv, greenfield_status_csv, switch_decisions_csv, plants, plant_names, input_sources
         ... )
+        >>> interactive.plot_capacity_china_map(
+        ...     post_processed_csv, greenfield_status_csv, switch_decisions_csv, plants, plant_names, input_sources
+        ... )
     """
 
     SUBDIR = "interactive"
@@ -820,7 +823,78 @@ class InteractivePlotter:
             column or a plant has no coordinates (logged as warnings so the plot stage
             never fails).
         """
-        table = self._read_post_processed(post_processed_csv, "capacity world map")
+        return self._plot_capacity_map(
+            "capacity_world_map",
+            "World iron and steel capacity by technology",
+            None,
+            post_processed_csv,
+            greenfield_status_csv,
+            switch_decisions_csv,
+            plants,
+            plant_names,
+            input_sources,
+        )
+
+    def plot_capacity_china_map(
+        self,
+        post_processed_csv: Path,
+        greenfield_status_csv: Path,
+        switch_decisions_csv: Path,
+        plants: dict[str, dict[str, Any]],
+        plant_names: dict[str, str],
+        input_sources: list[str],
+        capacity_pool_provinces_json: Optional[Path] = None,
+    ) -> Optional[Path]:
+        """Write the capacity China map viewer (``capacity_china_map.html``).
+
+        The capacity world map focused on China: only Chinese plants, provinces as
+        the geography unit and an equirectangular view fitted to the country.
+
+        Args:
+            post_processed_csv: As for :meth:`plot_capacity_world_map`.
+            greenfield_status_csv: As for :meth:`plot_capacity_world_map`.
+            switch_decisions_csv: As for :meth:`plot_capacity_world_map`.
+            plants: As for :meth:`plot_capacity_world_map`.
+            plant_names: As for :meth:`plot_capacity_world_map`.
+            input_sources: As for :meth:`plot_capacity_world_map`.
+            capacity_pool_provinces_json: The prepared ``fixtures/capacity_pool_provinces.json``,
+                passed on policy-ON runs: its province groups (Jing-Jin-Ji, …) become the
+                map's regions. None (or a missing file) leaves the map without groups.
+
+        Returns:
+            The written path, or None as for :meth:`plot_capacity_world_map` and when the
+            run has no Chinese plants (logged as warnings so the plot stage never fails).
+        """
+        from steelo.adapters.repositories.json_repository import CapacityPoolProvinceJsonRepository
+
+        region_rows = CapacityPoolProvinceJsonRepository(capacity_pool_provinces_json).list()
+        return self._plot_capacity_map(
+            "capacity_china_map",
+            "China iron and steel capacity by technology",
+            capacity_world_map.focus_config("CHN", region_rows),
+            post_processed_csv,
+            greenfield_status_csv,
+            switch_decisions_csv,
+            plants,
+            plant_names,
+            input_sources,
+        )
+
+    def _plot_capacity_map(
+        self,
+        file_stem: str,
+        chart_title: str,
+        focus: Optional[dict[str, Any]],
+        post_processed_csv: Path,
+        greenfield_status_csv: Path,
+        switch_decisions_csv: Path,
+        plants: dict[str, dict[str, Any]],
+        plant_names: dict[str, str],
+        input_sources: list[str],
+    ) -> Optional[Path]:
+        """Write one capacity map viewer; ``focus`` (:func:`.capacity_world_map.focus_config`) narrows it to a country."""
+        viewer = file_stem.replace("_", " ")
+        table = self._read_post_processed(post_processed_csv, viewer)
         if table is None:
             return None
         greenfield_status = None
@@ -828,20 +902,21 @@ class InteractivePlotter:
             greenfield_status = pd.read_csv(greenfield_status_csv)
         else:
             logger.warning(
-                "No greenfield status timeseries at %s — new builds under construction omitted from the "
-                "capacity world map viewer",
+                "No greenfield status timeseries at %s — new builds under construction omitted from the %s viewer",
                 greenfield_status_csv,
+                viewer,
             )
         switch_decisions = pd.read_csv(switch_decisions_csv) if switch_decisions_csv.is_file() else None
         if switch_decisions is None or switch_decisions.empty:
             logger.warning(
-                "No switch decisions at %s — rebuilds omitted from the capacity world map viewer",
-                switch_decisions_csv,
+                "No switch decisions at %s — rebuilds omitted from the %s viewer", switch_decisions_csv, viewer
             )
         try:
-            payload = capacity_world_map.pack_sites(table, greenfield_status, switch_decisions, plants, plant_names)
+            payload = capacity_world_map.pack_sites(
+                table, greenfield_status, switch_decisions, plants, plant_names, focus["iso3"] if focus else None
+            )
         except ValueError as exc:
-            logger.warning("%s — skipping the capacity world map viewer", exc)
+            logger.warning("%s — skipping the %s viewer", exc, viewer)
             return None
         data = {
             self.run_title: {
@@ -853,9 +928,9 @@ class InteractivePlotter:
                 **payload,
             },
         }
-        config = self._config("World iron and steel capacity by technology")
-        path = capacity_world_map.write_viewer(config, data, self.output_dir / "capacity_world_map.html")
-        logger.info("Wrote capacity world map viewer %s (%d plants)", path, len(payload["sites"]))
+        config = self._config(chart_title, focus=focus, fileStem=file_stem)
+        path = capacity_world_map.write_viewer(config, data, self.output_dir / f"{file_stem}.html")
+        logger.info("Wrote %s viewer %s (%d plants)", viewer, path, len(payload["sites"]))
         return path
 
     def _config(self, chart_title: str, **chart_config: Any) -> dict[str, Any]:

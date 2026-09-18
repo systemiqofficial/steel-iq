@@ -1,4 +1,4 @@
-"""Record packing for the capacity world map viewer (``capacity_world_map.html``).
+"""Record packing for the capacity map viewers (``capacity_world_map.html``, ``capacity_china_map.html``).
 
 The map draws one pie per plant on a world map: area is capacity, wedges are
 technologies. It has a year slider, filters for technology, status, plant origin
@@ -15,6 +15,10 @@ the latter drawn in the new technology. Coordinates and origin come from the run
 live plants; plant names and the source line from the master's Furnace units sheet.
 Timelines are run-length encoded per plant.
 
+The China map is the same template focused on one country: only that country's
+plants, its provinces as the geography unit, an equirectangular view fitted to
+the country and, on policy-ON runs, the capacity pool's province groups as regions.
+
 ``world_countries.json`` holds the polygons: Natural Earth (public domain), exported
 once from the local shapefiles. ``countries`` are the 50m admin-0 map subunits
 dissolved by ``ADM0_A3`` (Antarctica dropped), simplified to 0.05 degrees;
@@ -23,10 +27,13 @@ simplified to 0.03 degrees. Both are rounded to 2 decimal places.
 """
 
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
+
+from steelo.capacity_policy.inputs import RegionRow
 
 ASSETS_DIR = Path(__file__).parent
 
@@ -82,6 +89,7 @@ def pack_sites(
     switch_decisions: Optional[pd.DataFrame],
     plants: dict[str, dict[str, Any]],
     plant_names: dict[str, str],
+    iso3: Optional[str] = None,
 ) -> dict[str, Any]:
     """Compact per-plant payload for the template.
 
@@ -96,6 +104,7 @@ def pack_sites(
         plants: ``{plant_id: {"lat", "lon", "greenfield"}}`` of the run's plants.
         plant_names: ``{plant_id: plant_name}``; plants without an entry are named by
             their id (``New plant <id>`` for greenfield plants).
+        iso3: Keep only this country's plants (the China map); None keeps the world.
 
     Returns:
         ``years`` (every simulated year); ``techs`` (iron technologies first, then
@@ -108,8 +117,8 @@ def pack_sites(
         are ``[decision_year, switch_year, old_technology, new_technology]``.
 
     Raises:
-        ValueError: If a table lacks a required column or a plant has no entry in
-            ``plants``.
+        ValueError: If a table lacks a required column, a plant has no entry in
+            ``plants``, or ``iso3`` is given and the run has no plant there.
 
     Notes:
         A group counts as under construction for a rebuild from its
@@ -136,10 +145,14 @@ def pack_sites(
     groups["iso3"] = groups["iso3"].fillna(groups["geo_key"].str.split(":").str[0])
     if "rebuilt_from" not in groups:
         groups["rebuilt_from"] = None
+    if iso3 is not None:
+        groups = groups[groups["iso3"] == iso3]
+        if groups.empty:
+            raise ValueError(f"The run has no plants in {iso3}")
 
     missing = sorted(set(groups["plant_id"]) - set(plants))
     if missing:
-        raise ValueError(f"{len(missing)} plants on the capacity world map have no coordinates, e.g. {missing[:5]}")
+        raise ValueError(f"{len(missing)} plants on the capacity map have no coordinates, e.g. {missing[:5]}")
 
     switches_by_plant: dict[str, list[list[Any]]] = {}
     if switch_decisions is not None:
@@ -203,6 +216,29 @@ def pack_sites(
     }
 
 
+def focus_config(iso3: str, region_rows: list[RegionRow]) -> dict[str, Any]:
+    """The template's ``focus`` config for a one-country map.
+
+    Args:
+        iso3: The country the map shows.
+        region_rows: The capacity pool's province rows
+            (``fixtures/capacity_pool_provinces.json``); empty for a policy-OFF run.
+
+    Returns:
+        ``{"iso3", "groups", "types"}``: ``groups`` maps a geo key to its region name
+        where at least two provinces share that name (Jing-Jin-Ji, not a province's
+        own name); ``types`` maps a geo key to ``key`` or ``exempt``. Both are empty
+        without region rows, which leaves the map without province groups.
+    """
+    rows = [row for row in region_rows if row.geo_key.startswith(f"{iso3}:")]
+    shared = {name for name, count in Counter(row.region_name for row in rows).items() if name and count > 1}
+    return {
+        "iso3": iso3,
+        "groups": {row.geo_key: row.region_name for row in rows if row.region_name in shared},
+        "types": {row.geo_key: row.type for row in rows if row.type},
+    }
+
+
 def source_line(input_sources: list[str]) -> str:
     """The map's source line, naming the input data sets behind the plants.
 
@@ -221,11 +257,13 @@ def source_line(input_sources: list[str]) -> str:
 
 
 def write_viewer(config: dict[str, Any], data: dict[str, Any], output_path: Path) -> Path:
-    """Write the capacity world map viewer.
+    """Write a capacity map viewer.
 
     Args:
-        config: The shell config (:meth:`InteractivePlotter._config`); the viewer
-            reads its ``techColours``, ``geoInfo``, ``geoUnitNames`` and ``defaultRun``.
+        config: The shell config (:meth:`InteractivePlotter._config`) plus ``focus``
+            (:func:`focus_config`, or None for the world) and ``fileStem`` (the PNG
+            export's file name); the viewer also reads its ``chartTitle``,
+            ``techColours``, ``geoInfo``, ``geoUnitNames`` and ``defaultRun``.
         data: Per-run payloads — ``{run: {"title", "provenance", "source", **pack_sites(...)}}``.
         output_path: The HTML file to write; parent directories are created.
 

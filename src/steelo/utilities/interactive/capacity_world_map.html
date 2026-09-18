@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>World iron and steel capacity by technology</title>
+<title>Iron and steel capacity by technology</title>
 <style>__COMMON_CSS__</style>
 <style>
 /* The shared shell (common.css) supplies the toolbar, dropdown and chip chrome; the
@@ -96,7 +96,7 @@ td.stack > div { display: flex; height: 8px; border-radius: 2px; overflow: hidde
 </head>
 <body>
 <div id="topbar">
-  <h1>World iron and steel capacity by technology <span id="year-title"></span> <small id="subtitle"></small></h1>
+  <h1><span id="chart-title"></span> <span id="year-title"></span> <small id="subtitle"></small></h1>
   <div class="toolbar">
     <div class="group"><label class="head">Technology</label><div class="boxes" id="tech-boxes"></div></div>
   </div>
@@ -157,6 +157,8 @@ const DATA = __DATA__;
 const WORLD = __WORLD__;
 const RUN = DATA[CONFIG.defaultRun];
 const TECHS = RUN.techs, STATUSES = RUN.statuses, SITES = RUN.sites, YEARS = RUN.years;
+// a one-country map (the China map): {iso3, groups, types}; null for the world
+const FOCUS = CONFIG.focus, OTHER = "Other provinces";
 const ORIGINS = ["existing fleet", "greenfield"];
 const originOf = (s) => ORIGINS[+s.greenfield];
 // Geography units: countries keyed by ISO3, provinces by their geo key ("CHN:CN-HE") with a parent country.
@@ -168,6 +170,8 @@ for (const s of SITES) {
   if (!s.geo) continue;
   const code = s.geo.split(":")[1];
   PROVINCES[s.geo] ||= {code, parent: s.iso, name: CONFIG.geoUnitNames[s.geo] || code, region: info.region, geometry: WORLD.units[s.geo]};
+  // policy-ON focus maps group the provinces by the capacity pool's regions
+  if (FOCUS && Object.keys(FOCUS.groups).length) Object.assign(PROVINCES[s.geo], {group: FOCUS.groups[s.geo], type: FOCUS.types[s.geo], region: FOCUS.groups[s.geo] || OTHER});
 }
 const CTRY = {...COUNTRIES, ...PROVINCES};
 const PARENTS = new Set(Object.values(PROVINCES).map(p => p.parent));
@@ -177,27 +181,43 @@ const DEFAULT_ON = new Set(STATUSES);
 const unitsAt = (s, year) => { const seg = s.segs.find(g => g[0] <= year && year <= g[1]); return seg ? seg[2] : []; };
 const techSet = (units) => new Set(units.map(u => u[0]));
 const sameTechs = (a, b) => a.size === b.size && [...a].every(t => b.has(t));
-const REGIONS = [...new Set(Object.values(CTRY).map(c => c.region))].sort();
+// a focus map lists its provinces' regions only: the parent country is never selectable there
+const REGIONS = [...new Set(Object.values(FOCUS && PARENTS.size ? PROVINCES : CTRY).map(c => c.region))].sort((a, b) => (a === OTHER) - (b === OTHER) || (a < b ? -1 : a > b ? 1 : 0));
 const state = {techs: new Set(TECHS), statuses: new Set(STATUSES.filter(s => DEFAULT_ON.has(s))), origins: new Set(ORIGINS), ctrys: new Set(), byProv: false, scale: 0.5, cluster: true, year: YEARS[0], changes: false};
 // "Show by province" swaps a parent country for its provinces in every list, filter and table
 const isActive = (k) => CTRY[k].parent ? state.byProv : !(state.byProv && PARENTS.has(k));
 const unitOf = (s) => state.byProv && s.geo ? s.geo : s.iso;
-const unitNoun = () => state.byProv ? "countries and provinces" : "countries";
+const unitNoun = () => FOCUS ? "provinces" : state.byProv ? "countries and provinces" : "countries";
+const unitHead = () => FOCUS ? "Province" : state.byProv ? "Country / province" : "Country";
+const tipUnit = (s) => FOCUS ? unitOf(s) : s.iso;
 const inRegion = (r) => Object.keys(CTRY).filter(c => CTRY[c].region === r && isActive(c));
 document.getElementById("subtitle").textContent = RUN.title;
 document.getElementById("source").textContent = RUN.source;
 document.getElementById("source").title = RUN.provenance;
-if (!PARENTS.size) document.getElementById("by-prov-label").style.display = "none";
+document.title = CONFIG.chartTitle;
+document.getElementById("chart-title").textContent = CONFIG.chartTitle;
+if (FOCUS || !PARENTS.size) document.getElementById("by-prov-label").style.display = "none";
 const ctryLabel = (c) => `${CTRY[c].code} <span class="cname">${CTRY[c].name}</span>`;
 const fmt = (ttpa) => (ttpa / 1000).toLocaleString("en-GB", {maximumFractionDigits: 1, minimumFractionDigits: 1});
 
-// ---- projection: Web Mercator like the deck.gl viewers, so shapes stay true at any zoom
-const LAT_MAX = 84, LAT_MIN = -58;
-const merc = (lat) => Math.log(Math.tan(Math.PI / 4 + Math.max(Math.min(lat, 89), -89) * Math.PI / 360)) * 180 / Math.PI;
-const W = 1000, K = W / 360, TOP = merc(LAT_MAX);
-const H = (TOP - merc(LAT_MIN)) * K;
-const proj = (lon, lat) => [(lon + 180) * K, (TOP - merc(lat)) * K];
+// ---- projection: Web Mercator like the deck.gl viewers, so shapes stay true at any zoom;
+// a focus map is equirectangular with its mid-latitude cosine, fitted to the country
 const polysOf = (geom) => geom.type === "Polygon" ? [geom.coordinates] : geom.coordinates;
+const W = 1000;
+let H, proj;
+if (FOCUS) {
+  const pts = polysOf(WORLD.countries[FOCUS.iso3]).flat(2), lons = pts.map(p => p[0]), lats = pts.map(p => p[1]);
+  const lat0 = Math.min(...lats), lat1 = Math.max(...lats), COS = Math.cos((lat0 + lat1) / 2 * Math.PI / 180);
+  const PAD = 20, x0 = Math.min(...lons) * COS, K = (W - 2 * PAD) / (Math.max(...lons) * COS - x0);
+  H = (lat1 - lat0) * K + 2 * PAD;
+  proj = (lon, lat) => [(lon * COS - x0) * K + PAD, (lat1 - lat) * K + PAD];
+} else {
+  const LAT_MAX = 84, LAT_MIN = -58;
+  const merc = (lat) => Math.log(Math.tan(Math.PI / 4 + Math.max(Math.min(lat, 89), -89) * Math.PI / 360)) * 180 / Math.PI;
+  const K = W / 360, TOP = merc(LAT_MAX);
+  H = (TOP - merc(LAT_MIN)) * K;
+  proj = (lon, lat) => [(lon + 180) * K, (TOP - merc(lat)) * K];
+}
 const pathOf = (geom) => polysOf(geom).map(poly => poly.map(ring => "M" + ring.map(([lon, lat]) => proj(lon, lat).map(v => v.toFixed(2)).join(",")).join("L") + "Z").join("")).join("");
 const labelSpotOf = (geom) => {
   // area-weighted centroid and width of the largest ring, good enough for a label
@@ -314,7 +334,7 @@ for (const o of ORIGINS) {
 }
 const originNote = () => state.origins.size === ORIGINS.length ? "" : ` · ${state.origins.size ? [...state.origins][0] + " only" : "no plants"}`;
 const regionSel = document.getElementById("region-select");
-regionSel.innerHTML = `<option value="">World</option>` + REGIONS.map(r => `<option value="${r}">${r}</option>`).join("");
+regionSel.innerHTML = `<option value="">${FOCUS ? CTRY[FOCUS.iso3].name : "World"}</option>` + REGIONS.map(r => `<option value="${r}">${r}</option>`).join("");
 function setRegion(r) {
   state.ctrys = new Set(r ? inRegion(r) : []);
   refresh();
@@ -325,7 +345,7 @@ ctryPanel.innerHTML = `<div class="search"><input type="search" id="ctry-search"
 function buildCtryPanel() {
  for (const l of ctryPanel.querySelectorAll("label")) l.remove();
  for (const k in ctryBoxes) delete ctryBoxes[k];
- document.getElementById("ctry-btn").textContent = state.byProv ? "Countries and provinces ▾" : "Countries ▾";
+ document.getElementById("ctry-btn").textContent = FOCUS ? "Provinces ▾" : state.byProv ? "Countries and provinces ▾" : "Countries ▾";
  for (const r of REGIONS) {
   const h = document.createElement("label"); h.className = "region"; h.dataset.region = r;
   h.innerHTML = `<input type="checkbox" title="Select or clear every country in ${r}">${r}<span class="muted" data-rcap="${r}"></span>`;
@@ -382,7 +402,7 @@ function setByProv(on) {
     if (on && PARENTS.has(k)) { state.ctrys.delete(k); for (const p in PROVINCES) if (PROVINCES[p].parent === k) state.ctrys.add(p); }
     if (!on && CTRY[k].parent) { state.ctrys.delete(k); state.ctrys.add(CTRY[k].parent); }
   }
-  document.getElementById("ctry-heading").textContent = on ? "Capacity by country and province" : "Capacity by country";
+  document.getElementById("ctry-heading").textContent = `Capacity by ${unitHead().toLowerCase().replace(" / ", " and ")}`;
   applyGeoMode(); buildCtryPanel(); filterCtryPanel(); refresh(); applyView();
 }
 document.getElementById("by-prov").addEventListener("change", (e) => setByProv(e.target.checked));
@@ -498,9 +518,9 @@ function aggregate() {
     for (const u of s.units) unitsByTech[u[0]] = (unitsByTech[u[0]] || 0) + 1;
     for (const [t, c] of Object.entries(s.byTech)) {
       byTech[t] = (byTech[t] || 0) + c;
-      add(byCtry, unitOf(s), t, c); add(byRegion, CTRY[s.iso].region, t, c);
+      add(byCtry, unitOf(s), t, c); add(byRegion, CTRY[unitOf(s)].region, t, c);
     }
-    byCtry[unitOf(s)].plants++; byRegion[CTRY[s.iso].region].plants++;
+    byCtry[unitOf(s)].plants++; byRegion[CTRY[unitOf(s)].region].plants++;
   }
   const iron = TECHS.filter(t => IRON.has(t)).reduce((a, t) => a + (byTech[t] || 0), 0);
   const steel = TECHS.filter(t => !IRON.has(t)).reduce((a, t) => a + (byTech[t] || 0), 0);
@@ -618,7 +638,7 @@ function drawSide() {
       `<td>${unitsByTech[t] || 0}</td>` +
       `<td class="bar"><div style="width:${100 * (byTech[t] || 0) / max}%;background:${COLOR[t]}"></div></td></tr>`).join("") + "</tbody>";
   geoTable("region-table", "Region", regionRows, r => r, r => regionSel.value === r);
-  geoTable("ctry-table", state.byProv ? "Country / province" : "Country", ctryRows, ctryLabel, c => state.ctrys.has(c));
+  geoTable("ctry-table", unitHead(), ctryRows, ctryLabel, c => state.ctrys.has(c));
   for (const tr of document.querySelectorAll("#region-table tbody tr")) tr.addEventListener("click", () => toggleRegion(tr.dataset.key));
   for (const tr of document.querySelectorAll("#ctry-table tbody tr")) {
     tr.addEventListener("click", () => toggleCtry(tr.dataset.key));
@@ -648,15 +668,15 @@ function showSiteTip(e, s) {
   for (const u of units) shown[u[0]] = (shown[u[0]] || 0) + u[2];
   const switching = s.switches.filter(w => w[0] <= state.year && state.year <= w[1])
     .map(w => `<div class="sub" style="margin:4px 0 0">switching ${w[2]} → ${w[3]} · decided ${w[0]} · new technology from ${w[1]}</div>`).join("");
-  tip.innerHTML = `<b>${esc(s.name)}</b><div class="sub">${s.iso} ${c.name}${s.geo ? ` · ${CTRY[s.geo].code} ${CTRY[s.geo].name}` : ""} · ${c.region} · ${capLabel}` +
+  tip.innerHTML = `<b>${esc(s.name)}</b><div class="sub">${s.iso} ${c.name}${s.geo ? ` · ${CTRY[s.geo].code} ${CTRY[s.geo].name}` : ""} · ${(s.geo && CTRY[s.geo].group) || c.region} · ${capLabel}` +
     `${history ? " · " + history : ""}</div>` +
     `<table>${TECHS.filter(t => shown[t]).map(t => `<tr><td><span class="swatch" style="background:${COLOR[t]};vertical-align:-1px"></span> ${t}</td><td><b>${fmt(shown[t])} Mt</b></td><td></td></tr>` +
       units.filter(u => u[0] === t).map(u => `<tr><td></td><td>${fmt(u[2])}</td><td class="st">${u[3] ? `construction · rebuild from ${u[3]}` : u[1]} · ${u[4]}</td></tr>`).join("")).join("")}</table>${switching}`;
   placeTip(e);
 }
 function showClusterTip(e, c) {
-  const names = [...new Set(c.members.map(s => `${s.iso} ${CTRY[s.iso].name}`))].sort();
-  const where = names.length > 4 ? `${names.length} countries` : names.join(", ");
+  const names = [...new Set(c.members.map(s => `${CTRY[tipUnit(s)].code} ${CTRY[tipUnit(s)].name}`))].sort();
+  const where = names.length > 4 ? `${names.length} ${FOCUS ? "provinces" : "countries"}` : names.join(", ");
   const top = c.members.slice(0, 5).map(s => `<tr><td class="nm">${esc(s.name)}</td><td>${fmt(s.total)} Mt</td></tr>`).join("");
   tip.innerHTML = `<b>${c.members.length} plants (merged at this zoom)</b><div class="sub">${where} · ${fmt(c.total)} Mt/yr shown · zoom in to separate</div>` +
     `<table>${techRows(c.byTech)}</table><div class="sub" style="margin-top:5px">Largest:</div><table>${top}</table>`;
@@ -665,7 +685,7 @@ function showClusterTip(e, c) {
 function showCtryTip(e, code) {
   if (drag) return;
   const c = CTRY[code], v = stats.byCtry[code];
-  tip.innerHTML = `<b>${c.code} ${c.name}</b><div class="sub">${c.parent ? CTRY[c.parent].name : c.region} · ${v ? `${v.plants} plants · ${fmt(v.iron)} Mt/yr iron · ${fmt(v.steel)} Mt/yr steel` : "nothing shown under the current filters"}</div>` +
+  tip.innerHTML = `<b>${c.code} ${c.name}</b><div class="sub">${c.parent ? CTRY[c.parent].name + (c.group ? ` · ${c.group}` : "") + (c.type ? ` (${c.type} province)` : "") : c.region} · ${v ? `${v.plants} plants · ${fmt(v.iron)} Mt/yr iron · ${fmt(v.steel)} Mt/yr steel` : "nothing shown under the current filters"}</div>` +
     `<table>${v ? techRows(v) : ""}</table>`;
   placeTip(e);
 }
@@ -694,7 +714,7 @@ function exportSvg() {
   const today = new Date().toISOString().slice(0, 10);
   let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${EW}" height="${EH}" viewBox="0 0 ${EW} ${EH}"><style>${EXPORT_CSS}</style>`;
   out += `<rect width="${EW}" height="${EH}" fill="#fcfcfb"/>`;
-  out += `<text x="${M}" y="${M + 22}" font-size="28" font-weight="600" fill="#0b0b0b">World iron and steel capacity by technology, ${state.year}</text>`;
+  out += `<text x="${M}" y="${M + 22}" font-size="28" font-weight="600" fill="#0b0b0b">${esc(CONFIG.chartTitle)}, ${state.year}</text>`;
   out += `<text x="${M}" y="${M + 48}" font-size="13" fill="#52514e">${filterLine}</text>`;
   // map: the live groups inside a nested svg at the current view
   const clipId = "map-clip";
@@ -747,7 +767,7 @@ function exportSvg() {
   const nameChars = Math.floor(165 / (cFont * 0.52)) - 4;
   const short = (name) => name.length > nameChars ? name.slice(0, nameChars - 1).trimEnd() + "…" : name;
   const ironX = sideX + 225, steelX = sideX + 290, barX = steelX + 12;
-  out += `<text x="${sideX}" y="${y + 6}" font-size="13" fill="#52514e">${state.byProv ? "Country / province" : "Country"}</text>`;
+  out += `<text x="${sideX}" y="${y + 6}" font-size="13" fill="#52514e">${unitHead()}</text>`;
   out += `<text x="${ironX}" y="${y + 6}" font-size="13" fill="#52514e" text-anchor="end">Iron</text><text x="${steelX}" y="${y + 6}" font-size="13" fill="#52514e" text-anchor="end">Steel</text>`;
   y += 20;
   const cmax = Math.max(1, ...ctryRows.slice(0, n).map(r => r[1].total));
@@ -791,7 +811,7 @@ document.getElementById("download").addEventListener("click", () => {
   exportPng(6, (blob) => {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `capacity_world_map_${state.year}.png`;
+    a.download = `${CONFIG.fileStem}_${state.year}.png`;
     a.click();
     note.textContent = `Saved ${(blob.size / 1e6).toFixed(1)} MB · current view, landscape, 9600 × 6000 px`;
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
@@ -800,7 +820,15 @@ document.getElementById("download").addEventListener("click", () => {
 
 const query = new URLSearchParams(location.search);
 if (query.get("changes")) { state.changes = true; document.getElementById("changes").checked = true; }
-if (query.has("provinces")) { state.byProv = true; document.getElementById("by-prov").checked = true; document.getElementById("ctry-heading").textContent = "Capacity by country and province"; buildCtryPanel(); }
+if (FOCUS || query.has("provinces")) { state.byProv = true; document.getElementById("by-prov").checked = true; document.getElementById("ctry-heading").textContent = `Capacity by ${unitHead().toLowerCase().replace(" / ", " and ")}`; buildCtryPanel(); }
+if (FOCUS) {
+  // the prototype's China defaults: names on, larger bubbles
+  document.getElementById("labels").click();
+  state.scale = 0.75; document.getElementById("scale").value = 0.75;
+  document.getElementById("hint").lastChild.textContent = document.getElementById("hint").lastChild.textContent.replace("click a country", "click a province");
+}
+// a single region (a focus map without policy groups) needs no region controls
+if (REGIONS.length < 2) { regionSel.style.display = "none"; for (const e of [document.getElementById("region-table"), document.getElementById("region-table").previousElementSibling]) e.style.display = "none"; }
 applyGeoMode();
 if (query.get("region")) state.ctrys = new Set(inRegion(query.get("region")));
 setYear(query.get("year") ? +query.get("year") : YEARS[0]);

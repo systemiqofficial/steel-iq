@@ -1586,7 +1586,7 @@ class SimulationRunner:
                 post_processed_csv=Path(output_path),
                 primary_feedstocks_json=fixtures_dir / "primary_feedstocks.json" if fixtures_dir else None,
             )
-            interactive.plot_capacity_world_map(
+            capacity_map_inputs: dict[str, Any] = dict(
                 post_processed_csv=Path(output_path),
                 greenfield_status_csv=self.config.output_dir / "data" / "greenfield_status_timeseries.csv",
                 switch_decisions_csv=self.config.output_dir / "data" / "pam_switch_decisions.csv",
@@ -1600,6 +1600,14 @@ class SimulationRunner:
                 },
                 plant_names=bus.env.plant_names,
                 input_sources=bus.env.input_sources,
+            )
+            interactive.plot_capacity_world_map(**capacity_map_inputs)
+            # the China map groups provinces by the capacity pool's regions on policy-ON runs only
+            interactive.plot_capacity_china_map(
+                **capacity_map_inputs,
+                capacity_pool_provinces_json=fixtures_dir / "capacity_pool_provinces.json"
+                if fixtures_dir and self.config.capacity_policy.enabled
+                else None,
             )
 
         # Aggregate per-year LCOE/LCOH statistics into stacked CSVs
