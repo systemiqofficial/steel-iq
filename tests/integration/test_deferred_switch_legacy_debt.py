@@ -9,13 +9,15 @@ decision-time remaining lifetime carried on the command (``remaining_lifetime``)
 """
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
 from steelo.devdata import get_furnace_group, get_plant
 from steelo.domain import PointInTime, TimeFrame, Volumes, Year
-from steelo.domain import commands
+from steelo.domain import commands, events
 from steelo.domain.calculate_costs import calculate_debt_repayment
+from steelo.service_layer import handlers
 from steelo.service_layer.handlers import execute_scheduled_technology_switch
 
 PLANT_LIFETIME = 20
@@ -200,3 +202,52 @@ def test_second_switch_combines_existing_legacy_debt_once():
         for i, tail_payment in enumerate(old_tech_tail)
     ]
     assert furnace_group.legacy_debt_schedule == pytest.approx(expected)
+
+
+def test_end_year_zero_increment_finalise_does_not_replay_the_switch():
+    """A switch due in the end year executes once although the end year is finalised twice.
+
+    Notes:
+        The end year fires IterationOver with time_step_increment=0, so
+        finalise_iteration meets future_switch_year == env.year a second time. The
+        replay emitted a second FurnaceGroupTechChanged (a phantom DRI -> DRI switch
+        row in pam_motions.csv) and restarted the lifetime and debt set-up.
+    """
+    end_year = 2025 + CONSTRUCTION_TIME
+    plant, furnace_group = make_plant(cycle_start=2011, boundary_end=2031)
+    plant.change_furnace_group_status_to_switching_technology(
+        furnace_group.furnace_group_id,
+        end_year,
+        make_switch_command(plant, furnace_group),
+    )
+    env = MagicMock()
+    env.year = Year(end_year - 1)
+    env.config.active_statuses = ["operating", "operating pre-retirement", "operating switching technology"]
+    env.config.plant_lifetime = PLANT_LIFETIME
+    env.config.construction_time = CONSTRUCTION_TIME
+    env.dynamic_feedstocks = {}
+    env.opex_subsidies = {}
+    env.current_demand = 0.0
+    uow = MagicMock()
+    uow.plants.list.return_value = [plant]
+    uow.plants.get.return_value = plant
+    uow.repository.suppliers.list.return_value = []
+
+    handlers.finalise_iteration(
+        events.IterationOver(time_step_increment=1, iron_price=0.0),
+        env=env,
+        uow=uow,
+        checkpoint_system=MagicMock(),
+    )
+    legacy_after_switch = list(furnace_group.legacy_debt_schedule)
+    handlers.finalise_iteration(
+        events.IterationOver(time_step_increment=0, iron_price=0.0),
+        env=env,
+        uow=uow,
+        checkpoint_system=MagicMock(),
+    )
+
+    tech_changes = [event for event in plant.events if isinstance(event, events.FurnaceGroupTechChanged)]
+    assert len(tech_changes) == 1
+    assert furnace_group.technology.name == "DRI"
+    assert furnace_group.legacy_debt_schedule == legacy_after_switch
