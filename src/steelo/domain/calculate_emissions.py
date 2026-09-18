@@ -111,7 +111,7 @@ def calculate_emissions(
 
     Notes:
         - Production volume calculated as: material_demand / required_quantity_per_ton_of_product
-        - Grid emissions added to indirect_ghg for all boundaries.
+        - Grid emissions added to indirect_ghg once per boundary, regardless of the number of materials.
         - Skips materials with zero/None required_quantity_per_ton_of_product.
         - Aggregates emissions across multiple materials in the bill of materials.
     """
@@ -160,9 +160,7 @@ def calculate_emissions(
                 "direct_with_biomass_ghg": direct_with_biomass_ghg_factor[0] * amount_of_product
                 if direct_with_biomass_ghg_factor
                 else 0.0,
-                "indirect_ghg": indirect_ghg_factor[0] * amount_of_product + grid_emissions
-                if indirect_ghg_factor
-                else 0.0,
+                "indirect_ghg": indirect_ghg_factor[0] * amount_of_product if indirect_ghg_factor else 0.0,
             }
 
         if not total_emissions:
@@ -174,6 +172,10 @@ def calculate_emissions(
                 else:
                     for scope, value in emissions.items():
                         total_emissions[convention][scope] += value
+
+    # grid_emissions is the furnace group's total, not a per-charge amount
+    for emissions in total_emissions.values():
+        emissions["indirect_ghg"] += grid_emissions
 
     return total_emissions
 
