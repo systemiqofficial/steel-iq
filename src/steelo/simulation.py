@@ -1586,6 +1586,21 @@ class SimulationRunner:
                 post_processed_csv=Path(output_path),
                 primary_feedstocks_json=fixtures_dir / "primary_feedstocks.json" if fixtures_dir else None,
             )
+            interactive.plot_capacity_world_map(
+                post_processed_csv=Path(output_path),
+                greenfield_status_csv=self.config.output_dir / "data" / "greenfield_status_timeseries.csv",
+                switch_decisions_csv=self.config.output_dir / "data" / "pam_switch_decisions.csv",
+                plants={
+                    p.plant_id: {
+                        "lat": p.location.lat,
+                        "lon": p.location.lon,
+                        "greenfield": p.parent_gem_id.lower().startswith("indi_"),
+                    }
+                    for p in bus.uow.plants.list()
+                },
+                plant_names=bus.env.plant_names,
+                input_sources=bus.env.input_sources,
+            )
 
         # Aggregate per-year LCOE/LCOH statistics into stacked CSVs
         aggregate_lcoe_lcoh_statistics(self.config.output_dir, start_year, end_year)

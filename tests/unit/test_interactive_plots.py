@@ -530,3 +530,76 @@ def test_plot_metallic_charge_use_writes_self_contained_viewer(tmp_path) -> None
     bare_csv = tmp_path / "post_processed_bare.csv"
     sample_post_processed().drop(columns=["feedstock"]).to_csv(bare_csv, index=False)
     assert plotter.plot_metallic_charge_use(bare_csv, fixtures / "primary_feedstocks.json") is None
+
+
+def capacity_world_map_inputs(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, dict]]:
+    """The post-processed table with plant columns, a greenfield build, one rebuild decision and the plants."""
+    table = sample_post_processed()
+    table["iso3"] = ["CHN", "DEU"]
+    table["plant_id"] = ["P1", "P2"]
+    csv_path = tmp_path / "post_processed_test.csv"
+    table.to_csv(csv_path, index=False)
+    greenfield_csv = tmp_path / "greenfield_status_timeseries.csv"
+    columns = ["year", "geo_key", "plant_id", "furnace_group_id", "technology", "product", "capacity", "status"]
+    pd.DataFrame(
+        [[2025, "DEU", "indi_1", "indi_1_0", "DRI", "iron", 2_000_000.0, "construction"]], columns=columns
+    ).to_csv(greenfield_csv, index=False)
+    decisions_csv = tmp_path / "pam_switch_decisions.csv"
+    columns = ["decision_year", "switch_year", "construction_start_year", "plant_id", "furnace_group_id", "geo_key"]
+    columns += ["product", "old_technology", "new_technology", "new_capacity_t"]
+    pd.DataFrame(
+        [[2025, 2029, None, "P1", "P1_0", "CHN:CN-HE", "iron", "BF", "DRI", 3_000_000.0]], columns=columns
+    ).to_csv(decisions_csv, index=False)
+    plants = {
+        "P1": {"lat": 39.0, "lon": 118.0, "greenfield": False},
+        "P2": {"lat": 51.0, "lon": 7.0, "greenfield": False},
+        "indi_1": {"lat": 53.0, "lon": 8.0, "greenfield": True},
+    }
+    return csv_path, greenfield_csv, decisions_csv, plants
+
+
+def test_plot_capacity_world_map_writes_self_contained_viewer(tmp_path) -> None:
+    """The map lands in plots/interactive with the shared CSS, the polygons, the config and the payload inlined."""
+    csv_path, greenfield_csv, decisions_csv, plants = capacity_world_map_inputs(tmp_path)
+    plotter = InteractivePlotter(tmp_path / "plots", sample_country_mappings(), run_title="sim_test")
+
+    written = plotter.plot_capacity_world_map(
+        csv_path, greenfield_csv, decisions_csv, plants, {"P1": "Tangshan Works"}, ["gem_unit", "external"]
+    )
+
+    assert written == tmp_path / "plots" / "interactive" / "capacity_world_map.html"
+    html = written.read_text()
+    for placeholder in ("__COMMON_CSS__", "__WORLD__", "__CONFIG__", "__DATA__"):
+        assert placeholder not in html
+    assert ".box-dropdown" in html and '"CHN:CN-HE":{"type":' in html
+    assert '"source":"Source: Steel-IQ model (with GEM and EXTERNAL input data)"' in html
+    assert '"name":"Tangshan Works","iso":"CHN","geo":"CHN:CN-HE"' in html
+    assert '"name":"New plant indi_1"' in html and '["DRI","construction",2000,null,"indi_1_0"]' in html
+    assert '"switches":[[2025,2029,"BF","DRI"]]' in html
+    assert '"DEU": {"country": "Germany", "region": "Europe"}' in html
+
+
+def test_plot_capacity_world_map_degrades_on_missing_inputs(tmp_path, caplog) -> None:
+    """No table or a plant without coordinates skips the viewer; no decisions or greenfield file only drops that layer."""
+    csv_path, greenfield_csv, decisions_csv, plants = capacity_world_map_inputs(tmp_path)
+    plotter = InteractivePlotter(tmp_path / "plots", sample_country_mappings(), run_title="sim_test")
+    caplog.set_level("WARNING")
+
+    assert (
+        plotter.plot_capacity_world_map(tmp_path / "absent.csv", greenfield_csv, decisions_csv, plants, {}, []) is None
+    )
+    assert "skipping the capacity world map viewer" in caplog.text
+    without_p2 = {plant_id: plant for plant_id, plant in plants.items() if plant_id != "P2"}
+    assert plotter.plot_capacity_world_map(csv_path, greenfield_csv, decisions_csv, without_p2, {}, []) is None
+    assert "1 plants on the capacity world map have no coordinates" in caplog.text
+
+    caplog.clear()
+    written = plotter.plot_capacity_world_map(
+        csv_path, tmp_path / "absent.csv", tmp_path / "absent2.csv", plants, {}, []
+    )
+    assert written is not None
+    assert "rebuilds omitted from the capacity world map viewer" in caplog.text
+    assert "new builds under construction omitted from the capacity world map viewer" in caplog.text
+    html = written.read_text()
+    assert '"switches":[]' in html and "indi_1" not in html
+    assert "Source: Steel-IQ model (with GEM input data)" in html

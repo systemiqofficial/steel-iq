@@ -27,6 +27,7 @@ from steelo.utilities.plotting import region2colours, tech2colours
 
 from . import (
     capacity_production,
+    capacity_world_map,
     cost_curves,
     decision_flows,
     emissions,
@@ -127,6 +128,9 @@ class InteractivePlotter:
         >>> interactive.plot_metallic_charge_use(post_processed_csv, primary_feedstocks_json, suppliers_json)
         >>> interactive.plot_greenfield_status(greenfield_status_csv)
         >>> interactive.plot_greenfield_map(greenfield_status_csv, post_processed_csv, primary_feedstocks_json)
+        >>> interactive.plot_capacity_world_map(
+        ...     post_processed_csv, greenfield_status_csv, switch_decisions_csv, plants, plant_names, input_sources
+        ... )
     """
 
     SUBDIR = "interactive"
@@ -782,6 +786,76 @@ class InteractivePlotter:
         )
         path = greenfield_map.write_viewer(config, data, self.output_dir / "greenfield_map.html")
         logger.info("Wrote greenfield map viewer %s (%d groups)", path, len(payload["groups"]))
+        return path
+
+    def plot_capacity_world_map(
+        self,
+        post_processed_csv: Path,
+        greenfield_status_csv: Path,
+        switch_decisions_csv: Path,
+        plants: dict[str, dict[str, Any]],
+        plant_names: dict[str, str],
+        input_sources: list[str],
+    ) -> Optional[Path]:
+        """Write the capacity world map viewer (``capacity_world_map.html``).
+
+        The map draws one pie per plant (area = capacity, wedges = technology) with
+        a year slider, filters for technology, status, plant origin and geography, a
+        statistics side panel and a PNG export.
+
+        Args:
+            post_processed_csv: The run's ``post_processed_<timestamp>.csv``, giving the
+                operating furnace groups per year.
+            greenfield_status_csv: The run's ``data/greenfield_status_timeseries.csv``,
+                for new builds under construction. A missing file omits them with a warning.
+            switch_decisions_csv: The run's ``data/pam_switch_decisions.csv``, for groups
+                being rebuilt for a technology switch. A missing or empty file (older
+                runs) omits the rebuilds with a warning.
+            plants: ``{plant_id: {"lat", "lon", "greenfield"}}`` of the run's live plants.
+            plant_names: ``{plant_id: plant_name}`` from the master's Furnace units sheet.
+            input_sources: The distinct ``source`` values of that sheet, for the source line.
+
+        Returns:
+            The written path, or None when the table is missing, a table lacks a required
+            column or a plant has no coordinates (logged as warnings so the plot stage
+            never fails).
+        """
+        table = self._read_post_processed(post_processed_csv, "capacity world map")
+        if table is None:
+            return None
+        greenfield_status = None
+        if greenfield_status_csv.is_file():
+            greenfield_status = pd.read_csv(greenfield_status_csv)
+        else:
+            logger.warning(
+                "No greenfield status timeseries at %s — new builds under construction omitted from the "
+                "capacity world map viewer",
+                greenfield_status_csv,
+            )
+        switch_decisions = pd.read_csv(switch_decisions_csv) if switch_decisions_csv.is_file() else None
+        if switch_decisions is None or switch_decisions.empty:
+            logger.warning(
+                "No switch decisions at %s — rebuilds omitted from the capacity world map viewer",
+                switch_decisions_csv,
+            )
+        try:
+            payload = capacity_world_map.pack_sites(table, greenfield_status, switch_decisions, plants, plant_names)
+        except ValueError as exc:
+            logger.warning("%s — skipping the capacity world map viewer", exc)
+            return None
+        data = {
+            self.run_title: {
+                "title": self.run_title,
+                "provenance": f"Operating furnace groups from {post_processed_csv.name}; new builds under "
+                f"construction from data/{greenfield_status_csv.name}; rebuilds from "
+                f"data/{switch_decisions_csv.name}.",
+                "source": capacity_world_map.source_line(input_sources),
+                **payload,
+            },
+        }
+        config = self._config("World iron and steel capacity by technology")
+        path = capacity_world_map.write_viewer(config, data, self.output_dir / "capacity_world_map.html")
+        logger.info("Wrote capacity world map viewer %s (%d plants)", path, len(payload["sites"]))
         return path
 
     def _config(self, chart_title: str, **chart_config: Any) -> dict[str, Any]:
