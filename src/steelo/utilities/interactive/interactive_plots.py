@@ -35,6 +35,7 @@ from . import (
     greenfield_status,
     metallic_charge_use,
     reductant_use,
+    supply_chain,
     supply_demand,
     trade_allocations,
     trade_matrix,
@@ -413,6 +414,48 @@ class InteractivePlotter:
         }
         path = self._write("trade_network.html", self._config("Trade network"), data)
         logger.info("Wrote trade-network viewer %s (%d flows over %d years)", path, len(rows), len(years))
+        return path
+
+    def plot_supply_chain(self, tm_dir: Path) -> Optional[Path]:
+        """Write the supply-chain viewer (``supply_chain.html``) from the per-year allocation files.
+
+        The viewer traces the steel demand of one country or one region back through the
+        steel plants that served it, the iron products and scrap those plants took in, and
+        the ore behind that iron. The trace runs in the browser over the furnace-group-level edges
+        embedded here (:func:`supply_chain.pack_edges`), attributing upstream volumes pro
+        rata to the share of each furnace group's output that went down the chain, and
+        is drawn per country and tier with the trade network's layouts.
+
+        Args:
+            tm_dir: The run's ``TM`` output directory holding ``steel_trade_allocations_<year>.csv``.
+
+        Returns:
+            The written path, or None when no allocation file exists or one cannot be read
+            (logged as warnings so the plot stage never fails).
+        """
+        files = trade_matrix.allocation_files(tm_dir)
+        if not files:
+            logger.warning("No steel_trade_allocations_<year>.csv under %s — skipping the supply-chain viewer", tm_dir)
+            return None
+        try:
+            chain = supply_chain.pack_edges(files)
+            coords = trade_matrix.read_coords(files)
+        except ValueError as exc:
+            logger.warning("%s — skipping the supply-chain viewer", exc)
+            return None
+        data = {
+            self.run_title: {
+                "title": self.run_title,
+                "provenance": self.TRADE_PROVENANCE,
+                "years": list(files),
+                "coords": coords,
+                "chain": chain,
+            },
+        }
+        colours = {c: "#%02x%02x%02x" % tuple(rgb) for c, rgb in trade_allocations.COMMODITY_COLOURS.items()}
+        path = self._write("supply_chain.html", self._config("Supply chain", commodityColours=colours), data)
+        edges = sum(len(year["v"]) for year in chain["edges"].values())
+        logger.info("Wrote supply-chain viewer %s (%d edges over %d years)", path, edges, len(files))
         return path
 
     def plot_trade_allocations(self, tm_dir: Path) -> Optional[Path]:
