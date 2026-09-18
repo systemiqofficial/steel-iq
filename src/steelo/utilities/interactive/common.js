@@ -139,15 +139,71 @@ const Interactive = (() => {
       dropdown("country"), dropdown("unit"), dropdown("bloc"), dropdown("region"),
       el("div", {id: "geo-chips"})]));
     if (withTechs) {
-      // Technologies get their own row of always-visible ticks between the chart's
-      // controls and the geography row.
+      // Technologies get their own row between the chart's controls and the
+      // geography row: always-visible ticks up to MAX_TICKS options, a dropdown
+      // like the geography filters above that (see tickMode).
       const row = el("div", {id: "tech-panel"}, [
         el("label", {}, [document.createTextNode("Technologies"),
           el("button", {id: "tech-all", class: "small-btn", text: "All"}),
           el("button", {id: "tech-none", class: "small-btn", text: "None"})]),
-        el("div", {id: "tech-boxes"})]);
+        dropdown("tech"), el("div", {id: "tech-chips", class: "tick-chips"})]);
       container.parentNode.insertBefore(row, container);
     }
+  }
+
+  /* Present a checkbox container (built by dropdown(id)) as an always-visible tick
+     row when it offers at most MAX_TICKS options, or as a dropdown above that. */
+  const MAX_TICKS = 6;
+  function tickMode(id, visibleCount) {
+    const asDropdown = visibleCount > MAX_TICKS;
+    document.getElementById(id + "-toggle").style.display = asDropdown ? "" : "none";
+    const panel = document.getElementById(id + "-boxes");
+    panel.classList.toggle("box-panel", asDropdown);
+    panel.classList.toggle("box-ticks", !asDropdown);
+    if (!asDropdown) panel.classList.remove("open");
+  }
+
+  /* Removable pills of the selected options beside a dropdown-mode tick control,
+     or an "all/no <noun> selected" note — as the geography chips. Cleared in tick
+     mode, where the boxes themselves are visible. `uncheck(name)` must untick the
+     option and re-render. */
+  function updateChips(id, selectedNames, total, noun, uncheck) {
+    const chips = document.getElementById(id + "-chips");
+    chips.innerHTML = "";
+    if (!document.getElementById(id + "-boxes").classList.contains("box-panel")) return;
+    if (selectedNames.length === total || !selectedNames.length) {
+      chips.appendChild(el("span", {class: "geo-chip-note",
+        text: selectedNames.length ? `all ${noun} selected` : `no ${noun} selected`}));
+      return;
+    }
+    selectedNames.forEach(name => {
+      const x = el("button", {text: "×", title: "Remove"});
+      x.addEventListener("click", () => uncheck(name));
+      chips.appendChild(el("span", {class: "geo-chip"}, [document.createTextNode(name), x]));
+    });
+  }
+
+  function visibleTechCbs() {
+    return [...techCbs.values()].filter(cb => cb.parentElement.style.display !== "none");
+  }
+
+  function updateTechToggle() {
+    const visible = visibleTechCbs();
+    updateToggle("tech-toggle", visible.filter(cb => cb.checked).length, visible.length, "technologies");
+    if (!document.getElementById("tech-chips")) return;
+    const selected = [...techCbs]
+      .filter(([, cb]) => cb.checked && cb.parentElement.style.display !== "none")
+      .map(([tech]) => tech);
+    updateChips("tech", selected, visible.length, "technologies",
+      tech => { techCbs.get(tech).checked = false; updateUi(); onChange(); });
+  }
+
+  /* Limit the technology filter to `techs` (e.g. the selected product's); the
+     others keep their tick state hidden until they return. */
+  function setVisibleTechs(techs) {
+    techCbs.forEach((cb, tech) => { cb.parentElement.style.display = techs.has(tech) ? "" : "none"; });
+    tickMode("tech", visibleTechCbs().length);
+    updateTechToggle();
   }
 
   function addBox(parent, value, text, cbs, onToggle, note) {
@@ -201,7 +257,7 @@ const Interactive = (() => {
     }
     updateToggle("bloc-toggle", ...counts.bloc, "trade blocs");
     updateToggle("region-toggle", ...counts.region, "regions");
-    updateToggle("tech-toggle", [...techCbs.values()].filter(cb => cb.checked).length, techCbs.size, "technologies");
+    updateTechToggle();
 
     const chips = document.getElementById("geo-chips");
     chips.innerHTML = "";
@@ -284,14 +340,17 @@ const Interactive = (() => {
     if (techs) {
       const techBoxes = document.getElementById("tech-boxes");
       [...new Set(techs)].sort().forEach(tech => addBox(techBoxes, tech, tech, techCbs, () => {}));
+      tickMode("tech", techCbs.size);
     }
 
+    // A tickMode container swaps between .box-panel and .box-ticks on the same
+    // element, so capture it by either class.
     const dropdowns = [...document.querySelectorAll(".box-dropdown")];
     dropdowns.forEach(dd => {
-      const panel = dd.querySelector(".box-panel");
+      const panel = dd.querySelector(".box-panel, .box-ticks");
       dd.querySelector("button").addEventListener("click", () => {
         dropdowns.forEach(other => {
-          const p = other.querySelector(".box-panel");
+          const p = other.querySelector(".box-panel, .box-ticks");
           if (p !== panel) p.classList.remove("open");
         });
         panel.classList.toggle("open");
@@ -299,7 +358,7 @@ const Interactive = (() => {
     });
     document.addEventListener("click", e => {
       if (!dropdowns.some(dd => dd.contains(e.target)))
-        dropdowns.forEach(dd => dd.querySelector(".box-panel").classList.remove("open"));
+        dropdowns.forEach(dd => dd.querySelector(".box-panel, .box-ticks").classList.remove("open"));
     });
     const setAllGeo = checked => { countries.forEach(iso3 => setCountry(iso3, checked)); updateUi(); onChange(); };
     document.getElementById("geo-all").addEventListener("click", () => setAllGeo(true));
@@ -312,7 +371,7 @@ const Interactive = (() => {
     updateUi();
   }
 
-  return {init, run, geoKeys, selectedGeos, selectedTechs, geoNote, isoOf, regionOf, countryName, unitName,
-          summary, showEmpty, fitWidth, plotSize, onResize, legendWidth, hexToRgba, lighten, colourTable,
-          theme, GEO_SEP};
+  return {init, run, geoKeys, selectedGeos, selectedTechs, setVisibleTechs, tickMode, updateChips, geoNote,
+          isoOf, regionOf, countryName, unitName, summary, showEmpty, fitWidth, plotSize, onResize, legendWidth,
+          hexToRgba, lighten, colourTable, theme, GEO_SEP};
 })();

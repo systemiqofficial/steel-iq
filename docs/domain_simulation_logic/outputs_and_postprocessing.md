@@ -25,6 +25,7 @@ For where individual costs and emissions originate, see [Cost Calculation Functi
 | `status_counts` | `{product: {year: {tech: {status: count}}}}` | Greenfield (GEO-origin) FGs, every status, every year |
 | `new_plant_locations` | `{product: {year: [{lat, lon}, …]}}` | Greenfield FGs in the year they start operating |
 | `greenfield_plants` | `{fg_id: record}` | One record per greenfield FG: identity and location on first sighting, plus the first year each status was observed and the initial versus final technology, reductant and capacity, refreshed yearly |
+| `greenfield_status_rows` | `[{year, furnace_group_id, …}]` | One flat row per year and greenfield FG, written to `data/greenfield_status_timeseries.csv` (see below) |
 
 ### Emissions reshape and overcounting fix
 
@@ -74,6 +75,21 @@ Plants that originate in the geospatial model (greenfield, GEO-origin) get their
 - `<product>_greenfield_map.png` — world map of newly operating greenfield plants coloured by 5-year operational-start class, plus one map per decade (`<product>_greenfield_map_<y0>-<y1>.png`) coloured by exact year.
 - `greenfield_plants.csv` — one row per greenfield furnace group that was actually built: the year it entered each lifecycle status (blank where unobserved), the scheduled lifetime end, current status, location (region, geo key, lat/lon), identity, and initial versus final technology, reductant and capacity. Candidates that never reached construction are excluded. For plants still under construction at the end of the run, `year_operating` holds the scheduled operating year; such rows have `status == "construction"`.
 
+`DataCollector` also writes `data/greenfield_status_timeseries.csv` at the end of the run: one row per year and greenfield furnace group, candidates that are never built included. A run that creates no greenfield groups writes no file.
+
+| Column | Meaning |
+|--------|---------|
+| `year` | Snapshot year |
+| `furnace_group_id`, `plant_id`, `plant_group_id` | The furnace group, its plant and its owning plant group |
+| `product`, `technology`, `reductant` | As of the snapshot year, so technology and reductant switches show up as changes between rows |
+| `status` | Lifecycle status in the snapshot year |
+| `geo_key`, `region`, `lat`, `lon` | Location |
+| `capacity` | Capacity in tonnes |
+| `production`, `utilization_rate` | Zero unless the status is operating: closing a furnace group leaves its last utilisation rate behind, which would otherwise book production for closed groups |
+| `opportunity_npv` | The business-opportunity NPV evaluated that year while the group is a considered candidate; blank afterwards |
+
+This file feeds the `greenfield_status.html` and `greenfield_map.html` viewers below.
+
 ### Plot folder layout
 
 Emissions, cost-curve, greenfield and capacity-pool plots write to top-level sibling folders rather than under `plots/PAM/…`:
@@ -103,7 +119,7 @@ Cost-curve filenames follow `cost_curve_{product}_by_{aggregation}_{year}.png` (
 
 `InteractivePlotter` (`src/steelo/utilities/interactive/`) writes a set of interactive plotly viewers to `plots/interactive/` at the end of every run. Each viewer is a single self-contained HTML file with the run's data embedded — open it in any browser, no server or network access needed.
 
-All viewers share one shell (`common.js` / `common.css`): a run selector, a geography filter (countries, sub-national geo units, trade blocs, regions), an opt-in technology filter, and the shared colour schemes. Sub-national units are labelled from the prepared `fixtures/geo_hierarchy.json` (codes when absent). Chart titles carry the run name — `--run-name`, defaulting to the `sim_<timestamp>` output directory name.
+All viewers share one shell (`common.js` / `common.css`): a run selector, a geography filter (countries, sub-national geo units, trade blocs, regions), an opt-in technology filter, and the shared colour schemes. Tick-box filters show as a row of ticks up to six options and fold into a dropdown with removable chips above that. Sub-national units are labelled from the prepared `fixtures/geo_hierarchy.json` (codes when absent). Chart titles carry the run name — `--run-name`, defaulting to the `sim_<timestamp>` output directory name.
 
 | Viewer | Shows | Data source |
 |--------|-------|-------------|
@@ -117,8 +133,10 @@ All viewers share one shell (`common.js` / `common.css`): a run selector, a geog
 | `reductant_use.html` | Iron production and absolute reductant use per reductant | `post_processed_<timestamp>.csv` + `fixtures/primary_feedstocks.json` |
 | `metallic_charge_use.html` | Metallic charges fed into steel (scrap, hot metal, pig iron, DRI/HBI) and iron (ore grades), per charge / technology / region, with a local scrap supply overlay | `post_processed_<timestamp>.csv` + `fixtures/primary_feedstocks.json` + `fixtures/suppliers.json` |
 | `decision_flows.html` | Furnace-group decision flows as a Sankey: each group's state when it first acts (its technology, or NEW for capacity that does not exist yet) flowing through decision rounds grouped into Renovate / Switch / Retire / Pipeline / Expand / Greenfield bands with technology sub-nodes; link width is the capacity entering the decision, in Mt; a year-range slider narrows the flows to the decision years of interest | `data/pam_motions.csv` |
+| `greenfield_status.html` | The static greenfield status charts made interactive: greenfield furnace groups per year stacked by lifecycle status or by technology, as plant count, capacity or production, as the stock in each status or the flow entering it | `data/greenfield_status_timeseries.csv` |
+| `greenfield_map.html` | The static greenfield maps made interactive: every greenfield furnace group as a capacity-sized dot on a world map with a year slider, filters for status, technology, product, reductant and metallic charge, and a per-site history (status entry years, technology and reductant switches, production and charge allocations); light and dark themes | `data/greenfield_status_timeseries.csv` + `post_processed_<timestamp>.csv` + `fixtures/primary_feedstocks.json` |
 
-A missing input file skips that viewer with a warning instead of failing the plot stage.
+A missing input file skips that viewer with a warning instead of failing the plot stage. The greenfield map drops its metallic-charge filter, with a warning, when only the post-processed table or the Bill of Materials is missing.
 
 ---
 

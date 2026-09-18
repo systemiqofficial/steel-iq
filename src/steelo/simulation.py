@@ -1393,6 +1393,8 @@ class SimulationRunner:
         flush_capacity_policy_outputs(self.config.policy_output_dir)
         # Global motions: all countries, every run
         flush_global_motions(self.config.output_dir / "data")
+        # Per-year status snapshots of greenfield (GEO-origin) furnace groups
+        data_collector.write_greenfield_status_csv(self.config.output_dir / "data")
 
         # Postprocessing
         output_path = extract_and_process_stored_dataCollection(
@@ -1575,6 +1577,14 @@ class SimulationRunner:
                 post_processed_csv=Path(output_path),
                 primary_feedstocks_json=fixtures_dir / "primary_feedstocks.json" if fixtures_dir else None,
                 suppliers_json=fixtures_dir / "suppliers.json" if fixtures_dir else None,
+            )
+            interactive.plot_greenfield_status(
+                greenfield_status_csv=self.config.output_dir / "data" / "greenfield_status_timeseries.csv",
+            )
+            interactive.plot_greenfield_map(
+                greenfield_status_csv=self.config.output_dir / "data" / "greenfield_status_timeseries.csv",
+                post_processed_csv=Path(output_path),
+                primary_feedstocks_json=fixtures_dir / "primary_feedstocks.json" if fixtures_dir else None,
             )
 
         # Aggregate per-year LCOE/LCOH statistics into stacked CSVs

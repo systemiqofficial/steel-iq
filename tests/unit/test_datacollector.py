@@ -388,3 +388,103 @@ def test_collect_new_plant_data_selects_by_origin_not_owner(mock_tech_switches_f
     assert data_collector.status_counts["steel"][year]["EAF"]["operating"] == 1
     # It started operating this year, so its location is on the map; the brownfield one is not.
     assert data_collector.new_plant_locations["steel"][year] == [{"lat": 30.0, "lon": 110.0}]
+
+
+def _greenfield_status_collector(year, tmp_dir, mock_tech_switches_file):
+    """Build a DataCollector over one indi-origin plant with operating, construction and considered furnace groups."""
+    from steelo.domain.models import Volumes
+
+    operating_fg = get_furnace_group(fg_id="geo_fg_operating", capacity=Volumes(100000), utilization_rate=0.5)
+    construction_fg = get_furnace_group(fg_id="geo_fg_construction", capacity=Volumes(200000), utilization_rate=0.7)
+    construction_fg.status = "construction"
+    considered_fg = get_furnace_group(fg_id="geo_fg_considered", capacity=Volumes(300000), utilization_rate=0.0)
+    considered_fg.status = "considered"
+    considered_fg.historical_npv_business_opportunities = {int(year): 1234.5}
+
+    geo_plant = get_plant(
+        plant_id="plant_geo_chn",
+        furnace_groups=[operating_fg, construction_fg, considered_fg],
+        location=Location(iso3="CHN", country="", region="China", lat=30.0, lon=110.0),
+    )
+    geo_plant.parent_gem_id = "indi_CHN"
+    plant_group = PlantGroup(plant_group_id="indi_CHN", plants=[geo_plant])
+
+    config = SimulationConfig(
+        start_year=Year(2025),
+        end_year=Year(2060),
+        master_excel_path=Path(tempfile.gettempdir()) / "master.xlsx",
+        output_dir=Path(tempfile.gettempdir()),
+        technology_settings=get_default_technology_settings(),
+    )
+    env = Environment(config=config, tech_switches_csv=mock_tech_switches_file)
+    return DataCollector([plant_group], env, output_dir=tmp_dir)
+
+
+def test_collect_new_plant_data_records_greenfield_status_rows(tmp_path, mock_tech_switches_file):
+    """
+    Record one flat snapshot row per greenfield furnace group and year.
+
+    Production and utilisation are taken as-is for operating groups but zeroed
+    for non-operating statuses, whose utilization_rate can hold a stale value.
+    """
+    year = Year(2025)
+    data_collector = _greenfield_status_collector(year, tmp_path, mock_tech_switches_file)
+    data_collector.collect_new_plant_data(year)
+
+    rows = {row["furnace_group_id"]: row for row in data_collector.greenfield_status_rows}
+    assert len(rows) == 3
+    assert rows["geo_fg_operating"] == {
+        "year": 2025,
+        "furnace_group_id": "geo_fg_operating",
+        "plant_id": "plant_geo_chn",
+        "plant_group_id": "indi_CHN",
+        "product": "steel",
+        "technology": "EAF",
+        "reductant": "",
+        "status": "operating",
+        "geo_key": "CHN",
+        "region": "China",
+        "lat": 30.0,
+        "lon": 110.0,
+        "capacity": 100000.0,
+        "production": 50000.0,
+        "utilization_rate": 0.5,
+        "opportunity_npv": None,
+    }
+    # The stale utilisation on the construction group must not book production.
+    assert rows["geo_fg_construction"]["production"] == 0.0
+    assert rows["geo_fg_construction"]["utilization_rate"] == 0.0
+    assert rows["geo_fg_construction"]["capacity"] == 200000.0
+    # The considered group carries this year's opportunity NPV.
+    assert rows["geo_fg_considered"]["status"] == "considered"
+    assert rows["geo_fg_considered"]["opportunity_npv"] == 1234.5
+
+
+def test_write_greenfield_status_csv_round_trips_rows(tmp_path, mock_tech_switches_file):
+    """Write the collected snapshot rows to data/greenfield_status_timeseries.csv and read them back."""
+    import csv
+
+    year = Year(2025)
+    data_collector = _greenfield_status_collector(year, tmp_path, mock_tech_switches_file)
+    data_collector.collect_new_plant_data(year)
+
+    path = data_collector.write_greenfield_status_csv(tmp_path / "data")
+    assert path == tmp_path / "data" / "greenfield_status_timeseries.csv"
+
+    with path.open() as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 3
+    by_fg = {row["furnace_group_id"]: row for row in rows}
+    assert by_fg["geo_fg_operating"]["year"] == "2025"
+    assert by_fg["geo_fg_operating"]["production"] == "50000.0"
+    assert by_fg["geo_fg_operating"]["opportunity_npv"] == ""
+    assert by_fg["geo_fg_construction"]["status"] == "construction"
+    assert by_fg["geo_fg_considered"]["opportunity_npv"] == "1234.5"
+
+
+def test_write_greenfield_status_csv_without_rows_writes_nothing(tmp_path, mock_tech_switches_file):
+    """Return None and write no file when no greenfield rows were collected."""
+    data_collector = _greenfield_status_collector(Year(2025), tmp_path, mock_tech_switches_file)
+
+    assert data_collector.write_greenfield_status_csv(tmp_path / "data") is None
+    assert not (tmp_path / "data").exists()

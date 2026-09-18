@@ -2,6 +2,7 @@ from .models import Environment, FurnaceGroup, PlantGroup, Plant
 
 # Global variables moved to Environment/Config
 from steelo.domain.constants import Commodities  # Keep enum as constant
+import csv
 import pickle
 from collections import defaultdict
 from typing import Any, cast
@@ -38,6 +39,8 @@ class DataCollector:
         self.new_plant_locations: dict[Any, dict[Any, list]] = defaultdict(lambda: defaultdict(list))
         # {furnace_group_id: record} for greenfield (indi-origin) furnace groups; see collect_new_plant_data
         self.greenfield_plants: dict[str, dict[str, Any]] = {}
+        # One flat snapshot row per (year, greenfield furnace group); see _record_greenfield_status_row
+        self.greenfield_status_rows: list[dict[str, Any]] = []
         self.trace_capex: dict[int, dict[str, dict[str, float]]] = defaultdict(
             lambda: defaultdict(lambda: defaultdict(float))
         )  # {year: {technology: {iso3: total_capex}}}
@@ -247,8 +250,8 @@ class DataCollector:
 
     def collect_new_plant_data(self, year: Year):
         """
-        Collect status counts, locations, and per-furnace-group records of new
-        (GEO-origin) plants for the given year.
+        Collect status counts, locations, per-furnace-group records and per-year
+        status snapshot rows of new (GEO-origin) plants for the given year.
 
         Args:
             year: The year to collect new plant data for.
@@ -273,6 +276,7 @@ class DataCollector:
                             ({"lat": plant.location.lat, "lon": plant.location.lon})
                         )
                     self._record_greenfield_furnace_group(plant_group, plant, fg, year)
+                    self._record_greenfield_status_row(plant_group, plant, fg, year)
         if not found_indi:
             logger.warning("No indi-origin plants found. Skipping new plant data collection.")
 
@@ -323,6 +327,75 @@ class DataCollector:
         record["lifetime_start"] = fg.lifetime.start
         record["lifetime_end"] = fg.lifetime.end
         record["status_years"].setdefault(fg.status, year)
+
+    def _record_greenfield_status_row(
+        self, plant_group: PlantGroup, plant: Plant, fg: FurnaceGroup, year: Year
+    ) -> None:
+        """
+        Append this year's status snapshot of one greenfield furnace group.
+
+        Args:
+            plant_group: Group the plant currently belongs to.
+            plant: The greenfield (indi-origin) plant.
+            fg: Furnace group being recorded.
+            year: Current simulation year.
+
+        Notes:
+            Rows accumulate in ``greenfield_status_rows`` and are written out at
+            the end of the run by ``write_greenfield_status_csv``. Production and
+            utilisation are zeroed for non-operating statuses: closing a furnace
+            group does not reset its ``utilization_rate``, so the stale value
+            would otherwise book production against closed plants.
+            ``opportunity_npv`` is the NPV the opportunity was (re-)valued at this
+            year while considered (the announce/discard decision input); it is
+            blank for years after the group left the considered status.
+        """
+        operating = fg.status.startswith("operating")
+        npv_history = fg.historical_npv_business_opportunities or {}
+        self.greenfield_status_rows.append(
+            {
+                "year": int(year),
+                "furnace_group_id": fg.furnace_group_id,
+                "plant_id": plant.plant_id,
+                "plant_group_id": plant_group.plant_group_id,
+                "product": fg.technology.product,
+                "technology": fg.technology.name,
+                "reductant": fg.chosen_reductant,
+                "status": fg.status,
+                "geo_key": plant.location.geo_key,
+                "region": plant.location.region,
+                "lat": plant.location.lat,
+                "lon": plant.location.lon,
+                "capacity": float(fg.capacity),
+                "production": float(fg.production) if operating else 0.0,
+                "utilization_rate": fg.utilization_rate if operating else 0.0,
+                "opportunity_npv": npv_history.get(year),
+            }
+        )
+
+    def write_greenfield_status_csv(self, output_dir: Path) -> Path | None:
+        """
+        Write the per-year greenfield status snapshots to ``greenfield_status_timeseries.csv``.
+
+        Args:
+            output_dir: Directory to write into (``<output>/data`` on a real run);
+                created if it does not exist.
+
+        Returns:
+            Path to the written CSV, or None when no greenfield rows were collected.
+        """
+        logger = logging.getLogger(f"{__name__}.write_greenfield_status_csv")
+        if not self.greenfield_status_rows:
+            logger.warning("No greenfield status rows collected. Skipping CSV export.")
+            return None
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / "greenfield_status_timeseries.csv"
+        with path.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(self.greenfield_status_rows[0]))
+            writer.writeheader()
+            writer.writerows(self.greenfield_status_rows)
+        logger.info("Wrote %s rows=%d", path, len(self.greenfield_status_rows))
+        return path
 
     def collect_capex_investments(self, year: Year):
         """

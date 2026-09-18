@@ -30,6 +30,8 @@ from . import (
     cost_curves,
     decision_flows,
     emissions,
+    greenfield_map,
+    greenfield_status,
     metallic_charge_use,
     reductant_use,
     supply_demand,
@@ -123,6 +125,8 @@ class InteractivePlotter:
         >>> interactive.plot_trade_allocations(tm_dir)
         >>> interactive.plot_reductant_use(post_processed_csv, primary_feedstocks_json)
         >>> interactive.plot_metallic_charge_use(post_processed_csv, primary_feedstocks_json, suppliers_json)
+        >>> interactive.plot_greenfield_status(greenfield_status_csv)
+        >>> interactive.plot_greenfield_map(greenfield_status_csv, post_processed_csv, primary_feedstocks_json)
     """
 
     SUBDIR = "interactive"
@@ -655,6 +659,129 @@ class InteractivePlotter:
             len(aggregated),
             len(supply),
         )
+        return path
+
+    def plot_greenfield_status(self, greenfield_status_csv: Path) -> Optional[Path]:
+        """Write the greenfield status viewer (``greenfield_status.html``).
+
+        The viewer is the static ``greenfield/<product>_greenfield_status.png``
+        charts made interactive: greenfield (GEO-origin) furnace groups per year
+        stacked by lifecycle status or by technology, as plant count, capacity
+        or production, showing either the stock in each status or the flow
+        entering it.
+
+        Args:
+            greenfield_status_csv: The run's ``data/greenfield_status_timeseries.csv``.
+
+        Returns:
+            The written path, or None when the CSV is missing (a run may create no
+            greenfield groups) or lacks a required column (logged as warnings so
+            the plot stage never fails).
+        """
+        if not greenfield_status_csv.is_file():
+            logger.warning(
+                "No greenfield status timeseries at %s — skipping the greenfield status viewer",
+                greenfield_status_csv,
+            )
+            return None
+        try:
+            aggregated = greenfield_status.aggregate_status(pd.read_csv(greenfield_status_csv))
+        except ValueError as exc:
+            logger.warning("%s — skipping the greenfield status viewer", exc)
+            return None
+        data = {
+            self.run_title: {
+                "title": self.run_title,
+                "provenance": f"Per-year greenfield furnace-group snapshots from data/{greenfield_status_csv.name}.",
+                "rows": greenfield_status.pack_rows(aggregated),
+            },
+        }
+        config = self._config("Greenfield status", statusColours=greenfield_status.STATUS_COLOURS)
+        path = self._write("greenfield_status.html", config, data)
+        logger.info("Wrote greenfield status viewer %s (%d aggregated rows)", path, len(aggregated))
+        return path
+
+    def plot_greenfield_map(
+        self,
+        greenfield_status_csv: Path,
+        post_processed_csv: Optional[Path] = None,
+        primary_feedstocks_json: Optional[Path] = None,
+    ) -> Optional[Path]:
+        """Write the greenfield buildout map viewer (``greenfield_map.html``).
+
+        The map is the static ``greenfield/<product>_greenfield_map*.png`` charts
+        made interactive: every greenfield furnace group as a capacity-sized dot
+        over the trade map's world outline, with a year slider, filters for
+        status, technology, product, reductant and metallic charge, and hover
+        tooltips carrying each group's full history — the year it entered each
+        status, technology and reductant switches, and the shown year's
+        production and charge allocations.
+
+        Args:
+            greenfield_status_csv: The run's ``data/greenfield_status_timeseries.csv``.
+            post_processed_csv: The run's ``post_processed_<timestamp>.csv``, whose
+                feedstock rows give each group's per-year metallic charges. None (or
+                a missing file) omits the charge filter and tooltip lines with a warning.
+            primary_feedstocks_json: The prepared ``fixtures/primary_feedstocks.json``
+                (the Bill of Materials), which identifies charge rows. None (or a
+                missing file) omits the charges like a missing table does.
+
+        Returns:
+            The written path, or None when the timeseries is missing (a run may
+            create no greenfield groups) or lacks a required column (logged as
+            warnings so the plot stage never fails).
+        """
+        from steelo.adapters.repositories.json_repository import PrimaryFeedstockJsonRepository
+
+        if not greenfield_status_csv.is_file():
+            logger.warning(
+                "No greenfield status timeseries at %s — skipping the greenfield map viewer", greenfield_status_csv
+            )
+            return None
+        timeseries = pd.read_csv(greenfield_status_csv)
+
+        charges = None
+        charge_source = ""
+        table = self._read_post_processed(post_processed_csv, "greenfield map") if post_processed_csv else None
+        if table is None or primary_feedstocks_json is None or not primary_feedstocks_json.is_file():
+            logger.warning(
+                "No post-processed table or no primary feedstocks fixture at %s — metallic charges omitted "
+                "from the greenfield map viewer",
+                primary_feedstocks_json,
+            )
+        else:
+            feedstocks = PrimaryFeedstockJsonRepository(primary_feedstocks_json).list()
+            try:
+                charges = greenfield_map.greenfield_charges(table, feedstocks, set(timeseries["furnace_group_id"]))
+                charge_source = (
+                    f"; metallic charges from {post_processed_csv.name} via the Bill of Materials"
+                    if post_processed_csv
+                    else ""
+                )
+            except ValueError as exc:
+                logger.warning("%s — metallic charges omitted from the greenfield map viewer", exc)
+
+        try:
+            payload = greenfield_map.pack_groups(timeseries, charges)
+        except ValueError as exc:
+            logger.warning("%s — skipping the greenfield map viewer", exc)
+            return None
+        data = {
+            self.run_title: {
+                "title": self.run_title,
+                "provenance": f"Per-year greenfield furnace-group snapshots from data/{greenfield_status_csv.name}"
+                f"{charge_source}.",
+                **payload,
+            },
+        }
+        config = self._config(
+            "Greenfield buildout map",
+            statusColours=greenfield_status.STATUS_COLOURS,
+            reductantColours=reductant_use.REDUCTANT_COLOURS,
+            chargeColours=metallic_charge_use.CHARGE_COLOURS,
+        )
+        path = greenfield_map.write_viewer(config, data, self.output_dir / "greenfield_map.html")
+        logger.info("Wrote greenfield map viewer %s (%d groups)", path, len(payload["groups"]))
         return path
 
     def _config(self, chart_title: str, **chart_config: Any) -> dict[str, Any]:
