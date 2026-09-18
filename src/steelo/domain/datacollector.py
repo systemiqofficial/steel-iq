@@ -36,6 +36,23 @@ SWITCH_DECISION_COLUMNS = [
     "selection_probabilities",
 ]
 
+# Column order of pipeline_status_timeseries.csv; also gives the header of a run without pipeline rows
+PIPELINE_STATUS_COLUMNS = [
+    "year",
+    "furnace_group_id",
+    "plant_id",
+    "plant_group_id",
+    "geo_key",
+    "product",
+    "technology",
+    "reductant",
+    "status",
+    "capacity",
+    "start_year",
+    "created_by_pam",
+]
+PIPELINE_STATUSES = ("announced", "construction")
+
 
 class DataCollector:
     def __init__(
@@ -68,6 +85,8 @@ class DataCollector:
         self.greenfield_status_rows: list[dict[str, Any]] = []
         # {(furnace_group_id, switch_year): row}, one per technology-switch decision; see _record_switch_decision
         self.switch_decisions: dict[tuple[str, int], dict[str, Any]] = {}
+        # One row per (year, not-yet-operating furnace group of the existing fleet); see collect_pipeline_status
+        self.pipeline_status_rows: list[dict[str, Any]] = []
         self.trace_capex: dict[int, dict[str, dict[str, float]]] = defaultdict(
             lambda: defaultdict(lambda: defaultdict(float))
         )  # {year: {technology: {iso3: total_capex}}}
@@ -422,6 +441,67 @@ class DataCollector:
             writer.writeheader()
             writer.writerows(self.greenfield_status_rows)
         logger.info("Wrote %s rows=%d", path, len(self.greenfield_status_rows))
+        return path
+
+    def collect_pipeline_status(self, year: Year) -> None:
+        """
+        Record every furnace group of the existing fleet that is not operating yet, for the given year.
+
+        Args:
+            year: Current simulation year.
+
+        Notes:
+            These groups have no post-processed row until they operate (their status is
+            not active) and are not in the greenfield table (their plant is not
+            GEO-origin), so no other output dates their construction. They are the units
+            the master lists as announced or under construction (``created_by_pam``
+            False) and the expansions the PAM builds at existing plants (True).
+            ``start_year`` is the year the group turns operating; for master units
+            without one it is the model's draw.
+        """
+        for plant_group in self.plant_groups:
+            for plant in plant_group.plants:
+                if plant is None or plant.parent_gem_id.lower().startswith("indi_"):
+                    continue
+                for fg in plant.furnace_groups:
+                    if fg.status.lower() not in PIPELINE_STATUSES:
+                        continue
+                    self.pipeline_status_rows.append(
+                        {
+                            "year": int(year),
+                            "furnace_group_id": fg.furnace_group_id,
+                            "plant_id": plant.plant_id,
+                            "plant_group_id": plant_group.plant_group_id,
+                            "geo_key": plant.location.geo_key,
+                            "product": fg.technology.product,
+                            "technology": fg.technology.name,
+                            "reductant": fg.chosen_reductant,
+                            "status": fg.status,
+                            "capacity": float(fg.capacity),
+                            "start_year": int(fg.lifetime.time_frame.start),
+                            "created_by_pam": bool(fg.created_by_PAM),
+                        }
+                    )
+
+    def write_pipeline_status_csv(self, output_dir: Path) -> Path:
+        """
+        Write the per-year pipeline status snapshots to ``pipeline_status_timeseries.csv``.
+
+        Args:
+            output_dir: Directory to write into (``<output>/data`` on a real run);
+                created if it does not exist.
+
+        Returns:
+            Path to the written CSV. The header is written even when no group was in the pipeline.
+        """
+        logger = logging.getLogger(f"{__name__}.write_pipeline_status_csv")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / "pipeline_status_timeseries.csv"
+        with path.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=PIPELINE_STATUS_COLUMNS)
+            writer.writeheader()
+            writer.writerows(self.pipeline_status_rows)
+        logger.info("Wrote %s rows=%d", path, len(self.pipeline_status_rows))
         return path
 
     def collect_switch_decisions(self, year: Year) -> None:
@@ -891,6 +971,7 @@ class DataCollector:
         self.plant_emissions[self.step] = self.collect_emissions_by_plants().copy()
         self.collect_new_plant_data(self.env.year)
         self.collect_switch_decisions(self.env.year)
+        self.collect_pipeline_status(self.env.year)
         self.collect_capex_investments(self.env.year)
         self.collect_emissions_by_technology(self.env.year)
         self.collect_iron_ore_by_quality(self.env.year)

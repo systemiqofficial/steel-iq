@@ -129,12 +129,12 @@ class InteractivePlotter:
         >>> interactive.plot_greenfield_status(greenfield_status_csv)
         >>> interactive.plot_greenfield_map(greenfield_status_csv, post_processed_csv, primary_feedstocks_json)
         >>> interactive.plot_capacity_world_map(
-        ...     post_processed_csv, greenfield_status_csv, switch_decisions_csv, motions_csv, plants, plant_names,
-        ...     input_sources,
+        ...     post_processed_csv, greenfield_status_csv, switch_decisions_csv, motions_csv, pipeline_status_csv,
+        ...     plants, plant_names, input_sources,
         ... )
         >>> interactive.plot_capacity_china_map(
-        ...     post_processed_csv, greenfield_status_csv, switch_decisions_csv, motions_csv, plants, plant_names,
-        ...     input_sources,
+        ...     post_processed_csv, greenfield_status_csv, switch_decisions_csv, motions_csv, pipeline_status_csv,
+        ...     plants, plant_names, input_sources,
         ... )
     """
 
@@ -799,6 +799,7 @@ class InteractivePlotter:
         greenfield_status_csv: Path,
         switch_decisions_csv: Path,
         motions_csv: Path,
+        pipeline_status_csv: Path,
         plants: dict[str, dict[str, Any]],
         plant_names: dict[str, str],
         input_sources: list[str],
@@ -819,7 +820,11 @@ class InteractivePlotter:
                 runs) omits the rebuilds with a warning.
             motions_csv: The run's ``data/pam_motions.csv``, whose ``expansion`` rows give
                 the expansions at existing plants while they are built. A missing file
-                omits them with a warning.
+                omits them with a warning. Only a fallback for runs without the pipeline table.
+            pipeline_status_csv: The run's ``data/pipeline_status_timeseries.csv``, for the
+                existing fleet's groups that are not operating yet (the input data's
+                pipeline units and the PAM's expansions). A missing file (older runs)
+                omits the input data's units before they operate, with a warning.
             plants: ``{plant_id: {"lat", "lon", "greenfield"}}`` of the run's live plants.
             plant_names: ``{plant_id: plant_name}`` from the master's Furnace units sheet.
             input_sources: The distinct ``source`` values of that sheet, for the source line.
@@ -837,6 +842,7 @@ class InteractivePlotter:
             greenfield_status_csv,
             switch_decisions_csv,
             motions_csv,
+            pipeline_status_csv,
             plants,
             plant_names,
             input_sources,
@@ -848,6 +854,7 @@ class InteractivePlotter:
         greenfield_status_csv: Path,
         switch_decisions_csv: Path,
         motions_csv: Path,
+        pipeline_status_csv: Path,
         plants: dict[str, dict[str, Any]],
         plant_names: dict[str, str],
         input_sources: list[str],
@@ -863,6 +870,7 @@ class InteractivePlotter:
             greenfield_status_csv: As for :meth:`plot_capacity_world_map`.
             switch_decisions_csv: As for :meth:`plot_capacity_world_map`.
             motions_csv: As for :meth:`plot_capacity_world_map`.
+            pipeline_status_csv: As for :meth:`plot_capacity_world_map`.
             plants: As for :meth:`plot_capacity_world_map`.
             plant_names: As for :meth:`plot_capacity_world_map`.
             input_sources: As for :meth:`plot_capacity_world_map`.
@@ -885,6 +893,7 @@ class InteractivePlotter:
             greenfield_status_csv,
             switch_decisions_csv,
             motions_csv,
+            pipeline_status_csv,
             plants,
             plant_names,
             input_sources,
@@ -899,6 +908,7 @@ class InteractivePlotter:
         greenfield_status_csv: Path,
         switch_decisions_csv: Path,
         motions_csv: Path,
+        pipeline_status_csv: Path,
         plants: dict[str, dict[str, Any]],
         plant_names: dict[str, str],
         input_sources: list[str],
@@ -915,20 +925,31 @@ class InteractivePlotter:
             return None
         try:
             optional: dict[str, Optional[pd.DataFrame]] = {}
+            # the provenance names only the inputs this run really had
+            read = [f"operating furnace groups from {post_processed_csv.name}"]
+            absent = []
             for name, csv_path, layer in (
                 ("greenfield", greenfield_status_csv, "new builds under construction"),
                 ("decisions", switch_decisions_csv, "rebuilds"),
                 ("motions", motions_csv, "expansions under construction"),
+                ("pipeline", pipeline_status_csv, "the existing fleet's construction pipeline"),
             ):
                 frame = pd.read_csv(csv_path) if csv_path.is_file() else None
                 if frame is None or frame.empty:
                     logger.warning("No rows at %s — %s omitted from the %s viewer", csv_path, layer, viewer)
+                    absent.append(layer)
+                else:
+                    read.append(f"{layer} from data/{csv_path.name}")
                 optional[name] = frame
+            provenance = "; ".join(read) + "."
+            if absent:
+                provenance += f" Not available for this run: {', '.join(absent)}."
             payload = capacity_world_map.pack_sites(
                 table,
                 optional["greenfield"],
                 optional["decisions"],
                 optional["motions"],
+                optional["pipeline"],
                 plants,
                 plant_names,
                 focus["iso3"] if focus else None,
@@ -936,9 +957,7 @@ class InteractivePlotter:
             data = {
                 self.run_title: {
                     "title": self.run_title,
-                    "provenance": f"Operating furnace groups from {post_processed_csv.name}; new builds under "
-                    f"construction from data/{greenfield_status_csv.name}; rebuilds from "
-                    f"data/{switch_decisions_csv.name}; expansions from data/{motions_csv.name}.",
+                    "provenance": provenance[0].upper() + provenance[1:],
                     "source": capacity_world_map.source_line(input_sources),
                     **payload,
                 },
