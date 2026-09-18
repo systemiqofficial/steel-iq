@@ -376,6 +376,8 @@ Outputs always go to a fresh `$STEELO_HOME/output/sim_<timestamp>/` directory; `
 - `--grid-emissions-scenario`: Grid emissivity projection applied at run time, named as in the "Power grid emissivity" sheet without its `projection_` prefix (default: Business As Usual)
 - `--peg-iron-to-steel-price` / `--iron-to-steel-price-ratio`: Floor the iron price at a share of the steel price (default ratio: 0.8)
 - `--enable-clustering` / `--clustering-scope`: Cluster hot-metal-affected furnace groups to reduce trade-LP size (scope `iso3`, `plant_group` or `plant`)
+- `--hydrogen-ceiling-percentile`: Percentile of a region's LCOH used as the regional hydrogen price cap (default: 100, which disables the cap). See [Hydrogen Costs](../domain_simulation_logic/geospatial_model/priority_location_selection.md#hydrogen-costs)
+- `--intraregional-trade` / `--no-intraregional-trade`: Allow or disallow hydrogen imports between linked regions (default: off)
 
 **Data Files (usually handled automatically via caching):**
 - `--plants-json`: Path to plants JSON file
