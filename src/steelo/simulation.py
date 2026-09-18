@@ -1590,6 +1590,7 @@ class SimulationRunner:
                 post_processed_csv=Path(output_path),
                 greenfield_status_csv=self.config.output_dir / "data" / "greenfield_status_timeseries.csv",
                 switch_decisions_csv=self.config.output_dir / "data" / "pam_switch_decisions.csv",
+                motions_csv=self.config.output_dir / "data" / "pam_motions.csv",
                 plants={
                     p.plant_id: {
                         "lat": p.location.lat,

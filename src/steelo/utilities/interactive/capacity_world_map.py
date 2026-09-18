@@ -10,8 +10,12 @@ network access.
 Per plant and year the map shows the furnace groups the simulation ran (the
 post-processed table, which has a row exactly in the years a group's status is
 active), new builds under construction (``data/greenfield_status_timeseries.csv``)
-and groups being rebuilt for a technology switch (``data/pam_switch_decisions.csv``),
-the latter drawn in the new technology. Coordinates and origin come from the run's
+groups being rebuilt for a technology switch (``data/pam_switch_decisions.csv``),
+drawn in the new technology, and expansions at existing plants between their
+decision and their first operating year (``data/pam_motions.csv``). Units the
+master already lists as announced or under construction are NOT shown while they
+are built: their motion is dated the year they start operating, so no output
+records their construction years, and they appear as opened in that year. Coordinates and origin come from the run's
 live plants; plant names and the source line from the master's Furnace units sheet.
 Timelines are run-length encoded per plant.
 
@@ -51,18 +55,49 @@ DECISION_COLUMNS = [
     "new_technology",
     "new_capacity_t",
 ]
+MOTION_COLUMNS = [
+    "year",
+    "kind",
+    "plant_id",
+    "furnace_group_id",
+    "geo_key",
+    "product",
+    "new_technology",
+    "new_capacity_t",
+]
+CONSTRUCTION_COLUMNS = [*GREENFIELD_COLUMNS[:-1], "note"]
 STATUSES = ["operating", "construction"]
 IRON_PRODUCT = "iron"
 
 
 def _require(frame: pd.DataFrame, columns: list[str], name: str) -> None:
+    """Check that an input table has the columns the map reads.
+
+    Args:
+        frame: The table to check.
+        columns: The columns it must have.
+        name: The table's name for the error message.
+
+    Raises:
+        ValueError: Naming the missing columns.
+    """
     missing = [column for column in columns if column not in frame.columns]
     if missing:
         raise ValueError(f"The {name} has no {', '.join(missing)} column(s)")
 
 
 def _rebuild_rows(switch_decisions: pd.DataFrame, last_year: int) -> pd.DataFrame:
-    """One construction row per rebuild year of every switch decision that started construction."""
+    """Construction rows of the groups being rebuilt for a technology switch.
+
+    Args:
+        switch_decisions: The switch decisions table.
+        last_year: The last simulated year, which caps the rebuild years.
+
+    Returns:
+        One row per decision that started construction and rebuild year
+        (``construction_start_year`` to ``switch_year - 1``), in the new technology at
+        the new capacity, with ``note`` naming the old technology.
+    """
     rows = []
     started = switch_decisions[switch_decisions["construction_start_year"].notna()]
     for decision in started.to_dict("records"):
@@ -77,16 +112,51 @@ def _rebuild_rows(switch_decisions: pd.DataFrame, last_year: int) -> pd.DataFram
                     "technology": decision["new_technology"],
                     "product": decision["product"],
                     "capacity": decision["new_capacity_t"],
-                    "rebuilt_from": decision["old_technology"],
+                    "note": f"rebuild from {decision['old_technology']}",
                 },
             )
-    return pd.DataFrame(rows, columns=[*GREENFIELD_COLUMNS[:-1], "rebuilt_from"])
+    return pd.DataFrame(rows, columns=CONSTRUCTION_COLUMNS)
+
+
+def _expansion_rows(motions: pd.DataFrame, operating: pd.DataFrame, last_year: int) -> pd.DataFrame:
+    """Construction rows of the expansions at existing plants.
+
+    Args:
+        motions: The PAM motions table, whose ``expansion`` rows are dated the
+            decision year and carry the new group's technology and capacity.
+        operating: The operating groups, giving each group's first operating year.
+        last_year: The last simulated year, until which a group that never starts
+            operating stays under construction.
+
+    Returns:
+        One row per expansion and year from its decision to the year before its first
+        operating row, with ``note`` set to ``expansion``.
+    """
+    rows = []
+    first_operating = operating.groupby("furnace_group_id")["year"].min()
+    for motion in motions[motions["kind"] == "expansion"].to_dict("records"):
+        start = int(first_operating.get(motion["furnace_group_id"], last_year + 1))
+        for year in range(int(motion["year"]), start):
+            rows.append(
+                {
+                    "year": year,
+                    "geo_key": motion["geo_key"],
+                    "plant_id": motion["plant_id"],
+                    "furnace_group_id": motion["furnace_group_id"],
+                    "technology": motion["new_technology"],
+                    "product": motion["product"],
+                    "capacity": motion["new_capacity_t"],
+                    "note": "expansion",
+                },
+            )
+    return pd.DataFrame(rows, columns=CONSTRUCTION_COLUMNS)
 
 
 def pack_sites(
     table: pd.DataFrame,
     greenfield_status: Optional[pd.DataFrame],
     switch_decisions: Optional[pd.DataFrame],
+    motions: Optional[pd.DataFrame],
     plants: dict[str, dict[str, Any]],
     plant_names: dict[str, str],
     iso3: Optional[str] = None,
@@ -101,6 +171,8 @@ def pack_sites(
             are the new builds under construction; None omits them.
         switch_decisions: The switch decisions (``data/pam_switch_decisions.csv``);
             None omits the rebuilds and the switch lines.
+        motions: The PAM motions (``data/pam_motions.csv``), whose ``expansion`` rows
+            are the expansions at existing plants; None omits them while they are built.
         plants: ``{plant_id: {"lat", "lon", "greenfield"}}`` of the run's plants.
         plant_names: ``{plant_id: plant_name}``; plants without an entry are named by
             their id (``New plant <id>`` for greenfield plants).
@@ -113,12 +185,13 @@ def pack_sites(
         sub-national unit, else None), ``lat``/``lon`` (4 decimals), ``greenfield``,
         ``segs`` and ``switches``. ``segs`` are ``[first_year, last_year, units]``
         runs of identical years, a unit being ``[technology, status, capacity in
-        ttpa, old technology of a rebuild or None, furnace_group_id]``. ``switches``
+        ttpa, construction note or None, furnace_group_id]``, the note being ``rebuild from
+        <old technology>`` or ``expansion``. ``switches``
         are ``[decision_year, switch_year, old_technology, new_technology]``.
 
     Raises:
-        ValueError: If a table lacks a required column, a plant has no entry in
-            ``plants``, or ``iso3`` is given and the run has no plant there.
+        ValueError: If a table lacks a required column, a plant has no entry or no
+            coordinates in ``plants``, or ``iso3`` is given and the run has no plant there.
 
     Notes:
         A group counts as under construction for a rebuild from its
@@ -126,7 +199,10 @@ def pack_sites(
         the last simulated year, in the new technology at the new capacity. The
         greenfield table's ``construction switching technology`` rows are ignored
         because the decisions cover them. Its ``region`` column is not used: it
-        books some groups under "unknown".
+        books some groups under "unknown". An expansion counts as under construction
+        from its motion year to the year before its first operating row. Where two
+        layers hold the same group and year (a few expansions are also in the
+        greenfield table) the first in the order above wins.
     """
     _require(table, TABLE_COLUMNS, "post-processed table")
     operating = table.loc[table["product"].isin(["iron", "steel"]), TABLE_COLUMNS]
@@ -140,17 +216,21 @@ def pack_sites(
     if switch_decisions is not None:
         _require(switch_decisions, DECISION_COLUMNS, "switch decisions table")
         layers.append(_rebuild_rows(switch_decisions, years[-1]).assign(status="construction"))
+    if motions is not None:
+        _require(motions, MOTION_COLUMNS, "motions table")
+        layers.append(_expansion_rows(motions, operating, years[-1]).assign(status="construction"))
     groups = pd.concat([layer for layer in layers if len(layer)], ignore_index=True)
-    groups = groups[groups["capacity"] > 0].copy()
+    groups = groups[groups["capacity"] > 0].drop_duplicates(["year", "furnace_group_id"]).copy()
     groups["iso3"] = groups["iso3"].fillna(groups["geo_key"].str.split(":").str[0])
-    if "rebuilt_from" not in groups:
-        groups["rebuilt_from"] = None
+    if "note" not in groups:
+        groups["note"] = None
     if iso3 is not None:
         groups = groups[groups["iso3"] == iso3]
         if groups.empty:
             raise ValueError(f"The run has no plants in {iso3}")
 
-    missing = sorted(set(groups["plant_id"]) - set(plants))
+    located = {plant_id for plant_id, plant in plants.items() if pd.notna(plant["lat"]) and pd.notna(plant["lon"])}
+    missing = sorted(set(groups["plant_id"]) - located)
     if missing:
         raise ValueError(f"{len(missing)} plants on the capacity map have no coordinates, e.g. {missing[:5]}")
 
@@ -171,14 +251,14 @@ def pack_sites(
         plant_id = str(key)
         by_year: dict[int, list[list[Any]]] = {}
         for row in rows.to_dict("records"):
-            rebuilt_from = row["rebuilt_from"] if pd.notna(row["rebuilt_from"]) else None
+            note = row["note"] if pd.notna(row["note"]) else None
             by_year.setdefault(int(row["year"]), []).append(
                 # t -> ttpa
                 [
                     row["technology"],
                     row["status"],
                     int(round(row["capacity"] / 1000)),
-                    rebuilt_from,
+                    note,
                     row["furnace_group_id"],
                 ],
             )

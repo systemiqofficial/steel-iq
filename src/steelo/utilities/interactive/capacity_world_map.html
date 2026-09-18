@@ -165,17 +165,21 @@ const originOf = (s) => ORIGINS[+s.greenfield];
 // Both come from the plants; a unit without a polygon works everywhere but has no shape to click.
 const COUNTRIES = {}, PROVINCES = {};
 for (const s of SITES) {
-  const info = CONFIG.geoInfo[s.iso];
-  COUNTRIES[s.iso] ||= {code: s.iso, name: info.country, region: info.region, geometry: WORLD.countries[s.iso]};
+  // an ISO3 missing from the Country mapping keeps its code, as in the shared shell
+  const info = CONFIG.geoInfo[s.iso] || {};
+  COUNTRIES[s.iso] ||= {code: s.iso, name: info.country || s.iso, region: info.region || "Unknown region", geometry: WORLD.countries[s.iso]};
   if (!s.geo) continue;
   const code = s.geo.split(":")[1];
-  PROVINCES[s.geo] ||= {code, parent: s.iso, name: CONFIG.geoUnitNames[s.geo] || code, region: info.region, geometry: WORLD.units[s.geo]};
+  PROVINCES[s.geo] ||= {code, parent: s.iso, name: CONFIG.geoUnitNames[s.geo] || code, region: COUNTRIES[s.iso].region, geometry: WORLD.units[s.geo]};
   // policy-ON focus maps group the provinces by the capacity pool's regions
   if (FOCUS && Object.keys(FOCUS.groups).length) Object.assign(PROVINCES[s.geo], {group: FOCUS.groups[s.geo], type: FOCUS.types[s.geo], region: FOCUS.groups[s.geo] || OTHER});
 }
 const CTRY = {...COUNTRIES, ...PROVINCES};
 const PARENTS = new Set(Object.values(PROVINCES).map(p => p.parent));
-const COLOR = CONFIG.techColours;
+// technologies without a house colour take the shared shell's fallback colours
+const FALLBACK_COLOURS = ["#a52a2a", "#6b6b6b", "#b8860b", "#556b2f", "#708090", "#8b008b"];
+const UNCOLOURED = TECHS.filter(t => !CONFIG.techColours[t]);
+const COLOR = Object.fromEntries(TECHS.map(t => [t, CONFIG.techColours[t] || FALLBACK_COLOURS[UNCOLOURED.indexOf(t) % FALLBACK_COLOURS.length]]));
 const IRON = new Set(RUN.ironTechs);
 const DEFAULT_ON = new Set(STATUSES);
 const unitsAt = (s, year) => { const seg = s.segs.find(g => g[0] <= year && year <= g[1]); return seg ? seg[2] : []; };
@@ -478,16 +482,18 @@ function refresh() {
     const units = unitsAt(s, state.year).filter(keep);
     for (const u of units) byTech[u[0]] = (byTech[u[0]] || 0) + u[2];
     const total = Object.values(byTech).reduce((a, b) => a + b, 0);
-    let change = "", prev = units, prevTotal = total;
+    // opened, closed and switched are judged on the plant's whole timeline, so an unticked status or
+    // technology never turns a rebuild into a closure; the filters only decide what is drawn
+    let change = "", prev = [];
     if (state.changes && state.year > YEARS[0]) {
-      prev = unitsAt(s, state.year - 1).filter(keep);
-      prevTotal = prev.reduce((a, u) => a + u[2], 0);
-      if (total > 0 && prevTotal === 0) change = "opened";
-      else if (total > 0 && !sameTechs(techSet(units), techSet(prev))) change = "switched";
-      else if (total === 0 && prevTotal > 0) change = "closed";
+      const now = unitsAt(s, state.year), before = unitsAt(s, state.year - 1);
+      prev = before.filter(keep);
+      if (now.length && !before.length) change = "opened";
+      else if (!now.length && before.length) change = "closed";
+      else if (now.length && !sameTechs(techSet(now), techSet(before))) change = "switched";
     }
     if (total > 0) filtered.push({...s, byTech, total, units, change});
-    else if (change === "closed") closed.push({...s, total: prevTotal, units: prev});
+    else if (change === "closed" && prev.length) closed.push({...s, total: prev.reduce((a, u) => a + u[2], 0), units: prev});
   }
   for (const c in ctryEls) ctryEls[c].classList.toggle("sel", state.ctrys.has(c)), ctryEls[c].classList.toggle("dim", !geoAll && !state.ctrys.has(c));
   const chips = document.getElementById("geo-chips");
@@ -671,7 +677,7 @@ function showSiteTip(e, s) {
   tip.innerHTML = `<b>${esc(s.name)}</b><div class="sub">${s.iso} ${c.name}${s.geo ? ` · ${CTRY[s.geo].code} ${CTRY[s.geo].name}` : ""} · ${(s.geo && CTRY[s.geo].group) || c.region} · ${capLabel}` +
     `${history ? " · " + history : ""}</div>` +
     `<table>${TECHS.filter(t => shown[t]).map(t => `<tr><td><span class="swatch" style="background:${COLOR[t]};vertical-align:-1px"></span> ${t}</td><td><b>${fmt(shown[t])} Mt</b></td><td></td></tr>` +
-      units.filter(u => u[0] === t).map(u => `<tr><td></td><td>${fmt(u[2])}</td><td class="st">${u[3] ? `construction · rebuild from ${u[3]}` : u[1]} · ${u[4]}</td></tr>`).join("")).join("")}</table>${switching}`;
+      units.filter(u => u[0] === t).map(u => `<tr><td></td><td>${fmt(u[2])}</td><td class="st">${u[3] ? `${u[1]} · ${u[3]}` : u[1]} · ${u[4]}</td></tr>`).join("")).join("")}</table>${switching}`;
   placeTip(e);
 }
 function showClusterTip(e, c) {
@@ -710,7 +716,7 @@ function exportSvg() {
   const EW = 1600, EH = 1000, M = 44, SIDE = 400, MAP_Y = 118, MAP_H = EH - MAP_Y - 70;
   const mapW = EW - 2 * M - SIDE - 30, sideX = EW - M - SIDE;
   const {byTech, unitsByTech, units, iron, steel, ctryRows} = stats;
-  const filterLine = `${esc(RUN.title)} · ${state.techs.size === TECHS.length ? "all technologies" : [...state.techs].join(", ")} · ${[...state.statuses].join(", ")}${originNote()} · ${esc(geoLabel())}`;
+  const filterLine = `${esc(RUN.title)} · ${state.techs.size === TECHS.length ? "all technologies" : esc([...state.techs].join(", "))} · ${[...state.statuses].join(", ")}${originNote()} · ${esc(geoLabel())}`;
   const today = new Date().toISOString().slice(0, 10);
   let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${EW}" height="${EH}" viewBox="0 0 ${EW} ${EH}"><style>${EXPORT_CSS}</style>`;
   out += `<rect width="${EW}" height="${EH}" fill="#fcfcfb"/>`;
@@ -728,7 +734,7 @@ function exportSvg() {
   out += `<rect x="${lx}" y="${ly}" width="${lw}" height="${lh}" rx="5" fill="rgba(255,255,255,0.94)" stroke="#e3e1db"/>`;
   TECHS.forEach((t, i) => {
     out += `<circle cx="${lx + 16}" cy="${ly + 18 + i * 18}" r="5.5" fill="${COLOR[t]}"/>`;
-    out += `<text x="${lx + 28}" y="${ly + 22 + i * 18}" font-size="14" fill="#52514e">${t} (${IRON.has(t) ? "iron" : "steel"})</text>`;
+    out += `<text x="${lx + 28}" y="${ly + 22 + i * 18}" font-size="14" fill="#52514e">${esc(t)} (${IRON.has(t) ? "iron" : "steel"})</text>`;
   });
   let yy = ly + 22 + TECHS.length * 18 + 4;
   out += `<text x="${lx + 10}" y="${yy}" font-size="13" fill="#52514e">Bubble area = capacity</text>`;
@@ -753,7 +759,7 @@ function exportSvg() {
   y += 20;
   for (const t of shownTechs) {
     out += `<line x1="${sideX}" y1="${y + rowH - 6}" x2="${sideX + SIDE}" y2="${y + rowH - 6}" stroke="#e3e1db"/>`;
-    out += `<circle cx="${sideX + 7}" cy="${y + 7}" r="5" fill="${COLOR[t]}"/><text x="${sideX + 18}" y="${y + 11}" font-size="14" fill="#0b0b0b">${t}</text>`;
+    out += `<circle cx="${sideX + 7}" cy="${y + 7}" r="5" fill="${COLOR[t]}"/><text x="${sideX + 18}" y="${y + 11}" font-size="14" fill="#0b0b0b">${esc(t)}</text>`;
     out += `<text x="${sideX + 210}" y="${y + 11}" font-size="14" fill="#0b0b0b" text-anchor="end">${fmt(byTech[t])}</text>`;
     out += `<text x="${sideX + 260}" y="${y + 11}" font-size="14" fill="#0b0b0b" text-anchor="end">${unitsByTech[t] || 0}</text>`;
     out += `<rect x="${sideX + 280}" y="${y + 2}" width="${(SIDE - 280) * byTech[t] / tmax}" height="10" rx="2" fill="${COLOR[t]}"/>`;
@@ -801,14 +807,16 @@ function exportPng(scale, done) {
     ctx.fillStyle = "#fcfcfb"; ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
     URL.revokeObjectURL(url);
-    canvas.toBlob(done, "image/png");
+    canvas.toBlob(done, "image/png");  // null when the browser cannot allocate the canvas
   };
+  img.onerror = () => { URL.revokeObjectURL(url); done(null); };
   img.src = url;
 }
 document.getElementById("download").addEventListener("click", () => {
   const note = document.getElementById("download-note");
   note.textContent = "Rendering…";
   exportPng(6, (blob) => {
+    if (!blob) { note.textContent = "Export failed: this browser could not render the 9600 × 6000 px image"; return; }
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `${CONFIG.fileStem}_${state.year}.png`;
@@ -837,7 +845,7 @@ if (state.ctrys.size) zoomTo(state.ctrys);
 if (query.has("export-check")) {
   // headless verification hook: report the export size in the summary line
   exportPng(6, (blob) => {
-    document.getElementById("summary").textContent = `EXPORT_BYTES=${blob.size}`;
+    document.getElementById("summary").textContent = `EXPORT_BYTES=${blob ? blob.size : 0}`;
   });
 }
 </script>

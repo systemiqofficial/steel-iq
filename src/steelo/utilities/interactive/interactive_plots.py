@@ -129,10 +129,12 @@ class InteractivePlotter:
         >>> interactive.plot_greenfield_status(greenfield_status_csv)
         >>> interactive.plot_greenfield_map(greenfield_status_csv, post_processed_csv, primary_feedstocks_json)
         >>> interactive.plot_capacity_world_map(
-        ...     post_processed_csv, greenfield_status_csv, switch_decisions_csv, plants, plant_names, input_sources
+        ...     post_processed_csv, greenfield_status_csv, switch_decisions_csv, motions_csv, plants, plant_names,
+        ...     input_sources,
         ... )
         >>> interactive.plot_capacity_china_map(
-        ...     post_processed_csv, greenfield_status_csv, switch_decisions_csv, plants, plant_names, input_sources
+        ...     post_processed_csv, greenfield_status_csv, switch_decisions_csv, motions_csv, plants, plant_names,
+        ...     input_sources,
         ... )
     """
 
@@ -796,6 +798,7 @@ class InteractivePlotter:
         post_processed_csv: Path,
         greenfield_status_csv: Path,
         switch_decisions_csv: Path,
+        motions_csv: Path,
         plants: dict[str, dict[str, Any]],
         plant_names: dict[str, str],
         input_sources: list[str],
@@ -814,14 +817,17 @@ class InteractivePlotter:
             switch_decisions_csv: The run's ``data/pam_switch_decisions.csv``, for groups
                 being rebuilt for a technology switch. A missing or empty file (older
                 runs) omits the rebuilds with a warning.
+            motions_csv: The run's ``data/pam_motions.csv``, whose ``expansion`` rows give
+                the expansions at existing plants while they are built. A missing file
+                omits them with a warning.
             plants: ``{plant_id: {"lat", "lon", "greenfield"}}`` of the run's live plants.
             plant_names: ``{plant_id: plant_name}`` from the master's Furnace units sheet.
             input_sources: The distinct ``source`` values of that sheet, for the source line.
 
         Returns:
             The written path, or None when the table is missing, a table lacks a required
-            column or a plant has no coordinates (logged as warnings so the plot stage
-            never fails).
+            column, a plant has no coordinates or anything else goes wrong (logged as
+            warnings so the plot stage never fails).
         """
         return self._plot_capacity_map(
             "capacity_world_map",
@@ -830,6 +836,7 @@ class InteractivePlotter:
             post_processed_csv,
             greenfield_status_csv,
             switch_decisions_csv,
+            motions_csv,
             plants,
             plant_names,
             input_sources,
@@ -840,6 +847,7 @@ class InteractivePlotter:
         post_processed_csv: Path,
         greenfield_status_csv: Path,
         switch_decisions_csv: Path,
+        motions_csv: Path,
         plants: dict[str, dict[str, Any]],
         plant_names: dict[str, str],
         input_sources: list[str],
@@ -854,6 +862,7 @@ class InteractivePlotter:
             post_processed_csv: As for :meth:`plot_capacity_world_map`.
             greenfield_status_csv: As for :meth:`plot_capacity_world_map`.
             switch_decisions_csv: As for :meth:`plot_capacity_world_map`.
+            motions_csv: As for :meth:`plot_capacity_world_map`.
             plants: As for :meth:`plot_capacity_world_map`.
             plant_names: As for :meth:`plot_capacity_world_map`.
             input_sources: As for :meth:`plot_capacity_world_map`.
@@ -875,6 +884,7 @@ class InteractivePlotter:
             post_processed_csv,
             greenfield_status_csv,
             switch_decisions_csv,
+            motions_csv,
             plants,
             plant_names,
             input_sources,
@@ -888,48 +898,57 @@ class InteractivePlotter:
         post_processed_csv: Path,
         greenfield_status_csv: Path,
         switch_decisions_csv: Path,
+        motions_csv: Path,
         plants: dict[str, dict[str, Any]],
         plant_names: dict[str, str],
         input_sources: list[str],
     ) -> Optional[Path]:
-        """Write one capacity map viewer; ``focus`` (:func:`.capacity_world_map.focus_config`) narrows it to a country."""
+        """Write one capacity map viewer; ``focus`` (:func:`.capacity_world_map.focus_config`) narrows it to a country.
+
+        Notes:
+            The maps run last in a multi-hour run, so every failure here — a truncated CSV,
+            an unexpected value — is logged and skips the viewer instead of propagating.
+        """
         viewer = file_stem.replace("_", " ")
         table = self._read_post_processed(post_processed_csv, viewer)
         if table is None:
             return None
-        greenfield_status = None
-        if greenfield_status_csv.is_file():
-            greenfield_status = pd.read_csv(greenfield_status_csv)
-        else:
-            logger.warning(
-                "No greenfield status timeseries at %s — new builds under construction omitted from the %s viewer",
-                greenfield_status_csv,
-                viewer,
-            )
-        switch_decisions = pd.read_csv(switch_decisions_csv) if switch_decisions_csv.is_file() else None
-        if switch_decisions is None or switch_decisions.empty:
-            logger.warning(
-                "No switch decisions at %s — rebuilds omitted from the %s viewer", switch_decisions_csv, viewer
-            )
         try:
+            optional: dict[str, Optional[pd.DataFrame]] = {}
+            for name, csv_path, layer in (
+                ("greenfield", greenfield_status_csv, "new builds under construction"),
+                ("decisions", switch_decisions_csv, "rebuilds"),
+                ("motions", motions_csv, "expansions under construction"),
+            ):
+                frame = pd.read_csv(csv_path) if csv_path.is_file() else None
+                if frame is None or frame.empty:
+                    logger.warning("No rows at %s — %s omitted from the %s viewer", csv_path, layer, viewer)
+                optional[name] = frame
             payload = capacity_world_map.pack_sites(
-                table, greenfield_status, switch_decisions, plants, plant_names, focus["iso3"] if focus else None
+                table,
+                optional["greenfield"],
+                optional["decisions"],
+                optional["motions"],
+                plants,
+                plant_names,
+                focus["iso3"] if focus else None,
             )
-        except ValueError as exc:
-            logger.warning("%s — skipping the %s viewer", exc, viewer)
+            data = {
+                self.run_title: {
+                    "title": self.run_title,
+                    "provenance": f"Operating furnace groups from {post_processed_csv.name}; new builds under "
+                    f"construction from data/{greenfield_status_csv.name}; rebuilds from "
+                    f"data/{switch_decisions_csv.name}; expansions from data/{motions_csv.name}.",
+                    "source": capacity_world_map.source_line(input_sources),
+                    **payload,
+                },
+            }
+            config = self._config(chart_title, focus=focus, fileStem=file_stem)
+            path = capacity_world_map.write_viewer(config, data, self.output_dir / f"{file_stem}.html")
+        except Exception as exc:
+            # a ValueError is an expected input problem; anything else gets its traceback
+            logger.warning("%s — skipping the %s viewer", exc, viewer, exc_info=not isinstance(exc, ValueError))
             return None
-        data = {
-            self.run_title: {
-                "title": self.run_title,
-                "provenance": f"Operating furnace groups from {post_processed_csv.name}; new builds under "
-                f"construction from data/{greenfield_status_csv.name}; rebuilds from "
-                f"data/{switch_decisions_csv.name}.",
-                "source": capacity_world_map.source_line(input_sources),
-                **payload,
-            },
-        }
-        config = self._config(chart_title, focus=focus, fileStem=file_stem)
-        path = capacity_world_map.write_viewer(config, data, self.output_dir / f"{file_stem}.html")
         logger.info("Wrote %s viewer %s (%d plants)", viewer, path, len(payload["sites"]))
         return path
 

@@ -532,8 +532,8 @@ def test_plot_metallic_charge_use_writes_self_contained_viewer(tmp_path) -> None
     assert plotter.plot_metallic_charge_use(bare_csv, fixtures / "primary_feedstocks.json") is None
 
 
-def capacity_world_map_inputs(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, dict]]:
-    """The post-processed table with plant columns, a greenfield build, one rebuild decision and the plants."""
+def capacity_world_map_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path, dict[str, dict]]:
+    """The post-processed table with plant columns, a greenfield build, one decision, one expansion and the plants."""
     table = sample_post_processed()
     table["iso3"] = ["CHN", "DEU"]
     table["plant_id"] = ["P1", "P2"]
@@ -555,16 +555,21 @@ def capacity_world_map_inputs(tmp_path: Path) -> tuple[Path, Path, Path, dict[st
         "P2": {"lat": 51.0, "lon": 7.0, "greenfield": False},
         "indi_1": {"lat": 53.0, "lon": 8.0, "greenfield": True},
     }
-    return csv_path, greenfield_csv, decisions_csv, plants
+    motions_csv = tmp_path / "pam_motions.csv"
+    columns = ["year", "kind", "plant_id", "furnace_group_id", "geo_key", "product", "new_technology", "new_capacity_t"]
+    pd.DataFrame([[2025, "expansion", "P2", "P2_1", "DEU", "steel", "EAF", 2_500_000.0]], columns=columns).to_csv(
+        motions_csv, index=False
+    )
+    return csv_path, greenfield_csv, decisions_csv, motions_csv, plants
 
 
 def test_plot_capacity_world_map_writes_self_contained_viewer(tmp_path) -> None:
     """The map lands in plots/interactive with the shared CSS, the polygons, the config and the payload inlined."""
-    csv_path, greenfield_csv, decisions_csv, plants = capacity_world_map_inputs(tmp_path)
+    csv_path, greenfield_csv, decisions_csv, motions_csv, plants = capacity_world_map_inputs(tmp_path)
     plotter = InteractivePlotter(tmp_path / "plots", sample_country_mappings(), run_title="sim_test")
 
     written = plotter.plot_capacity_world_map(
-        csv_path, greenfield_csv, decisions_csv, plants, {"P1": "Tangshan Works"}, ["gem_unit", "external"]
+        csv_path, greenfield_csv, decisions_csv, motions_csv, plants, {"P1": "Tangshan Works"}, ["gem_unit", "external"]
     )
 
     assert written == tmp_path / "plots" / "interactive" / "capacity_world_map.html"
@@ -576,32 +581,40 @@ def test_plot_capacity_world_map_writes_self_contained_viewer(tmp_path) -> None:
     assert '"name":"Tangshan Works","iso":"CHN","geo":"CHN:CN-HE"' in html
     assert '"name":"New plant indi_1"' in html and '["DRI","construction",2000,null,"indi_1_0"]' in html
     assert '"switches":[[2025,2029,"BF","DRI"]]' in html
+    assert '["EAF","construction",2500,"expansion","P2_1"]' in html
     assert '"DEU": {"country": "Germany", "region": "Europe"}' in html
 
 
 def test_plot_capacity_world_map_degrades_on_missing_inputs(tmp_path, caplog) -> None:
     """No table or a plant without coordinates skips the viewer; no decisions or greenfield file only drops that layer."""
-    csv_path, greenfield_csv, decisions_csv, plants = capacity_world_map_inputs(tmp_path)
+    csv_path, greenfield_csv, decisions_csv, motions_csv, plants = capacity_world_map_inputs(tmp_path)
     plotter = InteractivePlotter(tmp_path / "plots", sample_country_mappings(), run_title="sim_test")
     caplog.set_level("WARNING")
 
     assert (
-        plotter.plot_capacity_world_map(tmp_path / "absent.csv", greenfield_csv, decisions_csv, plants, {}, []) is None
+        plotter.plot_capacity_world_map(
+            tmp_path / "absent.csv", greenfield_csv, decisions_csv, motions_csv, plants, {}, []
+        )
+        is None
     )
     assert "skipping the capacity world map viewer" in caplog.text
     without_p2 = {plant_id: plant for plant_id, plant in plants.items() if plant_id != "P2"}
-    assert plotter.plot_capacity_world_map(csv_path, greenfield_csv, decisions_csv, without_p2, {}, []) is None
+    assert (
+        plotter.plot_capacity_world_map(csv_path, greenfield_csv, decisions_csv, motions_csv, without_p2, {}, [])
+        is None
+    )
     assert "1 plants on the capacity map have no coordinates" in caplog.text
 
     caplog.clear()
     written = plotter.plot_capacity_world_map(
-        csv_path, tmp_path / "absent.csv", tmp_path / "absent2.csv", plants, {}, []
+        csv_path, tmp_path / "absent.csv", tmp_path / "absent2.csv", tmp_path / "absent3.csv", plants, {}, []
     )
     assert written is not None
     assert "rebuilds omitted from the capacity world map viewer" in caplog.text
     assert "new builds under construction omitted from the capacity world map viewer" in caplog.text
+    assert "expansions under construction omitted from the capacity world map viewer" in caplog.text
     html = written.read_text()
-    assert '"switches":[]' in html and "indi_1" not in html
+    assert '"switches":[]' in html and "indi_1" not in html and "P2_1" not in html
     assert "Source: Steel-IQ model (with GEM input data)" in html
 
 
@@ -610,7 +623,7 @@ def test_plot_capacity_china_map_focuses_the_shared_viewer_on_china(tmp_path, ca
     from steelo.adapters.repositories.json_repository import CapacityPoolProvinceJsonRepository
     from steelo.capacity_policy.inputs import RegionRow
 
-    csv_path, greenfield_csv, decisions_csv, plants = capacity_world_map_inputs(tmp_path)
+    csv_path, greenfield_csv, decisions_csv, motions_csv, plants = capacity_world_map_inputs(tmp_path)
     pool_json = tmp_path / "capacity_pool_provinces.json"
     CapacityPoolProvinceJsonRepository(pool_json).add_list(
         [
@@ -620,7 +633,9 @@ def test_plot_capacity_china_map_focuses_the_shared_viewer_on_china(tmp_path, ca
     )
     plotter = InteractivePlotter(tmp_path / "plots", sample_country_mappings(), run_title="sim_test")
 
-    written = plotter.plot_capacity_china_map(csv_path, greenfield_csv, decisions_csv, plants, {}, [], pool_json)
+    written = plotter.plot_capacity_china_map(
+        csv_path, greenfield_csv, decisions_csv, motions_csv, plants, {}, [], pool_json
+    )
 
     assert written == tmp_path / "plots" / "interactive" / "capacity_china_map.html"
     html = written.read_text()
@@ -630,16 +645,42 @@ def test_plot_capacity_china_map_focuses_the_shared_viewer_on_china(tmp_path, ca
     assert '"id":"P1"' in html and '"id":"P2"' not in html and "indi_1" not in html
 
     # a policy-OFF run passes no fixture: same map, no groups
-    plotter.plot_capacity_china_map(csv_path, greenfield_csv, decisions_csv, plants, {}, [])
+    plotter.plot_capacity_china_map(csv_path, greenfield_csv, decisions_csv, motions_csv, plants, {}, [])
     assert '"focus": {"iso3": "CHN", "groups": {}, "types": {}}' in written.read_text()
     assert (
         '"focus": null'
-        in plotter.plot_capacity_world_map(csv_path, greenfield_csv, decisions_csv, plants, {}, []).read_text()
+        in plotter.plot_capacity_world_map(
+            csv_path, greenfield_csv, decisions_csv, motions_csv, plants, {}, []
+        ).read_text()
     )
 
     table = pd.read_csv(csv_path)
     german_csv = tmp_path / "post_processed_german.csv"
     table[table["iso3"] == "DEU"].to_csv(german_csv, index=False)
     caplog.set_level("WARNING")
-    assert plotter.plot_capacity_china_map(german_csv, tmp_path / "absent.csv", decisions_csv, plants, {}, []) is None
+    assert (
+        plotter.plot_capacity_china_map(german_csv, tmp_path / "absent.csv", decisions_csv, motions_csv, plants, {}, [])
+        is None
+    )
     assert "The run has no plants in CHN — skipping the capacity china map viewer" in caplog.text
+
+
+def test_plot_capacity_world_map_never_fails_the_plot_stage(tmp_path, caplog) -> None:
+    """A truncated input file or a plant without coordinates skips the viewer with a warning instead of raising."""
+    csv_path, greenfield_csv, decisions_csv, motions_csv, plants = capacity_world_map_inputs(tmp_path)
+    plotter = InteractivePlotter(tmp_path / "plots", sample_country_mappings(), run_title="sim_test")
+    caplog.set_level("WARNING")
+
+    unlocated = {**plants, "P2": {"lat": None, "lon": None, "greenfield": False}}
+    assert (
+        plotter.plot_capacity_world_map(csv_path, greenfield_csv, decisions_csv, motions_csv, unlocated, {}, []) is None
+    )
+    assert "1 plants on the capacity map have no coordinates" in caplog.text
+
+    truncated = tmp_path / "truncated.csv"
+    truncated.write_text('year,kind\n2025,"expansion')
+    assert plotter.plot_capacity_world_map(csv_path, greenfield_csv, decisions_csv, truncated, plants, {}, []) is None
+    empty = tmp_path / "empty.csv"
+    empty.write_text("")
+    assert plotter.plot_capacity_world_map(csv_path, empty, decisions_csv, motions_csv, plants, {}, []) is None
+    assert caplog.text.count("skipping the capacity world map viewer") == 3
