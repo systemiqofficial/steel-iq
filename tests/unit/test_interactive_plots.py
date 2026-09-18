@@ -433,12 +433,12 @@ def test_tiam_regions_members_by_label() -> None:
     }
 
 
-def test_read_usage_groups_use_and_steel_demand_by_country(tmp_path) -> None:
-    """Steel counts at the demand centre (demand once per centre), scrap/ore at the source, bio at the consumer."""
+def test_read_usage_groups_use_by_country(tmp_path) -> None:
+    """Steel counts at the demand centre, scrap/ore at the source, bio at the consumer."""
     write_supply_demand_allocations(tmp_path / "TM")
     resolve = supply_demand.geo_resolver(supply_demand_country_mappings())
 
-    used, steel_demand = supply_demand.read_usage({2030: tmp_path / "TM" / "steel_trade_allocations_2030.csv"}, resolve)
+    used = supply_demand.read_usage({2030: tmp_path / "TM" / "steel_trade_allocations_2030.csv"}, resolve)
 
     used_rows = {(r.year, r.group, r.geo, r.grade): r.volume_mt for r in used.itertuples()}
     assert used_rows == {
@@ -447,7 +447,6 @@ def test_read_usage_groups_use_and_steel_demand_by_country(tmp_path) -> None:
         (2030, "ore", "BIH", "io_mid"): 0.2,  # ore keeps its grade for the viewer's grade ticks
         (2030, "bio", "CHN", ""): 0.1,
     }
-    assert [(r.year, r.geo, r.volume_mt) for r in steel_demand.itertuples()] == [(2030, "CHN", 2.0)]
 
 
 def test_availability_rows_from_suppliers_and_constraints() -> None:
@@ -487,6 +486,14 @@ def test_plot_supply_demand_writes_self_contained_viewer(tmp_path) -> None:
     write_supply_demand_allocations(tmp_path / "TM")
     fixtures = tmp_path / "fixtures"
     fixtures.mkdir()
+    china = Location(lat=1.0, lon=2.0, country="China", region="R", iso3="CHN")
+    uruguay = Location(lat=1.0, lon=2.0, country="Uruguay", region="R", iso3="URY")
+    DemandCenterJsonRepository(fixtures / "demand_centers.json").add_list(
+        [
+            DemandCenter("China_2", china, {Year(2030): Volumes(2_000_000), Year(2100): Volumes(9e9)}),
+            DemandCenter("Uruguay", uruguay, {Year(2030): Volumes(600_000)}),
+        ]
+    )
     scrap_location = Location(lat=1.0, lon=2.0, country="Germany", region="R", iso3="DEU")
     SupplierJsonRepository(fixtures / "suppliers.json").add_list(
         [Supplier("Germany_scrap", scrap_location, "scrap", {Year(2030): Volumes(1_000_000)}, {})]
@@ -500,6 +507,7 @@ def test_plot_supply_demand_writes_self_contained_viewer(tmp_path) -> None:
         tmp_path / "TM",
         suppliers_json=fixtures / "suppliers.json",
         biomass_availability_json=fixtures / "biomass_availability.json",
+        demand_centers_json=fixtures / "demand_centers.json",
     )
 
     assert written == tmp_path / "plots" / "interactive" / "supply_demand.html"
@@ -509,13 +517,15 @@ def test_plot_supply_demand_writes_self_contained_viewer(tmp_path) -> None:
     assert "const Interactive" in html
     assert '{"y": 2030, "c": "scrap", "g": "DEU", "v": 0.3}' in html
     assert '{"y": 2030, "c": "steel", "g": "CHN", "v": 2.0}' in html  # the demand centre's demand
+    assert '{"y": 2030, "c": "steel", "g": "URY", "v": 0.6}' in html  # a centre no plant delivered to
     assert '{"y": 2030, "c": "bio", "g": "region:CHI", "v": 3.0}' in html
     assert '"regionBudgets": {"region:CHI": ["CHN"]}' in html
 
-    # Missing fixtures still produce the viewer, with usage and steel demand only.
+    # Missing fixtures still produce the viewer, with usage only.
     assert plotter.plot_supply_demand(tmp_path / "TM") == written
     html = written.read_text()
     assert '{"y": 2030, "c": "ore", "g": "BIH", "v": 0.2, "s": "io_mid"}' in html
+    assert '{"y": 2030, "c": "steel", "g": "CHN", "v": 2.0}' not in html
     assert '"c": "bio", "g": "region:CHI"' not in html
     assert plotter.plot_supply_demand(tmp_path / "absent") is None
 

@@ -563,17 +563,21 @@ class InteractivePlotter:
         tm_dir: Path,
         suppliers_json: Optional[Path] = None,
         biomass_availability_json: Optional[Path] = None,
+        demand_centers_json: Optional[Path] = None,
     ) -> Optional[Path]:
         """Write the supply and demand viewer (``supply_demand.html``).
 
         Args:
             tm_dir: The run's ``TM`` output directory holding ``steel_trade_allocations_<year>.csv``,
-                which gives every commodity's use (and the steel demand).
+                which gives every commodity's use.
             suppliers_json: The prepared ``fixtures/suppliers.json``, for scrap and ore
                 availability. None (or a missing file) omits those availabilities with a warning.
             biomass_availability_json: The prepared ``fixtures/biomass_availability.json``,
                 for the CO2 storage limits and biomass budgets. None (or a missing file)
                 omits them with a warning.
+            demand_centers_json: The prepared ``fixtures/demand_centers.json``, for the steel
+                demand — the demand the trade LP is asked to serve, including centres it
+                leaves fully unserved. None (or a missing file) omits it with a warning.
 
         Returns:
             The written path, or None when no allocation file exists or one cannot be read
@@ -581,6 +585,7 @@ class InteractivePlotter:
         """
         from steelo.adapters.repositories.json_repository import (
             BiomassAvailabilityJsonRepository,
+            DemandCenterJsonRepository,
             SupplierJsonRepository,
         )
 
@@ -590,7 +595,7 @@ class InteractivePlotter:
             return None
         resolve = supply_demand.geo_resolver(self.country_mappings)
         try:
-            used, steel_demand = supply_demand.read_usage(files, resolve)
+            used = supply_demand.read_usage(files, resolve)
         except ValueError as exc:
             logger.warning("%s — skipping the supply-demand viewer", exc)
             return None
@@ -611,14 +616,19 @@ class InteractivePlotter:
         avail, region_budgets = supply_demand.availability_rows(
             suppliers, biomass_items, self.country_mappings, set(files)
         )
-        avail = pd.concat([avail, steel_demand.assign(group="steel", grade="")], ignore_index=True)
+        if demand_centers_json is not None and demand_centers_json.is_file():
+            centres = DemandCenterJsonRepository(demand_centers_json).list()
+            steel_demand = capacity_production.steel_demand_rows(centres, set(files))
+            avail = pd.concat([avail, steel_demand.assign(group="steel", grade="")], ignore_index=True)
+        else:
+            logger.warning("No demand centres fixture at %s — steel demand omitted", demand_centers_json)
 
         data = {
             self.run_title: {
                 "title": self.run_title,
-                "provenance": "Use and steel demand from TM/steel_trade_allocations_<year>.csv; scrap and ore "
-                "availability from fixtures/suppliers.json; CO2 storage and biomass limits from "
-                "fixtures/biomass_availability.json.",
+                "provenance": "Use from TM/steel_trade_allocations_<year>.csv; steel demand from "
+                "fixtures/demand_centers.json; scrap and ore availability from fixtures/suppliers.json; "
+                "CO2 storage and biomass limits from fixtures/biomass_availability.json.",
                 "years": list(files),
                 "rows": supply_demand.pack_rows(used),
                 "avail": supply_demand.pack_rows(avail),

@@ -4,10 +4,12 @@ The viewer shows, per year, how much of a constrained commodity was used
 against how much was available: steel demand against deliveries per
 demand-centre country, scrap and iron ore drawn against supplier capacity
 per source country, and CO2 storage and biomass (bio-PCI) use per consuming
-country against the input-side limits. Usage (and steel demand) comes from
-the trade LP's per-year allocation files; the other availabilities come from
-the prepared inputs (``fixtures/suppliers.json`` and
-``fixtures/biomass_availability.json``). A biomass budget belongs to a whole
+country against the input-side limits. Usage comes from the trade LP's
+per-year allocation files; steel demand and the other availabilities come from
+the prepared inputs (``fixtures/demand_centers.json``, ``fixtures/suppliers.json``
+and ``fixtures/biomass_availability.json``). The allocation files only list the
+demand centres that received steel, so they cannot give the demand of a centre
+the LP left fully unserved. A biomass budget belongs to a whole
 TIAM-UCL region rather than one country, so those rows carry a ``region:``
 geography; the viewer counts a budget in full once any member country is
 selected, noting how many are only partly covered.
@@ -34,10 +36,8 @@ USAGE_COLUMNS = [
     "commodity",
     "source_location",
     "destination_type",
-    "destination_id",
     "destination_location",
     "allocated_volume",
-    "demand_at_destination",
 ]
 # Geography prefix of a shared regional budget (kept distinct from ISO3 codes,
 # which some TIAM-UCL region labels could collide with).
@@ -95,25 +95,23 @@ def _source_geo(location: str, resolve: Callable[[str], str]) -> str:
         return resolve(country_label_of(location))
 
 
-def read_usage(files: dict[int, Path], resolve: Callable[[str], str]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Commodity use and steel demand per year and country, from the allocation files.
+def read_usage(files: dict[int, Path], resolve: Callable[[str], str]) -> pd.DataFrame:
+    """Commodity use per year and country, from the allocation files.
 
     Args:
         files: Output of :func:`~.trade_matrix.allocation_files`.
         resolve: Output of :func:`geo_resolver`, for sources without an ISO3 (ore mines).
 
     Returns:
-        ``(used, steel_demand)``. ``used`` has columns ``year, group, geo, grade,
-        volume_mt``: steel delivered per demand-centre country, scrap and ore drawn per
-        source country, CO2 stored and bio-PCI burnt per consuming plant country; ore
-        rows carry their commodity (``io_low/mid/high``) as the grade, all others "".
-        ``steel_demand`` has columns ``year, geo, volume_mt``: the demand centres'
-        demand (each centre counted once, however many plants supplied it).
+        Columns ``year, group, geo, grade, volume_mt``: steel delivered per
+        demand-centre country, scrap and ore drawn per source country, CO2 stored and
+        bio-PCI burnt per consuming plant country; ore rows carry their commodity
+        (``io_low/mid/high``) as the grade, all others "".
 
     Raises:
         ValueError: If a file lacks the usage columns or a location lacks the needed field.
     """
-    used_frames, demand_frames = [], []
+    used_frames = []
     for year, path in files.items():
         table = pd.read_csv(path, usecols=USAGE_COLUMNS, keep_default_na=False)
         parts = []
@@ -122,13 +120,6 @@ def read_usage(files: dict[int, Path], resolve: Callable[[str], str]) -> tuple[p
             geo = steel["destination_location"].map(iso3_of)
             parts.append(
                 pd.DataFrame({"group": "steel", "geo": geo, "grade": "", "volume_mt": steel["allocated_volume"] / 1e6})
-            )
-            centres = steel.assign(geo=geo).drop_duplicates("destination_id")
-            demand = pd.to_numeric(centres["demand_at_destination"]) / 1e6
-            demand_frames.append(
-                pd.DataFrame({"year": year, "geo": centres["geo"], "volume_mt": demand})
-                .groupby(["year", "geo"], as_index=False)["volume_mt"]
-                .sum()
             )
         sourced = table[table["commodity"].isin(SOURCE_GROUPS)]
         if not sourced.empty:
@@ -160,13 +151,7 @@ def read_usage(files: dict[int, Path], resolve: Callable[[str], str]) -> tuple[p
             year_used.insert(0, "year", year)
             used_frames.append(year_used)
     empty = pd.DataFrame(columns=["year", "group", "geo", "grade", "volume_mt"])
-    used = pd.concat(used_frames, ignore_index=True) if used_frames else empty
-    steel_demand = (
-        pd.concat(demand_frames, ignore_index=True)
-        if demand_frames
-        else pd.DataFrame(columns=["year", "geo", "volume_mt"])
-    )
-    return used, steel_demand
+    return pd.concat(used_frames, ignore_index=True) if used_frames else empty
 
 
 def availability_rows(
