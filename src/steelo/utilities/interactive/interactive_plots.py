@@ -30,6 +30,7 @@ from . import (
     capacity_world_map,
     cost_curves,
     decision_flows,
+    embedded_emissions_map,
     emissions,
     greenfield_map,
     greenfield_status,
@@ -125,6 +126,7 @@ class InteractivePlotter:
         >>> interactive.plot_trade_matrix(tm_dir)
         >>> interactive.plot_trade_network(tm_dir)
         >>> interactive.plot_trade_allocations(tm_dir)
+        >>> interactive.plot_embedded_emissions_map(post_processed_csv, tm_dir, boundary)
         >>> interactive.plot_reductant_use(post_processed_csv, primary_feedstocks_json)
         >>> interactive.plot_metallic_charge_use(post_processed_csv, primary_feedstocks_json, suppliers_json)
         >>> interactive.plot_greenfield_status(greenfield_status_csv)
@@ -500,6 +502,52 @@ class InteractivePlotter:
         path = trade_allocations.write_viewer(config, data, self.output_dir / "trade_allocations.html")
         arcs = sum(len(arc_records) for arc_records, _ in years.values())
         logger.info("Wrote trade-allocations viewer %s (%d arcs over %d years)", path, arcs, len(years))
+        return path
+
+    def plot_embedded_emissions_map(self, post_processed_csv: Path, tm_dir: Path, boundary: str) -> Optional[Path]:
+        """Write the embedded emissions map (``embedded_emissions_map.html``).
+
+        A choropleth of the emissions embedded in steel trade: every furnace group's direct
+        and indirect emissions are carried along the realised allocations to the country
+        that consumed the steel (:mod:`embedded_emissions_map`), giving production-based
+        and consumption-based emissions per country and year, the emissions embedded in
+        imports and exports, and the partners behind them.
+
+        Args:
+            post_processed_csv: The run's post-processed table (furnace-group emissions).
+            tm_dir: The run's ``TM`` output directory holding ``steel_trade_allocations_<year>.csv``.
+            boundary: The run's chosen emissions boundary
+                (``chosen_emissions_boundary_for_carbon_costs``), e.g. ``rs-inspired``.
+
+        Returns:
+            The written path, or None when an input is missing or cannot be read (logged
+            as warnings so the plot stage never fails).
+        """
+        viewer = "embedded emissions map"
+        post_processed = self._read_post_processed(post_processed_csv, viewer)
+        if post_processed is None:
+            return None
+        files = trade_matrix.allocation_files(tm_dir)
+        if not files:
+            logger.warning("No steel_trade_allocations_<year>.csv under %s — skipping the %s", tm_dir, viewer)
+            return None
+        try:
+            payload = embedded_emissions_map.pack_years(post_processed, files, boundary)
+            coords = trade_matrix.read_coords(files)
+        except ValueError as exc:
+            logger.warning("%s — skipping the %s", exc, viewer)
+            return None
+        provenance = (
+            f"Furnace-group direct and indirect emissions ({boundary} boundary, the run's chosen boundary) from "
+            f"{post_processed_csv.name}, carried along the trade module's realised allocations "
+            "(TM/steel_trade_allocations_<year>.csv) pro rata to volume: iron furnace group → steel furnace "
+            "group → demand centre. Ore and scrap carry no emissions inside the model."
+        )
+        data = {self.run_title: {"title": self.run_title, "provenance": provenance, "coords": coords, **payload}}
+        path = embedded_emissions_map.write_viewer(
+            self._config("Emissions embedded in steel trade"), data, self.output_dir / "embedded_emissions_map.html"
+        )
+        logger.info("Wrote embedded emissions map %s (%d years)", path, len(payload["years"]))
         return path
 
     def plot_supply_demand(

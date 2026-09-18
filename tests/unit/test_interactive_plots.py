@@ -321,6 +321,46 @@ def test_plot_supply_chain_writes_self_contained_viewer(tmp_path) -> None:
     assert plotter.plot_supply_chain(tmp_path / "absent") is None
 
 
+def test_plot_embedded_emissions_map_writes_self_contained_viewer(tmp_path) -> None:
+    """The map embeds the emitter-by-consumer matrix, polygons and provenance; a missing input → no viewer."""
+    tm_dir = tmp_path / "TM"
+    tm_dir.mkdir()
+    header = "commodity,source_type,source_id,source_location,capacity_at_source,source_tech,destination_type,"
+    header += (
+        "destination_id,destination_location,allocated_volume,allocation_cost,demand_at_destination,supply_at_source"
+    )
+    loc = (
+        "Location(lat=1.0, lon=2.0, country='{0}', region='R', iso3='{0}', distance_to_other_iso3=None, geo_unit=None)"
+    )
+    row = f'steel,Plant-FurnaceGroup,P1_0,"{loc.format("CHN")}",1e6,BOF,DemandCenter,India,"{loc.format("IND")}",2e6,0,2e6,N/A'
+    (tm_dir / "steel_trade_allocations_2025.csv").write_text(f"{header}\n{row}\n")
+    post_processed_csv = tmp_path / "post_processed.csv"
+    pd.DataFrame(
+        {
+            "year": [2025],
+            "furnace_group_id": ["P1_0"],
+            "emissions_rs-inspired_direct_ghg": [3e6],
+            "emissions_rs-inspired_indirect_ghg": [1e6],
+        }
+    ).to_csv(post_processed_csv, index=False)
+    plotter = InteractivePlotter(tmp_path / "plots", sample_country_mappings(), run_title="sim_test")
+
+    written = plotter.plot_embedded_emissions_map(post_processed_csv, tm_dir, "rs-inspired")
+
+    assert written == tmp_path / "plots" / "interactive" / "embedded_emissions_map.html"
+    html = written.read_text()
+    for placeholder in ("__PLOTLYJS__", "__DECKGL__", "__COMMON_JS__", "__COUNTRIES__", "__CONFIG__", "__DATA__"):
+        assert placeholder not in html
+    assert '"chartTitle": "Emissions embedded in steel trade"' in html
+    assert '"countries":["CHN","IND"]' in html
+    assert '"m":{"2025":{"direct":{"s":[0],"d":[1],"t":[3000]},"indirect":{"s":[0],"d":[1],"t":[1000]}}}' in html
+    assert '"steel":{"2025":{"s":[0],"d":[1],"t":[2000]}}' in html
+    assert "rs-inspired boundary" in html
+    assert plotter.plot_embedded_emissions_map(post_processed_csv, tmp_path / "absent", "rs-inspired") is None
+    assert plotter.plot_embedded_emissions_map(tmp_path / "absent.csv", tm_dir, "rs-inspired") is None
+    assert plotter.plot_embedded_emissions_map(post_processed_csv, tm_dir, "no-such-boundary") is None
+
+
 def supply_demand_country_mappings() -> list[CountryMapping]:
     """Three countries with TIAM-UCL regions, one of them commonly labelled with an ampersand."""
     common = {"irena_name": "", "ssp_region": ""}

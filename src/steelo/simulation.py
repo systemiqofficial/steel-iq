@@ -1598,6 +1598,11 @@ class SimulationRunner:
             interactive.plot_trade_network(tm_dir=self.config.output_dir / "TM")
             interactive.plot_supply_chain(tm_dir=self.config.output_dir / "TM")
             interactive.plot_trade_allocations(tm_dir=self.config.output_dir / "TM")
+            interactive.plot_embedded_emissions_map(
+                post_processed_csv=Path(output_path),
+                tm_dir=self.config.output_dir / "TM",
+                boundary=bus.env.config.chosen_emissions_boundary_for_carbon_costs,
+            )
             interactive.plot_supply_demand(
                 tm_dir=self.config.output_dir / "TM",
                 suppliers_json=fixtures_dir / "suppliers.json" if fixtures_dir else None,

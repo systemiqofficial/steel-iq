@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Emissions embedded in steel trade</title>
+<style>__COMMON_CSS__</style>
+<style>
+body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+#chart-controls { padding-top: 4px; padding-bottom: 8px; border-bottom: 1px solid #e4e2dc; }
+#chart-controls .ticks label.inline { padding-top: 5px; }
+#focus-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; margin-top: 18px;
+              background: #eceae4; border-radius: 10px; padding: 2px 10px; }
+#focus-chip button { border: none; background: none; cursor: pointer; font-size: 12px; color: #52514e; padding: 0; }
+#main { flex: 1; display: flex; min-height: 0; }
+#map { position: relative; flex: 1; background: #f7f6f2; }
+#side { width: 440px; flex: none; overflow-y: auto; border-left: 1px solid #e4e2dc; padding: 12px 16px 20px;
+        background: #fcfcfb; }
+#main.side-hidden #side { display: none; }
+#side-toggle { position: absolute; z-index: 1; right: 12px; top: 12px; font-size: 12px; padding: 3px 10px; cursor: pointer;
+               background: rgba(255,255,255,0.92); border: 1px solid #b5b3ae; border-radius: 4px; color: #0b0b0b; }
+#side-toggle:hover { background: #fff; }
+.panel { position: absolute; z-index: 1; background: rgba(252, 252, 251, 0.94); border-radius: 6px;
+         box-shadow: 0 1px 6px rgba(0,0,0,0.15); padding: 10px 14px; font-size: 13px; }
+#controls { top: 10px; left: 10px; width: 420px; }
+#title { font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+#year-row { display: flex; align-items: center; gap: 8px; }
+#year-row button { background: #2a78d6; color: #fff; border: none; border-radius: 3px; font-size: 13px;
+                   padding: 2px 9px; cursor: pointer; }
+#year-slider { flex: 1; accent-color: #2a78d6; }
+#year-label { font-weight: 600; font-size: 15px; min-width: 42px; text-align: right; }
+#legend { bottom: 14px; left: 10px; width: 300px; }
+#legend-title { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+#legend-bar { height: 12px; border-radius: 3px; border: 1px solid #d6d4ce; }
+#legend-ticks { display: flex; justify-content: space-between; font-size: 11px; color: #52514e; margin-top: 3px; }
+#legend-note { font-size: 11px; color: #52514e; margin-top: 6px; line-height: 1.4; }
+#provenance { position: absolute; z-index: 1; right: 10px; bottom: 6px; max-width: 520px; font-size: 10px;
+              color: #7a786f; text-align: right; line-height: 1.35; }
+#side h2 { font-size: 15px; margin: 4px 0 2px; font-weight: 600; }
+#side .sub { font-size: 12px; color: #52514e; margin-bottom: 10px; }
+#stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; margin-bottom: 10px; }
+.stat { border: 1px solid #e4e2dc; border-radius: 6px; padding: 6px 10px; }
+.stat .k { font-size: 11px; color: #52514e; }
+.stat .v { font-size: 18px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.stat .v small { font-size: 11px; font-weight: 400; color: #52514e; margin-left: 4px; }
+.stat.net .v { color: #0b0b0b; }
+#side .row { display: flex; align-items: center; gap: 10px; margin: 10px 0 2px; }
+#side .row label { font-size: 12px; color: #52514e; }
+#side select { font-size: 12px; }
+.hint { font-size: 11px; color: #7a786f; margin-top: 8px; line-height: 1.4; }
+</style>
+</head>
+<body>
+<div id="err"></div>
+<script>
+window.addEventListener("error", function(e) {
+  const el = document.getElementById("err");
+  el.style.display = "block";
+  el.textContent = "Load error: " + (e.message || e.type) + (e.filename ? " @ " + e.lineno : "");
+}, true);
+</script>
+<div class="toolbar" id="shared-filters"></div>
+<div class="toolbar" id="chart-controls">
+  <div>
+    <label for="metric-select">Map colour</label>
+    <select id="metric-select"></select>
+  </div>
+  <div class="ticks">
+    <label>Emissions scope</label>
+    <label class="inline"><input type="checkbox" id="scope-direct" checked>Direct</label>
+    <label class="inline"><input type="checkbox" id="scope-indirect">Indirect</label>
+  </div>
+  <div id="focus-holder"></div>
+</div>
+<div id="main">
+  <div id="map">
+    <div id="controls" class="panel">
+      <div id="title"></div>
+      <div id="year-row">
+        <button id="year-prev" title="Previous year">‹</button>
+        <input type="range" id="year-slider">
+        <button id="year-next" title="Next year">›</button>
+        <span id="year-label"></span>
+      </div>
+    </div>
+    <div id="legend" class="panel">
+      <div id="legend-title"></div>
+      <div id="legend-bar"></div>
+      <div id="legend-ticks"></div>
+      <div id="legend-note"></div>
+    </div>
+    <button id="side-toggle"></button>
+    <div id="provenance"></div>
+  </div>
+  <div id="side">
+    <h2 id="focus-title"></h2>
+    <div class="sub" id="focus-sub"></div>
+    <div id="stats"></div>
+    <div id="series"></div>
+    <div class="row">
+      <label for="partners-select">Trading partners</label>
+      <select id="partners-select">
+        <option value="imports">emissions embedded in imports, by origin</option>
+        <option value="exports">emissions embedded in exports, by destination</option>
+      </select>
+    </div>
+    <div id="partners"></div>
+    <div class="hint">Click a country on the map to focus it; clear the focus to see the geography filter's
+      selection as one economy (trade inside the selection nets out). Hover for a country's figures.</div>
+  </div>
+</div>
+<script>__DECKGL__</script>
+<script>__PLOTLYJS__</script>
+<script>
+const CONFIG = __CONFIG__;
+const DATA = __DATA__;
+const COUNTRIES = __COUNTRIES__;
+</script>
+<script>__COMMON_JS__</script>
+<script>
+const T = Interactive.theme;
+// Diverging: net importers of emissions in red, net exporters in blue, neutral grey at zero
+// (the OWID convention). Sequential: one blue ramp, lightest = near zero.
+const MID = "#f0efec";
+const RED_ARM = [MID, "#f6d0cb", "#eea59d", "#e4746c", "#d3413e", "#961c1c"];
+const BLUE_ARM = [MID, "#cde2fb", "#9ec5f4", "#5598e7", "#2a78d6", "#184f95"];
+const SEQ = ["#eef3fb", "#cde2fb", "#9ec5f4", "#5598e7", "#2a78d6", "#184f95", "#0d366b"];
+const NO_DATA = [232, 230, 225, 255];
+const SERIES = {production: "#2a78d6", consumption: "#eb6834"};
+
+const METRICS = {
+  net: {label: "Net imported emissions", unit: "Mt CO₂", kind: "diverging",
+        value: s => (s.C - s.P) / 1e3,
+        note: "consumption-based minus production-based emissions: red = a net importer of embedded emissions, blue = a net exporter"},
+  share: {label: "Net imported emissions, % of production-based", unit: "%", kind: "diverging", clip: 100,
+          value: s => s.P > 0 ? (s.C - s.P) / s.P * 100 : null,
+          note: "the OWID measure: how much larger (red) or smaller (blue) the consumption footprint is than the emissions released at home; countries without any production are blank"},
+  imports: {label: "Emissions embedded in imports", unit: "Mt CO₂", kind: "sequential", value: s => s.I / 1e3,
+            note: "emissions released abroad in the iron and steel behind the steel this country consumed"},
+  exports: {label: "Emissions embedded in exports", unit: "Mt CO₂", kind: "sequential", value: s => s.X / 1e3,
+            note: "emissions released here in the iron and steel behind steel consumed abroad"},
+  production: {label: "Production-based emissions", unit: "Mt CO₂", kind: "sequential", value: s => s.P / 1e3,
+               note: "emissions released by this country's furnace groups (territorial)"},
+  consumption: {label: "Consumption-based emissions", unit: "Mt CO₂", kind: "sequential", value: s => s.C / 1e3,
+                note: "emissions, wherever released, behind the steel this country consumed"},
+  intensity: {label: "Embedded intensity of steel consumed", unit: "t CO₂ / t steel", kind: "sequential",
+              value: s => s.SC > 0 ? s.C / s.SC : null,
+              note: "consumption-based emissions per tonne of steel delivered to the country's demand centres"},
+};
+
+let focus = null;                    // iso3 clicked on the map, or null = the geography filter's selection
+const polygonCodes = new Set(COUNTRIES.features.map(f => f.properties.iso3));
+const domainCache = {};
+
+function run() { return DATA[Interactive.run()]; }
+function year() { return run().years[+document.getElementById("year-slider").value]; }
+function scopes() {
+  return run().scopes.filter(s => document.getElementById("scope-" + s).checked);
+}
+function metric() { return METRICS[document.getElementById("metric-select").value]; }
+function name(iso3) { return Interactive.countryName(iso3) || iso3; }
+const fmt1 = v => v.toLocaleString("en-US", {maximumFractionDigits: 1, minimumFractionDigits: 1});
+const fmtMt = kt => fmt1(kt / 1e3);
+const fmtTick = v => v.toLocaleString("en-US", {maximumFractionDigits: v >= 20 ? 0 : 1});
+const fmtSigned = v => (v > 0 ? "+" : "") + fmt1(v);
+
+/* ---- statistics ----
+   Entries are (emitter s, consumer d, kt). For a group G of country indices: production-based
+   P = everything emitted in G, consumption-based C = everything consumed in G, imports I = emitted
+   outside G and consumed inside, exports X = emitted inside and consumed outside; steel likewise. */
+function entries(yr, sc) {
+  const R = run(), out = [];
+  sc.forEach(scope => { const M = R.m[yr][scope]; if (M) out.push(M); });
+  return out;
+}
+
+function countryStats(yr, sc) {
+  const R = run(), n = R.countries.length;
+  const st = {P: new Float64Array(n), C: new Float64Array(n), I: new Float64Array(n), X: new Float64Array(n),
+              SP: new Float64Array(n), SC: new Float64Array(n)};
+  entries(yr, sc).forEach(M => {
+    for (let i = 0; i < M.t.length; i++) {
+      const s = M.s[i], d = M.d[i], t = M.t[i];
+      st.P[s] += t; st.C[d] += t;
+      if (s !== d) { st.I[d] += t; st.X[s] += t; }
+    }
+  });
+  const S = R.steel[yr];
+  if (S) for (let i = 0; i < S.t.length; i++) { st.SP[S.s[i]] += S.t[i]; st.SC[S.d[i]] += S.t[i]; }
+  return st;
+}
+
+function at(st, i) { return {P: st.P[i], C: st.C[i], I: st.I[i], X: st.X[i], SP: st.SP[i], SC: st.SC[i]}; }
+
+function groupStats(yr, sc, G) {
+  const R = run(), out = {P: 0, C: 0, I: 0, X: 0, SP: 0, SC: 0};
+  const byOrigin = new Map(), byDest = new Map();
+  entries(yr, sc).forEach(M => {
+    for (let i = 0; i < M.t.length; i++) {
+      const s = G.has(M.s[i]), d = G.has(M.d[i]), t = M.t[i];
+      if (s) out.P += t;
+      if (d) out.C += t;
+      if (d && !s) { out.I += t; byOrigin.set(M.s[i], (byOrigin.get(M.s[i]) || 0) + t); }
+      if (s && !d) { out.X += t; byDest.set(M.d[i], (byDest.get(M.d[i]) || 0) + t); }
+    }
+  });
+  const S = R.steel[yr];
+  if (S) for (let i = 0; i < S.t.length; i++) {
+    if (G.has(S.s[i])) out.SP += S.t[i];
+    if (G.has(S.d[i])) out.SC += S.t[i];
+  }
+  out.byOrigin = byOrigin; out.byDest = byDest;
+  return out;
+}
+
+/* Fixed colour domain over the whole run for the current metric and scopes, so the year
+   slider compares like with like. The bound is the 97th percentile of |value| over every
+   (year, country); the legend marks the ends as "≥". */
+function domain(m, sc) {
+  const key = `${Interactive.run()}|${document.getElementById("metric-select").value}|${sc.join()}`;
+  if (domainCache[key]) return domainCache[key];
+  const R = run(), values = [];
+  R.years.forEach(yr => {
+    const st = countryStats(yr, sc);
+    for (let i = 0; i < R.countries.length; i++) {
+      const v = m.value(at(st, i));
+      if (v !== null && Number.isFinite(v) && v !== 0) values.push(Math.abs(v));
+    }
+  });
+  values.sort((a, b) => a - b);
+  let bound = values.length ? values[Math.min(values.length - 1, Math.floor(values.length * 0.97))] : 1;
+  if (m.clip) bound = Math.min(bound, m.clip);
+  return (domainCache[key] = {bound: bound || 1});
+}
+
+/* ---- colour ---- */
+function hexRgb(h) { return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]; }
+function interp(stops, t) {
+  const x = Math.min(Math.max(t, 0), 1) * (stops.length - 1), i = Math.min(Math.floor(x), stops.length - 2);
+  const a = hexRgb(stops[i]), b = hexRgb(stops[i + 1]), f = x - i;
+  return [0, 1, 2].map(k => Math.round(a[k] + (b[k] - a[k]) * f));
+}
+function colourOf(v, m, dom) {
+  if (v === null || !Number.isFinite(v)) return null;
+  if (m.kind === "diverging") return interp(v >= 0 ? RED_ARM : BLUE_ARM, Math.abs(v) / dom.bound);
+  return interp(SEQ, v / dom.bound);
+}
+function cssGradient(m) {
+  const stops = m.kind === "diverging" ? [...BLUE_ARM].reverse().concat(RED_ARM.slice(1)) : SEQ;
+  return `linear-gradient(to right, ${stops.join(", ")})`;
+}
+
+/* ---- map ---- */
+const TOOLTIP_STYLE = {
+  backgroundColor: "rgba(252, 252, 251, 0.97)", color: T.ink, fontSize: "12px", lineHeight: "1.45",
+  padding: "8px 12px", borderRadius: "4px", whiteSpace: "pre-line", maxWidth: "340px",
+  boxShadow: "0 1px 6px rgba(0,0,0,0.2)", fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
+};
+let frame = null;  // the current render's per-country values, for tooltips and layers
+
+function tooltipText(iso3) {
+  const i = frame.index.get(iso3);
+  if (i === undefined) return `${name(iso3)} (${iso3})\nno steel demand or production in ${frame.year}`;
+  const s = at(frame.stats, i), sc = scopes();
+  const share = s.P > 0 ? ` (${fmtSigned((s.C - s.P) / s.P * 100)} % of production-based)` : "";
+  const G = new Set([i]), g = groupStats(frame.year, sc, G);
+  const top = [...g.byOrigin].sort((a, b) => b[1] - a[1]).slice(0, 3)
+    .map(([j, t]) => `${name(run().countries[j])} ${fmtMt(t)}`).join(", ");
+  return `${name(iso3)} (${iso3}) — ${frame.year}\n` +
+    `Production-based: ${fmtMt(s.P)} Mt CO₂\nConsumption-based: ${fmtMt(s.C)} Mt CO₂\n` +
+    `Net imported: ${fmtSigned((s.C - s.P) / 1e3)} Mt${share}\n` +
+    `Embedded in imports ${fmtMt(s.I)} Mt · in exports ${fmtMt(s.X)} Mt\n` +
+    `Steel consumed ${fmtMt(s.SC)} Mt · produced ${fmtMt(s.SP)} Mt` +
+    (s.SC > 0 ? ` · ${fmt1(s.C / s.SC)} t CO₂/t consumed` : "") +
+    (top ? `\nImported emissions from: ${top}` : "");
+}
+
+function tooltip(info) {
+  if (!info.object) return null;
+  const iso3 = info.layer.id === "small" ? info.object.iso3 : info.object.properties.iso3;
+  return {text: tooltipText(iso3), style: TOOLTIP_STYLE};
+}
+
+function fill(iso3) {
+  const i = frame.index.get(iso3);
+  if (i === undefined) return NO_DATA;
+  const rgb = colourOf(frame.values[i], frame.metric, frame.dom);
+  if (!rgb) return NO_DATA;
+  const muted = !frame.selected.has(iso3);
+  return [...rgb, muted ? 70 : 255];
+}
+
+function buildLayers() {
+  const R = run();
+  const trigger = [frame.year, frame.metricKey, frame.scopeKey, frame.selKey, focus];
+  const small = Object.entries(R.coords).filter(([iso3]) => !polygonCodes.has(iso3))
+    .map(([iso3, [lat, lon]]) => ({iso3, position: [lon, lat]}));
+  const layers = [
+    new deck.GeoJsonLayer({
+      id: "countries", data: COUNTRIES, filled: true, stroked: true, pickable: true, autoHighlight: true,
+      highlightColor: [11, 11, 11, 40],
+      getFillColor: f => fill(f.properties.iso3),
+      getLineColor: [255, 255, 255, 220], lineWidthMinPixels: 0.6,
+      updateTriggers: {getFillColor: trigger},
+      onClick: info => setFocus(info.object.properties.iso3),
+    }),
+    new deck.ScatterplotLayer({
+      id: "small", data: small, pickable: true, radiusUnits: "pixels", getRadius: 5,
+      getPosition: d => d.position, getFillColor: d => fill(d.iso3), stroked: true,
+      getLineColor: [255, 255, 255, 220], lineWidthMinPixels: 1,
+      updateTriggers: {getFillColor: trigger},
+      onClick: info => setFocus(info.object.iso3),
+    }),
+  ];
+  if (focus) {
+    const f = COUNTRIES.features.filter(x => x.properties.iso3 === focus);
+    layers.push(new deck.GeoJsonLayer({id: "focus", data: {type: "FeatureCollection", features: f}, filled: false,
+      stroked: true, getLineColor: [11, 11, 11, 255], lineWidthMinPixels: 2}));
+  }
+  return layers;
+}
+
+const deckgl = new deck.Deck({
+  parent: document.getElementById("map"),
+  views: [new deck.MapView({repeat: true})],
+  initialViewState: {longitude: 15, latitude: 18, zoom: 1.15, minZoom: 0.8, maxZoom: 8},
+  controller: {keyboard: false},
+  getTooltip: tooltip,
+  layers: [],
+});
+
+function renderLegend() {
+  const m = frame.metric, b = frame.dom.bound;
+  document.getElementById("legend-title").textContent = `${m.label} (${m.unit}), ${frame.year}`;
+  document.getElementById("legend-bar").style.background = cssGradient(m);
+  const ticks = m.kind === "diverging"
+    ? [`≤ −${fmtTick(b)}`, `−${fmtTick(b / 2)}`, "0", fmtTick(b / 2), `≥ +${fmtTick(b)}`]
+    : ["0", fmtTick(b / 4), fmtTick(b / 2), fmtTick(3 * b / 4), `≥ ${fmtTick(b)}`];
+  document.getElementById("legend-ticks").innerHTML = ticks.map(t => `<span>${t}</span>`).join("");
+  document.getElementById("legend-note").textContent = m.note + ". Grey = no steel demand or production; faded = outside the geography filter.";
+}
+
+/* ---- side panel ---- */
+function focusGroup() {
+  const R = run();
+  if (focus) {
+    const i = frame.index.get(focus);
+    return {G: new Set(i === undefined ? [] : [i]), title: `${name(focus)} (${focus})`, sub: "focused country"};
+  }
+  const sel = frame.selected;
+  const G = new Set(R.countries.map((c, i) => sel.has(c) ? i : -1).filter(i => i >= 0));
+  if (sel.size >= frame.index.size) return {G, title: "World", sub: "all countries — the net is zero by construction"};
+  const note = Interactive.geoNote(new Set(R.countries));
+  return {G, title: `Selected geography`, sub: `${note} as one economy; trade inside the selection nets out`};
+}
+
+function statTile(k, v, cls = "") {
+  return `<div class="stat ${cls}"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+}
+
+function renderSide() {
+  const R = run(), sc = scopes(), yr = frame.year;
+  const {G, title, sub} = focusGroup();
+  document.getElementById("focus-title").textContent = title;
+  document.getElementById("focus-sub").textContent = sub;
+  const g = groupStats(yr, sc, G);
+  const net = (g.C - g.P) / 1e3, share = g.P > 0 ? `<small>${fmtSigned((g.C - g.P) / g.P * 100)} % of production-based</small>` : "";
+  document.getElementById("stats").innerHTML =
+    statTile(`Production-based, ${yr}`, `${fmtMt(g.P)}<small>Mt CO₂</small>`) +
+    statTile(`Consumption-based, ${yr}`, `${fmtMt(g.C)}<small>Mt CO₂</small>`) +
+    statTile("Net imported emissions", `${fmtSigned(net)}<small>Mt CO₂</small>${share}`, "net") +
+    statTile("Embedded in imports · exports", `${fmtMt(g.I)}<small>Mt</small> · ${fmtMt(g.X)}<small>Mt</small>`) +
+    statTile("Steel consumed · produced", `${fmtMt(g.SC)}<small>Mt</small> · ${fmtMt(g.SP)}<small>Mt</small>`) +
+    statTile("Intensity of steel consumed", g.SC > 0 ? `${fmt1(g.C / g.SC)}<small>t CO₂ / t</small>` : "–");
+
+  // Production- vs consumption-based over the horizon, current year marked.
+  const P = [], C = [];
+  R.years.forEach(y => { const s = groupStats(y, sc, G); P.push(s.P / 1e3); C.push(s.C / 1e3); });
+  const last = R.years.length - 1;
+  const line = (ys, key, label) => ({
+    x: R.years, y: ys, mode: "lines", name: label, line: {color: SERIES[key], width: 2},
+    hovertemplate: `${label}: %{y:,.1f} Mt<extra></extra>`,
+  });
+  Plotly.react("series", [line(P, "production", "Production-based"), line(C, "consumption", "Consumption-based")], {
+    width: 408, height: 230, margin: {l: 48, r: 128, t: 28, b: 34},
+    paper_bgcolor: T.surface, plot_bgcolor: T.surface, showlegend: false, hovermode: "x unified",
+    title: {text: "Mt CO₂ per year", font: {size: 12, color: T.inkSecondary}, x: 0, xanchor: "left"},
+    xaxis: {showgrid: false, tickfont: {size: 11}, zeroline: false, range: [R.years[0], R.years[last]], fixedrange: true},
+    yaxis: {gridcolor: "#e4e2dc", tickfont: {size: 11}, zeroline: false, rangemode: "tozero"},
+    shapes: [{type: "line", x0: yr, x1: yr, y0: 0, y1: 1, yref: "paper", line: {color: T.grid, width: 1, dash: "dot"}}],
+    annotations: [
+      {x: R.years[last], y: P[last], text: "production-based", xanchor: "left", showarrow: false, xshift: 6,
+       font: {size: 11, color: T.inkSecondary}},
+      {x: R.years[last], y: C[last], text: "consumption-based", xanchor: "left", showarrow: false, xshift: 6,
+       yshift: Math.abs(P[last] - C[last]) < (Math.max(...P, ...C) || 1) * 0.06 ? (C[last] >= P[last] ? 10 : -10) : 0,
+       font: {size: 11, color: T.inkSecondary}},
+    ],
+  }, {displayModeBar: false, responsive: false});
+
+  // Partners: top ten origins of imported emissions or destinations of exported ones.
+  const mode = document.getElementById("partners-select").value;
+  const rows = [...(mode === "imports" ? g.byOrigin : g.byDest)].sort((a, b) => b[1] - a[1]).slice(0, 10).reverse();
+  const total = mode === "imports" ? g.I : g.X;
+  if (!rows.length) {
+    Interactive.showEmpty(document.getElementById("partners"), `no ${mode === "imports" ? "imported" : "exported"} emissions in ${yr}`, 408, 120);
+  } else {
+    Plotly.react("partners", [{
+      type: "bar", orientation: "h", x: rows.map(r => r[1] / 1e3), y: rows.map(r => name(R.countries[r[0]])),
+      marker: {color: SERIES.production}, text: rows.map(r => `${fmtMt(r[1])} Mt`), textposition: "outside",
+      textfont: {size: 11, color: T.inkSecondary}, cliponaxis: false,
+      hovertemplate: "%{y}: %{x:,.1f} Mt CO₂<extra></extra>",
+    }], {
+      width: 408, height: 40 + rows.length * 24, margin: {l: 130, r: 70, t: 24, b: 10},
+      paper_bgcolor: T.surface, plot_bgcolor: T.surface,
+      title: {text: `${fmtMt(total)} Mt CO₂ in ${yr}, top ${rows.length}`, font: {size: 12, color: T.inkSecondary}, x: 0, xanchor: "left"},
+      xaxis: {visible: false}, yaxis: {tickfont: {size: 11}, automargin: true},
+      bargap: 0.25,
+    }, {displayModeBar: false, responsive: false});
+  }
+}
+
+/* ---- render ---- */
+function render() {
+  const R = run(), yr = year(), sc = scopes(), m = metric();
+  const stats = countryStats(yr, sc), dom = domain(m, sc);
+  const values = R.countries.map((c, i) => m.value(at(stats, i)));
+  frame = {
+    year: yr, stats, values, metric: m, dom, metricKey: document.getElementById("metric-select").value,
+    scopeKey: sc.join(), selected: Interactive.selectedGeos(),
+    index: new Map(R.countries.map((c, i) => [c, i])),
+  };
+  frame.selKey = [...frame.selected].sort().join();
+  document.getElementById("title").textContent = R.title;
+  document.getElementById("provenance").textContent = R.provenance;
+  document.getElementById("year-label").textContent = yr;
+  deckgl.setProps({layers: buildLayers()});
+  renderLegend();
+  renderSide();
+  const holder = document.getElementById("focus-holder");
+  holder.innerHTML = "";
+  if (focus) {
+    const chip = document.createElement("span");
+    chip.id = "focus-chip";
+    chip.textContent = `Focus: ${name(focus)} (${focus}) `;
+    const x = document.createElement("button");
+    x.textContent = "×"; x.title = "Clear focus";
+    x.addEventListener("click", () => setFocus(null));
+    chip.appendChild(x);
+    holder.appendChild(chip);
+  }
+}
+
+function setSide(shown) {
+  document.getElementById("main").classList.toggle("side-hidden", !shown);
+  document.getElementById("side-toggle").textContent = shown ? "Hide statistics ›" : "‹ Show statistics";
+}
+function setFocus(iso3) {
+  focus = focus === iso3 ? null : iso3;
+  if (focus) setSide(true);
+  render();
+}
+
+function syncYears() {
+  const slider = document.getElementById("year-slider"), years = run().years;
+  const current = years[+slider.value];
+  slider.min = 0; slider.max = years.length - 1;
+  slider.value = years.includes(current) ? years.indexOf(current) : years.indexOf(2030) >= 0 ? years.indexOf(2030) : 0;
+}
+function stepYear(delta) {
+  const slider = document.getElementById("year-slider");
+  slider.value = Math.min(Math.max(+slider.value + delta, 0), run().years.length - 1);
+  render();
+}
+
+function init() {
+  const select = document.getElementById("metric-select");
+  Object.entries(METRICS).forEach(([key, m]) => {
+    const o = document.createElement("option"); o.value = key; o.textContent = m.label; select.appendChild(o);
+  });
+  select.addEventListener("change", render);
+  ["scope-direct", "scope-indirect"].forEach(id => document.getElementById(id).addEventListener("change", () => {
+    if (!scopes().length) document.getElementById(id).checked = true;
+    render();
+  }));
+  document.getElementById("partners-select").addEventListener("change", renderSide);
+  const slider = document.getElementById("year-slider");
+  slider.addEventListener("input", render);
+  document.getElementById("year-prev").addEventListener("click", () => stepYear(-1));
+  document.getElementById("year-next").addEventListener("click", () => stepYear(1));
+  document.addEventListener("keydown", e => {
+    if (document.activeElement === slider || document.activeElement.tagName === "SELECT") return;
+    if (e.key === "ArrowLeft") stepYear(-1);
+    if (e.key === "ArrowRight") stepYear(1);
+    if (e.key === "Escape") setFocus(null);
+  });
+  ["pointerdown", "pointermove", "pointerup", "mousedown", "touchstart", "wheel", "dblclick"].forEach(type =>
+    ["controls", "legend", "side-toggle"].forEach(id => document.getElementById(id).addEventListener(type, e => e.stopPropagation())));
+  Interactive.init({
+    geoKeys: Object.values(DATA).flatMap(d => d.countries),
+    onChange: () => { syncYears(); render(); },
+  });
+  document.getElementById("side-toggle").addEventListener("click", () =>
+    setSide(document.getElementById("main").classList.contains("side-hidden")));
+  const query = new URLSearchParams(location.search);
+  setSide(!query.has("hide-side"));
+  if (query.get("metric")) select.value = query.get("metric");
+  if (query.get("indirect")) document.getElementById("scope-indirect").checked = true;
+  if (query.get("focus")) focus = query.get("focus");
+  syncYears();
+  if (query.get("year")) slider.value = run().years.indexOf(+query.get("year"));
+  render();
+}
+init();
+</script>
+</body>
+</html>
