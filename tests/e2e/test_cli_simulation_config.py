@@ -123,6 +123,39 @@ def test_cli_creates_and_passes_simulation_config(
         assert config.end_year == Year(2035)
 
 
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_successful_run_returns_none_so_the_console_script_exits_zero(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+):
+    """The console script calls sys.exit() on the return value, and anything but None or 0 exits non-zero."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        stub_cli_dependencies(Path(tmpdir), mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+
+        with patch.object(sys, "argv", ["run_simulation", "--start-year", "2026", "--end-year", "2035"]):
+            result = run_full_simulation()
+
+    assert result is None
+
+
+@pytest.mark.parametrize("cache_flag", ["--cache-stats", "--clear-cache"])
+def test_cli_cache_operations_return_none_so_the_console_script_exits_zero(cache_flag, tmp_path):
+    """The cache-only flags finish without running a simulation and must not hand sys.exit() a message."""
+    with patch.object(sys, "argv", ["run_simulation", cache_flag, "--steelo-home", str(tmp_path)]):
+        result = run_full_simulation()
+
+    assert result is None
+
+
 @pytest.mark.parametrize(
     "flag_argv, expected",
     [([], "Business As Usual"), (["--grid-emissions-scenario", "Net Zero"], "Net Zero")],
