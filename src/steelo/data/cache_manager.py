@@ -58,7 +58,7 @@ class CacheMetadata:
 class DataPreparationCache:
     """Manages cached data preparations based on content hashing."""
 
-    CACHE_VERSION = "1.12"  # Bump to invalidate all caches (dynamic trade-bloc serialisation)
+    CACHE_VERSION = "1.13"  # Bump to invalidate all caches (bloc carbon-cost series and the common-price flag)
 
     def __init__(self, cache_root: Optional[Path] = None):
         """Initialize cache manager.

@@ -1332,7 +1332,9 @@ def read_carbon_costs(carbon_cost_excel_path: Path, sheet_name="Carbon cost") ->
 
     The function handles two formats:
     1. Legacy format: columns for "ISO 3-letter code", "year", "carbon_cost"
-    2. New format: "ISO 3-letter code_Bloc" column with year columns (2020, 2021, etc.)
+    2. New format: "ISO 3-letter code_Bloc" column with year columns (2020, 2021, etc.); bloc rows
+       (e.g. "EFTA/EUCU") are kept under the normalised bloc name a carbon border mechanism's
+       applying_region_column carries, so a common bloc price can be looked up beside the national series
 
     Args:
         carbon_cost_excel_path (str): Path to the Excel file containing carbon costs.
@@ -1352,13 +1354,14 @@ def read_carbon_costs(carbon_cost_excel_path: Path, sheet_name="Carbon cost") ->
     if has_new_format:
         # New format: ISO3 in "ISO 3-letter code_Bloc" column, years as column headers
         for _, row in carbon_cost_df.iterrows():
-            iso3 = row["ISO 3-letter code_Bloc"]
+            code = row["ISO 3-letter code_Bloc"]
 
-            # Skip rows with invalid ISO3 codes
-            if pd.isna(iso3) or not isinstance(iso3, str) or len(str(iso3).strip()) != 3:
+            # Only blank codes are skipped; a non-ISO3 code is a bloc row
+            if pd.isna(code) or not isinstance(code, str) or not code.strip():
                 continue
 
-            iso3 = str(iso3).strip()
+            code = code.strip()
+            iso3 = code if len(code) == 3 else normalise_bloc_name(code)
             if iso3 not in carbon_costs:
                 carbon_costs[iso3] = {}
 
@@ -1963,7 +1966,8 @@ def read_carbon_border_mechanisms(excel_path: Path, sheet_name: str = "CBAM") ->
     - Row 0: "CBAM active?" - 1 if active, 0 if inactive
     - Row 1: "Year CBAM begins" - start year
     - Row 2: "Year CBAM ends" - end year
-    - Row 3: "Common carbon cost across the bloc?" - not used
+    - Row 3: "Common carbon cost across the bloc?" - 1 prices the border at the bloc's carbon-cost
+      series instead of each member's national series (absent row: every mechanism national)
 
     The function dynamically detects trade bloc columns (any column except the first
     descriptor column) and processes them as potential carbon border mechanisms.
@@ -1987,6 +1991,11 @@ def read_carbon_border_mechanisms(excel_path: Path, sheet_name: str = "CBAM") ->
     if len(df) < 3:
         logger.warning(f"CBAM sheet has insufficient rows ({len(df)}) - expected at least 3")
         return []
+    has_common_price_row = len(df) > 3
+    if not has_common_price_row:
+        logger.info(
+            "CBAM sheet has no 'Common carbon cost across the bloc?' row; every mechanism prices at national series"
+        )
 
     # Dynamically detect mechanism columns
     # Skip the first column (assumed to be the row descriptor/label column)
@@ -2039,12 +2048,16 @@ def read_carbon_border_mechanisms(excel_path: Path, sheet_name: str = "CBAM") ->
                     logger.warning(f"Invalid end year for {mechanism_name}: {end_year_val}")
                     # Continue with None end year (ongoing mechanism)
 
+            # Row 3: common bloc price flag
+            common_carbon_cost = bool(has_common_price_row and df.iloc[3][mechanism_name] == 1)
+
             if start_year:
                 mechanism = CarbonBorderMechanism(
                     mechanism_name=mechanism_name,
                     applying_region_column=region_column,
                     start_year=start_year,
                     end_year=end_year,
+                    common_carbon_cost=common_carbon_cost,
                 )
                 mechanisms.append(mechanism)
                 logger.info(f"Created {mechanism_name} mechanism: {start_year}-{end_year if end_year else 'ongoing'}")

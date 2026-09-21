@@ -1256,11 +1256,12 @@ class DummyCountryMapping:
 
 
 class DummyCarbonBorderMechanism:
-    def __init__(self, mechanism_name, applying_region_column, start_year, end_year=None):
+    def __init__(self, mechanism_name, applying_region_column, start_year, end_year=None, common_carbon_cost=False):
         self.mechanism_name = mechanism_name
         self.applying_region_column = applying_region_column
         self.start_year = start_year
         self.end_year = end_year
+        self.common_carbon_cost = common_carbon_cost
 
     def is_active(self, year):
         if year < self.start_year:
@@ -1564,6 +1565,48 @@ def test_resolve_destination_carbon_prices_returns_national_prices():
         "DEU": 50.0,
         "CHN": 12.0,
     }
+
+
+def test_resolve_destination_carbon_prices_uses_bloc_series_for_common_price_mechanism():
+    """Members of a common-price bloc are priced at the bloc's series, even above their national price."""
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import resolve_destination_carbon_prices
+
+    env = DummyEnvironment()
+    env.carbon_costs = {"DEU": {2026: 60.0}, "NOR": {2026: 40.0}, "EFTA_EUCU": {2026: 29.7}, "CHN": {2026: 13.9}}
+    common_bloc = DummyCarbonBorderMechanism("EFTA/EUCU", "EFTA_EUCU", start_year=2026, common_carbon_cost=True)
+
+    prices = resolve_destination_carbon_prices(env, [common_bloc], BORDER_COUNTRY_MAPPINGS, 2026)
+
+    assert prices["DEU"] == 29.7
+    assert prices["NOR"] == 29.7
+    assert prices["CHN"] == 13.9
+    assert "EFTA_EUCU" not in prices
+
+
+def test_resolve_destination_carbon_prices_uses_national_series_for_single_country_mechanism():
+    """A mechanism without the flag prices its members at their national series and ignores its bloc row."""
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import resolve_destination_carbon_prices
+
+    env = DummyEnvironment()
+    env.carbon_costs = {"CHN": {2026: 13.9}, "China": {2026: 0.0}, "DEU": {2026: 50.0}}
+
+    prices = resolve_destination_carbon_prices(env, [CHINA], BORDER_COUNTRY_MAPPINGS, 2026)
+
+    assert prices == {"CHN": 13.9, "DEU": 50.0}
+
+
+def test_resolve_destination_carbon_prices_takes_max_across_covering_mechanisms():
+    """CHE inside the common bloc and its own national mechanism is priced at the higher of the two."""
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import resolve_destination_carbon_prices
+
+    env = DummyEnvironment()
+    env.carbon_costs = {"CHE": {2026: 50.0}, "NOR": {2026: 40.0}, "EFTA_EUCU": {2026: 29.7}}
+    common_bloc = DummyCarbonBorderMechanism("EFTA/EUCU", "EFTA_EUCU", start_year=2026, common_carbon_cost=True)
+
+    prices = resolve_destination_carbon_prices(env, [common_bloc, SWITZERLAND], BORDER_COUNTRY_MAPPINGS, 2026)
+
+    assert prices["CHE"] == 50.0
+    assert prices["NOR"] == 29.7
 
 
 def test_log_carbon_border_outcomes_summarises_charged_flows():

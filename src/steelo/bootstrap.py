@@ -148,6 +148,39 @@ def _load_aggregated_metallic_charge_constraints(env, fixtures_dir):
         logger.info(f"Total {len(constraints)} aggregated metallic charge constraints loaded")
 
 
+def _check_common_carbon_cost_series(mechanisms, carbon_costs: dict) -> None:
+    """Fail on a common-price mechanism without a bloc series; warn when that series is all zeros.
+
+    Args:
+        mechanisms: The loaded carbon border mechanisms.
+        carbon_costs: Bloc name or ISO3 -> year -> price, as loaded from the Carbon cost sheet.
+
+    Raises:
+        ValueError: If a mechanism carries the common-price flag but the sheet has no row for its bloc.
+
+    Notes:
+        Every bloc row except EU and EFTA/EUCU is zero in the current masters, so a mis-set flag
+        would otherwise price a border silently at 0.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+    for mechanism in mechanisms:
+        if not mechanism.common_carbon_cost:
+            continue
+        series = carbon_costs.get(mechanism.applying_region_column)
+        if not series:
+            raise ValueError(
+                f"Carbon border mechanism '{mechanism.mechanism_name}' prices at a common bloc carbon cost but the "
+                f"Carbon cost sheet has no '{mechanism.applying_region_column}' row"
+            )
+        if not any(series.values()):
+            logger.warning(
+                f"Carbon border mechanism '{mechanism.mechanism_name}' prices at the common bloc series "
+                f"'{mechanism.applying_region_column}', which is all zeros: imports into the bloc are not charged"
+            )
+
+
 def _load_secondary_feedstock_constraints(env, repository_json):
     """Load secondary feedstock constraints from biomass availability data (includes CO2 storage)."""
     import logging
@@ -384,6 +417,7 @@ def bootstrap_simulation(
         env.set_trade_tariffs(trade_tariffs=repository_json.trade_tariffs.list())
         env.set_legal_process_connectors(legal_process_connectors=repository_json.legal_process_connectors.list())
         env.carbon_border_mechanisms = repository_json.carbon_border_mechanisms.list()
+        _check_common_carbon_cost_series(env.carbon_border_mechanisms, env.carbon_costs)
         env.willingness_to_pay = repository_json.willingness_to_pay.list()
         env.railway_costs = repository_json.railway_costs.list()
         env.transport_emissions = repository_json.transport_emissions.list()

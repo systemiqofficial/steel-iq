@@ -2996,6 +2996,7 @@ class CarbonBorderMechanismInDb(BaseModel):
     applying_region_column: str
     start_year: int
     end_year: int | None = None
+    common_carbon_cost: bool = False
 
     def to_domain(self) -> CarbonBorderMechanism:
         """Convert to domain model."""
@@ -3004,6 +3005,7 @@ class CarbonBorderMechanismInDb(BaseModel):
             applying_region_column=self.applying_region_column,
             start_year=self.start_year,
             end_year=self.end_year,
+            common_carbon_cost=self.common_carbon_cost,
         )
 
     @classmethod
@@ -3014,6 +3016,7 @@ class CarbonBorderMechanismInDb(BaseModel):
             applying_region_column=mechanism.applying_region_column,
             start_year=mechanism.start_year,
             end_year=mechanism.end_year,
+            common_carbon_cost=mechanism.common_carbon_cost,
         )
 
 

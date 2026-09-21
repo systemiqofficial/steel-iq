@@ -872,17 +872,45 @@ def resolve_destination_carbon_prices(
 ) -> dict[str, float]:
     """Carbon price each destination country's border is priced at.
 
+    Every country with a national series starts at that price. Each active mechanism prices the
+    countries it covers at its bloc's series when it carries the common-price flag, else at their
+    national series; a country covered by several mechanisms takes the highest of those. A member of
+    a common-price bloc is therefore priced at the bloc's series even when its national price is higher.
+
     Args:
-        env: Environment carrying the national carbon-price series.
-        mechanisms: Active carbon border mechanisms (unused until bloc prices apply).
-        country_mappings: ISO3 -> CountryMapping (unused until bloc prices apply).
+        env: Environment carrying the national and bloc carbon-price series.
+        mechanisms: Carbon border mechanisms; inactive ones are ignored.
+        country_mappings: ISO3 -> CountryMapping, used to resolve each mechanism's members.
         year: Simulation year.
 
     Returns:
-        ISO3 -> price for every country with a carbon-price series; a country without one has no
+        ISO3 -> price; a country without a series and without a common-price mechanism has no
         carbon policy and is absent.
     """
-    return {iso3: env.carbon_price_for_year(iso3, Year(year)) for iso3 in env.carbon_costs}
+    logger = logging.getLogger(f"{__name__}.resolve_destination_carbon_prices")
+    # Bloc rows share the series dict with the countries; only ISO3 codes are destinations
+    prices = {code: env.carbon_price_for_year(code, Year(year)) for code in env.carbon_costs if len(code) == 3}
+    covered: dict[str, float] = {}
+    sources: list[str] = []
+    for mechanism in mechanisms:
+        if not mechanism.is_active(year):
+            continue
+        members = mechanism.get_applying_region_countries(country_mappings)
+        if mechanism.common_carbon_cost:
+            bloc_price = env.carbon_price_for_year(mechanism.applying_region_column, Year(year))
+            candidates = {iso3: bloc_price for iso3 in members}
+            sources.append(f"{mechanism.mechanism_name}=bloc:{mechanism.applying_region_column}")
+        else:
+            candidates = {iso3: prices[iso3] for iso3 in members if iso3 in prices}
+            sources.append(f"{mechanism.mechanism_name}=national")
+        for iso3, candidate in candidates.items():
+            covered[iso3] = max(covered.get(iso3, candidate), candidate)
+    prices.update(covered)
+    logger.info(
+        f"Carbon border price sources in {year}: {', '.join(sources) or 'none'}; P_d "
+        + ", ".join(f"{iso3}={prices[iso3]:.2f}" for iso3 in ("DEU", "GBR", "CHN", "NOR") if iso3 in prices)
+    )
+    return prices
 
 
 def adapt_allocation_costs_for_carbon_border_mechanisms(

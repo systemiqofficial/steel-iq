@@ -526,6 +526,7 @@ class CarbonBorderMechanism:
     applying_region_column: str  # Column name in CountryMapping (e.g., "EU", "EFTA_EUCU", "OECD")
     start_year: int
     end_year: int | None = None  # None if it doesn't end
+    common_carbon_cost: bool = False  # Price the border at the bloc's series instead of each member's national one
 
     def is_active(self, year: int) -> bool:
         """Check if this mechanism is active in a given year."""
