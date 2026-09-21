@@ -102,32 +102,8 @@ def recreate_country_mappings_data(
         # Read mappings from master Excel
         mappings = read_country_mappings(master_excel_path, "Country mapping")
 
-        # Convert to JSON format
-        mappings_data = []
-        for mapping in mappings:
-            mapping_dict = {
-                "Country": mapping.country,
-                "ISO 2-letter code": mapping.iso2,
-                "ISO 3-letter code": mapping.iso3,
-                "irena_name": mapping.irena_name,
-                "region_for_outputs": mapping.region_for_outputs,
-                "ssp_region": mapping.ssp_region,
-                "gem_country": mapping.gem_country,
-                "ws_region": mapping.ws_region,
-                "tiam-ucl_region": mapping.tiam_ucl_region,
-                "eu_or_non_eu": mapping.eu_region,
-                # Add new regional boolean fields
-                "EU": mapping.EU,
-                "EFTA_EUCJ": mapping.EFTA_EUCJ,
-                "OECD": mapping.OECD,
-                "NAFTA": mapping.NAFTA,
-                "Mercosur": mapping.Mercosur,
-                "ASEAN": mapping.ASEAN,
-                "RCEP": mapping.RCEP,
-            }
-            # Validate with Pydantic model
-            CountryMappingInDb(**mapping_dict)
-            mappings_data.append(mapping_dict)
+        # Serialise via the Pydantic model so every detected bloc column is carried
+        mappings_data = [CountryMappingInDb.from_domain(mapping).model_dump(by_alias=True) for mapping in mappings]
 
         # Sort by ISO3 for consistent output
         mappings_data.sort(key=lambda x: x["ISO 3-letter code"] or "")

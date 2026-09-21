@@ -2076,9 +2076,12 @@ class LegalProcessConnectorJsonRepository:
 class CountryMappingInDb(BaseModel):
     """
     Pydantic model for serializing/deserializing CountryMapping to/from JSON.
+
+    Trade bloc membership booleans are carried as extra fields, so every bloc
+    column detected in the master sheet survives the JSON round-trip.
     """
 
-    model_config = {"populate_by_name": True}  # Allow both alias and field name
+    model_config = {"populate_by_name": True, "extra": "allow"}
 
     country: str = Field(..., alias="Country")
     iso2: str = Field(..., alias="ISO 2-letter code")
@@ -2091,17 +2094,10 @@ class CountryMappingInDb(BaseModel):
     ws_region: str | None = Field(None, alias="ws_region")
     tiam_ucl_region: str = Field(..., alias="tiam-ucl_region")
     eu_region: str | None = Field(None, alias="eu_or_non_eu")
-    # CBAM-related region memberships
-    EU: bool = Field(False, alias="EU")
-    EFTA_EUCJ: bool = Field(False, alias="EFTA/EUCJ")
-    OECD: bool = Field(False, alias="OECD")
-    NAFTA: bool = Field(False, alias="NAFTA")
-    Mercosur: bool = Field(False, alias="Mercosur")
-    ASEAN: bool = Field(False, alias="ASEAN")
-    RCEP: bool = Field(False, alias="RCEP")
 
     def to_domain(self) -> CountryMapping:
-        """Convert to domain object."""
+        """Convert to domain object, passing bloc booleans through dynamically."""
+        blocs = {name: value for name, value in (self.model_extra or {}).items() if isinstance(value, bool)}
         return CountryMapping(
             country=self.country,
             iso2=self.iso2,
@@ -2114,19 +2110,14 @@ class CountryMappingInDb(BaseModel):
             ws_region=self.ws_region,
             tiam_ucl_region=self.tiam_ucl_region,
             eu_region=self.eu_region,
-            EU=self.EU,
-            EFTA_EUCJ=self.EFTA_EUCJ,
-            OECD=self.OECD,
-            NAFTA=self.NAFTA,
-            Mercosur=self.Mercosur,
-            ASEAN=self.ASEAN,
-            RCEP=self.RCEP,
+            **blocs,
         )
 
     @classmethod
     def from_domain(cls, obj: CountryMapping) -> "CountryMappingInDb":
-        """Create from domain object."""
-        return cls(
+        """Create from domain object, carrying every boolean bloc attribute."""
+        data: dict[str, Any] = {name: value for name, value in vars(obj).items() if isinstance(value, bool)}
+        data.update(
             country=obj.country,
             iso2=obj.iso2,
             iso3=obj.iso3,
@@ -2138,14 +2129,8 @@ class CountryMappingInDb(BaseModel):
             ws_region=obj.ws_region,
             tiam_ucl_region=obj.tiam_ucl_region,
             eu_region=obj.eu_region,
-            EU=obj.EU,
-            EFTA_EUCJ=obj.EFTA_EUCJ,
-            OECD=obj.OECD,
-            NAFTA=obj.NAFTA,
-            Mercosur=obj.Mercosur,
-            ASEAN=obj.ASEAN,
-            RCEP=obj.RCEP,
         )
+        return cls.model_validate(data)
 
     def __lt__(self, other: "CountryMappingInDb") -> bool:
         """Enable sorting by iso3 for stable JSON dumps."""

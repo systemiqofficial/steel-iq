@@ -54,16 +54,17 @@ def trade_bloc_members(country_mappings: list[CountryMapping]) -> dict[str, list
         country_mappings: The run's country mappings (the Country mapping sheet).
 
     Returns:
-        ``{bloc_name: [iso3, ...]}`` for every bloc with at least one member, both sorted.
+        ``{bloc_name: [iso3, ...]}`` for every bloc with at least two members, both sorted.
         Any boolean attribute on the mapping counts as a bloc, so blocs added as new
-        sheet columns appear without changes here.
+        sheet columns appear without changes here; single-country groupings (CBAM-partner
+        style columns) are omitted as redundant with picking the country itself.
     """
     members: dict[str, list[str]] = defaultdict(list)
     for mapping in country_mappings:
         for name, value in vars(mapping).items():
             if isinstance(value, bool) and value:
                 members[name].append(mapping.iso3)
-    return {bloc: sorted(iso3s) for bloc, iso3s in sorted(members.items())}
+    return {bloc: sorted(iso3s) for bloc, iso3s in sorted(members.items()) if len(iso3s) > 1}
 
 
 def geo_info(country_mappings: list[CountryMapping]) -> dict[str, dict[str, str]]:

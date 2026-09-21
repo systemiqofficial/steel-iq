@@ -52,6 +52,8 @@ trade_lp_variables.csv
 # master input
 *master_input_*.xlsx
 master_input
+master-input*
+Master*
 
 .claude/
 claude.md

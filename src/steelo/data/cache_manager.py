@@ -58,7 +58,7 @@ class CacheMetadata:
 class DataPreparationCache:
     """Manages cached data preparations based on content hashing."""
 
-    CACHE_VERSION = "1.11"  # Bump to invalidate all caches (every iron ore mine carries its country ISO3)
+    CACHE_VERSION = "1.12"  # Bump to invalidate all caches (dynamic trade-bloc serialisation)
 
     def __init__(self, cache_root: Optional[Path] = None):
         """Initialize cache manager.

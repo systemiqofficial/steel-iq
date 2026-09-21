@@ -1233,6 +1233,19 @@ def read_scrap_as_suppliers(
     return refine_scrap_centers_for_major_countries(supply_centers)
 
 
+def normalise_bloc_name(name: str) -> str:
+    """Normalise a bloc/column name to its CountryMapping attribute name.
+
+    Args:
+        name: Bloc name as authored in a sheet (e.g. "EFTA/EUCU", "OECD but not EU").
+
+    Returns:
+        The attribute name: special characters become underscores, and the legacy
+        "EUCJ" spelling is canonicalised to the sheet's "EUCU".
+    """
+    return name.replace("/", "_").replace(" ", "_").replace("-", "_").replace("EUCJ", "EUCU")
+
+
 def find_iso3s_of_trade_bloc(country_mappings: list, bloc_name: str, negation: bool = False) -> list[str]:
     """
     Find the ISO3 codes of countries in a given trade bloc using CountryMapping objects.
@@ -1252,12 +1265,7 @@ def find_iso3s_of_trade_bloc(country_mappings: list, bloc_name: str, negation: b
     Raises:
         ValueError: If the bloc_name is not found as an attribute in any CountryMapping object.
     """
-    # Normalize bloc name to match CountryMapping attributes
-    # Replace special characters that might be in Excel column names
-    bloc_name_normalized = bloc_name.replace("/", "_").replace(" ", "_").replace("-", "_")
-
-    # Special case: EUCU maps to EUCJ for backwards compatibility
-    bloc_name_normalized = bloc_name_normalized.replace("EUCU", "EUCJ")
+    bloc_name_normalized = normalise_bloc_name(bloc_name)
 
     # Verify that at least one country mapping has this attribute
     if country_mappings and not hasattr(country_mappings[0], bloc_name_normalized):
@@ -1304,7 +1312,7 @@ def _resolve_iso3_or_bloc_entry(entry: str, country_mappings: list, supported_bl
     """
     if entry.startswith("NOT "):
         target = entry[4:]
-        if target in supported_blocs:
+        if normalise_bloc_name(target) in supported_blocs:
             return find_iso3s_of_trade_bloc(country_mappings, target, negation=True)
         all_iso3s = [c.iso3 for c in country_mappings] if country_mappings else []
         if target not in all_iso3s:
@@ -1313,7 +1321,7 @@ def _resolve_iso3_or_bloc_entry(entry: str, country_mappings: list, supported_bl
                 f"Available trade blocs: {', '.join(supported_blocs) if supported_blocs else '(none)'}"
             )
         return [iso3 for iso3 in all_iso3s if iso3 != target]
-    if entry in supported_blocs:
+    if normalise_bloc_name(entry) in supported_blocs:
         return find_iso3s_of_trade_bloc(country_mappings, entry)
     return [entry]
 
@@ -1581,10 +1589,6 @@ def read_tariffs(tariff_excel_path: str, tariff_sheet_name: str, country_mapping
             for attr in dir(country_mappings[0])
             if not attr.startswith("_") and isinstance(getattr(country_mappings[0], attr, None), bool)
         ]
-        # Add common variants with "/" for Excel column names (e.g., EFTA/EUCU)
-        # This allows the tariff sheet to use either EFTA_EUCJ or EFTA/EUCU
-        if "EFTA_EUCJ" in supported_blocs:
-            supported_blocs.append("EFTA/EUCU")
 
     logger.info(
         f"Detected {len(supported_blocs)} available trade blocs for tariff processing: {', '.join(supported_blocs)}"
@@ -1937,9 +1941,7 @@ def read_country_mappings(excel_path: Path, sheet_name: str = "Country mapping")
                     else:
                         boolean_val = False
 
-                    # Normalize column name for attribute (replace special chars with underscores)
-                    attr_name = col.replace("/", "_").replace(" ", "_").replace("-", "_")
-                    mapping_kwargs[attr_name] = boolean_val
+                    mapping_kwargs[normalise_bloc_name(col)] = boolean_val
 
             mapping = CountryMapping(**mapping_kwargs)  # type: ignore[arg-type]
             mappings.append(mapping)
@@ -1991,11 +1993,7 @@ def read_carbon_border_mechanisms(excel_path: Path, sheet_name: str = "CBAM") ->
     # All other columns are potential mechanisms
     mechanism_configs = []
     for col in df.columns[1:]:  # Skip first column
-        # Normalize the column name to match CountryMapping attributes
-        region_column = col.replace("/", "_").replace(" ", "_").replace("-", "_")
-        # Special case: EUCU maps to EUCJ
-        region_column = region_column.replace("EUCU", "EUCJ")
-        mechanism_configs.append((col, region_column))
+        mechanism_configs.append((col, normalise_bloc_name(col)))
 
     if mechanism_configs:
         logger.info(

@@ -470,15 +470,6 @@ class CountryMapping:
         ws_region: str | None = None,
         eu_region: str | None = None,
         tiam_ucl_region: str,
-        # Deprecated explicit parameters (kept for backwards compatibility)
-        EU: bool = False,
-        EFTA_EUCJ: bool = False,
-        OECD: bool = False,
-        NAFTA: bool = False,
-        Mercosur: bool = False,
-        ASEAN: bool = False,
-        RCEP: bool = False,
-        # Accept any additional boolean attributes dynamically
         **trade_bloc_memberships: bool,
     ) -> None:
         self.country = country
@@ -493,17 +484,6 @@ class CountryMapping:
         self.eu_region = eu_region
         self.tiam_ucl_region = tiam_ucl_region
 
-        # Set explicit parameters (for backwards compatibility)
-        # These will be overridden by kwargs if provided
-        self.EU = EU
-        self.EFTA_EUCJ = EFTA_EUCJ
-        self.OECD = OECD
-        self.NAFTA = NAFTA
-        self.Mercosur = Mercosur
-        self.ASEAN = ASEAN
-        self.RCEP = RCEP
-
-        # Set any additional trade bloc memberships dynamically
         for attr_name, attr_value in trade_bloc_memberships.items():
             setattr(self, attr_name, attr_value)
 
@@ -542,8 +522,8 @@ class TechnologyEmissionFactors:
 class CarbonBorderMechanism:
     """Represents a carbon border adjustment mechanism applied by a region to all non-members."""
 
-    mechanism_name: str  # e.g., "CBAM", "EFTA/EUCJ", "OECD", "NAFTA", etc.
-    applying_region_column: str  # Column name in CountryMapping (e.g., "EU", "EFTA_EUCJ", "OECD")
+    mechanism_name: str  # e.g., "CBAM", "EFTA/EUCU", "OECD", "NAFTA", etc.
+    applying_region_column: str  # Column name in CountryMapping (e.g., "EU", "EFTA_EUCU", "OECD")
     start_year: int
     end_year: int | None = None  # None if it doesn't end
 
