@@ -28,7 +28,7 @@ Used for:
 
 **Method**: For each year from construction start through plant lifetime:
 1. Calculate future steel demand (sum across all demand centers)
-2. Calculate future iron demand (virgin iron demand, based on steel demand and scrap availability)
+2. Calculate future iron demand (virgin iron demand, based on steel demand and scrap availability): steel not covered by scrap × `iron_required_per_tonne_steel` (config, default 1.2 t iron per t steel)
 3. Apply each year's demand to the existing cost curve to extract price
 
 ```python
