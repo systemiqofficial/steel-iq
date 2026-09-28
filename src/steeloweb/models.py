@@ -700,6 +700,7 @@ class ModelRun(models.Model):
             "iron_market_clearing_share",
             "peg_iron_to_steel_price",
             "iron_to_steel_price_ratio",
+            "iron_required_per_tonne_steel",
             "opening_balance_multiplier",
             # Output paths (optional, will be derived from output_dir if not provided)
             "plots_dir",

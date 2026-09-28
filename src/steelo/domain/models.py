@@ -6876,6 +6876,7 @@ class VirginIronDemand:
         world_suppliers: list["Supplier"],
         steel_demand_dict: dict[str, dict[Year, Volumes]],
         dynamic_feedstocks: dict[str, list[PrimaryFeedstock]],
+        iron_required_per_tonne_steel: float = 1.2,
     ):
         """
         Initialize and precalculate virgin iron demand for all available years.
@@ -6884,6 +6885,7 @@ class VirginIronDemand:
             world_suppliers: List of all suppliers in the world
             steel_demand_dict: Steel demand by demand center and year
             dynamic_feedstocks: Feedstock requirements by technology
+            iron_required_per_tonne_steel: Tonnes of virgin iron needed per tonne of steel not made from scrap
         """
         logger = logging.getLogger(f"{__name__}.VirginIronDemand.__init__")
         # Store the precalculated demands by year
@@ -6941,9 +6943,8 @@ class VirginIronDemand:
                 steel_from_scrap = scrap_available / scrap_required_quantity
                 steel_from_iron = steel_demand - steel_from_scrap
 
-            # Calculate virgin iron demand (assuming 1.1 t iron per t steel)
-            iron_required_quantity = 1.1
-            virgin_iron_demand = steel_from_iron * iron_required_quantity
+            # Calculate virgin iron demand
+            virgin_iron_demand = steel_from_iron * iron_required_per_tonne_steel
 
             # Store result
             self._demand_by_year[year] = virgin_iron_demand
@@ -9992,6 +9993,7 @@ class Environment:
             world_suppliers=world_suppliers_list,
             steel_demand_dict=steel_demand_dict,
             dynamic_feedstocks=self.dynamic_feedstocks,
+            iron_required_per_tonne_steel=self.config.iron_required_per_tonne_steel,
         )
         logger.info("[VIRGIN IRON DEMAND]: Precalculation complete for all years")
 
