@@ -1195,6 +1195,8 @@ class FurnaceGroup:
         # product; set by the TM-PAM connector after each solve and read at the next LP set-up
         self.upstream_emission_intensity: float = 0.0
         self.upstream_carbon_cost_paid: float = 0.0
+        # Year whose solved inbound flows set the two upstream fields; None when no solve observed them
+        self.upstream_carbon_year: int | None = None
 
         # Initialize _carbon_cost from carbon_costs_for_emissions if provided
         if carbon_costs_for_emissions is not None and carbon_costs_for_emissions > 0:
@@ -10811,7 +10813,9 @@ class Environment:
             ``Plant.update_furnace_group_carbon_costs`` (so the PRI to USA fallback carries over); a
             plant without a series has no carbon policy and prices at 0.0. Furnace groups without
             bill-of-materials shares fall back to the fleet-average input shares of their technology,
-            else equal shares; in the first year every furnace group takes a fallback.
+            else equal shares; in the first year every furnace group takes a fallback. Only furnace
+            groups in an active status are refreshed, since only they enter the trade LP; the others
+            keep their last values until they are active again.
         """
         logger = logging.getLogger(f"{__name__}.update_trade_carbon_costs_of_furnace_groups")
         ef_by_key = build_direct_ghg_lookup(
@@ -10831,6 +10835,8 @@ class Environment:
         for plant in world_plants:
             price = plant.carbon_cost_series.get(year, 0.0)
             for fg in plant.furnace_groups:
+                if fg.status.lower() not in self.config.active_statuses:
+                    continue
                 intensity, source = fg._direct_emission_intensity_with_source(
                     ef_by_key, fallback_shares_by_tech.get(fg.technology.name)
                 )
@@ -10857,6 +10863,71 @@ class Environment:
             source_counts["bom"],
             source_counts["avg_bom"],
             source_counts["equal"],
+        )
+
+    def fill_missing_upstream_embedded_carbon(self, world_plants: list[Plant]) -> None:
+        """
+        Give active furnace groups without last year's upstream carbon the average of their peers.
+
+        Args:
+            world_plants: Plants whose active furnace groups are filled.
+
+        Notes:
+            A furnace group observed last year is one whose ``upstream_carbon_year`` is the previous
+            year. Every other active furnace group (idle, new, or back from mothballing) would
+            otherwise enter the carbon border charge with no upstream emissions, so a steel furnace
+            would be charged on its own small stage alone. It takes the capacity-weighted mean of the
+            observed furnace groups of its technology in its country, else of its technology
+            worldwide, else keeps 0.0. Both fields come from the same peers so intensity and carbon
+            paid stay consistent. ``upstream_carbon_year`` is left unchanged, so filled values never
+            count as observations. In the first year nothing is observed and every value stays 0.0.
+        """
+        logger = logging.getLogger(f"{__name__}.fill_missing_upstream_embedded_carbon")
+        observed_year = int(self.year) - 1
+        active = [
+            (plant.location.iso3, fg)
+            for plant in world_plants
+            for fg in plant.furnace_groups
+            if fg.status.lower() in self.config.active_statuses
+        ]
+        # (emissions x capacity, carbon paid x capacity, capacity) per peer group
+        country_sums: dict[tuple[str, str], list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
+        global_sums: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
+        missing = []
+        for iso3, fg in active:
+            if fg.upstream_carbon_year != observed_year:
+                missing.append((iso3, fg))
+                continue
+            capacity = float(fg.capacity)
+            for sums in (country_sums[(iso3, fg.technology.name)], global_sums[fg.technology.name]):
+                sums[0] += fg.upstream_emission_intensity * capacity
+                sums[1] += fg.upstream_carbon_cost_paid * capacity
+                sums[2] += capacity
+
+        filled = {"country": 0, "global": 0, "none": 0}
+        for iso3, fg in missing:
+            for scope, peers in (
+                ("country", country_sums.get((iso3, fg.technology.name))),
+                ("global", global_sums.get(fg.technology.name)),
+            ):
+                if peers is not None and peers[2] > 0:
+                    fg.upstream_emission_intensity = peers[0] / peers[2]
+                    fg.upstream_carbon_cost_paid = peers[1] / peers[2]
+                    filled[scope] += 1
+                    break
+            else:
+                fg.upstream_emission_intensity = 0.0
+                fg.upstream_carbon_cost_paid = 0.0
+                filled["none"] += 1
+        logger.info(
+            "Upstream embedded carbon in %s: %d active furnace groups observed in %d, %d filled from "
+            "country-technology peers, %d from technology peers worldwide, %d left at 0.0",
+            self.year,
+            len(active) - len(missing),
+            observed_year,
+            filled["country"],
+            filled["global"],
+            filled["none"],
         )
 
     def pass_carbon_cost_series_to_plants(self, world_plants: list[Plant]) -> None:

@@ -2012,12 +2012,6 @@ wheels = [
 ]
 
 [[package]]
-name = "mocker"
-version = "1.1.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/2b/be/7347e7ec91c7598eed358ed40ff4c5cd59002490f537adf4a43f92f81abe/mocker-1.1.1.tar.bz2", hash = "sha256:2009911707c74b28bdc9959b5224717e45fcb93475b4b7bb4efad3285fcf2919", size = 36357 }
-
-[[package]]
 name = "more-itertools"
 version = "10.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3741,7 +3735,6 @@ dependencies = [
     { name = "httpx" },
     { name = "ipython" },
     { name = "matplotlib" },
-    { name = "mocker" },
     { name = "networkx" },
     { name = "numba" },
     { name = "openpyxl" },
@@ -3812,7 +3805,6 @@ requires-dist = [
     { name = "httpx" },
     { name = "ipython" },
     { name = "matplotlib" },
-    { name = "mocker" },
     { name = "networkx" },
     { name = "numba", specifier = ">=0.61.2" },
     { name = "openpyxl" },

@@ -25,6 +25,7 @@ class StubFurnaceGroup:
         self.utilization_rate = utilization_rate
         self.upstream_emission_intensity = -1.0
         self.upstream_carbon_cost_paid = -1.0
+        self.upstream_carbon_year: int | None = -1
 
 
 def _supplier(name: str, iso3: str = "AUS") -> tlp.ProcessCenter:
@@ -53,6 +54,7 @@ def _demand(name: str, iso3: str = "DEU") -> tlp.ProcessCenter:
 
 def _propagate(allocations: tlp.Allocations) -> TM_PAM_connector:
     connector = TM_PAM_connector(dynamic_feedstocks_classes={}, plants=PlantInMemoryRepository(), transport_kpis=None)
+    connector.current_year = 2030
     connector.create_graph(allocations)
     connector.propage_cost_forward_by_layers_and_normalize()
     return connector
@@ -86,6 +88,7 @@ def test_bf_emissions_embed_into_bof_upstream_fields():
         pytest.approx(1.8),
         pytest.approx(200.0),
     )
+    assert bof_fg.upstream_carbon_year == 2030
 
 
 def test_two_stage_chain_accumulates_own_and_upstream():
@@ -162,7 +165,7 @@ def test_multi_output_producer_normalises_by_total_export():
 
 
 def test_idle_and_absent_furnace_groups_are_zeroed():
-    """Furnace groups outside the graph, without inbound edges, or idle get 0.0 for both fields."""
+    """Furnace groups outside the graph, without inbound edges, or idle get 0.0 for both fields and no year."""
     ore, bf, bof, demand = (
         _supplier("sup"),
         _producer("bf", "CHN", "bf", 1.8, 200.0),
@@ -184,3 +187,4 @@ def test_idle_and_absent_furnace_groups_are_zeroed():
 
     for fg in (absent, idle, source_only):
         assert (fg.upstream_emission_intensity, fg.upstream_carbon_cost_paid) == (0.0, 0.0)
+        assert fg.upstream_carbon_year is None

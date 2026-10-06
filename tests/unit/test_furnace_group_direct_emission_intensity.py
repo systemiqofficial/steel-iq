@@ -34,12 +34,15 @@ def _furnace_group(
     bill_of_materials: dict | None = None,
     utilization_rate: float = 0.8,
     feedstocks: list[PrimaryFeedstock] | None = None,
+    status: str = "operating",
+    technology_name: str = "BF",
+    capacity: float = 1000.0,
 ) -> FurnaceGroup:
     """Blast furnace on coke with io_low (1.4 t/t) and io_mid (1.5 t/t) business cases."""
     if feedstocks is None:
         feedstocks = [_feedstock("IO_low", 1.4), _feedstock("IO_mid", 1.5)]
     technology = Technology(
-        name="BF",
+        name=technology_name,
         product="iron",
         bill_of_materials=None,
         capex_type="greenfield",
@@ -48,13 +51,13 @@ def _furnace_group(
     return FurnaceGroup(
         furnace_group_id=fg_id,
         technology=technology,
-        capacity=Volumes(1000.0),
+        capacity=Volumes(capacity),
         lifetime=PointInTime(
             plant_lifetime=20,
             current=2025,
             time_frame=TimeFrame(start=Year(2025), end=Year(2045)),
         ),
-        status="operating",
+        status=status,
         chosen_reductant="coke",
         last_renovation_date=None,
         historical_production={},
@@ -158,8 +161,7 @@ def test_intensity_raises_on_missing_factor_or_feedstocks():
         without_quantity.direct_emission_intensity(EF_BY_KEY)
 
 
-def test_update_trade_carbon_costs_uses_plant_series_price(tmp_path: Path):
-    """The environment prices each furnace group's intensity at its plant's carbon cost series for the year."""
+def _environment(tmp_path: Path) -> Environment:
     config = SimulationConfig(
         start_year=Year(2025),
         end_year=Year(2030),
@@ -170,6 +172,12 @@ def test_update_trade_carbon_costs_uses_plant_series_price(tmp_path: Path):
     tech_switches_csv.write_text("origin,BF\nBF,YES\n", encoding="utf-8")
     env = Environment(config=config, tech_switches_csv=tech_switches_csv)
     env.year = Year(2026)
+    return env
+
+
+def test_update_trade_carbon_costs_uses_plant_series_price(tmp_path: Path):
+    """The environment prices each furnace group's intensity at its plant's carbon cost series for the year."""
+    env = _environment(tmp_path)
     env.technology_emission_factors = [
         _emission_factor("IO_low", 2.0),
         _emission_factor("IO_mid", 1.0),
@@ -196,3 +204,53 @@ def test_update_trade_carbon_costs_uses_plant_series_price(tmp_path: Path):
     expected_intensity = (raw_low * 2.0 + raw_mid * 1.0) / (raw_low + raw_mid)
     assert unpriced_fg.trade_emission_intensity == pytest.approx(expected_intensity)
     assert unpriced_fg.trade_carbon_cost_per_unit == 0.0
+
+
+def test_update_trade_carbon_costs_skips_inactive_furnace_groups(tmp_path: Path):
+    """A closed furnace group never enters the trade LP, so bad business-case data on it must not raise."""
+    env = _environment(tmp_path)
+    env.technology_emission_factors = [_emission_factor("IO_low", 2.0), _emission_factor("IO_mid", 1.0)]
+    env.avg_boms = {}
+    active_fg = _furnace_group(fg_id="active", bill_of_materials=_bom({"io_low": 0.7, "io_mid": 0.75}))
+    closed_fg = _furnace_group(fg_id="closed", feedstocks=[], status="closed")
+    closed_fg.trade_emission_intensity = 3.0
+
+    env.update_trade_carbon_costs_of_furnace_groups([_plant("plant", "DEU", [active_fg, closed_fg])])
+
+    assert active_fg.trade_emission_intensity == pytest.approx(1.5)
+    assert closed_fg.trade_emission_intensity == 3.0
+
+
+def _observed(fg: FurnaceGroup, intensity: float, paid: float, year: int = 2025) -> FurnaceGroup:
+    fg.upstream_emission_intensity = intensity
+    fg.upstream_carbon_cost_paid = paid
+    fg.upstream_carbon_year = year
+    return fg
+
+
+def test_fill_missing_upstream_uses_country_then_global_technology_peers(tmp_path: Path):
+    """Unobserved active furnace groups take the capacity-weighted mean of observed same-technology peers."""
+    env = _environment(tmp_path)
+    chn_small = _observed(_furnace_group(fg_id="chn_small", technology_name="BOF", capacity=1000.0), 2.0, 20.0)
+    chn_large = _observed(_furnace_group(fg_id="chn_large", technology_name="BOF", capacity=3000.0), 1.0, 0.0)
+    chn_idle = _furnace_group(fg_id="chn_idle", technology_name="BOF")
+    chn_stale = _observed(_furnace_group(fg_id="chn_stale", technology_name="BOF"), 0.1, 1.0, year=2020)
+    ind_new = _furnace_group(fg_id="ind_new", technology_name="BOF")
+    ind_eaf = _furnace_group(fg_id="ind_eaf", technology_name="EAF")
+    deu_eaf = _observed(_furnace_group(fg_id="deu_eaf", technology_name="EAF", status="closed"), 0.5, 5.0)
+
+    env.fill_missing_upstream_embedded_carbon(
+        [
+            _plant("chn", "CHN", [chn_small, chn_large, chn_idle, chn_stale]),
+            _plant("ind", "IND", [ind_new, ind_eaf]),
+            _plant("deu", "DEU", [deu_eaf]),
+        ]
+    )
+
+    chn_mean = (pytest.approx((2.0 * 1000 + 1.0 * 3000) / 4000), pytest.approx(20.0 * 1000 / 4000))
+    for fg in (chn_idle, chn_stale, ind_new):
+        assert (fg.upstream_emission_intensity, fg.upstream_carbon_cost_paid) == chn_mean
+    assert chn_stale.upstream_carbon_year == 2020
+    assert (chn_small.upstream_emission_intensity, chn_large.upstream_emission_intensity) == (2.0, 1.0)
+    # The only observed EAF is closed, so it is no peer and the Indian EAF stays at zero
+    assert (ind_eaf.upstream_emission_intensity, ind_eaf.upstream_carbon_cost_paid) == (0.0, 0.0)

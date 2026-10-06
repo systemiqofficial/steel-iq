@@ -753,7 +753,9 @@ class TM_PAM_connector:
         Notes:
             Both values are per tonne of the furnace group's product and describe what arrived on its
             inbound flows this year; the next LP set-up reads them as last year's realised state. A
-            furnace group absent from the graph, without inbound edges, or idle carries 0.0 for both.
+            furnace group absent from the graph, without inbound edges, or idle carries 0.0 for both
+            and no ``upstream_carbon_year``, so Environment.fill_missing_upstream_embedded_carbon gives
+            it its peers' average at the next set-up; an observed one is stamped with this year.
         """
         logger = logging.getLogger(f"{__name__}.update_furnace_group_embedded_carbon")
         graph = self.G
@@ -762,10 +764,12 @@ class TM_PAM_connector:
             if graph is None or node_id not in graph.nodes or graph.in_degree(node_id) == 0 or fg.utilization_rate <= 0:
                 fg.upstream_emission_intensity = 0.0
                 fg.upstream_carbon_cost_paid = 0.0
+                fg.upstream_carbon_year = None
                 continue
             node = graph.nodes[node_id]
             fg.upstream_emission_intensity = node["upstream_emission_intensity"]
             fg.upstream_carbon_cost_paid = node["upstream_carbon_cost_paid"]
+            fg.upstream_carbon_year = self.current_year
             if fg.upstream_emission_intensity or fg.upstream_carbon_cost_paid:
                 logger.debug(
                     "fg=%s upstream_emission_intensity=%.4f upstream_carbon_cost_paid=%.2f",
