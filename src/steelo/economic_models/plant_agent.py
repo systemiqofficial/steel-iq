@@ -31,11 +31,13 @@ from steelo.domain.calculate_costs import collect_subsidies_for_geo
 from steelo.domain.constants import T_TO_KT, Volumes
 from steelo.domain.events import SteelAllocationsCalculated
 from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
+    log_carbon_border_outcomes,
     set_up_steel_trade_lp,
     solve_steel_trade_lp_and_return_commodity_allocations,
 )
+from steelo.domain.trade_modelling.trade_lp_modelling import Allocations
 from steelo.service_layer.message_bus import MessageBus
-from steelo.utilities.file_output import export_commodity_allocations_to_csv
+from steelo.utilities.file_output import export_carbon_border_charges_to_csv, export_commodity_allocations_to_csv
 from steelo.utilities.memory_profiling import MemoryTracker
 from steelo.utilities.plotting import (
     plot_detailed_trade_map,
@@ -385,6 +387,8 @@ class AllocationModel:
             plant.update_furnace_group_carbon_costs(
                 current_year, bus.env.config.chosen_emissions_boundary_for_carbon_costs
             )
+        bus.env.update_trade_carbon_costs_of_furnace_groups(world_plants=bus.uow.plants.list())
+        bus.env.fill_missing_upstream_embedded_carbon(world_plants=bus.uow.plants.list())
 
         # Clustering: Reduce LP complexity by aggregating furnace groups
         meta_furnace_groups = None
@@ -470,6 +474,9 @@ class AllocationModel:
 
         # Extract allocations before cleanup (needed for event publishing later)
         trade_lp_allocations = trade_lp.allocations if hasattr(trade_lp, "allocations") else None
+        # Tests stub the solved LP with plain dicts; only a real Allocations carries charges to summarise
+        if isinstance(trade_lp_allocations, Allocations):
+            log_carbon_border_outcomes(trade_lp_allocations, int(bus.env.year))
 
         # Disaggregation: Convert clustered allocations back to individual furnace groups
         # Use explicit True check to avoid MagicMock truthy values in tests
@@ -612,6 +619,13 @@ class AllocationModel:
             tm_dir.mkdir(parents=True, exist_ok=True)
             with open(tm_dir / f"steel_trade_allocations_{bus.env.year}.pkl", "wb") as f:
                 pickle.dump(trade_lp_allocations, f)
+            # Tests stub the solved LP with plain dicts; only a real Allocations carries charges to export
+            if isinstance(trade_lp_allocations, Allocations):
+                export_carbon_border_charges_to_csv(
+                    allocations=trade_lp_allocations,
+                    year=int(bus.env.year),
+                    filename=str(tm_dir / "carbon_border_charges.csv"),
+                )
             if (event := SteelAllocationsCalculated(trade_allocations=trade_lp_allocations)) is not None:
                 bus.handle(event)
 

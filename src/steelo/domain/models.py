@@ -470,15 +470,6 @@ class CountryMapping:
         ws_region: str | None = None,
         eu_region: str | None = None,
         tiam_ucl_region: str,
-        # Deprecated explicit parameters (kept for backwards compatibility)
-        EU: bool = False,
-        EFTA_EUCJ: bool = False,
-        OECD: bool = False,
-        NAFTA: bool = False,
-        Mercosur: bool = False,
-        ASEAN: bool = False,
-        RCEP: bool = False,
-        # Accept any additional boolean attributes dynamically
         **trade_bloc_memberships: bool,
     ) -> None:
         self.country = country
@@ -493,17 +484,6 @@ class CountryMapping:
         self.eu_region = eu_region
         self.tiam_ucl_region = tiam_ucl_region
 
-        # Set explicit parameters (for backwards compatibility)
-        # These will be overridden by kwargs if provided
-        self.EU = EU
-        self.EFTA_EUCJ = EFTA_EUCJ
-        self.OECD = OECD
-        self.NAFTA = NAFTA
-        self.Mercosur = Mercosur
-        self.ASEAN = ASEAN
-        self.RCEP = RCEP
-
-        # Set any additional trade bloc memberships dynamically
         for attr_name, attr_value in trade_bloc_memberships.items():
             setattr(self, attr_name, attr_value)
 
@@ -542,10 +522,11 @@ class TechnologyEmissionFactors:
 class CarbonBorderMechanism:
     """Represents a carbon border adjustment mechanism applied by a region to all non-members."""
 
-    mechanism_name: str  # e.g., "CBAM", "EFTA/EUCJ", "OECD", "NAFTA", etc.
-    applying_region_column: str  # Column name in CountryMapping (e.g., "EU", "EFTA_EUCJ", "OECD")
+    mechanism_name: str  # e.g., "CBAM", "EFTA/EUCU", "OECD", "NAFTA", etc.
+    applying_region_column: str  # Column name in CountryMapping (e.g., "EU", "EFTA_EUCU", "OECD")
     start_year: int
     end_year: int | None = None  # None if it doesn't end
+    common_carbon_cost: bool = False  # Price the border at the bloc's series instead of each member's national one
 
     def is_active(self, year: int) -> bool:
         """Check if this mechanism is active in a given year."""
@@ -1206,6 +1187,16 @@ class FurnaceGroup:
         self.technology_emission_factors: list[TechnologyEmissionFactors] = []
         self.emissions = emissions
         self.transport_emissions = 0.0
+        # Own-stage direct tCO2/t product at the business-case factors and the USD/t the trade LP
+        # prices on it; both independent of utilisation (see direct_emission_intensity)
+        self.trade_emission_intensity: float = 0.0
+        self.trade_carbon_cost_per_unit: float = 0.0
+        # Direct emissions embedded in, and carbon already paid on, last year's inputs, per tonne of
+        # product; set by the TM-PAM connector after each solve and read at the next LP set-up
+        self.upstream_emission_intensity: float = 0.0
+        self.upstream_carbon_cost_paid: float = 0.0
+        # Year whose solved inbound flows set the two upstream fields; None when no solve observed them
+        self.upstream_carbon_year: int | None = None
 
         # Initialize _carbon_cost from carbon_costs_for_emissions if provided
         if carbon_costs_for_emissions is not None and carbon_costs_for_emissions > 0:
@@ -1486,6 +1477,89 @@ class FurnaceGroup:
     #     Sets the grid emissivity for the furnace group.
     #     """
     #     self.grid_emissivity = grid_emission
+
+    def direct_emission_intensity(
+        self,
+        ef_by_key: dict[tuple[str, str, str], float],
+        fallback_input_shares: dict[str, float] | None = None,
+    ) -> float:
+        """
+        Own-stage direct emission intensity in tCO2 per tonne of product, independent of utilisation.
+
+        Args:
+            ef_by_key: Direct GHG factors keyed ``(technology, reductant, metallic charge)`` for the
+                configured boundary, as built by ``build_direct_ghg_lookup``.
+            fallback_input_shares: Fleet-average input shares of the technology keyed by normalised
+                metallic charge (``avg_boms[tech][charge]["input_share_pct"]``); used only when the
+                furnace group has no bill-of-materials shares.
+
+        Returns:
+            Sum over the effective primary feedstocks of direct GHG factor times product share.
+
+        Raises:
+            ValueError: If there are no effective primary feedstocks, or a feedstock whose share is
+                needed has no required quantity per tonne of product.
+            KeyError: If a feedstock has no emission factor; the EF table is validated complete at load.
+
+        Notes:
+            Product shares come from the bill of materials (``demand_share_pct / required_quantity``,
+            the product-share maths of the cost breakdown), else from the fallback input shares
+            converted to product shares and renormalised as ``get_bom_from_avg_boms`` does, else
+            equal shares.
+        """
+        return self._direct_emission_intensity_with_source(ef_by_key, fallback_input_shares)[0]
+
+    def _direct_emission_intensity_with_source(
+        self,
+        ef_by_key: dict[tuple[str, str, str], float],
+        fallback_input_shares: dict[str, float] | None,
+    ) -> tuple[float, str]:
+        """Intensity as in ``direct_emission_intensity`` plus its share source: ``bom``, ``avg_bom`` or ``equal``."""
+        feedstocks = self.effective_primary_feedstocks
+        if not feedstocks:
+            raise ValueError(f"Furnace group {self.furnace_group_id} has no effective primary feedstocks")
+
+        def product_share(feedstock: PrimaryFeedstock, input_share: float) -> float:
+            required_quantity = feedstock.required_quantity_per_ton_of_product
+            if not required_quantity:
+                raise ValueError(
+                    f"Feedstock {feedstock.name} of furnace group {self.furnace_group_id} has no "
+                    "required quantity per tonne of product to derive its product share with"
+                )
+            return input_share / required_quantity
+
+        materials = self.bill_of_materials["materials"] if self.bill_of_materials else {}
+        shares = {
+            feedstock.metallic_charge: product_share(
+                feedstock, materials[feedstock.metallic_charge.lower()]["demand_share_pct"]
+            )
+            for feedstock in feedstocks
+            if feedstock.metallic_charge.lower() in materials
+        }
+        source = "bom"
+        if not shares and fallback_input_shares:
+            raw_shares = {
+                feedstock.metallic_charge: product_share(
+                    feedstock, fallback_input_shares[normalize_name(feedstock.metallic_charge)]
+                )
+                for feedstock in feedstocks
+                if normalize_name(feedstock.metallic_charge) in fallback_input_shares
+            }
+            total = sum(raw_shares.values())
+            if total > 0:
+                shares = {charge: share / total for charge, share in raw_shares.items()}
+                source = "avg_bom"
+        if not shares:
+            shares = {feedstock.metallic_charge: 1.0 / len(feedstocks) for feedstock in feedstocks}
+            source = "equal"
+
+        # A feedstock absent from the share source was not charged, so it carries no emissions
+        intensity = sum(
+            ef_by_key[(feedstock.technology.lower(), normalize_name(feedstock.reductant), feedstock.metallic_charge)]
+            * shares.get(feedstock.metallic_charge, 0.0)
+            for feedstock in feedstocks
+        )
+        return intensity, source
 
     @property
     def emissions_per_unit(self) -> dict[str, dict[str, float]]:
@@ -10726,6 +10800,135 @@ class Environment:
                     carbon_price=self.carbon_costs[pl.location.iso3][year_key],
                     chosen_emissions_boundary_for_carbon_costs=self.config.chosen_emissions_boundary_for_carbon_costs,
                 )
+
+    def update_trade_carbon_costs_of_furnace_groups(self, world_plants: list[Plant]) -> None:
+        """
+        Set each furnace group's scale-free direct emission intensity and this year's trade carbon cost.
+
+        Args:
+            world_plants: Plants whose furnace groups are refreshed.
+
+        Notes:
+            The price is the plant's carbon cost series at the current year, the same source as
+            ``Plant.update_furnace_group_carbon_costs`` (so the PRI to USA fallback carries over); a
+            plant without a series has no carbon policy and prices at 0.0. Furnace groups without
+            bill-of-materials shares fall back to the fleet-average input shares of their technology,
+            else equal shares; in the first year every furnace group takes a fallback. Only furnace
+            groups in an active status are refreshed, since only they enter the trade LP; the others
+            keep their last values until they are active again.
+        """
+        logger = logging.getLogger(f"{__name__}.update_trade_carbon_costs_of_furnace_groups")
+        ef_by_key = build_direct_ghg_lookup(
+            self.technology_emission_factors, self.config.chosen_emissions_boundary_for_carbon_costs
+        )
+        # Hardcoded fallback average BOMs without a cost carry no input share; they are skipped
+        fallback_shares_by_tech = {
+            tech: {
+                normalize_name(charge): data["input_share_pct"]
+                for charge, data in shares.items()
+                if "input_share_pct" in data
+            }
+            for tech, shares in self.avg_boms.items()
+        }
+        source_counts = {"bom": 0, "avg_bom": 0, "equal": 0}
+        year = Year(self.year)
+        for plant in world_plants:
+            price = plant.carbon_cost_series.get(year, 0.0)
+            for fg in plant.furnace_groups:
+                if fg.status.lower() not in self.config.active_statuses:
+                    continue
+                intensity, source = fg._direct_emission_intensity_with_source(
+                    ef_by_key, fallback_shares_by_tech.get(fg.technology.name)
+                )
+                fg.trade_emission_intensity = intensity
+                fg.trade_carbon_cost_per_unit = intensity * price
+                source_counts[source] += 1
+                if source != "bom":
+                    logger.debug(
+                        "fg=%s tech=%s reductant=%s iso3=%s intensity=%.4f price=%.2f cost=%.2f source=%s",
+                        fg.furnace_group_id,
+                        fg.technology.name,
+                        fg.chosen_reductant,
+                        plant.location.iso3,
+                        intensity,
+                        price,
+                        fg.trade_carbon_cost_per_unit,
+                        source,
+                    )
+        logger.info(
+            "Trade carbon costs refreshed for %d furnace groups in %s: %d from BOM shares, "
+            "%d from fleet-average shares, %d from equal shares",
+            sum(source_counts.values()),
+            year,
+            source_counts["bom"],
+            source_counts["avg_bom"],
+            source_counts["equal"],
+        )
+
+    def fill_missing_upstream_embedded_carbon(self, world_plants: list[Plant]) -> None:
+        """
+        Give active furnace groups without last year's upstream carbon the average of their peers.
+
+        Args:
+            world_plants: Plants whose active furnace groups are filled.
+
+        Notes:
+            A furnace group observed last year is one whose ``upstream_carbon_year`` is the previous
+            year. Every other active furnace group (idle, new, or back from mothballing) would
+            otherwise enter the carbon border charge with no upstream emissions, so a steel furnace
+            would be charged on its own small stage alone. It takes the capacity-weighted mean of the
+            observed furnace groups of its technology in its country, else of its technology
+            worldwide, else keeps 0.0. Both fields come from the same peers so intensity and carbon
+            paid stay consistent. ``upstream_carbon_year`` is left unchanged, so filled values never
+            count as observations. In the first year nothing is observed and every value stays 0.0.
+        """
+        logger = logging.getLogger(f"{__name__}.fill_missing_upstream_embedded_carbon")
+        observed_year = int(self.year) - 1
+        active = [
+            (plant.location.iso3, fg)
+            for plant in world_plants
+            for fg in plant.furnace_groups
+            if fg.status.lower() in self.config.active_statuses
+        ]
+        # (emissions x capacity, carbon paid x capacity, capacity) per peer group
+        country_sums: dict[tuple[str, str], list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
+        global_sums: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
+        missing = []
+        for iso3, fg in active:
+            if fg.upstream_carbon_year != observed_year:
+                missing.append((iso3, fg))
+                continue
+            capacity = float(fg.capacity)
+            for sums in (country_sums[(iso3, fg.technology.name)], global_sums[fg.technology.name]):
+                sums[0] += fg.upstream_emission_intensity * capacity
+                sums[1] += fg.upstream_carbon_cost_paid * capacity
+                sums[2] += capacity
+
+        filled = {"country": 0, "global": 0, "none": 0}
+        for iso3, fg in missing:
+            for scope, peers in (
+                ("country", country_sums.get((iso3, fg.technology.name))),
+                ("global", global_sums.get(fg.technology.name)),
+            ):
+                if peers is not None and peers[2] > 0:
+                    fg.upstream_emission_intensity = peers[0] / peers[2]
+                    fg.upstream_carbon_cost_paid = peers[1] / peers[2]
+                    filled[scope] += 1
+                    break
+            else:
+                fg.upstream_emission_intensity = 0.0
+                fg.upstream_carbon_cost_paid = 0.0
+                filled["none"] += 1
+        logger.info(
+            "Upstream embedded carbon in %s: %d active furnace groups observed in %d, %d filled from "
+            "country-technology peers, %d from technology peers worldwide, %d left at 0.0",
+            self.year,
+            len(active) - len(missing),
+            observed_year,
+            filled["country"],
+            filled["global"],
+            filled["none"],
+        )
 
     def pass_carbon_cost_series_to_plants(self, world_plants: list[Plant]) -> None:
         """

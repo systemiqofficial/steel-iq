@@ -32,6 +32,7 @@ usage: run_simulation [-h] [--start-year START_YEAR] [--end-year END_YEAR]
                       [--iron-to-steel-price-ratio IRON_TO_STEEL_PRICE_RATIO]
                       [--random-seed RANDOM_SEED] [--enable-capacity-policy]
                       [--credit-validity-years CREDIT_VALIDITY_YEARS]
+                      [--cbam-rebate]
 
 Run a full steel model simulation.
 
@@ -131,6 +132,8 @@ options:
                         Years a capacity-pool credit may sit banked before it
                         expires; requires --enable-capacity-policy (default:
                         no expiry)
+  --cbam-rebate         Rebate the carbon already paid on exports leaving a
+                        carbon border region (default: disabled)
 ```
 
 `--output-dir` is accepted but currently not used: every run writes to a fresh `$STEELO_HOME/output/sim_<timestamp>/` directory, also linked as `$STEELO_HOME/output_latest`.
