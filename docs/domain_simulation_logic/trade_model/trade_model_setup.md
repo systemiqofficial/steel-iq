@@ -192,16 +192,18 @@ Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASE
 ---
 
 #### `adapt_allocation_costs_for_carbon_border_mechanisms()`
-**Purpose:** Applies carbon border adjustment mechanisms (CBAM) to trade costs.
+**Purpose:** Charges imports into carbon-border regions on the embedded direct emissions of the product, at the destination's carbon price, net of carbon already paid upstream.
 
-**What it models:**
-- Export rebates when high-carbon-price region exports to low-carbon-price region
-- Import adjustments when low-carbon-price region exports to high-carbon-price region
-- Prevents double-counting when countries belong to multiple policy regions
+**What it models:** For every legal arc from a production centre into a country covered by an active mechanism, the allocation cost rises by `max(0, E × P_d − C)`, where `E` is the source's own plus upstream direct emission intensity (tCO2/t), `P_d` the destination's carbon price (from `resolve_destination_carbon_prices()`) and `C` the carbon cost already paid at the source and upstream of it (USD/t). The own-stage part of `E` and `C` uses this year's emission factors and carbon price. The upstream part of both comes from last year's solved trade graph (see `update_furnace_group_embedded_carbon()` in the TM-PAM connector), so for every exporter a change of suppliers reaches the charge one year later. Active furnace groups that did not run last year take the average of observed peers of the same technology (see `Environment.fill_missing_upstream_embedded_carbon()`). In the first simulated year nothing has been observed, so `E` and `C` cover the own stage only.
 
-**Generalized design:** Works with any carbon border mechanism (EU CBAM, OECD, etc.), not just EU-specific.
+**Rules:**
+- Two countries inside one mechanism's applying set never adjust each other's flows, whatever other mechanisms cover either of them.
+- Every arc evaluates every mechanism and sums the result, so the outcome does not depend on mechanism order.
+- Supplier sources are skipped (their production cost is a raw-material price); a destination without a carbon price series is not charged and is warned about once.
+- Export rebates are off by default. With `SimulationConfig.carbon_border_export_rebates = True` the mirror term `min(0, E × P_d − C)` is added on arcs leaving a covered country, so every cross-border arc then carries exactly `E × P_d`.
+- `P_d` comes from `resolve_destination_carbon_prices()`: a country covered by a mechanism whose CBAM sheet row "Common carbon cost across the bloc?" is 1 is priced at that bloc's row of the Carbon cost sheet (kept under the normalised bloc name, e.g. `EFTA_EUCU`), otherwise at its national series; a country under several mechanisms takes the highest. Plant costs always use the national series.
 
-**Note:** Called separately from main setup, typically in allocation workflow.
+**Outputs:** Non-zero adjustments are recorded per arc on `Allocations.carbon_border_charges` and booked into the importer's material cost like tariffs; `log_carbon_border_outcomes()` summarises the charges the solved flows actually carry each year.
 
 ---
 
@@ -213,6 +215,7 @@ Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASE
 - `lp_epsilon`: Solver tolerance (1e-3) - how close to constraints is acceptable
 - `capacity_limit`: Production safety factor (0.95) - models realistic availability
 - `active_statuses`: Which furnace states to include (e.g., ["operating", "mothballed"])
+- `carbon_border_export_rebates`: Also rebate exports leaving a carbon-border region (default False)
 
 **Physical constraints:**
 - `hot_metal_radius`: Maximum transport distance for hot commodities (~5 km by default). Enforced in several layers:
