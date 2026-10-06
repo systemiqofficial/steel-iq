@@ -3927,10 +3927,13 @@ def disaggregate_allocations(
             f"resolved cluster keys: from={ex[3]}, to={ex[4]}"
         )
 
-    # Create new Allocations object
+    # Create new Allocations object. Tariff taxes are keyed by (from_iso3, to_iso3, commodity),
+    # not by process center, so they carry over unchanged and TM_PAM_connector can still
+    # propagate them into plant BOM material costs.
     result = Allocations(
         allocations=disaggregated_allocs,
         allocation_costs=disaggregated_costs if disaggregated_costs else None,
+        tariff_taxes=clustered_allocations.tariff_taxes,
     )
 
     logger.info(f"[DISAGGREGATION] Output allocations: {len(result.allocations)} flows")

@@ -253,6 +253,31 @@ class ProcessCenter:
         self.optimal_production = optimal_production
 
 
+def potential_tariff_keys(from_iso3: str, to_iso3: str, commodity_name: str) -> list[Tuple[str, str, str]]:
+    """Return the (from_iso3, to_iso3, commodity) tariff keys that apply to a flow.
+
+    Covers the exact route, a wildcard source, a wildcard destination and a wildcard commodity.
+    Iron products (hot_metal, pig_iron, dri_*, ...) also match tariffs set on the "iron" family,
+    so a quota keyed on "iron" caps all iron products together. The wildcard-commodity key is not
+    repeated for the family, since it already covers every commodity.
+    """
+    from steelo.domain.constants import IRON_PRODUCTS
+
+    keys = [
+        (from_iso3, to_iso3, commodity_name),
+        ("*", to_iso3, commodity_name),
+        (from_iso3, "*", commodity_name),
+        (from_iso3, to_iso3, "*"),
+    ]
+    if commodity_name.lower() in IRON_PRODUCTS and commodity_name.lower() != "iron":
+        keys += [
+            (from_iso3, to_iso3, "iron"),
+            ("*", to_iso3, "iron"),
+            (from_iso3, "*", "iron"),
+        ]
+    return keys
+
+
 class Allocations:
     """Stores optimal commodity flows and costs between process centers.
 
@@ -825,12 +850,7 @@ class TradeLPModel:
 
     def return_potential_tariff_keys(self, from_pc_iso3, to_pc_iso3, commodity_name):
         """Return the potential keys for tariff taxes and quotas"""
-        return [
-            (from_pc_iso3, to_pc_iso3, commodity_name),
-            ("*", to_pc_iso3, commodity_name),
-            (from_pc_iso3, "*", commodity_name),
-            (from_pc_iso3, to_pc_iso3, "*"),
-        ]
+        return potential_tariff_keys(from_pc_iso3, to_pc_iso3, commodity_name)
 
     @time_function
     def add_allocation_keys_subject_to_sf_constraints_as_parameters_to_lp(self):
