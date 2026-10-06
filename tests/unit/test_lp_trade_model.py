@@ -1092,15 +1092,15 @@ def test_solve_lp_model_logs_highs_diagnostics_and_dumps_lp_on_failure(location_
 
 def test_solve_lp_model_falls_back_to_cold_ipx_when_hipo_errors(location_mock_factory, caplog, monkeypatch):
     """
-    When the HiPO solve ends in a solver error, the LP is re-solved from scratch with IPX
-    and the model carries on with that optimal solution as if nothing had happened.
+    When the HiPO solve ends in a solver error, the LP is re-solved from scratch with IPX under the
+    relaxed fallback tolerances, and the model carries on with that optimal solution as if nothing had happened.
     """
     model, pc_demand = _build_supply_to_demand_model(location_mock_factory)
     real_run_solver = TradeLPModel._run_solver
-    attempts: list[str] = []
+    attempts: list[tuple[str, bool]] = []
 
-    def hipo_errors_out(self, solver_name, warm_start, logger):
-        attempts.append(solver_name)
+    def hipo_errors_out(self, solver_name, warm_start, logger, relaxed_tolerances=False):
+        attempts.append((solver_name, relaxed_tolerances))
         if solver_name == "hipo":
             failed = types.SimpleNamespace(
                 solver=types.SimpleNamespace(
@@ -1108,14 +1108,17 @@ def test_solve_lp_model_falls_back_to_cold_ipx_when_hipo_errors(location_mock_fa
                 )
             )
             return types.SimpleNamespace(_solver_model=highspy.Highs()), failed
-        return real_run_solver(self, solver_name, warm_start, logger)
+        return real_run_solver(self, solver_name, warm_start, logger, relaxed_tolerances)
 
     monkeypatch.setattr(TradeLPModel, "_run_solver", hipo_errors_out)
 
     with caplog.at_level("WARNING"):
         result = model.solve_lp_model()
 
-    assert attempts == ["hipo", "ipx"]
+    # Only the fallback runs under relaxed tolerances; the primary solve keeps HiGHS's defaults
+    assert attempts == [("hipo", False), ("ipx", True)]
+    assert not set(model.fallback_solver_options) & set(model.solver_options)
+    assert any("solver=ipx relaxed_tolerances=" in r.getMessage() for r in caplog.records)
     assert result.solver.termination_condition == pyo.TerminationCondition.optimal
     assert model.solution_status == pyo.SolverStatus.ok
     assert any("status=retry solver=ipx after=hipo" in r.getMessage() for r in caplog.records)

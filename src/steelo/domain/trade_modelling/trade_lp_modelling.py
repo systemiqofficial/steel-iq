@@ -439,11 +439,6 @@ class TradeLPModel:
             # (look for "Running HiPO" / "Using dual simplex solver" / "IPX version").
             "output_flag": "true",
             "log_to_console": "true",
-            # Optimality tolerances for faster convergence
-            "ipm_optimality_tolerance": 1e-3,
-            "primal_feasibility_tolerance": 1e-3,
-            "dual_feasibility_tolerance": 1e-3,
-            "kkt_tolerance": 1e-3,
         }
 
         # Warm-start support (OPT-2) - previous year's solution for faster convergence
@@ -453,6 +448,14 @@ class TradeLPModel:
         self.failure_dump_path: Path | None = None
         # Retried cold in order on a non-optimal solve; in HiGHS 1.15 "ipm" is HiPO again, legacy IPM is "ipx".
         self.fallback_solvers: list[str] = ["ipx", "simplex"]
+        # Looser tolerances applied only to the fallback retries, so a hard year still gets a solution;
+        # the primary solve keeps HiGHS's default (~1e-7) tolerances and results stay comparable across runs.
+        self.fallback_solver_options: dict[str, Any] = {
+            "ipm_optimality_tolerance": 1e-3,
+            "primal_feasibility_tolerance": 1e-3,
+            "dual_feasibility_tolerance": 1e-3,
+            "kkt_tolerance": 1e-3,
+        }
 
     def add_transportation_costs(self, transportation_costs: list[TransportationCost]) -> None:
         """Add transportation costs to the model."""
@@ -1819,7 +1822,8 @@ class TradeLPModel:
 
         Notes:
             - Uses solver_options for configuration (default: HiPO interior point with crossover)
-            - A non-optimal primary solve is retried cold with each of fallback_solvers in turn
+            - A non-optimal primary solve is retried cold with each of fallback_solvers in turn,
+              under the looser fallback_solver_options tolerances
             - Supports warm-starting from previous_solution (simplex only)
             - Random seed from SimulationConfig.random_seed for reproducibility
             - Does not automatically load solution (call extract_solution() after)
@@ -1863,7 +1867,7 @@ class TradeLPModel:
                 logger.warning(f"operation=trade_optimization status=retry solver={fallback} after={solver_type}")
                 del solver
                 gc.collect()
-                solver, result = self._run_solver(fallback, False, logger)
+                solver, result = self._run_solver(fallback, False, logger, relaxed_tolerances=True)
                 if result.solver.termination_condition == pyo.TerminationCondition.optimal:
                     break
                 self._log_solver_failure(solver, result.solver.termination_condition, logger, dump_lp=False)
@@ -1918,13 +1922,16 @@ class TradeLPModel:
 
         return result
 
-    def _run_solver(self, solver_name: str, warm_start: bool, logger: logging.Logger) -> tuple[Any, Any]:
+    def _run_solver(
+        self, solver_name: str, warm_start: bool, logger: logging.Logger, relaxed_tolerances: bool = False
+    ) -> tuple[Any, Any]:
         """Solve the built LP with a fresh HiGHS instance running the given algorithm.
 
         Args:
             solver_name: HiGHS `solver` option value (hipo, ipx or simplex)
             warm_start: Pass the variable values already set on the model as a starting basis (simplex only)
             logger: Logger for the timing line
+            relaxed_tolerances: Apply fallback_solver_options on top of solver_options (fallback retries only)
 
         Returns:
             Tuple of (appsi solver instance, Pyomo result object)
@@ -1934,6 +1941,11 @@ class TradeLPModel:
         solver.options["random_seed"] = self.random_seed
         solver.options.update(self.solver_options)
         solver.options["solver"] = solver_name
+        if relaxed_tolerances:
+            solver.options.update(self.fallback_solver_options)
+            logger.warning(
+                f"operation=trade_optimization solver={solver_name} relaxed_tolerances={self.fallback_solver_options}"
+            )
         solver.config.load_solution = False  # Don't try to load infeasible solution
         # HiGHS's log reaches the run log via the pyomo appsi logger; tee=True also mirrors it to stdout.
         highs_log = os.environ.get("STEELO_HIGHS_LOG", "").lower() in {"1", "true", "yes"}
