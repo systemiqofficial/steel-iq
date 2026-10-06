@@ -3985,7 +3985,9 @@ def disaggregate_allocations(
     for charge_key in sorted(set(cluster_charges_by_name) - matched_charge_keys)[:10]:
         logger.debug(f"[DISAGGREGATION] Charged cluster arc {charge_key} matched no disaggregated flow")
 
-    # Create new Allocations object
+    # Create new Allocations object. Tariff taxes are keyed by (from_iso3, to_iso3, commodity),
+    # not by process center, so they carry over unchanged and TM_PAM_connector can still
+    # propagate them into plant BOM material costs.
     result = Allocations(
         allocations=disaggregated_allocs,
         allocation_costs=disaggregated_costs if disaggregated_costs else None,

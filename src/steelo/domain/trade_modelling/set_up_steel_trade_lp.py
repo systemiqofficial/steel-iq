@@ -688,8 +688,11 @@ def enforce_trade_tariffs_on_allocations(
                     logger.warning(f"cannot find average prices for {cost_commodity}")
                     continue
                 else:
+                    # Key by the tariff's own commodity, not the price family: a "pig_iron" tariff
+                    # keyed as "iron" would also hit every other iron product
+                    tariff_commodity = trade_tariff.commodity.lower() if trade_tariff.commodity is not None else ""
                     for comm, iso3 in keys_of_region:
-                        tax_dict[(iso3 or "unknown", trade_tariff.to_iso3 or "unknown", comm)] = (
+                        tax_dict[(iso3 or "unknown", trade_tariff.to_iso3 or "unknown", tariff_commodity)] = (
                             trade_tariff.tax_percentage * average_commodity_price_per_region[(comm, iso3)]
                         )
             elif trade_tariff.to_iso3 == "*":
@@ -727,6 +730,8 @@ def enforce_trade_tariffs_on_allocations(
                     logger.warning(f"cannot find average prices for {trade_tariff.from_iso3 or 'unknown'}")
                     continue
                 else:
+                    # Keys use the price family ("iron", "steel"); potential_tariff_keys matches
+                    # "iron" to every iron product on lookup
                     for comm, iso3 in keys_of_region:
                         tax_dict[(trade_tariff.from_iso3 or "unknown", trade_tariff.to_iso3 or "unknown", comm)] = (
                             trade_tariff.tax_percentage * average_commodity_price_per_region[(comm, iso3)]

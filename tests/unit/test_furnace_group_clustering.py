@@ -609,6 +609,75 @@ class TestDisaggregateAllocations:
         assert (supplier_pc, demand_pc, commodity) in result.allocations
         assert result.allocations[(supplier_pc, demand_pc, commodity)] == 3000.0
 
+    def test_disaggregate_preserves_tariff_taxes(self):
+        """Test that tariff taxes survive disaggregation so TM_PAM_connector can propagate them to plants."""
+        from steelo.domain.trade_modelling.furnace_group_clustering import disaggregate_allocations
+        from steelo.domain.trade_modelling.trade_lp_modelling import (
+            Allocations,
+            ProcessCenter,
+            Commodity,
+            Process,
+            ProcessType,
+        )
+
+        fg1_id = "plant1_fg0"
+        fg2_id = "plant2_fg0"
+        meta_fg = MetaFurnaceGroup(
+            cluster_key=ClusterKey("BOF", "CHN", "hot_metal:hot_metal"),
+            meta_furnace_group_id="cluster_BOF_hot_metal_CHN",
+            constituent_fg_ids=[fg1_id, fg2_id],
+            technology_name="BOF",
+            chosen_reductant="hot_metal",
+            location=Location(lat=35.0, lon=110.0, iso3="CHN", country="China", region="Asia"),
+            total_capacity=Volumes(4000.0),
+            weighted_avg_carbon_cost=50.0,
+            dynamic_business_case=None,
+            capacity_shares={fg1_id: 0.5, fg2_id: 0.5},
+            constituent_locations={
+                fg1_id: Location(lat=34.0, lon=109.0, iso3="CHN", country="China", region="Asia"),
+                fg2_id: Location(lat=36.0, lon=111.0, iso3="CHN", country="China", region="Asia"),
+            },
+        )
+
+        bof_process = Process(name="BOF", type=ProcessType.PRODUCTION, bill_of_materials=[])
+        meta_fg_pc = ProcessCenter(
+            name="cluster_BOF_hot_metal_CHN",
+            process=bof_process,
+            capacity=4000.0,
+            location=meta_fg.location,
+        )
+        demand_process = Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[])
+        demand_pc = ProcessCenter(
+            name="demand_center_usa",
+            process=demand_process,
+            capacity=5000.0,
+            location=Location(lat=40.0, lon=-75.0, iso3="USA", country="United States", region="Americas"),
+        )
+
+        commodity = Commodity("steel")
+        tariff_taxes = {("CHN", "USA", "steel"): 120.0, ("*", "USA", "steel"): 30.0}
+        clustered_allocs = Allocations(
+            allocations={(meta_fg_pc, demand_pc, commodity): 2000.0},
+            tariff_taxes=tariff_taxes,
+        )
+
+        config = type(
+            "Config",
+            (),
+            {"hot_metal_radius": 100.0, "closely_allocated_products": ["dri_high", "dri_mid", "dri_low", "hot_metal"]},
+        )()
+
+        result = disaggregate_allocations(
+            clustered_allocations=clustered_allocs,
+            meta_furnace_groups=[meta_fg],
+            plants_repo=None,
+            config=config,
+        )
+
+        # Flows are split across constituent FGs, and the tariff taxes are carried over unchanged
+        assert {from_pc.name for from_pc, _, _ in result.allocations} == {fg1_id, fg2_id}
+        assert result.tariff_taxes == tariff_taxes
+
 
 class TestClusterFurnaceGroups:
     """Test furnace group clustering function."""

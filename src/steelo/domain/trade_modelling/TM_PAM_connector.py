@@ -8,7 +8,7 @@ from steelo.adapters.repositories.in_memory_repository import (
 )
 from steelo.domain.calculate_costs import ENERGY_FEEDSTOCK_KEYS
 from steelo.domain.models import PrimaryFeedstock, FurnaceGroup, TransportKPI
-from steelo.domain.trade_modelling.trade_lp_modelling import Allocations, ProcessType
+from steelo.domain.trade_modelling.trade_lp_modelling import Allocations, ProcessType, potential_tariff_keys
 from steelo.domain.constants import LP_TOLERANCE
 from steelo.domain import diagnostics as diag
 from steelo.utilities.utils import normalize_name
@@ -204,8 +204,9 @@ class TM_PAM_connector:
         """Retrieve tariff cost between two countries for a specific commodity.
 
         Supports wildcard keys: checks exact match first, then wildcard source,
-        wildcard destination, and wildcard commodity. All matching tariffs are summed,
-        mirroring the LP's ``return_potential_tariff_keys`` logic.
+        wildcard destination, and wildcard commodity, plus the "iron" family keys for
+        iron products. All matching tariffs are summed, using the same
+        ``potential_tariff_keys`` as the LP.
 
         Args:
             from_iso: Source country ISO3 code.
@@ -215,14 +216,8 @@ class TM_PAM_connector:
         Returns:
             Tariff cost per ton in USD. Returns 0.0 if no tariffs apply.
         """
-        comm = commodity.lower()
         total = 0.0
-        for key in [
-            (from_iso, to_iso, comm),
-            ("*", to_iso, comm),
-            (from_iso, "*", comm),
-            (from_iso, to_iso, "*"),
-        ]:
+        for key in potential_tariff_keys(from_iso, to_iso, commodity.lower()):
             total += self.tariff_taxes.get(key, 0.0)
         return total
 
