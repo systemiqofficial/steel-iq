@@ -247,7 +247,7 @@ def _compute_effective_bof_capacity(
     Args:
         fg: The furnace group.
         plant: Plant that contains the FG (used for location/distance calculations).
-        hot_metal_producers_by_iso3: Active BF/ESF/SR groups indexed by ISO3.
+        hot_metal_producers_by_iso3: Active hot-metal producers indexed by ISO3.
         aggregated_constraints: Aggregated metallic-charge constraints (may be None).
         config: Simulation configuration.
 
@@ -263,8 +263,8 @@ def _compute_effective_bof_capacity(
     if min_share is None or min_share <= 0:
         return physical_cap
 
-    # Sum BF/ESF/SR capacity within hot_metal_radius of this BOF FG (same ISO3 only,
-    # matching the per-country clustering constraint)
+    # Sum hot-metal producer capacity within hot_metal_radius of this BOF FG (same ISO3
+    # only, matching the per-country clustering constraint)
     iso3 = plant.location.iso3
     producers = hot_metal_producers_by_iso3.get(iso3, [])
     reachable_hm_cap = sum(
@@ -581,7 +581,7 @@ def cluster_furnace_groups(
     logger.info("[CLUSTERING] Starting furnace group clustering...")
 
     # Step 1: Collect all active furnace groups with their plants.
-    # Drop BOFs that have no active, in-country BF/ESF/SR within hot_metal_radius.
+    # Drop BOFs that have no active, in-country hot-metal producer within hot_metal_radius.
     #
     # The domain-model flag fg.has_hot_metal_access (set by PlantGroup.update_hot_metal_access)
     # is too permissive: PlantGroups can span countries, so a BOF near a border may get access
@@ -596,7 +596,7 @@ def cluster_furnace_groups(
     hot_metal_producers_by_iso3: dict[str, list[tuple[FurnaceGroup, Plant]]] = {}
     for plant in plants:
         for fg in plant.furnace_groups:
-            if fg.status.lower() in config.active_statuses and fg.technology.name.lower() in ("bf", "esf", "sr"):
+            if fg.status.lower() in config.active_statuses and fg.produces_hot_metal:
                 iso3 = plant.location.iso3
                 hot_metal_producers_by_iso3.setdefault(iso3, []).append((fg, plant))
 
@@ -616,7 +616,7 @@ def cluster_furnace_groups(
                         filtered_bofs_no_hot_metal += 1
                         logger.debug(
                             f"[CLUSTERING] Filtering BOF FG {fg.furnace_group_id} "
-                            f"(plant {plant.plant_id}, {iso3}): no active BF/ESF/SR "
+                            f"(plant {plant.plant_id}, {iso3}): no active hot-metal producer "
                             f"in same country within {config.hot_metal_radius:.0f} km"
                         )
                         continue

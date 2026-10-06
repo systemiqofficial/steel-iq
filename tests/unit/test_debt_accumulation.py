@@ -71,6 +71,7 @@ def test_debt_accumulation_on_technology_switch():
         technology_name="EAF",
         plant_lifetime=20,
         lag=0,
+        capacity=plant.get_furnace_group("fg1").capacity,
         capex=400.0,  # New technology capex
         capex_no_subsidy=400.0,  # Same as capex if no subsidy
         cost_of_debt=0.05,

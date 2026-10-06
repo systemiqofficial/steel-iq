@@ -188,6 +188,12 @@ features:
   furnace_group_breakdown: true  # Set to false to disable
 ```
 
+To keep the failing trade LP for offline reproduction, enable the (large) MPS dump the same way:
+```yaml
+features:
+  dump_failed_lp: true  # Writes TM/trade_lp_failed_<year>.mps on a non-optimal solve
+```
+
 ### Key Metrics to Monitor
 
 1. **Command counts**: How many switches, renovations, closures, expansions?

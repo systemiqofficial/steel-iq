@@ -50,7 +50,7 @@ The Trade Module solves a linear programming optimization problem representing t
 **Purpose**: Make economic decisions for all plants and plant groups
 
 **Process**:
-The Plant Agent Model uses data from the Trade Model obtained via the TM-PAM Connector (e.g., utilization rates, bills of materials, emissions) to evaluate economic viability through NPV calculations and issue strategic commands. After establishing market conditions (carbon costs, current and forecast prices), the model evaluates each furnace group for optimal action: renovate at end-of-life, switch technology mid-lifetime (accounting for stranded assets), close if unprofitable, or continue operations. Plant groups then evaluate expansion opportunities using 3-year price forecasts to identify the best NPV options across all plants and technologies. All capacity additions are subject to annual buildout limits, with separate constraints for steel and iron production to reflect supply chain realities.
+The Plant Agent Model uses data from the Trade Model obtained via the TM-PAM Connector (e.g., utilization rates, bills of materials, emissions) to evaluate economic viability through NPV calculations and issue strategic commands. After establishing market conditions (carbon costs, current and forecast prices), the model evaluates each furnace group for optimal action: renovate at end-of-life, switch technology mid-lifetime (accounting for stranded assets), close if unprofitable, or continue operations. Plant groups then evaluate expansion opportunities using 3-year price forecasts to identify the best NPV options across all plants and technologies. All capacity additions are subject to annual buildout limits, with separate constraints for steel and iron production to reflect supply chain realities. When China's capacity-replacement policy is enabled, Chinese replacements and additions are additionally gated on a national pool of retirement credits (see [China Capacity-Replacement Policy](capacity_replacement_policy.md)).
 
 **Key Outputs**:
 - Strategic commands (renovate, switch, close, expand)
@@ -168,6 +168,7 @@ Data Collector
 - **Probabilistic adoption**: Not all economically viable projects are realized (reflects real-world hesitation)
 - **Supply chain constraints**: Separate limits for steel and iron reflect different infrastructure requirements
 - **Allowed transitions**: Technology switches constrained by technical feasibility matrix
+- **Capacity-replacement policy (optional)**: China's swap regime, in which new capacity is built against retired capacity at a ratio that penalises emission-intense routes
 
 ### Geospatial Optimization
 - **Custom renewable energy**: Site-specific LCOE from weather data and storage optimization

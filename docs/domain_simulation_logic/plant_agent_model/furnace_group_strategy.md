@@ -195,6 +195,7 @@ Start
 - **Note**: Secondary output adjustment is included in NPV for both brownfield (renovation) and greenfield (technology switch) paths, as well as COSA baseline. This captures by-product revenue (e.g., bf_gas, bof_gas, cog, ironmaking_slag), disposal costs (e.g., steelmaking_slag — see `disposal_cost_outputs` in SimulationConfig), and carbon output costs (e.g., co2_stored) in investment decisions.
 - **Construction-year alignment**: `calculate_npv_full` lags the secondary-output adjustment with `zeros` of length `construction_time` so it only contributes during operational years. Earlier code applied the constant to every year of the cash-flow series, including construction — that double-counted upcoming by-product revenue against capex, biasing greenfield NPVs upward.
 - **Greenfield BOM shape**: `Environment.get_bom_from_avg_boms()` produces the BOM dict consumed by `calculate_variable_opex()` on the greenfield path. Each `materials[<feedstock>]` entry must include `total_material_cost` and each `energy[<carrier>]` entry must include `product_volume`; without these keys VOPEX silently collapsed and greenfield NPV was undervalued.
+- **Average-BOM cost basis**: fleet-derived `avg_boms` entries carry `unit_cost` per tonne of *input* (`cost_sum / demand_sum` in `generate_average_boms()`), and `get_bom_from_avg_boms()` charges them as `unit_cost × input demand`. Technologies with no active furnace group anywhere get a placeholder instead: their whole default metallic charge priced at the fallback material cost, which is authored per tonne of *product* (USD/t HM). Placeholder entries are marked `cost_basis="per_output"` and charged on output volume, so the bill per tonne of product equals the authored value; previously they were charged per input tonne, overbilling undeployed technologies by the ore ratio (~1.5×). Material `demand` always carries the physical input tonnage regardless of basis. Placeholder technologies also ride a hardcoded 0.6 utilisation (deliberately conservative) and the flat fallback number carries no transport or tariff component (destination unknown before a site exists).
 
 ### Stage 9: Adjust NPV for COSA
 - **Decision**: Is this a technology switch?
@@ -348,6 +349,7 @@ threshold in Stage 2 runs unconditionally.
 **Purpose**: Narrow down technology options based on what's allowed in the current year
 - **Process**: Intersect `allowed_techs[current_year]` with `allowed_furnace_transitions[current_tech]`, then apply the **P2 CO2 storage gate** to drop CCS candidates the country cannot physically support.
 - **P2 gate**: For each surviving CCS tech, the gate computes the plant's annual `get_co2_need(tech, capacity, env-wide reductant)` and compares against `get_co2_headroom(iso3, current_year + construction_time)`. If `need > headroom` the tech is dropped so the NPV race in Stage 5 picks the next-best non-CCS alternative naturally. CCU techs have `co2_stored = 0` in BOM and are never dropped.
+- **China capacity-replacement gate** (policy-enabled runs, Chinese plants only): for each surviving candidate — the incumbent's renovation option included — the policy's REPLACE hook resolves the capacity the candidate may build *before* its NPV runs. A utilisation gate comes first: a group at or below the utilisation floor for the whole recorded window loses every candidate. Otherwise the permitted capacity is `current / ratio`, 1.5:1 when the new route is emission-intense whatever the old route is (stricter than the source flowchart's old-route-first test, by modelling decision), 1:1 otherwise and always in the exempt provinces. A blocked candidate drops off the menu; a permitted one is valued at its permitted capacity in Stage 5. See [China Capacity-Replacement Policy](../capacity_replacement_policy.md).
 - **Example**:
   - Current tech: BF-BOF
   - All possible transitions: [BF-BOF, EAF, DRI-EAF, H2-DRI-EAF, BF+CCS]
@@ -427,6 +429,8 @@ threshold in Stage 2 runs unconditionally.
 - Renovation cost: $160 × 5,000,000 × 0.30 = $240,000,000
 - Plant group balance: $300,000,000 → **Affordable, renovate**
 
+**Capacity policy note**: with China's capacity-replacement policy enabled, a Chinese renovation is a replacement. It runs at the permitted capacity resolved in Stage 4 (an emission-intense renovation shrinks to `capacity / 1.5`), the `RenovateFurnaceGroup` command carries that capacity, and the freed difference is deposited into the retirement-credit pool when the renovation executes.
+
 ### Stage 10: Handle Technology Switch Scenario
 **Condition**: Best technology ≠ current technology
 
@@ -447,6 +451,8 @@ threshold in Stage 2 runs unconditionally.
 - Equity share: 30%
 - Switch cost: $650 × 5,000,000 × 0.30 = $975,000,000
 - Plant group balance: $1,200,000,000 → **Affordable, proceed**
+
+**Capacity policy note**: with the policy enabled, a Chinese switch is likewise sized at the permitted capacity from Stage 4. The group shrinks when the scheduled switch executes and the freed difference is deposited into the retirement-credit pool.
 
 ### Stage 11: Probabilistic Adoption Decision
 **Purpose**: Model real-world hesitation in technology adoption (financing risk, permit delays, market uncertainty)

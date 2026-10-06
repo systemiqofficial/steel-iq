@@ -41,6 +41,9 @@ from .recreation_functions import (
     recreate_fopex_data,
     recreate_fallback_material_costs,
     recreate_willingness_to_pay_data,
+    recreate_capacity_pool_provinces_data,
+    recreate_capacity_pool_technologies_data,
+    recreate_capacity_pool_opening_credits_data,
 )
 
 
@@ -68,6 +71,8 @@ class DataRecreator:
         master_excel_path: Path | None = None,
         track_timing: bool = False,
         use_furnace_units_sheet: bool = True,
+        demand_scenario: str = "BAU",
+        scrap_scenario: str = "BAU",
     ) -> dict[str, Path]:
         """Recreate JSON repositories from a downloaded package.
 
@@ -79,6 +84,8 @@ class DataRecreator:
             track_timing: If True, track and display timing for each file creation
             use_furnace_units_sheet: If True (default), read from 'Furnace units' sheet (new method).
                                      If False, read from 'Iron and steel plants' sheet (old method).
+            demand_scenario: "Scenario" column value read for demand centres
+            scrap_scenario: "Scenario" column value read for scrap suppliers
 
         Returns:
             Dictionary mapping repository types to their output paths
@@ -248,6 +255,7 @@ class DataRecreator:
                     mines_sheet_name="Iron ore mines",
                     location_csv=package_dir / "countries.csv",
                     gravity_distances_pkl_path=package_dir / "gravity_distances_dict.pkl",
+                    scrap_scenario=scrap_scenario,
                 )
                 console.print(
                     f"  ✓ Created {output_paths['suppliers'].name} "
@@ -262,6 +270,7 @@ class DataRecreator:
                     demand_sheet_name="Demand and scrap availability",
                     gravity_distances_path=package_dir / "gravity_distances_dict.pkl",
                     location_csv=package_dir / "countries.csv",
+                    demand_scenario=demand_scenario,
                 )
                 console.print(
                     f"  ✓ Created {output_paths['demand_centers'].name} "
@@ -332,6 +341,8 @@ class DataRecreator:
         package_name: str = "core-data",
         use_furnace_units_sheet: bool = True,
         valid_geo_keys: set[str] | None = None,
+        demand_scenario: str = "BAU",
+        scrap_scenario: str = "BAU",
     ) -> dict[str, Path]:
         """
         Recreate files using a RecreationConfig for fine-grained control.
@@ -346,6 +357,8 @@ class DataRecreator:
             valid_geo_keys: Recognised sub-national geo-keys for the plants readers to
                             validate against (the in-memory geo_hierarchy built during
                             prep). None falls back to the prepared geo_hierarchy.json.
+            demand_scenario: "Scenario" column value read for demand centres
+            scrap_scenario: "Scenario" column value read for scrap suppliers
 
         Returns:
             Dictionary mapping filenames to their output paths
@@ -408,7 +421,14 @@ class DataRecreator:
 
                     # Call the appropriate recreation function
                     success = self._recreate_single_file(
-                        spec, output_dir, package_dir, master_excel_path, use_furnace_units_sheet, valid_geo_keys
+                        spec,
+                        output_dir,
+                        package_dir,
+                        master_excel_path,
+                        use_furnace_units_sheet,
+                        valid_geo_keys,
+                        demand_scenario=demand_scenario,
+                        scrap_scenario=scrap_scenario,
                     )
 
                     if success and file_path.exists():
@@ -447,6 +467,8 @@ class DataRecreator:
         master_excel_path: Path | None,
         use_furnace_units_sheet: bool = True,
         valid_geo_keys: set[str] | None = None,
+        demand_scenario: str = "BAU",
+        scrap_scenario: str = "BAU",
     ) -> bool:
         """
         Recreate a single file based on its specification.
@@ -480,6 +502,9 @@ class DataRecreator:
             "recreate_carbon_border_mechanisms_data": recreate_carbon_border_mechanisms_data,
             "recreate_fallback_material_costs": recreate_fallback_material_costs,
             "recreate_willingness_to_pay_data": recreate_willingness_to_pay_data,
+            "recreate_capacity_pool_provinces_data": recreate_capacity_pool_provinces_data,
+            "recreate_capacity_pool_technologies_data": recreate_capacity_pool_technologies_data,
+            "recreate_capacity_pool_opening_credits_data": recreate_capacity_pool_opening_credits_data,
         }
 
         if isinstance(spec.recreate_function, str):
@@ -508,6 +533,7 @@ class DataRecreator:
                     demand_sheet_name=spec.master_excel_sheet,
                     gravity_distances_path=package_dir / "gravity_distances_dict.pkl",
                     location_csv=package_dir / "countries.csv",
+                    demand_scenario=demand_scenario,
                 )
             elif spec.recreate_function == "recreate_mines_and_scrap_as_suppliers_data":
                 func(
@@ -517,6 +543,7 @@ class DataRecreator:
                     mines_sheet_name=spec.master_excel_sheet,
                     location_csv=package_dir / "countries.csv",
                     gravity_distances_pkl_path=package_dir / "gravity_distances_dict.pkl",
+                    scrap_scenario=scrap_scenario,
                 )
             elif spec.recreate_function == "recreate_tariffs_data":
                 func(
@@ -630,6 +657,24 @@ class DataRecreator:
                     excel_path=master_excel_path,
                     country_mappings=country_mappings,
                     willingness_to_pay_sheet_name=spec.master_excel_sheet or "Willingness to pay",
+                )
+            elif spec.recreate_function == "recreate_capacity_pool_provinces_data":
+                func(
+                    json_path=output_path,
+                    excel_path=master_excel_path,
+                    sheet_name=spec.master_excel_sheet or "Capacity pool - CHN provinces",
+                )
+            elif spec.recreate_function == "recreate_capacity_pool_technologies_data":
+                func(
+                    json_path=output_path,
+                    excel_path=master_excel_path,
+                    sheet_name=spec.master_excel_sheet or "Capacity pool - technologies",
+                )
+            elif spec.recreate_function == "recreate_capacity_pool_opening_credits_data":
+                func(
+                    json_path=output_path,
+                    excel_path=master_excel_path,
+                    sheet_name=spec.master_excel_sheet or "Capacity pool - opening credits",
                 )
             elif spec.recreate_function == "recreate_plants_data":
                 # Special handling for plants - read directly from master Excel

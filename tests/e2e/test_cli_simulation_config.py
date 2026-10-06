@@ -7,9 +7,74 @@ from unittest.mock import patch, MagicMock, Mock
 from pathlib import Path
 import tempfile
 
+import pytest
+
 from steelo.simulation import SimulationConfig
 from steelo.entrypoints.cli import run_full_simulation
 from steelo.domain import Year
+
+
+def stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner):
+    """Wire the S3 download, data preparation and runner factory out of the CLI path."""
+    # Setup the data directory where CLI will create it
+    data_dir = cli_temp_base / "data"
+    fixtures_dir = data_dir / "fixtures"
+
+    # Mock DataManager to avoid S3 download
+    mock_data_manager = MagicMock()
+    mock_master_input_path = cli_temp_base / "master-input"
+    mock_master_input_path.mkdir(parents=True, exist_ok=True)
+    (mock_master_input_path / "master_input.xlsx").touch()
+    mock_data_manager.get_package_path.return_value = mock_master_input_path
+    mock_data_manager.download_package.return_value = None
+    mock_data_manager_class.return_value = mock_data_manager
+
+    # Mock data preparation service
+    mock_prep_service = MagicMock()
+    mock_prep_result = MagicMock()
+    mock_prep_result.data_dir = data_dir
+    mock_prep_result.output_directory = fixtures_dir
+
+    # Add specific attributes that will be serialized
+    mock_prep_result.master_excel_path = None
+    mock_prep_result.master_excel_source = "S3"
+    mock_prep_result.data_package_version = "1.0.0"
+    mock_prep_result.cache_used = False
+    mock_prep_result.preparation_time = 1.23
+    mock_prep_result.total_duration = 2.5
+    mock_prep_result.files = ["file1.json", "file2.json"]
+
+    # Make prepare_data create the required files
+    def prepare_data_side_effect(*args, **kwargs):
+        # Get the actual output_dir from kwargs
+        actual_output_dir = kwargs.get("output_dir", fixtures_dir)
+        # Create the directories and files when prepare_data is called
+        actual_output_dir.parent.mkdir(parents=True, exist_ok=True)
+        actual_output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create the fixtures subdirectory where files are expected
+        fixtures_subdir = actual_output_dir / "fixtures"
+        fixtures_subdir.mkdir(parents=True, exist_ok=True)
+
+        # Create required JSON files in fixtures directory
+        (fixtures_subdir / "plants.json").write_text("[]")
+        (fixtures_subdir / "demand_centers.json").write_text("[]")
+        (fixtures_subdir / "suppliers.json").write_text("[]")
+        (fixtures_subdir / "country_mappings.json").write_text("[]")
+        (fixtures_subdir / "railway_costs.json").write_text("[]")
+
+        # Update the mock result to use the actual directory
+        mock_prep_result.output_directory = fixtures_subdir
+        mock_prep_result.data_dir = actual_output_dir
+        return mock_prep_result
+
+    mock_prep_service.prepare_data.side_effect = prepare_data_side_effect
+    mock_data_prep_service_class.return_value = mock_prep_service
+
+    # Mock the runner to avoid actual simulation
+    mock_runner = MagicMock()
+    mock_runner.run = Mock()
+    mock_create_runner.return_value = mock_runner
 
 
 @patch("steelo.entrypoints.cli.setup_legacy_symlinks")  # Mock to prevent symlink creation
@@ -34,66 +99,7 @@ def test_cli_creates_and_passes_simulation_config(
     with tempfile.TemporaryDirectory() as tmpdir:
         # Setup the CLI's expected temp directory structure
         cli_temp_base = Path(tmpdir)
-
-        # Setup the data directory where CLI will create it
-        data_dir = cli_temp_base / "data"
-        fixtures_dir = data_dir / "fixtures"
-
-        # Mock DataManager to avoid S3 download
-        mock_data_manager = MagicMock()
-        mock_master_input_path = cli_temp_base / "master-input"
-        mock_master_input_path.mkdir(parents=True, exist_ok=True)
-        (mock_master_input_path / "master_input.xlsx").touch()
-        mock_data_manager.get_package_path.return_value = mock_master_input_path
-        mock_data_manager.download_package.return_value = None
-        mock_data_manager_class.return_value = mock_data_manager
-
-        # Mock data preparation service
-        mock_prep_service = MagicMock()
-        mock_prep_result = MagicMock()
-        mock_prep_result.data_dir = data_dir
-        mock_prep_result.output_directory = fixtures_dir
-
-        # Add specific attributes that will be serialized
-        mock_prep_result.master_excel_path = None
-        mock_prep_result.master_excel_source = "S3"
-        mock_prep_result.data_package_version = "1.0.0"
-        mock_prep_result.cache_used = False
-        mock_prep_result.preparation_time = 1.23
-        mock_prep_result.total_duration = 2.5
-        mock_prep_result.files = ["file1.json", "file2.json"]
-
-        # Make prepare_data create the required files
-        def prepare_data_side_effect(*args, **kwargs):
-            # Get the actual output_dir from kwargs
-            actual_output_dir = kwargs.get("output_dir", fixtures_dir)
-            # Create the directories and files when prepare_data is called
-            actual_output_dir.parent.mkdir(parents=True, exist_ok=True)
-            actual_output_dir.mkdir(parents=True, exist_ok=True)
-
-            # Create the fixtures subdirectory where files are expected
-            fixtures_subdir = actual_output_dir / "fixtures"
-            fixtures_subdir.mkdir(parents=True, exist_ok=True)
-
-            # Create required JSON files in fixtures directory
-            (fixtures_subdir / "plants.json").write_text("[]")
-            (fixtures_subdir / "demand_centers.json").write_text("[]")
-            (fixtures_subdir / "suppliers.json").write_text("[]")
-            (fixtures_subdir / "country_mappings.json").write_text("[]")
-            (fixtures_subdir / "railway_costs.json").write_text("[]")
-
-            # Update the mock result to use the actual directory
-            mock_prep_result.output_directory = fixtures_subdir
-            mock_prep_result.data_dir = actual_output_dir
-            return mock_prep_result
-
-        mock_prep_service.prepare_data.side_effect = prepare_data_side_effect
-        mock_data_prep_service_class.return_value = mock_prep_service
-
-        # Mock the runner to avoid actual simulation
-        mock_runner = MagicMock()
-        mock_runner.run = Mock()
-        mock_create_runner.return_value = mock_runner
+        stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
 
         # Simulate running the CLI with specific arguments
         with patch.object(sys, "argv", ["run_simulation", "--start-year", "2026", "--end-year", "2035"]):
@@ -115,3 +121,306 @@ def test_cli_creates_and_passes_simulation_config(
         config = args[0]
         assert config.start_year == Year(2026)
         assert config.end_year == Year(2035)
+
+
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_successful_run_returns_none_so_the_console_script_exits_zero(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+):
+    """The console script calls sys.exit() on the return value, and anything but None or 0 exits non-zero."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        stub_cli_dependencies(Path(tmpdir), mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+
+        with patch.object(sys, "argv", ["run_simulation", "--start-year", "2026", "--end-year", "2035"]):
+            result = run_full_simulation()
+
+    assert result is None
+
+
+@pytest.mark.parametrize("cache_flag", ["--cache-stats", "--clear-cache"])
+def test_cli_cache_operations_return_none_so_the_console_script_exits_zero(cache_flag, tmp_path):
+    """The cache-only flags finish without running a simulation and must not hand sys.exit() a message."""
+    with patch.object(sys, "argv", ["run_simulation", cache_flag, "--steelo-home", str(tmp_path)]):
+        result = run_full_simulation()
+
+    assert result is None
+
+
+@pytest.mark.parametrize(
+    "flag_argv, expected",
+    [([], "Business As Usual"), (["--grid-emissions-scenario", "Net Zero"], "Net Zero")],
+)
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_grid_emissions_scenario_flag_lands_on_the_config(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    flag_argv,
+    expected,
+):
+    """``--grid-emissions-scenario`` selects the grid emissivity projection; absent, BAU applies."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cli_temp_base = Path(tmpdir)
+        stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+
+        argv = ["run_simulation", "--start-year", "2026", "--end-year", "2027", *flag_argv]
+        with patch.object(sys, "argv", argv):
+            with patch("sys.exit"):
+                run_full_simulation()
+
+        config = mock_create_runner.call_args[0][0]
+        assert config.chosen_grid_emissions_scenario == expected
+
+
+@pytest.mark.parametrize(
+    "flag_argv, expected",
+    [([], 42), (["--random-seed", "7"], 7)],
+)
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_random_seed_lands_on_the_config_and_geo_config(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    flag_argv,
+    expected,
+):
+    """``--random-seed`` sets the run-time seed and propagates into GeoConfig; absent, the default 42 applies."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cli_temp_base = Path(tmpdir)
+        stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+
+        argv = ["run_simulation", "--start-year", "2026", "--end-year", "2027", *flag_argv]
+        with patch.object(sys, "argv", argv):
+            with patch("sys.exit"):
+                run_full_simulation()
+
+        config = mock_create_runner.call_args[0][0]
+        assert config.random_seed == expected
+        assert config.geo_config.random_seed == expected
+
+
+@pytest.mark.parametrize(
+    "flag_argv, expected_percentile, expected_trade",
+    [
+        ([], 100.0, False),
+        (["--hydrogen-ceiling-percentile", "20"], 20.0, False),
+        (["--intraregional-trade"], 100.0, True),
+        (["--no-intraregional-trade"], 100.0, False),
+        (["--hydrogen-ceiling-percentile", "20", "--intraregional-trade"], 20.0, True),
+    ],
+)
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_hydrogen_trade_flags_land_on_the_geo_config(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    flag_argv,
+    expected_percentile,
+    expected_trade,
+):
+    """``--hydrogen-ceiling-percentile`` and ``--[no-]intraregional-trade`` override the GeoConfig defaults."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cli_temp_base = Path(tmpdir)
+        stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+
+        argv = ["run_simulation", "--start-year", "2026", "--end-year", "2027", *flag_argv]
+        with patch.object(sys, "argv", argv):
+            with patch("sys.exit"):
+                run_full_simulation()
+
+        config = mock_create_runner.call_args[0][0]
+        assert config.geo_config.hydrogen_ceiling_percentile == expected_percentile
+        assert config.geo_config.intraregional_trade_allowed is expected_trade
+
+
+@pytest.mark.parametrize(
+    "flag_argv, expected_enabled, expected_scope",
+    [
+        ([], True, "plant"),
+        (["--clustering"], True, "plant"),
+        (["--no-clustering"], False, "plant"),
+        (["--enable-clustering", "--clustering-scope", "plant"], True, "plant"),
+        (["--clustering-scope", "iso3"], True, "iso3"),
+        (["--clustering-scope", "plant_group"], True, "plant_group"),
+    ],
+)
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_clustering_flags_land_on_the_config(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    flag_argv,
+    expected_enabled,
+    expected_scope,
+):
+    """Clustering by plant is the default; ``--[no-]clustering`` and ``--clustering-scope`` override it."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cli_temp_base = Path(tmpdir)
+        stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+
+        argv = ["run_simulation", "--start-year", "2026", "--end-year", "2027", *flag_argv]
+        with patch.object(sys, "argv", argv):
+            with patch("sys.exit"):
+                run_full_simulation()
+
+        config = mock_create_runner.call_args[0][0]
+        assert config.enable_furnace_group_clustering is expected_enabled
+        assert config.geographical_clustering_scope == expected_scope
+
+
+@pytest.mark.parametrize(
+    "flag_argv, expected",
+    [([], None), (["--run-name", "china BAU"], "china BAU")],
+)
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_run_name_lands_on_the_config(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    flag_argv,
+    expected,
+):
+    """``--run-name`` names the run in the interactive plot titles; absent, the config carries None."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cli_temp_base = Path(tmpdir)
+        stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+
+        argv = ["run_simulation", "--start-year", "2026", "--end-year", "2027", *flag_argv]
+        with patch.object(sys, "argv", argv):
+            with patch("sys.exit"):
+                run_full_simulation()
+
+        config = mock_create_runner.call_args[0][0]
+        assert config.run_name == expected
+
+
+@pytest.mark.parametrize("flag_argv, expected", [([], False), (["--enable-capacity-policy"], True)])
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_capacity_policy_flag_drives_the_nested_config(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    flag_argv,
+    expected,
+):
+    """``--enable-capacity-policy`` is the only policy surface; absent, the run stays off."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cli_temp_base = Path(tmpdir)
+        stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+
+        argv = ["run_simulation", "--start-year", "2026", "--end-year", "2027", *flag_argv]
+        with patch.object(sys, "argv", argv):
+            with patch("sys.exit"):
+                run_full_simulation()
+
+        config = mock_create_runner.call_args[0][0]
+        assert config.capacity_policy.enabled is expected
+
+
+@pytest.mark.parametrize(
+    "argv_tail, message",
+    [
+        (["--enable-capacity-policy", "--credit-validity-years", "0"], "must be a positive number of years"),
+        (["--credit-validity-years", "3"], "requires --enable-capacity-policy"),
+    ],
+)
+def test_cli_credit_validity_years_is_refused_at_parse_time(argv_tail, message, capsys):
+    """A non-positive shelf life, or one given without the policy flag, stops the run before any setup."""
+    with patch.object(sys, "argv", ["run_simulation", *argv_tail]):
+        with pytest.raises(SystemExit) as raised:
+            run_full_simulation()
+
+    assert raised.value.code == 2
+    assert message in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "flag_argv, expected",
+    [(["--enable-capacity-policy"], None), (["--enable-capacity-policy", "--credit-validity-years", "2"], 2)],
+)
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_credit_validity_years_lands_on_the_policy_config(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    flag_argv,
+    expected,
+):
+    """``--credit-validity-years`` sets the banked-credit shelf life; absent, credits never expire."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cli_temp_base = Path(tmpdir)
+        stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+
+        argv = ["run_simulation", "--start-year", "2026", "--end-year", "2027", *flag_argv]
+        with patch.object(sys, "argv", argv):
+            with patch("sys.exit"):
+                run_full_simulation()
+
+        config = mock_create_runner.call_args[0][0]
+        assert config.capacity_policy.credit_validity_years == expected

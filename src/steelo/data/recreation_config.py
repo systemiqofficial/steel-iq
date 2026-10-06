@@ -287,6 +287,30 @@ FILE_RECREATION_SPECS = {
         dependencies=["country_mappings.json"],
         description="Willingness to pay by region/country and commodity from master Excel",
     ),
+    "capacity_pool_provinces.json": FileRecreationSpec(
+        filename="capacity_pool_provinces.json",
+        recreate_function="recreate_capacity_pool_provinces_data",
+        source_type="master-excel",
+        master_excel_sheet="Capacity pool - CHN provinces",
+        dependencies=[],
+        description="Chinese province classification for the capacity-replacement policy (optional sheet)",
+    ),
+    "capacity_pool_technologies.json": FileRecreationSpec(
+        filename="capacity_pool_technologies.json",
+        recreate_function="recreate_capacity_pool_technologies_data",
+        source_type="master-excel",
+        master_excel_sheet="Capacity pool - technologies",
+        dependencies=[],
+        description="Technology classification and swap-ratio overrides for the capacity-replacement policy (optional sheet)",
+    ),
+    "capacity_pool_opening_credits.json": FileRecreationSpec(
+        filename="capacity_pool_opening_credits.json",
+        recreate_function="recreate_capacity_pool_opening_credits_data",
+        source_type="master-excel",
+        master_excel_sheet="Capacity pool - opening credits",
+        dependencies=[],
+        description="Opening retirement-credit pool for the capacity-replacement policy (optional sheet)",
+    ),
 }
 
 

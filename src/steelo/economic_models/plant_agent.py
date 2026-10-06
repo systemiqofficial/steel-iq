@@ -13,6 +13,14 @@ from steelo.adapters.geospatial.geospatial_statistics import (
     export_overbuild_factor_statistics_by_country,
 )
 from steelo.adapters.repositories.in_memory_repository import InMemoryRepository
+from steelo.capacity_policy.handlers import (
+    expansion_capacity_hook,
+    greenfield_capacity_hook,
+    greenfield_feasibility_hook,
+    greenfield_retry_cap,
+    increase_sizing_hook,
+    replace_capacity_hook,
+)
 from steelo.domain import Year
 from steelo.domain.commands import (
     AddFurnaceGroup,
@@ -26,6 +34,7 @@ from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
     set_up_steel_trade_lp,
     solve_steel_trade_lp_and_return_commodity_allocations,
 )
+from steelo.logging_config import LoggingConfig
 from steelo.service_layer.message_bus import MessageBus
 from steelo.utilities.file_output import export_commodity_allocations_to_csv
 from steelo.utilities.memory_profiling import MemoryTracker
@@ -253,6 +262,10 @@ class GeospatialModel:
                     get_co2_need=bus.env.get_co2_need,
                     co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
                     reserved_discount_factor=bus.env.config.co2_storage_reserved_discount_factor,
+                    permitted_greenfield_capacity=greenfield_capacity_hook(),
+                    capacity_pool_max_retry_years=greenfield_retry_cap(),
+                    increase_sizing_query=increase_sizing_hook(),
+                    greenfield_feasibility_probe=greenfield_feasibility_hook(),
                 )
             )
         if status_commands:
@@ -287,7 +300,11 @@ class GeospatialModel:
                 get_bom_from_avg_boms=bus.env.get_bom_from_avg_boms,
                 reductant_score_series=bus.env.reductant_score_series,
                 global_risk_free_rate=bus.env.config.global_risk_free_rate,
-                tech_to_product=bus.env.technology_to_product,
+                tech_to_product={
+                    tech: product
+                    for tech, product in bus.env.technology_to_product.items()
+                    if tech not in geo_config.excluded_greenfield_technologies
+                },
                 allowed_techs=bus.env.allowed_techs,
                 top_n_loctechs_as_business_op=bus.env.config.top_n_loctechs_as_business_op,
                 opportunity_pool_depth=bus.env.config.opportunity_pool_depth,
@@ -306,6 +323,7 @@ class GeospatialModel:
                 co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
                 derive_geo_unit=derive_geo_unit_for_site,
                 probabilistic_agents=bus.env.config.probabilistic_agents,
+                increase_sizing_query=increase_sizing_hook(),
             )
         )
         step_time = time.time() - step_start
@@ -420,8 +438,7 @@ class AllocationModel:
         # Warm-start from previous year's solution if available (OPT-2)
         if bus.env.previous_lp_solution is not None:
             trade_lp.previous_solution = bus.env.previous_lp_solution
-
-        if bus.env.output_dir is not None:
+        if bus.env.output_dir is not None and LoggingConfig.DUMP_FAILED_LP:
             trade_lp.failure_dump_path = bus.env.output_dir / "TM" / f"trade_lp_failed_{bus.env.year}.mps"
 
         setup_elapsed = time.time() - setup_start
@@ -519,11 +536,7 @@ class AllocationModel:
         if output_dir is None:
             raise ValueError("output_dir must be set on bus.env")
 
-        if non_empty_allocations:
-            # # pickle the allocations for debugging purposes TODO: remove
-            # with open(output_dir / f"steel_trade_allocations_{bus.env.year}.pkl", "wb") as f:
-            #     pickle.dump(non_empty_allocations, f)
-
+        if non_empty_allocations and bus.env.plot_paths is not None and bus.env.plot_paths.tm_plots_dir is not None:
             # Create detailed trade map (existing pydeck visualization)
             plot_detailed_trade_map(
                 allocations_by_commodity=non_empty_allocations, chosen_year=bus.env.year, plot_paths=bus.env.plot_paths
@@ -890,6 +903,7 @@ class PlantAgentsModel:
                             get_co2_headroom=bus.env.get_co2_headroom,
                             get_co2_need_by_name=bus.env.get_co2_need_by_name,
                             co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
+                            permitted_replace_capacity=replace_capacity_hook(),
                         )
                     ) is not None:
                         logger.info(f"[PAM] FG {fg.furnace_group_id} strategy returned command: {type(cmd).__name__}")
@@ -975,6 +989,8 @@ class PlantAgentsModel:
                     get_co2_headroom=bus.env.get_co2_headroom,
                     get_co2_need_by_name=bus.env.get_co2_need_by_name,
                     co2_storage_diagnostics=bus.env.co2_storage_diagnostics,
+                    permitted_expansion_capacity=expansion_capacity_hook(),
+                    increase_sizing_query=increase_sizing_hook(),
                 )
             ) is not None:
                 logger.info(f"[PAM] Plant group {pg.plant_group_id} expansion returned: {type(cmd).__name__}")

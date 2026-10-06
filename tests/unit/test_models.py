@@ -461,6 +461,26 @@ def test_unit_fopex_uses_minimum_utilization_threshold():
     assert fg.unit_fopex == pytest.approx(80.0 / 0.5)
 
 
+def test_unit_current_debt_repayment_uses_minimum_utilization_threshold():
+    """Debt repayment per tonne floors utilisation at the low threshold, mirroring unit_fopex."""
+    fg = get_furnace_group(utilization_rate=0.01, fg_id="fg_low_util_debt", tech_name="BOF")
+    fg.technology.capex = 500.0
+    fg.production_threshold = ProductionThreshold(low=0.1, high=0.95)
+    debt = fg.debt_repayment_for_current_year
+    assert debt > 0
+
+    # Utilisation below the configured low threshold should clamp to the threshold value
+    assert fg.unit_current_debt_repayment == pytest.approx(debt / (0.1 * fg.capacity))
+
+    # Adjusting the threshold should change the clamped result accordingly
+    fg.production_threshold = ProductionThreshold(low=0.02, high=0.95)
+    assert fg.unit_current_debt_repayment == pytest.approx(debt / (0.02 * fg.capacity))
+
+    # For utilisations above the threshold, the raw production is used
+    fg.utilization_rate = 0.5
+    assert fg.unit_current_debt_repayment == pytest.approx(debt / fg.production)
+
+
 @pytest.fixture
 def multi_furnace_groups():
     return [

@@ -467,9 +467,12 @@ class ModelRunCreateForm(forms.ModelForm):
 
     enable_furnace_group_clustering = forms.BooleanField(
         label="Enable furnace group clustering",
-        initial=False,
+        initial=True,
         required=False,
-        help_text="Speed up trade calculations by grouping similar furnace groups (same technology, reductant, and country) into clusters",
+        help_text=(
+            "Speed up trade calculations by grouping similar furnace groups (same technology, reductant, and country) "
+            "into clusters. Switching this off radically increases the runtime."
+        ),
         widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),
     )
 
@@ -480,7 +483,7 @@ class ModelRunCreateForm(forms.ModelForm):
             ("plant_group", "Plant group (corporate)"),
             ("plant", "Individual plant"),
         ],
-        initial="iso3",
+        initial="plant",
         required=False,
         help_text=(
             "Geographical scope for clustering furnace groups consuming/producing closely-allocated commodities. "
@@ -586,19 +589,19 @@ class ModelRunCreateForm(forms.ModelForm):
 
     hydrogen_ceiling_percentile = forms.DecimalField(
         label="Hydrogen ceiling percentile",
-        initial=20.0,
+        initial=100.0,
         min_value=0.0,
         max_value=100.0,
         max_digits=5,
         decimal_places=1,
         required=False,
-        help_text="Hydrogen price cap percentage for interregional trade. Set to 100 to inhibit interregional trade.",
+        help_text="Percentile of a region's hydrogen cost used as its price cap. 100 means no cap.",
         widget=forms.NumberInput(attrs={"class": "form-control field-connected", "step": "0.1"}),
     )
 
     intraregional_trade_allowed = forms.BooleanField(
         label="Intraregional trade allowed",
-        initial=True,
+        initial=False,
         required=False,
         help_text="Allow hydrogen trade between linked regions (e.g., trade between Africa and Western Europe)",
         widget=forms.CheckboxInput(attrs={"class": "form-check-input field-connected"}),

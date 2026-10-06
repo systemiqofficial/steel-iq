@@ -242,6 +242,195 @@ class TestSteelPlotter:
         plotter.plot_emissions_by_technology(trace_emissions={})
         plotter.plot_iron_ore_by_quality(trace_iron_ore={})
         plotter.plot_metallic_charges(trace_metallic_charges={})
+        assert plotter.plot_greenfield_plants_by_status(status_counts={}) == []
+        assert plotter.plot_greenfield_plants_map(new_plant_locations={}) == []
+        assert plotter.export_greenfield_plants_csv({}) is None
+
+    def test_plot_greenfield_plants_by_status_creates_files(self, plotter, plot_paths):
+        """Test that greenfield status charts land in plots/greenfield with per-product names."""
+        status_counts = {
+            "steel": {
+                2025: {"EAF": {"announced": 2, "construction": 1}},
+                2026: {"EAF": {"construction": 2, "operating": 1}},
+            },
+            "iron": {
+                2025: {"DRI": {"announced": 1}},
+                2026: {"DRI": {"operating": 1}},
+            },
+        }
+
+        saved = plotter.plot_greenfield_plants_by_status(status_counts=status_counts)
+
+        greenfield_dir = plot_paths.plots_dir / SteelPlotter.GREENFIELD_SUBDIR
+        assert len(saved) == 2
+        for product in ("steel", "iron"):
+            plot_file = greenfield_dir / f"{product}_greenfield_status.png"
+            assert plot_file.exists(), f"{plot_file.name} was not created"
+            assert plot_file.stat().st_size > 0, f"{plot_file.name} is empty"
+            csv_file = greenfield_dir / f"{product}_greenfield_status.csv"
+            assert csv_file.exists(), f"{csv_file.name} was not created"
+
+    def test_plot_greenfield_plants_map_creates_files(self, plotter, plot_paths):
+        """Test that the overall and per-decade greenfield maps land in plots/greenfield."""
+        new_plant_locations = {
+            "steel": {
+                2025: [{"lat": 50.0, "lon": 10.0}, {"lat": 31.0, "lon": 120.0}],
+                2026: [{"lat": -23.0, "lon": -46.0}],
+            },
+            "iron": {},
+        }
+
+        saved = plotter.plot_greenfield_plants_map(new_plant_locations=new_plant_locations)
+
+        greenfield_dir = plot_paths.plots_dir / SteelPlotter.GREENFIELD_SUBDIR
+        # Overall map plus one decade map (all data falls in a single decade)
+        assert len(saved) == 2
+        for name in ("steel_greenfield_map.png", "steel_greenfield_map_2025-2026.png"):
+            plot_file = greenfield_dir / name
+            assert plot_file.exists(), f"{name} was not created"
+            assert plot_file.stat().st_size > 0, f"{name} is empty"
+        # Iron had no locations, so no iron map is written
+        assert not (greenfield_dir / "iron_greenfield_map.png").exists()
+
+    def test_year_bins_merges_stub_final_bin(self):
+        """Test 5/10-year binning clamps to the data range and absorbs stub final bins."""
+        assert SteelPlotter._year_bins(2032, 2060, step=5) == [
+            (2032, 2034),
+            (2035, 2039),
+            (2040, 2044),
+            (2045, 2049),
+            (2050, 2054),
+            (2055, 2060),
+        ]
+        assert SteelPlotter._year_bins(2032, 2060, step=10) == [(2032, 2039), (2040, 2049), (2050, 2060)]
+        assert SteelPlotter._year_bins(2025, 2026, step=5) == [(2025, 2026)]
+
+    def test_export_greenfield_plants_csv(self, plotter, plot_paths):
+        """Test that the greenfield plants CSV has one row per furnace group in the fixed column order."""
+        import pandas as pd
+
+        greenfield_plants = {
+            "fg_1": {
+                "furnace_group_id": "fg_1",
+                "plant_id": "plant_1",
+                "parent_gem_id": "indi_001",
+                "product": "steel",
+                "technology_initial": "EAF",
+                "reductant_initial": "hydrogen",
+                "capacity_initial": 1_000_000.0,
+                "geo_key": "DEU",
+                "region": "Europe",
+                "lat": 50.0,
+                "lon": 10.0,
+                "plant_group_id": "pg_1",
+                "technology_final": "EAF",
+                "reductant_final": "hydrogen",
+                "capacity_final": 1_200_000.0,
+                "status": "operating",
+                "lifetime_end": 2047,
+                "status_years": {"considered": 2024, "announced": 2025, "construction": 2026, "operating": 2027},
+            },
+            "fg_2": {
+                "furnace_group_id": "fg_2",
+                "plant_id": "plant_2",
+                "parent_gem_id": "indi_002",
+                "product": "iron",
+                "technology_initial": "DRI",
+                "reductant_initial": "natural_gas",
+                "capacity_initial": 500_000.0,
+                "geo_key": "CHN:CN-HE",
+                "region": "China",
+                "lat": 38.0,
+                "lon": 115.0,
+                "plant_group_id": "indi",
+                "technology_final": "DRI",
+                "reductant_final": "natural_gas",
+                "capacity_final": 500_000.0,
+                "status": "discarded",
+                "lifetime_end": 2050,
+                "status_years": {"considered": 2025, "discarded": 2026},
+            },
+            "fg_3": {
+                "furnace_group_id": "fg_3",
+                "plant_id": "plant_3",
+                "parent_gem_id": "indi_003",
+                "product": "steel",
+                "technology_initial": "EAF",
+                "reductant_initial": "hydrogen",
+                "capacity_initial": 800_000.0,
+                "geo_key": "AUS",
+                "region": "Oceania",
+                "lat": -30.0,
+                "lon": 140.0,
+                "plant_group_id": "indi",
+                "technology_final": "EAF",
+                "reductant_final": "hydrogen",
+                "capacity_final": 800_000.0,
+                "status": "construction",
+                "lifetime_start": 2030,
+                "lifetime_end": 2050,
+                "status_years": {"considered": 2025, "announced": 2026, "construction": 2027},
+            },
+        }
+
+        csv_path = plotter.export_greenfield_plants_csv(greenfield_plants)
+
+        expected = plot_paths.plots_dir / SteelPlotter.GREENFIELD_SUBDIR / "greenfield_plants.csv"
+        assert csv_path == expected
+        assert csv_path.exists()
+
+        df = pd.read_csv(csv_path)
+        assert list(df.columns) == [
+            "year_considered",
+            "year_announced",
+            "year_construction",
+            "year_operating",
+            "year_closed",
+            "lifetime_end",
+            "status",
+            "region",
+            "geo_key",
+            "lat",
+            "lon",
+            "parent_gem_id",
+            "plant_group_id",
+            "plant_id",
+            "furnace_group_id",
+            "product",
+            "technology_initial",
+            "reductant_initial",
+            "capacity_initial",
+            "technology_final",
+            "reductant_final",
+            "capacity_final",
+        ]
+
+        # fg_2 was discarded before construction, so only built plants are exported
+        assert list(df["furnace_group_id"]) == ["fg_1", "fg_3"]
+        row = df[df["furnace_group_id"] == "fg_1"].iloc[0]
+        assert row["year_announced"] == 2025
+        assert row["year_construction"] == 2026
+        assert row["year_operating"] == 2027
+        assert pd.isna(row["year_closed"])
+        assert row["capacity_final"] == 1_200_000.0
+
+        # fg_3 is still under construction: year_operating is estimated from the
+        # scheduled lifetime start (construction start + construction time)
+        under_construction = df[df["furnace_group_id"] == "fg_3"].iloc[0]
+        assert under_construction["year_construction"] == 2027
+        assert under_construction["year_operating"] == 2030
+        assert under_construction["status"] == "construction"
+
+    def test_export_greenfield_plants_csv_skips_unbuilt_records(self, plotter):
+        """Test that a collection with only never-built candidates exports nothing."""
+        unbuilt = {
+            "fg_9": {
+                "furnace_group_id": "fg_9",
+                "status": "discarded",
+                "status_years": {"considered": 2025, "discarded": 2026},
+            },
+        }
+        assert plotter.export_greenfield_plants_csv(unbuilt) is None
 
     def test_plot_capacity_development_by_technology(self, plotter, plot_paths):
         """Test that capacity development plotting creates a PNG file."""

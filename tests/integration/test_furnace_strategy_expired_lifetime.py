@@ -178,6 +178,7 @@ def test_renovation_debt_basis_matches_evaluated_capex(mocker):
     plant.renovate_furnace_group(
         furnace_group_id=command.furnace_group_id,
         plant_lifetime=20,
+        capacity=command.capacity,
         capex=command.capex,
         capex_no_subsidy=command.capex_no_subsidy,
         cost_of_debt=command.cost_of_debt,

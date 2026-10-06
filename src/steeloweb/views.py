@@ -756,8 +756,8 @@ def create_modelrun(request):
                     if form.cleaned_data.get("new_capacity_share_from_new_plants") is not None
                     else 0.4
                 ),
-                "hydrogen_ceiling_percentile": float(form.cleaned_data.get("hydrogen_ceiling_percentile") or 20.0),
-                "intraregional_trade_allowed": form.cleaned_data.get("intraregional_trade_allowed", True),
+                "hydrogen_ceiling_percentile": float(form.cleaned_data.get("hydrogen_ceiling_percentile") or 100.0),
+                "intraregional_trade_allowed": form.cleaned_data.get("intraregional_trade_allowed", False),
                 "long_dist_pipeline_transport_cost": float(
                     form.cleaned_data.get("long_dist_pipeline_transport_cost") or 1.0
                 ),
@@ -765,8 +765,8 @@ def create_modelrun(request):
                 "use_iron_ore_premiums": form.cleaned_data.get("use_iron_ore_premiums", True),
                 "green_steel_emissions_limit": 0.4,  # Hardcoded - no longer user-configurable
                 "include_tariffs": form.cleaned_data.get("include_tariffs", True),
-                "enable_furnace_group_clustering": form.cleaned_data.get("enable_furnace_group_clustering", False),
-                "geographical_clustering_scope": form.cleaned_data.get("geographical_clustering_scope", "iso3"),
+                "enable_furnace_group_clustering": form.cleaned_data.get("enable_furnace_group_clustering", True),
+                "geographical_clustering_scope": form.cleaned_data.get("geographical_clustering_scope") or "plant",
                 "output_file": output_file,
                 # Add new demand and circularity fields
                 "total_steel_demand_scenario": form.cleaned_data.get(

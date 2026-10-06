@@ -142,6 +142,7 @@ annual_payment = annual_principal + annual_interest
 
 **Impact on Profitability**:
 - Debt repayment added to unit production cost
+- Per-tonne debt divides the annual payment by production, with utilisation floored at `production_threshold.low` (default 0.1) — the same floor `unit_fopex` uses — so a barely-producing furnace group does not book runaway per-tonne debt
 - Higher debt → Higher per-tonne cost → Lower competitiveness
 - Debt fully repaid after `plant_lifetime` years (default 20)
 

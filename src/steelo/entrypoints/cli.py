@@ -18,16 +18,21 @@ from rich.console import Console
 from rich.table import Table
 
 from ..domain import Year
+from ..domain.constants import RANDOM_SEED_DEFAULT
 
 from ..simulation import SimulationConfig
 from ..bootstrap import bootstrap_simulation
 from ..utils.symlink_manager import update_data_symlink, update_output_symlink, setup_legacy_symlinks
 
 
-def run_full_simulation() -> str:
+def run_full_simulation() -> None:
     """
     Run a full simulation from start to end year with the
     configuration provided via command line arguments.
+
+    Notes:
+        The console script passes the return value to sys.exit(), so a successful run
+        returns None (exit code 0); failures call sys.exit() with a non-zero code.
     """
     console = Console()
 
@@ -66,6 +71,48 @@ def run_full_simulation() -> str:
         type=str,
         default="Steel_Demand_Chris Bataille",
         help="Sheet name in the demand excel file (default: 'Steel_Demand_Chris Bataille')",
+    )
+    parser.add_argument(
+        "--demand-scenario",
+        type=str,
+        default="BAU",
+        help="Scenario name in the 'Demand and scrap availability' sheet used for steel demand (default: BAU)",
+    )
+    parser.add_argument(
+        "--scrap-scenario",
+        type=str,
+        default=None,
+        help="Scenario name in the same sheet used for scrap availability (default: same as --demand-scenario)",
+    )
+    parser.add_argument(
+        "--grid-emissions-scenario",
+        type=str,
+        default="Business As Usual",
+        help=(
+            "Grid emissivity projection applied at run time, named as in the 'Power grid emissivity' sheet "
+            "without its 'projection_' prefix (default: 'Business As Usual'; alternative: 'Net Zero')"
+        ),
+    )
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help="Human-readable run name shown in the interactive plot titles (default: the sim_<timestamp> dir name)",
+    )
+    parser.add_argument(
+        "--hydrogen-ceiling-percentile",
+        type=float,
+        default=None,
+        help=(
+            "Percentile of a region's LCOH used as the regional hydrogen price cap "
+            "(default: the GeoConfig value, 100, which disables the cap)"
+        ),
+    )
+    parser.add_argument(
+        "--intraregional-trade",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Allow hydrogen imports between linked regions (default: the GeoConfig value, off)",
     )
     parser.add_argument(
         "--location-csv",
@@ -114,20 +161,35 @@ def run_full_simulation() -> str:
         help="Path to BOA-generated baseload power simulation output directory (overrides default)",
     )
     parser.add_argument(
-        "--enable-clustering",
+        "--clustering",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Cluster furnace groups to reduce LP complexity (default: on)",
+    )
+    # Former spelling of --clustering, kept so existing launch scripts still parse
+    parser.add_argument(
+        "--enable-clustering", dest="clustering", action="store_true", default=None, help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--plot-tm",
         action="store_true",
-        help="Enable furnace group clustering to reduce LP complexity",
+        help="Write the per-year trade maps under plots/TM (off by default; the interactive trade viewers replace them)",
+    )
+    parser.add_argument(
+        "--plot-geo",
+        action="store_true",
+        help="Write the geospatial PNGs under plots/GEO (off by default)",
     )
 
     parser.add_argument(
         "--clustering-scope",
         type=str,
         choices=["iso3", "plant_group", "plant"],
-        default="iso3",
+        default=None,
         help=(
             "When clustering is enabled, geographical scope for clustering hot-metal-affected techs. "
-            "'iso3' (default): cluster by country. 'plant_group': cluster by corporate group. "
-            "'plant': cluster by individual plant. "
+            "'plant' (default): cluster by individual plant. 'plant_group': cluster by corporate group. "
+            "'iso3': cluster by country. "
             "Only affects FGs with hot_metal/dri_*/liquid_iron feedstocks or outputs."
         ),
     )
@@ -142,10 +204,38 @@ def run_full_simulation() -> str:
         default=0.8,
         help="Ratio of steel price for iron floor when pegging is enabled (default: 0.8 = 80%%)",
     )
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=RANDOM_SEED_DEFAULT,
+        help=(
+            "Seed for the run-time RNGs shared by the plant agent, geospatial and trade LP modules "
+            "(default: %(default)s); data preparation keeps its own fixed seed"
+        ),
+    )
+    parser.add_argument(
+        "--enable-capacity-policy",
+        action="store_true",
+        help="Enable China's capacity-replacement policy (default: disabled)",
+    )
+    parser.add_argument(
+        "--credit-validity-years",
+        type=int,
+        default=None,
+        help=(
+            "Years a capacity-pool credit may sit banked before it expires; requires "
+            "--enable-capacity-policy (default: no expiry)"
+        ),
+    )
 
     # Parse the command-line arguments
     try:
         args = parser.parse_args()
+
+        if args.credit_validity_years is not None and args.credit_validity_years <= 0:
+            parser.error("--credit-validity-years must be a positive number of years")
+        if args.credit_validity_years is not None and not args.enable_capacity_policy:
+            parser.error("--credit-validity-years requires --enable-capacity-policy")
 
         # Setup directories
         steelo_home = Path(args.steelo_home)
@@ -161,12 +251,12 @@ def run_full_simulation() -> str:
             console.print("[blue]Cache Statistics:[/blue]")
             for key, value in stats.items():
                 console.print(f"  {key}: {value}")
-            return "Cache stats displayed"
+            return
 
         if args.clear_cache:
             removed = cache_manager.clear_cache()
             console.print(f"[green]Cleared {removed} cached preparations[/green]")
-            return "Cache cleared"
+            return
 
         # Prepare output directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -186,6 +276,15 @@ def run_full_simulation() -> str:
             "CRITICAL": logging.CRITICAL,
         }
         log_level = log_levels[args.log_level]
+
+        # Scrap availability follows the demand scenario unless picked separately
+        demand_scenario = args.demand_scenario
+        scrap_scenario = args.scrap_scenario or args.demand_scenario
+        grid_emissions_scenario = args.grid_emissions_scenario
+        console.print(
+            f"[blue]Demand scenario:[/blue] {demand_scenario}  [blue]Scrap scenario:[/blue] {scrap_scenario}  "
+            f"[blue]Grid emissions scenario:[/blue] {grid_emissions_scenario}"
+        )
 
         # Prepare data with caching
         from ..data import DataPreparationService
@@ -221,7 +320,9 @@ def run_full_simulation() -> str:
         # Check if we can use cached data directly
         cached_data_dir = None
         if not args.no_cache and not args.force_refresh:
-            cached_data_dir = cache_manager.get_cached_preparation(master_excel_path)
+            cached_data_dir = cache_manager.get_cached_preparation(
+                master_excel_path, demand_scenario=demand_scenario, scrap_scenario=scrap_scenario
+            )
             if cached_data_dir:
                 # cached_data_dir already points to the data directory
                 console.print(f"[blue]Using cached preparation from:[/blue] {cached_data_dir}")
@@ -246,7 +347,14 @@ def run_full_simulation() -> str:
                 "output_dir": output_dir,
                 "master_excel_path": master_excel_path,
                 "demand_sheet_name": args.demand_sheet,
+                "chosen_demand_scenario": demand_scenario,
+                "chosen_scrap_scenario": scrap_scenario,
+                "chosen_grid_emissions_scenario": grid_emissions_scenario,
+                "run_name": args.run_name,
                 "log_level": log_level,
+                "random_seed": args.random_seed,
+                "plot_tm": args.plot_tm,
+                "plot_geo": args.plot_geo,
             }
 
             # Add custom baseload_power_sim_dir if provided
@@ -261,10 +369,11 @@ def run_full_simulation() -> str:
             config = SimulationConfig.from_data_directory(**config_kwargs)
 
             # Override clustering setting from command line
-            if args.enable_clustering:
-                config.enable_furnace_group_clustering = True
-                console.print("[green]Furnace group clustering enabled[/green]")
-            if args.clustering_scope != "iso3":
+            if args.clustering is not None:
+                config.enable_furnace_group_clustering = args.clustering
+                state = "enabled" if args.clustering else "disabled"
+                console.print(f"[green]Furnace group clustering {state}[/green]")
+            if args.clustering_scope is not None:
                 config.geographical_clustering_scope = args.clustering_scope
                 console.print(f"[green]Hot-metal-affected techs will cluster by {args.clustering_scope}[/green]")
 
@@ -276,6 +385,21 @@ def run_full_simulation() -> str:
                     f"[green]Iron price pegging enabled at {args.iron_to_steel_price_ratio:.0%} of steel price[/green]"
                 )
 
+            if args.enable_capacity_policy:
+                config.capacity_policy.enabled = True
+                console.print("[green]China capacity-replacement policy enabled[/green]")
+            if args.credit_validity_years is not None:
+                config.capacity_policy.credit_validity_years = args.credit_validity_years
+            if args.hydrogen_ceiling_percentile is not None:
+                config.geo_config.hydrogen_ceiling_percentile = args.hydrogen_ceiling_percentile
+                console.print(
+                    f"[green]Hydrogen ceiling at the {args.hydrogen_ceiling_percentile:g}th LCOH percentile[/green]"
+                )
+            if args.intraregional_trade is not None:
+                config.geo_config.intraregional_trade_allowed = args.intraregional_trade
+                state = "enabled" if args.intraregional_trade else "disabled"
+                console.print(f"[green]Intraregional hydrogen trade {state}[/green]")
+
             # Save config and metadata
             config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
             config_path = output_dir / "simulation_config.json"
@@ -286,6 +410,8 @@ def run_full_simulation() -> str:
                 "cache_used": True,
                 "master_excel": str(master_excel_path),
                 "cached_from": str(cached_data_dir),
+                "demand_scenario": demand_scenario,
+                "scrap_scenario": scrap_scenario,
             }
             (output_dir / "preparation_metadata.json").write_text(json.dumps(prep_metadata, indent=2))
 
@@ -305,6 +431,8 @@ def run_full_simulation() -> str:
                     master_excel_path=master_excel_path,
                     force_refresh=args.force_refresh,
                     verbose=True,
+                    demand_scenario=demand_scenario,
+                    scrap_scenario=scrap_scenario,
                 )
 
                 actual_data_dir = prep_dir
@@ -324,7 +452,14 @@ def run_full_simulation() -> str:
                     "output_dir": output_dir,
                     "master_excel_path": master_excel_path,
                     "demand_sheet_name": args.demand_sheet,
+                    "chosen_demand_scenario": demand_scenario,
+                    "chosen_scrap_scenario": scrap_scenario,
+                    "chosen_grid_emissions_scenario": grid_emissions_scenario,
+                    "run_name": args.run_name,
                     "log_level": log_level,
+                    "random_seed": args.random_seed,
+                    "plot_tm": args.plot_tm,
+                    "plot_geo": args.plot_geo,
                 }
 
                 # Add custom baseload_power_sim_dir if provided
@@ -341,10 +476,11 @@ def run_full_simulation() -> str:
                 config = SimulationConfig.from_data_directory(**config_kwargs)
 
                 # Override clustering setting from command line
-                if args.enable_clustering:
-                    config.enable_furnace_group_clustering = True
-                    console.print("[green]Furnace group clustering enabled[/green]")
-                if args.clustering_scope != "iso3":
+                if args.clustering is not None:
+                    config.enable_furnace_group_clustering = args.clustering
+                    state = "enabled" if args.clustering else "disabled"
+                    console.print(f"[green]Furnace group clustering {state}[/green]")
+                if args.clustering_scope is not None:
                     config.geographical_clustering_scope = args.clustering_scope
                     console.print(f"[green]Hot-metal-affected techs will cluster by {args.clustering_scope}[/green]")
 
@@ -355,6 +491,21 @@ def run_full_simulation() -> str:
                     console.print(
                         f"[green]Iron price pegging enabled at {args.iron_to_steel_price_ratio:.0%} of steel price[/green]"
                     )
+
+                if args.enable_capacity_policy:
+                    config.capacity_policy.enabled = True
+                    console.print("[green]China capacity-replacement policy enabled[/green]")
+                if args.credit_validity_years is not None:
+                    config.capacity_policy.credit_validity_years = args.credit_validity_years
+                if args.hydrogen_ceiling_percentile is not None:
+                    config.geo_config.hydrogen_ceiling_percentile = args.hydrogen_ceiling_percentile
+                    console.print(
+                        f"[green]Hydrogen ceiling at the {args.hydrogen_ceiling_percentile:g}th LCOH percentile[/green]"
+                    )
+                if args.intraregional_trade is not None:
+                    config.geo_config.intraregional_trade_allowed = args.intraregional_trade
+                    state = "enabled" if args.intraregional_trade else "disabled"
+                    console.print(f"[green]Intraregional hydrogen trade {state}[/green]")
 
                 # Save config and metadata
                 config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
@@ -368,6 +519,8 @@ def run_full_simulation() -> str:
                     "preparation_duration": prep_result.total_duration,
                     "files_prepared": len(prep_result.files),
                     "temp_prep_dir": str(prep_dir),
+                    "demand_scenario": demand_scenario,
+                    "scrap_scenario": scrap_scenario,
                 }
                 (output_dir / "preparation_metadata.json").write_text(json.dumps(prep_metadata, indent=2))
 
@@ -431,8 +584,6 @@ def run_full_simulation() -> str:
         console.print("[green]Simulation completed![/green]")
         console.print(f"[green]Results in:[/green] {output_dir}")
         console.print(f"[green]Latest symlink:[/green] {latest_link}")
-
-        return f"Simulation completed! Results in: {output_dir}"
 
     except argparse.ArgumentError as e:
         console.print(f"[red]Argument parsing error: {e}[/red]")
@@ -690,12 +841,13 @@ def show_geo_plots() -> None:
 
     args = parser.parse_args()
 
-    # Create SimulationConfig from data directory
+    # Create SimulationConfig from data directory; this command exists to make the GEO plots
     config = SimulationConfig.from_data_directory(
         data_dir=args.data_dir,
         output_dir=args.output_dir,
         start_year=args.year,
         end_year=args.year,
+        plot_geo=True,
     )
 
     # Create PlotPaths object

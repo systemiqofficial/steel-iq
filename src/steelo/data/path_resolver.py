@@ -151,6 +151,18 @@ class DataPathResolver:
         return self.get_fixtures_path("cost_of_x.json")
 
     @property
+    def capacity_pool_provinces_json_path(self) -> Path:
+        return self.get_fixtures_path("capacity_pool_provinces.json")
+
+    @property
+    def capacity_pool_technologies_json_path(self) -> Path:
+        return self.get_fixtures_path("capacity_pool_technologies.json")
+
+    @property
+    def capacity_pool_opening_credits_json_path(self) -> Path:
+        return self.get_fixtures_path("capacity_pool_opening_credits.json")
+
+    @property
     def tech_switches_csv_path(self) -> Path:
         return self.get_fixtures_path("tech_switches_allowed.csv")
 

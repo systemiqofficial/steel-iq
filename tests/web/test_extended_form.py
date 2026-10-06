@@ -147,6 +147,21 @@ def test_form_render_includes_demand_fields(mock_technology_extraction, client):
     assert b"Simulation Period" in response.content
 
 
+@pytest.mark.django_db
+def test_form_render_defaults_to_clustering_by_plant(mock_technology_extraction, client):
+    """The create page opens with clustering ticked and the scope dropdown on 'plant'."""
+    response = client.get(reverse("create-modelrun"))
+    assert response.status_code == 200
+
+    form = response.context["form"]
+    assert form["enable_furnace_group_clustering"].value() is True
+    assert form["geographical_clustering_scope"].value() == "plant"
+
+    assert b'name="geographical_clustering_scope"' in response.content
+    assert b'<option value="plant" selected>' in response.content
+    assert b"cluster_hot_metal_techs_by_plant_group" not in response.content
+
+
 # CircularityDataForm tests
 
 

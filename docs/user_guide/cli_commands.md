@@ -7,57 +7,166 @@ The main command to run a steel model simulation with automatic data preparation
 ```shell
 ❯ run_simulation -h
 usage: run_simulation [-h] [--start-year START_YEAR] [--end-year END_YEAR]
-                     [--output-dir OUTPUT_DIR] [--log-level LOG_LEVEL]
-                     [--cache-stats] [--clear-cache] [--force-refresh] [--no-cache]
-                     [--peg-iron-to-steel-price] [--iron-to-steel-price-ratio RATIO]
-                     [additional options...]
+                      [--plants-json PLANTS_JSON] [--output-dir OUTPUT_DIR]
+                      [--output-file OUTPUT_FILE]
+                      [--demand-excel DEMAND_EXCEL]
+                      [--demand-sheet DEMAND_SHEET]
+                      [--demand-scenario DEMAND_SCENARIO]
+                      [--scrap-scenario SCRAP_SCENARIO]
+                      [--grid-emissions-scenario GRID_EMISSIONS_SCENARIO]
+                      [--run-name RUN_NAME]
+                      [--hydrogen-ceiling-percentile HYDROGEN_CEILING_PERCENTILE]
+                      [--intraregional-trade | --no-intraregional-trade]
+                      [--location-csv LOCATION_CSV]
+                      [--cost-of-x-csv COST_OF_X_CSV]
+                      [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
+                      [--resume-from-year RESUME_FROM_YEAR]
+                      [--master-excel MASTER_EXCEL] [--no-cache]
+                      [--force-refresh] [--steelo-home STEELO_HOME]
+                      [--cache-stats] [--clear-cache]
+                      [--baseload-power-sim-dir BASELOAD_POWER_SIM_DIR]
+                      [--clustering | --no-clustering] [--plot-tm]
+                      [--plot-geo]
+                      [--clustering-scope {iso3,plant_group,plant}]
+                      [--peg-iron-to-steel-price]
+                      [--iron-to-steel-price-ratio IRON_TO_STEEL_PRICE_RATIO]
+                      [--random-seed RANDOM_SEED] [--enable-capacity-policy]
+                      [--credit-validity-years CREDIT_VALIDITY_YEARS]
 
-Run a steel model simulation with automatic caching
+Run a full steel model simulation.
 
 options:
   -h, --help            show this help message and exit
   --start-year START_YEAR
-                        Starting year for simulation (default: 2025)
-  --end-year END_YEAR   Ending year for simulation (default: 2050)
+                        The year to start the simulation (default: 2025)
+  --end-year END_YEAR   The year to end the simulation (default: 2060)
+  --plants-json PLANTS_JSON
+                        Path to the plants JSON file (default:
+                        ./data/fixtures/plants.json)
   --output-dir OUTPUT_DIR
-                        Base output directory (default: $STEELO_HOME/output)
-  --log-level LOG_LEVEL
-                        Logging level (default: WARNING)
-
-price configuration:
-  --peg-iron-to-steel-price
-                        Enable iron price pegging to steel price (default: disabled)
-  --iron-to-steel-price-ratio RATIO
-                        Ratio of steel price for iron floor when pegging is enabled
-                        (default: 0.8 = 80%)
-
-caching options:
+                        Base output directory for simulation results (default:
+                        ./outputs)
+  --output-file OUTPUT_FILE
+                        Path for the output JSON file (default: <output-
+                        dir>/pam_simulation_run.json)
+  --demand-excel DEMAND_EXCEL
+                        Path to the demand excel file (default:
+                        ./data/fixtures/2025_05_27 Demand outputs for trade
+                        module.xlsx)
+  --demand-sheet DEMAND_SHEET
+                        Sheet name in the demand excel file (default:
+                        'Steel_Demand_Chris Bataille')
+  --demand-scenario DEMAND_SCENARIO
+                        Scenario name in the 'Demand and scrap availability'
+                        sheet used for steel demand (default: BAU)
+  --scrap-scenario SCRAP_SCENARIO
+                        Scenario name in the same sheet used for scrap
+                        availability (default: same as --demand-scenario)
+  --grid-emissions-scenario GRID_EMISSIONS_SCENARIO
+                        Grid emissivity projection applied at run time, named
+                        as in the 'Power grid emissivity' sheet without its
+                        'projection_' prefix (default: 'Business As Usual';
+                        alternative: 'Net Zero')
+  --run-name RUN_NAME   Human-readable run name shown in the interactive plot
+                        titles (default: the sim_<timestamp> dir name)
+  --hydrogen-ceiling-percentile HYDROGEN_CEILING_PERCENTILE
+                        Percentile of a region's LCOH used as the regional
+                        hydrogen price cap (default: the GeoConfig value, 100,
+                        which disables the cap)
+  --intraregional-trade, --no-intraregional-trade
+                        Allow hydrogen imports between linked regions
+                        (default: the GeoConfig value, off)
+  --location-csv LOCATION_CSV
+                        Path to the location CSV file (default:
+                        ./data/fixtures/countries.csv)
+  --cost-of-x-csv COST_OF_X_CSV
+                        Path to the cost of x CSV file (default:
+                        ./data/fixtures/cost_of_x.json)
+  --log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
+                        Set the logging level (default: WARNING)
+  --resume-from-year RESUME_FROM_YEAR
+                        Resume simulation from a checkpoint at the specified
+                        year
+  --master-excel MASTER_EXCEL
+                        Path to master Excel file (uses default or downloads
+                        if not provided)
+  --no-cache            Disable preparation cache
+  --force-refresh       Force data re-preparation even if cached
+  --steelo-home STEELO_HOME
+                        STEELO_HOME directory (default: ~/.steelo or
+                        $STEELO_HOME)
   --cache-stats         Show cache statistics and exit
-  --clear-cache         Clear preparation cache and exit (Note: use 'steelo-cache clear' for complete cleanup)
-  --force-refresh       Force fresh data preparation (bypass cache)
-  --no-cache            Disable caching for this run
+  --clear-cache         Clear preparation cache and exit
+  --baseload-power-sim-dir BASELOAD_POWER_SIM_DIR
+                        Path to BOA-generated baseload power simulation output
+                        directory (overrides default)
+  --clustering, --no-clustering
+                        Cluster furnace groups to reduce LP complexity
+                        (default: on)
+  --plot-tm             Write the per-year trade maps under plots/TM (off by
+                        default; the interactive trade viewers replace them)
+  --plot-geo            Write the geospatial PNGs under plots/GEO (off by
+                        default)
+  --clustering-scope {iso3,plant_group,plant}
+                        When clustering is enabled, geographical scope for
+                        clustering hot-metal-affected techs. 'plant'
+                        (default): cluster by individual plant. 'plant_group':
+                        cluster by corporate group. 'iso3': cluster by
+                        country. Only affects FGs with
+                        hot_metal/dri_*/liquid_iron feedstocks or outputs.
+  --peg-iron-to-steel-price
+                        Enable iron price pegging to steel price (default:
+                        disabled)
+  --iron-to-steel-price-ratio IRON_TO_STEEL_PRICE_RATIO
+                        Ratio of steel price for iron floor when pegging is
+                        enabled (default: 0.8 = 80%)
+  --random-seed RANDOM_SEED
+                        Seed for the run-time RNGs shared by the plant agent,
+                        geospatial and trade LP modules (default: 42); data
+                        preparation keeps its own fixed seed
+  --enable-capacity-policy
+                        Enable China's capacity-replacement policy (default:
+                        disabled)
+  --credit-validity-years CREDIT_VALIDITY_YEARS
+                        Years a capacity-pool credit may sit banked before it
+                        expires; requires --enable-capacity-policy (default:
+                        no expiry)
+```
+
+`--output-dir` is accepted but currently not used: every run writes to a fresh `$STEELO_HOME/output/sim_<timestamp>/` directory, also linked as `$STEELO_HOME/output_latest`.
 
 Examples:
-  # Run simulation with default settings
-  run_simulation
 
-  # Run shorter simulation
-  run_simulation --start-year 2025 --end-year 2030
+```shell
+# Run simulation with default settings
+run_simulation
 
-  # Enable iron price pegging with default 80% ratio
-  run_simulation --peg-iron-to-steel-price
+# Run shorter simulation
+run_simulation --start-year 2025 --end-year 2030
 
-  # Enable iron price pegging with custom 75% ratio
-  run_simulation --peg-iron-to-steel-price --iron-to-steel-price-ratio 0.75
+# Run against a specific master input workbook
+run_simulation --master-excel ./master_input/my_master.xlsx
 
-  # View cache statistics
-  run_simulation --cache-stats
+# Enable iron price pegging with default 80% ratio
+run_simulation --peg-iron-to-steel-price
 
-  # Clear cache
-  run_simulation --clear-cache
+# Enable iron price pegging with custom 75% ratio
+run_simulation --peg-iron-to-steel-price --iron-to-steel-price-ratio 0.75
 
-  # Force fresh preparation
-  run_simulation --force-refresh
+# View cache statistics
+run_simulation --cache-stats
+
+# Clear cache
+run_simulation --clear-cache
+
+# Force fresh preparation
+run_simulation --force-refresh
+
+# Run with China's capacity-replacement policy enabled, credits expiring after 5 years
+run_simulation --enable-capacity-policy --credit-validity-years 5
+
+# Cap regional hydrogen prices at the 20th LCOH percentile and allow hydrogen imports between linked regions
+run_simulation --hydrogen-ceiling-percentile 20 --intraregional-trade
 ```
 
 ### Features:
@@ -66,6 +175,7 @@ Examples:
 - **Backward Compatibility**: Creates symlinks at `data/` and `output/`
 - **Cache Management**: Built-in commands to view and manage cache
 - **Iron Price Pegging**: Optionally peg iron prices to steel prices to ensure minimum value ratios (new feature)
+- **Capacity Policy**: Optionally enable China's capacity-replacement policy (`--enable-capacity-policy`), gating Chinese replacements and new builds on a national pool of retirement credits
 
 ## Data Preparation Commands
 

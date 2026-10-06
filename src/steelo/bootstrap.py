@@ -7,9 +7,12 @@ from typing import Optional, TYPE_CHECKING
 
 import numpy as np
 from .service_layer import handlers, UnitOfWork, MessageBus, SimulationCheckpoint
-from .domain.models import Environment, PlantGroup
+from .domain.constants import Commodities
+from .domain.models import Environment, PlantGroup, Supplier
 from .adapters.repositories import JsonRepository, InMemoryRepository, Repository
+from .capacity_policy.bootstrap import configure_capacity_policy
 from .data.path_resolver import DataPathResolver
+from .motions import bind_global_motions
 
 if TYPE_CHECKING:
     from .simulation import SimulationConfig, SimulationRunner
@@ -209,6 +212,31 @@ def _load_secondary_feedstock_constraints(env, repository_json):
         logger.info(f"Total {len(constraints)} secondary feedstock constraints loaded")
 
 
+def apply_supplier_cost_config(suppliers: list[Supplier], config: "SimulationConfig") -> None:
+    """Apply the configured cost choices to the loaded suppliers' production costs.
+
+    Args:
+        suppliers: The suppliers loaded from the prepared fixtures.
+        config: The simulation configuration.
+
+    Notes:
+        Mines get mine_price_by_year (with iron ore premiums) or mine_cost_by_year (without),
+        per config.use_iron_ore_premiums. Scrap suppliers (empty mine dictionaries) get
+        config.initial_scrap_production_cost for every year, replacing the placeholder written
+        at data preparation; the annual repricing in handlers.py overwrites it from the second
+        year onward.
+    """
+    for supplier in suppliers:
+        if supplier.commodity == Commodities.SCRAP.value:
+            supplier.production_cost_by_year = {
+                year: config.initial_scrap_production_cost for year in supplier.production_cost_by_year
+            }
+        elif config.use_iron_ore_premiums and supplier.mine_price_by_year:
+            supplier.production_cost_by_year = supplier.mine_price_by_year.copy()
+        elif not config.use_iron_ore_premiums and supplier.mine_cost_by_year:
+            supplier.production_cost_by_year = supplier.mine_cost_by_year.copy()
+
+
 def bootstrap_simulation(
     config: "SimulationConfig",
     repository: Optional[Repository] = None,  # Allow injecting a repository for testing
@@ -274,6 +302,9 @@ def bootstrap_simulation(
             carbon_border_mechanisms_path=fixtures_dir / "carbon_border_mechanisms.json",
             fallback_material_costs_path=fixtures_dir / "fallback_material_costs.json",
             willingness_to_pay_path=fixtures_dir / "willingness_to_pay.json",
+            capacity_pool_provinces_path=fixtures_dir / "capacity_pool_provinces.json",
+            capacity_pool_technologies_path=fixtures_dir / "capacity_pool_technologies.json",
+            capacity_pool_opening_credits_path=fixtures_dir / "capacity_pool_opening_credits.json",
             current_simulation_year=int(config.start_year),
         )
 
@@ -285,15 +316,8 @@ def bootstrap_simulation(
         repository.demand_centers.add_list(repository_json.demand_centers.list())
         repository.suppliers.add_list(repository_json.suppliers.list())
 
-        # Apply use_iron_ore_premiums flag to iron ore supplier costs
-        for supplier in repository.suppliers.list():
-            if config.use_iron_ore_premiums and supplier.mine_price_by_year:
-                # Copy mine_price_by_year to production_cost_by_year
-                supplier.production_cost_by_year = supplier.mine_price_by_year.copy()
-            elif not config.use_iron_ore_premiums and supplier.mine_cost_by_year:
-                # Copy mine_cost_by_year to production_cost_by_year
-                supplier.production_cost_by_year = supplier.mine_cost_by_year.copy()
-            # If mine_cost/mine_price dictionaries are empty (e.g., for scrap suppliers), keep existing production_cost_by_year
+        # Apply the iron-ore-premium choice and the initial scrap cost to supplier costs
+        apply_supplier_cost_config(repository.suppliers.list(), config)
 
         # Plant groups setup from SimulationRunner.setup()
         plant_groups = []
@@ -304,6 +328,12 @@ def bootstrap_simulation(
         repository.plant_groups.add(PlantGroup(plant_group_id="indi", plants=[]))
 
         repository.trade_tariffs.add_list(repository_json.trade_tariffs.list())
+
+    # China capacity policy: unbind any state a previous run in this process left,
+    # then bind a fresh evaluator and pool when the config enables the policy
+    configure_capacity_policy(config.capacity_policy, repository_json, start_year=int(config.start_year))
+    # Global motions record every run, policy or not: always a fresh recorder
+    bind_global_motions()
 
     # Create UoW
     uow = UnitOfWork(repository=repository)
@@ -375,6 +405,12 @@ def bootstrap_simulation(
             config_master_excel_path=config.master_excel_path,
             fixtures_dir=fixtures_dir,
         )
+        # only the capacity map viewers read these, so a run without plots skips the workbook read
+        if config.plots_dir is not None:
+            env.plant_names, env.input_sources = _load_plant_names_and_sources(
+                config_master_excel_path=config.master_excel_path,
+                fixtures_dir=fixtures_dir,
+            )
         env.initiate_hydrogen_efficiency(repository_json.hydrogen_efficiency.list())
         env.initiate_hydrogen_capex_opex(repository_json.hydrogen_capex_opex.list())
         env.initiate_capped_hydrogen_costs_by_year()
@@ -409,14 +445,16 @@ def bootstrap_simulation(
 
         plots_dir = config.output_dir / "plots"
         pam_plots_dir = plots_dir / "PAM"
-        geo_plots_dir = plots_dir / "GEO"
-        tm_plots_dir = plots_dir / "TM"
+        geo_plots_dir = plots_dir / "GEO" if config.plot_geo else None
+        tm_plots_dir = plots_dir / "TM" if config.plot_tm else None
 
         # Create the directories
         plots_dir.mkdir(parents=True, exist_ok=True)
         pam_plots_dir.mkdir(parents=True, exist_ok=True)
-        geo_plots_dir.mkdir(parents=True, exist_ok=True)
-        tm_plots_dir.mkdir(parents=True, exist_ok=True)
+        if geo_plots_dir is not None:
+            geo_plots_dir.mkdir(parents=True, exist_ok=True)
+        if tm_plots_dir is not None:
+            tm_plots_dir.mkdir(parents=True, exist_ok=True)
 
         env.plot_paths = PlotPaths(
             plots_dir=plots_dir,
@@ -445,9 +483,13 @@ def bootstrap_simulation(
         env.geo_paths = GeoDataPaths(
             data_dir=config.data_dir,
             atlite_dir=config.data_dir / "atlite",
-            geo_plots_dir=config.output_dir / "plots" / "GEO"
-            if config.output_dir
-            else config.data_dir / "output" / "plots" / "GEO",
+            geo_plots_dir=(
+                config.output_dir / "plots" / "GEO"
+                if config.output_dir
+                else config.data_dir / "output" / "plots" / "GEO"
+            )
+            if config.plot_geo
+            else None,
             terrain_nc_path=terrain_path,
             rail_distance_nc_path=rail_distance_path,
             railway_capex_csv_path=config.data_dir / "railway_capex.csv",
@@ -585,3 +627,56 @@ def _load_default_metallic_charge_per_technology(
 
     logger.info("Loaded default metallic charge mapping entries: %d", len(mapping))
     return mapping
+
+
+def _load_plant_names_and_sources(
+    *,
+    config_master_excel_path: Path | str | None,
+    fixtures_dir: Path | None,
+) -> tuple[dict[str, str], list[str]]:
+    """Load plant names and the input data sources from the master's Furnace units sheet.
+
+    Args:
+        config_master_excel_path: The configured master Excel path, if any.
+        fixtures_dir: The prepared fixtures directory, used to discover the workbook
+            when no configured path exists.
+
+    Returns:
+        ``(plant_names, input_sources)``: ``{plant_id: plant_name}`` and the distinct
+        values of the sheet's ``source`` column, most rows first. ``({}, [])`` (with
+        a warning) when the workbook, the sheet or one of the columns is missing.
+
+    Notes:
+        Only the capacity map viewers use these, for their plant labels and source
+        line, so a missing sheet must not stop the run. The workbook is resolved at
+        start-up, so it can differ from the one a cached data preparation was built
+        from; that affects labels only, never the model.
+    """
+    master_excel_path = _resolve_fallback_bom_excel_path(
+        config_master_excel_path=config_master_excel_path,
+        fixtures_dir=fixtures_dir,
+    )
+    if master_excel_path is None:
+        logger.warning("No master workbook to read plant names from. The capacity maps will label plants by id.")
+        return {}, []
+
+    import pandas as pd
+
+    try:
+        units = pd.read_excel(
+            master_excel_path, sheet_name="Furnace units", usecols=["plant_id", "plant_name", "source"]
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not load plant names from the Furnace units sheet of %s: %s. "
+            "The capacity maps will label plants by id.",
+            master_excel_path,
+            exc,
+        )
+        return {}, []
+
+    named = units.dropna(subset=["plant_name"])
+    plant_names = {str(plant_id): str(name) for plant_id, name in zip(named["plant_id"], named["plant_name"])}
+    input_sources = [str(source) for source in units["source"].value_counts().index]
+    logger.info("Loaded %d plant names and input sources %s", len(plant_names), input_sources)
+    return plant_names, input_sources

@@ -20,10 +20,15 @@ class CloseFurnaceGroup(Command):
 
 @dataclass
 class RenovateFurnaceGroup(Command):
-    """Renovate a furnace group."""
+    """Renovate a furnace group.
+
+    ``capacity`` is the post-renovation capacity: the group's own, unless the
+    capacity policy shrank the renovation as a penalised replacement.
+    """
 
     plant_id: str
     furnace_group_id: str
+    capacity: float
     capex: float
     capex_no_subsidy: float
     cost_of_debt: float
@@ -34,7 +39,11 @@ class RenovateFurnaceGroup(Command):
 
 @dataclass
 class ChangeFurnaceGroupTechnology(Command):
-    """Change the technology of a furnace group."""
+    """Change the technology of a furnace group.
+
+    ``competing_npvs`` holds the finite NPVs ({technology: npv}) the selection
+    draw ran over, the incumbent's included when renovation was allowed.
+    """
 
     plant_id: str
     furnace_group_id: str
@@ -53,6 +62,7 @@ class ChangeFurnaceGroupTechnology(Command):
     cost_of_debt_no_subsidy: float
     capex_subsidies: list["Subsidy"]
     debt_subsidies: list["Subsidy"]
+    competing_npvs: dict[str, float] | None = None
 
 
 @dataclass

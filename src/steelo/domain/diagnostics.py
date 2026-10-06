@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Iterable, Sequence
 
-DIAGNOSTICS_ENABLED = os.getenv("STEEL_DIAGNOSTICS", "1") == "1"
+DIAGNOSTICS_ENABLED = os.getenv("STEEL_DIAGNOSTICS", "0") == "1"
 DIAGNOSTICS_DETAIL = os.getenv("STEEL_DIAGNOSTICS_DETAIL", "summary").lower()
 DIAGNOSTICS_BASE_PATH = Path(os.getenv("STEEL_DIAGNOSTICS_PATH", "output/diagnostics"))
 

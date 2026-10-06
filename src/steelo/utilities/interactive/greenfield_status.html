@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Greenfield status</title>
+<style>__COMMON_CSS__</style>
+<style>
+/* Status filter row, styled like the shell's technology row (#tech-panel): ticks
+   up to six statuses, a dropdown above that (Interactive.tickMode). */
+#status-panel { display: flex; align-items: center; gap: 4px 14px; flex-wrap: wrap; padding: 2px 40px 0; }
+#status-panel > label { font-size: 12px; color: #52514e; margin: 0; }
+#status-boxes .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+</style>
+</head>
+<body>
+<div id="err"></div>
+<script>
+window.addEventListener("error", function(e) {
+  const el = document.getElementById("err");
+  el.style.display = "block";
+  el.textContent = "Load error: " + (e.message || e.type) + (e.filename ? " @ " + e.lineno : "");
+}, true);
+</script>
+<div class="toolbar">
+  <div>
+    <label for="product-select">Product</label>
+    <select id="product-select">
+      <option value="steel">Steel</option>
+      <option value="iron">Iron</option>
+    </select>
+  </div>
+  <div>
+    <label for="metric-select">Metric</label>
+    <select id="metric-select">
+      <option value="count">Furnace groups</option>
+      <option value="capacity">Capacity</option>
+      <option value="production">Production</option>
+    </select>
+  </div>
+  <div>
+    <label for="view-select">View</label>
+    <select id="view-select">
+      <option value="stock">In the status (stock)</option>
+      <option value="flow">Entering the status (flow)</option>
+    </select>
+  </div>
+  <div>
+    <label for="stack-select">Stack by</label>
+    <select id="stack-select">
+      <option value="status">Status</option>
+      <option value="technology">Technology</option>
+    </select>
+  </div>
+</div>
+<div id="status-panel">
+  <label>Statuses
+    <button id="status-all" class="small-btn">All</button>
+    <button id="status-none" class="small-btn">None</button>
+  </label>
+  <div class="box-dropdown">
+    <button id="status-toggle"></button>
+    <div id="status-boxes" class="box-ticks"></div>
+  </div>
+  <div id="status-chips" class="tick-chips"></div>
+</div>
+<div class="toolbar" id="shared-filters"></div>
+<div id="summary"></div>
+<div id="chart"></div>
+<script>__PLOTLYJS__</script>
+<script>
+const CONFIG = __CONFIG__;
+const DATA = __DATA__;
+</script>
+<script>__COMMON_JS__</script>
+<script>
+const MAX_WIDTH = 1280, MAX_HEIGHT = 720;
+const MARGIN = {l: 70, t: 90, b: 60};  // right margin is sized per render to fit the legend
+const T = Interactive.theme;
+
+/* Value field per metric and view, with the companion quantity shown in the hover. */
+const METRICS = {
+  count: {stock: "n", flow: "nn", companion: {stock: "cap", flow: "ncap"},
+          hover: "%{y} groups · %{customdata:.1f} Mt", axis: "Furnace groups", word: "furnace groups"},
+  capacity: {stock: "cap", flow: "ncap", companion: {stock: "n", flow: "nn"},
+             hover: "%{y:.1f} Mt · %{customdata} groups", axis: "Capacity (Mt)", word: "capacity"},
+  production: {stock: "pr", companion: {stock: "n"},
+               hover: "%{y:.1f} Mt · %{customdata} groups", axis: "Production (Mt)", word: "production"},
+};
+
+function capitalise(text) { return text.charAt(0).toUpperCase() + text.slice(1); }
+
+const allRows = Object.values(DATA).flatMap(d => d.rows);
+/* Lifecycle order from the embedded colour table, then any unknown statuses. */
+const knownOrder = Object.keys(CONFIG.statusColours);
+function statusOrder(statuses) {
+  const known = knownOrder.filter(s => statuses.has(s));
+  return known.concat([...statuses].filter(s => !knownOrder.includes(s)).sort());
+}
+
+/* ---- status filter: ticks for the statuses the current product's groups reach,
+   rebuilt on product change; unticked choices are remembered. ---- */
+const statusCbs = new Map();
+const untickedStatuses = new Set();
+
+function syncStatusBoxes(statuses) {
+  if (statuses.join("|") === [...statusCbs.keys()].join("|")) return;
+  const boxes = document.getElementById("status-boxes");
+  boxes.innerHTML = "";
+  statusCbs.clear();
+  const colours = Interactive.colourTable(CONFIG.statusColours, statuses);
+  statuses.forEach(name => {
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !untickedStatuses.has(name);
+    cb.addEventListener("change", () => {
+      untickedStatuses[cb.checked ? "delete" : "add"](name);
+      render();
+    });
+    const swatch = document.createElement("span");
+    swatch.className = "swatch";
+    swatch.style.background = colours[name];
+    const label = document.createElement("label");
+    label.appendChild(cb);
+    label.appendChild(swatch);
+    label.appendChild(document.createTextNode(name));
+    boxes.appendChild(label);
+    statusCbs.set(name, cb);
+  });
+  Interactive.tickMode("status", statuses.length);
+}
+
+function setAllStatuses(checked) {
+  statusCbs.forEach((cb, name) => {
+    cb.checked = checked;
+    untickedStatuses[checked ? "delete" : "add"](name);
+  });
+  render();
+}
+
+function render() {
+  const {width: WIDTH, height: HEIGHT} = Interactive.plotSize(MAX_WIDTH, MAX_HEIGHT);
+  const run = DATA[Interactive.run()];
+  const product = document.getElementById("product-select").value;
+  const viewSelect = document.getElementById("view-select");
+  const flow = viewSelect.value === "flow";
+  const metricSelect = document.getElementById("metric-select");
+  // Production has no flow reading (entries into a status produce nothing yet).
+  const productionOption = metricSelect.querySelector('option[value="production"]');
+  productionOption.disabled = flow;
+  productionOption.title = flow ? "Only for the stock view" : "";
+  if (flow && metricSelect.value === "production") metricSelect.value = "capacity";
+  const metric = METRICS[metricSelect.value];
+  const field = flow ? metric.flow : metric.stock;
+  const companion = flow ? metric.companion.flow : metric.companion.stock;
+  const selectedGeo = Interactive.selectedGeos(), selectedTech = Interactive.selectedTechs();
+  const gd = document.getElementById("chart");
+
+  const productRows = run.rows.filter(r => r.p === product);
+  // Faceted filters: each control offers only the options with data under the
+  // other filters' selections, and is never narrowed by its own ticks; hidden
+  // options keep their remembered state until they return.
+  const geoRows = productRows.filter(r => selectedGeo.has(r.g));
+  syncStatusBoxes(statusOrder(new Set(geoRows.filter(r => selectedTech.has(r.t)).map(r => r.s))));
+  const selectedStatuses = [...statusCbs].filter(([, cb]) => cb.checked).map(([name]) => name);
+  document.getElementById("status-toggle").textContent =
+    `${selectedStatuses.length} of ${statusCbs.size} statuses ▾`;
+  Interactive.updateChips("status", selectedStatuses, statusCbs.size, "statuses",
+    name => { statusCbs.get(name).checked = false; untickedStatuses.add(name); render(); });
+  const availableTechs = [...new Set(geoRows.filter(r => !untickedStatuses.has(r.s)).map(r => r.t))].sort();
+  Interactive.setVisibleTechs(new Set(availableTechs));
+  const rows = geoRows.filter(r => selectedTech.has(r.t) && statusCbs.get(r.s).checked);
+
+  const stackBy = document.getElementById("stack-select").value;
+  const keyOf = stackBy === "technology" ? (r => r.t) : (r => r.s);
+  const years = [...new Set(run.rows.map(r => r.y))].sort((a, b) => a - b);
+  const yearIdx = new Map(years.map((y, i) => [y, i]));
+  const series = new Map();  // stack key -> {v: metric values per year, c: companion values}
+  const totals = years.map(() => 0);
+  rows.forEach(r => {
+    const key = keyOf(r), yi = yearIdx.get(r.y);
+    if (!series.has(key)) series.set(key, {v: years.map(() => 0), c: years.map(() => 0)});
+    series.get(key).v[yi] += r[field];
+    series.get(key).c[yi] += r[companion];
+    totals[yi] += r[field];
+  });
+
+  // Statuses stack in lifecycle order (bottom to top), as the static chart;
+  // technologies alphabetically. The top of the stack lists first in the legend
+  // and the unified hover.
+  const present = new Set(series.keys());
+  const keys = (stackBy === "technology" ? [...present].sort() : statusOrder(present))
+    .filter(k => series.get(k).v.some(v => v !== 0));
+  if (!keys.length) {
+    Interactive.showEmpty(gd, `No greenfield ${product} ${metric.word} for this selection`, WIDTH, HEIGHT);
+    Interactive.summary("0 furnace groups");
+    return;
+  }
+  const colours = Interactive.colourTable(
+    stackBy === "technology" ? CONFIG.techColours : CONFIG.statusColours, keys);
+
+  const traces = keys.map((key, order) => ({
+    type: "bar", x: years, y: series.get(key).v, customdata: series.get(key).c,
+    name: key, legendrank: 1000 - order,
+    marker: {color: colours[key], line: {color: T.surface, width: 1}},
+    hovertemplate: metric.hover,
+  }));
+  traces.push({
+    type: "scatter", mode: "lines", x: years, y: totals,
+    name: "Total", line: {width: 0}, fill: "none", showlegend: false, legendrank: 3000,
+    hovertemplate: metricSelect.value === "count" ? "<b>%{y} groups</b>" : "<b>%{y:.1f} Mt</b>",
+  });
+
+  const viewNote = flow ? "flow: groups entering the status that year"
+                        : "stock: every group in the status that year";
+  // A technology-stacked chart aggregates over the selected statuses, so the
+  // subtitle carries that filter where the stacking no longer shows it.
+  const statusNote = stackBy !== "technology" ? null
+    : selectedStatuses.length === statusCbs.size ? "all statuses"
+    : selectedStatuses.length <= 3 ? `statuses: ${selectedStatuses.join(", ")}`
+    : `${selectedStatuses.length} of ${statusCbs.size} statuses`;
+  const runGeos = new Set(run.rows.map(r => r.g));
+  const subtitle = [run.title, Interactive.geoNote(runGeos)]
+    .concat(statusNote ? [statusNote] : []).concat([viewNote]).join(" · ");
+  const margin = {...MARGIN, r: 12 + Interactive.legendWidth(keys)};
+  const layout = {
+    title: {text: `Greenfield ${product} ${metric.word} by ${stackBy}<br><sup>${subtitle}</sup>`,
+            font: {color: T.ink, size: 17}, x: 0.05},
+    barmode: "stack", bargap: 0.2,
+    xaxis: {title: {text: "Year"}, dtick: years.length > 12 ? 5 : 1,
+            gridcolor: T.grid, zeroline: false},
+    yaxis: {title: {text: metric.axis + (flow ? " entering the status" : "")},
+            gridcolor: T.grid, zeroline: true, zerolinecolor: T.ink, zerolinewidth: 1, rangemode: "tozero"},
+    // barmode "stack" flips the legend's default traceorder; "normal" keeps the
+    // legendrank order (top of the stack first, as the bars read).
+    legend: {x: 1 + 12 / (WIDTH - margin.l - margin.r), xanchor: "left", y: 1, yanchor: "top",
+             font: {size: 11}, bgcolor: T.surface, traceorder: "normal"},
+    hovermode: "x unified",
+    hoverlabel: {align: "left", font: {size: 11}, bgcolor: "#fff"},
+    font: {family: "Helvetica Neue, Helvetica, Arial", color: T.inkSecondary, size: 11},
+    paper_bgcolor: T.surface, plot_bgcolor: T.surface,
+    width: WIDTH, height: HEIGHT, margin,
+  };
+  Plotly.react(gd, traces, layout, {displaylogo: false, responsive: false});
+
+  const last = years.length - 1;
+  const nCountries = new Set(Interactive.geoKeys().map(Interactive.isoOf)).size;
+  const selCountries = new Set([...selectedGeo].map(Interactive.isoOf)).size;
+  const selTechs = availableTechs.filter(t => selectedTech.has(t)).length;
+  const lastTotal = metricSelect.value === "count" ? `${totals[last]} groups` : `${totals[last].toFixed(1)} Mt`;
+  Interactive.summary(
+    `${selCountries} of ${nCountries} countries · ${selTechs} of ${availableTechs.length} ${product} technologies · ` +
+    `${selectedStatuses.length} of ${statusCbs.size} statuses · ${lastTotal} ${flow ? "entering" : "in"} the selected ` +
+    `statuses in ${years[last]}\n${run.provenance}`);
+}
+
+["product-select", "metric-select", "view-select", "stack-select"].forEach(id =>
+  document.getElementById(id).addEventListener("change", render));
+document.getElementById("status-all").addEventListener("click", () => setAllStatuses(true));
+document.getElementById("status-none").addEventListener("click", () => setAllStatuses(false));
+Interactive.init({geoKeys: allRows.map(r => r.g), techs: allRows.map(r => r.t), onChange: render});
+Interactive.onResize(render);
+render();
+</script>
+</body>
+</html>

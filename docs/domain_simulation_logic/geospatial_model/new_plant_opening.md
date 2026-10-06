@@ -138,6 +138,7 @@ Filters technologies based on what will be allowed at the earliest possible cons
 **Purpose:** Prevents companies from considering plants using technologies that would be illegal to build by the time construction begins. For example, if BF-BOF will be banned in 2034, it won't be considered as an opportunity in 2030 even though it's currently legal.
 
 **Process:**
+- Drop technologies listed in `geo_config.excluded_greenfield_technologies` (default `["BOF"]`) before anything else; these are never built greenfield regardless of `technology_settings`
 - Calculate target year when the earliest possible construction would start 
 - Check which technologies are allowed in that future year
 - Filter opportunities to only include permitted technologies
@@ -201,6 +202,7 @@ Subsidies are often announced years before plants are built. Standard NPV using 
 **Notes:**
 - If NPV calculation fails (returns NaN due to missing data or invalid inputs), it is set to negative infinity to exclude that location-technology pair from selection.
 - For more information on the NPV calculation, see related documentation in [Calculate Cost](../plant_agent_model/calculate_costs.md).
+- With China's capacity-replacement policy enabled, a Chinese candidate's NPV is taken at the capacity the policy would permit the route to build (the planned capacity, or ÷ 1.5 for an emission-intense route), so a penalised route is valued as it would actually be built. See [China Capacity-Replacement Policy](../capacity_replacement_policy.md).
 
 ### Step 5: Top Opportunity Selection
 
@@ -280,6 +282,8 @@ Tracks CONSIDERED business opportunities by recalculating NPV each year and deci
 
 Single-year NPV could be an outlier from temporary price spikes, one-time events, or data anomalies. Multi-year tracking ensures decisions are based on sustained economic viability.
 
+**China capacity-replacement gate (policy-enabled runs, Chinese opportunities only):** before the announcement draw, a non-consuming probe asks the retirement-credit pool whether a single credit holder could fund the plant. An unfundable year counts towards `capacity_pool_max_retry_years` (default 2), after which the opportunity is discarded without ever having withdrawn. When the draw succeeds, the credits are withdrawn from that one holder and travel with the opportunity; a refused withdrawal leaves it considered to retry next year.
+
 ### Step 3: Converting into Actual Plants under Construction
 
 **Function:** `convert_business_opportunity_into_actual_project()`
@@ -291,6 +295,8 @@ Converts ANNOUNCED business opportunities into CONSTRUCTION status, checking tec
 2. **Capacity Check:** If adding this plant would exceed the new annual capacity limit assigned to new plants → Stay announced, retry next year
 3. **Probability Filter:** Apply `probability_of_construction` → If fails, stay announced, retry next year
 4. **Success:** Begin construction
+
+**Capacity policy (policy-enabled runs):** a Chinese plant whose announcement was funded by another company's retirement credits moves into that company's plant group when construction begins; a discard at step 1 refunds the consumed credits to the pool at their original vintages.
 
 **Capacity Limit Logic:**
 
@@ -311,6 +317,7 @@ Models real-world risk factors: financing may fall through, permits may be denie
 | `plant_lifetime` | int | 20 years | Expected operational lifetime of plant |
 | `expanded_capacity` | float | 2.5 Mt/year | Standard capacity for new plants (same than for plant expansion) |
 | `top_n_loctechs_as_business_op` | int | 5 | Number of opportunities to track per product per year |
+| `geo_config.excluded_greenfield_technologies` | list[str] | `["BOF"]` | Technologies removed from the greenfield candidate set before the allowed-technology filter of Step 1. A greenfield plant has a single furnace group, so a BOF built this way has no hot-metal supply of its own. Brownfield switching and renovation are unaffected (they use `technology_settings`) |
 
 ### Probability Parameters
 

@@ -878,6 +878,8 @@ def plot_detailed_trade_map(
         "sinter_mid": [160, 82, 45],  # sienna
         "sinter_high": [210, 105, 30],  # chocolate
         "liquid steel": [0, 200, 255],  # light blue
+        "liquid_iron": [255, 140, 0],  # dark orange
+        "electrolytic_iron": [123, 104, 238],  # medium slate blue
         "hbi_low": [102, 0, 204],  # indigo
         "hbi_mid": [153, 51, 255],  # violet
         "hbi_high": [204, 153, 255],  # light purple
@@ -1429,6 +1431,12 @@ def plot_detailed_trade_map(
         }};
 
         let deckgl;
+
+        // This map never uses Mapbox-hosted styles/tiles (basemap comes from CARTO's
+        // free CDN), so disable Mapbox GL JS's access-token requirement rather than
+        // needing a real Mapbox account/key.
+        mapboxgl.accessToken = 'not-needed';
+        mapboxgl.config.REQUIRE_ACCESS_TOKEN = false;
 
         // Make functions available globally for onclick handlers
         window.toggleCommodity = function(commodity) {{
@@ -2046,6 +2054,9 @@ def plot_screenshot(
     plot_paths: Optional["PlotPaths"] = None,
     show=False,
 ):
+    # Skip entirely when a save is requested but geo plotting is disabled (no geo_plots_dir)
+    if save_name and (plot_paths is None or plot_paths.geo_plots_dir is None):
+        return
     # Select variable to plot
     if var:
         data_to_plot = data[var]
@@ -2145,6 +2156,8 @@ def plot_screenshot(
 
 
 def plot_landtype(data, plot_paths: "PlotPaths", var=None, title=None, save_name=None):
+    if save_name and (plot_paths is None or plot_paths.geo_plots_dir is None):
+        return
     # Initialize plot
     lat_lon_ratio = len(data.lat) / len(data.lon)
     fig = plt.figure(figsize=(10, 10 * lat_lon_ratio))
@@ -2227,6 +2240,8 @@ def plot_bubble_map(
     """
     Plots a bubble map where the size of each bubble corresponds to the weight at that location.
     """
+    if save_name and (plot_paths is None or plot_paths.geo_plots_dir is None):
+        return
     # Initialize plot
     fig = plt.figure(figsize=(10, 6))
     ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
@@ -2282,6 +2297,8 @@ def plot_value_histogram(
     - subtitle (str, optional): Smaller grey caption rendered below the title.
     - xlabel (str, optional): Custom x-axis label; defaults to ``"Values of '{var_name}'"``.
     """
+    if plot_paths is None or plot_paths.geo_plots_dir is None:
+        return
     if var_name is None:
         var_name = list(ds.data_vars)[0]
 
@@ -2339,6 +2356,8 @@ def plot_value_histogram(
 
 
 def plot_global_grid_with_iso3(grid, plot_paths: "PlotPaths") -> None:
+    if plot_paths is None or plot_paths.geo_plots_dir is None:
+        return
     # Visualize the global grid with ISO3 codes
     plt.figure(figsize=(10, 5))
     ax = plt.axes(projection=ccrs.PlateCarree())  # type: ignore[call-arg]
@@ -2447,129 +2466,6 @@ def plot_area_chart_of_column_by_region_or_technology(
 
     plt.close()
     return fig
-
-
-def plot_bar_chart_of_new_plants_by_status(status_counts, plot_paths: "PlotPaths"):
-    """
-    Plots a bar chart with the number of indi plants per year that are in each status.
-    """
-    if not status_counts:
-        logger.warning("No status counts data available for new plants - skipping plant status bar chart generation")
-        return
-
-    for product, status_per_prod in status_counts.items():
-        records = []
-        for year, status_per_year in status_per_prod.items():
-            status_totals: dict[str, float] = defaultdict(float)
-            for _, statuses_per_tech in status_per_year.items():
-                for status, count in statuses_per_tech.items():
-                    status_totals[status] += count
-            record = {"year": year}
-            record.update(status_totals)
-            records.append(record)
-        if not records:
-            logger.info(f"No new {product} plants found in any year - skipping {product} plant status chart")
-            continue
-
-        status_df = pd.DataFrame(records).set_index("year").fillna(0).astype(int)
-        status_df = status_df.reindex(sorted(status_df.index), axis=0)
-        status_colors = {
-            "considered": "#a6cee3",
-            "announced": "#1f78b4",
-            "construction": "#f1dc1e",
-            "operating": "#24851b",
-            "operating pre-retirement": "#084302",
-            "discarded": "#e31a1c",
-            "closed": "#882626",
-        }
-        all_statuses = list(status_colors.keys())
-        for s in status_df.columns:
-            if s not in all_statuses:
-                all_statuses.append(s)
-        status_df = status_df.reindex(columns=all_statuses, fill_value=0)
-        used_colors = [status_colors.get(s, "#cccccc") for s in status_df.columns]
-        status_df.plot(kind="bar", stacked=True, figsize=(12, 6), color=used_colors)
-        plt.title(f"New {product} plants")
-        plt.xlabel("Year")
-        plt.ylabel("Number of Plants")
-        plt.xticks(rotation=45)
-        plt.legend(title="Status")
-        plt.tight_layout()
-        # Ensure the directory exists before saving
-        geo_plots_dir = plot_paths.geo_plots_dir
-        if geo_plots_dir is None:
-            raise ValueError("geo_plots_dir must be set in PlotPaths")
-        geo_plots_dir.mkdir(parents=True, exist_ok=True)
-        output_path = geo_plots_dir / f"new_{product}_plants_by_status.png"
-        plt.savefig(output_path, dpi=300)
-        plt.close()
-        logger.info(f"Generated plant status chart for {product} at: {output_path}")
-
-
-def plot_map_of_new_plants_operating(new_plant_locations, plot_paths: "PlotPaths"):
-    """
-    Plots the locations of new plants which just started operating.
-    """
-    if not new_plant_locations:
-        logger.warning("No new plant location data available - skipping map generation")
-        return
-
-    for product, locations_per_year in new_plant_locations.items():
-        if not locations_per_year:
-            logger.info(f"No new {product} plant locations found - skipping map generation")
-            continue
-
-        # Check if there are any locations at all
-        total_locations = sum(len(locs) for locs in locations_per_year.values())
-        if total_locations == 0:
-            logger.info(f"No new {product} plants operating in any year - skipping map generation")
-            continue
-
-        fig = plt.figure(figsize=(10, 6))
-        ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
-        ax.set_extent(  # type: ignore[attr-defined]
-            [-180, 180, -90, 90],  # Global extent
-            crs=ccrs.PlateCarree(),
-        )
-        # Prepare at least 25 distinct colors
-        years = sorted(locations_per_year.keys())
-        n_colors = max(25, len(years))
-        color_map = cm.get_cmap("tab20", n_colors)
-        year_to_color = {year: color_map(i % n_colors) for i, year in enumerate(years)}
-
-        plotted_locations = set()
-        for i, year in enumerate(years):
-            locations = locations_per_year[year]
-            if not locations:
-                continue
-            unique_locs = []
-            for loc in locations:
-                key = (loc["lat"], loc["lon"])
-                if key not in plotted_locations:
-                    unique_locs.append(loc)
-                    plotted_locations.add(key)
-            if unique_locs:
-                lats = [loc["lat"] for loc in unique_locs]
-                lons = [loc["lon"] for loc in unique_locs]
-                plt.scatter(lons, lats, label=year, alpha=0.7, color=year_to_color[year])
-
-        ax.add_feature(cfeature.COASTLINE)  # type: ignore[attr-defined]
-        ax.add_feature(cfeature.BORDERS, linestyle=":")  # type: ignore[attr-defined]
-        plt.title(f"Locations of new {product} plants")
-        plt.xlabel("Longitude")
-        plt.ylabel("Latitude")
-        plt.legend(title="Operational start year", loc="lower left", ncol=2)
-        plt.grid()
-        plt.tight_layout()
-        # Ensure the directory exists before saving
-        geo_plots_dir = plot_paths.geo_plots_dir
-        if geo_plots_dir is None:
-            raise ValueError("geo_plots_dir must be set in PlotPaths")
-        geo_plots_dir.mkdir(parents=True, exist_ok=True)
-        output_path = geo_plots_dir / f"new_{product}_plants_map.png"
-        plt.savefig(output_path, dpi=300)
-        plt.close()
-        logger.info(f"Generated new plant map for {product} at: {output_path}")
 
 
 # Capacity addition by technology

@@ -175,7 +175,7 @@ def test_evaluate_expansion_without_subsidies(
     assert plant_id in options
 
     # Get the NPV, best tech, and capex
-    npv, best_tech, capex, _reductant = options[plant_id]
+    npv, best_tech, capex, _reductant, _build_capacity = options[plant_id]
     assert npv is not None
     assert best_tech in ["EAF", "BOF", "DRI", "BF"]
     assert capex == bus.env.name_to_capex["greenfield"]["Americas"][best_tech]
@@ -257,7 +257,7 @@ def test_evaluate_expansion_with_absolute_capex_subsidy(
     # Debug: Check what options contains
     assert options, f"No expansion options returned. Plant id: {plant_id}"
     assert plant_id in options, f"Plant {plant_id} not in options. Available keys: {list(options.keys())}"
-    npv, best_tech, capex_with_subsidy, _reductant = options[plant_id]
+    npv, best_tech, capex_with_subsidy, _reductant, _build_capacity = options[plant_id]
 
     # If EAF is chosen, verify subsidy was applied
     if best_tech == "EAF":
@@ -341,7 +341,7 @@ def test_evaluate_expansion_with_relative_capex_subsidy(
 
     # Get the results
     plant_id = plant_with_location.plant_id
-    npv, best_tech, capex_with_subsidy, _reductant = options[plant_id]
+    npv, best_tech, capex_with_subsidy, _reductant, _build_capacity = options[plant_id]
 
     # If DRI is chosen, verify subsidy was applied
     if best_tech == "DRI":
@@ -448,7 +448,7 @@ def test_evaluate_expansion_with_combined_subsidies(
 
     # Get the results
     plant_id = plant_with_location.plant_id
-    npv, best_tech, capex_with_subsidy, _reductant = options[plant_id]
+    npv, best_tech, capex_with_subsidy, _reductant, _build_capacity = options[plant_id]
 
     # Verify BOF was chosen given the favorable BOM
     if best_tech == "BOF":
@@ -532,7 +532,7 @@ def test_prefilter_affordability_uses_subsidised_capex(
 
     plant_id = plant_with_location.plant_id
     assert plant_id in options, "Subsidised EAF should survive the affordability pre-filter"
-    npv, best_tech, capex_with_subsidy, _reductant = options[plant_id]
+    npv, best_tech, capex_with_subsidy, _reductant, _build_capacity = options[plant_id]
     assert best_tech == "EAF"
     assert capex_with_subsidy == 200.0
 
@@ -612,7 +612,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
 
     # Get the results
     plant_id = plant_with_location.plant_id
-    npv, best_tech, capex, _reductant = options[plant_id]
+    npv, best_tech, capex, _reductant, _build_capacity = options[plant_id]
 
     # Verify that only allowed technologies were considered
     assert best_tech in ["EAF", "BOF"], f"Technology {best_tech} was chosen but is not in allowed_techs"
@@ -648,7 +648,7 @@ def test_evaluate_expansion_with_restricted_allowed_techs(
         debt_subsidies={},
     )
 
-    npv_all, best_tech_all, capex_all, _reductant_all = options_all[plant_id]
+    npv_all, best_tech_all, capex_all, _reductant_all, _build_capacity_all = options_all[plant_id]
 
     # When all techs are allowed, the more economical DRI or BF should be chosen
     assert best_tech_all in ["DRI", "BF"], (

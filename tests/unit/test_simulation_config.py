@@ -69,6 +69,23 @@ def test_simulation_config_can_override_defaults():
     assert config.active_statuses == ["operating"]
 
 
+def test_policy_output_dir_defaults_under_data_and_is_not_created(tmp_path):
+    """
+    The capacity-policy CSVs live in data/policy, but the flush creates the
+    directory, so a policy-OFF run leaves no empty one behind.
+    """
+    config = SimulationConfig(
+        start_year=Year(2025),
+        end_year=Year(2060),
+        master_excel_path=Path("test.xlsx"),
+        output_dir=tmp_path / "output",
+        technology_settings=get_default_technology_settings(),
+    )
+
+    assert config.policy_output_dir == tmp_path / "output" / "data" / "policy"
+    assert not config.policy_output_dir.exists()
+
+
 def test_config_factory_from_data_directory(prepared_data_dir):
     """
     Tests that the from_data_directory factory correctly populates path fields.

@@ -256,3 +256,52 @@ def test_cache_version_invalidation(tmp_path):
 
     # Should not find cache with different version
     assert cache_manager.get_cached_preparation(sample_file) is None
+
+
+def test_hash_changes_with_demand_scenario(tmp_path):
+    """Same workbook, different demand scenario → different cache key."""
+    sample_file = tmp_path / "sample.xlsx"
+    sample_file.write_bytes(b"PK\x03\x04" + b"X" * 1000)
+
+    assert get_preparation_hash(sample_file, demand_scenario="BAU") != get_preparation_hash(
+        sample_file, demand_scenario="China-high"
+    )
+
+
+def test_hash_changes_with_scrap_scenario_alone(tmp_path):
+    """Scrap scenario is keyed independently of the demand scenario."""
+    sample_file = tmp_path / "sample.xlsx"
+    sample_file.write_bytes(b"PK\x03\x04" + b"X" * 1000)
+
+    assert get_preparation_hash(
+        sample_file, demand_scenario="China-high", scrap_scenario="BAU"
+    ) != get_preparation_hash(sample_file, demand_scenario="China-high", scrap_scenario="China-high")
+
+
+def test_cached_preparation_is_keyed_by_scenarios(tmp_path):
+    """A preparation saved for one scenario pair is not served for another, and its metadata records the pair."""
+    import json
+
+    cache_manager = DataPreparationCache(cache_root=tmp_path / "cache")
+    sample_file = tmp_path / "sample.xlsx"
+    sample_file.write_bytes(b"PK\x03\x04" + b"X" * 1000)
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "test.txt").write_text("test")
+
+    cache_dir = cache_manager.save_preparation(
+        source_dir, sample_file, 1.0, demand_scenario="China-high", scrap_scenario="BAU"
+    )
+
+    metadata = json.loads((cache_dir / "metadata.json").read_text())
+    assert metadata["demand_scenario"] == "China-high"
+    assert metadata["scrap_scenario"] == "BAU"
+    assert (
+        cache_manager.get_cached_preparation(sample_file, demand_scenario="China-high", scrap_scenario="BAU")
+        is not None
+    )
+    assert (
+        cache_manager.get_cached_preparation(sample_file, demand_scenario="China-high", scrap_scenario="China-high")
+        is None
+    )
+    assert cache_manager.get_cached_preparation(sample_file) is None
