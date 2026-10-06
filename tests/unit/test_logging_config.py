@@ -138,14 +138,16 @@ def test_configure_from_yaml_sets_feature_flags(
     yaml_config_file,
     clean_logging_state,
 ):
-    """Verify FURNACE_GROUP_BREAKDOWN is updated from YAML."""
-    # First set to opposite value
+    """Verify FURNACE_GROUP_BREAKDOWN and DUMP_FAILED_LP are updated from YAML."""
+    # First set to opposite values
     LoggingConfig.FURNACE_GROUP_BREAKDOWN = True
+    LoggingConfig.DUMP_FAILED_LP = False
 
     content = """
 version: 1
 features:
   furnace_group_breakdown: false
+  dump_failed_lp: true
 modules:
   geo: INFO
 """
@@ -153,9 +155,11 @@ modules:
     LoggingConfig.configure_from_yaml(str(yaml_path))
 
     assert LoggingConfig.FURNACE_GROUP_BREAKDOWN is False
+    assert LoggingConfig.DUMP_FAILED_LP is True
 
     # Reset for other tests
     LoggingConfig.FURNACE_GROUP_BREAKDOWN = True
+    LoggingConfig.DUMP_FAILED_LP = False
 
 
 def test_configure_from_yaml_sets_external_loggers(
@@ -684,3 +688,23 @@ def test_short_name_formatter_same_function_different_context(clean_logging_stat
 
     assert pam_result == "DEBUG   | PAM  | calculate_subsidies: Subsidy calc"
     assert geo_result == "DEBUG   | GEO  | calculate_subsidies: Subsidy calc"
+
+
+def test_short_name_formatter_external_logger_outside_context_uses_owning_module(clean_logging_state):
+    """Pyomo/HiGHS output emitted from a thread without module context is tagged TM, not CORE."""
+    formatter = ShortNameFormatter()
+
+    record = logging.LogRecord(
+        name="pyomo.contrib.appsi.solvers.highs",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="Running HiPO",
+        args=(),
+        exc_info=None,
+    )
+
+    _current_module.name = None
+    result = formatter.format(record)
+
+    assert result == "INFO    | TM   | highs: Running HiPO"

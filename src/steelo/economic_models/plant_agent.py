@@ -35,6 +35,7 @@ from steelo.domain.trade_modelling.set_up_steel_trade_lp import (
     set_up_steel_trade_lp,
     solve_steel_trade_lp_and_return_commodity_allocations,
 )
+from steelo.logging_config import LoggingConfig
 from steelo.domain.trade_modelling.trade_lp_modelling import Allocations
 from steelo.service_layer.message_bus import MessageBus
 from steelo.utilities.file_output import export_carbon_border_charges_to_csv, export_commodity_allocations_to_csv
@@ -441,6 +442,8 @@ class AllocationModel:
         # Warm-start from previous year's solution if available (OPT-2)
         if bus.env.previous_lp_solution is not None:
             trade_lp.previous_solution = bus.env.previous_lp_solution
+        if bus.env.output_dir is not None and LoggingConfig.DUMP_FAILED_LP:
+            trade_lp.failure_dump_path = bus.env.output_dir / "TM" / f"trade_lp_failed_{bus.env.year}.mps"
 
         setup_elapsed = time.time() - setup_start
         logger.info(f"operation=allocation_setup year={bus.env.year} duration_s={setup_elapsed:.3f}")

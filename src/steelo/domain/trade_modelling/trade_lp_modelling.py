@@ -5,9 +5,11 @@ import pyomo.environ as pyo
 from typing import Tuple, Any
 
 # LP_EPSILON is now passed as a parameter to TradeLPModel
+import gc
 import logging
 import os
 import time
+from pathlib import Path
 import functools
 from steelo.adapters.geospatial.geospatial_toolbox import haversine_distance
 
@@ -441,6 +443,19 @@ class TradeLPModel:
 
         # Warm-start support (OPT-2) - previous year's solution for faster convergence
         self.previous_solution: dict[tuple[str, str, str], float] | None = None
+
+        # Where to write the LP (MPS) when the solve does not end optimal, for offline reproduction
+        self.failure_dump_path: Path | None = None
+        # Retried cold in order on a non-optimal solve; in HiGHS 1.15 "ipm" is HiPO again, legacy IPM is "ipx".
+        self.fallback_solvers: list[str] = ["ipx", "simplex"]
+        # Looser tolerances applied only to the fallback retries, so a hard year still gets a solution;
+        # the primary solve keeps HiGHS's default (~1e-7) tolerances and results stay comparable across runs.
+        self.fallback_solver_options: dict[str, Any] = {
+            "ipm_optimality_tolerance": 1e-3,
+            "primal_feasibility_tolerance": 1e-3,
+            "dual_feasibility_tolerance": 1e-3,
+            "kkt_tolerance": 1e-3,
+        }
 
     def add_transportation_costs(self, transportation_costs: list[TransportationCost]) -> None:
         """Add transportation costs to the model."""
@@ -1806,20 +1821,15 @@ class TradeLPModel:
                 - solver.termination_condition: Why solver stopped (optimal, infeasible, etc.)
 
         Notes:
-            - Uses solver_options for configuration (default: IPM for memory efficiency)
+            - Uses solver_options for configuration (default: HiPO interior point with crossover)
+            - A non-optimal primary solve is retried cold with each of fallback_solvers in turn,
+              under the looser fallback_solver_options tolerances
             - Supports warm-starting from previous_solution (simplex only)
             - Random seed from SimulationConfig.random_seed for reproducibility
             - Does not automatically load solution (call extract_solution() after)
             - Logs detailed diagnostics if model is infeasible
         """
         logger = logging.getLogger(f"{__name__}.solve_lp_model")
-        start_time = time.time()
-        solver = pyo.SolverFactory("appsi_highs")
-        solver.options["random_seed"] = self.random_seed
-
-        # Use configurable solver options for performance tuning (OPT-4)
-        solver.options.update(self.solver_options)
-        solver.config.load_solution = False  # Don't try to load infeasible solution
 
         # Warm-start from previous year's solution if available (OPT-2)
         # NOTE: HiGHS Appsi only supports warm starts for simplex solver, not IPM/HiPO
@@ -1846,12 +1856,22 @@ class TradeLPModel:
                     f"operation=warm_start status=skipped reason='{solver_type} solver does not support warm starts'"
                 )
 
-        # tee=True forwards HiGHS's own logs (algorithm banner, iterations, timing)
-        # so you can verify HiPO is actually running. Toggle via env STEELO_HIGHS_LOG.
-        highs_log = os.environ.get("STEELO_HIGHS_LOG", "").lower() in {"1", "true", "yes"}
-        result = solver.solve(self.lp_model, load_solutions=False, warmstart=warm_start_enabled, tee=highs_log)
-        elapsed = time.time() - start_time
-        logger.info(f"operation=trade_optimization duration_s={elapsed:.3f}")
+        solver, result = self._run_solver(solver_type, warm_start_enabled, logger)
+
+        if result.solver.termination_condition != pyo.TerminationCondition.optimal:
+            self._log_solver_failure(solver, result.solver.termination_condition, logger, dump_lp=True)
+            # A fresh instance per retry so HiGHS cannot warm-start from the failed iterate.
+            for fallback in self.fallback_solvers:
+                if fallback == solver_type:
+                    continue
+                logger.warning(f"operation=trade_optimization status=retry solver={fallback} after={solver_type}")
+                del solver
+                gc.collect()
+                solver, result = self._run_solver(fallback, False, logger, relaxed_tolerances=True)
+                if result.solver.termination_condition == pyo.TerminationCondition.optimal:
+                    break
+                self._log_solver_failure(solver, result.solver.termination_condition, logger, dump_lp=False)
+
         self.solution_status = result.solver.status
 
         # Check if solution was found
@@ -1901,6 +1921,68 @@ class TradeLPModel:
                 logger.info("LP Solution: No demand centers found")
 
         return result
+
+    def _run_solver(
+        self, solver_name: str, warm_start: bool, logger: logging.Logger, relaxed_tolerances: bool = False
+    ) -> tuple[Any, Any]:
+        """Solve the built LP with a fresh HiGHS instance running the given algorithm.
+
+        Args:
+            solver_name: HiGHS `solver` option value (hipo, ipx or simplex)
+            warm_start: Pass the variable values already set on the model as a starting basis (simplex only)
+            logger: Logger for the timing line
+            relaxed_tolerances: Apply fallback_solver_options on top of solver_options (fallback retries only)
+
+        Returns:
+            Tuple of (appsi solver instance, Pyomo result object)
+        """
+        start_time = time.time()
+        solver = pyo.SolverFactory("appsi_highs")
+        solver.options["random_seed"] = self.random_seed
+        solver.options.update(self.solver_options)
+        solver.options["solver"] = solver_name
+        if relaxed_tolerances:
+            solver.options.update(self.fallback_solver_options)
+            logger.warning(
+                f"operation=trade_optimization solver={solver_name} relaxed_tolerances={self.fallback_solver_options}"
+            )
+        solver.config.load_solution = False  # Don't try to load infeasible solution
+        # HiGHS's log reaches the run log via the pyomo appsi logger; tee=True also mirrors it to stdout.
+        highs_log = os.environ.get("STEELO_HIGHS_LOG", "").lower() in {"1", "true", "yes"}
+        result = solver.solve(self.lp_model, load_solutions=False, warmstart=warm_start, tee=highs_log)
+        logger.info(f"operation=trade_optimization duration_s={time.time() - start_time:.3f} solver={solver_name}")
+        return solver, result
+
+    def _log_solver_failure(self, solver, termination_condition, logger: logging.Logger, dump_lp: bool) -> None:
+        """Log HiGHS's own account of a non-optimal solve and optionally dump the LP for offline reproduction.
+
+        Args:
+            solver: The appsi_highs solver instance that just ran
+            termination_condition: Pyomo termination condition of the failed solve
+            logger: Logger to write the diagnostics to
+            dump_lp: Write the LP to failure_dump_path (the LP is identical across retries, so once is enough)
+
+        Notes:
+            - Pyomo folds HiGHS's load/model/presolve/solve/postsolve errors into a single
+              TerminationCondition.error; the raw HiGHS status and iteration counts are the
+              only way to tell a HiPO divergence from a crossover or postsolve failure.
+            - The MPS file (written only when failure_dump_path is set) lets the exact failing
+              LP be re-solved with highspy under different options without re-running the simulation.
+        """
+        highs = solver._solver_model  # appsi keeps the highspy.Highs handle here
+        info = highs.getInfo()
+        logger.error(
+            f"operation=trade_optimization termination={termination_condition} "
+            f"highs_status='{highs.modelStatusToString(highs.getModelStatus())}' "
+            f"ipm_iterations={info.ipm_iteration_count} crossover_iterations={info.crossover_iteration_count} "
+            f"simplex_iterations={info.simplex_iteration_count} "
+            f"primal_status='{highs.solutionStatusToString(info.primal_solution_status)}' "
+            f"dual_status='{highs.solutionStatusToString(info.dual_solution_status)}'"
+        )
+        if dump_lp and self.failure_dump_path is not None:
+            self.failure_dump_path.parent.mkdir(parents=True, exist_ok=True)
+            highs.writeModel(str(self.failure_dump_path))
+            logger.error(f"Failed LP written to {self.failure_dump_path} for offline reproduction")
 
     def extract_solution(self):
         """Extract optimal allocation values from solved LP model.
