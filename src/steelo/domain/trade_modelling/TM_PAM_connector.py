@@ -221,6 +221,19 @@ class TM_PAM_connector:
             total += self.tariff_taxes.get(key, 0.0)
         return total
 
+    def get_carbon_border_cost(self, from_pc, to_pc, commodity) -> float:
+        """Carbon border adjustment on one arc in USD/t; an arc without a recorded charge carries none.
+
+        Args:
+            from_pc: Source process centre of the arc.
+            to_pc: Destination process centre of the arc.
+            commodity: Commodity shipped on the arc.
+
+        Returns:
+            The recorded adjustment (negative for an export rebate), or 0.0 when the arc has none.
+        """
+        return self.carbon_border_charges.get((from_pc, to_pc, commodity), 0.0)
+
     def create_graph(self, solved_trade_allocations):
         """
         Build a directed multigraph of all process centers, with parallel edges, by key
@@ -260,6 +273,8 @@ class TM_PAM_connector:
         # Store tariff taxes for edge attribute lookup
         self.tariff_taxes: dict[tuple[str, str, str], float] = solved_trade_allocations.tariff_taxes or {}
         logger.debug("[TARIFF] Loaded %d tariff entries", len(self.tariff_taxes))
+        self.carbon_border_charges: dict = solved_trade_allocations.carbon_border_charges or {}
+        logger.debug("[CBAM] Loaded %d charged arcs", len(self.carbon_border_charges))
 
         # Initialize an empty directed multigraph
         self.G = nx.MultiDiGraph()
@@ -302,6 +317,8 @@ class TM_PAM_connector:
                 "transport_cost": self.get_transport_cost(from_pc.location.iso3, to_pc.location.iso3, commodity),
                 # 3. Tariff cost from LP tariff taxes (import/export duties)
                 "tariff_cost": self.get_tariff_cost(from_pc.location.iso3, to_pc.location.iso3, commodity),
+                # 3b. Carbon border adjustment recorded by the LP on this arc, keyed by the same objects
+                "carbon_border_cost": self.get_carbon_border_cost(from_pc, to_pc, comm),
                 # 4. Processing energy cost, if defined for this destination
                 "processing_energy_cost": total_energy_cost,
                 "processing_energy_breakdown": energy_breakdown,
@@ -338,6 +355,7 @@ class TM_PAM_connector:
                     product_cost={},
                     unit_cost={},
                     own_unit_cost=float(from_pc.production_cost or 0.0),
+                    own_emission_intensity=float(from_pc.emission_intensity),
                 )
 
             # Add the destination node, initializing its attrs with same cost logic
@@ -448,6 +466,20 @@ class TM_PAM_connector:
                 # Accumulate export volumes by commodity
                 for src, v, comm, edata in G.out_edges(u, keys=True, data=True):
                     G.nodes[u][export_attr][comm] = G.nodes[u][export_attr].get(comm, 0) + edata.get(volume_attr, 0)
+            # Upstream embedded emissions and carbon paid per tonne of this node's product: the inbound
+            # totals spread over everything it ships (multi-output nodes normalise by total export)
+            inbound = G.nodes[u].get(allocation_attr, {})
+            total_export = sum(G.nodes[u].get(export_attr, {}).values())
+            if G.in_degree(u) > 0 and total_export > 0:
+                up_e = sum(alloc["EmbeddedEmissions"] for alloc in inbound.values()) / total_export
+                up_c = sum(alloc["CarbonPaid"] for alloc in inbound.values()) / total_export
+            else:
+                up_e, up_c = 0.0, 0.0
+            G.nodes[u]["upstream_emission_intensity"] = up_e
+            G.nodes[u]["upstream_carbon_cost_paid"] = up_c
+            # Suppliers carry neither attribute and contribute nothing of their own
+            own_e = float(G.nodes[u].get("own_emission_intensity", 0.0))
+            own_c = float(G.nodes[u].get("own_unit_cost", 0.0))
             # If G[u] is also a to-node
             # For each outgoing edge (u → v) carrying commodity `comm`
             for _, v, comm, edata in G.out_edges(u, keys=True, data=True):
@@ -498,7 +530,10 @@ class TM_PAM_connector:
                 # We want to track the material cost EXCLUDING the current step's energy
                 volume = edata.get(volume_attr, 0.0)
                 material_tariff_transportation_cost = (
-                    per_unit_base + edata.get(transport_attr, 0.0) + edata.get("tariff_cost", 0.0)
+                    per_unit_base
+                    + edata.get(transport_attr, 0.0)
+                    + edata.get("tariff_cost", 0.0)
+                    + edata.get("carbon_border_cost", 0.0)
                 ) * volume
                 current_step_energy_cost = edata.get(process_attr, 0.0) * volume
                 edge_cost = material_tariff_transportation_cost + current_step_energy_cost
@@ -558,10 +593,17 @@ class TM_PAM_connector:
                 # MaterialCost includes upstream material + ALL upstream costs
                 # (including upstream energy) + current transport + tariffs
                 # EXCLUDES the current step's processing energy
-                prev = G.nodes[v][allocation_attr].get(comm, {"Cost": 0.0, "MaterialCost": 0.0, "Volume": 0.0})
+                prev = G.nodes[v][allocation_attr].get(
+                    comm,
+                    {"Cost": 0.0, "MaterialCost": 0.0, "Volume": 0.0, "EmbeddedEmissions": 0.0, "CarbonPaid": 0.0},
+                )
                 prev["Cost"] += edge_cost  # Total cost including current step's energy
                 prev["MaterialCost"] += material_tariff_transportation_cost  # Excludes current step's energy only
                 prev["Volume"] += volume
+                # tCO2 and USD carried into v on this edge: the source's own stage plus everything upstream
+                # of it, and the border charge paid on the edge itself
+                prev["EmbeddedEmissions"] += (own_e + up_e) * volume
+                prev["CarbonPaid"] += (own_c + up_c + edata.get("carbon_border_cost", 0.0)) * volume
                 G.nodes[v][allocation_attr][comm] = prev
 
             G.nodes[u][unit_cost_attr].update(unit_cost)
@@ -695,6 +737,40 @@ class TM_PAM_connector:
                 # raise Warning(f"Furnace group capacity is 0 for {fg.furnace_group_id}")
                 logger.debug(
                     f"Furnace group capacity is 0 for {fg.furnace_group_id} \n and allocation is {fg.allocated_volumes}"
+                )
+
+    def update_furnace_group_embedded_carbon(self, furnace_groups: list[FurnaceGroup]) -> None:
+        """Copy the propagated upstream emission intensity and carbon paid onto each furnace group.
+
+        Args:
+            furnace_groups: Furnace groups to update from their graph nodes.
+
+        Notes:
+            Both values are per tonne of the furnace group's product and describe what arrived on its
+            inbound flows this year; the next LP set-up reads them as last year's realised state. A
+            furnace group absent from the graph, without inbound edges, or idle carries 0.0 for both
+            and no ``upstream_carbon_year``, so Environment.fill_missing_upstream_embedded_carbon gives
+            it its peers' average at the next set-up; an observed one is stamped with this year.
+        """
+        logger = logging.getLogger(f"{__name__}.update_furnace_group_embedded_carbon")
+        graph = self.G
+        for fg in furnace_groups:
+            node_id = fg.furnace_group_id
+            if graph is None or node_id not in graph.nodes or graph.in_degree(node_id) == 0 or fg.utilization_rate <= 0:
+                fg.upstream_emission_intensity = 0.0
+                fg.upstream_carbon_cost_paid = 0.0
+                fg.upstream_carbon_year = None
+                continue
+            node = graph.nodes[node_id]
+            fg.upstream_emission_intensity = node["upstream_emission_intensity"]
+            fg.upstream_carbon_cost_paid = node["upstream_carbon_cost_paid"]
+            fg.upstream_carbon_year = self.current_year
+            if fg.upstream_emission_intensity or fg.upstream_carbon_cost_paid:
+                logger.debug(
+                    "fg=%s upstream_emission_intensity=%.4f upstream_carbon_cost_paid=%.2f",
+                    node_id,
+                    fg.upstream_emission_intensity,
+                    fg.upstream_carbon_cost_paid,
                 )
 
     def update_bill_of_materials(self, furnace_groups: list[FurnaceGroup]):

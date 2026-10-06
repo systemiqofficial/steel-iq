@@ -417,12 +417,17 @@ class MetaFurnaceGroup:
         chosen_reductant: Reductant choice of all constituent furnace groups
         location: Capacity-weighted center of gravity of all constituent FGs
         total_capacity: Sum of capacities of all constituent furnace groups
-        weighted_avg_carbon_cost: Capacity-weighted average carbon cost per unit
+        weighted_avg_carbon_cost: Capacity-weighted average trade carbon cost per unit (utilisation-independent)
         dynamic_business_case: List of primary feedstock options (should be identical across cluster)
         capacity_shares: Mapping from fg_id to its share of total cluster capacity (0-1)
         constituent_locations: Original locations of constituent FGs (for disaggregation)
         weighted_avg_energy_costs: Capacity-weighted average energy costs by metallic charge input
             (e.g., {"hot_metal": 25.5, "pig_iron": 30.2} in USD per tonne of output)
+        weighted_avg_emission_intensity: Capacity-weighted own-stage direct tCO2 per tonne of product
+        weighted_avg_upstream_emission_intensity: Capacity-weighted tCO2 per tonne embedded in last
+            year's inputs
+        weighted_avg_upstream_carbon_cost_paid: Capacity-weighted USD per tonne already paid on last
+            year's inputs
 
     Example:
         >>> # Three BF furnaces in China using coke, with total capacity 10,000 t
@@ -457,6 +462,9 @@ class MetaFurnaceGroup:
     capacity_shares: dict[str, float] = field(default_factory=dict)
     constituent_locations: dict[str, Location] = field(default_factory=dict)
     weighted_avg_energy_costs: dict[str, float] = field(default_factory=dict)
+    weighted_avg_emission_intensity: float = 0.0
+    weighted_avg_upstream_emission_intensity: float = 0.0
+    weighted_avg_upstream_carbon_cost_paid: float = 0.0
     # Set when the cluster was keyed by plant_group or plant (hot-metal-affected tech with
     # geographical_clustering_scope = "plant_group" or "plant"). Used by the LP to restrict hot
     # commodity flows to within a plant_group/plant. None for iso3-keyed clusters.
@@ -468,6 +476,28 @@ class MetaFurnaceGroup:
             f"n_constituents={len(self.constituent_fg_ids)}, "
             f"capacity={float(self.total_capacity) * T_TO_KT:.1f} kt)"
         )
+
+
+def _capacity_weighted_mean(
+    cluster_fgs: list[tuple[FurnaceGroup, Plant]],
+    effective_caps: dict[str, float],
+    total_eff_cap: float,
+    attr: str,
+) -> float:
+    """Effective-capacity-weighted mean of a furnace-group attribute across a cluster.
+
+    Args:
+        cluster_fgs: The cluster's (furnace group, plant) pairs.
+        effective_caps: Effective capacity per furnace group id.
+        total_eff_cap: Sum of the effective capacities.
+        attr: Name of the numeric furnace-group attribute to average.
+
+    Returns:
+        The weighted mean, or the simple mean when the cluster has no effective capacity.
+    """
+    if total_eff_cap > 0:
+        return sum(getattr(fg, attr) * effective_caps[fg.furnace_group_id] for fg, _ in cluster_fgs) / total_eff_cap
+    return sum(getattr(fg, attr) for fg, _ in cluster_fgs) / len(cluster_fgs)
 
 
 def calculate_center_of_gravity(furnace_groups_with_plants: list[tuple[FurnaceGroup, Plant]]) -> Location:
@@ -758,15 +788,19 @@ def cluster_furnace_groups(
             # Equal shares if all effective capacities are zero
             capacity_shares = {fg.furnace_group_id: 1.0 / len(cluster_fgs) for fg, _ in cluster_fgs}
 
-        # Calculate weighted average carbon cost (weighted by effective capacity)
-        if total_eff_cap > 0:
-            weighted_avg_carbon_cost = (
-                sum(fg.carbon_cost_per_unit * effective_caps[fg.furnace_group_id] for fg, _ in cluster_fgs)
-                / total_eff_cap
-            )
-        else:
-            # Simple average if all have zero effective capacity
-            weighted_avg_carbon_cost = sum(fg.carbon_cost_per_unit for fg, _ in cluster_fgs) / len(cluster_fgs)
+        # The LP prices clusters on the utilisation-independent trade carbon cost, not the realised one
+        weighted_avg_carbon_cost = _capacity_weighted_mean(
+            cluster_fgs, effective_caps, total_eff_cap, "trade_carbon_cost_per_unit"
+        )
+        weighted_avg_emission_intensity = _capacity_weighted_mean(
+            cluster_fgs, effective_caps, total_eff_cap, "trade_emission_intensity"
+        )
+        weighted_avg_upstream_emission_intensity = _capacity_weighted_mean(
+            cluster_fgs, effective_caps, total_eff_cap, "upstream_emission_intensity"
+        )
+        weighted_avg_upstream_carbon_cost_paid = _capacity_weighted_mean(
+            cluster_fgs, effective_caps, total_eff_cap, "upstream_carbon_cost_paid"
+        )
 
         # Store constituent locations for disaggregation
         constituent_locations = {fg.furnace_group_id: plant.location for fg, plant in cluster_fgs}
@@ -854,6 +888,9 @@ def cluster_furnace_groups(
             capacity_shares=capacity_shares,
             constituent_locations=constituent_locations,
             weighted_avg_energy_costs=weighted_avg_energy_costs,
+            weighted_avg_emission_intensity=weighted_avg_emission_intensity,
+            weighted_avg_upstream_emission_intensity=weighted_avg_upstream_emission_intensity,
+            weighted_avg_upstream_carbon_cost_paid=weighted_avg_upstream_carbon_cost_paid,
             plant_group_id=plant_group_id,
         )
 
@@ -3096,6 +3133,9 @@ def disaggregate_allocations(
             location=meta_fg.constituent_locations[fg_id],
             production_cost=meta_fg.weighted_avg_carbon_cost,
             soft_minimum_capacity=None,
+            emission_intensity=meta_fg.weighted_avg_emission_intensity,
+            upstream_emission_intensity=meta_fg.weighted_avg_upstream_emission_intensity,
+            upstream_carbon_cost_paid=meta_fg.weighted_avg_upstream_carbon_cost_paid,
         )
 
     # PASS 1: Group allocations by type for batching
@@ -3898,8 +3938,16 @@ def disaggregate_allocations(
     if clustered_allocations.allocation_costs is not None:
         for (c_from, c_to, c_comm), c_cost in clustered_allocations.allocation_costs.items():
             cluster_costs_by_name[(c_from.name, c_to.name, c_comm.name.lower())] = c_cost
+    # Carbon border charges are per-tonne like the LP costs, so every member flow of a charged
+    # cluster pair carries the cluster's charge unchanged.
+    cluster_charges_by_name: dict[tuple[str, str, str], float] = {}
+    if clustered_allocations.carbon_border_charges is not None:
+        for (c_from, c_to, c_comm), c_charge in clustered_allocations.carbon_border_charges.items():
+            cluster_charges_by_name[(c_from.name, c_to.name, c_comm.name.lower())] = c_charge
 
     disaggregated_costs: dict = {}
+    disaggregated_charges: dict = {}
+    matched_charge_keys: set[tuple[str, str, str]] = set()
     matched_count = 0
     unmatched_examples: list[tuple] = []
     for from_pc, to_pc, comm in disaggregated_allocs:
@@ -3917,15 +3965,25 @@ def disaggregate_allocations(
         if not found and len(unmatched_examples) < 10:
             unmatched_examples.append((from_pc.name, to_pc.name, comm.name, from_key, to_key))
         disaggregated_costs[(from_pc, to_pc, comm)] = matched
+        for comm_name in _commodity_equivalent_names(comm):
+            charge_key = (from_key, to_key, comm_name)
+            if charge_key in cluster_charges_by_name:
+                disaggregated_charges[(from_pc, to_pc, comm)] = cluster_charges_by_name[charge_key]
+                matched_charge_keys.add(charge_key)
+                break
     logger.info(
         f"[DISAGGREGATION] Cost lookup: matched {matched_count}/{len(disaggregated_allocs)} flows "
-        f"(cluster cost map size: {len(cluster_costs_by_name)})"
+        f"(cluster cost map size: {len(cluster_costs_by_name)}); carbon border charges: "
+        f"{len(matched_charge_keys)}/{len(cluster_charges_by_name)} charged cluster arcs mapped onto "
+        f"{len(disaggregated_charges)} flows"
     )
     for ex in unmatched_examples:
         logger.info(
             f"[DISAGGREGATION] Unmatched: from_pc={ex[0]}, to_pc={ex[1]}, comm={ex[2]}, "
             f"resolved cluster keys: from={ex[3]}, to={ex[4]}"
         )
+    for charge_key in sorted(set(cluster_charges_by_name) - matched_charge_keys)[:10]:
+        logger.debug(f"[DISAGGREGATION] Charged cluster arc {charge_key} matched no disaggregated flow")
 
     # Create new Allocations object. Tariff taxes are keyed by (from_iso3, to_iso3, commodity),
     # not by process center, so they carry over unchanged and TM_PAM_connector can still
@@ -3934,6 +3992,7 @@ def disaggregate_allocations(
         allocations=disaggregated_allocs,
         allocation_costs=disaggregated_costs if disaggregated_costs else None,
         tariff_taxes=clustered_allocations.tariff_taxes,
+        carbon_border_charges=disaggregated_charges if disaggregated_charges else None,
     )
 
     logger.info(f"[DISAGGREGATION] Output allocations: {len(result.allocations)} flows")

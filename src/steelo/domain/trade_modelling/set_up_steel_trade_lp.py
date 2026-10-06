@@ -21,7 +21,7 @@ from steelo.service_layer.message_bus import MessageBus
 
 if TYPE_CHECKING:
     from steelo.simulation import SimulationConfig
-from collections import defaultdict
+from collections import Counter, defaultdict
 import pyomo.environ as pyo
 from steelo.domain.constants import LP_TOLERANCE, T_TO_KT
 
@@ -180,25 +180,20 @@ def create_process_from_furnace_group(
                     f"Feedstock {primary_feedstock.name} has primary outputs: {primary_commodities} "
                     f"(from total outputs: {list(primary_feedstock.outputs.keys())})"
                 )
-            dependent_commodities = {}
-            for sec_feedstock in primary_feedstock.secondary_feedstock:
-                dependent_commodities[tlp.Commodity(name=sec_feedstock)] = primary_feedstock.secondary_feedstock[
-                    sec_feedstock
-                ]
-            for en_req in primary_feedstock.energy_requirements:
-                dependent_commodities[tlp.Commodity(name=en_req)] = primary_feedstock.energy_requirements[en_req]
             if primary_feedstock.required_quantity_per_ton_of_product is None:
                 raise ValueError(
                     f"Required quantity per ton of product is None for feedstock {primary_feedstock.name}. It's outputs are: {primary_feedstock.outputs.keys()}"
                 )
-            # Bridge carbon outputs (e.g. co2_stored) into dependent_commodities so that
-            # regional availability constraints can be enforced by the LP. carbon_outputs
-            # values are in tCO2/t-product-output; dividing by required_quantity converts
-            # to tCO2/t-primary-input, which is the unit the LP dependent-commodity ratio
-            # expects. If no supply process exists for a given carbon output (i.e. no
-            # constraint is configured), set_legal_allocations will simply find no allocation
-            # variable and the equality constraint is skipped harmlessly.
             req_qty = primary_feedstock.required_quantity_per_ton_of_product
+            # The sheet states secondary feedstocks, energy and carbon outputs per tonne of PRODUCT; the LP's
+            # dependent-commodity constraint multiplies the ratio by the primary INPUT flow, so divide by req_qty
+            dependent_commodities = {}
+            for sec_feedstock, amount in primary_feedstock.secondary_feedstock.items():
+                dependent_commodities[tlp.Commodity(name=sec_feedstock)] = amount / req_qty
+            for en_req, amount in primary_feedstock.energy_requirements.items():
+                dependent_commodities[tlp.Commodity(name=en_req)] = amount / req_qty
+            # A carbon output without a supply process (no constraint configured) gets no allocation
+            # variable, so its equality constraint is skipped harmlessly
             for co_key, co_amount in (primary_feedstock.carbon_outputs or {}).items():
                 if co_amount:  # skip zero-valued outputs — no LP effect and avoids noisy warnings
                     dependent_commodities[tlp.Commodity(name=co_key)] = co_amount / req_qty
@@ -307,25 +302,23 @@ def create_process_from_meta_furnace_group(
                     f"(from total outputs: {list(primary_feedstock.outputs.keys())})"
                 )
 
-            # Build dependent commodities (secondary feedstocks)
-            dependent_commodities = {}
-            for sec_feedstock in primary_feedstock.secondary_feedstock:
-                dependent_commodities[tlp.Commodity(name=sec_feedstock)] = primary_feedstock.secondary_feedstock[
-                    sec_feedstock
-                ]
-            for en_req in primary_feedstock.energy_requirements:
-                dependent_commodities[tlp.Commodity(name=en_req)] = primary_feedstock.energy_requirements[en_req]
-
             if primary_feedstock.required_quantity_per_ton_of_product is None:
                 raise ValueError(
                     f"Required quantity per ton of product is None for feedstock {primary_feedstock.name}. "
                     f"Its outputs are: {primary_feedstock.outputs.keys()}"
                 )
-
-            # Bridge carbon outputs into dependent_commodities
             req_qty = primary_feedstock.required_quantity_per_ton_of_product
+            # The sheet states secondary feedstocks, energy and carbon outputs per tonne of PRODUCT; the LP's
+            # dependent-commodity constraint multiplies the ratio by the primary INPUT flow, so divide by req_qty
+            dependent_commodities = {}
+            for sec_feedstock, amount in primary_feedstock.secondary_feedstock.items():
+                dependent_commodities[tlp.Commodity(name=sec_feedstock)] = amount / req_qty
+            for en_req, amount in primary_feedstock.energy_requirements.items():
+                dependent_commodities[tlp.Commodity(name=en_req)] = amount / req_qty
+            # A carbon output without a supply process (no constraint configured) gets no allocation
+            # variable, so its equality constraint is skipped harmlessly
             for co_key, co_amount in (primary_feedstock.carbon_outputs or {}).items():
-                if co_amount:  # skip zero-valued outputs
+                if co_amount:  # skip zero-valued outputs — no LP effect and avoids noisy warnings
                     dependent_commodities[tlp.Commodity(name=co_key)] = co_amount / req_qty
 
             output_commodities = [tlp.Commodity(name=oc) for oc in primary_commodities]
@@ -390,7 +383,8 @@ def add_furnace_groups_as_process_centers(
         - Only includes furnace groups with status in config.active_statuses (when using repository)
         - Reuses Process objects across furnace groups with the same technology
         - Capacity is scaled by config.capacity_limit (e.g., 0.95 for 95% availability)
-        - Production cost is set to furnace_group.carbon_cost_per_unit or weighted_avg_carbon_cost
+        - Production cost is the utilisation-independent trade carbon cost per tonne:
+          furnace_group.trade_carbon_cost_per_unit or meta_fg.weighted_avg_carbon_cost
         - Creates new processes on-the-fly using create_process_from_furnace_group()
         - MetaFurnaceGroup objects use capacity-weighted centroid locations
     """
@@ -422,6 +416,9 @@ def add_furnace_groups_as_process_centers(
                 production_cost=meta_fg.weighted_avg_carbon_cost,
                 soft_minimum_capacity=config.soft_minimum_capacity_share,
                 energy_costs_per_input=build_energy_costs_per_input_for_meta_fg(meta_fg),
+                emission_intensity=meta_fg.weighted_avg_emission_intensity,
+                upstream_emission_intensity=meta_fg.weighted_avg_upstream_emission_intensity,
+                upstream_carbon_cost_paid=meta_fg.weighted_avg_upstream_carbon_cost_paid,
             )
             logger.info(
                 f"Created ProcessCenter {process_center.name} with capacity {process_center.capacity} and {len(process.bill_of_materials)} BOMs"
@@ -448,9 +445,12 @@ def add_furnace_groups_as_process_centers(
                     process=process,
                     capacity=config.capacity_limit * furnace_group.capacity,
                     location=plant.location,
-                    production_cost=furnace_group.carbon_cost_per_unit,
+                    production_cost=furnace_group.trade_carbon_cost_per_unit,
                     soft_minimum_capacity=config.soft_minimum_capacity_share,
                     energy_costs_per_input=build_energy_costs_per_input(furnace_group),
+                    emission_intensity=furnace_group.trade_emission_intensity,
+                    upstream_emission_intensity=furnace_group.upstream_emission_intensity,
+                    upstream_carbon_cost_paid=furnace_group.upstream_carbon_cost_paid,
                 )
                 process_centers.append(process_center)
 
@@ -555,7 +555,6 @@ def add_suppliers_as_process_centers(repository, lp_model: tlp.TradeLPModel, yea
         supplier_process: tlp.Process | None = lp_model.get_process(f"{commodity_name}_supply")
         if supplier_process is None:
             continue
-        lp_model.add_processes([supplier_process])
         capacity = supplier.capacity_by_year.get(year)
         if capacity is None:
             logger.warning(
@@ -866,124 +865,183 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
     return trade_lp
 
 
-def build_reference_producer_carbon_costs(
-    process_centers: list["tlp.ProcessCenter"],
-) -> dict[tuple[str, str], float]:
-    """Build production-weighted average carbon cost of active producers, per (iso3, commodity).
+def resolve_destination_carbon_prices(
+    env, mechanisms: list, country_mappings: dict[str, CountryMapping], year: int
+) -> dict[str, float]:
+    """Carbon price each destination country's border is priced at.
 
-    Demand centres carry no production_cost of their own (it defaults to 0.0), so carbon
-    border adjustments on flows into a demand centre need a stand-in for "the carbon cost a
-    domestic producer of this commodity would have incurred". This aggregates that reference
-    cost from PRODUCTION process centres, weighted by capacity, per country and commodity.
+    Every country with a national series starts at that price. Each active mechanism prices the
+    countries it covers at its bloc's series when it carries the common-price flag, else at their
+    national series; a country covered by several mechanisms takes the highest of those. A member of
+    a common-price bloc is therefore priced at the bloc's series even when its national price is higher.
 
-    Excludes idle producers (production_cost == 0.0) to avoid downward bias from zero-cost
-    idle capacity outweighing active producers.
+    Args:
+        env: Environment carrying the national and bloc carbon-price series.
+        mechanisms: Carbon border mechanisms; inactive ones are ignored.
+        country_mappings: ISO3 -> CountryMapping, used to resolve each mechanism's members.
+        year: Simulation year.
+
+    Returns:
+        ISO3 -> price; a country without a series and without a common-price mechanism has no
+        carbon policy and is absent.
     """
-    weighted_cost_sum: dict[tuple[str, str], float] = defaultdict(float)
-    capacity_sum: dict[tuple[str, str], float] = defaultdict(float)
-
-    for pc in process_centers:
-        if pc.process.type != tlp.ProcessType.PRODUCTION:
+    logger = logging.getLogger(f"{__name__}.resolve_destination_carbon_prices")
+    # Bloc rows share the series dict with the countries; only ISO3 codes are destinations
+    prices = {code: env.carbon_price_for_year(code, Year(year)) for code in env.carbon_costs if len(code) == 3}
+    covered: dict[str, float] = {}
+    sources: list[str] = []
+    for mechanism in mechanisms:
+        if not mechanism.is_active(year):
             continue
-        if pc.production_cost == 0.0:
-            continue
-        iso3 = pc.location.iso3
-        for commodity in pc.process.products:
-            key = (iso3, commodity.name)
-            weighted_cost_sum[key] += pc.production_cost * pc.capacity
-            capacity_sum[key] += pc.capacity
-
-    return {key: weighted_cost_sum[key] / capacity_sum[key] for key in capacity_sum if capacity_sum[key] > 0}
+        members = mechanism.get_applying_region_countries(country_mappings)
+        if mechanism.common_carbon_cost:
+            bloc_price = env.carbon_price_for_year(mechanism.applying_region_column, Year(year))
+            candidates = {iso3: bloc_price for iso3 in members}
+            sources.append(f"{mechanism.mechanism_name}=bloc:{mechanism.applying_region_column}")
+        else:
+            candidates = {iso3: prices[iso3] for iso3 in members if iso3 in prices}
+            sources.append(f"{mechanism.mechanism_name}=national")
+        for iso3, candidate in candidates.items():
+            covered[iso3] = max(covered.get(iso3, candidate), candidate)
+    prices.update(covered)
+    logger.info(
+        f"Carbon border price sources in {year}: {', '.join(sources) or 'none'}; P_d "
+        + ", ".join(f"{iso3}={prices[iso3]:.2f}" for iso3 in ("DEU", "GBR", "CHN", "NOR") if iso3 in prices)
+    )
+    return prices
 
 
 def adapt_allocation_costs_for_carbon_border_mechanisms(
-    trade_lp: tlp.TradeLPModel, carbon_border_mechanisms: list, country_mappings: dict[str, CountryMapping], year: int
-):
-    """Apply carbon border adjustment mechanisms to allocation costs.
+    trade_lp: tlp.TradeLPModel,
+    carbon_border_mechanisms: list,
+    country_mappings: dict[str, CountryMapping],
+    year: int,
+    destination_prices: dict[str, float],
+    export_rebates: bool = False,
+) -> None:
+    """Charge imports into carbon-border regions on embedded emissions at the destination carbon price.
 
-    Adjusts allocation costs for cross-border flows based on carbon cost differentials
-    between trading partners. Works with any carbon border mechanism (EU CBAM, OECD, etc.).
-    Prevents double-counting when countries belong to multiple regions.
+    For each legal arc from a PRODUCTION centre the adjustment is ``max(0, E_s * P_d - C_s)`` when the
+    destination sits in an active mechanism's applying set, where ``E_s`` is the source's own plus
+    upstream direct emission intensity, ``C_s`` the carbon already paid on it and ``P_d`` the
+    destination's price. With ``export_rebates`` the mirror ``min(0, E_s * P_d - C_s)`` is added when
+    the source sits in an applying set. Both terms are evaluated on every arc and summed, so the result
+    is independent of mechanism order.
 
     Args:
-        trade_lp: The trade LP model to modify
-        carbon_border_mechanisms: List of CarbonBorderMechanism objects with:
-            - applying_region: Region code where mechanism applies
-            - is_active(year): Method to check if mechanism is active
-            - get_applying_region_countries(mappings): Method to get country list
-        country_mappings: Dictionary mapping ISO3 codes to CountryMapping objects
-        year: Current simulation year
+        trade_lp: The trade LP model whose allocation costs are adjusted in place.
+        carbon_border_mechanisms: CarbonBorderMechanism objects; inactive ones are ignored.
+        country_mappings: ISO3 -> CountryMapping, used to resolve each mechanism's applying set.
+        year: Simulation year.
+        destination_prices: ISO3 -> price the border is priced at, from resolve_destination_carbon_prices.
+        export_rebates: Also rebate exports leaving an applying set; off by default.
 
     Notes:
-        - Export rebates: applying_region → other flows get cost increase if carbon cost is higher
-        - Import adjustments: other → applying_region flows get cost increase if carbon cost is higher
-        - Only first mechanism applied to each flow (tracked via adjusted_flows set)
-        - Only applies to legal allocations (defined process connectors)
-        - Skips supplier sources: their production_cost is raw-material price, not carbon cost.
-          CBAM does not apply to scrap feedstock anyway.
-        - Skips flows involving None process centers or locations
-        - Demand-centre destinations have no production_cost of their own, so their carbon
-          cost is stood in for by the capacity-weighted average of domestic PRODUCTION
-          process centres for that commodity (see build_reference_producer_carbon_costs).
-          Destination countries with no domestic producers of the commodity are skipped —
-          there is nothing to protect or rebate against.
+        Two countries inside one applying set never adjust each other's flows, whatever other mechanisms
+        cover either of them. Supplier sources are skipped: their production cost is a raw-material price.
+        A destination without a price series has no policy and charges nothing. Non-zero adjustments are
+        recorded in ``trade_lp.lp_model.carbon_border_charge`` for extraction onto Allocations.
     """
-    # Track which arcs have already been adjusted to prevent double-counting across mechanisms
-    adjusted_arcs = set()
-    adjustments_made = 0
-    skipped_duplicates = 0
-
-    reference_carbon_cost = build_reference_producer_carbon_costs(trade_lp.process_centers)
-
+    logger = logging.getLogger(f"{__name__}.adapt_allocation_costs_for_carbon_border_mechanisms")
+    applying_sets: list[set[str]] = []
     for mechanism in carbon_border_mechanisms:
         if not mechanism.is_active(year):
             continue
-
-        # Get countries in the applying region
         applying_countries = mechanism.get_applying_region_countries(country_mappings)
+        if not applying_countries:
+            logger.warning(
+                f"Mechanism {mechanism.mechanism_name}: no countries match region column "
+                f"'{mechanism.applying_region_column}' — it adjusts nothing"
+            )
+            continue
+        applying_sets.append(applying_countries)
+    covered_countries: set[str] = set().union(*applying_sets) if applying_sets else set()
 
-        for from_pc, to_pc, comm in trade_lp.legal_allocations:
-            from_iso3 = from_pc.location.iso3
-            to_iso3 = to_pc.location.iso3
+    charges: list[tuple[float, tuple[str, str, str], float, float, float]] = []
+    rebates: list[tuple[float, tuple[str, str, str], float, float, float]] = []
+    charged_per_destination: Counter[str] = Counter()
+    unpriced_destinations: set[str] = set()
+    for from_pc, to_pc, comm in trade_lp.legal_allocations:
+        if from_pc.process.type == tlp.ProcessType.SUPPLY:
+            continue
+        from_iso3 = from_pc.location.iso3
+        to_iso3 = to_pc.location.iso3
+        if from_iso3 == to_iso3 or any(from_iso3 in members and to_iso3 in members for members in applying_sets):
+            continue
+        if to_iso3 in covered_countries and to_iso3 not in destination_prices:
+            unpriced_destinations.add(to_iso3)
+        # A destination without a price series has no carbon policy
+        price = destination_prices.get(to_iso3, 0.0)
+        embedded = from_pc.emission_intensity + from_pc.upstream_emission_intensity
+        paid = from_pc.production_cost + from_pc.upstream_carbon_cost_paid
+        diff = embedded * price - paid
+        adjustment = 0.0
+        if to_iso3 in covered_countries:
+            adjustment += max(0.0, diff)
+        if export_rebates and from_iso3 in covered_countries:
+            adjustment += min(0.0, diff)
+        if adjustment == 0.0:
+            continue
+        key = (from_pc.name, to_pc.name, comm.name)
+        trade_lp.lp_model.allocation_costs[key] += adjustment
+        trade_lp.lp_model.carbon_border_charge[key] = adjustment
+        if adjustment > 0:
+            charges.append((adjustment, key, embedded, paid, price))
+            charged_per_destination[to_iso3] += 1
+        else:
+            rebates.append((adjustment, key, embedded, paid, price))
 
-            # Skip supplier sources: their production_cost is raw-material price, not carbon cost.
-            if from_pc.process.type == tlp.ProcessType.SUPPLY:
-                continue
+    for iso3 in sorted(unpriced_destinations):
+        logger.warning(
+            f"Destination {iso3} is inside a carbon border mechanism but has no carbon price series; imports are not charged"
+        )
+    for label, sample in (("charge", sorted(charges, reverse=True)[:20]), ("rebate", sorted(rebates)[:20])):
+        for adjustment, key, embedded, paid, price in sample:
+            logger.debug(
+                f"{label} from={key[0]} to={key[1]} comm={key[2]} E={embedded:.3f} paid={paid:.2f} P_d={price:.2f} adjustment={adjustment:.2f}"
+            )
+    if charged_per_destination:
+        logger.debug(f"charged arcs per destination: {dict(charged_per_destination.most_common())}")
+    charge_values = [charge for charge, *_ in charges]
+    logger.info(
+        f"operation=carbon_border_adjustment year={year} mechanisms={len(applying_sets)} arcs_charged={len(charges)} "
+        f"mean_charge_usd_t={(sum(charge_values) / len(charge_values)) if charge_values else 0.0:.2f} "
+        f"max_charge_usd_t={max(charge_values) if charge_values else 0.0:.2f} arcs_rebated={len(rebates)} "
+        f"export_rebates={export_rebates}"
+    )
 
-            # Create a unique identifier for this arc
-            arc_key = (from_pc.name, to_pc.name, comm.name)
 
-            # Skip if we've already adjusted this arc under an earlier mechanism
-            if arc_key in adjusted_arcs:
-                skipped_duplicates += 1
-                continue
+def log_carbon_border_outcomes(allocations: "tlp.Allocations", year: int) -> None:
+    """Summarise the carbon border charges the solved allocations actually carry.
 
-            from_carbon_cost = from_pc.production_cost
-            if to_pc.process.type == tlp.ProcessType.DEMAND:
-                to_carbon_cost = reference_carbon_cost.get((to_iso3, comm.name))
-                if to_carbon_cost is None:
-                    # No domestic producers of this commodity in the destination country —
-                    # nothing to protect (import case) or rebate against (export case).
-                    continue
-            else:
-                to_carbon_cost = to_pc.production_cost
-            differential = to_carbon_cost - from_carbon_cost
-
-            # Case 1: Exporting from applying region to non-applying region (export rebates)
-            if from_iso3 in applying_countries and to_iso3 not in applying_countries:
-                # Apply the minimum of the carbon costs due to export rebates
-                if from_carbon_cost > to_carbon_cost:
-                    trade_lp.lp_model.allocation_costs[arc_key] += differential
-                    adjusted_arcs.add(arc_key)
-                    adjustments_made += 1
-
-            # Case 2: Importing into applying region from non-applying region (border adjustment)
-            elif from_iso3 not in applying_countries and to_iso3 in applying_countries:
-                # Apply the maximum of the carbon costs (border adjustment)
-                if from_carbon_cost < to_carbon_cost:
-                    trade_lp.lp_model.allocation_costs[arc_key] += differential
-                    adjusted_arcs.add(arc_key)
-                    adjustments_made += 1
+    Args:
+        allocations: Solved LP-level allocations with ``carbon_border_charges``; imports into demand
+            centres are therefore counted.
+        year: Simulation year.
+    """
+    logger = logging.getLogger(f"{__name__}.log_carbon_border_outcomes")
+    charges = allocations.carbon_border_charges or {}
+    charged_arcs = rebated_arcs = 0
+    charged_kt = charges_musd = rebates_musd = 0.0
+    per_destination: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
+    for key, charge in charges.items():
+        volume = allocations.allocations[key]
+        money_musd = charge * volume / 1e6
+        if charge > 0:
+            charged_arcs += 1
+            charged_kt += volume * T_TO_KT
+            charges_musd += money_musd
+            per_destination[key[1].location.iso3][0] += volume * T_TO_KT
+            per_destination[key[1].location.iso3][1] += money_musd
+        else:
+            rebated_arcs += 1
+            rebates_musd += money_musd
+    top = sorted(per_destination.items(), key=lambda item: -item[1][1])[:5]
+    logger.info(
+        f"[CBAM] year={year} charged_arcs={charged_arcs} charged_kt={charged_kt:.1f} charges_musd={charges_musd:.2f} "
+        f"rebated_arcs={rebated_arcs} rebates_musd={rebates_musd:.2f} top_destinations="
+        + ",".join(f"{iso3}:{kt:.1f}kt/{musd:.2f}musd" for iso3, (kt, musd) in top)
+    )
 
 
 def set_up_steel_trade_lp(
@@ -1068,7 +1126,6 @@ def set_up_steel_trade_lp(
         repository=repository, lp_model=lp_model, config=config, furnace_groups_override=furnace_groups_override
     )
     add_demand_centers_as_process_centers(repository=repository, lp_model=lp_model, year=year)
-    secondary_supply_locations: dict[str, tlp.Location] = {}
     if secondary_feedstock_constraints:
         for commodity in secondary_feedstock_constraints:
             total_capacity = sum(
@@ -1082,7 +1139,6 @@ def set_up_steel_trade_lp(
                 iso3="XXX",
                 region="dummy region",
             )
-            secondary_supply_locations[commodity] = location
             _ensure_secondary_feedstock_supplier(
                 repository,
                 supplier_id=f"{commodity}_supply_process_center",
@@ -1178,54 +1234,24 @@ def set_up_steel_trade_lp(
             if not to_processes:
                 logger.debug(f"Debug: Process '{connector.to_technology_name}' not found in LP model")
 
-    # add dummy processes AND PROCESSCENTERS! for the secondary feedstock constraints:
+    # The synthetic supply process and centre for each constrained secondary feedstock were registered
+    # once via the repository supplier; only the connectors are missing because the Legal Process
+    # connectors sheet carries no rows for synthetic suppliers.
     if secondary_feedstock_constraints:
+        connector_counts: dict[str, int] = {}
         for commodity in secondary_feedstock_constraints:
-            # Calculate total capacity across all regions for this commodity
-            total_capacity = sum(
-                secondary_feedstock_constraints[commodity][iso_3_tuple]
-                for iso_3_tuple in secondary_feedstock_constraints[commodity]
-            )
-
-            commodity_supply_com_bom_element = tlp.BOMElement(
-                name=f"{commodity}_supply",
-                commodity=tlp.Commodity(name=commodity),
-                parameters={},
-                output_commodities=[tlp.Commodity(name=commodity)],
-            )
-            # Create a dummy process for the secondary feedstock
-            commodity_supply_process = tlp.Process(
-                name=f"{commodity}_supply",
-                type=tlp.ProcessType.SUPPLY,
-                bill_of_materials=[commodity_supply_com_bom_element],
-            )
-            lp_model.add_processes([commodity_supply_process])
-
-            location = secondary_supply_locations.get(
-                commodity,
-                tlp.Location(
-                    lat=52.22,
-                    lon=-4.53,
-                    country="dummy country",
-                    iso3="XXX",
-                    region="dummy region",
-                ),
-            )
-            commodity_supply_process_center = tlp.ProcessCenter(
-                name=f"{commodity}_supply_process_center",
-                process=commodity_supply_process,
-                capacity=total_capacity + 1,  # Set a non-limiting capacity limit
-                location=location,
-            )
-            lp_model.add_process_centers([commodity_supply_process_center])
-
-            # Create a process connector from the dummy process to all production processes
+            supply_process = lp_model.get_process(f"{commodity}_supply")
+            if supply_process is None:
+                raise ValueError(f"Synthetic supply process '{commodity}_supply' was not registered in the LP model")
+            connector_counts[f"{commodity}_supply_process_center"] = 0
             for process in lp_model.processes:
                 if process.type == tlp.ProcessType.PRODUCTION:
-                    commodity_supply_process_to_process = tlp.ProcessConnector(
-                        from_process=commodity_supply_process, to_process=process
-                    )
-                    all_process_connectors.append(commodity_supply_process_to_process)
+                    all_process_connectors.append(tlp.ProcessConnector(from_process=supply_process, to_process=process))
+                    connector_counts[f"{commodity}_supply_process_center"] += 1
+        logger.info(
+            "Synthetic secondary-feedstock supply centres registered once: "
+            + ", ".join(f"{name} ({count} production connectors)" for name, count in connector_counts.items())
+        )
 
     # Validate process network connectivity before building LP model
     logger.info("🔍 Starting process network validation...")
@@ -1274,6 +1300,7 @@ def set_up_steel_trade_lp(
     # Prepare carbon border mechanism parameters
     carbon_border_mechanisms = None
     country_mappings_dict = None
+    destination_prices = None
     if (
         hasattr(message_bus.env, "carbon_border_mechanisms")
         and message_bus.env.carbon_border_mechanisms
@@ -1285,6 +1312,9 @@ def set_up_steel_trade_lp(
             country_mappings_dict = {
                 mapping.iso3: mapping for mapping in message_bus.env.country_mappings._mappings.values()
             }
+            destination_prices = resolve_destination_carbon_prices(
+                message_bus.env, active_mechanisms, country_mappings_dict, year
+            )
             logger.info(
                 f"Will apply carbon border adjustments for {len(active_mechanisms)} active mechanisms in year {year}"
             )
@@ -1298,6 +1328,8 @@ def set_up_steel_trade_lp(
         carbon_border_mechanisms=carbon_border_mechanisms,
         country_mappings=country_mappings_dict,
         year=year,
+        destination_prices=destination_prices,
+        carbon_border_export_rebates=config.carbon_border_export_rebates,
     )
     lp_model = fix_to_zero_allocations_where_distance_doesnt_match_commodity(
         trade_lp=lp_model, config=config, env=message_bus.env if hasattr(message_bus, "env") else None

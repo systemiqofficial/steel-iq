@@ -1233,6 +1233,19 @@ def read_scrap_as_suppliers(
     return refine_scrap_centers_for_major_countries(supply_centers)
 
 
+def normalise_bloc_name(name: str) -> str:
+    """Normalise a bloc/column name to its CountryMapping attribute name.
+
+    Args:
+        name: Bloc name as authored in a sheet (e.g. "EFTA/EUCU", "OECD but not EU").
+
+    Returns:
+        The attribute name: special characters become underscores, and the legacy
+        "EUCJ" spelling is canonicalised to the sheet's "EUCU".
+    """
+    return name.replace("/", "_").replace(" ", "_").replace("-", "_").replace("EUCJ", "EUCU")
+
+
 def find_iso3s_of_trade_bloc(country_mappings: list, bloc_name: str, negation: bool = False) -> list[str]:
     """
     Find the ISO3 codes of countries in a given trade bloc using CountryMapping objects.
@@ -1252,12 +1265,7 @@ def find_iso3s_of_trade_bloc(country_mappings: list, bloc_name: str, negation: b
     Raises:
         ValueError: If the bloc_name is not found as an attribute in any CountryMapping object.
     """
-    # Normalize bloc name to match CountryMapping attributes
-    # Replace special characters that might be in Excel column names
-    bloc_name_normalized = bloc_name.replace("/", "_").replace(" ", "_").replace("-", "_")
-
-    # Special case: EUCU maps to EUCJ for backwards compatibility
-    bloc_name_normalized = bloc_name_normalized.replace("EUCU", "EUCJ")
+    bloc_name_normalized = normalise_bloc_name(bloc_name)
 
     # Verify that at least one country mapping has this attribute
     if country_mappings and not hasattr(country_mappings[0], bloc_name_normalized):
@@ -1304,7 +1312,7 @@ def _resolve_iso3_or_bloc_entry(entry: str, country_mappings: list, supported_bl
     """
     if entry.startswith("NOT "):
         target = entry[4:]
-        if target in supported_blocs:
+        if normalise_bloc_name(target) in supported_blocs:
             return find_iso3s_of_trade_bloc(country_mappings, target, negation=True)
         all_iso3s = [c.iso3 for c in country_mappings] if country_mappings else []
         if target not in all_iso3s:
@@ -1313,7 +1321,7 @@ def _resolve_iso3_or_bloc_entry(entry: str, country_mappings: list, supported_bl
                 f"Available trade blocs: {', '.join(supported_blocs) if supported_blocs else '(none)'}"
             )
         return [iso3 for iso3 in all_iso3s if iso3 != target]
-    if entry in supported_blocs:
+    if normalise_bloc_name(entry) in supported_blocs:
         return find_iso3s_of_trade_bloc(country_mappings, entry)
     return [entry]
 
@@ -1324,7 +1332,9 @@ def read_carbon_costs(carbon_cost_excel_path: Path, sheet_name="Carbon cost") ->
 
     The function handles two formats:
     1. Legacy format: columns for "ISO 3-letter code", "year", "carbon_cost"
-    2. New format: "ISO 3-letter code_Bloc" column with year columns (2020, 2021, etc.)
+    2. New format: "ISO 3-letter code_Bloc" column with year columns (2020, 2021, etc.); bloc rows
+       (e.g. "EFTA/EUCU") are kept under the normalised bloc name a carbon border mechanism's
+       applying_region_column carries, so a common bloc price can be looked up beside the national series
 
     Args:
         carbon_cost_excel_path (str): Path to the Excel file containing carbon costs.
@@ -1344,13 +1354,14 @@ def read_carbon_costs(carbon_cost_excel_path: Path, sheet_name="Carbon cost") ->
     if has_new_format:
         # New format: ISO3 in "ISO 3-letter code_Bloc" column, years as column headers
         for _, row in carbon_cost_df.iterrows():
-            iso3 = row["ISO 3-letter code_Bloc"]
+            code = row["ISO 3-letter code_Bloc"]
 
-            # Skip rows with invalid ISO3 codes
-            if pd.isna(iso3) or not isinstance(iso3, str) or len(str(iso3).strip()) != 3:
+            # Only blank codes are skipped; a non-ISO3 code is a bloc row
+            if pd.isna(code) or not isinstance(code, str) or not code.strip():
                 continue
 
-            iso3 = str(iso3).strip()
+            code = code.strip()
+            iso3 = code if len(code) == 3 else normalise_bloc_name(code)
             if iso3 not in carbon_costs:
                 carbon_costs[iso3] = {}
 
@@ -1581,10 +1592,6 @@ def read_tariffs(tariff_excel_path: str, tariff_sheet_name: str, country_mapping
             for attr in dir(country_mappings[0])
             if not attr.startswith("_") and isinstance(getattr(country_mappings[0], attr, None), bool)
         ]
-        # Add common variants with "/" for Excel column names (e.g., EFTA/EUCU)
-        # This allows the tariff sheet to use either EFTA_EUCJ or EFTA/EUCU
-        if "EFTA_EUCJ" in supported_blocs:
-            supported_blocs.append("EFTA/EUCU")
 
     logger.info(
         f"Detected {len(supported_blocs)} available trade blocs for tariff processing: {', '.join(supported_blocs)}"
@@ -1937,9 +1944,7 @@ def read_country_mappings(excel_path: Path, sheet_name: str = "Country mapping")
                     else:
                         boolean_val = False
 
-                    # Normalize column name for attribute (replace special chars with underscores)
-                    attr_name = col.replace("/", "_").replace(" ", "_").replace("-", "_")
-                    mapping_kwargs[attr_name] = boolean_val
+                    mapping_kwargs[normalise_bloc_name(col)] = boolean_val
 
             mapping = CountryMapping(**mapping_kwargs)  # type: ignore[arg-type]
             mappings.append(mapping)
@@ -1961,7 +1966,8 @@ def read_carbon_border_mechanisms(excel_path: Path, sheet_name: str = "CBAM") ->
     - Row 0: "CBAM active?" - 1 if active, 0 if inactive
     - Row 1: "Year CBAM begins" - start year
     - Row 2: "Year CBAM ends" - end year
-    - Row 3: "Common carbon cost across the bloc?" - not used
+    - Row 3: "Common carbon cost across the bloc?" - 1 prices the border at the bloc's carbon-cost
+      series instead of each member's national series (absent row: every mechanism national)
 
     The function dynamically detects trade bloc columns (any column except the first
     descriptor column) and processes them as potential carbon border mechanisms.
@@ -1985,17 +1991,18 @@ def read_carbon_border_mechanisms(excel_path: Path, sheet_name: str = "CBAM") ->
     if len(df) < 3:
         logger.warning(f"CBAM sheet has insufficient rows ({len(df)}) - expected at least 3")
         return []
+    has_common_price_row = len(df) > 3
+    if not has_common_price_row:
+        logger.info(
+            "CBAM sheet has no 'Common carbon cost across the bloc?' row; every mechanism prices at national series"
+        )
 
     # Dynamically detect mechanism columns
     # Skip the first column (assumed to be the row descriptor/label column)
     # All other columns are potential mechanisms
     mechanism_configs = []
     for col in df.columns[1:]:  # Skip first column
-        # Normalize the column name to match CountryMapping attributes
-        region_column = col.replace("/", "_").replace(" ", "_").replace("-", "_")
-        # Special case: EUCU maps to EUCJ
-        region_column = region_column.replace("EUCU", "EUCJ")
-        mechanism_configs.append((col, region_column))
+        mechanism_configs.append((col, normalise_bloc_name(col)))
 
     if mechanism_configs:
         logger.info(
@@ -2041,12 +2048,16 @@ def read_carbon_border_mechanisms(excel_path: Path, sheet_name: str = "CBAM") ->
                     logger.warning(f"Invalid end year for {mechanism_name}: {end_year_val}")
                     # Continue with None end year (ongoing mechanism)
 
+            # Row 3: common bloc price flag
+            common_carbon_cost = bool(has_common_price_row and df.iloc[3][mechanism_name] == 1)
+
             if start_year:
                 mechanism = CarbonBorderMechanism(
                     mechanism_name=mechanism_name,
                     applying_region_column=region_column,
                     start_year=start_year,
                     end_year=end_year,
+                    common_carbon_cost=common_carbon_cost,
                 )
                 mechanisms.append(mechanism)
                 logger.info(f"Created {mechanism_name} mechanism: {start_year}-{end_year if end_year else 'ongoing'}")

@@ -76,10 +76,10 @@ def sample_motions() -> pd.DataFrame:
 
 
 def test_trade_bloc_members_from_boolean_attributes() -> None:
-    """Every True boolean attribute counts as a bloc, including ones added dynamically; empty blocs vanish."""
+    """Every True boolean attribute counts as a bloc; empty and single-member blocs vanish."""
     blocs = interactive_plots.trade_bloc_members(sample_country_mappings())
 
-    assert blocs == {"EU": ["DEU"], "G20": ["CHN", "DEU"], "OECD": ["DEU"], "RCEP": ["CHN"]}
+    assert blocs == {"G20": ["CHN", "DEU"]}
 
 
 def test_geo_unit_names_from_geo_hierarchy(tmp_path) -> None:

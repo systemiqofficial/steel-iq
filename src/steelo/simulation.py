@@ -427,6 +427,9 @@ class SimulationConfig:
     # Use InitVar to accept but not store deprecated parameter for backward compatibility
     global_bf_ban: InitVar[bool] = None
     include_tariffs: bool = True  # Whether to include tariffs in trade modeling
+    carbon_border_export_rebates: bool = (
+        False  # Mirror the border charge as a rebate on exports leaving a priced region
+    )
     plot_tm: bool = False  # Write the per-year trade maps under plots/TM
     plot_geo: bool = False  # Write the geospatial PNGs under plots/GEO
 

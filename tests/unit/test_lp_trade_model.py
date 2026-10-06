@@ -341,6 +341,202 @@ def test_trade_lp_model_basic_build_and_solve(location_mock_factory):
     assert total_steel_to_demand <= 50 + LP_EPSILON
 
 
+def test_secondary_feedstock_cap_binds_at_full_value(location_mock_factory):
+    """A regional secondary-feedstock cap limits the inflow into that region to exactly the cap.
+
+    Mirrors the production set-up: one synthetic supply centre for the feedstock, a production centre
+    consuming it as a dependent commodity, and the cap keyed by the joined iso3 string.
+    """
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
+
+    iron_ore = Commodity("iron_ore")
+    bio_pci = Commodity("bio_pci")
+    steel = Commodity("steel")
+
+    ore_supply_bom = BOMElement(
+        name="iron_ore_supply", commodity=iron_ore, output_commodities=[iron_ore], parameters={}
+    )
+    bio_pci_supply_bom = BOMElement(
+        name="bio_pci_supply", commodity=bio_pci, output_commodities=[bio_pci], parameters={}
+    )
+    steel_demand_bom = BOMElement(name="steel_demand", commodity=steel, output_commodities=[steel], parameters={})
+    bom_ore2steel = BOMElement(
+        name="BOM_Ore2Steel",
+        commodity=iron_ore,
+        output_commodities=[steel],
+        parameters={MaterialParameters.INPUT_RATIO.value: 1.0},
+        dependent_commodities={bio_pci: 1.0},
+    )
+
+    ore_supply_process = Process(name="iron_ore_supply", type=ProcessType.SUPPLY, bill_of_materials=[ore_supply_bom])
+    bio_pci_supply_process = Process(
+        name="bio_pci_supply", type=ProcessType.SUPPLY, bill_of_materials=[bio_pci_supply_bom]
+    )
+    production_process = Process(name="SteelProduction", type=ProcessType.PRODUCTION, bill_of_materials=[bom_ore2steel])
+    demand_process = Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[steel_demand_bom])
+
+    pc_ore = ProcessCenter(
+        name="PC_Ore",
+        process=ore_supply_process,
+        capacity=2000.0,
+        location=location_mock_factory(lat=0, lon=0, iso3="SUP"),
+    )
+    pc_bio_pci = ProcessCenter(
+        name="bio_pci_supply_process_center",
+        process=bio_pci_supply_process,
+        capacity=1000.0,
+        location=location_mock_factory(lat=0, lon=1, iso3="XXX"),
+    )
+    pc_prod = ProcessCenter(
+        name="PC_Prod",
+        process=production_process,
+        capacity=1000.0,
+        location=location_mock_factory(lat=1, lon=1, iso3="PRO"),
+    )
+    pc_demand = ProcessCenter(
+        name="PC_Demand",
+        process=demand_process,
+        capacity=1000.0,
+        location=location_mock_factory(lat=2, lon=2, iso3="DEM"),
+    )
+
+    model.add_commodities([iron_ore, bio_pci, steel])
+    model.add_processes([ore_supply_process, bio_pci_supply_process, production_process, demand_process])
+    model.add_process_centers([pc_ore, pc_bio_pci, pc_prod, pc_demand])
+    model.add_bom_elements([ore_supply_bom, bio_pci_supply_bom, steel_demand_bom, bom_ore2steel])
+    model.add_process_connectors(
+        [
+            ProcessConnector(from_process=ore_supply_process, to_process=production_process),
+            ProcessConnector(from_process=bio_pci_supply_process, to_process=production_process),
+            ProcessConnector(from_process=production_process, to_process=demand_process),
+        ]
+    )
+    model.secondary_feedstock_constraints = {"bio_pci": {"PRO": 200.0}}
+
+    model.build_lp_model()
+    result = model.solve_lp_model()
+    assert result.solver.status == pyo.SolverStatus.ok
+    model.extract_solution()
+
+    bio_pci_inflow = sum(
+        volume
+        for (from_pc, to_pc, commodity), volume in model.allocations.allocations.items()
+        if to_pc == pc_prod and commodity == bio_pci
+    )
+    assert bio_pci_inflow == pytest.approx(200.0, abs=LP_EPSILON)
+
+
+def test_extract_solution_carries_carbon_border_charges(location_mock_factory):
+    """Charges recorded per arc during the build come out on Allocations keyed by the extracted objects."""
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
+    iron_ore, steel = Commodity("iron_ore"), Commodity("steel")
+    ore_supply_bom = BOMElement(
+        name="iron_ore_supply", commodity=iron_ore, output_commodities=[iron_ore], parameters={}
+    )
+    steel_demand_bom = BOMElement(name="steel_demand", commodity=steel, output_commodities=[steel], parameters={})
+    bom_ore2steel = BOMElement(
+        name="BOM_Ore2Steel",
+        commodity=iron_ore,
+        output_commodities=[steel],
+        parameters={MaterialParameters.INPUT_RATIO.value: 1.0},
+    )
+    ore_supply_process = Process(name="iron_ore_supply", type=ProcessType.SUPPLY, bill_of_materials=[ore_supply_bom])
+    production_process = Process(name="SteelProduction", type=ProcessType.PRODUCTION, bill_of_materials=[bom_ore2steel])
+    demand_process = Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[steel_demand_bom])
+    pc_ore = ProcessCenter(
+        name="PC_Ore", process=ore_supply_process, capacity=2000.0, location=location_mock_factory(0, 0, "SUP")
+    )
+    pc_prod = ProcessCenter(
+        name="PC_Prod", process=production_process, capacity=1000.0, location=location_mock_factory(1, 1, "PRO")
+    )
+    pc_demand = ProcessCenter(
+        name="PC_Demand", process=demand_process, capacity=500.0, location=location_mock_factory(2, 2, "DEM")
+    )
+    model.add_commodities([iron_ore, steel])
+    model.add_processes([ore_supply_process, production_process, demand_process])
+    model.add_process_centers([pc_ore, pc_prod, pc_demand])
+    model.add_bom_elements([ore_supply_bom, steel_demand_bom, bom_ore2steel])
+    model.add_process_connectors(
+        [
+            ProcessConnector(from_process=ore_supply_process, to_process=production_process),
+            ProcessConnector(from_process=production_process, to_process=demand_process),
+        ]
+    )
+
+    model.build_lp_model()
+    model.lp_model.carbon_border_charge[("PC_Prod", "PC_Demand", "steel")] = 32.0
+    model.lp_model.carbon_border_charge[("PC_Ore", "PC_Nowhere", "iron_ore")] = 99.0
+    assert model.solve_lp_model().solver.status == pyo.SolverStatus.ok
+    model.extract_solution()
+
+    assert model.allocations.allocations[(pc_prod, pc_demand, steel)] == pytest.approx(500.0, abs=LP_EPSILON)
+    assert model.allocations.carbon_border_charges == {(pc_prod, pc_demand, steel): 32.0}
+
+
+def test_secondary_feedstock_procured_per_tonne_of_product(location_mock_factory):
+    """0.45 t bio-PCI per tonne of product on a 1.4565 t/t input yields 450 t for 1000 t of steel, not 655."""
+    from types import SimpleNamespace
+
+    from steelo.domain.models import PrimaryFeedstock
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import create_process_from_furnace_group
+
+    feedstock = PrimaryFeedstock(metallic_charge="io_low", reductant="coke", technology="BF")
+    feedstock.required_quantity_per_ton_of_product = 1.4565
+    feedstock.add_secondary_feedstock("bio_pci", 0.45)
+    feedstock.outputs = {"steel": 1.0}
+    furnace_group = SimpleNamespace(
+        furnace_group_id="bf_fg",
+        technology=SimpleNamespace(name="BF", dynamic_business_case=[feedstock]),
+        chosen_reductant="coke",
+        effective_primary_feedstocks=[feedstock],
+        energy_vopex_by_input={},
+    )
+    model = TradeLPModel(lp_epsilon=LP_EPSILON, random_seed=42)
+    production_process = create_process_from_furnace_group(
+        furnace_group, model, SimpleNamespace(primary_products=["steel"])
+    )
+
+    io_low, bio_pci, steel = Commodity("io_low"), Commodity("bio_pci"), Commodity("steel")
+    ore_supply_bom = BOMElement(name="io_low_supply", commodity=io_low, output_commodities=[io_low], parameters={})
+    bio_supply_bom = BOMElement(name="bio_pci_supply", commodity=bio_pci, output_commodities=[bio_pci], parameters={})
+    demand_bom = BOMElement(name="steel_demand", commodity=steel, output_commodities=[steel], parameters={})
+    ore_supply = Process(name="io_low_supply", type=ProcessType.SUPPLY, bill_of_materials=[ore_supply_bom])
+    bio_supply = Process(name="bio_pci_supply", type=ProcessType.SUPPLY, bill_of_materials=[bio_supply_bom])
+    demand = Process(name="demand", type=ProcessType.DEMAND, bill_of_materials=[demand_bom])
+    pc_ore = ProcessCenter(
+        name="PC_Ore", process=ore_supply, capacity=5000.0, location=location_mock_factory(0, 0, "SUP")
+    )
+    pc_bio = ProcessCenter(
+        name="PC_Bio", process=bio_supply, capacity=5000.0, location=location_mock_factory(0, 1, "XXX")
+    )
+    pc_prod = ProcessCenter(
+        name="PC_Prod", process=production_process, capacity=2000.0, location=location_mock_factory(1, 1, "PRO")
+    )
+    pc_demand = ProcessCenter(
+        name="PC_Demand", process=demand, capacity=1000.0, location=location_mock_factory(2, 2, "DEM")
+    )
+    model.add_commodities([io_low, bio_pci, steel])
+    model.add_processes([ore_supply, bio_supply, production_process, demand])
+    model.add_process_centers([pc_ore, pc_bio, pc_prod, pc_demand])
+    model.add_bom_elements([ore_supply_bom, bio_supply_bom, demand_bom])
+    model.add_process_connectors(
+        [
+            ProcessConnector(from_process=ore_supply, to_process=production_process),
+            ProcessConnector(from_process=bio_supply, to_process=production_process),
+            ProcessConnector(from_process=production_process, to_process=demand),
+        ]
+    )
+
+    model.build_lp_model()
+    assert model.solve_lp_model().solver.status == pyo.SolverStatus.ok
+    model.extract_solution()
+
+    flows = model.allocations.allocations
+    assert flows[(pc_prod, pc_demand, steel)] == pytest.approx(1000.0, abs=LP_EPSILON)
+    assert flows[(pc_ore, pc_prod, io_low)] == pytest.approx(1456.5, abs=LP_EPSILON)
+    assert flows[(pc_bio, pc_prod, bio_pci)] == pytest.approx(450.0, abs=LP_EPSILON)
+
+
 def test_trade_lp_model_infeasible_demand(location_mock_factory):
     """
     Test that if we want more steel than we can possibly produce or supply,
