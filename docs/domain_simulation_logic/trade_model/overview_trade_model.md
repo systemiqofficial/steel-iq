@@ -521,7 +521,7 @@ LP setup uses `Environment.build_distance_function_for_trade_lp(process_centers)
 ### Carbon Border Adjustments
 
 **Applied during `build_lp_model()`, before the objective** (see `adapt_allocation_costs_for_carbon_border_mechanisms()` in the setup page):
-- Every legal arc from a production centre into a country covered by an active mechanism pays `max(0, E × P_d − C)` per tonne: embedded direct emissions of the product (own stage plus last year's upstream) at the destination's carbon price, net of carbon already paid
+- Every legal arc from a production centre into a country covered by an active mechanism pays `max(0, E × P_d − C)` per tonne: embedded direct emissions of the product (own stage plus last year's upstream) at the destination's carbon price, net of carbon already paid (own stage plus last year's upstream)
 - The destination price is the country's national series, or the bloc's common series where the CBAM sheet flags one; a country under several mechanisms takes the highest
 - Two members of one mechanism never adjust each other's flows; supplier arcs are never adjusted
 - Export rebates are off by default (`SimulationConfig.carbon_border_export_rebates`)
