@@ -25,7 +25,10 @@ GREEN_STEEL_ELIGIBILITY_MINIMUM_LEVEL = 4  # Minimum level of "green steel" eval
 # calibrated against a SINGLE convention, so the intensity must use exactly one — summing several
 # alternative standards (as the historical code did) inflates the value and breaks the thresholds.
 GREEN_GRADE_EMISSIONS_BOUNDARY = "rs-inspired"  # one of: rs-inspired, worldsteel_no_opt_credits, worldsteel_opt_credits
-GREEN_GRADE_EMISSIONS_SCOPES = ("direct_ghg",)  # scope 1 only; other options: indirect_ghg, direct_with_biomass_ghg
+GREEN_GRADE_EMISSIONS_SCOPES = (
+    "direct_ghg",
+    "indirect_ghg",
+)  # scope 1 only; other options: indirect_ghg, direct_with_biomass_ghg
 
 # ===== Unit Conversion Factors =====
 GJ_TO_KWH = 1e3 / 3.6  # 1 GJ = 1e3/3e6 kWh and 1/3.6 MWh
