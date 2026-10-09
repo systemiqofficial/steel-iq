@@ -50,6 +50,7 @@ from steelo.domain.constants import (
     MioUSD_TO_USD,
     MINIMUM_UTILIZATION_RATE_FOR_COST_CURVE,
     MINIMUM_PRODUCTION_VOLUME_FOR_COST_CURVE,
+    CLOSELY_ALLOCATED_PRODUCTS,
 )
 
 if TYPE_CHECKING:
@@ -11409,13 +11410,21 @@ class CommodityAllocations:
             - Resets all furnace group transport_emissions to 0.0.
             - Sets fg.transport_emissions for each destination furnace group to the sum of
               transport emissions from all incoming allocations.
+            - Logs one warning listing the cross-border routes that have no record for this commodity.
 
         Notes:
-            - Uses nested lookup function to find emission factors by (from_iso3, to_iso3, commodity).
-            - Returns 0.0 emission factor if no matching TransportKPI found.
+            - Builds a (from_iso3, to_iso3, commodity) to factor dictionary once per call.
+            - Domestic routes and closely allocated products (hot metal, DRI, liquid iron) contribute 0.0:
+              the transport data has no domestic routes, and these products travel a few kilometres at most.
+            - A cross-border route without a record for this commodity contributes 0.0 and is named in the warning.
             - Only updates destinations that are (Plant, FurnaceGroup) tuples.
             - Accumulates emissions across multiple sources to same destination.
         """
+        logger = logging.getLogger(f"{__name__}.CommodityAllocations.update_transport_emissions")
+        emission_factors = {
+            (te.reporter_iso, te.partner_iso, te.commodity): te.ghg_factor for te in transport_emissions
+        }
+
         # First, set all to 0:
         for source in self.allocations:
             for destination in self.allocations[source]:
@@ -11423,14 +11432,11 @@ class CommodityAllocations:
                     plant, fg = destination
                     fg.transport_emissions = 0.0
 
-        # Create a lookup function for transport emissions
-        def get_transport_emission_factor(from_iso3: str, to_iso3: str, commodity: str) -> float:
-            for te in transport_emissions:
-                if te.reporter_iso == from_iso3 and te.partner_iso == to_iso3 and te.commodity == commodity:
-                    return te.ghg_factor
-            return 0.0
+        if self.commodity in CLOSELY_ALLOCATED_PRODUCTS:
+            return
 
         # now update the transport emissions:
+        unrecorded_routes: set[tuple[str, str]] = set()
         for source in self.allocations:
             for destination in self.allocations[source]:
                 from_iso3 = None
@@ -11448,9 +11454,18 @@ class CommodityAllocations:
                     to_plant, to_fg = destination
                     to_iso3 = to_plant.location.iso3
 
-                    if from_iso3 and to_iso3:
-                        emission_factor = get_transport_emission_factor(from_iso3, to_iso3, self.commodity)
-                        to_fg.transport_emissions += emission_factor * self.allocations[source][destination]
+                    if from_iso3 and to_iso3 and from_iso3 != to_iso3:
+                        emission_factor = emission_factors.get((from_iso3, to_iso3, self.commodity))
+                        if emission_factor is None:
+                            unrecorded_routes.add((from_iso3, to_iso3))
+                        else:
+                            to_fg.transport_emissions += emission_factor * self.allocations[source][destination]
+
+        if unrecorded_routes:
+            logger.warning(
+                f"No {self.commodity} transport emission record for {len(unrecorded_routes)} cross-border routes; "
+                f"counted as zero: " + ", ".join(f"{a}->{b}" for a, b in sorted(unrecorded_routes))
+            )
 
     def create_cost_curve(self, environment: Environment):
         total_demand = self.calculate_total_volumes()
