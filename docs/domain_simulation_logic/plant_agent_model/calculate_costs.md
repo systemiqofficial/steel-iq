@@ -125,8 +125,10 @@ Computes both variable and fixed operating expenditures based on input cost data
 **Functions:**
 - `calculate_variable_opex()` - Weighted average of material and energy costs. Accepts flexible input formats: unit_cost as float or `{"Value": float, "Unit": str}`, and uses `demand` or `demand_share_pct` for weighting.
 - `calculate_unit_total_opex()` - Sums variable and fixed OPEX per unit (returns 0 if utilization is 0)
+- `scale_fopex_to_production()` - Converts fixed OPEX per tonne of capacity to fixed OPEX per tonne of production by dividing by expected utilisation, for the investment NPVs. No utilisation floor. Raises `ZeroUtilisationError` for zero or negative utilisation. See [Reductant Choice and Investment OPEX](reductant_choice_and_opex.md#fixed-opex).
+- `ZeroUtilisationError` - A `ValueError` subclass that callers catch to skip a candidate with no expected production.
 - `calculate_unit_production_cost()` - Total unit cost including OPEX, carbon costs, debt repayment, and secondary output adjustments
-- `calculate_cost_adjustments_from_secondary_outputs()` - Computes average per-unit cost adjustment from secondary outputs (by-products). Uses `output_energy_costs` (output-side subsidised prices) for energy carriers. Physical outputs generate revenue (negative adjustment via `-abs(price)`), **except** carriers in `disposal_cost_outputs` which keep their raw price sign (positive = disposal cost, e.g. steelmaking_slag). Carbon outputs (co2_*) may be a cost or credit depending on sign. This adjustment is included in all 4 NPV call sites (brownfield renovation, greenfield switch, new plant evaluation, expansion evaluation) and COSA baseline
+- `calculate_cost_adjustments_from_secondary_outputs()` - Computes average per-unit cost adjustment from secondary outputs (by-products). Uses `output_energy_costs` (output-side subsidised prices) for energy carriers. Physical outputs generate revenue (negative adjustment via `-abs(price)`), **except** carriers in `disposal_cost_outputs` which keep their raw price sign (positive = disposal cost, e.g. steelmaking_slag). Carbon outputs (co2_*) may be a cost or credit depending on sign. This adjustment enters the operating unit cost (`calculate_unit_production_cost()`) and the COSA baseline. The four investment NPVs (renovation, switch, expansion, new plant) get by-products per tonne and per year through the reductant score series instead.
 
 ### Debt Repayment
 Generates debt repayment schedules using straight-line amortization (constant principal, declining interest) and calculates debt payment breakdowns.
@@ -152,17 +154,17 @@ Calculates cash flows over time for profitability analysis and stranded asset co
 - `calculate_gross_cash_flow()` - Cash flow as (Revenue - OPEX) per period
 - `calculate_net_cash_flow()` - Subtracts debt from gross cash flow (for NPV)
 
-**Note:** If unit OPEX == 0 for a period, the model assumes no production and sets cash flow to 0 (revenue is not realized).
+**Note:** A `None` OPEX entry marks a non-producing period (construction) and gets zero cash flow. A `0.0` entry is a genuine zero-cost operating year, for example one with OPEX fully subsidised, and earns its full revenue.
 
 ### Investment Evaluation - NPV
 Provides tools to calculate net present value (NPV) for technology investments, supporting both individual and batch calculations for business opportunities. Returns -1e9 for invalid inputs (NaN values in cash flows or cost_of_equity ≤ -1.0) to signal non-viability.
 
 **Functions:**
 - `calculate_npv_costs()` - Basic NPV from equity investor perspective
-- `calculate_npv_full()` - Comprehensive NPV with construction lag, carbon costs, and infrastructure
+- `calculate_npv_full()` - Full NPV with construction lag and infrastructure costs; energy, carbon and by-products arrive inside the per-year OPEX list
 - `calculate_business_opportunity_npvs()` - Batch NPV calculation for multiple sites/technologies
 
-**Note:** `construction_time` years are prepended to OPEX and debt schedules. `price_series` must include the same lead periods so its length matches the lagged OPEX/debt.
+**Note:** `calculate_npv_full()` prepends `construction_time` periods to the schedules: `None` to the OPEX list, so those years earn no revenue, and `0.0` to the debt list. `price_series` must include the same lead periods so its length matches. A renovation of the current technology passes `construction_time = 0`, because it happens in place without a production gap.
 
 ### Stranded Asset Analysis
 Calculates the Cost of Stranded Asset (COSA) when switching technologies before end-of-life: the foregone operating margin of the current technology.
@@ -198,6 +200,8 @@ The module supports:
 - Intraregional hydrogen trade with transport costs
 - Country-level LCOH calculations with electrolyzer efficiency curves
 
+The capped LCOH series is computed once at bootstrap for every year of the input-cost data (`Environment.initiate_capped_hydrogen_costs_by_year()`), not each simulation year. See [Data Checks at Load Time](reductant_choice_and_opex.md#data-checks-at-load-time).
+
 **Note:** This LCOH calculation is analogous to the one used in the geospatial model, but based on grid power prices instead of custom renewable energy costs. Functions are duplicated in `geospatial_calculations.py` and changes must be manually synchronized between both locations. See [Priority Location Selection](../geospatial_model/priority_location_selection.md) for more details on ceilings and trade.
 
 **Functions:**
@@ -208,10 +212,16 @@ The module supports:
 **Note:** Functions are duplicated in `geospatial_calculations.py` and changes must be manually synchronized between both locations.
 
 ### Energy and Reductant Selection
-Identifies the most cost-effective reductant across different production paths based on energy costs.
+Scores each (metallic charge, reductant) combination on total cost and picks the reductant. See [Reductant Choice and Investment OPEX](reductant_choice_and_opex.md) for how the annual pick and the investment NPVs use them.
 
 **Functions:**
-- `calculate_energy_costs_and_most_common_reductant()` - Identifies most cost-effective reductant across all metallic inputs
+- `score_reductants_for_business_cases()` - Scores every (charge, reductant) combination as energy VOPEX + carbon price × direct emission factor + secondary-output adjustment. Missing emission factors raise an error.
+- `build_direct_ghg_lookup()` - Direct GHG factors keyed by (technology, reductant, metallic charge) for one emissions boundary
+- `calculate_secondary_output_adjustment_per_tonne()` - By-product revenue, disposal and carbon storage cost per tonne for one business case; shared with `calculate_cost_adjustments_from_secondary_outputs()`
+- `ReductantScoreSeries` - One score and one reductant pick per operating year, returned by `Environment.reductant_score_series()`
+- `summarise_reductant_picks()` - Compresses a per-year pick list into year ranges for log lines
+- `carbon_price_from_series()` - Carbon price for a year: zero without a series, the last value beyond its end
+- `calculate_energy_costs_and_most_common_reductant()` - Energy-only reductant choice, used only as a first hint for a technology with no fleet to take the most common reductant from
 
 ## Cross-Cutting Solutions
 
@@ -221,7 +231,7 @@ Identifies the most cost-effective reductant across different production paths b
 - Ensures minimum values: CAPEX/OPEX ≥ 0, Cost_of_Debt ≥ Risk_Free_Rate
 
 ### Time Series Treatment
-- Construction time lags: Prepends zeros to schedules for projects under construction
+- Construction time lags: construction years carry `None` OPEX (no production, no revenue) and zero debt repayment; renovations of the current technology carry no lag
 - Year-specific subsidies: Automatically filters subsidies active in each year
 - Variable time horizons: Supports both full lifetime and remaining lifetime calculations
 
@@ -238,8 +248,11 @@ This module is called by the following PAM components:
 
 | Caller | Function Used | Purpose |
 |--------|---------------|---------|
-| `FurnaceGroup.optimal_technology_name()` | `stranding_asset_cost()`, `calculate_npv_full()` | Technology switching NPV analysis |
+| `FurnaceGroup.optimal_technology_name()` | `stranding_asset_cost()`, `calculate_npv_full()`, `scale_fopex_to_production()`, `calculate_opex_list_with_subsidies()` | Switch and renovation NPVs, COSA |
 | `FurnaceGroup.unit_production_cost` | `calculate_unit_production_cost()`, `calculate_current_debt_repayment()` | Current operating cost |
-| `FurnaceGroup.debt_repayment_per_year` | `calculate_debt_repayment()` | Debt schedule for COSA calculations |
-| `Plant.evaluate_expansion()` | `calculate_business_opportunity_npvs()` | New plant investment analysis |
-| `PlantAgentsModel.run()` | `calculate_lcoh_from_electricity_country_level()`, `calculate_regional_hydrogen_ceiling_country_level()`, `apply_hydrogen_price_cap_country_level()` | Hydrogen cost modeling |
+| `FurnaceGroup.debt_repayment_per_year` | `calculate_debt_repayment()` | Debt schedule |
+| `FurnaceGroup.generate_energy_vopex_by_reductant()`, `Environment.reductant_score_series()` | `score_reductants_for_business_cases()`, `build_direct_ghg_lookup()` | Annual reductant pick and investment score series |
+| `PlantGroup.evaluate_expansion_options()` | `calculate_npv_full()`, `scale_fopex_to_production()` | Expansion NPVs |
+| `PlantGroup.identify_new_business_opportunities_4indi()` | `calculate_business_opportunity_npvs()` | New-plant NPVs at geospatial sites |
+| `FurnaceGroup.track_business_opportunities()` | `calculate_npv_full()`, `scale_fopex_to_production()` | Yearly NPV re-check of tracked opportunities |
+| `Environment.initiate_capped_hydrogen_costs_by_year()` (bootstrap) | `calculate_lcoh_from_electricity_country_level()`, `calculate_regional_hydrogen_ceiling_country_level()`, `apply_hydrogen_price_cap_country_level()` | Capped LCOH series for the full data horizon |

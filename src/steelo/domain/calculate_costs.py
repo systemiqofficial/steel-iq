@@ -56,6 +56,27 @@ def _coerce_to_float(value: Any) -> float | None:
     return None
 
 
+def carbon_price_from_series(series: dict[Year, float] | None, year: Year) -> float:
+    """
+    Carbon price for a year from one country's (or bloc's) carbon price series.
+
+    Args:
+        series: Year -> carbon price, or None/empty when no carbon policy applies.
+        year: Any simulation or forecast year.
+
+    Returns:
+        0.0 without a series; years beyond the series end reuse its last value, so a
+        sheet ending before the simulation horizon does not drop carbon to zero.
+
+    Notes:
+        Years missing inside the covered range raise KeyError rather than pricing
+        carbon as zero.
+    """
+    if not series:
+        return 0.0
+    return series[min(year, max(series))]
+
+
 def filter_subsidies_for_year(subsidies: list["Subsidy"], year: "Year") -> list["Subsidy"]:
     """
     Filter subsidies to only include those active in the specified year.

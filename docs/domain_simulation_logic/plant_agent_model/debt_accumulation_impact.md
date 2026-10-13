@@ -258,6 +258,25 @@ Year 31-45: SR debt only ($80M/year)
 
 ---
 
+## Deferred Switches: When the Legacy Tail Is Measured
+
+A switch decided in year Y does not take effect at once. The furnace group keeps running its old technology during `construction_time` years (C), and the stored switch command runs at year end in Y + C. During construction the group keeps paying its old debt as normal.
+
+The legacy tail is therefore measured from the decision, not from the moment the switch runs:
+
+```
+legacy years = max(0, remaining lifetime at decision − construction_time)
+```
+
+- **Old life ends before the switch runs** (remaining lifetime ≤ C): the old debt is fully repaid during construction, so no legacy tail carries over. By then the group's lifetime already belongs to the new cycle. Reading the remaining years from it would add up to a full cycle of phantom old debt.
+- **Old life outlasts construction**: the tail covers the remaining lifetime minus the construction years already paid.
+
+The tail is computed from the current technology's own investment (`calculate_debt_repayment`), and any earlier legacy debt is added once, year by year. `debt_repayment_per_year` already includes earlier legacy debt, so slicing the tail from it would count a previous switch's debt twice.
+
+The scenarios above ignore the construction delay for simplicity. With a delay, read "Year 10: Switch" as the year the switch runs, with the remaining years measured at the decision.
+
+---
+
 ## Calibration Considerations
 
 ### Debt Parameters
@@ -296,10 +315,12 @@ cost_of_debt = 0.05  # 5%
 
 **Verify legacy debt is being tracked**:
 ```python
-# After technology switch
-assert furnace_group.legacy_debt_schedule != []
-assert len(furnace_group.legacy_debt_schedule) == remaining_years
+# After a deferred switch executes
+tail_years = max(0, remaining_years_at_decision - construction_time)
+assert len(furnace_group.legacy_debt_schedule) == max(tail_years, len(earlier_legacy_schedule))
 ```
+
+The new tail and any earlier legacy schedule are summed year by year, so the combined schedule is as long as the longer of the two. With no earlier legacy debt and an old life that ended during construction, the schedule is empty.
 
 **Verify debt is being combined**:
 ```python

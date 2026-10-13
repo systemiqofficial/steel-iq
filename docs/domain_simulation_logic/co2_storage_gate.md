@@ -15,7 +15,7 @@ The Environment owns two per-country counters:
 
 Counters are rebuilt from scratch at the start of each year by walking every FurnaceGroup, so cancelled or closed plants automatically free their slot. Intra-year handler hooks keep counters up-to-date as plants transition between statuses during the year, so gates fired later in the year see earlier commitments.
 
-To estimate a prospective CCS plant's need, the gate uses `Environment.get_co2_need(tech, capacity, reductant)`. The computation uses the most conservative (highest-emitting) feedstock for the plant's expected reductant; this over-estimates by up to ~6% and never under-estimates.
+To estimate a prospective CCS plant's need, the gate uses `Environment.get_co2_need(tech, capacity, reductant)`. The reductant is the one the plant would actually be built with: the evaluated pick for new opportunities, `chosen_reductant` for announced plants, and the score-series pick for the operating start year for switch (P2) and expansion (P3) candidates (see [Reductant Choice and Investment OPEX](plant_agent_model/reductant_choice_and_opex.md#the-committed-reductant)). Within that reductant the computation takes the highest-storing metallic charge, which over-estimates by up to ~6% and never under-estimates.
 
 ## How a CCS plant reaches operation
 
@@ -54,7 +54,7 @@ A plant committing today consumes storage in the future. A plant announcing in 2
 
 **Gate and trade-model enforcement coexist.** The gate prevents over-*investment*; the trade model manages over-*operation* within a year.
 
-**Approximate need is acceptable.** A conservative reductant-filtered maximum is used upfront; if the plant ends up running a cleaner feedstock, the trade model handles it via under-utilisation.
+**Approximate need is acceptable.** The need uses the committed reductant but the highest-storing metallic charge, so it errs on the high side. If the annual reductant re-pick later moves the plant to a different reductant, the yearly counter rebuild follows it, and the trade model handles any shortfall in operation via under-utilisation.
 
 **Considered opportunities stay alive when blocked at G2.** They cost nothing (not in counters); keeping them open lets them succeed later if other plants are discarded or new storage comes online.
 

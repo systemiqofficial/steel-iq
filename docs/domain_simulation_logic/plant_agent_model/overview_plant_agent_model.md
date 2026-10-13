@@ -37,6 +37,9 @@ Explains the "proxy profit" method used to derive market prices from the Trade M
 **[Economic Considerations](economic_considerations.md)**
 Comprehensive overview of the economic factors shaping PAM decisions: price signals (spot vs forecast), profitability checks, balance sheet constraints, capacity limits, financing structure, carbon pricing impacts, probabilistic adoption, and subsidies.
 
+**[Reductant Choice and Investment OPEX](reductant_choice_and_opex.md)**
+How the model picks a reductant and prices it into investment decisions. Covers the reductant score (energy, carbon and by-products), the annual reductant pick and fleet-wide vote, and the year-wise score series behind the switch, renovation, expansion and new-plant NPVs.
+
 **[Debt Accumulation Impact](debt_accumulation_impact.md)**
 Analyzes how preserving debt across technology switches creates realistic transition dynamics. Covers behavioral impacts (clustering at renovation boundaries, higher COSA, capital requirements), cascading debt from multiple switches, and model realism improvements.
 
