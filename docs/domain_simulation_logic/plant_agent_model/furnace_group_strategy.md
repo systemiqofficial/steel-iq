@@ -136,7 +136,8 @@ Start
 
 ### Stage 4: Calculate Cost of Stranded Assets (COSA)
 - **Purpose**: Determine the cost of abandoning current technology
-- **Key calculation**: NPV of the foregone operating margin (discounted gross cash flow over the remaining life)
+- **Key calculation**: NPV of the foregone operating margin: the discounted gross cash flow for years `[construction_time, remaining_time)`. The incumbent keeps operating during the switch's construction, so only the years after it are foregone; COSA is 0 when the remaining life does not outlast construction.
+- **Incumbent OPEX**: current unit OPEX with OPEX subsidies, plus its carbon cost series and by-product adjustment (Stages 2 and 3), at its current production, discounted at the incumbent's cost of equity
 - **Rationale**: Remaining debt is excluded — it persists via the `legacy_debt_schedule` (realised P&L / closure), so it cancels from the switch-vs-stay comparison
 
 ### Stage 5: Check for Allowed Technology Transitions

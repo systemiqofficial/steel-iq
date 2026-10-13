@@ -144,11 +144,12 @@ Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASE
 ---
 
 #### Secondary Feedstock & Aggregated Constraints
-**Purpose:** Limits scrap availability and enforces technology-specific feedstock ratios.
+**Purpose:** Limits constrained secondary feedstocks and enforces technology-specific feedstock ratios.
 
 **Secondary feedstock constraints:**
-- Regional limits on scrap, recycled materials
-- Example: "Europe can only source 50M tons scrap/year"
+- Annual limits on `bio_pci` per TIAM-UCL region and on `co2_stored` (CO2 storage) per country, from the [`Biomass availability` sheet](../../user_guide/master_input_reference.md#biomass-availability)
+- Example: "furnace groups in Western Europe can use at most X t of bio-PCI in 2030"
+- Each constrained commodity comes from a synthetic zero-cost supplier connected to every production process; the limit caps its flows into the region. Scrap is not limited this way: its availability comes from scrap suppliers.
 
 **Aggregated constraints:**
 - Technology-level min/max ratios

@@ -146,16 +146,13 @@ annual_payment = annual_principal + annual_interest
 - Higher debt → Higher per-tonne cost → Lower competitiveness
 - Debt fully repaid after `plant_lifetime` years (default 20)
 
-### Cost of Debt by Country
-Interest rates vary by location:
+### Cost of Debt and Equity by Country and Technology
+Financing rates vary by country **and** technology, from the [`Cost of capital` sheet](../../user_guide/master_input_reference.md#cost-of-capital):
 ```python
-cost_of_debt_dict = {
-    "USA": 0.05,  # 5%
-    "CHN": 0.04,  # 4%
-    "IND": 0.08,  # 8%
-    # ...
-}
+cost_of_debt_by_tech = {"IND": {"BF": 0.08, "DRI": 0.09, ...}, "DEU": {...}, ...}
+cost_of_equity_by_tech = {"IND": {"BF": 0.12, "DRI": 0.13, ...}, ...}
 ```
+Each candidate is financed at its own technology's rates in the plant's country: cost of debt for the debt schedule, cost of equity as the NPV discount rate. COSA is discounted at the incumbent's cost of equity.
 
 Lower rates → Lower financing costs → More competitive
 

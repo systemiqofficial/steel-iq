@@ -296,14 +296,14 @@ sum(flows matching tariff pattern) ≤ quota_limit
 
 ### 6. Secondary Feedstock Constraints
 
-**Purpose:** Regional limits on secondary material availability
+**Purpose:** Annual limits on secondary feedstocks with constrained regional supply
 
 **Formulation:**
 ```
-sum(material to region group) ≤ regional_availability
+sum(commodity flows into furnace groups in the region) ≤ availability for the year
 ```
 
-**Applied to:** Scrap and other secondary feedstocks with limited regional supply
+**Applied to:** `bio_pci` (per TIAM-UCL region) and `co2_stored` (CO2 storage, per country), both from the [`Biomass availability` sheet](../../user_guide/master_input_reference.md#biomass-availability). Each constrained commodity is supplied by a synthetic zero-cost supplier connected to every production process. Scrap is not limited this way: its availability comes from scrap suppliers.
 
 ---
 

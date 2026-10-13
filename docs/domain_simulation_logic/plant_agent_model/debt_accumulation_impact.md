@@ -73,14 +73,16 @@ Total debt burden: $2,600M ($400M legacy + $2,200M)
 when many years of profitable operation remain, and shrinks towards zero near
 end-of-life. Switching early therefore forfeits more margin.
 
-**Example NPV Comparison** (BF margin $50M/year, r=0.08):
+**Example NPV Comparison** (BF margin $50M/year, r=0.08, `construction_time` = 4):
 
 | Switch Year | Years Remaining | Foregone Margin (COSA) | NPV (new tech) | Net Benefit |
 |-------------|-----------------|------------------------|----------------|-------------|
-| Year 5      | 15              | $428M                  | $800M          | $372M       |
-| Year 10     | 10              | $335M                  | $800M          | $465M       |
-| Year 15     | 5               | $200M                  | $800M          | $600M       |
+| Year 5      | 15              | $262M                  | $800M          | $538M       |
+| Year 10     | 10              | $170M                  | $800M          | $630M       |
+| Year 15     | 5               | $34M                   | $800M          | $766M       |
 | Year 20     | 0               | $0M                    | $800M          | $800M       |
+
+The first 4 years after the decision are not charged: the incumbent keeps operating while the new technology is built, so only the years after construction are foregone.
 
 **Result**: Waiting until year 20 (no remaining margin to forgo) yields more net
 benefit than switching at year 5, because COSA tracks the foregone operating
@@ -125,7 +127,8 @@ COSA = NPV(foregone_operating_profits)
 ```
 
 COSA is the **foregone operating margin only** — the discounted gross cash flow
-(revenue − OPEX) over the remaining life. The remaining debt is *not* included:
+(revenue − OPEX) over the remaining life after the switch's construction period
+(years `[construction_time, remaining_time)`). The remaining debt is *not* included:
 the old debt is paid whether the plant stays or switches (it persists via the
 `legacy_debt_schedule`), so it cancels from the switch-vs-stay comparison.
 
@@ -133,12 +136,13 @@ the old debt is paid whether the plant stays or switches (it persists via the
 
 ```
 Foregone Operating Profits:
-  BF margin: $50/t × 100 kt/year = $50M/year, for 10 remaining years
+  BF margin: $50/t × 100 kt/year = $50M/year
+  10 years remaining, of which years 1 to 4 fall in construction (construction_time = 4)
 
 NPV at 8% discount rate:
-  COSA = NPV($50M × 10 years, r=0.08)
-  COSA = $50M × 6.71 (PV factor for 10 years)
-  COSA ≈ $335M
+  COSA = NPV($50M for years 5 to 10, r=0.08)
+  COSA = $50M × (6.71 − 3.31) = $50M × 3.40
+  COSA ≈ $170M
 ```
 
 **The legacy debt's real effect** is captured by the `legacy_debt_schedule` — the
@@ -281,19 +285,21 @@ The scenarios above ignore the construction delay for simplicity. With a delay, 
 
 ### Debt Parameters
 
-**Lifetime affects burden**:
+**Lifetime affects the legacy burden**:
 ```python
 plant_lifetime = 20  # Standard
-# Shorter lifetime (15 years) → Higher annual payments → Larger COSA
-# Longer lifetime (25 years) → Lower annual payments → Smaller COSA
+# Shorter lifetime (15 years) → Higher annual payments → Heavier legacy debt after an early switch
+# Longer lifetime (25 years) → Lower annual payments → Lighter legacy debt
 ```
 
-**Cost of debt affects total burden**:
+**Cost of debt affects the legacy burden**:
 ```python
 cost_of_debt = 0.05  # 5%
-# Higher rate (8%) → More interest paid → Larger COSA
-# Lower rate (3%) → Less interest paid → Smaller COSA
+# Higher rate (8%) → More interest paid → Heavier legacy debt after an early switch
+# Lower rate (3%) → Less interest paid → Lighter legacy debt
 ```
+
+Debt parameters do not change COSA, which is the foregone operating margin only. They change how much old debt the furnace group carries in its realised P&L after switching.
 
 ### Balance Sheet Impact
 

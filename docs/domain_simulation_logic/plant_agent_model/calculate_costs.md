@@ -169,7 +169,7 @@ Provides tools to calculate net present value (NPV) for technology investments, 
 ### Stranded Asset Analysis
 Calculates the Cost of Stranded Asset (COSA) when switching technologies before end-of-life: the foregone operating margin of the current technology.
 
-When switching technologies before end-of-life, COSA represents the NPV of the **foregone operating profits** — the gross cash flow (revenue − OPEX) the current asset would have earned over its remaining life. The remaining debt is *excluded*: it persists post-switch via the `legacy_debt_schedule` (and is paid whether the plant stays or switches), so it cancels from the switch-vs-stay comparison.
+When switching technologies before end-of-life, COSA represents the NPV of the **foregone operating profits** — the gross cash flow (revenue − OPEX) the current asset would have earned over its remaining life **after the switch's construction period**. A switch takes effect `construction_time` years after the decision, and the incumbent keeps operating until then, so only years `[construction_time, remaining_time)` are charged. They keep their original discount positions (the construction years are zero-padded), and COSA is 0 when the remaining life does not outlast construction. The remaining debt is *excluded*: it persists post-switch via the `legacy_debt_schedule` (and is paid whether the plant stays or switches), so it cancels from the switch-vs-stay comparison.
 
 Formula: `COSA = NPV(Gross_Cash_Flow)`
 

@@ -225,6 +225,17 @@ Capacity in a year therefore reads as the capacity that year's allocation could 
 
 Before this rule, a group closed by the plant agents had no row in its closing year although it had produced and shipped: up to about 2% of yearly production and capacity and about 4% of yearly emissions were missing, from the second simulated year on. A group shrunk by a renovation reported the shrunk capacity, and two thirds of its production at a 1.5 replacement ratio, in the renovation year already (capacity policy runs only, about 0.3% of yearly production). Reported production, emissions, capacity and production-weighted cost averages are not comparable between runs from before and after the change; the simulation's decisions are unaffected.
 
+### Fixes that affect comparability between runs
+
+The fixes below change results. Runs from before and after a fix are not directly comparable on the outputs listed.
+
+| Fix | What changed | Outputs affected | Decisions affected |
+|---|---|---|---|
+| **Indirect emissions counted once** (#181) | `calculate_emissions()` added a furnace group's grid-electricity emissions to `indirect_ghg` once per metallic charge, so a group with several charges (an EAF on scrap, DRI and pig iron; a BOF on hot metal and scrap) counted them several times. They are now added once per emissions boundary. A charge without an indirect emission factor row also no longer drops the grid emissions. | Indirect (Scope 2) emissions in the post-processed CSV, the emissions plots and the emissions viewer; lower than before for multi-charge groups | No: carbon cost and the carbon border charge use direct emissions |
+| **Every iron ore mine has an ISO-3 code** (#181) | Mines in 13 countries missing from the region mapping had an empty ISO-3 code, so about 22% of iron ore shipped without transport cost or tariff in the trade LP. Every mine now carries its country code, and an unmapped region stops data preparation. See [Iron ore mines](../user_guide/master_input_reference.md#iron-ore-mines). | Ore sourcing and trade flows, iron and steel costs, prices | Yes: costs feed prices, NPVs and every plant decision |
+| **End-year technology switch runs once** (#181) | The final simulated year is finalised twice. A switch scheduled for that year was replayed on the second pass, which booked the new technology's own debt again as legacy debt and recorded the switch twice. A scheduled switch now runs only while the group still holds a switching status. | Final year only, for groups switching that year: debt, unit cost and switch records | No: the replay happened after the year's decisions |
+| **Bio-PCI availability in tonnes** (#145) | `Biomass availability` rows with a unit in kg (`kg charcoal-equivalent/y`) were read as tonnes, so the bio-PCI limits in the trade LP were 1000 times too high and never bound. They are now divided by 1000. See [Biomass availability](../user_guide/master_input_reference.md#biomass-availability). | Bio-PCI use and the furnace groups' charge mix, costs and emissions where the limit now binds | Yes: through costs and prices |
+
 ### Header columns (deterministic order)
 
 | Column | Source |

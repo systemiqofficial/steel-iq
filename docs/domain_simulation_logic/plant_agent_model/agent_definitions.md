@@ -233,7 +233,7 @@ When a furnace group switches technologies before its debt is fully repaid:
 - Old technology's remaining debt is stored in `legacy_debt_schedule`
 - New technology creates new debt based on its CAPEX
 - Total debt = new debt + legacy debt (for overlapping years)
-- This makes early switches expensive and affects COSA calculations
+- This makes early switches expensive through the realised legacy debt burden. COSA does not include this debt: it is owed whether the group stays or switches.
 
 ### 2. Renovation Cycles
 Plants don't retire after N years - they renovate:

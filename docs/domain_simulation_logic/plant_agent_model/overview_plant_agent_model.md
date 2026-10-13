@@ -70,7 +70,7 @@ Documents the bridge between the Geospatial Model and PAM. Explains how new gree
 
 ### Economic Metrics
 - **NPV**: Net Present Value of future cash flows minus initial investment
-- **COSA**: Cost of Stranded Assets (NPV of remaining debt + foregone profits)
+- **COSA**: Cost of Stranded Assets (NPV of the operating margin the current technology forgoes after the switch's construction period; remaining debt is excluded because it is carried forward as legacy debt)
 - **LCOS**: Levelized Cost of Steel/Iron (production cost per tonne)
 - **Market Price**: Derived from cost curve intersection with demand
 - **Balance**: Accumulated profit/loss (plant-level and plant group-level)

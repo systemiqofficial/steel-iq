@@ -32,12 +32,12 @@ The **Environment** class represents the macro-scale context in our agent-based 
   Establishes the simulation's starting year by creating a `Year` instance based on a constant (e.g., `SIMULATION_START_YEAR`).
 
 - **Cost of Capital:**  
-  Calls a dedicated method to load cost of capital data for industrial assets from an external JSON configuration file.
+  `initiate_cost_of_capital()` loads the per-country, per-technology financing rates from `cost_of_capital.json` into `cost_of_debt_by_tech` and `cost_of_equity_by_tech`.
 
 ### Industrial Asset Cost of Capital
 
-- **`initiate_industrial_asset_cost_of_capital`:**  
-  Loads and parses a JSON file containing cost-of-equity data by country. The resulting dictionary maps each country's code to its respective cost of capital. This parameter is critical for financial calculations such as NPV assessments.
+- **`initiate_cost_of_capital`:**  
+  Builds `cost_of_debt_by_tech` and `cost_of_equity_by_tech` (iso3 → technology → rate) from the `Cost of capital` sheet. Cost of debt sets debt repayment; cost of equity is the discount rate for NPV and COSA. The sheet's `Cost of capital` column is not used. See the [Master Input Reference](../user_guide/master_input_reference.md#cost-of-capital).
 
 ### Cost Curve Generation
 

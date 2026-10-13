@@ -25,6 +25,7 @@ user_guide/LOGGING_GUIDE
 
 domain_simulation_logic/overview_simulation
 domain_simulation_logic/environment
+domain_simulation_logic/sub_national_geography
 domain_simulation_logic/checkpoint
 domain_simulation_logic/plant_agent_model/overview_plant_agent_model
 domain_simulation_logic/plant_agent_model/agent_definitions

@@ -117,8 +117,8 @@ Throughout the evaluation process:
 **Cost Data**:
 - `name_to_capex` → CAPEX by technology and region
 - `capex_renovation_share` → Brownfield cost multipliers
-- `industrial_cost_of_debt` → Interest rates by country
-- `industrial_cost_of_equity` → Required returns by country
+- `cost_of_debt_by_tech` → Interest rates by country and technology
+- `cost_of_equity_by_tech` → Required returns by country and technology
 
 **Technology Configuration**:
 - `allowed_furnace_transitions` → Valid technology switches
@@ -207,7 +207,7 @@ features:
 **Issue**: No technology switches happening
 - Check: allowed transitions Excel tab allows switches between expected technologies
 - Check: NPV calculations include correct CAPEX and OPEX
-- Check: COSA isn't too high (check remaining debt)
+- Check: COSA isn't too high: a profitable incumbent with many years left forgoes a large operating margin by switching (see the `[OPTIMAL TECH] COSA` debug line). Remaining debt does not enter COSA.
 
 **Issue**: Expansions not happening
 - Check: Plant group balances (need positive balance)

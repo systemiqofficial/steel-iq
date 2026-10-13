@@ -191,8 +191,8 @@ graph TD
 | construction_time | int | Time to construct new furnace (years) |
 | current_year | Year | Current simulation year |
 | allowed_techs | dict[Year, list[str]] | Technologies allowed by year |
-| cost_of_debt_dict | dict[str, float] | Cost of debt by ISO3 country code |
-| cost_of_equity_dict | dict[str, float] | Cost of equity by ISO3 country code |
+| cost_of_debt_dict | dict[str, dict[str, float]] | Cost of debt by ISO3 country code and technology |
+| cost_of_equity_dict | dict[str, dict[str, float]] | Cost of equity by ISO3 country code and technology |
 | get_bom_from_avg_boms | Callable | Function to retrieve bill of materials for a technology |
 | capacity_limit_steel | Volumes | Maximum allowed steel capacity from expansions/switches (PAM share) |
 | capacity_limit_iron | Volumes | Maximum allowed iron capacity from expansions/switches (PAM share) |

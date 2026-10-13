@@ -193,7 +193,8 @@ usage: steelo-data-prepare [-h] [--output-dir OUTPUT_DIR]
                            [--master-excel-file MASTER_EXCEL_FILE]
                            [--geo-version GEO_VERSION] [--skip-existing]
                            [--no-skip-existing] [--list-files] [--verbose]
-                           [--force-refresh]
+                           [--force-refresh] [--use-furnace-units-sheet]
+                           [--use-plants-sheet]
 
 Prepare all data files for simulation.
 ```
@@ -203,6 +204,8 @@ Key options:
 - `--cache-dir`: Location of reusable intermediate artefacts.
 - `--master-excel-file`: Alternate master input workbook to ingest.
 - `--force-refresh`: Rebuild everything even if cached results exist.
+- `--use-furnace-units-sheet`: Build the starting fleet from the `Furnace units` sheet (default).
+- `--use-plants-sheet`: Build it from the older `Iron and steel plants` sheet instead, for workbooks authored before the `Furnace units` sheet existed. See the [Master Input Reference](master_input_reference.md#furnace-units).
 
 ### steelo-data-recreate
 
@@ -210,6 +213,7 @@ Key options:
 ❯ steelo-data-recreate -h
 usage: steelo-data-recreate [-h] [--package PACKAGE] [--output-dir OUTPUT_DIR]
                             [--cache-dir CACHE_DIR] [--force-download]
+                            [--use-furnace-units-sheet] [--use-plants-sheet]
 
 Recreate JSON repositories from downloaded data packages (similar to recreate_sample_data).
 ```
@@ -219,8 +223,28 @@ Key options:
 - `--output-dir`: Output directory for the JSON repositories (default: `./data/repositories`).
 - `--cache-dir`: Cache directory for downloaded data.
 - `--force-download`: Force re-download of packages instead of using cached archives.
+- `--use-furnace-units-sheet` / `--use-plants-sheet`: Which sheet builds the starting fleet, as for `steelo-data-prepare` (default: `Furnace units`).
 
 Use `steelo-data-recreate` when you already have the packaged data archives and only need to regenerate the JSON repositories.
+
+### generate-geo-options
+
+```shell
+❯ generate-geo-options -h
+usage: generate-geo-options [-h] [--fixtures-dir FIXTURES_DIR] [--out OUT]
+
+Generate geo_options.csv (authorable geo-keys) from a prepared
+geo_hierarchy.json
+
+options:
+  -h, --help            show this help message and exit
+  --fixtures-dir FIXTURES_DIR
+                        Directory containing geo_hierarchy.json (default:
+                        ~/.steelo/data/fixtures)
+  --out OUT             Output CSV path (default: ./geo_options.csv)
+```
+
+Writes the list of province keys (`CHN:CN-HE` and so on) that the master workbook can use in its geo-keyed sheets, one row per unit. Data preparation already writes `geo_options.csv` to the data root; run this command to regenerate it after preparation, or to write it elsewhere. It fails if `geo_hierarchy.json` has not been prepared yet. See [Sub-national Geography](../domain_simulation_logic/sub_national_geography.md).
 
 ## List Available Binaries
 

@@ -2,7 +2,7 @@
 
 The master input workbook documents itself: its `Contents` sheet says what each sheet is and where the default data comes from, and sheet-level READMEs explain the authoring conventions. This page is the complement for the people who edit it. For each sheet it lists what every column may contain, what the model does with the value, the rules data preparation enforces on it, and the simulation parameters that change how the sheet is used.
 
-The page is being built up sheet by sheet. The China capacity-replacement policy sheets are documented first; the remaining sheets follow.
+The page is being built up sheet by sheet. The China capacity-replacement policy sheets, `Cost of capital`, `Furnace units`, `Power grid emissivity`, `Biomass availability`, the geography columns of `Iron and steel plants` and the `Region` column of `Iron ore mines` are documented so far; the remaining sheets follow.
 
 ## Conventions
 
@@ -86,3 +86,150 @@ The pool as it stands at the simulation start: capacity retired before the run a
 | `inter_company_swap_cutoff_year` | 2028 | First year a group may spend only its own credits. Before it, every opening credit is drawable by any Chinese group; `None` disables the partition and unowned credits stay drawable for the whole run. |
 | `banked_credit_rule` | `reassign` | What happens to credits banked before the cutoff, the opening credits included: `reassign` keeps each with its owner and sweeps the unowned ones; `persist` keeps them all freely spendable; `expire` makes them unusable from the cutoff. |
 | `credit_validity_years` (`--credit-validity-years`) | `None` | Shelf life. A vintage `V` credit is usable through `V + N − 1`; opening credits older than that at the start are purged immediately. |
+
+## Cost of capital
+
+One row per (country, technology). The sheet sets the interest rate on debt and the required return on equity for every investment the plant agents evaluate: renovations, technology switches, expansions and new plants. It is prepared into `cost_of_capital.json` by `steelo-data-prepare`; the model reads it on every run.
+
+| Column | Allowed values | What the model does with it |
+|---|---|---|
+| `Country` | Free text | Stored with the country's rates for reference. |
+| `ISO-3 Code` | A bare ISO-3 country code | Groups the rows. Plants and candidate sites take their rates from their own country code. Some codes appear under several territory names (for example `ESP`); identical duplicate rows are merged. |
+| `Tech` | A technology name exactly as in the `Technology` column of `Techno-economic details`, or `Renewables` or `Hydrogen` | Matched verbatim, without name normalisation. Each candidate technology is financed at its own row's rates. |
+| `Cost of debt` | A fraction (`0.05` = 5%) | Interest rate on the debt share of CAPEX (1 − `equity_share`), before any cost-of-debt subsidy. Sets the debt repayment schedule in every NPV and in the furnace group's realised P&L. |
+| `Cost of equity` | A fraction | Discount rate for the investor's NPV of a candidate and for the incumbent's cost of stranded assets (COSA). |
+| `Cost of capital` | A fraction (weighted average cost of capital) | Stored but **not used**. The model finances from `Cost of debt`, `Cost of equity` and `equity_share`, so editing this column changes nothing. |
+
+**Rules enforced at preparation** (all errors):
+
+- two rows for the same `ISO-3 Code` and `Tech` with different values
+- a country that does not cover every technology in `Techno-economic details`, plus `Renewables` and `Hydrogen`
+
+The `Renewables` and `Hydrogen` rows are required but not currently read by the model: the levelised costs of electricity and hydrogen do not take their financing rates from this sheet.
+
+**At run time**: a plant in a country with no rows stops the run when its furnace groups are evaluated, and a new-plant site in such a country stops the run when its NPV is prepared. Blank rate cells are not caught at preparation: they are read as NaN and make the affected NPVs invalid, so those candidates never win. Fill every rate cell.
+
+**Parameters that interact**: `equity_share` (default 0.2) sets the share of CAPEX paid from the plant group's balance; the rest is debt at `Cost of debt`. Cost-of-debt subsidies lower `Cost of debt` for the technologies they cover, floored at the risk-free rate.
+
+## Furnace units
+
+One row per furnace group (a furnace unit). The sheet is the model's starting fleet: rows sharing a `plant_id` become one plant, and each row becomes one furnace group of that plant. `steelo-data-prepare` reads it into `plants.json` by default; `--use-plants-sheet` switches back to the older `Iron and steel plants` sheet, and a workbook with no `Furnace units` sheet falls back to that sheet with a warning.
+
+| Column | Allowed values | What the model does with it |
+|---|---|---|
+| `plant_id` | Any identifier; blank rows are skipped | Groups rows into plants. |
+| `unit_id` | Any identifier | Part of the furnace group ID (`temp_<plant_id>_<technology>_<unit_id>_<row>`). |
+| `technology` | A technology name from `Techno-economic details` | The furnace group's technology. Its business cases come from `Bill of Materials`. |
+| `capacity_ttpa` | Capacity in thousand tonnes per year | The furnace group's capacity. Rows with a blank, zero or negative capacity are skipped. |
+| `status` | A furnace group status, for example `operating`, `construction`, `announced`; default `operating` | The starting status. `announced` and `construction` mark pipeline units (see the start-year rules below). |
+| `start_year` | A year, or blank | Commissioning year; sets the renovation cycle. Blank values, and pipeline units dated before the reference year, are imputed (see below). |
+| `last_renovation_year` | A year, or blank | Last renovation; defaults to the start year. |
+| `iso3` | A real ISO-3 country code; required | The plant's country. Read from the plant's first row. |
+| `geo_unit_or_province` | An ISO 3166-2 sub-national code (for example `CN-HE`), or blank | With `iso3` it forms the plant's geographic key (`CHN:CN-HE`), used for province-level prices and subsidies. Blank places the plant at country level. |
+| `latitude`, `longitude` | Decimal degrees | Plant location, from the plant's first row. |
+| `region`, `power_source`, `soe_status`, `parent_gem_id`, `workforce_size` | Free text or numbers; optional | Plant attributes, from the plant's first row. |
+| `plant_name`, `source` | Free text | Read only by the interactive capacity world map. |
+
+**Rules enforced at preparation** (all errors):
+
+- a row with a `plant_id` but no `iso3`, or an `iso3` that is not a real ISO-3 code
+- a filled `geo_unit_or_province` that does not form a key in the prepared geo hierarchy (`geo_hierarchy.json`)
+
+When no geo hierarchy has been prepared yet, the sub-national check is skipped with a warning.
+
+### Start-year imputation
+
+The model sets every furnace group's renovation cycle from its start year, so undated units would otherwise all reach the end of their lifetime in the same year. Preparation fills the gaps:
+
+- **Operating units with no `start_year`**: a year drawn uniformly from a vintage band, **2000 to 2013 for China** and **2005 to 2025 elsewhere** (both ends included).
+- **Pipeline units** (`announced` or `construction`) with no `start_year`, or with one before the reference year: dated forward from the reference year, because the simulation switches a pipeline unit on only in the year equal to its start year, and a past year would strand it.
+  - `construction`: reference year + 0 to 4 years (`CONSTRUCTION_TIME_DEFAULT`)
+  - `announced`: reference year + 0 to 1 years (`ANNOUNCEMENT_TIME`) + 4 years of construction, so 4 to 5 years ahead
+
+Imputed units carry `age_source = "imputed"` in their metadata; units with an authored year carry `"exact"`. The draws use a fixed seed (`RANDOM_SEED_DEFAULT` = 42) that the `--random-seed` option of `run_simulation` does not change, so the same sheet always gets the same years. The reference year is currently fixed at 2025 in preparation.
+
+Preparation logs how many units it dated in each way.
+
+## Iron ore mines
+
+This section covers the `Region` column only; the capacity, cost and price columns are not yet documented here.
+
+| Column | Allowed values | What the model does with it |
+|---|---|---|
+| `Region` | One of the 22 names below, spelled exactly | Mapped to the mine's ISO-3 code. The trade model keys transport costs and tariffs on that code. |
+
+| Region | ISO-3 | Region | ISO-3 |
+|---|---|---|---|
+| Australia | AUS | Mauritania | MRT |
+| Bosnia & Herzegovina | BIH | Mexico | MEX |
+| Brazil | BRA | Norway | NOR |
+| Canada | CAN | Peru | PER |
+| Chile | CHL | Russia | RUS |
+| China | CHN | Sierra Leone | SLE |
+| Guinea | GIN | South Africa | ZAF |
+| India | IND | Sweden | SWE |
+| Iran | IRN | Ukraine | UKR |
+| Kazakhstan | KAZ | USA | USA |
+| Liberia | LBR | Venezuela | VEN |
+
+**Rules enforced at preparation** (error): a mine with capacity in any year whose `Region` is not in the table. Mines with no capacity in any year are skipped before the check. The mapping lives in code (`translate_mine_regions_to_iso3` in `excel_reader.py`), so a new mine country needs a code change, not only a workbook edit.
+
+Before this check, an unmapped region gave the mine an empty ISO-3 code and its ore travelled without transport costs or tariffs in the trade model; see [Fixes that affect comparability between runs](../domain_simulation_logic/outputs_and_postprocessing.md#fixes-that-affect-comparability-between-runs).
+
+## Iron and steel plants
+
+The older plant sheet, read instead of `Furnace units` when data preparation runs with `--use-plants-sheet` or the workbook has no `Furnace units` sheet. This section covers its geography columns only.
+
+| Column | Allowed values | What the model does with it |
+|---|---|---|
+| `ISO3` | A bare ISO-3 code (`CHN`) or a combined geo key (`CHN:CN-AH`) | The plant's country and, in the combined form, its province. A row with a blank `ISO3` is skipped. |
+| `geo_unit` | An ISO 3166-2 code (`CN-AH`), or blank; optional column | The province for a row whose `ISO3` is a bare country. Blank places the plant at country level. When the row also uses the combined `ISO3` form with a different unit, the combined value wins. |
+
+**Rules enforced at preparation**:
+
+- error: a country code that is not a real ISO-3 code, or a unit that does not form a key in `geo_hierarchy.json`
+- warning: a combined `ISO3` value and a different `geo_unit` value on the same row
+- a sheet with no `ISO3` column takes the country from its `Country` column (workbooks older than master input v2.2); a sheet with neither column is rejected
+
+The country and province come only from these columns. The model no longer derives them from the plant's coordinates. See [Sub-national Geography](../domain_simulation_logic/sub_national_geography.md) for how province-level values are used.
+
+## Power grid emissivity
+
+One row per (geography, year, scenario). The sheet sets the grid electricity emission factor that gives each furnace group its indirect (Scope 2) electricity emissions. It does not change carbon cost, which charges direct emissions only.
+
+| Column | Allowed values | What the model does with it |
+|---|---|---|
+| `country_iso3` (or `ISO 3-letter code`, or `ISO-3 code`) | A bare ISO-3 code (`CHN`) or a geo key (`CHN:CN-HE`) | The geography. Plants resolve the province row first, then the country row. |
+| `country` | Free text | Stored as the country name. |
+| `year` | A year | The year of the factor. |
+| `projection_scenario` | `projection_<name>`, for example `projection_business_as_usual` | The scenario. The run uses the rows whose name, without the `projection_` prefix and in title case, equals `--grid-emissions-scenario` (default `Business As Usual`; the current data also carries `Net Zero`). |
+| `ghg_factor_scope_2` | A number (tCO2e per unit of electricity) | The grid emission factor. |
+
+Coke and natural gas factors for each geography come from the country rows of the `Met coal & gas emissions` sheet; a province row takes its country's factors.
+
+**Rules**:
+
+- at preparation (warning): a province row that does not author every year its country authors; the missing years are filled from the country's rows for the same scenario
+- at run start (error): `--grid-emissions-scenario` matches no scenario in the sheet; the message lists the available scenarios
+- during the run (error): a plant whose location has no emissivity at province or country level, or whose entry has no value for the current year
+
+Before these errors existed, a plant with no matching data, or a run with a mistyped scenario, silently got a grid emissivity of 0.0.
+
+## Biomass availability
+
+Despite its name, the sheet carries two kinds of annual limit for the trade model: bio-PCI availability per region, and CO2 storage capacity per country. Each becomes a secondary feedstock constraint: the total flow of that commodity into furnace groups located in the region or country may not exceed the limit for the year.
+
+| Column | Allowed values | What the model does with it |
+|---|---|---|
+| `tiam-ucl_region` | A TIAM-UCL region name, as in the `tiam-ucl_region` column of `Country mapping` | The region of a bio-PCI row: the limit covers every country mapped to that region. Rows with a blank region are skipped. |
+| `Country` | Bio-PCI rows: a country name or blank. `co2_stored` rows: an ISO-3 code | A bio-PCI row with a country applies to that country only. A `co2_stored` row applies to the country given. |
+| `Metric` | `Bio-PCI availability` or `co2_stored` | A metric containing "co2" becomes a `co2_stored` limit; any other metric becomes a `bio_pci` limit. |
+| `Scenario` | Free text; blank in the current data | Stored; not used to filter rows. |
+| `Unit` | `kg charcoal-equivalent/y` for bio-PCI, `t CO2/y` for CO2 storage | A unit containing "kg" is divided by 1000, so every limit is in tonnes per year. |
+| `2024` to the last year column | Numbers | The limit for that year. Blank cells set no limit for that year. |
+
+**At run start** (error): a bio-PCI region that matches no `tiam-ucl_region` in `Country mapping`, no ISO-3 code and no country name.
+
+**How the trade model applies the limits**: each constrained commodity gets a synthetic supplier (`bio_pci_supply_process_center`, `co2_stored_supply_process_center`) with no production cost, connected to every production process; the per-region or per-country limits then cap the flows from it. Scrap is not limited this way: scrap availability comes from scrap suppliers. The `co2_stored` limits also set the budget of the [CO2 storage gate](../domain_simulation_logic/co2_storage_gate.md).
+
+Before the kg conversion, bio-PCI limits were read 1000 times too high and never bound; see [Fixes that affect comparability between runs](../domain_simulation_logic/outputs_and_postprocessing.md#fixes-that-affect-comparability-between-runs).
