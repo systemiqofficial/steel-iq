@@ -2507,9 +2507,10 @@ class FurnaceGroup:
         )
 
         # Log current operating costs
-        logger.debug(f"[OPTIMAL TECH] Unit fixed OPEX: ${self.unit_fopex:,.2f}/t")
-        logger.debug(f"[OPTIMAL TECH] Unit variable OPEX: ${self.unit_vopex:,.2f}/t")
-        logger.debug(f"[OPTIMAL TECH] Unit total OPEX: ${self.unit_total_opex:,.2f}/t")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"[OPTIMAL TECH] Unit fixed OPEX: ${self.unit_fopex:,.2f}/t")
+            logger.debug(f"[OPTIMAL TECH] Unit variable OPEX: ${self.unit_vopex:,.2f}/t")
+            logger.debug(f"[OPTIMAL TECH] Unit total OPEX: ${self.unit_total_opex:,.2f}/t")
         logger.debug(f"[OPTIMAL TECH] Debt repayment number of years: {len(self.debt_repayment_per_year)}")
 
         # ========== STAGE 2: Calculate Current Technology OPEX with Subsidies ==========
