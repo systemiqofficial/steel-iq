@@ -1341,7 +1341,7 @@ class SimulationRunner:
                                 fg.energy_costs_no_subsidy,
                             )
             for plant_group in bus.uow.plant_groups.list():
-                plant_group.update_hot_metal_access(bus.env.config.hot_metal_radius)
+                plant_group.update_hot_metal_access(bus.env.config.hot_metal_radius, bus.env.config.active_statuses)
             Simulation(bus=bus, economic_model=AllocationModel()).run_simulation()
             Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()
             Simulation(bus=bus, economic_model=GeospatialModel()).run_simulation()

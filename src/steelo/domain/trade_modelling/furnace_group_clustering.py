@@ -231,10 +231,38 @@ def _get_hot_metal_min_share_for_fg(
     return best_share if best_share and best_share > 0 else None
 
 
+def _reachable_hot_metal_producers(
+    plant: "Plant",
+    hot_metal_producers: list[tuple["FurnaceGroup", "Plant"]],
+    config: "SimulationConfig",
+) -> list[tuple["FurnaceGroup", "Plant"]]:
+    """Active hot-metal producers that can feed a BOF at ``plant``.
+
+    A producer qualifies when it sits within ``hot_metal_radius``. Under the ``iso3``
+    clustering scope it must also be in the plant's country, because the LP blocks hot
+    flows between country-keyed clusters; under ``plant_group`` and ``plant`` scope the
+    LP has no country check, so neither does this.
+
+    Args:
+        plant: Plant holding the BOF.
+        hot_metal_producers: All active hot-metal-producing FGs with their plants.
+        config: Simulation configuration (``hot_metal_radius``, ``geographical_clustering_scope``).
+
+    Returns:
+        The qualifying (furnace group, plant) pairs.
+    """
+    same_country_only = getattr(config, "geographical_clustering_scope", "iso3") == "iso3"
+    return [
+        (producer_fg, producer_plant)
+        for producer_fg, producer_plant in hot_metal_producers
+        if (not same_country_only or producer_plant.location.iso3 == plant.location.iso3)
+        and _calculate_distance_km(plant.location, producer_plant.location) <= config.hot_metal_radius
+    ]
+
+
 def _compute_effective_bof_capacity(
     fg: "FurnaceGroup",
-    plant: "Plant",
-    hot_metal_producers_by_iso3: dict[str, list[tuple["FurnaceGroup", "Plant"]]],
+    reachable_producers: list[tuple["FurnaceGroup", "Plant"]],
     aggregated_constraints: list | None,
     config: "SimulationConfig",
 ) -> float:
@@ -246,8 +274,8 @@ def _compute_effective_bof_capacity(
 
     Args:
         fg: The furnace group.
-        plant: Plant that contains the FG (used for location/distance calculations).
-        hot_metal_producers_by_iso3: Active hot-metal producers indexed by ISO3.
+        reachable_producers: Hot-metal producers that can feed this FG's plant
+            (from ``_reachable_hot_metal_producers``).
         aggregated_constraints: Aggregated metallic-charge constraints (may be None).
         config: Simulation configuration.
 
@@ -263,15 +291,7 @@ def _compute_effective_bof_capacity(
     if min_share is None or min_share <= 0:
         return physical_cap
 
-    # Sum hot-metal producer capacity within hot_metal_radius of this BOF FG (same ISO3
-    # only, matching the per-country clustering constraint)
-    iso3 = plant.location.iso3
-    producers = hot_metal_producers_by_iso3.get(iso3, [])
-    reachable_hm_cap = sum(
-        float(bf_fg.capacity)
-        for bf_fg, bf_plant in producers
-        if plant.distance_to(bf_plant.location) <= config.hot_metal_radius
-    )
+    reachable_hm_cap = sum(float(bf_fg.capacity) for bf_fg, _ in reachable_producers)
 
     if reachable_hm_cap <= 0:
         # No reachable hot metal — this FG should have been filtered out in step 1b,
@@ -611,43 +631,39 @@ def cluster_furnace_groups(
     logger.info("[CLUSTERING] Starting furnace group clustering...")
 
     # Step 1: Collect all active furnace groups with their plants.
-    # Drop BOFs that have no active, in-country hot-metal producer within hot_metal_radius.
+    # Drop BOFs that have no active hot-metal producer the LP lets them draw from: one within
+    # hot_metal_radius, and (under iso3 scope only) in the same country.
     #
     # The domain-model flag fg.has_hot_metal_access (set by PlantGroup.update_hot_metal_access)
-    # is too permissive: PlantGroups can span countries, so a BOF near a border may get access
-    # from a BF in a neighbouring country. Clustering is per-ISO3, so that cross-border BF ends
-    # up in a different cluster and the BOF has no in-cluster source. Similarly, an inactive BF
-    # at the same plant gives the flag but isn't in any cluster.
-    #
-    # We therefore build a location index of active hot-metal producers first, then check each
-    # BOF against it using same-ISO3 + within-radius.
+    # only looks inside the BOF's own plant group, while the LP takes hot metal from any owner,
+    # so the check is redone here against every active producer.
 
-    # 1a. Index active hot-metal producers by country
-    hot_metal_producers_by_iso3: dict[str, list[tuple[FurnaceGroup, Plant]]] = {}
-    for plant in plants:
-        for fg in plant.furnace_groups:
-            if fg.status.lower() in config.active_statuses and fg.produces_hot_metal:
-                iso3 = plant.location.iso3
-                hot_metal_producers_by_iso3.setdefault(iso3, []).append((fg, plant))
+    # 1a. Collect active hot-metal producers
+    hot_metal_producers: list[tuple[FurnaceGroup, Plant]] = [
+        (fg, plant)
+        for plant in plants
+        for fg in plant.furnace_groups
+        if fg.status.lower() in config.active_statuses and fg.produces_hot_metal
+    ]
 
-    # 1b. Collect active FGs, filtering BOFs without an in-country producer within radius
+    # 1b. Collect active FGs, filtering BOFs without a reachable producer
     active_fgs: list[tuple[FurnaceGroup, Plant]] = []
+    reachable_producers_by_plant: dict[str, list[tuple[FurnaceGroup, Plant]]] = {}
     filtered_bofs_no_hot_metal = 0
     for plant in plants:
         for fg in plant.furnace_groups:
             if fg.status.lower() in config.active_statuses:
                 if fg.technology.name.lower() == "bof":
-                    iso3 = plant.location.iso3
-                    producers = hot_metal_producers_by_iso3.get(iso3, [])
-                    has_in_country_access = any(
-                        plant.distance_to(p.location) <= config.hot_metal_radius for _, p in producers
-                    )
-                    if not has_in_country_access:
+                    if plant.plant_id not in reachable_producers_by_plant:
+                        reachable_producers_by_plant[plant.plant_id] = _reachable_hot_metal_producers(
+                            plant, hot_metal_producers, config
+                        )
+                    if not reachable_producers_by_plant[plant.plant_id]:
                         filtered_bofs_no_hot_metal += 1
                         logger.debug(
                             f"[CLUSTERING] Filtering BOF FG {fg.furnace_group_id} "
-                            f"(plant {plant.plant_id}, {iso3}): no active hot-metal producer "
-                            f"in same country within {config.hot_metal_radius:.0f} km"
+                            f"(plant {plant.plant_id}, {plant.location.iso3}): no reachable active "
+                            f"hot-metal producer within {config.hot_metal_radius:.0f} km"
                         )
                         continue
                 active_fgs.append((fg, plant))
@@ -655,7 +671,7 @@ def cluster_furnace_groups(
     if filtered_bofs_no_hot_metal > 0:
         logger.warning(
             f"[CLUSTERING] Filtered out {filtered_bofs_no_hot_metal} BOF furnace group(s) "
-            f"without in-country hot-metal access within {config.hot_metal_radius:.0f} km"
+            f"without reachable hot-metal access within {config.hot_metal_radius:.0f} km"
         )
 
     logger.info(f"[CLUSTERING] Found {len(active_fgs)} active furnace groups to cluster")
@@ -755,7 +771,7 @@ def cluster_furnace_groups(
         # reachable hot-metal supply so the LP doesn't over-allocate production.
         effective_caps: dict[str, float] = {
             fg.furnace_group_id: _compute_effective_bof_capacity(
-                fg, plant, hot_metal_producers_by_iso3, aggregated_constraints, config
+                fg, reachable_producers_by_plant.get(plant.plant_id, []), aggregated_constraints, config
             )
             for fg, plant in cluster_fgs
         }

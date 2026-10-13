@@ -2623,9 +2623,9 @@ class FurnaceGroup:
                 logger.info(f"[OPTIMAL TECH] SKIPPING {tech} - No capex data available")
                 continue
 
-            # BOF requires smelter furnace (for pig iron production)
+            # BOF requires an active hot-metal producer within hot_metal_radius
             if tech == "BOF" and not self.has_hot_metal_access:
-                logger.info("[OPTIMAL TECH] SKIPPING BOF - Plant has no smelter furnace (required for BOF)")
+                logger.info("[OPTIMAL TECH] SKIPPING BOF - No active hot-metal producer within radius")
                 continue
 
             # The capacity policy may have shrunk this candidate; everything downstream —
@@ -5325,25 +5325,30 @@ class PlantGroup:
         self.balance = 0.0
         self.events: list[events.Event] = []
 
-    def update_hot_metal_access(self, hot_metal_radius: float) -> None:
-        """Flag BOF furnace groups (and their plants) that a hot-metal producer in the group can feed.
+    def update_hot_metal_access(self, hot_metal_radius: float, active_statuses: list[str]) -> None:
+        """Flag every plant (and all its furnace groups) that an active hot-metal producer in the group can feed.
+
+        Access is a property of the site, not of the technology already there: a BF-only plant
+        has access for a BOF expansion, and any furnace group inherits its plant's flag for a
+        switch to BOF.
 
         Args:
             hot_metal_radius: Maximum distance (km) over which hot metal can be transported.
+            active_statuses: Furnace group statuses that count as producing; a retired,
+                mothballed or announced BF grants no access.
         """
+        active = {status.lower() for status in active_statuses}
+        producer_plants = [
+            plant
+            for plant in self.plants
+            if any(fg.status.lower() in active and fg.produces_hot_metal for fg in plant.furnace_groups)
+        ]
         for plant in self.plants:
-            plant.has_hot_metal_access = False  # Initialize hot metal access for the plant
+            plant.has_hot_metal_access = plant in producer_plants or any(
+                plant.distance_to(producer.location) <= hot_metal_radius for producer in producer_plants
+            )
             for fg in plant.furnace_groups:
-                if fg.technology.name.lower() == "bof":
-                    fg.has_hot_metal_access = False  # Initialize access flag
-                    for other_plant in self.plants:
-                        for other_fg in other_plant.furnace_groups:
-                            if (
-                                other_fg.produces_hot_metal
-                                and plant.distance_to(other_plant.location) <= hot_metal_radius
-                            ):
-                                fg.has_hot_metal_access = True
-                                plant.has_hot_metal_access = True
+                fg.has_hot_metal_access = plant.has_hot_metal_access
 
     @property
     def is_dormant(self) -> bool:

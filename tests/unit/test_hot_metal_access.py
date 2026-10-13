@@ -1,4 +1,4 @@
-"""PlantGroup.update_hot_metal_access flags BOFs fed by any hot-metal-producing technology within radius."""
+"""PlantGroup.update_hot_metal_access flags plants fed by any active hot-metal-producing technology within radius."""
 
 import pytest
 
@@ -31,8 +31,10 @@ HOT_METAL_PRODUCERS = [
 ]
 
 
-def make_furnace_group(fg_id: str, technology_name: str, outputs: dict[str, float]) -> FurnaceGroup:
-    """Build a minimal operating furnace group whose business case outputs ``outputs``."""
+def make_furnace_group(
+    fg_id: str, technology_name: str, outputs: dict[str, float], status: str = "operating"
+) -> FurnaceGroup:
+    """Build a minimal furnace group with ``status`` whose business case outputs ``outputs``."""
     feedstock = PrimaryFeedstock(metallic_charge="io_high", reductant="coke", technology=technology_name)
     feedstock.outputs = outputs
     return FurnaceGroup(
@@ -50,7 +52,7 @@ def make_furnace_group(fg_id: str, technology_name: str, outputs: dict[str, floa
             current=2025,
             time_frame=TimeFrame(start=Year(2025), end=Year(2045)),
         ),
-        status="operating",
+        status=status,
         chosen_reductant="coke",
         last_renovation_date=None,
         historical_production={},
@@ -74,15 +76,29 @@ def make_plant(plant_id: str, lat: float, lon: float, furnace_groups: list[Furna
     )
 
 
-def hot_metal_access_after_update(producer_tech: str, outputs: dict[str, float], distance_deg: float = 0.01):
+ACTIVE_STATUSES = ["operating", "operating pre-retirement", "operating switching technology"]
+
+
+def update(plants: list[Plant]) -> None:
+    PlantGroup(plant_group_id="group", plants=plants).update_hot_metal_access(
+        hot_metal_radius=5.0, active_statuses=ACTIVE_STATUSES
+    )
+
+
+def hot_metal_access_after_update(
+    producer_tech: str, outputs: dict[str, float], distance_deg: float = 0.01, producer_status: str = "operating"
+):
     """Return (fg flag, plant flag) for a BOF whose group holds one ``producer_tech`` plant ``distance_deg`` away."""
     bof = make_furnace_group("bof", "BOF", outputs={"steel": 1.0})
     bof_plant = make_plant("bof_plant", 35.0, 110.0, [bof])
     producer_plant = make_plant(
-        "producer_plant", 35.0 + distance_deg, 110.0, [make_furnace_group("producer", producer_tech, outputs)]
+        "producer_plant",
+        35.0 + distance_deg,
+        110.0,
+        [make_furnace_group("producer", producer_tech, outputs, status=producer_status)],
     )
 
-    PlantGroup(plant_group_id="group", plants=[bof_plant, producer_plant]).update_hot_metal_access(hot_metal_radius=5.0)
+    update([bof_plant, producer_plant])
 
     return bof.has_hot_metal_access, bof_plant.has_hot_metal_access
 
@@ -102,3 +118,46 @@ def test_bof_gets_no_access_from_producers_of_other_iron_products():
 def test_bof_gets_no_access_from_a_hot_metal_producer_outside_the_radius():
     """A blast furnace ~11 km away is beyond the 5 km hot-metal radius."""
     assert hot_metal_access_after_update("BF", {"hot_metal": 1.0}, distance_deg=0.1) == (False, False)
+
+
+@pytest.mark.parametrize("status", ["retired", "mothballed", "announced", "construction", "cancelled"])
+def test_bof_gets_no_access_from_an_inactive_hot_metal_producer(status):
+    """Only producers in an active status feed a BOF; a retired or not-yet-built BF does not."""
+    assert hot_metal_access_after_update("BF", {"hot_metal": 1.0}, producer_status=status) == (False, False)
+
+
+def test_bf_only_plant_has_access_for_a_bof_expansion():
+    """A plant with a BF but no BOF is flagged, so the expansion check can offer a BOF next to its own BF."""
+    bf = make_furnace_group("bf", "BF", {"hot_metal": 1.0})
+    eaf = make_furnace_group("eaf", "EAF", {"steel": 1.0})
+    bf_plant = make_plant("bf_plant", 35.0, 110.0, [bf, eaf])
+
+    update([bf_plant])
+
+    assert bf_plant.has_hot_metal_access
+    assert bf.has_hot_metal_access and eaf.has_hot_metal_access
+
+
+def test_non_bof_furnace_group_inherits_access_from_a_nearby_producer():
+    """An EAF-only plant within radius of a group BF is flagged, for any future switch to BOF."""
+    eaf = make_furnace_group("eaf", "EAF", {"steel": 1.0})
+    eaf_plant = make_plant("eaf_plant", 35.0, 110.0, [eaf])
+    bf_plant = make_plant("bf_plant", 35.01, 110.0, [make_furnace_group("bf", "BF", {"hot_metal": 1.0})])
+
+    update([eaf_plant, bf_plant])
+
+    assert eaf_plant.has_hot_metal_access and eaf.has_hot_metal_access
+
+
+def test_access_is_reset_when_the_producer_retires():
+    """Flags are recomputed each call, so a plant loses access once its only BF leaves the active statuses."""
+    bf = make_furnace_group("bf", "BF", {"hot_metal": 1.0})
+    bof = make_furnace_group("bof", "BOF", {"steel": 1.0})
+    plant = make_plant("plant", 35.0, 110.0, [bf, bof])
+
+    update([plant])
+    assert plant.has_hot_metal_access and bof.has_hot_metal_access
+
+    bf.status = "retired"
+    update([plant])
+    assert not plant.has_hot_metal_access and not bof.has_hot_metal_access
