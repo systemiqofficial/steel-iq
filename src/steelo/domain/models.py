@@ -8790,7 +8790,7 @@ class Environment:
         Returns:
             The exogenous carbon price; 0.0 for countries without a carbon-price
             series (no policy). Years beyond the series reuse its last value; years
-            missing inside the covered range raise KeyError rather than pricing
+            missing inside the covered range raise ValueError rather than pricing
             carbon as zero.
         """
         return carbon_price_from_series(self.carbon_costs.get(iso3), year)

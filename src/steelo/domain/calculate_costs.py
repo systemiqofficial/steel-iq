@@ -69,12 +69,15 @@ def carbon_price_from_series(series: dict[Year, float] | None, year: Year) -> fl
         sheet ending before the simulation horizon does not drop carbon to zero.
 
     Notes:
-        Years missing inside the covered range raise KeyError rather than pricing
+        Years missing inside the covered range raise ValueError rather than pricing
         carbon as zero.
     """
     if not series:
         return 0.0
-    return series[min(year, max(series))]
+    lookup_year = min(year, max(series))
+    if lookup_year not in series:
+        raise ValueError(f"Carbon price series has no value for {year} (series covers {min(series)}-{max(series)})")
+    return series[lookup_year]
 
 
 def filter_subsidies_for_year(subsidies: list["Subsidy"], year: "Year") -> list["Subsidy"]:
