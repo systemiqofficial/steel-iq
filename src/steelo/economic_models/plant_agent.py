@@ -3,7 +3,6 @@ import gc
 import logging
 import pickle
 import random
-import time
 from typing import cast
 
 from steelo.adapters.geospatial.geo_unit_lookup import derive_geo_unit_for_site
@@ -40,6 +39,7 @@ from steelo.domain.trade_modelling.trade_lp_modelling import Allocations
 from steelo.service_layer.message_bus import MessageBus
 from steelo.utilities.file_output import export_carbon_border_charges_to_csv, export_commodity_allocations_to_csv
 from steelo.utilities.memory_profiling import MemoryTracker
+from steelo.utilities.stage_timing import StageTimer, stop_stage
 from steelo.utilities.plotting import (
     plot_detailed_trade_map,
     plot_trade_allocation_visualization,
@@ -120,7 +120,7 @@ class GeospatialModel:
         """
         logger = logging.getLogger(f"{__name__}.GeospatialModel.run")
         logger.info(f"\n\n[GEO] ========== 🗺️  Starting GeospatialModel.run for Year {bus.env.year} ========== \n")
-        geo_start = time.time()
+        geo_timer = StageTimer()
 
         # Set up
         ## Check preconditions
@@ -173,11 +173,11 @@ class GeospatialModel:
             future_price_series[product] = future_price_list
 
         # Create geospatial layers and calculate outgoing cashflow proxy to find top locations
-        step_start = time.time()
+        step_timer = StageTimer()
         top_locations, custom_energy_costs = get_candidate_locations_for_opening_new_plants(
             bus.uow, bus.env, geo_config, bus.env.geo_paths
         )
-        step_time = time.time() - step_start
+        step_time = stop_stage(step_timer, "geo_candidate_locations")
         logger.info(f"operation=geo_candidate_locations year={bus.env.year} duration_s={step_time:.3f}")
         logger.debug(f"[GEO] Number of top iron locations returned: {len(top_locations.get('iron', []))}")
         logger.debug(f"[GEO] Number of top steel locations returned: {len(top_locations.get('steel', []))}")
@@ -211,7 +211,7 @@ class GeospatialModel:
                     logger.warning(f"Failed to export {factor_name} statistics for year {bus.env.year}: {e}")
 
         # Update dynamic costs for all existing business opportunities yearly
-        step_start = time.time()
+        step_timer = StageTimer()
         dynamic_cost_commands: list = []
         for pg in per_country_indi_groups:
             dynamic_cost_commands.extend(
@@ -232,14 +232,14 @@ class GeospatialModel:
             )
         for command in dynamic_cost_commands:
             bus.handle(command)
-        step_time = time.time() - step_start
+        step_time = stop_stage(step_timer, "geo_update_costs")
         logger.info(
             f"operation=geo_update_costs year={bus.env.year} duration_s={step_time:.3f} fg_count={len(dynamic_cost_commands)}"
         )
         logger.debug(f"[GEO] Updated dynamic costs for {len(dynamic_cost_commands)} furnace groups")
 
         # Update the status of all existing business opportunities (to move from opportunity to new plant)
-        step_start = time.time()
+        step_timer = StageTimer()
         status_commands: list = []
         for pg in per_country_indi_groups:
             status_commands.extend(
@@ -273,14 +273,14 @@ class GeospatialModel:
         if status_commands:
             for command in status_commands:
                 bus.handle(command)
-            step_time = time.time() - step_start
+            step_time = stop_stage(step_timer, "geo_update_status")
             logger.info(
                 f"operation=geo_update_status year={bus.env.year} duration_s={step_time:.3f} fg_count={len(status_commands)}"
             )
             logger.debug(f"[GEO] Updated status for {len(status_commands)} furnace groups")
 
         # Identify new business opportunities and prioritize them by NPV
-        step_start = time.time()
+        step_timer = StageTimer()
         bus.handle(
             indi_master_pg.identify_new_business_opportunities_4indi(
                 current_year=bus.env.year,
@@ -328,11 +328,11 @@ class GeospatialModel:
                 increase_sizing_query=increase_sizing_hook(),
             )
         )
-        step_time = time.time() - step_start
+        step_time = stop_stage(step_timer, "geo_identify_opportunities")
         logger.info(f"operation=geo_identify_opportunities year={bus.env.year} duration_s={step_time:.3f}")
 
         # End of geospatial model
-        module_elapsed = time.time() - geo_start
+        module_elapsed = stop_stage(geo_timer, "geospatial_model")
         logger.info(f"operation=geospatial_model year={bus.env.year} duration_s={module_elapsed:.3f}")
         logger.info(
             f"[GEO] ========== Total GeospatialModel.run Time: {module_elapsed:.3f} seconds ({module_elapsed / 60:.2f} minutes) =========="
@@ -351,14 +351,14 @@ class AllocationModel:
         """
 
         logger = logging.getLogger(f"{__name__}.AllocationModel.run")
-        module_start = time.time()
+        module_timer = StageTimer()
         logger.debug(f"\n\n[TM] ========== Starting AllocationModel.run for year {bus.env.year} ========== \n")
 
         # Initialize memory tracker for detailed LP profiling
         memory_tracker = MemoryTracker()
 
         # Setup phase: emission factors, prices, carbon costs, LP construction
-        setup_start = time.time()
+        setup_timer = StageTimer()
         memory_tracker.checkpoint("before_lp_setup", year=bus.env.year)
 
         bus.env.set_primary_feedstocks_in_furnace_groups(world_plants=bus.uow.repository.plants.list())
@@ -445,7 +445,7 @@ class AllocationModel:
         if bus.env.output_dir is not None and LoggingConfig.DUMP_FAILED_LP:
             trade_lp.failure_dump_path = bus.env.output_dir / "TM" / f"trade_lp_failed_{bus.env.year}.mps"
 
-        setup_elapsed = time.time() - setup_start
+        setup_elapsed = stop_stage(setup_timer, "allocation_setup")
         logger.info(f"operation=allocation_setup year={bus.env.year} duration_s={setup_elapsed:.3f}")
         memory_tracker.checkpoint("after_lp_setup", year=bus.env.year)
 
@@ -516,7 +516,7 @@ class AllocationModel:
             logger.info("[DISAGGREGATION] CommodityAllocations created")
 
         # Post-processing: plotting and CSV export
-        postprocess_start = time.time()
+        postprocess_timer = StageTimer()
 
         if bus.env.transport_kpis:  # Check if list is not empty
             for _, allocations in commodity_allocations.items():
@@ -632,10 +632,10 @@ class AllocationModel:
             if (event := SteelAllocationsCalculated(trade_allocations=trade_lp_allocations)) is not None:
                 bus.handle(event)
 
-        postprocess_elapsed = time.time() - postprocess_start
+        postprocess_elapsed = stop_stage(postprocess_timer, "allocation_postprocess")
         logger.info(f"operation=allocation_postprocess year={bus.env.year} duration_s={postprocess_elapsed:.3f}")
 
-        module_elapsed = time.time() - module_start
+        module_elapsed = stop_stage(module_timer, "allocation_model")
         logger.info(f"operation=allocation_model year={bus.env.year} duration_s={module_elapsed:.3f}")
         memory_tracker.checkpoint("allocation_complete", year=bus.env.year)
 
@@ -716,7 +716,7 @@ class PlantAgentsModel:
             raise ValueError("SimulationConfig is required for PlantAgentsModel")
 
         logger = logging.getLogger(f"{__name__}.PlantAgentsModel.run")
-        module_start = time.time()
+        module_timer = StageTimer()
 
         logger.info(f"\n\n[PAM] ========== Starting PlantAgentsModel.run for year {bus.env.year} ========== \n")
 
@@ -728,9 +728,9 @@ class PlantAgentsModel:
 
         # Step 1: Calculate carbon costs for all furnace groups
         # This updates each furnace group's carbon cost based on its emissions and the current carbon price
-        carbon_start = time.time()
+        carbon_timer = StageTimer()
         bus.env.calculate_carbon_costs_of_furnace_groups(world_plants=plants)
-        carbon_elapsed = time.time() - carbon_start
+        carbon_elapsed = stop_stage(carbon_timer, "pam_carbon_costs")
         logger.info(f"operation=pam_carbon_costs year={bus.env.year} duration_s={carbon_elapsed:.3f}")
 
         # Step 2: Extract current market prices from cost curves
@@ -787,7 +787,7 @@ class PlantAgentsModel:
         # Group-first ordering: sweep every FG's annual P&L into the group treasury BEFORE any plant
         # in the group runs its strategy. This gives all plants in the group equal information about
         # the year's available wallet. Plant-iteration order within a group remains random.
-        plant_eval_start = time.time()
+        plant_eval_timer = StageTimer()
         logger.info("[PAM] Step 4 - Evaluating furnace group strategies (group-first)")
         step4_plant_groups = bus.uow.plant_groups.list()
         for pg in random.sample(step4_plant_groups, len(step4_plant_groups)):
@@ -945,14 +945,14 @@ class PlantAgentsModel:
                             counter += 1
                             bus.handle(cmd)
 
-        plant_eval_elapsed = time.time() - plant_eval_start
+        plant_eval_elapsed = stop_stage(plant_eval_timer, "pam_evaluate_plants")
         logger.info(
             f"operation=pam_evaluate_plants year={bus.env.year} duration_s={plant_eval_elapsed:.3f} plant_count={len(plants)}"
         )
 
         # Step 5: Evaluate plant groups for expansion opportunities
         # Plant expansions add new furnace groups to existing plants based on NPV analysis
-        expansion_start = time.time()
+        expansion_timer = StageTimer()
         logger.info("[PAM] Step 5 - Evaluating plant group expansions")
         logger.debug(f"[PAM] Total plant groups in simulation: {len(bus.uow.plant_groups.list())}")
         logger.debug(
@@ -1020,14 +1020,14 @@ class PlantAgentsModel:
                     counter += 1
                     bus.handle(cmd)
 
-        expansion_elapsed = time.time() - expansion_start
+        expansion_elapsed = stop_stage(expansion_timer, "pam_evaluate_expansions")
         group_count = len(bus.uow.plant_groups.list())
         logger.info(
             f"operation=pam_evaluate_expansions year={bus.env.year} duration_s={expansion_elapsed:.3f} group_count={group_count}"
         )
 
         # Step 6: Summary and final logging
-        module_elapsed = time.time() - module_start
+        module_elapsed = stop_stage(module_timer, "plant_agents_model")
         logger.info(f"operation=plant_agents_model year={bus.env.year} duration_s={module_elapsed:.3f}")
 
         logger.info(f"[PAM] ========== PlantAgentsModel.run COMPLETED (year {bus.env.year}) ==========")
