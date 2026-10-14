@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 import logging
 import networkx as nx
 
-from steelo.domain.models import Location, Plant, FurnaceGroup, PrimaryFeedstock, Volumes
+from steelo.domain.models import Location, Plant, FurnaceGroup, PrimaryFeedstock, Volumes, can_supply_hot_metal
 from steelo.domain.constants import T_TO_KT
 from steelo.utilities.utils import normalize_name
 from steelo.utilities.data_processing import normalize_product_name
@@ -238,10 +238,11 @@ def _reachable_hot_metal_producers(
 ) -> list[tuple["FurnaceGroup", "Plant"]]:
     """Active hot-metal producers that can feed a BOF at ``plant``.
 
-    A producer qualifies when it sits within ``hot_metal_radius``. Under the ``iso3``
-    clustering scope it must also be in the plant's country, because the LP blocks hot
-    flows between country-keyed clusters; under ``plant_group`` and ``plant`` scope the
-    LP has no country check, so neither does this.
+    A producer qualifies when it sits within ``hot_metal_radius`` and the LP lets hot metal
+    flow from it (``can_supply_hot_metal``): under ``iso3`` scope it must be in the plant's
+    country, under ``plant_group`` scope in the plant's ultimate plant group, because the LP
+    blocks hot flows between clusters with different location keys; under ``plant`` scope
+    any owner and country qualify.
 
     Args:
         plant: Plant holding the BOF.
@@ -251,12 +252,11 @@ def _reachable_hot_metal_producers(
     Returns:
         The qualifying (furnace group, plant) pairs.
     """
-    same_country_only = getattr(config, "geographical_clustering_scope", "iso3") == "iso3"
+    clustering_scope = getattr(config, "geographical_clustering_scope", "iso3")
     return [
         (producer_fg, producer_plant)
         for producer_fg, producer_plant in hot_metal_producers
-        if (not same_country_only or producer_plant.location.iso3 == plant.location.iso3)
-        and _calculate_distance_km(plant.location, producer_plant.location) <= config.hot_metal_radius
+        if can_supply_hot_metal(producer_plant, plant, config.hot_metal_radius, clustering_scope)
     ]
 
 
@@ -634,9 +634,8 @@ def cluster_furnace_groups(
     # Drop BOFs that have no active hot-metal producer the LP lets them draw from: one within
     # hot_metal_radius, and (under iso3 scope only) in the same country.
     #
-    # The domain-model flag fg.has_hot_metal_access (set by PlantGroup.update_hot_metal_access)
-    # only looks inside the BOF's own plant group, while the LP takes hot metal from any owner,
-    # so the check is redone here against every active producer.
+    # The domain-model flag fg.has_hot_metal_access (set by update_hot_metal_access) is computed
+    # once per year before the LP runs; the check is redone here so clustering stays self-contained.
 
     # 1a. Collect active hot-metal producers
     hot_metal_producers: list[tuple[FurnaceGroup, Plant]] = [

@@ -42,8 +42,8 @@ def create_test_location(lat: float, lon: float, iso3: str = "TST") -> Location:
     )
 
 
-def create_test_plant(plant_id: str, location: Location) -> Plant:
-    """Helper to create a test plant."""
+def create_test_plant(plant_id: str, location: Location, owner: str = "E100000000000") -> Plant:
+    """Helper to create a test plant owned by ``owner``."""
     return Plant(
         plant_id=plant_id,
         location=location,
@@ -51,7 +51,7 @@ def create_test_plant(plant_id: str, location: Location) -> Plant:
         technology_unit_fopex={},
         power_source="grid",
         soe_status="private",
-        parent_gem_id="E100000000000",
+        parent_gem_id=owner,
         workforce_size=100,
         certified=False,
         category_steel_product=set(),
@@ -183,13 +183,13 @@ def test_bof_effective_capacity_counts_every_hot_metal_producer():
     assert float(bof_meta.total_capacity) == pytest.approx(1400.0 / 0.7)
 
 
-def _bof_with_neighbouring_bf(bf_iso3: str) -> list[Plant]:
-    """A BOF-only plant and a BF-only plant ~3.3 km apart, the BF in ``bf_iso3``."""
+def _bof_with_neighbouring_bf(bf_iso3: str, bf_owner: str = "E100000000000") -> list[Plant]:
+    """A BOF-only plant and a BF-only plant ~3.3 km apart, the BF in ``bf_iso3`` owned by ``bf_owner``."""
     bof_plant = create_test_plant("bof_plant", create_test_location(lat=35.0, lon=110.0, iso3="CHN"))
     bof = create_test_furnace_group("bof", "BOF", capacity=1400.0, chosen_reductant="hot_metal")
     bof.technology.dynamic_business_case[0].minimum_share_in_product = 0.7
     bof_plant.furnace_groups = [bof]
-    bf_plant = create_test_plant("bf_plant", create_test_location(lat=35.03, lon=110.0, iso3=bf_iso3))
+    bf_plant = create_test_plant("bf_plant", create_test_location(lat=35.03, lon=110.0, iso3=bf_iso3), owner=bf_owner)
     bf_plant.furnace_groups = [create_test_furnace_group("bf", "BF", capacity=700.0, outputs={"hot_metal": 1.0})]
     return [bof_plant, bf_plant]
 
@@ -212,6 +212,16 @@ def test_cross_border_bf_within_radius_counts_only_outside_iso3_scope(scope, kep
     config = MockConfig(active_statuses=["operating"], geographical_clustering_scope=scope)
 
     _, mapping = cluster_furnace_groups(_bof_with_neighbouring_bf("MNG"), config)
+
+    assert ("bof" in _clustered_fg_ids(mapping)) is kept
+
+
+@pytest.mark.parametrize("scope, kept", [("iso3", True), ("plant_group", False), ("plant", True)])
+def test_other_owners_bf_within_radius_counts_only_outside_plant_group_scope(scope, kept):
+    """Under plant_group scope the LP blocks hot flows between groups, so another owner's BF feeds nothing."""
+    config = MockConfig(active_statuses=["operating"], geographical_clustering_scope=scope)
+
+    _, mapping = cluster_furnace_groups(_bof_with_neighbouring_bf("CHN", bf_owner="E200000000000"), config)
 
     assert ("bof" in _clustered_fg_ids(mapping)) is kept
 
