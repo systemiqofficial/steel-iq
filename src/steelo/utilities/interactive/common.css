@@ -22,6 +22,13 @@ select { font-size: 13px; padding: 3px 6px; }
 .box-panel label { display: flex; align-items: center; gap: 6px; font-size: 12px;
                    color: #0b0b0b; margin: 0; padding: 1px 0; cursor: pointer; white-space: nowrap; }
 .box-panel .muted { color: #52514e; }
+.box-panel label[hidden] { display: none; }
+.box-tools { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; background: inherit;
+             margin: -6px -10px 4px; padding: 6px 10px 4px; }
+.box-tools input { flex: 1; min-width: 120px; font-size: 12px; padding: 3px 6px; }
+.box-none { display: none; font-size: 12px; padding: 4px 0; }
+.box-sep { border-top: 1px solid #b5b3ae; margin: 5px 0; }
+.box-ticks .box-tools, .box-ticks .box-none { display: none !important; }
 .small-btn { font-size: 11px; padding: 1px 8px; margin-left: 8px; cursor: pointer; }
 #geo-chips, .tick-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 10px; max-width: 760px;
                           vertical-align: top; }
