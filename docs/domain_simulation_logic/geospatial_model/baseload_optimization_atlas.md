@@ -4,73 +4,12 @@ It is computed in two steps:
 1) Simulating renewable energy supply (using weather data and Atlite)
 2) Finding the optimum overbuilding factors for solar, wind, and battery. 
 
-Due to long runtimes (>6h per simulation year with parallelization on a powerful computer) this module runs as a standalone script (not as part of the main pipeline) and its precomputed outputs are read by the main model (steelo). However, we do provide the option to re-run step 2 of this module in case the user wants to change some of the input data or assumptions (e.g., cost of capital, solar PV CAPEX). For this, the output data from step 1 are required and are not provided in the default data package due to its large size (70 GB). Please, reach out to Steel-IQ@systemiq.earth to obtain these data. 
+Because a BOA run takes hours per simulation year, steel-iq does not run BOA: it reads precomputed LCOE files. BOA is maintained in its own repository, [systemiqofficial/baseload-optimisation-atlas](https://github.com/systemiqofficial/baseload-optimisation-atlas), which documents how to prepare its input data and run it.
 
-### 1. Prerequisites
-Ensure all required data files are in place:
-- Download and save the outputs from step 1 to the `data/atlite/` folder:
-    - Renewable energy profiles to `data/atlite/output/`
-    - Maximum capacity constraints to `data/atlite/cav/`
-- Add the Renewable Energy Input Data Excel file at `data/Renewable_Energy_Input_Data.xlsx`
-- Master input Excel file - is generated automatically when running the main pipeline, but can also be added manually
+### LCOE files read by steel-iq
+The default files ship in the `geo-data` package, one file per simulation year and coverage, at `p<p>/GLOBAL/optimal_sol_GLOBAL_<year>_p<p>.nc`. Here `p` is 100 minus the coverage in percent, so 85% coverage reads the `p15` files.
 
-### 2. Running the simulation
-The simulation can be run using the `run_boa` command (after installing with `uv sync`):
-
-```bash
-# Run with default parameters (GLOBAL, 2025-2050, 500 MW demand)
-run_boa
-
-# Run for specific region with custom parameters
-run_boa --region EU --baseload-demand 1000 --coverage 0.95
-
-# Run single year simulation
-run_boa --start-year 2030 --end-year 2030
-
-# See all available options
-run_boa --help
-```
-
-Alternatively, you can run the script directly:
-```bash
-python src/baseload_optimisation_atlas/boa_run_simulation.py
-```
-
-### 3. Available parameters
-
-**Temporal Parameters:**
-- `--start-year`: Starting year for simulation (default: 2025)
-- `--end-year`: Ending year for simulation (default: 2050)
-- `--frequency`: Years between simulations (default: 5)
-
-**Spatial Parameters:**
-- `--region`: Region to simulate - GLOBAL, EU, NORTH_ASIA, SOUTH_ASIA, MENA, AFRICA, ALASKA, NORTH_AMERICA, SOUTH_AMERICA, INDO_AUS (default: GLOBAL)
-
-**Technical Parameters:**
-- `--baseload-demand`: Baseload demand in MW (default: 500.0, typical range: 150-1000)
-- `--coverage`: Required demand coverage fraction, e.g., 0.85 means 85% coverage (default: 0.85)
-- `--samples`: Number of design samples per grid point (default: 1000)
-
-**Optional Parameters:**
-- `--verbose`: Enable detailed logging output
-- `--dry-run`: Print configuration without running simulation
-
-### 4. Output
-The simulation will:
-- Run the baseload power simulation for the selected years
-- Process all regions (or selected region) in parallel
-- Generate optimal renewable energy system designs for each grid point
-- Save results as NetCDF files in `outputs/GEO/baseload_power_simulation/p{X}/`
-- Create visualization plots in `outputs/plots/geo_layers/baseload_power_simulation/`
-
-Results include:
-- LCOE (Levelized Cost of Energy) in USD/MWh
-- Solar overscale factor (relative to baseload demand)
-- Wind overscale factor (relative to baseload demand)
-- Battery overscale factor (relative to baseload demand)
-- Total installation cost in USD
-
-To run the steelo simulation based on the custom BOA output for the LCOE (instead of the default), the path to the output data must be provided explicitly:
+To run a simulation on another folder with the same layout, pass the folder explicitly:
 
 ```bash
 run_simulation --baseload-power-sim-dir path-to-baseload-power-simulation-folder

@@ -116,7 +116,6 @@ class TestBaseloadPowerGlobalSubdirectory:
         # Create GeoDataPaths with all required arguments
         geo_paths = GeoDataPaths(
             data_dir=tmp_path,
-            atlite_dir=tmp_path / "atlite",
             geo_plots_dir=tmp_path / "plots",
             terrain_nc_path=tmp_path / "terrain.nc",
             rail_distance_nc_path=tmp_path / "rail.nc",
