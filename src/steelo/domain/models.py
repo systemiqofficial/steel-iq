@@ -341,7 +341,6 @@ class GeoDataPaths:
 
     # Base directories
     data_dir: Path
-    atlite_dir: Path
     geo_plots_dir: Optional[Path]  # None disables the plots/GEO output
 
     # Specific data files

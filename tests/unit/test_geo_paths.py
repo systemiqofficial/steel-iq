@@ -21,7 +21,6 @@ def test_geo_data_paths_creation():
     """Test that GeoDataPaths can be created properly."""
     geo_paths = GeoDataPaths(
         data_dir=Path("/test/data"),
-        atlite_dir=Path("/test/data/atlite"),
         geo_plots_dir=Path("/test/data/output/plots/GEO"),
         terrain_nc_path=Path("/test/data/terrain.nc"),
         rail_distance_nc_path=Path("/test/data/rail_distance.nc"),
