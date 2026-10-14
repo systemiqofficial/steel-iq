@@ -796,7 +796,7 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
                 # Plant-keyed meta-FGs sit at their plant, so the radius applies directly
                 if from_loc is None or to_loc is None:
                     reason = "missing-location"
-                elif haversine_distance([from_loc.lat, from_loc.lon, to_loc.lat, to_loc.lon]) > config.hot_metal_radius:
+                elif not (haversine_distance([from_loc.lat, from_loc.lon, to_loc.lat, to_loc.lon]) <= config.hot_metal_radius):
                     reason = "beyond-radius"
                 else:
                     continue
