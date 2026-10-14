@@ -118,17 +118,17 @@ One row per furnace group (a furnace unit). The sheet is the model's starting fl
 | Column | Allowed values | What the model does with it |
 |---|---|---|
 | `plant_id` | Any identifier; blank rows are skipped | Groups rows into plants. |
-| `unit_id` | Any identifier | Part of the furnace group ID (`temp_<plant_id>_<technology>_<unit_id>_<row>`). |
+| `unit_id` | Any identifier | Used only in a temporary ID during preparation. The final furnace group ID is `<plant_id>_<n>`, numbered from 0 in sheet order, so `unit_id` does not reach `plants.json`. |
 | `technology` | A technology name from `Techno-economic details` | The furnace group's technology. Its business cases come from `Bill of Materials`. |
 | `capacity_ttpa` | Capacity in thousand tonnes per year | The furnace group's capacity. Rows with a blank, zero or negative capacity are skipped. |
-| `status` | A furnace group status, for example `operating`, `construction`, `announced`; default `operating` | The starting status. `announced` and `construction` mark pipeline units (see the start-year rules below). |
+| `status` | A furnace group status, for example `operating`, `construction`, `announced`; required in every row | The starting status. `operating` applies only when the whole column is missing; a blank cell is read as the status `nan`. `announced` and `construction` mark pipeline units (see the start-year rules below). |
 | `start_year` | A year, or blank | Commissioning year; sets the renovation cycle. Blank values, and pipeline units dated before the reference year, are imputed (see below). |
 | `last_renovation_year` | A year, or blank | Last renovation; defaults to the start year. |
 | `iso3` | A real ISO-3 country code; required | The plant's country. Read from the plant's first row. |
 | `geo_unit_or_province` | An ISO 3166-2 sub-national code (for example `CN-HE`), or blank | With `iso3` it forms the plant's geographic key (`CHN:CN-HE`), used for province-level prices and subsidies. Blank places the plant at country level. |
 | `latitude`, `longitude` | Decimal degrees | Plant location, from the plant's first row. |
 | `region`, `power_source`, `soe_status`, `parent_gem_id`, `workforce_size` | Free text or numbers; optional | Plant attributes, from the plant's first row. |
-| `plant_name`, `source` | Free text | Read only by the interactive capacity world map. |
+| `plant_name`, `source` | Free text | Read only by the interactive capacity map viewers, for plant labels and the source line. |
 
 **Rules enforced at preparation** (all errors):
 
@@ -148,7 +148,7 @@ The model sets every furnace group's renovation cycle from its start year, so un
 
 Imputed units carry `age_source = "imputed"` in their metadata; units with an authored year carry `"exact"`. The draws use a fixed seed (`RANDOM_SEED_DEFAULT` = 42) that the `--random-seed` option of `run_simulation` does not change, so the same sheet always gets the same years. The reference year is currently fixed at 2025 in preparation.
 
-Preparation logs how many units it dated in each way.
+Preparation logs how many operating units and how many pipeline units it imputed, when either count is above zero.
 
 ## Iron ore mines
 
@@ -185,11 +185,12 @@ The older plant sheet, read instead of `Furnace units` when data preparation run
 | `ISO3` | A bare ISO-3 code (`CHN`) or a combined geo key (`CHN:CN-AH`) | The plant's country and, in the combined form, its province. A row with a blank `ISO3` is skipped. |
 | `geo_unit` | An ISO 3166-2 code (`CN-AH`), or blank; optional column | The province for a row whose `ISO3` is a bare country. Blank places the plant at country level. When the row also uses the combined `ISO3` form with a different unit, the combined value wins. |
 
-**Rules enforced at preparation**:
+**Rules checked by `validate-master-input` and the web app upload** (not by `steelo-data-prepare`, so a bad value passes preparation unchecked):
 
 - error: a country code that is not a real ISO-3 code, or a unit that does not form a key in `geo_hierarchy.json`
 - warning: a combined `ISO3` value and a different `geo_unit` value on the same row
-- a sheet with no `ISO3` column takes the country from its `Country` column (workbooks older than master input v2.2); a sheet with neither column is rejected
+
+**At preparation**: a sheet with no `ISO3` column takes the country from its `Country` column (workbooks older than master input v2.2); a sheet with neither column is rejected.
 
 The country and province come only from these columns. The model no longer derives them from the plant's coordinates. See [Sub-national Geography](../domain_simulation_logic/overarching_elements/sub_national_geography.md) for how province-level values are used.
 
@@ -217,22 +218,35 @@ Before these errors existed, a plant with no matching data, or a run with a mist
 
 ## Biomass availability
 
-Despite its name, the sheet carries two kinds of annual limit for the trade model: bio-PCI availability per region, and CO2 storage capacity per country. Each becomes a secondary feedstock constraint: the total flow of that commodity into furnace groups located in the region or country may not exceed the limit for the year.
+The sheet sets annual bio-PCI availability limits for the trade model, per region. Each limit becomes a secondary feedstock constraint: the total flow of bio-PCI into furnace groups located in the region (or country) may not exceed the limit for the year. CO2 storage limits come from the separate [`CO2 storage`](#co2-storage) sheet.
 
 | Column | Allowed values | What the model does with it |
 |---|---|---|
-| `tiam-ucl_region` | A TIAM-UCL region name, as in the `tiam-ucl_region` column of `Country mapping` | The region of a bio-PCI row: the limit covers every country mapped to that region. Rows with a blank region are skipped. |
-| `Country` | Bio-PCI rows: a country name or blank. `co2_stored` rows: an ISO-3 code | A bio-PCI row with a country applies to that country only. A `co2_stored` row applies to the country given. |
-| `Metric` | `Bio-PCI availability` or `co2_stored` | A metric containing "co2" becomes a `co2_stored` limit; any other metric becomes a `bio_pci` limit. |
+| `tiam-ucl_region` | A TIAM-UCL region name, as in the `tiam-ucl_region` column of `Country mapping` | The region of the row: the limit covers every country mapped to that region. Rows with a blank region are skipped. |
+| `Country` | A country name, or blank | A row with a country applies to that country only. |
+| `Metric` | `Bio-PCI availability` | Any metric without "co2" in it becomes a `bio_pci` limit. A metric containing "co2" becomes a `co2_stored` limit instead; the current data has no such rows. |
 | `Scenario` | Free text; blank in the current data | Stored; not used to filter rows. |
-| `Unit` | `kg charcoal-equivalent/y` for bio-PCI, `t CO2/y` for CO2 storage | A unit containing "kg" is divided by 1000, so every limit is in tonnes per year. |
+| `Unit` | `kg charcoal-equivalent/y` | A unit containing "kg" is divided by 1000, so every limit is in tonnes per year. |
 | `2024` to the last year column | Numbers | The limit for that year. Blank cells set no limit for that year. |
 
 **At run start** (error): a bio-PCI region that matches no `tiam-ucl_region` in `Country mapping`, no ISO-3 code and no country name.
 
-**How the trade model applies the limits**: each constrained commodity gets a synthetic supplier (`bio_pci_supply_process_center`, `co2_stored_supply_process_center`) with no production cost, connected to every production process; the per-region or per-country limits then cap the flows from it. Scrap is not limited this way: scrap availability comes from scrap suppliers. The `co2_stored` limits also set the budget of the [CO2 storage gate](../domain_simulation_logic/plant_agent_model/co2_storage_gate.md).
+**How the trade model applies the limits**: each constrained commodity (bio-PCI from this sheet, CO2 storage from the `CO2 storage` sheet) gets a synthetic supplier (`bio_pci_supply_process_center`, `co2_stored_supply_process_center`) with no production cost, connected to every production process; the per-region or per-country limits then cap the flows from it. Scrap is not limited this way: scrap availability comes from scrap suppliers.
 
-Before the kg conversion, bio-PCI limits were read 1000 times too high and never bound; see [Fixes that affect comparability between runs](../domain_simulation_logic/overarching_elements/outputs_and_postprocessing.md#fixes-that-affect-comparability-between-runs).
+Before the kg conversion, bio-PCI limits were read 1000 times too high and never bound; see [Fixes that affect comparability between runs](../domain_simulation_logic/outputs_and_postprocessing.md#fixes-that-affect-comparability-between-runs).
+
+## CO2 storage
+
+One row per country. The sheet sets each country's annual CO2 storage capacity. Preparation stores these limits alongside the bio-PCI limits as `co2_stored` constraints, so the trade model applies them the same way (see [Biomass availability](#biomass-availability)). They also set the budget of the [CO2 storage gate](../domain_simulation_logic/co2_storage_gate.md).
+
+| Column | Allowed values | What the model does with it |
+|---|---|---|
+| `ISO-3 code` | An ISO-3 code | The country the limit applies to. Rows with a blank code are skipped. |
+| `Scenario` | Free text | Stored; not used to filter rows. |
+| `Unit` | `t CO2/y` | Stored only. Values are read as tonnes of CO2 per year, with no conversion. |
+| `2024` to the last year column | Numbers | The limit for that year. Blank cells set no limit for that year; rows with every year blank are skipped. |
+
+Other columns, such as `Country` and `Metric`, are not read. A workbook without the sheet is prepared with a warning and no CO2 storage limits.
 
 ## Tariffs
 

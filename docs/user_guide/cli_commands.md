@@ -280,7 +280,8 @@ options:
   --out OUT             Output CSV path (default: ./geo_options.csv)
 ```
 
-Writes the list of province keys (`CHN:CN-HE` and so on) that the master workbook can use in its geo-keyed sheets, one row per unit. Data preparation already writes `geo_options.csv` to the data root; run this command to regenerate it after preparation, or to write it elsewhere. It fails if `geo_hierarchy.json` has not been prepared yet. See [Sub-national Geography](../domain_simulation_logic/overarching_elements/sub_national_geography.md).
+
+Writes the list of province keys (`CHN:CN-HE` and so on) that the master workbook can use in its geo-keyed sheets, one row per unit. Data preparation already writes `geo_options.csv` to the data root when the geo-data package includes the Natural Earth admin-1 shapefile; run this command to regenerate it after preparation, or to write it elsewhere. It fails if `geo_hierarchy.json` has not been prepared yet. See [Sub-national Geography](../domain_simulation_logic/sub_national_geography.md).
 
 ## List Available Binaries
 

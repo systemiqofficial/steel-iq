@@ -303,7 +303,7 @@ sum(flows matching tariff pattern) ≤ quota_limit
 sum(commodity flows into furnace groups in the region) ≤ availability for the year
 ```
 
-**Applied to:** `bio_pci` (per TIAM-UCL region) and `co2_stored` (CO2 storage, per country), both from the [`Biomass availability` sheet](../../user_guide/master_input_reference.md#biomass-availability). Each constrained commodity is supplied by a synthetic zero-cost supplier connected to every production process. Scrap is not limited this way: its availability comes from scrap suppliers.
+**Applied to:** `bio_pci` (per TIAM-UCL region) and `co2_stored` (CO2 storage, per country), from the [`Biomass availability`](../../user_guide/master_input_reference.md#biomass-availability) and [`CO2 storage`](../../user_guide/master_input_reference.md#co2-storage) sheets respectively. Each constrained commodity is supplied by a synthetic zero-cost supplier connected to every production process. Scrap is not limited this way: its availability comes from scrap suppliers.
 
 ---
 
@@ -562,7 +562,7 @@ LP setup uses `Environment.build_distance_function_for_trade_lp(process_centers)
 
 ### Solver algorithm
 
-**Default: HiPO.** The trade LP is solved with HiPO, the interior-point solver introduced in HiGHS 1.15. Interior-point methods are faster than simplex on large LPs and use little memory; they approach the optimum from inside the feasible region, so crossover is enabled to turn the result into a vertex (basic) solution. HiPO ships in the optional HiGHS extras, which is why the project depends on `highspy[extras]>=1.15.1`; a plain `highspy` install cannot run the default solver.
+**Default: HiPO.** The trade LP is solved with HiPO, the default interior-point solver in HiGHS 1.15. Interior-point methods are faster than simplex on large LPs and use little memory; they approach the optimum from inside the feasible region, so crossover is enabled to turn the result into a vertex (basic) solution. HiPO ships in the optional HiGHS extras, which is why the project depends on `highspy[extras]>=1.15.1`; a plain `highspy` install cannot run the default solver.
 
 **Choosing the algorithm.** The environment variable `STEELO_LP_SOLVER` overrides the default, for benchmarking or troubleshooting:
 

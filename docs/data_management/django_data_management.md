@@ -101,7 +101,6 @@ media/prepared_data/prep_<id>/
 │   │   ├── demand_centers.json
 │   │   ├── cost_of_x.json
 │   │   └── ...
-│   ├── atlite/           # Geo data files
 │   ├── outputs/GEO/      # Geo output files
 │   └── ...
 ```

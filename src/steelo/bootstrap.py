@@ -516,7 +516,6 @@ def bootstrap_simulation(
 
         env.geo_paths = GeoDataPaths(
             data_dir=config.data_dir,
-            atlite_dir=config.data_dir / "atlite",
             geo_plots_dir=(
                 config.output_dir / "plots" / "GEO"
                 if config.output_dir

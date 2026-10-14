@@ -143,30 +143,6 @@ def technology_form_converter():
     return _convert_to_form_data
 
 
-def pytest_addoption(parser):
-    parser.addoption(
-        "--run-wind-and-pv-tests",
-        action="store_true",
-        default=False,
-        help="Run tests for the wind_and_pv package only if this flag is set",
-    )
-
-
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        "wind_and_pv: wind_and_pv: Marks special tests that are only executed when --run-wind-and-pv-tests is set",
-    )
-
-
-def pytest_collection_modifyitems(config, items):
-    if not config.getoption("--run-wind-and-pv-tests"):
-        skip_marker = pytest.mark.skip(reason="--run-wind-and-pv-tests not set")
-        for item in items:
-            if "wind_and_pv" in item.keywords:
-                item.add_marker(skip_marker)
-
-
 # Removed preserve_iso3_to_region fixture as we're migrating to dynamic country mappings
 
 

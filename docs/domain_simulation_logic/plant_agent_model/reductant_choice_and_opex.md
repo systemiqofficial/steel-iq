@@ -161,7 +161,7 @@ The reductant score looks up emission factors strictly, and the score series nee
 
 - business cases exist but the technology emission factor table is empty
 - the boundary set in `chosen_emissions_boundary_for_carbon_costs` has no rows in the table
-- any (technology, reductant, metallic charge) combination in the Bill of Materials has no emission factor row in any boundary present in the table, not only the configured one
+- any (technology, reductant, metallic charge) combination in the Bill of Materials lacks an emission factor row in any one boundary present in the table, not only the configured one
 
 The error message gives the number of missing combinations and up to five examples. To fix it, add the missing rows to the "Technology emission factors" sheet.
 

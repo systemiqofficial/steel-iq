@@ -57,8 +57,7 @@ src/
     ├── unit/                # Domain logic tests
     ├── integration/         # Service layer tests
     ├── e2e/                 # CLI end-to-end tests
-    ├── web/                 # Django view tests
-    └── wind_and_pv/        # Renewable energy tests
+    └── web/                 # Django view tests
 ```
 
 ### Testing Strategy

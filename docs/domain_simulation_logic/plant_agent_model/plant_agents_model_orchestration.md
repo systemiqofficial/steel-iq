@@ -42,7 +42,7 @@ Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()
 
 2. **Refresh hot-metal access** (`simulation.py`):
    - Calls `plant_group.update_hot_metal_access(config.hot_metal_radius)` for each `PlantGroup`
-   - Sets `has_hot_metal_access` on each BOF `FurnaceGroup` and its `Plant` when a [hot-metal producer](#hot-metal-producers) (any technology whose Bill of Materials outputs hot metal) sits within `hot_metal_radius` of the plant, across plants in the same plant group
+   - Sets `has_hot_metal_access` on each BOF `FurnaceGroup` and its `Plant` when a [hot-metal producer](../trade_model/overview_trade_model.md#hot-metal-producers) (any technology whose Bill of Materials outputs hot metal) sits within `hot_metal_radius` of the plant, across plants in the same plant group
    - Consumed downstream by the PAM's BOF-transition check and by `PlantGroup.evaluate_expansion()` to skip BOF expansion options at plants without access. `cluster_furnace_groups()` does not use the flag: it applies its own stricter check (active producers in the same country)
 
 3. **Checkpoint** saves state:

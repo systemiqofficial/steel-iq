@@ -6,10 +6,14 @@
 
    which builds the run selector, the geography filter (countries, sub-national
    geo units, trade blocs, regions, selected entries as removable chips) and, when
-   `techs` is given, a technology filter inside #shared-filters. render() then reads
-   Interactive.selectedGeos() / selectedTechs() and the helpers below. */
+   `techs` is given, a technology filter inside #shared-filters. Each dropdown
+   carries a search box and All/None buttons that act on the rows the search
+   shows. render() then reads Interactive.selectedGeos() / selectedTechs() and
+   the helpers below. */
 const Interactive = (() => {
   const GEO_SEP = ":";
+  // Country order at the head of the countries dropdown, when present in the data.
+  const LEAD_COUNTRIES = ["CHN", "IND", "USA", "JPN", "KOR", "SAU", "ARE"];
   const theme = {surface: "#fcfcfb", ink: "#0b0b0b", inkSecondary: "#52514e", grid: "#b5b3ae"};
   const FALLBACK_COLOURS = ["#a52a2a", "#6b6b6b", "#b8860b", "#556b2f", "#708090", "#8b008b"];
 
@@ -17,6 +21,7 @@ const Interactive = (() => {
   const countryCbs = new Map(), unitCbs = new Map(), countryUnits = new Map();
   const techCbs = new Map();
   const groupCbs = new Map();  // "bloc:EU" / "region:Europe" -> {cb, members}
+  const boxToggles = new Map();  // checkbox -> its onToggle, for the dropdown All/None
 
   /* ---- geography helpers ---- */
   function isoOf(geo) { return geo.split(GEO_SEP)[0]; }
@@ -123,9 +128,40 @@ const Interactive = (() => {
     return node;
   }
 
-  function dropdown(id) {
+  function rowShown(label) { return !label.hidden && label.style.display !== "none"; }
+
+  /* Show only the rows whose text contains the query; the lead-countries separator
+     goes while a search is on. */
+  function filterPanel(panel, query) {
+    const q = query.trim().toLowerCase();
+    const rows = [...panel.querySelectorAll("label")];
+    rows.forEach(label => { label.hidden = !label.dataset.search.includes(q); });
+    panel.querySelectorAll(".box-sep").forEach(sep => { sep.hidden = Boolean(q); });
+    panel.querySelector(".box-none").style.display = rows.some(rowShown) ? "none" : "block";
+  }
+
+  /* Checkbox dropdown with a sticky header: a search box plus All/None buttons
+     that tick or untick the rows the search currently shows. */
+  function dropdown(id, noun) {
     const toggle = el("button", {id: id + "-toggle"});
-    const panel = el("div", {id: id + "-boxes", class: "box-panel"});
+    const search = el("input", {type: "search", placeholder: `Search ${noun}…`, autocomplete: "off"});
+    const all = el("button", {class: "small-btn", text: "All"});
+    const none = el("button", {class: "small-btn", text: "None"});
+    const panel = el("div", {id: id + "-boxes", class: "box-panel"}, [
+      el("div", {class: "box-tools"}, [search, all, none]),
+      el("div", {class: "box-none muted", text: "No match"})]);
+    search.addEventListener("input", () => filterPanel(panel, search.value));
+    const setShown = checked => {
+      [...panel.querySelectorAll("label")].filter(rowShown).forEach(label => {
+        const cb = label.querySelector("input");
+        cb.checked = checked;
+        boxToggles.get(cb)(cb);
+      });
+      updateUi();
+      onChange();
+    };
+    all.addEventListener("click", () => setShown(true));
+    none.addEventListener("click", () => setShown(false));
     return el("div", {id: id + "-dropdown", class: "box-dropdown"}, [toggle, panel]);
   }
 
@@ -136,7 +172,8 @@ const Interactive = (() => {
       el("label", {}, [document.createTextNode("Geography"),
         el("button", {id: "geo-all", class: "small-btn", text: "All"}),
         el("button", {id: "geo-none", class: "small-btn", text: "None"})]),
-      dropdown("country"), dropdown("unit"), dropdown("bloc"), dropdown("region"),
+      dropdown("country", "countries"), dropdown("unit", "geo units"),
+      dropdown("bloc", "trade blocs"), dropdown("region", "regions"),
       el("div", {id: "geo-chips"})]));
     if (withTechs) {
       // Technologies get their own row between the chart's controls and the
@@ -146,7 +183,7 @@ const Interactive = (() => {
         el("label", {}, [document.createTextNode("Technologies"),
           el("button", {id: "tech-all", class: "small-btn", text: "All"}),
           el("button", {id: "tech-none", class: "small-btn", text: "None"})]),
-        dropdown("tech"), el("div", {id: "tech-chips", class: "tick-chips"})]);
+        dropdown("tech", "technologies"), el("div", {id: "tech-chips", class: "tick-chips"})]);
       container.parentNode.insertBefore(row, container);
     }
   }
@@ -161,6 +198,10 @@ const Interactive = (() => {
     panel.classList.toggle("box-panel", asDropdown);
     panel.classList.toggle("box-ticks", !asDropdown);
     if (!asDropdown) panel.classList.remove("open");
+    const search = panel.querySelector(".box-tools input");
+    if (!search) return;
+    if (!asDropdown) search.value = "";
+    filterPanel(panel, search.value);
   }
 
   /* Removable pills of the selected options beside a dropdown-mode tick control,
@@ -206,14 +247,17 @@ const Interactive = (() => {
     updateTechToggle();
   }
 
-  function addBox(parent, value, text, cbs, onToggle, note) {
+  /* `searchExtra`: text the search matches beyond the row's own (a unit's country name). */
+  function addBox(parent, value, text, cbs, onToggle, note, searchExtra = "") {
     const cb = el("input", {type: "checkbox", value});
     cb.checked = true;
     cb.addEventListener("change", () => { onToggle(cb); updateUi(); onChange(); });
     const label = el("label", {}, [cb, document.createTextNode(text)]);
     if (note) label.appendChild(el("span", {class: "muted", text: note}));
+    label.dataset.search = `${text}${note || ""} ${searchExtra}`.toLowerCase();
     parent.appendChild(label);
     cbs.set(value, cb);
+    boxToggles.set(cb, onToggle);
     return cb;
   }
 
@@ -307,11 +351,19 @@ const Interactive = (() => {
     });
     const countries = [...new Set(allGeoKeys.map(isoOf))].sort();
 
+    // The major producers lead the countries dropdown above a separator; the rest
+    // follow alphabetically.
     const countryBoxes = document.getElementById("country-boxes");
-    countries.forEach(iso3 => addBox(countryBoxes, iso3, iso3, countryCbs,
-      cb => setCountry(iso3, cb.checked), countryName(iso3) ? " " + countryName(iso3) : ""));
+    const addCountry = iso3 => addBox(countryBoxes, iso3, iso3, countryCbs,
+      cb => setCountry(iso3, cb.checked), countryName(iso3) ? " " + countryName(iso3) : "");
+    const lead = LEAD_COUNTRIES.filter(iso3 => countries.includes(iso3));
+    const rest = countries.filter(iso3 => !lead.includes(iso3));
+    lead.forEach(addCountry);
+    if (lead.length && rest.length) countryBoxes.appendChild(el("div", {class: "box-sep"}));
+    rest.forEach(addCountry);
     const unitBoxes = document.getElementById("unit-boxes");
-    units.forEach(geo => addBox(unitBoxes, geo, geo, unitCbs, () => {}, unitName(geo) ? " " + unitName(geo) : ""));
+    units.forEach(geo => addBox(unitBoxes, geo, geo, unitCbs, () => {},
+      unitName(geo) ? " " + unitName(geo) : "", countryName(isoOf(geo))));
     if (!units.length) document.getElementById("unit-dropdown").style.display = "none";
     if (countries.length === 1 && units.length) document.getElementById("country-dropdown").style.display = "none";
 
@@ -327,7 +379,7 @@ const Interactive = (() => {
     };
     const blocBoxes = document.getElementById("bloc-boxes");
     Object.entries(CONFIG.tradeBlocs).forEach(([bloc, members]) => addGroup("bloc", blocBoxes, bloc, members));
-    if (!blocBoxes.childElementCount) document.getElementById("bloc-dropdown").style.display = "none";
+    if (!blocBoxes.querySelector("label")) document.getElementById("bloc-dropdown").style.display = "none";
     const regionMembers = new Map();
     countries.forEach(iso3 => {
       const region = regionOf(iso3);
@@ -354,6 +406,8 @@ const Interactive = (() => {
           if (p !== panel) p.classList.remove("open");
         });
         panel.classList.toggle("open");
+        const search = panel.querySelector(".box-tools input");
+        if (search && panel.classList.contains("open")) search.focus();
       });
     });
     document.addEventListener("click", e => {

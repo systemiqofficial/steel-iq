@@ -1,6 +1,8 @@
 import logging
 from typing import TYPE_CHECKING
 
+from steelo.domain.calculate_costs import carbon_price_from_series
+from steelo.domain.constants import Year
 from steelo.utilities.utils import normalize_name
 
 if TYPE_CHECKING:
@@ -196,8 +198,8 @@ def calculate_emissions_cost_series(
         emissions: Emissions data by boundary and scope. Structure:
             {boundary: {"direct_ghg": float, "indirect_ghg": float, ...}}
             None or empty dict treated as zero emissions.
-        carbon_price_dict: Mapping of years to carbon prices in USD/tCO2e.
-            Missing years default to 0.0 price.
+        carbon_price_dict: Mapping of years to carbon prices in USD/tCO2e, read with
+            carbon_price_from_series (empty prices at zero; years past the end hold the last value).
         chosen_emission_boundary: Emissions boundary to use for cost calculation
             (e.g., "plant_boundary", "supply_chain").
         start_year: First year of the series (inclusive).
@@ -245,7 +247,7 @@ def calculate_emissions_cost_series(
         return [0.0] * (end_year - start_year + 1)
     else:
         return [
-            emissions[chosen_emission_boundary]["direct_ghg"] * carbon_price_dict.get(year, 0.0)
+            emissions[chosen_emission_boundary]["direct_ghg"] * carbon_price_from_series(carbon_price_dict, Year(year))
             for year in range(start_year, end_year + 1)
         ]
 

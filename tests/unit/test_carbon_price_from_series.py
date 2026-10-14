@@ -6,6 +6,7 @@ from datetime import date
 import pytest
 
 from steelo.domain.calculate_costs import carbon_price_from_series
+from steelo.domain.calculate_emissions import calculate_emissions_cost_series
 from steelo.domain.models import FurnaceGroup, Location, Plant, PointInTime, Technology, Year
 
 
@@ -26,8 +27,17 @@ def test_year_beyond_series_end_holds_last_value():
 
 
 def test_interior_gap_raises():
-    with pytest.raises(KeyError):
+    with pytest.raises(ValueError, match="no value for 2026"):
         carbon_price_from_series({Year(2025): 50.0, Year(2027): 70.0}, Year(2026))
+
+
+def test_cosa_carbon_cost_series_holds_last_value_beyond_series_end():
+    """The COSA carbon cost series prices years past the series end at its last value, not zero."""
+    emissions = {"plant_boundary": {"direct_ghg": 2.0}}
+
+    costs = calculate_emissions_cost_series(emissions, SERIES, "plant_boundary", 2026, 2029)
+
+    assert costs == [120.0, 140.0, 140.0, 140.0]
 
 
 def test_plant_operating_carbon_cost_holds_last_value_beyond_series_end(monkeypatch):
