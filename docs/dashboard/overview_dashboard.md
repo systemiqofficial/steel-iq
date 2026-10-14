@@ -33,13 +33,6 @@ Comprehensive guide to both deployment options, covering:
 - User workflows and system requirements
 - Security considerations and troubleshooting
 
-### <a href="concept.html">Concept Document</a>
-High-level requirements and design goals for the web UI:
-- Core functionality requirements
-- Technical constraints and performance considerations
-- User experience goals
-- Target users and use cases
-
 ## Implementation Details
 
 ### <a href="parallel_workers.html">Parallel Worker Management</a>
@@ -49,13 +42,6 @@ Detailed documentation of the parallel execution system:
 - Task queue and scheduling
 - Monitoring and troubleshooting
 
-### <a href="design_approaches.html">Design Approaches</a>
-UI/UX design decisions and patterns:
-- Interface design principles
-- User interaction patterns
-- Visualization approaches
-- Responsive design considerations
-
 ### <a href="custom_repositories.html">Custom Repositories</a>
 Data management and repository system:
 - Repository pattern implementation
@@ -63,15 +49,9 @@ Data management and repository system:
 - Version control for configurations
 - Custom data source integration
 
-### <a href="user_stories.html">User Stories</a>
-Use cases and user requirements:
-- Key user workflows
-- Feature requirements
-- User personas and scenarios
-- Acceptance criteria
-
 ## Related Documentation
 
+- <a href="../legacy_docs/index.html">Archive</a> - Early UI concept, user stories and design approaches
 - [Architecture Overview](../architecture/overview_architecture.md) - Overall system architecture
 - [Configuration Guide](../user_guide/configuration.md) - Configuration options
 
@@ -83,3 +63,12 @@ Use cases and user requirements:
 - **Issue Reporting**: See project issue tracker for bugs and feature requests
 
 :::
+
+
+```{toctree}
+:hidden:
+
+django_electron_overview
+parallel_workers
+custom_repositories
+```

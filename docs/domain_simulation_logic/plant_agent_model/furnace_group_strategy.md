@@ -63,9 +63,9 @@ evaluate_furnace_group_strategy (Plant)
 ```
 
 
-# Part 1: Economic Analysis
+## Part 1: Economic Analysis
 
-## Overview
+### Overview
 
 **Function**: `FurnaceGroup.optimal_technology_name`
 
@@ -114,9 +114,9 @@ Start
   └─> Stage 10: Return results (NPVs, capex dict, COSA, BOMs)
 ```
 
-## Detailed Stage Breakdown
+### Detailed Stage Breakdown
 
-### Stage 1: Initialize and Import Dependencies
+#### Stage 1: Initialize and Import Dependencies
 - **Purpose**: Set up logging and import required calculation functions
 - **Debug prefix**: `[OPTIMAL TECHNOLOGY]:`
 - **Key actions**:
@@ -124,29 +124,29 @@ Start
   - Import cost and emissions calculation functions
   - Initialize return dictionaries
 
-### Stage 2: Prepare Operating Expenses List and Calculate Operating Subsidies
+#### Stage 2: Prepare Operating Expenses List and Calculate Operating Subsidies
 - **Purpose**: Apply OPEX subsidies to the current OPEX value
 - **Output**: List of subsidised OPEX values by year for the period of remaining lifetime
 
-### Stage 3: Calculate Carbon Costs for Current Technology and Combine with Subsidised OPEX
+#### Stage 3: Calculate Carbon Costs for Current Technology and Combine with Subsidised OPEX
 - **Purpose**: Determine carbon cost series for existing operations
 - **Key decision**: Use current emissions and chosen boundary
 - **Inputs**: Current emissions, carbon price series, emission boundary
 - **Output**: List of carbon costs over facility lifetime combined with list of subsidised OPEX values
 
-### Stage 4: Calculate Cost of Stranded Assets (COSA)
+#### Stage 4: Calculate Cost of Stranded Assets (COSA)
 - **Purpose**: Determine the cost of abandoning current technology
 - **Key calculation**: NPV of the foregone operating margin: the discounted gross cash flow for years `[construction_time, remaining_time)`. The incumbent keeps operating during the switch's construction, so only the years after it are foregone; COSA is 0 when the remaining life does not outlast construction.
 - **Incumbent OPEX**: current unit OPEX with OPEX subsidies, plus its carbon cost series and by-product adjustment (Stages 2 and 3), at its current production, discounted at the incumbent's cost of equity
 - **Rationale**: Remaining debt is excluded — it persists via the `legacy_debt_schedule` (realised P&L / closure), so it cancels from the switch-vs-stay comparison
 
-### Stage 5: Check for Allowed Technology Transitions
+#### Stage 5: Check for Allowed Technology Transitions
 - **Decision point**: Are transitions defined for current technology?
   - If no: Return empty results (no switch possible)
   - If yes: Continue to evaluation
 - **Key check**: `allowed_furnace_transitions` dictionary
 
-### Stage 6: Evaluate Each Allowed Technology
+#### Stage 6: Evaluate Each Allowed Technology
 - **For each technology in allowed transitions**:
   - **Decision 1**: Does technology have capex data?
     - If no: Skip this technology
@@ -154,9 +154,9 @@ Start
     - BOF requires smelter furnace
     - If not met: Skip this technology
 
-### Stage 7: Branch Based on Technology Type
+#### Stage 7: Branch Based on Technology Type
 
-#### Branch A: Current Technology (Brownfield)
+##### Branch A: Current Technology (Brownfield)
 - **Characteristics**:
   - Retrofit of existing facility
   - Reduced capex (typically 20% of greenfield)
@@ -167,7 +167,7 @@ Start
   - Apply brownfield_capex_share multiplier
   - Validate existing BOM structure
 
-#### Branch B: New Technology (Greenfield)
+##### Branch B: New Technology (Greenfield)
 - **Characteristics**:
   - Complete replacement with new technology
   - Full capex cost
@@ -176,7 +176,7 @@ Start
   1. Fetch the average BOM for the technology, using the fleet's most common reductant as a first hint
   2. Take the output shares from the average BOM build
 
-### Stage 8: Calculate NPV
+#### Stage 8: Calculate NPV
 - **Prerequisite**: Valid BOM must exist
 - **Process**:
   1. Get market price series for the product type
@@ -191,13 +191,13 @@ Start
 - **Average-BOM material demand**: `get_bom_from_avg_boms()` derives each metallic charge's output share from the fleet's input shares and the process efficiencies (`eff`, tonnes of input per tonne of product): `output_share = (input_share / eff)`, normalised to 1. Material demand is then `output_share × capacity × eff`, so efficiency is applied exactly once and the candidate's input mix matches the fleet's. The same output shares build the energy rows and weight the reductant score series. Earlier code computed `input_share × capacity × eff`, applying efficiency twice: input shares already embed it. That overstated material demand and cost for technologies with several metallic charges (for example 1.30 t instead of 1.23 t of input per tonne for a 50/50 mix at efficiencies 1.6 and 1.0) and skewed the mix towards the less efficient charge. Single-charge technologies were unaffected.
 - **Average-BOM cost basis**: fleet-derived `avg_boms` entries carry `unit_cost` per tonne of *input* (`cost_sum / demand_sum` in `generate_average_boms()`), and `get_bom_from_avg_boms()` charges them as `unit_cost × input demand`. Technologies with no active furnace group anywhere get a placeholder instead: their whole default metallic charge priced at the fallback material cost, which is authored per tonne of *product* (USD/t HM). Placeholder entries are marked `cost_basis="per_output"` and charged on output volume, so the bill per tonne of product equals the authored value; previously they were charged per input tonne, overbilling undeployed technologies by the ore ratio (~1.5×). Material `demand` always carries the physical input tonnage regardless of basis. Placeholder technologies also ride a hardcoded 0.6 utilisation (deliberately conservative) and the flat fallback number carries no transport or tariff component (destination unknown before a site exists).
 
-### Stage 9: Adjust NPV for COSA
+#### Stage 9: Adjust NPV for COSA
 - **Decision**: Is this a technology switch?
   - If yes (tech != current): Subtract COSA from NPV
   - If no (same tech): No COSA adjustment
 - **Rationale**: Switching technologies incurs stranded asset cost
 
-### Stage 10: Return Results
+#### Stage 10: Return Results
 - **Outputs**:
   1. `npv_dict`: NPV values for each technology (COSA-adjusted for switches)
   2. `npv_capex_dict`: Effective capex after subsidies (renovation-basis for the current technology)
@@ -205,9 +205,9 @@ Start
   4. `bom_dict`: Bill of Materials for each technology, rebuilt for the committed reductant where the pick differed
   5. `reductant_dict`: The operating-start-year reductant pick per technology, which the `ChangeFurnaceGroupTechnology` command carries so the built asset starts on the reductant the NPV evaluated
 
-## Key Dependencies and Interactions
+### Key Dependencies and Interactions
 
-### External Functions Called
+#### External Functions Called
 - `calculate_emissions_cost_series`: Incumbent carbon cost series (COSA baseline only)
 - `calculate_opex_list_with_subsidies`: Year-by-year OPEX with OPEX subsidies applied
 - `stranding_asset_cost`: Calculates COSA
@@ -220,7 +220,7 @@ Start
 - `calculate_variable_opex`: Materials-only variable operating costs
 - `calculate_npv_full`: Performs complete NPV calculation
 
-### Data Dependencies
+#### Data Dependencies
 - `self.bill_of_materials`: Current technology's BOM
 - `self.emissions`: Current emission profile
 - `self.lifetime`: Facility lifetime information
@@ -228,34 +228,34 @@ Start
 - `self.utilization_rate`: Current capacity utilization
 - `self.production`: Current production volume
 
-## Input Parameters
+### Input Parameters
 
-### Required Market Data
+#### Required Market Data
 - `market_price_series`: Product prices by type (steel, iron, etc.)
 - `carbon_cost_series`: Carbon prices over time
 - `cost_of_debt`: Interest rate on debt
 - `cost_of_equity`: Required return on equity
 
-### Technology Configuration
+#### Technology Configuration
 - `capex_dict`: Capital costs by technology
 - `capex_renovation_share`: Retrofit cost multipliers (brownfield)
 - `technology_fopex_dict`: Fixed operating costs
 - `allowed_furnace_transitions`: Valid technology switches
 - `dynamic_business_cases`: Feedstock configurations
 
-### Subsidy Information
+#### Subsidy Information
 - `tech_capex_subsidies`: Capital subsidies by technology
 - `tech_opex_subsidies`: Operating subsidies by technology
 - `tech_debt_subsidies`: Debt subsidies by technology
 
-## Common Issues and Debugging Tips
+### Common Issues and Debugging Tips
 
-### Issue 1: No Transitions Found
+#### Issue 1: No Transitions Found
 - **Symptom**: Function returns empty NPV dictionary
 - **Check**: `allowed_furnace_transitions` contains current technology
 - **Debug**: Look for `"NO TRANSITIONS ALLOWED"` in logs
 
-### Issue 2: Technology Skipped
+#### Issue 2: Technology Skipped
 - **Symptom**: Expected technology not in results
 - **Possible causes**:
   - Missing capex data
@@ -263,19 +263,19 @@ Start
   - Failed BOM retrieval
 - **Debug**: Look for `"SKIPPING"` messages in logs
 
-### Issue 3: Invalid BOM Structure
+#### Issue 3: Invalid BOM Structure
 - **Symptom**: Technology evaluation fails
 - **Check**: BOM contains both "materials" and "energy" keys
 - **Debug**: Look for `"Invalid or missing BOM"` warnings
 
-### Issue 4: Negative NPV After COSA
+#### Issue 4: Negative NPV After COSA
 - **Symptom**: All technologies show negative NPV
 - **Explanation**: COSA exceeds benefits of switching
 - **Debug**: Check COSA calculation (foregone operating margin)
 
-# Part 2: Strategic Decision-Making
+## Part 2: Strategic Decision-Making
 
-## Overview
+### Overview
 
 **Function**: `Plant.evaluate_furnace_group_strategy`
 
@@ -316,20 +316,20 @@ Stage 11-13: Final Checks & Command Generation
   └─> Generate command (Renovate/Switch/Close/None)
 ```
 
-## Detailed Stage Breakdown
+### Detailed Stage Breakdown
 
 Affordability is checked per-capex at the point of decision against
 ``plant_group.balance`` (renovation in Stage 8, switch in Stage 9). A negative
 group balance does not short-circuit evaluation; the historic-loss closure
 threshold in Stage 2 runs unconditionally.
 
-### Stage 1: Check Furnace Group Status
+#### Stage 1: Check Furnace Group Status
 **Decision**: Is the furnace group eligible for strategy evaluation?
 - **Check**: Status is not "operating pre-retirement"
 - **If pre-retirement**: Return `None` (already scheduled to close)
 - **Rationale**: Don't invest in facilities about to close
 
-### Stage 3: Check for Forced Closure
+#### Stage 3: Check for Forced Closure
 **Decision**: Have accumulated losses exceeded write-off threshold?
 - **Threshold calculation**: `CAPEX × capacity`
 - **Check**: `furnace_group.historic_balance < -threshold`
@@ -342,11 +342,11 @@ threshold in Stage 2 runs unconditionally.
 - Threshold: -$4,000,000,000
 - Historic balance: -$4,500,000,000 → **Close**
 
-### Stage 4: Filter Allowed Technology Transitions
+#### Stage 4: Filter Allowed Technology Transitions
 **Purpose**: Narrow down technology options based on what's allowed in the current year
 - **Process**: Intersect `allowed_techs[current_year]` with `allowed_furnace_transitions[current_tech]`, then apply the **P2 CO2 storage gate** to drop CCS candidates the country cannot physically support.
 - **P2 gate**: For each surviving CCS tech, a cheap pre-check first asks `get_co2_need_by_name(tech, capacity, "")`. The empty reductant returns the maximum over all reductants, so 0 means no CCS potential and the tech is kept. Otherwise the need is sized with the candidate's own reductant pick for its operating start year (`current_year + construction_time`) from the [reductant score series](reductant_choice_and_opex.md#the-committed-reductant), the reductant the switch would commit. The need is compared against `get_co2_headroom(iso3, current_year + construction_time)`. If `need > headroom` the tech is dropped, so the NPV race in Stage 5 picks the next-best non-CCS alternative naturally. CCU techs have `co2_stored = 0` in their BOM and are never dropped. The China capacity-replacement gate reuses the same pick.
-- **China capacity-replacement gate** (policy-enabled runs, Chinese plants only): for each surviving candidate — the incumbent's renovation option included — the policy's REPLACE hook resolves the capacity the candidate may build *before* its NPV runs. A utilisation gate comes first: a group at or below the utilisation floor for the whole recorded window loses every candidate. Otherwise the permitted capacity is `current / ratio`, 1.5:1 when the new route is emission-intense whatever the old route is (stricter than the source flowchart's old-route-first test, by modelling decision), 1:1 otherwise and always in the exempt provinces. A blocked candidate drops off the menu; a permitted one is valued at its permitted capacity in Stage 5. See [China Capacity-Replacement Policy](../capacity_replacement_policy.md).
+- **China capacity-replacement gate** (policy-enabled runs, Chinese plants only): for each surviving candidate — the incumbent's renovation option included — the policy's REPLACE hook resolves the capacity the candidate may build *before* its NPV runs. A utilisation gate comes first: a group at or below the utilisation floor for the whole recorded window loses every candidate. Otherwise the permitted capacity is `current / ratio`, 1.5:1 when the new route is emission-intense whatever the old route is (stricter than the source flowchart's old-route-first test, by modelling decision), 1:1 otherwise and always in the exempt provinces. A blocked candidate drops off the menu; a permitted one is valued at its permitted capacity in Stage 5. See [China Capacity-Replacement Policy](capacity_replacement_policy.md).
 - **Example**:
   - Current tech: BF-BOF
   - All possible transitions: [BF-BOF, EAF, DRI-EAF, H2-DRI-EAF, BF+CCS]
@@ -354,7 +354,7 @@ threshold in Stage 2 runs unconditionally.
   - Plant in a country with no CO2 storage assessed → P2 drops BF+CCS
   - Filtered transitions: [BF-BOF, EAF, DRI-EAF]
 
-### Stage 5: Calculate NPV for All Technology Options
+#### Stage 5: Calculate NPV for All Technology Options
 **Key Action**: Call `furnace_group.optimal_technology_name()` to get economic analysis
 
 **Inputs passed to analysis engine**:
@@ -371,16 +371,16 @@ threshold in Stage 2 runs unconditionally.
 - `bom_dict`: Bills of materials for each technology
 - `reductant_dict`: Committed reductant per technology
 
-### Stage 6: Check if Any Technology Option is Profitable
+#### Stage 6: Check if Any Technology Option is Profitable
 **Decision**: Is investing worthwhile?
 - **Check**: `max(tech_npv_dict.values()) > 0`
 - **If all NPVs ≤ 0**: Return `None`, unless the lifetime has expired, in which case [renovate or close](#expired-lifetime-renovate-or-close)
 - **Rationale**: Don't invest if all options lose money
 
-### Stage 7: Identify Optimal Technology
+#### Stage 7: Identify Optimal Technology
 **Process**: Find the technology with the highest NPV, `optimal_tech = max(tech_npv_dict, key=tech_npv_dict.get)`. This is logged only. The selection in Stage 8 does not short-circuit on it.
 
-### Stage 8: Technology Selection
+#### Stage 8: Technology Selection
 **Decision Mode**: Weighted random (`probabilistic_agents=True`) or deterministic (`probabilistic_agents=False`). The incumbent competes on its own NPV alongside the challengers in both modes.
 
 **Weighted Random Selection** (when `probabilistic_agents=True`):
@@ -404,7 +404,7 @@ threshold in Stage 2 runs unconditionally.
 - **Challenger selected**: Stage 10 (technology switch)
 - **No valid NPV, all weights near zero, or the selected NPV ≤ 0**: Return `None`, or [renovate or close](#expired-lifetime-renovate-or-close) when the lifetime has expired
 
-### Stage 9: Handle Renovation Scenario
+#### Stage 9: Handle Renovation Scenario
 **Condition**: Lifetime expired and no switch happens: the incumbent is selected, or any other exit listed under [Expired Lifetime: Renovate or Close](#expired-lifetime-renovate-or-close)
 
 **Decision Path**:
@@ -429,7 +429,7 @@ threshold in Stage 2 runs unconditionally.
 
 **Capacity policy note**: with China's capacity-replacement policy enabled, a Chinese renovation is a replacement. It runs at the permitted capacity resolved in Stage 4 (an emission-intense renovation shrinks to `capacity / 1.5`), the `RenovateFurnaceGroup` command carries that capacity, and the freed difference is deposited into the retirement-credit pool when the renovation executes.
 
-### Stage 10: Handle Technology Switch Scenario
+#### Stage 10: Handle Technology Switch Scenario
 **Condition**: Best technology ≠ current technology
 
 **Process**:
@@ -452,7 +452,7 @@ threshold in Stage 2 runs unconditionally.
 
 **Capacity policy note**: with the policy enabled, a Chinese switch is likewise sized at the permitted capacity from Stage 4. The group shrinks when the scheduled switch executes and the freed difference is deposited into the retirement-credit pool.
 
-### Stage 11: Probabilistic Adoption Decision
+#### Stage 11: Probabilistic Adoption Decision
 **Purpose**: Model real-world hesitation in technology adoption (financing risk, permit delays, market uncertainty)
 
 **Formula**:
@@ -486,7 +486,7 @@ acceptance_probability = exp(-switch_cost / NPV)
 
 **Special Case**: Furnaces with CCS/CCU equipment are never switched (representing significant sunk investment)
 
-### Stage 12: Check Capacity Limits
+#### Stage 12: Check Capacity Limits
 **Purpose**: Enforce annual capacity expansion limits (supply chain constraints)
 
 **Context**:
@@ -517,7 +517,7 @@ if expansion_and_switch_capacity + furnace_capacity > expansion_limit:
 
 **If within limits**: Proceed to Stage 13
 
-### Stage 13: Execute Technology Switch
+#### Stage 13: Execute Technology Switch
 **Final Actions**:
 1. **Debit group treasury**: `plant_group.deduct_equity(switch_cost, reason="switch")`
 2. **Generate command**: Return `ChangeFurnaceGroupTechnology`
@@ -529,7 +529,7 @@ if expansion_and_switch_capacity + furnace_capacity > expansion_limit:
 - Technical details (BOM, utilization, capacity)
 - Subsidy configurations
 
-### Expired Lifetime: Renovate or Close
+#### Expired Lifetime: Renovate or Close
 
 `lifetime.expired` is true only in the year a furnace group reaches the end of its renovation cycle. In that year the group must either renovate or close. Taking no action would roll it into a new cycle without paying for a renovation.
 
@@ -555,23 +555,23 @@ A missing incumbent NPV means renovation is no longer an option: the incumbent t
 
 When every NPV is 0 or below, the incumbent's NPV is too, so an expired furnace group in that case always closes. Renovation happens only through the other exits, where the incumbent's NPV is positive.
 
-## Command Types Returned
+### Command Types Returned
 
-### 1. `RenovateFurnaceGroup`
+#### 1. `RenovateFurnaceGroup`
 - **When**: Lifetime expired, no switch happens, incumbent NPV positive, and the group can fund the renovation equity
 - **Includes**: Renovation-basis CAPEX, subsidies, cost of debt
 
-### 2. `ChangeFurnaceGroupTechnology`
+#### 2. `ChangeFurnaceGroupTechnology`
 - **When**: Different tech selected AND affordable AND passes probability filter AND within capacity limits
 - **Includes**: Full technology switch details, NPV, COSA, BOM, subsidies
 
-### 3. `CloseFurnaceGroup`
+#### 3. `CloseFurnaceGroup`
 - **When**:
   - Forced closure (historic losses exceed threshold)
   - Lifetime expired and no switch happens, and the incumbent NPV is not positive or the renovation is unaffordable
 - **Includes**: Plant ID and furnace group ID
 
-### 4. `None`
+#### 4. `None`
 - **When** the lifetime has not expired and:
   - all NPVs are negative or zero
   - the switch is unaffordable (group balance too low)
@@ -580,24 +580,24 @@ When every NPV is 0 or below, the incumbent's NPV is too, so an expired furnace 
   - the current technology is optimal
 - Or: the furnace group is in pre-retirement
 
-## Data Dependencies
+### Data Dependencies
 
-### For Strategic Decisions (`evaluate_furnace_group_strategy`)
+#### For Strategic Decisions (`evaluate_furnace_group_strategy`)
 - `plant_group.balance`: Group treasury — gates renovation and switch affordability
 - `furnace_group.status`: Operating status
 - `furnace_group.historic_balance`: Cumulative profit/loss
 - `furnace_group.lifetime.expired`: Whether renovation is needed
 - `furnace_group.is_ccs_or_ccu`: CCS/CCU equipment flag (derived from tech name)
 
-### External Functions Called
+#### External Functions Called
 - `furnace_group.optimal_technology_name()`: Gets NPV analysis
 - `filter_subsidies_for_year()`: Filters subsidies for a specific year
 - `collect_active_subsidies_over_period()`: Collects unique subsidies over a multi-year period
 - `calculate_debt_with_subsidies()`: Applies debt subsidies
 
-# Function Relationship Summary
+## Function Relationship Summary
 
-## Division of Responsibilities
+### Division of Responsibilities
 
 | Aspect | `optimal_technology_name()` | `evaluate_furnace_group_strategy()` |
 |--------|----------------------------|-------------------------------------|
@@ -610,48 +610,48 @@ When every NPV is 0 or below, the incumbent's NPV is too, so an expired furnace 
 | **Calls** | Calculate_costs functions | optimal_technology_name() |
 | **Level** | FurnaceGroup level | Plant level |
 
-## Why This Architecture?
+### Why This Architecture?
 
-### Separation of Concerns
+#### Separation of Concerns
 - **Economic analysis** is complex and reusable
 - **Strategic decisions** depend on context (plant finances, capacity limits, policy)
 - Separating them allows testing economics independently of business rules
 
-### Testability
+#### Testability
 - Can test NPV calculations without mocking entire decision system
 - Can test decision logic with predetermined NPV inputs
 
-### Clarity
+#### Clarity
 - Clear distinction between "what's optimal economically" and "what's feasible practically"
 - Makes code easier to understand and maintain
 
-### Flexibility
+#### Flexibility
 - Can change decision rules without touching NPV calculations
 - Can add new economic factors without changing decision logic
 
 
-## Key Metrics to Monitor
+### Key Metrics to Monitor
 
-### Economic Analysis Metrics
+#### Economic Analysis Metrics
 1. **COSA vs NPV**: If COSA > NPV, switch is unprofitable
 2. **Utilization rates**: Lower utilization reduces NPV
 3. **Carbon cost impact**: Rising carbon prices favor cleaner technologies
 4. **Subsidy effectiveness**: Track NPV changes with/without subsidies
 5. **Brownfield advantage**: Compare brownfield vs greenfield NPVs
 
-### Decision Metrics
+#### Decision Metrics
 1. **Acceptance rate**: % of positive-NPV switches actually executed
 2. **Capacity utilization**: How close to annual limits
 3. **Rejection reasons**: Categorize why switches don't happen
 4. **Technology distribution**: Which technologies are being adopted
 
-### Performance Indicators
+#### Performance Indicators
 1. **Average NPV of executed switches**: Quality of decisions
 2. **Renovation vs. switch ratio**: Technology transition pace
 3. **Closure rate**: Industry health indicator
 4. **Balance sheet health**: Plant financial sustainability
 
-# Glossary
+## Glossary
 
 - **COSA**: Cost of Stranded Assets - economic loss from abandoning existing technology (the foregone operating margin)
 - **NPV**: Net Present Value - present value of future cash flows minus initial investment

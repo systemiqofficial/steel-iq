@@ -2,7 +2,7 @@
 
 The master input workbook documents itself: its `Contents` sheet says what each sheet is and where the default data comes from, and sheet-level READMEs explain the authoring conventions. This page is the complement for the people who edit it. For each sheet it lists what every column may contain, what the model does with the value, the rules data preparation enforces on it, and the simulation parameters that change how the sheet is used.
 
-The page is being built up sheet by sheet. The China capacity-replacement policy sheets, `Cost of capital`, `Furnace units`, `Power grid emissivity`, `Biomass availability`, the geography columns of `Iron and steel plants` and the `Region` column of `Iron ore mines` are documented so far; the remaining sheets follow.
+The page is being built up sheet by sheet. The China capacity-replacement policy sheets, `Cost of capital`, `Furnace units`, `Power grid emissivity`, `Biomass availability`, `Tariffs`, `CBAM`, the geography columns of `Iron and steel plants` and the `Region` column of `Iron ore mines` are documented so far; the remaining sheets follow.
 
 ## Conventions
 
@@ -12,7 +12,7 @@ The page is being built up sheet by sheet. The China capacity-replacement policy
 
 ## China capacity-replacement policy sheets
 
-Three optional sheets, `Capacity pool - CHN provinces`, `Capacity pool - technologies` and `Capacity pool - opening credits`, feed [China's capacity-replacement policy](../domain_simulation_logic/capacity_replacement_policy.md). They are prepared into fixtures on every data preparation, so authoring errors fail every preparation, but the model reads the fixtures only when a run is started with `--enable-capacity-policy`; without the flag the sheets change nothing. A run with the flag needs all three sheets present and refuses to start on any validation warning left in them. The module internals are in the [technical reference](../domain_simulation_logic/capacity_replacement_policy_reference.md).
+Three optional sheets, `Capacity pool - CHN provinces`, `Capacity pool - technologies` and `Capacity pool - opening credits`, feed [China's capacity-replacement policy](../domain_simulation_logic/plant_agent_model/capacity_replacement_policy.md). They are prepared into fixtures on every data preparation, so authoring errors fail every preparation, but the model reads the fixtures only when a run is started with `--enable-capacity-policy`; without the flag the sheets change nothing. A run with the flag needs all three sheets present and refuses to start on any validation warning left in them. The module internals are in the [technical reference](../domain_simulation_logic/plant_agent_model/capacity_replacement_policy_reference.md).
 
 ### Capacity pool - CHN provinces
 
@@ -174,7 +174,7 @@ This section covers the `Region` column only; the capacity, cost and price colum
 
 **Rules enforced at preparation** (error): a mine with capacity in any year whose `Region` is not in the table. Mines with no capacity in any year are skipped before the check. The mapping lives in code (`translate_mine_regions_to_iso3` in `excel_reader.py`), so a new mine country needs a code change, not only a workbook edit.
 
-Before this check, an unmapped region gave the mine an empty ISO-3 code and its ore travelled without transport costs or tariffs in the trade model; see [Fixes that affect comparability between runs](../domain_simulation_logic/outputs_and_postprocessing.md#fixes-that-affect-comparability-between-runs).
+Before this check, an unmapped region gave the mine an empty ISO-3 code and its ore travelled without transport costs or tariffs in the trade model; see [Fixes that affect comparability between runs](../domain_simulation_logic/overarching_elements/outputs_and_postprocessing.md#fixes-that-affect-comparability-between-runs).
 
 ## Iron and steel plants
 
@@ -191,7 +191,7 @@ The older plant sheet, read instead of `Furnace units` when data preparation run
 - warning: a combined `ISO3` value and a different `geo_unit` value on the same row
 - a sheet with no `ISO3` column takes the country from its `Country` column (workbooks older than master input v2.2); a sheet with neither column is rejected
 
-The country and province come only from these columns. The model no longer derives them from the plant's coordinates. See [Sub-national Geography](../domain_simulation_logic/sub_national_geography.md) for how province-level values are used.
+The country and province come only from these columns. The model no longer derives them from the plant's coordinates. See [Sub-national Geography](../domain_simulation_logic/overarching_elements/sub_national_geography.md) for how province-level values are used.
 
 ## Power grid emissivity
 
@@ -230,6 +230,52 @@ Despite its name, the sheet carries two kinds of annual limit for the trade mode
 
 **At run start** (error): a bio-PCI region that matches no `tiam-ucl_region` in `Country mapping`, no ISO-3 code and no country name.
 
-**How the trade model applies the limits**: each constrained commodity gets a synthetic supplier (`bio_pci_supply_process_center`, `co2_stored_supply_process_center`) with no production cost, connected to every production process; the per-region or per-country limits then cap the flows from it. Scrap is not limited this way: scrap availability comes from scrap suppliers. The `co2_stored` limits also set the budget of the [CO2 storage gate](../domain_simulation_logic/co2_storage_gate.md).
+**How the trade model applies the limits**: each constrained commodity gets a synthetic supplier (`bio_pci_supply_process_center`, `co2_stored_supply_process_center`) with no production cost, connected to every production process; the per-region or per-country limits then cap the flows from it. Scrap is not limited this way: scrap availability comes from scrap suppliers. The `co2_stored` limits also set the budget of the [CO2 storage gate](../domain_simulation_logic/plant_agent_model/co2_storage_gate.md).
 
-Before the kg conversion, bio-PCI limits were read 1000 times too high and never bound; see [Fixes that affect comparability between runs](../domain_simulation_logic/outputs_and_postprocessing.md#fixes-that-affect-comparability-between-runs).
+Before the kg conversion, bio-PCI limits were read 1000 times too high and never bound; see [Fixes that affect comparability between runs](../domain_simulation_logic/overarching_elements/outputs_and_postprocessing.md#fixes-that-affect-comparability-between-runs).
+
+## Tariffs
+
+One row per tariff, quota, or both, on a trade route. The sheet is prepared into `tariffs.json` by `steelo-data-prepare`; the model reads it on every run. How the trade model applies the rows is described in [Tariffs, Quotas and Carbon Border Adjustments](../domain_simulation_logic/trade_model/trade_policy.md#tariffs-and-quotas).
+
+| Column | Allowed values | What the model does with it |
+|---|---|---|
+| `Tariff scenario name` | Free text | Labels the row. Rows with a blank name are dropped. |
+| `From ISO3` | An ISO-3 code, a trade bloc, `NOT <bloc>`, `NOT <ISO-3>` or `*` | The exporting side. A bloc is any True/False column of `Country mapping`, for example `EU` or `EFTA/EUCU`; see [Country and bloc entries](../domain_simulation_logic/trade_model/trade_policy.md#country-and-bloc-entries). Data preparation writes one tariff for every exporter and importer pair and drops pairs within one country. |
+| `To ISO3` | As `From ISO3` | The importing side. |
+| `Commodity` | A commodity name, for example `steel`, or `*` for every commodity | Matched after name normalisation. |
+| `Tax [$/t]` | A number in USD per tonne, or blank | Added to the cost of every tonne shipped on the route. |
+| `Tax [%]` | A fraction (`0.25` = 25%), or blank | Converted each year to USD per tonne at the average price of the commodity in the exporting country. |
+| `Quota [t]` | Tonnes per year, or blank | Caps the flow on each exporter and importer pair. `0` bans the route. A quota on a bloc caps each member country separately, not the bloc as a whole. |
+| `Start year` | A year, or blank | First year the row applies. Blank means 2000. |
+| `End year` | A year, or blank | Last year the row applies. Blank means 2100. |
+| `Metric (Volume/Emissions)` | Free text | Stored; not used by the model. |
+
+**Rows skipped at preparation**: a row whose taxes are both blank or zero and whose quota is blank sets nothing and is dropped. A zero quota is kept.
+
+**Rules enforced at preparation** (error): a `NOT <X>` entry where `<X>` is neither a trade bloc nor a known ISO-3 code.
+
+**Not caught**: any other entry that is not a known bloc is taken as an ISO-3 code as written. A misspelt bloc, such as `EU ` with a trailing space, therefore becomes a country that matches no flows, and the row silently has no effect.
+
+**At run time**: when several rows give the same exporter, importer and commodity, the lowest quota applies and fixed taxes add up. A percentage tax replaces any tax already set by an earlier row instead of adding to it. A percentage tax on an exporter with no average commodity price is skipped with a warning.
+
+## CBAM
+
+Defines the carbon border adjustment mechanisms. The sheet is prepared into `carbon_border_mechanisms.json` by `steelo-data-prepare`; the model reads it on every run. How the charge is calculated is described in [Carbon border adjustments](../domain_simulation_logic/trade_model/trade_policy.md#carbon-border-adjustments).
+
+The first column holds the row labels. Every other column is one mechanism. Its header must name a trade bloc column of `Country mapping`, which defines the member countries. Headers are normalised the same way as bloc names, so `EFTA/EUCU` matches the `EFTA_EUCU` bloc. The rows are read **by position**, not by label, so keep them in this order:
+
+| Row | Allowed values | What the model does with it |
+|---|---|---|
+| 1. `CBAM active?` | `1`, `0` or blank | Only columns with `1` become mechanisms. |
+| 2. `Year CBAM begins` | A year | First year imports into the bloc are charged. A blank or invalid year skips the mechanism with a warning. |
+| 3. `Year CBAM ends` | A year, or blank | Last year of the charge. Blank means it never ends. |
+| 4. `Common carbon cost across the bloc?` | `1`, `0` or blank | `1` prices the border for every member at the bloc's own row of `Carbon cost`. Otherwise each member uses its national carbon price. If the whole row is missing, every mechanism uses national prices. |
+
+**Rules at preparation**: none raise an error. A sheet with fewer than three rows produces no mechanisms, with a warning.
+
+**At run time**: a mechanism whose header matches no countries in `Country mapping` charges nothing and is reported with a warning. A member with no carbon price is not charged, and the model logs a warning for it each year.
+
+**Not caught**: with the common-price flag set, a bloc that has no row on the `Carbon cost` sheet is priced at zero, so its members charge nothing, without a warning.
+
+**Parameters that interact**: `carbon_border_export_rebates` (CLI `--cbam-rebate`, default off) also rebates the carbon already paid on exports leaving a member country.

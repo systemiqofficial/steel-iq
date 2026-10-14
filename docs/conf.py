@@ -29,10 +29,28 @@ if _sphinx_tags is not None and hasattr(_sphinx_tags, "has"):
 
 extensions = [
     "myst_parser",
+    "sphinx_reredirects",
     # Future: 'sphinx.ext.autodoc' when API docs needed
     # Future: 'sphinx.ext.napoleon' for Google-style docstrings
     # Future: 'sphinx.ext.autodoc_typehints' for type hint rendering
 ]
+
+# Old page path -> new location, relative to the old page. Keeps published links working after a move.
+redirects = {
+    "domain_simulation_logic/co2_storage_gate": "plant_agent_model/co2_storage_gate.html",
+    "domain_simulation_logic/capacity_replacement_policy": "plant_agent_model/capacity_replacement_policy.html",
+    "domain_simulation_logic/capacity_replacement_policy_reference": (
+        "plant_agent_model/capacity_replacement_policy_reference.html"
+    ),
+    "domain_simulation_logic/plant_agent_model/plant_agent_model_logic": (
+        "overview_plant_agent_model.html#how-the-agents-decide"
+    ),
+    "user_guide/commandline_entrypoints": "cli_commands.html#data-preparation-commands",
+    "domain_simulation_logic/environment": "overarching_elements/environment.html",
+    "domain_simulation_logic/sub_national_geography": "overarching_elements/sub_national_geography.html",
+    "domain_simulation_logic/checkpoint": "overarching_elements/checkpoint.html",
+    "domain_simulation_logic/outputs_and_postprocessing": "overarching_elements/outputs_and_postprocessing.html",
+}
 
 templates_path = ["_templates"]
 exclude_patterns = [
@@ -53,12 +71,10 @@ source_suffix = {
 root_doc = "README"
 
 PUBLIC_EXCLUDE_PATTERNS = [
+    "README.md",  # Internal front page; its toctrees would leak into the public sidebar
     "architecture/adr/**",
-    "dashboard/concept.md",
     "dashboard/custom_repositories.md",
-    "dashboard/design_approaches.md",
     "dashboard/parallel_workers.md",
-    "dashboard/user_stories.md",
     "data_management/**",
     "development/**",
     "legacy_docs/**",
@@ -67,6 +83,9 @@ PUBLIC_EXCLUDE_PATTERNS = [
 if IS_PUBLIC_BUILD:
     root_doc = "public_index"
     exclude_patterns.extend(PUBLIC_EXCLUDE_PATTERNS)
+    redirects["README"] = "public_index.html"
+else:
+    exclude_patterns.append("public_index.md")
 
 # -- MyST parser configuration -----------------------------------------------
 
@@ -77,14 +96,13 @@ myst_enable_extensions = [
     "fieldlist",  # Field lists
 ]
 
-myst_heading_anchors = 3
+myst_heading_anchors = 4
 
 # Suppress warnings for known issues in existing documentation
 # These should be fixed over time but don't block the documentation build
 suppress_warnings = [
     "myst.header",  # Non-consecutive header levels (existing docs)
     "misc.highlighting_failure",  # Unknown lexers (mermaid, dotenv, etc.)
-    "toc.not_included",  # Documents not in toctree (working files, etc.)
     "toc.excluded",  # Internal toctree entries dropped from public build
     "toc.not_readable",  # Internal-only documents excluded from build
 ]

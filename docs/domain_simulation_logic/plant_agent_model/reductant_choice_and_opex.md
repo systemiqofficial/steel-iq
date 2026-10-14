@@ -145,7 +145,7 @@ A candidate with no expected production cannot be priced. `scale_fopex_to_produc
 The pick for the first operating year (`picks[0]`) is the reductant the investment commits to. When it differs from the reductant used to build the candidate BOM, the model rebuilds the BOM for the committed reductant. Material rows do not depend on the reductant; only the energy rows change. The committed reductant then flows to:
 
 - **The commit commands**: `ChangeFurnaceGroupTechnology` and `AddFurnaceGroup` carry it, and new plants store it in their cost data, so the built asset starts on the reductant the NPV evaluated.
-- **The CO2 storage gates**: the switch and expansion gates size a CCS (carbon capture and storage) candidate's storage need with this pick. See [CO2 Storage Gate](../co2_storage_gate.md).
+- **The CO2 storage gates**: the switch and expansion gates size a CCS (carbon capture and storage) candidate's storage need with this pick. See [CO2 Storage Gate](co2_storage_gate.md).
 
 ### Debugging
 

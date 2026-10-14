@@ -6,7 +6,7 @@ never constructs one, so it writes no files rather than empty ones. All
 amounts are model tonnes, suffixed ``_t``. Blank cells mean not-applicable,
 except ``region_tag`` (untagged) and the owner columns (the unowned pot).
 Vocabularies, columns and the reconciliation invariant:
-docs/domain_simulation_logic/capacity_replacement_policy_reference.md#artefacts-and-the-reconciliation-contract.
+docs/domain_simulation_logic/plant_agent_model/capacity_replacement_policy_reference.md#artefacts-and-the-reconciliation-contract.
 """
 
 import csv

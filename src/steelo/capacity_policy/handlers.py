@@ -9,7 +9,7 @@ domain. The motion handlers also feed the always-bound global recorder of
 membership: handlers resolve ``uow.plant_groups.get_by_plant_id(...)``, not
 the events' ``owner_id``, which still reports ``indi_<iso3>`` for an
 attributed greenfield plant; a plant with no registered group raises.
-See docs/domain_simulation_logic/capacity_replacement_policy_reference.md#binding-lifecycle.
+See docs/domain_simulation_logic/plant_agent_model/capacity_replacement_policy_reference.md#binding-lifecycle.
 """
 
 import logging

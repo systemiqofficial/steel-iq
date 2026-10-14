@@ -110,22 +110,7 @@ Trade-LP setup, the average-commodity-price calculation in `Environment.calculat
 2. **Absolute taxes**: Fixed cost per ton ($/ton)
 3. **Percentage taxes**: Cost based on commodity price (% of market price)
 
-**Features:**
-- Wildcard support for country groups (e.g., "any country to EU")
-- Handles iron product families (hot metal, pig iron, DRI → "iron")
-- Accumulates multiple taxes on same route
-
-**`From ISO3` / `To ISO3` syntax in the `Tariffs` master-input sheet.** Each entry resolves to a list of ISO3 codes via `_resolve_iso3_or_bloc_entry()`:
-
-| Entry | Resolves to |
-|-------|-------------|
-| `<ISO3>` (e.g. `CHN`) | The single country |
-| `<bloc>` (e.g. `EU`) | All countries flagged for that bloc on the `Country mapping` sheet |
-| `NOT <bloc>` (e.g. `NOT EU`) | All countries *not* flagged for that bloc |
-| `NOT <ISO3>` (e.g. `NOT DEU`) | All known countries except that one |
-| `*` | Kept as a literal wildcard for downstream matching |
-
-Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASEAN`, `RCEP`. Membership comes from boolean columns on each `CountryMapping` record (the legacy `Trade bloc definitions` sheet with one column per region marked `X` is no longer read). For `NOT <X>`, the resolver first looks up `<X>` as a bloc and falls back to treating it as an ISO3 code; an unknown `<X>` raises `ValueError` rather than silently producing the universe. Adding a new bloc requires (a) adding a boolean column to the `Country mapping` sheet, (b) adding the field to the `CountryMapping` model, and (c) appending the bloc name to `supported_blocs` in `read_tariffs()` / `find_iso3s_of_trade_bloc()`.
+See [Tariffs, Quotas and Carbon Border Adjustments](trade_policy.md#tariffs-and-quotas) for the `Tariffs` sheet, the country and bloc syntax, and how overlapping rows combine.
 
 ---
 
@@ -195,16 +180,9 @@ Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASE
 #### `adapt_allocation_costs_for_carbon_border_mechanisms()`
 **Purpose:** Charges imports into carbon-border regions on the embedded direct emissions of the product, at the destination's carbon price, net of carbon already paid upstream.
 
-**What it models:** For every legal arc from a production centre into a country covered by an active mechanism, the allocation cost rises by `max(0, E × P_d − C)`, where `E` is the source's own plus upstream direct emission intensity (tCO2/t), `P_d` the destination's carbon price (from `resolve_destination_carbon_prices()`) and `C` the carbon cost already paid at the source and upstream of it (USD/t). The own-stage part of `E` and `C` uses this year's emission factors and carbon price. The upstream part of both comes from last year's solved trade graph (see `update_furnace_group_embedded_carbon()` in the TM-PAM connector), so for every exporter a change of suppliers reaches the charge one year later. Active furnace groups that did not run last year take the average of observed peers of the same technology (see `Environment.fill_missing_upstream_embedded_carbon()`). In the first simulated year nothing has been observed, so `E` and `C` cover the own stage only.
+**What it models:** For every legal arc from a production centre into a country covered by an active mechanism, the allocation cost rises by `max(0, E × P_d − C)`: the product's embedded direct emissions at the destination's carbon price, net of carbon already paid. Non-zero adjustments are recorded on `Allocations.carbon_border_charges`.
 
-**Rules:**
-- Two countries inside one mechanism's applying set never adjust each other's flows, whatever other mechanisms cover either of them.
-- Every arc evaluates every mechanism and sums the result, so the outcome does not depend on mechanism order.
-- Supplier sources are skipped (their production cost is a raw-material price); a destination without a carbon price series is not charged and is warned about once.
-- Export rebates are off by default. With `SimulationConfig.carbon_border_export_rebates = True` the mirror term `min(0, E × P_d − C)` is added on arcs leaving a covered country, so every cross-border arc then carries exactly `E × P_d`.
-- `P_d` comes from `resolve_destination_carbon_prices()`: a country covered by a mechanism whose CBAM sheet row "Common carbon cost across the bloc?" is 1 is priced at that bloc's row of the Carbon cost sheet (kept under the normalised bloc name, e.g. `EFTA_EUCU`), otherwise at its national series; a country under several mechanisms takes the highest. Plant costs always use the national series.
-
-**Outputs:** Non-zero adjustments are recorded per arc on `Allocations.carbon_border_charges` and booked into the importer's material cost like tariffs; `log_carbon_border_outcomes()` summarises the charges the solved flows actually carry each year.
+See [Tariffs, Quotas and Carbon Border Adjustments](trade_policy.md#carbon-border-adjustments) for the inputs, the rules and export rebates.
 
 ---
 

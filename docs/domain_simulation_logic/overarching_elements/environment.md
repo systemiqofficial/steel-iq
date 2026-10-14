@@ -37,7 +37,7 @@ The **Environment** class represents the macro-scale context in our agent-based 
 ### Industrial Asset Cost of Capital
 
 - **`initiate_cost_of_capital`:**  
-  Builds `cost_of_debt_by_tech` and `cost_of_equity_by_tech` (iso3 → technology → rate) from the `Cost of capital` sheet. Cost of debt sets debt repayment; cost of equity is the discount rate for NPV and COSA. The sheet's `Cost of capital` column is not used. See the [Master Input Reference](../user_guide/master_input_reference.md#cost-of-capital).
+  Builds `cost_of_debt_by_tech` and `cost_of_equity_by_tech` (iso3 → technology → rate) from the `Cost of capital` sheet. Cost of debt sets debt repayment; cost of equity is the discount rate for NPV and COSA. The sheet's `Cost of capital` column is not used. See the [Master Input Reference](../../user_guide/master_input_reference.md#cost-of-capital).
 
 ### Cost Curve Generation
 
@@ -101,7 +101,7 @@ The Environment owns the per-country CO2 storage budget consumed by CCS investme
 
 Intra-year handler hooks also mutate the counters as plants transition between statuses (announced→construction, tech-switch commit, expansion), so gate decisions made later in the same year see earlier commitments.
 
-See [CO2 Storage Capacity Gate](co2_storage_gate.md) for a narrative walkthrough of the five gates, the unified headroom formula, and the design choices behind them.
+See [CO2 Storage Capacity Gate](../plant_agent_model/co2_storage_gate.md) for a narrative walkthrough of the five gates, the unified headroom formula, and the design choices behind them.
 
 ## Conclusion
 

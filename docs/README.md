@@ -10,12 +10,6 @@ Welcome to the Steel Model documentation. This guide will help you navigate the 
 
 ## Quick Navigation
 
-:::{only} public
-- **[User Guide](user_guide/overview_user_guide)** - Install, configure, and operate the Steel Model
-- **[Model Overview](domain_simulation_logic/overview_simulation)** - Understand how simulations work conceptually
-- **[Dashboards](dashboard/overview_dashboard)** - Explore the UI and monitoring tools
-:::
-
 :::{only} not public
 - **[User Guide](user_guide/overview_user_guide)** - Installation, CLI commands, configuration, and running simulations
 - **[Domain Logic](domain_simulation_logic/overview_simulation)** - Plant Agent Model, Trade Model, and Geospatial Model
@@ -28,95 +22,27 @@ Welcome to the Steel Model documentation. This guide will help you navigate the 
 :::{only} not public
 
 ```{toctree}
-:maxdepth: 2
+:maxdepth: 1
 :caption: Getting Started
 
 user_guide/overview_user_guide
-user_guide/installation_guide
-user_guide/running_simulations_locally
-user_guide/configuration
-user_guide/master_input_reference
-user_guide/cli_commands
-user_guide/commandline_entrypoints
-user_guide/LOGGING_GUIDE
 ```
 
 ```{toctree}
-:maxdepth: 2
-:caption: Architecture
-
-architecture/overview_architecture
-architecture/adr/index
-```
-
-```{toctree}
-:maxdepth: 2
-:caption: Development
-
-development/overview_development
-development/just_commands
-development/electron_app
-development/style_guide_and_variable_naming
-development/create_modelrun_native_validation
-development/technical_debt
-```
-
-```{toctree}
-:maxdepth: 2
-:caption: Data Management
-
-data_management/overview_data_management
-data_management/adding_excel_data_howto
-data_management/python_api
-data_management/django_data_management
-data_management/data_packages
-data_management/cli_commands
-```
-
-```{toctree}
-:maxdepth: 2
-:caption: Dashboard & UI
-
-dashboard/overview_dashboard
-dashboard/django_electron_overview
-dashboard/parallel_workers
-dashboard/user_stories
-dashboard/design_approaches
-dashboard/custom_repositories
-dashboard/concept
-```
-
-```{toctree}
-:maxdepth: 2
-:caption: Domain & Simulation Logic
+:maxdepth: 1
+:caption: Model Logic
 
 domain_simulation_logic/overview_simulation
-domain_simulation_logic/environment
-domain_simulation_logic/sub_national_geography
-domain_simulation_logic/checkpoint
-domain_simulation_logic/plant_agent_model/overview_plant_agent_model
-domain_simulation_logic/plant_agent_model/agent_definitions
-domain_simulation_logic/plant_agent_model/plant_agents_model_orchestration
-domain_simulation_logic/plant_agent_model/plant_agent_model_logic
-domain_simulation_logic/plant_agent_model/market_price_calculation
-domain_simulation_logic/plant_agent_model/furnace_group_strategy
-domain_simulation_logic/plant_agent_model/plant_expansions
-domain_simulation_logic/plant_agent_model/introduction_of_new_technologies
-domain_simulation_logic/co2_storage_gate
-domain_simulation_logic/capacity_replacement_policy
-domain_simulation_logic/capacity_replacement_policy_reference
-domain_simulation_logic/plant_agent_model/economic_considerations
-domain_simulation_logic/plant_agent_model/reductant_choice_and_opex
-domain_simulation_logic/plant_agent_model/debt_accumulation_impact
-domain_simulation_logic/plant_agent_model/calculate_costs
-domain_simulation_logic/plant_agent_model/trade_model_connector
-domain_simulation_logic/geospatial_model/new_plant_opening
-domain_simulation_logic/geospatial_model/priority_location_selection
-domain_simulation_logic/geospatial_model/baseload_optimization_atlas
-domain_simulation_logic/geospatial_model/overview_geospatial_model
-domain_simulation_logic/trade_model/overview_trade_model
-domain_simulation_logic/trade_model/trade_model_setup
-domain_simulation_logic/outputs_and_postprocessing
+```
+
+```{toctree}
+:maxdepth: 1
+:caption: Developer Docs
+
+architecture/overview_architecture
+data_management/overview_data_management
+dashboard/overview_dashboard
+development/overview_development
 ```
 
 ```{toctree}
