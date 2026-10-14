@@ -16,6 +16,7 @@ from steelo.domain import events, commands
 from steelo.domain.calculate_costs import (
     build_direct_ghg_lookup,
     calculate_capex_with_subsidies,
+    carbon_price_from_series,
     calculate_debt_repayment,
     calculate_debt_with_subsidies,
     calculate_energy_costs_and_most_common_reductant,
@@ -2406,15 +2407,18 @@ class FurnaceGroup:
         options.
 
         Steps:
-        1. Calculate Cost of Stranded Assets (COSA) for abandoning current technology (max of remaining debt and
-            economic COSA).
+        1. Calculate Cost of Stranded Assets (COSA) for abandoning current technology: the discounted
+            foregone operating margin after the construction window (remaining debt is excluded; it
+            persists via the legacy-debt schedule).
         2. For each allowed technology transition:
            a. Apply subsidies to capex and cost of debt.
-           b. Determine if brownfield renovation (same tech) or greenfield installation (new tech).
-           c. Get or calculate BOM, utilization rate, and emissions.
-           d. Calculate NPV including carbon costs and operating subsidies.
+           b. Determine if brownfield renovation (same tech, no construction lag) or greenfield
+              installation (new tech).
+           c. Get the BOM, utilization rate and output shares.
+           d. Calculate NPV from materials-only VOPEX + scaled fixed OPEX + the year-wise reductant
+              score (energy, carbon, by-products), with operating subsidies per year.
            e. Adjust NPV by subtracting COSA (for technology switches only).
-        3. Return NPV comparison results with BOMs for each viable technology.
+        3. Return NPV comparison results with BOMs and committed reductants for each viable technology.
 
         Args:
             market_price_series (dict[str, list[float]]): Future market prices for steel and iron in $/tonne.
@@ -2458,7 +2462,7 @@ class FurnaceGroup:
                 at its entry; None (default) evaluates everything at the group's own capacity.
 
         Returns:
-            tuple: (npv_dict, npv_capex_dict, cosa, bom_dict) where:
+            tuple: (npv_dict, npv_capex_dict, cosa, bom_dict, reductant_dict) where:
                 - npv_dict (dict[str, float]): NPV in $ for each evaluated technology (after COSA adjustment for
                     switches).
                 - npv_capex_dict (dict[str, float]): Effective capex per tonne in $ after subsidies for each technology.
@@ -5240,11 +5244,11 @@ class Plant:
             Updates carbon costs for all furnace groups via set_carbon_costs_for_emissions().
 
         Notes:
-            - If the year is not in the carbon cost series, defaults to $0/tCO2.
+            - Without a carbon cost series the price is $0/tCO2; years beyond the series end
+              reuse its last value (carbon_price_from_series).
             - Carbon costs affect furnace group variable costs in the trade optimization model.
         """
-        # Retrieve carbon price for the year, defaulting to 0 if not found
-        carbon_price = self.carbon_cost_series.get(year, 0.0)
+        carbon_price = carbon_price_from_series(self.carbon_cost_series, year)
 
         # Apply carbon price to all furnace groups
         for furnace_group in self.furnace_groups:
@@ -8572,8 +8576,9 @@ class Environment:
 
         Hydrogen Cost Flow:
             - Bootstrap: Uses hydrogen from Excel input costs
-            - Year Start: calculate_capped_hydrogen_costs_per_country() runs, then update_furnace_hydrogen_costs()
-              sets fg.energy_costs["hydrogen"] with capped prices
+            - Year Start: the year's capped prices are read from the series precomputed at bootstrap
+              (capped_hydrogen_costs_for_year()), then update_furnace_hydrogen_costs() sets
+              fg.energy_costs["hydrogen"] with them
             - This method: Preserves those capped prices instead of overwriting with Excel's static values
 
         Args:
@@ -8786,14 +8791,10 @@ class Environment:
         Returns:
             The exogenous carbon price; 0.0 for countries without a carbon-price
             series (no policy). Years beyond the series reuse its last value; years
-            missing inside the covered range raise KeyError rather than pricing
+            missing inside the covered range raise ValueError rather than pricing
             carbon as zero.
         """
-        series = self.carbon_costs.get(iso3)
-        if not series:
-            return 0.0
-        last_year = max(series)
-        return series[min(year, last_year)]
+        return carbon_price_from_series(self.carbon_costs.get(iso3), year)
 
     def _unsubsidised_energy_costs_for_year(self, location: "Location", year: Year) -> dict[str, float]:
         """
@@ -8997,7 +8998,7 @@ class Environment:
         """
 
         for p in world_plants:
-            carbon_price = self.carbon_costs.get(p.location.iso3, {}).get(self.year, 0.0)
+            carbon_price = self.carbon_price_for_year(p.location.iso3, self.year)
             for fg in p.furnace_groups:
                 fg.technology.dynamic_business_case = self.dynamic_feedstocks.get(
                     fg.technology.name, self.dynamic_feedstocks.get(fg.technology.name.lower(), [])
@@ -10793,12 +10794,10 @@ class Environment:
         for pl in world_plants:
             if pl.location.iso3 not in self.carbon_costs:
                 continue
-            year_key = Year(self.year)
-            if year_key not in self.carbon_costs[pl.location.iso3]:
-                continue
+            carbon_price = self.carbon_price_for_year(pl.location.iso3, Year(self.year))
             for fg in pl.furnace_groups:
                 fg.set_carbon_costs_for_emissions(
-                    carbon_price=self.carbon_costs[pl.location.iso3][year_key],
+                    carbon_price=carbon_price,
                     chosen_emissions_boundary_for_carbon_costs=self.config.chosen_emissions_boundary_for_carbon_costs,
                 )
 
@@ -10834,7 +10833,7 @@ class Environment:
         source_counts = {"bom": 0, "avg_bom": 0, "equal": 0}
         year = Year(self.year)
         for plant in world_plants:
-            price = plant.carbon_cost_series.get(year, 0.0)
+            price = carbon_price_from_series(plant.carbon_cost_series, year)
             for fg in plant.furnace_groups:
                 if fg.status.lower() not in self.config.active_statuses:
                     continue

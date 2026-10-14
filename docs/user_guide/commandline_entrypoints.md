@@ -11,7 +11,8 @@ usage: steelo-data-prepare [-h] [--output-dir OUTPUT_DIR]
                            [--master-excel-file MASTER_EXCEL_FILE]
                            [--geo-version GEO_VERSION] [--skip-existing]
                            [--no-skip-existing] [--list-files] [--verbose]
-                           [--force-refresh]
+                           [--force-refresh] [--use-furnace-units-sheet]
+                           [--use-plants-sheet]
 
 Prepare all data files for simulation.
 ```
@@ -22,9 +23,9 @@ This command recreates JSON repositories from downloaded data packages.
 
 ```shell
 ❯ steelo-data-recreate -h
-usage: steelo-data-recreate [-h] [--force-download] [--master-excel MASTER_EXCEL]
-                            [--track-timing] [--list-packages]
-                            [package_name] [output_dir]
+usage: steelo-data-recreate [-h] [--package PACKAGE] [--output-dir OUTPUT_DIR]
+                            [--cache-dir CACHE_DIR] [--force-download]
+                            [--use-furnace-units-sheet] [--use-plants-sheet]
 
 Recreate JSON repositories from downloaded data packages (similar to recreate_sample_data).
 ```

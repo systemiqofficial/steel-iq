@@ -560,6 +560,20 @@ def test_reductant_score_defaults_reproduce_legacy_choice():
     assert fg_legacy.energy_vopex_breakdown_by_input == fg_default.energy_vopex_breakdown_by_input
 
 
+def test_annual_repick_holds_carbon_price_beyond_series_end():
+    """A carbon series ending before the simulation year keeps its last value in the
+    annual re-pick, as the investment score series does, instead of dropping to zero."""
+    env = _make_env_for_feedstocks({"DRI": _dri_feedstocks()})
+    env.carbon_costs = {"NZL": {Year(2020): 10.0, Year(2021): 10.0}}  # ends before env.year 2025
+    fg = _make_fg("fg_open", "DRI", "coal", status="operating")
+    fg.set_energy_costs(coal=1.0, natural_gas=2.0)
+
+    env.set_primary_feedstocks_in_furnace_groups(world_plants=[_make_dri_plant(fg)])
+
+    # Energy-only coal wins (10 vs 20); at the held $10 carbon price gas wins (30 vs 25).
+    assert fg.chosen_reductant == "natural_gas"
+
+
 def test_reductant_score_material_drift_warning():
     """A cross-reductant material difference triggers the data-drift warning."""
     import logging

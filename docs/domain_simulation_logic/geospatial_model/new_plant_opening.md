@@ -165,7 +165,7 @@ Gathers all cost inputs needed for NPV calculation for each location-technology 
 | Input Category | Components | Source |
 |----------------|-----------|---------|
 | Energy costs | Electricity, hydrogen, gas, coal prices | Geography-resolved data (province row when the site falls in one, else country) + site-specific renewable calculations for electricity and hydrogen |
-| Financial parameters | Cost of debt, cost of equity | Country-level financial data |
+| Financial parameters | Cost of debt, cost of equity | Per country and technology (`Cost of capital` sheet) |
 | CAPEX | Capital expenditure per tonne capacity | Regional technology-specific estimates |
 | OPEX | Fixed operating costs per tonne | Country and technology-specific |
 | Infrastructure | Railway buildout cost | From priority location selection |

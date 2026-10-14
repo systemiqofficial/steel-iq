@@ -144,11 +144,12 @@ Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASE
 ---
 
 #### Secondary Feedstock & Aggregated Constraints
-**Purpose:** Limits scrap availability and enforces technology-specific feedstock ratios.
+**Purpose:** Limits constrained secondary feedstocks and enforces technology-specific feedstock ratios.
 
 **Secondary feedstock constraints:**
-- Regional limits on scrap, recycled materials
-- Example: "Europe can only source 50M tons scrap/year"
+- Annual limits on `bio_pci` per TIAM-UCL region and on `co2_stored` (CO2 storage) per country, from the [`Biomass availability`](../../user_guide/master_input_reference.md#biomass-availability) and [`CO2 storage`](../../user_guide/master_input_reference.md#co2-storage) sheets respectively
+- Example: "furnace groups in Western Europe can use at most X t of bio-PCI in 2030"
+- Each constrained commodity comes from a synthetic zero-cost supplier connected to every production process; the limit caps its flows into the region. Scrap is not limited this way: its availability comes from scrap suppliers.
 
 **Aggregated constraints:**
 - Technology-level min/max ratios
@@ -220,7 +221,7 @@ Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASE
 **Physical constraints:**
 - `hot_metal_radius`: Maximum transport distance for hot commodities (~5 km by default). Enforced in several layers:
   1. **LP-build time** — international hot-commodity flows (different ISO3) are fixed to zero via `fix_to_zero_allocations_where_distance_doesnt_match_commodity()`. With `geographical_clustering_scope` on `"plant"` (the default) or `"plant_group"`, hot flows between meta-FGs of different plants or plant groups are additionally zeroed.
-  2. **Clustering** — BOF FGs with no active BF/ESF/SR within radius in the same country are excluded from their cluster. BOF cluster capacity is capped at `min(physical_cap, Σ[reachable_BF_cap] / min_hot_metal_share)` so the LP cannot over-allocate.
+  2. **Clustering** — BOF FGs with no active [hot-metal producer](overview_trade_model.md#hot-metal-producers) (any technology whose Bill of Materials outputs hot metal) within radius in the same country are excluded from their cluster. BOF cluster capacity is capped at `min(physical_cap, Σ[reachable hot-metal producer capacity] / min_hot_metal_share)` so the LP cannot over-allocate.
   3. **Disaggregation pre-pass (strict)** — hot flows to destinations with a BOM minimum-share constraint are solved under strict radius with per-FG physical-capacity caps: radius-violating edges are omitted from the min-cost-flow graph, and when a geographic pocket can't physically meet its demand, destination demand is scaled down (producing downstream shortfalls the drift mechanism rebalances).
   4. **Drift + rebalance** — clusters whose actual joint-strict flow differs from LP get their Case 2 (cluster → demand) batches scaled by the drift factor and their Case 3 (supplier → cluster) batches rebalanced so per-cluster demand matches actual production × BOM ratio while per-supplier totals stay below LP (mine capacity hard-bounded).
   5. **Disaggregation (relabeling)** — hot flows without a binding minimum constraint that exceed the radius are relabeled to their cold equivalent (e.g. `dri_high` → `hbi_high`, `hot_metal` → `pig_iron`).
@@ -248,11 +249,10 @@ See the "Disaggregation: Hot-Metal Radius + Minimum-Ratio Enforcement" section i
 The trade model is called during each simulation time step:
 
 1. **Allocation Model** prepares input data (plants, demand, suppliers for current year)
-2. **Setup phase** builds LP model with `set_up_steel_trade_lp()`
-3. **Optional adjustments** apply carbon border mechanisms
-4. **Solve phase** optimizes with `solve_steel_trade_lp_and_return_commodity_allocations()`
-5. **Analysis phase** identifies bottlenecks and validates results
-6. **Allocations** are returned to simulation for plant-level profit calculations
+2. **Setup phase** builds LP model with `set_up_steel_trade_lp()`; active carbon border mechanisms adjust the allocation costs inside `build_lp_model()`, before the objective is built
+3. **Solve phase** optimizes with `solve_steel_trade_lp_and_return_commodity_allocations()`
+4. **Analysis phase** identifies bottlenecks and validates results
+5. **Allocations** are returned to simulation for plant-level profit calculations
 
 ---
 

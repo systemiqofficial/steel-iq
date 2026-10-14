@@ -146,16 +146,13 @@ annual_payment = annual_principal + annual_interest
 - Higher debt → Higher per-tonne cost → Lower competitiveness
 - Debt fully repaid after `plant_lifetime` years (default 20)
 
-### Cost of Debt by Country
-Interest rates vary by location:
+### Cost of Debt and Equity by Country and Technology
+Financing rates vary by country **and** technology, from the [`Cost of capital` sheet](../../user_guide/master_input_reference.md#cost-of-capital):
 ```python
-cost_of_debt_dict = {
-    "USA": 0.05,  # 5%
-    "CHN": 0.04,  # 4%
-    "IND": 0.08,  # 8%
-    # ...
-}
+cost_of_debt_by_tech = {"IND": {"BF": 0.08, "DRI": 0.09, ...}, "DEU": {...}, ...}
+cost_of_equity_by_tech = {"IND": {"BF": 0.12, "DRI": 0.13, ...}, ...}
 ```
+Each candidate is financed at its own technology's rates in the plant's country: cost of debt for the debt schedule, cost of equity as the NPV discount rate. COSA is discounted at the incumbent's cost of equity.
 
 Lower rates → Lower financing costs → More competitive
 
@@ -164,17 +161,20 @@ Lower rates → Lower financing costs → More competitive
 ## 5. Carbon Pricing
 
 ### Carbon Cost Integration
-Carbon costs added to operating expenses:
+Carbon enters the model in three places, always as the carbon price × **direct** emissions in the boundary set by `chosen_emissions_boundary_for_carbon_costs` (default `rs-inspired`):
 
-```python
-unit_carbon_cost = emissions_per_tonne × carbon_price
-unit_production_cost = opex + carbon_cost + debt_repayment
-```
+- **Operating cost.** Each year a furnace group's unit production cost includes its carbon cost per tonne:
+  ```python
+  unit_carbon_cost = direct_emissions_per_tonne × carbon_price
+  unit_production_cost = opex + unit_carbon_cost + debt_repayment + secondary_output_adjustment
+  ```
+  This feeds the cost curve and the balance sheet.
+- **Investment NPVs.** Renovation, switch, expansion and new-plant NPVs carry carbon inside the year-wise reductant score: the carbon price in each operating year × the direct emission factor of the reductant picked for that year. Carbon can therefore change the reductant a plant would run, as well as its NPV. See [Reductant Choice and Investment OPEX](reductant_choice_and_opex.md).
+- **Cost of stranded assets (COSA).** The incumbent's carbon cost series over its remaining life is added to its OPEX when valuing the margin it would forgo.
 
-**Sources of Emissions**:
-- Direct (Scope 1): Process emissions, fossil fuel combustion
-- Indirect (Scope 2): Purchased electricity
-- Supply chain (Scope 3): Upstream material production
+The annual reductant pick uses the same score at the current year's price, so a rising carbon price can move an operating plant to a cleaner reductant. The trade model charges carbon separately in the LP, including carbon border adjustments; see the [Trade Model overview](../trade_model/overview_trade_model.md).
+
+**Emission scopes**: indirect (Scope 2, purchased electricity) and supply-chain (Scope 3) emissions are calculated and reported, but carbon cost charges direct emissions only.
 
 ### Carbon Price Trajectory
 Time-varying carbon prices affect technology competitiveness:
@@ -187,6 +187,8 @@ carbon_cost_series = {
     2050: 300,
 }
 ```
+
+Countries without a carbon price series pay no carbon cost. Years beyond the end of a series reuse its last value, in every lookup (operating cost, reductant pick, investment NPVs and trade LP).
 
 **Impact**:
 - Rising prices → Favor low-carbon technologies (DRI+ESF, EAF with renewables)
