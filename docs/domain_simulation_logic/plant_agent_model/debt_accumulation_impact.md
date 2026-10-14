@@ -264,7 +264,7 @@ Year 31-45: SR debt only ($80M/year)
 
 ## Deferred Switches: When the Legacy Tail Is Measured
 
-A switch decided in year Y does not take effect at once. The furnace group keeps running its old technology during `construction_time` years (C), and the stored switch command runs at year end in Y + C. During construction the group keeps paying its old debt as normal.
+A switch decided in year Y does not take effect at once. The furnace group keeps running its old technology during `construction_time` years (C), and the stored switch command runs when the year rolls over into Y + C (at the end of year Y + C − 1). During construction the group keeps paying its old debt as normal.
 
 The legacy tail is therefore measured from the decision, not from the moment the switch runs:
 
