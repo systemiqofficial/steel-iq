@@ -21,6 +21,7 @@ from steelo.utilities.memory_profiling import MemoryTracker
 
 from .capacity_policy.config import CapacityPolicyConfig
 from .domain import Year, Plant, PlantGroup
+from .domain.models import update_hot_metal_access
 from .domain.constants import CONSTRUCTION_TIME_DEFAULT, RANDOM_SEED_DEFAULT
 from .service_layer.message_bus import MessageBus
 from .economic_models import EconomicModel, PlantAgentsModel, AllocationModel, GeospatialModel
@@ -1340,8 +1341,13 @@ class SimulationRunner:
                                 fg.output_energy_costs,
                                 fg.energy_costs_no_subsidy,
                             )
-            for plant_group in bus.uow.plant_groups.list():
-                plant_group.update_hot_metal_access(bus.env.config.hot_metal_radius)
+            env_config = bus.env.config
+            update_hot_metal_access(
+                bus.uow.plants.list(),
+                env_config.hot_metal_radius,
+                env_config.active_statuses,
+                env_config.geographical_clustering_scope if env_config.enable_furnace_group_clustering else "plant",
+            )
             Simulation(bus=bus, economic_model=AllocationModel()).run_simulation()
             Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()
             Simulation(bus=bus, economic_model=GeospatialModel()).run_simulation()

@@ -2628,9 +2628,9 @@ class FurnaceGroup:
                 logger.info(f"[OPTIMAL TECH] SKIPPING {tech} - No capex data available")
                 continue
 
-            # BOF requires smelter furnace (for pig iron production)
+            # BOF requires an active hot-metal producer within hot_metal_radius
             if tech == "BOF" and not self.has_hot_metal_access:
-                logger.info("[OPTIMAL TECH] SKIPPING BOF - Plant has no smelter furnace (required for BOF)")
+                logger.info("[OPTIMAL TECH] SKIPPING BOF - No active hot-metal producer within radius")
                 continue
 
             # The capacity policy may have shrunk this candidate; everything downstream —
@@ -5312,6 +5312,67 @@ def get_new_plant_id(existent_plant_ids: list[str] = []) -> str:
         return "P000000000001"
 
 
+def can_supply_hot_metal(producer: Plant, plant: Plant, hot_metal_radius: float, clustering_scope: str) -> bool:
+    """Whether hot metal from ``producer`` can reach ``plant`` under the trade LP's rule for hot flows.
+
+    Shared by the renovation access flag and by clustering, so neither keeps a BOF the LP cannot feed:
+        - ``plant`` (also used when clustering is off): within ``hot_metal_radius``, any owner, any country
+        - ``plant_group``: within the radius and in the same ultimate plant group
+        - ``iso3``: within the radius and in the same country
+
+    Args:
+        producer: Plant holding an active hot-metal producer.
+        plant: Plant that would consume the hot metal.
+        hot_metal_radius: Maximum distance (km) over which hot metal can be transported.
+        clustering_scope: ``geographical_clustering_scope``, or ``"plant"`` when clustering is off.
+    """
+    from steelo.adapters.geospatial.geospatial_toolbox import haversine_distance
+
+    if clustering_scope == "plant_group" and producer.ultimate_plant_group != plant.ultimate_plant_group:
+        return False
+    if clustering_scope == "iso3" and producer.location.iso3 != plant.location.iso3:
+        return False
+    distance = haversine_distance(
+        [plant.location.lat, plant.location.lon, producer.location.lat, producer.location.lon]
+    )
+    return distance <= hot_metal_radius
+
+
+def update_hot_metal_access(
+    plants: list[Plant], hot_metal_radius: float, active_statuses: list[str], clustering_scope: str
+) -> None:
+    """Flag every plant (and all its furnace groups) that an active hot-metal producer can feed.
+
+    Reachability follows ``can_supply_hot_metal``, the rule the trade LP and clustering apply to
+    hot-metal flows, so a BOF the LP can feed is never closed or switched at renovation for lack
+    of access.
+
+    Access is a property of the site, not of the technology already there: a BF-only plant
+    has access for a BOF expansion, and any furnace group inherits its plant's flag for a
+    switch to BOF.
+
+    Args:
+        plants: Every plant in the world; producers and candidates are drawn from the same list.
+        hot_metal_radius: Maximum distance (km) over which hot metal can be transported.
+        active_statuses: Furnace group statuses that count as producing; a retired,
+            mothballed or announced BF grants no access.
+        clustering_scope: ``geographical_clustering_scope``, or ``"plant"`` when clustering is off.
+    """
+    active = {status.lower() for status in active_statuses}
+    producer_plants = [
+        plant
+        for plant in plants
+        if any(fg.status.lower() in active and fg.produces_hot_metal for fg in plant.furnace_groups)
+    ]
+
+    for plant in plants:
+        plant.has_hot_metal_access = any(
+            can_supply_hot_metal(producer, plant, hot_metal_radius, clustering_scope) for producer in producer_plants
+        )
+        for fg in plant.furnace_groups:
+            fg.has_hot_metal_access = plant.has_hot_metal_access
+
+
 class PlantGroup:
     def __init__(self, *, plant_group_id: str, plants: list[Plant]) -> None:
         """
@@ -5329,26 +5390,6 @@ class PlantGroup:
         self.plants = plants
         self.balance = 0.0
         self.events: list[events.Event] = []
-
-    def update_hot_metal_access(self, hot_metal_radius: float) -> None:
-        """Flag BOF furnace groups (and their plants) that a hot-metal producer in the group can feed.
-
-        Args:
-            hot_metal_radius: Maximum distance (km) over which hot metal can be transported.
-        """
-        for plant in self.plants:
-            plant.has_hot_metal_access = False  # Initialize hot metal access for the plant
-            for fg in plant.furnace_groups:
-                if fg.technology.name.lower() == "bof":
-                    fg.has_hot_metal_access = False  # Initialize access flag
-                    for other_plant in self.plants:
-                        for other_fg in other_plant.furnace_groups:
-                            if (
-                                other_fg.produces_hot_metal
-                                and plant.distance_to(other_plant.location) <= hot_metal_radius
-                            ):
-                                fg.has_hot_metal_access = True
-                                plant.has_hot_metal_access = True
 
     @property
     def is_dormant(self) -> bool:
