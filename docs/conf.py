@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from typing import Any
 
@@ -72,7 +73,7 @@ root_doc = "README"
 
 PUBLIC_EXCLUDE_PATTERNS = [
     "README.md",  # Internal front page; its toctrees would leak into the public sidebar
-    "architecture/adr/**",
+    "architecture/**",
     "dashboard/custom_repositories.md",
     "dashboard/parallel_workers.md",
     "data_management/**",
@@ -144,6 +145,22 @@ html_context = {
     "commit_short_sha": _compute_short_commit_sha(),
     "is_public_build": IS_PUBLIC_BUILD,
 }
+
+# -- Strip internal-only blocks from the public build -------------------------
+# Sphinx's `only` directive cannot hide headings: sections inside a
+# `:::{only} not public` block still reach the page and the sidebar. In the public
+# build we delete those blocks from the source before parsing. Blocks must not nest.
+_NOT_PUBLIC_BLOCK = re.compile(r"^:::\{only\} not public[ \t]*\n.*?^:::[ \t]*$\n?", re.MULTILINE | re.DOTALL)
+
+
+def _strip_not_public_blocks(app: Any, docname: str, source: list[str]) -> None:
+    source[0] = _NOT_PUBLIC_BLOCK.sub("", source[0])
+
+
+def setup(app: Any) -> None:
+    if IS_PUBLIC_BUILD:
+        app.connect("source-read", _strip_not_public_blocks)
+
 
 # -- Future API documentation setup ------------------------------------------
 # When API documentation is needed, uncomment and configure:

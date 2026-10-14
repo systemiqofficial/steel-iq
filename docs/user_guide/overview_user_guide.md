@@ -155,7 +155,10 @@ The Steel Model uses a structured data flow:
 
 ## Related Documentation
 
+:::{only} not public
 - **[Architecture Overview](../architecture/overview_architecture.md)**: Overall system design
+:::
+
 - **[Dashboard & UI](../dashboard/overview_dashboard.md)**: Web interface and Electron app documentation
 
 ## Getting Help

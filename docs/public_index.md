@@ -12,7 +12,6 @@ stakeholders.
 
 - **[User Guide](user_guide/overview_user_guide)** - Install, configure, and operate the Steel Model
 - **[Model Overview](domain_simulation_logic/overview_simulation)** - Understand how simulations work conceptually
-- **[Architecture](architecture/overview_architecture)** - How the code is structured
 - **[Dashboards](dashboard/overview_dashboard)** - Explore the UI and monitoring tools
 
 ```{toctree}
@@ -27,7 +26,6 @@ user_guide/overview_user_guide
 :maxdepth: 1
 
 domain_simulation_logic/overview_simulation
-architecture/overview_architecture
 ```
 
 ```{toctree}
