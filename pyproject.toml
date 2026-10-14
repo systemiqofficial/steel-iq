@@ -88,15 +88,12 @@ dev = [
 line-length = 120
 
 [project.scripts]
-show_plants_on_map = "steelo.entrypoints.cli:show_plants_on_map"
-show_cost_of_x_on_map = "steelo.entrypoints.cli:show_cost_of_x_on_map"
 run_simulation = "steelo.entrypoints.cli:run_full_simulation"
 llm-content = "steelo.entrypoints.developer_tools:llm_content"
 steelo-data-download = "steelo.entrypoints.data_cli:steelo_data_download"
 steelo-data-list = "steelo.entrypoints.data_cli:steelo_data_list"
 steelo-data-verify = "steelo.entrypoints.data_cli:steelo_data_verify"
 steelo-data-validate = "steelo.entrypoints.data_cli:steelo_data_validate"
-test-plotting = "steelo.entrypoints.test_plotting_quick:main"
 steelo-data-convert = "steelo.entrypoints.data_cli:steelo_data_convert"
 steelo-data-recreate = "steelo.entrypoints.data_cli:steelo_data_recreate"
 steelo-data-extract-geo = "steelo.entrypoints.data_cli:steelo_data_extract_geo"
@@ -108,7 +105,6 @@ list-binaries = "steelo.entrypoints.list_binaries:main"
 validate-master-input = "steelo.entrypoints.validate_master_input:main"
 generate-geo-options = "steelo.entrypoints.generate_geo_options:main"
 count-lines-of-code = "steelo.entrypoints.cli:count_lines_of_code"
-run_baseload_power_simulation = "steelo.entrypoints.geo:run_baseload_power_simulation"
 
 [tool.pytest.ini_options]
 addopts = "-ra"
