@@ -228,7 +228,8 @@ class DummyTradeLPModel:
 
     def add_tariff_information(self, quota_dict=None, tax_dict=None):
         """Mock tariff information addition"""
-        pass
+        self.quota_dict = quota_dict
+        self.tax_dict = tax_dict
 
     def add_transportation_costs(self, costs):
         """Mock transportation costs addition"""
@@ -1227,6 +1228,99 @@ def test_enforce_trade_tariffs_iron_products_mapping():
         ]
         enforce_trade_tariffs_on_allocations(message_bus, tariffs, lp_model)
         # Should map to iron commodity
+
+
+def test_enforce_trade_tariffs_wildcard_from_iron_product_keyed_by_traded_commodity():
+    """Test that a wildcard-exporter tariff on an iron product is keyed by that product, not by 'iron'."""
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import enforce_trade_tariffs_on_allocations
+
+    lp_model = DummyTradeLPModel()
+    message_bus = DummyMessageBus(DummyRepository())
+    message_bus.env.average_commodity_price_per_region = {
+        ("iron", "USA"): 400.0,
+        ("iron", "BRA"): 300.0,
+        ("steel", "USA"): 1000.0,
+    }
+
+    tariffs = [
+        DummyTradeTariff(
+            tariff_name="wildcard_from_pig_iron", from_iso3="*", to_iso3="DEU", commodity="pig_iron", tax_percentage=0.1
+        )
+    ]
+
+    enforce_trade_tariffs_on_allocations(message_bus, tariffs, lp_model)
+
+    # Priced at each exporter's average iron price, keyed by the traded commodity the LP edges carry
+    assert lp_model.tax_dict == {
+        ("USA", "DEU", "pig_iron"): pytest.approx(40.0),
+        ("BRA", "DEU", "pig_iron"): pytest.approx(30.0),
+    }
+
+
+def test_enforce_trade_tariffs_wildcard_commodity_keyed_by_price_family():
+    """Test that a wildcard-commodity tariff is priced and keyed per price family ('iron', 'steel')."""
+    from steelo.domain.trade_modelling.set_up_steel_trade_lp import enforce_trade_tariffs_on_allocations
+
+    lp_model = DummyTradeLPModel()
+    message_bus = DummyMessageBus(DummyRepository())
+    message_bus.env.average_commodity_price_per_region = {
+        ("iron", "USA"): 400.0,
+        ("steel", "USA"): 1000.0,
+        ("steel", "CHN"): 900.0,
+    }
+
+    tariffs = [
+        DummyTradeTariff(tariff_name="all_goods", from_iso3="USA", to_iso3="DEU", commodity="*", tax_percentage=0.1)
+    ]
+
+    enforce_trade_tariffs_on_allocations(message_bus, tariffs, lp_model)
+
+    # The "iron" key reaches hot_metal, pig_iron, dri_* etc. through potential_tariff_keys
+    assert lp_model.tax_dict == {
+        ("USA", "DEU", "iron"): pytest.approx(40.0),
+        ("USA", "DEU", "steel"): pytest.approx(100.0),
+    }
+
+
+def test_potential_tariff_keys_iron_products_match_iron_family():
+    """Test that iron products also match tariffs set on the 'iron' family, without a duplicate wildcard key."""
+    from steelo.domain.trade_modelling.trade_lp_modelling import potential_tariff_keys
+
+    hot_metal_keys = potential_tariff_keys("USA", "DEU", "hot_metal")
+    assert ("USA", "DEU", "iron") in hot_metal_keys
+    assert ("*", "DEU", "iron") in hot_metal_keys
+    assert ("USA", "*", "iron") in hot_metal_keys
+    # The wildcard-commodity key covers every commodity once, so it must not be repeated
+    assert hot_metal_keys.count(("USA", "DEU", "*")) == 1
+    assert len(hot_metal_keys) == len(set(hot_metal_keys))
+
+    # Non-iron commodities and the family itself keep the four base keys
+    assert potential_tariff_keys("USA", "DEU", "steel") == [
+        ("USA", "DEU", "steel"),
+        ("*", "DEU", "steel"),
+        ("USA", "*", "steel"),
+        ("USA", "DEU", "*"),
+    ]
+    assert len(potential_tariff_keys("USA", "DEU", "iron")) == 4
+
+
+def test_tm_pam_connector_tariff_cost_includes_iron_family():
+    """Test that TM_PAM_connector adds 'iron' family tariffs to iron-product edges, as the LP does."""
+    from types import SimpleNamespace
+
+    from steelo.domain.trade_modelling.TM_PAM_connector import TM_PAM_connector
+
+    connector = SimpleNamespace(
+        tariff_taxes={
+            ("USA", "DEU", "iron"): 40.0,
+            ("USA", "DEU", "pig_iron"): 5.0,
+            ("USA", "DEU", "steel"): 100.0,
+        }
+    )
+
+    assert TM_PAM_connector.get_tariff_cost(connector, "USA", "DEU", "pig_iron") == pytest.approx(45.0)
+    assert TM_PAM_connector.get_tariff_cost(connector, "USA", "DEU", "hot_metal") == pytest.approx(40.0)
+    assert TM_PAM_connector.get_tariff_cost(connector, "USA", "DEU", "steel") == pytest.approx(100.0)
 
 
 # --- Tests for fix_to_zero_allocations_where_distance_doesnt_match_commodity ---
