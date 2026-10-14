@@ -1,9 +1,12 @@
 import csv
 
 from steelo.utilities.stage_timing import (
+    STAGE_METRICS_FILE,
     STAGE_TIMING_FILE,
     StageTimer,
+    get_metric_records,
     get_stage_records,
+    record_metric,
     reset_stage_timings,
     set_stage_year,
     stop_stage,
@@ -41,3 +44,21 @@ def test_write_stage_timings_replaces_file_and_reset_clears(tmp_path):
 
     reset_stage_timings()
     assert get_stage_records() == []
+
+
+def test_metrics_are_written_with_their_year_and_cleared_by_reset(tmp_path):
+    reset_stage_timings()
+    set_stage_year(2026)
+    record_metric("lp_columns", 1_680_000)
+    record_metric("clusters", 194)
+    write_stage_timings(tmp_path)
+
+    with open(tmp_path / STAGE_METRICS_FILE, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert [(r["year"], r["metric"], r["value"]) for r in rows] == [
+        ("2026", "lp_columns", "1680000"),
+        ("2026", "clusters", "194"),
+    ]
+
+    reset_stage_timings()
+    assert get_metric_records() == []

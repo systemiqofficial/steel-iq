@@ -39,7 +39,7 @@ from steelo.domain.trade_modelling.trade_lp_modelling import Allocations
 from steelo.service_layer.message_bus import MessageBus
 from steelo.utilities.file_output import export_carbon_border_charges_to_csv, export_commodity_allocations_to_csv
 from steelo.utilities.memory_profiling import MemoryTracker
-from steelo.utilities.stage_timing import StageTimer, stop_stage
+from steelo.utilities.stage_timing import StageTimer, record_metric, stop_stage
 from steelo.utilities.plotting import (
     plot_detailed_trade_map,
     plot_trade_allocation_visualization,
@@ -402,10 +402,10 @@ class AllocationModel:
                 config=bus.env.config,
                 aggregated_constraints=bus.env.aggregated_metallic_charge_constraints or None,
             )
-            logger.info(
-                f"[CLUSTERING] Reduced furnace groups from "
-                f"{sum(len(fgs) for fgs in cluster_mapping.values())} to {len(meta_furnace_groups)}"
-            )
+            groups_before = sum(len(fgs) for fgs in cluster_mapping.values())
+            record_metric("furnace_groups", groups_before)
+            record_metric("clusters", len(meta_furnace_groups))
+            logger.info(f"[CLUSTERING] Reduced furnace groups from {groups_before} to {len(meta_furnace_groups)}")
             # Store cluster_mapping in environment for disaggregation later
             bus.env.cluster_mapping = cluster_mapping
             bus.env.meta_furnace_groups = meta_furnace_groups
