@@ -340,7 +340,7 @@ min_share × total_input ≤ sum(matching commodities) ≤ max_share × total_in
 
 ### Distance-Based Filtering
 
-**Problem:** Certain commodities can only travel short distances while in their "hot" form. Hot metal cools within a short radius (~100 km); DRI loses its heat premium over similar distances. Their cold counterparts (`pig_iron`, `hbi_*`, `electrolytic_iron`) ship globally.
+**Problem:** Certain commodities can only travel short distances while in their "hot" form. Hot metal cools within a short radius (`hot_metal_radius`, 5 km by default); DRI loses its heat premium over similar distances. Their cold counterparts (`pig_iron`, `hbi_*`, `electrolytic_iron`) ship globally.
 
 **Hot/cold commodity pairs:**
 
@@ -355,11 +355,17 @@ min_share × total_input ≤ sum(matching commodities) ≤ max_share × total_in
 **Solution:** `fix_to_zero_allocations_where_distance_doesnt_match_commodity()` — behavior depends on whether furnace-group clustering is enabled and the geographical scope. Clustering by plant is the default (`enable_furnace_group_clustering=True`, `geographical_clustering_scope="plant"`; CLI `--no-clustering` and `--clustering-scope` change it):
 
 - **Clustering disabled:** The LP fixes hot-commodity flows to zero for all pairs beyond `hot_metal_radius`, and cold-commodity flows to zero for pairs inside the radius. Called before build to reduce problem size.
-- **Clustering enabled, iso3 keying** (`geographical_clustering_scope="iso3"`): The LP blocks *international* hot-commodity flows (different ISO3). Intra-country hot flows are allowed at the LP stage because clusters aggregate furnace groups whose individual locations aren't visible to the LP. The actual per-FG radius check is deferred to **disaggregation** (see below).
-- **Clustering enabled, plant-group keying** (`geographical_clustering_scope="plant_group"`): The LP additionally blocks hot-commodity flows between meta-furnace-groups that belong to *different plant groups*, even within the same country. This matches the clustering key for hot-metal-affected technologies and limits LP-level hot flows to pairs that can plausibly stay within radius at disaggregation. Supplier / demand-centre edges (which don't have a `plant_group_id`) fall through to the iso3 rule.
-- **Clustering enabled, plant-level keying** (`geographical_clustering_scope="plant"`, the default): The LP additionally blocks hot-commodity flows between meta-furnace-groups that belong to *different plants*, even within the same plant group. This is the finest-grained constraint, limiting hot flows to same-plant pairs. Supplier / demand-centre edges fall through to the iso3 rule.
+- **Clustering enabled, iso3 keying** (`geographical_clustering_scope="iso3"`): The LP blocks hot-commodity flows that cross a border, and flows where either side has no country. Within a country, hot flows stay open at the LP stage because a country cluster aggregates furnace groups whose individual locations the LP cannot see. The per-FG radius check happens at **disaggregation** (see below).
+- **Clustering enabled, plant-group keying** (`geographical_clustering_scope="plant_group"`): Each meta-furnace-group carries its cluster location key: the plant group for hot-metal-affected technologies, the iso3 for the others. The LP blocks hot-commodity flows between different keys, and flows where either side has no key, which covers supplier and demand-centre edges. There is no country check, because one plant group's cluster can span borders. The radius is applied at disaggregation.
+- **Clustering enabled, plant-level keying** (`geographical_clustering_scope="plant"`, the default): Hot-metal-affected meta-furnace-groups sit at their plant, so the LP applies `hot_metal_radius` directly. It blocks hot-commodity flows longer than the radius (haversine distance) and flows where either side has no location, whatever the owner or country. A BOF can therefore draw hot metal from a BF at a neighbouring plant.
 
-A summary line `[LP HOT-METAL] Fixed to zero: X cross-country, Y cross-scope, Z missing-iso3 ...` is emitted per year so the operator can see how often each rule bound.
+A summary line is logged per year, counting the blocked flows by reason so the operator can see how often each rule bound:
+
+```
+[LP HOT-METAL] Fixed to zero (clustering_scope=plant, radius=5 km): {'beyond-radius': 1234}
+```
+
+The reasons are `beyond-radius` and `missing-location` under plant scope, `cross-plant-group` and `missing-cluster-key` under plant-group scope, and `cross-country` and `missing-iso3` under iso3 scope. The line reads `none` when no flow was blocked.
 
 ---
 
@@ -367,7 +373,7 @@ A summary line `[LP HOT-METAL] Fixed to zero: X cross-country, Y cross-scope, Z 
 
 After the LP solves at the cluster level, `disaggregate_allocations()` in `furnace_group_clustering.py` splits cluster-to-cluster flows back to individual furnace groups. This is where per-FG distance constraints, BOM-minimum-share constraints, physical-capacity caps, and bill-of-materials consistency are all enforced.
 
-The LP plans at cluster level and is not aware of the `hot_metal_radius` constraint; it can allocate cluster totals that are physically infeasible at the FG level (e.g. a source-cluster pocket that can't reach a destination-cluster pocket). Disaggregation has to project that infeasible LP solution onto something physically consistent — preserving physical capacity and per-FG BOM as hard invariants while allowing cluster-level flows to drift away from LP when necessary.
+Under the default plant scope the LP already applies `hot_metal_radius` between plants. Under iso3 and plant-group scope the LP plans at cluster level without the radius, so it can allocate cluster totals that are physically infeasible at the FG level (e.g. a source-cluster pocket that can't reach a destination-cluster pocket). Disaggregation has to project that infeasible LP solution onto something physically consistent — preserving physical capacity and per-FG BOM as hard invariants while allowing cluster-level flows to drift away from LP when necessary.
 
 Nine mechanisms work together:
 
@@ -376,30 +382,36 @@ Nine mechanisms work together:
 
 A BOF needs hot metal from a nearby ironmaking furnace. A furnace group is a **hot-metal producer** when any business case of its technology lists `hot_metal` among its outputs in the Bill of Materials (`FurnaceGroup.produces_hot_metal`). The rule follows the data: BF, charcoal BF, BF with CCS or CCU, ESF, SR and any future technology that outputs hot metal all qualify without a code change. Before #155 the model used hard-coded name lists (`bf`, `esf`, `sr`), so BOFs fed only by other hot-metal technologies were dropped from the LP and stranded.
 
-The rule is applied with two different reach tests:
+One reach rule decides which producers can feed a plant. It follows the LP's rule for hot-commodity flows (see [Distance-Based Filtering](#distance-based-filtering)), so the plant agents, clustering and the LP agree on which BOFs can run. A producer reaches a plant when it is in an active status and:
 
-| Use | Producers counted | Effect |
-|---|---|---|
-| `PlantGroup.update_hot_metal_access(hot_metal_radius)`, each year | Any producer in the **same plant group** within `hot_metal_radius`, whatever its status or country | Sets `has_hot_metal_access` on BOF furnace groups and their plants. The plant agents skip a BOF switch candidate or a BOF expansion without access |
-| Clustering: isolated BOF filter | **Active** producers in the **same country** within `hot_metal_radius` | A BOF without one is left out of the LP (see below) |
-| Clustering: effective BOF capacity | Same as the filter | Caps the BOF's capacity at the reachable producers' capacity (see below) |
+- **Plant scope** (the default, also used when clustering is off): it sits within `hot_metal_radius`, whatever its owner or country.
+- **Plant-group scope:** it sits within the radius and belongs to the same ultimate plant group.
+- **Iso3 scope:** it sits within the radius and is in the same country.
 
-Clustering cannot reuse the plant-group flag: a plant group can span countries, while clusters are per country, and an inactive producer is in no cluster.
+`can_supply_hot_metal()` in `models.py` holds the rule, and both the plant agents and clustering call it. Distances are haversine, as in the LP.
+
+| Use | Effect |
+|---|---|
+| `update_hot_metal_access(plants, hot_metal_radius, active_statuses, clustering_scope)`, each year before the trade model | Sets `has_hot_metal_access` on every plant and all its furnace groups. The plant agents skip a BOF switch candidate or a BOF expansion without access |
+| Clustering: isolated BOF filter | A BOF without a reachable producer is left out of the LP (see below) |
+| Clustering: effective BOF capacity | Caps the BOF's capacity at the reachable producers' capacity (see below) |
+
+Before #190 the three uses applied different tests. The access flag counted any producer in the same plant group, whatever its status. Clustering counted active producers in the same country. Under plant scope the LP allowed hot metal only within one plant. A BOF fed by another owner's BF could lose access at renovation, and a BOF next to another plant's BF was kept and sized by clustering but received nothing from the LP.
 
 #### 1. BOF filtering and effective capacity at clustering time
 
 `cluster_furnace_groups()` performs two corrections before building clusters:
 
-- **Isolated BOF filtering.** BOF FGs with no active [hot-metal producer](#hot-metal-producers) within `hot_metal_radius` in their country are excluded from their cluster entirely. Without a local iron source they can never satisfy the hot-metal minimum-share constraint, so including them would guarantee a BOM violation.
+- **Isolated BOF filtering.** BOF FGs that no active [hot-metal producer](#hot-metal-producers) can reach under the shared reach rule are excluded from their cluster entirely. Without a local iron source they can never satisfy the hot-metal minimum-share constraint, so including them would guarantee a BOM violation.
 
-- **Effective BOF cluster capacity.** For each BOF FG, effective capacity = `min(physical_capacity, Σ[reachable hot-metal producer capacity] / min_hot_metal_share)`, counting active producers in the same country within `hot_metal_radius`. The cluster's `total_capacity`, `capacity_shares`, and weighted costs are all derived from these effective capacities. This prevents the LP from allocating more hot metal to a BOF cluster than its geographically reachable producers can physically supply.
+- **Effective BOF cluster capacity.** For each BOF FG, effective capacity = `min(physical_capacity, Σ[reachable hot-metal producer capacity] / min_hot_metal_share)`, counting the active producers that reach the BOF's plant under the same rule. The cluster's `total_capacity`, `capacity_shares`, and weighted costs are all derived from these effective capacities. This prevents the LP from allocating more hot metal to a BOF cluster than its geographically reachable producers can physically supply.
 
 **Cluster key.** The cluster key is `(technology_name, location_key, feedstock_signature)` where `location_key` is determined by `geographical_clustering_scope`:
 - Country scope (`iso3`): `location_key = plant.location.iso3`
 - Plant-group scope: `location_key = plant.ultimate_plant_group` for hot-metal-affected FGs; iso3 for others
 - Plant scope (default): `location_key = plant.plant_id` for hot-metal-affected FGs; iso3 for others
 
-A FG is considered *affected* by looking at its `effective_primary_feedstocks`: any feedstock whose `metallic_charge` or `outputs` key is in `config.closely_allocated_products` (hot_metal, dri_*, liquid_iron) triggers the configured scope keying. Non-affected techs always use iso3 keying. The resulting `plant_group_id` (for plant_group or plant scope) is consumed by the LP's cross-scope rule above. A log line `[CLUSTERING] Created N clusters (X FGs keyed by plant_group, Y by iso3)` (or similarly for plant scope) confirms the split per year.
+A FG is considered *affected* by looking at its `effective_primary_feedstocks`: any feedstock whose `metallic_charge` or `outputs` key is in `config.closely_allocated_products` (hot_metal, dri_*, liquid_iron) triggers the configured scope keying. Non-affected techs always use iso3 keying. Under plant-group scope the LP reads each meta-furnace-group's `cluster_key.location_key` for its cross-plant-group rule above; under plant scope it uses the meta-furnace-group locations instead. A log line `[CLUSTERING] Created N clusters (X FGs keyed by plant_group, Y by iso3)` (or similarly for plant scope) confirms the split per year.
 
 #### 2. Joint transportation problem for hot-metal disaggregation (pre-pass)
 
@@ -482,7 +494,7 @@ A separate downstream check in `TMPAMConnector.validate_bom_consistency()` then 
 
 #### Known limitations
 
-* **LP infeasibility w.r.t. radius.** The LP doesn't model `hot_metal_radius`; cluster-level allocations can be physically infeasible at the pocket level. Cross-cluster borrowing (multi-source joint groups) or supply-capped demand reduction (single-source pockets) are post-hoc repairs — the resulting steel output and supplier-to-cluster routing can deviate from the LP's optimum.
+* **LP infeasibility w.r.t. radius.** Under iso3 and plant-group scope the LP doesn't model `hot_metal_radius`; cluster-level allocations can be physically infeasible at the pocket level. Cross-cluster borrowing (multi-source joint groups) or supply-capped demand reduction (single-source pockets) are post-hoc repairs — the resulting steel output and supplier-to-cluster routing can deviate from the LP's optimum.
 * **Demand-centre shortfalls.** When a BOF cluster is capacity-constrained on the metallic-charge side, its Case 2 steel shipments drop by the drift factor (and are further adjusted by the per-FG BOM fix-up). Demand centres receive less than the LP promised; we do not redistribute that unmet demand to another cluster.
 * **Mine-capacity soft preservation.** Case 3 Sinkhorn rebalance keeps each supplier's LP total as a hard *upper* bound but will under-utilise that capacity when aggregate drift pushes cluster demand below supplier LP.
 * **Stranded material when a BOF is capacity-capped.** If the BOM-ideal output for a BOF FG exceeds its physical capacity, `_bom_fix_up_per_fg` caps the output and scales its inputs down proportionally. The "scaled-down delta" is material the upstream source FG produced but couldn't ship to this FG — it remains at the source side as stranded/unused, which may show up as a small per-source-FG BOM residual absorbed by `BOM_TOL`.
