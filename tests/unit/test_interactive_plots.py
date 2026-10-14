@@ -128,7 +128,7 @@ def test_plot_emissions_writes_self_contained_viewer(tmp_path) -> None:
     written = plotter.plot_emissions(csv_path)
 
     assert written == tmp_path / "plots" / "interactive" / "emissions.html"
-    html = written.read_text()
+    html = written.read_text(encoding="utf-8")
     for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
         assert placeholder not in html
     assert "const Interactive" in html and ".box-dropdown" in html
@@ -156,7 +156,7 @@ def test_plot_capacity_and_production_writes_self_contained_viewer(tmp_path) -> 
     written = plotter.plot_capacity_and_production(csv_path, fixtures / "demand_centers.json")
 
     assert written == tmp_path / "plots" / "interactive" / "capacity_and_production.html"
-    html = written.read_text()
+    html = written.read_text(encoding="utf-8")
     for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
         assert placeholder not in html
     assert "const Interactive" in html
@@ -166,7 +166,7 @@ def test_plot_capacity_and_production_writes_self_contained_viewer(tmp_path) -> 
 
     # A missing fixture still produces the viewer, without the overlay data.
     assert plotter.plot_capacity_and_production(csv_path) == written
-    assert '"demand": []' in written.read_text()
+    assert '"demand": []' in written.read_text(encoding="utf-8")
 
 
 def test_plot_cost_curves_writes_self_contained_viewer(tmp_path) -> None:
@@ -184,7 +184,7 @@ def test_plot_cost_curves_writes_self_contained_viewer(tmp_path) -> None:
     written = plotter.plot_cost_curves(csv_path, prices_csv, CLEARING)
 
     assert written == tmp_path / "plots" / "interactive" / "cost_curves.html"
-    html = written.read_text()
+    html = written.read_text(encoding="utf-8")
     for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
         assert placeholder not in html
     assert "const Interactive" in html
@@ -195,7 +195,7 @@ def test_plot_cost_curves_writes_self_contained_viewer(tmp_path) -> None:
 
     # Without a recorded demand (older runs) steel clears against its production.
     assert plotter.plot_cost_curves(csv_path, tmp_path / "absent.csv", CLEARING) == written
-    assert '"steel": {"2025": {"d": 1.0, "c": 500.0}}' in written.read_text()
+    assert '"steel": {"2025": {"d": 1.0, "c": 500.0}}' in written.read_text(encoding="utf-8")
 
 
 def test_plot_decision_flows_writes_self_contained_viewer(tmp_path) -> None:
@@ -207,7 +207,7 @@ def test_plot_decision_flows_writes_self_contained_viewer(tmp_path) -> None:
     written = plotter.plot_decision_flows(motions_csv)
 
     assert written == tmp_path / "plots" / "interactive" / "decision_flows.html"
-    html = written.read_text()
+    html = written.read_text(encoding="utf-8")
     for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
         assert placeholder not in html
     assert "const Interactive" in html
@@ -254,7 +254,7 @@ def test_plot_trade_matrix_writes_self_contained_viewer(tmp_path) -> None:
     written = plotter.plot_trade_matrix(tm_dir)
 
     assert written == tmp_path / "plots" / "interactive" / "trade_matrix.html"
-    html = written.read_text()
+    html = written.read_text(encoding="utf-8")
     for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
         assert placeholder not in html
     assert "const Interactive" in html
@@ -282,7 +282,7 @@ def test_plot_trade_network_writes_self_contained_viewer(tmp_path) -> None:
     written = plotter.plot_trade_network(tm_dir)
 
     assert written == tmp_path / "plots" / "interactive" / "trade_network.html"
-    html = written.read_text()
+    html = written.read_text(encoding="utf-8")
     for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
         assert placeholder not in html
     assert "const Interactive" in html
@@ -312,7 +312,7 @@ def test_plot_supply_chain_writes_self_contained_viewer(tmp_path) -> None:
     written = plotter.plot_supply_chain(tm_dir)
 
     assert written == tmp_path / "plots" / "interactive" / "supply_chain.html"
-    html = written.read_text()
+    html = written.read_text(encoding="utf-8")
     for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
         assert placeholder not in html
     assert '"chartTitle": "Supply chain"' in html
@@ -353,7 +353,7 @@ def test_plot_embedded_emissions_map_writes_self_contained_viewer(tmp_path) -> N
     written = plotter.plot_embedded_emissions_map(post_processed_csv, tm_dir, "rs-inspired")
 
     assert written == tmp_path / "plots" / "interactive" / "embedded_emissions_map.html"
-    html = written.read_text()
+    html = written.read_text(encoding="utf-8")
     for placeholder in ("__PLOTLYJS__", "__DECKGL__", "__COMMON_JS__", "__COUNTRIES__", "__CONFIG__", "__DATA__"):
         assert placeholder not in html
     assert '"chartTitle": "Emissions embedded in steel trade"' in html
@@ -514,7 +514,7 @@ def test_plot_supply_demand_writes_self_contained_viewer(tmp_path) -> None:
     )
 
     assert written == tmp_path / "plots" / "interactive" / "supply_demand.html"
-    html = written.read_text()
+    html = written.read_text(encoding="utf-8")
     for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
         assert placeholder not in html
     assert "const Interactive" in html
@@ -526,7 +526,7 @@ def test_plot_supply_demand_writes_self_contained_viewer(tmp_path) -> None:
 
     # Missing fixtures still produce the viewer, with usage only.
     assert plotter.plot_supply_demand(tmp_path / "TM") == written
-    html = written.read_text()
+    html = written.read_text(encoding="utf-8")
     assert '{"y": 2030, "c": "ore", "g": "BIH", "v": 0.2, "s": "io_mid"}' in html
     assert '{"y": 2030, "c": "steel", "g": "CHN", "v": 2.0}' not in html
     assert '"c": "bio", "g": "region:CHI"' not in html
@@ -560,7 +560,7 @@ def test_plot_reductant_use_writes_self_contained_viewer(tmp_path) -> None:
     written = plotter.plot_reductant_use(csv_path, fixtures / "primary_feedstocks.json")
 
     assert written == tmp_path / "plots" / "interactive" / "reductant_use.html"
-    html = written.read_text()
+    html = written.read_text(encoding="utf-8")
     for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
         assert placeholder not in html
     assert "const Interactive" in html
@@ -576,7 +576,7 @@ def test_plot_reductant_use_writes_self_contained_viewer(tmp_path) -> None:
 
     # A missing fixture still produces the viewer, with the production view only.
     assert plotter.plot_reductant_use(csv_path, fixtures / "absent.json") == written
-    assert '"carriers": []' in written.read_text()
+    assert '"carriers": []' in written.read_text(encoding="utf-8")
 
     # A missing table or a table without the reductant column skips the viewer.
     assert plotter.plot_reductant_use(tmp_path / "absent.csv") is None
@@ -603,7 +603,7 @@ def test_plot_metallic_charge_use_writes_self_contained_viewer(tmp_path) -> None
     )
 
     assert written == tmp_path / "plots" / "interactive" / "metallic_charge_use.html"
-    html = written.read_text()
+    html = written.read_text(encoding="utf-8")
     for placeholder in ("__PLOTLYJS__", "__COMMON_JS__", "__COMMON_CSS__", "__CONFIG__", "__DATA__"):
         assert placeholder not in html
     assert "const Interactive" in html
@@ -615,7 +615,7 @@ def test_plot_metallic_charge_use_writes_self_contained_viewer(tmp_path) -> None
 
     # A missing suppliers fixture still produces the viewer, without the overlay data.
     assert plotter.plot_metallic_charge_use(csv_path, fixtures / "primary_feedstocks.json") == written
-    assert '"supply": []' in written.read_text()
+    assert '"supply": []' in written.read_text(encoding="utf-8")
 
     # A missing Bill of Materials, a missing table or a table without the feedstock column skips the viewer.
     assert plotter.plot_metallic_charge_use(csv_path, fixtures / "absent.json") is None
@@ -679,7 +679,7 @@ def test_plot_capacity_world_map_writes_self_contained_viewer(tmp_path) -> None:
     )
 
     assert written == tmp_path / "plots" / "interactive" / "capacity_world_map.html"
-    html = written.read_text()
+    html = written.read_text(encoding="utf-8")
     for placeholder in ("__COMMON_CSS__", "__WORLD__", "__CONFIG__", "__DATA__"):
         assert placeholder not in html
     assert ".box-dropdown" in html and '"CHN:CN-HE":{"type":' in html
@@ -731,7 +731,7 @@ def test_plot_capacity_world_map_degrades_on_missing_inputs(tmp_path, caplog) ->
     assert "new builds under construction omitted from the capacity world map viewer" in caplog.text
     assert "expansions under construction omitted from the capacity world map viewer" in caplog.text
     assert "the existing fleet's construction pipeline omitted from the capacity world map viewer" in caplog.text
-    html = written.read_text()
+    html = written.read_text(encoding="utf-8")
     assert '"switches":[]' in html and "indi_1" not in html and "P2_1" not in html
     # the provenance names only what was read
     assert "pam_switch_decisions.csv" not in html
@@ -762,7 +762,7 @@ def test_plot_capacity_china_map_focuses_the_shared_viewer_on_china(tmp_path, ca
     )
 
     assert written == tmp_path / "plots" / "interactive" / "capacity_china_map.html"
-    html = written.read_text()
+    html = written.read_text(encoding="utf-8")
     assert '"chartTitle": "China iron and steel capacity by technology"' in html
     assert '"focus": {"iso3": "CHN", "groups": {"CHN:CN-HE": "Jing-Jin-Ji", "CHN:CN-BJ": "Jing-Jin-Ji"}' in html
     assert '"fileStem": "capacity_china_map"' in html
@@ -770,13 +770,10 @@ def test_plot_capacity_china_map_focuses_the_shared_viewer_on_china(tmp_path, ca
 
     # a policy-OFF run passes no fixture: same map, no groups
     plotter.plot_capacity_china_map(csv_path, greenfield_csv, decisions_csv, motions_csv, pipeline_csv, plants, {}, [])
-    assert '"focus": {"iso3": "CHN", "groups": {}, "types": {}}' in written.read_text()
-    assert (
-        '"focus": null'
-        in plotter.plot_capacity_world_map(
-            csv_path, greenfield_csv, decisions_csv, motions_csv, pipeline_csv, plants, {}, []
-        ).read_text()
-    )
+    assert '"focus": {"iso3": "CHN", "groups": {}, "types": {}}' in written.read_text(encoding="utf-8")
+    assert '"focus": null' in plotter.plot_capacity_world_map(
+        csv_path, greenfield_csv, decisions_csv, motions_csv, pipeline_csv, plants, {}, []
+    ).read_text(encoding="utf-8")
 
     table = pd.read_csv(csv_path)
     german_csv = tmp_path / "post_processed_german.csv"

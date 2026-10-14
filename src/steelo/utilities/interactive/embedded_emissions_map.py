@@ -213,7 +213,7 @@ def pack_years(post_processed: pd.DataFrame, files: dict[int, Path], boundary: s
 
 def country_features() -> dict[str, Any]:
     """The shipped country polygons (``world_countries.json``) as a GeoJSON collection keyed by the model's ISO3."""
-    polygons = json.loads((ASSETS_DIR / "world_countries.json").read_text())["countries"]
+    polygons = json.loads((ASSETS_DIR / "world_countries.json").read_text(encoding="utf-8"))["countries"]
     return {
         "type": "FeatureCollection",
         "features": [
@@ -236,15 +236,15 @@ def write_viewer(config: dict[str, Any], data: dict[str, Any], output_path: Path
     """
     html = (
         (ASSETS_DIR / "embedded_emissions_map.html")
-        .read_text()
-        .replace("__COMMON_CSS__", (ASSETS_DIR / "common.css").read_text())
-        .replace("__COMMON_JS__", (ASSETS_DIR / "common.js").read_text())
+        .read_text(encoding="utf-8")
+        .replace("__COMMON_CSS__", (ASSETS_DIR / "common.css").read_text(encoding="utf-8"))
+        .replace("__COMMON_JS__", (ASSETS_DIR / "common.js").read_text(encoding="utf-8"))
         .replace("__COUNTRIES__", json.dumps(country_features(), separators=(",", ":")))
         .replace("__CONFIG__", json.dumps(config))
         .replace("__DATA__", json.dumps(data, separators=(",", ":")))
-        .replace("__DECKGL__", DECKGL_JS.read_text())
+        .replace("__DECKGL__", DECKGL_JS.read_text(encoding="utf-8"))
         .replace("__PLOTLYJS__", get_plotlyjs())
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(html)
+    output_path.write_text(html, encoding="utf-8")
     return output_path

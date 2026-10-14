@@ -91,7 +91,7 @@ def geo_unit_names(geo_hierarchy_json: Optional[Path]) -> dict[str, str]:
     """
     if geo_hierarchy_json is None or not geo_hierarchy_json.is_file():
         return {}
-    return {row["geo_key"]: row["display_name"] for row in json.loads(geo_hierarchy_json.read_text())}
+    return {row["geo_key"]: row["display_name"] for row in json.loads(geo_hierarchy_json.read_text(encoding="utf-8"))}
 
 
 def run_display_title(run_name: Optional[str], fallback: str, post_processed_csv: Path) -> str:
@@ -1101,14 +1101,14 @@ class InteractivePlotter:
         """Inline plotly.js, the shared shell and the payload into the template; write it under the output dir."""
         html = (
             (ASSETS_DIR / template_name)
-            .read_text()
-            .replace("__COMMON_CSS__", (ASSETS_DIR / "common.css").read_text())
-            .replace("__COMMON_JS__", (ASSETS_DIR / "common.js").read_text())
+            .read_text(encoding="utf-8")
+            .replace("__COMMON_CSS__", (ASSETS_DIR / "common.css").read_text(encoding="utf-8"))
+            .replace("__COMMON_JS__", (ASSETS_DIR / "common.js").read_text(encoding="utf-8"))
             .replace("__PLOTLYJS__", get_plotlyjs())
             .replace("__CONFIG__", json.dumps(config))
             .replace("__DATA__", json.dumps(data))
         )
         self.output_dir.mkdir(parents=True, exist_ok=True)
         path = self.output_dir / template_name
-        path.write_text(html)
+        path.write_text(html, encoding="utf-8")
         return path

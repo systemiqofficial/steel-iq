@@ -304,10 +304,10 @@ def test_write_viewer_is_self_contained(tmp_path: Path) -> None:
         "fallbackColour": trade_allocations.FALLBACK_COLOUR,
     }
     path = trade_allocations.write_viewer(config, data, tmp_path / "out" / "trade_allocations.html")
-    html = path.read_text()
+    html = path.read_text(encoding="utf-8")
     # deck.gl's minified source mentions URLs and script tags in its own error strings;
     # the page around it must add none, so check with the inlined library stripped out.
-    page = html.replace(trade_allocations.DECKGL_JS.read_text(), "")
+    page = html.replace(trade_allocations.DECKGL_JS.read_text(encoding="utf-8"), "")
     assert len(page) < len(html)
     assert "<script src=" not in page
     assert "<link" not in page
@@ -343,5 +343,5 @@ def test_plot_trade_allocations_writes_viewer_under_plots_interactive(tmp_path: 
     plotter = InteractivePlotter(tmp_path / "plots", [], run_title="sim_test")
     written = plotter.plot_trade_allocations(tm_dir)
     assert written == tmp_path / "plots" / "interactive" / "trade_allocations.html"
-    assert '"sim_test"' in written.read_text()
+    assert '"sim_test"' in written.read_text(encoding="utf-8")
     assert plotter.plot_trade_allocations(tmp_path / "absent") is None
