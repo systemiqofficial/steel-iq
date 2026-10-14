@@ -1,5 +1,6 @@
 """Tests for the year-wise reductant-optimised score series (B3 core)."""
 
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -254,3 +255,90 @@ def test_override_reference_ignores_reference_year_subsidies(tmp_path: Path) -> 
 
     # Subsidy expired by 2027: the scaled price is exactly the unsubsidised ratio.
     assert input_2027["electricity"] == pytest.approx(site_electricity * country_2027 / country_2025)
+
+
+def _reference_series(env, location, technology_name, shares, start, end, overrides=None, reference_year=None):
+    """The series as computed without the memo: score each year from scratch."""
+    business_case = env.dynamic_feedstocks[technology_name.lower()]
+    ef_by_key = build_direct_ghg_lookup(
+        env.technology_emission_factors, env.config.chosen_emissions_boundary_for_carbon_costs
+    )
+    scores, picks = [], []
+    for year in range(int(start), int(end)):
+        input_costs, output_costs = env.candidate_energy_costs_for_year(
+            location, technology_name, Year(year), overrides=overrides, override_reference_year=reference_year
+        )
+        year_scores = score_reductants_for_business_cases(
+            business_case,
+            input_costs,
+            output_costs,
+            env.carbon_price_for_year(location.iso3, Year(year)),
+            ef_by_key,
+            env.config.disposal_cost_outputs,
+        )
+        mins = [min(costs, key=lambda k: costs[k]) for costs in year_scores.score_by_input.values() if costs]
+        pick, _ = Counter(mins).most_common(1)[0]
+        scores.append(
+            sum(
+                share * year_scores.score_by_input[charge][pick]
+                for charge, share in shares.items()
+                if pick in year_scores.score_by_input.get(charge, {})
+            )
+        )
+        picks.append(pick)
+    return scores, picks
+
+
+def test_memoised_series_equals_fresh_computation_across_windows_shares_and_overrides(tmp_path: Path) -> None:
+    env = _make_env(tmp_path, carbon_by_year={y: 100.0 for y in range(2025, 2031)})
+    windows = [(2025, 2031), (2026, 2031), (2025, 2028), (2027, 2034), (2025, 2031)]  # overlapping and repeated
+    cases = [
+        ({"IO_low": 1.0}, None, None),
+        ({"IO_low": 0.4}, None, None),  # shares only weight the picked scores
+        ({"IO_low": 1.0}, {"electricity": 0.08}, Year(2025)),
+        ({"IO_low": 1.0}, {"electricity": 0.02}, Year(2025)),  # a different override is a different entry
+    ]
+    for start, end in windows:
+        for shares, overrides, reference_year in cases:
+            series = env.reductant_score_series(
+                LOCATION,
+                "DRI",
+                shares,
+                Year(start),
+                Year(end),
+                overrides=overrides,
+                override_reference_year=reference_year,
+            )
+            scores, picks = _reference_series(
+                env, LOCATION, "DRI", shares, start, end, overrides=overrides, reference_year=reference_year
+            )
+            assert series.scores == scores
+            assert series.picks == picks
+
+
+def test_memo_is_dropped_when_exogenous_inputs_are_replaced_or_reinitialised(tmp_path: Path) -> None:
+    env = _make_env(tmp_path, carbon_by_year={y: 0.0 for y in range(2025, 2031)})
+    before = env.reductant_score_series(LOCATION, "DRI", SHARES, Year(2025), Year(2031))
+
+    env.carbon_costs = {"AAA": {Year(y): 500.0 for y in range(2025, 2031)}}  # replaced container
+    replaced = env.reductant_score_series(LOCATION, "DRI", SHARES, Year(2025), Year(2031))
+    assert replaced.scores == _reference_series(env, LOCATION, "DRI", SHARES, 2025, 2031)[0]
+    assert replaced.scores != before.scores
+
+    env.initiate_technology_emission_factors([_ef("natural_gas", 0.0), _ef("hydrogen", 0.1)])  # re-initialised
+    reinitialised = env.reductant_score_series(LOCATION, "DRI", SHARES, Year(2025), Year(2031))
+    assert reinitialised.scores == _reference_series(env, LOCATION, "DRI", SHARES, 2025, 2031)[0]
+    assert reinitialised.scores != replaced.scores
+
+
+def test_memo_follows_in_place_changes_only_after_it_is_cleared(tmp_path: Path) -> None:
+    env = _make_env(tmp_path, carbon_by_year={y: 0.0 for y in range(2025, 2031)})
+    before = env.reductant_score_series(LOCATION, "DRI", SHARES, Year(2025), Year(2031))
+
+    env.carbon_costs["AAA"] = {Year(y): 500.0 for y in range(2025, 2031)}  # in place: not detected
+    assert env.reductant_score_series(LOCATION, "DRI", SHARES, Year(2025), Year(2031)).scores == before.scores
+
+    env.clear_reductant_score_cache()
+    after = env.reductant_score_series(LOCATION, "DRI", SHARES, Year(2025), Year(2031))
+    assert after.scores == _reference_series(env, LOCATION, "DRI", SHARES, 2025, 2031)[0]
+    assert after.scores != before.scores
