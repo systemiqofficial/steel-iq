@@ -41,9 +41,11 @@ Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()
    - Record domain events
 
 2. **Refresh hot-metal access** (`simulation.py`):
-   - Calls `plant_group.update_hot_metal_access(config.hot_metal_radius)` for each `PlantGroup`
-   - Sets `has_hot_metal_access` on each BOF `FurnaceGroup` and its `Plant` when a [hot-metal producer](../trade_model/overview_trade_model.md#hot-metal-producers) (any technology whose Bill of Materials outputs hot metal) sits within `hot_metal_radius` of the plant, across plants in the same plant group
-   - Consumed downstream by the PAM's BOF-transition check and by `PlantGroup.evaluate_expansion()` to skip BOF expansion options at plants without access. `cluster_furnace_groups()` does not use the flag: it applies its own stricter check (active producers in the same country)
+   - Calls `update_hot_metal_access(plants, config.hot_metal_radius, config.active_statuses, clustering_scope)` once over every plant in the world. `clustering_scope` is `config.geographical_clustering_scope`, or `"plant"` when clustering is off
+   - Only [hot-metal producers](#hot-metal-producers) (any technology whose Bill of Materials outputs hot metal) in an `active_statuses` status count; a retired, mothballed or announced BF grants no access
+   - A producer reaches a plant under the shared reach rule that clustering and the trade LP also apply: within `hot_metal_radius`, any owner and country under plant scope, the same plant group under plant-group scope, the same country under iso3 scope
+   - Sets `has_hot_metal_access` on every `Plant` and on all its `FurnaceGroup`s, not only BOFs: access belongs to the site, so a BF-only or EAF-only plant can be offered a BOF expansion or switch
+   - Consumed downstream by the PAM's BOF-transition check and by `PlantGroup.evaluate_expansion()` to skip BOF expansion options at plants without access. `cluster_furnace_groups()` recomputes the same rule itself rather than reading the flag
 
 3. **Checkpoint** saves state:
    - Serializes all plants, furnace groups, plant groups

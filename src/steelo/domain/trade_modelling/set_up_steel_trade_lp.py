@@ -18,6 +18,7 @@ from steelo.domain.models import (
 )
 import steelo.domain.trade_modelling.trade_lp_modelling as tlp
 from steelo.service_layer.message_bus import MessageBus
+from steelo.adapters.geospatial.geospatial_toolbox import haversine_distance
 
 if TYPE_CHECKING:
     from steelo.simulation import SimulationConfig
@@ -741,11 +742,13 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
 ):
     """Fix allocation variables to zero based on commodity-specific distance constraints.
 
-    When clustering is enabled:
-        - Hot commodities are restricted to intra-country allocations only
-        - Cold commodities can be allocated anywhere (both domestic and international)
-        - Hot metal radius is NOT applied here, will be handled during disaggregation
-        - This ensures BOF hot metal minimum constraints can be satisfied in LP
+    When clustering is enabled, hot commodities stay local according to
+    ``geographical_clustering_scope``; cold commodities can be allocated anywhere:
+        - ``iso3``: hot flows stay within a country; the radius is applied during disaggregation
+        - ``plant_group``: hot flows stay within one cluster location key (the plant group, or
+          the iso3 for owner-less clusters); no country check, radius applied during disaggregation
+        - ``plant``: hot flows must lie within ``hot_metal_radius`` (no country check), so a
+          BOF can draw from a BF at a neighbouring plant
 
     When clustering is disabled (backwards compatibility):
         - Applies distance-based restrictions for both hot and cold commodities
@@ -769,61 +772,61 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
     enable_clustering = getattr(config, "enable_furnace_group_clustering", False)
 
     if enable_clustering:
-        # NEW BEHAVIOR: Allow both hot and cold commodities with geographic constraints
-        # Hot commodities are restricted to intra-country allocations (or intra-plant-group/intra-plant
-        # when geographical_clustering_scope is plant_group or plant, which keeps flows physically
-        # local).
-        # Cold commodities can go anywhere.
-
-        # Build a mapping from process center names to ISO3 codes for quick lookup
-        pc_name_to_iso3 = {}
-        for pc in trade_lp.process_centers:
-            if pc.location and pc.location.iso3:
-                pc_name_to_iso3[pc.name] = pc.location.iso3
-
-        # When clustering scope is plant_group or plant, build pc_name → scope_id for meta-FGs
-        # so we can tighten the hot-commodity rule beyond iso3.
-        pc_name_to_plant_group: dict[str, str] = {}
+        # Hot commodities stay local by clustering scope (see docstring); cold commodities go anywhere.
         clustering_scope = getattr(config, "geographical_clustering_scope", "iso3")
-        use_plant_group_rule = clustering_scope in ("plant_group", "plant")
-        if use_plant_group_rule:
+        pc_location_by_name = {pc.name: pc.location for pc in trade_lp.process_centers}
+
+        # Under plant_group scope, map each meta-FG to its cluster location key: the plant group,
+        # or the iso3 for clusters without one (unknown owner, or techs not affected by the radius)
+        pc_name_to_location_key: dict[str, str] = {}
+        if clustering_scope == "plant_group":
             meta_fgs = getattr(env, "meta_furnace_groups", None) if env is not None else None
             if meta_fgs:
                 for mfg in meta_fgs:
-                    if mfg.plant_group_id is not None:
-                        pc_name_to_plant_group[mfg.meta_furnace_group_id] = mfg.plant_group_id
+                    pc_name_to_location_key[mfg.meta_furnace_group_id] = mfg.cluster_key.location_key
 
-        blocked_missing_iso3 = 0
-        blocked_cross_country = 0
-        blocked_cross_plant_group = 0
+        blocked: Counter[str] = Counter()
         for from_pc_name, to_pc_name, comm in trade_lp.lp_model.allocation_variables:
-            if comm in config.closely_allocated_products:
-                from_iso3 = pc_name_to_iso3.get(from_pc_name)
-                to_iso3 = pc_name_to_iso3.get(to_pc_name)
+            if comm not in config.closely_allocated_products:
+                continue
+            from_loc = pc_location_by_name.get(from_pc_name)
+            to_loc = pc_location_by_name.get(to_pc_name)
 
-                # If we can't determine ISO3 codes, be conservative and block the allocation
+            if clustering_scope == "plant":
+                # Plant-keyed meta-FGs sit at their plant, so the radius applies directly
+                if from_loc is None or to_loc is None:
+                    reason = "missing-location"
+                elif not (haversine_distance([from_loc.lat, from_loc.lon, to_loc.lat, to_loc.lon]) <= config.hot_metal_radius):
+                    reason = "beyond-radius"
+                else:
+                    continue
+            elif clustering_scope == "plant_group":
+                # Hot flows stay inside one cluster location key; no radius, no country check
+                from_key = pc_name_to_location_key.get(from_pc_name)
+                to_key = pc_name_to_location_key.get(to_pc_name)
+                if from_key is None or to_key is None:
+                    reason = "missing-cluster-key"
+                elif from_key != to_key:
+                    reason = "cross-plant-group"
+                else:
+                    continue
+            else:
+                # iso3 scope: block when either country is unknown, or the flow crosses a border
+                from_iso3 = from_loc.iso3 if from_loc is not None else None
+                to_iso3 = to_loc.iso3 if to_loc is not None else None
                 if from_iso3 is None or to_iso3 is None:
-                    trade_lp.lp_model.allocation_variables[(from_pc_name, to_pc_name, comm)].fix(0)
-                    blocked_missing_iso3 += 1
+                    reason = "missing-iso3"
+                elif from_iso3 != to_iso3:
+                    reason = "cross-country"
+                else:
                     continue
-                # Always block cross-country hot commodity flow.
-                if from_iso3 != to_iso3:
-                    trade_lp.lp_model.allocation_variables[(from_pc_name, to_pc_name, comm)].fix(0)
-                    blocked_cross_country += 1
-                    continue
-                # Same-country: if both sides are plant-group-keyed meta-FGs, require
-                # them to share the same plant_group. Otherwise fall through (allow).
-                if use_plant_group_rule:
-                    from_pg = pc_name_to_plant_group.get(from_pc_name)
-                    to_pg = pc_name_to_plant_group.get(to_pc_name)
-                    if from_pg is not None and to_pg is not None and from_pg != to_pg:
-                        trade_lp.lp_model.allocation_variables[(from_pc_name, to_pc_name, comm)].fix(0)
-                        blocked_cross_plant_group += 1
+
+            trade_lp.lp_model.allocation_variables[(from_pc_name, to_pc_name, comm)].fix(0)
+            blocked[reason] += 1
 
         logger.info(
-            f"[LP HOT-METAL] Fixed to zero: {blocked_cross_country} cross-country, "
-            f"{blocked_cross_plant_group} cross-scope, {blocked_missing_iso3} missing-iso3 "
-            f"(clustering_scope={clustering_scope}, scope-keyed PCs={len(pc_name_to_plant_group)})"
+            f"[LP HOT-METAL] Fixed to zero (clustering_scope={clustering_scope}, "
+            f"radius={config.hot_metal_radius:.0f} km): {dict(blocked) or 'none'}"
         )
 
     else:
