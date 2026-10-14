@@ -132,16 +132,16 @@ The model is a **network flow optimization problem**:
 **Method:** `solve_lp_model()`
 
 **What it does:**
-1. Invokes HiGHS solver (fast open-source LP solver)
-2. Uses interior point method with crossover for speed and integrality
-3. Checks termination condition (optimal, infeasible, etc.)
+1. Invokes the HiGHS solver (fast open-source LP solver) with its HiPO interior-point algorithm and crossover
+2. Checks termination condition (optimal, infeasible, etc.)
+3. On a non-optimal solve, retries with the fallback solvers (see [Solver Details](#solver-details))
 4. Loads solution if optimal, logs diagnostics if infeasible
 
 **Solver configuration:**
-- Fixed random seed (1337) for reproducibility
+- Random seed from `SimulationConfig.random_seed` (`--random-seed`, default 42) for reproducibility
 - Presolve enabled to reduce problem size
 - Scaling enabled for numerical stability
-- Crossover enabled to avoid fractional solutions
+- Crossover enabled to return a vertex (basic) solution
 
 **Returns:** Solver result object with termination condition and status
 
@@ -296,14 +296,14 @@ sum(flows matching tariff pattern) ≤ quota_limit
 
 ### 6. Secondary Feedstock Constraints
 
-**Purpose:** Regional limits on secondary material availability
+**Purpose:** Annual limits on secondary feedstocks with constrained regional supply
 
 **Formulation:**
 ```
-sum(material to region group) ≤ regional_availability
+sum(commodity flows into furnace groups in the region) ≤ availability for the year
 ```
 
-**Applied to:** Scrap and other secondary feedstocks with limited regional supply
+**Applied to:** `bio_pci` (per TIAM-UCL region) and `co2_stored` (CO2 storage, per country), from the [`Biomass availability`](../../user_guide/master_input_reference.md#biomass-availability) and [`CO2 storage`](../../user_guide/master_input_reference.md#co2-storage) sheets respectively. Each constrained commodity is supplied by a synthetic zero-cost supplier connected to every production process. Scrap is not limited this way: its availability comes from scrap suppliers.
 
 ---
 
@@ -371,13 +371,28 @@ The LP plans at cluster level and is not aware of the `hot_metal_radius` constra
 
 Nine mechanisms work together:
 
+(hot-metal-producers)=
+#### Hot-metal producers
+
+A BOF needs hot metal from a nearby ironmaking furnace. A furnace group is a **hot-metal producer** when any business case of its technology lists `hot_metal` among its outputs in the Bill of Materials (`FurnaceGroup.produces_hot_metal`). The rule follows the data: BF, charcoal BF, BF with CCS or CCU, ESF, SR and any future technology that outputs hot metal all qualify without a code change. Before #155 the model used hard-coded name lists (`bf`, `esf`, `sr`), so BOFs fed only by other hot-metal technologies were dropped from the LP and stranded.
+
+The rule is applied with two different reach tests:
+
+| Use | Producers counted | Effect |
+|---|---|---|
+| `PlantGroup.update_hot_metal_access(hot_metal_radius)`, each year | Any producer in the **same plant group** within `hot_metal_radius`, whatever its status or country | Sets `has_hot_metal_access` on BOF furnace groups and their plants. The plant agents skip a BOF switch candidate or a BOF expansion without access |
+| Clustering: isolated BOF filter | **Active** producers in the **same country** within `hot_metal_radius` | A BOF without one is left out of the LP (see below) |
+| Clustering: effective BOF capacity | Same as the filter | Caps the BOF's capacity at the reachable producers' capacity (see below) |
+
+Clustering cannot reuse the plant-group flag: a plant group can span countries, while clusters are per country, and an inactive producer is in no cluster.
+
 #### 1. BOF filtering and effective capacity at clustering time
 
 `cluster_furnace_groups()` performs two corrections before building clusters:
 
-- **Isolated BOF filtering.** BOF FGs with no active BF/ESF/SR within `hot_metal_radius` in their country are excluded from their cluster entirely. Without a local iron source they can never satisfy the hot-metal minimum-share constraint, so including them would guarantee a BOM violation.
+- **Isolated BOF filtering.** BOF FGs with no active [hot-metal producer](#hot-metal-producers) within `hot_metal_radius` in their country are excluded from their cluster entirely. Without a local iron source they can never satisfy the hot-metal minimum-share constraint, so including them would guarantee a BOM violation.
 
-- **Effective BOF cluster capacity.** For each BOF FG, effective capacity = `min(physical_capacity, Σ[reachable_BF_capacity within radius] / min_hot_metal_share)`. The cluster's `total_capacity`, `capacity_shares`, and weighted costs are all derived from these effective capacities. This prevents the LP from allocating more hot metal to a BOF cluster than its geographically reachable BF neighbours can physically supply.
+- **Effective BOF cluster capacity.** For each BOF FG, effective capacity = `min(physical_capacity, Σ[reachable hot-metal producer capacity] / min_hot_metal_share)`, counting active producers in the same country within `hot_metal_radius`. The cluster's `total_capacity`, `capacity_shares`, and weighted costs are all derived from these effective capacities. This prevents the LP from allocating more hot metal to a BOF cluster than its geographically reachable producers can physically supply.
 
 **Cluster key.** The cluster key is `(technology_name, location_key, feedstock_signature)` where `location_key` is determined by `geographical_clustering_scope`:
 - Country scope (`iso3`): `location_key = plant.location.iso3`
@@ -550,14 +565,27 @@ LP setup uses `Environment.build_distance_function_for_trade_lp(process_centers)
 - Actively maintained
 - Good numerical stability
 
-### Interior Point Method (IPM)
+### Solver algorithm
 
-**Characteristics:**
-- Faster than simplex for large problems
-- Solves from "inside" feasible region
-- May produce fractional solutions
+**Default: HiPO.** The trade LP is solved with HiPO, the default interior-point solver in HiGHS 1.15. Interior-point methods are faster than simplex on large LPs and use little memory; they approach the optimum from inside the feasible region, so crossover is enabled to turn the result into a vertex (basic) solution. HiPO ships in the optional HiGHS extras, which is why the project depends on `highspy[extras]>=1.15.1`; a plain `highspy` install cannot run the default solver.
 
-**Crossover enabled:** Converts IPM solution to vertex solution (cleaner, more integer-friendly)
+**Choosing the algorithm.** The environment variable `STEELO_LP_SOLVER` overrides the default, for benchmarking or troubleshooting:
+
+| `STEELO_LP_SOLVER` | Algorithm |
+|---|---|
+| `hipo` (default) | HiPO interior point |
+| `ipx` | The legacy HiGHS interior point (named `ipm` before HiGHS 1.15) |
+| `simplex` | Dual simplex; the only option that warm-starts from the previous year's solution |
+
+**HiGHS log.** HiGHS's own log always reaches the run log. Set `STEELO_HIGHS_LOG=1` (or `true`, `yes`) to mirror it to the console as well; look for "Running HiPO", "IPX version" or "Using dual simplex solver" to confirm which algorithm ran.
+
+**Fallback on a failed solve.** When the first solve does not end optimal, the model:
+
+1. logs HiGHS's own status, iteration counts and solution status (Pyomo folds most HiGHS failures into a single "error" condition)
+2. writes the LP to `TM/trade_lp_failed_<year>.mps` in the run's output directory, for offline reproduction with highspy
+3. retries from scratch with `ipx`, then `simplex`, skipping the algorithm that just failed
+
+The retries use looser tolerances (1e-3) so that a hard year still gets a solution; the first solve keeps HiGHS's default tolerances, so results from normal years stay comparable across runs.
 
 ---
 

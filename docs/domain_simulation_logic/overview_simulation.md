@@ -160,7 +160,7 @@ Data Collector
 ### Economic Realism
 - **NPV-based decisions**: All investments evaluated on financial viability
 - **Debt accumulation**: Legacy debt persists across technology switches, creating financial lock-in
-- **COSA (Cost of Stranded Assets)**: Switching technologies early accounts for remaining debt and foregone profits
+- **COSA (Cost of Stranded Assets)**: Switching technologies early costs the operating margin the current asset would still have earned; its remaining debt is carried forward as legacy debt rather than counted in COSA
 - **Market dynamics**: Prices derived from supply-demand cost curves
 
 ### Technology Transition Realism

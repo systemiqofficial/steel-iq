@@ -30,7 +30,7 @@ Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()
    - Sets `furnace_group.emissions`
 
 3. **BOM validation and utilisation correction** (`handlers.py`):
-   - `TMPAMConnector.validate_bom_consistency()` checks every active FG for: mass balance (metallic input / production ∈ [0.99, 1.21]), minimum-share constraints (e.g. BOF hot_metal ≥ 70% − 1pp), and zero metallic charge where metallics are required.
+   - `TMPAMConnector.validate_bom_consistency()` checks every active FG for: mass balance (metallic input / production ∈ [0.99, 1.21]), per-feedstock minimum shares (e.g. BOF hot_metal ≥ 70% − 1pp, hot and cold forms counted together), aggregated metallic-charge constraints checked against their minimum and maximum independently (e.g. BOF DRI ≤ 15% + 1pp and HBI ≤ 15% + 1pp, each pattern counted on its own), and zero metallic charge where metallics are required. Violations are logged as `[BOM-CHECK]` warnings; the run continues.
    - `correct_utilization_for_supply_constraints()` scales down production and utilisation for any BOF FG that received insufficient hot metal to meet its minimum share. This is a safety net for edge cases (e.g. technology-cluster mismatch) that survive the structural disaggregation checks.
 
 **After PAM runs:**
@@ -42,9 +42,8 @@ Simulation(bus=bus, economic_model=PlantAgentsModel()).run_simulation()
 
 2. **Refresh hot-metal access** (`simulation.py`):
    - Calls `plant_group.update_hot_metal_access(config.hot_metal_radius)` for each `PlantGroup`
-   - Sets `has_hot_metal_access` on each `Plant` and each `FurnaceGroup` based on whether any BF/ESF/SR producer sits within `hot_metal_radius` of the plant (across plants in the same plant group)
-   - Populates `PlantGroup.hot_metal_access` (BOF `furnace_group_id` → list of in-radius hot-metal producers)
-   - Consumed downstream by `cluster_furnace_groups()` to filter BOFs without hot-metal access, by the PAM's BOF-transition check, and by `PlantGroup.evaluate_expansion()` to skip BOF greenfield options at plants without access
+   - Sets `has_hot_metal_access` on each BOF `FurnaceGroup` and its `Plant` when a [hot-metal producer](../trade_model/overview_trade_model.md#hot-metal-producers) (any technology whose Bill of Materials outputs hot metal) sits within `hot_metal_radius` of the plant, across plants in the same plant group
+   - Consumed downstream by the PAM's BOF-transition check and by `PlantGroup.evaluate_expansion()` to skip BOF expansion options at plants without access. `cluster_furnace_groups()` does not use the flag: it applies its own stricter check (active producers in the same country)
 
 3. **Checkpoint** saves state:
    - Serializes all plants, furnace groups, plant groups
@@ -117,8 +116,8 @@ Throughout the evaluation process:
 **Cost Data**:
 - `name_to_capex` → CAPEX by technology and region
 - `capex_renovation_share` → Brownfield cost multipliers
-- `industrial_cost_of_debt` → Interest rates by country
-- `industrial_cost_of_equity` → Required returns by country
+- `cost_of_debt_by_tech` → Interest rates by country and technology
+- `cost_of_equity_by_tech` → Required returns by country and technology
 
 **Technology Configuration**:
 - `allowed_furnace_transitions` → Valid technology switches
@@ -207,7 +206,7 @@ features:
 **Issue**: No technology switches happening
 - Check: allowed transitions Excel tab allows switches between expected technologies
 - Check: NPV calculations include correct CAPEX and OPEX
-- Check: COSA isn't too high (check remaining debt)
+- Check: COSA isn't too high: a profitable incumbent with many years left forgoes a large operating margin by switching (see the `[OPTIMAL TECH] COSA` debug line). Remaining debt does not enter COSA.
 
 **Issue**: Expansions not happening
 - Check: Plant group balances (need positive balance)

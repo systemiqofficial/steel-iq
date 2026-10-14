@@ -1073,35 +1073,42 @@ class TM_PAM_connector:
         mass_balance_tolerance: float = 0.01,
         min_share_tolerance: float = 0.01,
     ) -> list[dict]:
-        """Validate BOM balance and minimum-share constraints for all active furnace groups.
+        """Validate BOM balance and share constraints for all active furnace groups.
 
-        Two checks are run for every FG with production > 0:
+        Checks run for every FG with production > 0:
 
         1. **Mass balance**: the total metallic-charge input (hot_metal, pig_iron, scrap,
-           DRI/HBI, etc.) should be within `mass_balance_tolerance` of the production
-           volume.  A steel furnace using 1 t of metallic charge to produce 1 t of steel
-           should have a ratio close to 1.  Ratios outside [1 - tol, 1 + tol] indicate a
-           disaggregation error (e.g. material stranded at wrong FG).
+           DRI/HBI, etc.) divided by production must lie in
+           [1 - mass_balance_tolerance, 1.2 + mass_balance_tolerance]; yield losses make
+           slightly more input than output normal. Ratios outside indicate a
+           disaggregation error (e.g. material stranded at wrong FG). An FG whose
+           feedstocks require metallic charge but whose BOM holds none is flagged too.
 
-        2. **Min-share constraints**: for each feedstock whose
-           ``minimum_share_in_product > 0``, the material's actual share of the total
+        2. **Per-feedstock minimum shares**: for each feedstock whose
+           ``minimum_share_in_product > 0``, the material's share of the total
            metallic-charge input must be ≥ ``minimum_share_in_product - min_share_tolerance``.
-           Aggregated constraints (e.g. BOF hot_metal ≥ 70%) are also checked; both the
-           hot and cold form of a commodity are counted (pig_iron ≡ hot_metal).
+           The hot and cold form of a commodity are counted together (pig_iron ≡ hot_metal).
+
+        3. **Aggregated constraints**: for each ``AggregatedMetallicChargeConstraint`` of the
+           FG's technology, the share of materials whose name starts with the pattern is
+           checked against its minimum and its maximum independently (e.g. BOF DRI ≤ 15%,
+           a max-only constraint). Hot and cold forms are not combined: each has its own
+           constraint (BOF DRI ≤ 15% and HBI ≤ 15%).
 
         Args:
             furnace_groups: All furnace groups to check.
             aggregated_constraints: Optional list of ``AggregatedMetallicChargeConstraint``
                 objects (same ones passed to the LP / disaggregation).
-            mass_balance_tolerance: Relative tolerance for metallic input/output ratio.
-                Default 10 % (0.10).
-            min_share_tolerance: Absolute slack allowed on minimum-share constraints.
-                Default 2 pp (0.02).
+            mass_balance_tolerance: Slack on the metallic input/output ratio bounds.
+                Default 0.01.
+            min_share_tolerance: Absolute slack allowed on minimum and maximum shares.
+                Default 1 pp (0.01).
 
         Returns:
             List of issue dicts.  Each dict contains at least:
-            ``fg_id``, ``technology``, ``check`` (``"empty_bom"``, ``"mass_balance"``,
-            or ``"min_share"``), and ``message``.  All violations are also logged as
+            ``fg_id``, ``technology``, ``check`` (``"empty_bom"``, ``"zero_metallic"``,
+            ``"mass_balance"``, ``"min_share"``, ``"aggregated_min_share"`` or
+            ``"aggregated_max_share"``), and ``message``.  All violations are also logged as
             WARNING.
         """
         logger = logging.getLogger(f"{__name__}.validate_bom_consistency")
@@ -1248,13 +1255,10 @@ class TM_PAM_connector:
                     issues.append(issue)
                     logger.warning("[BOM-CHECK] min_share: %s", issue["message"])
 
-            # --- Check 3: aggregated constraints (e.g. BOF hot_metal ≥ 70%) ---
+            # --- Check 3: aggregated constraints (e.g. BOF DRI ≤ 15%) ---
             if aggregated_constraints:
                 fg_tech = fg.technology.name.lower()
                 for c in aggregated_constraints:
-                    min_share = getattr(c, "minimum_share", None)
-                    if not min_share or min_share <= 0:
-                        continue
                     if str(getattr(c, "technology_name", "")).lower() != fg_tech:
                         continue
                     pattern = str(getattr(c, "feedstock_pattern", "")).lower()
@@ -1271,7 +1275,10 @@ class TM_PAM_connector:
                     )
                     actual_share = matching_demand / total_metallic_in if total_metallic_in > 0 else 0.0
 
-                    if actual_share < min_share - min_share_tolerance:
+                    # Minimum and maximum are independent checks: a max-only constraint
+                    # (minimum_share 0) is still checked against its cap
+                    min_share = getattr(c, "minimum_share", None)
+                    if min_share and min_share > 0 and actual_share < min_share - min_share_tolerance:
                         issue = {
                             "fg_id": fg.furnace_group_id,
                             "technology": fg.technology.name,
@@ -1289,26 +1296,24 @@ class TM_PAM_connector:
                         issues.append(issue)
                         logger.warning("[BOM-CHECK] aggregated_min_share: %s", issue["message"])
 
-                    # Check maximum share constraint (e.g. BOF DRI ≤ 15%, HBI ≤ 15%)
                     max_share = getattr(c, "maximum_share", None)
-                    if max_share and max_share > 0:
-                        if actual_share > max_share + min_share_tolerance:
-                            issue = {
-                                "fg_id": fg.furnace_group_id,
-                                "technology": fg.technology.name,
-                                "check": "aggregated_max_share",
-                                "pattern": pattern,
-                                "actual_share": actual_share,
-                                "required_share": max_share,
-                                "message": (
-                                    f"FG {fg.furnace_group_id} ({fg.technology.name}): "
-                                    f"aggregated constraint '{pattern}*' share={actual_share:.1%} "
-                                    f"> maximum={max_share:.1%} "
-                                    f"(matching={matching_demand:.0f}t / metallic_total={total_metallic_in:.0f}t)"
-                                ),
-                            }
-                            issues.append(issue)
-                            logger.warning("[BOM-CHECK] aggregated_max_share: %s", issue["message"])
+                    if max_share and max_share > 0 and actual_share > max_share + min_share_tolerance:
+                        issue = {
+                            "fg_id": fg.furnace_group_id,
+                            "technology": fg.technology.name,
+                            "check": "aggregated_max_share",
+                            "pattern": pattern,
+                            "actual_share": actual_share,
+                            "required_share": max_share,
+                            "message": (
+                                f"FG {fg.furnace_group_id} ({fg.technology.name}): "
+                                f"aggregated constraint '{pattern}*' share={actual_share:.1%} "
+                                f"> maximum={max_share:.1%} "
+                                f"(matching={matching_demand:.0f}t / metallic_total={total_metallic_in:.0f}t)"
+                            ),
+                        }
+                        issues.append(issue)
+                        logger.warning("[BOM-CHECK] aggregated_max_share: %s", issue["message"])
 
         if issues:
             logger.warning(

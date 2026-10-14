@@ -57,8 +57,8 @@ graph TD
 - **Purpose**: Calculate NPV for all possible technology expansions across all plants
 - **Actions**:
   - Call `evaluate_expansion_options()` to get NPV for each plant-technology combination
-  - **Per-(plant, tech) affordability pre-filter**: For each combination, check that the group treasury can cover `capex × capacity × equity_share` before computing NPV. Combinations the group cannot afford are skipped so max-NPV selection picks from affordable candidates only.
-  - **P3 CO2 storage gate (pre-NPV)**: For each CCS candidate, the gate computes `get_co2_need_by_name(tech, capacity, reductant)` and compares against `get_co2_headroom(iso3, current_year + construction_time)`. If `need > headroom` the tech is dropped before NPV is computed, so the per-plant NPV race naturally picks the next-best non-CCS alternative (or yields no expansion for that plant). Reductant lookup is two-level (PlantGroup-local first, env fallback) to stay aligned with the downstream `get_bom_from_avg_boms` call — gate and NPV see the same reductant.
+  - **Per-(plant, tech) affordability pre-filter**: For each combination, apply the CAPEX subsidies active in the current year, then check that the group treasury can cover `subsidised capex × capacity × equity_share` before computing the NPV, so a CAPEX subsidy that makes a candidate affordable is counted from the start. The pre-filter uses the planned capacity; the Stage 6 affordability check and the equity debit use the capacity the China capacity-replacement policy permits (`build_capacity`), so in runs with that policy the two figures can differ. Combinations the group cannot afford are skipped, so max-NPV selection picks from affordable candidates only.
+  - **P3 CO2 storage gate (pre-NPV)**: For each CCS candidate, a cheap pre-check asks `get_co2_need_by_name(tech, capacity, "")`. The all-reductant maximum is 0 for a technology with no CCS potential, which is then kept. Otherwise the need is sized with the candidate's own reductant pick for its operating start year from the [reductant score series](reductant_choice_and_opex.md#the-committed-reductant). This is the same reductant the BOM is rebuilt to and the `AddFurnaceGroup` command commits. The need is compared against `get_co2_headroom(iso3, current_year + construction_time)`. If `need > headroom`, the tech is dropped before the NPV is computed, so the per-plant NPV race naturally picks the next-best non-CCS alternative (or yields no expansion for that plant).
   - **China capacity-replacement sizing query (pre-NPV, policy-enabled runs only)**: For each Chinese candidate, the policy's sizing query returns the capacity the route may actually build — the planned capacity, or ÷ 1.5 for an emission-intense route — and the NPV, the equity check and the capacity-limit check all run at that capacity. Pool availability is deliberately not consulted here: a build that lacks credits is refused at commitment (Stage 11), whatever it was worth. See [China Capacity-Replacement Policy](../capacity_replacement_policy.md).
   - Consider regional CAPEX, subsidies, dynamic feedstocks
   - Pass all subsidy information for proper NPV calculation
@@ -158,8 +158,9 @@ graph TD
 - **Output**: AddFurnaceGroup command object
 - **Key Parameters**:
   - Basic: furnace_group_id, plant_id, technology, capacity, product
-  - Financial: equity_needed, npv, capex (with/without subsidy), cost_of_debt (with/without subsidy)
+  - Financial: equity_share, equity_needed, npv, capex (with/without subsidy), cost_of_debt (with/without subsidy)
   - Subsidies: capex_subsidies, debt_subsidies lists
+- **Equity share**: the new furnace group takes the command's `equity_share`, the same share the equity check and debit used. Its debt schedule therefore matches what the group paid in equity, rather than an internal default of 0.2.
 
 **Capacity policy gate (policy-enabled runs, Chinese plant groups only)**: after every check above has passed and before the command is created, the policy's expansion gate withdraws the planned capacity from the retirement-credit pool, oldest credits first, within the credits applicable to the group (its own region's tag in a key province, and only its own credits from the 2028 company cutoff). If the applicable pool cannot cover the withdrawal, the expansion is refused for this year and the method returns `None`. The granted build capacity must equal the sizing query's answer the NPV was taken at; a mismatch raises.
 
@@ -190,8 +191,8 @@ graph TD
 | construction_time | int | Time to construct new furnace (years) |
 | current_year | Year | Current simulation year |
 | allowed_techs | dict[Year, list[str]] | Technologies allowed by year |
-| cost_of_debt_dict | dict[str, float] | Cost of debt by ISO3 country code |
-| cost_of_equity_dict | dict[str, float] | Cost of equity by ISO3 country code |
+| cost_of_debt_dict | dict[str, dict[str, float]] | Cost of debt by ISO3 country code and technology |
+| cost_of_equity_dict | dict[str, dict[str, float]] | Cost of equity by ISO3 country code and technology |
 | get_bom_from_avg_boms | Callable | Function to retrieve bill of materials for a technology |
 | capacity_limit_steel | Volumes | Maximum allowed steel capacity from expansions/switches (PAM share) |
 | capacity_limit_iron | Volumes | Maximum allowed iron capacity from expansions/switches (PAM share) |

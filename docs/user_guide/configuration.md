@@ -101,6 +101,17 @@ If validation fails (e.g., required settings are missing), the module:
 - Prints a validation error message using `rich.print`.
 - Exits the application with a status code of `1`.
 
+## Trade Solver Environment Variables
+
+Two environment variables tune the trade LP solver. They are read directly from the process environment, not from the settings above, so set them in the shell (for example `STEELO_LP_SOLVER=simplex run_simulation ...`) rather than in a `.env` file.
+
+| Variable | Values | Effect |
+|---|---|---|
+| `STEELO_LP_SOLVER` | `hipo` (default), `ipx`, `simplex` | The HiGHS algorithm for the trade LP |
+| `STEELO_HIGHS_LOG` | `1`, `true` or `yes` to enable | Mirrors HiGHS's own log to the console (it always reaches the run log) |
+
+See [Solver Details](../domain_simulation_logic/trade_model/overview_trade_model.md#solver-details) for what each algorithm does and the fallback on a failed solve.
+
 ## Example `.env` File
 
 An example of what the `.env` file might contain:
