@@ -3,7 +3,7 @@
 :func:`configure_capacity_policy` owns the binding lifecycle: it always
 unbinds first, refuses an enabled run without complete fixtures, and binds a
 fresh evaluator, pool and recorder seeded from the opening credits.
-See docs/domain_simulation_logic/capacity_replacement_policy_reference.md#binding-lifecycle.
+See docs/domain_simulation_logic/plant_agent_model/capacity_replacement_policy_reference.md#binding-lifecycle.
 """
 
 from __future__ import annotations

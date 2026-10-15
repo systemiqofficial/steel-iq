@@ -1,6 +1,6 @@
 # CO2 Storage Capacity Gate
 
-Narrative companion to the reference sections in [Environment](environment.md#co2-storage-capacity-tracking), [Furnace Group Strategy](plant_agent_model/furnace_group_strategy.md) (P2), and [Plant Expansions](plant_agent_model/plant_expansions.md) (P3).
+Narrative companion to the reference sections in [Environment](../overarching_elements/environment.md#co2-storage-capacity-tracking), [Furnace Group Strategy](furnace_group_strategy.md) (P2), and [Plant Expansions](plant_expansions.md) (P3).
 
 ## Why we need a gate
 
@@ -15,7 +15,7 @@ The Environment owns two per-country counters:
 
 Counters are rebuilt from scratch at the start of each year by walking every FurnaceGroup, so cancelled or closed plants automatically free their slot. Intra-year handler hooks keep counters up-to-date as plants transition between statuses during the year, so gates fired later in the year see earlier commitments.
 
-To estimate a prospective CCS plant's need, the gate uses `Environment.get_co2_need(tech, capacity, reductant)`. The reductant is the one the plant would actually be built with: the evaluated pick for new opportunities, `chosen_reductant` for announced plants, and the score-series pick for the operating start year for switch (P2) and expansion (P3) candidates (see [Reductant Choice and Investment OPEX](plant_agent_model/reductant_choice_and_opex.md#the-committed-reductant)). Within that reductant the computation takes the highest-storing metallic charge, which over-estimates by up to ~6% and never under-estimates.
+To estimate a prospective CCS plant's need, the gate uses `Environment.get_co2_need(tech, capacity, reductant)`. The reductant is the one the plant would actually be built with: the evaluated pick for new opportunities, `chosen_reductant` for announced plants, and the score-series pick for the operating start year for switch (P2) and expansion (P3) candidates (see [Reductant Choice and Investment OPEX](reductant_choice_and_opex.md#the-committed-reductant)). Within that reductant the computation takes the highest-storing metallic charge, which over-estimates by up to ~6% and never under-estimates.
 
 ## How a CCS plant reaches operation
 

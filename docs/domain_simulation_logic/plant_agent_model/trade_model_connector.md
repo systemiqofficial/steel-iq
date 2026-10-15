@@ -135,6 +135,8 @@ Each producing furnace's carbon — `ProcessCenter.production_cost`, equal to th
 
 #### Carbon border charge propagation
 
+How the LP sets tariffs and carbon border charges is described in [Tariffs, Quotas and Carbon Border Adjustments](../trade_model/trade_policy.md). This stage passes them on to importers.
+
 The per-arc carbon border charges the LP recorded on `Allocations.carbon_border_charges` (USD/t, keyed by the same process-centre and commodity objects as the flows, negative for an export rebate) are stamped on each edge as `carbon_border_cost` and added to `material_tariff_transportation_cost` beside transport and tariff, so the importer's material cost carries the charge exactly like a tariff. An arc without a recorded charge carries none.
 
 #### Embedded emissions and carbon paid

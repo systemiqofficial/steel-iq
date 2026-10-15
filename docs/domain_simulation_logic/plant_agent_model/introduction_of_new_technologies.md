@@ -34,7 +34,7 @@ Limits reflect time to build:
 - Carbon capture and storage networks (e.g., for BF+CCS or BF+CCU)
 - Renewable electricity generation (e.g., for electric furnaces)
 
-For CO2 storage specifically, an annual per-country budget is enforced by five pre-investment gates so plants cannot commit to CCS beyond what a country can physically store. Two at opportunity-generation time (G1: drop CCS candidates at NPV time; G2: block considered → announced) sit on the geospatial side; three at plant-agent state transitions (P1: block announced → construction, with immediate discard to prevent hoarding of the reserved slot; P2: drop CCS candidates in the tech-switch pre-NPV filter; P3: drop CCS candidates in the expansion pre-NPV filter). All five gates read a unified `Environment.get_co2_headroom(iso3, operating-start-year)` helper backed by firm/reserved counters that are rebuilt every year and updated intra-year as plants transition. See [CO2 Storage Capacity Gate](../co2_storage_gate.md) for the full walkthrough.
+For CO2 storage specifically, an annual per-country budget is enforced by five pre-investment gates so plants cannot commit to CCS beyond what a country can physically store. Two at opportunity-generation time (G1: drop CCS candidates at NPV time; G2: block considered → announced) sit on the geospatial side; three at plant-agent state transitions (P1: block announced → construction, with immediate discard to prevent hoarding of the reserved slot; P2: drop CCS candidates in the tech-switch pre-NPV filter; P3: drop CCS candidates in the expansion pre-NPV filter). All five gates read a unified `Environment.get_co2_headroom(iso3, operating-start-year)` helper backed by firm/reserved counters that are rebuilt every year and updated intra-year as plants transition. See [CO2 Storage Capacity Gate](co2_storage_gate.md) for the full walkthrough.
 
 ### Learning Curve
 Early adopters face:
@@ -104,7 +104,7 @@ new_capacity_share_from_new_plants = 0.4  # 40% of new capacity from greenfield
 
 ### China Capacity-Replacement Policy (optional)
 
-In addition to the annual limits, a run started with `--enable-capacity-policy` gates every Chinese expansion, new plant and replacement on a national pool of retirement credits: capacity may only be added against capacity retired earlier, and emission-intense replacements and additions are penalised at 1.5:1. The pool works alongside the annual limits, not instead of them, and applies to Chinese plants only. See [China Capacity-Replacement Policy](../capacity_replacement_policy.md).
+In addition to the annual limits, a run started with `--enable-capacity-policy` gates every Chinese expansion, new plant and replacement on a national pool of retirement credits: capacity may only be added against capacity retired earlier, and emission-intense replacements and additions are penalised at 1.5:1. The pool works alongside the annual limits, not instead of them, and applies to Chinese plants only. See [China Capacity-Replacement Policy](capacity_replacement_policy.md).
 
 ## Implementation Details
 

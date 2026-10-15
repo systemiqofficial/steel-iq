@@ -17,7 +17,7 @@ Geo-keyed inputs use the same form in the master workbook: a bare country code f
 
 ## How Plants Get Their Province
 
-- **Starting fleet**: from the master workbook. The `Furnace units` sheet carries `iso3` and `geo_unit_or_province` in separate columns; the older `Iron and steel plants` sheet carries a bare or combined code in `ISO3`, with an optional `geo_unit` column. See the [Master Input Reference](../user_guide/master_input_reference.md). The model no longer derives a plant's country or province from its coordinates.
+- **Starting fleet**: from the master workbook. The `Furnace units` sheet carries `iso3` and `geo_unit_or_province` in separate columns; the older `Iron and steel plants` sheet carries a bare or combined code in `ISO3`, with an optional `geo_unit` column. See the [Master Input Reference](../../user_guide/master_input_reference.md). The model no longer derives a plant's country or province from its coordinates.
 - **New plants from the geospatial model**: from their coordinates, by a point-in-polygon lookup against the Natural Earth admin-1 layer (`derive_geo_unit_for_site`). The derived unit is kept only if its country matches the site's country and the unit appears in `geo_hierarchy.json`; otherwise the site is placed at country level. Without the admin-1 layer, every new site is placed at country level.
 
 ## Which Inputs Are Resolved at Province Level
@@ -43,7 +43,7 @@ Before this fallback, unauthored commodities on a province row were priced at 0.
 
 ### Grid emissivity years
 
-A province row in `Power grid emissivity` may author only some years. Preparation fills the missing years from the country's rows for the same scenario and logs a warning. See the [Master Input Reference](../user_guide/master_input_reference.md#power-grid-emissivity).
+A province row in `Power grid emissivity` may author only some years. Preparation fills the missing years from the country's rows for the same scenario and logs a warning. See the [Master Input Reference](../../user_guide/master_input_reference.md#power-grid-emissivity).
 
 ## Reference Files
 
@@ -72,11 +72,11 @@ Every sub-national check uses this file: the geography checks on `Furnace units`
 
 `geo_options.csv` in the data root lists every province key that can be authored, for pasting into the master workbook. Columns: `Region`, `Country (iso3)`, `Country (name)`, `Subnational (geo_unit)`, `Subnational (display_name)`, `unit_type`, `geo_key`.
 
-Data preparation writes it automatically. To regenerate it, or to write it elsewhere, run [`generate-geo-options`](../user_guide/cli_commands.md#generate-geo-options).
+Data preparation writes it automatically. To regenerate it, or to write it elsewhere, run [`generate-geo-options`](../../user_guide/cli_commands.md#generate-geo-options).
 
 ## Related Documentation
 
-- [Master Input Reference](../user_guide/master_input_reference.md): sheet columns and checks
+- [Master Input Reference](../../user_guide/master_input_reference.md): sheet columns and checks
 - [Environment](environment.md): where the geo-keyed inputs are loaded
-- [Priority Location Selection](geospatial_model/priority_location_selection.md): hydrogen ceilings and intraregional trade
-- [New Plant Opening](geospatial_model/new_plant_opening.md): how candidate sites are priced
+- [Priority Location Selection](../geospatial_model/priority_location_selection.md): hydrogen ceilings and intraregional trade
+- [New Plant Opening](../geospatial_model/new_plant_opening.md): how candidate sites are priced
