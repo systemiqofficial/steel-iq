@@ -12,7 +12,6 @@ import time
 from pathlib import Path
 import functools
 from steelo.adapters.geospatial.geospatial_toolbox import haversine_distance
-from steelo.utilities.stage_timing import StageTimer, record_metric, stop_stage
 
 
 def time_function(func):
@@ -1943,16 +1942,6 @@ class TradeLPModel:
 
         return result
 
-    @staticmethod
-    def _record_lp_size(solver: Any) -> None:
-        """Record rows, columns and nonzeros of the LP the solver last received (HiGHS only)."""
-        highs = getattr(solver, "_solver_model", None)
-        if highs is None or not hasattr(highs, "getNumCol"):
-            return
-        record_metric("lp_rows", highs.getNumRow())
-        record_metric("lp_columns", highs.getNumCol())
-        record_metric("lp_nonzeros", highs.getNumNz())
-
     def _run_solver(
         self, solver_name: str, warm_start: bool, logger: logging.Logger, relaxed_tolerances: bool = False
     ) -> tuple[Any, Any]:
@@ -1967,7 +1956,7 @@ class TradeLPModel:
         Returns:
             Tuple of (appsi solver instance, Pyomo result object)
         """
-        solve_timer = StageTimer()
+        start_time = time.time()
         solver = pyo.SolverFactory("appsi_highs")
         solver.options["random_seed"] = self.random_seed
         solver.options.update(self.solver_options)
@@ -1981,9 +1970,7 @@ class TradeLPModel:
         # HiGHS's log reaches the run log via the pyomo appsi logger; tee=True also mirrors it to stdout.
         highs_log = os.environ.get("STEELO_HIGHS_LOG", "").lower() in {"1", "true", "yes"}
         result = solver.solve(self.lp_model, load_solutions=False, warmstart=warm_start, tee=highs_log)
-        solve_s = stop_stage(solve_timer, "trade_optimization")
-        self._record_lp_size(solver)
-        logger.info(f"operation=trade_optimization duration_s={solve_s:.3f} solver={solver_name}")
+        logger.info(f"operation=trade_optimization duration_s={time.time() - start_time:.3f} solver={solver_name}")
         return solver, result
 
     def _log_solver_failure(self, solver, termination_condition, logger: logging.Logger, dump_lp: bool) -> None:

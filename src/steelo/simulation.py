@@ -18,13 +18,6 @@ import sys
 
 from steelo.simulation_types import TechSettingsMap, get_default_technology_settings
 from steelo.utilities.memory_profiling import MemoryTracker
-from steelo.utilities.stage_timing import (
-    StageTimer,
-    reset_stage_timings,
-    set_stage_year,
-    stop_stage,
-    write_stage_timings,
-)
 
 from .capacity_policy.config import CapacityPolicyConfig
 from .domain import Year, Plant, PlantGroup
@@ -1166,7 +1159,6 @@ class SimulationRunner:
 
         # Performance logging: simulation start
         simulation_start_time = time.time()
-        reset_stage_timings()
         if self.modelrun_id is not None:
             logger.info(f"operation=simulation_start model_run_id={self.modelrun_id}")
         else:
@@ -1199,8 +1191,7 @@ class SimulationRunner:
 
         for i in range(start_year, end_year + 1):
             # Performance logging: year start
-            year_timer = StageTimer()
-            set_stage_year(i)
+            year_start_time = time.time()
             logger.info(f"operation=year_start year={i}")
             memory_tracker.checkpoint("year_start", year=i)
 
@@ -1428,8 +1419,7 @@ class SimulationRunner:
                         bus.handle(event(time_step_increment=1, iron_price=price["iron"]))
 
             # Performance logging: year complete
-            year_elapsed = stop_stage(year_timer, "year_complete")
-            write_stage_timings(self.config.output_dir)
+            year_elapsed = time.time() - year_start_time
             logger.info(f"operation=year_complete year={i} duration_s={year_elapsed:.3f}")
             _log_memory_usage("memory_snapshot", stage="year_complete", year=i)
             memory_tracker.checkpoint("year_end", year=i)
