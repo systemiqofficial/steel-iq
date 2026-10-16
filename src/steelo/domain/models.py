@@ -30,6 +30,9 @@ from steelo.domain.calculate_costs import (
     collect_active_subsidies_over_period,
     collect_subsidies_for_geo,
     score_reductants_for_business_cases,
+    compile_reductant_business_cases,
+    score_compiled_reductant_business_cases,
+    CompiledBusinessCase,
     summarise_reductant_picks,
     ENERGY_FEEDSTOCK_KEYS,
     ReductantScoreSeries,
@@ -9023,6 +9026,7 @@ class Environment:
     _REDUCTANT_CACHE_MAX_ENTRIES = 200_000
     _reductant_cache_token: tuple | None = None
     _direct_ghg_lookup: dict[tuple[str, str, str], float]
+    _compiled_reductant_cases: dict[str, tuple[list["PrimaryFeedstock"], list[CompiledBusinessCase]]]
 
     def _validate_reductant_score_cache(self) -> None:
         """Drop the reductant-score memo when an input it was computed from has been replaced.
@@ -9056,6 +9060,22 @@ class Environment:
         self._reductant_score_cache: dict[tuple, tuple[str | None, dict[str, dict[str, float]]]] = {}
         self._reductant_cache_token = None
         self._direct_ghg_lookup = {}
+        self._compiled_reductant_cases = {}
+
+    def _compiled_business_cases(
+        self, technology_name: str, dynamic_business_case: list["PrimaryFeedstock"]
+    ) -> list[CompiledBusinessCase]:
+        """The technology's business cases in the form the scorer needs, built once per list.
+
+        A replaced list, or one that changed length, is compiled again. Editing a business case in
+        place needs ``clear_reductant_score_cache`` like any other exogenous input.
+        """
+        entry = self._compiled_reductant_cases.get(technology_name)
+        if entry is not None and entry[0] is dynamic_business_case and len(entry[1]) == len(dynamic_business_case):
+            return entry[1]
+        compiled = compile_reductant_business_cases(dynamic_business_case)
+        self._compiled_reductant_cases[technology_name] = (dynamic_business_case, compiled)
+        return compiled
 
     def _reductant_pick_and_scores_for_year(
         self,
@@ -9082,8 +9102,8 @@ class Environment:
             override_reference_year=override_reference_year,
         )
         carbon_price = self.carbon_price_for_year(location.iso3, year)
-        year_scores = score_reductants_for_business_cases(
-            dynamic_business_case,
+        year_scores = score_compiled_reductant_business_cases(
+            self._compiled_business_cases(technology_name, dynamic_business_case),
             input_costs,
             output_costs,
             carbon_price,
