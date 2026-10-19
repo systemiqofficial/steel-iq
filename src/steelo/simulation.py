@@ -287,6 +287,9 @@ class SimulationConfig:
     # === Trade Module Parameters ===
     # Solver configuration
     lp_epsilon: float = 1e-3  # LP solver epsilon
+    # Trade LP solver backend: "highs" (default) or "gurobi". Gurobi needs your own license; use it
+    # only as that license allows.
+    optimization_solver: str = "highs"
     capacity_limit: float = 0.95
     soft_minimum_capacity_share: float = 0.6
     minimum_active_utilisation_rate: float = 0.01

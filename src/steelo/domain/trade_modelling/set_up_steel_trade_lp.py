@@ -801,7 +801,9 @@ def fix_to_zero_allocations_where_distance_doesnt_match_commodity(
                 # Plant-keyed meta-FGs sit at their plant, so the radius applies directly
                 if from_loc is None or to_loc is None:
                     reason = "missing-location"
-                elif not (haversine_distance([from_loc.lat, from_loc.lon, to_loc.lat, to_loc.lon]) <= config.hot_metal_radius):
+                elif not (
+                    haversine_distance([from_loc.lat, from_loc.lon, to_loc.lat, to_loc.lon]) <= config.hot_metal_radius
+                ):
                     reason = "beyond-radius"
                 else:
                     continue
@@ -1073,6 +1075,7 @@ def set_up_steel_trade_lp(
         config: SimulationConfig with:
             - primary_products: List of commodities (e.g., ["steel", "iron"])
             - lp_epsilon: LP solver tolerance (e.g., 1e-3)
+            - optimization_solver: LP solver backend, "highs" (default) or "gurobi"
             - capacity_limit: Production capacity safety factor (typically 0.95)
             - soft_minimum_capacity_share: Target minimum utilization
             - active_statuses: Furnace statuses to include (e.g., ["operating"])
@@ -1117,7 +1120,10 @@ def set_up_steel_trade_lp(
         distance_function = None  # Placeholder for now
 
     lp_model = tlp.TradeLPModel(
-        lp_epsilon=config.lp_epsilon, distance_function=distance_function, random_seed=config.random_seed
+        lp_epsilon=config.lp_epsilon,
+        distance_function=distance_function,
+        random_seed=config.random_seed,
+        solver=config.optimization_solver,
     )
     modelled_products = config.primary_products
 
