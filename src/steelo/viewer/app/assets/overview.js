@@ -8,6 +8,8 @@ function rtEl(tag, cls, text) {
   return e;
 }
 
+const rtCount = (n, noun) => n + " " + noun + (n === 1 ? "" : "s");
+
 // "2026-10-20T21:11:34" to the minute.
 const runTableDate = run => run.started.slice(0, 16).replace("T", " ");
 
@@ -74,7 +76,7 @@ function renderRunTable(box, set, scenarios, opts) {
     const variant = set.dimensions.find(d => d.key === opts.variantKey);
     const seeds = variant ? variant.values : [];
     box.append(rtEl("h2", "rt-title", set.label),
-      rtEl("div", "rt-counts", set.runs.length + " runs · " + scenarios.length + " scenarios"
+      rtEl("div", "rt-counts", rtCount(set.runs.length, "run") + " · " + rtCount(scenarios.length, "scenario")
         + (seeds.length ? " · seed" + (seeds.length > 1 ? "s " : " ") + seeds.join(", ") : "")));
   }
 

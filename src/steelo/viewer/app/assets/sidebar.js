@@ -33,9 +33,10 @@ function dimText(d, v, i) {
   return i === 0 ? v : dimPrefix(d.label) + " " + v;
 }
 
+// With no dimension left but the variant, the scenario takes its first run's name.
 function scenarioLabel(set, scenario) {
   return set.dimensions.filter(d => d.key in scenario.dims)
-    .map((d, i) => dimText(d, scenario.dims[d.key], i)).join(" · ");
+    .map((d, i) => dimText(d, scenario.dims[d.key], i)).join(" · ") || scenario.runs[0].name;
 }
 
 // Dims that vary across the picks name each series; the shared rest goes into a subtitle once.
