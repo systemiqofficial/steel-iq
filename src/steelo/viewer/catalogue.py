@@ -149,7 +149,12 @@ def format_value(key: str, value: Any) -> str:
 
     Returns:
         "none" for None and for an empty list, "on" or "off" for booleans, a list joined with ", ", a float through
-        ``format(value, "g")``, the fields in ``TONNE_FIELDS`` in Mt with the unit ("2.5 Mt"), anything else as ``str``.
+        ``format(value, ".15g")``, the fields in ``TONNE_FIELDS`` in Mt with the unit ("2.5 Mt"), anything else as
+        ``str``.
+
+    Notes:
+        Fifteen significant digits keep every digit a setting is given with, so two runs differing in a late digit
+        still differ here, while 100.0 still reads "100".
     """
     if value is None:
         return "none"
@@ -158,9 +163,9 @@ def format_value(key: str, value: Any) -> str:
     if isinstance(value, list):
         return ", ".join(str(item) for item in value) if value else "none"
     if key in TONNE_FIELDS:
-        return f"{value / MT_TO_T:g} Mt"
+        return f"{value / MT_TO_T:.15g} Mt"
     if isinstance(value, float):
-        return format(value, "g")
+        return format(value, ".15g")
     return str(value)
 
 
