@@ -70,7 +70,7 @@ function createResultsPane(container, set, opts = {}) {
     fetch(runUrl("index.json"))
       .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
       .then(index => { if (token === state.token) { state.index = index; renderFolders(); } })
-      .catch(() => { if (token === state.token) showMessage("No result tables for this set's runs."); });
+      .catch(() => { if (token === state.token) showMessage("No result tables for this run."); });
   }
 
   function renderFolders() {

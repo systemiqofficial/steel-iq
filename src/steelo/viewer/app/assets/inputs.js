@@ -113,7 +113,7 @@ function createInputsPane(container, set, opts) {
     if (!data) {
       const d = document.createElement("div");
       d.className = "empty";
-      d.textContent = loadError ? "No input data for this set (missing " + INPUTS_FILE + ")." : "Loading…";
+      d.textContent = loadError ? "No input data for these runs (" + loadError + ")." : "Loading…";
       list.appendChild(d);
       return;
     }
@@ -609,7 +609,7 @@ function createInputsPane(container, set, opts) {
     renderTopics();
     if (!data) {
       renderViewRow(null);
-      showMessage("No input data found for this set (" + loadError + ").");
+      showMessage("No input data found for these runs (" + loadError + ").");
       return;
     }
     const t = topicOf(state.topic);
