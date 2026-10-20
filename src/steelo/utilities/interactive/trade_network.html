@@ -418,7 +418,7 @@ function render() {
   }
 
   // Nodes on the circle: countries blocked by region (then busiest first), regions and
-  // bloc members busiest first, "Rest of world" last; the bipartite ore view puts
+  // bloc members busiest first, "Rest of world" last; a labelled-origin view puts
   // origin labels on a left arc and destination countries on a right arc. The map
   // layout instead puts every node at the trade-weighted mean position of its members.
   const shown = new Set(kept.flatMap(f => [f.o, f.d]));

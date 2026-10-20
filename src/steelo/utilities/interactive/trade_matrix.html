@@ -429,7 +429,7 @@ function initControls() {
   const setAllCommodities = checked => { commodityCbs.forEach(cb => cb.checked = checked); render(); };
   document.getElementById("commodity-all").addEventListener("click", () => setAllCommodities(true));
   document.getElementById("commodity-none").addEventListener("click", () => setAllCommodities(false));
-  // Mine origins are labels, not countries, so they stay out of the geography filter;
+  // Label origins, where a product has them, stay out of the geography filter;
   // suppliers carry no technology, so only plant rows feed the technology filter.
   Interactive.init({geoKeys: allRows.flatMap(r => PRODUCTS[r.p].labelledOrigins ? [r.d] : [r.o, r.d]),
                     techs: countryRows.map(r => r.t), onChange: () => { syncYears(); render(); }});
