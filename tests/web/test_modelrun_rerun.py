@@ -7,7 +7,7 @@ from django.core.files.base import ContentFile
 from django.urls import reverse
 from django.utils import timezone
 
-from steeloweb.models import ModelRun, SimulationPlot
+from steeloweb.models import ModelRun, ResultImages, SimulationPlot
 
 
 @pytest.fixture(autouse=True)
@@ -121,7 +121,7 @@ def test_rerun_from_cancelled_resets_and_enqueues(client, monkeypatch):
 
 @pytest.mark.django_db
 def test_reset_for_rerun_removes_previous_outputs(temp_media_root):
-    """A reset removes the output folder, the result CSV and the plot rows, so a rerun shows only its own results."""
+    """A reset removes the output folder, result CSV and plot and image rows, so a rerun shows only its own results."""
     output_dir = Path(temp_media_root) / "model_outputs" / "run_old"
     output_dir.mkdir(parents=True)
     (output_dir / "old.csv").write_text("stale")
@@ -136,6 +136,7 @@ def test_reset_for_rerun_removes_previous_outputs(temp_media_root):
         title="Old plot",
         image=ContentFile(b"png", name="old.png"),
     )
+    ResultImages.objects.create(modelrun=modelrun)
 
     modelrun.reset_for_rerun()
 
@@ -144,3 +145,4 @@ def test_reset_for_rerun_removes_previous_outputs(temp_media_root):
     assert modelrun.output_directory == ""
     assert not output_dir.exists()
     assert not modelrun.simulation_plots.exists()
+    assert not modelrun.result_images.exists()
