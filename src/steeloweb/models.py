@@ -1154,7 +1154,15 @@ class ModelRun(models.Model):
         return self.failed_with_exception
 
     def reset_for_rerun(self) -> None:
-        """Restore the run to a pristine CREATED state so it can be queued again."""
+        """Restore the run to a pristine CREATED state so it can be queued again.
+
+        Notes:
+            Also removes the previous attempt's outputs: the output folder, the result CSV and the plot and image
+            rows. ``output_directory`` is cleared so the next run recreates the folder structure.
+        """
+        self.cleanup_output_directory()
+        self.simulation_plots.all().delete()
+        self.result_images.all().delete()
         self.state = self.RunState.CREATED
         self.error_message = ""
         self.results = {}
@@ -1162,6 +1170,8 @@ class ModelRun(models.Model):
         self.run_started_at = None
         self.finished_at = None
         self.task_id = None
+        self.result_csv = None
+        self.output_directory = ""
         self.save(
             update_fields=[
                 "state",
@@ -1171,6 +1181,8 @@ class ModelRun(models.Model):
                 "run_started_at",
                 "finished_at",
                 "task_id",
+                "result_csv",
+                "output_directory",
                 "updated_at",
             ]
         )

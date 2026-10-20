@@ -1,11 +1,13 @@
 import types
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from django.core.files.base import ContentFile
 from django.urls import reverse
 from django.utils import timezone
 
-from steeloweb.models import ModelRun
+from steeloweb.models import ModelRun, SimulationPlot
 
 
 @pytest.fixture(autouse=True)
@@ -115,3 +117,30 @@ def test_rerun_from_cancelled_resets_and_enqueues(client, monkeypatch):
     assert modelrun.finished_at is None
 
     enqueue_stub.assert_called_once_with(modelrun.pk)
+
+
+@pytest.mark.django_db
+def test_reset_for_rerun_removes_previous_outputs(temp_media_root):
+    """A reset removes the output folder, the result CSV and the plot rows, so a rerun shows only its own results."""
+    output_dir = Path(temp_media_root) / "model_outputs" / "run_old"
+    output_dir.mkdir(parents=True)
+    (output_dir / "old.csv").write_text("stale")
+    modelrun = ModelRun.objects.create(
+        state=ModelRun.RunState.FAILED,
+        output_directory=str(output_dir),
+        result_csv=ContentFile(b"stale", name="old_results.csv"),
+    )
+    SimulationPlot.objects.create(
+        modelrun=modelrun,
+        plot_type=SimulationPlot.PlotType.OTHER,
+        title="Old plot",
+        image=ContentFile(b"png", name="old.png"),
+    )
+
+    modelrun.reset_for_rerun()
+
+    modelrun.refresh_from_db()
+    assert not modelrun.result_csv
+    assert modelrun.output_directory == ""
+    assert not output_dir.exists()
+    assert not modelrun.simulation_plots.exists()
