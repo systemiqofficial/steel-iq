@@ -1,8 +1,8 @@
 """The ``steelo-viewer`` command: serve the scenario viewer for local runs on 127.0.0.1, or rebuild their files.
 
-The app comes from ``app/`` beside this module, Plotly from the installed ``plotly`` package, ``manifest.json`` and
-``inputs.json`` from the catalogue on every request, and each run's files from its folder under
-``runs/<folder>/``, refused when the resolved path leaves the run folder.
+The app comes from ``app/`` beside this module, Plotly from the installed ``plotly`` package, ``manifest.json``,
+``inputs.json`` and ``geo.json`` from the catalogue on every request, over the runs found on disk again each time, and
+each run's files from its folder under ``runs/<folder>/``, refused when the resolved path leaves the run folder.
 """
 
 import argparse
@@ -67,15 +67,32 @@ def resolve_run_file(runs: dict[str, Path], url_path: str) -> Path | None:
 class ViewerHandler(http.server.SimpleHTTPRequestHandler):
     """Request handler for the viewer: the three set files per request, everything else as files on disk."""
 
+    output_base: Path | None = None
+    run_dirs: list[Path] = []
     runs: dict[str, Path] = {}
+
+    def refresh_runs(self) -> list[Path]:
+        """Find the served runs on disk again, for this request and the run file requests after it.
+
+        Returns:
+            The runs holding ``viewer/run.json`` under ``output_base`` or among ``run_dirs``, oldest first;
+            ``runs`` is set to them by folder name.
+
+        Notes:
+            Each set file calls it, so a run finished since start-up is listed, and a run that lost ``run.json``
+            (deleted, or part-way through ``regenerate``) is skipped instead of failing the request.
+        """
+        found = catalogue.discover_runs(self.output_base, self.run_dirs)
+        ViewerHandler.runs = {run_dir.name: run_dir for run_dir in found}
+        return found
 
     def do_GET(self) -> None:
         """Answer ``/manifest.json`` and ``/inputs.json`` from the catalogue, anything else as a file."""
         url_path = decoded_path(self.path)
-        run_dirs = list(self.runs.values())
         if url_path == "/manifest.json":
-            self.send_body(200, "application/json", catalogue.build_manifest(run_dirs, with_made_in=False))
+            self.send_body(200, "application/json", catalogue.build_manifest(self.refresh_runs(), with_made_in=False))
         elif url_path == "/inputs.json":
+            run_dirs = self.refresh_runs()
             manifest = catalogue.build_manifest(run_dirs, with_made_in=False)
             try:
                 inputs = catalogue.build_inputs(run_dirs, manifest)
@@ -112,8 +129,8 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
         Returns:
             ``app/index.html`` for ``/`` and ``/index.html``; the Plotly bundle for
             ``/assets/vendor/plotly.min.js``; a file under ``app/`` for ``/assets/...``; the newest run's
-            ``geo.json`` for ``/geo.json``; a run file through :func:`resolve_run_file` for ``/runs/...``;
-            ``NOT_FOUND`` otherwise, so the parent answers 404.
+            ``geo.json`` for ``/geo.json``, from the runs found again; a file of a run the last set file found,
+            through :func:`resolve_run_file`, for ``/runs/...``; ``NOT_FOUND`` otherwise, so the parent answers 404.
 
         Notes:
             ``/assets/...`` goes through the parent's own mapping onto ``app/``, which drops ``..`` segments.
@@ -126,7 +143,7 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
         if url_path.startswith("/assets/"):
             return super().translate_path(path)
         if url_path == "/geo.json":
-            geo = catalogue.geo_path(list(self.runs.values()))
+            geo = catalogue.geo_path(self.refresh_runs())
             return NOT_FOUND if geo is None else str(geo)
         if url_path.startswith(RUNS_PREFIX):
             run_file = resolve_run_file(self.runs, url_path)
@@ -143,15 +160,19 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
         logger.debug(format % args)
 
 
-def serve(runs: dict[str, Path], port: int, open_browser: bool) -> None:
+def serve(output_base: Path | None, run_dirs: list[Path], runs: list[Path], port: int, open_browser: bool) -> None:
     """Serve the viewer on 127.0.0.1 until Ctrl-C.
 
     Args:
-        runs: The run folders to serve, by folder name.
+        output_base: The output base whose runs are served, or None.
+        run_dirs: The run folders named one by one.
+        runs: The runs found at start-up, served until the next set file finds them again.
         port: The port; 0 picks a free one.
         open_browser: Whether to open the viewer in the default browser.
     """
-    ViewerHandler.runs = runs
+    ViewerHandler.output_base = output_base
+    ViewerHandler.run_dirs = run_dirs
+    ViewerHandler.runs = {run_dir.name: run_dir for run_dir in runs}
     handler = functools.partial(ViewerHandler, directory=str(APP_DIR))
     with http.server.ThreadingHTTPServer(("127.0.0.1", port), handler) as server:
         url = f"http://127.0.0.1:{server.server_address[1]}/"
@@ -176,7 +197,8 @@ def main(argv: list[str] | None = None) -> int:
 
     Notes:
         With RUN_DIRs only those runs are served; with none, every run under the output base
-        (``--output-dir``, default ``<steelo-home>/output``).
+        (``--output-dir``, default ``<steelo-home>/output``). The runs are found again on disk with every set
+        file, so a run finished while the viewer is open shows on the next page load.
     """
     argv = sys.argv[1:] if argv is None else argv
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -199,20 +221,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-browser", action="store_true", help="do not open the viewer in the browser")
     args = parser.parse_args(argv)
 
-    if args.run_dirs:
-        run_dirs = catalogue.discover_runs(None, args.run_dirs)
-    else:
-        output_base = args.output_dir or args.steelo_home / "output"
-        if not output_base.is_dir():
-            logger.error(f"no output folder at {output_base}")
-            return 1
-        run_dirs = catalogue.discover_runs(output_base, [])
-    if not run_dirs:
+    # Folder names are the URL keys; the folders under one output base cannot share one
+    names = [run_dir.name for run_dir in args.run_dirs]
+    shared = [str(run_dir) for run_dir in args.run_dirs if names.count(run_dir.name) > 1]
+    if shared:
+        logger.error(f"run folders share a folder name, serve them one at a time: {', '.join(shared)}")
+        return 1
+    output_base = None if args.run_dirs else args.output_dir or args.steelo_home / "output"
+    if output_base is not None and not output_base.is_dir():
+        logger.error(f"no output folder at {output_base}")
+        return 1
+    runs = catalogue.discover_runs(output_base, args.run_dirs)
+    if not runs:
         logger.error("no run with viewer/run.json found")
         return 1
-    runs = {run_dir.name: run_dir for run_dir in run_dirs}
-    if len(runs) < len(run_dirs):
-        logger.error("two run folders share a folder name; serve them one at a time")
-        return 1
-    serve(runs, args.port, not args.no_browser)
+    serve(output_base, args.run_dirs, runs, args.port, not args.no_browser)
     return 0
