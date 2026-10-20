@@ -238,9 +238,9 @@ function createTour(app) {
     const skip = el("button", "tour-skip", "Skip tour");
     skip.onclick = end;
     const back = el("button", "tour-back", "Back");
-    back.onclick = () => go(step - 1, -1);
+    back.onclick = () => go(step - 1);
     const next = el("button", "tour-next", "Next");
-    next.onclick = () => go(step + 1, 1);
+    next.onclick = () => go(step + 1);
     foot.append(count, skip, back, next);
     card.append(title, body, foot);
     document.body.append(overlay, spot, card);
@@ -252,7 +252,7 @@ function createTour(app) {
     return visible(e) ? e : null;
   }
 
-  function go(n, dir) {
+  function go(n) {
     if (n < 0) return;
     if (n >= TOUR_STEPS.length) { end(); return; }
     step = n;
@@ -262,7 +262,6 @@ function createTour(app) {
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if (!ui || step !== n) return;
       target = resolve(s.target);
-      if (s.target && !target && s.optional) { go(n + dir, dir); return; }
       sizer.disconnect();
       if (target) sizer.observe(target);
       ui.title.textContent = s.title;
@@ -315,8 +314,8 @@ function createTour(app) {
 
   function onKey(e) {
     if (e.key === "Escape") end();
-    else if (e.key === "ArrowRight") go(step + 1, 1);
-    else if (e.key === "ArrowLeft") go(step - 1, -1);
+    else if (e.key === "ArrowRight") go(step + 1);
+    else if (e.key === "ArrowLeft") go(step - 1);
     else return;
     e.preventDefault();
   }
@@ -329,7 +328,7 @@ function createTour(app) {
     document.addEventListener("keydown", onKey);
     window.addEventListener("resize", place);
     window.addEventListener("scroll", place, true);
-    go(0, 1);
+    go(0);
   }
 
   function end() {

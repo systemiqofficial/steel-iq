@@ -10,7 +10,6 @@ function createGeoFilter(container, opts) {
   const info = geo.geoInfo || {};
   const unitNames = geo.geoUnitNames || {};
   const onChange = opts.onChange || (() => {});
-  const noun = opts.noun || "countries";
 
   const isoOf = key => key.split(":")[0];
   const nameOf = iso3 => (info[iso3] || {}).country || "";
@@ -63,7 +62,7 @@ function createGeoFilter(container, opts) {
     return { root, toggle, panel, noun };
   }
   const dds = {
-    country: mkDropdown(noun),
+    country: mkDropdown("countries"),
     unit: mkDropdown("geo units"),
     bloc: mkDropdown("trade blocs"),
     region: mkDropdown("regions"),
@@ -199,7 +198,7 @@ function createGeoFilter(container, opts) {
       if (cb.checked) counts[kind][0] += 1;
     }
     dds.country.toggle.textContent = countries.filter(c => countryState(c) > 0).length
-      + " of " + countries.length + " " + noun + " ▾";
+      + " of " + countries.length + " countries ▾";
     dds.unit.toggle.textContent = [...unitCbs.values()].filter(cb => cb.checked).length
       + " of " + unitCbs.size + " geo units ▾";
     dds.bloc.toggle.textContent = counts.bloc[0] + " of " + counts.bloc[1] + " trade blocs ▾";
@@ -210,7 +209,7 @@ function createGeoFilter(container, opts) {
     if (!sel.size || sel.size === allKeys.length) {
       const m = document.createElement("span");
       m.className = "muted";
-      m.textContent = sel.size ? "all " + noun + " selected" : "no " + noun + " selected";
+      m.textContent = sel.size ? "all countries selected" : "no countries selected";
       chips.appendChild(m);
       return;
     }
@@ -239,14 +238,14 @@ function createGeoFilter(container, opts) {
 
   function note() {
     const sel = selectedGeos();
-    if (sel.size === allKeys.length) return "all " + noun;
+    if (sel.size === allKeys.length) return "all countries";
     const full = fullRegions();
     const inFull = new Set(full.flatMap(([, members]) => members));
     const rest = countries.filter(iso3 => !inFull.has(iso3) && countryState(iso3) > 0);
-    if (!full.length) return rest.length + " of " + countries.length + " " + noun;
+    if (!full.length) return rest.length + " of " + countries.length + " countries";
     const names = full.map(([region]) => region).join(" + ");
     if (!rest.length) return names;
-    return names + " + " + (rest.length <= 3 ? rest.join(", ") : rest.length + " other " + noun);
+    return names + " + " + (rest.length <= 3 ? rest.join(", ") : rest.length + " other countries");
   }
 
   return {

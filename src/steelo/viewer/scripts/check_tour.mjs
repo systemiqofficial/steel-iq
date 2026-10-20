@@ -44,7 +44,7 @@ const stepInfo = page => page.evaluate(() => {
   };
 });
 
-// Next, then wait for the card to show another step (an optional step may be skipped).
+// Next, then wait for the card to show another step.
 async function next(page, from) {
   await page.click(".tour-next");
   await page.waitForFunction(n => {
@@ -64,14 +64,14 @@ const pageState = page => page.evaluate(() => ({
 
 // Every step from the open one to the end renders, with its target when it has one.
 async function walk(page) {
-  const steps = await page.evaluate(() => TOUR_STEPS.map(s => ({ title: s.title, target: !!s.target, optional: !!s.optional })));
+  const steps = await page.evaluate(() => TOUR_STEPS.map(s => ({ title: s.title, target: !!s.target })));
   const seen = new Set();
   for (let guard = 0; guard < steps.length + 1 && await page.$(".tour-card"); guard++) {
     const info = await stepInfo(page);
     const s = steps[info.n - 1];
     seen.add(info.n);
     const where = "step " + info.n + " (" + info.title + ")";
-    if (s.target && !s.optional && !info.spot) fail(where, "its target element was not found or is hidden");
+    if (s.target && !info.spot) fail(where, "its target element was not found or is hidden");
     if (!info.onScreen) fail(where, "the card is off screen");
     if (!info.text.trim()) fail(where, "empty text");
     console.log("  " + info.n + ". " + info.title + " · " + (info.mode || "page") + (info.spot ? "" : " · no spotlight"));
@@ -79,7 +79,7 @@ async function walk(page) {
     await next(page, info.n);
   }
   for (let i = 1; i <= steps.length; i++)
-    if (!seen.has(i) && !steps[i - 1].optional) fail("step " + i + " (" + steps[i - 1].title + ")", "never shown");
+    if (!seen.has(i)) fail("step " + i + " (" + steps[i - 1].title + ")", "never shown");
 }
 
 // 1. A first visit: the tour starts by itself and every step renders.
