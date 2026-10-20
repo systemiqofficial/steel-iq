@@ -46,7 +46,7 @@ options:
                         ./data/fixtures/plants.json)
   --output-dir OUTPUT_DIR
                         Base output directory for simulation results (default:
-                        ./outputs)
+                        $STEELO_HOME/output)
   --output-file OUTPUT_FILE
                         Path for the output JSON file (default: <output-
                         dir>/pam_simulation_run.json)
@@ -144,7 +144,7 @@ options:
 
 Gurobi is commercial software that this project does not license. Selecting `--optimization-solver gurobi` prints a license reminder. You need your own Gurobi license and must use it as its license agreement allows (for example, an academic license is not valid for commercial use).
 
-`--output-dir` is accepted but currently not used: every run writes to a fresh `$STEELO_HOME/output/sim_<timestamp>/` directory, also linked as `$STEELO_HOME/output_latest`.
+Every run writes to a fresh `sim_<timestamp>/` directory under `--output-dir` (default `$STEELO_HOME/output`), also linked as `$STEELO_HOME/output_latest`.
 
 Examples:
 

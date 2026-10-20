@@ -20,7 +20,7 @@ Common options:
 - `--enable-capacity-policy`: switch on China's capacity-replacement policy, which gates Chinese replacements and new builds on a national pool of retirement credits (off by default; needs the three `Capacity pool - …` sheets in the master Excel). `--credit-validity-years N` caps how long a banked credit stays spendable (default: no expiry). Policy runs additionally write `data/policy/` CSVs and `plots/capacity_pool/` charts, described in [Outputs and postprocessing](../domain_simulation_logic/outputs_and_postprocessing.md).
 - `--cbam-rebate`: rebate the carbon already paid on exports leaving a carbon border region, mirroring the import charge (off by default; see [Carbon border adjustments](../domain_simulation_logic/trade_model/overview_trade_model.md#carbon-border-adjustments)).
 
-Each run writes its plots, CSVs and logs to a fresh `$STEELO_HOME/output/sim_<timestamp>/` directory, also linked as `$STEELO_HOME/output_latest`; `--output-dir` is accepted but currently not used. Review the [Configuration](configuration.md) guide for a comprehensive list of parameters and environment variables.
+Each run writes its plots, CSVs and logs to a fresh `sim_<timestamp>/` directory under `--output-dir` (default `$STEELO_HOME/output`), also linked as `$STEELO_HOME/output_latest`. Review the [Configuration](configuration.md) guide for a comprehensive list of parameters and environment variables.
 
 ## Custom Data Overview
 
@@ -370,7 +370,7 @@ The full list is the `run_simulation -h` dump in [CLI Commands](cli_commands.md)
 - `--random-seed`: Seed for the run-time RNGs shared by the plant agent, geospatial and trade LP modules (default: 42)
 - `--resume-from-year`: Resume the simulation from a checkpoint at the given year
 
-Outputs always go to a fresh `$STEELO_HOME/output/sim_<timestamp>/` directory; `--output-dir` is accepted but currently not used.
+Outputs go to a fresh `sim_<timestamp>/` directory under `--output-dir` (default `$STEELO_HOME/output`).
 
 **Scenario Selection:**
 - `--demand-scenario` / `--scrap-scenario`: `Scenario` rows of the "Demand and scrap availability" sheet used for steel demand and for scrap availability (default: BAU; scrap falls back to the demand scenario)
