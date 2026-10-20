@@ -93,8 +93,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Emissions boundary prefixes: rs = rs-inspired, wsn = worldsteel_no_opt_credits,
-# wso = worldsteel_opt_credits; scopes: direct, direct_bio (with biomass), indirect.
+# Prefixes: rs = rs-inspired, wsn / wso = worldsteel without / with optional credits
 EMISSION_COLUMNS = {
     "emissions_rs-inspired_direct_ghg": "rs_direct",
     "emissions_rs-inspired_direct_with_biomass_ghg": "rs_direct_bio",
@@ -132,8 +131,7 @@ INPUTS_NAME = "inputs.json"
 RUN_NAME = "run.json"
 SCHEMA_VERSION = 1
 
-# Annual cost inputs: furnace-group-level post_processed columns (repeated
-# on every feedstock row) and the per-feedstock cost_breakdown columns.
+# Furnace-group-level post_processed columns, repeated on every feedstock row
 ANNUAL_COSTS_FG_COLUMNS = [
     "year",
     "iso3",
@@ -156,9 +154,7 @@ ANNUAL_COSTS_BREAKDOWN_PREFIX = "cost_breakdown - "
 ANNUAL_COSTS_MATERIAL_COLUMN = ANNUAL_COSTS_BREAKDOWN_PREFIX + "material cost (incl. transport and tariffs)"
 # ProductionThreshold.low: the model spreads unit fopex and debt over max(util, 0.1) x capacity.
 ANNUAL_COSTS_UTIL_FLOOR = 0.1
-# An inferred capex this far above the technology's greenfield value means the
-# payment slope carries a previous technology's loan (learning-rate adjustments
-# move it by a few per cent at most).
+# Above this multiple of greenfield capex, the payment slope carries a previous technology's loan
 ANNUAL_COSTS_LEGACY_FACTOR = 1.08
 
 GREENFIELD_COLUMNS = [
@@ -172,8 +168,7 @@ GREENFIELD_COLUMNS = [
     "capacity",
 ]
 
-# Full reductant-carrier column set (unit-suffixed): mass carriers in Mt,
-# energy carriers in TWh, as embedded by the per-run reductant_use.html.
+# Mass carriers in Mt, energy carriers in TWh, as reductant_use.html embeds them
 CARRIER_COLUMNS = {
     "coking_coal": "coking_coal_mt",
     "pci": "pci_mt",
@@ -230,9 +225,7 @@ def extract_greenfield(source_csv: Path) -> pd.DataFrame:
         that itself first appears after the start year. The root-group test
         catches credit-funded greenfields the capacity policy moves into the
         funding company's plant group — incumbent plants only ever carry
-        ``_N``-suffixed groups. Validated exactly (groups, build years,
-        capacities) against greenfield_status_timeseries.csv on the 17
-        archived runs that have both. Greenfield plants nearly always hold a
+        ``_N``-suffixed groups. Greenfield plants nearly always hold a
         single furnace group, so the group count is the plant count in
         practice (a later second unit on the same plant counts again).
     """
@@ -790,11 +783,7 @@ def grid_scenario_name(projection: pd.Series) -> pd.Series:
     return projection.str.removeprefix("projection_").str.replace("_", " ").str.title()
 
 
-# A topic reads one sheet (`frame` tidies it first); `select` narrows it to
-# the rows a run actually uses (given the run's chosen scenarios); `keys`
-# identify a row and `values` (None = every other column; or, with `years`,
-# every year column of the sheet — `pivot` names the year and value columns
-# of a long sheet) are its values; `value_labels` name them in the pane.
+# Per topic: frame tidies the sheet, select keeps the run's rows, keys and values (or years) pick columns
 TOPICS: list[dict[str, Any]] = [
     {
         "id": "carbon",
