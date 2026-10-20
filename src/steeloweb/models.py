@@ -914,7 +914,7 @@ class ModelRun(models.Model):
 
         # Create the SimulationConfig using the factory method when data preparation is available,
         # otherwise use the manual config creation for backwards compatibility
-        from steelo.simulation import SimulationConfig, GeoConfig
+        from steelo.simulation import SimulationConfig, GeoConfig, config_as_json_dict
         from steelo.domain import Year
 
         if data_dir is not None and data_dir.exists():
@@ -1038,14 +1038,20 @@ class ModelRun(models.Model):
             from datetime import datetime
 
             try:
-                config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
-                (output_path / "simulation_config.json").write_text(json.dumps(config_dict, indent=2, default=str))
+                (output_path / "simulation_config.json").write_text(json.dumps(config_as_json_dict(config), indent=2))
 
+                master_row = self.data_preparation.master_excel if self.data_preparation else None
+                # An uploaded master without a MasterExcelFile row is known by its file name
+                uploaded_name = master_excel_path.name if master_excel_path else None
                 prep_metadata = {
                     "preparation_time": datetime.now().isoformat(),
                     "cache_used": True,
                     "master_excel": str(master_excel_path) if master_excel_path else None,
                     "cached_from": str(data_dir) if data_dir else None,
+                    "made_in": "app",
+                    "master_source": "default" if master_row and master_row.is_template else "custom",
+                    "master_name": master_row.name if master_row else uploaded_name,
+                    "preparation_name": self.data_preparation.name if self.data_preparation else None,
                 }
                 (output_path / "preparation_metadata.json").write_text(json.dumps(prep_metadata, indent=2))
             except Exception as e:

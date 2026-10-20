@@ -1,5 +1,7 @@
 # tests/unit/test_simulation_config.py
 
+import json
+
 import pytest
 from pathlib import Path
 
@@ -7,6 +9,8 @@ from steelo.simulation_types import get_default_technology_settings
 
 from steelo.domain import Year
 from steelo.domain.constants import MT_TO_T
+from steelo import simulation
+from steelo.adapters.repositories.in_memory_repository import InMemoryRepository
 from steelo.simulation import SimulationConfig
 
 
@@ -179,3 +183,20 @@ def test_probabilistic_agents_keep_default_npv_sampling_and_priority_share():
     assert config.probabilistic_agents is True
     assert config.calculate_npv_sites_share == 0.1
     assert config.geo_config.pick_priority_sites_share == 0.05
+
+
+def test_config_as_json_dict_survives_a_json_round_trip_with_nested_settings_as_objects(tmp_path):
+    """
+    Tests that the dict written to simulation_config.json holds nested settings as JSON
+    objects and lists, not Python repr strings, and leaves out the private fields.
+    """
+    config = SimulationConfig.for_testing(repository=InMemoryRepository(), output_dir=tmp_path)
+
+    loaded = json.loads(json.dumps(simulation.config_as_json_dict(config)))
+
+    assert loaded["geo_config"]["hydrogen_ceiling_percentile"] == 100.0
+    assert loaded["capacity_policy"]["enabled"] is False
+    assert loaded["technology_settings"]["BF"]["allowed"] is True
+    assert loaded["disposal_cost_outputs"] == ["steelmaking_slag"]
+    assert loaded["output_dir"] == str(tmp_path)
+    assert not [key for key in loaded if key.startswith("_")]

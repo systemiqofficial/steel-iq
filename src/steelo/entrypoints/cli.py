@@ -20,7 +20,7 @@ from rich.table import Table
 from ..domain import Year
 from ..domain.constants import RANDOM_SEED_DEFAULT
 
-from ..simulation import SimulationConfig
+from ..simulation import SimulationConfig, config_as_json_dict, run_names_in_use, unique_run_name
 from ..bootstrap import bootstrap_simulation
 from ..utils.symlink_manager import update_data_symlink, update_output_symlink, setup_legacy_symlinks
 
@@ -61,12 +61,6 @@ def run_full_simulation() -> None:
         help="Base output directory for simulation results (default: $STEELO_HOME/output)",
     )
     parser.add_argument(
-        "--output-file",
-        type=str,
-        default=None,
-        help="Path for the output JSON file (default: <output-dir>/pam_simulation_run.json)",
-    )
-    parser.add_argument(
         "--demand-excel",
         type=str,
         default=None,
@@ -103,7 +97,8 @@ def run_full_simulation() -> None:
         "--run-name",
         type=str,
         default=None,
-        help="Human-readable run name shown in the interactive plot titles (default: the sim_<timestamp> dir name)",
+        help="Human-readable run name shown in the interactive plot titles (default: the sim_<timestamp> dir name); "
+        "a name already in use under the output base gets _2, _3, and so on",
     )
     parser.add_argument(
         "--hydrogen-ceiling-percentile",
@@ -282,6 +277,11 @@ def run_full_simulation() -> None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_base = Path(args.output_dir) if args.output_dir else steelo_home / "output"
         output_base.mkdir(parents=True, exist_ok=True)
+        run_name = (
+            unique_run_name(args.run_name, run_names_in_use(output_base))
+            if args.run_name and args.run_name.strip()
+            else None
+        )
 
         # Unique output directory for this simulation
         output_dir = output_base / f"sim_{timestamp}"
@@ -370,7 +370,7 @@ def run_full_simulation() -> None:
                 "chosen_demand_scenario": demand_scenario,
                 "chosen_scrap_scenario": scrap_scenario,
                 "chosen_grid_emissions_scenario": grid_emissions_scenario,
-                "run_name": args.run_name,
+                "run_name": run_name,
                 "log_level": log_level,
                 "random_seed": args.random_seed,
                 "plot_tm": args.plot_tm,
@@ -430,9 +430,8 @@ def run_full_simulation() -> None:
                     console.print(f"[yellow]{GUROBI_LICENSE_NOTICE}[/yellow]")
 
             # Save config and metadata
-            config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
             config_path = output_dir / "simulation_config.json"
-            config_path.write_text(json.dumps(config_dict, indent=2, default=str))
+            config_path.write_text(json.dumps(config_as_json_dict(config), indent=2))
 
             prep_metadata = {
                 "preparation_time": datetime.now().isoformat(),
@@ -441,6 +440,8 @@ def run_full_simulation() -> None:
                 "cached_from": str(cached_data_dir),
                 "demand_scenario": demand_scenario,
                 "scrap_scenario": scrap_scenario,
+                "made_in": "cli",
+                "master_source": "custom" if args.master_excel else "default",
             }
             (output_dir / "preparation_metadata.json").write_text(json.dumps(prep_metadata, indent=2))
 
@@ -484,7 +485,7 @@ def run_full_simulation() -> None:
                     "chosen_demand_scenario": demand_scenario,
                     "chosen_scrap_scenario": scrap_scenario,
                     "chosen_grid_emissions_scenario": grid_emissions_scenario,
-                    "run_name": args.run_name,
+                    "run_name": run_name,
                     "log_level": log_level,
                     "random_seed": args.random_seed,
                     "plot_tm": args.plot_tm,
@@ -546,9 +547,8 @@ def run_full_simulation() -> None:
                         console.print(f"[yellow]{GUROBI_LICENSE_NOTICE}[/yellow]")
 
                 # Save config and metadata
-                config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
                 config_path = output_dir / "simulation_config.json"
-                config_path.write_text(json.dumps(config_dict, indent=2, default=str))
+                config_path.write_text(json.dumps(config_as_json_dict(config), indent=2))
 
                 prep_metadata = {
                     "preparation_time": datetime.now().isoformat(),
@@ -559,6 +559,8 @@ def run_full_simulation() -> None:
                     "temp_prep_dir": str(prep_dir),
                     "demand_scenario": demand_scenario,
                     "scrap_scenario": scrap_scenario,
+                    "made_in": "cli",
+                    "master_source": "custom" if args.master_excel else "default",
                 }
                 (output_dir / "preparation_metadata.json").write_text(json.dumps(prep_metadata, indent=2))
 
