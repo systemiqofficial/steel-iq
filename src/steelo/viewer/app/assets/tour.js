@@ -34,6 +34,8 @@ const TOUR_STEPS = [
     before: (h, app) => { app.setMode("explore"); h.sidebar(); h.filters(); },
     body: app => {
       const base = tourDims(app).map(d => dimPrefix(d.label));
+      if (!base.length)
+        return "<p>No filters yet: they appear once the runs differ in a setting or in their input data.</p>";
       return "<p>A scenario is one combination of the filters: " + tourList(base) + ". They are the settings "
         + "that differ between the runs, with the run name added when two runs would otherwise look the same.</p>"
         + "<p>Click a pill to narrow the list. A greyed pill has no scenario left under the other filters. "
