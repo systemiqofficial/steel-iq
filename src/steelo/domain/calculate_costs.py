@@ -2131,6 +2131,143 @@ def score_reductants_for_business_cases(
     )
 
 
+class CompiledBusinessCase(NamedTuple):
+    """The year-independent part of one business case for reductant scoring.
+
+    Built once per technology by ``compile_reductant_business_cases``; only the prices vary per call.
+    """
+
+    dbc: "PrimaryFeedstock"
+    metallic_input: str
+    reductant: str
+    energy_terms: tuple[tuple[str, str, float], ...]
+    ef_key: tuple[str, str, str]
+    material_profile: tuple
+
+
+def compile_reductant_business_cases(dynamic_business_case: list["PrimaryFeedstock"]) -> list[CompiledBusinessCase]:
+    """
+    Pre-compute what ``score_reductants_for_business_cases`` re-derives on every call.
+
+    That is the merged energy requirements per carrier (normalised names, summed in the
+    same order), the material profile and the key of the direct GHG lookup. Prices, the
+    carbon price and the GHG table stay call arguments, so the result stays valid for any
+    year. It is valid only while the business cases themselves are not edited.
+
+    Args:
+        dynamic_business_case: PrimaryFeedstock rows of one technology.
+
+    Returns:
+        One entry per row, in order.
+    """
+    compiled = []
+    for dbc in dynamic_business_case:
+        combined_requirements: dict[str, float] = {}
+        for energy_type, volume in (dbc.energy_requirements or {}).items():
+            normalized_energy = normalize_name(energy_type)
+            if normalized_energy not in ENERGY_FEEDSTOCK_KEYS:
+                continue
+            combined_requirements[normalized_energy] = combined_requirements.get(normalized_energy, 0.0) + volume
+
+        non_energy_secondary: dict[str, float] = {}
+        for secondary_type, volume in (dbc.secondary_feedstock or {}).items():
+            normalized_secondary = normalize_name(secondary_type)
+            if normalized_secondary not in ENERGY_FEEDSTOCK_KEYS:
+                non_energy_secondary[normalized_secondary] = volume
+                continue
+            combined_requirements[normalized_secondary] = combined_requirements.get(normalized_secondary, 0.0) + volume
+
+        compiled.append(
+            CompiledBusinessCase(
+                dbc=dbc,
+                metallic_input=dbc.metallic_charge,
+                reductant=dbc.reductant,
+                energy_terms=tuple(
+                    (normalize_name(energy_type), energy_type, volume)
+                    for energy_type, volume in combined_requirements.items()
+                ),
+                ef_key=(dbc.technology.lower(), normalize_name(dbc.reductant), dbc.metallic_charge),
+                material_profile=(
+                    dbc.required_quantity_per_ton_of_product,
+                    tuple(sorted(non_energy_secondary.items())),
+                ),
+            )
+        )
+    return compiled
+
+
+def score_compiled_reductant_business_cases(
+    compiled: list[CompiledBusinessCase],
+    energy_costs: dict[str, float],
+    output_energy_costs: dict[str, float],
+    carbon_price: float,
+    ef_by_key: dict[tuple[str, str, str], float] | None,
+    disposal_cost_outputs: frozenset[str] | None,
+) -> ReductantScores:
+    """
+    ``score_reductants_for_business_cases`` on pre-compiled business cases, with identical results.
+
+    Args:
+        compiled: Output of ``compile_reductant_business_cases`` for one technology.
+        energy_costs / output_energy_costs / carbon_price / ef_by_key / disposal_cost_outputs:
+            As in ``score_reductants_for_business_cases``.
+
+    Returns:
+        ReductantScores equal to what the uncompiled function returns for the same inputs.
+    """
+    energy_vopex_by_input: dict[str, dict[str, float]] = {}
+    energy_breakdown_by_input: dict[str, dict[str, dict[str, float]]] = {}
+    extra_score_by_input: dict[str, dict[str, float]] = {}
+    material_profile_by_input: dict[str, dict[str, tuple]] = {}
+
+    for case in compiled:
+        metallic_input = case.metallic_input
+        reductant = case.reductant
+        material_profile_by_input.setdefault(metallic_input, {})[reductant] = case.material_profile
+
+        if not case.energy_terms:
+            continue
+
+        vopex_by_reductant = energy_vopex_by_input.setdefault(metallic_input, {})
+        if reductant not in vopex_by_reductant:
+            vopex_by_reductant[reductant] = 0.0
+        breakdown = energy_breakdown_by_input.setdefault(metallic_input, {}).setdefault(reductant, defaultdict(float))
+
+        for normalized_energy, energy_type, volume in case.energy_terms:
+            cost_value = volume * energy_costs.get(normalized_energy, energy_costs.get(energy_type, 0.0))
+            vopex_by_reductant[reductant] += cost_value
+            breakdown[normalized_energy] += cost_value
+
+        if ef_by_key is not None:
+            direct_ghg_factor = ef_by_key[case.ef_key]
+            secondary_adjustment = calculate_secondary_output_adjustment_per_tonne(
+                case.dbc,
+                output_energy_costs,
+                disposal_cost_outputs,
+            )
+            extra = carbon_price * direct_ghg_factor + secondary_adjustment
+            extra_by_reductant = extra_score_by_input.setdefault(metallic_input, {})
+            extra_by_reductant[reductant] = extra_by_reductant.get(reductant, 0.0) + extra
+
+    if ef_by_key is not None:
+        score_by_input = {
+            metallic_input: {
+                reductant: energy_cost + extra_score_by_input[metallic_input][reductant]
+                for reductant, energy_cost in reductant_costs.items()
+            }
+            for metallic_input, reductant_costs in energy_vopex_by_input.items()
+        }
+    else:
+        score_by_input = energy_vopex_by_input
+
+    return ReductantScores(
+        energy_vopex_by_input=energy_vopex_by_input,
+        energy_breakdown_by_input=energy_breakdown_by_input,
+        score_by_input=score_by_input,
+        material_profile_by_input=material_profile_by_input,
+    )
+
+
 def calculate_cost_adjustments_from_secondary_outputs(
     bill_of_materials,
     dynamic_business_cases,

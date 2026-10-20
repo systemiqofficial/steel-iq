@@ -550,7 +550,8 @@ def add_grid_power_price(
     # Pixels carry only iso3; sub-national rows reach pixels via GEO, not this country grid price
     grid_price = pd.Series({iso3: input_costs[iso3][year]["electricity"] for iso3 in input_costs if ":" not in iso3})
     iso3_vals = ds["iso3"].values
-    known_mask = np.isin(iso3_vals, grid_price.index.to_numpy())
+    # Hash lookup; np.isin sorts the million object strings and takes about 30 s per call
+    known_mask = pd.Series(iso3_vals.ravel()).isin(grid_price.index).to_numpy().reshape(iso3_vals.shape)
     fallback_mask = ~known_mask & (ds["feasibility_mask"].values > 0)
     fallback_count = int(fallback_mask.sum())
     if fallback_count:

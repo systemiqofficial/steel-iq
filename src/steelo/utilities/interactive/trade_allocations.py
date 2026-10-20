@@ -168,7 +168,7 @@ def records_for_year(csv_path: Path) -> tuple[list[dict[str, Any]], list[dict[st
     arcs: list[dict[str, Any]] = []
     located: dict[tuple[float, float], dict[tuple[str, str], dict[str, Any]]] = defaultdict(dict)
     inflow: dict[str, float] = defaultdict(float)
-    with csv_path.open(newline="") as handle:
+    with csv_path.open(newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
             source = _endpoint(row["source_location"], row["source_type"], row["source_id"])
             dest = _endpoint(row["destination_location"], row["destination_type"], row["destination_id"])
@@ -300,14 +300,14 @@ def write_viewer(config: dict[str, Any], data: dict[str, Any], output_path: Path
     """
     html = (
         (ASSETS_DIR / "trade_allocations.html")
-        .read_text()
-        .replace("__COMMON_CSS__", (ASSETS_DIR / "common.css").read_text())
-        .replace("__COMMON_JS__", (ASSETS_DIR / "common.js").read_text())
-        .replace("__WORLD__", (ASSETS_DIR / "world_outline.json").read_text())
+        .read_text(encoding="utf-8")
+        .replace("__COMMON_CSS__", (ASSETS_DIR / "common.css").read_text(encoding="utf-8"))
+        .replace("__COMMON_JS__", (ASSETS_DIR / "common.js").read_text(encoding="utf-8"))
+        .replace("__WORLD__", (ASSETS_DIR / "world_outline.json").read_text(encoding="utf-8"))
         .replace("__CONFIG__", json.dumps(config))
         .replace("__DATA__", json.dumps(data, separators=(",", ":")))
-        .replace("__DECKGL__", DECKGL_JS.read_text())
+        .replace("__DECKGL__", DECKGL_JS.read_text(encoding="utf-8"))
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(html)
+    output_path.write_text(html, encoding="utf-8")
     return output_path

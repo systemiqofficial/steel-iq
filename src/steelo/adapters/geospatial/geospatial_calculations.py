@@ -142,10 +142,12 @@ def calculate_regional_hydrogen_ceiling(
         if region not in tiam_ucl_region_to_iso3:
             tiam_ucl_region_to_iso3[region] = []
         tiam_ucl_region_to_iso3[region].append(mapping.iso3)
-    ds["tiam_ucl_region"] = (("lat", "lon"), np.full(ds["iso3"].shape, np.nan, dtype=object))
-    for region, iso3_list in tiam_ucl_region_to_iso3.items():
-        mask = np.isin(ds["iso3"].values, iso3_list)
-        ds["tiam_ucl_region"].values[mask] = region
+    # One hash lookup over the grid; a np.isin pass per region sorts the million object strings each time.
+    # A country listed under two regions keeps the last one, as in a region-by-region overwrite.
+    region_by_iso3 = {iso3: region for region, iso3_list in tiam_ucl_region_to_iso3.items() for iso3 in iso3_list}
+    iso3_values = ds["iso3"].values
+    region_values = pd.Series(iso3_values.ravel()).map(region_by_iso3).to_numpy(dtype=object)
+    ds["tiam_ucl_region"] = (("lat", "lon"), region_values.reshape(iso3_values.shape))
 
     # Calculate hydrogen ceiling
     regional_ceiling_dict = {}

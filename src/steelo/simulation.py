@@ -1380,7 +1380,8 @@ class SimulationRunner:
             commands[bus.env.year] = bus.collect_commands()
 
             with LoggingConfig.simulation_logging("DebugLogging"):
-                if LoggingConfig.FURNACE_GROUP_BREAKDOWN:
+                # The breakdown only writes INFO lines but reads every furnace group; skip it when INFO is off.
+                if LoggingConfig.FURNACE_GROUP_BREAKDOWN and logging.getLogger().isEnabledFor(logging.INFO):
                     logging.info(f"========== FURNACE GROUP DEBUG - YEAR {bus.env.year} ==========\n")
 
                     # Use the new FurnaceBreakdownLogger for all plants

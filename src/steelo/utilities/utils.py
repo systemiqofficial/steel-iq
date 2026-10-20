@@ -1,3 +1,4 @@
+import functools
 import re
 
 import pandas as pd
@@ -7,6 +8,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from steelo.domain.models import FurnaceGroup
+
+_UNDERSCORE_RUN = re.compile(r"_+")
 
 
 def normalize_name(name: str | None) -> str:
@@ -32,8 +35,20 @@ def normalize_name(name: str | None) -> str:
     """
     if name is None:
         return ""
-    key = str(name).lower().replace(" ", "_").replace("-", "_")
-    return re.sub(r"_+", "_", key)
+    if type(name) is str:
+        return _normalize_str(name)
+    return _normalize_uncached(str(name))
+
+
+def _normalize_uncached(name: str) -> str:
+    key = name.lower().replace(" ", "_").replace("-", "_")
+    return _UNDERSCORE_RUN.sub("_", key)
+
+
+# The call count is in the hundreds of millions per run, over a few hundred distinct names.
+# Only exact str is cached: a str subclass (for example a str-mixin Enum) compares equal to its
+# value but can format differently under str(), so it would share a cache entry wrongly.
+_normalize_str = functools.lru_cache(maxsize=65536)(_normalize_uncached)
 
 
 def display_scrollable_dataframe(df) -> None:

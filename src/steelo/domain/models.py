@@ -30,6 +30,9 @@ from steelo.domain.calculate_costs import (
     collect_active_subsidies_over_period,
     collect_subsidies_for_geo,
     score_reductants_for_business_cases,
+    compile_reductant_business_cases,
+    score_compiled_reductant_business_cases,
+    CompiledBusinessCase,
     summarise_reductant_picks,
     ENERGY_FEEDSTOCK_KEYS,
     ReductantScoreSeries,
@@ -7821,6 +7824,7 @@ class Environment:
         self.input_costs: dict[str, dict[Year, dict[str, float]]] = {}
         # Precomputed capped-LCOH series (year -> geo_key -> USD/kg), filled at bootstrap
         self.capped_hydrogen_costs_by_year: dict[Year, dict[str, float]] = {}
+        self.clear_reductant_score_cache()
         # Initialize cost curves as empty dicts
         self.cost_curve: dict[str, list[dict[str, float]]] = {"steel": [], "iron": []}
         self.future_cost_curve: dict[str, list[dict[str, float]]] = {"steel": [], "iron": []}
@@ -7927,6 +7931,7 @@ class Environment:
             time instead.
         """
         self.technology_emission_factors = technology_emission_factors
+        self.clear_reductant_score_cache()
 
         required_keys = {
             (dbc.technology.lower(), normalize_name(dbc.reductant), dbc.metallic_charge)
@@ -8194,6 +8199,7 @@ class Environment:
                 energy_subsidies[carrier][subsidy.geo_key][subsidy.technology_name] = []
             energy_subsidies[carrier][subsidy.geo_key][subsidy.technology_name].append(subsidy)
         self.energy_subsidies = energy_subsidies
+        self.clear_reductant_score_cache()
 
     def initiate_dynamic_feedstocks(self, feedstocks: list[PrimaryFeedstock]) -> None:
         """
@@ -8203,6 +8209,7 @@ class Environment:
             feedstocks (list[PrimaryFeedstock]): A list of PrimaryFeedstock objects to be added to the environment.
         """
         self.dynamic_feedstocks = {}
+        self.clear_reductant_score_cache()
         for feedstock in feedstocks:
             # Store with both original case and lowercase for compatibility
             tech_name = feedstock.technology
@@ -8284,6 +8291,7 @@ class Environment:
             carbon_costs (list[CarbonCostSeries]): A list of CarbonCostSeries objects to be added to the environment.
         """
         self.carbon_costs = {cc.iso3: cc.carbon_cost for cc in carbon_costs}
+        self.clear_reductant_score_cache()
 
     def initiate_grid_emissivity(self, emissivities: list[RegionEmissivity]) -> None:
         """
@@ -8373,6 +8381,7 @@ class Environment:
             if ic.geo_key not in self.input_costs:
                 self.input_costs[ic.geo_key] = {}
             self.input_costs[ic.geo_key][ic.year] = ic.costs
+        self.clear_reductant_score_cache()
 
     def set_capex_and_debt_in_furnace_groups(self, world_plants_list: list[Plant]) -> None:
         """
@@ -8798,6 +8807,7 @@ class Environment:
             Year(y): self.calculate_capped_hydrogen_costs_per_country(year=Year(y))
             for y in range(int(self.config.start_year), int(max(data_years)) + 1)
         }
+        self.clear_reductant_score_cache()
 
     def capped_hydrogen_costs_for_year(self, year: Year) -> dict[str, float]:
         """
@@ -8969,44 +8979,143 @@ class Environment:
             raise ValueError(f"No dynamic business case for technology '{technology_name}'")
         if self.config is None:
             raise ValueError("SimulationConfig is required for reductant score series")
-        ef_by_key = build_direct_ghg_lookup(
-            self.technology_emission_factors,
-            self.config.chosen_emissions_boundary_for_carbon_costs,
-        )
+        self._validate_reductant_score_cache()
+        cache = self._reductant_score_cache
+        # The year's pick and scores depend on the site only through its geo key and price overrides,
+        # and not on output_shares (those only weight the picked scores).
+        if overrides:
+            site_key: tuple = (
+                location.geo_key,
+                technology_name,
+                tuple(sorted(overrides.items())),
+                override_reference_year,
+            )
+        else:
+            site_key = (location.geo_key, technology_name, None, None)
         scores: list[float] = []
         picks: list[str] = []
         for year in range(int(start_year), int(end_year)):
-            input_costs, output_costs = self.candidate_energy_costs_for_year(
-                location,
-                technology_name,
-                Year(year),
-                overrides=overrides,
-                override_reference_year=override_reference_year,
-            )
-            carbon_price = self.carbon_price_for_year(location.iso3, Year(year))
-            year_scores = score_reductants_for_business_cases(
-                dynamic_business_case,
-                input_costs,
-                output_costs,
-                carbon_price,
-                ef_by_key,
-                self.config.disposal_cost_outputs,
-            )
-            mins = [min(costs, key=lambda k: costs[k]) for costs in year_scores.score_by_input.values() if costs]
-            counts = Counter(mins)
-            if not counts:
+            year_key = (*site_key, year)
+            entry = cache.get(year_key)
+            if entry is None:
+                entry = self._reductant_pick_and_scores_for_year(
+                    location,
+                    technology_name,
+                    dynamic_business_case,
+                    Year(year),
+                    overrides,
+                    override_reference_year,
+                )
+                if len(cache) >= self._REDUCTANT_CACHE_MAX_ENTRIES:
+                    cache.clear()
+                cache[year_key] = entry
+            pick, score_by_input = entry
+            if pick is None:
                 scores.append(0.0)
                 picks.append("")
                 continue
-            pick, _ = counts.most_common(1)[0]
             value = sum(
-                share * year_scores.score_by_input[charge][pick]
+                share * score_by_input[charge][pick]
                 for charge, share in output_shares.items()
-                if pick in year_scores.score_by_input.get(charge, {})
+                if pick in score_by_input.get(charge, {})
             )
             scores.append(value)
             picks.append(str(pick))
         return ReductantScoreSeries(scores=scores, picks=picks)
+
+    _REDUCTANT_CACHE_MAX_ENTRIES = 200_000
+    _reductant_cache_token: tuple | None = None
+    _direct_ghg_lookup: dict[tuple[str, str, str], float]
+    _compiled_reductant_cases: dict[str, tuple[list["PrimaryFeedstock"], list[CompiledBusinessCase]]]
+
+    def _validate_reductant_score_cache(self) -> None:
+        """Drop the reductant-score memo when an input it was computed from has been replaced.
+
+        The memo covers exogenous data that is set once at start-up (input costs, hydrogen costs,
+        subsidies, carbon costs, business cases, emission factors) and two config values. It is
+        keyed on the identity of those containers, so replacing one invalidates the memo.
+        Mutating one in place does not; call ``clear_reductant_score_cache`` after doing that.
+        """
+        assert self.config is not None
+        token = (
+            id(self.input_costs),
+            id(self.capped_hydrogen_costs_by_year),
+            id(self.energy_subsidies),
+            id(self.carbon_costs),
+            id(self.dynamic_feedstocks),
+            id(self.technology_emission_factors),
+            self.config.chosen_emissions_boundary_for_carbon_costs,
+            self.config.disposal_cost_outputs,
+        )
+        if token != self._reductant_cache_token:
+            self.clear_reductant_score_cache()
+            self._direct_ghg_lookup = build_direct_ghg_lookup(
+                self.technology_emission_factors,
+                self.config.chosen_emissions_boundary_for_carbon_costs,
+            )
+            self._reductant_cache_token = token
+
+    def clear_reductant_score_cache(self) -> None:
+        """Forget memoised reductant scores; needed only after mutating exogenous inputs in place."""
+        self._reductant_score_cache: dict[tuple, tuple[str | None, dict[str, dict[str, float]]]] = {}
+        self._reductant_cache_token = None
+        self._direct_ghg_lookup = {}
+        self._compiled_reductant_cases = {}
+
+    def _compiled_business_cases(
+        self, technology_name: str, dynamic_business_case: list["PrimaryFeedstock"]
+    ) -> list[CompiledBusinessCase]:
+        """The technology's business cases in the form the scorer needs, built once per list.
+
+        A replaced list, or one that changed length, is compiled again. Editing a business case in
+        place needs ``clear_reductant_score_cache`` like any other exogenous input.
+        """
+        entry = self._compiled_reductant_cases.get(technology_name)
+        if entry is not None and entry[0] is dynamic_business_case and len(entry[1]) == len(dynamic_business_case):
+            return entry[1]
+        compiled = compile_reductant_business_cases(dynamic_business_case)
+        self._compiled_reductant_cases[technology_name] = (dynamic_business_case, compiled)
+        return compiled
+
+    def _reductant_pick_and_scores_for_year(
+        self,
+        location: "Location",
+        technology_name: str,
+        dynamic_business_case: list["PrimaryFeedstock"],
+        year: Year,
+        overrides: dict[str, float] | None,
+        override_reference_year: Year | None,
+    ) -> tuple[str | None, dict[str, dict[str, float]]]:
+        """Reductant pick and per-(charge, reductant) scores of a candidate technology in one year.
+
+        The pick is the mode over charges of each charge's cheapest reductant, as in the annual re-pick.
+
+        Returns:
+            (pick, score_by_input); the pick is None when no charge has a scored reductant.
+        """
+        assert self.config is not None
+        input_costs, output_costs = self.candidate_energy_costs_for_year(
+            location,
+            technology_name,
+            year,
+            overrides=overrides,
+            override_reference_year=override_reference_year,
+        )
+        carbon_price = self.carbon_price_for_year(location.iso3, year)
+        year_scores = score_compiled_reductant_business_cases(
+            self._compiled_business_cases(technology_name, dynamic_business_case),
+            input_costs,
+            output_costs,
+            carbon_price,
+            self._direct_ghg_lookup,
+            self.config.disposal_cost_outputs,
+        )
+        mins = [min(costs, key=lambda k: costs[k]) for costs in year_scores.score_by_input.values() if costs]
+        counts = Counter(mins)
+        if not counts:
+            return None, year_scores.score_by_input
+        pick, _ = counts.most_common(1)[0]
+        return pick, year_scores.score_by_input
 
     def get_eu_countries(self) -> list[str]:
         logger = logging.getLogger(f"{__name__}.Environment.get_eu_countries")

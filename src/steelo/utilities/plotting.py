@@ -1602,7 +1602,7 @@ def plot_detailed_trade_map(
 </html>"""
 
             output_file = output_path / f"steel_trade_allocations_{chosen_year}_pydeck.html"
-            with open(output_file, "w") as f:
+            with open(output_file, "w", encoding="utf-8") as f:
                 f.write(html_content)
 
             print(f"Fallback HTML generated successfully: {output_file}")

@@ -388,12 +388,12 @@ def write_viewer(config: dict[str, Any], data: dict[str, Any], output_path: Path
     """
     html = (
         (ASSETS_DIR / "capacity_world_map.html")
-        .read_text()
-        .replace("__COMMON_CSS__", (ASSETS_DIR / "common.css").read_text())
-        .replace("__WORLD__", (ASSETS_DIR / "world_countries.json").read_text())
+        .read_text(encoding="utf-8")
+        .replace("__COMMON_CSS__", (ASSETS_DIR / "common.css").read_text(encoding="utf-8"))
+        .replace("__WORLD__", (ASSETS_DIR / "world_countries.json").read_text(encoding="utf-8"))
         .replace("__CONFIG__", json.dumps(config))
         .replace("__DATA__", json.dumps(data, separators=(",", ":")))
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(html)
+    output_path.write_text(html, encoding="utf-8")
     return output_path

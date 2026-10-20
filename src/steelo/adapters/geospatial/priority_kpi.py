@@ -254,6 +254,23 @@ def extract_priority_locations(
     return top_values, locations
 
 
+def _bounding_boxes_by_iso3(iso3_grid: np.ndarray) -> dict[str, tuple[int, int, int, int]]:
+    """Return (row_start, row_stop, col_start, col_stop) of the smallest index box around each country's cells."""
+    n_cols = iso3_grid.shape[1]
+    codes, labels = pd.factorize(iso3_grid.ravel())
+    positions = np.flatnonzero(codes >= 0)
+    cells = pd.DataFrame(
+        {"code": codes[positions], "row": positions // n_cols, "col": positions % n_cols},
+    )
+    extent = cells.groupby("code").agg(
+        row_min=("row", "min"), row_max=("row", "max"), col_min=("col", "min"), col_max=("col", "max")
+    )
+    return {
+        labels[code]: (int(row_min), int(row_max) + 1, int(col_min), int(col_max) + 1)
+        for code, row_min, row_max, col_min, col_max in extent.itertuples(name=None)
+    }
+
+
 def find_top_locations_per_country(
     ds: xr.Dataset,
     top_locations: dict[str, pd.DataFrame],
@@ -288,9 +305,17 @@ def find_top_locations_per_country(
 
     # Only the three variables the extraction reads
     ds_lottery_vars = ds[["iso3", f"outgoing_cashflow_{product}", "feasibility_mask"]]
+    # A country is extracted from its bounding box. Masking and ranking the whole global grid for each of
+    # the ~170 countries dominates the run time. The box keeps the cells of the country in the same
+    # relative order, so the sort, the random draws and the quantile see the same values.
+    row_dim, col_dim = ds["iso3"].dims
+    boxes = _bounding_boxes_by_iso3(ds["iso3"].values)
     for iso3 in unique_iso3:
         # Get the top locations for the current ISO3 code (if not empty)
-        ds_iso3 = ds_lottery_vars.where(ds_lottery_vars["iso3"] == iso3)
+        row_start, row_stop, col_start, col_stop = boxes[iso3]
+        box = {row_dim: slice(row_start, row_stop), col_dim: slice(col_start, col_stop)}
+        ds_box = ds_lottery_vars.isel(box)
+        ds_iso3 = ds_box.where(ds_box["iso3"] == iso3)
         if np.any(~np.isnan(ds_iso3[f"outgoing_cashflow_{product}"].values)):
             top_values_iso3, top_locations_iso3 = extract_priority_locations(
                 ds_iso3,
@@ -299,8 +324,8 @@ def find_top_locations_per_country(
                 random_seed=random_seed,
                 invert=True,
             )
-            # Add to the global top locations if not nan
-            top_wlottery += top_values_iso3
+            # Add to the global top locations if not nan; cells outside the box add 0
+            top_wlottery[box] += top_values_iso3.values
             dfs_to_concat = [df for df in [top_locations_wlottery, top_locations_iso3] if not df.empty]
             if dfs_to_concat:
                 top_locations_wlottery = pd.concat(dfs_to_concat, ignore_index=True)
