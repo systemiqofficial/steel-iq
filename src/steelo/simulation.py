@@ -1002,6 +1002,55 @@ def config_as_json_dict(config: SimulationConfig) -> dict[str, Any]:
     return result
 
 
+def run_names_in_use(output_base: Path) -> set[str]:
+    """The run names already taken by the run folders directly under one output base.
+
+    Args:
+        output_base: The folder holding the run folders, e.g. ``$STEELO_HOME/output``.
+
+    Returns:
+        Every non-null ``run_name`` in a ``<folder>/simulation_config.json``; symlinks (``latest``)
+        and folders without the file are skipped.
+
+    Raises:
+        json.JSONDecodeError: If a ``simulation_config.json`` does not parse.
+
+    Notes:
+        Both entry points write ``simulation_config.json`` at run start, so a run in progress holds
+        its name. Two runs started in the same second can still take the same name.
+    """
+    names = set()
+    for folder in output_base.iterdir():
+        config_path = folder / "simulation_config.json"
+        if folder.is_symlink() or not config_path.is_file():
+            continue
+        # Runs from before run_name was recorded have no key and no name
+        name = json.loads(config_path.read_text()).get("run_name")
+        if name is not None:
+            names.add(name)
+    return names
+
+
+def unique_run_name(name: str, in_use: set[str]) -> str:
+    """The name trimmed, with the first free ``_2``, ``_3``, ... suffix when it is already taken.
+
+    Args:
+        name: The run name as given.
+        in_use: The names already taken, e.g. :func:`run_names_in_use` output.
+
+    Returns:
+        The trimmed name when free, else ``<name>_<n>`` for the smallest free n from 2. Only an
+        exact match counts as taken, so "BAU high" next to "BAU" keeps its name.
+    """
+    name = name.strip()
+    if name not in in_use:
+        return name
+    suffix = 2
+    while f"{name}_{suffix}" in in_use:
+        suffix += 1
+    return f"{name}_{suffix}"
+
+
 def write_viewer_files_after_run(output_dir: Path) -> None:
     """Write the run's viewer files as the run's last step, logging a failure instead of raising it.
 

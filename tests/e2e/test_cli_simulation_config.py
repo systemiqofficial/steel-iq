@@ -2,6 +2,7 @@
 Tests for CLI creating and passing SimulationConfig.
 """
 
+import json
 import sys
 from unittest.mock import patch, MagicMock, Mock
 from pathlib import Path
@@ -342,6 +343,63 @@ def test_cli_run_name_lands_on_the_config(
 
         config = mock_create_runner.call_args[0][0]
         assert config.run_name == expected
+
+
+@pytest.mark.parametrize(
+    "taken_names, run_name, expected",
+    [
+        (["test"], "test", "test_2"),
+        (["test", "test_2"], "test", "test_3"),
+        (["test"], "other", "other"),
+    ],
+)
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_run_name_in_use_under_the_output_base_gets_a_suffix(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    taken_names,
+    run_name,
+    expected,
+):
+    """
+    A ``--run-name`` already held by a ``simulation_config.json`` under the output base gets the
+    first free ``_2``, ``_3`` suffix, even in a folder without ``run.json``; any other name is kept.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cli_temp_base = Path(tmpdir)
+        stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+        output_base = cli_temp_base / "my-runs"
+        for folder, taken in zip(["sim_a", "sim_b"], taken_names):
+            (output_base / folder).mkdir(parents=True)
+            (output_base / folder / "simulation_config.json").write_text(json.dumps({"run_name": taken}))
+
+        argv = [
+            "run_simulation",
+            "--start-year",
+            "2026",
+            "--end-year",
+            "2027",
+            "--output-dir",
+            str(output_base),
+            "--run-name",
+            run_name,
+        ]
+        with patch.object(sys, "argv", argv):
+            with patch("sys.exit"):
+                run_full_simulation()
+
+        config = mock_create_runner.call_args[0][0]
+        assert config.run_name == expected
+        assert json.loads((config.output_dir / "simulation_config.json").read_text())["run_name"] == expected
 
 
 @patch("steelo.entrypoints.cli.setup_legacy_symlinks")
