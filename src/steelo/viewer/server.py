@@ -176,8 +176,8 @@ def serve(output_base: Path | None, run_dirs: list[Path], runs: list[Path], port
     handler = functools.partial(ViewerHandler, directory=str(APP_DIR))
     with http.server.ThreadingHTTPServer(("127.0.0.1", port), handler) as server:
         url = f"http://127.0.0.1:{server.server_address[1]}/"
-        print(f"Scenario viewer at {url}")
-        print(f"Runs served: {len(runs)}; press Ctrl-C to stop")
+        print(f"Scenario viewer at {url}", flush=True)
+        print(f"Runs served: {len(runs)}; press Ctrl-C to stop", flush=True)
         if open_browser:
             webbrowser.open(url)
         try:
