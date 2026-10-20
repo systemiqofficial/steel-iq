@@ -26,6 +26,7 @@ dependencies = [
     "dash",
     "dash-leaflet",
     "dash-extensions",
+    "plotly",
     "pyomo",
     "seaborn",
     "fiona",
@@ -111,6 +112,7 @@ list-binaries = "steelo.entrypoints.list_binaries:main"
 validate-master-input = "steelo.entrypoints.validate_master_input:main"
 generate-geo-options = "steelo.entrypoints.generate_geo_options:main"
 count-lines-of-code = "steelo.entrypoints.cli:count_lines_of_code"
+steelo-viewer = "steelo.viewer.server:main"
 
 [tool.pytest.ini_options]
 addopts = "-ra"

@@ -623,6 +623,7 @@ def run_full_simulation() -> None:
 
         console.print("[green]Simulation completed![/green]")
         console.print(f"[green]Results in:[/green] {output_dir}")
+        console.print(f"[green]View it:[/green] steelo-viewer {output_dir}")
         console.print(f"[green]Latest symlink:[/green] {latest_link}")
 
     except argparse.ArgumentError as e:
