@@ -8,10 +8,8 @@ plant → demand centre, iron rows (pig iron, HBI and DRI by grade, electrolytic
 iron, and the on-site hot metal and liquid iron) iron plant → steelmaking
 furnace group, ore rows mine → furnace group, and scrap rows per-country scrap
 supplier → furnace group.
-Steel, iron and scrap origins and destinations are countries (plants carry a
-sub-national geo_unit but demand centres do not, so a finer diagonal is not
-definable); ore origins are the mine sheet's own region labels, as mines carry
-that label rather than a resolved ISO3.
+Origins and destinations are countries (plants carry a sub-national geo_unit but
+demand centres do not, so a finer diagonal is not definable).
 """
 
 import logging
@@ -45,8 +43,6 @@ COMMODITY_PRODUCTS = {
 # Allocated commodities that are deliberately not metal trade (reductants, captured CO2).
 # Anything in neither set is dropped with a warning, so a new commodity surfaces loudly.
 EXCLUDED_COMMODITIES = {"bio_pci", "co2_stored"}
-# Products whose origin is the location's country label rather than its ISO3.
-LABELLED_ORIGINS = {"ore"}
 COLUMNS = ["commodity", "source_location", "source_tech", "destination_location", "allocated_volume"]
 # The location columns hold Location reprs; the fields are read off them.
 ISO3_PATTERN = re.compile(r"\biso3='([A-Z]{3})'")
@@ -120,9 +116,8 @@ def read_flows(files: dict[int, Path]) -> pd.DataFrame:
     Returns:
         Columns ``year, product, commodity, origin, destination, technology, volume_mt``:
         the allocated tonnes of each commodity in :data:`COMMODITY_PRODUCTS` summed over
-        the sources of the origin and the receivers of the destination country. Origins
-        are ISO3 codes, except for :data:`LABELLED_ORIGINS` where they are the source's
-        country label. A year whose file holds no such allocations (a failed trade LP
+        the sources of the origin and the receivers of the destination country, both as
+        ISO3 codes. A year whose file holds no such allocations (a failed trade LP
         writes a header-only file) contributes no rows. Commodities in neither
         :data:`COMMODITY_PRODUCTS` nor :data:`EXCLUDED_COMMODITIES` are dropped with
         a warning naming them.
@@ -141,20 +136,12 @@ def read_flows(files: dict[int, Path]) -> pd.DataFrame:
         metal = table[table["commodity"].isin(COMMODITY_PRODUCTS)]
         if metal.empty:
             continue
-        product = metal["commodity"].map(COMMODITY_PRODUCTS)
-        labelled = product.isin(LABELLED_ORIGINS)
-        origin = pd.concat(
-            [
-                metal.loc[labelled, "source_location"].map(country_label_of),
-                metal.loc[~labelled, "source_location"].map(iso3_of),
-            ]
-        )
         flows = pd.DataFrame(
             {
                 "year": year,
-                "product": product,
+                "product": metal["commodity"].map(COMMODITY_PRODUCTS),
                 "commodity": metal["commodity"],
-                "origin": origin,
+                "origin": metal["source_location"].map(iso3_of),
                 "destination": metal["destination_location"].map(iso3_of),
                 "technology": metal["source_tech"],
                 "volume_mt": metal["allocated_volume"] / 1e6,
@@ -179,8 +166,8 @@ def read_coords(files: dict[int, Path]) -> dict[str, list[float]]:
         files: Output of :func:`allocation_files`.
 
     Returns:
-        ``{key: [lat, lon]}`` with the keys of :func:`read_flows` — origin ISO3 codes (or
-        the mine label for labelled origins) and destination ISO3 codes — each at the
+        ``{key: [lat, lon]}`` with the keys of :func:`read_flows` — origin and
+        destination ISO3 codes — each at the
         allocation-weighted mean position of its plants, suppliers, mines and demand
         centres over all years, rounded to two decimals. Empty when no file holds metal
         allocations.
@@ -195,13 +182,7 @@ def read_coords(files: dict[int, Path]) -> dict[str, list[float]]:
         metal = table[table["commodity"].isin(COMMODITY_PRODUCTS)]
         if metal.empty:
             continue
-        labelled = metal["commodity"].map(COMMODITY_PRODUCTS).isin(LABELLED_ORIGINS)
-        origin = pd.concat(
-            [
-                metal.loc[labelled, "source_location"].map(country_label_of),
-                metal.loc[~labelled, "source_location"].map(iso3_of),
-            ]
-        )
+        origin = metal["source_location"].map(iso3_of)
         destination = metal["destination_location"].map(iso3_of)
         for key, side in ((origin, "source_location"), (destination, "destination_location")):
             latlon = metal[side].str.extract(COORD_PATTERN).astype(float)

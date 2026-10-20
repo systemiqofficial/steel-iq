@@ -1986,7 +1986,7 @@ class ModelRunOutputFilesView(DetailView):
         sections: list[dict] = []
 
         # Subfolder sections: nest by child folders if present, else list files flat.
-        for sub_dir in ("plots", "Data", "TM"):
+        for sub_dir in ("plots", "data", "TM"):
             section = self._build_section(self._humanise_folder_name(sub_dir), output_path / sub_dir, output_path)
             if section:
                 sections.append(section)

@@ -111,10 +111,9 @@ const COMMODITY_NAMES = {steel: "steel", scrap: "scrap", pig_iron: "pig iron", h
 const PRODUCTS = {
   steel: {name: "steel", ticks: "Steel", note: "destinations = demand centres"},
   iron: {name: "iron", ticks: "Iron products", note: "destinations = steelmaking furnace groups; hot metal and liquid iron = on-site transfers"},
-  // Ore origins are the mine sheet's own labels, so the network is bipartite: grey
-  // origin nodes on the left, destination countries on the right, no domestic flows.
-  ore: {name: "iron ore", ticks: "Ore grades", note: "origins = mine regions as named in the mine sheet; destinations = furnace groups",
-        labelledOrigins: true},
+  // Mines carry their country and no technology, like scrap suppliers.
+  ore: {name: "iron ore", ticks: "Ore grades", note: "origins = mine countries; destinations = furnace groups",
+        supplierOrigins: true},
   scrap: {name: "scrap", ticks: "Scrap", note: "origins = per-country scrap suppliers; destinations = furnace groups",
           supplierOrigins: true},
 };
@@ -124,7 +123,7 @@ const SAME = {
   region: ["region", "regions"],
   bloc: ["country", "countries"],
 };
-// Origin-label nodes (mine regions) carry a key prefix so a label can never merge with
+// Origin-label nodes carry a key prefix so a label can never merge with
 // a country or region node of the same name.
 const SRC = "src:";
 const allRows = Object.values(DATA).flatMap(d => d.rows);
@@ -419,7 +418,7 @@ function render() {
   }
 
   // Nodes on the circle: countries blocked by region (then busiest first), regions and
-  // bloc members busiest first, "Rest of world" last; the bipartite ore view puts
+  // bloc members busiest first, "Rest of world" last; a labelled-origin view puts
   // origin labels on a left arc and destination countries on a right arc. The map
   // layout instead puts every node at the trade-weighted mean position of its members.
   const shown = new Set(kept.flatMap(f => [f.o, f.d]));

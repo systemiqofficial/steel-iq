@@ -344,6 +344,36 @@ def test_cli_run_name_lands_on_the_config(
         assert config.run_name == expected
 
 
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_output_dir_is_the_base_of_the_run_folder(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+):
+    """``--output-dir`` is the base folder: the run's ``sim_<timestamp>`` folder is created inside it."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cli_temp_base = Path(tmpdir)
+        stub_cli_dependencies(cli_temp_base, mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+        output_base = cli_temp_base / "my-runs"
+
+        argv = ["run_simulation", "--start-year", "2026", "--end-year", "2027", "--output-dir", str(output_base)]
+        with patch.object(sys, "argv", argv):
+            with patch("sys.exit"):
+                run_full_simulation()
+
+        config = mock_create_runner.call_args[0][0]
+        assert config.output_dir.parent == output_base
+        assert config.output_dir.name.startswith("sim_")
+
+
 @pytest.mark.parametrize("flag_argv, expected", [([], False), (["--enable-capacity-policy"], True)])
 @patch("steelo.entrypoints.cli.setup_legacy_symlinks")
 @patch("steelo.entrypoints.cli.update_output_symlink")

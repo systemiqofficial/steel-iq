@@ -58,7 +58,7 @@ def run_full_simulation() -> None:
         "--output-dir",
         type=str,
         default=None,
-        help="Base output directory for simulation results (default: ./outputs)",
+        help="Base output directory for simulation results (default: $STEELO_HOME/output)",
     )
     parser.add_argument(
         "--output-file",
@@ -280,8 +280,8 @@ def run_full_simulation() -> None:
 
         # Prepare output directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_base = steelo_home / "output"
-        output_base.mkdir(exist_ok=True)
+        output_base = Path(args.output_dir) if args.output_dir else steelo_home / "output"
+        output_base.mkdir(parents=True, exist_ok=True)
 
         # Unique output directory for this simulation
         output_dir = output_base / f"sim_{timestamp}"
