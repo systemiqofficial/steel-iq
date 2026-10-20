@@ -1,5 +1,6 @@
 "use strict";
-/* Guided tour: a spotlight and a card per step, switching views as it goes and restoring the page after. */
+/* Guided tour: a spotlight and a card per step, switching views as it goes and restoring the page after.
+   src/steelo/viewer/scripts/check_tour.mjs walks every step against the running page. */
 
 // "a, b and c" from the app's own labels, escaped for the card's HTML.
 const tourEsc = t => String(t).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -13,20 +14,19 @@ const tourDims = app => app.set().dimensions.filter(d => d.key !== app.variantKe
 const TOUR_STEPS = [
   {
     title: "Welcome to the Steel-IQ scenario viewer",
-    body: "<p>Every curated run of the Steel-IQ model is here: its interactive plots, one measure compared "
+    body: "<p>Every run on this computer is here: its interactive plots, one measure compared "
       + "across scenarios, the annual cost of a tonne of iron or steel, and the input data each scenario "
       + "was run with.</p><p>The tour takes about two minutes. Use <b>→</b> and <b>←</b> to move and "
       + "<b>Esc</b> to leave it.</p>",
   },
   {
-    title: "Six views",
+    title: "Five views",
     target: ".modetabs", at: "right",
     before: (h, app) => { h.sidebar(); },
     body: "<p><b>Explore</b> shows one scenario's plots, or two side by side. <b>Compare</b> charts one measure across several "
       + "scenarios. <b>Annual costs</b> stacks the cost of a tonne of iron or crude steel. "
-      + "<b>View data</b> lists the inputs the scenarios were run with. <b>Capacity map</b> shows the "
-      + "plant database they all start from. <b>Download results</b> hands out one scenario's result "
-      + "tables.</p>",
+      + "<b>View data</b> lists the inputs the scenarios were run with. <b>Download results</b> hands "
+      + "out one scenario's result tables.</p>",
   },
   {
     title: "Filters",
@@ -34,23 +34,24 @@ const TOUR_STEPS = [
     before: (h, app) => { app.setMode("explore"); h.sidebar(); h.filters(); },
     body: app => {
       const base = tourDims(app).map(d => dimPrefix(d.label));
-      return "<p>A scenario is one combination of the set's dimensions: " + tourList(base) + ".</p>"
+      return "<p>A scenario is one combination of the filters: " + tourList(base) + ". They are the settings "
+        + "that differ between the runs, with the run name added when two runs would otherwise look the same.</p>"
         + "<p>Click a pill to narrow the list. A greyed pill has no scenario left under the other filters. "
       + "<i>Clear</i> resets them, the chevron folds the card into a row of chips, and the divider "
       + "below it drags.</p>";
     },
   },
   {
-    title: "Scenario overview",
-    target: "#explore-pane .ov-block", at: "bottom",
+    title: "The run table",
+    target: "#explore-pane .rt-table", at: "bottom",
     before: (h, app) => { app.setMode("explore"); h.sidebar(); h.overview(); },
-    body: "<p>With nothing picked, the set's scenarios sit in one table: the filters with a few values "
-      + "form the columns, the rest name the rows, and every cell is a scenario's <b>#n</b>. A hatched "
-      + "cell was never run, a dashed ○ is a run still to come, and a faded cell is left out by the "
-      + "filters.</p>"
-      + "<p>Click a number to explore it, or switch the toggle to pick two for the split view. The same "
-      + "table picks scenarios in Compare, Annual costs and Download results, and <i>overview</i> beside "
-      + "the scenario list brings it back.</p>",
+    body: "<p>With nothing picked, every run sits in one table, one row per run: its scenario's <b>#n</b>, "
+      + "its name, when it started and the input data it used. A faded row is left out by the filters.</p>"
+      + "<p>Click a row to explore that run, or switch the toggle to pick two for the split view. "
+      + "<i>details</i> lists every setting of the run, marked <i>changed</i> where it differs from the "
+      + "default and <i>varies</i> where it differs between the runs, with a link to the run's folder.</p>"
+      + "<p>The same table picks in Compare, Annual costs, View data and Download results, and "
+      + "<i>all runs</i> beside the scenario list brings it back.</p>",
   },
   {
     title: "Scenarios",
@@ -80,7 +81,7 @@ const TOUR_STEPS = [
     before: (h, app) => { app.setMode("explore"); h.sidebar(); h.pickOne(); },
     body: "<p>The plots are the model's own interactive pages: hover for values, click legend entries to "
       + "hide series, and use the controls at the top of each page.</p>"
-      + "<p>The address bar always names the set, run and plot, so copy it to share exactly this view. "
+      + "<p>The address bar always names the run and plot, so copy it to share exactly this view. "
       + "The control bar above drags to resize and folds away with its chevron.</p>",
   },
   {
@@ -90,7 +91,7 @@ const TOUR_STEPS = [
     body: "<p>Tick <b>Split view</b> above the scenario list to see two scenarios side by side. Clicks in "
       + "the list then fill <b>A</b> and <b>B</b> in turn; the A / B toggle chooses which side the next "
       + "click sets, <i>⇄ Swap</i> trades the two sides, and <i>clear A</i> or <i>clear B</i> empties a side. "
-      + "An empty side shows the scenario table to pick from, and <i>change</i> beside a side's name empties it.</p>"
+      + "An empty side shows the run table to pick from, and <i>change</i> beside a side's name empties it.</p>"
       + "<p>The plot tabs drive both sides at once, and the address bar names both runs, so the link "
       + "shares the comparison.</p>",
   },
@@ -104,7 +105,7 @@ const TOUR_STEPS = [
       + "direction for trade), plus a technology multi-select and a geography filter of countries, "
       + "sub-national units, trade blocs and regions. The numbers sit in the <i>Data table</i> under "
       + "the chart.</p>"
-      + "<p>With nothing ticked, here and in Annual costs, the scenario table appears instead: tick up "
+      + "<p>With nothing ticked, here and in Annual costs, the run table appears instead: tick up "
       + "to 20 and press <i>Show</i>.</p>",
   },
   {
@@ -123,13 +124,13 @@ const TOUR_STEPS = [
     before: (h, app) => { app.setMode("data"); h.sidebar(); h.topic(); },
     body: app => {
       const topics = app.inputs().getTopics().map(dimPrefix);
-      return "<p>The inputs the set was run with, by topic" + (topics.length ? ": " + tourList(topics) : "")
+      return "<p>The inputs the runs were made with, by topic" + (topics.length ? ": " + tourList(topics) : "")
         + ", read from the runs' master workbooks.</p>"
         + "<p>A row that is the same in every run appears once. A row that differs is followed by a "
       + "pale-orange row per variant, tagged with the filter setting that activates it. The filters above "
       + "keep only the variants in use, so filtering down to one scenario shows exactly its inputs.</p>"
-      + "<p>With no sheet picked, the scenario table shows which scenarios the filters cover; click one "
-      + "to filter to exactly it. Clicking <i>View data</i> again brings the table back.</p>";
+      + "<p>With no sheet picked, the run table shows which runs the filters cover; click one "
+      + "to filter to exactly its scenario. Clicking <i>View data</i> again brings the table back.</p>";
     },
   },
   {
@@ -144,9 +145,9 @@ const TOUR_STEPS = [
     title: "Download results",
     target: "#results-pane",
     before: (h, app) => { h.sidebar(); app.setMode("results"); h.pickOne(); },
-    body: "<p>One scenario's result tables in three folders: furnace groups, trade, and LCOE-LCOH. "
-      + "Download a table as a gzipped CSV, or all of them as one zip, or view it here page by page. "
-      + "With nothing picked, click a scenario in the table.</p>",
+    body: "<p>One scenario's result tables, in the folders its run has among run, data, LCOE, LCOH, trade "
+      + "and policy. Download a table as a gzipped CSV, or all of them as one zip, or view it here page by page. "
+      + "With nothing picked, click a run in the table.</p>",
   },
   {
     title: "That's the tour",
@@ -155,8 +156,7 @@ const TOUR_STEPS = [
     at: "bottom",
     body: "<p>Restart it any time from <b>Tour</b> in the top bar (under the ☰ on a narrow screen). "
       + "The sidebar width, the folded bars and "
-      + "the filters card's height are remembered in this browser.</p>"
-      + "<p>For questions, or to get a new scenario set in here, use <i>Contact</i>.</p>",
+      + "the filters card's height are remembered in this browser.</p>",
   },
 ];
 
@@ -184,7 +184,7 @@ function createTour(app) {
       const b = q("#picker .runs button");
       if (b) b.click();
     },
-    // Explore with nothing picked, which shows the scenario overview.
+    // Explore with nothing picked, which shows the run table.
     overview: () => {
       if (!app.viewer().getScenario()) return;
       app.sidebar().setScenario(null);
