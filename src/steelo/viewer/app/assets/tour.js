@@ -14,7 +14,7 @@ const tourDims = app => app.set().dimensions.filter(d => d.key !== app.variantKe
 const TOUR_STEPS = [
   {
     title: "Welcome to the Steel-IQ scenario viewer",
-    body: "<p>Every run on this computer is here: its interactive plots, one measure compared "
+    body: "<p>Every run this viewer serves is here: its interactive plots, one measure compared "
       + "across scenarios, the annual cost of a tonne of iron or steel, and the input data each scenario "
       + "was run with.</p><p>The tour takes about two minutes. Use <b>→</b> and <b>←</b> to move and "
       + "<b>Esc</b> to leave it.</p>",
