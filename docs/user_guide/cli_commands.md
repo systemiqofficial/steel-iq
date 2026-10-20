@@ -8,7 +8,6 @@ The main command to run a steel model simulation with automatic data preparation
 ❯ run_simulation -h
 usage: run_simulation [-h] [--start-year START_YEAR] [--end-year END_YEAR]
                       [--plants-json PLANTS_JSON] [--output-dir OUTPUT_DIR]
-                      [--output-file OUTPUT_FILE]
                       [--demand-excel DEMAND_EXCEL]
                       [--demand-sheet DEMAND_SHEET]
                       [--demand-scenario DEMAND_SCENARIO]
@@ -47,9 +46,6 @@ options:
   --output-dir OUTPUT_DIR
                         Base output directory for simulation results (default:
                         $STEELO_HOME/output)
-  --output-file OUTPUT_FILE
-                        Path for the output JSON file (default: <output-
-                        dir>/pam_simulation_run.json)
   --demand-excel DEMAND_EXCEL
                         Path to the demand excel file (default:
                         ./data/fixtures/2025_05_27 Demand outputs for trade

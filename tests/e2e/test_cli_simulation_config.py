@@ -453,6 +453,16 @@ def test_cli_credit_validity_years_is_refused_at_parse_time(argv_tail, message, 
     assert message in capsys.readouterr().err
 
 
+def test_cli_output_file_flag_is_refused_at_parse_time(capsys):
+    """``--output-file`` names a JSON that nothing writes, so the flag no longer exists and stops the run at parsing."""
+    with patch.object(sys, "argv", ["run_simulation", "--output-file", "x.json"]):
+        with pytest.raises(SystemExit) as raised:
+            run_full_simulation()
+
+    assert raised.value.code == 2
+    assert "--output-file" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     "flag_argv, expected",
     [(["--enable-capacity-policy"], None), (["--enable-capacity-policy", "--credit-validity-years", "2"], 2)],

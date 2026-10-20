@@ -61,12 +61,6 @@ def run_full_simulation() -> None:
         help="Base output directory for simulation results (default: $STEELO_HOME/output)",
     )
     parser.add_argument(
-        "--output-file",
-        type=str,
-        default=None,
-        help="Path for the output JSON file (default: <output-dir>/pam_simulation_run.json)",
-    )
-    parser.add_argument(
         "--demand-excel",
         type=str,
         default=None,
