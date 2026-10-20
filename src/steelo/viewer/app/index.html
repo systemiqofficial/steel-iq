@@ -165,7 +165,7 @@ function setSplitView(on) {
   }
 }
 
-// Explore with nothing picked, which shows the scenario overview.
+// Explore with nothing picked, which shows the run table.
 function showOverview() {
   splitView = false;
   sidebar.setSplit(null, null);
@@ -184,12 +184,12 @@ function openSplit(h) {
   splitViewer.show(a, h.split.runA, b, h.split.runB, h.split.plot);
 }
 
-// One split side picked (sc null = unpicked); the other side keeps its scenario and run.
-function pickSplitSide(letter, sc) {
+// One split side picked with its run (sc null = unpicked); the other side keeps its scenario and run.
+function pickSplitSide(letter, sc, run) {
   const a = letter === "A" ? sc : splitViewer.getScenarioA(), b = letter === "B" ? sc : splitViewer.getScenarioB();
   sidebar.setSplit(a, b);
-  splitViewer.show(a, a === splitViewer.getScenarioA() ? splitViewer.getRunA() : undefined,
-                   b, b === splitViewer.getScenarioB() ? splitViewer.getRunB() : undefined);
+  splitViewer.show(a, letter === "A" ? run : a === splitViewer.getScenarioA() ? splitViewer.getRunA() : undefined,
+                   b, letter === "B" ? run : b === splitViewer.getScenarioB() ? splitViewer.getRunB() : undefined);
 }
 
 function buildFor(s, run, plot) {
@@ -210,46 +210,46 @@ function buildFor(s, run, plot) {
       else if (multiPane()) multiPane().show(sel.scenarios);
     },
     onSplitToggle: setSplitView,
-    // In Compare, Annual costs and Download results the overview is the pane's scenario picker.
+    // In Compare, Annual costs and Download results the run table is the pane's picker.
     onOverview: () => {
       if (multiPane()) multiPane().show([]);
       else if (mode === "results") { sidebar.setScenario(null); results.show(null); }
       else showOverview();
     },
     onFilterChange: filters => {
-      for (const box of document.querySelectorAll(".scenario-overview")) applyOverviewFilters(box, s, filters);
+      for (const box of document.querySelectorAll(".scenario-overview")) applyRunTableFilters(box, s, filters);
     },
   });
   viewer = createPlotViewer($("explore-pane"), s, {
     variantKey: VARIANT,
     onChange: () => { if (mode === "explore" && !splitView) updateHash(); },
     renderEmpty: box => {
-      renderScenarioOverview(box, s, sidebar.scenarios, {
-        variantKey: VARIANT,
-        onPick: sc => { sidebar.setScenario(sc); viewer.show(sc); },
-        onPickPair: (a, b) => openSplit({ split: { runA: a.runs[0], runB: b.runs[0] } }),
+      renderRunTable(box, s, sidebar.scenarios, {
+        variantKey: VARIANT, mode: "pair",
+        onPick: (sc, run) => { sidebar.setScenario(sc); viewer.show(sc, run); },
+        onPickPair: (runA, runB) => openSplit({ split: { runA, runB } }),
       });
-      applyOverviewFilters(box, s, sidebar.getFilters());
+      applyRunTableFilters(box, s, sidebar.getFilters());
     },
   });
   splitViewer = createSplitViewer($("explore-split-pane"), s, {
     variantKey: VARIANT,
     onChange: () => { if (mode === "explore" && splitView) updateHash(); },
     renderEmpty: (box, letter, other) => {
-      renderSplitOverview(box, s, sidebar.scenarios, {
-        variantKey: VARIANT, side: letter, other, onPick: sc => pickSplitSide(letter, sc),
+      renderRunTable(box, s, sidebar.scenarios, {
+        variantKey: VARIANT, mode: "side", side: letter, other, onPick: (sc, run) => pickSplitSide(letter, sc, run),
       });
-      applyOverviewFilters(box, s, sidebar.getFilters());
+      applyRunTableFilters(box, s, sidebar.getFilters());
     },
     onUnpick: letter => pickSplitSide(letter, null),
   });
   // Compare's palette caps both multi panes at 20 scenarios.
   const renderPicker = box => {
-    renderMultiOverview(box, s, sidebar.scenarios, {
-      variantKey: VARIANT, picked: sidebar.getScenarios(), max: COMPARE_PALETTE.length,
+    renderRunTable(box, s, sidebar.scenarios, {
+      variantKey: VARIANT, mode: "multi", picked: sidebar.getScenarios(), max: COMPARE_PALETTE.length,
       onShow: scs => { sidebar.setPicked(scs); multiPane().show(scs); },
     });
-    applyOverviewFilters(box, s, sidebar.getFilters());
+    applyRunTableFilters(box, s, sidebar.getFilters());
   };
   compare = createComparePane($("compare-pane"), s, { variantKey: VARIANT, renderEmpty: renderPicker });
   annualCosts = createAnnualCostsPane($("annual-costs-pane"), s, { variantKey: VARIANT, renderEmpty: renderPicker });
@@ -258,27 +258,29 @@ function buildFor(s, run, plot) {
     onChange: () => { if (mode === "data") updateHash(); },
     // A click filters to exactly that scenario (the filters are View data's selection).
     renderEmpty: box => {
-      renderScenarioOverview(box, s, sidebar.scenarios, {
-        variantKey: VARIANT, pickHint: "Click a scenario number to set the filters to its settings, then pick an input data sheet to see exactly its inputs",
+      renderRunTable(box, s, sidebar.scenarios, {
+        variantKey: VARIANT, mode: "pick",
+        pickHint: "Click a run to set the filters to its scenario's settings, then pick an input data sheet to see exactly its inputs",
         onPick: sc => {
           sidebar.setFilters(Object.fromEntries(s.dimensions.filter(d => d.values.length > 1 && d.key !== VARIANT)
             .map(d => [d.key, sc.dims[d.key]])));
           inputs.setSelection(dataSelection());
         },
       });
-      applyOverviewFilters(box, s, sidebar.getFilters());
+      applyRunTableFilters(box, s, sidebar.getFilters());
     },
   });
   results = createResultsPane($("results-pane"), s, {
     renderEmpty: box => {
-      renderScenarioOverview(box, s, sidebar.scenarios, {
-        variantKey: VARIANT, pickHint: "Click a scenario number, here or in the sidebar, to download or view its result tables",
+      renderRunTable(box, s, sidebar.scenarios, {
+        variantKey: VARIANT, mode: "pick",
+        pickHint: "Click a run, or a scenario in the sidebar, to download or view its result tables",
         onPick: sc => { sidebar.setScenario(sc); results.show(sc); },
       });
-      applyOverviewFilters(box, s, sidebar.getFilters());
+      applyRunTableFilters(box, s, sidebar.getFilters());
     },
   });
-  // No run named: nothing selected, so Explore shows the scenario overview.
+  // No run named: nothing selected, so Explore shows the run table.
   const sc = (run && sidebar.scenarios.find(x => x.runs.includes(run))) || null;
   sidebar.setScenario(sc);
   viewer.show(sc, run, plot);

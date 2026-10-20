@@ -92,7 +92,7 @@ body.resizing iframe { pointer-events: none; }
 .runs button.picked-b { background: var(--accent-b-soft); color: var(--accent-b); font-weight: 600; }
 .ab-badge { margin-left: auto; font-size: 10.5px; font-weight: 700; }
 .runs .empty { color: var(--muted); font-size: 12.5px; padding: 7px 9px; }
-/* The link back to the scenario overview, beside the list title, styled like "clear". */
+/* The "all runs" link back to the run table, beside the list title, styled like "clear". */
 .overview-link { margin-left: 8px; font-size: 11.5px; color: var(--accent); cursor: pointer; }
 
 /* Explore's split view: the checkbox that turns it on, and the A / B toggle beneath it. */
@@ -181,87 +181,77 @@ body.sidebar-collapsed .side-a .split-label, body.sidebar-collapsed .side-a .spl
 
 #error { padding: 40px; color: var(--muted); max-width: 560px; }
 
-/* Scenario overview (assets/overview.js), the picker while nothing is picked. */
+/* Run table (assets/overview.js), the picker while nothing is picked. */
 .scenario-overview { flex: 1; min-height: 0; overflow: auto; padding: 18px 24px 40px; }
 body.sidebar-collapsed .scenario-overview { padding-left: 40px; }
-.ov-title { margin: 0 0 2px; font-size: 18px; color: #001868; }
-.ov-counts { font-size: 12.5px; color: var(--muted); }
-.ov-hint { margin: 4px 0 8px; font-size: 12.5px; color: var(--muted); }
-.ov-fixed { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 6px 0; font-size: 12px; }
-.ov-fixed-label { color: var(--muted); }
-.ov-chip { border: 1px solid var(--border); border-radius: 12px; padding: 2px 9px; background: var(--panel); }
-.ov-block { margin-top: 20px; }
-.ov-block-head { display: flex; align-items: baseline; gap: 10px; }
-.ov-block-head h3 { margin: 0; font-size: 14.5px; color: #001868; }
-.ov-table { margin-top: 6px; border-collapse: separate; border-spacing: 0; font-size: 12px; white-space: nowrap;
+.rt-title { margin: 0 0 2px; font-size: 18px; color: #001868; }
+.rt-counts { font-size: 12.5px; color: var(--muted); }
+.rt-hint { margin: 4px 0 8px; font-size: 12.5px; color: var(--muted); }
+.rt-mode { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 10px 0 4px; font-size: 12px; }
+.rt-mode-label { color: var(--muted); }
+.rt-table { margin-top: 6px; border-collapse: separate; border-spacing: 0; font-size: 12px;
             background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
-.ov-table th, .ov-table td { padding: 4px 10px; text-align: left; border-bottom: 1px solid var(--border); }
-.ov-table thead { position: sticky; top: -18px; z-index: 1; }   /* minus the pane padding: flush with its top */
-.ov-table th { font-weight: 600; background: #f0f2f5; vertical-align: bottom; }
+.rt-table th, .rt-table td { padding: 4px 10px; text-align: left; border-bottom: 1px solid var(--border);
+                             white-space: nowrap; }
+.rt-table thead { position: sticky; top: -18px; z-index: 1; }   /* minus the pane padding: flush with its top */
+.rt-table th { font-weight: 600; background: #f0f2f5; }
 /* The corner cells take the table's rounding, or their backgrounds poke out past it. */
-.ov-table thead tr:first-child > :first-child { border-top-left-radius: 7px; }
-.ov-table thead tr:first-child > :last-child { border-top-right-radius: 7px; }
-.ov-table > :last-child > tr:last-child > :first-child { border-bottom-left-radius: 7px; }
-.ov-table > :last-child > tr:last-child > :last-child { border-bottom-right-radius: 7px; }
-.ov-table .ov-colhead { text-align: center; border-left: 1px solid var(--border); }
-.ov-table .ov-axis-name { text-align: right; font-weight: 400; color: var(--muted); }
-.ov-table .ov-cell, .ov-table .ov-gap { min-width: 56px; }
-.ov-table .ov-cell, .ov-table .ov-gap { text-align: center; border-left: 1px solid var(--border); }
-.ov-table tbody tr:hover td { background: var(--accent-soft); }
-.ov-table tbody tr:hover td.ov-gap, .ov-gap {
-  background: repeating-linear-gradient(45deg, #f3f4f6 0 4px, #e6e9ee 4px 8px); }
-.ov-run { border: 1px solid #c4d7f8; border-radius: 10px; padding: 1px 8px; background: var(--accent-soft);
-          color: #0b4fb8; font: inherit; font-size: 12px; cursor: pointer; }
-.ov-run:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
-.ov-seeds { opacity: 0.75; }
-/* A planned run not in the viewer yet. */
-.ov-planned { display: inline-block; min-width: 2.6em; border: 1px dashed #aab3c0; border-radius: 10px;
-              padding: 0 8px; color: var(--muted); cursor: default; }
-.ov-plus { color: var(--muted); font-weight: 400; }
-.ov-mode { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 10px 0 4px; font-size: 12px; }
-/* Scenario A while its B is being picked, in split view's A colour. */
-.ov-run.ov-a { background: var(--accent); border-color: var(--accent); color: #fff; }
-.ov-ab { margin-left: 5px; font-size: 10.5px; font-weight: 700; }
-.ov-table .ov-off { color: var(--muted); font-weight: 400; }
-.ov-table .ov-num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted);
-                    border-left: 1px solid var(--border); }
-.ov-table tfoot td { border-bottom: 0; font-weight: 600; background: #f7f8fa; }
-.ov-table tfoot .ov-cell, .ov-table tfoot td.ov-num { color: var(--text); }
-/* The compact overview filling an empty split-view side. */
+.rt-table thead tr:first-child > :first-child { border-top-left-radius: 7px; }
+.rt-table thead tr:first-child > :last-child { border-top-right-radius: 7px; }
+.rt-table > :last-child > tr:last-child > :first-child { border-bottom-left-radius: 7px; }
+.rt-table > :last-child > tr:last-child > :last-child { border-bottom-right-radius: 7px; }
+.rt-row { cursor: pointer; }
+.rt-row:hover td { background: var(--accent-soft); }
+.rt-tag { font-weight: 600; color: #0b4fb8; font-variant-numeric: tabular-nums; }
+.rt-date { color: var(--muted); font-variant-numeric: tabular-nums; }
+.rt-more { color: var(--accent); cursor: pointer; }
+.rt-ab { margin-left: 5px; padding: 0 5px; border-radius: 8px; font-size: 10.5px; font-weight: 700;
+         color: #fff; background: var(--accent); }
+/* Run A while its B is picked, and the other split side's pick, in their sides' colours. */
+.rt-row.rt-a td { background: var(--accent-soft); }
+.rt-row.rt-b td { background: var(--accent-b-soft); }
+.rt-row.rt-b .rt-ab { background: var(--accent-b); }
+.rt-row.rt-picked td { background: var(--accent-soft); }
+.rt-row.rt-picked .rt-tag::after { content: " \2713"; }
+.rt-full .rt-row:not(.rt-picked) { opacity: 0.4; cursor: not-allowed; }
+/* Left out by the sidebar's filters; a picked one can still be unticked. */
+.rt-row.rt-filtered { opacity: 0.35; cursor: not-allowed; }
+.rt-row.rt-filtered:not(.rt-picked):hover td { background: none; }
+.rt-row.rt-filtered.rt-picked { opacity: 0.55; cursor: pointer; }
+.rt-details > td { padding: 10px 12px 12px; white-space: normal; background: #f7f8fa; }
+.rt-facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0 0 8px; }
+.rt-facts dt { color: var(--muted); }
+.rt-facts dd { margin: 0; }
+.rt-legend { margin: 0 0 6px; color: var(--muted); }
+.rt-settings { columns: 320px; column-gap: 24px; margin: 0; padding: 0; list-style: none; }
+.rt-settings li { break-inside: avoid; padding: 1px 0; }
+.rt-set-label { color: var(--muted); }
+.rt-mark { margin-left: 5px; padding: 0 5px; border-radius: 8px; font-size: 10.5px; font-weight: 600;
+           white-space: nowrap; }
+.rt-changed { background: var(--accent-soft); color: #0b4fb8; }
+.rt-varies { background: var(--accent-b-soft); color: var(--accent-b); }
+.rt-unknown { border: 1px dashed #aab3c0; color: var(--muted); }
+/* The compact table filling an empty split-view side. */
 .split-side .scenario-overview { padding: 10px 12px 30px; }
 body.sidebar-collapsed .split-side .scenario-overview { padding-left: 12px; }
 body.sidebar-collapsed .side-a .scenario-overview { padding-left: 34px; }
-.split-side .ov-block { margin-top: 12px; }
-.split-side .ov-table { font-size: 11.5px; }
-.split-side .ov-table th, .split-side .ov-table td { padding: 3px 5px; }
-.split-side .ov-table thead { top: -10px; }
-.split-side .ov-table th, .split-side .ov-table .ov-extra { white-space: normal; }   /* long names wrap over short values */
-.split-side .ov-table .ov-cell, .split-side .ov-table .ov-gap { min-width: 0; }
-.split-side .ov-run { padding: 1px 5px; font-size: 11.5px; }
-.split-side .ov-planned { min-width: 2em; padding: 0 5px; }
-/* The other side's pick, in its colour. */
-.ov-run.ov-b { background: var(--accent-b); border-color: var(--accent-b); color: #fff; }
+.split-side .rt-table { font-size: 11.5px; }
+.split-side .rt-table th, .split-side .rt-table td { padding: 3px 5px; }
+.split-side .rt-table thead { top: -10px; }
+.split-side .rt-name, .split-side .rt-input { white-space: normal; }
 /* Inside Compare's and Annual costs' scrolling body; the Show bar stays pinned to its foot. */
 .compare-body .scenario-overview { overflow: visible; padding: 4px 6px 0; }
 /* Nothing picked yet: the page's grey, as Explore shows it. */
 .compare-body:has(> .scenario-overview) { background: var(--bg); }
-.compare-body .ov-table thead { top: -14px; }
-.ov-run.ov-picked { background: var(--accent); border-color: var(--accent); color: #fff; }
-.ov-run.ov-picked::after { content: " \2713"; }
-.ov-full .ov-run:not(.ov-picked) { opacity: 0.4; cursor: not-allowed; }
-.ov-full .ov-run:not(.ov-picked):hover { background: var(--accent-soft); border-color: #c4d7f8; color: #0b4fb8; }
-.ov-showbar { position: sticky; bottom: -20px; z-index: 2; display: flex; align-items: center; gap: 12px;
+.compare-body .rt-table thead { top: -14px; }
+.rt-showbar { position: sticky; bottom: -20px; z-index: 2; display: flex; align-items: center; gap: 12px;
               margin: 16px -24px -20px; padding: 10px 24px; font-size: 12.5px;
               background: var(--bg); border-top: 1px solid var(--border); }
-.ov-showcount { font-weight: 600; }
-.ov-clear { color: var(--accent); cursor: pointer; }
-.ov-show { margin-left: auto; border: 1px solid var(--accent); border-radius: 15px; padding: 5px 18px;
+.rt-showcount { font-weight: 600; }
+.rt-clear { color: var(--accent); cursor: pointer; }
+.rt-show { margin-left: auto; border: 1px solid var(--accent); border-radius: 15px; padding: 5px 18px;
            background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
-.ov-show:disabled { opacity: 0.45; cursor: default; }
-/* Left out by the sidebar's filters; a picked one can still be unticked. */
-.ov-run.ov-filtered, .ov-planned.ov-filtered { opacity: 0.3; cursor: not-allowed; }
-.ov-run.ov-filtered:not(.ov-picked):hover { background: var(--accent-soft); border-color: #c4d7f8; color: #0b4fb8; }
-.ov-run.ov-filtered.ov-picked { opacity: 0.55; cursor: pointer; }
+.rt-show:disabled { opacity: 0.45; cursor: default; }
 main header select { padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px;
                      background: var(--panel); color: var(--text); font: inherit;
                      font-size: 12.5px; max-width: 220px; }

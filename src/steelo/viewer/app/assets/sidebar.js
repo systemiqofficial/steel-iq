@@ -112,8 +112,8 @@ function createScenarioSidebar(container, set, opts) {
   listHead.className = "list-head";
   const overviewLink = document.createElement("a");
   overviewLink.className = "overview-link";
-  overviewLink.textContent = "overview";
-  overviewLink.title = "Show all of this set's scenarios in one table";
+  overviewLink.textContent = "all runs";
+  overviewLink.title = "Show every run in the run table";
   overviewLink.onclick = () => opts.onOverview();
   listHead.append(listLab, overviewLink, countLine);
   const listBox = document.createElement("div");
