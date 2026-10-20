@@ -277,7 +277,11 @@ def run_full_simulation() -> None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_base = Path(args.output_dir) if args.output_dir else steelo_home / "output"
         output_base.mkdir(parents=True, exist_ok=True)
-        run_name = unique_run_name(args.run_name, run_names_in_use(output_base)) if args.run_name else None
+        run_name = (
+            unique_run_name(args.run_name, run_names_in_use(output_base))
+            if args.run_name and args.run_name.strip()
+            else None
+        )
 
         # Unique output directory for this simulation
         output_dir = output_base / f"sim_{timestamp}"

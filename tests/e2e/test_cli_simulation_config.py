@@ -351,6 +351,8 @@ def test_cli_run_name_lands_on_the_config(
         (["test"], "test", "test_2"),
         (["test", "test_2"], "test", "test_3"),
         (["test"], "other", "other"),
+        (["  test  "], "test", "test_2"),
+        ([], "   ", None),
     ],
 )
 @patch("steelo.entrypoints.cli.setup_legacy_symlinks")
@@ -372,7 +374,8 @@ def test_cli_run_name_in_use_under_the_output_base_gets_a_suffix(
 ):
     """
     A ``--run-name`` already held by a ``simulation_config.json`` under the output base gets the
-    first free ``_2``, ``_3`` suffix, even in a folder without ``run.json``; any other name is kept.
+    first free ``_2``, ``_3`` suffix, even in a folder without ``run.json``; names compare trimmed,
+    any other name is kept, and a blank name records no name.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         cli_temp_base = Path(tmpdir)

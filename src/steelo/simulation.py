@@ -1009,8 +1009,8 @@ def run_names_in_use(output_base: Path) -> set[str]:
         output_base: The folder holding the run folders, e.g. ``$STEELO_HOME/output``.
 
     Returns:
-        Every non-null ``run_name`` in a ``<folder>/simulation_config.json``; symlinks (``latest``)
-        and folders without the file are skipped.
+        Every non-null ``run_name`` in a ``<folder>/simulation_config.json``, trimmed; symlinks
+        (``latest``) and folders without the file are skipped.
 
     Raises:
         json.JSONDecodeError: If a ``simulation_config.json`` does not parse.
@@ -1027,7 +1027,7 @@ def run_names_in_use(output_base: Path) -> set[str]:
         # Runs from before run_name was recorded have no key and no name
         name = json.loads(config_path.read_text()).get("run_name")
         if name is not None:
-            names.add(name)
+            names.add(name.strip())
     return names
 
 
