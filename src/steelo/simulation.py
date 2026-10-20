@@ -32,6 +32,7 @@ from .adapters.dataprocessing.postprocessing.post_process_datacollection import 
 )
 from .adapters.dataprocessing.postprocessing.generate_post_run_plots import generate_post_run_cap_prod_plots
 from .adapters.geospatial.geospatial_statistics import aggregate_lcoe_lcoh_statistics
+from .viewer.extract import write_viewer_files
 from .logging_config import LoggingConfig
 from steelo.domain.constants import T_TO_KT, MT_TO_T, INITIAL_SCRAP_PRODUCTION_COST
 from steelo.domain.calculate_costs import (
@@ -1001,6 +1002,23 @@ def config_as_json_dict(config: SimulationConfig) -> dict[str, Any]:
     return result
 
 
+def write_viewer_files_after_run(output_dir: Path) -> None:
+    """Write the run's viewer files as the run's last step, logging a failure instead of raising it.
+
+    Args:
+        output_dir: The run folder.
+
+    Notes:
+        The model's outputs are on disk by now, so an error here must not fail the run.
+        ``write_viewer_files`` writes ``run.json`` last, so a failed step leaves no ``run.json``
+        and the viewer's catalogue skips the run.
+    """
+    try:
+        write_viewer_files(output_dir)
+    except Exception:
+        logger.exception("viewer files incomplete for this run")
+
+
 @dataclass
 class Progress:
     start_year: Year | None = None
@@ -1699,6 +1717,8 @@ class SimulationRunner:
 
         # Aggregate per-year LCOE/LCOH statistics into stacked CSVs
         aggregate_lcoe_lcoh_statistics(self.config.output_dir, start_year, end_year)
+
+        write_viewer_files_after_run(self.config.output_dir)
 
         # Clean up temporary directory
         self._cleanup_temp_dir()
