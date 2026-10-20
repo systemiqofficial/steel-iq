@@ -12,7 +12,7 @@ from steelo.domain.calculate_costs import (
     score_reductants_for_business_cases,
 )
 from steelo.domain.models import PrimaryFeedstock
-from tests.unit.test_reductant_score_series import LOCATION, SHARES, Year, _ef, _feedstock, _make_env
+from test_reductant_score_series import LOCATION, SHARES, Year, _ef, _feedstock, _make_env
 
 CARRIERS = ["electricity", "natural_gas", "hydrogen", "coke", "bio_pci", "steam"]
 EF_TABLE = {
