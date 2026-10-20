@@ -489,12 +489,19 @@ def build_inputs(run_dirs: list[Path], manifest: dict[str, Any]) -> dict[str, An
         :func:`build_topic` writes them.
 
     Raises:
-        ValueError: If a topic's runs do not share the same value columns.
+        ValueError: If a run's ``inputs.json`` does not parse (naming the file), or a topic's runs do not share the
+            same value columns.
     """
     by_folder = {run_dir.name: run_dir for run_dir in run_dirs}
     local = manifest["sets"][0]
     runs = [run for run in local["runs"] if run["dir"] in by_folder]
-    per_run = [json.loads((by_folder[run["dir"]] / VIEWER_DIR / INPUTS_NAME).read_text()) for run in runs]
+    per_run = []
+    for run in runs:
+        path = by_folder[run["dir"]] / VIEWER_DIR / INPUTS_NAME
+        try:
+            per_run.append(json.loads(path.read_text()))
+        except json.JSONDecodeError as error:
+            raise ValueError(f"{path}: {error}") from error
     # Dimensions and values as these runs span them
     dims = [
         {**d, "values": [v for v in d["values"] if any(r["dims"][d["key"]] == v for r in runs)]}
