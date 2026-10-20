@@ -109,12 +109,10 @@ const COMMODITY_NAMES = {steel: "steel", scrap: "scrap", pig_iron: "pig iron", h
 const PRODUCTS = {
   steel: {name: "steel", ticks: "Steel", note: "destinations = demand centres"},
   iron: {name: "iron", ticks: "Iron products", note: "destinations = steelmaking furnace groups; hot metal and liquid iron = on-site transfers"},
-  // Ore origins are the mine sheet's own labels: rows are never grouped or folded and
-  // there is no diagonal, so the matrix is rectangular.
-  ore: {name: "iron ore", ticks: "Ore grades", note: "origins = mine regions as named in the mine sheet; destinations = furnace groups",
-        labelledOrigins: true},
-  // Scrap suppliers are per-country and carry no technology, so the matrix is square
-  // (diagonal = domestic scrap) but the technology filter does not apply.
+  // Mines and scrap suppliers carry their country and no technology, so the matrix is
+  // square (diagonal = domestic ore or scrap) but the technology filter does not apply.
+  ore: {name: "iron ore", ticks: "Ore grades", note: "origins = mine countries; destinations = furnace groups",
+        supplierOrigins: true},
   scrap: {name: "scrap", ticks: "Scrap", note: "origins = per-country scrap suppliers; destinations = furnace groups",
           supplierOrigins: true},
 };
