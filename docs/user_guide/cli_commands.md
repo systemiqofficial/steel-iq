@@ -32,7 +32,7 @@ usage: run_simulation [-h] [--start-year START_YEAR] [--end-year END_YEAR]
                       [--iron-to-steel-price-ratio IRON_TO_STEEL_PRICE_RATIO]
                       [--random-seed RANDOM_SEED] [--enable-capacity-policy]
                       [--credit-validity-years CREDIT_VALIDITY_YEARS]
-                      [--cbam-rebate]
+                      [--cbam-rebate] [--optimization-solver {highs,gurobi}]
 
 Run a full steel model simulation.
 
@@ -134,7 +134,15 @@ options:
                         no expiry)
   --cbam-rebate         Rebate the carbon already paid on exports leaving a
                         carbon border region (default: disabled)
+  --optimization-solver {highs,gurobi}
+                        Trade LP solver backend (default: highs). 'gurobi'
+                        requires your own Gurobi license and a gurobipy
+                        installation reachable from wherever the simulation
+                        runs; you must follow the terms of your license.
+                        Install with `uv sync --extra gurobi`.
 ```
+
+Gurobi is commercial software that this project does not license. Selecting `--optimization-solver gurobi` prints a license reminder. You need your own Gurobi license and must use it as its license agreement allows (for example, an academic license is not valid for commercial use).
 
 `--output-dir` is accepted but currently not used: every run writes to a fresh `$STEELO_HOME/output/sim_<timestamp>/` directory, also linked as `$STEELO_HOME/output_latest`.
 
@@ -170,6 +178,9 @@ run_simulation --enable-capacity-policy --credit-validity-years 5
 
 # Cap regional hydrogen prices at the 20th LCOH percentile and allow hydrogen imports between linked regions
 run_simulation --hydrogen-ceiling-percentile 20 --intraregional-trade
+
+# Solve the trade LP with Gurobi instead of HiGHS (requires a license)
+run_simulation --optimization-solver gurobi
 ```
 
 ### Features:

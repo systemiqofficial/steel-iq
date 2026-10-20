@@ -160,7 +160,7 @@ Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASE
 ### 4. `solve_steel_trade_lp_and_return_commodity_allocations()` - Solve & Extract Results
 
 **What it does:**
-1. Solves the LP optimization problem using Pyomo/HiGHS solver
+1. Solves the LP optimization problem using Pyomo, via HiGHS (default) or Gurobi
 2. Extracts optimal allocation values from solver variables
 3. Maps LP results back to domain objects (plants, suppliers, demand centers)
 4. Filters out negligible allocations (< 0.0001 tons)
@@ -214,6 +214,20 @@ Supported trade-bloc names: `EU`, `EFTA/EUCU`, `OECD`, `NAFTA`, `Mercosur`, `ASE
 
 **Model behavior:**
 - `lp_epsilon`: Solver tolerance (1e-3) - how close to constraints is acceptable
+- `optimization_solver`: LP solver backend, `"highs"` (default, no license needed) or `"gurobi"`
+  (requires `gurobipy` importable and able to obtain a license at solve time - install with
+  `uv sync --extra gurobi`). Also settable via `run_simulation --optimization-solver gurobi`.
+  **Gurobi is commercial software that this project does not license. You need your own Gurobi
+  license and must use it as its license agreement allows** (for example, an academic license
+  is not valid for commercial use). HiGHS and Gurobi don't share a tuning-option
+  vocabulary, so `TradeLPModel.solver_options` defaults differ per backend (see
+  `_default_solver_options()` in `trade_lp_modelling.py`); overriding `solver_options` must use
+  the selected backend's own option names. The Gurobi defaults are barrier (`Method=2`), one
+  thread (`Threads=1`), and the HiGHS default tolerances (`FeasibilityTol=1e-7`,
+  `OptimalityTol=1e-7`, `BarConvTol=1e-8`). Warm-starting between simulation years only works
+  with simplex-family methods on either backend - HiGHS's default `hipo` and Gurobi's default
+  barrier method both start fresh each year. The HiGHS retry chain (`fallback_solvers`) does
+  not apply to Gurobi: a non-optimal Gurobi solve is not retried.
 - `capacity_limit`: Production safety factor (0.95) - models realistic availability
 - `active_statuses`: Which furnace states to include (e.g., ["operating", "mothballed"])
 - `carbon_border_export_rebates`: Also rebate exports leaving a carbon-border region (default False)

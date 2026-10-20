@@ -24,6 +24,12 @@ from ..simulation import SimulationConfig
 from ..bootstrap import bootstrap_simulation
 from ..utils.symlink_manager import update_data_symlink, update_output_symlink, setup_legacy_symlinks
 
+GUROBI_LICENSE_NOTICE = (
+    "Gurobi is commercial software that is not part of this project. You need your own Gurobi "
+    "license and must use it as its license agreement allows (for example, an academic license "
+    "is not valid for commercial use)."
+)
+
 
 def run_full_simulation() -> None:
     """
@@ -232,6 +238,15 @@ def run_full_simulation() -> None:
         action="store_true",
         help="Rebate the carbon already paid on exports leaving a carbon border region (default: disabled)",
     )
+    parser.add_argument(
+        "--optimization-solver",
+        type=str,
+        choices=["highs", "gurobi"],
+        default="highs",
+        help="Trade LP solver backend (default: highs). 'gurobi' requires your own Gurobi license "
+        "and a gurobipy installation reachable from wherever the simulation runs; you must "
+        "follow the terms of your license.",
+    )
 
     # Parse the command-line arguments
     try:
@@ -407,6 +422,12 @@ def run_full_simulation() -> None:
             if args.cbam_rebate:
                 config.carbon_border_export_rebates = True
                 console.print("[green]Carbon border export rebates enabled[/green]")
+            # Override trade LP solver backend from command line
+            if args.optimization_solver != "highs":
+                config.optimization_solver = args.optimization_solver
+                console.print(f"[green]Trade LP solver backend set to: {args.optimization_solver}[/green]")
+                if args.optimization_solver == "gurobi":
+                    console.print(f"[yellow]{GUROBI_LICENSE_NOTICE}[/yellow]")
 
             # Save config and metadata
             config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
@@ -517,6 +538,12 @@ def run_full_simulation() -> None:
                 if args.cbam_rebate:
                     config.carbon_border_export_rebates = True
                     console.print("[green]Carbon border export rebates enabled[/green]")
+                # Override trade LP solver backend from command line
+                if args.optimization_solver != "highs":
+                    config.optimization_solver = args.optimization_solver
+                    console.print(f"[green]Trade LP solver backend set to: {args.optimization_solver}[/green]")
+                    if args.optimization_solver == "gurobi":
+                        console.print(f"[yellow]{GUROBI_LICENSE_NOTICE}[/yellow]")
 
                 # Save config and metadata
                 config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
