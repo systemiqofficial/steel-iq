@@ -57,7 +57,10 @@ function createInputsPane(container, set, opts) {
   const distinctCache = new Map();   // topic id -> per key column, its sorted distinct values
   let data = null, loadError = null;
   const loading = fetch(INPUTS_FILE)
-    .then(async res => { if (!res.ok) throw new Error(await res.text() || res.status + " " + res.statusText); return res.json(); })
+    .then(async res => {
+      if (!res.ok) throw new Error(await res.text() || res.status + " " + res.statusText);
+      return res.json();
+    })
     .then(d => { data = d; })
     .catch(e => { loadError = e.message; });
 

@@ -30,7 +30,9 @@ await ctx.route("**/*", route => {
 async function open(hash) {
   const page = await ctx.newPage();
   page.on("pageerror", e => problems.push((hash || "#explore") + " page error: " + e.message));
-  page.on("console", m => { if (m.type() === "error") problems.push((hash || "#explore") + " console error: " + m.text()); });
+  page.on("console", m => {
+    if (m.type() === "error") problems.push((hash || "#explore") + " console error: " + m.text());
+  });
   await page.goto(url + hash, { waitUntil: "networkidle" });
   return page;
 }
@@ -88,5 +90,8 @@ for (const hash of ["#compare", "#annual-costs"]) {
 }
 
 await browser.close();
-if (problems.length) { console.log("\n" + problems.length + " problem(s):\n  " + problems.join("\n  ")); process.exit(1); }
+if (problems.length) {
+  console.log("\n" + problems.length + " problem(s):\n  " + problems.join("\n  "));
+  process.exit(1);
+}
 console.log("\nOffline OK");

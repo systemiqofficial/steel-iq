@@ -260,7 +260,8 @@ function buildFor(s, run, plot) {
     renderEmpty: box => {
       renderRunTable(box, s, sidebar.scenarios, {
         variantKey: VARIANT, mode: "pick",
-        pickHint: "Click a run to set the filters to its scenario's settings, then pick an input data sheet to see exactly its inputs",
+        pickHint: "Click a run to set the filters to its scenario's settings, "
+          + "then pick an input data sheet to see exactly its inputs",
         onPick: sc => {
           sidebar.setFilters(Object.fromEntries(s.dimensions.filter(d => d.values.length > 1 && d.key !== VARIANT)
             .map(d => [d.key, sc.dims[d.key]])));

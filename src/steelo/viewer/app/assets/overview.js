@@ -104,7 +104,8 @@ function renderRunTable(box, set, scenarios, opts) {
   function renderHint() {
     for (const [on, b] of modeButtons) b.classList.toggle("active", on === pairing);
     if (mode === "side") {
-      hint.replaceChildren(rtEl("span", "ab-chip", opts.side), "Pick scenario " + opts.side + ": click a run, here or in the sidebar.");
+      hint.replaceChildren(rtEl("span", "ab-chip", opts.side),
+                           "Pick scenario " + opts.side + ": click a run, here or in the sidebar.");
       return;
     }
     hint.textContent = mode === "multi"
