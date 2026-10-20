@@ -38,9 +38,10 @@ def write_run(run_dir, name, started, master="master_input.xlsx", master_source=
 
 def test_catalogue_dimensions_are_the_differing_settings_input_data_seed_and_run(tmp_path):
     """
-    Tests that four runs (two differing in one setting, one on a custom master, one a copy of another) give
-    exactly the filters input data, that setting, seed and run; that a run differing only in an excluded field
-    adds none; and that the run detail flags the changed setting as changed from the default and varying.
+    Tests that four runs (two differing in one setting, one on a custom master, one a copy of another under the
+    same name) give exactly the filters input data, that setting, seed and run, with a distinct run value for the
+    copy; that a run differing only in an excluded field adds none; and that the run detail flags the changed
+    setting as changed from the default and varying.
     """
     runs = [
         write_run(tmp_path / "sim_1", "base", "2026-10-20T10:00:00"),
@@ -57,7 +58,7 @@ def test_catalogue_dimensions_are_the_differing_settings_input_data_seed_and_run
             master="my_master.xlsx",
             master_source="custom",
         ),
-        write_run(tmp_path / "sim_4", "base_2", "2026-10-20T10:03:00"),
+        write_run(tmp_path / "sim_4", "base", "2026-10-20T10:03:00"),
     ]
     plots_only = write_run(
         tmp_path / "sim_5",
@@ -72,6 +73,8 @@ def test_catalogue_dimensions_are_the_differing_settings_input_data_seed_and_run
     keys = [dimension["key"] for dimension in local["dimensions"]]
     assert keys == ["input_data", "geo_config.hydrogen_ceiling_percentile", "seed", "run"]
     assert [dimension["key"] for dimension in with_plots_only["dimensions"]] == keys
+    run_values = {run["dir"]: run["dims"]["run"] for run in local["runs"]}
+    assert run_values["sim_1"] != run_values["sim_4"]
     settings = {run["dir"]: {s["key"]: s for s in run["settings"]} for run in local["runs"]}
     percentile = "geo_config.hydrogen_ceiling_percentile"
     assert settings["sim_2"][percentile]["changed"] is True

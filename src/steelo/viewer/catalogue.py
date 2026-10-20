@@ -298,7 +298,8 @@ def build_manifest(run_dirs: list[Path], with_made_in: bool) -> dict[str, Any]:
 
     Notes:
         The run filter appears only when two runs share every other filter value, since such runs would otherwise
-        form one scenario with only the first reachable.
+        form one scenario with only the first reachable. Its value is the run name, or "<name> (<folder>)" for a
+        name more than one listed run holds (a copied run, or runs from two output bases).
     """
     loaded = []
     for run_dir in run_dirs:
@@ -323,7 +324,12 @@ def build_manifest(run_dirs: list[Path], with_made_in: bool) -> dict[str, Any]:
             columns.append((key, column))
     columns.append(("seed", [run_values["seed"] for run_values in values]))
     if len(set(zip(*(column for _, column in columns)))) < len(loaded):
-        columns.append(("run", [run["name"] for _, run, _, _ in loaded]))
+        names = [run["name"] for _, run, _, _ in loaded]
+        run_values = [
+            name if names.count(name) == 1 else f"{name} ({run_dir.name})"
+            for name, (run_dir, _, _, _) in zip(names, loaded)
+        ]
+        columns.append(("run", run_values))
     varying = {key for key, column in columns if len(set(column)) > 1}
 
     runs = [
