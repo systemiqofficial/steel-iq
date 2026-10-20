@@ -74,6 +74,7 @@ results/ holds the run's own tables for the Download results pane, gzipped and
 paged. run.json, written last, names the run and lists what was written.
 """
 
+import argparse
 import csv
 import gzip
 import importlib.metadata
@@ -82,6 +83,7 @@ import logging
 import math
 import re
 import shutil
+import sys
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
@@ -1287,3 +1289,66 @@ def write_viewer_files(run_dir: Path, master_excel: Path | None = None) -> None:
     }
     (viewer_dir / RUN_NAME).write_text(json.dumps(run, indent=2) + "\n")
     logger.info(f"viewer files written to {viewer_dir}")
+
+
+def missing_inputs(run_dir: Path, master_excel: Path | None = None) -> list[Path]:
+    """The files :func:`write_viewer_files` cannot do without that one run folder lacks.
+
+    Args:
+        run_dir: The run folder.
+        master_excel: The master workbook to read instead of the recorded one, or None.
+
+    Returns:
+        The missing paths: the post-processed CSV (as its glob), ``simulation_config.json``,
+        ``preparation_metadata.json``, the master and ``emissions.html``, which ``geo.json``
+        needs. Empty when the run has every one.
+
+    Notes:
+        The recorded master is checked only when ``preparation_metadata.json`` exists. The other
+        plot pages are optional: a missing one skips its file with a warning, as at run end.
+    """
+    metadata_path = run_dir / "preparation_metadata.json"
+    missing = [] if any(run_dir.glob("post_processed_*.csv")) else [run_dir / "post_processed_*.csv"]
+    missing += [p for p in (run_dir / "simulation_config.json", metadata_path) if not p.exists()]
+    if master_excel is None and metadata_path.exists():
+        master_excel = Path(json.loads(metadata_path.read_text())["master_excel"])
+    if master_excel is not None and not master_excel.exists():
+        missing.append(master_excel)
+    emissions_page = run_dir / PAGES_DIR / "emissions.html"
+    if not emissions_page.exists():
+        missing.append(emissions_page)
+    return missing
+
+
+def regenerate(argv: list[str]) -> int:
+    """Rebuild ``<run>/viewer/`` for finished runs, leaving the plot pages and model outputs alone.
+
+    Args:
+        argv: Command-line arguments: one or more run folders and an optional ``--master-excel``.
+
+    Returns:
+        0 when every run's viewer folder was written, 1 when a run lacks a required input; then
+        nothing is written.
+    """
+    parser = argparse.ArgumentParser(
+        prog="steelo-viewer regenerate", description="Rebuild the viewer files of finished runs."
+    )
+    parser.add_argument("run_dirs", nargs="+", type=Path, metavar="RUN_DIR", help="run folder to rebuild")
+    parser.add_argument(
+        "--master-excel", type=Path, help="master workbook to read instead of the one each run recorded"
+    )
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    missing = [path for run_dir in args.run_dirs for path in missing_inputs(run_dir, args.master_excel)]
+    for path in missing:
+        logger.error(f"missing input: {path}")
+    if missing:
+        return 1
+    for run_dir in args.run_dirs:
+        write_viewer_files(run_dir, args.master_excel)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(regenerate(sys.argv[1:]))
