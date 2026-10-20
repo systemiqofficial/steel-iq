@@ -1223,7 +1223,8 @@ def write_viewer_files(run_dir: Path, master_excel: Path | None = None) -> None:
             ``preparation_metadata.json``.
 
     Raises:
-        FileNotFoundError: If the post-processed CSV, either JSON file or the master is missing.
+        FileNotFoundError: If the post-processed CSV, either JSON file or the master is missing, or the
+            metadata records no master and none is given.
 
     Notes:
         An existing ``viewer/`` folder is removed first and ``run.json`` is written last, so a
@@ -1236,7 +1237,10 @@ def write_viewer_files(run_dir: Path, master_excel: Path | None = None) -> None:
     config_path = run_dir / "simulation_config.json"
     config = json.loads(config_path.read_text())
     metadata = json.loads((run_dir / "preparation_metadata.json").read_text())
-    master = master_excel or Path(metadata["master_excel"])
+    recorded = metadata["master_excel"]
+    if master_excel is None and recorded is None:
+        raise FileNotFoundError(f"{run_dir / 'preparation_metadata.json'} records no master workbook")
+    master = master_excel or Path(recorded)
     if not master.exists():
         raise FileNotFoundError(f"master workbook {master} not found")
     source_csvs = sorted(run_dir.glob("post_processed_*.csv"))
@@ -1279,7 +1283,7 @@ def write_viewer_files(run_dir: Path, master_excel: Path | None = None) -> None:
         "ended": datetime.now().isoformat(timespec="seconds"),
         "steelo_version": importlib.metadata.version("steel-model"),
         "input_data": {
-            "master": Path(metadata["master_excel"]).name,
+            "master": Path(recorded or master).name,
             "master_source": metadata.get("master_source"),
             "master_name": metadata.get("master_name"),
             "preparation_name": metadata.get("preparation_name"),
@@ -1300,8 +1304,9 @@ def missing_inputs(run_dir: Path, master_excel: Path | None = None) -> list[Path
 
     Returns:
         The missing paths: the post-processed CSV (as its glob), ``simulation_config.json``,
-        ``preparation_metadata.json``, the master and ``emissions.html``, which ``geo.json``
-        needs. Empty when the run has every one.
+        ``preparation_metadata.json``, the master (``preparation_metadata.json:master_excel`` when
+        the metadata records none) and ``emissions.html``, which ``geo.json`` needs. Empty when the
+        run has every one.
 
     Notes:
         The recorded master is checked only when ``preparation_metadata.json`` exists. The other
@@ -1311,7 +1316,12 @@ def missing_inputs(run_dir: Path, master_excel: Path | None = None) -> list[Path
     missing = [] if any(run_dir.glob("post_processed_*.csv")) else [run_dir / "post_processed_*.csv"]
     missing += [p for p in (run_dir / "simulation_config.json", metadata_path) if not p.exists()]
     if master_excel is None and metadata_path.exists():
-        master_excel = Path(json.loads(metadata_path.read_text())["master_excel"])
+        recorded = json.loads(metadata_path.read_text())["master_excel"]
+        # The app records null for a run without a ready data preparation
+        if recorded is None:
+            missing.append(run_dir / "preparation_metadata.json:master_excel")
+        else:
+            master_excel = Path(recorded)
     if master_excel is not None and not master_excel.exists():
         missing.append(master_excel)
     emissions_page = run_dir / PAGES_DIR / "emissions.html"
