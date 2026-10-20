@@ -48,14 +48,16 @@ function createResultsPane(container, set, opts = {}) {
     clearView();
   }
 
-  function show(scenario) {
-    const run = scenario ? scenario.runs[0] : null;
+  // The given run, else the open one while it belongs to the scenario, else the scenario's first.
+  function show(scenario, given) {
+    const run = !scenario ? null : given && scenario.runs.includes(given) ? given
+      : scenario.runs.includes(state.run) ? state.run : scenario.runs[0];
     if (run && run === state.run && state.index) return;   // back from another view: keep the open table
     const token = ++state.token;
     state.run = run;
     state.index = null;
     title.textContent = scenario ? scenarioLabel(set, scenario) : "";
-    subtitle.textContent = "";
+    subtitle.textContent = run ? "Run folder " + run.dir : "";
     if (!scenario) {
       showMessage("Pick a scenario in the sidebar to download or view its result tables.");
       if (opts.renderEmpty) {
@@ -75,7 +77,8 @@ function createResultsPane(container, set, opts = {}) {
     message.hidden = true;
     actions.hidden = folders.hidden = false;
     const files = state.index.folders.flatMap(d => d.files);
-    subtitle.textContent = files.length + " tables, " + mb(files.reduce((s, f) => s + f.bytes, 0))
+    subtitle.textContent = "Run folder " + state.run.dir + " · " + files.length + " tables, "
+      + mb(files.reduce((s, f) => s + f.bytes, 0))
       + " as gzipped CSV (.csv.gz: double-click to unpack; Windows may need 7-Zip).";
     actions.replaceChildren();
     const all = document.createElement("button");

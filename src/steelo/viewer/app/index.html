@@ -275,7 +275,7 @@ function buildFor(s, run, plot) {
       renderRunTable(box, s, sidebar.scenarios, {
         variantKey: VARIANT, mode: "pick",
         pickHint: "Click a run, or a scenario in the sidebar, to download or view its result tables",
-        onPick: sc => { sidebar.setScenario(sc); results.show(sc); },
+        onPick: (sc, run) => { sidebar.setScenario(sc); results.show(sc, run); },
       });
       applyRunTableFilters(box, s, sidebar.getFilters());
     },
