@@ -204,7 +204,12 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     if argv[:1] == ["regenerate"]:
         return extract.regenerate(argv[1:])
-    parser = argparse.ArgumentParser(prog="steelo-viewer", description="Serve the scenario viewer for local runs.")
+    parser = argparse.ArgumentParser(
+        prog="steelo-viewer",
+        description="Serve the scenario viewer for local runs.",
+        epilog="steelo-viewer regenerate RUN_DIR [RUN_DIR ...] rebuilds the viewer files of finished runs; "
+        "see steelo-viewer regenerate --help.",
+    )
     parser.add_argument(
         "run_dirs", nargs="*", type=Path, metavar="RUN_DIR", help="run folder to serve (default: every run)"
     )
