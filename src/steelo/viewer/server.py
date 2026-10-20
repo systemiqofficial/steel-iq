@@ -150,6 +150,18 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
             return NOT_FOUND if run_file is None else str(run_file)
         return NOT_FOUND
 
+    def handle(self) -> None:
+        """Serve the connection's requests, returning quietly when the client closes it part-way.
+
+        Notes:
+            Switching runs while a large page or the Plotly bundle loads closes the download; the parent would
+            print a traceback for it.
+        """
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def log_message(self, format: str, *args: Any) -> None:
         """Send the per-request log line to the module logger at DEBUG, so the terminal stays quiet.
 
