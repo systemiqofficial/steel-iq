@@ -220,20 +220,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=0, help="port to serve on (default: a free port)")
     parser.add_argument("--no-browser", action="store_true", help="do not open the viewer in the browser")
     args = parser.parse_args(argv)
+    # Resolved, so "." and a symlink such as latest give the real folder's name, and each folder comes once
+    run_dirs = list(dict.fromkeys(run_dir.resolve() for run_dir in args.run_dirs))
 
     # Folder names are the URL keys; the folders under one output base cannot share one
-    names = [run_dir.name for run_dir in args.run_dirs]
-    shared = [str(run_dir) for run_dir in args.run_dirs if names.count(run_dir.name) > 1]
+    names = [run_dir.name for run_dir in run_dirs]
+    shared = [str(run_dir) for run_dir in run_dirs if names.count(run_dir.name) > 1]
     if shared:
         logger.error(f"run folders share a folder name, serve them one at a time: {', '.join(shared)}")
         return 1
-    output_base = None if args.run_dirs else args.output_dir or args.steelo_home / "output"
+    output_base = None if run_dirs else args.output_dir or args.steelo_home / "output"
     if output_base is not None and not output_base.is_dir():
         logger.error(f"no output folder at {output_base}")
         return 1
-    runs = catalogue.discover_runs(output_base, args.run_dirs)
+    runs = catalogue.discover_runs(output_base, run_dirs)
     if not runs:
         logger.error("no run with viewer/run.json found")
         return 1
-    serve(output_base, args.run_dirs, runs, args.port, not args.no_browser)
+    serve(output_base, run_dirs, runs, args.port, not args.no_browser)
     return 0
