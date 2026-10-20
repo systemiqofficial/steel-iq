@@ -453,6 +453,32 @@ def test_cli_credit_validity_years_is_refused_at_parse_time(argv_tail, message, 
     assert message in capsys.readouterr().err
 
 
+@patch("steelo.entrypoints.cli.setup_legacy_symlinks")
+@patch("steelo.entrypoints.cli.update_output_symlink")
+@patch("steelo.entrypoints.cli.update_data_symlink")
+@patch("steelo.entrypoints.cli.bootstrap_simulation")
+@patch("steelo.data.DataPreparationService")
+@patch("steelo.data.DataManager")
+def test_cli_run_without_steelo_home_writes_into_the_test_home(
+    mock_data_manager_class,
+    mock_data_prep_service_class,
+    mock_create_runner,
+    mock_update_data_symlink,
+    mock_update_output_symlink,
+    mock_setup_legacy_symlinks,
+    tmp_path,
+):
+    """A CLI call without ``--steelo-home`` lands in the test's own home, never in the developer's ``~/.steelo``."""
+    stub_cli_dependencies(tmp_path / "stubs", mock_data_manager_class, mock_data_prep_service_class, mock_create_runner)
+
+    with patch.object(sys, "argv", ["run_simulation", "--start-year", "2026", "--end-year", "2027"]):
+        with patch("sys.exit"):
+            run_full_simulation()
+
+    config = mock_create_runner.call_args[0][0]
+    assert config.output_dir.parent == tmp_path / "home" / "output"
+
+
 def test_cli_output_file_flag_is_refused_at_parse_time(capsys):
     """``--output-file`` names a JSON that nothing writes, so the flag no longer exists and stops the run at parsing."""
     with patch.object(sys, "argv", ["run_simulation", "--output-file", "x.json"]):
