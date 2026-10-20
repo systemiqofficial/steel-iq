@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field, InitVar
+from dataclasses import dataclass, field, InitVar, fields, asdict
 from pathlib import Path
 from typing import Optional, Callable, Any, TYPE_CHECKING
 import logging
@@ -967,6 +967,38 @@ class SimulationConfig:
             if temp_dir.exists():
                 shutil.rmtree(temp_dir, ignore_errors=True)
             raise RuntimeError(f"Failed to create config from master Excel: {e}") from e
+
+
+def config_as_json_dict(config: SimulationConfig) -> dict[str, Any]:
+    """Return the run's configuration as the JSON-ready dict written to ``simulation_config.json``.
+
+    Args:
+        config: The run's configuration.
+
+    Returns:
+        One key per public ``SimulationConfig`` field, in declaration order. Paths become strings,
+        ``geo_config`` and ``capacity_policy`` objects keyed by their field names, ``technology_settings`` one
+        object per technology code and ``disposal_cost_outputs`` a sorted list; every other value is kept.
+
+    Notes:
+        Private fields (``_repository``, ``_json_repository``) are left out. A value that is not JSON makes
+        ``json.dumps`` fail, so a new field type shows at the write instead of as a repr string.
+    """
+    result: dict[str, Any] = {}
+    for config_field in fields(config):
+        if config_field.name.startswith("_"):
+            continue
+        value = getattr(config, config_field.name)
+        if isinstance(value, Path):
+            value = str(value)
+        elif config_field.name in ("geo_config", "capacity_policy"):
+            value = asdict(value)
+        elif config_field.name == "technology_settings":
+            value = {code: settings.to_dict() for code, settings in value.items()}
+        elif config_field.name == "disposal_cost_outputs":
+            value = sorted(value)
+        result[config_field.name] = value
+    return result
 
 
 @dataclass

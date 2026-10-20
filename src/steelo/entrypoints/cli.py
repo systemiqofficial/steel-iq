@@ -20,7 +20,7 @@ from rich.table import Table
 from ..domain import Year
 from ..domain.constants import RANDOM_SEED_DEFAULT
 
-from ..simulation import SimulationConfig
+from ..simulation import SimulationConfig, config_as_json_dict
 from ..bootstrap import bootstrap_simulation
 from ..utils.symlink_manager import update_data_symlink, update_output_symlink, setup_legacy_symlinks
 
@@ -424,9 +424,8 @@ def run_full_simulation() -> None:
                     console.print(f"[yellow]{GUROBI_LICENSE_NOTICE}[/yellow]")
 
             # Save config and metadata
-            config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
             config_path = output_dir / "simulation_config.json"
-            config_path.write_text(json.dumps(config_dict, indent=2, default=str))
+            config_path.write_text(json.dumps(config_as_json_dict(config), indent=2))
 
             prep_metadata = {
                 "preparation_time": datetime.now().isoformat(),
@@ -435,6 +434,8 @@ def run_full_simulation() -> None:
                 "cached_from": str(cached_data_dir),
                 "demand_scenario": demand_scenario,
                 "scrap_scenario": scrap_scenario,
+                "made_in": "cli",
+                "master_source": "custom" if args.master_excel else "default",
             }
             (output_dir / "preparation_metadata.json").write_text(json.dumps(prep_metadata, indent=2))
 
@@ -540,9 +541,8 @@ def run_full_simulation() -> None:
                         console.print(f"[yellow]{GUROBI_LICENSE_NOTICE}[/yellow]")
 
                 # Save config and metadata
-                config_dict = {k: str(v) if isinstance(v, Path) else v for k, v in config.__dict__.items()}
                 config_path = output_dir / "simulation_config.json"
-                config_path.write_text(json.dumps(config_dict, indent=2, default=str))
+                config_path.write_text(json.dumps(config_as_json_dict(config), indent=2))
 
                 prep_metadata = {
                     "preparation_time": datetime.now().isoformat(),
@@ -553,6 +553,8 @@ def run_full_simulation() -> None:
                     "temp_prep_dir": str(prep_dir),
                     "demand_scenario": demand_scenario,
                     "scrap_scenario": scrap_scenario,
+                    "made_in": "cli",
+                    "master_source": "custom" if args.master_excel else "default",
                 }
                 (output_dir / "preparation_metadata.json").write_text(json.dumps(prep_metadata, indent=2))
 
