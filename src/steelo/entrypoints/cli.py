@@ -18,9 +18,9 @@ from rich.console import Console
 from rich.table import Table
 
 from ..domain import Year
-from ..domain.constants import RANDOM_SEED_DEFAULT
+from ..domain.constants import END_YEAR_DEFAULT, RANDOM_SEED_DEFAULT, START_YEAR_DEFAULT
 
-from ..simulation import SimulationConfig, config_as_json_dict, run_names_in_use, unique_run_name
+from ..simulation import SimulationConfig, config_as_json_dict, config_default, run_names_in_use, unique_run_name
 from ..bootstrap import bootstrap_simulation
 from ..utils.symlink_manager import update_data_symlink, update_output_symlink, setup_legacy_symlinks
 
@@ -31,23 +31,33 @@ GUROBI_LICENSE_NOTICE = (
 )
 
 
-def run_full_simulation() -> None:
-    """
-    Run a full simulation from start to end year with the
-    configuration provided via command line arguments.
+def _build_parser() -> argparse.ArgumentParser:
+    """The argument parser of ``run_simulation``.
+
+    Returns:
+        The parser, every flag defined and nothing parsed yet.
 
     Notes:
-        The console script passes the return value to sys.exit(), so a successful run
-        returns None (exit code 0); failures call sys.exit() with a non-zero code.
+        A flag that repeats a run setting's default takes it from ``config_default``, the years from the
+        constants, so a CLI run on the defaults records the class defaults. ``--log-level`` defaults to WARNING
+        against the class's DEBUG on purpose, for a quiet console.
     """
-    console = Console()
-
     # Initialize the argument parser
     parser = argparse.ArgumentParser(description="Run a full steel model simulation.")
 
     # Add the options for the simulation
-    parser.add_argument("--start-year", type=int, default=2025, help="The year to start the simulation (default: 2025)")
-    parser.add_argument("--end-year", type=int, default=2060, help="The year to end the simulation (default: 2060)")
+    parser.add_argument(
+        "--start-year",
+        type=int,
+        default=START_YEAR_DEFAULT,
+        help="The year to start the simulation (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--end-year",
+        type=int,
+        default=END_YEAR_DEFAULT,
+        help="The year to end the simulation (default: %(default)s)",
+    )
     parser.add_argument(
         "--output-dir",
         type=str,
@@ -57,8 +67,8 @@ def run_full_simulation() -> None:
     parser.add_argument(
         "--demand-scenario",
         type=str,
-        default="BAU",
-        help="Scenario name in the 'Demand and scrap availability' sheet used for steel demand (default: BAU)",
+        default=config_default("chosen_demand_scenario"),
+        help="Scenario name in the 'Demand and scrap availability' sheet used for steel demand (default: %(default)s)",
     )
     parser.add_argument(
         "--scrap-scenario",
@@ -69,10 +79,10 @@ def run_full_simulation() -> None:
     parser.add_argument(
         "--grid-emissions-scenario",
         type=str,
-        default="Business As Usual",
+        default=config_default("chosen_grid_emissions_scenario"),
         help=(
             "Grid emissivity projection applied at run time, named as in the 'Power grid emissivity' sheet "
-            "without its 'projection_' prefix (default: 'Business As Usual'; alternative: 'Net Zero')"
+            "without its 'projection_' prefix (default: '%(default)s'; alternative: 'Net Zero')"
         ),
     )
     parser.add_argument(
@@ -172,8 +182,8 @@ def run_full_simulation() -> None:
     parser.add_argument(
         "--iron-to-steel-price-ratio",
         type=float,
-        default=0.8,
-        help="Ratio of steel price for iron floor when pegging is enabled (default: 0.8 = 80%%)",
+        default=config_default("iron_to_steel_price_ratio"),
+        help="Ratio of steel price for iron floor when pegging is enabled (default: %(default)s)",
     )
     parser.add_argument(
         "--random-seed",
@@ -207,11 +217,25 @@ def run_full_simulation() -> None:
         "--optimization-solver",
         type=str,
         choices=["highs", "gurobi"],
-        default="highs",
-        help="Trade LP solver backend (default: highs). 'gurobi' requires your own Gurobi license "
+        default=config_default("optimization_solver"),
+        help="Trade LP solver backend (default: %(default)s). 'gurobi' requires your own Gurobi license "
         "and a gurobipy installation reachable from wherever the simulation runs; you must "
         "follow the terms of your license.",
     )
+    return parser
+
+
+def run_full_simulation() -> None:
+    """
+    Run a full simulation from start to end year with the
+    configuration provided via command line arguments.
+
+    Notes:
+        The console script passes the return value to sys.exit(), so a successful run
+        returns None (exit code 0); failures call sys.exit() with a non-zero code.
+    """
+    console = Console()
+    parser = _build_parser()
 
     # Parse the command-line arguments
     try:
