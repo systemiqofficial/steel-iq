@@ -77,7 +77,8 @@ function createResultsPane(container, set, opts = {}) {
     message.hidden = true;
     actions.hidden = folders.hidden = false;
     const files = state.index.folders.flatMap(d => d.files);
-    subtitle.textContent = "Run folder " + state.run.dir + " · " + files.length + " tables, "
+    subtitle.textContent = "Run folder " + state.run.dir + " · " + files.length
+      + " table" + (files.length === 1 ? "" : "s") + ", "
       + mb(files.reduce((s, f) => s + f.bytes, 0))
       + " as gzipped CSV (.csv.gz: double-click to unpack; Windows may need 7-Zip).";
     actions.replaceChildren();
@@ -100,7 +101,7 @@ function createResultsPane(container, set, opts = {}) {
         + 'stroke="currentColor" stroke-width="2.4"><path d="M6 9l6 6 6-6"/></svg>';
       const count = document.createElement("span");
       count.className = "results-meta";
-      count.textContent = d.files.length + " tables";
+      count.textContent = d.files.length + " table" + (d.files.length === 1 ? "" : "s");
       h.append(d.label, count);
       h.onclick = () => {
         const folded = box.classList.toggle("folded");
