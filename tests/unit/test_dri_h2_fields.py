@@ -8,6 +8,22 @@ from steeloweb.models import ModelRun, DataPackage, MasterExcelFile
 User = get_user_model()
 
 
+@pytest.fixture(autouse=True)
+def steelo_home(monkeypatch, tmp_path):
+    """Point ``STEELO_HOME`` at a folder of the test's own, so the create form never reads the developer's CLI runs.
+
+    Args:
+        monkeypatch: Pytest's monkeypatch fixture.
+        tmp_path: The test's temporary folder.
+
+    Returns:
+        The test home, ``<tmp_path>/home``, not yet created.
+    """
+    home = tmp_path / "home"
+    monkeypatch.setenv("STEELO_HOME", str(home))
+    return home
+
+
 @pytest.fixture
 def test_user(db):
     """Create a test user."""
