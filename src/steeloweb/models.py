@@ -738,6 +738,7 @@ class ModelRun(models.Model):
             "chosen_emissions_boundary_for_carbon_costs",
             "chosen_grid_emissions_scenario",
             "use_iron_ore_premiums",
+            "include_tariffs",
             "green_steel_emissions_limit",
             "enable_furnace_group_clustering",
             "geographical_clustering_scope",
