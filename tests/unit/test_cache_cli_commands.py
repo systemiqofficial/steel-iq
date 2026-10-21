@@ -166,11 +166,13 @@ class TestCacheCLICommands:
 
     @patch("sys.argv", ["steelo-cache", "clear"])
     @patch("steelo.entrypoints.cache_cli.Console")
-    def test_cache_cli_clear_all_caches(self, mock_console, mock_cache_dir):
-        """Test clearing all caches."""
+    def test_cache_cli_clear_all_caches(self, mock_console, mock_cache_dir, monkeypatch, tmp_path):
+        """Test clearing all caches, leaving the working directory alone."""
         mock_console_instance = MagicMock()
         mock_console.return_value = mock_console_instance
         mock_console_instance.input.return_value = "y"
+        # The command also removes a data/ folder in the working directory
+        monkeypatch.chdir(tmp_path)
 
         with patch("steelo.entrypoints.cache_cli.DataPreparationCache") as mock_cache_class:
             # Patch DataManager at the module level where it's imported inside the function
