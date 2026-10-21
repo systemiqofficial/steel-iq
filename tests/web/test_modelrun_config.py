@@ -6,6 +6,7 @@ import pytest
 from django.core.files.base import ContentFile
 from django.urls import reverse
 
+from steelo import simulation
 from steeloweb.models import DataPackage, DataPreparation, ModelRun
 
 
@@ -130,3 +131,27 @@ def test_create_form_stores_no_output_file_key(mock_technology_extraction, clien
 
     assert response.status_code == 302
     assert "output_file" not in ModelRun.objects.get().config
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("posted", "stored"),
+    [
+        ("", simulation.config_default("global_risk_free_rate")),
+        ("0", 0),
+    ],
+)
+def test_create_form_stores_the_class_default_for_a_blank_field_and_an_entered_zero_as_zero(
+    mock_technology_extraction,
+    client,
+    valid_modelrun_form_data,
+    posted,
+    stored,
+):
+    """A numeric field left blank stores the ``SimulationConfig`` default; the same field entered as 0 stores 0."""
+    form_data = {**valid_modelrun_form_data, "global_risk_free_rate": posted}
+
+    response = client.post(reverse("create-modelrun"), data=form_data)
+
+    assert response.status_code == 302
+    assert ModelRun.objects.get().config["global_risk_free_rate"] == stored
