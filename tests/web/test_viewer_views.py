@@ -9,11 +9,12 @@ from steeloweb.models import ModelRun
 
 
 @pytest.mark.django_db
-def test_run_file_view_serves_only_files_inside_a_listed_run_folder(client, tmp_path):
+def test_run_file_view_serves_only_files_inside_a_listed_run_folder(client, tmp_path, monkeypatch):
     """
     A file inside a finished app run's folder is served; a ../ path, an encoded .., a symlink inside the folder
     pointing outside it and an unknown run folder are 404.
     """
+    monkeypatch.setattr(views_viewer, "RUNS", {})
     run_dir = tmp_path / "model_outputs" / "run_1"
     (run_dir / "viewer").mkdir(parents=True)
     (run_dir / "viewer" / "run.json").write_text(json.dumps({"started": "2026-10-21T10:00:00"}))
