@@ -122,6 +122,25 @@ def ready_model_run(tmp_path, name, config):
     return ModelRun.objects.create(name=name, config=config, data_preparation=data_prep)
 
 
+def make_runnable(data_preparation):
+    """Give a ready preparation what a run started from the form needs.
+
+    Args:
+        data_preparation: The ready ``DataPreparation`` of the ``ready_data_preparation`` fixture.
+
+    Notes:
+        Adds a master, the two files the config factory checks, the capacity pool fixtures and a second grid
+        scenario ("Net Zero").
+    """
+    fixtures = data_preparation.get_data_path() / "data" / "fixtures"
+    emissivity = json.loads((fixtures / "region_emissivity.json").read_text())
+    emissivity["root"].append({**emissivity["root"][0], "scenario": "Net Zero"})
+    (fixtures / "region_emissivity.json").write_text(json.dumps(emissivity))
+    for name in ("plants.json", "demand_centers.json", *CAPACITY_POOL_FIXTURES):
+        (fixtures / name).write_text("[]")
+    data_preparation.master_excel_file.save("master.xlsx", ContentFile(b"fake excel content"), save=True)
+
+
 def held_value(config, name):
     """The value a ``SimulationConfig`` holds for one form field.
 
@@ -304,13 +323,7 @@ def test_every_connected_form_field_reaches_the_simulation_config(
     ready_data_preparation,
 ):
     """A form posted with every connected field off its default gives a ``SimulationConfig`` holding each value."""
-    fixtures = ready_data_preparation.get_data_path() / "data" / "fixtures"
-    emissivity = json.loads((fixtures / "region_emissivity.json").read_text())
-    emissivity["root"].append({**emissivity["root"][0], "scenario": "Net Zero"})
-    (fixtures / "region_emissivity.json").write_text(json.dumps(emissivity))
-    for name in ("plants.json", "demand_centers.json", *CAPACITY_POOL_FIXTURES):
-        (fixtures / name).write_text("[]")
-    ready_data_preparation.master_excel_file.save("master.xlsx", ContentFile(b"fake excel content"), save=True)
+    make_runnable(ready_data_preparation)
     posted = {name: "on" if value is True else value for name, value in OFF_DEFAULT_POST.items() if value is not False}
     greenfield = {
         f"tech_{slug}_greenfield": "on" for slug in ready_data_preparation.get_technologies() if slug != "EAF"
@@ -326,6 +339,36 @@ def test_every_connected_form_field_reaches_the_simulation_config(
     expected = {name: value * MT_TO_T if name in MT_FIELDS else value for name, value in OFF_DEFAULT_POST.items()}
     assert held == expected
     assert config.geo_config.excluded_greenfield_technologies == ["EAF"]
+
+
+@pytest.mark.django_db
+@patch("steelo.validation.validate_technology_settings")
+@patch("steelo.bootstrap.bootstrap_simulation")
+def test_the_switches_the_reach_test_keeps_on_reach_the_simulation_config_when_off(
+    mock_bootstrap_simulation,
+    mock_validate,
+    mock_technology_extraction,
+    client,
+    valid_modelrun_form_data,
+    ready_data_preparation,
+):
+    """Probabilistic agents off, clustering off and "No cutoff" reach the ``SimulationConfig``."""
+    make_runnable(ready_data_preparation)
+    form_data = {
+        **valid_modelrun_form_data,
+        "capacity_policy_enabled": "on",
+        "capacity_policy_no_swap_cutoff": "on",
+    }
+
+    response = client.post(reverse("create-modelrun"), data=form_data)
+    ModelRun.objects.get().run()
+
+    assert response.status_code == 302
+    config = mock_bootstrap_simulation.call_args[0][0]
+    assert config.probabilistic_agents is False
+    assert config.enable_furnace_group_clustering is False
+    assert config.geographical_clustering_scope == "plant"
+    assert config.capacity_policy.inter_company_swap_cutoff_year is None
 
 
 @pytest.mark.django_db
