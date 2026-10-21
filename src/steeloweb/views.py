@@ -13,6 +13,7 @@ from django.urls import reverse_lazy, reverse
 from django.http import Http404, HttpResponse, FileResponse, HttpResponseNotModified
 from django.core.files.base import ContentFile
 from django.views.decorators.http import require_http_methods, require_POST
+from django.template.loader import get_template
 from django.utils import timezone
 
 from django_htmx.http import HttpResponseClientRefresh
@@ -22,12 +23,18 @@ from .models import ModelRun, ResultImages, MasterExcelFile, DataPackage, DataPr
 from .forms import ModelRunCreateForm, CircularityDataForm, MasterExcelFileForm
 from .views_viewer import cli_base
 from steelo.core.parse import parse_bool_strict, parse_int_strict
-from steelo.validation import SimulationConfigError, validate_technology_settings
+from steelo.validation import SimulationConfigError, ValidationError, validate_technology_settings
 from steelo.simulation_types import TechnologySettings
 from steelo.data.manager import DataManager
 from steelo.domain.constants import MT_TO_T
 from steelo.simulation import SimulationConfig, config_default
 from steelo.viewer.extract import RUN_NAME, VIEWER_DIR
+
+
+# Posted by the technology table, so a table without its Greenfield column is told apart from one with every box
+# unticked
+GREENFIELD_COLUMN_MARKER = "greenfield_column"
+TECHNOLOGY_TABLE_TEMPLATE = "steeloweb/partials/_technology_table.html"
 
 
 class ModelRunListView(ListView):
@@ -517,12 +524,19 @@ def _merge_posted_technology_values(request, technologies: dict) -> None:
             slug = key[5:-8]  # Extract slug from "tech_{slug}_allowed"
             posted_allowed_techs.add(slug)
 
+    # A table without the Greenfield column posts no box, so its rows start again from the class default
+    has_greenfield_column = GREENFIELD_COLUMN_MARKER in request.POST
+    excluded = config_default("geo_config.excluded_greenfield_technologies")
+
     # Merge posted values for each technology
     for slug, tech_info in technologies.items():
         # Checkbox: preserve exact user selection
         # If checkbox was posted, it was checked; otherwise it was unchecked
         tech_info["allowed"] = slug in posted_allowed_techs
-        tech_info["greenfield"] = f"tech_{slug}_greenfield" in request.POST
+        if has_greenfield_column:
+            tech_info["greenfield"] = f"tech_{slug}_greenfield" in request.POST
+        else:
+            tech_info["greenfield"] = tech_info["code"] not in excluded
 
         # Year values: preserve if posted
         posted_from_year = request.POST.get(f"tech_{slug}_from_year")
@@ -779,6 +793,21 @@ def create_modelrun(request):
             # Extract technology settings from POST data if data preparation is available
             data_preparation = form.cleaned_data.get("data_preparation")
             if data_preparation:
+                # A table served before the Greenfield column posts no box, which would read as every row unticked
+                if GREENFIELD_COLUMN_MARKER not in request.POST:
+                    form.technology_validation_errors = [
+                        ValidationError(
+                            title="Technology table out of date",
+                            description=(
+                                "The technology table was loaded before it had the Greenfield column. Check the "
+                                "table below, then create the simulation again."
+                            ),
+                            suggestions=[],
+                            product_type=None,
+                        )
+                    ]
+                    context = _build_validation_error_context(request, form, data_preparation)
+                    return render(request, "steeloweb/create_modelrun.html", context)
                 technology_settings = _extract_technology_settings(request, data_preparation, form)
                 if not technology_settings:  # Validation failed
                     # ALWAYS build context with preserved user input, regardless of error type
@@ -898,7 +927,11 @@ def technologies_fragment(request):
 
     if tech_path.exists():
         st = tech_path.stat()
-        etag_val = hashlib.md5(f"{st.st_mtime_ns}:{st.st_size}:{prep.id}".encode()).hexdigest()
+        # The partial's own version too, so a table cached before the template changed is not reused
+        partial = Path(get_template(TECHNOLOGY_TABLE_TEMPLATE).origin.name).stat()
+        etag_val = hashlib.md5(
+            f"{st.st_mtime_ns}:{st.st_size}:{prep.id}:{partial.st_mtime_ns}:{partial.st_size}".encode()
+        ).hexdigest()
 
         # Normalize client ETag (strip quotes) for comparison
         client_tag = (request.headers.get("If-None-Match", "") or "").strip('"')

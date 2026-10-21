@@ -17,6 +17,7 @@ def test_bf_allowed_field_controls_blast_furnace(mock_technology_extraction, cli
             "plant_lifetime": 20,
             "end_year": 2060,
             "data_preparation": ready_data_preparation.id,
+            "greenfield_column": "1",
             # Technology settings in new dynamic format
             # BF and BFBOF disabled (no checkbox = disabled)
             "tech_BF_from_year": 2025,
@@ -110,6 +111,7 @@ def test_all_technology_allowed_fields_saved_correctly(mock_technology_extractio
         "plant_lifetime": 20,
         "end_year": 2037,
         "data_preparation": data_prep.id,
+        "greenfield_column": "1",
         # Technology settings using dynamic field names
         # BF disabled (no checkbox)
         "tech_BF_from_year": "2025",
@@ -201,6 +203,7 @@ def test_technology_allowed_defaults_when_not_specified(mock_technology_extracti
             "plant_lifetime": 20,
             "end_year": 2060,
             "data_preparation": data_prep.id,
+            "greenfield_column": "1",
             # Only include from_year fields (no allowed checkboxes)
             "tech_BF_from_year": "2025",
             "tech_BOF_from_year": "2025",
@@ -264,6 +267,7 @@ def test_disable_all_iron_technologies_scenario(mock_technology_extraction, clie
             "plant_lifetime": 20,
             "end_year": 2060,
             "data_preparation": data_prep.id,
+            "greenfield_column": "1",
             # Technology settings using dynamic field names
             # BF disabled (no checkbox)
             "tech_BF_from_year": "2025",
@@ -335,6 +339,7 @@ def test_technology_year_ranges_with_allowed_fields(mock_technology_extraction, 
             "plant_lifetime": 20,
             "end_year": 2060,
             "data_preparation": data_prep.id,
+            "greenfield_column": "1",
             # Technology settings using dynamic field names
             "tech_BF_allowed": "true",
             "tech_BF_from_year": "2025",

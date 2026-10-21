@@ -66,6 +66,7 @@ def add_dynamic_technology_fields(form_data, technologies=None):
         form_data[f"tech_{tech}_from_year"] = "2025"
         # to_year is optional and typically empty
         form_data[f"tech_{tech}_to_year"] = ""
+    form_data["greenfield_column"] = "1"
 
     return form_data
 

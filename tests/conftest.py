@@ -106,7 +106,7 @@ def technology_form_converter():
 
     def _convert_to_form_data(tech_settings: TechSettingsMap) -> dict[str, str]:
         """Convert TechSettingsMap to Django form POST data format."""
-        form_data = {}
+        form_data = {"greenfield_column": "1"}
 
         # Production mapping from normalized codes to form field slugs
         # This should ideally come from the production code, but for now inline it

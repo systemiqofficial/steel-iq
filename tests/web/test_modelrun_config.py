@@ -356,3 +356,25 @@ def test_create_page_shows_none_of_the_removed_inputs_and_a_post_without_them_cr
     assert "Demand and circularity" not in page
     assert response.status_code == 302
     assert [name for name in REMOVED_INPUTS if name in ModelRun.objects.get().config] == []
+
+
+@pytest.mark.django_db
+def test_create_form_refuses_a_technology_table_without_the_greenfield_column(
+    mock_technology_extraction,
+    client,
+    valid_modelrun_form_data,
+):
+    """A post from a table without the Greenfield column is refused; the table shown again starts at the class default.
+
+    Its rows would otherwise come back unticked, and submitting them again would exclude every technology.
+    """
+    form_data = {key: value for key, value in valid_modelrun_form_data.items() if key != "greenfield_column"}
+
+    response = client.post(reverse("create-modelrun"), data=form_data)
+
+    assert response.status_code == 200
+    assert not ModelRun.objects.exists()
+    assert [error["title"] for error in response.context["technology_validation_errors"]] == [
+        "Technology table out of date",
+    ]
+    assert {slug for slug, tech in response.context["technologies"].items() if not tech["greenfield"]} == {"BOF"}

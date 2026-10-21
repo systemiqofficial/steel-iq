@@ -73,6 +73,7 @@ def test_dri_h2_fields_in_form(client, test_user, sample_master_excel, ready_dat
         "description": "Testing DRI H2 technology availability",
         "master_input_excel": sample_master_excel.id,
         "data_preparation": ready_data_preparation.id,
+        "greenfield_column": "1",
         "start_year": 2025,
         "end_year": 2060,
         # Technology settings in new format
@@ -181,6 +182,7 @@ def test_dri_h2_fields_disabled(client, test_user, sample_master_excel, ready_da
         "description": "Testing DRI H2 disabled",
         "master_input_excel": sample_master_excel.id,
         "data_preparation": ready_data_preparation.id,
+        "greenfield_column": "1",
         "start_year": 2025,
         "end_year": 2060,
         # DRI H2 disabled - no checkbox means disabled
@@ -255,6 +257,7 @@ def test_dri_h2_partial_year_range(client, test_user, sample_master_excel, ready
         "description": "Testing DRI H2 with only from_year",
         "master_input_excel": sample_master_excel.id,
         "data_preparation": ready_data_preparation.id,
+        "greenfield_column": "1",
         "start_year": 2025,
         "end_year": 2060,
         # DRI H2 with only from_year

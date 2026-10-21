@@ -42,6 +42,7 @@ def test_modelrun_name_field_saved(mock_technology_extraction, client, prepared_
             "plant_lifetime": 20,
             "end_year": 2060,
             "data_preparation": data_prep.id,
+            "greenfield_column": "1",
             # Other required fields with defaults
             "bf_allowed": True,
             "bf_from_year": 2025,
@@ -113,6 +114,7 @@ def test_modelrun_without_name(mock_technology_extraction, client, prepared_data
             "plant_lifetime": 20,
             "end_year": 2060,
             "data_preparation": data_prep.id,
+            "greenfield_column": "1",
             # Other required fields with defaults
             "bf_allowed": True,
             "bf_from_year": 2025,
