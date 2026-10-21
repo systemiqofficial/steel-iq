@@ -3,6 +3,7 @@
 The app comes from ``app/`` beside this module, Plotly from the installed ``plotly`` package, ``manifest.json``,
 ``inputs.json`` and ``geo.json`` from the catalogue on every request, over the runs found on disk again each time, and
 each run's files from its folder under ``runs/<folder>/``, refused when the resolved path leaves the run folder.
+A request naming any host but ``127.0.0.1`` or ``localhost``, on any port, gets a 404.
 """
 
 import argparse
@@ -85,6 +86,24 @@ class ViewerHandler(http.server.SimpleHTTPRequestHandler):
         found = catalogue.discover_runs(self.output_base, self.run_dirs)
         ViewerHandler.runs = {run_dir.name: run_dir for run_dir in found}
         return found
+
+    def parse_request(self) -> bool:
+        """Parse the request line and headers, answering 404 when the Host header names another host.
+
+        Returns:
+            True when the request is to be served; False once an error has been sent.
+
+        Notes:
+            A web page that points its own domain name at 127.0.0.1 (DNS rebinding) reaches the viewer with that
+            domain in the Host header; refusing every Host but 127.0.0.1 and localhost keeps the manifest and the
+            run files from such a page. The port is not compared, so an ssh tunnel on another local port works.
+        """
+        if not super().parse_request():
+            return False
+        if self.headers.get("Host", "").lower().split(":")[0] not in ("127.0.0.1", "localhost"):
+            self.send_error(404)
+            return False
+        return True
 
     def do_GET(self) -> None:
         """Answer ``/manifest.json`` and ``/inputs.json`` from the catalogue, anything else as a file."""
