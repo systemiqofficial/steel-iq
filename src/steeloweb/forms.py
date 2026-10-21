@@ -809,7 +809,16 @@ class ModelRunCreateForm(forms.ModelForm):
         if scenarios and self.fields["chosen_grid_emissions_scenario"].initial not in scenarios:
             self.fields["chosen_grid_emissions_scenario"].initial = scenarios[0]
 
-        boundaries = active_prep.get_emission_boundaries() if active_prep is not None else []
+        # A broken preparation refuses the post in clean() but leaves the page usable for the others
+        self.emission_boundaries_error = None
+        try:
+            boundaries = active_prep.get_emission_boundaries() if active_prep is not None else []
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            boundaries = []
+            self.emission_boundaries_error = (
+                f"This data preparation has no readable technology emission factors ({error}); prepare the master "
+                "again."
+            )
         boundary_field = self.fields["chosen_emissions_boundary_for_carbon_costs"]
         boundary_field.choices = [(boundary, boundary) for boundary in boundaries]
         if boundaries and boundary_field.initial not in boundaries:
@@ -914,9 +923,12 @@ class ModelRunCreateForm(forms.ModelForm):
 
         Notes:
             A lever set that ``CapacityPolicyConfig`` refuses, the switch on a preparation without the capacity pool
-            fixtures, and a credit validity without the switch are form errors.
+            fixtures, a credit validity without the switch, and a preparation whose emission factors cannot be read
+            are form errors.
         """
         cleaned_data = super().clean()
+        if self.emission_boundaries_error:
+            self.add_error("chosen_emissions_boundary_for_carbon_costs", self.emission_boundaries_error)
         start_year = cleaned_data.get("start_year")
         end_year = cleaned_data.get("end_year")
 
