@@ -20,7 +20,7 @@
         <div id="viewer-title" class="d-flex justify-content-between align-items-center">
             <h1 class="h4 mb-0">STEEL-IQ Scenario Viewer</h1>
             <div>
-                <button type="button" id="viewer-tour" class="btn btn-sm btn-outline-primary">
+                <button type="button" id="viewer-tour" class="btn btn-sm btn-outline-primary" disabled>
                     <i class="fas fa-question-circle"></i> Tour
                 </button>
                 <a href="{{ browser_url }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-primary">
@@ -29,17 +29,20 @@
             </div>
         </div>
     </div>
-    <iframe id="viewer-frame" src="{{ frame_src }}" title="Scenario viewer"></iframe>
+    <iframe id="viewer-frame" src="{{ frame_src }}" title="Scenario viewer"
+            onload="document.getElementById('viewer-tour').disabled = false"></iframe>
 </div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
-// The framed viewer hides its banner and Tour link, so this starts its tour, with focus in the frame for the keys
+// The framed viewer hides its Tour link; this clicks it once the viewer has set it up, with focus in the frame
 document.getElementById("viewer-tour").onclick = () => {
     const frame = document.getElementById("viewer-frame");
+    const link = frame.contentDocument.getElementById("tour-link");
+    if (!link || !link.onclick) return;
     frame.contentWindow.focus();
-    frame.contentDocument.getElementById("tour-link").click();
+    link.click();
 };
 </script>
 {% endblock %}
