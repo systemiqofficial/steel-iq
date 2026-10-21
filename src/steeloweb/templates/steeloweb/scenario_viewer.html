@@ -1,25 +1,43 @@
 {% extends "base.html" %}
 
-{% block title %}Scenario viewer{% endblock %}
+{% block title %}STEEL-IQ Scenario Viewer{% endblock %}
 
 {% block extra_css %}
 <style>
     /* The frame fills the window below the navigation and the header row */
-    body { display: flex; flex-direction: column; height: 100vh; }
+    body { display: flex; flex-direction: column; height: 100vh; padding-bottom: 0; }
     footer { display: none; }
     #scenario-viewer { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-    #scenario-viewer iframe { flex: 1; width: 100%; border: 0; }
+    #scenario-viewer iframe { flex: 1; width: 100%; border: 0; border-top: 1px solid #dee2e6; }
 </style>
 {% endblock %}
 
 {% block content %}
 <div id="scenario-viewer">
-    <div class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom">
-        <h1 class="h5 mb-0">Scenario viewer</h1>
-        <a href="{{ browser_url }}" target="_blank" rel="noopener" class="btn btn-sm btn-outline-secondary">
-            <i class="fas fa-external-link-alt"></i> Open in browser
-        </a>
+    <div class="container mt-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1>STEEL-IQ Scenario Viewer</h1>
+            <div>
+                <button type="button" id="viewer-tour" class="btn btn-outline-primary">
+                    <i class="fas fa-question-circle"></i> Tour
+                </button>
+                <a href="{{ browser_url }}" target="_blank" rel="noopener" class="btn btn-outline-primary">
+                    <i class="fas fa-external-link-alt"></i> Open in browser
+                </a>
+            </div>
+        </div>
     </div>
-    <iframe src="{{ frame_src }}" title="Scenario viewer"></iframe>
+    <iframe id="viewer-frame" src="{{ frame_src }}" title="Scenario viewer"></iframe>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// The framed viewer hides its banner and Tour link, so this starts its tour, with focus in the frame for the keys
+document.getElementById("viewer-tour").onclick = () => {
+    const frame = document.getElementById("viewer-frame");
+    frame.contentWindow.focus();
+    frame.contentDocument.getElementById("tour-link").click();
+};
+</script>
 {% endblock %}
