@@ -8,7 +8,6 @@ The main command to run a steel model simulation with automatic data preparation
 ❯ run_simulation -h
 usage: run_simulation [-h] [--start-year START_YEAR] [--end-year END_YEAR]
                       [--output-dir OUTPUT_DIR]
-                      [--demand-sheet DEMAND_SHEET]
                       [--demand-scenario DEMAND_SCENARIO]
                       [--scrap-scenario SCRAP_SCENARIO]
                       [--grid-emissions-scenario GRID_EMISSIONS_SCENARIO]
@@ -40,9 +39,6 @@ options:
   --output-dir OUTPUT_DIR
                         Base output directory for simulation results (default:
                         $STEELO_HOME/output)
-  --demand-sheet DEMAND_SHEET
-                        Sheet name in the demand excel file (default:
-                        'Steel_Demand_Chris Bataille')
   --demand-scenario DEMAND_SCENARIO
                         Scenario name in the 'Demand and scrap availability'
                         sheet used for steel demand (default: BAU)

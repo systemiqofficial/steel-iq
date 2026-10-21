@@ -379,7 +379,6 @@ Outputs go to a fresh `sim_<timestamp>/` directory under `--output-dir` (default
 - `--intraregional-trade` / `--no-intraregional-trade`: Allow or disallow hydrogen imports between linked regions (default: off)
 
 **Data Files (usually handled automatically via caching):**
-- `--demand-sheet`: Sheet name in the demand Excel file
 - `--baseload-power-sim-dir`: BOA-generated baseload power simulation output directory
 
 **Caching Options:**

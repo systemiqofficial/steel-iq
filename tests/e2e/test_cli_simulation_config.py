@@ -550,9 +550,15 @@ def test_cli_output_file_flag_is_refused_at_parse_time(capsys):
     assert "--output-file" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("flag", ["--plants-json", "--demand-excel", "--location-csv", "--cost-of-x-csv"])
+@pytest.mark.parametrize(
+    "flag",
+    ["--plants-json", "--demand-excel", "--location-csv", "--cost-of-x-csv", "--demand-sheet"],
+)
 def test_cli_unread_input_file_flags_are_refused_at_parse_time(flag, capsys):
-    """The four single-file flags were never read, so they no longer exist and stop the run at parsing."""
+    """
+    The four single-file flags and the demand sheet name were never read, so they no longer exist and stop the run at
+    parsing.
+    """
     with patch.object(sys, "argv", ["run_simulation", flag, "x"]):
         with pytest.raises(SystemExit) as raised:
             run_full_simulation()

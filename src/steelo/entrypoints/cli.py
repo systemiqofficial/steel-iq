@@ -55,12 +55,6 @@ def run_full_simulation() -> None:
         help="Base output directory for simulation results (default: $STEELO_HOME/output)",
     )
     parser.add_argument(
-        "--demand-sheet",
-        type=str,
-        default="Steel_Demand_Chris Bataille",
-        help="Sheet name in the demand excel file (default: 'Steel_Demand_Chris Bataille')",
-    )
-    parser.add_argument(
         "--demand-scenario",
         type=str,
         default="BAU",
@@ -342,7 +336,6 @@ def run_full_simulation() -> None:
                 "data_dir": actual_data_dir,
                 "output_dir": output_dir,
                 "master_excel_path": master_excel_path,
-                "demand_sheet_name": args.demand_sheet,
                 "chosen_demand_scenario": demand_scenario,
                 "chosen_scrap_scenario": scrap_scenario,
                 "chosen_grid_emissions_scenario": grid_emissions_scenario,
@@ -457,7 +450,6 @@ def run_full_simulation() -> None:
                     "data_dir": actual_data_dir,
                     "output_dir": output_dir,
                     "master_excel_path": master_excel_path,
-                    "demand_sheet_name": args.demand_sheet,
                     "chosen_demand_scenario": demand_scenario,
                     "chosen_scrap_scenario": scrap_scenario,
                     "chosen_grid_emissions_scenario": grid_emissions_scenario,
