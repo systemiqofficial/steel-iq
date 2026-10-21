@@ -79,7 +79,90 @@ def test_catalogue_dimensions_are_the_differing_settings_input_data_seed_and_run
     percentile = "geo_config.hydrogen_ceiling_percentile"
     assert settings["sim_2"][percentile]["changed"] is True
     assert settings["sim_2"][percentile]["varies"] is True
+    assert settings["sim_2"][percentile]["default"] == "no cap"
     assert settings["sim_1"][percentile]["changed"] is False
+    assert "default" not in settings["sim_1"][percentile]
+
+
+def test_run_details_carry_list_items_and_switch_states(tmp_path):
+    """
+    Tests that a list setting carries its items for the run details' chips and a boolean setting its state for the
+    on and off dot, beside the formatted value the filters use.
+    """
+    run = write_run(tmp_path / "sim_1", "base", "2026-10-20T10:00:00")
+
+    local = catalogue.build_manifest([run], with_made_in=False)["sets"][0]
+
+    settings = {s["key"]: s for s in local["runs"][0]["settings"]}
+    statuses = settings["active_statuses"]
+    assert statuses["items"] == SimulationConfig.for_testing(InMemoryRepository()).active_statuses
+    assert statuses["value"] == ", ".join(statuses["items"])
+    assert settings["include_tariffs"]["bool"] is True
+    assert settings["include_tariffs"]["value"] == "on"
+    assert "items" not in settings["include_tariffs"] and "bool" not in statuses
+
+
+def test_settings_layout_places_every_counted_setting_once():
+    """
+    Tests that the run details' layout names every counted setting of a config exactly once, by key or by a group's
+    prefix, and no key that is not one, so a new, renamed or removed setting cannot fall out of the run details
+    unnoticed.
+    """
+    config = SimulationConfig.for_testing(InMemoryRepository())
+    keys = set(catalogue.flatten_settings(simulation.config_as_json_dict(config)))
+    named = []
+    prefixes = []
+    for section in catalogue.SETTINGS_LAYOUT:
+        if "tiles" in section:
+            named += [key for _, tile_keys in section["tiles"] for key in tile_keys]
+        for group in section["groups"]:
+            named += group["rows"] + [group[field] for field in ("switch", "greenfield") if field in group]
+            if "prefix" in group:
+                prefixes.append(group["prefix"])
+
+    under_prefix = {key for key in keys if any(key.startswith(prefix) for prefix in prefixes)}
+    assert len(named) == len(set(named))
+    assert not set(named) & under_prefix
+    assert set(named) | under_prefix == keys
+
+
+def test_format_value_shows_shares_units_and_words():
+    """
+    Tests that a share reads in per cent, a quantity with its unit, the hydrogen ceiling as a percentile or as no
+    cap, and None and booleans in the words their settings use.
+    """
+    cases = {
+        ("equity_share", 0.2): "20%",
+        ("global_risk_free_rate", 0.0209): "2.09%",
+        ("iron_to_steel_price_ratio", 0.8): "80% of steel price",
+        ("expanded_capacity", 2_500_000.0): "2.5 Mt",
+        ("steel_price_buffer", 200.0): "200 USD/t",
+        ("plant_lifetime", 20): "20 years",
+        ("geo_config.max_slope", 2.0): "2°",
+        ("geo_config.land_cover_factor.Cropland", 1.1): "1.1×",
+        ("capacity_policy.replacement_ratio", 1.5): "1.5 : 1",
+        ("geo_config.hydrogen_ceiling_percentile", 100.0): "no cap",
+        ("geo_config.hydrogen_ceiling_percentile", 20.0): "20th percentile",
+        ("geo_config.hydrogen_ceiling_percentile", 22.0): "22nd percentile",
+        ("technology_settings.BF.to_year", None): "open",
+        ("capacity_policy.credit_validity_years", None): "never expires",
+        ("technology_settings.BF.allowed", True): "yes",
+        ("include_tariffs", False): "off",
+        ("seed", 42): "42",
+    }
+
+    assert {case: catalogue.format_value(*case) for case in cases} == cases
+
+
+def test_ordered_values_puts_numbers_with_units_in_numeric_order():
+    """
+    Tests that filter values starting with a number sort by that number, units and per cent signs after it
+    included, and that values not all numeric keep the natural order.
+    """
+    assert catalogue.ordered_values({"10 Mt", "2.5 Mt", "2.25 Mt"}) == ["2.25 Mt", "2.5 Mt", "10 Mt"]
+    assert catalogue.ordered_values({"2.5%", "2.09%", "100%"}) == ["2.09%", "2.5%", "100%"]
+    assert catalogue.ordered_values({"1e-05", "0.001"}) == ["1e-05", "0.001"]
+    assert catalogue.ordered_values({"no cap", "20th percentile"}) == ["20th percentile", "no cap"]
 
 
 def test_excluded_settings_name_only_real_config_fields():
