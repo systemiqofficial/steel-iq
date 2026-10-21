@@ -10,8 +10,12 @@ function rtEl(tag, cls, text) {
 
 const rtCount = (n, noun) => n + " " + noun + (n === 1 ? "" : "s");
 
-// "2026-10-20T21:11:34" to the minute.
-const runTableDate = run => run.started.slice(0, 16).replace("T", " ");
+// The start to the minute in the viewer's local time; one without an offset (older runs) reads as local time.
+const runTableDate = run => {
+  const d = new Date(run.started), two = n => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate())
+    + " " + two(d.getHours()) + ":" + two(d.getMinutes());
+};
 
 // One run's details, as a row under its own spanning the table: an overview of what sets the run apart, then the
 // sections of set.settings_layout with a contents list beside them.
